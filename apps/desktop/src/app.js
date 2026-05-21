@@ -28,6 +28,7 @@ Every key you press runs a Lisp command, defined in
 packages/stdlib/lisp/ — not hardcoded.
 
   C-x C-f open a file      C-x C-s save the buffer
+  C-x C-r reload the editor's own Lisp (hot reload)
   C-z     undo             C-S-z   redo
 
 The REPL below shares this buffer and this interpreter. Try:
@@ -122,6 +123,10 @@ const interpreter = createInterpreter({
       saveBufferInteractive();
       return NIL;
     },
+    'reload-stdlib!': () => {
+      reloadStdlib();
+      return NIL;
+    },
   },
 });
 
@@ -134,14 +139,27 @@ function evaluateInRepl(source) {
   }
 }
 
+/** Fetch the source of a standard-library file over the app:// scheme. */
+function fetchStdlibSource(name) {
+  return fetch(`app://editor/packages/stdlib/lisp/${name}`).then((response) =>
+    response.text()
+  );
+}
+
+/** Re-evaluate the standard library — hot reload of the editor itself. */
+async function reloadStdlib() {
+  try {
+    await loadStdlib(interpreter, fetchStdlibSource);
+    repl.appendNote('standard library reloaded');
+  } catch (error) {
+    repl.appendError(`reload failed: ${error.message}`);
+  }
+}
+
 // Load the standard library — the commands and keymap, written in Lisp.
 let keymapReady = false;
 try {
-  await loadStdlib(interpreter, (name) =>
-    fetch(`app://editor/packages/stdlib/lisp/${name}`).then((response) =>
-      response.text()
-    )
-  );
+  await loadStdlib(interpreter, fetchStdlibSource);
   keymapReady = true;
 } catch (error) {
   repl.appendError(`standard library failed to load: ${error.message}`);

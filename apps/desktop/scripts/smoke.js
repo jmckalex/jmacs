@@ -128,13 +128,21 @@ app.whenReady().then(() => {
           + ' (reset-keymap!) p))');
         const sequence = lastResult();
 
+        // The module system: define a module, import it, call its export.
+        submit('(module demo (export answer) (define (answer) 42))');
+        submit('(begin (import demo) (answer))');
+        const modules = lastResult();
+
         const firstLineBefore = document.querySelector('.editor-line').textContent;
         submit('(goto! 0)');
         submit('(insert! "[lisp] ")');
         await frame();
         const firstLineAfter = document.querySelector('.editor-line').textContent;
 
-        return { arithmetic, stdlib, sequence, firstLineBefore, firstLineAfter };
+        return {
+          arithmetic, stdlib, sequence, modules,
+          firstLineBefore, firstLineAfter,
+        };
       })()`);
       console.log('  lisp:', JSON.stringify(lisp));
 
@@ -164,17 +172,18 @@ app.whenReady().then(() => {
       const replOk = lisp.arithmetic === '6';
       const stdlibOk = lisp.stdlib.includes('procedure');
       const sequenceOk = lisp.sequence === '#t';
+      const modulesOk = lisp.modules === '42';
       const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
       const filesOk =
         files.exposed && files.saved && savedContent === 'smoke save ok';
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
-        interopOk && filesOk
+        modulesOk && interopOk && filesOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, sequences, REPL, buffer edits and file I/O all work`
+          `${render.lines} lines; keymap, sequences, modules, REPL, edits and file I/O all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -186,6 +195,8 @@ app.whenReady().then(() => {
         finish(1, 'the standard library did not load');
       } else if (!sequenceOk) {
         finish(1, 'key sequences (prefix keys) did not work');
+      } else if (!modulesOk) {
+        finish(1, 'the module system did not work');
       } else if (!interopOk) {
         finish(1, 'Lisp did not edit the buffer');
       } else {
