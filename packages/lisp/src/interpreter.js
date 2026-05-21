@@ -6,7 +6,7 @@
  */
 
 import { Environment } from './environment.js';
-import { evaluate } from './eval.js';
+import { applyProcedure, evaluate } from './eval.js';
 import { installPrimitives } from './primitives.js';
 import { read } from './reader.js';
 import { NIL, Primitive } from './values.js';
@@ -41,6 +41,9 @@ const PRELUDE = `
  *   returning the value of the last form. Throws `LispError` on error.
  * @property {(name: string, value: *) => *} define - Bind a value in
  *   the global environment.
+ * @property {(name: string, ...args: *[]) => *} call - Apply a global
+ *   procedure to JavaScript arguments. The host's way into Lisp — used,
+ *   for example, to run the keymap's `handle-key` on every keystroke.
  */
 
 /**
@@ -59,6 +62,14 @@ export function createInterpreter(options = {}) {
   const global = new Environment();
 
   installPrimitives(global, { write });
+  // `eval` needs the global environment, so it is installed here rather
+  // than in primitives.js. `(eval form)` evaluates a form — and, given a
+  // symbol, resolves it to its current binding, which is what lets the
+  // keymap bind command *names* and pick up redefinitions.
+  global.define(
+    'eval',
+    new Primitive('eval', (args) => evaluate(args[0], global))
+  );
   for (const form of read(PRELUDE)) {
     evaluate(form, global);
   }
@@ -81,6 +92,10 @@ export function createInterpreter(options = {}) {
 
     define(name, value) {
       return global.define(name, value);
+    },
+
+    call(name, ...args) {
+      return applyProcedure(global.lookup(name), args);
     },
   };
 }
