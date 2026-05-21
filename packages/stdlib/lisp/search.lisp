@@ -6,3 +6,7 @@
 (define (isearch-forward)
   "Begin an incremental forward search in the current buffer."
   (start-search!))
+
+(define (isearch-backward)
+  "Begin an incremental backward search in the current buffer."
+  (start-search-backward!))

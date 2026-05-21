@@ -54,6 +54,10 @@ async function editor(initialText = 'hello world') {
         searchCalls.push('search');
         return NIL;
       },
+      'start-search-backward!': () => {
+        searchCalls.push('search-backward');
+        return NIL;
+      },
       'start-command-palette!': () => {
         paletteCalls.push('palette');
         return NIL;
@@ -249,6 +253,12 @@ test('C-s starts an incremental search', async () => {
   const { interpreter, searchCalls } = await editor();
   press(interpreter, 'C-s');
   assert.deepEqual(searchCalls, ['search']);
+});
+
+test('C-r starts a backward search', async () => {
+  const { interpreter, searchCalls } = await editor();
+  press(interpreter, 'C-r');
+  assert.deepEqual(searchCalls, ['search-backward']);
 });
 
 test('M-x opens the command palette', async () => {

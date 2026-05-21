@@ -61,6 +61,7 @@
    "C-z"          'undo
    "C-S-z"        'redo
    "C-s"          'isearch-forward
+   "C-r"          'isearch-backward
    "M-x"          'execute-command
    "C-w"          'kill-region
    "M-w"          'copy-region

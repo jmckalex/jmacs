@@ -145,9 +145,10 @@ async function saveBufferInteractive() {
 const minibuffer = createMinibuffer(document.getElementById('minibuffer-host'));
 
 /** Run an incremental forward search in the minibuffer. */
-function startSearch() {
+function startSearch(initialDirection) {
   const buffer = session.current;
   const origin = buffer.point;
+  let direction = initialDirection;
   let lastMatch = -1;
 
   /** Select the match at `index` so the editor highlights it. */
@@ -157,46 +158,59 @@ function startSearch() {
     lastMatch = index;
   }
 
-  minibuffer.prompt('I-search: ', {
-    onChange(query) {
-      if (query === '') {
-        buffer.moveTo(origin);
+  /** Find `query` from offset `from` in `dir`. */
+  function find(query, from, dir) {
+    return dir === 'forward'
+      ? buffer.text.indexOf(query, from)
+      : buffer.text.lastIndexOf(query, from);
+  }
+
+  minibuffer.prompt(
+    initialDirection === 'forward' ? 'I-search: ' : 'I-search backward: ',
+    {
+      onChange(query) {
         lastMatch = -1;
-        minibuffer.setStatus('');
-        return;
-      }
-      const index = buffer.text.indexOf(query, origin);
-      if (index >= 0) {
-        showMatch(index, query);
-        minibuffer.setStatus('');
-      } else {
-        minibuffer.setStatus('no match');
-      }
-    },
-    onKey(key, query) {
-      // A repeated C-s advances to the next match.
-      if (key === 'C-s' && query !== '') {
-        const from = lastMatch >= 0 ? lastMatch + 1 : origin;
-        const index = buffer.text.indexOf(query, from);
+        if (query === '') {
+          buffer.moveTo(origin);
+          minibuffer.setStatus('');
+          return;
+        }
+        const from = direction === 'forward' ? origin : Math.max(origin - 1, 0);
+        const index = find(query, from, direction);
         if (index >= 0) {
           showMatch(index, query);
           minibuffer.setStatus('');
         } else {
-          minibuffer.setStatus('no more matches');
+          minibuffer.setStatus('no match');
         }
-        return true;
-      }
-      return false;
-    },
-    onSubmit() {
-      buffer.clearMark(); // keep the cursor at the match
-      editorView.focus();
-    },
-    onCancel() {
-      buffer.moveTo(origin);
-      editorView.focus();
-    },
-  });
+      },
+      onKey(key, query) {
+        // C-s / C-r advance to the next match, forward or backward.
+        if ((key === 'C-s' || key === 'C-r') && query !== '') {
+          direction = key === 'C-s' ? 'forward' : 'backward';
+          const base = lastMatch >= 0 ? lastMatch : origin;
+          const from = direction === 'forward' ? base + 1 : base - 1;
+          const index = find(query, from, direction);
+          if (index >= 0) {
+            showMatch(index, query);
+            minibuffer.setStatus('');
+          } else {
+            minibuffer.setStatus('no more matches');
+          }
+          return true;
+        }
+        return false;
+      },
+      onSubmit() {
+        buffer.clearMark(); // keep the cursor at the match
+        editorView.focus();
+      },
+      onCancel() {
+        buffer.moveTo(origin);
+        editorView.focus();
+      },
+    }
+  );
 }
 
 // --- command palette (M-x) ---------------------------------------------
@@ -352,7 +366,11 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'start-search!': () => {
-      startSearch();
+      startSearch('forward');
+      return NIL;
+    },
+    'start-search-backward!': () => {
+      startSearch('backward');
       return NIL;
     },
     'start-command-palette!': () => {
