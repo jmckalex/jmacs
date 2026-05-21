@@ -15,3 +15,7 @@
 (define (new-buffer)
   "Create a fresh empty buffer and switch to it."
   (new-buffer!))
+
+(define (switch-buffer)
+  "Switch to a buffer chosen by name, with completion."
+  (start-buffer-switcher!))

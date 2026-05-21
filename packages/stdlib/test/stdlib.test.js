@@ -44,6 +44,10 @@ async function editor(initialText = 'hello world') {
         bufferCalls.push('new');
         return NIL;
       },
+      'start-buffer-switcher!': () => {
+        bufferCalls.push('switch');
+        return NIL;
+      },
       'start-search!': () => {
         searchCalls.push('search');
         return NIL;
@@ -205,17 +209,24 @@ test('plain keys still work after a completed sequence', async () => {
 
 // --- multiple buffers ---------------------------------------------------
 
-test('C-x b switches to the next buffer', async () => {
+test('C-x b opens the buffer switcher', async () => {
   const { interpreter, bufferCalls } = await editor();
   press(interpreter, 'C-x');
   press(interpreter, 'b');
+  assert.deepEqual(bufferCalls, ['switch']);
+});
+
+test('C-x right switches to the next buffer', async () => {
+  const { interpreter, bufferCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'right');
   assert.deepEqual(bufferCalls, ['next']);
 });
 
-test('C-x p switches to the previous buffer', async () => {
+test('C-x left switches to the previous buffer', async () => {
   const { interpreter, bufferCalls } = await editor();
   press(interpreter, 'C-x');
-  press(interpreter, 'p');
+  press(interpreter, 'left');
   assert.deepEqual(bufferCalls, ['previous']);
 });
 

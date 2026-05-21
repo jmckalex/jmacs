@@ -235,6 +235,36 @@ function startCommandPalette() {
   });
 }
 
+/** Switch to a buffer chosen by name, with completion, in the minibuffer. */
+function startBufferSwitcher() {
+  const names = buffers.map((buffer) => buffer.name);
+
+  minibuffer.prompt('Buffer: ', {
+    onChange(query) {
+      const matches = fuzzyFilter(query, names);
+      if (matches.length === 0) {
+        minibuffer.setStatus('no matching buffer');
+        return;
+      }
+      const shown = matches.slice(0, 6);
+      minibuffer.setStatus(
+        `[${shown[0]}]` +
+          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
+      );
+    },
+    onSubmit(query) {
+      editorView.focus();
+      const chosen = fuzzyFilter(query, names)[0];
+      if (chosen === undefined) return;
+      const index = buffers.findIndex((buffer) => buffer.name === chosen);
+      if (index >= 0) switchToBuffer(index);
+    },
+    onCancel() {
+      editorView.focus();
+    },
+  });
+}
+
 // --- Lisp interpreter and REPL -----------------------------------------
 
 const repl = createReplView(document.getElementById('repl-host'), {
@@ -267,6 +297,10 @@ const interpreter = createInterpreter({
     },
     'start-command-palette!': () => {
       startCommandPalette();
+      return NIL;
+    },
+    'start-buffer-switcher!': () => {
+      startBufferSwitcher();
       return NIL;
     },
 

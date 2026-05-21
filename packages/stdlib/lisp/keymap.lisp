@@ -13,12 +13,13 @@
 
 ;; The C-x prefix map — keys reached by first pressing C-x.
 (define c-x-keymap
-  {"C-f" 'find-file
-   "C-s" 'save-buffer
-   "C-r" 'reload-stdlib
-   "b"   'next-buffer
-   "p"   'previous-buffer
-   "n"   'new-buffer})
+  {"C-f"   'find-file
+   "C-s"   'save-buffer
+   "C-r"   'reload-stdlib
+   "b"     'switch-buffer
+   "right" 'next-buffer
+   "left"  'previous-buffer
+   "n"     'new-buffer})
 
 ;; The root keymap.
 (define the-keymap
