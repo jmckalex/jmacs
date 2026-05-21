@@ -89,6 +89,8 @@ function updateModeline() {
   nameEl.textContent = mark + buffer.name + count;
   const { line, column } = buffer.positionAt(buffer.point);
   positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
+  // Reflect the current buffer in the OS window title.
+  document.title = `${mark}${buffer.name} — editor`;
 }
 
 // Watch the current buffer for changes; re-subscribed when it switches.

@@ -57,6 +57,7 @@
    "C-a"          'move-beginning-of-line
    "C-e"          'move-end-of-line
    "C-d"          'delete-forward
+   "C-t"          'transpose-chars
    "C-g"          'keyboard-quit
    "C-z"          'undo
    "C-S-z"        'redo

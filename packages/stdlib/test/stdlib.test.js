@@ -461,6 +461,20 @@ test('M-r is bound to replace-string', async () => {
   assert.equal(press(interpreter, 'M-r'), true);
 });
 
+test('C-t transposes the two characters before the cursor', async () => {
+  const { buffer, interpreter } = await editor('abcd');
+  buffer.moveTo(3); // after "abc"
+  press(interpreter, 'C-t');
+  assert.equal(buffer.text, 'acbd');
+});
+
+test('C-t at the buffer start does nothing', async () => {
+  const { buffer, interpreter } = await editor('ab');
+  buffer.moveTo(1);
+  press(interpreter, 'C-t');
+  assert.equal(buffer.text, 'ab');
+});
+
 test('C-x ; comments and uncomments a line', async () => {
   const { buffer, interpreter } = await editor('hello');
   buffer.moveTo(0);

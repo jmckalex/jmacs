@@ -74,6 +74,15 @@
   "Delete the character after the cursor (or the selection)."
   (delete-forward!))
 
+(define (transpose-chars)
+  "Swap the two characters before the cursor."
+  (when (>= (point) 2)
+    (let ((p (point)))
+      (let ((a (buffer-substring (- p 2) (- p 1)))
+            (b (buffer-substring (- p 1) p)))
+        (delete-region! (- p 2) p)
+        (insert! (str b a))))))
+
 (define (newline)
   "Insert a line break, copying the current line's indentation."
   (insert! (str "\n" (line-indent))))
