@@ -265,6 +265,39 @@ function startBufferSwitcher() {
   });
 }
 
+/** Pick a command in the minibuffer and show its documentation. */
+function startDescribeCommand() {
+  const names = [...new Set(listToArray(interpreter.call('command-names')))];
+
+  minibuffer.prompt('Describe command: ', {
+    onChange(query) {
+      const matches = fuzzyFilter(query, names);
+      if (matches.length === 0) {
+        minibuffer.setStatus('no matching command');
+        return;
+      }
+      const shown = matches.slice(0, 6);
+      minibuffer.setStatus(
+        `[${shown[0]}]` +
+          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
+      );
+    },
+    onSubmit(query) {
+      editorView.focus();
+      const chosen = fuzzyFilter(query, names)[0];
+      if (chosen === undefined) return;
+      try {
+        interpreter.call('describe-named-command', chosen);
+      } catch (error) {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      }
+    },
+    onCancel() {
+      editorView.focus();
+    },
+  });
+}
+
 // --- Lisp interpreter and REPL -----------------------------------------
 
 const repl = createReplView(document.getElementById('repl-host'), {
@@ -301,6 +334,10 @@ const interpreter = createInterpreter({
     },
     'start-buffer-switcher!': () => {
       startBufferSwitcher();
+      return NIL;
+    },
+    'start-describe-command!': () => {
+      startDescribeCommand();
       return NIL;
     },
 

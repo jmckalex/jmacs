@@ -20,7 +20,9 @@ async function editor(initialText = 'hello world') {
   const bufferCalls = [];
   const searchCalls = [];
   const paletteCalls = [];
+  const output = [];
   const interpreter = createInterpreter({
+    write: (text) => output.push(text),
     primitives: {
       ...createBufferPrimitives({ current: buffer }),
       'open-file!': () => {
@@ -56,6 +58,10 @@ async function editor(initialText = 'hello world') {
         paletteCalls.push('palette');
         return NIL;
       },
+      'start-describe-command!': () => {
+        paletteCalls.push('describe');
+        return NIL;
+      },
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
@@ -66,6 +72,7 @@ async function editor(initialText = 'hello world') {
     bufferCalls,
     searchCalls,
     paletteCalls,
+    output,
   };
 }
 
@@ -329,4 +336,39 @@ test('M-backspace kills the previous word', async () => {
   buffer.moveTo(11);
   press(interpreter, 'M-backspace');
   assert.equal(buffer.text, 'hello ');
+});
+
+// --- help ---------------------------------------------------------------
+
+test('C-h k describes the next key pressed', async () => {
+  const { buffer, interpreter, output } = await editor('hello');
+  buffer.moveTo(0);
+  press(interpreter, 'C-h');
+  press(interpreter, 'k');
+  press(interpreter, 'right'); // the key being described
+  const text = output.join('');
+  assert.ok(text.includes('forward-char'), 'names the bound command');
+  assert.ok(text.includes('one character'), 'shows the docstring');
+  assert.equal(buffer.point, 0, 'the described key does not also run');
+});
+
+test('C-h k reports an unbound key', async () => {
+  const { interpreter, output } = await editor();
+  press(interpreter, 'C-h');
+  press(interpreter, 'k');
+  press(interpreter, 'C-q');
+  assert.ok(output.join('').includes('unbound'));
+});
+
+test('C-h f opens the describe-command prompt', async () => {
+  const { interpreter, paletteCalls } = await editor();
+  press(interpreter, 'C-h');
+  press(interpreter, 'f');
+  assert.deepEqual(paletteCalls, ['describe']);
+});
+
+test('describe-named-command prints a command docstring', async () => {
+  const { interpreter, output } = await editor();
+  interpreter.evaluate('(describe-named-command "forward-char")');
+  assert.ok(output.join('').includes('one character'));
 });

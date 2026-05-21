@@ -21,32 +21,37 @@
    "left"  'previous-buffer
    "n"     'new-buffer})
 
+;; The C-h prefix map — help.
+(define c-h-keymap
+  {"k" 'describe-key
+   "f" 'describe-command})
+
 ;; The root keymap.
 (define the-keymap
-  {"left"      'backward-char
-   "right"     'forward-char
-   "up"        'previous-line
-   "down"      'next-line
-   "S-left"    'backward-char-extending
-   "S-right"   'forward-char-extending
-   "S-up"      'previous-line-extending
-   "S-down"    'next-line-extending
-   "home"      'move-beginning-of-line
-   "end"       'move-end-of-line
-   "S-home"    'beginning-of-line-extending
-   "S-end"     'end-of-line-extending
-   "C-left"    'move-beginning-of-line
-   "C-right"   'move-end-of-line
-   "C-up"      'beginning-of-buffer
-   "C-down"    'end-of-buffer
-   "backspace" 'delete-backward
-   "delete"    'delete-forward
-   "enter"     'newline
-   "tab"       'insert-tab
-   "C-z"       'undo
-   "C-S-z"     'redo
-   "C-s"       'isearch-forward
-   "M-x"       'execute-command
+  {"left"         'backward-char
+   "right"        'forward-char
+   "up"           'previous-line
+   "down"         'next-line
+   "S-left"       'backward-char-extending
+   "S-right"      'forward-char-extending
+   "S-up"         'previous-line-extending
+   "S-down"       'next-line-extending
+   "home"         'move-beginning-of-line
+   "end"          'move-end-of-line
+   "S-home"       'beginning-of-line-extending
+   "S-end"        'end-of-line-extending
+   "C-left"       'move-beginning-of-line
+   "C-right"      'move-end-of-line
+   "C-up"         'beginning-of-buffer
+   "C-down"       'end-of-buffer
+   "backspace"    'delete-backward
+   "delete"       'delete-forward
+   "enter"        'newline
+   "tab"          'insert-tab
+   "C-z"          'undo
+   "C-S-z"        'redo
+   "C-s"          'isearch-forward
+   "M-x"          'execute-command
    "C-w"          'kill-region
    "M-w"          'copy-region
    "C-k"          'kill-line
@@ -55,7 +60,8 @@
    "M-b"          'backward-word
    "M-d"          'kill-word
    "M-backspace"  'backward-kill-word
-   "C-x"          c-x-keymap})
+   "C-x"          c-x-keymap
+   "C-h"          c-h-keymap})
 
 ;; The keymap the next keystroke is looked up in: the root keymap, or a
 ;; prefix keymap while a key sequence is in progress.
@@ -69,27 +75,40 @@
   "True when KEY is a single character to be inserted as text."
   (and (string? key) (= (string-length key) 1)))
 
+;; A procedure to receive the next keystroke instead of the keymap, or
+;; nil. This is how a command like describe-key reads a key.
+(define *key-reader* nil)
+
+(define (read-next-key callback)
+  "Route the next keystroke to CALLBACK rather than the keymap."
+  (set! *key-reader* callback))
+
 (define (handle-key key)
-  "Dispatch KEY through the active keymap. A key may run a command,
-   begin a key sequence (a prefix), or self-insert. Returns #t when the
-   key was handled."
-  (let ((binding (get active-keymap key nil)))
-    (cond
-      ;; A nested keymap: KEY is a prefix — wait for the next key.
-      ((map? binding)
-       (set! active-keymap binding)
-       #t)
-      ;; A command name: run it, then return to the root keymap.
-      ((symbol? binding)
-       (reset-keymap!)
-       ((eval binding))
-       #t)
-      ;; Mid-sequence with nothing bound: the sequence is undefined.
-      ((not (eq? active-keymap the-keymap))
-       (reset-keymap!)
-       #t)
-      ;; At the root: self-insert a character, else leave it unhandled.
-      ((self-insert-key? key)
-       (insert! key)
-       #t)
-      (else #f))))
+  "Dispatch KEY. If a key-reader is pending it receives the key;
+   otherwise KEY runs a command, begins a sequence, or self-inserts.
+   Returns #t when the key was handled."
+  (if (not (nil? *key-reader*))
+      (let ((reader *key-reader*))
+        (set! *key-reader* nil)
+        (reader key)
+        #t)
+      (let ((binding (get active-keymap key nil)))
+        (cond
+          ;; A nested keymap: KEY is a prefix — wait for the next key.
+          ((map? binding)
+           (set! active-keymap binding)
+           #t)
+          ;; A command name: run it, then return to the root keymap.
+          ((symbol? binding)
+           (reset-keymap!)
+           ((eval binding))
+           #t)
+          ;; Mid-sequence with nothing bound: the sequence is undefined.
+          ((not (eq? active-keymap the-keymap))
+           (reset-keymap!)
+           #t)
+          ;; At the root: self-insert a character, else leave unhandled.
+          ((self-insert-key? key)
+           (insert! key)
+           #t)
+          (else #f)))))
