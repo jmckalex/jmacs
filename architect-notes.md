@@ -10,7 +10,7 @@ flagged so the standing instructions can be updated if you disagree.
 ## [2026-05-21 overnight] Tree-sitter, kill ring, words, gutter, help, more
 
 **Context**: You went to sleep asking for "an amazing app" by morning.
-Nine features built overnight, each on its own branch, each merged to
+Ten features built overnight, each on its own branch, each merged to
 `main` only with all tests and the Electron smoke test green.
 
 **What's new**:
@@ -28,6 +28,8 @@ Nine features built overnight, each on its own branch, each merged to
    drawing on the self-documentation.
 8. **Emacs movement keys** — `C-f/b/n/p/a/e/d`, `C-g` keyboard-quit.
 9. **Matching-bracket highlight**.
+10. **Auto-indent on newline** (copies the line's indentation) and
+    select-all (`C-x h`).
 
 **Decisions / things to know**:
 
@@ -51,9 +53,8 @@ guard — perhaps a hook that warns on un-committed edits to a clean
 `main`, or just my discipline.
 
 **State of the work**: `main` only; every suite green — storage 47,
-buffer 31, lisp 66, renderer 59, stdlib 40 (243 total) — and the smoke
-test exercises the whole stack. Twenty-one feature branches across the
-project, all merged.
+buffer 31, lisp 66, renderer 59, stdlib 43 (246 total) — and the smoke
+test exercises the whole stack. All feature branches merged.
 
 ---
 
