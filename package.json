@@ -1,0 +1,12 @@
+{
+  "name": "jmacs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.2.2",
+  "description": "A Lisp-extensible editor with an Electron presentation layer.",
+  "scripts": {
+    "test": "pnpm -r --if-present test",
+    "dev": "pnpm --filter @editor/desktop dev"
+  }
+}

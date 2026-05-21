@@ -1,0 +1,17 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  packages/buffer:
+    dependencies:
+      '@editor/storage':
+        specifier: workspace:*
+        version: link:../storage
+
+  packages/storage: {}

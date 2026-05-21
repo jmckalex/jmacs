@@ -1,0 +1,246 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { createBuffer } from '../src/index.js';
+
+// --- construction -------------------------------------------------------
+
+test('a new buffer starts empty with the cursor at 0', () => {
+  const buf = createBuffer();
+  assert.equal(buf.text, '');
+  assert.equal(buf.point, 0);
+  assert.equal(buf.mark, null);
+});
+
+test('a buffer can be seeded with text and named', () => {
+  const buf = createBuffer('hello', { name: 'greeting' });
+  assert.equal(buf.text, 'hello');
+  assert.equal(buf.name, 'greeting');
+  assert.equal(buf.lineCount, 1);
+});
+
+test('name defaults to untitled', () => {
+  assert.equal(createBuffer('x').name, 'untitled');
+});
+
+// --- insert -------------------------------------------------------------
+
+test('insert places text at the cursor and advances it', () => {
+  const buf = createBuffer();
+  buf.insert('hello');
+  assert.equal(buf.text, 'hello');
+  assert.equal(buf.point, 5);
+});
+
+test('insert happens at the cursor, not the end', () => {
+  const buf = createBuffer('ad');
+  buf.moveTo(1);
+  buf.insert('bc');
+  assert.equal(buf.text, 'abcd');
+  assert.equal(buf.point, 3);
+});
+
+test('typing characters one at a time composes', () => {
+  const buf = createBuffer();
+  for (const ch of 'word') buf.insert(ch);
+  assert.equal(buf.text, 'word');
+  assert.equal(buf.point, 4);
+});
+
+// --- delete -------------------------------------------------------------
+
+test('deleteBackward removes the character before the cursor', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(5);
+  assert.equal(buf.deleteBackward(), true);
+  assert.equal(buf.text, 'hell');
+  assert.equal(buf.point, 4);
+});
+
+test('deleteBackward at the start of the buffer is a no-op', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(0);
+  assert.equal(buf.deleteBackward(), false);
+  assert.equal(buf.text, 'hello');
+});
+
+test('deleteForward removes the character after the cursor', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(0);
+  assert.equal(buf.deleteForward(), true);
+  assert.equal(buf.text, 'ello');
+  assert.equal(buf.point, 0);
+});
+
+test('deleteForward at the end of the buffer is a no-op', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(5);
+  assert.equal(buf.deleteForward(), false);
+});
+
+test('deleteBackward can remove several characters', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(5);
+  buf.deleteBackward(3);
+  assert.equal(buf.text, 'he');
+  assert.equal(buf.point, 2);
+});
+
+// --- selection ----------------------------------------------------------
+
+test('selection is null until the mark is set away from point', () => {
+  const buf = createBuffer('hello');
+  assert.equal(buf.selection, null);
+  buf.moveTo(3);
+  buf.setMark(1);
+  assert.deepEqual(buf.selection, { start: 1, end: 3 });
+});
+
+test('selection normalises regardless of mark/point order', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(1);
+  buf.setMark(4);
+  assert.deepEqual(buf.selection, { start: 1, end: 4 });
+});
+
+test('insert replaces the active selection', () => {
+  const buf = createBuffer('hello world');
+  buf.moveTo(0);
+  buf.setMark(5);
+  buf.insert('HI');
+  assert.equal(buf.text, 'HI world');
+  assert.equal(buf.point, 2);
+  assert.equal(buf.selection, null);
+});
+
+test('deleteBackward removes the active selection', () => {
+  const buf = createBuffer('hello world');
+  buf.moveTo(11);
+  buf.setMark(5);
+  buf.deleteBackward();
+  assert.equal(buf.text, 'hello');
+  assert.equal(buf.point, 5);
+});
+
+test('extending a move builds a selection', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(1);
+  buf.moveRight({ extend: true });
+  buf.moveRight({ extend: true });
+  assert.deepEqual(buf.selection, { start: 1, end: 3 });
+});
+
+// --- movement -----------------------------------------------------------
+
+test('moveTo clamps out-of-range offsets', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(99);
+  assert.equal(buf.point, 5);
+  buf.moveTo(-5);
+  assert.equal(buf.point, 0);
+});
+
+test('moveLeft and moveRight step by one', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(2);
+  buf.moveRight();
+  assert.equal(buf.point, 3);
+  buf.moveLeft();
+  assert.equal(buf.point, 2);
+});
+
+test('moveDown keeps the column across lines', () => {
+  const buf = createBuffer('abcd\nefgh\nijkl');
+  buf.moveTo(2); // line 0, column 2
+  buf.moveDown();
+  assert.deepEqual(buf.positionAt(buf.point), { line: 1, column: 2 });
+  buf.moveUp();
+  assert.deepEqual(buf.positionAt(buf.point), { line: 0, column: 2 });
+});
+
+test('moveLineStart and moveLineEnd reach the line edges', () => {
+  const buf = createBuffer('first\nsecond line\nthird');
+  buf.moveTo(9); // somewhere in 'second line'
+  buf.moveLineStart();
+  assert.equal(buf.point, 6);
+  buf.moveLineEnd();
+  assert.equal(buf.point, 17);
+});
+
+test('moveBufferStart and moveBufferEnd reach the buffer edges', () => {
+  const buf = createBuffer('a\nb\nc');
+  buf.moveBufferEnd();
+  assert.equal(buf.point, 5);
+  buf.moveBufferStart();
+  assert.equal(buf.point, 0);
+});
+
+// --- history ------------------------------------------------------------
+
+test('undo reverses an insert and restores the cursor', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(5);
+  buf.insert(' world');
+  assert.equal(buf.text, 'hello world');
+  assert.equal(buf.undo(), true);
+  assert.equal(buf.text, 'hello');
+  assert.equal(buf.point, 5);
+});
+
+test('redo reapplies an undone edit', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(5);
+  buf.insert('!');
+  buf.undo();
+  assert.equal(buf.redo(), true);
+  assert.equal(buf.text, 'hello!');
+});
+
+test('undo on an empty history returns false', () => {
+  assert.equal(createBuffer('x').undo(), false);
+});
+
+test('canUndo and canRedo track history', () => {
+  const buf = createBuffer();
+  assert.equal(buf.canUndo, false);
+  buf.insert('a');
+  assert.equal(buf.canUndo, true);
+  buf.undo();
+  assert.equal(buf.canRedo, true);
+});
+
+// --- events -------------------------------------------------------------
+
+test('onChange fires on an edit with the change and cursor state', () => {
+  const buf = createBuffer('hi');
+  const events = [];
+  buf.onChange((e) => events.push(e));
+  buf.moveTo(2);
+  buf.insert('!');
+  assert.equal(events.length, 2); // the move, then the insert
+  assert.equal(events[0].change, null);
+  assert.deepEqual(events[1].change, { start: 2, removed: '', inserted: '!' });
+  assert.equal(events[1].point, 3);
+});
+
+test('onChange fires on a pure cursor move with a null change', () => {
+  const buf = createBuffer('hello');
+  const events = [];
+  buf.onChange((e) => events.push(e));
+  buf.moveRight();
+  assert.deepEqual(events, [{ change: null, point: 1, mark: null }]);
+});
+
+test('onChange returns a working unsubscribe', () => {
+  const buf = createBuffer();
+  let count = 0;
+  const off = buf.onChange(() => (count += 1));
+  buf.insert('a');
+  off();
+  buf.insert('b');
+  assert.equal(count, 1);
+});
+
+test('onChange rejects a non-function listener', () => {
+  assert.throws(() => createBuffer().onChange(42), TypeError);
+});
