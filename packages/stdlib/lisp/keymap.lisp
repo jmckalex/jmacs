@@ -44,6 +44,7 @@
    "tab"       'insert-tab
    "C-z"       'undo
    "C-S-z"     'redo
+   "C-s"       'isearch-forward
    "C-x"       c-x-keymap})
 
 ;; The keymap the next keystroke is looked up in: the root keymap, or a

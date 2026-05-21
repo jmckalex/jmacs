@@ -8,6 +8,7 @@
 
 export { createEditorView } from './view.js';
 export { createReplView } from './repl.js';
+export { createMinibuffer } from './minibuffer.js';
 export { toLines, selectionRects } from './projection.js';
 export { resolveKey, keyEventToString } from './keymap.js';
 export { applyIntent, handleKeyEvent } from './commands.js';

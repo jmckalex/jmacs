@@ -175,6 +175,32 @@ app.whenReady().then(() => {
       const savedContent = await readFile(savePath, 'utf8').catch(() => null);
       await rm(savePath, { force: true });
 
+      // Incremental search: C-s opens the minibuffer; typing a query
+      // selects a match (rendered as selection rectangles).
+      const search = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 's', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        const mb = document.querySelector('.minibuffer-input');
+        const panel = document.querySelector('.minibuffer');
+        const opened = !!mb && panel !== null && !panel.hidden;
+        let matched = false;
+        if (opened) {
+          mb.value = 'Lisp';
+          mb.dispatchEvent(new Event('input', { bubbles: true }));
+          await frame();
+          matched = document.querySelectorAll('.editor-selection-rect').length > 0;
+          mb.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Escape', bubbles: true, cancelable: true,
+          }));
+        }
+        return { opened, matched };
+      })()`);
+      console.log('  search:', JSON.stringify(search));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -187,14 +213,15 @@ app.whenReady().then(() => {
       const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
       const filesOk =
         files.exposed && files.saved && savedContent === 'smoke save ok';
+      const searchOk = search.opened && search.matched;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
-        modulesOk && buffersOk && interopOk && filesOk
+        modulesOk && buffersOk && interopOk && filesOk && searchOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, sequences, modules, buffers, REPL and file I/O all work`
+          `${render.lines} lines; keymap, sequences, modules, buffers, search, REPL and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -212,8 +239,10 @@ app.whenReady().then(() => {
         finish(1, 'multiple buffers did not work');
       } else if (!interopOk) {
         finish(1, 'Lisp did not edit the buffer');
-      } else {
+      } else if (!filesOk) {
         finish(1, 'the file bridge did not work');
+      } else {
+        finish(1, 'incremental search did not work');
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

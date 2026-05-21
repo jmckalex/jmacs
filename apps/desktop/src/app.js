@@ -11,7 +11,11 @@
 
 import { createBuffer } from '@editor/buffer';
 import { createInterpreter, NIL, writeString } from '@editor/lisp';
-import { createEditorView, createReplView } from '@editor/renderer';
+import {
+  createEditorView,
+  createMinibuffer,
+  createReplView,
+} from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 
 const WELCOME = `Welcome.
@@ -117,6 +121,65 @@ async function saveBufferInteractive() {
   }
 }
 
+// --- incremental search -------------------------------------------------
+
+const minibuffer = createMinibuffer(document.getElementById('minibuffer-host'));
+
+/** Run an incremental forward search in the minibuffer. */
+function startSearch() {
+  const buffer = session.current;
+  const origin = buffer.point;
+  let lastMatch = -1;
+
+  /** Select the match at `index` so the editor highlights it. */
+  function showMatch(index, query) {
+    buffer.moveTo(index);
+    buffer.moveTo(index + query.length, { extend: true });
+    lastMatch = index;
+  }
+
+  minibuffer.prompt('I-search: ', {
+    onChange(query) {
+      if (query === '') {
+        buffer.moveTo(origin);
+        lastMatch = -1;
+        minibuffer.setStatus('');
+        return;
+      }
+      const index = buffer.text.indexOf(query, origin);
+      if (index >= 0) {
+        showMatch(index, query);
+        minibuffer.setStatus('');
+      } else {
+        minibuffer.setStatus('no match');
+      }
+    },
+    onKey(key, query) {
+      // A repeated C-s advances to the next match.
+      if (key === 'C-s' && query !== '') {
+        const from = lastMatch >= 0 ? lastMatch + 1 : origin;
+        const index = buffer.text.indexOf(query, from);
+        if (index >= 0) {
+          showMatch(index, query);
+          minibuffer.setStatus('');
+        } else {
+          minibuffer.setStatus('no more matches');
+        }
+        return true;
+      }
+      return false;
+    },
+    onSubmit() {
+      buffer.clearMark(); // keep the cursor at the match
+      editorView.focus();
+    },
+    onCancel() {
+      buffer.moveTo(origin);
+      editorView.focus();
+    },
+  });
+}
+
 // --- Lisp interpreter and REPL -----------------------------------------
 
 const repl = createReplView(document.getElementById('repl-host'), {
@@ -141,6 +204,10 @@ const interpreter = createInterpreter({
     },
     'reload-stdlib!': () => {
       reloadStdlib();
+      return NIL;
+    },
+    'start-search!': () => {
+      startSearch();
       return NIL;
     },
 

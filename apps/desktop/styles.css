@@ -247,3 +247,38 @@ body {
 .repl-input::placeholder {
   color: var(--fg-dim);
 }
+
+/* --- minibuffer --------------------------------------------------------- */
+
+.minibuffer {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 14px;
+  background: var(--bg-chrome);
+  border-top: 1px solid var(--accent);
+  font-size: 13px;
+}
+
+.minibuffer[hidden] {
+  display: none;
+}
+
+.minibuffer-prompt {
+  color: var(--accent);
+  user-select: none;
+}
+
+.minibuffer-input {
+  flex: 1 1 auto;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+}
+
+.minibuffer-status {
+  color: var(--fg-dim);
+  user-select: none;
+}

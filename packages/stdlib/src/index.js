@@ -23,6 +23,7 @@ export const STDLIB_FILES = Object.freeze([
   'editing.lisp',
   'files.lisp',
   'buffers.lisp',
+  'search.lisp',
   'system.lisp',
   'keymap.lisp',
 ]);

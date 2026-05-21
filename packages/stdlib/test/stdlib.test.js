@@ -18,6 +18,7 @@ async function editor(initialText = 'hello world') {
   const buffer = createBuffer(initialText, { name: 'test' });
   const fileCalls = [];
   const bufferCalls = [];
+  const searchCalls = [];
   const interpreter = createInterpreter({
     primitives: {
       ...createBufferPrimitives({ current: buffer }),
@@ -42,10 +43,14 @@ async function editor(initialText = 'hello world') {
         bufferCalls.push('new');
         return NIL;
       },
+      'start-search!': () => {
+        searchCalls.push('search');
+        return NIL;
+      },
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
-  return { buffer, interpreter, fileCalls, bufferCalls };
+  return { buffer, interpreter, fileCalls, bufferCalls, searchCalls };
 }
 
 /** Send a key through the Lisp keymap; returns whether it was handled. */
@@ -207,4 +212,10 @@ test('C-x n creates a new buffer', async () => {
   press(interpreter, 'C-x');
   press(interpreter, 'n');
   assert.deepEqual(bufferCalls, ['new']);
+});
+
+test('C-s starts an incremental search', async () => {
+  const { interpreter, searchCalls } = await editor();
+  press(interpreter, 'C-s');
+  assert.deepEqual(searchCalls, ['search']);
 });
