@@ -317,6 +317,19 @@ export function createBuffer(initialText = '', options = {}) {
       return true;
     },
 
+    /**
+     * Replace the entire buffer contents. Used to load a file. The
+     * cursor moves to the start and the selection is cleared.
+     *
+     * @param {string} text - The new contents.
+     */
+    setText(text) {
+      storage.replace(0, storage.length, String(text));
+      point = 0;
+      mark = null;
+      emit(lastChange);
+    },
+
     // --- history --------------------------------------------------------
 
     /**

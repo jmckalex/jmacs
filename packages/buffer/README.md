@@ -44,6 +44,7 @@ buf.onChange((event) => {
 - `insert(text)` — insert at the cursor, replacing any selection.
 - `deleteBackward(count?)` / `deleteForward(count?)` — delete around the
   cursor, or delete the selection if one is active.
+- `setText(text)` — replace the entire contents (used to load a file).
 - `undo()` / `redo()` — with `canUndo` / `canRedo`.
 
 ### Reading

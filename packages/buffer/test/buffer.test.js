@@ -86,6 +86,27 @@ test('deleteBackward can remove several characters', () => {
   assert.equal(buf.point, 2);
 });
 
+// --- setText ------------------------------------------------------------
+
+test('setText replaces the whole buffer and resets the cursor', () => {
+  const buf = createBuffer('old contents');
+  buf.moveTo(8);
+  buf.setText('brand new text');
+  assert.equal(buf.text, 'brand new text');
+  assert.equal(buf.point, 0);
+  assert.equal(buf.mark, null);
+});
+
+test('setText fires a change event', () => {
+  const buf = createBuffer('before');
+  let fired = false;
+  buf.onChange((event) => {
+    if (event.change) fired = true;
+  });
+  buf.setText('after');
+  assert.equal(fired, true);
+});
+
 // --- selection ----------------------------------------------------------
 
 test('selection is null until the mark is set away from point', () => {
