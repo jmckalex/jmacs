@@ -372,3 +372,41 @@ test('describe-named-command prints a command docstring', async () => {
   interpreter.evaluate('(describe-named-command "forward-char")');
   assert.ok(output.join('').includes('one character'));
 });
+
+// --- Emacs movement keys ------------------------------------------------
+
+test('C-f and C-b move by a character', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(2);
+  press(interpreter, 'C-f');
+  assert.equal(buffer.point, 3);
+  press(interpreter, 'C-b');
+  assert.equal(buffer.point, 2);
+});
+
+test('C-a and C-e move to the line edges', async () => {
+  const { buffer, interpreter } = await editor('a long line');
+  buffer.moveTo(5);
+  press(interpreter, 'C-a');
+  assert.equal(buffer.point, 0);
+  press(interpreter, 'C-e');
+  assert.equal(buffer.point, 11);
+});
+
+test('C-g clears the selection', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  buffer.setMark(3);
+  assert.notEqual(buffer.selection, null);
+  press(interpreter, 'C-g');
+  assert.equal(buffer.selection, null);
+});
+
+test('C-g aborts a partial key sequence', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  press(interpreter, 'C-x'); // begin a sequence
+  press(interpreter, 'C-g'); // abort it
+  press(interpreter, 'C-f'); // back to normal dispatch
+  assert.equal(buffer.point, 1);
+});

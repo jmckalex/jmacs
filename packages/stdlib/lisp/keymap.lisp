@@ -48,6 +48,14 @@
    "delete"       'delete-forward
    "enter"        'newline
    "tab"          'insert-tab
+   "C-f"          'forward-char
+   "C-b"          'backward-char
+   "C-n"          'next-line
+   "C-p"          'previous-line
+   "C-a"          'move-beginning-of-line
+   "C-e"          'move-end-of-line
+   "C-d"          'delete-forward
+   "C-g"          'keyboard-quit
    "C-z"          'undo
    "C-S-z"        'redo
    "C-s"          'isearch-forward
@@ -70,6 +78,11 @@
 (define (reset-keymap!)
   "Return dispatch to the root keymap."
   (set! active-keymap the-keymap))
+
+(define (keyboard-quit)
+  "Abort a partial key sequence and clear the selection (C-g)."
+  (reset-keymap!)
+  (clear-mark!))
 
 (define (self-insert-key? key)
   "True when KEY is a single character to be inserted as text."
