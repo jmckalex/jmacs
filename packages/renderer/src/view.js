@@ -19,6 +19,7 @@
 import { toLines, selectionRects } from './projection.js';
 import { handleKeyEvent } from './commands.js';
 import { keyEventToString } from './keymap.js';
+import { highlightLine, languageForName } from './highlight.js';
 
 /**
  * @typedef {object} EditorView
@@ -67,13 +68,27 @@ export function createEditorView(buffer, container, options = {}) {
     return node;
   }
 
-  /** Render the buffer's lines. */
+  /** Render the buffer's lines, syntax-highlighted by run. */
   function renderLines() {
+    const language = languageForName(activeBuffer.name);
     const lines = toLines(activeBuffer.text);
     linesEl.replaceChildren(
       ...lines.map((line) => {
         const lineEl = el('div', 'editor-line');
-        lineEl.textContent = line.content;
+        const runs = highlightLine(line.content, language);
+        if (runs.length === 1 && runs[0].face === null) {
+          lineEl.textContent = runs[0].text;
+        } else {
+          for (const run of runs) {
+            if (run.face === null) {
+              lineEl.append(doc.createTextNode(run.text));
+            } else {
+              const span = el('span', `tok-${run.face}`);
+              span.textContent = run.text;
+              lineEl.append(span);
+            }
+          }
+        }
         return lineEl;
       })
     );

@@ -43,10 +43,27 @@ The REPL below shares this interpreter. Try:
   (insert! "  <- from Lisp")
 `;
 
+const SCRATCH = `;; scratch.lisp — a buffer for evaluating Lisp.
+;;
+;; This buffer is syntax-highlighted because its name ends in .lisp.
+;; Edit freely; press C-x b to switch back to the welcome buffer.
+
+(define (factorial n)
+  "The classic recursion."
+  (if (= n 0)
+      1
+      (* n (factorial (- n 1)))))
+
+(define greeting "hello, world")
+`;
+
 // --- buffers ------------------------------------------------------------
 
 /** Every open buffer; one is current. */
-const buffers = [createBuffer(WELCOME, { name: 'welcome.txt' })];
+const buffers = [
+  createBuffer(WELCOME, { name: 'welcome.txt' }),
+  createBuffer(SCRATCH, { name: 'scratch.lisp' }),
+];
 let currentIndex = 0;
 
 /** The session object the buffer primitives operate through. */

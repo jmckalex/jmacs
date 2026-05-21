@@ -41,6 +41,8 @@ app.whenReady().then(() => {
       await submit('(module geometry (export area)'
         + ' (define (area r) (* 3.14159 r r)))');
       await submit('(begin (import geometry) (area 10))');
+      // Switch to the syntax-highlighted scratch.lisp buffer.
+      await submit('(next-buffer!)');
     })()`);
 
     await new Promise((resolve) => setTimeout(resolve, 350));

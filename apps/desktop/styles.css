@@ -282,3 +282,34 @@ body {
   color: var(--fg-dim);
   user-select: none;
 }
+
+/* --- syntax highlighting ------------------------------------------------ */
+
+.tok-comment {
+  color: #6b6b7a;
+  font-style: italic;
+}
+
+.tok-string {
+  color: #9ccf8f;
+}
+
+.tok-number {
+  color: #e3b485;
+}
+
+.tok-keyword {
+  color: #b58ad9;
+}
+
+.tok-constant {
+  color: #6fb8c9;
+}
+
+.tok-paren {
+  color: #6f6f7e;
+}
+
+.tok-operator {
+  color: #c0c0cc;
+}

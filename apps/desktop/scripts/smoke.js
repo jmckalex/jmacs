@@ -133,12 +133,15 @@ app.whenReady().then(() => {
         submit('(begin (import demo) (answer))');
         const modules = lastResult();
 
-        // Multiple buffers: create one (the view re-points to it), then
-        // switch back to the first.
-        submit('(begin (new-buffer!) (buffer-count))');
+        // Multiple buffers + highlighting: two buffers are seeded;
+        // switching to scratch.lisp shows syntax-highlighted spans.
+        submit('(buffer-count)');
         const bufferCount = lastResult();
+        submit('(next-buffer!)');
         await frame();
-        const newBufferLines = document.querySelectorAll('.editor-line').length;
+        const tokenSpans = document.querySelectorAll(
+          '.tok-keyword, .tok-comment, .tok-string'
+        ).length;
         submit('(previous-buffer!)');
         await frame();
 
@@ -150,7 +153,7 @@ app.whenReady().then(() => {
 
         return {
           arithmetic, stdlib, sequence, modules,
-          bufferCount, newBufferLines,
+          bufferCount, tokenSpans,
           firstLineBefore, firstLineAfter,
         };
       })()`);
@@ -236,7 +239,8 @@ app.whenReady().then(() => {
       const stdlibOk = lisp.stdlib.includes('procedure');
       const sequenceOk = lisp.sequence === '#t';
       const modulesOk = lisp.modules === '42';
-      const buffersOk = lisp.bufferCount === '2' && lisp.newBufferLines === 1;
+      const buffersOk = lisp.bufferCount === '2';
+      const highlightOk = lisp.tokenSpans > 0;
       const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
       const filesOk =
         files.exposed && files.saved && savedContent === 'smoke save ok';
@@ -245,11 +249,12 @@ app.whenReady().then(() => {
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
-        modulesOk && buffersOk && interopOk && filesOk && searchOk && paletteOk
+        modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
+        searchOk && paletteOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, sequences, modules, buffers, search, M-x, REPL and files all work`
+          `${render.lines} lines; keymap, modules, buffers, highlighting, search, M-x and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -265,6 +270,8 @@ app.whenReady().then(() => {
         finish(1, 'the module system did not work');
       } else if (!buffersOk) {
         finish(1, 'multiple buffers did not work');
+      } else if (!highlightOk) {
+        finish(1, 'syntax highlighting did not render');
       } else if (!interopOk) {
         finish(1, 'Lisp did not edit the buffer');
       } else if (!filesOk) {
