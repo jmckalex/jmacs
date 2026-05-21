@@ -22,6 +22,7 @@ export { createBufferPrimitives } from './buffer-primitives.js';
 export const STDLIB_FILES = Object.freeze([
   'editing.lisp',
   'files.lisp',
+  'buffers.lisp',
   'system.lisp',
   'keymap.lisp',
 ]);

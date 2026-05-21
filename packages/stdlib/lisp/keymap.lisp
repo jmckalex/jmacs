@@ -15,7 +15,10 @@
 (define c-x-keymap
   {"C-f" 'find-file
    "C-s" 'save-buffer
-   "C-r" 'reload-stdlib})
+   "C-r" 'reload-stdlib
+   "b"   'next-buffer
+   "p"   'previous-buffer
+   "n"   'new-buffer})
 
 ;; The root keymap.
 (define the-keymap

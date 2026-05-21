@@ -1,12 +1,12 @@
 /**
  * @file Renderer-process entry point. Wires the whole editor together:
- * an L2 buffer, an L4 editor view, a Lisp interpreter, the standard
- * library (commands + keymap), file open/save, a REPL panel, and a
- * modeline.
+ * a list of L2 buffers, an L4 editor view, a Lisp interpreter, the
+ * standard library (commands + keymap), file open/save, a REPL panel,
+ * and a modeline.
  *
  * Every keystroke in the editor is dispatched through the Lisp keymap;
- * the REPL shares the same interpreter and buffer. The editor's
- * behaviour is Lisp, live.
+ * the REPL shares the same interpreter. The editor's behaviour is Lisp,
+ * live.
  */
 
 import { createBuffer } from '@editor/buffer';
@@ -20,36 +20,39 @@ This is a Lisp-extensible editor. The whole stack is running:
 
   storage   (L1)   the text itself
   buffer    (L2)   cursor, selection, editing commands, undo
-  lisp      (L3)   a custom Lisp — reader, evaluator, macros
+  lisp      (L3)   a custom Lisp — reader, evaluator, macros, modules
   stdlib           the editor's commands and keymap, in Lisp
   renderer  (L4)   these lines, the cursor, the REPL below
 
-Every key you press runs a Lisp command, defined in
-packages/stdlib/lisp/ — not hardcoded.
+Every key you press runs a Lisp command from packages/stdlib/lisp/.
 
   C-x C-f open a file      C-x C-s save the buffer
+  C-x b   next buffer      C-x n   new buffer
   C-x C-r reload the editor's own Lisp (hot reload)
   C-z     undo             C-S-z   redo
 
-The REPL below shares this buffer and this interpreter. Try:
+The REPL below shares this interpreter. Try:
 
   (doc forward-char)        ;; ask a command what it does
-  the-keymap                ;; see the bindings
+  (module m (export hi) (define (hi) "hello"))
   (insert! "  <- from Lisp")
-
-And then redefine the editor while it runs:
-
-  (define (newline) (insert! "\\n;; "))
-
-...now press Enter in this buffer. You just changed the editor.
 `;
 
-const buffer = createBuffer(WELCOME, { name: 'welcome.txt' });
+// --- buffers ------------------------------------------------------------
 
-// The file the buffer is associated with, and whether it has unsaved
-// changes since it was last opened or saved.
-let currentPath = null;
-let dirty = false;
+/** Every open buffer; one is current. */
+const buffers = [createBuffer(WELCOME, { name: 'welcome.txt' })];
+let currentIndex = 0;
+
+/** The session object the buffer primitives operate through. */
+const session = {
+  get current() {
+    return buffers[currentIndex];
+  },
+};
+
+/** Buffers with unsaved changes. */
+const dirtyBuffers = new Set();
 
 // --- modeline -----------------------------------------------------------
 
@@ -57,45 +60,58 @@ const nameEl = document.getElementById('modeline-name');
 const positionEl = document.getElementById('modeline-position');
 
 function updateModeline() {
-  nameEl.textContent = (dirty ? '● ' : '') + buffer.name;
+  const buffer = session.current;
+  const mark = dirtyBuffers.has(buffer) ? '● ' : '';
+  const count = buffers.length > 1 ? `  ${currentIndex + 1}/${buffers.length}` : '';
+  nameEl.textContent = mark + buffer.name + count;
   const { line, column } = buffer.positionAt(buffer.point);
   positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
 }
 
-buffer.onChange((event) => {
-  if (event.change !== null) dirty = true;
-  updateModeline();
-});
-updateModeline();
+// Watch the current buffer for changes; re-subscribed when it switches.
+let unwatch = () => {};
+function watchCurrentBuffer() {
+  unwatch();
+  const buffer = session.current;
+  unwatch = buffer.onChange((event) => {
+    if (event.change !== null) dirtyBuffers.add(buffer);
+    updateModeline();
+  });
+}
 
-// --- file open / save ---------------------------------------------------
-
-/** Mark the buffer clean (just opened or saved) and refresh the modeline. */
-function markClean() {
-  dirty = false;
+/** Switch to the buffer at `index`: re-point the view and the modeline. */
+function switchToBuffer(index) {
+  if (index < 0 || index >= buffers.length) return;
+  currentIndex = index;
+  editorView.setBuffer(session.current);
+  watchCurrentBuffer();
   updateModeline();
 }
+
+// --- file open / save ---------------------------------------------------
 
 async function openFileInteractive() {
   try {
     const result = await window.host.openFile();
     if (result === null) return;
-    buffer.setText(result.content);
-    buffer.name = result.name;
-    currentPath = result.path;
-    markClean();
+    const buffer = createBuffer(result.content, { name: result.name });
+    buffer.filePath = result.path;
+    buffers.push(buffer);
+    switchToBuffer(buffers.length - 1);
   } catch (error) {
     repl.appendError(`open failed: ${error.message}`);
   }
 }
 
 async function saveBufferInteractive() {
+  const buffer = session.current;
   try {
-    const result = await window.host.saveFile(currentPath, buffer.text);
+    const result = await window.host.saveFile(buffer.filePath ?? null, buffer.text);
     if (result === null) return;
-    currentPath = result.path;
+    buffer.filePath = result.path;
     buffer.name = result.name;
-    markClean();
+    dirtyBuffers.delete(buffer);
+    updateModeline();
   } catch (error) {
     repl.appendError(`save failed: ${error.message}`);
   }
@@ -105,16 +121,16 @@ async function saveBufferInteractive() {
 
 const repl = createReplView(document.getElementById('repl-host'), {
   prompt: 'λ ',
-  welcome: 'REPL — type Lisp, press Enter. It shares the editor buffer.',
+  welcome: 'REPL — type Lisp, press Enter. It shares the editor buffers.',
   onSubmit: evaluateInRepl,
 });
 
 const interpreter = createInterpreter({
   write: (text) => repl.appendOutput(text),
   primitives: {
-    ...createBufferPrimitives(buffer),
-    // File commands run async work (a dialog, IPC) and return at once;
-    // the buffer updates when the operation completes.
+    ...createBufferPrimitives(session),
+
+    // File commands run async work and return at once.
     'open-file!': () => {
       openFileInteractive();
       return NIL;
@@ -127,6 +143,22 @@ const interpreter = createInterpreter({
       reloadStdlib();
       return NIL;
     },
+
+    // Buffer-list commands — they re-point the editor view.
+    'next-buffer!': () => {
+      switchToBuffer((currentIndex + 1) % buffers.length);
+      return NIL;
+    },
+    'previous-buffer!': () => {
+      switchToBuffer((currentIndex - 1 + buffers.length) % buffers.length);
+      return NIL;
+    },
+    'new-buffer!': () => {
+      buffers.push(createBuffer('', { name: `untitled-${buffers.length + 1}` }));
+      switchToBuffer(buffers.length - 1);
+      return NIL;
+    },
+    'buffer-count': () => buffers.length,
   },
 });
 
@@ -138,6 +170,8 @@ function evaluateInRepl(source) {
     repl.appendError(error.lispMessage ?? error.message ?? String(error));
   }
 }
+
+// --- standard library ---------------------------------------------------
 
 /** Fetch the source of a standard-library file over the app:// scheme. */
 function fetchStdlibSource(name) {
@@ -156,7 +190,6 @@ async function reloadStdlib() {
   }
 }
 
-// Load the standard library — the commands and keymap, written in Lisp.
 let keymapReady = false;
 try {
   await loadStdlib(interpreter, fetchStdlibSource);
@@ -178,9 +211,11 @@ function dispatchKey(key) {
 // --- editor view --------------------------------------------------------
 
 const editorView = createEditorView(
-  buffer,
+  session.current,
   document.getElementById('editor-host'),
   keymapReady ? { onKey: dispatchKey } : {}
 );
 
+watchCurrentBuffer();
+updateModeline();
 editorView.focus();

@@ -17,9 +17,10 @@ const lispDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lisp');
 async function editor(initialText = 'hello world') {
   const buffer = createBuffer(initialText, { name: 'test' });
   const fileCalls = [];
+  const bufferCalls = [];
   const interpreter = createInterpreter({
     primitives: {
-      ...createBufferPrimitives(buffer),
+      ...createBufferPrimitives({ current: buffer }),
       'open-file!': () => {
         fileCalls.push('open');
         return NIL;
@@ -28,10 +29,23 @@ async function editor(initialText = 'hello world') {
         fileCalls.push('save');
         return NIL;
       },
+      'reload-stdlib!': () => NIL,
+      'next-buffer!': () => {
+        bufferCalls.push('next');
+        return NIL;
+      },
+      'previous-buffer!': () => {
+        bufferCalls.push('previous');
+        return NIL;
+      },
+      'new-buffer!': () => {
+        bufferCalls.push('new');
+        return NIL;
+      },
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
-  return { buffer, interpreter, fileCalls };
+  return { buffer, interpreter, fileCalls, bufferCalls };
 }
 
 /** Send a key through the Lisp keymap; returns whether it was handled. */
@@ -170,4 +184,27 @@ test('plain keys still work after a completed sequence', async () => {
   press(interpreter, 'C-s');
   press(interpreter, 'right');
   assert.equal(buffer.point, 1);
+});
+
+// --- multiple buffers ---------------------------------------------------
+
+test('C-x b switches to the next buffer', async () => {
+  const { interpreter, bufferCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'b');
+  assert.deepEqual(bufferCalls, ['next']);
+});
+
+test('C-x p switches to the previous buffer', async () => {
+  const { interpreter, bufferCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'p');
+  assert.deepEqual(bufferCalls, ['previous']);
+});
+
+test('C-x n creates a new buffer', async () => {
+  const { interpreter, bufferCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'n');
+  assert.deepEqual(bufferCalls, ['new']);
 });

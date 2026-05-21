@@ -8,6 +8,9 @@
  * events arrived. Geometry is expressed in CSS `ch` (column) and `lh`
  * (line) units, so a monospace font needs no pixel measurement.
  *
+ * The view can be re-pointed at a different buffer with `setBuffer`,
+ * which is how switching between buffers works.
+ *
  * This module is only meaningful in a browser/Electron renderer
  * context. The pure projection, keymap and command logic it builds on
  * lives in sibling modules and is tested without a DOM.
@@ -20,6 +23,8 @@ import { keyEventToString } from './keymap.js';
 /**
  * @typedef {object} EditorView
  * @property {HTMLElement} element - The view's root element.
+ * @property {(buffer: object) => void} setBuffer - Re-point the view
+ *   at a different buffer.
  * @property {() => void} focus - Give the editor keyboard focus.
  * @property {() => void} destroy - Unsubscribe and remove the view.
  */
@@ -27,7 +32,7 @@ import { keyEventToString } from './keymap.js';
 /**
  * Mount an editor view for a buffer inside a container element.
  *
- * @param {import('@editor/buffer').Buffer} buffer
+ * @param {import('@editor/buffer').Buffer} buffer - The initial buffer.
  * @param {HTMLElement} container - The element to mount into.
  * @param {object} [options]
  * @param {(key: string) => boolean} [options.onKey] - Key dispatcher.
@@ -40,6 +45,9 @@ import { keyEventToString } from './keymap.js';
 export function createEditorView(buffer, container, options = {}) {
   const doc = container.ownerDocument;
   const win = doc.defaultView ?? globalThis;
+
+  // The buffer currently shown; swapped by setBuffer.
+  let activeBuffer = buffer;
 
   const root = el('div', 'editor');
   root.tabIndex = 0;
@@ -61,7 +69,7 @@ export function createEditorView(buffer, container, options = {}) {
 
   /** Render the buffer's lines. */
   function renderLines() {
-    const lines = toLines(buffer.text);
+    const lines = toLines(activeBuffer.text);
     linesEl.replaceChildren(
       ...lines.map((line) => {
         const lineEl = el('div', 'editor-line');
@@ -73,7 +81,7 @@ export function createEditorView(buffer, container, options = {}) {
 
   /** Render the selection highlight, one rectangle per touched line. */
   function renderSelection() {
-    const rects = selectionRects(buffer);
+    const rects = selectionRects(activeBuffer);
     selectionLayer.replaceChildren(
       ...rects.map((rect) => {
         const span = rect.toColumn - rect.fromColumn;
@@ -92,7 +100,7 @@ export function createEditorView(buffer, container, options = {}) {
 
   /** Position the cursor at the buffer's point. */
   function renderCursor() {
-    const { line, column } = buffer.positionAt(buffer.point);
+    const { line, column } = activeBuffer.positionAt(activeBuffer.point);
     cursorEl.style.left = `calc(${column} * 1ch)`;
     cursorEl.style.top = `calc(${line} * 1lh)`;
     // Restart the blink so the cursor is solid right after it moves.
@@ -121,7 +129,7 @@ export function createEditorView(buffer, container, options = {}) {
     frame = win.requestAnimationFrame(render);
   }
 
-  const unsubscribe = buffer.onChange(schedule);
+  let unsubscribe = activeBuffer.onChange(schedule);
 
   // Key handling: use the host's dispatcher when given (the editor's
   // Lisp keymap), otherwise fall back to the renderer's built-in keymap
@@ -130,7 +138,7 @@ export function createEditorView(buffer, container, options = {}) {
   root.addEventListener('keydown', (event) => {
     const handled = onKey
       ? onKey(keyEventToString(event))
-      : handleKeyEvent(buffer, event);
+      : handleKeyEvent(activeBuffer, event);
     if (handled) event.preventDefault();
   });
   root.addEventListener('mousedown', () => root.focus());
@@ -140,7 +148,17 @@ export function createEditorView(buffer, container, options = {}) {
 
   return {
     element: root,
+
+    setBuffer(next) {
+      if (next === activeBuffer) return;
+      unsubscribe();
+      activeBuffer = next;
+      unsubscribe = activeBuffer.onChange(schedule);
+      render();
+    },
+
     focus: () => root.focus(),
+
     destroy: () => {
       unsubscribe();
       if (frame) win.cancelAnimationFrame(frame);

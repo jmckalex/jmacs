@@ -133,6 +133,15 @@ app.whenReady().then(() => {
         submit('(begin (import demo) (answer))');
         const modules = lastResult();
 
+        // Multiple buffers: create one (the view re-points to it), then
+        // switch back to the first.
+        submit('(begin (new-buffer!) (buffer-count))');
+        const bufferCount = lastResult();
+        await frame();
+        const newBufferLines = document.querySelectorAll('.editor-line').length;
+        submit('(previous-buffer!)');
+        await frame();
+
         const firstLineBefore = document.querySelector('.editor-line').textContent;
         submit('(goto! 0)');
         submit('(insert! "[lisp] ")');
@@ -141,6 +150,7 @@ app.whenReady().then(() => {
 
         return {
           arithmetic, stdlib, sequence, modules,
+          bufferCount, newBufferLines,
           firstLineBefore, firstLineAfter,
         };
       })()`);
@@ -173,17 +183,18 @@ app.whenReady().then(() => {
       const stdlibOk = lisp.stdlib.includes('procedure');
       const sequenceOk = lisp.sequence === '#t';
       const modulesOk = lisp.modules === '42';
+      const buffersOk = lisp.bufferCount === '2' && lisp.newBufferLines === 1;
       const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
       const filesOk =
         files.exposed && files.saved && savedContent === 'smoke save ok';
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
-        modulesOk && interopOk && filesOk
+        modulesOk && buffersOk && interopOk && filesOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, sequences, modules, REPL, edits and file I/O all work`
+          `${render.lines} lines; keymap, sequences, modules, buffers, REPL and file I/O all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -197,6 +208,8 @@ app.whenReady().then(() => {
         finish(1, 'key sequences (prefix keys) did not work');
       } else if (!modulesOk) {
         finish(1, 'the module system did not work');
+      } else if (!buffersOk) {
+        finish(1, 'multiple buffers did not work');
       } else if (!interopOk) {
         finish(1, 'Lisp did not edit the buffer');
       } else {
