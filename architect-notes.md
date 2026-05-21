@@ -7,6 +7,44 @@ flagged so the standing instructions can be updated if you disagree.
 
 ---
 
+## [2026-05-21] File open/save, key sequences, module system + hot reload
+
+**Context**: You asked for these three, in this order. All built and
+merged.
+
+**File open/save**: filesystem access lives in the Electron main
+process (`files.js`), reached over IPC through a `preload.mjs` context
+bridge (`window.host`). L2 gained `setText` to load content; the
+modeline shows a `●` dirty marker. **v0 is single-buffer** — opening a
+file replaces the current buffer's contents. Multiple buffers (a buffer
+list, `C-x b`) are a deliberate next step, not built.
+
+**Key sequences**: a keymap entry can be a nested keymap. Dispatch
+tracks an active keymap; a prefix key switches to its sub-map.
+`C-x C-f` / `C-x C-s` / `C-x C-r` work. No prefix-timeout or minibuffer
+echo yet.
+
+**Module system + hot reload**: `module` / `import` / `export`, with a
+base-vs-global environment split for namespace isolation (modules are
+siblings of the global env under a shared base). Hot reload works by
+reusing a module's environment on re-evaluation; `reload-stdlib`
+(`C-x C-r`) re-evaluates the editor's own Lisp live. One honest
+limitation, documented in `docs/spec/lisp.md §6`: an importer holds a
+snapshot, so a redefined *export* needs re-importing — a redefined
+private helper updates immediately.
+
+**Process note**: twice this session I started editing on `main` before
+cutting the feature branch (after a prior merge left me on `main`). I
+caught it before committing each time and branched first, so nothing
+landed on `main` directly — but flagging the slip.
+
+**State of the work**: branches `agent-6-files`, `agent-7-keyseq`,
+`agent-8-modules`, all merged to `main`. Every suite green (storage 47,
+buffer 31, lisp 66, renderer 30, stdlib 17 — 191 total) and the
+Electron smoke test passing.
+
+---
+
 ## [2026-05-21] Lisp standard library + Lisp-defined keymap
 
 **Context**: You chose "Lisp stdlib + keymap" as the next direction.
