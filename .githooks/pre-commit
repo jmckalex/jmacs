@@ -4,11 +4,20 @@
 
 set -euo pipefail
 
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
 GREEN='\033[0;32m'
 NC='\033[0m'
+
+# Detect the initial commit (no HEAD yet). The initial commit gets a pass on
+# branch checks and test running, since there's no codebase to test and the
+# branch protection isn't meaningful yet.
+if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+  echo -e "${GREEN}Initial commit detected. Skipping pre-commit checks.${NC}"
+  exit 0
+fi
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 # Block direct commits to main or master.
 if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
@@ -22,8 +31,15 @@ if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
 fi
 
 # Warn if committing on a branch that doesn't match the conventions.
-if [[ ! "$BRANCH" =~ ^(agent-[0-9]+|architect|fix|feature|docs|spike)/ ]] && \
-   [[ ! "$BRANCH" =~ ^(agent-[0-9]+|architect|main|master)$ ]]; then
+# Accepted forms (see CLAUDE.md):
+#   agent-N-description            e.g. agent-1-storage
+#   agent-N-description/subtask    e.g. agent-2-buffer/markers
+#   agent-N                        bare role branch
+#   architect, architect/something
+#   fix/..., feature/..., docs/..., spike/...
+#   main, master
+if [[ ! "$BRANCH" =~ ^(agent-[0-9]+(-[a-z0-9-]+)?|architect|fix|feature|docs|spike)/ ]] && \
+   [[ ! "$BRANCH" =~ ^(agent-[0-9]+(-[a-z0-9-]+)?|architect|main|master)$ ]]; then
   echo -e "${YELLOW}WARNING:${NC} Branch '$BRANCH' doesn't match expected naming convention."
   echo "Expected: agent-N-description, agent-N/subtask, architect/something, fix/something, etc."
   echo "Proceeding anyway. Bypass with --no-verify."
