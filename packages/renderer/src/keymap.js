@@ -94,6 +94,38 @@ const NAMED_KEYS = {
   ' ': 'space',
 };
 
+/** `event.code` values mapped to the names used in key strings. */
+const NAMED_CODES = {
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  Backspace: 'backspace',
+  Delete: 'delete',
+  Enter: 'enter',
+  Tab: 'tab',
+  Home: 'home',
+  End: 'end',
+  Escape: 'escape',
+  Space: 'space',
+};
+
+/**
+ * Derive a layout-independent base name from `event.code`. `event.code`
+ * names a physical key (`KeyX`, `Digit1`, `ArrowLeft`) regardless of
+ * the keyboard layout or of Option composing a character on macOS.
+ *
+ * @param {string} code
+ * @returns {string}
+ */
+function codeToBase(code) {
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) return letter[1].toLowerCase();
+  const digit = /^Digit([0-9])$/.exec(code);
+  if (digit) return digit[1];
+  return NAMED_CODES[code] ?? code.toLowerCase();
+}
+
 /**
  * Normalise a keyboard event to a key string, for keymap dispatch by
  * the host (the editor's real keymap is defined in Lisp).
@@ -104,7 +136,11 @@ const NAMED_KEYS = {
  * in that order. Examples: `"left"`, `"S-left"`, `"backspace"`, `"C-z"`,
  * `"C-S-z"`.
  *
- * @param {Pick<KeyboardEvent, 'key' | 'shiftKey' | 'metaKey' |
+ * For a modified key the base name comes from `event.code` when present,
+ * so `M-x` is `"M-x"` even where Option composes a character (macOS).
+ * Synthetic events without a `code` fall back to `event.key`.
+ *
+ * @param {Pick<KeyboardEvent, 'key' | 'code' | 'shiftKey' | 'metaKey' |
  *   'ctrlKey' | 'altKey'>} event
  * @returns {string}
  */
@@ -118,7 +154,11 @@ export function keyEventToString(event) {
     return key;
   }
 
-  const base = NAMED_KEYS[key] ?? key.toLowerCase();
+  const base =
+    (ctrl || alt) && event.code
+      ? codeToBase(event.code)
+      : NAMED_KEYS[key] ?? key.toLowerCase();
+
   let prefix = '';
   if (ctrl) prefix += 'C-';
   if (alt) prefix += 'M-';

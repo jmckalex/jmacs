@@ -106,3 +106,26 @@ test('a modified printable key is named, not self-inserting', () => {
   );
   assert.equal(keyEventToString(key({ key: 'a', metaKey: true })), 'C-a');
 });
+
+test('a modified key uses event.code, independent of event.key', () => {
+  // On macOS, Option+X composes event.key to "≈"; event.code stays KeyX.
+  assert.equal(
+    keyEventToString(key({ key: '≈', code: 'KeyX', altKey: true })),
+    'M-x'
+  );
+  assert.equal(
+    keyEventToString(key({ key: 'z', code: 'KeyZ', ctrlKey: true })),
+    'C-z'
+  );
+});
+
+test('event.code resolves named and digit keys under a modifier', () => {
+  assert.equal(
+    keyEventToString(key({ key: 'ArrowLeft', code: 'ArrowLeft', metaKey: true })),
+    'C-left'
+  );
+  assert.equal(
+    keyEventToString(key({ key: '1', code: 'Digit1', ctrlKey: true })),
+    'C-1'
+  );
+});
