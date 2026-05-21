@@ -153,7 +153,11 @@ export function createEditorView(buffer, container, options = {}) {
 
   /** Outline the bracket pair around the cursor, if any. */
   function renderBrackets() {
-    const match = matchingBracket(activeBuffer.text, activeBuffer.point);
+    const match = matchingBracket(
+      activeBuffer.text,
+      activeBuffer.point,
+      languageForName(activeBuffer.name)
+    );
     if (match === null) {
       bracketLayer.replaceChildren();
       return;

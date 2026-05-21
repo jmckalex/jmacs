@@ -29,3 +29,22 @@ test('an unbalanced bracket yields null', () => {
   assert.equal(matchingBracket('(a b', 0), null);
   assert.equal(matchingBracket('a b)', 4), null);
 });
+
+test('Lisp: a bracket inside a string is skipped', () => {
+  // (x ")" y) — the ) at index 4 is inside the string ")".
+  assert.deepEqual(matchingBracket('(x ")" y)', 0, 'lisp'), { a: 0, b: 8 });
+});
+
+test('Lisp: a bracket inside a comment is skipped', () => {
+  // (a ; ) \n b) — the ) at index 6 is inside the comment.
+  assert.deepEqual(matchingBracket('(a ; )\n b)', 0, 'lisp'), { a: 0, b: 9 });
+});
+
+test('JavaScript: a bracket inside a string is skipped', () => {
+  assert.deepEqual(matchingBracket('f(")")', 1, 'javascript'), { a: 1, b: 5 });
+});
+
+test('without a language, brackets are not skipped', () => {
+  // Plain text: the ) inside the quotes still counts.
+  assert.deepEqual(matchingBracket('(x ")" y)', 0), { a: 0, b: 4 });
+});
