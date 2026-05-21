@@ -44,10 +44,10 @@ in tests (read from disk).
 
 ## Current state
 
-Movement, selection, editing and history commands, and a default
-keymap. Key sequences (prefix keys like `C-x C-f`), a command palette
-(`M-x`) and a command registry with metadata are next; for now the
-keymap binds key strings directly to command procedures.
+Movement, selection, editing, history and file commands, and a default
+keymap with **key sequences** — a key can map to a nested keymap, so
+`C-x C-f` works. A command palette (`M-x`) and a command registry with
+metadata are next.
 
 ## Tests
 

@@ -37,9 +37,9 @@ app.whenReady().then(() => {
         }));
         await frame();
       };
-      await submit('(+ 1 2 3 4)');
+      await submit('(doc forward-char)');
+      await submit('(get the-keymap "C-z")');
       await submit('(map (lambda (x) (* x x)) (range 1 8))');
-      await submit('(buffer-line-count)');
     })()`);
 
     await new Promise((resolve) => setTimeout(resolve, 350));

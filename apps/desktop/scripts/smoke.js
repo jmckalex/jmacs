@@ -121,13 +121,20 @@ app.whenReady().then(() => {
         submit('handle-key');
         const stdlib = lastResult();
 
+        // A prefix key (C-x) begins a sequence rather than running a
+        // command; this checks and then resets the pending state.
+        submit('(begin (handle-key "C-x")'
+          + ' (let ((p (not (eq? active-keymap the-keymap))))'
+          + ' (reset-keymap!) p))');
+        const sequence = lastResult();
+
         const firstLineBefore = document.querySelector('.editor-line').textContent;
         submit('(goto! 0)');
         submit('(insert! "[lisp] ")');
         await frame();
         const firstLineAfter = document.querySelector('.editor-line').textContent;
 
-        return { arithmetic, stdlib, firstLineBefore, firstLineAfter };
+        return { arithmetic, stdlib, sequence, firstLineBefore, firstLineAfter };
       })()`);
       console.log('  lisp:', JSON.stringify(lisp));
 
@@ -156,17 +163,18 @@ app.whenReady().then(() => {
       const deleteOk = input.afterDelete === input.before;
       const replOk = lisp.arithmetic === '6';
       const stdlibOk = lisp.stdlib.includes('procedure');
+      const sequenceOk = lisp.sequence === '#t';
       const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
       const filesOk =
         files.exposed && files.saved && savedContent === 'smoke save ok';
 
       if (
-        renderOk && typeOk && deleteOk && replOk && stdlibOk && interopOk &&
-        filesOk
+        renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
+        interopOk && filesOk
       ) {
         finish(
           0,
-          `${render.lines} lines; Lisp keymap, REPL, buffer edits and file I/O all work`
+          `${render.lines} lines; keymap, sequences, REPL, buffer edits and file I/O all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -176,6 +184,8 @@ app.whenReady().then(() => {
         finish(1, 'the REPL did not evaluate Lisp');
       } else if (!stdlibOk) {
         finish(1, 'the standard library did not load');
+      } else if (!sequenceOk) {
+        finish(1, 'key sequences (prefix keys) did not work');
       } else if (!interopOk) {
         finish(1, 'Lisp did not edit the buffer');
       } else {

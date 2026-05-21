@@ -27,8 +27,8 @@ This is a Lisp-extensible editor. The whole stack is running:
 Every key you press runs a Lisp command, defined in
 packages/stdlib/lisp/ — not hardcoded.
 
-  C-o   open a file        C-s   save the buffer
-  C-z   undo               C-S-z redo
+  C-x C-f open a file      C-x C-s save the buffer
+  C-z     undo             C-S-z   redo
 
 The REPL below shares this buffer and this interpreter. Try:
 
