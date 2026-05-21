@@ -19,7 +19,8 @@
    "b"     'switch-buffer
    "right" 'next-buffer
    "left"  'previous-buffer
-   "n"     'new-buffer})
+   "n"     'new-buffer
+   "h"     'mark-whole-buffer})
 
 ;; The C-h prefix map — help.
 (define c-h-keymap

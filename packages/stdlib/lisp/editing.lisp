@@ -67,8 +67,13 @@
   (delete-forward!))
 
 (define (newline)
-  "Insert a line break at the cursor."
-  (insert! "\n"))
+  "Insert a line break, copying the current line's indentation."
+  (insert! (str "\n" (line-indent))))
+
+(define (mark-whole-buffer)
+  "Select the entire buffer."
+  (goto! (buffer-length))
+  (set-mark! 0))
 
 (define (insert-tab)
   "Insert two spaces at the cursor."

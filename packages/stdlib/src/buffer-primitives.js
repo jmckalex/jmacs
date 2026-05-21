@@ -66,6 +66,7 @@ export function createBufferPrimitives(session) {
       buffer().slice(offset(args[0]), offset(args[1])),
     'line-start': () => buffer().lineAt(buffer().point).from,
     'line-end': () => buffer().lineAt(buffer().point).to,
+    'line-indent': () => /^[ \t]*/.exec(buffer().lineAt(buffer().point).text)[0],
     'word-forward-offset': () => forwardWord(buffer().text, buffer().point),
     'word-backward-offset': () => backwardWord(buffer().text, buffer().point),
     'region-active?': () => buffer().selection !== null,

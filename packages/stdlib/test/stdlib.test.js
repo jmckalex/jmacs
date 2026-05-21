@@ -410,3 +410,27 @@ test('C-g aborts a partial key sequence', async () => {
   press(interpreter, 'C-f'); // back to normal dispatch
   assert.equal(buffer.point, 1);
 });
+
+// --- indentation and select-all -----------------------------------------
+
+test('Enter copies the current line indentation', async () => {
+  const { buffer, interpreter } = await editor('    indented');
+  buffer.moveTo(12);
+  press(interpreter, 'enter');
+  assert.equal(buffer.text, '    indented\n    ');
+});
+
+test('Enter on an unindented line adds no indentation', async () => {
+  const { buffer, interpreter } = await editor('flush');
+  buffer.moveTo(5);
+  press(interpreter, 'enter');
+  assert.equal(buffer.text, 'flush\n');
+});
+
+test('C-x h selects the whole buffer', async () => {
+  const { buffer, interpreter } = await editor('hello world');
+  buffer.moveTo(3);
+  press(interpreter, 'C-x');
+  press(interpreter, 'h');
+  assert.deepEqual(buffer.selection, { start: 0, end: 11 });
+});
