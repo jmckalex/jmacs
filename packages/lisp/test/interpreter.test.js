@@ -215,6 +215,12 @@ test('type-of reports the value type', () => {
   assert.equal(show('(type-of (list))'), ':nil');
 });
 
+test('string-prefix? tests how a string begins', () => {
+  assert.equal(run('(string-prefix? "ab" "abcd")'), true);
+  assert.equal(run('(string-prefix? "x" "abcd")'), false);
+  assert.equal(run('(string-prefix? "" "abc")'), true);
+});
+
 // --- output -------------------------------------------------------------
 
 test('print writes to the output sink', () => {

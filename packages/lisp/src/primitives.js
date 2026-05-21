@@ -300,6 +300,10 @@ export function installPrimitives(env, { write }) {
     arity('string-contains?', a, 2);
     return str('string-contains?', a[0]).includes(str('string-contains?', a[1]));
   });
+  def('string-prefix?', (a) => {
+    arity('string-prefix?', a, 2);
+    return str('string-prefix?', a[1]).startsWith(str('string-prefix?', a[0]));
+  });
   def('string->symbol', (a) => sym(str('string->symbol', a[0])));
   def('symbol->string', (a) => {
     if (!(a[0] instanceof Sym)) throw new LispError('symbol->string: expected a symbol');

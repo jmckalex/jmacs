@@ -441,3 +441,22 @@ test('M-g is bound to goto-line', async () => {
   assert.ok(interpreter.evaluate('(eq? (get the-keymap "M-g") (quote goto-line))'));
   assert.equal(press(interpreter, 'M-g'), true);
 });
+
+test('C-x ; comments and uncomments a line', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  press(interpreter, 'C-x');
+  press(interpreter, ';');
+  assert.equal(buffer.text, ';; hello');
+  press(interpreter, 'C-x');
+  press(interpreter, ';');
+  assert.equal(buffer.text, 'hello');
+});
+
+test('comment-line keeps the indentation', async () => {
+  const { buffer, interpreter } = await editor('  indented');
+  buffer.moveTo(0);
+  press(interpreter, 'C-x');
+  press(interpreter, ';');
+  assert.equal(buffer.text, '  ;; indented');
+});

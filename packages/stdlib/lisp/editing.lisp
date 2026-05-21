@@ -79,6 +79,14 @@
   (goto! (buffer-length))
   (set-mark! 0))
 
+(define (comment-line)
+  "Comment or uncomment the current line."
+  (let ((prefix (comment-prefix))
+        (indent-end (+ (line-start) (string-length (line-indent)))))
+    (if (string-prefix? prefix (buffer-substring indent-end (line-end)))
+        (delete-region! indent-end (+ indent-end (string-length prefix)))
+        (begin (goto! indent-end) (insert! prefix)))))
+
 (define (insert-tab)
   "Insert two spaces at the cursor."
   (insert! "  "))

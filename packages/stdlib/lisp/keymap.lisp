@@ -20,7 +20,8 @@
    "right" 'next-buffer
    "left"  'previous-buffer
    "n"     'new-buffer
-   "h"     'mark-whole-buffer})
+   "h"     'mark-whole-buffer
+   ";"     'comment-line})
 
 ;; The C-h prefix map — help.
 (define c-h-keymap

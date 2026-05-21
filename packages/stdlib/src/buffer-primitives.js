@@ -67,6 +67,10 @@ export function createBufferPrimitives(session) {
     'line-start': () => buffer().lineAt(buffer().point).from,
     'line-end': () => buffer().lineAt(buffer().point).to,
     'line-indent': () => /^[ \t]*/.exec(buffer().lineAt(buffer().point).text)[0],
+    'comment-prefix': () => {
+      const name = buffer().name;
+      return name.endsWith('.js') || name.endsWith('.mjs') ? '// ' : ';; ';
+    },
     'word-forward-offset': () => forwardWord(buffer().text, buffer().point),
     'word-backward-offset': () => backwardWord(buffer().text, buffer().point),
     'region-active?': () => buffer().selection !== null,
