@@ -22,18 +22,26 @@ pure and unit-tested:
   rectangles. No DOM.
 - `keymap.js` — a keyboard event → an editor intent. No DOM, no buffer.
 - `commands.js` — applies an intent to a buffer. No DOM.
-- `view.js` — the only DOM-aware module: builds elements, subscribes to
-  the buffer, batches renders with `requestAnimationFrame`, and wires
+- `view.js` — the editor surface: builds elements, subscribes to the
+  buffer, batches renders with `requestAnimationFrame`, and wires
   keystrokes through `commands.js`.
+- `repl.js` — a REPL panel (scrollback log + input line with history).
+  Plain DOM; it knows nothing about Lisp, reporting submitted source
+  through an `onSubmit` callback and rendering whatever text it is
+  handed. That keeps the renderer decoupled from the language runtime.
 
 ## API
 
 ```js
-import { createEditorView } from '@editor/renderer';
+import { createEditorView, createReplView } from '@editor/renderer';
 
 const view = createEditorView(buffer, document.getElementById('host'));
 view.focus();
 // view.element — the root node; view.destroy() — unsubscribe and remove.
+
+const repl = createReplView(document.getElementById('repl-host'), {
+  onSubmit: (source) => { /* evaluate, then repl.appendResult(...) */ },
+});
 ```
 
 Geometry uses CSS `ch` (columns) and `lh` (lines) units, so a monospace

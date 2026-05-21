@@ -7,6 +7,7 @@
  */
 
 export { createEditorView } from './view.js';
+export { createReplView } from './repl.js';
 export { toLines, selectionRects } from './projection.js';
 export { resolveKey } from './keymap.js';
 export { applyIntent, handleKeyEvent } from './commands.js';

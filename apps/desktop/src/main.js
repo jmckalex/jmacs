@@ -13,9 +13,9 @@ import { EDITOR_URL, serveAppFile } from './serve.js';
 function createWindow() {
   const win = new BrowserWindow({
     width: 1040,
-    height: 720,
+    height: 880,
     minWidth: 480,
-    minHeight: 320,
+    minHeight: 520,
     backgroundColor: '#1b1b23',
     titleBarStyle: 'hiddenInset',
     webPreferences: {

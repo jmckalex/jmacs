@@ -1,38 +1,44 @@
 /**
- * @file Renderer-process entry point. Runs in the window, wires the
- * stack together: an L2 buffer, an L4 editor view, and a modeline that
- * reflects the buffer's state.
+ * @file Renderer-process entry point. Wires the whole editor together:
+ * an L2 buffer, an L4 editor view, a Lisp interpreter whose primitives
+ * manipulate that buffer, a REPL panel, and a modeline.
+ *
+ * Because the interpreter's buffer primitives operate on the same
+ * buffer the editor view is showing, Lisp typed into the REPL edits the
+ * visible document live.
  */
 
 import { createBuffer } from '@editor/buffer';
-import { createEditorView } from '@editor/renderer';
+import { createInterpreter, LispError, NIL, writeString } from '@editor/lisp';
+import { createEditorView, createReplView } from '@editor/renderer';
 
 const WELCOME = `Welcome.
 
-This is a Lisp-extensible editor, in its earliest running form.
-What you see is the whole stack working end to end:
+This is a Lisp-extensible editor. The whole stack is running:
 
   storage   (L1)   the text itself
   buffer    (L2)   cursor, selection, editing commands, undo
-  renderer  (L4)   these lines, and that blinking cursor
+  lisp      (L3)   a custom Lisp — reader, evaluator, macros
+  renderer  (L4)   these lines, the cursor, the REPL below
 
 Type anywhere — the text is a live buffer.
 
-  arrows         move the cursor
-  shift + arrows extend a selection
-  cmd + arrows   jump to line and buffer edges
-  cmd + z        undo        cmd + shift + z   redo
+The REPL below shares this buffer. Try evaluating:
 
-There is no Lisp yet, and no files on disk. Those come next.
-For now: a window, a buffer, and a cursor that is really yours.
+  (+ 1 2 3 4)
+  (buffer-line-count)
+  (insert! "  <- Lisp wrote this")
+  (map (lambda (x) (* x x)) (range 1 8))
+
+Lisp that ends in ! changes the buffer; watch this text move.
 `;
 
 const buffer = createBuffer(WELCOME, { name: 'welcome.txt' });
 
-const host = document.getElementById('editor-host');
-const view = createEditorView(buffer, host);
+const editorView = createEditorView(buffer, document.getElementById('editor-host'));
 
-// Modeline — buffer name on the left, cursor position on the right.
+// --- modeline -----------------------------------------------------------
+
 const nameEl = document.getElementById('modeline-name');
 const positionEl = document.getElementById('modeline-position');
 
@@ -44,4 +50,65 @@ function updateModeline() {
 
 buffer.onChange(updateModeline);
 updateModeline();
-view.focus();
+
+// --- Lisp + REPL --------------------------------------------------------
+
+/** A small integer argument, or a clear error for the REPL. */
+function asOffset(name, value) {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new LispError(`${name}: expected an integer offset`);
+  }
+  return value;
+}
+
+/**
+ * Buffer primitives — host procedures, bound to the editor's buffer,
+ * that the interpreter exposes to Lisp. Names ending in `!` mutate.
+ */
+const bufferPrimitives = {
+  'buffer-text': () => buffer.text,
+  'buffer-length': () => buffer.length,
+  'buffer-line-count': () => buffer.lineCount,
+  'buffer-name': () => buffer.name,
+  'point': () => buffer.point,
+  'buffer-substring': (args) =>
+    buffer.slice(asOffset('buffer-substring', args[0]), asOffset('buffer-substring', args[1])),
+  'goto!': (args) => {
+    buffer.moveTo(asOffset('goto!', args[0]));
+    return NIL;
+  },
+  'insert!': (args) => {
+    buffer.insert(String(args[0]));
+    return NIL;
+  },
+  'delete-backward!': (args) => {
+    buffer.deleteBackward(args.length > 0 ? asOffset('delete-backward!', args[0]) : 1);
+    return NIL;
+  },
+  'delete-forward!': (args) => {
+    buffer.deleteForward(args.length > 0 ? asOffset('delete-forward!', args[0]) : 1);
+    return NIL;
+  },
+};
+
+const repl = createReplView(document.getElementById('repl-host'), {
+  prompt: 'λ ',
+  welcome: 'REPL — type Lisp, press Enter. Buffer primitives end in !.',
+  onSubmit: evaluateInRepl,
+});
+
+const interpreter = createInterpreter({
+  write: (text) => repl.appendOutput(text),
+  primitives: bufferPrimitives,
+});
+
+/** Evaluate a line of REPL input and show the result. */
+function evaluateInRepl(source) {
+  try {
+    repl.appendResult(writeString(interpreter.evaluate(source)));
+  } catch (error) {
+    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+  }
+}
+
+editorView.focus();

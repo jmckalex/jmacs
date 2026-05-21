@@ -24,8 +24,25 @@ app.whenReady().then(() => {
   });
 
   win.webContents.once('did-finish-load', async () => {
-    // Let the first frame paint, then settle the cursor blink.
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    // Exercise the REPL so the capture shows it alive.
+    await win.webContents.executeJavaScript(`(async () => {
+      const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const replInput = document.querySelector('.repl-input');
+      const submit = async (src) => {
+        replInput.value = src;
+        replInput.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        await frame();
+      };
+      await submit('(+ 1 2 3 4)');
+      await submit('(map (lambda (x) (* x x)) (range 1 8))');
+      await submit('(buffer-line-count)');
+    })()`);
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
     const image = await win.webContents.capturePage();
     await writeFile(outPath, image.toPNG());
     console.log(`wrote ${outPath}`);

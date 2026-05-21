@@ -76,17 +76,52 @@ app.whenReady().then(() => {
       })()`);
       console.log('  input:', JSON.stringify(input));
 
+      // Drive the REPL: evaluate arithmetic, and have Lisp edit the
+      // buffer, confirming the L3 -> L2 -> L4 path.
+      const lisp = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const lastResult = () => {
+          const all = document.querySelectorAll('.repl-result');
+          return all.length ? all[all.length - 1].textContent : '';
+        };
+
+        submit('(+ 1 2 3)');
+        const arithmetic = lastResult();
+
+        const firstLineBefore = document.querySelector('.editor-line').textContent;
+        submit('(goto! 0)');
+        submit('(insert! "[lisp] ")');
+        await frame();
+        const firstLineAfter = document.querySelector('.editor-line').textContent;
+
+        return { arithmetic, firstLineBefore, firstLineAfter };
+      })()`);
+      console.log('  lisp:', JSON.stringify(lisp));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
       const deleteOk = input.afterDelete === input.before;
+      const replOk = lisp.arithmetic === '6';
+      const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
 
-      if (renderOk && typeOk && deleteOk) {
-        finish(0, `rendered ${render.lines} lines; typing and deletion work`);
+      if (renderOk && typeOk && deleteOk && replOk && interopOk) {
+        finish(0, `${render.lines} lines; typing, REPL and Lisp buffer edits all work`);
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
+      } else if (!typeOk || !deleteOk) {
+        finish(1, 'editor rendered but typing did not update the DOM');
+      } else if (!replOk) {
+        finish(1, 'the REPL did not evaluate Lisp');
       } else {
-        finish(1, 'editor rendered but input did not update the DOM');
+        finish(1, 'Lisp did not edit the buffer');
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

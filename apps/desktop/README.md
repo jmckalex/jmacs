@@ -1,8 +1,8 @@
 # @editor/desktop — the Electron host (L0)
 
 The desktop application. It opens a window and runs the editor inside
-it. The main process is deliberately thin; the editor itself (L1, L2,
-L4) runs entirely in the renderer process.
+it. The main process is deliberately thin; the editor itself (L1–L4,
+including the Lisp runtime) runs entirely in the renderer process.
 
 ## Running it
 
@@ -20,7 +20,9 @@ than `file://`: a privileged standard scheme gives the page a real,
 secure origin, which is what native modules and import maps need. The
 main process (`src/main.js`) serves the repository's files and opens
 the window; `src/app.js` runs in the renderer and wires a buffer to an
-editor view and a modeline.
+editor view, a modeline, and a Lisp REPL. The REPL's buffer primitives
+operate on the same buffer the editor shows, so Lisp typed into the
+REPL edits the visible document live.
 
 ## Scripts
 
@@ -36,7 +38,7 @@ editor view and a modeline.
 ```
 src/main.js      Electron main process — window + protocol
 src/serve.js     the app:// scheme, shared with the smoke test
-src/app.js       renderer entry — wires buffer, view, modeline
+src/app.js       renderer entry — wires buffer, view, REPL, Lisp
 index.html       the page: import map + mount points
 styles.css       the editor's visual defaults
 scripts/         smoke test and screenshot tooling
