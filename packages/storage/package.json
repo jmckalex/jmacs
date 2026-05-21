@@ -1,0 +1,15 @@
+{
+  "name": "@editor/storage",
+  "version": "0.0.0",
+  "description": "Layer 1 — text storage. Plain-string buffer today; piece tree later.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
