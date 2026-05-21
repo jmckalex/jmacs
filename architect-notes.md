@@ -7,6 +7,51 @@ flagged so the standing instructions can be updated if you disagree.
 
 ---
 
+## [2026-05-21] Multiple buffers, search, command palette, syntax highlighting
+
+**Context**: You asked for all four, "press ahead, no questions." All
+built, tested and merged.
+
+**Multiple buffers**: a buffer list with a current index; the buffer
+primitives operate through a `session.current` indirection; the view
+gained `setBuffer`. `C-x b` / `C-x p` cycle, `C-x n` makes a new one,
+`find-file` now opens into a new buffer. A second buffer, `scratch.lisp`,
+is seeded. **Not built**: a buffer-list UI or select-by-name (cycling
+only).
+
+**Minibuffer + search**: a reusable minibuffer component; `C-s` runs an
+incremental forward search (repeated `C-s` advances). The interactive
+search loop is host JavaScript — the Lisp keymap only starts it.
+
+**Command palette**: `M-x` opens the minibuffer, a fuzzy matcher ranks
+command names collected from the keymap, the top match runs on Enter.
+**Caveat**: `M-x` relies on `event.key` being `x` with Alt held; on
+macOS, Option composes characters, so `M-x` may not register depending
+on keyboard settings. A more robust key-normalisation (using
+`event.code` for modified keys) is worth doing. No completion dropdown —
+matches show in the minibuffer status line.
+
+**Syntax highlighting — deviates from architecture commitment #4
+(tree-sitter).** I used hand-written tokenizers for the Lisp dialect
+and JavaScript instead. Reasons: (1) the editor's Lisp is a *custom*
+dialect — there is no tree-sitter grammar for it, and writing/compiling
+one to WASM is itself a project; (2) a tokenizer is reliable and
+dependency-free. The architecture explicitly allows the renderer's
+internals to be revised, and tree-sitter can replace this behind the
+same run interface later. Limitation: highlighting is line-independent,
+so a string or block comment spanning lines highlights only its first
+line. If you want tree-sitter sooner (e.g. for JS), say so.
+
+**Territory**: branches `agent-9-buffers`, `agent-10-search`,
+`agent-11-palette`, `agent-12-highlight`, all merged to `main`.
+
+**State of the work**: all suites green — storage 47, buffer 31,
+lisp 66, renderer 46, stdlib 23 (213 total) — and the Electron smoke
+test exercises rendering, the keymap, sequences, modules, buffers,
+highlighting, search, M-x, the REPL and file I/O.
+
+---
+
 ## [2026-05-21] File open/save, key sequences, module system + hot reload
 
 **Context**: You asked for these three, in this order. All built and
