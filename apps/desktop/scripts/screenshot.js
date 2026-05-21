@@ -41,8 +41,11 @@ app.whenReady().then(() => {
       await submit('(module geometry (export area)'
         + ' (define (area r) (* 3.14159 r r)))');
       await submit('(begin (import geometry) (area 10))');
-      // Switch to the syntax-highlighted scratch.lisp buffer.
+      // Switch to the syntax-highlighted scratch.lisp buffer and put
+      // the cursor on an opening paren to show the bracket match.
       await submit('(next-buffer!)');
+      await submit('(begin (next-line) (next-line) (next-line)'
+        + ' (next-line) (next-line))');
     })()`);
 
     await new Promise((resolve) => setTimeout(resolve, 350));

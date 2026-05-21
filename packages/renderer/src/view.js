@@ -20,6 +20,7 @@ import { toLines, selectionRects } from './projection.js';
 import { handleKeyEvent } from './commands.js';
 import { keyEventToString } from './keymap.js';
 import { highlightLine, languageForName } from './highlight.js';
+import { matchingBracket } from './brackets.js';
 
 /**
  * @typedef {object} EditorView
@@ -66,9 +67,10 @@ export function createEditorView(buffer, container, options = {}) {
   const content = el('div', 'editor-content');
   const currentLineEl = el('div', 'editor-current-line');
   const selectionLayer = el('div', 'editor-selection');
+  const bracketLayer = el('div', 'editor-brackets');
   const linesEl = el('div', 'editor-lines');
   const cursorEl = el('div', 'editor-cursor');
-  content.append(currentLineEl, selectionLayer, linesEl, cursorEl);
+  content.append(currentLineEl, selectionLayer, bracketLayer, linesEl, cursorEl);
   root.append(gutter, content);
   container.append(root);
 
@@ -149,6 +151,24 @@ export function createEditorView(buffer, container, options = {}) {
     );
   }
 
+  /** Outline the bracket pair around the cursor, if any. */
+  function renderBrackets() {
+    const match = matchingBracket(activeBuffer.text, activeBuffer.point);
+    if (match === null) {
+      bracketLayer.replaceChildren();
+      return;
+    }
+    bracketLayer.replaceChildren(
+      ...[match.a, match.b].map((at) => {
+        const { line, column } = activeBuffer.positionAt(at);
+        const box = el('div', 'editor-bracket');
+        box.style.left = `calc(${column} * 1ch)`;
+        box.style.top = `calc(${line} * 1lh)`;
+        return box;
+      })
+    );
+  }
+
   /** Position the cursor, the current-line highlight and the gutter. */
   function renderCursor() {
     const { line, column } = activeBuffer.positionAt(activeBuffer.point);
@@ -177,6 +197,7 @@ export function createEditorView(buffer, container, options = {}) {
     frame = 0;
     renderLines();
     renderSelection();
+    renderBrackets();
     renderCursor();
     cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
