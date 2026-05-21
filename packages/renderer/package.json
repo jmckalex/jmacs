@@ -14,5 +14,9 @@
     "@editor/buffer": "workspace:*"
   },
   "license": "UNLICENSED",
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "tree-sitter-javascript": "0.25.0",
+    "web-tree-sitter": "0.26.9"
+  }
 }

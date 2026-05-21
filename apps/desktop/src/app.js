@@ -13,6 +13,7 @@ import { createBuffer } from '@editor/buffer';
 import { createInterpreter, listToArray, NIL, writeString } from '@editor/lisp';
 import {
   createEditorView,
+  createJavaScriptHighlighter,
   createMinibuffer,
   createReplView,
   fuzzyFilter,
@@ -278,8 +279,10 @@ const interpreter = createInterpreter({
       switchToBuffer((currentIndex - 1 + buffers.length) % buffers.length);
       return NIL;
     },
-    'new-buffer!': () => {
-      buffers.push(createBuffer('', { name: `untitled-${buffers.length + 1}` }));
+    'new-buffer!': (args) => {
+      const name =
+        args.length > 0 ? String(args[0]) : `untitled-${buffers.length + 1}`;
+      buffers.push(createBuffer('', { name }));
       switchToBuffer(buffers.length - 1);
       return NIL;
     },
@@ -323,6 +326,17 @@ try {
   repl.appendError(`standard library failed to load: ${error.message}`);
 }
 
+// The tree-sitter JavaScript highlighter (the Lisp keeps its tokenizer).
+// Highlighting still works without it: JavaScript falls back line-based.
+let highlightJavaScript = null;
+try {
+  const highlighter = await createJavaScriptHighlighter();
+  highlightJavaScript = highlighter.highlight;
+  document.body.dataset.treesitter = 'ready';
+} catch (error) {
+  repl.appendError(`JavaScript highlighter unavailable: ${error.message}`);
+}
+
 /** Dispatch a keystroke through the Lisp keymap. */
 function dispatchKey(key) {
   try {
@@ -338,7 +352,10 @@ function dispatchKey(key) {
 const editorView = createEditorView(
   session.current,
   document.getElementById('editor-host'),
-  keymapReady ? { onKey: dispatchKey } : {}
+  {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    highlightJavaScript,
+  }
 );
 
 watchCurrentBuffer();

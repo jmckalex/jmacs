@@ -231,6 +231,30 @@ app.whenReady().then(() => {
       })()`);
       console.log('  palette:', JSON.stringify(palette));
 
+      // Tree-sitter: a .js buffer is highlighted by the grammar, so
+      // typing JavaScript produces keyword and number token spans.
+      const treesitter = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        submit('(new-buffer! "smoke.js")');
+        submit('(insert! "const answer = 42;")');
+        await frame();
+        return {
+          // 'ready' only when the grammar WASM actually loaded — not
+          // the tokenizer fallback.
+          ready: document.body.dataset.treesitter === 'ready',
+          keywords: document.querySelectorAll('.tok-keyword').length,
+          numbers: document.querySelectorAll('.tok-number').length,
+        };
+      })()`);
+      console.log('  treesitter:', JSON.stringify(treesitter));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -246,15 +270,17 @@ app.whenReady().then(() => {
         files.exposed && files.saved && savedContent === 'smoke save ok';
       const searchOk = search.opened && search.matched;
       const paletteOk = palette.opened && palette.matched && palette.closed;
+      const treesitterOk =
+        treesitter.ready && treesitter.keywords > 0 && treesitter.numbers > 0;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
-        searchOk && paletteOk
+        searchOk && paletteOk && treesitterOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, modules, buffers, highlighting, search, M-x and files all work`
+          `${render.lines} lines; keymap, modules, buffers, highlighting, tree-sitter, search, M-x and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -278,8 +304,10 @@ app.whenReady().then(() => {
         finish(1, 'the file bridge did not work');
       } else if (!searchOk) {
         finish(1, 'incremental search did not work');
-      } else {
+      } else if (!paletteOk) {
         finish(1, 'the command palette did not work');
+      } else {
+        finish(1, 'tree-sitter JavaScript highlighting did not work');
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

@@ -24,6 +24,7 @@ const MIME = {
   '.js': 'text/javascript',
   '.css': 'text/css',
   '.json': 'application/json',
+  '.wasm': 'application/wasm',
 };
 
 // Must run before the app is ready; importing this module is enough.

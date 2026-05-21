@@ -1,3 +1,9 @@
 packages:
   - 'packages/*'
   - 'apps/*'
+
+# tree-sitter-javascript ships a native Node binding built by a postinstall
+# script. The editor does not use that binding — it loads the package's
+# prebuilt WebAssembly grammar instead — so its build is disabled.
+allowBuilds:
+  tree-sitter-javascript: false

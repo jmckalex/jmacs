@@ -41,6 +41,10 @@ import { highlightLine, languageForName } from './highlight.js';
  *   returns whether the key was handled. When given, it replaces the
  *   renderer's own built-in keymap — this is how the editor's real,
  *   Lisp-defined keymap takes over.
+ * @param {(text: string) => import('./highlight.js').Run[][]}
+ *   [options.highlightJavaScript] - A whole-buffer JavaScript
+ *   highlighter (tree-sitter). When absent, JavaScript falls back to
+ *   the line-based tokenizer.
  * @returns {EditorView}
  */
 export function createEditorView(buffer, container, options = {}) {
@@ -49,6 +53,11 @@ export function createEditorView(buffer, container, options = {}) {
 
   // The buffer currently shown; swapped by setBuffer.
   let activeBuffer = buffer;
+
+  const highlightJavaScript =
+    typeof options.highlightJavaScript === 'function'
+      ? options.highlightJavaScript
+      : null;
 
   const root = el('div', 'editor');
   root.tabIndex = 0;
@@ -68,27 +77,46 @@ export function createEditorView(buffer, container, options = {}) {
     return node;
   }
 
+  /** Fill a line element with its highlighted runs. */
+  function renderRuns(lineEl, runs) {
+    if (runs.length === 1 && runs[0].face === null) {
+      lineEl.textContent = runs[0].text;
+      return;
+    }
+    for (const run of runs) {
+      if (run.face === null) {
+        lineEl.append(doc.createTextNode(run.text));
+      } else {
+        const span = el('span', `tok-${run.face}`);
+        span.textContent = run.text;
+        lineEl.append(span);
+      }
+    }
+  }
+
   /** Render the buffer's lines, syntax-highlighted by run. */
   function renderLines() {
     const language = languageForName(activeBuffer.name);
     const lines = toLines(activeBuffer.text);
+
+    // JavaScript uses the tree-sitter highlighter when one was given;
+    // it parses the whole buffer at once. Everything else is line-based.
+    let perLine = null;
+    if (language === 'javascript' && highlightJavaScript) {
+      try {
+        perLine = highlightJavaScript(activeBuffer.text);
+      } catch {
+        perLine = null;
+      }
+    }
+
     linesEl.replaceChildren(
-      ...lines.map((line) => {
+      ...lines.map((line, index) => {
         const lineEl = el('div', 'editor-line');
-        const runs = highlightLine(line.content, language);
-        if (runs.length === 1 && runs[0].face === null) {
-          lineEl.textContent = runs[0].text;
-        } else {
-          for (const run of runs) {
-            if (run.face === null) {
-              lineEl.append(doc.createTextNode(run.text));
-            } else {
-              const span = el('span', `tok-${run.face}`);
-              span.textContent = run.text;
-              lineEl.append(span);
-            }
-          }
-        }
+        const runs = perLine
+          ? perLine[index] ?? []
+          : highlightLine(line.content, language);
+        renderRuns(lineEl, runs);
         return lineEl;
       })
     );

@@ -7,28 +7,32 @@ those events drive rendering.
 
 ## Current state
 
-A minimal but complete v0: it renders lines, a blinking cursor and a
-selection highlight, batches rendering on animation frames, and handles
-a built-in keymap. **Not yet present:** virtualisation (all lines are in
-the DOM), run-based spans (one element per line, no syntax highlighting
-yet), and tree-sitter. These arrive when they start to matter.
+The renderer renders syntax-highlighted lines, a blinking cursor and a
+selection highlight, batches rendering on animation frames, and routes
+keystrokes to a host dispatcher (the editor's Lisp keymap).
+Highlighting is run-based — one span per highlighted run.
+**Not yet present:** virtualisation; all lines are in the DOM.
 
 ## Design
 
-The renderer is split so that everything except the DOM mutation is
-pure and unit-tested:
+The renderer is split so that everything except DOM mutation is pure
+and unit-tested:
 
-- `projection.js` — buffer state → a plain line model and selection
-  rectangles. No DOM.
-- `keymap.js` — a keyboard event → an editor intent. No DOM, no buffer.
-- `commands.js` — applies an intent to a buffer. No DOM.
+- `projection.js` — buffer state → a line model and selection
+  rectangles.
+- `keymap.js` — a keyboard event → an editor intent, or a normalised
+  key string for the host keymap.
+- `commands.js` — the renderer's built-in fallback keymap.
+- `highlight.js` — tokenizers for the Lisp dialect and JavaScript.
+- `treesitter.js` — tree-sitter highlighting for JavaScript, via
+  `web-tree-sitter` and the prebuilt grammar in `vendor/`. The Lisp
+  dialect keeps the tokenizer (it is custom and has no grammar).
+- `runs.js` — splitting faced ranges into per-line runs.
+- `fuzzy.js` — fuzzy filtering, for the command palette.
 - `view.js` — the editor surface: builds elements, subscribes to the
-  buffer, batches renders with `requestAnimationFrame`, and wires
-  keystrokes through `commands.js`.
-- `repl.js` — a REPL panel (scrollback log + input line with history).
-  Plain DOM; it knows nothing about Lisp, reporting submitted source
-  through an `onSubmit` callback and rendering whatever text it is
-  handed. That keeps the renderer decoupled from the language runtime.
+  buffer, batches renders with `requestAnimationFrame`.
+- `repl.js` — the REPL panel; `minibuffer.js` — the minibuffer (search,
+  the command palette). Both are plain DOM, decoupled from the runtime.
 
 ## API
 
