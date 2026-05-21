@@ -38,8 +38,9 @@ app.whenReady().then(() => {
         await frame();
       };
       await submit('(doc forward-char)');
-      await submit('(get the-keymap "C-z")');
-      await submit('(map (lambda (x) (* x x)) (range 1 8))');
+      await submit('(module geometry (export area)'
+        + ' (define (area r) (* 3.14159 r r)))');
+      await submit('(begin (import geometry) (area 10))');
     })()`);
 
     await new Promise((resolve) => setTimeout(resolve, 350));
