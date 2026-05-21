@@ -103,6 +103,8 @@ its arguments, or it controls the environment.
 | `(and …)` `(or …)` | Short-circuiting logic. |
 | `(try body… (catch name handler…))` | Error handling (§7). |
 | `(defmacro name params body…)` | Define a macro (§5). |
+| `(module name body…)` | Define a module (§6). |
+| `(import name)` | Bring a module's exports into scope (§6). |
 
 Special-form names are resolved before macros and bindings; they are
 not shadowable in v0.
@@ -139,20 +141,46 @@ standard library exists yet, the upgrade is cheap. Careful macros
 
 ## 6. Modules
 
-**Planned — not implemented.** v0 uses a single global environment.
-
-The intended design (from the plan): first-class modules with explicit
-imports and exports, no implicit globals across boundaries:
+First-class modules give code a private namespace and an explicit
+interface.
 
 ```lisp
-(module editing
-  (export forward-word backward-word)
-  (import (lang core) (lang buffer))
-  …)
+(module geometry
+  (export area)
+  (define pi 3.14159)               ; private to the module
+  (define (area r) (* pi r r)))     ; exported
+
+(import geometry)
+(area 2)                             ; => 12.56636
 ```
 
-Hot reload — re-evaluating a module updates definitions in the running
-editor — is a module-system concern and is likewise planned.
+A module's body is evaluated in a fresh environment — a child of the
+base environment, so it sees the primitives and the prelude, but **not**
+the global environment or other modules. `(export …)` forms, which may
+appear anywhere in the body, name the bindings the module offers.
+`(import name)` copies a module's exported bindings into the current
+environment; it works at the top level or inside another module's body.
+
+Module names are plain symbols in v0; hierarchical names like
+`(lang core)` are **Planned**.
+
+### Hot reload
+
+Re-evaluating `(module name …)` reuses the module's existing
+environment rather than creating a new one (clearing it first, so
+removed definitions disappear). Because the evaluator resolves names
+late, every procedure that closes over that environment — the module's
+own procedures, and anything still calling into them — picks up the new
+definitions at once.
+
+An importer holds a *snapshot* of what it imported, so a redefined
+*export* is stale until the module is imported again. A redefined
+*private helper*, by contrast, is seen immediately: the exported
+procedures resolve it through the reused module environment.
+
+The editor uses this. `reload-stdlib` (bound to `C-x C-r`) re-evaluates
+the standard library, and the running editor switches to the new
+command definitions without a restart.
 
 ## 7. Errors and conditions
 
@@ -253,11 +281,11 @@ For quick reference, what this spec marks **Planned / not yet built**:
 
 1. Hygienic (`syntax-case`) macros — §5.
 2. Tail-call optimisation — §3.
-3. The module system and hot reload — §6.
-4. Conditions and restarts — §7.
-5. The concurrency model — §8.
-6. Lisp-to-JavaScript interop (`js/call`, JS module import) — §9.
-7. Source positions on atoms; set literals — §2.
+3. Conditions and restarts — §7.
+4. The concurrency model — §8.
+5. Lisp-to-JavaScript interop (`js/call`, JS module import) — §9.
+6. Source positions on atoms; set literals — §2.
+7. Hierarchical module names — §6.
 
 None of these change the language's settled core; each is an additive
 layer. The core — scoping, evaluation, the special forms — is fixed.

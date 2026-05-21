@@ -18,7 +18,6 @@ to drive the in-editor REPL and to script the buffer.
   it is sequenced to land before a macro-heavy standard library exists.
 - **No tail-call optimisation.** Deep non-tail recursion can exhaust the
   JavaScript stack.
-- **No module system yet.** One global environment for now.
 - **Conditions/restarts** are not built; `try`/`catch` is the surface.
 
 ## Using it
@@ -52,8 +51,20 @@ lisp.evaluate('(map (lambda (x) (* x x)) (range 1 5))'); // => (1 4 9 16)
 ```
 
 Special forms: `quote` `quasiquote` `if` `define` `lambda` `let` `let*`
-`letrec` `set!` `begin` `cond` `and` `or` `try` `defmacro`. Everything
-else is a procedure or a macro.
+`letrec` `set!` `begin` `cond` `and` `or` `try` `defmacro` `module`
+`import`. Everything else is a procedure or a macro.
+
+Modules give code a private namespace; re-evaluating one hot-reloads it:
+
+```lisp
+(module geometry
+  (export area)
+  (define pi 3.14159)              ; private
+  (define (area r) (* pi r r)))    ; exported
+
+(import geometry)
+(area 2)                            ; => 12.56636
+```
 
 ## Tests
 

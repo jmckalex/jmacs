@@ -59,23 +59,34 @@ const PRELUDE = `
  */
 export function createInterpreter(options = {}) {
   const write = options.write ?? (() => {});
-  const global = new Environment();
 
-  installPrimitives(global, { write });
-  // `eval` needs the global environment, so it is installed here rather
-  // than in primitives.js. `(eval form)` evaluates a form — and, given a
-  // symbol, resolves it to its current binding, which is what lets the
-  // keymap bind command *names* and pick up redefinitions.
-  global.define(
+  // The base environment holds the primitives, the prelude, host
+  // primitives and the module registry. The global environment and
+  // every module are children of it: they share the base but not each
+  // other's bindings, which is what gives modules their namespaces.
+  const base = new Environment();
+  installPrimitives(base, { write });
+  base.modules = new Map();
+
+  // Top-level user code — the REPL and the standard library — runs in
+  // the global environment.
+  const global = new Environment(base);
+
+  // `eval` evaluates a form in the global environment; given a symbol
+  // it resolves the current binding, which is what lets the keymap
+  // bind command *names* and pick up redefinitions. Installed here
+  // because it needs the global reference.
+  base.define(
     'eval',
     new Primitive('eval', (args) => evaluate(args[0], global))
   );
+
   for (const form of read(PRELUDE)) {
-    evaluate(form, global);
+    evaluate(form, base);
   }
   if (options.primitives) {
     for (const [name, fn] of Object.entries(options.primitives)) {
-      global.define(name, new Primitive(name, fn));
+      base.define(name, new Primitive(name, fn));
     }
   }
 

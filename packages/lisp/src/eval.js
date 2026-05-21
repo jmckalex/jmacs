@@ -244,6 +244,24 @@ function args(form) {
   return listToArray(form.tail);
 }
 
+/**
+ * Find the module registry, which lives on the root environment. The
+ * interpreter installs it; `module` and `import` reach it from any
+ * environment by walking out to the root.
+ *
+ * @returns {{ registry: Map<string, *>, base: Environment }}
+ */
+function moduleRegistry(env) {
+  let root = env;
+  while (root.parent !== null) {
+    root = root.parent;
+  }
+  if (root.modules === undefined) {
+    throw new LispError('the module system is not available');
+  }
+  return { registry: root.modules, base: root };
+}
+
 /** Build the Lisp value a `catch` clause binds for a caught error. */
 function conditionValue(error) {
   const condition = new Map();
@@ -439,6 +457,59 @@ const SPECIAL_FORMS = {
       scope.define(varName.name, conditionValue(error));
       return evaluateBody(catchParts.slice(1), scope);
     }
+  },
+
+  module(form, env) {
+    const parts = args(form);
+    if (parts.length < 1 || !(parts[0] instanceof Sym)) {
+      throw new LispError('module: expected (module name body...)');
+    }
+    const name = parts[0];
+    const { registry, base } = moduleRegistry(env);
+
+    // An `(export …)` form anywhere in the body is a declaration, not
+    // code; everything else is evaluated in the module's environment.
+    const exports = new Set();
+    const body = [];
+    for (const f of parts.slice(1)) {
+      if (f instanceof Pair && f.head instanceof Sym && f.head.name === 'export') {
+        for (const symbol of listToArray(f.tail)) {
+          if (!(symbol instanceof Sym)) {
+            throw new LispError('module: exported names must be symbols');
+          }
+          exports.add(symbol.name);
+        }
+      } else {
+        body.push(f);
+      }
+    }
+
+    // Reloading a module reuses its environment, so closures that hold
+    // it see the new definitions; clearing first drops removed ones.
+    const existing = registry.get(name.name);
+    const moduleEnv = existing ? existing.env : new Environment(base);
+    moduleEnv.vars.clear();
+    for (const f of body) {
+      evaluate(f, moduleEnv);
+    }
+    registry.set(name.name, { name: name.name, env: moduleEnv, exports });
+    return name;
+  },
+
+  import(form, env) {
+    const parts = args(form);
+    if (parts.length !== 1 || !(parts[0] instanceof Sym)) {
+      throw new LispError('import: expected (import module-name)');
+    }
+    const { registry } = moduleRegistry(env);
+    const module = registry.get(parts[0].name);
+    if (module === undefined) {
+      throw new LispError(`no such module: ${parts[0].name}`);
+    }
+    for (const exported of module.exports) {
+      env.define(exported, module.env.lookup(exported));
+    }
+    return parts[0];
   },
 };
 
