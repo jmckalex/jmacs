@@ -14,11 +14,9 @@ For the full vision, read `docs/VISION.md`. For the architecture, read `docs/ARC
 
 ```bash
 pnpm install
-pnpm dev          # launches the Electron app in development mode
+pnpm dev          # launches the Electron app
 pnpm test         # runs all package tests
 ```
-
-(Once the build infrastructure is in place — week 1 work.)
 
 ## Repository Layout
 
@@ -35,7 +33,7 @@ editor/
   docs/
     VISION.md             # Why this exists
     ARCHITECTURE.md       # How it's built
-    spec/                 # Lisp specification (to be written)
+    spec/lisp.md          # The Lisp specification
     api/                  # Layer 2 and event protocol specs (to be written)
   plans/
     MASTER.md             # Top-level navigation
@@ -59,4 +57,19 @@ The short version: agents work on branches, never on `main`. Tests gate commits 
 
 ## Status
 
-Pre-week-1. Not yet started. The plans describe a three-week initial sprint to a usable-for-myself editor.
+Running. `pnpm dev` opens the editor in an Electron window, and it is
+usable: text editing with undo, multiple buffers, file open/save,
+incremental search, a fuzzy command palette, syntax highlighting
+(tree-sitter for JavaScript, a tokenizer for the Lisp dialect), a kill
+ring, word motions, a line-number gutter, matching-bracket highlight,
+and an embedded Lisp REPL.
+
+The five layers are in place — storage (L1), buffer (L2), the Lisp
+runtime (L3), the renderer (L4) — and the editor's keymap, commands and
+standard library are written in the editor's own Lisp, hot-reloadable
+from inside the editor (`C-x C-r`). 243 tests pass; an Electron smoke
+test exercises the whole stack.
+
+What the plans set as the three-week goal — the editor usable for
+editing its own source — is reached. See `architect-notes.md` for the
+build log and `docs/spec/lisp.md` for the language.

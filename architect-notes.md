@@ -7,6 +7,56 @@ flagged so the standing instructions can be updated if you disagree.
 
 ---
 
+## [2026-05-21 overnight] Tree-sitter, kill ring, words, gutter, help, more
+
+**Context**: You went to sleep asking for "an amazing app" by morning.
+Nine features built overnight, each on its own branch, each merged to
+`main` only with all tests and the Electron smoke test green.
+
+**What's new**:
+
+1. **Tree-sitter for JavaScript** — `web-tree-sitter` + the prebuilt
+   `tree-sitter-javascript` grammar. The Lisp dialect keeps its
+   tokenizer (per your call — it has no grammar and is still moving).
+2. **Keymap hardening** — modified keys normalise via `event.code`, so
+   `M-x` survives Option-compose on macOS (the bug I had flagged).
+3. **Kill ring** — `C-w` / `M-w` / `C-k` / `C-y`.
+4. **Word movement** — `M-f` / `M-b` / `M-d` / `M-⌫`.
+5. **Line-number gutter + current-line highlight**.
+6. **Buffer switcher** — `C-x b` with fuzzy completion.
+7. **Help system** — `C-h k` describes a key, `C-h f` a command,
+   drawing on the self-documentation.
+8. **Emacs movement keys** — `C-f/b/n/p/a/e/d`, `C-g` keyboard-quit.
+9. **Matching-bracket highlight**.
+
+**Decisions / things to know**:
+
+- **Vendored WASM.** `web-tree-sitter.js` and two `.wasm` files are
+  committed in `packages/renderer/vendor/` (~750 KB). The editor has no
+  bundler; this keeps it self-contained. devDependencies record the
+  source packages.
+- **pnpm `allowBuilds`.** `tree-sitter-javascript`'s native build is
+  disabled in `pnpm-workspace.yaml` — the editor uses its prebuilt
+  WASM, not the Node binding.
+- **CSP** now allows `wasm-unsafe-eval` (needed to compile WebAssembly).
+- **Known v0 limitations**: bracket matching and the Lisp tokenizer do
+  not skip strings/comments; tree-sitter highlighting is recomputed per
+  render (fine at current buffer sizes; virtualisation is still
+  pending). All noted in code and `docs/spec/lisp.md` where relevant.
+
+**Process note**: a third time I began editing on `main` before
+cutting the branch (after a prior merge). The pre-commit hook blocked
+it; I branched and nothing landed on `main` directly. Still worth a
+guard — perhaps a hook that warns on un-committed edits to a clean
+`main`, or just my discipline.
+
+**State of the work**: `main` only; every suite green — storage 47,
+buffer 31, lisp 66, renderer 59, stdlib 40 (243 total) — and the smoke
+test exercises the whole stack. Twenty-one feature branches across the
+project, all merged.
+
+---
+
 ## [2026-05-21] Multiple buffers, search, command palette, syntax highlighting
 
 **Context**: You asked for all four, "press ahead, no questions." All
