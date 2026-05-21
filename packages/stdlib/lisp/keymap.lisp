@@ -67,6 +67,7 @@
    "C-y"          'yank
    "M-f"          'forward-word
    "M-b"          'backward-word
+   "M-g"          'goto-line
    "M-d"          'kill-word
    "M-backspace"  'backward-kill-word
    "C-x"          c-x-keymap

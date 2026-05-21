@@ -265,6 +265,33 @@ function startBufferSwitcher() {
   });
 }
 
+/** Prompt for a line number in the minibuffer and jump to it. */
+function startGotoLine() {
+  const buffer = session.current;
+
+  minibuffer.prompt('Goto line: ', {
+    onChange(value) {
+      const n = Number(value);
+      minibuffer.setStatus(
+        value !== '' && Number.isInteger(n) && n >= 1
+          ? `line ${Math.min(n, buffer.lineCount)} of ${buffer.lineCount}`
+          : ''
+      );
+    },
+    onSubmit(value) {
+      editorView.focus();
+      const n = Number(value);
+      if (Number.isInteger(n) && n >= 1) {
+        const line = Math.min(n, buffer.lineCount) - 1;
+        buffer.moveTo(buffer.offsetAt(line, 0));
+      }
+    },
+    onCancel() {
+      editorView.focus();
+    },
+  });
+}
+
 /** Pick a command in the minibuffer and show its documentation. */
 function startDescribeCommand() {
   const names = [...new Set(listToArray(interpreter.call('command-names')))];
@@ -338,6 +365,10 @@ const interpreter = createInterpreter({
     },
     'start-describe-command!': () => {
       startDescribeCommand();
+      return NIL;
+    },
+    'start-goto-line!': () => {
+      startGotoLine();
       return NIL;
     },
 

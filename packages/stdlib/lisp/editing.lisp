@@ -47,6 +47,10 @@
   "Move backward to the start of the previous word."
   (goto! (word-backward-offset)))
 
+(define (goto-line)
+  "Prompt for a line number and move the cursor to that line."
+  (start-goto-line!))
+
 ;; --- movement that extends the selection -------------------------------
 
 (define (forward-char-extending) (cursor-right! #t))

@@ -62,6 +62,7 @@ async function editor(initialText = 'hello world') {
         paletteCalls.push('describe');
         return NIL;
       },
+      'start-goto-line!': () => NIL,
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
@@ -433,4 +434,10 @@ test('C-x h selects the whole buffer', async () => {
   press(interpreter, 'C-x');
   press(interpreter, 'h');
   assert.deepEqual(buffer.selection, { start: 0, end: 11 });
+});
+
+test('M-g is bound to goto-line', async () => {
+  const { interpreter } = await editor();
+  assert.ok(interpreter.evaluate('(eq? (get the-keymap "M-g") (quote goto-line))'));
+  assert.equal(press(interpreter, 'M-g'), true);
 });
