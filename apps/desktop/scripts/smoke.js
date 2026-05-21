@@ -95,13 +95,17 @@ app.whenReady().then(() => {
         submit('(+ 1 2 3)');
         const arithmetic = lastResult();
 
+        // handle-key exists only if the standard library loaded.
+        submit('handle-key');
+        const stdlib = lastResult();
+
         const firstLineBefore = document.querySelector('.editor-line').textContent;
         submit('(goto! 0)');
         submit('(insert! "[lisp] ")');
         await frame();
         const firstLineAfter = document.querySelector('.editor-line').textContent;
 
-        return { arithmetic, firstLineBefore, firstLineAfter };
+        return { arithmetic, stdlib, firstLineBefore, firstLineAfter };
       })()`);
       console.log('  lisp:', JSON.stringify(lisp));
 
@@ -110,16 +114,22 @@ app.whenReady().then(() => {
       const typeOk = input.afterType === 'Zz!' + input.before;
       const deleteOk = input.afterDelete === input.before;
       const replOk = lisp.arithmetic === '6';
+      const stdlibOk = lisp.stdlib.includes('procedure');
       const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
 
-      if (renderOk && typeOk && deleteOk && replOk && interopOk) {
-        finish(0, `${render.lines} lines; typing, REPL and Lisp buffer edits all work`);
+      if (renderOk && typeOk && deleteOk && replOk && stdlibOk && interopOk) {
+        finish(
+          0,
+          `${render.lines} lines; the Lisp keymap, REPL and buffer edits all work`
+        );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
       } else if (!typeOk || !deleteOk) {
         finish(1, 'editor rendered but typing did not update the DOM');
       } else if (!replOk) {
         finish(1, 'the REPL did not evaluate Lisp');
+      } else if (!stdlibOk) {
+        finish(1, 'the standard library did not load');
       } else {
         finish(1, 'Lisp did not edit the buffer');
       }

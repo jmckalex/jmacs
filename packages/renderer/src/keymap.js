@@ -77,3 +77,51 @@ export function resolveKey(event) {
 
   return null;
 }
+
+/** Named keys mapped to the names used in key strings. */
+const NAMED_KEYS = {
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  Backspace: 'backspace',
+  Delete: 'delete',
+  Enter: 'enter',
+  Tab: 'tab',
+  Home: 'home',
+  End: 'end',
+  Escape: 'escape',
+  ' ': 'space',
+};
+
+/**
+ * Normalise a keyboard event to a key string, for keymap dispatch by
+ * the host (the editor's real keymap is defined in Lisp).
+ *
+ * A bare printable key is returned as typed — `"a"`, `"A"`, `"("`, `" "`
+ * — so it can be self-inserted. Everything else gets a name and, when
+ * held, modifier prefixes: `C-` (Ctrl or Cmd), `M-` (Alt), `S-` (Shift),
+ * in that order. Examples: `"left"`, `"S-left"`, `"backspace"`, `"C-z"`,
+ * `"C-S-z"`.
+ *
+ * @param {Pick<KeyboardEvent, 'key' | 'shiftKey' | 'metaKey' |
+ *   'ctrlKey' | 'altKey'>} event
+ * @returns {string}
+ */
+export function keyEventToString(event) {
+  const { key } = event;
+  const ctrl = event.ctrlKey || event.metaKey;
+  const alt = event.altKey;
+
+  // A bare printable character: return it exactly as typed.
+  if (key.length === 1 && !ctrl && !alt) {
+    return key;
+  }
+
+  const base = NAMED_KEYS[key] ?? key.toLowerCase();
+  let prefix = '';
+  if (ctrl) prefix += 'C-';
+  if (alt) prefix += 'M-';
+  if (event.shiftKey) prefix += 'S-';
+  return prefix + base;
+}

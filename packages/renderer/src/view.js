@@ -15,6 +15,7 @@
 
 import { toLines, selectionRects } from './projection.js';
 import { handleKeyEvent } from './commands.js';
+import { keyEventToString } from './keymap.js';
 
 /**
  * @typedef {object} EditorView
@@ -28,9 +29,15 @@ import { handleKeyEvent } from './commands.js';
  *
  * @param {import('@editor/buffer').Buffer} buffer
  * @param {HTMLElement} container - The element to mount into.
+ * @param {object} [options]
+ * @param {(key: string) => boolean} [options.onKey] - Key dispatcher.
+ *   Receives a normalised key string (see `keyEventToString`) and
+ *   returns whether the key was handled. When given, it replaces the
+ *   renderer's own built-in keymap — this is how the editor's real,
+ *   Lisp-defined keymap takes over.
  * @returns {EditorView}
  */
-export function createEditorView(buffer, container) {
+export function createEditorView(buffer, container, options = {}) {
   const doc = container.ownerDocument;
   const win = doc.defaultView ?? globalThis;
 
@@ -116,10 +123,15 @@ export function createEditorView(buffer, container) {
 
   const unsubscribe = buffer.onChange(schedule);
 
+  // Key handling: use the host's dispatcher when given (the editor's
+  // Lisp keymap), otherwise fall back to the renderer's built-in keymap
+  // so the view stays usable on its own.
+  const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   root.addEventListener('keydown', (event) => {
-    if (handleKeyEvent(buffer, event)) {
-      event.preventDefault();
-    }
+    const handled = onKey
+      ? onKey(keyEventToString(event))
+      : handleKeyEvent(buffer, event);
+    if (handled) event.preventDefault();
   });
   root.addEventListener('mousedown', () => root.focus());
 

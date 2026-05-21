@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveKey } from '../src/keymap.js';
+import { resolveKey, keyEventToString } from '../src/keymap.js';
 
 /** Build a key event with sensible defaults. */
 function key(over) {
@@ -75,4 +75,34 @@ test('a character with a command modifier is not an insert', () => {
 
 test('an unbound key resolves to null', () => {
   assert.equal(resolveKey(key({ key: 'F5' })), null);
+});
+
+// --- keyEventToString ---------------------------------------------------
+
+test('a bare printable key is returned as typed', () => {
+  assert.equal(keyEventToString(key({ key: 'a' })), 'a');
+  assert.equal(keyEventToString(key({ key: 'A' })), 'A');
+  assert.equal(keyEventToString(key({ key: '(' })), '(');
+  assert.equal(keyEventToString(key({ key: ' ' })), ' ');
+});
+
+test('named keys get readable names', () => {
+  assert.equal(keyEventToString(key({ key: 'ArrowLeft' })), 'left');
+  assert.equal(keyEventToString(key({ key: 'Backspace' })), 'backspace');
+  assert.equal(keyEventToString(key({ key: 'Enter' })), 'enter');
+});
+
+test('modifiers become C- / M- / S- prefixes', () => {
+  assert.equal(keyEventToString(key({ key: 'ArrowLeft', shiftKey: true })), 'S-left');
+  assert.equal(keyEventToString(key({ key: 'ArrowLeft', metaKey: true })), 'C-left');
+  assert.equal(keyEventToString(key({ key: 'z', ctrlKey: true })), 'C-z');
+});
+
+test('a modified printable key is named, not self-inserting', () => {
+  // Ctrl+Shift+Z normalises to a stable "C-S-z" regardless of casing.
+  assert.equal(
+    keyEventToString(key({ key: 'Z', ctrlKey: true, shiftKey: true })),
+    'C-S-z'
+  );
+  assert.equal(keyEventToString(key({ key: 'a', metaKey: true })), 'C-a');
 });

@@ -1,16 +1,17 @@
 /**
  * @file Renderer-process entry point. Wires the whole editor together:
- * an L2 buffer, an L4 editor view, a Lisp interpreter whose primitives
- * manipulate that buffer, a REPL panel, and a modeline.
+ * an L2 buffer, an L4 editor view, a Lisp interpreter, the standard
+ * library (commands + keymap), a REPL panel, and a modeline.
  *
- * Because the interpreter's buffer primitives operate on the same
- * buffer the editor view is showing, Lisp typed into the REPL edits the
- * visible document live.
+ * Every keystroke in the editor is dispatched through the Lisp keymap;
+ * the REPL shares the same interpreter and buffer. The editor's
+ * behaviour is Lisp, live.
  */
 
 import { createBuffer } from '@editor/buffer';
-import { createInterpreter, LispError, NIL, writeString } from '@editor/lisp';
+import { createInterpreter, writeString } from '@editor/lisp';
 import { createEditorView, createReplView } from '@editor/renderer';
+import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 
 const WELCOME = `Welcome.
 
@@ -19,23 +20,26 @@ This is a Lisp-extensible editor. The whole stack is running:
   storage   (L1)   the text itself
   buffer    (L2)   cursor, selection, editing commands, undo
   lisp      (L3)   a custom Lisp — reader, evaluator, macros
+  stdlib           the editor's commands and keymap, in Lisp
   renderer  (L4)   these lines, the cursor, the REPL below
 
-Type anywhere — the text is a live buffer.
+Every key you press runs a Lisp command. Arrows, selection, undo —
+all defined in packages/stdlib/lisp/, not hardcoded.
 
-The REPL below shares this buffer. Try evaluating:
+The REPL below shares this buffer and this interpreter. Try:
 
-  (+ 1 2 3 4)
-  (buffer-line-count)
-  (insert! "  <- Lisp wrote this")
-  (map (lambda (x) (* x x)) (range 1 8))
+  (doc forward-char)        ;; ask a command what it does
+  the-keymap                ;; see the bindings
+  (insert! "  <- from Lisp")
 
-Lisp that ends in ! changes the buffer; watch this text move.
+And then redefine the editor while it runs:
+
+  (define (newline) (insert! "\\n;; "))
+
+...now press Enter in this buffer. You just changed the editor.
 `;
 
 const buffer = createBuffer(WELCOME, { name: 'welcome.txt' });
-
-const editorView = createEditorView(buffer, document.getElementById('editor-host'));
 
 // --- modeline -----------------------------------------------------------
 
@@ -51,55 +55,17 @@ function updateModeline() {
 buffer.onChange(updateModeline);
 updateModeline();
 
-// --- Lisp + REPL --------------------------------------------------------
-
-/** A small integer argument, or a clear error for the REPL. */
-function asOffset(name, value) {
-  if (typeof value !== 'number' || !Number.isInteger(value)) {
-    throw new LispError(`${name}: expected an integer offset`);
-  }
-  return value;
-}
-
-/**
- * Buffer primitives — host procedures, bound to the editor's buffer,
- * that the interpreter exposes to Lisp. Names ending in `!` mutate.
- */
-const bufferPrimitives = {
-  'buffer-text': () => buffer.text,
-  'buffer-length': () => buffer.length,
-  'buffer-line-count': () => buffer.lineCount,
-  'buffer-name': () => buffer.name,
-  'point': () => buffer.point,
-  'buffer-substring': (args) =>
-    buffer.slice(asOffset('buffer-substring', args[0]), asOffset('buffer-substring', args[1])),
-  'goto!': (args) => {
-    buffer.moveTo(asOffset('goto!', args[0]));
-    return NIL;
-  },
-  'insert!': (args) => {
-    buffer.insert(String(args[0]));
-    return NIL;
-  },
-  'delete-backward!': (args) => {
-    buffer.deleteBackward(args.length > 0 ? asOffset('delete-backward!', args[0]) : 1);
-    return NIL;
-  },
-  'delete-forward!': (args) => {
-    buffer.deleteForward(args.length > 0 ? asOffset('delete-forward!', args[0]) : 1);
-    return NIL;
-  },
-};
+// --- Lisp interpreter and REPL -----------------------------------------
 
 const repl = createReplView(document.getElementById('repl-host'), {
   prompt: 'λ ',
-  welcome: 'REPL — type Lisp, press Enter. Buffer primitives end in !.',
+  welcome: 'REPL — type Lisp, press Enter. It shares the editor buffer.',
   onSubmit: evaluateInRepl,
 });
 
 const interpreter = createInterpreter({
   write: (text) => repl.appendOutput(text),
-  primitives: bufferPrimitives,
+  primitives: createBufferPrimitives(buffer),
 });
 
 /** Evaluate a line of REPL input and show the result. */
@@ -110,5 +76,36 @@ function evaluateInRepl(source) {
     repl.appendError(error.lispMessage ?? error.message ?? String(error));
   }
 }
+
+// Load the standard library — the commands and keymap, written in Lisp.
+let keymapReady = false;
+try {
+  await loadStdlib(interpreter, (name) =>
+    fetch(`app://editor/packages/stdlib/lisp/${name}`).then((response) =>
+      response.text()
+    )
+  );
+  keymapReady = true;
+} catch (error) {
+  repl.appendError(`standard library failed to load: ${error.message}`);
+}
+
+/** Dispatch a keystroke through the Lisp keymap. */
+function dispatchKey(key) {
+  try {
+    return interpreter.call('handle-key', key) === true;
+  } catch (error) {
+    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+    return true; // consume the key; the error is visible in the REPL
+  }
+}
+
+// --- editor view --------------------------------------------------------
+
+const editorView = createEditorView(
+  buffer,
+  document.getElementById('editor-host'),
+  keymapReady ? { onKey: dispatchKey } : {}
+);
 
 editorView.focus();
