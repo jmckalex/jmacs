@@ -4,7 +4,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createBuffer, loadBuffer, saveBuffer } from '../src/index.js';
+import { createBuffer } from '../src/index.js';
+import { loadBuffer, saveBuffer } from '../src/persistence.js';
 
 /**
  * Run `fn` with a fresh temp directory that is removed afterwards.

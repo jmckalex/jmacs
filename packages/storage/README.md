@@ -16,7 +16,8 @@ will be replaced by a piece tree behind this exact public API.
 ## API
 
 ```js
-import { createBuffer, loadBuffer, saveBuffer } from '@editor/storage';
+import { createBuffer } from '@editor/storage';
+import { loadBuffer, saveBuffer } from '@editor/storage/persistence';
 
 const buf = createBuffer('hello world');
 buf.insert(5, ',');           // 'hello, world'
@@ -50,7 +51,10 @@ const reloaded = await loadBuffer('/tmp/note.txt');
   redo) with a `{ start, removed, inserted }` change; returns an
   unsubscribe function.
 
-### Persistence
+### Persistence — `@editor/storage/persistence`
+
+A separate, Node-only entry point (it uses the filesystem, so it must
+not be in the browser-safe default entry).
 
 - `loadBuffer(path)` — read a file into a new buffer.
 - `saveBuffer(buffer, path)` — write a buffer's contents to a file.
