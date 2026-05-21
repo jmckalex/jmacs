@@ -46,6 +46,10 @@
    "C-S-z"     'redo
    "C-s"       'isearch-forward
    "M-x"       'execute-command
+   "C-w"       'kill-region
+   "M-w"       'copy-region
+   "C-k"       'kill-line
+   "C-y"       'yank
    "C-x"       c-x-keymap})
 
 ;; The keymap the next keystroke is looked up in: the root keymap, or a

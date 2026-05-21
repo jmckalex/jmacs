@@ -246,3 +246,42 @@ test('command-names lists the keymap commands', async () => {
     false
   );
 });
+
+// --- kill ring ----------------------------------------------------------
+
+test('C-w cuts the selection and C-y yanks it back', async () => {
+  const { buffer, interpreter } = await editor('hello world');
+  buffer.moveTo(0);
+  buffer.setMark(6); // select "hello "
+  press(interpreter, 'C-w');
+  assert.equal(buffer.text, 'world');
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'hello world');
+});
+
+test('M-w copies the selection without deleting it', async () => {
+  const { buffer, interpreter } = await editor('abc');
+  buffer.moveTo(0);
+  buffer.setMark(3);
+  press(interpreter, 'M-w');
+  assert.equal(buffer.text, 'abc');
+  buffer.moveTo(3);
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'abcabc');
+});
+
+test('C-k kills to the end of the line', async () => {
+  const { buffer, interpreter } = await editor('keep me\nsecond');
+  buffer.moveTo(4);
+  press(interpreter, 'C-k');
+  assert.equal(buffer.text, 'keep\nsecond');
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'keep me\nsecond');
+});
+
+test('C-k at the end of a line kills the newline', async () => {
+  const { buffer, interpreter } = await editor('a\nb');
+  buffer.moveTo(1);
+  press(interpreter, 'C-k');
+  assert.equal(buffer.text, 'ab');
+});

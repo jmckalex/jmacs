@@ -45,6 +45,15 @@ export function createBufferPrimitives(session) {
     'mark': () => (buffer().mark === null ? NIL : buffer().mark),
     'buffer-substring': (args) =>
       buffer().slice(offset(args[0]), offset(args[1])),
+    'line-start': () => buffer().lineAt(buffer().point).from,
+    'line-end': () => buffer().lineAt(buffer().point).to,
+    'region-active?': () => buffer().selection !== null,
+    'region-text': () => {
+      const selection = buffer().selection;
+      return selection === null
+        ? ''
+        : buffer().slice(selection.start, selection.end);
+    },
 
     // --- cursor movement; an optional #t argument extends a selection --
     'cursor-left!': (args) => {
@@ -106,6 +115,14 @@ export function createBufferPrimitives(session) {
     },
     'delete-forward!': () => {
       buffer().deleteForward();
+      return NIL;
+    },
+    'delete-region!': (args) => {
+      const a = offset(args[0]);
+      const b = offset(args[1]);
+      const buf = buffer();
+      buf.moveTo(Math.min(a, b));
+      buf.deleteForward(Math.abs(b - a));
       return NIL;
     },
 
