@@ -7,6 +7,42 @@ flagged so the standing instructions can be updated if you disagree.
 
 ---
 
+## [2026-05-21] Lisp standard library + Lisp-defined keymap
+
+**Context**: You chose "Lisp stdlib + keymap" as the next direction.
+The editor's commands and keybindings now live in Lisp, not in
+hardcoded JavaScript.
+
+**What's built**: new package `@editor/stdlib` — `editing.lisp`
+(commands), `keymap.lisp` (bindings + `handle-key` dispatch), and the
+`buffer-primitives.js` bridge. The renderer's `createEditorView` now
+takes an `onKey` dispatcher; the app routes every keystroke through
+`(handle-key …)`. Two host-integration additions to L3:
+`interpreter.call` and an `eval` primitive.
+
+**Design decision worth noting**: keymaps bind command **names**
+(symbols), resolved late on each keystroke via `eval`, not command
+*procedures*. A test ("redefining a command changes the editor")
+caught the procedure-binding version — it didn't pick up redefinitions.
+Late name resolution is both correct (it is how Emacs keymaps work) and
+the groundwork for hot reload. No question for you here — the test
+settled it — but flagging the choice since it touches the module/
+hot-reload design sketched in `docs/spec/lisp.md §6`.
+
+**Still a v0 floor**: single-chord keys only (no `C-x C-f` sequences),
+no command palette / `M-x`, no command registry with metadata. Those
+are the natural next stdlib steps.
+
+**Territory note**: spanned `packages/stdlib` (new), `packages/lisp`,
+`packages/renderer` and `apps/desktop` on branch `agent-5-stdlib`,
+under the direct live brief.
+
+**State of the work**: Branch `agent-5-stdlib`, all committed, every
+suite green (storage 47, buffer 29, lisp 57, renderer 30, stdlib 12 —
+175 total) and the Electron smoke test passing.
+
+---
+
 ## [2026-05-21] L3 Lisp runtime + in-editor REPL
 
 **Context**: Brief was "next step, ambitiously." Built the L3 Lisp
