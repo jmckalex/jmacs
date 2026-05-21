@@ -1,0 +1,19 @@
+{
+  "name": "@editor/stdlib",
+  "version": "0.0.0",
+  "description": "The editor's standard library — commands and keybindings, written in Lisp.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@editor/buffer": "workspace:*",
+    "@editor/lisp": "workspace:*"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

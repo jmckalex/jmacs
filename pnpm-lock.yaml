@@ -28,6 +28,15 @@ importers:
         specifier: workspace:*
         version: link:../buffer
 
+  packages/stdlib:
+    dependencies:
+      '@editor/buffer':
+        specifier: workspace:*
+        version: link:../buffer
+      '@editor/lisp':
+        specifier: workspace:*
+        version: link:../lisp
+
   packages/storage: {}
 
 packages:
