@@ -39,6 +39,14 @@
   "Move the cursor to the end of the buffer."
   (cursor-buffer-end! #f))
 
+(define (forward-word)
+  "Move forward to the end of the next word."
+  (goto! (word-forward-offset)))
+
+(define (backward-word)
+  "Move backward to the start of the previous word."
+  (goto! (word-backward-offset)))
+
 ;; --- movement that extends the selection -------------------------------
 
 (define (forward-char-extending) (cursor-right! #t))

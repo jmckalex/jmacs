@@ -38,3 +38,19 @@
 (define (yank)
   "Insert the most recent kill at the cursor."
   (insert! (kill-ring-top)))
+
+(define (kill-word)
+  "Kill forward to the end of the next word."
+  (let ((from (point))
+        (to (word-forward-offset)))
+    (when (> to from)
+      (kill-ring-add! (buffer-substring from to))
+      (delete-region! from to))))
+
+(define (backward-kill-word)
+  "Kill backward to the start of the previous word."
+  (let ((from (point))
+        (to (word-backward-offset)))
+    (when (< to from)
+      (kill-ring-add! (buffer-substring to from))
+      (delete-region! to from))))

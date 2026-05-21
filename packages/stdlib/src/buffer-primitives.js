@@ -20,6 +20,25 @@ function offset(value) {
   return value;
 }
 
+/** Whether a character is part of a word. */
+const isWordChar = (ch) => /\w/.test(ch);
+
+/** The offset of the next word boundary at or after `from`. */
+function forwardWord(text, from) {
+  let i = from;
+  while (i < text.length && !isWordChar(text[i])) i += 1;
+  while (i < text.length && isWordChar(text[i])) i += 1;
+  return i;
+}
+
+/** The offset of the previous word boundary at or before `from`. */
+function backwardWord(text, from) {
+  let i = from;
+  while (i > 0 && !isWordChar(text[i - 1])) i -= 1;
+  while (i > 0 && isWordChar(text[i - 1])) i -= 1;
+  return i;
+}
+
 /**
  * Build the buffer primitives for a session.
  *
@@ -47,6 +66,8 @@ export function createBufferPrimitives(session) {
       buffer().slice(offset(args[0]), offset(args[1])),
     'line-start': () => buffer().lineAt(buffer().point).from,
     'line-end': () => buffer().lineAt(buffer().point).to,
+    'word-forward-offset': () => forwardWord(buffer().text, buffer().point),
+    'word-backward-offset': () => backwardWord(buffer().text, buffer().point),
     'region-active?': () => buffer().selection !== null,
     'region-text': () => {
       const selection = buffer().selection;

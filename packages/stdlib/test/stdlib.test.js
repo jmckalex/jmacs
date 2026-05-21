@@ -285,3 +285,37 @@ test('C-k at the end of a line kills the newline', async () => {
   press(interpreter, 'C-k');
   assert.equal(buffer.text, 'ab');
 });
+
+// --- word movement ------------------------------------------------------
+
+test('M-f moves forward by a word', async () => {
+  const { buffer, interpreter } = await editor('hello world foo');
+  buffer.moveTo(0);
+  press(interpreter, 'M-f');
+  assert.equal(buffer.point, 5);
+  press(interpreter, 'M-f');
+  assert.equal(buffer.point, 11);
+});
+
+test('M-b moves backward by a word', async () => {
+  const { buffer, interpreter } = await editor('hello world');
+  buffer.moveTo(11);
+  press(interpreter, 'M-b');
+  assert.equal(buffer.point, 6);
+});
+
+test('M-d kills the next word', async () => {
+  const { buffer, interpreter } = await editor('hello world');
+  buffer.moveTo(0);
+  press(interpreter, 'M-d');
+  assert.equal(buffer.text, ' world');
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'hello world');
+});
+
+test('M-backspace kills the previous word', async () => {
+  const { buffer, interpreter } = await editor('hello world');
+  buffer.moveTo(11);
+  press(interpreter, 'M-backspace');
+  assert.equal(buffer.text, 'hello ');
+});
