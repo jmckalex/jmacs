@@ -62,12 +62,14 @@ export function createEditorView(buffer, container, options = {}) {
   const root = el('div', 'editor');
   root.tabIndex = 0;
 
+  const gutter = el('div', 'editor-gutter');
   const content = el('div', 'editor-content');
+  const currentLineEl = el('div', 'editor-current-line');
   const selectionLayer = el('div', 'editor-selection');
   const linesEl = el('div', 'editor-lines');
   const cursorEl = el('div', 'editor-cursor');
-  content.append(selectionLayer, linesEl, cursorEl);
-  root.append(content);
+  content.append(currentLineEl, selectionLayer, linesEl, cursorEl);
+  root.append(gutter, content);
   container.append(root);
 
   /** Create an element with a class name. */
@@ -110,16 +112,22 @@ export function createEditorView(buffer, container, options = {}) {
       }
     }
 
-    linesEl.replaceChildren(
-      ...lines.map((line, index) => {
-        const lineEl = el('div', 'editor-line');
-        const runs = perLine
-          ? perLine[index] ?? []
-          : highlightLine(line.content, language);
-        renderRuns(lineEl, runs);
-        return lineEl;
-      })
-    );
+    const lineEls = [];
+    const numberEls = [];
+    lines.forEach((line, index) => {
+      const lineEl = el('div', 'editor-line');
+      const runs = perLine
+        ? perLine[index] ?? []
+        : highlightLine(line.content, language);
+      renderRuns(lineEl, runs);
+      lineEls.push(lineEl);
+
+      const numberEl = el('div', 'editor-line-no');
+      numberEl.textContent = String(index + 1);
+      numberEls.push(numberEl);
+    });
+    linesEl.replaceChildren(...lineEls);
+    gutter.replaceChildren(...numberEls);
   }
 
   /** Render the selection highlight, one rectangle per touched line. */
@@ -141,11 +149,19 @@ export function createEditorView(buffer, container, options = {}) {
     );
   }
 
-  /** Position the cursor at the buffer's point. */
+  /** Position the cursor, the current-line highlight and the gutter. */
   function renderCursor() {
     const { line, column } = activeBuffer.positionAt(activeBuffer.point);
     cursorEl.style.left = `calc(${column} * 1ch)`;
     cursorEl.style.top = `calc(${line} * 1lh)`;
+    currentLineEl.style.top = `calc(${line} * 1lh)`;
+
+    // Brighten the current line's number in the gutter.
+    const numbers = gutter.children;
+    for (let i = 0; i < numbers.length; i += 1) {
+      numbers[i].classList.toggle('is-current', i === line);
+    }
+
     // Restart the blink so the cursor is solid right after it moves.
     cursorEl.classList.remove('is-blinking');
     void cursorEl.offsetWidth;

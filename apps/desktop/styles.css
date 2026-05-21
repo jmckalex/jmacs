@@ -76,16 +76,51 @@ body {
 .editor {
   height: 100%;
   overflow: auto;
-  padding: 18px 22px;
   outline: none;
+  display: flex;
+  align-items: flex-start;
+  padding: 18px 22px 18px 0;
   font-size: var(--font-size);
   line-height: var(--line-height);
 }
 
+/* Line-number gutter — sticks to the left through horizontal scroll. */
+.editor-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  flex: 0 0 auto;
+  padding: 0 14px 0 18px;
+  text-align: right;
+  background: var(--bg-editor);
+  user-select: none;
+}
+
+.editor-line-no {
+  min-height: 1lh;
+  color: var(--fg-dim);
+  opacity: 0.5;
+}
+
+.editor-line-no.is-current {
+  opacity: 1;
+  color: var(--fg);
+}
+
 .editor-content {
   position: relative;
-  width: max-content;
-  min-width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A subtle band behind the line the cursor is on. */
+.editor-current-line {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 1lh;
+  z-index: 0;
+  background: #ffffff0a;
 }
 
 .editor-lines {
