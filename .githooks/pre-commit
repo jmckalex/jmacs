@@ -47,9 +47,12 @@ if [[ ! "$BRANCH" =~ ^(agent-[0-9]+(-[a-z0-9-]+)?|architect|fix|feature|docs|spi
 fi
 
 # Run tests if a test script exists.
+# Note: the flag goes before the script name so pnpm consumes it; an arg
+# after the script name is forwarded to the script (and `node --test`
+# rejects unknown flags).
 if [[ -f "package.json" ]] && grep -q '"test"' package.json; then
   echo -e "${GREEN}Running tests before commit...${NC}"
-  if ! pnpm test --silent 2>&1 | tail -20; then
+  if ! pnpm --silent test 2>&1 | tail -20; then
     echo ""
     echo -e "${RED}ERROR:${NC} Tests failed. Commit blocked."
     echo "Fix tests, or bypass with --no-verify if you have a good reason."
