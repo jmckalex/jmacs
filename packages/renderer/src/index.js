@@ -12,3 +12,4 @@ export { createMinibuffer } from './minibuffer.js';
 export { toLines, selectionRects } from './projection.js';
 export { resolveKey, keyEventToString } from './keymap.js';
 export { applyIntent, handleKeyEvent } from './commands.js';
+export { fuzzyFilter } from './fuzzy.js';

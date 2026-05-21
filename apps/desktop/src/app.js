@@ -10,11 +10,12 @@
  */
 
 import { createBuffer } from '@editor/buffer';
-import { createInterpreter, NIL, writeString } from '@editor/lisp';
+import { createInterpreter, listToArray, NIL, writeString } from '@editor/lisp';
 import {
   createEditorView,
   createMinibuffer,
   createReplView,
+  fuzzyFilter,
 } from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 
@@ -180,6 +181,42 @@ function startSearch() {
   });
 }
 
+// --- command palette (M-x) ---------------------------------------------
+
+/** Run the command palette in the minibuffer. */
+function startCommandPalette() {
+  const names = [...new Set(listToArray(interpreter.call('command-names')))];
+
+  minibuffer.prompt('M-x ', {
+    onChange(query) {
+      const matches = fuzzyFilter(query, names);
+      if (matches.length === 0) {
+        minibuffer.setStatus('no matching command');
+        return;
+      }
+      // The first match runs on Enter; show it bracketed.
+      const shown = matches.slice(0, 6);
+      minibuffer.setStatus(
+        `[${shown[0]}]` +
+          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
+      );
+    },
+    onSubmit(query) {
+      editorView.focus();
+      const chosen = fuzzyFilter(query, names)[0];
+      if (chosen === undefined) return;
+      try {
+        interpreter.call(chosen);
+      } catch (error) {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      }
+    },
+    onCancel() {
+      editorView.focus();
+    },
+  });
+}
+
 // --- Lisp interpreter and REPL -----------------------------------------
 
 const repl = createReplView(document.getElementById('repl-host'), {
@@ -208,6 +245,10 @@ const interpreter = createInterpreter({
     },
     'start-search!': () => {
       startSearch();
+      return NIL;
+    },
+    'start-command-palette!': () => {
+      startCommandPalette();
       return NIL;
     },
 

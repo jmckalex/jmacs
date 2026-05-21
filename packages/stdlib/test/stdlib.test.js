@@ -19,6 +19,7 @@ async function editor(initialText = 'hello world') {
   const fileCalls = [];
   const bufferCalls = [];
   const searchCalls = [];
+  const paletteCalls = [];
   const interpreter = createInterpreter({
     primitives: {
       ...createBufferPrimitives({ current: buffer }),
@@ -47,10 +48,21 @@ async function editor(initialText = 'hello world') {
         searchCalls.push('search');
         return NIL;
       },
+      'start-command-palette!': () => {
+        paletteCalls.push('palette');
+        return NIL;
+      },
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
-  return { buffer, interpreter, fileCalls, bufferCalls, searchCalls };
+  return {
+    buffer,
+    interpreter,
+    fileCalls,
+    bufferCalls,
+    searchCalls,
+    paletteCalls,
+  };
 }
 
 /** Send a key through the Lisp keymap; returns whether it was handled. */
@@ -218,4 +230,19 @@ test('C-s starts an incremental search', async () => {
   const { interpreter, searchCalls } = await editor();
   press(interpreter, 'C-s');
   assert.deepEqual(searchCalls, ['search']);
+});
+
+test('M-x opens the command palette', async () => {
+  const { interpreter, paletteCalls } = await editor();
+  press(interpreter, 'M-x');
+  assert.deepEqual(paletteCalls, ['palette']);
+});
+
+test('command-names lists the keymap commands', async () => {
+  const { interpreter } = await editor();
+  assert.ok(interpreter.evaluate('(> (length (command-names)) 5)'));
+  assert.notEqual(
+    interpreter.evaluate('(member "forward-char" (command-names))'),
+    false
+  );
 });

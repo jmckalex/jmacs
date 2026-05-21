@@ -102,8 +102,9 @@ export function createMinibuffer(container) {
       statusEl.textContent = '';
       root.hidden = false;
       input.focus();
-      // A starting value (e.g. a recalled search) counts as input.
-      if (input.value !== '') h.onChange?.(input.value);
+      // Report the starting value so callers can render initial state
+      // (e.g. the command palette listing every command).
+      h.onChange?.(input.value);
     },
 
     setStatus(text) {

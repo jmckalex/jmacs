@@ -201,6 +201,33 @@ app.whenReady().then(() => {
       })()`);
       console.log('  search:', JSON.stringify(search));
 
+      // Command palette: M-x opens it, a query filters commands, Enter
+      // runs the top match and closes the minibuffer.
+      const palette = await win.webContents.executeJavaScript(`(async () => {
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'x', altKey: true, bubbles: true, cancelable: true,
+        }));
+        const mb = document.querySelector('.minibuffer-input');
+        const panel = document.querySelector('.minibuffer');
+        const opened = !!mb && panel !== null && !panel.hidden;
+        let matched = false;
+        let closed = false;
+        if (opened) {
+          mb.value = 'beginning-of-buffer';
+          mb.dispatchEvent(new Event('input', { bubbles: true }));
+          matched = document.querySelector('.minibuffer-status')
+            .textContent.includes('beginning-of-buffer');
+          mb.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+          closed = panel.hidden;
+        }
+        return { opened, matched, closed };
+      })()`);
+      console.log('  palette:', JSON.stringify(palette));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -214,14 +241,15 @@ app.whenReady().then(() => {
       const filesOk =
         files.exposed && files.saved && savedContent === 'smoke save ok';
       const searchOk = search.opened && search.matched;
+      const paletteOk = palette.opened && palette.matched && palette.closed;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
-        modulesOk && buffersOk && interopOk && filesOk && searchOk
+        modulesOk && buffersOk && interopOk && filesOk && searchOk && paletteOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, sequences, modules, buffers, search, REPL and files all work`
+          `${render.lines} lines; keymap, sequences, modules, buffers, search, M-x, REPL and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -241,8 +269,10 @@ app.whenReady().then(() => {
         finish(1, 'Lisp did not edit the buffer');
       } else if (!filesOk) {
         finish(1, 'the file bridge did not work');
-      } else {
+      } else if (!searchOk) {
         finish(1, 'incremental search did not work');
+      } else {
+        finish(1, 'the command palette did not work');
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

@@ -26,6 +26,8 @@ export const STDLIB_FILES = Object.freeze([
   'search.lisp',
   'system.lisp',
   'keymap.lisp',
+  // palette.lisp reads the keymap, so it loads after it.
+  'palette.lisp',
 ]);
 
 /**
