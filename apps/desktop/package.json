@@ -1,0 +1,17 @@
+{
+  "name": "@editor/desktop",
+  "version": "0.0.0",
+  "description": "L0 — the Electron host application that presents the editor.",
+  "type": "module",
+  "main": "src/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "smoke": "electron scripts/smoke.js",
+    "screenshot": "electron scripts/screenshot.js"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "electron": "42.2.0"
+  }
+}

@@ -1,0 +1,12 @@
+/**
+ * @file Layer 4 — public entry point.
+ *
+ * The renderer projects L2 buffer state into the DOM and turns keyboard
+ * input into editing commands. It never mutates the buffer directly
+ * except through the buffer's own command methods.
+ */
+
+export { createEditorView } from './view.js';
+export { toLines, selectionRects } from './projection.js';
+export { resolveKey } from './keymap.js';
+export { applyIntent, handleKeyEvent } from './commands.js';

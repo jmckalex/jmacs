@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' app:; script-src 'self' app: 'unsafe-inline'; style-src 'self' app: 'unsafe-inline'"
+    />
+    <title>editor</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "@editor/storage": "../../packages/storage/src/index.js",
+          "@editor/buffer": "../../packages/buffer/src/index.js",
+          "@editor/renderer": "../../packages/renderer/src/index.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header class="titlebar">
+      <span class="titlebar-name">editor</span>
+    </header>
+
+    <main id="editor-host" class="editor-host"></main>
+
+    <footer class="modeline">
+      <span id="modeline-name" class="modeline-name"></span>
+      <span id="modeline-position" class="modeline-position"></span>
+    </footer>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,159 @@
+/*
+ * The editor's visual defaults. Per the project vision, the editor
+ * should be beautiful when it first opens — not configurable into
+ * beauty later. This stylesheet is that first impression: a calm dark
+ * theme, a comfortable monospace, generous spacing.
+ */
+
+:root {
+  --bg: #1b1b23;
+  --bg-chrome: #16161d;
+  --bg-editor: #1e1e28;
+  --fg: #d6d6e0;
+  --fg-dim: #82828f;
+  --accent: #7d9bf5;
+  --selection: rgba(125, 155, 245, 0.26);
+
+  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas,
+    monospace;
+  --font-size: 14px;
+  --line-height: 1.65;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+  user-select: none;
+}
+
+/* --- title bar --------------------------------------------------------- */
+
+.titlebar {
+  flex: 0 0 auto;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid #00000040;
+  /* Let the whole bar drag the window; traffic lights sit at the left. */
+  -webkit-app-region: drag;
+}
+
+.titlebar-name {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+
+/* --- editor surface ---------------------------------------------------- */
+
+.editor-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg-editor);
+}
+
+.editor {
+  height: 100%;
+  overflow: auto;
+  padding: 18px 22px;
+  outline: none;
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+}
+
+.editor-content {
+  position: relative;
+  width: max-content;
+  min-width: 100%;
+}
+
+.editor-lines {
+  position: relative;
+  z-index: 1;
+}
+
+.editor-line {
+  white-space: pre;
+  min-height: 1lh;
+}
+
+/* --- cursor ------------------------------------------------------------ */
+
+.editor-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 1lh;
+  z-index: 2;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+.editor-cursor.is-blinking {
+  animation: cursor-blink 1.06s steps(1, end) infinite;
+}
+
+@keyframes cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  99% {
+    opacity: 0;
+  }
+}
+
+/* --- selection --------------------------------------------------------- */
+
+.editor-selection {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+}
+
+.editor-selection-rect {
+  position: absolute;
+  height: 1lh;
+  background: var(--selection);
+  border-radius: 2px;
+}
+
+/* --- modeline ---------------------------------------------------------- */
+
+.modeline {
+  flex: 0 0 auto;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  background: var(--bg-chrome);
+  border-top: 1px solid #00000040;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+}
+
+.modeline-name {
+  color: var(--fg);
+}
