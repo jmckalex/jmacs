@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+
+  "permissions": {
+    "deny": [
+      "Read(/Users/jason/.ssh/**)",
+      "Read(/Users/jason/.aws/**)",
+      "Read(/Users/jason/.config/**)",
+      "Read(/Users/jason/.gnupg/**)",
+      "Read(/Users/jason/Library/Keychains/**)",
+      "Read(/Users/jason/.netrc)",
+      "Read(/Users/jason/.zsh_history)",
+      "Read(/Users/jason/.bash_history)",
+      "Read(/etc/**)",
+      "Read(/private/etc/**)",
+      "Edit(/Users/jason/.ssh/**)",
+      "Edit(/Users/jason/.aws/**)",
+      "Edit(/Users/jason/.config/**)",
+      "Edit(/Users/jason/.gnupg/**)",
+      "Edit(/etc/**)",
+      "Edit(/private/etc/**)",
+      "Write(/Users/jason/.ssh/**)",
+      "Write(/Users/jason/.aws/**)",
+      "Write(/Users/jason/.config/**)",
+      "Write(/Users/jason/.gnupg/**)",
+      "Write(/etc/**)",
+      "Write(/private/etc/**)",
+
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(secrets/**)",
+      "Read(**/secrets/**)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/id_rsa*)",
+      "Read(**/id_ed25519*)",
+
+      "Bash(sudo *)",
+      "Bash(sudo)",
+      "Bash(su *)",
+      "Bash(su)",
+
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Bash(rm -rf $HOME*)",
+      "Bash(rm -rf /Users/*)",
+      "Bash(rm -rf /System/*)",
+      "Bash(rm -rf /Library/*)",
+      "Bash(rm -rf /private/*)",
+      "Bash(rm -rf /etc/*)",
+      "Bash(rm -rf /var/*)",
+      "Bash(rm -rf /tmp/*)",
+      "Bash(rm -rf /usr/*)",
+
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push --force-with-lease *)",
+      "Bash(git push *main*)",
+      "Bash(git push *master*)",
+      "Bash(git push origin main*)",
+      "Bash(git push origin master*)",
+      "Bash(git reset --hard origin/*)",
+      "Bash(git checkout main)",
+      "Bash(git checkout master)",
+      "Bash(git branch -D main)",
+      "Bash(git branch -D master)",
+
+      "Bash(npm publish *)",
+      "Bash(npm publish)",
+      "Bash(pnpm publish *)",
+      "Bash(pnpm publish)",
+      "Bash(yarn publish *)",
+
+      "Bash(curl * | sh)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | sh)",
+      "Bash(wget * | bash)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+
+      "Bash(launchctl *)",
+      "Bash(defaults write *)",
+      "Bash(killall *)",
+      "Bash(shutdown *)",
+      "Bash(reboot *)",
+      "Bash(diskutil *)",
+      "Bash(mount *)",
+      "Bash(umount *)"
+    ],
+
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+
+      "Bash(pnpm *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff)",
+      "Bash(git diff *)",
+      "Bash(git log)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch)",
+      "Bash(git branch *)",
+      "Bash(git checkout -b *)",
+      "Bash(git checkout agent-*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git stash *)",
+      "Bash(git rev-parse *)",
+      "Bash(git config --get *)",
+      "Bash(git config --local *)",
+      "Bash(git ls-files *)",
+      "Bash(git remote -v)",
+      "Bash(git fetch *)",
+      "Bash(git merge-base *)",
+
+      "Bash(ls *)",
+      "Bash(pwd)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)",
+      "Bash(find . *)",
+      "Bash(rg *)",
+      "Bash(grep *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(awk *)",
+      "Bash(sed *)",
+      "Bash(cut *)",
+      "Bash(tr *)",
+      "Bash(mkdir -p *)",
+      "Bash(touch *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(rm packages/**)",
+      "Bash(rm apps/**)",
+      "Bash(rm docs/**)",
+      "Bash(rm node_modules/**)",
+      "Bash(rm -rf node_modules)",
+      "Bash(rm -rf dist)",
+      "Bash(rm -rf build)",
+      "Bash(rm -rf .vite)",
+      "Bash(rm -rf coverage)",
+
+      "Bash(./scripts/*)",
+      "Bash(bash scripts/*)",
+      "Bash(sh scripts/*)",
+
+      "WebFetch(domain:registry.npmjs.org)",
+      "WebFetch(domain:nodejs.org)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:tree-sitter.github.io)",
+      "WebFetch(domain:developer.mozilla.org)",
+      "WebFetch(domain:electronjs.org)",
+      "WebFetch(domain:vitejs.dev)",
+      "WebFetch(domain:docs.codemirror.net)",
+      "WebFetch(domain:codemirror.net)"
+    ],
+
+    "ask": [
+      "WebFetch",
+      "WebSearch",
+      "Bash(brew *)",
+      "Bash(open *)"
+    ],
+
+    "defaultMode": "ask",
+
+    "additionalDirectories": []
+  },
+
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "afplay /System/Library/Sounds/Glass.aiff 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

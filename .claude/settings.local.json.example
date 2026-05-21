@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+
+  "_comment": "This file overrides .claude/settings.json for your local machine only. It is gitignored. Use for personal preferences or additional permissions.",
+
+  "_overnight_mode_instructions": "For overnight unsupervised runs, change defaultMode to 'bypassPermissions' temporarily. REVERT to 'ask' after the run completes. Never commit bypassPermissions to the shared settings.json.",
+
+  "permissions": {
+    "allow": [],
+    "deny": [],
+    "defaultMode": "ask"
+  }
+}

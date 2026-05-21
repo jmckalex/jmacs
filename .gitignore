@@ -1,0 +1,42 @@
+# Claude Code local settings
+.claude/settings.local.json
+.claude/.credentials.json
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+.npm/
+
+# Build outputs
+dist/
+build/
+out/
+.vite/
+
+# Test outputs
+coverage/
+.nyc_output/
+*.log
+
+# Electron
+release/
+app/dist/
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.recommended.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
