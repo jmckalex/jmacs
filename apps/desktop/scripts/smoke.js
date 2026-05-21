@@ -255,6 +255,34 @@ app.whenReady().then(() => {
       })()`);
       console.log('  treesitter:', JSON.stringify(treesitter));
 
+      // Replace-string: a chained two-prompt minibuffer flow.
+      const replace = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const replSubmit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        replSubmit('(new-buffer! "replace-test")');
+        replSubmit('(insert! "foo foo foo")');
+        await frame();
+        replSubmit('(replace-string)');
+        const mb = document.querySelector('.minibuffer-input');
+        const fill = async (text) => {
+          mb.value = text;
+          mb.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+          await frame();
+        };
+        await fill('foo');
+        await fill('bar');
+        return { text: document.querySelector('.editor-line').textContent };
+      })()`);
+      console.log('  replace:', JSON.stringify(replace));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -272,15 +300,16 @@ app.whenReady().then(() => {
       const paletteOk = palette.opened && palette.matched && palette.closed;
       const treesitterOk =
         treesitter.ready && treesitter.keywords > 0 && treesitter.numbers > 0;
+      const replaceOk = replace.text === 'bar bar bar';
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
-        searchOk && paletteOk && treesitterOk
+        searchOk && paletteOk && treesitterOk && replaceOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, modules, buffers, highlighting, tree-sitter, search, M-x and files all work`
+          `${render.lines} lines; keymap, modules, buffers, highlighting, tree-sitter, search, replace, M-x and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -306,8 +335,10 @@ app.whenReady().then(() => {
         finish(1, 'incremental search did not work');
       } else if (!paletteOk) {
         finish(1, 'the command palette did not work');
-      } else {
+      } else if (!treesitterOk) {
         finish(1, 'tree-sitter JavaScript highlighting did not work');
+      } else {
+        finish(1, 'replace-string did not work');
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

@@ -67,6 +67,7 @@ async function editor(initialText = 'hello world') {
         return NIL;
       },
       'start-goto-line!': () => NIL,
+      'start-replace!': () => NIL,
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
@@ -450,6 +451,14 @@ test('M-g is bound to goto-line', async () => {
   const { interpreter } = await editor();
   assert.ok(interpreter.evaluate('(eq? (get the-keymap "M-g") (quote goto-line))'));
   assert.equal(press(interpreter, 'M-g'), true);
+});
+
+test('M-r is bound to replace-string', async () => {
+  const { interpreter } = await editor();
+  assert.ok(
+    interpreter.evaluate('(eq? (get the-keymap "M-r") (quote replace-string))')
+  );
+  assert.equal(press(interpreter, 'M-r'), true);
 });
 
 test('C-x ; comments and uncomments a line', async () => {

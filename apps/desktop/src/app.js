@@ -306,6 +306,41 @@ function startGotoLine() {
   });
 }
 
+/** Prompt for a search and a replacement; replace every occurrence. */
+function startReplace() {
+  const buffer = session.current;
+
+  minibuffer.prompt('Replace: ', {
+    onSubmit(search) {
+      if (search === '') {
+        editorView.focus();
+        return;
+      }
+      minibuffer.prompt(`Replace "${search}" with: `, {
+        onSubmit(replacement) {
+          editorView.focus();
+          const text = buffer.text;
+          const count = text.split(search).length - 1;
+          if (count > 0) {
+            buffer.setText(text.split(search).join(replacement));
+          }
+          repl.appendNote(
+            count > 0
+              ? `replaced ${count} occurrence(s) of "${search}"`
+              : `"${search}" not found`
+          );
+        },
+        onCancel() {
+          editorView.focus();
+        },
+      });
+    },
+    onCancel() {
+      editorView.focus();
+    },
+  });
+}
+
 /** Pick a command in the minibuffer and show its documentation. */
 function startDescribeCommand() {
   const names = [...new Set(listToArray(interpreter.call('command-names')))];
@@ -387,6 +422,10 @@ const interpreter = createInterpreter({
     },
     'start-goto-line!': () => {
       startGotoLine();
+      return NIL;
+    },
+    'start-replace!': () => {
+      startReplace();
       return NIL;
     },
 

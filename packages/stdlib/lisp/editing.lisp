@@ -51,6 +51,10 @@
   "Prompt for a line number and move the cursor to that line."
   (start-goto-line!))
 
+(define (replace-string)
+  "Prompt for a string and a replacement; replace every occurrence."
+  (start-replace!))
+
 ;; --- movement that extends the selection -------------------------------
 
 (define (forward-char-extending) (cursor-right! #t))

@@ -70,6 +70,7 @@
    "M-f"          'forward-word
    "M-b"          'backward-word
    "M-g"          'goto-line
+   "M-r"          'replace-string
    "M-d"          'kill-word
    "M-backspace"  'backward-kill-word
    "C-x"          c-x-keymap
