@@ -31,7 +31,9 @@
    "enter"     'newline
    "tab"       'insert-tab
    "C-z"       'undo
-   "C-S-z"     'redo})
+   "C-S-z"     'redo
+   "C-o"       'find-file
+   "C-s"       'save-buffer})
 
 (define (self-insert-key? key)
   "True when KEY is a single character to be inserted as text."

@@ -15,10 +15,15 @@
 export { createBufferPrimitives } from './buffer-primitives.js';
 
 /**
- * The standard-library Lisp files, in load order. `editing.lisp`
- * defines the commands; `keymap.lisp` binds them and must load after.
+ * The standard-library Lisp files, in load order. The command files
+ * (`editing.lisp`, `files.lisp`) come first; `keymap.lisp` binds the
+ * commands and must load last.
  */
-export const STDLIB_FILES = Object.freeze(['editing.lisp', 'keymap.lisp']);
+export const STDLIB_FILES = Object.freeze([
+  'editing.lisp',
+  'files.lisp',
+  'keymap.lisp',
+]);
 
 /**
  * Load the standard library into an interpreter.

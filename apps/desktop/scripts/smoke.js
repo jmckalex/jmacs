@@ -8,8 +8,24 @@
  */
 
 import { app, BrowserWindow, protocol } from 'electron';
+import { readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+import { registerFileHandlers } from '../src/files.js';
 import { EDITOR_URL, serveAppFile } from '../src/serve.js';
+
+/** A scratch path the file round-trip writes to. */
+const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
+
+/** The preload script — shared with the real window in main.js. */
+const PRELOAD = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'src',
+  'preload.mjs'
+);
 
 let done = false;
 
@@ -23,10 +39,16 @@ function finish(code, message) {
 
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
+  registerFileHandlers();
 
   const win = new BrowserWindow({
     show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      preload: PRELOAD,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
   });
 
   win.webContents.on('console-message', (...args) => {
@@ -109,6 +131,25 @@ app.whenReady().then(() => {
       })()`);
       console.log('  lisp:', JSON.stringify(lisp));
 
+      // Check the file bridge: the host API is exposed, and a save with
+      // an explicit path writes the file (no dialog needed).
+      const files = await win.webContents.executeJavaScript(`(async () => {
+        const api = window.host;
+        const exposed = !!(api
+          && typeof api.openFile === 'function'
+          && typeof api.saveFile === 'function');
+        let saved = false;
+        if (exposed) {
+          const result = await api.saveFile(
+            ${JSON.stringify(savePath)}, 'smoke save ok');
+          saved = result !== null;
+        }
+        return { exposed, saved };
+      })()`);
+      console.log('  files:', JSON.stringify(files));
+      const savedContent = await readFile(savePath, 'utf8').catch(() => null);
+      await rm(savePath, { force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -116,11 +157,16 @@ app.whenReady().then(() => {
       const replOk = lisp.arithmetic === '6';
       const stdlibOk = lisp.stdlib.includes('procedure');
       const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
+      const filesOk =
+        files.exposed && files.saved && savedContent === 'smoke save ok';
 
-      if (renderOk && typeOk && deleteOk && replOk && stdlibOk && interopOk) {
+      if (
+        renderOk && typeOk && deleteOk && replOk && stdlibOk && interopOk &&
+        filesOk
+      ) {
         finish(
           0,
-          `${render.lines} lines; the Lisp keymap, REPL and buffer edits all work`
+          `${render.lines} lines; Lisp keymap, REPL, buffer edits and file I/O all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -130,8 +176,10 @@ app.whenReady().then(() => {
         finish(1, 'the REPL did not evaluate Lisp');
       } else if (!stdlibOk) {
         finish(1, 'the standard library did not load');
-      } else {
+      } else if (!interopOk) {
         finish(1, 'Lisp did not edit the buffer');
+      } else {
+        finish(1, 'the file bridge did not work');
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);
