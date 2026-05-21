@@ -20,6 +20,8 @@ importers:
         specifier: workspace:*
         version: link:../storage
 
+  packages/lisp: {}
+
   packages/renderer:
     dependencies:
       '@editor/buffer':
