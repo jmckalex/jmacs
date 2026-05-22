@@ -90,7 +90,10 @@ function updateModeline() {
   const buffer = session.current;
   const mark = dirtyBuffers.has(buffer) ? '● ' : '';
   const count = buffers.length > 1 ? `  ${currentIndex + 1}/${buffers.length}` : '';
-  const mode = keymapReady ? `   ${interpreter.call('major-mode-name')}` : '';
+  const mode = keymapReady
+    ? `   ${interpreter.call('major-mode-name')}` +
+      interpreter.call('minor-mode-line')
+    : '';
   nameEl.textContent = mark + buffer.name + mode + count;
   const { line, column } = buffer.positionAt(buffer.point);
   positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;

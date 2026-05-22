@@ -387,7 +387,10 @@ app.whenReady().then(() => {
         submit('(new-buffer! "notes.txt")');
         await frame();
         const txt = document.getElementById('modeline-name').textContent;
-        return { lisp, txt };
+        submit('(toggle-math-mode)'); // a minor mode — shows in the modeline
+        await frame();
+        const math = document.getElementById('modeline-name').textContent;
+        return { lisp, txt, math };
       })()`);
       console.log('  modes:', JSON.stringify(modes));
 
@@ -415,7 +418,8 @@ app.whenReady().then(() => {
         virtual.lineDivs > 0 && virtual.lineDivs < 120 &&
         virtual.scrollHeight > 3000 && virtual.firstNumber === '1';
       const modesOk =
-        modes.lisp.includes('Lisp') && modes.txt.includes('Fundamental');
+        modes.lisp.includes('Lisp') && modes.txt.includes('Fundamental') &&
+        modes.math.includes('Math');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
