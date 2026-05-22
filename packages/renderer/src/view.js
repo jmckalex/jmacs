@@ -261,6 +261,11 @@ export function createEditorView(buffer, container, options = {}) {
 
   let dirty = false;
   let frame = 0;
+  // A render keeps the cursor on screen only when it follows a buffer
+  // event — the cursor may have moved. A render that follows a *scroll*
+  // must not: pulling the cursor back into view would yank the viewport
+  // back, so the user could never scroll past the cursor's line.
+  let followCursor = false;
 
   /** Render everything once; called on an animation frame. */
   function render() {
@@ -270,7 +275,10 @@ export function createEditorView(buffer, container, options = {}) {
     renderSelection();
     renderBrackets();
     renderCursor();
-    cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (followCursor) {
+      followCursor = false;
+      cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
   }
 
   /** Mark the view dirty and ensure a render is scheduled. */
@@ -280,7 +288,13 @@ export function createEditorView(buffer, container, options = {}) {
     frame = win.requestAnimationFrame(render);
   }
 
-  let unsubscribe = activeBuffer.onChange(schedule);
+  /** Schedule a render that also keeps the cursor on screen. */
+  function scheduleFollowingCursor() {
+    followCursor = true;
+    schedule();
+  }
+
+  let unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
 
   // Key handling: use the host's dispatcher when given (the editor's
   // Lisp keymap), otherwise fall back to the renderer's built-in keymap
@@ -372,6 +386,7 @@ export function createEditorView(buffer, container, options = {}) {
     event.preventDefault();
   });
 
+  followCursor = true;
   render();
   root.focus();
 
@@ -395,7 +410,8 @@ export function createEditorView(buffer, container, options = {}) {
       if (next === activeBuffer) return;
       unsubscribe();
       activeBuffer = next;
-      unsubscribe = activeBuffer.onChange(schedule);
+      unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
+      followCursor = true;
       render();
     },
 
