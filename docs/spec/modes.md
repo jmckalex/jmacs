@@ -1,6 +1,7 @@
 # Modes — design proposal
 
-**Status: proposal, for the architect to mark up. No code yet.**
+**Status: decided — the open questions (§13) are answered, and
+phases 1 and 2 are implemented. Phases 3–4 remain.**
 
 A *mode* is a tagged behavioural configuration for a buffer (per the
 glossary). This document proposes how modes work in jmacs: the data
@@ -233,13 +234,32 @@ editor working.
 
 1. **Mode state — L2 slot or stdlib map?** §4 recommends the stdlib map
    for v1. Agree, or put it in L2 now?
+
+Put it in L2 now.
+
 2. **Highlighting** — accept extension-based highlighting in v1 (§4,
    §10), or hold modes until they can drive it?
+
+extension-based highlighting works for now, but it ultimately needs to
+be located in the mode. Once modes are in L2, we can drop extension-based highlighting.
+
 3. **Pattern matching** — filename suffixes enough for v1, or are globs
    wanted from the start?
+
+Filename suffixes are enough for now.
+
 4. **`define-mode` sugar** — plain map literals for v1 (this proposal),
    or a macro now?
+
+Build a macro now.
+
 5. **Minor-mode precedence** — most-recently-enabled first (this
    proposal), or an explicit priority field?
+
+Let's have an explicit priority field.
+
 6. **Scope of v1** — is Phase 1 + Phase 2 the right first delivery, or
    should Phase 1 ship alone first?
+
+Build Phases 1 and 2 together.
+
