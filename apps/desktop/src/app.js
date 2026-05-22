@@ -23,6 +23,7 @@ import {
   createHtmlHighlighter,
   createImageView,
   createJavaScriptHighlighter,
+  createMarkdownPreview,
   createPythonHighlighter,
   createMinibuffer,
   createReplView,
@@ -155,6 +156,8 @@ function watchCurrentBuffer() {
     if (event.change !== null) {
       dirtyBuffers.add(buffer);
       dismissSplash();
+      // Keep the Markdown preview pane in step with the buffer.
+      refreshMarkdownPreview();
     }
     updateModeline();
   });
@@ -203,6 +206,7 @@ function switchToBuffer(index) {
     ensureMajorMode();
     editorView.focus();
     refreshModeMenu();
+    syncMarkdownPreviewToBuffer();
   }
   updateModeline();
 }
@@ -603,6 +607,10 @@ const interpreter = createInterpreter({
       if (hidden) editorView.focus();
       return NIL;
     },
+    'markdown-preview!': () => {
+      toggleMarkdownPreview();
+      return NIL;
+    },
     'quit-editor!': () => {
       quitInteractive();
       return NIL;
@@ -994,6 +1002,91 @@ const stickyNotes = createStickyNotes({
   onChange: () => scheduleMetadataWrite(session.current),
 });
 stickyNotes.setBuffer(session.current);
+
+// --- Markdown preview pane ---------------------------------------------
+// A toggleable pane (markdown-preview, C-c v) that renders the current
+// markdown-mode buffer to HTML through the same JMarkdown pipeline the
+// sticky notes use, refreshing — debounced — as the buffer is edited.
+
+/** Typeset mathematics in the rendered preview, once MathJax is ready.
+ *  A nice-to-have: MathJax is already loaded for the sticky notes. */
+function typesetPreview(element) {
+  const mathJax = globalThis.MathJax;
+  if (!mathJax) return;
+  const run = () => {
+    if (typeof mathJax.typesetClear === 'function') {
+      mathJax.typesetClear([element]);
+    }
+    if (typeof mathJax.typesetPromise === 'function') {
+      mathJax.typesetPromise([element]).catch(() => {});
+    }
+  };
+  const ready = mathJax.startup && mathJax.startup.promise;
+  if (ready) ready.then(run).catch(() => {});
+  else run();
+}
+
+const markdownPreview = createMarkdownPreview(
+  document.getElementById('markdown-preview-host'),
+  { render: renderNoteHtml, typeset: typesetPreview }
+);
+// The pane starts hidden; markdown-preview reveals it.
+document.body.classList.add('markdown-preview-hidden');
+
+/** Whether the current buffer is in markdown-mode. */
+function currentBufferIsMarkdown() {
+  if (!keymapReady) return false;
+  try {
+    return interpreter.call('major-mode-name') === 'Markdown';
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the preview pane is currently visible. */
+function markdownPreviewVisible() {
+  return !document.body.classList.contains('markdown-preview-hidden');
+}
+
+/** Render the current buffer into the preview pane, debounced. Used on
+ *  edits; a no-op when the pane is hidden. */
+function refreshMarkdownPreview() {
+  if (!markdownPreviewVisible()) return;
+  markdownPreview.update(session.current.text);
+}
+
+/** Re-point the preview pane after a buffer switch: render the new
+ *  buffer if the pane is open and the buffer is Markdown; otherwise
+ *  hide the pane, since it only makes sense for a markdown-mode
+ *  buffer. A no-op when the pane is already hidden. */
+function syncMarkdownPreviewToBuffer() {
+  if (!markdownPreviewVisible()) return;
+  if (currentBufferIsMarkdown()) {
+    markdownPreview.refreshNow(session.current.text);
+  } else {
+    document.body.classList.add('markdown-preview-hidden');
+    markdownPreview.clear();
+  }
+}
+
+/** Toggle the Markdown preview pane. Showing it renders the current
+ *  buffer at once; the pane only makes sense for a markdown-mode
+ *  buffer, so opening it on any other buffer is reported and skipped. */
+function toggleMarkdownPreview() {
+  if (markdownPreviewVisible()) {
+    document.body.classList.add('markdown-preview-hidden');
+    markdownPreview.clear();
+    editorView.focus();
+    return;
+  }
+  if (!currentBufferIsMarkdown()) {
+    repl.appendNote('markdown-preview: the current buffer is not in Markdown mode');
+    return;
+  }
+  document.body.classList.remove('markdown-preview-hidden');
+  markdownPreview.refreshNow(session.current.text);
+  editorView.focus();
+}
 
 watchCurrentBuffer();
 ensureMajorMode();

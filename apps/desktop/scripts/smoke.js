@@ -449,6 +449,69 @@ app.whenReady().then(() => {
       })()`);
       console.log('  markdown:', JSON.stringify(markdown));
 
+      // Markdown preview: C-c v toggles a pane that renders the current
+      // markdown-mode buffer to HTML. 'cat' is used as the render
+      // command so the result is deterministic without a JMarkdown
+      // binary; the heading text must reach the rendered pane, and the
+      // pane must refresh as the buffer is edited.
+      const preview = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        // A fresh markdown buffer; 'cat' echoes the source verbatim.
+        submit('(new-buffer! "preview.md")');
+        await frame();
+        submit('(set! *jmarkdown-command* "cat")');
+        await frame();
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        for (const ch of '# Heading') {
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: ch, bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        // C-c v toggles the preview pane open. C-c is a prefix; the
+        // 'v' that completes it carries no modifier.
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'v', bubbles: true, cancelable: true,
+        }));
+        await wait(600);
+        const pane = document.querySelector('.markdown-preview-host');
+        const body = document.querySelector('.markdown-preview-body');
+        const shown = !!(pane && getComputedStyle(pane).display !== 'none');
+        const rendered = !!(body && body.textContent.includes('# Heading'));
+        // Editing the buffer refreshes the pane (debounced ~250ms).
+        editor.focus();
+        for (const ch of ' more') {
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: ch, bubbles: true, cancelable: true,
+          }));
+        }
+        await wait(600);
+        const refreshed = !!(body && body.textContent.includes('Heading more'));
+        // C-c v again hides the pane.
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'v', bubbles: true, cancelable: true,
+        }));
+        await frame();
+        const hidden = !!(pane && getComputedStyle(pane).display === 'none');
+        return { shown, rendered, refreshed, hidden };
+      })()`);
+      console.log('  preview:', JSON.stringify(preview));
+
       // Virtualisation: a long buffer keeps only a window of lines in
       // the DOM, while the scroll height spans the whole document.
       const virtual = await win.webContents.executeJavaScript(`(async () => {
@@ -736,6 +799,11 @@ app.whenReady().then(() => {
         mouse.endOfLine.includes('Ln 2') && mouse.endOfLine.includes('Col 5') &&
         mouse.wordSelected;
       const markdownOk = markdown.headings > 0;
+      const previewOk =
+        preview.shown &&
+        preview.rendered &&
+        preview.refreshed &&
+        preview.hidden;
       const virtualOk =
         virtual.lineDivs > 0 && virtual.lineDivs < 120 &&
         virtual.scrollHeight > 3000 && virtual.firstNumber === '1' &&
@@ -774,12 +842,12 @@ app.whenReady().then(() => {
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
-        markdownOk && virtualOk && modesOk && layersOk && splashOk &&
-        stickyOk && configOk && imageOk
+        markdownOk && previewOk && virtualOk && modesOk && layersOk &&
+        splashOk && stickyOk && configOk && imageOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, virtualisation, sticky notes, customisation, image buffers, search and files all work`
+          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, markdown preview, virtualisation, sticky notes, customisation, image buffers, search and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -816,6 +884,11 @@ app.whenReady().then(() => {
         finish(1, 'mouse click did not move the cursor');
       } else if (!markdownOk) {
         finish(1, 'markdown highlighting did not work');
+      } else if (!previewOk) {
+        finish(
+          1,
+          `the Markdown preview pane did not work (${JSON.stringify(preview)})`
+        );
       } else if (!virtualOk) {
         finish(
           1,

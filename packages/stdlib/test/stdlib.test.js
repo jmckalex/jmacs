@@ -22,6 +22,7 @@ async function editor(initialText = 'hello world') {
   const paletteCalls = [];
   const noteCalls = [];
   const replCalls = [];
+  const previewCalls = [];
   const minibufferPrompts = [];
   const output = [];
   const interpreter = createInterpreter({
@@ -81,6 +82,10 @@ async function editor(initialText = 'hello world') {
         replCalls.push('toggle');
         return NIL;
       },
+      'markdown-preview!': () => {
+        previewCalls.push('toggle');
+        return NIL;
+      },
       'quit-editor!': () => NIL,
       'note-create!': () => {
         noteCalls.push('create');
@@ -123,6 +128,7 @@ async function editor(initialText = 'hello world') {
     paletteCalls,
     noteCalls,
     replCalls,
+    previewCalls,
     minibufferPrompts,
     output,
   };
@@ -841,6 +847,20 @@ test('C-c b runs markdown-bold in a markdown buffer', async () => {
   press(interpreter, 'C-c');
   press(interpreter, 'b');
   assert.equal(buffer.text, '*word*');
+});
+
+test('markdown-preview toggles the preview pane through the host', async () => {
+  const { interpreter, previewCalls } = await editor('# notes');
+  interpreter.evaluate('(markdown-preview)');
+  assert.deepEqual(previewCalls, ['toggle']);
+});
+
+test('C-c v runs markdown-preview in a markdown buffer', async () => {
+  const { interpreter, previewCalls } = await editor('# notes');
+  interpreter.evaluate('(set-major-mode! markdown-mode)');
+  press(interpreter, 'C-c');
+  press(interpreter, 'v');
+  assert.deepEqual(previewCalls, ['toggle']);
 });
 
 test('math mode: backtick then a key inserts a LaTeX symbol', async () => {

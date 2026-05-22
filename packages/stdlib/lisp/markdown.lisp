@@ -69,6 +69,13 @@
 (defcommand markdown-blockquote () "Make the line a blockquote." (insert-at-line-start "> "))
 (defcommand markdown-list-item () "Make the line a list item." (insert-at-line-start "- "))
 
+;; --- live preview ------------------------------------------------------
+(defcommand markdown-preview ()
+  "Toggle the live Markdown preview pane. It renders the current
+   markdown-mode buffer to HTML through the JMarkdown pipeline and
+   refreshes as the buffer is edited."
+  (markdown-preview!))
+
 ;; --- math symbol minor mode -------------------------------------------
 ;; AUCTeX-style: with math mode on, ` then a key inserts a LaTeX symbol.
 ;; ` followed by an unmapped key inserts that key (so ` ` gives a `).
@@ -125,7 +132,8 @@
    "4" 'markdown-heading-4
    "5" 'markdown-heading-5
    "6" 'markdown-heading-6
-   "m" 'toggle-math-mode})
+   "m" 'toggle-math-mode
+   "v" 'markdown-preview})
 
 ;; markdown-mode-map is declared empty in modes.lisp; fill it in here.
 (set! markdown-mode-map {"C-c" markdown-c-c-map})
