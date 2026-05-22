@@ -696,6 +696,65 @@ test('a mode resolves its keymap by name, so set! is seen live', async () => {
   assert.equal(buffer.point, 1);
 });
 
+// --- markdown mode ------------------------------------------------------
+
+test('markdown-bold wraps the selection in strong markers', async () => {
+  const { buffer, interpreter } = await editor('hello world');
+  buffer.moveTo(0);
+  buffer.setMark(5); // select "hello"
+  interpreter.evaluate('(markdown-bold)');
+  assert.equal(buffer.text, '*hello* world');
+});
+
+test('markdown-italic with no selection inserts a slash pair', async () => {
+  const { buffer, interpreter } = await editor('');
+  interpreter.evaluate('(markdown-italic)');
+  assert.equal(buffer.text, '//');
+  assert.equal(buffer.point, 1); // the cursor sits between the slashes
+});
+
+test('markdown-heading-2 prepends the heading marker', async () => {
+  const { buffer, interpreter } = await editor('a title');
+  buffer.moveTo(3);
+  interpreter.evaluate('(markdown-heading-2)');
+  assert.equal(buffer.text, '## a title');
+  assert.equal(buffer.point, 6); // the cursor kept its place in the line
+});
+
+test('C-c b runs markdown-bold in a markdown buffer', async () => {
+  const { buffer, interpreter } = await editor('word');
+  interpreter.evaluate('(set-major-mode! markdown-mode)');
+  buffer.moveTo(0);
+  buffer.setMark(4);
+  press(interpreter, 'C-c');
+  press(interpreter, 'b');
+  assert.equal(buffer.text, '*word*');
+});
+
+test('math mode: backtick then a key inserts a LaTeX symbol', async () => {
+  const { buffer, interpreter } = await editor('');
+  interpreter.evaluate('(toggle-math-mode)'); // enable math mode
+  press(interpreter, '`');
+  press(interpreter, 'a');
+  assert.equal(buffer.text, '\\alpha');
+});
+
+test('math mode: backtick then an unmapped key inserts the key', async () => {
+  const { buffer, interpreter } = await editor('');
+  interpreter.evaluate('(toggle-math-mode)');
+  press(interpreter, '`');
+  press(interpreter, '`'); // not a math key — a literal backtick
+  assert.equal(buffer.text, '`');
+});
+
+test('toggle-math-mode toggles the minor mode on and off', async () => {
+  const { interpreter } = await editor('');
+  interpreter.evaluate('(toggle-math-mode)');
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 1);
+  interpreter.evaluate('(toggle-math-mode)');
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 0);
+});
+
 test('C-x ; comments and uncomments a line', async () => {
   const { buffer, interpreter } = await editor('hello');
   buffer.moveTo(0);
