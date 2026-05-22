@@ -10,6 +10,8 @@ This is the top-level navigation document for building the editor. Sub-plans cov
 - **`CANONICAL-USE-CASE.md`** — the editing session week 3 must support
 - **`WEEK-BY-WEEK.md`** — day-level schedule for weeks 1–3
 - **`RISKS.md`** — failure modes and responses
+- **`ROADMAP.md`** — features planned beyond the initial build, each
+  with its own detailed plan document
 
 ## The Goal (Three Weeks)
 
