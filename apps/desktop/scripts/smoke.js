@@ -537,6 +537,15 @@ app.whenReady().then(() => {
         // A note with mathematics — MathJax typesets it in place.
         submit('(note-set-source! (note-create!) "energy $E = mc^2$")');
         await wait(1200);
+        // A metadata header sets the note's colour. The \\n reach the
+        // REPL as a two-character escape, so the Lisp reader makes the
+        // newlines — a real newline would be stripped by the input.
+        submit('(note-set-source! (note-create!) "---\\\\ncolor: tomato\\\\n---\\\\ncoloured")');
+        await wait(400);
+        const colourNote = document.querySelectorAll('.sticky-note')[3];
+        const coloured = colourNote
+          ? getComputedStyle(colourNote).backgroundColor
+          : '';
         // Persistence: notes round-trip through a .jmacs-metadata file.
         const metaPath = ${JSON.stringify(notesPath)};
         await window.host.writeMetadata(metaPath, {
@@ -553,6 +562,7 @@ app.whenReady().then(() => {
           mathTypeset:
             document.querySelectorAll('.sticky-note-body mjx-container')
               .length > 0,
+          coloured,
           persisted: !!(restored && restored.notes &&
             restored.notes.length === 1 &&
             restored.notes[0].source === 'persisted note'),
@@ -602,9 +612,10 @@ app.whenReady().then(() => {
         sticky.present &&
         sticky.body.includes('sticky body text') &&
         sticky.scrolled &&
-        sticky.count === 3 &&
+        sticky.count === 4 &&
         sticky.rendered &&
         sticky.mathTypeset &&
+        sticky.coloured === 'rgb(255, 99, 71)' &&
         sticky.persisted;
 
       if (

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { adjustAnchor } from '../src/sticky-notes.js';
+import { adjustAnchor, parseNoteSource } from '../src/sticky-notes.js';
 
 /** A BufferChange — `removed`/`inserted` are strings. */
 const change = (start, removed, inserted) => ({ start, removed, inserted });
@@ -34,4 +34,29 @@ test('a whole-buffer setText collapses an interior anchor to the start', () => {
   // setText reports one change spanning the whole document.
   const old = 'x'.repeat(100);
   assert.equal(adjustAnchor(50, change(0, old, 'y'.repeat(40))), 0);
+});
+
+test('parseNoteSource returns the whole source as body when there is no header', () => {
+  const { meta, body } = parseNoteSource('# just markdown\n\ntext');
+  assert.deepEqual(meta, {});
+  assert.equal(body, '# just markdown\n\ntext');
+});
+
+test('parseNoteSource reads a metadata header and strips it from the body', () => {
+  const { meta, body } = parseNoteSource(
+    '---\ncolor: yellow\n---\n# Title\nbody'
+  );
+  assert.equal(meta.color, 'yellow');
+  assert.equal(body, '# Title\nbody');
+});
+
+test('parseNoteSource keeps an rgba() colour value intact', () => {
+  const { meta } = parseNoteSource('---\ncolor: rgba(255, 0, 0, 0.4)\n---\nx');
+  assert.equal(meta.color, 'rgba(255, 0, 0, 0.4)');
+});
+
+test('parseNoteSource handles a header with no body', () => {
+  const { meta, body } = parseNoteSource('---\ncolor: #ffcc00\n---');
+  assert.equal(meta.color, '#ffcc00');
+  assert.equal(body, '');
 });

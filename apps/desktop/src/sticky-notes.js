@@ -54,6 +54,29 @@ export function adjustAnchor(anchor, change) {
 }
 
 /**
+ * Split a note's source into an optional YAML-style metadata header and
+ * the Markdown body. A header is a `---` line, `key: value` lines, and a
+ * closing `---` line, all at the very start of the source — e.g.
+ * `---\ncolor: yellow\n---`. Keys are lower-cased; the first colon
+ * separates key from value, so an `rgba(…)` value survives intact.
+ *
+ * @param {string} source
+ * @returns {{meta: Record<string, string>, body: string}}
+ */
+export function parseNoteSource(source) {
+  const meta = {};
+  const match = /^---[ \t]*\n([\s\S]*?)\n---[ \t]*(?:\n|$)/.exec(source);
+  if (!match) return { meta, body: source };
+  for (const line of match[1].split('\n')) {
+    const colon = line.indexOf(':');
+    if (colon <= 0) continue;
+    const key = line.slice(0, colon).trim().toLowerCase();
+    if (key) meta[key] = line.slice(colon + 1).trim();
+  }
+  return { meta, body: source.slice(match[0].length) };
+}
+
+/**
  * Create the sticky-notes overlay manager.
  *
  * @param {object} options
@@ -68,6 +91,7 @@ export function adjustAnchor(anchor, change) {
  */
 export function createStickyNotes({ overlayLayer, getBuffer, render, onChange }) {
   const doc = overlayLayer.ownerDocument;
+  const win = doc.defaultView ?? globalThis;
 
   /** Default renderer: the raw source, escaped, or an empty-note hint. */
   const defaultRender = (source) =>
@@ -148,31 +172,62 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     typesetMath(bodyEl);
   }
 
+  /** A foreground colour that reads well on the given background. */
+  function contrastingText(color) {
+    const probe = doc.createElement('span');
+    probe.style.color = color;
+    doc.body.appendChild(probe);
+    const computed = win.getComputedStyle(probe).color;
+    probe.remove();
+    const channels = /(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)/.exec(
+      computed
+    );
+    if (!channels) return '';
+    const luminance =
+      0.299 * Number(channels[1]) +
+      0.587 * Number(channels[2]) +
+      0.114 * Number(channels[3]);
+    return luminance > 150 ? '#1c1c1c' : '#ececec';
+  }
+
+  /** Apply a note's metadata colour (or clear it back to the default). */
+  function applyColor(entry, color) {
+    const valid =
+      typeof color === 'string' &&
+      win.CSS &&
+      win.CSS.supports('background-color', color);
+    entry.root.style.background = valid ? color : '';
+    entry.body.style.color = valid ? contrastingText(color) : '';
+  }
+
   /** Render a note's body from its source (async, cached, race-guarded). */
   function renderBody(id) {
     const note = noteById(id);
     const entry = elements.get(id);
     if (!note || !entry) return;
-    const source = note.source;
-    const cached = htmlCache.get(source);
+    // A leading metadata header sets the note's colour and is not part
+    // of the Markdown that gets rendered.
+    const { meta, body } = parseNoteSource(note.source);
+    applyColor(entry, meta.color);
+    const cached = htmlCache.get(body);
     if (cached !== undefined) {
       setBody(entry.body, cached);
       return;
     }
-    Promise.resolve(renderSource(source))
+    Promise.resolve(renderSource(body))
       .then((html) => {
-        htmlCache.set(source, html);
+        htmlCache.set(body, html);
         const current = noteById(id);
         const e = elements.get(id);
         // Discard a stale render: the source may have changed while we
         // were waiting, in which case a newer renderBody already ran.
-        if (e && current && current.source === source) {
+        if (e && current && parseNoteSource(current.source).body === body) {
           setBody(e.body, html);
         }
       })
       .catch(() => {
         const e = elements.get(id);
-        if (e) setBody(e.body, defaultRender(source));
+        if (e) setBody(e.body, defaultRender(body));
       });
   }
 
