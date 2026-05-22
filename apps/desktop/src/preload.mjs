@@ -34,4 +34,19 @@ contextBridge.exposeInMainWorld('host', {
    */
   renderJMarkdown: (command, source) =>
     ipcRenderer.invoke('jmarkdown:render', { command, source }),
+
+  /**
+   * Read a file's companion metadata (sticky notes), or null.
+   * @param {string} path - The file's own path.
+   * @returns {Promise<object | null>}
+   */
+  readMetadata: (path) => ipcRenderer.invoke('metadata:read', { path }),
+
+  /**
+   * Write a file's companion metadata.
+   * @param {string} path - The file's own path.
+   * @param {object} data
+   */
+  writeMetadata: (path, data) =>
+    ipcRenderer.invoke('metadata:write', { path, data }),
 });

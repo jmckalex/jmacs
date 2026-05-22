@@ -20,6 +20,9 @@ import { EDITOR_URL, serveAppFile } from '../src/serve.js';
 /** A scratch path the file round-trip writes to. */
 const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
 
+/** A scratch path the sticky-note metadata round-trip writes beside. */
+const notesPath = join(tmpdir(), 'jmacs-smoke-notes.txt');
+
 /** The preload script — shared with the real window in main.js. */
 const PRELOAD = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -530,15 +533,26 @@ app.whenReady().then(() => {
         await frame();
         submit('(note-set-source! (note-create!) "<b>bold note</b>")');
         await wait(500);
+        // Persistence: notes round-trip through a .jmacs-metadata file.
+        const metaPath = ${JSON.stringify(notesPath)};
+        await window.host.writeMetadata(metaPath, {
+          notes: [{ id: 'm', anchor: 4, x: 8, y: 0,
+                    width: 200, height: 120, source: 'persisted note' }],
+        });
+        const restored = await window.host.readMetadata(metaPath);
         return {
           present: note !== null,
           body: body ? body.textContent.trim() : '',
           scrolled: Math.abs(after - before + 300) < 4,
           count: document.querySelectorAll('.sticky-note').length,
           rendered: document.querySelectorAll('.sticky-note-body b').length > 0,
+          persisted: !!(restored && restored.notes &&
+            restored.notes.length === 1 &&
+            restored.notes[0].source === 'persisted note'),
         };
       })()`);
       console.log('  sticky:', JSON.stringify(sticky));
+      await rm(notesPath + '.jmacs-metadata', { force: true });
 
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
@@ -582,7 +596,8 @@ app.whenReady().then(() => {
         sticky.body.includes('sticky body text') &&
         sticky.scrolled &&
         sticky.count === 2 &&
-        sticky.rendered;
+        sticky.rendered &&
+        sticky.persisted;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&

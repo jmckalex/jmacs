@@ -5,8 +5,11 @@
  */
 
 import { dialog, ipcMain } from 'electron';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { basename } from 'node:path';
+
+/** The companion file holding a file's jmacs metadata (sticky notes). */
+const metadataPath = (filePath) => `${filePath}.jmacs-metadata`;
 
 /** Register the `file:*` IPC handlers. Call once, after the app is ready. */
 export function registerFileHandlers() {
@@ -33,5 +36,30 @@ export function registerFileHandlers() {
     }
     await writeFile(target, payload?.content ?? '', 'utf8');
     return { path: target, name: basename(target) };
+  });
+
+  // Read a file's companion metadata (sticky notes). Returns the parsed
+  // JSON, or null when the companion file is absent or unreadable.
+  ipcMain.handle('metadata:read', async (_event, payload) => {
+    try {
+      const content = await readFile(metadataPath(payload?.path), 'utf8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  });
+
+  // Write a file's companion metadata. With no notes, the companion
+  // file is removed rather than left as an empty husk.
+  ipcMain.handle('metadata:write', async (_event, payload) => {
+    const target = metadataPath(payload?.path);
+    const data = payload?.data ?? {};
+    const notes = Array.isArray(data.notes) ? data.notes : [];
+    if (notes.length === 0) {
+      await rm(target, { force: true });
+      return { path: target, removed: true };
+    }
+    await writeFile(target, JSON.stringify(data, null, 2), 'utf8');
+    return { path: target };
   });
 }

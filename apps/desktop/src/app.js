@@ -153,6 +153,11 @@ async function openFileInteractive() {
     if (result === null) return;
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
+    // Load the file's sticky notes from its companion metadata file,
+    // before the buffer is shown, so note anchors land against the
+    // final text.
+    const metadata = await window.host.readMetadata(result.path);
+    if (metadata) buffer.metadata = metadata;
     buffers.push(buffer);
     switchToBuffer(buffers.length - 1);
   } catch (error) {
@@ -169,9 +174,62 @@ async function saveBufferInteractive() {
     buffer.name = result.name;
     dirtyBuffers.delete(buffer);
     updateModeline();
+    // Persist sticky notes alongside the file — this also covers a
+    // first save, when the buffer has only just gained a file path.
+    await flushMetadata(buffer);
   } catch (error) {
     repl.appendError(`save failed: ${error.message}`);
   }
+}
+
+// --- sticky-note metadata ----------------------------------------------
+// Sticky notes persist to a `<file>.jmacs-metadata` companion file.
+// Writes are debounced and coalesced per buffer; a buffer with no file
+// path keeps its notes in memory until its first save.
+
+/** Pending debounced metadata writes, keyed by buffer. */
+const metadataTimers = new Map();
+
+/** Write a buffer's note metadata to its companion file. */
+function writeMetadata(buffer) {
+  if (!buffer.filePath) return Promise.resolve();
+  return window.host
+    .writeMetadata(buffer.filePath, buffer.metadata ?? { notes: [] })
+    .catch((error) => repl.appendError(`metadata save failed: ${error.message}`));
+}
+
+/** Write a buffer's metadata now, cancelling any pending debounce. */
+function flushMetadata(buffer) {
+  clearTimeout(metadataTimers.get(buffer));
+  metadataTimers.delete(buffer);
+  return writeMetadata(buffer);
+}
+
+/** Schedule a debounced metadata write after a note change. */
+function scheduleMetadataWrite(buffer) {
+  if (!buffer.filePath) return;
+  clearTimeout(metadataTimers.get(buffer));
+  metadataTimers.set(buffer, setTimeout(() => flushMetadata(buffer), 600));
+}
+
+/** Flush every buffer with a pending metadata write. */
+function flushAllMetadata() {
+  return Promise.all(
+    [...metadataTimers.keys()].map((buffer) => flushMetadata(buffer))
+  );
+}
+
+/** Confirm unsaved changes, flush note metadata, then quit. */
+async function quitInteractive() {
+  const dirty = dirtyBuffers.size;
+  if (
+    dirty > 0 &&
+    !window.confirm(`Discard unsaved changes in ${dirty} buffer(s)?`)
+  ) {
+    return;
+  }
+  await flushAllMetadata();
+  window.host.quit();
 }
 
 // --- incremental search -------------------------------------------------
@@ -468,13 +526,7 @@ const interpreter = createInterpreter({
     },
     'page-lines': () => editorView.pageLines(),
     'quit-editor!': () => {
-      const dirty = dirtyBuffers.size;
-      if (
-        dirty === 0 ||
-        window.confirm(`Discard unsaved changes in ${dirty} buffer(s)?`)
-      ) {
-        window.host.quit();
-      }
+      quitInteractive();
       return NIL;
     },
 
@@ -647,6 +699,7 @@ const stickyNotes = createStickyNotes({
   overlayLayer: editorView.overlayLayer,
   getBuffer: () => session.current,
   render: renderNoteHtml,
+  onChange: () => scheduleMetadataWrite(session.current),
 });
 stickyNotes.setBuffer(session.current);
 
