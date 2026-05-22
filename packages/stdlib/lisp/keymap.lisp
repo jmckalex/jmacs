@@ -30,6 +30,15 @@
   {"k" 'describe-key
    "f" 'describe-command})
 
+;; The M-n prefix map — sticky notes (see sticky-notes.lisp).
+(define sticky-note-keymap
+  {"n" 'add-sticky-note
+   "e" 'edit-sticky-note
+   "d" 'delete-sticky-note
+   "f" 'next-sticky-note
+   "b" 'previous-sticky-note
+   "t" 'toggle-sticky-notes})
+
 ;; The root keymap.
 (define the-keymap
   {"left"         'backward-char
@@ -97,7 +106,8 @@
    "M-d"          'kill-word
    "M-backspace"  'backward-kill-word
    "C-x"          c-x-keymap
-   "C-h"          c-h-keymap})
+   "C-h"          c-h-keymap
+   "M-n"          sticky-note-keymap})
 
 ;; While a key sequence is in progress this holds the prefix keymap the
 ;; next keystroke is looked up in; at rest it is nil, meaning the key is

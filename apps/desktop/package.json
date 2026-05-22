@@ -6,6 +6,7 @@
   "main": "src/main.js",
   "scripts": {
     "dev": "electron .",
+    "test": "node --test",
     "smoke": "electron scripts/smoke.js",
     "screenshot": "electron scripts/screenshot.js"
   },

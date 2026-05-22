@@ -486,6 +486,46 @@ app.whenReady().then(() => {
       })()`);
       console.log('  modes:', JSON.stringify(modes));
 
+      // A sticky note: created via Lisp, it shows its source and rides
+      // the document when the buffer scrolls.
+      const sticky = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        submit('(new-buffer! "notes-sticky.txt")');
+        await frame();
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        for (let i = 0; i < 200; i += 1) {
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        submit('(goto! 0)');
+        await frame();
+        submit('(note-set-source! (note-create!) "sticky body text")');
+        await frame();
+        const note = document.querySelector('.sticky-note');
+        const body = note && note.querySelector('.sticky-note-body');
+        const before = note ? note.getBoundingClientRect().top : 0;
+        editor.scrollTop = editor.scrollTop + 300;
+        await frame();
+        await frame();
+        const after = note ? note.getBoundingClientRect().top : 0;
+        return {
+          present: note !== null,
+          body: body ? body.textContent.trim() : '',
+          scrolled: Math.abs(after - before + 300) < 4,
+        };
+      })()`);
+      console.log('  sticky:', JSON.stringify(sticky));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -523,16 +563,20 @@ app.whenReady().then(() => {
         modes.math.includes('Math') && modes.mathText.includes('Gamma');
       const layersOk = layers.background && layers.overlay && layers.ordered;
       const splashOk = splash.present && splash.dismissed;
+      const stickyOk =
+        sticky.present &&
+        sticky.body.includes('sticky body text') &&
+        sticky.scrolled;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
-        markdownOk && virtualOk && modesOk && layersOk && splashOk
+        markdownOk && virtualOk && modesOk && layersOk && splashOk && stickyOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, virtualisation, search and files all work`
+          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, virtualisation, sticky notes, search and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -578,8 +622,10 @@ app.whenReady().then(() => {
         finish(1, `modes did not work (${JSON.stringify(modes)})`);
       } else if (!layersOk) {
         finish(1, `the view layers did not work (${JSON.stringify(layers)})`);
-      } else {
+      } else if (!splashOk) {
         finish(1, `the splash did not work (${JSON.stringify(splash)})`);
+      } else {
+        finish(1, `sticky notes did not work (${JSON.stringify(sticky)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

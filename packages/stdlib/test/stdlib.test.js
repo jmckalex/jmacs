@@ -20,6 +20,7 @@ async function editor(initialText = 'hello world') {
   const bufferCalls = [];
   const searchCalls = [];
   const paletteCalls = [];
+  const noteCalls = [];
   const output = [];
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
@@ -71,6 +72,34 @@ async function editor(initialText = 'hello world') {
       'recenter!': () => NIL,
       'page-lines': () => 3,
       'quit-editor!': () => NIL,
+      'note-create!': () => {
+        noteCalls.push('create');
+        return 'note-1';
+      },
+      'note-edit!': () => {
+        noteCalls.push('edit');
+        return NIL;
+      },
+      'note-delete!': () => {
+        noteCalls.push('delete');
+        return NIL;
+      },
+      'note-at-point': () => {
+        noteCalls.push('at-point');
+        return 'note-1';
+      },
+      'note-next!': () => {
+        noteCalls.push('next');
+        return NIL;
+      },
+      'note-prev!': () => {
+        noteCalls.push('prev');
+        return NIL;
+      },
+      'notes-toggle!': () => {
+        noteCalls.push('toggle');
+        return NIL;
+      },
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
@@ -81,6 +110,7 @@ async function editor(initialText = 'hello world') {
     bufferCalls,
     searchCalls,
     paletteCalls,
+    noteCalls,
     output,
   };
 }
@@ -841,4 +871,48 @@ test('comment-line keeps the indentation', async () => {
   press(interpreter, 'C-x');
   press(interpreter, ';');
   assert.equal(buffer.text, '  ;; indented');
+});
+
+// --- sticky notes -------------------------------------------------------
+
+test('M-n n adds a sticky note and opens it for editing', async () => {
+  const { interpreter, noteCalls } = await editor();
+  press(interpreter, 'M-n');
+  press(interpreter, 'n');
+  assert.deepEqual(noteCalls, ['create', 'edit']);
+});
+
+test('M-n d deletes the sticky note nearest the cursor', async () => {
+  const { interpreter, noteCalls } = await editor();
+  press(interpreter, 'M-n');
+  press(interpreter, 'd');
+  assert.deepEqual(noteCalls, ['at-point', 'delete']);
+});
+
+test('M-n e edits the sticky note nearest the cursor', async () => {
+  const { interpreter, noteCalls } = await editor();
+  press(interpreter, 'M-n');
+  press(interpreter, 'e');
+  assert.deepEqual(noteCalls, ['at-point', 'edit']);
+});
+
+test('M-n f and M-n b move between sticky notes', async () => {
+  const { interpreter, noteCalls } = await editor();
+  press(interpreter, 'M-n');
+  press(interpreter, 'f');
+  press(interpreter, 'M-n');
+  press(interpreter, 'b');
+  assert.deepEqual(noteCalls, ['next', 'prev']);
+});
+
+test('M-n t toggles sticky-note visibility', async () => {
+  const { interpreter, noteCalls } = await editor();
+  press(interpreter, 'M-n');
+  press(interpreter, 't');
+  assert.deepEqual(noteCalls, ['toggle']);
+});
+
+test('the JMarkdown render command defaults to nil', async () => {
+  const { interpreter } = await editor();
+  assert.equal(interpreter.evaluate('(nil? *jmarkdown-command*)'), true);
 });

@@ -10,7 +10,13 @@
  */
 
 import { createBuffer } from '@editor/buffer';
-import { createInterpreter, listToArray, NIL, writeString } from '@editor/lisp';
+import {
+  arrayToList,
+  createInterpreter,
+  listToArray,
+  NIL,
+  writeString,
+} from '@editor/lisp';
 import {
   createEditorView,
   createHtmlHighlighter,
@@ -22,6 +28,7 @@ import {
 } from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 import { createSplash } from './splash.js';
+import { createStickyNotes } from './sticky-notes.js';
 
 const WELCOME = `
 
@@ -132,6 +139,7 @@ function switchToBuffer(index) {
   dismissSplash();
   currentIndex = index;
   editorView.setBuffer(session.current);
+  stickyNotes.setBuffer(session.current);
   watchCurrentBuffer();
   ensureMajorMode();
   updateModeline();
@@ -487,6 +495,56 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'buffer-count': () => buffers.length,
+
+    // Sticky notes — see sticky-notes.js and sticky-notes.lisp.
+    'note-create!': (args) =>
+      stickyNotes.create(typeof args[0] === 'number' ? args[0] : undefined),
+    'note-delete!': (args) => {
+      stickyNotes.remove(String(args[0]));
+      return NIL;
+    },
+    'note-edit!': (args) => {
+      stickyNotes.edit(String(args[0]));
+      return NIL;
+    },
+    'note-set-source!': (args) => {
+      stickyNotes.setSource(String(args[0]), String(args[1]));
+      return NIL;
+    },
+    'note-source': (args) => {
+      const source = stickyNotes.getSource(String(args[0]));
+      return source === null ? NIL : source;
+    },
+    'note-move!': (args) => {
+      stickyNotes.move(String(args[0]), args[1], args[2]);
+      return NIL;
+    },
+    'note-resize!': (args) => {
+      stickyNotes.resize(String(args[0]), args[1], args[2]);
+      return NIL;
+    },
+    'note-ids': () => arrayToList(stickyNotes.ids()),
+    'note-count': () => stickyNotes.count(),
+    'note-at-point': () => {
+      const id = stickyNotes.noteAtPoint();
+      return id === null ? NIL : id;
+    },
+    'note-goto!': (args) => {
+      stickyNotes.gotoNote(String(args[0]));
+      return NIL;
+    },
+    'note-next!': () => {
+      stickyNotes.gotoNext();
+      return NIL;
+    },
+    'note-prev!': () => {
+      stickyNotes.gotoPrevious();
+      return NIL;
+    },
+    'notes-toggle!': () => {
+      stickyNotes.toggle();
+      return NIL;
+    },
   },
 });
 
@@ -563,6 +621,13 @@ const editorView = createEditorView(
     highlighters,
   }
 );
+
+// Sticky notes fill the view's overlay layer; they ride the document.
+const stickyNotes = createStickyNotes({
+  overlayLayer: editorView.overlayLayer,
+  getBuffer: () => session.current,
+});
+stickyNotes.setBuffer(session.current);
 
 watchCurrentBuffer();
 ensureMajorMode();

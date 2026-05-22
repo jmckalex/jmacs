@@ -466,3 +466,115 @@ body {
   color: #6699cc;
   text-decoration: underline;
 }
+
+/* --- sticky notes ------------------------------------------------------ */
+/* Resizable JMarkdown notes (M-n n) overlaid on the buffer. They live in
+   the editor's overlay layer, so they scroll with the document. */
+
+.sticky-note {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #38332a;
+  border: 1px solid #c8a85a55;
+  border-radius: 5px;
+  box-shadow: 0 8px 22px #00000070;
+  /* The overlay layer ignores pointer events; a note takes them back. */
+  pointer-events: auto;
+}
+
+.sticky-note-bar {
+  flex: 0 0 auto;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  background: #c8a85a22;
+  cursor: move;
+}
+
+.sticky-note-close {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sticky-note-close:hover {
+  color: var(--error);
+}
+
+.sticky-note-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 7px 10px;
+  font-family: system-ui, sans-serif;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  user-select: text;
+}
+
+.sticky-note-body > :first-child {
+  margin-top: 0;
+}
+
+.sticky-note-body > :last-child {
+  margin-bottom: 0;
+}
+
+.sticky-note-raw {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.sticky-note-empty {
+  margin: 0;
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.sticky-note-edit {
+  flex: 1 1 auto;
+  border: 0;
+  outline: none;
+  resize: none;
+  padding: 7px 10px;
+  background: #00000033;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sticky-note-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 15px;
+  height: 15px;
+  cursor: nwse-resize;
+}
+
+.sticky-note-resize::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid #c8a85a99;
+  border-bottom: 2px solid #c8a85a99;
+}
+
+.editor-overlay.notes-hidden .sticky-note {
+  display: none;
+}
