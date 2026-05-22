@@ -1574,3 +1574,128 @@ test('auto-pairing surrounds text typed inside a fresh pair', async () => {
   assert.equal(buffer.text, '(ab)');
   assert.equal(buffer.point, 3, 'cursor stays inside, before the close');
 });
+
+// --- occur --------------------------------------------------------------
+
+test('occur-matching-lines returns 1-based line numbers and texts', async () => {
+  const { interpreter } = await editor();
+  // Each pair is (lineno . text); we read them out one by one.
+  const pairs = listToArray(
+    interpreter.evaluate(
+      '(occur-matching-lines "foo" "foo\\nbar\\nfoo bar\\nbaz")'
+    )
+  );
+  assert.equal(pairs.length, 2);
+  assert.equal(interpreter.call('car', pairs[0]), 1);
+  assert.equal(interpreter.call('cdr', pairs[0]), 'foo');
+  assert.equal(interpreter.call('car', pairs[1]), 3);
+  assert.equal(interpreter.call('cdr', pairs[1]), 'foo bar');
+});
+
+test('occur-matching-lines finds nothing when the pattern is absent', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(nil? (occur-matching-lines "xyz" "abc\\ndef"))'),
+    true
+  );
+});
+
+test('occur-result-text formats matches with padded line numbers', async () => {
+  const { interpreter } = await editor();
+  const text = interpreter.evaluate(
+    '(occur-result-text "f" "foo\\nbar\\nfizz\\nbaz")'
+  );
+  assert.ok(text.includes('2 matches for "f":'));
+  assert.ok(text.includes('1: foo'));
+  assert.ok(text.includes('3: fizz'));
+});
+
+test('occur-result-text reports an empty result in words', async () => {
+  const { interpreter } = await editor();
+  const text = interpreter.evaluate(
+    '(occur-result-text "nope" "alpha\\nbeta")'
+  );
+  assert.ok(text.includes('0 matches for "nope":'));
+  assert.ok(text.includes('(no matches)'));
+});
+
+test('occur-result-text uses the singular "match" for a single hit', async () => {
+  const { interpreter } = await editor();
+  const text = interpreter.evaluate(
+    '(occur-result-text "alp" "alpha\\nbeta")'
+  );
+  assert.ok(
+    text.includes('1 match for "alp":'),
+    'one hit is "1 match", not "1 matches"'
+  );
+});
+
+test('occur-buffer-name embeds the pattern', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(occur-buffer-name "needle")'),
+    '*Occur: needle*'
+  );
+});
+
+test('occur is a registered command with the M-s o binding', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote occur))'),
+    true
+  );
+  assert.ok(
+    interpreter.evaluate('(map? (get the-keymap "M-s"))'),
+    'M-s is a prefix map'
+  );
+  assert.ok(
+    interpreter.evaluate('(eq? (get m-s-keymap "o") (quote occur))')
+  );
+});
+
+test('M-s o begins a sequence then prompts the minibuffer for a pattern', async () => {
+  const { interpreter, minibufferPrompts } = await editor('foo\nbar\nfoo bar');
+  press(interpreter, 'M-s');
+  // Mid-sequence: the dispatch is parked at the M-s prefix.
+  assert.equal(interpreter.evaluate('(nil? active-keymap)'), false);
+  press(interpreter, 'o');
+  assert.deepEqual(minibufferPrompts, ['Occur: ']);
+});
+
+test('occur creates a *Occur: PATTERN* buffer and inserts the matches', async () => {
+  // The test mock for new-buffer! does not switch buffers, so insert!
+  // after it writes into the original buffer — that gives the test a
+  // direct view of the inserted text. Real app code switches first.
+  const { buffer, interpreter, bufferCalls } = await editor(
+    'foo\nbar\nfoo bar\nbaz'
+  );
+  press(interpreter, 'M-s');
+  press(interpreter, 'o');
+  interpreter.evaluate('(minibuffer-delivered "foo")');
+  // The command asked for a new buffer.
+  assert.deepEqual(bufferCalls, ['new']);
+  // The result text shows the header and both matches.
+  assert.ok(buffer.text.includes('2 matches for "foo":'));
+  assert.ok(buffer.text.includes('1: foo'));
+  assert.ok(buffer.text.includes('3: foo bar'));
+});
+
+test('occur with no matches still opens a results buffer that says so', async () => {
+  const { buffer, interpreter, bufferCalls } = await editor('alpha\nbeta');
+  press(interpreter, 'M-s');
+  press(interpreter, 'o');
+  interpreter.evaluate('(minibuffer-delivered "missing")');
+  assert.deepEqual(bufferCalls, ['new']);
+  assert.ok(buffer.text.includes('0 matches for "missing":'));
+  assert.ok(buffer.text.includes('(no matches)'));
+});
+
+test('cancelling the occur prompt does not open a buffer', async () => {
+  const { buffer, interpreter, bufferCalls } = await editor('one\ntwo');
+  const original = buffer.text;
+  press(interpreter, 'M-s');
+  press(interpreter, 'o');
+  interpreter.evaluate('(minibuffer-delivered nil)'); // cancelled
+  assert.deepEqual(bufferCalls, [], 'no new buffer is created on cancel');
+  assert.equal(buffer.text, original, 'the source buffer is untouched');
+});

@@ -42,6 +42,10 @@
    "b" 'previous-sticky-note
    "t" 'toggle-sticky-notes})
 
+;; The M-s prefix map — search-related commands (see occur.lisp).
+(define m-s-keymap
+  {"o" 'occur})
+
 ;; The root keymap.
 (define the-keymap
   {"left"         'backward-char
@@ -113,7 +117,8 @@
    "M-down"       'move-line-down
    "C-x"          c-x-keymap
    "C-h"          c-h-keymap
-   "M-n"          sticky-note-keymap})
+   "M-n"          sticky-note-keymap
+   "M-s"          m-s-keymap})
 
 ;; While a key sequence is in progress this holds the prefix keymap the
 ;; next keystroke is looked up in; at rest it is nil, meaning the key is
