@@ -143,6 +143,7 @@ function switchToBuffer(index) {
   watchCurrentBuffer();
   ensureMajorMode();
   updateModeline();
+  refreshModeMenu();
 }
 
 // --- file open / save ---------------------------------------------------
@@ -341,7 +342,12 @@ function startCommandPalette() {
   });
 }
 
-/** Switch to a buffer chosen by name, with completion, in the minibuffer. */
+/**
+ * Switch to a buffer chosen by name, with completion, in the
+ * minibuffer. A name that matches no open buffer creates a new one —
+ * the minibuffer status shows when a submit would create rather than
+ * switch.
+ */
 function startBufferSwitcher() {
   const names = buffers.map((buffer) => buffer.name);
 
@@ -349,7 +355,8 @@ function startBufferSwitcher() {
     onChange(query) {
       const matches = fuzzyFilter(query, names);
       if (matches.length === 0) {
-        minibuffer.setStatus('no matching buffer');
+        const trimmed = query.trim();
+        minibuffer.setStatus(trimmed === '' ? '' : `[new buffer: ${trimmed}]`);
         return;
       }
       const shown = matches.slice(0, 6);
@@ -360,10 +367,22 @@ function startBufferSwitcher() {
     },
     onSubmit(query) {
       editorView.focus();
+      const trimmed = query.trim();
+      if (trimmed === '') return;
+      // An exact name switches; otherwise the best fuzzy match does.
+      const exact = buffers.findIndex((buffer) => buffer.name === trimmed);
+      if (exact >= 0) {
+        switchToBuffer(exact);
+        return;
+      }
       const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      const index = buffers.findIndex((buffer) => buffer.name === chosen);
-      if (index >= 0) switchToBuffer(index);
+      if (chosen !== undefined) {
+        switchToBuffer(buffers.findIndex((buffer) => buffer.name === chosen));
+        return;
+      }
+      // No open buffer matches the typed name — create one.
+      buffers.push(createBuffer('', { name: trimmed }));
+      switchToBuffer(buffers.length - 1);
     },
     onCancel() {
       editorView.focus();
@@ -525,6 +544,11 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'page-lines': () => editorView.pageLines(),
+    'toggle-repl!': () => {
+      const hidden = document.body.classList.toggle('repl-hidden');
+      if (hidden) editorView.focus();
+      return NIL;
+    },
     'quit-editor!': () => {
       quitInteractive();
       return NIL;
@@ -656,11 +680,50 @@ document.body.dataset.treesitter = Object.keys(highlighters).join(',');
 /** Dispatch a keystroke through the Lisp keymap. */
 function dispatchKey(key) {
   try {
-    return interpreter.call('handle-key', key) === true;
+    const handled = interpreter.call('handle-key', key) === true;
+    // A key may have switched mode (e.g. toggle-math-mode) — keep the
+    // mode menu in step.
+    refreshModeMenu();
+    return handled;
   } catch (error) {
     repl.appendError(error.lispMessage ?? error.message ?? String(error));
     return true; // consume the key; the error is visible in the REPL
   }
+}
+
+// --- mode menu ----------------------------------------------------------
+// The native menu shows the current buffer's mode commands. The
+// renderer owns the keymaps, so it builds the menu data here and ships
+// it to the main process; a click comes back through onMenuCommand.
+
+/** The mode menu for the current buffer, or null when it has none. */
+function currentModeMenu() {
+  if (!keymapReady) return null;
+  let raw;
+  try {
+    raw = listToArray(interpreter.call('mode-menu-entries'));
+  } catch (error) {
+    repl.appendError(`mode menu failed: ${error.message}`);
+    return null;
+  }
+  if (raw.length === 0) return null;
+  const items = raw.map((entry) => {
+    const [keys, command, docText] = listToArray(entry);
+    return { label: `${command}    ${keys}`, command, toolTip: docText };
+  });
+  return { label: interpreter.call('major-mode-name'), items };
+}
+
+let lastModeMenuJson = null;
+
+/** Recompute the mode menu and, when it changed, send it to the host. */
+function refreshModeMenu() {
+  if (!keymapReady) return;
+  const menu = currentModeMenu();
+  const json = JSON.stringify(menu);
+  if (json === lastModeMenuJson) return;
+  lastModeMenuJson = json;
+  window.host.setModeMenu(menu);
 }
 
 // --- editor view --------------------------------------------------------
@@ -709,6 +772,19 @@ watchCurrentBuffer();
 ensureMajorMode();
 updateModeline();
 editorView.focus();
+
+// Native menus: run a command chosen from a menu, and publish the
+// current buffer's mode menu to the host.
+window.host.onMenuCommand((command) => {
+  editorView.focus();
+  try {
+    interpreter.call(command);
+  } catch (error) {
+    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+  }
+  refreshModeMenu();
+});
+refreshModeMenu();
 
 // The startup splash: the editor's own Lisp, behind the welcome text.
 // It lives in the view's background layer and is dismissed — faded out

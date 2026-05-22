@@ -21,6 +21,7 @@
    "right" 'next-buffer
    "left"  'previous-buffer
    "n"     'new-buffer
+   "p"     'toggle-repl
    "h"     'mark-whole-buffer
    ";"     'comment-line
    "C-x"   'exchange-point-and-mark})

@@ -287,6 +287,11 @@ body {
   border-top: 1px solid #00000055;
 }
 
+/* toggle-repl (C-x p) hides the panel; the editor takes the freed space. */
+body.repl-hidden .repl-host {
+  display: none;
+}
+
 .repl {
   display: flex;
   flex-direction: column;

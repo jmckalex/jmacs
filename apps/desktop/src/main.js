@@ -13,10 +13,18 @@ import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from './files.js';
 import { renderJMarkdown } from './jmarkdown.js';
-import { installMenu } from './menu.js';
+import { buildAppMenu } from './menu.js';
 import { EDITOR_URL, serveAppFile } from './serve.js';
 
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
+
+/** The editor window — there is only ever one. */
+let mainWindow = null;
+
+/** Send a command chosen from a native menu to the renderer to run. */
+function dispatchMenuCommand(command) {
+  if (mainWindow) mainWindow.webContents.send('menu:invoke', command);
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -35,18 +43,24 @@ function createWindow() {
       sandbox: false,
     },
   });
+  mainWindow = win;
   win.loadURL(EDITOR_URL);
 }
 
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   registerFileHandlers();
-  installMenu();
+  buildAppMenu(null, dispatchMenuCommand);
   ipcMain.on('app:quit', () => app.quit());
   // Render a sticky note's JMarkdown via the user-configured command.
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
   );
+  // The renderer sends the current buffer's mode menu; rebuild the
+  // application menu around it as the buffer's mode changes.
+  ipcMain.on('menu:set', (_event, modeMenu) => {
+    buildAppMenu(modeMenu, dispatchMenuCommand);
+  });
   createWindow();
 
   app.on('activate', () => {

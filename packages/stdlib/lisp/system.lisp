@@ -9,3 +9,7 @@
 (define (quit-editor)
   "Quit the editor (C-x C-c)."
   (quit-editor!))
+
+(define (toggle-repl)
+  "Show or hide the REPL panel (C-x p)."
+  (toggle-repl!))
