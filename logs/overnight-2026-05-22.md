@@ -479,3 +479,121 @@ stdlib 182, incl. 13 new):
 - (this log entry)
 
 ---
+
+## T0 — language plug-in point — `agent-0-language-registry`
+
+**Built.** A drop-in mechanism for adding a tree-sitter language to
+the editor. Before this commit, adding a language touched four shared
+files — `treesitter.js`, `app.js`, `highlight.js`, `STDLIB_FILES`.
+After it, none of them. A language is three files dropped in:
+
+- `packages/renderer/vendor/tree-sitter-<tag>.wasm` (the grammar);
+- `packages/renderer/src/languages/<tag>.js` — calls `registerLanguage`
+  with grammar filename, highlight query and file suffixes;
+- `packages/stdlib/lisp/languages/<tag>.lisp` — `define-mode` +
+  `register-mode` for the filename suffix.
+
+The pieces.
+
+- `packages/renderer/src/language-registry.js` — a small data registry.
+  Exports `registerLanguage(spec)`, `registeredLanguages()`,
+  `languageForFilename(name)`, `loadLanguageHighlighters(create,
+  onError)`, `clearLanguages()`. Each language is a `{tag, grammar,
+  query, suffixes}` record.
+- `packages/renderer/src/languages/` — three migrated tree-sitter
+  registrations (JavaScript, HTML, Python). The directory is the
+  drop-in surface. A `README.md` is the "how to add a language" for
+  the Track B agents.
+- `packages/renderer/src/treesitter.js` — drops the three per-language
+  exports (`createJavaScriptHighlighter`, `createHtmlHighlighter`,
+  `createPythonHighlighter`) and exports a generic
+  `createTreeSitterHighlighter(grammar, query)`. The file knows
+  nothing about individual languages now.
+- `packages/renderer/src/highlight.js` — `languageForName` consults
+  the registry for tags it does not itself claim (the hand-tokenized
+  Lisp / Markdown / LaTeX / Makefile still live there as built-ins,
+  since they have no published tree-sitter grammar).
+- `packages/stdlib/src/index.js` — `loadStdlib` takes an `options`
+  arg with `listLanguageFiles`; after `STDLIB_FILES` finishes, every
+  `.lisp` in `lisp/languages/` is loaded. Ordered core stays.
+- `packages/stdlib/lisp/languages/` — `javascript.lisp`, `html.lisp`,
+  `python.lisp` (mode + `register-mode`). The README mirrors the JS
+  one for symmetry. The JS/HTML/Python `define-mode`s left
+  `modes.lisp`; LaTeX/Makefile stay there (no tree-sitter).
+- `apps/desktop/src/app.js` — the per-language entries in the
+  highlighter-init loop are gone. Two discovery sweeps replace them:
+  `discoverRendererLanguages()` (dynamic-imports every `.js` in
+  `packages/renderer/src/languages/`) and
+  `listStdlibLanguageFiles()` (fed to `loadStdlib`). Both use the
+  new `app://` directory-listing endpoint.
+- `apps/desktop/src/serve.js` — a `?list` query on a URL ending in
+  `/` returns a JSON array of the directory's filenames. One-time
+  facility, not per-language.
+
+**Decisions / deviations.**
+
+- *Directory listing on `app://`.* The renderer has no bundler and
+  no `import.meta.glob`, so discovery needs a runtime list. The
+  cleanest option was extending `serve.js` with a `?list` endpoint
+  rather than baking in a manifest file. A manifest would re-introduce
+  a shared edit; the endpoint is permanent and language-agnostic.
+- *Three discovery routes.* For the desktop app, `app://?list` +
+  dynamic import. For the stdlib test, `readdir` on disk. For the
+  renderer unit test, static imports of the three language modules.
+  All three converge on the same registry singleton.
+- *Migrated languages kept their line-tokenizer fallback.*
+  `tokenizeJavaScript`, `tokenizeHtml`, `tokenizePython` stay in
+  `highlight.js`. The tree-sitter highlighter overrides them when
+  the grammar loads (the normal case); the tokenizer is the fallback.
+  A *new* language need not provide one — without it the buffer is
+  shown plain when the grammar is missing. Acceptable for v0.
+- *Default `loadStdlib` behaviour unchanged.* `listLanguageFiles` is
+  optional. Callers that don't pass it (no current caller) load only
+  the ordered core, exactly as before.
+- *No new keybinding.* T0 binds nothing; the plan's allocation table
+  has no row for it.
+
+**Tests.** `pnpm test` — 472 tests, 0 failures.
+
+| Package | Tests | New |
+|---------|-------|-----|
+| `apps/desktop` | 11 | 0 |
+| `packages/storage` | 47 | 0 |
+| `packages/lisp` | 68 | 0 |
+| `packages/buffer` | 35 | 0 |
+| `packages/renderer` | 129 | +8 (language registry) |
+| `packages/stdlib` | 182 | 0 |
+
+The eight new `language-registry.test.js` tests cover: spec storage
+and read-back; suffix lookup (positive and non-string); validation
+errors (missing tag / grammar / query / suffixes); replacement on
+re-register; `clearLanguages` empties; the `create` factory is called
+once per language; per-language failures are reported and do not
+break the rest.
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS. The
+`treesitter:` line reports `{"langs":"html,javascript,python",
+"keywords":1,"numbers":1,"pyFunctions":2,"htmlTags":2}` — all three
+migrated languages loaded via discovery and highlighted their sample
+buffers exactly as before. (Order changed from `javascript,html,
+python` to alphabetic by directory listing; the smoke uses
+`.includes` so this is fine.)
+
+**Acceptance check.** No edit to `packages/renderer/src/treesitter.js`,
+`apps/desktop/src/app.js`, `packages/renderer/src/highlight.js`, or
+`packages/stdlib/src/index.js` is needed to add a new language. The
+three migrated languages still highlight; all 472 unit tests and the
+smoke test pass. Removing one of `javascript.js` / `html.js` /
+`python.js` from the languages directory (plus its `.lisp`) removes
+the language entirely.
+
+**Commits.**
+- `1d95f35` feat(renderer): add a language registry for tree-sitter
+  languages
+- `c5f10a3` feat(stdlib): auto-load lisp/languages/ after the ordered
+  core
+- `5d05410` feat(desktop): discover languages at startup, drop
+  hard-coded list
+- (this log entry)
+
+---
