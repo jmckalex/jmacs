@@ -342,6 +342,34 @@ app.whenReady().then(() => {
       })()`);
       console.log('  markdown:', JSON.stringify(markdown));
 
+      // Virtualisation: a long buffer keeps only a window of lines in
+      // the DOM, while the scroll height spans the whole document.
+      const virtual = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        replInput.value = '(new-buffer! "big.txt")';
+        replInput.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        await frame();
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        for (let i = 0; i < 400; i += 1) {
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        editor.scrollTop = 0;
+        await frame();
+        return {
+          lineDivs: document.querySelectorAll('.editor-line').length,
+          firstNumber: (document.querySelector('.editor-line-no') || {}).textContent,
+          scrollHeight: editor.scrollHeight,
+        };
+      })()`);
+      console.log('  virtual:', JSON.stringify(virtual));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -362,16 +390,19 @@ app.whenReady().then(() => {
       const replaceOk = replace.text === 'bar bar bar';
       const mouseOk = mouse.after.includes('Ln 1') && mouse.before !== mouse.after;
       const markdownOk = markdown.headings > 0;
+      const virtualOk =
+        virtual.lineDivs > 0 && virtual.lineDivs < 120 &&
+        virtual.scrollHeight > 3000 && virtual.firstNumber === '1';
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
-        markdownOk
+        markdownOk && virtualOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, mouse, buffers, highlighting, markdown, search, replace and files all work`
+          `${render.lines} lines; keymap, mouse, highlighting, markdown, virtualisation, search, replace and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -403,8 +434,13 @@ app.whenReady().then(() => {
         finish(1, 'replace-string did not work');
       } else if (!mouseOk) {
         finish(1, 'mouse click did not move the cursor');
-      } else {
+      } else if (!markdownOk) {
         finish(1, 'markdown highlighting did not work');
+      } else {
+        finish(
+          1,
+          `view virtualisation did not work (${JSON.stringify(virtual)})`
+        );
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

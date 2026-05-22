@@ -84,20 +84,21 @@ body {
   line-height: var(--line-height);
 }
 
-/* Line-number gutter — sticks to the left through horizontal scroll. */
+/* Line-number gutter — sticks to the left through horizontal scroll.
+   Its width and height are set by the view; numbers are positioned. */
 .editor-gutter {
   position: sticky;
   left: 0;
   z-index: 3;
   flex: 0 0 auto;
-  padding: 0 14px 0 18px;
-  text-align: right;
   background: var(--bg-editor);
   user-select: none;
 }
 
 .editor-line-no {
-  min-height: 1lh;
+  position: absolute;
+  right: 14px;
+  height: 1lh;
   color: var(--fg-dim);
   opacity: 0.5;
 }
@@ -130,6 +131,8 @@ body {
 }
 
 .editor-line {
+  position: absolute;
+  left: 0;
   white-space: pre;
   min-height: 1lh;
 }

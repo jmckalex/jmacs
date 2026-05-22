@@ -98,36 +98,74 @@ export function createEditorView(buffer, container, options = {}) {
     }
   }
 
-  /** Render the buffer's lines, syntax-highlighted by run. */
+  // The whole-buffer JavaScript highlight is cached, so a scroll-only
+  // render (the text unchanged) does not re-parse the buffer.
+  let highlightCacheText = null;
+  let highlightCache = null;
+
+  /**
+   * Render the gutter and only the lines visible in the viewport.
+   *
+   * The content and gutter are sized to the whole document so the
+   * scrollbar is correct, but only a window of line and line-number
+   * elements — those on screen, plus a little overscan — is in the DOM.
+   * Each is absolutely positioned at its true line offset.
+   */
   function renderLines() {
+    const lineHeight = cursorEl.getBoundingClientRect().height || 22;
     const language = languageForName(activeBuffer.name);
     const lines = toLines(activeBuffer.text);
+    const lineCount = lines.length;
+
+    content.style.height = `calc(${lineCount} * 1lh)`;
+    gutter.style.height = `calc(${lineCount} * 1lh)`;
+    gutter.style.width = `calc(${String(lineCount).length}ch + 32px)`;
+
+    // The visible window, with a few lines of overscan each side.
+    const overscan = 6;
+    const top = root.scrollTop;
+    const viewport = root.clientHeight || lineHeight;
+    const first = Math.max(0, Math.floor(top / lineHeight) - overscan);
+    const last = Math.min(
+      lineCount,
+      Math.ceil((top + viewport) / lineHeight) + overscan
+    );
 
     // JavaScript uses the tree-sitter highlighter when one was given;
     // it parses the whole buffer at once. Everything else is line-based.
     let perLine = null;
     if (language === 'javascript' && highlightJavaScript) {
-      try {
-        perLine = highlightJavaScript(activeBuffer.text);
-      } catch {
-        perLine = null;
+      const text = activeBuffer.text;
+      if (text === highlightCacheText) {
+        perLine = highlightCache;
+      } else {
+        try {
+          perLine = highlightJavaScript(text);
+        } catch {
+          perLine = null;
+        }
+        highlightCacheText = text;
+        highlightCache = perLine;
       }
     }
 
     const lineEls = [];
     const numberEls = [];
-    lines.forEach((line, index) => {
+    for (let index = first; index < last; index += 1) {
       const lineEl = el('div', 'editor-line');
+      lineEl.style.top = `calc(${index} * 1lh)`;
       const runs = perLine
         ? perLine[index] ?? []
-        : highlightLine(line.content, language);
+        : highlightLine(lines[index].content, language);
       renderRuns(lineEl, runs);
       lineEls.push(lineEl);
 
       const numberEl = el('div', 'editor-line-no');
+      numberEl.style.top = `calc(${index} * 1lh)`;
+      numberEl.dataset.line = String(index);
       numberEl.textContent = String(index + 1);
       numberEls.push(numberEl);
-    });
+    }
     linesEl.replaceChildren(...lineEls);
     gutter.replaceChildren(...numberEls);
   }
@@ -180,10 +218,13 @@ export function createEditorView(buffer, container, options = {}) {
     cursorEl.style.top = `calc(${line} * 1lh)`;
     currentLineEl.style.top = `calc(${line} * 1lh)`;
 
-    // Brighten the current line's number in the gutter.
-    const numbers = gutter.children;
-    for (let i = 0; i < numbers.length; i += 1) {
-      numbers[i].classList.toggle('is-current', i === line);
+    // Brighten the current line's number in the gutter. Only the
+    // visible numbers are present, so match on the line each carries.
+    for (const numberEl of gutter.children) {
+      numberEl.classList.toggle(
+        'is-current',
+        Number(numberEl.dataset.line) === line
+      );
     }
 
     // Restart the blink so the cursor is solid right after it moves.
@@ -225,6 +266,9 @@ export function createEditorView(buffer, container, options = {}) {
       : handleKeyEvent(activeBuffer, event);
     if (handled) event.preventDefault();
   });
+
+  // Scrolling changes which lines are visible — re-render the window.
+  root.addEventListener('scroll', schedule);
   // Mouse: click to place the cursor, drag to select. A pixel point is
   // mapped to a buffer offset via the browser's own caret hit-testing.
   function offsetFromPoint(clientX, clientY) {
