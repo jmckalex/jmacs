@@ -242,3 +242,43 @@ test run (per spec).
 - (this log entry)
 
 ---
+
+## Task C2 — line operations  *(branch `agent-c2-line-ops`)*
+
+**What was built.** Four whole-line editing commands in a new file
+`packages/stdlib/lisp/line-ops.lisp`:
+
+- `move-line-up` / `move-line-down` (`M-Up` / `M-Down`) — swap the
+  current line with its neighbour, deleting the line plus one bounding
+  newline and re-inserting it on the far side. The cursor keeps its
+  column and travels with the line.
+- `duplicate-line` (`C-x C-d`) — inserts a copy of the current line
+  immediately below; the cursor moves to the copy, keeping its column.
+- `join-line` (`C-x C-j`) — pulls the next line onto the current one,
+  collapsing the intervening newline and the next line's leading
+  whitespace to a single space (Emacs-style); the cursor lands at the
+  join, before the space.
+
+`line-ops.lisp` was added to `STDLIB_FILES` (after `yank-pop.lisp`,
+before `keymap.lisp`); the four keys were bound in `keymap.lisp`
+(`M-up`/`M-down` in `the-keymap`, `C-d`/`C-j` in `c-x-keymap`).
+
+**Decisions / deviations.** None from the spec. All four commands are
+pure stdlib Lisp on the existing buffer primitives — no host change
+needed. Edge cases handled and tested: `move-line-up` on the first
+line and `move-line-down`/`join-line` on the last line are inert.
+Small `line-ops`-local helpers (`current-line-text`, `line-column`,
+`first-line?`, `last-line?`, `drop-leading-blanks`) keep the commands
+readable; `drop-leading-blanks` is a hand-rolled left-trim since the
+Lisp has no `string-trim` primitive.
+
+**Tests.** `pnpm test` — all packages green, 0 failures (422 total;
+stdlib 140, incl. 15 new covering each command, cursor/column
+carry-over, the no-op edge cases, the round-trip, and the key
+bindings). `apps/desktop/` untouched, so no smoke test run (per spec).
+
+**Commits.**
+- `1624748` feat: add line operations (move, duplicate, join)
+- (this log entry)
+
+---
