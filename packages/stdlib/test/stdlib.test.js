@@ -1699,3 +1699,156 @@ test('cancelling the occur prompt does not open a buffer', async () => {
   assert.deepEqual(bufferCalls, [], 'no new buffer is created on cancel');
   assert.equal(buffer.text, original, 'the source buffer is untouched');
 });
+
+// --- expand-region ------------------------------------------------------
+
+test('expand-region is a registered command bound to C-equal (the C-= key)', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote expand-region))'),
+    true
+  );
+  assert.ok(
+    interpreter.evaluate(
+      '(eq? (get the-keymap "C-equal") (quote expand-region))'
+    )
+  );
+});
+
+test('expand-region-word-bounds finds the word at an interior offset', async () => {
+  const { interpreter } = await editor();
+  // "alpha beta": cursor at offset 7 sits inside "beta" (b=6 e=7 t=8 a=9).
+  const pair = interpreter.evaluate(
+    '(expand-region-word-bounds "alpha beta" 7)'
+  );
+  assert.equal(interpreter.call('car', pair), 6);
+  assert.equal(interpreter.call('cdr', pair), 10);
+});
+
+test('expand-region-word-bounds uses the word just before an interword offset', async () => {
+  const { interpreter } = await editor();
+  // Cursor at offset 5 (the space) — there is no word at it, but the
+  // character just before is a word char, so the word ending there wins.
+  const pair = interpreter.evaluate(
+    '(expand-region-word-bounds "alpha beta" 5)'
+  );
+  assert.equal(interpreter.call('car', pair), 0);
+  assert.equal(interpreter.call('cdr', pair), 5);
+});
+
+test('expand-region-word-bounds returns nil between two non-word chars', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(nil? (expand-region-word-bounds "  alpha" 0))'),
+    true
+  );
+});
+
+test('expand-region-line-bounds spans from line start to line end', async () => {
+  const { interpreter } = await editor();
+  // "one\ntwo\nthree": offset 5 is inside "two" (line 2 — chars 4..7).
+  const pair = interpreter.evaluate(
+    '(expand-region-line-bounds "one\\ntwo\\nthree" 5)'
+  );
+  assert.equal(interpreter.call('car', pair), 4);
+  assert.equal(interpreter.call('cdr', pair), 7);
+});
+
+test('expand-region-paragraph-bounds spans contiguous non-blank lines', async () => {
+  const { interpreter } = await editor();
+  // Two paragraphs separated by a blank line.
+  // "a\nb\n\nc" — chars 0..3 are paragraph 1 ("a\nb"), char 5 is paragraph 2.
+  const p1 = interpreter.evaluate(
+    '(expand-region-paragraph-bounds "a\\nb\\n\\nc" 0)'
+  );
+  assert.equal(interpreter.call('car', p1), 0);
+  assert.equal(interpreter.call('cdr', p1), 3);
+  const p2 = interpreter.evaluate(
+    '(expand-region-paragraph-bounds "a\\nb\\n\\nc" 5)'
+  );
+  assert.equal(interpreter.call('car', p2), 5);
+  assert.equal(interpreter.call('cdr', p2), 6);
+});
+
+test('expand-region selects the current word on its first press', async () => {
+  const { buffer, interpreter } = await editor('one two three');
+  buffer.moveTo(5); // inside "two"
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 4, end: 7 });
+});
+
+test('expand-region grows: word, line, paragraph, then buffer', async () => {
+  const { buffer, interpreter } = await editor(
+    'one two three\nfour five\n\nsix seven'
+  );
+  buffer.moveTo(5); // inside "two", paragraph "one two three\nfour five"
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 4, end: 7 }, 'word "two"');
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 0, end: 13 }, 'line 1');
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 0, end: 23 }, 'paragraph 1');
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 0, end: 34 }, 'whole buffer');
+});
+
+test('expand-region: a step that adds nothing is skipped', async () => {
+  // On a single-line, single-paragraph buffer, line == paragraph == buffer.
+  // The first press grabs the word, the second the line; further presses
+  // don't introduce a strictly larger range.
+  const { buffer, interpreter } = await editor('alpha beta gamma');
+  buffer.moveTo(8); // inside "beta"
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 6, end: 10 }, 'word "beta"');
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 0, end: 16 }, 'whole line');
+  // Further presses see no growth — the selection stays as the line.
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 0, end: 16 });
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 0, end: 16 });
+});
+
+test('an intervening command resets the expand-region chain', async () => {
+  const { buffer, interpreter } = await editor(
+    'one two three\nfour five\n\nsix seven'
+  );
+  buffer.moveTo(5);
+  press(interpreter, 'C-equal'); // word "two"
+  press(interpreter, 'C-equal'); // line 1
+  assert.deepEqual(buffer.selection, { start: 0, end: 13 });
+  // A non-expand-region command — the chain is broken.
+  press(interpreter, 'right');
+  press(interpreter, 'C-equal');
+  // The new anchor is the current point (14, on "four"), so this grows
+  // to the word "four" rather than continuing to the paragraph.
+  assert.deepEqual(buffer.selection, { start: 14, end: 18 }, 'word "four"');
+});
+
+test('expand-region with the cursor between non-word chars falls through to the line', async () => {
+  // The leading space at offset 0 has no adjacent word — step 1 (word)
+  // yields nothing, so the first press takes the line directly.
+  const { buffer, interpreter } = await editor('   spaced   text');
+  buffer.moveTo(1); // between leading spaces
+  press(interpreter, 'C-equal');
+  assert.deepEqual(buffer.selection, { start: 0, end: 16 });
+});
+
+test('expand-region on an empty buffer leaves the selection null', async () => {
+  const { buffer, interpreter } = await editor('');
+  buffer.moveTo(0);
+  press(interpreter, 'C-equal');
+  assert.equal(buffer.selection, null);
+});
+
+test('expand-region keeps growing around the original anchor, not point', async () => {
+  // After the first press, point sits at the word end; the chain must
+  // still grow around the original cursor position (the anchor), not
+  // jump to a new line because point moved.
+  const { buffer, interpreter } = await editor('aaa bbb\nccc ddd');
+  buffer.moveTo(1); // inside "aaa"
+  press(interpreter, 'C-equal'); // selects "aaa"
+  assert.deepEqual(buffer.selection, { start: 0, end: 3 });
+  press(interpreter, 'C-equal'); // line containing the anchor
+  assert.deepEqual(buffer.selection, { start: 0, end: 7 });
+});
