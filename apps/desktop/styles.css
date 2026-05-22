@@ -529,6 +529,11 @@ body {
   margin-bottom: 0;
 }
 
+.sticky-note-body img {
+  max-width: 100%;
+  height: auto;
+}
+
 .sticky-note-raw {
   margin: 0;
   white-space: pre-wrap;
