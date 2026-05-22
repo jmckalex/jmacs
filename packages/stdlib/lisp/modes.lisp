@@ -10,8 +10,9 @@
   (list 'define name (cons 'hash-map pairs)))
 
 ;; --- mode keymaps ------------------------------------------------------
-;; Mode-specific bindings, consulted before the global keymap. Empty for
-;; now — a mode can grow its own keys, including prefix maps.
+;; Mode-specific bindings, consulted before the global keymap. A mode
+;; refers to its keymap by name (a symbol), so a feature file can fill
+;; the map in later and edits to it are seen live (see resolve-keymap).
 (define lisp-mode-map {})
 (define markdown-mode-map {})
 
@@ -23,12 +24,12 @@
   :name "Lisp"
   :comment-prefix ";; "
   :highlight :lisp
-  :keymap lisp-mode-map)
+  :keymap 'lisp-mode-map)
 
 (define-mode markdown-mode
   :name "Markdown"
   :highlight :markdown
-  :keymap markdown-mode-map)
+  :keymap 'markdown-mode-map)
 
 (define-mode javascript-mode
   :name "JavaScript"
@@ -83,10 +84,18 @@
   (let ((m (buffer-major-mode)))
     (if (nil? m) "Fundamental" (get m :name "Fundamental"))))
 
+(define (resolve-keymap k)
+  "Resolve a mode's :keymap — a symbol naming a keymap, or a keymap
+   itself. Resolving by name means the keymap stays live-editable."
+  (cond
+    ((nil? k) nil)
+    ((symbol? k) (eval k))
+    (else k)))
+
 (define (major-mode-keymap)
   "The current buffer's major-mode keymap, or nil."
   (let ((m (buffer-major-mode)))
-    (if (nil? m) nil (get m :keymap nil))))
+    (if (nil? m) nil (resolve-keymap (get m :keymap nil)))))
 
 (define (comment-prefix)
   "The comment prefix of the current buffer's major mode."
@@ -135,4 +144,15 @@
 
 (define (minor-mode-keymaps)
   "The keymaps of the active minor modes, highest priority first."
-  (map (lambda (m) (get m :keymap nil)) (minor-modes)))
+  (map (lambda (m) (resolve-keymap (get m :keymap nil))) (minor-modes)))
+
+(define (join-minor-names modes)
+  "Each minor mode's name, two-space-prefixed and concatenated."
+  (if (nil? modes)
+      ""
+      (str "  " (get (car modes) :name "?")
+           (join-minor-names (cdr modes)))))
+
+(define (minor-mode-line)
+  "The active minor mode names, for the modeline."
+  (join-minor-names (minor-modes)))

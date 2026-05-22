@@ -684,6 +684,18 @@ test('minor modes stack by descending priority', async () => {
   );
 });
 
+test('a mode resolves its keymap by name, so set! is seen live', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  interpreter.evaluate('(define live-map (hash-map))');
+  interpreter.evaluate('(set-major-mode! (hash-map :keymap (quote live-map)))');
+  // Bind a key in the keymap *after* the mode is already set.
+  interpreter.evaluate('(set! live-map (hash-map "C-d" (quote forward-char)))');
+  press(interpreter, 'C-d');
+  assert.equal(buffer.text, 'hello'); // C-d was the live-bound forward-char
+  assert.equal(buffer.point, 1);
+});
+
 test('C-x ; comments and uncomments a line', async () => {
   const { buffer, interpreter } = await editor('hello');
   buffer.moveTo(0);
