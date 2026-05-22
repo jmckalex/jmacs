@@ -1083,3 +1083,44 @@ test('custom-group-model lists a group title and its settings', async () => {
   assert.equal(model[0], 'sticky-notes'); // title
   assert.ok(listToArray(model[4]).length >= 1); // settings
 });
+
+// --- command system -----------------------------------------------------
+
+test('defcommand defines the procedure and registers the command', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate('(defcommand greet () "Say hi." (quote hi))');
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote greet))'),
+    true
+  );
+  assert.equal(
+    interpreter.evaluate('(symbol->string (run-command (quote greet)))'),
+    'hi'
+  );
+});
+
+test('defcommand works without a docstring', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate('(defcommand plain () 42)');
+  assert.equal(interpreter.evaluate('(run-command (quote plain))'), 42);
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote plain))'),
+    true
+  );
+});
+
+test('command-names lists a registered command bound to no key', async () => {
+  const { interpreter } = await editor();
+  // `customize` is declared with defcommand but bound to no key — the
+  // case the keymap-only palette used to miss.
+  const names = listToArray(interpreter.call('command-names'));
+  assert.ok(names.includes('customize'));
+});
+
+test('a keymap-bound command is also a registered command', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote forward-char))'),
+    true
+  );
+});

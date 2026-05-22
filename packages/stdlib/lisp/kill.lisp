@@ -13,19 +13,19 @@
   "The most recent kill, or an empty string when the ring is empty."
   (if (nil? *kill-ring*) "" (car *kill-ring*)))
 
-(define (copy-region)
+(defcommand copy-region ()
   "Copy the selected text to the kill ring."
   (when (region-active?)
     (kill-ring-add! (region-text))
     (clear-mark!)))
 
-(define (kill-region)
+(defcommand kill-region ()
   "Cut the selected text to the kill ring."
   (when (region-active?)
     (kill-ring-add! (region-text))
     (delete-backward!)))
 
-(define (kill-line)
+(defcommand kill-line ()
   "Kill from the cursor to the end of the line; at a line's end, kill
    the newline."
   (let ((from (point))
@@ -35,11 +35,11 @@
         (kill-ring-add! (buffer-substring from end))
         (delete-region! from end)))))
 
-(define (yank)
+(defcommand yank ()
   "Insert the most recent kill at the cursor."
   (insert! (kill-ring-top)))
 
-(define (kill-word)
+(defcommand kill-word ()
   "Kill forward to the end of the next word."
   (let ((from (point))
         (to (word-forward-offset)))
@@ -47,7 +47,7 @@
       (kill-ring-add! (buffer-substring from to))
       (delete-region! from to))))
 
-(define (kill-sentence)
+(defcommand kill-sentence ()
   "Kill forward to the end of the sentence."
   (let ((from (point))
         (to (sentence-forward-offset)))
@@ -55,7 +55,7 @@
       (kill-ring-add! (buffer-substring from to))
       (delete-region! from to))))
 
-(define (backward-kill-word)
+(defcommand backward-kill-word ()
   "Kill backward to the start of the previous word."
   (let ((from (point))
         (to (word-backward-offset)))

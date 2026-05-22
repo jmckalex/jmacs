@@ -148,7 +148,7 @@
       (lookup-in-chain key (keymap-chain))
       (get active-keymap key nil)))
 
-(define (keyboard-quit)
+(defcommand keyboard-quit ()
   "Abort a partial key sequence and clear the selection (C-g)."
   (reset-keymap!)
   (clear-mark!))
@@ -183,7 +183,7 @@
           ;; A command name: run it, then return to rest.
           ((symbol? binding)
            (reset-keymap!)
-           ((eval binding))
+           (run-command binding)
            #t)
           ;; Mid-sequence with nothing bound: the sequence is undefined.
           ((not (nil? active-keymap))

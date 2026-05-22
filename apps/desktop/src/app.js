@@ -397,7 +397,7 @@ function startCommandPalette() {
       const chosen = fuzzyFilter(query, names)[0];
       if (chosen === undefined) return;
       try {
-        interpreter.call(chosen);
+        interpreter.evaluate(`(run-command (quote ${chosen}))`);
       } catch (error) {
         repl.appendError(error.lispMessage ?? error.message ?? String(error));
       }
@@ -1008,7 +1008,7 @@ editorView.focus();
 window.host.onMenuCommand((command) => {
   editorView.focus();
   try {
-    interpreter.call(command);
+    interpreter.evaluate(`(run-command (quote ${command}))`);
   } catch (error) {
     repl.appendError(error.lispMessage ?? error.message ?? String(error));
   }

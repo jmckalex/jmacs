@@ -3,7 +3,7 @@
 ;;; Every command keeps its docstring (see define's self-documentation).
 ;;; These commands surface it; their output goes to the REPL.
 
-(define (describe-key)
+(defcommand describe-key ()
   "Describe the command bound to the next key pressed (C-h k)."
   (println "Describe key — press a key:")
   (read-next-key
@@ -26,6 +26,6 @@
     (println (str name ":"))
     (println (str "  " (if (string? info) info "(no documentation)")))))
 
-(define (describe-command)
+(defcommand describe-command ()
   "Prompt for a command by name and show its documentation (C-h f)."
   (start-describe-command!))

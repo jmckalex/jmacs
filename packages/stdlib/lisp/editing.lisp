@@ -7,71 +7,71 @@
 
 ;; --- cursor movement ---------------------------------------------------
 
-(define (forward-char)
+(defcommand forward-char ()
   "Move the cursor one character to the right."
   (cursor-right! #f))
 
-(define (backward-char)
+(defcommand backward-char ()
   "Move the cursor one character to the left."
   (cursor-left! #f))
 
-(define (next-line)
+(defcommand next-line ()
   "Move the cursor down one line."
   (cursor-down! #f))
 
-(define (previous-line)
+(defcommand previous-line ()
   "Move the cursor up one line."
   (cursor-up! #f))
 
-(define (move-beginning-of-line)
+(defcommand move-beginning-of-line ()
   "Move the cursor to the start of the current line."
   (cursor-line-start! #f))
 
-(define (move-end-of-line)
+(defcommand move-end-of-line ()
   "Move the cursor to the end of the current line."
   (cursor-line-end! #f))
 
-(define (beginning-of-buffer)
+(defcommand beginning-of-buffer ()
   "Move the cursor to the start of the buffer."
   (cursor-buffer-start! #f))
 
-(define (end-of-buffer)
+(defcommand end-of-buffer ()
   "Move the cursor to the end of the buffer."
   (cursor-buffer-end! #f))
 
-(define (forward-word)
+(defcommand forward-word ()
   "Move forward to the end of the next word."
   (goto! (word-forward-offset)))
 
-(define (backward-word)
+(defcommand backward-word ()
   "Move backward to the start of the previous word."
   (goto! (word-backward-offset)))
 
-(define (forward-sentence)
+(defcommand forward-sentence ()
   "Move forward to the end of the sentence."
   (goto! (sentence-forward-offset)))
 
-(define (backward-sentence)
+(defcommand backward-sentence ()
   "Move backward to the start of the sentence."
   (goto! (sentence-backward-offset)))
 
-(define (goto-line)
+(defcommand goto-line ()
   "Prompt for a line number and move the cursor to that line."
   (start-goto-line!))
 
-(define (replace-string)
+(defcommand replace-string ()
   "Prompt for a string and a replacement; replace every occurrence."
   (start-replace!))
 
-(define (recenter)
+(defcommand recenter ()
   "Scroll so the cursor's line is centred in the viewport."
   (recenter!))
 
-(define (back-to-indentation)
+(defcommand back-to-indentation ()
   "Move the cursor to the first non-blank character of the line."
   (goto! (+ (line-start) (string-length (line-indent)))))
 
-(define (exchange-point-and-mark)
+(defcommand exchange-point-and-mark ()
   "Move point to the mark, and the mark to where point was."
   (let ((m (mark)))
     (when (not (nil? m))
@@ -79,34 +79,34 @@
         (goto! m)
         (set-mark! p)))))
 
-(define (scroll-up)
+(defcommand scroll-up ()
   "Move the cursor forward by roughly one screenful."
   (for-each (lambda (i) (cursor-down! #f)) (range (page-lines))))
 
-(define (scroll-down)
+(defcommand scroll-down ()
   "Move the cursor backward by roughly one screenful."
   (for-each (lambda (i) (cursor-up! #f)) (range (page-lines))))
 
 ;; --- movement that extends the selection -------------------------------
 
-(define (forward-char-extending) (cursor-right! #t))
-(define (backward-char-extending) (cursor-left! #t))
-(define (next-line-extending) (cursor-down! #t))
-(define (previous-line-extending) (cursor-up! #t))
-(define (beginning-of-line-extending) (cursor-line-start! #t))
-(define (end-of-line-extending) (cursor-line-end! #t))
+(defcommand forward-char-extending () (cursor-right! #t))
+(defcommand backward-char-extending () (cursor-left! #t))
+(defcommand next-line-extending () (cursor-down! #t))
+(defcommand previous-line-extending () (cursor-up! #t))
+(defcommand beginning-of-line-extending () (cursor-line-start! #t))
+(defcommand end-of-line-extending () (cursor-line-end! #t))
 
 ;; --- editing -----------------------------------------------------------
 
-(define (delete-backward)
+(defcommand delete-backward ()
   "Delete the character before the cursor (or the selection)."
   (delete-backward!))
 
-(define (delete-forward)
+(defcommand delete-forward ()
   "Delete the character after the cursor (or the selection)."
   (delete-forward!))
 
-(define (transpose-chars)
+(defcommand transpose-chars ()
   "Swap the two characters before the cursor."
   (when (>= (point) 2)
     (let ((p (point)))
@@ -115,31 +115,31 @@
         (delete-region! (- p 2) p)
         (insert! (str b a))))))
 
-(define (newline)
+(defcommand newline ()
   "Insert a line break, copying the current line's indentation."
   (insert! (str "\n" (line-indent))))
 
-(define (open-line)
+(defcommand open-line ()
   "Insert a newline after the cursor, leaving the cursor before it."
   (let ((p (point)))
     (insert! "\n")
     (goto! p)))
 
-(define (fill-paragraph)
+(defcommand fill-paragraph ()
   "Re-wrap the paragraph around the cursor to the fill column."
   (fill-paragraph!))
 
-(define (mark-whole-buffer)
+(defcommand mark-whole-buffer ()
   "Select the entire buffer."
   (goto! (buffer-length))
   (set-mark! 0))
 
-(define (set-mark-command)
+(defcommand set-mark-command ()
   "Set the mark at the cursor, starting a region (C-SPC). While the
    mark is set, cursor movement extends the region; C-g clears it."
   (set-mark! (point)))
 
-(define (comment-line)
+(defcommand comment-line ()
   "Comment or uncomment the current line."
   (let ((prefix (comment-prefix))
         (indent-end (+ (line-start) (string-length (line-indent)))))
@@ -147,16 +147,16 @@
         (delete-region! indent-end (+ indent-end (string-length prefix)))
         (begin (goto! indent-end) (insert! prefix)))))
 
-(define (insert-tab)
+(defcommand insert-tab ()
   "Insert two spaces at the cursor."
   (insert! "  "))
 
 ;; --- history -----------------------------------------------------------
 
-(define (undo)
+(defcommand undo ()
   "Undo the last change."
   (undo!))
 
-(define (redo)
+(defcommand redo ()
   "Redo the last undone change."
   (redo!))

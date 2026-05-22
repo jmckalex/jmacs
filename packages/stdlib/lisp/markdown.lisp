@@ -22,23 +22,23 @@
     (goto! (+ p (string-length text)))))
 
 ;; --- inline formatting -------------------------------------------------
-(define (markdown-bold)
+(defcommand markdown-bold ()
   "Make the selection strong (JMarkdown *...*)."
   (surround "*" "*"))
 
-(define (markdown-italic)
+(defcommand markdown-italic ()
   "Make the selection emphasised (JMarkdown /.../)."
   (surround "/" "/"))
 
-(define (markdown-code)
+(defcommand markdown-code ()
   "Make the selection inline code."
   (surround "`" "`"))
 
-(define (markdown-highlight)
+(defcommand markdown-highlight ()
   "Highlight the selection (==...==)."
   (surround "==" "=="))
 
-(define (markdown-insert-link)
+(defcommand markdown-insert-link ()
   "Insert a link, wrapping the selection as the link text."
   (if (region-active?)
       (let ((text (region-text)))
@@ -49,25 +49,25 @@
         (insert! "[]()")
         (goto! (- (point) 3)))))
 
-(define (markdown-insert-cite)
+(defcommand markdown-insert-cite ()
   "Insert a JMarkdown \\cite{} citation."
   (insert! "\\cite{}")
   (goto! (- (point) 1)))
 
-(define (markdown-insert-footnote)
+(defcommand markdown-insert-footnote ()
   "Insert a JMarkdown footnote."
   (insert! "[^: ]")
   (goto! (- (point) 3)))
 
 ;; --- block structure ---------------------------------------------------
-(define (markdown-heading-1) "Make the line a level-1 heading." (insert-at-line-start "# "))
-(define (markdown-heading-2) "Make the line a level-2 heading." (insert-at-line-start "## "))
-(define (markdown-heading-3) "Make the line a level-3 heading." (insert-at-line-start "### "))
-(define (markdown-heading-4) "Make the line a level-4 heading." (insert-at-line-start "#### "))
-(define (markdown-heading-5) "Make the line a level-5 heading." (insert-at-line-start "##### "))
-(define (markdown-heading-6) "Make the line a level-6 heading." (insert-at-line-start "###### "))
-(define (markdown-blockquote) "Make the line a blockquote." (insert-at-line-start "> "))
-(define (markdown-list-item) "Make the line a list item." (insert-at-line-start "- "))
+(defcommand markdown-heading-1 () "Make the line a level-1 heading." (insert-at-line-start "# "))
+(defcommand markdown-heading-2 () "Make the line a level-2 heading." (insert-at-line-start "## "))
+(defcommand markdown-heading-3 () "Make the line a level-3 heading." (insert-at-line-start "### "))
+(defcommand markdown-heading-4 () "Make the line a level-4 heading." (insert-at-line-start "#### "))
+(defcommand markdown-heading-5 () "Make the line a level-5 heading." (insert-at-line-start "##### "))
+(defcommand markdown-heading-6 () "Make the line a level-6 heading." (insert-at-line-start "###### "))
+(defcommand markdown-blockquote () "Make the line a blockquote." (insert-at-line-start "> "))
+(defcommand markdown-list-item () "Make the line a list item." (insert-at-line-start "- "))
 
 ;; --- math symbol minor mode -------------------------------------------
 ;; AUCTeX-style: with math mode on, ` then a key inserts a LaTeX symbol.
@@ -87,7 +87,7 @@
    "<" "\\leq"      ">" "\\geq"      "~" "\\approx"   "=" "\\equiv"
    "." "\\cdot"     "v" "\\nabla"})
 
-(define (math-insert-symbol)
+(defcommand math-insert-symbol ()
   "Read a key and insert the LaTeX math symbol it names; an unmapped
    key is inserted as itself."
   (read-next-key
@@ -101,7 +101,7 @@
   :keymap 'math-mode-map
   :priority 10)
 
-(define (toggle-math-mode)
+(defcommand toggle-math-mode ()
   "Toggle the math symbol-insertion minor mode."
   (if (member math-mode (minor-modes))
       (disable-minor-mode math-mode)

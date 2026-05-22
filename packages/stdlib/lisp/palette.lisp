@@ -1,8 +1,8 @@
 ;;; palette.lisp — the command palette (M-x).
 ;;;
 ;;; Loaded after keymap.lisp, so it can read `the-keymap`. The palette
-;;; offers every command reachable from the keymap; the interactive
-;;; matching loop runs in the minibuffer (host code).
+;;; offers every command; the interactive matching loop runs in the
+;;; minibuffer (host code).
 
 (define (-keymap-commands keymap)
   "Collect command names from a keymap and any nested keymaps."
@@ -15,9 +15,12 @@
           (vals keymap)))
 
 (define (command-names)
-  "A list of every command name reachable from the keymap."
-  (-keymap-commands the-keymap))
+  "Every command name M-x offers — those in the command registry plus
+   any still reachable only from the keymap. The two overlap while the
+   defcommand migration is in progress; the caller de-duplicates."
+  (append (registered-command-names)
+          (-keymap-commands the-keymap)))
 
-(define (execute-command)
+(defcommand execute-command ()
   "Prompt for a command by name and run it — the M-x command."
   (start-command-palette!))

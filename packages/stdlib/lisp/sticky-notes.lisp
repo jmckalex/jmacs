@@ -21,32 +21,32 @@
   :group 'sticky-notes
   :doc "Shell command that renders a sticky note's JMarkdown source to HTML; the source is fed on stdin, the HTML read from the command's stdout.")
 
-(define (add-sticky-note)
+(defcommand add-sticky-note ()
   "Create a sticky note at the cursor and open it for editing."
   (note-edit! (note-create!)))
 
-(define (edit-sticky-note)
+(defcommand edit-sticky-note ()
   "Edit the sticky note nearest the cursor."
   (let ((id (note-at-point)))
     (if (nil? id)
         (println "No sticky note near the cursor.")
         (note-edit! id))))
 
-(define (delete-sticky-note)
+(defcommand delete-sticky-note ()
   "Delete the sticky note nearest the cursor."
   (let ((id (note-at-point)))
     (if (nil? id)
         (println "No sticky note near the cursor.")
         (note-delete! id))))
 
-(define (next-sticky-note)
+(defcommand next-sticky-note ()
   "Move the cursor to the next sticky note in the buffer."
   (note-next!))
 
-(define (previous-sticky-note)
+(defcommand previous-sticky-note ()
   "Move the cursor to the previous sticky note in the buffer."
   (note-prev!))
 
-(define (toggle-sticky-notes)
+(defcommand toggle-sticky-notes ()
   "Show or hide every sticky note in the buffer."
   (notes-toggle!))

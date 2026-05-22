@@ -20,6 +20,9 @@ export { createBufferPrimitives } from './buffer-primitives.js';
  * commands and must load last.
  */
 export const STDLIB_FILES = Object.freeze([
+  // The command system loads first — every command file declares its
+  // commands with `defcommand`.
+  'commands.lisp',
   'editing.lisp',
   // The customisation registry loads early — later files declare
   // their settings with `defcustom`.

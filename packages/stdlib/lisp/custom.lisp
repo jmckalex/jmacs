@@ -171,7 +171,7 @@
 
 ;; --- the customisation buffer ------------------------------------------
 
-(define (customize)
+(defcommand customize ()
   "Open the customisation buffer for all settings."
   (open-customize!))
 
