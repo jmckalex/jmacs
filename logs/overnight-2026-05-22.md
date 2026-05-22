@@ -139,3 +139,60 @@ hides it).
 - (this log entry)
 
 ---
+
+## Task A3 — clickable colour swatches
+
+**Branch**: `agent-a3-colour-swatches` (off `main`, not merged).
+
+**What was built.** Beside every colour literal in code — `#rgb`,
+`#rrggbb`, `#rrggbbaa` (and `#rgba`), `rgb(...)`, `rgba(...)` — the
+editor view now renders a small inline clickable swatch. Clicking a
+swatch opens a modal colour chooser; on OK the chosen colour is
+written back into the buffer, replacing the literal's text.
+
+- `colour-literals.js` — the pure, DOM-free detector. `findColourLiterals`
+  reports each literal's exact `{start, end, text, css}` span;
+  `normaliseToHex` resolves a literal to the `#rrggbb(aa)` form.
+- `colour-picker.js` — `openColourPicker`, a real in-app modal
+  (backdrop + panel + OK/Cancel) wrapping a native `<input type=color>`,
+  with a live preview and an editable hex field. Escape/Enter and a
+  backdrop click are handled; the modal grabs the keyboard in the
+  capture phase so editor keys do not fire underneath it.
+- `colour-swatches.js` — `createColourSwatches` (per-line `decorateLine`,
+  walks the line's text nodes and inserts a swatch after each literal,
+  surviving the highlighter's token-span split) and the pure
+  `replaceLiteralInBuffer` helper.
+- `view.js` — the view builds the decorator over its own active buffer
+  and runs it per rendered line; `colourSwatches: false` disables it.
+- `styles.css` — inline swatch (checkerboard for alpha) + modal styles.
+
+**Decisions / deviations.**
+- No app.js change. The brief said "the view already has buffer
+  access; use it" — the decorator reads the view's `activeBuffer`
+  through a closure, so a `setBuffer` swap needs no rewiring and no
+  shared-registry wiring is required at integration.
+- The buffer edit uses only the buffer's public command surface
+  (`moveTo` + `moveTo {extend}` + `insert`); the L2 buffer exposes no
+  `replace(start,end,text)`. On OK the swatch re-checks the captured
+  span still holds the literal before editing, so a stale span never
+  corrupts unrelated text.
+- Fixed one pre-existing latent bug while adding the per-line offset
+  loop in `renderLines`: `first` can exceed `lineCount` after
+  switching to a shorter buffer, so the offset sum is clamped.
+
+**Tests.** `pnpm test` — all packages green, 0 failures (renderer 121,
+incl. 24 new: 21 for the colour-literal detector + `normaliseToHex`,
+and decorate/replace tests for the swatch module against a faithful
+minimal DOM). `pnpm --filter @editor/desktop smoke` — PASS, including
+the new `swatches: {"count":2,...,"edited":"a #00ccff b rgb(0,0,0)",
+"modalClosed":true}` check (two swatches appear, clicking one opens
+the modal, OK replaces `#ff8800` with the chosen `#00ccff`).
+
+**Commits.**
+- `81a3dcb` feat: add pure colour-literal detector for swatches
+- `7911c32` feat: add colour-picker modal and swatch decorator
+- `9b96dcc` feat: wire colour swatches into the editor view
+- `82fb7ca` test: add a smoke check for colour swatches
+- (this log entry)
+
+---

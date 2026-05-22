@@ -290,3 +290,34 @@ passing. Pre-commit hook also had a real bug fixed this session
 is already on `main`.
 
 ---
+
+## [2026-05-22 23:30] Agent A3 / colour swatches: integration is clean — no shared-registry wiring needed
+
+**Context**: Task A3 — clickable colour swatches — is done on branch
+`agent-a3-colour-swatches`.
+
+**Integration pass note**: A3 needs **no** shared-registry wiring. The
+feature is self-contained:
+- New files: `packages/renderer/src/colour-literals.js`,
+  `colour-picker.js`, `colour-swatches.js` (+ two test files).
+- `packages/renderer/src/index.js` — append-only export additions.
+- `packages/renderer/src/view.js` — the view builds the swatch
+  decorator over its own active buffer and runs it per rendered line;
+  no app.js change was required (the view already has buffer access,
+  as the brief noted). One pre-existing latent bug was fixed in the
+  same edit: the new line-offset pre-loop is clamped to `lineCount`
+  because `first` can exceed it after switching to a shorter buffer.
+- `apps/desktop/styles.css` — append-only swatch + modal styles.
+- `apps/desktop/scripts/smoke.js` — a new `swatches` check, inserted
+  before the final assertion block (the brief explicitly asked for a
+  smoke check).
+
+Merge order A: should apply cleanly. The only shared files touched are
+`view.js`, `index.js`, `styles.css`, `smoke.js`; all edits are
+additive except the clamp fix in `renderLines`.
+
+**State of the work**: branch `agent-a3-colour-swatches`, four feature
+commits + this log/notes commit, `pnpm test` green (all packages),
+`pnpm --filter @editor/desktop smoke` PASS. Not merged, per the rules.
+
+---
