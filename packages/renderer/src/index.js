@@ -31,3 +31,9 @@ export {
   createPythonHighlighter,
 } from './treesitter.js';
 export { matchingBracket } from './brackets.js';
+export { findColourLiterals, normaliseToHex } from './colour-literals.js';
+export { openColourPicker } from './colour-picker.js';
+export {
+  createColourSwatches,
+  replaceLiteralInBuffer,
+} from './colour-swatches.js';

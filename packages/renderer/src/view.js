@@ -21,6 +21,7 @@ import { handleKeyEvent } from './commands.js';
 import { keyEventToString } from './keymap.js';
 import { highlightLine, languageForName } from './highlight.js';
 import { matchingBracket } from './brackets.js';
+import { createColourSwatches } from './colour-swatches.js';
 
 /** Keys that are only modifiers — never a keystroke on their own. */
 const MODIFIER_KEYS = new Set([
@@ -55,6 +56,8 @@ const MODIFIER_KEYS = new Set([
  *   import('./highlight.js').Run[][]>} [options.highlighters] - Whole-
  *   buffer tree-sitter highlighters, keyed by language. A language with
  *   no entry falls back to the line-based tokenizer.
+ * @param {boolean} [options.colourSwatches=true] - Whether to decorate
+ *   colour literals in the text with clickable inline swatches.
  * @returns {EditorView}
  */
 export function createEditorView(buffer, container, options = {}) {
@@ -63,6 +66,16 @@ export function createEditorView(buffer, container, options = {}) {
 
   // The buffer currently shown; swapped by setBuffer.
   let activeBuffer = buffer;
+
+  // The colour-swatch decorator: places a clickable swatch beside every
+  // colour literal in a rendered line, and edits the buffer when a
+  // swatch's modal is confirmed. It reads the current buffer through
+  // the closure, so a setBuffer swap needs no rewiring. On by default;
+  // pass `colourSwatches: false` to disable it.
+  const colourSwatches =
+    options.colourSwatches === false
+      ? null
+      : createColourSwatches({ doc, getBuffer: () => activeBuffer });
 
   const highlighters =
     options.highlighters && typeof options.highlighters === 'object'
@@ -175,6 +188,16 @@ export function createEditorView(buffer, container, options = {}) {
       }
     }
 
+    // The buffer offset each visible line starts at — its index into
+    // `lines` plus the lengths and newlines of every line before it.
+    // Only computed up to `first`, the first visible line; `first` can
+    // exceed the line count after a switch to a shorter buffer, so the
+    // sum is clamped to the lines that actually exist.
+    let lineStartOffset = 0;
+    for (let index = 0; index < first && index < lineCount; index += 1) {
+      lineStartOffset += lines[index].content.length + 1;
+    }
+
     const lineEls = [];
     const numberEls = [];
     for (let index = first; index < last; index += 1) {
@@ -184,6 +207,15 @@ export function createEditorView(buffer, container, options = {}) {
         ? perLine[index] ?? []
         : highlightLine(lines[index].content, language);
       renderRuns(lineEl, runs);
+      // Place any inline decorations (colour swatches) on the line.
+      if (colourSwatches) {
+        colourSwatches.decorateLine(
+          lineEl,
+          lines[index].content,
+          lineStartOffset
+        );
+      }
+      lineStartOffset += lines[index].content.length + 1;
       lineEls.push(lineEl);
 
       const numberEl = el('div', 'editor-line-no');
