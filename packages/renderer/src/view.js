@@ -301,47 +301,12 @@ export function createEditorView(buffer, container, options = {}) {
   root.addEventListener('scroll', schedule);
   // Mouse: click to place the cursor, drag to select.
   //
-  // A click on rendered text is mapped precisely by the browser's caret
-  // hit-testing. A click on an empty line, or past the end of a line's
-  // text, lands on no text node — there it falls back to the monospace
-  // grid geometry.
+  // A pixel point maps to a buffer offset directly through the
+  // monospace grid — the line from the y, the column from the x. This
+  // covers every case (mid-line, an empty line, past a line's end) and
+  // needs no DOM hit-testing, so it stays fast whatever is drawn behind
+  // the text.
   function offsetFromPoint(clientX, clientY) {
-    if (typeof doc.caretRangeFromPoint === 'function') {
-      const range = doc.caretRangeFromPoint(clientX, clientY);
-      if (range !== null && range.startContainer.nodeType === 3) {
-        const offset = offsetFromTextNode(range.startContainer, range.startOffset);
-        if (offset !== null) return offset;
-      }
-    }
-    return offsetFromGeometry(clientX, clientY);
-  }
-
-  /** A clicked text node and offset within it → a buffer offset. */
-  function offsetFromTextNode(node, nodeOffset) {
-    let lineEl = node.parentNode;
-    while (lineEl && !lineEl.classList?.contains('editor-line')) {
-      lineEl = lineEl.parentNode;
-    }
-    if (!lineEl) return null;
-    const lineIndex = Array.prototype.indexOf.call(linesEl.children, lineEl);
-    if (lineIndex < 0) return null;
-
-    // Column: the text in the line before the clicked node, plus its
-    // offset within that node.
-    let column = 0;
-    const walker = doc.createTreeWalker(lineEl, NodeFilter.SHOW_TEXT);
-    for (let t = walker.nextNode(); t !== null; t = walker.nextNode()) {
-      if (t === node) {
-        column += nodeOffset;
-        break;
-      }
-      column += t.textContent.length;
-    }
-    return activeBuffer.offsetAt(lineIndex, column);
-  }
-
-  /** A pixel point → a buffer offset via the monospace grid. */
-  function offsetFromGeometry(clientX, clientY) {
     const box = content.getBoundingClientRect();
     const lineHeight = cursorEl.getBoundingClientRect().height || 22;
     const line = Math.min(
