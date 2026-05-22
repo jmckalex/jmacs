@@ -32,6 +32,7 @@ export const STDLIB_FILES = Object.freeze([
   'search.lisp',
   'kill.lisp',
   'yank-pop.lisp',
+  'line-ops.lisp',
   'system.lisp',
   'modes.lisp',
   'keymap.lisp',

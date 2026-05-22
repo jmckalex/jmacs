@@ -24,6 +24,8 @@
    "p"     'toggle-repl
    "h"     'mark-whole-buffer
    ";"     'comment-line
+   "C-d"   'duplicate-line
+   "C-j"   'join-line
    "C-x"   'exchange-point-and-mark})
 
 ;; The C-h prefix map — help.
@@ -107,6 +109,8 @@
    "M-S-period"   'end-of-buffer
    "M-d"          'kill-word
    "M-backspace"  'backward-kill-word
+   "M-up"         'move-line-up
+   "M-down"       'move-line-down
    "C-x"          c-x-keymap
    "C-h"          c-h-keymap
    "M-n"          sticky-note-keymap})

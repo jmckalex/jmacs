@@ -1282,3 +1282,138 @@ test('cancelling a minibuffer prompt aborts the command', async () => {
   interpreter.evaluate('(minibuffer-delivered nil)'); // cancelled
   assert.equal(interpreter.evaluate('*ran*'), false);
 });
+
+// --- line operations ----------------------------------------------------
+
+test('M-Down moves the current line down one', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo\nthree');
+  buffer.moveTo(1); // on "one"
+  press(interpreter, 'M-down');
+  assert.equal(buffer.text, 'two\none\nthree');
+});
+
+test('M-Down carries the cursor with the moved line', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo\nthree');
+  buffer.moveTo(2); // column 2 of "one"
+  press(interpreter, 'M-down');
+  assert.equal(buffer.text, 'two\none\nthree');
+  assert.equal(buffer.point, 6, 'cursor stays at column 2 of the moved line');
+});
+
+test('M-Down on the last line does nothing', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo');
+  buffer.moveTo(5); // on "two"
+  press(interpreter, 'M-down');
+  assert.equal(buffer.text, 'one\ntwo');
+  assert.equal(buffer.point, 5);
+});
+
+test('M-Up moves the current line up one', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo\nthree');
+  buffer.moveTo(5); // on "two"
+  press(interpreter, 'M-up');
+  assert.equal(buffer.text, 'two\none\nthree');
+});
+
+test('M-Up carries the cursor with the moved line', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo\nthree');
+  buffer.moveTo(6); // column 2 of "two"
+  press(interpreter, 'M-up');
+  assert.equal(buffer.text, 'two\none\nthree');
+  assert.equal(buffer.point, 2, 'cursor stays at column 2 of the moved line');
+});
+
+test('M-Up on the first line does nothing', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo');
+  buffer.moveTo(1); // on "one"
+  press(interpreter, 'M-up');
+  assert.equal(buffer.text, 'one\ntwo');
+  assert.equal(buffer.point, 1);
+});
+
+test('move-line-down then move-line-up is a round trip', async () => {
+  const { buffer, interpreter } = await editor('a\nb\nc');
+  buffer.moveTo(0); // on "a"
+  press(interpreter, 'M-down');
+  assert.equal(buffer.text, 'b\na\nc');
+  press(interpreter, 'M-up');
+  assert.equal(buffer.text, 'a\nb\nc');
+});
+
+test('C-x C-d duplicates the current line below it', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo');
+  buffer.moveTo(1); // on "one"
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-d');
+  assert.equal(buffer.text, 'one\none\ntwo');
+});
+
+test('duplicate-line moves the cursor onto the copy, keeping its column', async () => {
+  const { buffer, interpreter } = await editor('hello\nworld');
+  buffer.moveTo(2); // column 2 of "hello"
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-d');
+  assert.equal(buffer.text, 'hello\nhello\nworld');
+  assert.equal(buffer.point, 8, 'cursor at column 2 of the duplicated line');
+});
+
+test('duplicate-line works on the last line', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo');
+  buffer.moveTo(5); // on "two"
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-d');
+  assert.equal(buffer.text, 'one\ntwo\ntwo');
+});
+
+test('C-x C-j joins the next line onto the current one', async () => {
+  const { buffer, interpreter } = await editor('hello\nworld');
+  buffer.moveTo(0); // on "hello"
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-j');
+  assert.equal(buffer.text, 'hello world');
+});
+
+test('join-line collapses the next line indentation to one space', async () => {
+  const { buffer, interpreter } = await editor('hello\n    world');
+  buffer.moveTo(0);
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-j');
+  assert.equal(buffer.text, 'hello world');
+});
+
+test('join-line lands the cursor at the join', async () => {
+  const { buffer, interpreter } = await editor('foo\nbar');
+  buffer.moveTo(1); // anywhere on "foo"
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-j');
+  assert.equal(buffer.text, 'foo bar');
+  assert.equal(buffer.point, 3, 'cursor sits at the join, before the space');
+});
+
+test('join-line on the last line does nothing', async () => {
+  const { buffer, interpreter } = await editor('only');
+  buffer.moveTo(2);
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-j');
+  assert.equal(buffer.text, 'only');
+});
+
+test('the line-op commands are bound to their keys', async () => {
+  const { interpreter } = await editor();
+  assert.ok(
+    interpreter.evaluate('(eq? (get the-keymap "M-up") (quote move-line-up))')
+  );
+  assert.ok(
+    interpreter.evaluate(
+      '(eq? (get the-keymap "M-down") (quote move-line-down))'
+    )
+  );
+  assert.ok(
+    interpreter.evaluate(
+      '(eq? (get c-x-keymap "C-d") (quote duplicate-line))'
+    )
+  );
+  assert.ok(
+    interpreter.evaluate('(eq? (get c-x-keymap "C-j") (quote join-line))')
+  );
+});
