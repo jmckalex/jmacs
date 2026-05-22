@@ -1,7 +1,7 @@
 # Modes — design proposal
 
 **Status: decided — the open questions (§13) are answered, and
-phases 1 and 2 are implemented. Phases 3–4 remain.**
+phases 1–3 are implemented. Phase 4 remains.**
 
 A *mode* is a tagged behavioural configuration for a buffer (per the
 glossary). This document proposes how modes work in jmacs: the data
