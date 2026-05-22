@@ -10,13 +10,16 @@
 ;;; under the M-n prefix (see keymap.lisp). Notes are also fully
 ;;; scriptable: the primitives are ordinary Lisp procedures.
 
-;; An optional override for the command that renders a note's JMarkdown
-;; source to HTML. jmacs runs the command, feeds the note's source on
-;; stdin, and shows whatever HTML it prints. nil uses the editor's
-;; built-in default ("multimarkdown -s"); set this to choose a
-;; different processor, e.g.
-;;   (set! *jmarkdown-command* "pandoc -f markdown -t html")
-(define *jmarkdown-command* nil)
+;; *jmarkdown-command* is a customisable setting (see custom.lisp): the
+;; shell command that renders a note's JMarkdown source to HTML — jmacs
+;; feeds the source on stdin and shows the command's stdout. Change it
+;; through the customisation UI, or directly, e.g.
+;;   (custom-apply! '*jmarkdown-command* "pandoc -f markdown -t html")
+(defgroup 'sticky-notes 'jmacs "Sticky notes overlaid on the buffer.")
+
+(defcustom *jmarkdown-command* "multimarkdown -s" :string
+  :group 'sticky-notes
+  :doc "Shell command that renders a sticky note's JMarkdown source to HTML; the source is fed on stdin, the HTML read from the command's stdout.")
 
 (define (add-sticky-note)
   "Create a sticky note at the cursor and open it for editing."

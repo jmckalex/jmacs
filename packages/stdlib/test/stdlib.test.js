@@ -918,9 +918,13 @@ test('M-n t toggles sticky-note visibility', async () => {
   assert.deepEqual(noteCalls, ['toggle']);
 });
 
-test('the JMarkdown render command defaults to nil', async () => {
+test('the JMarkdown render command is a registered custom setting', async () => {
   const { interpreter } = await editor();
-  assert.equal(interpreter.evaluate('(nil? *jmarkdown-command*)'), true);
+  assert.equal(interpreter.evaluate('*jmarkdown-command*'), 'multimarkdown -s');
+  assert.equal(
+    interpreter.evaluate('(custom-registered? (quote *jmarkdown-command*))'),
+    true
+  );
 });
 
 // --- toggle-repl --------------------------------------------------------
