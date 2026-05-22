@@ -7,6 +7,31 @@ flagged so the standing instructions can be updated if you disagree.
 
 ---
 
+## [2026-05-22 overnight, continued] Goto-line, replace, more
+
+You asked me to keep building without greenlighting each step. Six more
+features after the ten below, same discipline (branch, test, smoke,
+merge):
+
+- **goto-line** (`M-g`).
+- **Bracket matching skips strings and comments** — closes the v0
+  limitation flagged earlier; a whole-buffer non-code mask.
+- **Comment toggling** (`C-x ;`), language-aware.
+- **Backward incremental search** (`C-r`); `C-s`/`C-r` flip direction
+  mid-search.
+- **replace-string** (`M-r`) — a chained two-prompt minibuffer flow.
+- **transpose-chars** (`C-t`) and a live OS window title.
+
+Every suite green — storage 47, buffer 31, lisp 67, renderer 63,
+stdlib 50 (258 total); the smoke test covers the whole stack.
+
+The editor now has a genuinely complete editing surface: Emacs-style
+motion and editing, kill ring, search (both directions) and replace,
+multiple buffers, a command palette, a help system, syntax
+highlighting, and its keymap/commands in hot-reloadable Lisp.
+
+---
+
 ## [2026-05-21 overnight] Tree-sitter, kill ring, words, gutter, help, more
 
 **Context**: You went to sleep asking for "an amazing app" by morning.
