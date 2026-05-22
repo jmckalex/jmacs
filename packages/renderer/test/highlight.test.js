@@ -72,3 +72,46 @@ test('an empty line yields no runs in a code language', () => {
   assert.deepEqual(highlightLine('', 'lisp'), []);
   assert.deepEqual(highlightLine('', 'javascript'), []);
 });
+
+test('languageForName recognises markdown', () => {
+  assert.equal(languageForName('notes.md'), 'markdown');
+  assert.equal(languageForName('book.jmd'), 'markdown');
+});
+
+test('Markdown: a heading faces the whole line', () => {
+  assert.deepEqual(highlightLine('## A heading', 'markdown'), [
+    { text: '## A heading', face: 'heading' },
+  ]);
+});
+
+test('Markdown: inline code, strong, emphasis, highlight', () => {
+  assert.equal(faced('use `code` here', 'markdown', 'code').text, '`code`');
+  assert.equal(faced('a *strong* word', 'markdown', 'strong').text, '*strong*');
+  assert.equal(faced('an /italic/ word', 'markdown', 'emphasis').text, '/italic/');
+  assert.equal(faced('a ==mark== word', 'markdown', 'constant').text, '==mark==');
+});
+
+test('Markdown: links, JMarkdown citations and directives', () => {
+  assert.equal(faced('see [docs](u)', 'markdown', 'link').text, '[docs](u)');
+  assert.equal(
+    faced('text \\cite{ref} more', 'markdown', 'keyword').text,
+    '\\cite{ref}'
+  );
+  assert.deepEqual(highlightLine(':::TeX', 'markdown'), [
+    { text: ':::TeX', face: 'keyword' },
+  ]);
+});
+
+test('Markdown: list and blockquote markers', () => {
+  assert.equal(faced('- an item', 'markdown', 'operator').text, '-');
+  assert.equal(faced('> a quote', 'markdown', 'operator').text, '>');
+});
+
+test('Markdown runs reconstruct the line', () => {
+  for (const line of ['a *b* /c/ `d` [e](f)', '> quote with *strong*', '1. item']) {
+    assert.equal(
+      highlightLine(line, 'markdown').map((r) => r.text).join(''),
+      line
+    );
+  }
+});

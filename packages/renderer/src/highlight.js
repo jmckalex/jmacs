@@ -37,12 +37,13 @@ const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 /**
  * Choose a language from a buffer name.
  * @param {string} name
- * @returns {'lisp' | 'javascript' | 'plain'}
+ * @returns {'lisp' | 'javascript' | 'markdown' | 'plain'}
  */
 export function languageForName(name) {
   if (typeof name !== 'string') return 'plain';
   if (name.endsWith('.lisp')) return 'lisp';
   if (name.endsWith('.js') || name.endsWith('.mjs')) return 'javascript';
+  if (name.endsWith('.md') || name.endsWith('.jmd')) return 'markdown';
   return 'plain';
 }
 
@@ -156,15 +157,70 @@ function tokenizeJavaScript(line) {
 }
 
 /**
+ * Tokenize one line of Markdown (and JMarkdown). Block constructs
+ * (headings, `:::` directives) face the whole line; otherwise the line
+ * is scanned for inline constructs.
+ */
+function tokenizeMarkdown(line) {
+  if (/^\s*#{1,6}\s/.test(line)) return [{ text: line, face: 'heading' }];
+  if (/^\s*:::/.test(line)) return [{ text: line, face: 'keyword' }];
+
+  /** @type {Run[]} */
+  const runs = [];
+  let plain = '';
+  const flush = () => {
+    if (plain !== '') {
+      runs.push({ text: plain, face: null });
+      plain = '';
+    }
+  };
+  const emit = (text, face) => {
+    flush();
+    runs.push({ text, face });
+  };
+
+  let i = 0;
+  // A leading blockquote or list marker.
+  const lead = /^(\s*)(>|[-*+]|\d+\.)(\s)/.exec(line);
+  if (lead) {
+    plain += lead[1];
+    flush();
+    runs.push({ text: lead[2], face: 'operator' });
+    plain += lead[3];
+    i = lead[0].length;
+  }
+
+  while (i < line.length) {
+    const rest = line.slice(i);
+    let m;
+    if ((m = /^`[^`]+`/.exec(rest))) emit(m[0], 'code');
+    else if ((m = /^==[^=]+==/.exec(rest))) emit(m[0], 'constant');
+    else if ((m = /^\*[^*\n]+\*/.exec(rest))) emit(m[0], 'strong');
+    else if ((m = /^\/[^/\s][^/\n]*\//.exec(rest))) emit(m[0], 'emphasis');
+    else if ((m = /^\[[^\]\n]+\]\([^)\n]+\)/.exec(rest))) emit(m[0], 'link');
+    else if ((m = /^\\[A-Za-z]+\{[^}\n]*\}/.exec(rest))) emit(m[0], 'keyword');
+    else {
+      plain += line[i];
+      i += 1;
+      continue;
+    }
+    i += m[0].length;
+  }
+  flush();
+  return runs;
+}
+
+/**
  * Split a line into highlighted runs. The runs' texts always
  * concatenate back to the original line.
  *
  * @param {string} text - One line, without its newline.
- * @param {'lisp' | 'javascript' | 'plain'} language
+ * @param {'lisp' | 'javascript' | 'markdown' | 'plain'} language
  * @returns {Run[]}
  */
 export function highlightLine(text, language) {
   if (language === 'lisp') return tokenizeLisp(text);
   if (language === 'javascript') return tokenizeJavaScript(text);
+  if (language === 'markdown') return tokenizeMarkdown(text);
   return text === '' ? [] : [{ text, face: null }];
 }

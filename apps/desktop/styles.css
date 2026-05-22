@@ -366,3 +366,27 @@ body {
 .tok-operator {
   color: #c0c0cc;
 }
+
+/* Markdown / JMarkdown */
+.tok-heading {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tok-strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.tok-emphasis {
+  font-style: italic;
+}
+
+.tok-code {
+  color: #9ccf8f;
+}
+
+.tok-link {
+  color: #6fb8c9;
+  text-decoration: underline;
+}
