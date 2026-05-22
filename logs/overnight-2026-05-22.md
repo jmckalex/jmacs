@@ -383,3 +383,99 @@ untouched, so no smoke test run (per spec).
 - (this log entry)
 
 ---
+
+## Task C5 — `expand-region`  *(branch `agent-c5-expand-region`)*
+
+**What was built.** A new `defcommand` `expand-region` (in a new file
+`packages/stdlib/lisp/expand-region.lisp`) that grows the active
+region one structural step on every press: word → line → paragraph →
+whole buffer. Repeated presses keep growing; any other command in
+between resets the chain so the next press starts again at the word
+step around the current cursor position.
+
+- The structural bounds are computed by pure Lisp helpers — `expand-
+  region-word-bounds`, `-line-bounds`, `-paragraph-bounds`,
+  `-buffer-bounds` — each taking only `(text, pos)` and returning a
+  `(start . end)` pair (or nil for word, when the cursor sits between
+  two non-word chars and there is no adjacent word). The dispatch
+  picks the next step whose bounds are strictly larger than the
+  current selection, so a paragraph that happens to coincide with the
+  line is skipped rather than wasting a press.
+- The chain is detected via `(eq? *last-command* 'expand-region)` —
+  the same `*last-command*` mechanism `yank-pop` uses (C1). The first
+  press in a chain records the original point as
+  `*expand-region-anchor*`; every subsequent press in the chain
+  computes its bounds around that same anchor, so growth is stable as
+  the region's edges move.
+- `keymap.lisp` (shared, permitted): bound `C-equal` — the host's
+  normalisation of the spec's `C-=` keystroke (`event.code` is
+  `"Equal"`, no fallback in `NAMED_CODES`, so it surfaces as
+  `"C-equal"`, matching the existing `M-S-comma` / `M-S-period`
+  convention for shifted punctuation). Comment in the keymap notes
+  the spec name vs the bound key string.
+- `STDLIB_FILES` (shared, permitted): one append —
+  `expand-region.lisp`, loaded after `occur.lisp`. It uses
+  `drop-leading-blanks` from `line-ops.lisp` (which loads earlier),
+  so no helper was duplicated.
+
+**Decisions / deviations.**
+
+- **Key string `"C-equal"` for `C-=`.** The spec table writes the
+  binding as `C-=`, but the renderer normalises Ctrl+= to
+  `"C-equal"` (matching the established `M-S-comma` / `M-S-period`
+  pattern for shifted punctuation). Bound to `"C-equal"`; the spec
+  name is preserved in a comment. Not a deviation in intent, just in
+  spelling — the assigned keystroke is what fires the command.
+- **"Word" definition.** A word char is `[A-Za-z0-9_]`, derived in
+  Lisp via `string-contains?` membership in a literal alphabet string
+  (the Lisp has no char primitives). When the cursor sits *between* a
+  word char and a non-word char, the adjacent word wins; between two
+  non-word chars, the word step is skipped and the press takes the
+  line directly. This matches the common Emacs-style behaviour.
+- **Anchor across the chain.** Growth is computed around the original
+  anchor, not around the current point or selection edges. After the
+  first press point has moved to the word's end (because `set-mark!`
+  + `goto!` places point at one extreme and mark at the other); a
+  paragraph-step that read point would drift onto a different line in
+  a multi-line region. The explicit anchor variable keeps the chain
+  stable.
+- **Selection construction.** Each step applies its bounds via
+  `(clear-mark!) (goto! end) (set-mark! start)` — same pattern
+  `mark-whole-buffer` uses, just with the explicit clear-mark up
+  front so a `goto!` against an existing mark cannot accidentally
+  extend through it.
+- **Falling off the top.** Once at the whole-buffer step, further
+  presses are no-ops (the selection stays as the whole buffer); the
+  chain is still considered alive, so the next non-expand-region
+  command followed by `C-=` will restart at the word step around the
+  then-current cursor.
+
+**Tests.** `pnpm test` — all packages green, 0 failures (475 total;
+stdlib 182, incl. 13 new):
+
+- the `command-registered?` and `C-equal` keymap binding;
+- the three pure bound helpers — word at an interior offset, word
+  preferring the just-prior word at an interword offset, word
+  returning nil between non-word chars;
+- line bounds (start-to-end of the cursor's line);
+- paragraph bounds across blank-line boundaries (both halves of a
+  two-paragraph buffer);
+- the first press grabbing the current word;
+- the four-step growth (word, line, paragraph, buffer) over a
+  multi-paragraph buffer;
+- the "skip a step that adds nothing" case on a one-line buffer;
+- an intervening `right` command breaking the chain and restarting
+  the growth around the new cursor position;
+- the inter-word fall-through to the line;
+- the empty-buffer no-op (selection stays null);
+- anchor stability — second press still uses the original anchor
+  even though point moved to the word end after the first press.
+
+`apps/desktop/` untouched, so no smoke test run (per spec).
+
+**Commits.**
+- `ec75592` feat: add expand-region (C-=) — grow the selection structurally
+- `39c4495` test: cover expand-region bounds, growth steps and chain reset
+- (this log entry)
+
+---
