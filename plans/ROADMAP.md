@@ -17,13 +17,18 @@ in progress.
 
 | Feature | Plan | Status |
 |---------|------|--------|
+| The evaluator re-architecture — proper tail calls and a concurrency model (`await`, coroutines) | [`EVALUATOR.md`](EVALUATOR.md) | planned — gated by a performance spike |
 | A reactive Lisp notebook (Observable-style), written in Lisp | [`REACTIVE-NOTEBOOK.md`](REACTIVE-NOTEBOOK.md) | planned — awaiting review |
 | Pretty-printed markdown shown in place of source comments | [`MARKDOWN-COMMENTS.md`](MARKDOWN-COMMENTS.md) | planned — awaiting review |
 
-The notebook and the markdown-comments feature are independent of each
-other and can be built in either order.
+The **evaluator re-architecture** is the foundational one — a single
+rewrite that gets the evaluator off the JavaScript call stack, fixing
+both the no-tail-calls and no-concurrency limits. It unblocks work that
+is currently parked: the reactive notebook's async cells, an LSP
+client, file watchers. The notebook and the markdown-comments feature
+are independent of each other and can be built in either order.
 
-One deferred sub-feature is on the horizon: a **prefix-argument**
+One deferred sub-feature is also on the horizon: a **prefix-argument**
 (`C-u`) mechanism. The command system reserves a `prefix` interactive
 source for it (see [`COMMAND-SYSTEM.md`](COMMAND-SYSTEM.md)); it is a
 small feature in its own right.
