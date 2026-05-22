@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from './files.js';
+import { renderJMarkdown } from './jmarkdown.js';
 import { installMenu } from './menu.js';
 import { EDITOR_URL, serveAppFile } from './serve.js';
 
@@ -42,6 +43,10 @@ app.whenReady().then(() => {
   registerFileHandlers();
   installMenu();
   ipcMain.on('app:quit', () => app.quit());
+  // Render a sticky note's JMarkdown via the user-configured command.
+  ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
+    renderJMarkdown(command, source)
+  );
   createWindow();
 
   app.on('activate', () => {

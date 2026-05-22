@@ -24,4 +24,14 @@ contextBridge.exposeInMainWorld('host', {
 
   /** Quit the application. */
   quit: () => ipcRenderer.send('app:quit'),
+
+  /**
+   * Render JMarkdown `source` to HTML by running `command` (a shell
+   * command) with the source on stdin.
+   * @param {string} command
+   * @param {string} source
+   * @returns {Promise<{html: string} | {error: string}>}
+   */
+  renderJMarkdown: (command, source) =>
+    ipcRenderer.invoke('jmarkdown:render', { command, source }),
 });

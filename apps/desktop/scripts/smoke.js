@@ -7,13 +7,14 @@
  * normal test run because it needs an Electron runtime.
  */
 
-import { app, BrowserWindow, protocol } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol } from 'electron';
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from '../src/files.js';
+import { renderJMarkdown } from '../src/jmarkdown.js';
 import { EDITOR_URL, serveAppFile } from '../src/serve.js';
 
 /** A scratch path the file round-trip writes to. */
@@ -40,6 +41,9 @@ function finish(code, message) {
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   registerFileHandlers();
+  ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
+    renderJMarkdown(command, source)
+  );
 
   const win = new BrowserWindow({
     show: false,
@@ -490,6 +494,7 @@ app.whenReady().then(() => {
       // the document when the buffer scrolls.
       const sticky = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -509,6 +514,7 @@ app.whenReady().then(() => {
         await frame();
         submit('(goto! 0)');
         await frame();
+        // With no render command set, a note shows its raw source.
         submit('(note-set-source! (note-create!) "sticky body text")');
         await frame();
         const note = document.querySelector('.sticky-note');
@@ -518,10 +524,18 @@ app.whenReady().then(() => {
         await frame();
         await frame();
         const after = note ? note.getBoundingClientRect().top : 0;
+        // With a render command, the source is piped through it: 'cat'
+        // echoes it verbatim, so an HTML tag becomes a real element.
+        submit('(set! *jmarkdown-command* "cat")');
+        await frame();
+        submit('(note-set-source! (note-create!) "<b>bold note</b>")');
+        await wait(500);
         return {
           present: note !== null,
           body: body ? body.textContent.trim() : '',
           scrolled: Math.abs(after - before + 300) < 4,
+          count: document.querySelectorAll('.sticky-note').length,
+          rendered: document.querySelectorAll('.sticky-note-body b').length > 0,
         };
       })()`);
       console.log('  sticky:', JSON.stringify(sticky));
@@ -566,7 +580,9 @@ app.whenReady().then(() => {
       const stickyOk =
         sticky.present &&
         sticky.body.includes('sticky body text') &&
-        sticky.scrolled;
+        sticky.scrolled &&
+        sticky.count === 2 &&
+        sticky.rendered;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&

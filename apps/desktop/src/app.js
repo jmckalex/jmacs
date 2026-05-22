@@ -622,10 +622,31 @@ const editorView = createEditorView(
   }
 );
 
+// Render a sticky note's JMarkdown source to HTML through the shell
+// command in *jmarkdown-command*. Throwing — when no command is set,
+// or the command fails — makes the notes module fall back to showing
+// the raw source.
+async function renderNoteHtml(source) {
+  let command = null;
+  try {
+    const value = interpreter.evaluate('*jmarkdown-command*');
+    if (typeof value === 'string') command = value;
+  } catch {
+    command = null;
+  }
+  if (command === null || command.trim() === '') {
+    throw new Error('no JMarkdown command configured');
+  }
+  const result = await window.host.renderJMarkdown(command, source);
+  if (result && typeof result.html === 'string') return result.html;
+  throw new Error(result?.error ?? 'JMarkdown render failed');
+}
+
 // Sticky notes fill the view's overlay layer; they ride the document.
 const stickyNotes = createStickyNotes({
   overlayLayer: editorView.overlayLayer,
   getBuffer: () => session.current,
+  render: renderNoteHtml,
 });
 stickyNotes.setBuffer(session.current);
 
