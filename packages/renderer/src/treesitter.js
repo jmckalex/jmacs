@@ -17,8 +17,8 @@ import { splitIntoLineRuns } from './runs.js';
 const VENDOR = 'app://editor/packages/renderer/vendor';
 
 /**
- * The highlight query: which JavaScript nodes get which face. Limited
- * to leaf nodes, so captures never overlap.
+ * The highlight query: which JavaScript nodes get which face. Captures
+ * sit on leaf nodes (tokens and identifiers), so they never overlap.
  */
 const JS_QUERY = `
   (comment) @comment
@@ -34,6 +34,13 @@ const JS_QUERY = `
     "continue" "static" "get" "set"
   ] @keyword
   [ (true) (false) (null) (undefined) ] @constant
+  (function_declaration name: (identifier) @function)
+  (method_definition name: (property_identifier) @function)
+  (call_expression function: (identifier) @function)
+  (call_expression
+    function: (member_expression property: (property_identifier) @function))
+  (class_declaration name: (identifier) @type)
+  (new_expression constructor: (identifier) @type)
 `;
 
 /**

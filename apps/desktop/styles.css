@@ -6,16 +6,17 @@
  */
 
 :root {
-  --bg: #1b1b23;
-  --bg-chrome: #16161d;
-  --bg-editor: #1e1e28;
-  --bg-repl: #191920;
-  --fg: #d6d6e0;
-  --fg-dim: #82828f;
-  --accent: #7d9bf5;
-  --result: #8fce9b;
-  --error: #ef9a9a;
-  --selection: rgba(125, 155, 245, 0.26);
+  /* Mariana — the default dark scheme of Sublime Text. */
+  --bg: #2b333b;
+  --bg-chrome: #262d34;
+  --bg-editor: #303841;
+  --bg-repl: #2b333b;
+  --fg: #d8dee9;
+  --fg-dim: #7c8f9e;
+  --accent: #6699cc;
+  --result: #99c794;
+  --error: #ec5f67;
+  --selection: rgba(102, 153, 204, 0.27);
 
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas,
     monospace;
@@ -343,40 +344,52 @@ body {
   user-select: none;
 }
 
-/* --- syntax highlighting ------------------------------------------------ */
+/* --- syntax highlighting — Mariana palette ------------------------------ */
 
 .tok-comment {
-  color: #6b6b7a;
+  color: #7c8f9e;
   font-style: italic;
 }
 
 .tok-string {
-  color: #9ccf8f;
+  color: #99c794;
 }
 
 .tok-number {
-  color: #e3b485;
+  color: #f9ae58;
 }
 
 .tok-keyword {
-  color: #b58ad9;
+  color: #c594c5;
 }
 
 .tok-constant {
-  color: #6fb8c9;
+  color: #5fb4b4;
 }
 
-.tok-paren {
-  color: #6f6f7e;
+.tok-function {
+  color: #6699cc;
+}
+
+.tok-type {
+  color: #fac863;
+}
+
+.tok-tag {
+  color: #ec5f67;
 }
 
 .tok-operator {
-  color: #c0c0cc;
+  color: #a3acb9;
+}
+
+.tok-paren {
+  color: #8b98a6;
 }
 
 /* Markdown / JMarkdown */
 .tok-heading {
-  color: var(--accent);
+  color: #fac863;
   font-weight: 600;
 }
 
@@ -390,10 +403,10 @@ body {
 }
 
 .tok-code {
-  color: #9ccf8f;
+  color: #99c794;
 }
 
 .tok-link {
-  color: #6fb8c9;
+  color: #6699cc;
   text-decoration: underline;
 }
