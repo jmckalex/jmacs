@@ -20,14 +20,13 @@ import {
 import {
   createCustomizeView,
   createEditorView,
-  createHtmlHighlighter,
   createImageView,
-  createJavaScriptHighlighter,
   createMarkdownPreview,
-  createPythonHighlighter,
   createMinibuffer,
   createReplView,
+  createTreeSitterHighlighter,
   fuzzyFilter,
+  loadLanguageHighlighters,
 } from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 import { createSplash } from './splash.js';
@@ -723,6 +722,36 @@ function fetchStdlibSource(name) {
   );
 }
 
+/** List `.lisp` files in the stdlib's `languages/` directory. */
+async function listStdlibLanguageFiles() {
+  const response = await fetch(
+    'app://editor/packages/stdlib/lisp/languages/?list'
+  );
+  if (!response.ok) return [];
+  const names = await response.json();
+  return names.filter((name) => name.endsWith('.lisp'));
+}
+
+/**
+ * Import every JS module in `packages/renderer/src/languages/`. Each
+ * module calls `registerLanguage` at top level — loading the module is
+ * what registers it. See `packages/renderer/src/languages/README.md`.
+ */
+async function discoverRendererLanguages() {
+  const base = 'app://editor/packages/renderer/src/languages/';
+  const response = await fetch(`${base}?list`);
+  if (!response.ok) return;
+  const names = await response.json();
+  for (const name of names) {
+    if (!name.endsWith('.js')) continue;
+    try {
+      await import(/* @vite-ignore */ `${base}${name}`);
+    } catch (error) {
+      repl.appendError(`language ${name}: ${error.message}`);
+    }
+  }
+}
+
 /**
  * Write the customisation registry's saved settings to custom.lisp.
  * `pairList` is a Lisp list of (name value) pairs; each value is
@@ -766,10 +795,14 @@ async function loadUserConfig() {
   }
 }
 
+/** The options passed to `loadStdlib` — same shape both at boot and on
+ *  hot reload, so language files are picked up by both paths. */
+const stdlibOptions = { listLanguageFiles: listStdlibLanguageFiles };
+
 /** Re-evaluate the standard library — hot reload of the editor itself. */
 async function reloadStdlib() {
   try {
-    await loadStdlib(interpreter, fetchStdlibSource);
+    await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
     await loadUserConfig();
     repl.appendNote('standard library reloaded');
   } catch (error) {
@@ -779,7 +812,7 @@ async function reloadStdlib() {
 
 let keymapReady = false;
 try {
-  await loadStdlib(interpreter, fetchStdlibSource);
+  await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
   keymapReady = true;
 } catch (error) {
   repl.appendError(`standard library failed to load: ${error.message}`);
@@ -787,21 +820,18 @@ try {
 
 if (keymapReady) await loadUserConfig();
 
-// The tree-sitter highlighters (the Lisp keeps its own tokenizer). Each
-// loads independently; a language whose grammar fails falls back to the
-// line-based tokenizer in highlight.js.
-const highlighters = {};
-for (const [language, create] of [
-  ['javascript', createJavaScriptHighlighter],
-  ['html', createHtmlHighlighter],
-  ['python', createPythonHighlighter],
-]) {
-  try {
-    highlighters[language] = (await create()).highlight;
-  } catch (error) {
-    repl.appendError(`${language} highlighter unavailable: ${error.message}`);
+// Tree-sitter languages are drop-ins: discover the JS registration
+// modules in `packages/renderer/src/languages/` (each one registers
+// its grammar + query + suffixes on import), then instantiate one
+// highlighter per registered language. A grammar that fails to load
+// disables only its language; the rest still highlight.
+await discoverRendererLanguages();
+const highlighters = await loadLanguageHighlighters(
+  createTreeSitterHighlighter,
+  (tag, error) => {
+    repl.appendError(`${tag} highlighter unavailable: ${error.message}`);
   }
-}
+);
 document.body.dataset.treesitter = Object.keys(highlighters).join(',');
 
 /** Dispatch a keystroke through the Lisp keymap. */

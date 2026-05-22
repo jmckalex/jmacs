@@ -8,7 +8,7 @@
  */
 
 import { protocol } from 'electron';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,15 +41,31 @@ protocol.registerSchemesAsPrivileged([
  * repo-relative file. Register with `protocol.handle('app', ...)` once
  * the app is ready.
  *
+ * A URL ending with a slash and the query string `?list` returns a JSON
+ * array of the directory's entries (bare names, no directories). The
+ * language registry uses this to discover language modules and Lisp
+ * mode files at startup.
+ *
  * @param {Request} request
  * @returns {Promise<Response>}
  */
 export async function serveAppFile(request) {
-  const { pathname } = new URL(request.url);
-  const filePath = join(repoRoot, decodeURIComponent(pathname));
+  const url = new URL(request.url);
+  const filePath = join(repoRoot, decodeURIComponent(url.pathname));
   // Refuse to serve anything outside the repository.
   if (filePath !== repoRoot && !filePath.startsWith(repoRoot + '/')) {
     return new Response('Forbidden', { status: 403 });
+  }
+  if (url.pathname.endsWith('/') && url.searchParams.has('list')) {
+    try {
+      const entries = await readdir(filePath, { withFileTypes: true });
+      const names = entries.filter((e) => e.isFile()).map((e) => e.name);
+      return new Response(JSON.stringify(names), {
+        headers: { 'content-type': 'application/json' },
+      });
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
   }
   try {
     const data = await readFile(filePath);
