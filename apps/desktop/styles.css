@@ -17,7 +17,7 @@
   --error: #ef9a9a;
   --selection: rgba(125, 155, 245, 0.26);
 
-  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas,
+  --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas,
     monospace;
   --font-size: 14px;
   --line-height: 1.65;
@@ -40,6 +40,10 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-mono);
+  /* Coding ligatures (-> => != >= …) when the font provides them.
+     JetBrains Mono's ligatures preserve the monospace advance width,
+     so the ch/lh grid the editor lays out on is unaffected. */
+  font-variant-ligatures: contextual;
   -webkit-font-smoothing: antialiased;
   cursor: default;
   user-select: none;
