@@ -55,8 +55,8 @@ export function createBuffer(initialText = '', options = {}) {
   // library defines what a mode is and gives them meaning.
   /** @type {*} */
   let majorMode = null;
-  /** @type {*[]} */
-  let minorModes = [];
+  /** @type {*} */
+  let minorModes = null;
 
   /** @type {Set<(event: BufferEvent) => void>} */
   const listeners = new Set();
@@ -119,12 +119,12 @@ export function createBuffer(initialText = '', options = {}) {
       emit(null);
     },
 
-    /** @returns {*[]} The buffer's active minor modes. */
+    /** @returns {*} The buffer's active minor modes. */
     get minorModes() {
       return minorModes;
     },
     set minorModes(value) {
-      minorModes = Array.isArray(value) ? value : [];
+      minorModes = value;
       emit(null);
     },
 

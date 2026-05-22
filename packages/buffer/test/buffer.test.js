@@ -271,7 +271,7 @@ test('onChange rejects a non-function listener', () => {
 test('a buffer has no major mode and no minor modes by default', () => {
   const buf = createBuffer();
   assert.equal(buf.majorMode, null);
-  assert.deepEqual(buf.minorModes, []);
+  assert.equal(buf.minorModes, null);
 });
 
 test('the major mode stores an opaque value', () => {
@@ -291,8 +291,9 @@ test('setting a mode emits a change event so consumers refresh', () => {
   assert.deepEqual(events[0], { change: null, point: 0, mark: null });
 });
 
-test('minorModes coerces a non-array to an empty list', () => {
+test('minorModes stores an opaque value', () => {
   const buf = createBuffer();
-  buf.minorModes = null;
-  assert.deepEqual(buf.minorModes, []);
+  const modes = { lisp: true }; // the stdlib decides the representation
+  buf.minorModes = modes;
+  assert.equal(buf.minorModes, modes);
 });

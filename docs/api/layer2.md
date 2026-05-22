@@ -78,7 +78,7 @@ library defines what a mode is.
 | Member | Description |
 |--------|-------------|
 | `majorMode` | The major mode, or `null` (settable). |
-| `minorModes` | The list of active minor modes (settable; a non-array becomes `[]`). |
+| `minorModes` | The active minor modes — an opaque value, or `null` (settable). |
 
 Setting either emits a change event (`change: null`), so the renderer
 and modeline refresh exactly as they do for an edit or cursor move.
