@@ -333,3 +333,53 @@ spec).
 - (this log entry)
 
 ---
+
+## Task C4 — `occur`  *(branch `agent-c4-occur`)*
+
+**What was built.** A new `defcommand` `occur` (in a new file
+`packages/stdlib/lisp/occur.lisp`) that prompts for a literal
+substring via its interactive spec — `(interactive (string "Occur: "))`
+— and lists every matching line of the current buffer in a freshly
+created `*Occur: PATTERN*` buffer. Each result line is the source
+line number (1-based, right-padded to the widest match's width) and
+the matching line text. With zero matches the results buffer says
+`(no matches)` and a `0 matches for "PATTERN":` header rather than
+being empty. Matching is plain literal substring, no regex.
+
+- The matching and formatting are pure Lisp helpers
+  (`occur-matching-lines`, `occur-result-text`, `occur-buffer-name`),
+  separated from the command body so they can be unit-tested without
+  touching the host's buffer list.
+- The command body captures the source's `(buffer-text)` *first*,
+  then calls `new-buffer!` with the chosen name, then `insert!`s the
+  result — the buffer-switch happens between the read and the write.
+- A new `M-s` prefix keymap (`m-s-keymap`) was added to
+  `keymap.lisp`, with `M-s o` bound to `occur`; no other entry was
+  changed there.
+- `STDLIB_FILES`: one append — `occur.lisp`, loaded after
+  `line-ops.lisp` (it only needs `commands.lisp` and the base list
+  primitives, which load earlier).
+
+**Decisions / deviations.** None from the spec. The results buffer
+is named `*Occur: <pattern>*` (the spec's second option) rather than
+the bare `*Occur*` — it conveys what was searched for and reduces
+the duplicate-buffer problem when the user runs `occur` more than
+once with different patterns. (Same pattern twice will still create
+a second results buffer; v1 acceptably, since `new-buffer!` does not
+look up by name.)
+
+**Tests.** `pnpm test` — all packages green, 0 failures (462 total;
+stdlib 169, incl. 11 new covering: the pure
+`occur-matching-lines`/`occur-result-text`/`occur-buffer-name`
+helpers, the singular-vs-plural "match"/"matches" header, the
+empty-result case, the `(command-registered?)` and `M-s o` binding,
+the prefix-keymap behaviour mid-sequence, the end-to-end "creates a
+new buffer and inserts the right text" flow, the no-matches
+end-to-end case, and the cancelled-prompt case. `apps/desktop/`
+untouched, so no smoke test run (per spec).
+
+**Commits.**
+- `b311f0e` feat: add occur command bound to M-s o
+- (this log entry)
+
+---
