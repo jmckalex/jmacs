@@ -84,3 +84,58 @@ established.
 - (this log entry)
 
 ---
+
+## A2 — live Markdown preview  (branch `agent-a2-markdown-preview`)
+
+**What was built.** A toggleable preview pane, to the right of the
+editor, that renders the current `markdown-mode` buffer to HTML and
+refreshes as the buffer is edited.
+
+- New file `packages/renderer/src/markdown-preview.js`: the preview-pane
+  component, modelled on `repl.js` — a plain DOM component decoupled
+  from the Lisp runtime. It is handed Markdown source and a `render`
+  function; `update` debounces refreshes (~250ms, `PREVIEW_DEBOUNCE_MS`)
+  and `refreshNow` renders immediately. A render-token guard stops a
+  slow render from overwriting a newer one; an optional `typeset` hook
+  covers MathJax. Eight unit tests
+  (`packages/renderer/test/markdown-preview.test.js`).
+- `packages/renderer/src/index.js`: exports `createMarkdownPreview` and
+  `PREVIEW_DEBOUNCE_MS`.
+- `apps/desktop/index.html`: a `.workspace` row wraps the editor host
+  and the new `#markdown-preview-host` pane.
+- `apps/desktop/styles.css`: the `.workspace` flex row, the
+  `.markdown-preview-host` pane (42% width, white preview body) and
+  `body.markdown-preview-hidden` show/hide — modelled on `repl-hidden`.
+- `apps/desktop/src/app.js`: creates the pane (reusing `renderNoteHtml`,
+  the sticky-note JMarkdown bridge, as its renderer), adds the
+  `markdown-preview!` primitive, refreshes the pane on every buffer
+  edit (via `watchCurrentBuffer`) and re-points it on a buffer switch.
+- `packages/stdlib/lisp/markdown.lisp`: the `markdown-preview`
+  `defcommand`, bound to `C-c v` in `markdown-c-c-map`.
+
+**Decisions / deviations.**
+- The pane starts hidden and only opens on a `markdown-mode` buffer;
+  invoking `markdown-preview` on any other buffer reports a REPL note
+  and does nothing (the preview is meaningless off Markdown). Switching
+  away from a Markdown buffer auto-closes the pane.
+- MathJax typesetting of the pane was done — the "nice-to-have" — since
+  the app already loads MathJax and the sticky-note `typesetMath`
+  helper was a ready template; it is a no-op if MathJax is absent.
+- No deviation from the keybinding allocation: `C-c v` was free in
+  `markdown-c-c-map`.
+
+**Tests.** `pnpm test` — all packages pass, 0 failures (renderer 89
+incl. 8 new markdown-preview tests; stdlib 118 incl. 2 new
+markdown-preview tests; full suite green).
+`pnpm --filter @editor/desktop smoke` — PASS, including the new
+`preview: {"shown":true,"rendered":true,"refreshed":true,
+"hidden":true}` check (opens the pane with `C-c v`, confirms the
+heading reaches the rendered HTML, an edit refreshes it, `C-c v`
+hides it).
+
+**Commits.**
+- `db5ed66` feat: add the Markdown preview pane component
+- `a1bb5cb` feat: add live Markdown preview pane
+- (this log entry)
+
+---
