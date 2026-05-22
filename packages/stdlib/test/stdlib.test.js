@@ -68,6 +68,7 @@ async function editor(initialText = 'hello world') {
       },
       'start-goto-line!': () => NIL,
       'start-replace!': () => NIL,
+      'recenter!': () => NIL,
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
@@ -473,6 +474,12 @@ test('C-t at the buffer start does nothing', async () => {
   buffer.moveTo(1);
   press(interpreter, 'C-t');
   assert.equal(buffer.text, 'ab');
+});
+
+test('C-l is bound to recenter', async () => {
+  const { interpreter } = await editor();
+  assert.ok(interpreter.evaluate('(eq? (get the-keymap "C-l") (quote recenter))'));
+  assert.equal(press(interpreter, 'C-l'), true);
 });
 
 test('C-x ; comments and uncomments a line', async () => {

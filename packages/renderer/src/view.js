@@ -233,6 +233,11 @@ export function createEditorView(buffer, container, options = {}) {
   return {
     element: root,
 
+    /** Scroll so the cursor's line sits in the middle of the viewport. */
+    recenter() {
+      cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
+    },
+
     setBuffer(next) {
       if (next === activeBuffer) return;
       unsubscribe();

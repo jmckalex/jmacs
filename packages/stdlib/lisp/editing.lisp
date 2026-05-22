@@ -55,6 +55,10 @@
   "Prompt for a string and a replacement; replace every occurrence."
   (start-replace!))
 
+(define (recenter)
+  "Scroll so the cursor's line is centred in the viewport."
+  (recenter!))
+
 ;; --- movement that extends the selection -------------------------------
 
 (define (forward-char-extending) (cursor-right! #t))

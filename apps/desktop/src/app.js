@@ -430,6 +430,10 @@ const interpreter = createInterpreter({
       startReplace();
       return NIL;
     },
+    'recenter!': () => {
+      editorView.recenter();
+      return NIL;
+    },
 
     // Buffer-list commands — they re-point the editor view.
     'next-buffer!': () => {
