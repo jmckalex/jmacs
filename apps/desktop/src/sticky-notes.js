@@ -393,6 +393,9 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     textarea.className = 'sticky-note-edit';
     textarea.value = note.source;
     textarea.spellcheck = false;
+    // The editor is transparent over the note; carry the body's
+    // contrast colour so the text stays readable on a coloured note.
+    textarea.style.color = entry.body.style.color;
 
     let settled = false;
     function finish(value) {

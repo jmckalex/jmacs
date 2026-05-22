@@ -567,7 +567,9 @@ body.repl-hidden .repl-host {
   outline: none;
   resize: none;
   padding: 7px 10px;
-  background: #00000033;
+  /* Transparent so a coloured note shows through; the text colour is
+     set per-note for contrast (see beginEdit in sticky-notes.js). */
+  background: transparent;
   color: var(--fg);
   font-family: var(--font-mono);
   font-size: 12px;
@@ -609,6 +611,11 @@ body.repl-hidden .repl-host {
   height: 30px !important;
   min-width: 0;
   min-height: 0;
+  /* Collapsed, only the icon shows — no panel behind it. !important
+     beats the inline background a coloured note carries. */
+  background: transparent !important;
+  border: 0;
+  box-shadow: none;
 }
 
 .sticky-note.is-collapsed .sticky-note-bar,
