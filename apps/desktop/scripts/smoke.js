@@ -267,6 +267,21 @@ app.whenReady().then(() => {
       })()`);
       console.log('  treesitter:', JSON.stringify(treesitter));
 
+      // The background and overlay layers exist and are stacked right.
+      const layers = await win.webContents.executeJavaScript(`(() => {
+        const z = (sel) =>
+          Number(getComputedStyle(document.querySelector(sel)).zIndex);
+        return {
+          background: document.querySelector('.editor-background') !== null,
+          overlay: document.querySelector('.editor-overlay') !== null,
+          ordered:
+            z('.editor-background') < z('.editor-lines') &&
+            z('.editor-lines') < z('.editor-cursor') &&
+            z('.editor-cursor') < z('.editor-overlay'),
+        };
+      })()`);
+      console.log('  layers:', JSON.stringify(layers));
+
       // Replace-string: a chained two-prompt minibuffer flow.
       const replace = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -469,12 +484,13 @@ app.whenReady().then(() => {
       const modesOk =
         modes.lisp.includes('Lisp') && modes.txt.includes('Fundamental') &&
         modes.math.includes('Math') && modes.mathText.includes('Gamma');
+      const layersOk = layers.background && layers.overlay && layers.ordered;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
-        markdownOk && virtualOk && modesOk
+        markdownOk && virtualOk && modesOk && layersOk
       ) {
         finish(
           0,
@@ -520,8 +536,10 @@ app.whenReady().then(() => {
           1,
           `view virtualisation did not work (${JSON.stringify(virtual)})`
         );
-      } else {
+      } else if (!modesOk) {
         finish(1, `modes did not work (${JSON.stringify(modes)})`);
+      } else {
+        finish(1, `the view layers did not work (${JSON.stringify(layers)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

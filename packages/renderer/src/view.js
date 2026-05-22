@@ -30,6 +30,10 @@ const MODIFIER_KEYS = new Set([
 /**
  * @typedef {object} EditorView
  * @property {HTMLElement} element - The view's root element.
+ * @property {HTMLElement} backgroundLayer - An empty layer behind the
+ *   text, in the text's coordinate space; the host fills it.
+ * @property {HTMLElement} overlayLayer - An empty layer in front of the
+ *   text, in the text's coordinate space; the host fills it.
  * @property {(buffer: object) => void} setBuffer - Re-point the view
  *   at a different buffer.
  * @property {() => void} focus - Give the editor keyboard focus.
@@ -70,12 +74,25 @@ export function createEditorView(buffer, container, options = {}) {
 
   const gutter = el('div', 'editor-gutter');
   const content = el('div', 'editor-content');
+  // Empty layers for the host to fill — backgroundLayer sits behind the
+  // text, overlayLayer in front of it. Both share the text's ch/lh
+  // coordinate space and span the whole document.
+  const backgroundLayer = el('div', 'editor-background');
   const currentLineEl = el('div', 'editor-current-line');
   const selectionLayer = el('div', 'editor-selection');
   const bracketLayer = el('div', 'editor-brackets');
   const linesEl = el('div', 'editor-lines');
   const cursorEl = el('div', 'editor-cursor');
-  content.append(currentLineEl, selectionLayer, bracketLayer, linesEl, cursorEl);
+  const overlayLayer = el('div', 'editor-overlay');
+  content.append(
+    backgroundLayer,
+    currentLineEl,
+    selectionLayer,
+    bracketLayer,
+    linesEl,
+    cursorEl,
+    overlayLayer
+  );
   root.append(gutter, content);
   container.append(root);
 
@@ -384,6 +401,8 @@ export function createEditorView(buffer, container, options = {}) {
 
   return {
     element: root,
+    backgroundLayer,
+    overlayLayer,
 
     /** Scroll so the cursor's line sits in the middle of the viewport. */
     recenter() {
