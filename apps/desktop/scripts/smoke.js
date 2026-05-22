@@ -307,16 +307,25 @@ app.whenReady().then(() => {
         for (const ch of 'gamma') press(ch);
         await frame();
         const before = document.getElementById('modeline-position').textContent;
+        const click = (x, y) => {
+          editor.dispatchEvent(new MouseEvent('mousedown', {
+            clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true,
+          }));
+        };
         // The cursor is on line 3; click line 1 and check it moved.
-        const rect = document.querySelectorAll('.editor-line')[0].getBoundingClientRect();
-        editor.dispatchEvent(new MouseEvent('mousedown', {
-          clientX: rect.left + 16, clientY: rect.top + 4,
-          button: 0, bubbles: true, cancelable: true,
-        }));
+        const line0 = document.querySelectorAll('.editor-line')[0].getBoundingClientRect();
+        click(line0.left + 16, line0.top + 4);
+        await frame();
+        const after = document.getElementById('modeline-position').textContent;
+        // Click well past the end of line 2 ("beta") — the cursor should
+        // land at that line's end, not stay put.
+        const line1 = document.querySelectorAll('.editor-line')[1].getBoundingClientRect();
+        click(line1.right + 90, line1.top + 4);
         await frame();
         return {
           before,
-          after: document.getElementById('modeline-position').textContent,
+          after,
+          endOfLine: document.getElementById('modeline-position').textContent,
         };
       })()`);
       console.log('  mouse:', JSON.stringify(mouse));
@@ -390,7 +399,19 @@ app.whenReady().then(() => {
         submit('(toggle-math-mode)'); // a minor mode — shows in the modeline
         await frame();
         const math = document.getElementById('modeline-name').textContent;
-        return { lisp, txt, math };
+        // With math mode on, \` then Shift then G must insert \\Gamma —
+        // the bare Shift press must not reach the key reader.
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        const key = (k, shift) => editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: k, shiftKey: shift === true, bubbles: true, cancelable: true,
+        }));
+        key('\`');
+        key('Shift', true);
+        key('G', true);
+        await frame();
+        const mathText = document.querySelector('.editor-line').textContent;
+        return { lisp, txt, math, mathText };
       })()`);
       console.log('  modes:', JSON.stringify(modes));
 
@@ -412,14 +433,16 @@ app.whenReady().then(() => {
       const treesitterOk =
         treesitter.ready && treesitter.keywords > 0 && treesitter.numbers > 0;
       const replaceOk = replace.text === 'bar bar bar';
-      const mouseOk = mouse.after.includes('Ln 1') && mouse.before !== mouse.after;
+      const mouseOk =
+        mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
+        mouse.endOfLine.includes('Ln 2') && mouse.endOfLine.includes('Col 5');
       const markdownOk = markdown.headings > 0;
       const virtualOk =
         virtual.lineDivs > 0 && virtual.lineDivs < 120 &&
         virtual.scrollHeight > 3000 && virtual.firstNumber === '1';
       const modesOk =
         modes.lisp.includes('Lisp') && modes.txt.includes('Fundamental') &&
-        modes.math.includes('Math');
+        modes.math.includes('Math') && modes.mathText.includes('Gamma');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&

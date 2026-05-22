@@ -22,6 +22,11 @@ import { keyEventToString } from './keymap.js';
 import { highlightLine, languageForName } from './highlight.js';
 import { matchingBracket } from './brackets.js';
 
+/** Keys that are only modifiers — never a keystroke on their own. */
+const MODIFIER_KEYS = new Set([
+  'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph',
+]);
+
 /**
  * @typedef {object} EditorView
  * @property {HTMLElement} element - The view's root element.
@@ -261,6 +266,10 @@ export function createEditorView(buffer, container, options = {}) {
   // so the view stays usable on its own.
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   root.addEventListener('keydown', (event) => {
+    // A bare modifier press (Shift, Control, …) is not a key in its own
+    // right — dispatching it would, e.g., feed "S-shift" to a pending
+    // key reader. Wait for the real key.
+    if (MODIFIER_KEYS.has(event.key)) return;
     const handled = onKey
       ? onKey(keyEventToString(event))
       : handleKeyEvent(activeBuffer, event);
@@ -269,42 +278,66 @@ export function createEditorView(buffer, container, options = {}) {
 
   // Scrolling changes which lines are visible — re-render the window.
   root.addEventListener('scroll', schedule);
-  // Mouse: click to place the cursor, drag to select. A pixel point is
-  // mapped to a buffer offset via the browser's own caret hit-testing.
+  // Mouse: click to place the cursor, drag to select.
+  //
+  // A click on rendered text is mapped precisely by the browser's caret
+  // hit-testing. A click on an empty line, or past the end of a line's
+  // text, lands on no text node — there it falls back to the monospace
+  // grid geometry.
   function offsetFromPoint(clientX, clientY) {
-    if (typeof doc.caretRangeFromPoint !== 'function') return null;
-    const range = doc.caretRangeFromPoint(clientX, clientY);
-    if (range === null) return null;
+    if (typeof doc.caretRangeFromPoint === 'function') {
+      const range = doc.caretRangeFromPoint(clientX, clientY);
+      if (range !== null && range.startContainer.nodeType === 3) {
+        const offset = offsetFromTextNode(range.startContainer, range.startOffset);
+        if (offset !== null) return offset;
+      }
+    }
+    return offsetFromGeometry(clientX, clientY);
+  }
 
-    const node = range.startContainer;
-    let lineEl = node.nodeType === 3 ? node.parentNode : node;
-    while (
-      lineEl &&
-      lineEl !== linesEl &&
-      !(lineEl.classList && lineEl.classList.contains('editor-line'))
-    ) {
+  /** A clicked text node and offset within it → a buffer offset. */
+  function offsetFromTextNode(node, nodeOffset) {
+    let lineEl = node.parentNode;
+    while (lineEl && !lineEl.classList?.contains('editor-line')) {
       lineEl = lineEl.parentNode;
     }
-    if (!lineEl || !lineEl.classList?.contains('editor-line')) return null;
-
+    if (!lineEl) return null;
     const lineIndex = Array.prototype.indexOf.call(linesEl.children, lineEl);
     if (lineIndex < 0) return null;
 
     // Column: the text in the line before the clicked node, plus its
     // offset within that node.
-    let column = range.startOffset;
-    if (node.nodeType === 3) {
-      column = 0;
-      const walker = doc.createTreeWalker(lineEl, NodeFilter.SHOW_TEXT);
-      for (let t = walker.nextNode(); t !== null; t = walker.nextNode()) {
-        if (t === node) {
-          column += range.startOffset;
-          break;
-        }
-        column += t.textContent.length;
+    let column = 0;
+    const walker = doc.createTreeWalker(lineEl, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t !== null; t = walker.nextNode()) {
+      if (t === node) {
+        column += nodeOffset;
+        break;
       }
+      column += t.textContent.length;
     }
     return activeBuffer.offsetAt(lineIndex, column);
+  }
+
+  /** A pixel point → a buffer offset via the monospace grid. */
+  function offsetFromGeometry(clientX, clientY) {
+    const box = content.getBoundingClientRect();
+    const lineHeight = cursorEl.getBoundingClientRect().height || 22;
+    const line = Math.min(
+      activeBuffer.lineCount - 1,
+      Math.max(0, Math.floor((clientY - box.top) / lineHeight))
+    );
+    const column = Math.max(0, Math.round((clientX - box.left) / charWidth()));
+    return activeBuffer.offsetAt(line, column);
+  }
+
+  /** The pixel width of one character, measured from a rendered line. */
+  function charWidth() {
+    for (const lineEl of linesEl.children) {
+      const length = lineEl.textContent.length;
+      if (length > 0) return lineEl.getBoundingClientRect().width / length;
+    }
+    return (cursorEl.getBoundingClientRect().height || 22) * 0.6;
   }
 
   function onMouseMove(event) {
