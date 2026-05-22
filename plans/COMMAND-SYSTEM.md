@@ -1,6 +1,8 @@
 # Plan — the command system (`defcommand`)
 
-**Status: planned, not started.** A detailed design for review.
+**Status: shipped** (phases 1–3). Phase 4 — the `prefix` source — is
+deferred: it needs a prefix-argument (`C-u`) mechanism jmacs does not
+yet have. The spec reserves the `prefix` name for it.
 
 ## Context
 

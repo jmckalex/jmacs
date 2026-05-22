@@ -17,15 +17,16 @@ in progress.
 
 | Feature | Plan | Status |
 |---------|------|--------|
-| The command system — `defcommand`, a command registry, and Emacs-style interactive argument specs | [`COMMAND-SYSTEM.md`](COMMAND-SYSTEM.md) | planned — awaiting review |
 | A reactive Lisp notebook (Observable-style), written in Lisp | [`REACTIVE-NOTEBOOK.md`](REACTIVE-NOTEBOOK.md) | planned — awaiting review |
 | Pretty-printed markdown shown in place of source comments | [`MARKDOWN-COMMENTS.md`](MARKDOWN-COMMENTS.md) | planned — awaiting review |
 
-The **command system** is the natural next step — it makes "command" a
-first-class concept (so `M-x` lists every command, bound or not) and
-introduces declarative interactive argument specs, the powerful half of
-Emacs's `(interactive)`. The notebook and the markdown-comments feature
-are independent of it and of each other, and can follow in any order.
+The notebook and the markdown-comments feature are independent of each
+other and can be built in either order.
+
+One deferred sub-feature is on the horizon: a **prefix-argument**
+(`C-u`) mechanism. The command system reserves a `prefix` interactive
+source for it (see [`COMMAND-SYSTEM.md`](COMMAND-SYSTEM.md)); it is a
+small feature in its own right.
 
 ## Smaller follow-ups
 
@@ -43,6 +44,10 @@ startup splash, double-click word selection, the scroll-bounce fix,
 `C-x b` buffer creation, the `C-x p` REPL toggle, mode-specific native
 menus, the sticky-notes feature (rendering via an external command,
 MathJax, colour headers, collapse/expand, persistence, embedded media),
-and **Emacs-style customisation** — `defcustom`, the buffer-kind /
+**Emacs-style customisation** — `defcustom`, the buffer-kind /
 view-kind mechanism, the HTML customisation buffer, persistence and an
-`init.lisp` ([`CUSTOMISATION.md`](CUSTOMISATION.md)).
+`init.lisp` ([`CUSTOMISATION.md`](CUSTOMISATION.md)) — and **the command
+system** — `defcommand`, the command registry (so `M-x` lists every
+command), and declarative interactive argument specs
+([`COMMAND-SYSTEM.md`](COMMAND-SYSTEM.md)); the `prefix` source is
+deferred.
