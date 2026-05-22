@@ -676,8 +676,9 @@ const editorView = createEditorView(
 
 // The command sticky notes are rendered through. Hardcoded for now so
 // notes render out of the box; the *jmarkdown-command* Lisp variable
-// overrides it when set.
-const DEFAULT_JMARKDOWN_COMMAND = 'jmarkdown --to html --fragment';
+// overrides it when set. It must read the note source on stdin and
+// print HTML to stdout — `markdown` does; `jmarkdown` does not yet.
+const DEFAULT_JMARKDOWN_COMMAND = 'markdown';
 
 // Render a sticky note's JMarkdown source to HTML through the shell
 // command. Throwing — the command failed, e.g. it is not installed —

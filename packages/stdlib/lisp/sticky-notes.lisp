@@ -13,8 +13,8 @@
 ;; An optional override for the command that renders a note's JMarkdown
 ;; source to HTML. jmacs runs the command, feeds the note's source on
 ;; stdin, and shows whatever HTML it prints. nil uses the editor's
-;; built-in default ("jmarkdown --to html --fragment"); set this to
-;; choose a different processor, e.g.
+;; built-in default ("markdown"); set this to choose a different
+;; processor, e.g.
 ;;   (set! *jmarkdown-command* "pandoc -f markdown -t html")
 (define *jmarkdown-command* nil)
 
