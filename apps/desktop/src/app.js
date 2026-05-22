@@ -456,68 +456,6 @@ function startBufferSwitcher() {
   });
 }
 
-/** Prompt for a line number in the minibuffer and jump to it. */
-function startGotoLine() {
-  const buffer = session.current;
-
-  minibuffer.prompt('Goto line: ', {
-    onChange(value) {
-      const n = Number(value);
-      minibuffer.setStatus(
-        value !== '' && Number.isInteger(n) && n >= 1
-          ? `line ${Math.min(n, buffer.lineCount)} of ${buffer.lineCount}`
-          : ''
-      );
-    },
-    onSubmit(value) {
-      editorView.focus();
-      const n = Number(value);
-      if (Number.isInteger(n) && n >= 1) {
-        const line = Math.min(n, buffer.lineCount) - 1;
-        buffer.moveTo(buffer.offsetAt(line, 0));
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/** Prompt for a search and a replacement; replace every occurrence. */
-function startReplace() {
-  const buffer = session.current;
-
-  minibuffer.prompt('Replace: ', {
-    onSubmit(search) {
-      if (search === '') {
-        editorView.focus();
-        return;
-      }
-      minibuffer.prompt(`Replace "${search}" with: `, {
-        onSubmit(replacement) {
-          editorView.focus();
-          const text = buffer.text;
-          const count = text.split(search).length - 1;
-          if (count > 0) {
-            buffer.setText(text.split(search).join(replacement));
-          }
-          repl.appendNote(
-            count > 0
-              ? `replaced ${count} occurrence(s) of "${search}"`
-              : `"${search}" not found`
-          );
-        },
-        onCancel() {
-          editorView.focus();
-        },
-      });
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
 /** Pick a command in the minibuffer and show its documentation. */
 function startDescribeCommand() {
   const names = [...new Set(listToArray(interpreter.call('command-names')))];
@@ -597,12 +535,43 @@ const interpreter = createInterpreter({
       startDescribeCommand();
       return NIL;
     },
-    'start-goto-line!': () => {
-      startGotoLine();
+    // Open a minibuffer prompt for the command argument gatherer; the
+    // result is delivered back to Lisp via `minibuffer-delivered`.
+    'open-minibuffer!': (args) => {
+      minibuffer.prompt(String(args[0]), {
+        onSubmit(value) {
+          editorView.focus();
+          interpreter.call('minibuffer-delivered', value);
+        },
+        onCancel() {
+          editorView.focus();
+          interpreter.call('minibuffer-delivered', NIL);
+        },
+      });
       return NIL;
     },
-    'start-replace!': () => {
-      startReplace();
+    'goto-line!': (args) => {
+      const buffer = session.current;
+      const n = Number(args[0]);
+      if (Number.isInteger(n) && n >= 1) {
+        buffer.moveTo(buffer.offsetAt(Math.min(n, buffer.lineCount) - 1, 0));
+      }
+      return NIL;
+    },
+    'replace-all!': (args) => {
+      const buffer = session.current;
+      const search = String(args[0]);
+      const replacement = String(args[1]);
+      if (search !== '') {
+        const text = buffer.text;
+        const count = text.split(search).length - 1;
+        if (count > 0) buffer.setText(text.split(search).join(replacement));
+        repl.appendNote(
+          count > 0
+            ? `replaced ${count} occurrence(s) of "${search}"`
+            : `"${search}" not found`
+        );
+      }
       return NIL;
     },
     'recenter!': () => {

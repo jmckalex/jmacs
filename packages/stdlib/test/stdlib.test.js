@@ -22,6 +22,7 @@ async function editor(initialText = 'hello world') {
   const paletteCalls = [];
   const noteCalls = [];
   const replCalls = [];
+  const minibufferPrompts = [];
   const output = [];
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
@@ -68,8 +69,12 @@ async function editor(initialText = 'hello world') {
         paletteCalls.push('describe');
         return NIL;
       },
-      'start-goto-line!': () => NIL,
-      'start-replace!': () => NIL,
+      'open-minibuffer!': (a) => {
+        minibufferPrompts.push(a[0]);
+        return NIL;
+      },
+      'goto-line!': () => NIL,
+      'replace-all!': () => NIL,
       'recenter!': () => NIL,
       'page-lines': () => 3,
       'toggle-repl!': () => {
@@ -118,6 +123,7 @@ async function editor(initialText = 'hello world') {
     paletteCalls,
     noteCalls,
     replCalls,
+    minibufferPrompts,
     output,
   };
 }
@@ -1123,4 +1129,59 @@ test('a keymap-bound command is also a registered command', async () => {
     interpreter.evaluate('(command-registered? (quote forward-char))'),
     true
   );
+});
+
+test('an interactive command gathers a synchronous source (point)', async () => {
+  const { interpreter, buffer } = await editor('hello world');
+  interpreter.evaluate('(define *got* nil)');
+  interpreter.evaluate(
+    '(defcommand at-point (p) (interactive point) (set! *got* p))'
+  );
+  buffer.moveTo(6);
+  interpreter.evaluate('(run-command (quote at-point))');
+  assert.equal(interpreter.evaluate('*got*'), 6);
+});
+
+test('an interactive command gathers a number from the minibuffer', async () => {
+  const { interpreter, minibufferPrompts } = await editor();
+  interpreter.evaluate('(define *n* nil)');
+  interpreter.evaluate(
+    '(defcommand take-n (n) (interactive (number "N: ")) (set! *n* n))'
+  );
+  interpreter.evaluate('(run-command (quote take-n))');
+  // The gather suspended, awaiting the minibuffer.
+  assert.deepEqual(minibufferPrompts, ['N: ']);
+  assert.equal(interpreter.evaluate('(nil? *n*)'), true);
+  interpreter.evaluate('(minibuffer-delivered "42")');
+  assert.equal(interpreter.evaluate('*n*'), 42);
+});
+
+test('an interactive command gathers two minibuffer arguments in order', async () => {
+  const { interpreter, minibufferPrompts } = await editor();
+  interpreter.evaluate('(define *pair* nil)');
+  interpreter.evaluate(
+    '(defcommand take-two (a b)' +
+      ' (interactive (string "A: ") (string "B: "))' +
+      ' (set! *pair* (list a b)))'
+  );
+  interpreter.evaluate('(run-command (quote take-two))');
+  assert.deepEqual(minibufferPrompts, ['A: ']);
+  interpreter.evaluate('(minibuffer-delivered "one")');
+  assert.deepEqual(minibufferPrompts, ['A: ', 'B: ']);
+  interpreter.evaluate('(minibuffer-delivered "two")');
+  assert.deepEqual(listToArray(interpreter.evaluate('*pair*')), [
+    'one',
+    'two',
+  ]);
+});
+
+test('cancelling a minibuffer prompt aborts the command', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate('(define *ran* #f)');
+  interpreter.evaluate(
+    '(defcommand maybe (x) (interactive (string "X: ")) (set! *ran* #t))'
+  );
+  interpreter.evaluate('(run-command (quote maybe))');
+  interpreter.evaluate('(minibuffer-delivered nil)'); // cancelled
+  assert.equal(interpreter.evaluate('*ran*'), false);
 });

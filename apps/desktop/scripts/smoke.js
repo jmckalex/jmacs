@@ -337,7 +337,7 @@ app.whenReady().then(() => {
         replSubmit('(new-buffer! "replace-test")');
         replSubmit('(insert! "foo foo foo")');
         await frame();
-        replSubmit('(replace-string)');
+        replSubmit('(run-command (quote replace-string))');
         const mb = document.querySelector('.minibuffer-input');
         const fill = async (text) => {
           mb.value = text;

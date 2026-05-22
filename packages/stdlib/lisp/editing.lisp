@@ -55,13 +55,15 @@
   "Move backward to the start of the sentence."
   (goto! (sentence-backward-offset)))
 
-(defcommand goto-line ()
-  "Prompt for a line number and move the cursor to that line."
-  (start-goto-line!))
+(defcommand goto-line (line)
+  "Move the cursor to LINE."
+  (interactive (number "Goto line: "))
+  (goto-line! line))
 
-(defcommand replace-string ()
-  "Prompt for a string and a replacement; replace every occurrence."
-  (start-replace!))
+(defcommand replace-string (from to)
+  "Replace every occurrence of FROM with TO."
+  (interactive (string "Replace: ") (string "Replace with: "))
+  (replace-all! from to))
 
 (defcommand recenter ()
   "Scroll so the cursor's line is centred in the viewport."
