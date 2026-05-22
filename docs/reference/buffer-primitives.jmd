@@ -354,3 +354,79 @@ Re-fetch and re-evaluate the standard library. Wrapped by
 
 Quit the editor. If buffers have unsaved changes, asks for confirmation
 first. Wrapped by `quit-editor` (`C-x C-c`).
+
+## Sticky notes
+
+Registered in `apps/desktop/src/app.js`, delegating to the sticky-notes
+module (`apps/desktop/src/sticky-notes.js`). A note is identified by an
+opaque id string. `sticky-notes.lisp` wraps these as the `M-n` commands
+(see `commands.jmd`); they are equally callable directly. Unlike the
+primitives above, several of these return a value rather than `nil`.
+
+### `note-create!`
+`(note-create! [offset])`
+
+Create a note anchored at `offset` (default: the cursor). Returns the
+new note's id.
+
+### `note-delete!`
+`(note-delete! id)`
+
+Delete the note with `id`.
+
+### `note-edit!`
+`(note-edit! id)`
+
+Open the note's in-place editor — a textarea of its JMarkdown source.
+
+### `note-set-source!`
+`(note-set-source! id source)`
+
+Set the note's JMarkdown source and re-render it.
+
+### `note-source`
+`(note-source id)`
+
+The note's JMarkdown source, or `nil` when there is no such note.
+
+### `note-move!`
+`(note-move! id line x)`
+
+Re-anchor the note to `line` and set its left edge to `x` pixels.
+
+### `note-resize!`
+`(note-resize! id width height)`
+
+Resize the note to `width` × `height` pixels.
+
+### `note-ids`
+`(note-ids)`
+
+The ids of the current buffer's notes, as a list.
+
+### `note-count`
+`(note-count)`
+
+How many notes the current buffer has.
+
+### `note-at-point`
+`(note-at-point)`
+
+The id of the note whose anchor is nearest the cursor, or `nil` when
+the buffer has no notes.
+
+### `note-goto!`
+`(note-goto! id)`
+
+Move the cursor to the note's anchor and scroll the note into view.
+
+### `note-next!` / `note-prev!`
+`(note-next!)` / `(note-prev!)`
+
+Move the cursor to the next / previous note in the buffer, by anchor
+order.
+
+### `notes-toggle!`
+`(notes-toggle!)`
+
+Show or hide every note in the current buffer.
