@@ -8,6 +8,10 @@
 
 export { createEditorView } from './view.js';
 export { createReplView } from './repl.js';
+export {
+  createMarkdownPreview,
+  PREVIEW_DEBOUNCE_MS,
+} from './markdown-preview.js';
 export { createMinibuffer } from './minibuffer.js';
 export { createCustomizeView } from './customize.js';
 export {
