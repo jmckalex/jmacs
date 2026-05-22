@@ -172,5 +172,45 @@
 ;; --- the customisation buffer ------------------------------------------
 
 (define (customize)
-  "Open the customisation buffer."
+  "Open the customisation buffer for all settings."
   (open-customize!))
+
+(define (customize-group group)
+  "Open the customisation buffer for GROUP (a symbol)."
+  (open-customize-group! (symbol->string group)))
+
+(define (customize-variable name)
+  "Open the customisation buffer for the single setting NAME."
+  (open-customize-variable! (symbol->string name)))
+
+;; The model the customisation view renders is plain data — strings,
+;; values and lists — so the view needs no knowledge of the registry.
+
+(define (custom-field name)
+  "A setting as data for the view: a list
+   (name type value default doc state options), with name, type and
+   state as strings."
+  (let ((entry (custom-entry name)))
+    (list (symbol->string name)
+          (str (get entry :type :string))
+          (get entry :value nil)
+          (get entry :default nil)
+          (get entry :doc "")
+          (str (custom-state name))
+          (get entry :options nil))))
+
+(define (-group-doc group)
+  "The docstring of GROUP, or an empty string."
+  (get (get *custom-groups* group {}) :doc ""))
+
+(define (custom-group-model group)
+  "The model for a group's customisation buffer: a list
+   (title doc parent subgroups settings) — subgroups a list of
+   (name doc) pairs, settings a list of custom-field results."
+  (let ((parent (get (get *custom-groups* group {}) :parent nil)))
+    (list (symbol->string group)
+          (-group-doc group)
+          (if (nil? parent) nil (symbol->string parent))
+          (map (lambda (sub) (list (symbol->string sub) (-group-doc sub)))
+               (groups-in-group group))
+          (map custom-field (customs-in-group group)))))

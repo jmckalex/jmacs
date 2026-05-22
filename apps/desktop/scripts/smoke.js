@@ -621,12 +621,22 @@ app.whenReady().then(() => {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
         await new Promise((r) => requestAnimationFrame(() => r()));
-        const customizeView = document.querySelector('.customize');
+        const customizeEl = document.querySelector('.customize');
         const customizeShown = !!(
-          customizeView &&
-          getComputedStyle(customizeView).display !== 'none' &&
+          customizeEl &&
+          getComputedStyle(customizeEl).display !== 'none' &&
           getComputedStyle(document.querySelector('.editor')).display ===
             'none'
+        );
+        // The sticky-notes group renders its setting as a form widget.
+        replInput.value = '(customize-group (quote sticky-notes))';
+        replInput.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        await new Promise((r) => requestAnimationFrame(() => r()));
+        const settingRendered = !!(
+          document.querySelector('.customize-row') &&
+          document.querySelector('.customize-row .customize-widget')
         );
         return {
           initLoaded,
@@ -634,6 +644,7 @@ app.whenReady().then(() => {
             saved.includes('*jmarkdown-command*') &&
             saved.includes('echo smoke')),
           customizeShown,
+          settingRendered,
         };
       })()`);
       console.log('  config:', JSON.stringify(config));
@@ -689,7 +700,10 @@ app.whenReady().then(() => {
         sticky.faLoaded &&
         sticky.persisted;
       const configOk =
-        config.initLoaded && config.savedSetting && config.customizeShown;
+        config.initLoaded &&
+        config.savedSetting &&
+        config.customizeShown &&
+        config.settingRendered;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&

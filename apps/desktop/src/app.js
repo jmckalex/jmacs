@@ -643,9 +643,17 @@ const interpreter = createInterpreter({
       writeCustomFile(args[0]);
       return NIL;
     },
-    // Open (or switch to) the customisation buffer.
+    // Open (or switch to) a customisation buffer.
     'open-customize!': () => {
       openCustomize('*Customize*', { group: 'jmacs' });
+      return NIL;
+    },
+    'open-customize-group!': (args) => {
+      openCustomScope({ group: String(args[0]) });
+      return NIL;
+    },
+    'open-customize-variable!': (args) => {
+      openCustomScope({ variable: String(args[0]) });
       return NIL;
     },
 
@@ -860,13 +868,102 @@ const editorView = createEditorView(
   }
 );
 
+// --- the customisation view's data bridge ------------------------------
+// The view is decoupled from the Lisp; these turn registry data into
+// plain objects for it, and route its callbacks back into the registry.
+
+/** Turn a `custom-field` Lisp list into a plain setting object. */
+function fieldToSetting(field) {
+  const f = listToArray(field);
+  return {
+    name: f[0],
+    type: String(f[1]).replace(/^:/, ''),
+    value: f[2] === NIL ? null : f[2],
+    default: f[3] === NIL ? null : f[3],
+    doc: f[4],
+    state: f[5],
+    options: f[6] === NIL ? [] : listToArray(f[6]),
+  };
+}
+
+/** The model the customisation view renders for a buffer's scope. */
+function getCustomModel(scope) {
+  if (!keymapReady) return null;
+  try {
+    if (scope.variable) {
+      const field = interpreter.evaluate(
+        `(custom-field (quote ${scope.variable}))`
+      );
+      return {
+        title: scope.variable,
+        doc: '',
+        parent: null,
+        groups: [],
+        settings: [fieldToSetting(field)],
+      };
+    }
+    const model = listToArray(
+      interpreter.evaluate(`(custom-group-model (quote ${scope.group}))`)
+    );
+    return {
+      title: model[0],
+      doc: model[1],
+      parent: model[2] === NIL ? null : model[2],
+      groups: listToArray(model[3]).map((pair) => {
+        const g = listToArray(pair);
+        return { name: g[0], doc: g[1] };
+      }),
+      settings: listToArray(model[4]).map(fieldToSetting),
+    };
+  } catch (error) {
+    repl.appendError(`customize: ${error.lispMessage ?? error.message}`);
+    return null;
+  }
+}
+
+/** Apply a setting for the session — a value, quote-wrapped to survive
+ *  its type. */
+function applyCustomSetting(name, value) {
+  interpreter.evaluate(
+    `(custom-apply! (quote ${name}) (quote ${writeString(value)}))`
+  );
+}
+
+/** Apply a setting and persist it. */
+function saveCustomSetting(name, value) {
+  interpreter.evaluate(
+    `(custom-apply-and-save! (quote ${name}) (quote ${writeString(value)}))`
+  );
+}
+
+/** Reset a setting to its default value. */
+function resetCustomSetting(name) {
+  interpreter.evaluate(`(custom-reset! (quote ${name}))`);
+}
+
+/** Open a customisation buffer for a scope — a subgroup or a variable. */
+function openCustomScope(scope) {
+  if (scope.variable) {
+    openCustomize(`*Customize: ${scope.variable}*`, scope);
+  } else {
+    openCustomize(`*Customize: ${scope.group}*`, scope);
+  }
+}
+
 // The customisation view — the editor's first non-text buffer view.
 // It shares #editor-host with the editor view; switchToBuffer shows
 // whichever the current buffer's kind calls for. Keys typed in it
 // (outside a form control) go through the same Lisp keymap.
 const customizeView = createCustomizeView(
   document.getElementById('editor-host'),
-  keymapReady ? { onKey: dispatchKey } : {}
+  {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    getModel: getCustomModel,
+    applySetting: applyCustomSetting,
+    saveSetting: saveCustomSetting,
+    resetSetting: resetCustomSetting,
+    openScope: openCustomScope,
+  }
 );
 customizeView.element.style.display = 'none';
 

@@ -1060,3 +1060,26 @@ test('custom-apply-and-save! sets a setting and marks it saved', async () => {
     'saved'
   );
 });
+
+test('custom-field returns a setting as flat data for the view', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(DECLARE);
+  const field = listToArray(
+    interpreter.evaluate('(custom-field (quote *test-opt*))')
+  );
+  assert.equal(field[0], '*test-opt*'); // name
+  assert.equal(field[1], ':integer'); // type
+  assert.equal(field[2], 7); // value
+  assert.equal(field[5], 'standard'); // state
+});
+
+test('custom-group-model lists a group title and its settings', async () => {
+  const { interpreter } = await editor();
+  // The sticky-notes group and *jmarkdown-command* are declared by the
+  // standard library itself.
+  const model = listToArray(
+    interpreter.evaluate('(custom-group-model (quote sticky-notes))')
+  );
+  assert.equal(model[0], 'sticky-notes'); // title
+  assert.ok(listToArray(model[4]).length >= 1); // settings
+});
