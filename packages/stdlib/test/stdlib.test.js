@@ -1417,3 +1417,160 @@ test('the line-op commands are bound to their keys', async () => {
     interpreter.evaluate('(eq? (get c-x-keymap "C-j") (quote join-line))')
   );
 });
+
+// --- auto-pairing -------------------------------------------------------
+
+test('*auto-pair* is a registered boolean setting, on by default', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(custom-registered? (quote *auto-pair*))'),
+    true
+  );
+  assert.equal(interpreter.evaluate('*auto-pair*'), true);
+  const field = listToArray(
+    interpreter.evaluate('(custom-field (quote *auto-pair*))')
+  );
+  assert.equal(field[1], ':boolean'); // type
+});
+
+test('typing ( inserts a matching ) with the cursor between', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '(');
+  assert.equal(buffer.text, '()');
+  assert.equal(buffer.point, 1, 'cursor sits between the brackets');
+});
+
+test('typing [ and { auto-pairs their partners', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '[');
+  assert.equal(buffer.text, '[]');
+  assert.equal(buffer.point, 1);
+  const second = await editor('');
+  press(second.interpreter, '{');
+  assert.equal(second.buffer.text, '{}');
+  assert.equal(second.buffer.point, 1);
+});
+
+test('typing " inserts a matching quote pair', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '"');
+  assert.equal(buffer.text, '""');
+  assert.equal(buffer.point, 1);
+});
+
+test('typing ` inserts a matching backtick pair', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '`');
+  assert.equal(buffer.text, '``');
+  assert.equal(buffer.point, 1);
+});
+
+test('typing ) over an existing ) steps past it instead of duplicating', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '('); // inserts "()", cursor between
+  press(interpreter, ')'); // the close key over the inserted ")"
+  assert.equal(buffer.text, '()', 'no duplicate close inserted');
+  assert.equal(buffer.point, 2, 'cursor stepped past the close');
+});
+
+test('typing ] and } step past their matching closer', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '[');
+  press(interpreter, ']');
+  assert.equal(buffer.text, '[]');
+  assert.equal(buffer.point, 2);
+});
+
+test('typing ) with no close ahead self-inserts the close', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, ')');
+  assert.equal(buffer.text, ')');
+  assert.equal(buffer.point, 1);
+});
+
+test('typing " over an existing closing " steps past it', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '"'); // inserts the quote pair, cursor between
+  press(interpreter, '"'); // the closing quote
+  assert.equal(buffer.text, '""', 'no third quote inserted');
+  assert.equal(buffer.point, 2, 'cursor stepped past the closing quote');
+});
+
+test('backspace between an empty pair deletes both characters', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '(');
+  assert.equal(buffer.text, '()');
+  press(interpreter, 'backspace');
+  assert.equal(buffer.text, '', 'both the opener and closer were removed');
+  assert.equal(buffer.point, 0);
+});
+
+test('backspace between an empty quote pair deletes both', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '"');
+  press(interpreter, 'backspace');
+  assert.equal(buffer.text, '');
+});
+
+test('backspace not between a pair deletes one character as usual', async () => {
+  const { buffer, interpreter } = await editor('abc');
+  buffer.moveTo(3);
+  press(interpreter, 'backspace');
+  assert.equal(buffer.text, 'ab', 'ordinary backspace still deletes one');
+});
+
+test('backspace with a non-empty pair deletes only the opener', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '('); // "()", cursor between
+  press(interpreter, 'x'); // "(x)", cursor after x
+  buffer.moveTo(1); // back between "(" and "x"
+  press(interpreter, 'backspace');
+  assert.equal(buffer.text, 'x)', 'a non-empty pair is not collapsed');
+});
+
+test('with *auto-pair* off, ( self-inserts with no partner', async () => {
+  const { buffer, interpreter } = await editor('');
+  interpreter.evaluate('(custom-apply! (quote *auto-pair*) #f)');
+  press(interpreter, '(');
+  assert.equal(buffer.text, '(', 'no closing bracket added');
+  assert.equal(buffer.point, 1);
+});
+
+test('with *auto-pair* off, ) self-inserts even ahead of a )', async () => {
+  const { buffer, interpreter } = await editor(')');
+  interpreter.evaluate('(custom-apply! (quote *auto-pair*) #f)');
+  buffer.moveTo(0);
+  press(interpreter, ')');
+  assert.equal(buffer.text, '))', 'the close key does not step past');
+});
+
+test('with *auto-pair* off, backspace does not collapse a pair', async () => {
+  const { buffer, interpreter } = await editor('()');
+  interpreter.evaluate('(custom-apply! (quote *auto-pair*) #f)');
+  buffer.moveTo(1);
+  press(interpreter, 'backspace');
+  assert.equal(buffer.text, ')', 'only the opener is removed');
+});
+
+test('the bracket and quote keys are bound in the global keymap', async () => {
+  const { interpreter } = await editor();
+  assert.ok(
+    interpreter.evaluate(
+      '(eq? (get the-keymap "(") (quote auto-pair-open-paren))'
+    )
+  );
+  assert.ok(
+    interpreter.evaluate(
+      '(eq? (get the-keymap ")") (quote auto-pair-close-paren))'
+    )
+  );
+});
+
+test('auto-pairing surrounds text typed inside a fresh pair', async () => {
+  const { buffer, interpreter } = await editor('');
+  press(interpreter, '(');
+  press(interpreter, 'a');
+  press(interpreter, 'b');
+  assert.equal(buffer.text, '(ab)');
+  assert.equal(buffer.point, 3, 'cursor stays inside, before the close');
+});
