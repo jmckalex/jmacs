@@ -434,11 +434,17 @@ app.whenReady().then(() => {
           }));
         }
         await frame();
+        // The cursor sits on the last line. Scroll to the top and let
+        // it settle: the first frame runs the scroll-driven render, the
+        // second lets any cursor-follow bounce land. A scroll-only
+        // render must leave the viewport where the scroll put it.
         editor.scrollTop = 0;
+        await frame();
         await frame();
         return {
           lineDivs: document.querySelectorAll('.editor-line').length,
           firstNumber: (document.querySelector('.editor-line-no') || {}).textContent,
+          scrollTop: editor.scrollTop,
           scrollHeight: editor.scrollHeight,
         };
       })()`);
@@ -510,7 +516,8 @@ app.whenReady().then(() => {
       const markdownOk = markdown.headings > 0;
       const virtualOk =
         virtual.lineDivs > 0 && virtual.lineDivs < 120 &&
-        virtual.scrollHeight > 3000 && virtual.firstNumber === '1';
+        virtual.scrollHeight > 3000 && virtual.firstNumber === '1' &&
+        virtual.scrollTop === 0;
       const modesOk =
         modes.lisp.includes('Lisp') && modes.txt.includes('Fundamental') &&
         modes.math.includes('Math') && modes.mathText.includes('Gamma');
