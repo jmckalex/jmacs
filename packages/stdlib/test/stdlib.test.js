@@ -952,3 +952,75 @@ test('mode-menu-entries is empty for a mode that binds no commands', async () =>
   interpreter.evaluate('(set-major-mode! lisp-mode)'); // lisp-mode-map is empty
   assert.deepEqual(listToArray(interpreter.call('mode-menu-entries')), []);
 });
+
+// --- customisation registry ---------------------------------------------
+
+const DECLARE =
+  '(defcustom *test-opt* 7 :integer :group (quote jmacs) :doc "a test")';
+
+test('defcustom defines a variable and registers the setting', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(DECLARE);
+  assert.equal(interpreter.evaluate('*test-opt*'), 7);
+  assert.equal(interpreter.evaluate('(custom-value (quote *test-opt*))'), 7);
+  assert.equal(
+    interpreter.evaluate('(custom-registered? (quote *test-opt*))'),
+    true
+  );
+});
+
+test('custom-apply! changes the variable and the registry', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(DECLARE);
+  interpreter.evaluate('(custom-apply! (quote *test-opt*) 12)');
+  assert.equal(interpreter.evaluate('*test-opt*'), 12);
+  assert.equal(interpreter.evaluate('(custom-value (quote *test-opt*))'), 12);
+});
+
+test('custom-reset! restores a setting to its default', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(DECLARE);
+  interpreter.evaluate('(custom-apply! (quote *test-opt*) 99)');
+  interpreter.evaluate('(custom-reset! (quote *test-opt*))');
+  assert.equal(interpreter.evaluate('*test-opt*'), 7);
+});
+
+test('custom-state reports standard, then set after a change', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(DECLARE);
+  assert.equal(
+    interpreter.evaluate('(symbol->string (custom-state (quote *test-opt*)))'),
+    'standard'
+  );
+  interpreter.evaluate('(custom-apply! (quote *test-opt*) 8)');
+  assert.equal(
+    interpreter.evaluate('(symbol->string (custom-state (quote *test-opt*)))'),
+    'set'
+  );
+});
+
+test('re-declaring a customised setting keeps its value', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(DECLARE);
+  interpreter.evaluate('(custom-apply! (quote *test-opt*) 20)');
+  interpreter.evaluate(DECLARE); // a hot reload re-runs the same defcustom
+  assert.equal(interpreter.evaluate('*test-opt*'), 20);
+  assert.equal(interpreter.evaluate('(custom-value (quote *test-opt*))'), 20);
+});
+
+test('defgroup registers a group and customs-in-group finds members', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate('(defgroup (quote test-group) (quote jmacs) "tests")');
+  interpreter.evaluate('(defcustom *test-a* 1 :integer :group (quote test-group) :doc "")');
+  interpreter.evaluate('(defcustom *test-b* 2 :integer :group (quote test-group) :doc "")');
+  assert.equal(
+    interpreter.evaluate('(length (customs-in-group (quote test-group)))'),
+    2
+  );
+  assert.notEqual(
+    interpreter.evaluate(
+      '(member "test-group" (map symbol->string (custom-group-names)))'
+    ),
+    false
+  );
+});

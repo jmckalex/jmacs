@@ -21,6 +21,9 @@ export { createBufferPrimitives } from './buffer-primitives.js';
  */
 export const STDLIB_FILES = Object.freeze([
   'editing.lisp',
+  // The customisation registry loads early — later files declare
+  // their settings with `defcustom`.
+  'custom.lisp',
   'files.lisp',
   'buffers.lisp',
   'search.lisp',
