@@ -301,5 +301,8 @@ work, including the decisions and trade-offs made along the way.
 
 ## License
 
-This project does not yet carry an open-source license; all rights are
-reserved by default. Add a `LICENSE` file before publishing or sharing.
+jmacs is free software, licensed under the **GNU General Public License,
+version 3 or later** (`GPL-3.0-or-later`). You may use, study, share and
+modify it under those terms; works derived from it must remain free
+software under the same license. The full text is in
+[`LICENSE`](LICENSE).

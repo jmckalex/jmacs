@@ -13,6 +13,6 @@
   "dependencies": {
     "@editor/storage": "workspace:*"
   },
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-or-later",
   "private": true
 }

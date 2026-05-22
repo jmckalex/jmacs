@@ -9,7 +9,7 @@
     "smoke": "electron scripts/smoke.js",
     "screenshot": "electron scripts/screenshot.js"
   },
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-or-later",
   "private": true,
   "devDependencies": {
     "electron": "42.2.0"
