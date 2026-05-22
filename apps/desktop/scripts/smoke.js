@@ -7,8 +7,8 @@
  * normal test run because it needs an Electron runtime.
  */
 
-import { app, BrowserWindow, ipcMain, protocol } from 'electron';
-import { mkdirSync, rmSync } from 'node:fs';
+import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -23,6 +23,18 @@ const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
 
 /** A scratch path the sticky-note metadata round-trip writes beside. */
 const notesPath = join(tmpdir(), 'jmacs-smoke-notes.txt');
+
+/** A scratch image file the image-buffer check opens. */
+const imagePath = join(tmpdir(), 'jmacs-smoke-image.png');
+// A 1×1 PNG — the smallest real image the open path can read.
+writeFileSync(
+  imagePath,
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4' +
+      '2mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  )
+);
 
 // Isolate the smoke run's config files (custom.lisp, init.lisp) in a
 // fresh temp directory, so it never touches the real user data dir.
@@ -52,6 +64,12 @@ function finish(code, message) {
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   registerFileHandlers();
+  // The image-buffer check drives the real `file:open` path; with no
+  // way to click a native dialog, stub it to choose the scratch image.
+  dialog.showOpenDialog = async () => ({
+    canceled: false,
+    filePaths: [imagePath],
+  });
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
   );
@@ -649,6 +667,47 @@ app.whenReady().then(() => {
       })()`);
       console.log('  config:', JSON.stringify(config));
 
+      // Image buffers: opening an image file shows it through the image
+      // view — a non-text buffer kind — with the editor view hidden.
+      // The dialog is stubbed (above) to choose the scratch PNG.
+      const image = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        replInput.value = '(open-file!)';
+        replInput.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        // The open path is async (IPC + a data-URL read); give it room.
+        await new Promise((r) => setTimeout(r, 400));
+        await frame();
+        const view = document.querySelector('.image-view');
+        const img = document.querySelector('.image-content');
+        const toggle = document.querySelector('.image-zoom-toggle');
+        const shown = !!(
+          view &&
+          getComputedStyle(view).display !== 'none' &&
+          getComputedStyle(document.querySelector('.editor')).display ===
+            'none'
+        );
+        // The image carries a data URL and starts fit-to-window.
+        const hasDataUrl = !!(img && img.src.startsWith('data:image/png'));
+        const startsFit = !!(img && img.classList.contains('is-fit'));
+        // The toggle switches it to actual size and back.
+        let toActual = false;
+        let backToFit = false;
+        if (toggle) {
+          toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await frame();
+          toActual = img.classList.contains('is-actual');
+          toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await frame();
+          backToFit = img.classList.contains('is-fit');
+        }
+        return { shown, hasDataUrl, startsFit, toActual, backToFit };
+      })()`);
+      console.log('  image:', JSON.stringify(image));
+      await rm(imagePath, { force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -704,17 +763,23 @@ app.whenReady().then(() => {
         config.savedSetting &&
         config.customizeShown &&
         config.settingRendered;
+      const imageOk =
+        image.shown &&
+        image.hasDataUrl &&
+        image.startsFit &&
+        image.toActual &&
+        image.backToFit;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
         markdownOk && virtualOk && modesOk && layersOk && splashOk &&
-        stickyOk && configOk
+        stickyOk && configOk && imageOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, virtualisation, sticky notes, customisation, search and files all work`
+          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, virtualisation, sticky notes, customisation, image buffers, search and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -764,8 +829,10 @@ app.whenReady().then(() => {
         finish(1, `the splash did not work (${JSON.stringify(splash)})`);
       } else if (!stickyOk) {
         finish(1, `sticky notes did not work (${JSON.stringify(sticky)})`);
-      } else {
+      } else if (!configOk) {
         finish(1, `customisation did not work (${JSON.stringify(config)})`);
+      } else {
+        finish(1, `image buffers did not work (${JSON.stringify(image)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);
