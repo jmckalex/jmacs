@@ -225,7 +225,62 @@ export function createEditorView(buffer, container, options = {}) {
       : handleKeyEvent(activeBuffer, event);
     if (handled) event.preventDefault();
   });
-  root.addEventListener('mousedown', () => root.focus());
+  // Mouse: click to place the cursor, drag to select. A pixel point is
+  // mapped to a buffer offset via the browser's own caret hit-testing.
+  function offsetFromPoint(clientX, clientY) {
+    if (typeof doc.caretRangeFromPoint !== 'function') return null;
+    const range = doc.caretRangeFromPoint(clientX, clientY);
+    if (range === null) return null;
+
+    const node = range.startContainer;
+    let lineEl = node.nodeType === 3 ? node.parentNode : node;
+    while (
+      lineEl &&
+      lineEl !== linesEl &&
+      !(lineEl.classList && lineEl.classList.contains('editor-line'))
+    ) {
+      lineEl = lineEl.parentNode;
+    }
+    if (!lineEl || !lineEl.classList?.contains('editor-line')) return null;
+
+    const lineIndex = Array.prototype.indexOf.call(linesEl.children, lineEl);
+    if (lineIndex < 0) return null;
+
+    // Column: the text in the line before the clicked node, plus its
+    // offset within that node.
+    let column = range.startOffset;
+    if (node.nodeType === 3) {
+      column = 0;
+      const walker = doc.createTreeWalker(lineEl, NodeFilter.SHOW_TEXT);
+      for (let t = walker.nextNode(); t !== null; t = walker.nextNode()) {
+        if (t === node) {
+          column += range.startOffset;
+          break;
+        }
+        column += t.textContent.length;
+      }
+    }
+    return activeBuffer.offsetAt(lineIndex, column);
+  }
+
+  function onMouseMove(event) {
+    const offset = offsetFromPoint(event.clientX, event.clientY);
+    if (offset !== null) activeBuffer.moveTo(offset, { extend: true });
+  }
+  function endDrag() {
+    doc.removeEventListener('mousemove', onMouseMove);
+    doc.removeEventListener('mouseup', endDrag);
+  }
+  root.addEventListener('mousedown', (event) => {
+    root.focus();
+    if (event.button !== 0) return;
+    const offset = offsetFromPoint(event.clientX, event.clientY);
+    if (offset === null) return;
+    activeBuffer.moveTo(offset);
+    doc.addEventListener('mousemove', onMouseMove);
+    doc.addEventListener('mouseup', endDrag);
+    event.preventDefault();
+  });
 
   render();
   root.focus();
@@ -250,6 +305,7 @@ export function createEditorView(buffer, container, options = {}) {
 
     destroy: () => {
       unsubscribe();
+      endDrag();
       if (frame) win.cancelAnimationFrame(frame);
       root.remove();
     },

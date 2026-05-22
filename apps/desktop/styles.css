@@ -111,6 +111,7 @@ body {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
+  cursor: text;
 }
 
 /* A subtle band behind the line the cursor is on. */

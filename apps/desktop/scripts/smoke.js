@@ -283,6 +283,44 @@ app.whenReady().then(() => {
       })()`);
       console.log('  replace:', JSON.stringify(replace));
 
+      // Mouse: click in the buffer to place the cursor on another line.
+      const mouse = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const replSubmit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        replSubmit('(new-buffer! "mouse-test")');
+        await frame();
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        const press = (key) => editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key, bubbles: true, cancelable: true,
+        }));
+        for (const ch of 'alpha') press(ch);
+        press('Enter');
+        for (const ch of 'beta') press(ch);
+        press('Enter');
+        for (const ch of 'gamma') press(ch);
+        await frame();
+        const before = document.getElementById('modeline-position').textContent;
+        // The cursor is on line 3; click line 1 and check it moved.
+        const rect = document.querySelectorAll('.editor-line')[0].getBoundingClientRect();
+        editor.dispatchEvent(new MouseEvent('mousedown', {
+          clientX: rect.left + 16, clientY: rect.top + 4,
+          button: 0, bubbles: true, cancelable: true,
+        }));
+        await frame();
+        return {
+          before,
+          after: document.getElementById('modeline-position').textContent,
+        };
+      })()`);
+      console.log('  mouse:', JSON.stringify(mouse));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -301,15 +339,16 @@ app.whenReady().then(() => {
       const treesitterOk =
         treesitter.ready && treesitter.keywords > 0 && treesitter.numbers > 0;
       const replaceOk = replace.text === 'bar bar bar';
+      const mouseOk = mouse.after.includes('Ln 1') && mouse.before !== mouse.after;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
-        searchOk && paletteOk && treesitterOk && replaceOk
+        searchOk && paletteOk && treesitterOk && replaceOk && mouseOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, modules, buffers, highlighting, tree-sitter, search, replace, M-x and files all work`
+          `${render.lines} lines; keymap, mouse, modules, buffers, highlighting, search, replace and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -337,8 +376,10 @@ app.whenReady().then(() => {
         finish(1, 'the command palette did not work');
       } else if (!treesitterOk) {
         finish(1, 'tree-sitter JavaScript highlighting did not work');
-      } else {
+      } else if (!replaceOk) {
         finish(1, 'replace-string did not work');
+      } else {
+        finish(1, 'mouse click did not move the cursor');
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);
