@@ -282,3 +282,54 @@ bindings). `apps/desktop/` untouched, so no smoke test run (per spec).
 - (this log entry)
 
 ---
+
+## Task C3 — auto-pairing  *(branch `agent-c3-auto-pair`)*
+
+**What was built.** Automatic insertion of matching brackets and
+quotes, in a new file `packages/stdlib/lisp/auto-pair.lisp`. Typing
+`(`, `[`, `{`, `"` or `` ` `` inserts the closing partner and leaves
+the cursor between the pair. Typing a closing `)`, `]`, `}` — or a
+closing `"`/`` ` `` — when that character is already the next one
+steps the cursor past it instead of inserting a duplicate. Backspace
+between an empty pair removes both characters. A `defcustom`
+`*auto-pair*` (`:boolean`, default `#t`) turns the whole behaviour
+off, at which point the keys self-insert exactly as before.
+
+- Eight `defcommand`s in `auto-pair.lisp` — one per bracket/quote
+  opener (`auto-pair-open-paren` …) and one per non-quote closer —
+  each consulting `*auto-pair*` and the character after the cursor.
+- The bracket and quote characters are bound to those commands in
+  `the-keymap` (using `assoc`); `handle-key` resolves a bound symbol
+  before it would otherwise self-insert a printable character, so
+  this is what intercepts the typed character — no host change.
+- `delete-backward` is redefined in `auto-pair.lisp` (it loads after
+  `editing.lisp`) so a backspace between an empty pair deletes both
+  characters; every other case falls through to the underlying
+  `delete-backward!` primitive.
+- `STDLIB_FILES`: one append — `auto-pair.lisp`, loaded after
+  `keymap.lisp` (it needs `the-keymap`) and after `custom.lisp` (it
+  declares a `defcustom`).
+
+**Decisions / deviations.** None from the spec. Auto-pairing is a
+mode-keymap-friendly *global* binding: a major or minor mode that
+binds one of these characters (math mode's `` ` ``, for instance)
+still shadows the global binding through the existing keymap chain —
+the math-mode tests continue to pass. The `delete-backward`
+redefinition is local to this file (its loading order makes it the
+live binding); no other file is touched besides `STDLIB_FILES`.
+
+**Tests.** `pnpm test` — all packages green, 0 failures (440 total;
+stdlib 158, incl. 18 new covering: the `defcustom` registration,
+each opener inserting its partner, each closer stepping past an
+existing match, a self-insert when no match is ahead, the
+backspace-collapses-empty-pair and backspace-doesn't-collapse-text
+cases, the off-mode preserving plain self-insert and ordinary
+backspace, the keymap bindings, and a wrap-text-as-you-type
+end-to-end). `apps/desktop/` untouched, so no smoke test run (per
+spec).
+
+**Commits.**
+- `a2ae191` feat: add auto-pairing for brackets and quotes
+- (this log entry)
+
+---
