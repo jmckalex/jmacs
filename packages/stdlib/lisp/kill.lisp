@@ -13,6 +13,36 @@
   "The most recent kill, or an empty string when the ring is empty."
   (if (nil? *kill-ring*) "" (car *kill-ring*)))
 
+(define (kill-ring-length)
+  "The number of entries in the kill ring."
+  (length *kill-ring*))
+
+(define (kill-ring-ref index)
+  "The kill at INDEX (0 is the most recent), or an empty string when the
+   ring is empty. INDEX wraps around the ring."
+  (if (nil? *kill-ring*)
+      ""
+      (nth *kill-ring* (mod index (kill-ring-length)))))
+
+;; --- yank state --------------------------------------------------------
+;;
+;; `yank` records where it inserted text so a following `yank-pop` can
+;; find and replace it. `*yank-start*` is the offset of the inserted
+;; text, `*yank-length*` its length, and `*yank-index*` which kill it
+;; came from (0 = the most recent). The state is only meaningful when the
+;; command just run was `yank` or `yank-pop` (see `yank-pop`).
+
+(define *yank-start* 0)
+(define *yank-length* 0)
+(define *yank-index* 0)
+
+(define (record-yank! start text index)
+  "Remember that TEXT (from kill INDEX) was inserted at offset START, so
+   a following `yank-pop` can replace it."
+  (set! *yank-start* start)
+  (set! *yank-length* (string-length text))
+  (set! *yank-index* index))
+
 (defcommand copy-region ()
   "Copy the selected text to the kill ring."
   (when (region-active?)
@@ -36,8 +66,12 @@
         (delete-region! from end)))))
 
 (defcommand yank ()
-  "Insert the most recent kill at the cursor."
-  (insert! (kill-ring-top)))
+  "Insert the most recent kill at the cursor. Records the insertion so a
+   following `yank-pop` (M-y) can cycle through the kill ring."
+  (let ((start (point))
+        (text (kill-ring-top)))
+    (insert! text)
+    (record-yank! start text 0)))
 
 (defcommand kill-word ()
   "Kill forward to the end of the next word."

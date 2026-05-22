@@ -112,10 +112,24 @@
         (lambda (values)
           (gather-args (cdr spec) (append collected values) done)))))
 
+;; --- command history ---------------------------------------------------
+;;
+;; Each command dispatch records the command's name. `*last-command*` is
+;; the command that ran just before the current one; `*this-command*` is
+;; the one running now. A command can consult `*last-command*` to behave
+;; differently when it immediately follows a particular command — this is
+;; how `yank-pop` knows it follows a `yank`.
+
+(define *last-command* nil)
+(define *this-command* nil)
+
 (define (run-command name)
   "Invoke command NAME. A command with no interactive spec is called
    with no arguments; one with a spec has its arguments gathered (from
-   the region, the minibuffer, …) and applied."
+   the region, the minibuffer, …) and applied. Records the command in
+   `*this-command*`, shifting the previous one into `*last-command*`."
+  (set! *last-command* *this-command*)
+  (set! *this-command* name)
   (let ((spec (get *commands* name nil)))
     (if (nil? spec)
         ((eval name))

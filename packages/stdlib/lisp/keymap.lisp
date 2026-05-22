@@ -91,6 +91,7 @@
    "M-w"          'copy-region
    "C-k"          'kill-line
    "C-y"          'yank
+   "M-y"          'yank-pop
    "M-f"          'forward-word
    "M-b"          'backward-word
    "M-m"          'back-to-indentation
