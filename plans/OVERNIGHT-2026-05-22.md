@@ -34,6 +34,16 @@ will give each agent a genuinely isolated working copy and make most of
 this scaffolding unnecessary. Tonight it is needed; treat it as a
 stopgap.
 
+**Execution note (this run).** Until that retool, agents cannot safely
+share one working copy concurrently. Tonight's run is therefore
+orchestrated **serially** — one agent at a time, each branching from an
+up-to-date `main` and merged before the next is dispatched. That is
+conflict-free by construction, so the separate integration pass is not
+needed; merges happen incrementally. The track structure, task specs
+and priorities below are unchanged — only the dispatch is serialised.
+Priority order: Track A first (the differentiators must land), then
+Track C, then T0 + Track B, then Track D.
+
 ## Rules for every agent
 
 - Work on a branch named exactly as the task spec gives
@@ -57,6 +67,12 @@ stopgap.
   Append an `architect-notes.md` entry: what you built, exactly what
   shared-registry wiring the integration pass must apply, and anything
   you stopped on.
+- **Log your work.** As your *final commit* on your branch, append an
+  entry to `logs/overnight-2026-05-22.md` so the night can be inspected
+  afterward: the task id and branch; what you built; key decisions and
+  any deviation from the spec; the test and smoke results; the
+  commit(s). One section per task, appended — never rewrite earlier
+  entries.
 - **Stop and write a note** (don't guess) when: the spec is ambiguous
   on something that changes the implementation; you hit a design fork;
   an asset (a tree-sitter grammar) cannot be obtained; the same fix has
