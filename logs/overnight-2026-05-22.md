@@ -196,3 +196,49 @@ the modal, OK replaces `#ff8800` with the chosen `#00ccff`).
 - (this log entry)
 
 ---
+
+## Task C1 — yank-pop / kill-ring browsing
+
+**Branch**: `agent-c1-yank-pop` (off `main`, not merged).
+
+**What was built.** After a `yank` (C-y), pressing `M-y` replaces the
+just-yanked text with the *previous* kill from the ring; repeated `M-y`
+keeps cycling back and wraps around — Emacs's `yank-pop`. It is valid
+only immediately after a `yank` or another `yank-pop`; run after any
+other command it is inert and reports "previous command was not a yank".
+
+- `commands.lisp` (shared, permitted): `run-command` now records
+  `*this-command*` and shifts the prior name into `*last-command*`, so a
+  command can tell what ran immediately before it. This is the
+  adjacency check `yank-pop` needs and a small reusable mechanism.
+- `kill.lisp` (shared, permitted): `yank` records its insertion —
+  offset, length, kill-ring index — via the new `record-yank!`. Added
+  `kill-ring-ref` (indexed, wrapping) and `kill-ring-length` helpers.
+- New file `yank-pop.lisp`: the `yank-pop` `defcommand` plus the
+  `after-yank?` predicate; deletes the recorded yank region and inserts
+  the next kill, re-recording the new state for further cycling.
+- `keymap.lisp` (shared, permitted): bound `M-y` to `yank-pop` (`M-y`
+  was unbound).
+- `index.js` (shared, permitted): one `STDLIB_FILES` entry —
+  `yank-pop.lisp`, loaded after `kill.lisp`, before `keymap.lisp`.
+
+**Decisions / deviations.** None from the spec. `yank-pop` lives in its
+own new file as instructed; the yank *state* (and the `yank` change to
+record it) stays in `kill.lisp` so all kill-ring/yank state is in one
+place. No host primitive was needed — pure Lisp throughout. The
+`*last-command*` tracking was added to `commands.lisp` rather than
+inventing a yank-only flag, since it is the correct general mechanism
+and other commands (e.g. a future `append-next-kill`) can reuse it.
+
+**Tests.** `pnpm test` — all packages green, 0 failures (stdlib 125,
+incl. 7 new: M-y binding, swap-in-previous-kill, cycle-and-wrap,
+cursor-after-text, inert-without-yank, intervening-command-invalidates,
+and `*last-command*` tracking). `apps/desktop/` untouched, so no smoke
+test run (per spec).
+
+**Commits.**
+- `9830419` feat: add yank-pop (M-y) for kill-ring browsing
+- `a051701` test: cover yank-pop kill-ring browsing
+- (this log entry)
+
+---
