@@ -370,6 +370,27 @@ app.whenReady().then(() => {
       })()`);
       console.log('  virtual:', JSON.stringify(virtual));
 
+      // Modes: a new buffer's major mode is chosen from its name and
+      // shown in the modeline.
+      const modes = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        submit('(new-buffer! "core.lisp")');
+        await frame();
+        const lisp = document.getElementById('modeline-name').textContent;
+        submit('(new-buffer! "notes.txt")');
+        await frame();
+        const txt = document.getElementById('modeline-name').textContent;
+        return { lisp, txt };
+      })()`);
+      console.log('  modes:', JSON.stringify(modes));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -393,16 +414,18 @@ app.whenReady().then(() => {
       const virtualOk =
         virtual.lineDivs > 0 && virtual.lineDivs < 120 &&
         virtual.scrollHeight > 3000 && virtual.firstNumber === '1';
+      const modesOk =
+        modes.lisp.includes('Lisp') && modes.txt.includes('Fundamental');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
-        markdownOk && virtualOk
+        markdownOk && virtualOk && modesOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, mouse, highlighting, markdown, virtualisation, search, replace and files all work`
+          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, virtualisation, search and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -436,11 +459,13 @@ app.whenReady().then(() => {
         finish(1, 'mouse click did not move the cursor');
       } else if (!markdownOk) {
         finish(1, 'markdown highlighting did not work');
-      } else {
+      } else if (!virtualOk) {
         finish(
           1,
           `view virtualisation did not work (${JSON.stringify(virtual)})`
         );
+      } else {
+        finish(1, `modes did not work (${JSON.stringify(modes)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

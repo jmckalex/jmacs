@@ -90,7 +90,8 @@ function updateModeline() {
   const buffer = session.current;
   const mark = dirtyBuffers.has(buffer) ? '● ' : '';
   const count = buffers.length > 1 ? `  ${currentIndex + 1}/${buffers.length}` : '';
-  nameEl.textContent = mark + buffer.name + count;
+  const mode = keymapReady ? `   ${interpreter.call('major-mode-name')}` : '';
+  nameEl.textContent = mark + buffer.name + mode + count;
   const { line, column } = buffer.positionAt(buffer.point);
   positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
   // Reflect the current buffer in the OS window title.
@@ -108,12 +109,24 @@ function watchCurrentBuffer() {
   });
 }
 
+/** Give the current buffer a major mode if it has none yet. */
+function ensureMajorMode() {
+  if (keymapReady && session.current.majorMode === null) {
+    try {
+      interpreter.call('choose-major-mode!');
+    } catch (error) {
+      repl.appendError(`mode selection failed: ${error.message}`);
+    }
+  }
+}
+
 /** Switch to the buffer at `index`: re-point the view and the modeline. */
 function switchToBuffer(index) {
   if (index < 0 || index >= buffers.length) return;
   currentIndex = index;
   editorView.setBuffer(session.current);
   watchCurrentBuffer();
+  ensureMajorMode();
   updateModeline();
 }
 
@@ -529,5 +542,6 @@ const editorView = createEditorView(
 );
 
 watchCurrentBuffer();
+ensureMajorMode();
 updateModeline();
 editorView.focus();
