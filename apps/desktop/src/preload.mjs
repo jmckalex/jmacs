@@ -24,4 +24,18 @@ contextBridge.exposeInMainWorld('host', {
 
   /** Quit the application. */
   quit: () => ipcRenderer.send('app:quit'),
+
+  /**
+   * Send the current buffer's mode menu to the main process, which
+   * rebuilds the application menu around it. Pass null for no menu.
+   * @param {{label: string, items: object[]} | null} menu
+   */
+  setModeMenu: (menu) => ipcRenderer.send('menu:set', menu),
+
+  /**
+   * Register a handler for a command chosen from a native menu.
+   * @param {(command: string) => void} callback
+   */
+  onMenuCommand: (callback) =>
+    ipcRenderer.on('menu:invoke', (_event, command) => callback(command)),
 });

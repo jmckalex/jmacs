@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createBuffer } from '@editor/buffer';
-import { createInterpreter, NIL } from '@editor/lisp';
+import { createInterpreter, listToArray, NIL } from '@editor/lisp';
 import { createBufferPrimitives, loadStdlib } from '../src/index.js';
 
 const lispDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lisp');
@@ -20,6 +20,7 @@ async function editor(initialText = 'hello world') {
   const bufferCalls = [];
   const searchCalls = [];
   const paletteCalls = [];
+  const replCalls = [];
   const output = [];
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
@@ -70,6 +71,10 @@ async function editor(initialText = 'hello world') {
       'start-replace!': () => NIL,
       'recenter!': () => NIL,
       'page-lines': () => 3,
+      'toggle-repl!': () => {
+        replCalls.push('toggle');
+        return NIL;
+      },
       'quit-editor!': () => NIL,
     },
   });
@@ -81,6 +86,7 @@ async function editor(initialText = 'hello world') {
     bufferCalls,
     searchCalls,
     paletteCalls,
+    replCalls,
     output,
   };
 }
@@ -841,4 +847,34 @@ test('comment-line keeps the indentation', async () => {
   press(interpreter, 'C-x');
   press(interpreter, ';');
   assert.equal(buffer.text, '  ;; indented');
+});
+
+// --- toggle-repl --------------------------------------------------------
+
+test('C-x p toggles the REPL panel', async () => {
+  const { interpreter, replCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'p');
+  assert.deepEqual(replCalls, ['toggle']);
+});
+
+// --- mode menus ---------------------------------------------------------
+
+test('mode-menu-entries lists a mode keymap command with its keys', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate('(set-major-mode! markdown-mode)');
+  const entries = listToArray(interpreter.call('mode-menu-entries')).map(
+    (entry) => listToArray(entry)
+  );
+  assert.ok(entries.length > 5);
+  const bold = entries.find(([, command]) => command === 'markdown-bold');
+  assert.ok(bold, 'markdown-bold should appear in the mode menu');
+  assert.equal(bold[0], 'C-c b'); // the key sequence reaching it
+  assert.ok(bold[2].length > 0); // a non-empty docstring
+});
+
+test('mode-menu-entries is empty for a mode that binds no commands', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate('(set-major-mode! lisp-mode)'); // lisp-mode-map is empty
+  assert.deepEqual(listToArray(interpreter.call('mode-menu-entries')), []);
 });
