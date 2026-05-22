@@ -771,6 +771,55 @@ app.whenReady().then(() => {
       console.log('  image:', JSON.stringify(image));
       await rm(imagePath, { force: true });
 
+      // Colour swatches: a buffer with colour literals shows a clickable
+      // swatch beside each one; clicking a swatch opens the modal colour
+      // chooser, and confirming it writes the chosen colour back into the
+      // buffer, replacing the literal's text.
+      const swatches = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        submit('(new-buffer! "swatch.css")');
+        await frame();
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        for (const ch of 'a #ff8800 b rgb(0,0,0)') {
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: ch, bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        // One swatch per literal — the #ff8800 hash and the rgb() form.
+        const count = document.querySelectorAll('.colour-swatch').length;
+        const firstBefore = document.querySelector('.editor-line').textContent;
+        // Click the first swatch: the modal opens with OK / Cancel.
+        const swatch = document.querySelector('.colour-swatch');
+        swatch.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        swatch.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await frame();
+        const modal = document.querySelector('.colour-picker');
+        const modalShown = !!modal;
+        // Pick a new colour and confirm with OK.
+        let edited = '';
+        if (modalShown) {
+          const input = document.querySelector('.colour-picker-input');
+          input.value = '#00ccff';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          document.querySelector('.colour-picker-ok')
+            .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await frame();
+          edited = document.querySelector('.editor-line').textContent;
+        }
+        const modalClosed = document.querySelector('.colour-picker') === null;
+        return { count, firstBefore, modalShown, edited, modalClosed };
+      })()`);
+      console.log('  swatches:', JSON.stringify(swatches));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -837,17 +886,24 @@ app.whenReady().then(() => {
         image.startsFit &&
         image.toActual &&
         image.backToFit;
+      const swatchesOk =
+        swatches.count === 2 &&
+        swatches.modalShown &&
+        swatches.modalClosed &&
+        swatches.firstBefore.includes('#ff8800') &&
+        swatches.edited.includes('#00ccff') &&
+        !swatches.edited.includes('#ff8800');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
         markdownOk && previewOk && virtualOk && modesOk && layersOk &&
-        splashOk && stickyOk && configOk && imageOk
+        splashOk && stickyOk && configOk && imageOk && swatchesOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, markdown preview, virtualisation, sticky notes, customisation, image buffers, search and files all work`
+          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, markdown preview, virtualisation, sticky notes, colour swatches, customisation, image buffers, search and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -904,8 +960,13 @@ app.whenReady().then(() => {
         finish(1, `sticky notes did not work (${JSON.stringify(sticky)})`);
       } else if (!configOk) {
         finish(1, `customisation did not work (${JSON.stringify(config)})`);
-      } else {
+      } else if (!imageOk) {
         finish(1, `image buffers did not work (${JSON.stringify(image)})`);
+      } else {
+        finish(
+          1,
+          `colour swatches did not work (${JSON.stringify(swatches)})`
+        );
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);
