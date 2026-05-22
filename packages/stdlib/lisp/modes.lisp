@@ -31,24 +31,14 @@
   :highlight :markdown
   :keymap 'markdown-mode-map)
 
-(define-mode javascript-mode
-  :name "JavaScript"
-  :comment-prefix "// "
-  :highlight :javascript)
-
-(define-mode html-mode
-  :name "HTML"
-  :highlight :html)
-
+;; Languages with their own tree-sitter grammar live under
+;; `languages/`, each in its own drop-in file. The ones still defined
+;; here are the hand-tokenized languages (no published grammar / no
+;; tree-sitter yet).
 (define-mode latex-mode
   :name "LaTeX"
   :comment-prefix "% "
   :highlight :latex)
-
-(define-mode python-mode
-  :name "Python"
-  :comment-prefix "# "
-  :highlight :python)
 
 (define-mode makefile-mode
   :name "Makefile"
@@ -62,16 +52,14 @@
   "Associate a filename SUFFIX with a major MODE."
   (set! *mode-registry* (cons (cons suffix mode) *mode-registry*)))
 
+;; The core stdlib registers only the modes defined above (and a few
+;; suffixes those modes catch); the tree-sitter languages register
+;; their own suffixes from `languages/<name>.lisp`.
 (register-mode ".lisp"    lisp-mode)
 (register-mode ".jmd"     markdown-mode)
 (register-mode ".md"      markdown-mode)
-(register-mode ".js"      javascript-mode)
-(register-mode ".mjs"     javascript-mode)
-(register-mode ".html"    html-mode)
-(register-mode ".htm"     html-mode)
 (register-mode ".tex"     latex-mode)
 (register-mode ".latex"   latex-mode)
-(register-mode ".py"      python-mode)
 (register-mode "Makefile" makefile-mode)
 (register-mode "makefile" makefile-mode)
 (register-mode ".mk"      makefile-mode)

@@ -50,13 +50,31 @@ export const STDLIB_FILES = Object.freeze([
 /**
  * Load the standard library into an interpreter.
  *
+ * After the ordered `STDLIB_FILES`, `loadStdlib` loads every Lisp file
+ * in the `languages/` subdirectory (when the caller supplies a lister).
+ * Languages are mutually independent — load order among them is
+ * unspecified. See `packages/stdlib/lisp/languages/README.md`.
+ *
  * @param {import('@editor/lisp').Interpreter} interpreter
  * @param {(name: string) => (string | Promise<string>)} getSource -
- *   Returns the source text of a stdlib file given its name.
+ *   Returns the source text of a stdlib file given its name. Language
+ *   files are requested as `'languages/<name>.lisp'`.
+ * @param {object} [options]
+ * @param {() => (string[] | Promise<string[]>)} [options.listLanguageFiles] -
+ *   Returns the filenames in `lisp/languages/` (bare names, e.g.
+ *   `'javascript.lisp'`). When absent, no language files are loaded —
+ *   the caller has none.
  * @returns {Promise<void>}
  */
-export async function loadStdlib(interpreter, getSource) {
+export async function loadStdlib(interpreter, getSource, options = {}) {
   for (const name of STDLIB_FILES) {
     interpreter.evaluate(await getSource(name));
+  }
+  if (typeof options.listLanguageFiles === 'function') {
+    const files = await options.listLanguageFiles();
+    for (const name of files) {
+      if (!name.endsWith('.lisp')) continue;
+      interpreter.evaluate(await getSource(`languages/${name}`));
+    }
   }
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,6 +9,7 @@ import { createInterpreter, listToArray, NIL } from '@editor/lisp';
 import { createBufferPrimitives, loadStdlib } from '../src/index.js';
 
 const lispDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lisp');
+const languagesDir = join(lispDir, 'languages');
 
 /**
  * Build a buffer with the standard library loaded against it. The file
@@ -118,7 +119,14 @@ async function editor(initialText = 'hello world') {
       'write-custom-file!': () => NIL,
     },
   });
-  await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
+  await loadStdlib(
+    interpreter,
+    (name) => readFile(join(lispDir, name), 'utf8'),
+    {
+      listLanguageFiles: async () =>
+        (await readdir(languagesDir)).filter((n) => n.endsWith('.lisp')),
+    }
+  );
   return {
     buffer,
     interpreter,
