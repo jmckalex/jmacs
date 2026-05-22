@@ -21,4 +21,7 @@ contextBridge.exposeInMainWorld('host', {
    * @returns {Promise<{path: string, name: string} | null>}
    */
   saveFile: (path, content) => ipcRenderer.invoke('file:save', { path, content }),
+
+  /** Quit the application. */
+  quit: () => ipcRenderer.send('app:quit'),
 });

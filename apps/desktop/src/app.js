@@ -455,6 +455,16 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'page-lines': () => editorView.pageLines(),
+    'quit-editor!': () => {
+      const dirty = dirtyBuffers.size;
+      if (
+        dirty === 0 ||
+        window.confirm(`Discard unsaved changes in ${dirty} buffer(s)?`)
+      ) {
+        window.host.quit();
+      }
+      return NIL;
+    },
 
     // Buffer-list commands — they re-point the editor view.
     'next-buffer!': () => {

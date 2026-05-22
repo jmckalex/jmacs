@@ -16,6 +16,7 @@
   {"C-f"   'find-file
    "C-s"   'save-buffer
    "C-r"   'reload-stdlib
+   "C-c"   'quit-editor
    "b"     'switch-buffer
    "right" 'next-buffer
    "left"  'previous-buffer

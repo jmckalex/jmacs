@@ -70,6 +70,7 @@ async function editor(initialText = 'hello world') {
       'start-replace!': () => NIL,
       'recenter!': () => NIL,
       'page-lines': () => 3,
+      'quit-editor!': () => NIL,
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
@@ -193,6 +194,15 @@ test('C-x C-s runs save-buffer', async () => {
   assert.deepEqual(fileCalls, ['save']);
   // The sequence completed: dispatch is back at rest.
   assert.equal(interpreter.evaluate('(nil? active-keymap)'), true);
+});
+
+test('C-x C-c is bound to quit-editor', async () => {
+  const { interpreter } = await editor();
+  assert.ok(
+    interpreter.evaluate('(eq? (get c-x-keymap "C-c") (quote quit-editor))')
+  );
+  press(interpreter, 'C-x');
+  assert.equal(press(interpreter, 'C-c'), true);
 });
 
 test('C-x C-f runs find-file', async () => {

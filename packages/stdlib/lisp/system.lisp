@@ -5,3 +5,7 @@
    Because commands are bound by name and resolved late, the running
    editor switches to the new definitions at once — hot reload."
   (reload-stdlib!))
+
+(define (quit-editor)
+  "Quit the editor (C-x C-c)."
+  (quit-editor!))

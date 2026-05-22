@@ -7,7 +7,7 @@
  * runs entirely in the renderer process.
  */
 
-import { app, BrowserWindow, protocol } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,6 +39,7 @@ function createWindow() {
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   registerFileHandlers();
+  ipcMain.on('app:quit', () => app.quit());
   createWindow();
 
   app.on('activate', () => {
