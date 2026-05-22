@@ -265,3 +265,34 @@ test('onChange returns a working unsubscribe', () => {
 test('onChange rejects a non-function listener', () => {
   assert.throws(() => createBuffer().onChange(42), TypeError);
 });
+
+// --- modes --------------------------------------------------------------
+
+test('a buffer has no major mode and no minor modes by default', () => {
+  const buf = createBuffer();
+  assert.equal(buf.majorMode, null);
+  assert.deepEqual(buf.minorModes, []);
+});
+
+test('the major mode stores an opaque value', () => {
+  const buf = createBuffer();
+  const mode = { name: 'Lisp' };
+  buf.majorMode = mode;
+  assert.equal(buf.majorMode, mode);
+});
+
+test('setting a mode emits a change event so consumers refresh', () => {
+  const buf = createBuffer('hello');
+  const events = [];
+  buf.onChange((e) => events.push(e));
+  buf.majorMode = { name: 'Lisp' };
+  buf.minorModes = [{ name: 'auto-fill' }];
+  assert.equal(events.length, 2);
+  assert.deepEqual(events[0], { change: null, point: 0, mark: null });
+});
+
+test('minorModes coerces a non-array to an empty list', () => {
+  const buf = createBuffer();
+  buf.minorModes = null;
+  assert.deepEqual(buf.minorModes, []);
+});

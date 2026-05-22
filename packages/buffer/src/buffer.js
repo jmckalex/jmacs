@@ -51,6 +51,13 @@ export function createBuffer(initialText = '', options = {}) {
   let mark = null;
   let name = options.name ?? 'untitled';
 
+  // The buffer's modes. L2 stores them as opaque values — the standard
+  // library defines what a mode is and gives them meaning.
+  /** @type {*} */
+  let majorMode = null;
+  /** @type {*[]} */
+  let minorModes = [];
+
   /** @type {Set<(event: BufferEvent) => void>} */
   const listeners = new Set();
 
@@ -96,6 +103,29 @@ export function createBuffer(initialText = '', options = {}) {
     },
     set name(value) {
       name = String(value);
+    },
+
+    // --- modes ----------------------------------------------------------
+    // L2 stores these opaquely; the standard library interprets them.
+    // Setting a mode emits a change event so the view and modeline
+    // refresh, exactly as they do for an edit or a cursor move.
+
+    /** @returns {*} The buffer's major mode. */
+    get majorMode() {
+      return majorMode;
+    },
+    set majorMode(value) {
+      majorMode = value;
+      emit(null);
+    },
+
+    /** @returns {*[]} The buffer's active minor modes. */
+    get minorModes() {
+      return minorModes;
+    },
+    set minorModes(value) {
+      minorModes = Array.isArray(value) ? value : [];
+      emit(null);
     },
 
     // --- reading --------------------------------------------------------

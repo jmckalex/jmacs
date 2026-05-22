@@ -69,6 +69,20 @@ All editing is relative to the cursor.
 - `setText(text)` — replace the whole buffer (used to load a file);
   the cursor moves to the start.
 
+## Modes
+
+A buffer carries a **major mode** and a list of **minor modes**. L2
+stores them as opaque values — it never interprets them; the standard
+library defines what a mode is.
+
+| Member | Description |
+|--------|-------------|
+| `majorMode` | The major mode, or `null` (settable). |
+| `minorModes` | The list of active minor modes (settable; a non-array becomes `[]`). |
+
+Setting either emits a change event (`change: null`), so the renderer
+and modeline refresh exactly as they do for an edit or cursor move.
+
 ## History
 
 - `undo()` / `redo()` — reverse or reapply the last edit; return a
@@ -121,8 +135,9 @@ The architecture names more for L2; these are not built:
 
 - **Text properties** and **overlays** — metadata on ranges.
 - **Markers** — positions that survive edits.
-- **Modes** — tagged behavioural configuration.
 - **Hooks** — before/after-change extension points.
 - **Undo groups** — command-level transactions over L1's undo.
 
-They are layered on without changing the surface above.
+They are layered on without changing the surface above. (Modes now
+have a home — see *Modes* above; their semantics live in the standard
+library, specified in `docs/spec/modes.md`.)
