@@ -60,9 +60,12 @@
   (goto! (- (point) 3)))
 
 ;; --- block structure ---------------------------------------------------
-(define (markdown-heading-1) "Make the line a heading." (insert-at-line-start "# "))
-(define (markdown-heading-2) "Make the line a sub-heading." (insert-at-line-start "## "))
-(define (markdown-heading-3) "Make the line a sub-sub-heading." (insert-at-line-start "### "))
+(define (markdown-heading-1) "Make the line a level-1 heading." (insert-at-line-start "# "))
+(define (markdown-heading-2) "Make the line a level-2 heading." (insert-at-line-start "## "))
+(define (markdown-heading-3) "Make the line a level-3 heading." (insert-at-line-start "### "))
+(define (markdown-heading-4) "Make the line a level-4 heading." (insert-at-line-start "#### "))
+(define (markdown-heading-5) "Make the line a level-5 heading." (insert-at-line-start "##### "))
+(define (markdown-heading-6) "Make the line a level-6 heading." (insert-at-line-start "###### "))
 (define (markdown-blockquote) "Make the line a blockquote." (insert-at-line-start "> "))
 (define (markdown-list-item) "Make the line a list item." (insert-at-line-start "- "))
 
@@ -119,6 +122,9 @@
    "1" 'markdown-heading-1
    "2" 'markdown-heading-2
    "3" 'markdown-heading-3
+   "4" 'markdown-heading-4
+   "5" 'markdown-heading-5
+   "6" 'markdown-heading-6
    "m" 'toggle-math-mode})
 
 ;; markdown-mode-map is declared empty in modes.lisp; fill it in here.

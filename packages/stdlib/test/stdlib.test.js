@@ -721,6 +721,15 @@ test('markdown-heading-2 prepends the heading marker', async () => {
   assert.equal(buffer.point, 6); // the cursor kept its place in the line
 });
 
+test('C-c 6 makes the line a level-6 heading', async () => {
+  const { buffer, interpreter } = await editor('deep');
+  interpreter.evaluate('(set-major-mode! markdown-mode)');
+  buffer.moveTo(0);
+  press(interpreter, 'C-c');
+  press(interpreter, '6');
+  assert.equal(buffer.text, '###### deep');
+});
+
 test('C-c b runs markdown-bold in a markdown buffer', async () => {
   const { buffer, interpreter } = await editor('word');
   interpreter.evaluate('(set-major-mode! markdown-mode)');
