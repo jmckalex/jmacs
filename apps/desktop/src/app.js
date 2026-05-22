@@ -21,6 +21,7 @@ import {
   createCustomizeView,
   createEditorView,
   createHtmlHighlighter,
+  createImageView,
   createJavaScriptHighlighter,
   createPythonHighlighter,
   createMinibuffer,
@@ -170,10 +171,12 @@ function ensureMajorMode() {
   }
 }
 
-/** Show the editor view or the customisation view, hiding the other. */
+/** Show the view for `kind` — the editor view, the customisation view,
+ *  or the image view — hiding the other two. */
 function mountView(kind) {
-  editorView.element.style.display = kind === 'customize' ? 'none' : '';
+  editorView.element.style.display = kind === 'text' ? '' : 'none';
   customizeView.element.style.display = kind === 'customize' ? '' : 'none';
+  imageView.element.style.display = kind === 'image' ? '' : 'none';
 }
 
 /** Switch to the buffer at `index`: mount the matching view, re-point
@@ -187,6 +190,10 @@ function switchToBuffer(index) {
     mountView('customize');
     customizeView.setBuffer(buffer);
     customizeView.focus();
+  } else if (buffer.kind === 'image') {
+    mountView('image');
+    imageView.setBuffer(buffer);
+    imageView.focus();
   } else {
     currentTextBuffer = buffer;
     mountView('text');
@@ -218,6 +225,18 @@ async function openFileInteractive() {
   try {
     const result = await window.host.openFile();
     if (result === null) return;
+    // An image file comes back with a ready-to-display `imageSrc`
+    // (a data URL) rather than text — show it through the image view.
+    if (typeof result.imageSrc === 'string') {
+      buffers.push({
+        kind: 'image',
+        name: result.name,
+        filePath: result.path,
+        src: result.imageSrc,
+      });
+      switchToBuffer(buffers.length - 1);
+      return;
+    }
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
     // Load the file's sticky notes from its companion metadata file,
@@ -935,6 +954,15 @@ const customizeView = createCustomizeView(
   }
 );
 customizeView.element.style.display = 'none';
+
+// The image view — the view an `image`-kind buffer is shown through.
+// Like the customisation view it shares #editor-host; switchToBuffer
+// shows whichever the current buffer's kind calls for. Keys typed in
+// it go through the same Lisp keymap.
+const imageView = createImageView(document.getElementById('editor-host'), {
+  ...(keymapReady ? { onKey: dispatchKey } : {}),
+});
+imageView.element.style.display = 'none';
 
 // The command sticky notes are rendered through. Hardcoded for now so
 // notes render out of the box; the *jmarkdown-command* Lisp variable

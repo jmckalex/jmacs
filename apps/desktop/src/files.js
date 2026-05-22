@@ -6,10 +6,44 @@
 
 import { app, dialog, ipcMain } from 'electron';
 import { readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 
 /** The companion file holding a file's jmacs metadata (sticky notes). */
 const metadataPath = (filePath) => `${filePath}.jmacs-metadata`;
+
+/** Image file suffixes → MIME type. A file with one of these suffixes
+ *  is read as binary and returned as a `data:` URL, so the renderer can
+ *  show the image instead of its bytes. */
+const IMAGE_MIME_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+};
+
+/** The image MIME type for a path, by its suffix, or `null` when the
+ *  path is not a recognised image. The renderer's `mimeTypeForImage`
+ *  (in `@editor/renderer`) is the unit-tested twin of this logic; this
+ *  copy stays here because the main process cannot import the renderer
+ *  package. The pair is exercised end-to-end by the smoke test. */
+function imageMimeType(filePath) {
+  if (typeof filePath !== 'string') return null;
+  return IMAGE_MIME_TYPES[extname(filePath).toLowerCase()] ?? null;
+}
+
+/**
+ * Read an image file as a `data:` URL.
+ *
+ * @param {string} filePath
+ * @param {string} mime - The image's MIME type.
+ * @returns {Promise<string>}
+ */
+async function readImageDataUrl(filePath, mime) {
+  const data = await readFile(filePath);
+  return `data:${mime};base64,${data.toString('base64')}`;
+}
 
 /** A config file lives in the per-user data directory; its name is a
  *  bare filename (no path separators), resolved against that directory. */
@@ -20,13 +54,20 @@ function configPath(name) {
 
 /** Register the `file:*` IPC handlers. Call once, after the app is ready. */
 export function registerFileHandlers() {
-  // Show an open dialog and read the chosen file.
+  // Show an open dialog and read the chosen file. An image file is
+  // read as a `data:` URL (in `imageSrc`) so the renderer can display
+  // it; any other file is read as UTF-8 text (in `content`).
   ipcMain.handle('file:open', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openFile'] });
     if (result.canceled || result.filePaths.length === 0) {
       return null;
     }
     const path = result.filePaths[0];
+    const mime = imageMimeType(path);
+    if (mime !== null) {
+      const imageSrc = await readImageDataUrl(path, mime);
+      return { path, name: basename(path), imageSrc };
+    }
     const content = await readFile(path, 'utf8');
     return { path, name: basename(path), content };
   });
