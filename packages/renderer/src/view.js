@@ -334,21 +334,8 @@ export function createEditorView(buffer, container, options = {}) {
     doc.removeEventListener('mousemove', onMouseMove);
     doc.removeEventListener('mouseup', endDrag);
   }
-  root.addEventListener('mousedown', (event) => {
-    root.focus();
-    if (event.button !== 0) return;
-    const offset = offsetFromPoint(event.clientX, event.clientY);
-    if (offset === null) return;
-    activeBuffer.moveTo(offset);
-    doc.addEventListener('mousemove', onMouseMove);
-    doc.addEventListener('mouseup', endDrag);
-    event.preventDefault();
-  });
-
-  // Double-click selects the word under the pointer.
-  root.addEventListener('dblclick', (event) => {
-    const offset = offsetFromPoint(event.clientX, event.clientY);
-    if (offset === null) return;
+  /** Select the word straddling a buffer offset (a double-click). */
+  function selectWordAt(offset) {
     const text = activeBuffer.text;
     const isWord = (ch) => ch !== undefined && /\w/.test(ch);
     let start = offset;
@@ -358,7 +345,31 @@ export function createEditorView(buffer, container, options = {}) {
     if (end > start) {
       activeBuffer.moveTo(start);
       activeBuffer.moveTo(end, { extend: true });
+    } else {
+      activeBuffer.moveTo(offset);
     }
+  }
+
+  // Click to place the cursor; a double-click selects the word.
+  //
+  // The double-click is read from the mousedown's click count, not from
+  // a dblclick event: the mousedown schedules a render that recreates
+  // the line elements, detaching the element the press landed on, and
+  // the browser then dispatches neither click nor dblclick. The click
+  // count on mousedown is unaffected.
+  root.addEventListener('mousedown', (event) => {
+    root.focus();
+    if (event.button !== 0) return;
+    const offset = offsetFromPoint(event.clientX, event.clientY);
+    if (offset === null) return;
+    if (event.detail >= 2) {
+      selectWordAt(offset);
+    } else {
+      activeBuffer.moveTo(offset);
+    }
+    doc.addEventListener('mousemove', onMouseMove);
+    doc.addEventListener('mouseup', endDrag);
+    event.preventDefault();
   });
 
   render();

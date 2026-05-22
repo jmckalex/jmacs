@@ -377,9 +377,11 @@ app.whenReady().then(() => {
         click(line1.right + 90, line1.top + 4);
         await frame();
         const endOfLine = document.getElementById('modeline-position').textContent;
-        // Double-click selects the word under the pointer.
+        // Double-click selects the word — a mousedown with detail 2,
+        // which is how the editor detects a double-click.
         const line0b = document.querySelectorAll('.editor-line')[0].getBoundingClientRect();
-        editor.dispatchEvent(new MouseEvent('dblclick', {
+        editor.dispatchEvent(new MouseEvent('mousedown', {
+          detail: 2, button: 0,
           clientX: line0b.left + 12, clientY: line0b.top + 4,
           bubbles: true, cancelable: true,
         }));
