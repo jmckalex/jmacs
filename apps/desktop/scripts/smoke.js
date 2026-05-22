@@ -614,11 +614,26 @@ app.whenReady().then(() => {
         }));
         await new Promise((r) => setTimeout(r, 250));
         const saved = await window.host.readConfigFile('custom.lisp');
+        // (customize) opens a customisation buffer — a non-text buffer
+        // shown through its own view, the editor view hidden.
+        replInput.value = '(customize)';
+        replInput.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        await new Promise((r) => requestAnimationFrame(() => r()));
+        const customizeView = document.querySelector('.customize');
+        const customizeShown = !!(
+          customizeView &&
+          getComputedStyle(customizeView).display !== 'none' &&
+          getComputedStyle(document.querySelector('.editor')).display ===
+            'none'
+        );
         return {
           initLoaded,
           savedSetting: !!(saved &&
             saved.includes('*jmarkdown-command*') &&
             saved.includes('echo smoke')),
+          customizeShown,
         };
       })()`);
       console.log('  config:', JSON.stringify(config));
@@ -673,7 +688,8 @@ app.whenReady().then(() => {
         sticky.expanded &&
         sticky.faLoaded &&
         sticky.persisted;
-      const configOk = config.initLoaded && config.savedSetting;
+      const configOk =
+        config.initLoaded && config.savedSetting && config.customizeShown;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&

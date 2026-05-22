@@ -634,3 +634,29 @@ body.repl-hidden .repl-host {
   color: #e6cd86;
   cursor: move;
 }
+
+/* --- customisation view ------------------------------------------------ */
+/* A customisation buffer is shown through this view instead of the text
+   editor — the editor's first non-text buffer kind. */
+
+.customize {
+  height: 100%;
+  overflow: auto;
+  outline: none;
+  padding: 24px 30px;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+}
+
+.customize-title {
+  margin: 0 0 4px;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.customize-note {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 13px;
+}

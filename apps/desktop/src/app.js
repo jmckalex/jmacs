@@ -18,6 +18,7 @@ import {
   writeString,
 } from '@editor/lisp';
 import {
+  createCustomizeView,
   createEditorView,
   createHtmlHighlighter,
   createJavaScriptHighlighter,
@@ -100,10 +101,14 @@ const buffers = [
 ];
 let currentIndex = 0;
 
+/** The L2 text buffer the editor view shows and the buffer primitives
+ *  act on. Showing a customisation buffer does not change it. */
+let currentTextBuffer = buffers[0];
+
 /** The session object the buffer primitives operate through. */
 const session = {
   get current() {
-    return buffers[currentIndex];
+    return currentTextBuffer;
   },
 };
 
@@ -116,9 +121,19 @@ const nameEl = document.getElementById('modeline-name');
 const positionEl = document.getElementById('modeline-position');
 
 function updateModeline() {
-  const buffer = session.current;
+  const shown = buffers[currentIndex];
+  const count =
+    buffers.length > 1 ? `  ${currentIndex + 1}/${buffers.length}` : '';
+  // A special (non-text) buffer — a customisation buffer — has no
+  // point and no mode.
+  if (shown && shown.kind) {
+    nameEl.textContent = shown.name + count;
+    positionEl.textContent = '';
+    document.title = `${shown.name} — editor`;
+    return;
+  }
+  const buffer = currentTextBuffer;
   const mark = dirtyBuffers.has(buffer) ? '● ' : '';
-  const count = buffers.length > 1 ? `  ${currentIndex + 1}/${buffers.length}` : '';
   const mode = keymapReady
     ? `   ${interpreter.call('major-mode-name')}` +
       interpreter.call('minor-mode-line')
@@ -155,17 +170,46 @@ function ensureMajorMode() {
   }
 }
 
-/** Switch to the buffer at `index`: re-point the view and the modeline. */
+/** Show the editor view or the customisation view, hiding the other. */
+function mountView(kind) {
+  editorView.element.style.display = kind === 'customize' ? 'none' : '';
+  customizeView.element.style.display = kind === 'customize' ? '' : 'none';
+}
+
+/** Switch to the buffer at `index`: mount the matching view, re-point
+ *  it, and update the modeline. */
 function switchToBuffer(index) {
   if (index < 0 || index >= buffers.length) return;
   dismissSplash();
   currentIndex = index;
-  editorView.setBuffer(session.current);
-  stickyNotes.setBuffer(session.current);
-  watchCurrentBuffer();
-  ensureMajorMode();
+  const buffer = buffers[index];
+  if (buffer.kind === 'customize') {
+    mountView('customize');
+    customizeView.setBuffer(buffer);
+    customizeView.focus();
+  } else {
+    currentTextBuffer = buffer;
+    mountView('text');
+    editorView.setBuffer(buffer);
+    stickyNotes.setBuffer(buffer);
+    watchCurrentBuffer();
+    ensureMajorMode();
+    editorView.focus();
+    refreshModeMenu();
+  }
   updateModeline();
-  refreshModeMenu();
+}
+
+/** Find or create the customisation buffer named `name`, switch to it. */
+function openCustomize(name, scope) {
+  let index = buffers.findIndex(
+    (buffer) => buffer.kind === 'customize' && buffer.name === name
+  );
+  if (index < 0) {
+    buffers.push({ kind: 'customize', name, scope });
+    index = buffers.length - 1;
+  }
+  switchToBuffer(index);
 }
 
 // --- file open / save ---------------------------------------------------
@@ -599,6 +643,11 @@ const interpreter = createInterpreter({
       writeCustomFile(args[0]);
       return NIL;
     },
+    // Open (or switch to) the customisation buffer.
+    'open-customize!': () => {
+      openCustomize('*Customize*', { group: 'jmacs' });
+      return NIL;
+    },
 
     // Sticky notes — see sticky-notes.js and sticky-notes.lisp.
     'note-create!': (args) =>
@@ -810,6 +859,16 @@ const editorView = createEditorView(
     highlighters,
   }
 );
+
+// The customisation view — the editor's first non-text buffer view.
+// It shares #editor-host with the editor view; switchToBuffer shows
+// whichever the current buffer's kind calls for. Keys typed in it
+// (outside a form control) go through the same Lisp keymap.
+const customizeView = createCustomizeView(
+  document.getElementById('editor-host'),
+  keymapReady ? { onKey: dispatchKey } : {}
+);
+customizeView.element.style.display = 'none';
 
 // The command sticky notes are rendered through. Hardcoded for now so
 // notes render out of the box; the *jmarkdown-command* Lisp variable

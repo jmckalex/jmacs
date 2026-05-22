@@ -168,3 +168,9 @@
   (filter (lambda (name)
             (eq? (get (get *custom-groups* name {}) :parent nil) parent))
           (keys *custom-groups*)))
+
+;; --- the customisation buffer ------------------------------------------
+
+(define (customize)
+  "Open the customisation buffer."
+  (open-customize!))
