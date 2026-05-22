@@ -25,6 +25,7 @@ const MIME = {
   '.css': 'text/css',
   '.json': 'application/json',
   '.wasm': 'application/wasm',
+  '.woff2': 'font/woff2',
 };
 
 // Must run before the app is ready; importing this module is enough.

@@ -236,14 +236,19 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     const root = doc.createElement('div');
     root.className = 'sticky-note';
     root.dataset.id = note.id;
+    if (note.collapsed) root.classList.add('is-collapsed');
 
     const bar = doc.createElement('div');
     bar.className = 'sticky-note-bar';
+    const collapse = doc.createElement('button');
+    collapse.className = 'sticky-note-collapse';
+    collapse.title = 'Collapse note';
+    collapse.innerHTML = '<i class="fa-solid fa-window-minimize"></i>';
     const close = doc.createElement('button');
     close.className = 'sticky-note-close';
     close.textContent = '×';
     close.title = 'Delete note';
-    bar.append(close);
+    bar.append(collapse, close);
 
     const body = doc.createElement('div');
     body.className = 'sticky-note-body';
@@ -252,7 +257,14 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     grip.className = 'sticky-note-resize';
     grip.title = 'Resize';
 
-    root.append(bar, body, grip);
+    // Shown only while the note is collapsed — the note shrunk to its
+    // icon. Draggable, and double-clicked to expand again.
+    const icon = doc.createElement('div');
+    icon.className = 'sticky-note-icon';
+    icon.title = 'Double-click to expand';
+    icon.innerHTML = '<i class="fa-solid fa-note-sticky"></i>';
+
+    root.append(bar, body, grip, icon);
 
     // A click anywhere on the note must not reach the editor surface
     // (which would place the text cursor); it also raises the note.
@@ -264,6 +276,10 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     grip.addEventListener('mousedown', (event) =>
       startResize(note, root, event)
     );
+    collapse.addEventListener('click', (event) => {
+      event.stopPropagation();
+      collapseNote(note.id);
+    });
     close.addEventListener('click', (event) => {
       event.stopPropagation();
       remove(note.id);
@@ -272,8 +288,33 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
       event.stopPropagation();
       beginEdit(note.id);
     });
+    icon.addEventListener('mousedown', (event) => startMove(note, root, event));
+    icon.addEventListener('dblclick', (event) => {
+      event.stopPropagation();
+      expandNote(note.id);
+    });
 
     return { root, body, editing: false };
+  }
+
+  /** Shrink a note to its icon. */
+  function collapseNote(id) {
+    const note = noteById(id);
+    const entry = elements.get(id);
+    if (!note || !entry || note.collapsed) return;
+    note.collapsed = true;
+    entry.root.classList.add('is-collapsed');
+    notifyChanged();
+  }
+
+  /** Restore a collapsed note to its full size and position. */
+  function expandNote(id) {
+    const note = noteById(id);
+    const entry = elements.get(id);
+    if (!note || !entry || !note.collapsed) return;
+    note.collapsed = false;
+    entry.root.classList.remove('is-collapsed');
+    notifyChanged();
   }
 
   /** Add a note's element to the overlay and render it. */
@@ -437,6 +478,7 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
       width: DEFAULT.width,
       height: DEFAULT.height,
       source: '',
+      collapsed: false,
     };
     notes().push(note);
     addElement(note);

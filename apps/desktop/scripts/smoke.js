@@ -553,6 +553,22 @@ app.whenReady().then(() => {
                     width: 200, height: 120, source: 'persisted note' }],
         });
         const restored = await window.host.readMetadata(metaPath);
+        // Collapse the first note via its control, then expand it by
+        // double-clicking the icon. The icon is a Font Awesome glyph.
+        const firstNote = document.querySelectorAll('.sticky-note')[0];
+        firstNote.querySelector('.sticky-note-collapse').dispatchEvent(
+          new MouseEvent('click', { bubbles: true })
+        );
+        await frame();
+        const collapsed = firstNote.classList.contains('is-collapsed');
+        const faLoaded = getComputedStyle(
+          firstNote.querySelector('.sticky-note-icon i')
+        ).fontFamily.includes('Font Awesome');
+        firstNote.querySelector('.sticky-note-icon').dispatchEvent(
+          new MouseEvent('dblclick', { bubbles: true })
+        );
+        await frame();
+        const expanded = !firstNote.classList.contains('is-collapsed');
         return {
           present: note !== null,
           body: body ? body.textContent.trim() : '',
@@ -563,6 +579,9 @@ app.whenReady().then(() => {
             document.querySelectorAll('.sticky-note-body mjx-container')
               .length > 0,
           coloured,
+          collapsed,
+          expanded,
+          faLoaded,
           persisted: !!(restored && restored.notes &&
             restored.notes.length === 1 &&
             restored.notes[0].source === 'persisted note'),
@@ -616,6 +635,9 @@ app.whenReady().then(() => {
         sticky.rendered &&
         sticky.mathTypeset &&
         sticky.coloured === 'rgb(255, 99, 71)' &&
+        sticky.collapsed &&
+        sticky.expanded &&
+        sticky.faLoaded &&
         sticky.persisted;
 
       if (
