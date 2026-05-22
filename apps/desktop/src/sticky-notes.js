@@ -122,6 +122,32 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     root.style.height = `${note.height}px`;
   }
 
+  /** Typeset any mathematics in a note body, once MathJax is ready. */
+  function typesetMath(bodyEl) {
+    const mathJax = globalThis.MathJax;
+    if (!mathJax) return;
+    const run = () => {
+      // The body's HTML was just replaced — drop MathJax's stale record
+      // of it before typesetting afresh.
+      if (typeof mathJax.typesetClear === 'function') {
+        mathJax.typesetClear([bodyEl]);
+      }
+      if (typeof mathJax.typesetPromise === 'function') {
+        mathJax.typesetPromise([bodyEl]).catch(() => {});
+      }
+    };
+    // MathJax loads asynchronously; wait for its startup if need be.
+    const ready = mathJax.startup && mathJax.startup.promise;
+    if (ready) ready.then(run).catch(() => {});
+    else run();
+  }
+
+  /** Put HTML into a note body and typeset the mathematics in it. */
+  function setBody(bodyEl, html) {
+    bodyEl.innerHTML = html;
+    typesetMath(bodyEl);
+  }
+
   /** Render a note's body from its source (async, cached, race-guarded). */
   function renderBody(id) {
     const note = noteById(id);
@@ -130,7 +156,7 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     const source = note.source;
     const cached = htmlCache.get(source);
     if (cached !== undefined) {
-      entry.body.innerHTML = cached;
+      setBody(entry.body, cached);
       return;
     }
     Promise.resolve(renderSource(source))
@@ -141,12 +167,12 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
         // Discard a stale render: the source may have changed while we
         // were waiting, in which case a newer renderBody already ran.
         if (e && current && current.source === source) {
-          e.body.innerHTML = html;
+          setBody(e.body, html);
         }
       })
       .catch(() => {
         const e = elements.get(id);
-        if (e) e.body.innerHTML = defaultRender(source);
+        if (e) setBody(e.body, defaultRender(source));
       });
   }
 

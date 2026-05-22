@@ -534,6 +534,9 @@ app.whenReady().then(() => {
         // An HTML tag in the source becomes a real element once rendered.
         submit('(note-set-source! (note-create!) "<b>bold note</b>")');
         await wait(500);
+        // A note with mathematics — MathJax typesets it in place.
+        submit('(note-set-source! (note-create!) "energy $E = mc^2$")');
+        await wait(1200);
         // Persistence: notes round-trip through a .jmacs-metadata file.
         const metaPath = ${JSON.stringify(notesPath)};
         await window.host.writeMetadata(metaPath, {
@@ -547,6 +550,9 @@ app.whenReady().then(() => {
           scrolled: Math.abs(after - before + 300) < 4,
           count: document.querySelectorAll('.sticky-note').length,
           rendered: document.querySelectorAll('.sticky-note-body b').length > 0,
+          mathTypeset:
+            document.querySelectorAll('.sticky-note-body mjx-container')
+              .length > 0,
           persisted: !!(restored && restored.notes &&
             restored.notes.length === 1 &&
             restored.notes[0].source === 'persisted note'),
@@ -596,8 +602,9 @@ app.whenReady().then(() => {
         sticky.present &&
         sticky.body.includes('sticky body text') &&
         sticky.scrolled &&
-        sticky.count === 2 &&
+        sticky.count === 3 &&
         sticky.rendered &&
+        sticky.mathTypeset &&
         sticky.persisted;
 
       if (

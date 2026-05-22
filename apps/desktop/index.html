@@ -19,6 +19,28 @@
         }
       }
     </script>
+
+    <!-- MathJax — loaded once for the whole app, so HTML in the view
+         (sticky notes today) can carry typeset mathematics. The config
+         must precede the library; the library is vendored, see
+         vendor/mathjax/. Nothing is typeset until something asks. -->
+    <script>
+      window.MathJax = {
+        tex: {
+          inlineMath: [
+            ['$', '$'],
+            ['\\(', '\\)'],
+          ],
+          displayMath: [
+            ['$$', '$$'],
+            ['\\[', '\\]'],
+          ],
+        },
+        svg: { fontCache: 'local' },
+        startup: { typeset: false },
+      };
+    </script>
+    <script src="./vendor/mathjax/tex-svg.js"></script>
   </head>
   <body>
     <header class="titlebar">
