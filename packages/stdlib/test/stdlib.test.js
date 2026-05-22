@@ -526,6 +526,51 @@ test('M-< and M-> jump to the buffer ends', async () => {
   assert.equal(buffer.point, 0);
 });
 
+// --- fill-paragraph and sentence commands -------------------------------
+
+test('M-q joins a short paragraph onto one line', async () => {
+  const { buffer, interpreter } = await editor('aaa\nbbb\nccc');
+  buffer.moveTo(0);
+  press(interpreter, 'M-q');
+  assert.equal(buffer.text, 'aaa bbb ccc');
+});
+
+test('M-q re-wraps only the paragraph the cursor is in', async () => {
+  const { buffer, interpreter } = await editor('aaa\nbbb\n\nccc ddd');
+  buffer.moveTo(0);
+  press(interpreter, 'M-q');
+  assert.equal(buffer.text, 'aaa bbb\n\nccc ddd');
+});
+
+test('M-q wraps a long paragraph at the fill column', async () => {
+  const { buffer, interpreter } = await editor(Array(20).fill('wxyz').join(' '));
+  buffer.moveTo(0);
+  press(interpreter, 'M-q');
+  const lines = buffer.text.split('\n');
+  assert.equal(lines.length, 2);
+  for (const line of lines) assert.ok(line.length <= 72);
+});
+
+test('M-e and M-a move by sentence', async () => {
+  const { buffer, interpreter } = await editor('First sentence. Second one.');
+  buffer.moveTo(0);
+  press(interpreter, 'M-e');
+  assert.equal(buffer.point, 15);
+  press(interpreter, 'M-e');
+  assert.equal(buffer.point, 27);
+  press(interpreter, 'M-a');
+  assert.equal(buffer.point, 16);
+});
+
+test('M-k kills to the end of the sentence', async () => {
+  const { buffer, interpreter } = await editor('First sentence. Second.');
+  buffer.moveTo(0);
+  press(interpreter, 'M-k');
+  assert.equal(buffer.text, ' Second.');
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'First sentence. Second.');
+});
+
 test('C-x ; comments and uncomments a line', async () => {
   const { buffer, interpreter } = await editor('hello');
   buffer.moveTo(0);

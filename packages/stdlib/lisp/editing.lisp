@@ -47,6 +47,14 @@
   "Move backward to the start of the previous word."
   (goto! (word-backward-offset)))
 
+(define (forward-sentence)
+  "Move forward to the end of the sentence."
+  (goto! (sentence-forward-offset)))
+
+(define (backward-sentence)
+  "Move backward to the start of the sentence."
+  (goto! (sentence-backward-offset)))
+
 (define (goto-line)
   "Prompt for a line number and move the cursor to that line."
   (start-goto-line!))
@@ -116,6 +124,10 @@
   (let ((p (point)))
     (insert! "\n")
     (goto! p)))
+
+(define (fill-paragraph)
+  "Re-wrap the paragraph around the cursor to the fill column."
+  (fill-paragraph!))
 
 (define (mark-whole-buffer)
   "Select the entire buffer."

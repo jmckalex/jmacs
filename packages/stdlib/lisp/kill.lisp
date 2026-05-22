@@ -47,6 +47,14 @@
       (kill-ring-add! (buffer-substring from to))
       (delete-region! from to))))
 
+(define (kill-sentence)
+  "Kill forward to the end of the sentence."
+  (let ((from (point))
+        (to (sentence-forward-offset)))
+    (when (> to from)
+      (kill-ring-add! (buffer-substring from to))
+      (delete-region! from to))))
+
 (define (backward-kill-word)
   "Kill backward to the start of the previous word."
   (let ((from (point))

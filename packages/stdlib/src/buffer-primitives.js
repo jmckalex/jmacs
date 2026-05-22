@@ -40,6 +40,46 @@ function backwardWord(text, from) {
 }
 
 /**
+ * The offset just past the end of the sentence at or after `from`. A
+ * sentence ends at `.`, `!` or `?` followed by whitespace or the end of
+ * the buffer.
+ */
+function forwardSentence(text, from) {
+  const match = /[.!?](\s|$)/.exec(text.slice(from));
+  return match ? from + match.index + 1 : text.length;
+}
+
+/** The offset of the start of the sentence before `from`. */
+function backwardSentence(text, from) {
+  let start = 0;
+  const ends = /[.!?](\s|$)/g;
+  let match;
+  while ((match = ends.exec(text)) !== null) {
+    let s = match.index + 1;
+    while (s < text.length && /\s/.test(text[s])) s += 1;
+    if (s >= from) break;
+    start = s;
+  }
+  return start;
+}
+
+/** Re-wrap a paragraph's words to a fill column, keeping its indent. */
+function fillParagraph(words, indent, fillColumn) {
+  const lines = [];
+  let current = indent + words[0];
+  for (let w = 1; w < words.length; w += 1) {
+    if ((current + ' ' + words[w]).length > fillColumn) {
+      lines.push(current);
+      current = indent + words[w];
+    } else {
+      current += ' ' + words[w];
+    }
+  }
+  lines.push(current);
+  return lines;
+}
+
+/**
  * Build the buffer primitives for a session.
  *
  * @param {{ current: import('@editor/buffer').Buffer }} session - An
@@ -73,6 +113,39 @@ export function createBufferPrimitives(session) {
     },
     'word-forward-offset': () => forwardWord(buffer().text, buffer().point),
     'word-backward-offset': () => backwardWord(buffer().text, buffer().point),
+    'sentence-forward-offset': () =>
+      forwardSentence(buffer().text, buffer().point),
+    'sentence-backward-offset': () =>
+      backwardSentence(buffer().text, buffer().point),
+    'fill-paragraph!': () => {
+      const buf = buffer();
+      const lines = buf.text.split('\n');
+      const cursorLine = buf.positionAt(buf.point).line;
+      const isBlank = (i) =>
+        i < 0 || i >= lines.length || lines[i].trim() === '';
+      if (isBlank(cursorLine)) return NIL;
+
+      // The paragraph is the run of non-blank lines around the cursor.
+      let start = cursorLine;
+      while (!isBlank(start - 1)) start -= 1;
+      let end = cursorLine;
+      while (!isBlank(end + 1)) end += 1;
+
+      const indent = /^[ \t]*/.exec(lines[start])[0];
+      const words = lines
+        .slice(start, end + 1)
+        .join(' ')
+        .trim()
+        .split(/\s+/);
+      const wrapped = fillParagraph(words, indent, 72);
+
+      const from = buf.offsetAt(start, 0);
+      const to = buf.offsetAt(end, lines[end].length);
+      buf.moveTo(from);
+      buf.deleteForward(to - from);
+      buf.insert(wrapped.join('\n'));
+      return NIL;
+    },
     'region-active?': () => buffer().selection !== null,
     'region-text': () => {
       const selection = buffer().selection;

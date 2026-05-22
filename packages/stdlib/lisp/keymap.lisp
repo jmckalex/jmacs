@@ -79,6 +79,10 @@
    "M-v"          'scroll-down
    "M-g"          'goto-line
    "M-r"          'replace-string
+   "M-q"          'fill-paragraph
+   "M-a"          'backward-sentence
+   "M-e"          'forward-sentence
+   "M-k"          'kill-sentence
    ;; M-< and M-> — the symbols arrive shifted.
    "M-S-comma"    'beginning-of-buffer
    "M-S-period"   'end-of-buffer
