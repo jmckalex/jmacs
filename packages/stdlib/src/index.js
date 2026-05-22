@@ -34,6 +34,7 @@ export const STDLIB_FILES = Object.freeze([
   'yank-pop.lisp',
   'line-ops.lisp',
   'occur.lisp',
+  'expand-region.lisp',
   'system.lisp',
   'modes.lisp',
   'keymap.lisp',

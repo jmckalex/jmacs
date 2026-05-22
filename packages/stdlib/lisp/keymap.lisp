@@ -115,6 +115,9 @@
    "M-backspace"  'backward-kill-word
    "M-up"         'move-line-up
    "M-down"       'move-line-down
+   ;; expand-region — C-= as the spec names it; the host normalises that
+   ;; keystroke (event.code "Equal") to "C-equal".
+   "C-equal"      'expand-region
    "C-x"          c-x-keymap
    "C-h"          c-h-keymap
    "M-n"          sticky-note-keymap
