@@ -91,13 +91,42 @@
    "C-x"          c-x-keymap
    "C-h"          c-h-keymap})
 
-;; The keymap the next keystroke is looked up in: the root keymap, or a
-;; prefix keymap while a key sequence is in progress.
-(define active-keymap the-keymap)
+;; While a key sequence is in progress this holds the prefix keymap the
+;; next keystroke is looked up in; at rest it is nil, meaning the key is
+;; resolved through the buffer's mode chain (see lookup-key).
+(define active-keymap nil)
 
 (define (reset-keymap!)
-  "Return dispatch to the root keymap."
-  (set! active-keymap the-keymap))
+  "Return dispatch to rest — resolve the next key through the modes."
+  (set! active-keymap nil))
+
+;; --- keymap composition ------------------------------------------------
+;; A key is resolved through a chain of keymaps: the major mode's map,
+;; then the global keymap. The first map that binds the key wins, so a
+;; mode can shadow a global binding without disturbing other buffers.
+;; (Minor-mode maps will prepend to this chain in a later phase.)
+
+(define (keymap-chain)
+  "The keymaps to resolve a key through, highest precedence first."
+  (list (major-mode-keymap) the-keymap))
+
+(define (lookup-in-chain key maps)
+  "The first binding for KEY among MAPS, skipping nil maps."
+  (cond
+    ((nil? maps) nil)
+    ((nil? (car maps)) (lookup-in-chain key (cdr maps)))
+    (else
+      (let ((binding (get (car maps) key nil)))
+        (if (nil? binding)
+            (lookup-in-chain key (cdr maps))
+            binding)))))
+
+(define (lookup-key key)
+  "Resolve KEY: through the active prefix map mid-sequence, otherwise
+   through the buffer's mode chain."
+  (if (nil? active-keymap)
+      (lookup-in-chain key (keymap-chain))
+      (get active-keymap key nil)))
 
 (define (keyboard-quit)
   "Abort a partial key sequence and clear the selection (C-g)."
@@ -125,22 +154,22 @@
         (set! *key-reader* nil)
         (reader key)
         #t)
-      (let ((binding (get active-keymap key nil)))
+      (let ((binding (lookup-key key)))
         (cond
           ;; A nested keymap: KEY is a prefix — wait for the next key.
           ((map? binding)
            (set! active-keymap binding)
            #t)
-          ;; A command name: run it, then return to the root keymap.
+          ;; A command name: run it, then return to rest.
           ((symbol? binding)
            (reset-keymap!)
            ((eval binding))
            #t)
           ;; Mid-sequence with nothing bound: the sequence is undefined.
-          ((not (eq? active-keymap the-keymap))
+          ((not (nil? active-keymap))
            (reset-keymap!)
            #t)
-          ;; At the root: self-insert a character, else leave unhandled.
+          ;; At rest: self-insert a character, else leave unhandled.
           ((self-insert-key? key)
            (insert! key)
            #t)

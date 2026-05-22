@@ -191,8 +191,8 @@ test('C-x C-s runs save-buffer', async () => {
   press(interpreter, 'C-x');
   press(interpreter, 'C-s');
   assert.deepEqual(fileCalls, ['save']);
-  // The sequence completed: dispatch is back at the root keymap.
-  assert.equal(interpreter.evaluate('(eq? active-keymap the-keymap)'), true);
+  // The sequence completed: dispatch is back at rest.
+  assert.equal(interpreter.evaluate('(nil? active-keymap)'), true);
 });
 
 test('C-x C-f runs find-file', async () => {
@@ -600,6 +600,28 @@ test('comment-line uses the major mode comment prefix', async () => {
   press(interpreter, 'C-x');
   press(interpreter, ';');
   assert.equal(buffer.text, '// hello');
+});
+
+test('a mode keymap shadows the global keymap', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  // A mode whose keymap rebinds C-d (globally delete-forward).
+  interpreter.evaluate(
+    '(set-major-mode! (hash-map :keymap (hash-map "C-d" (quote forward-char))))'
+  );
+  press(interpreter, 'C-d');
+  assert.equal(buffer.text, 'hello'); // not deleted
+  assert.equal(buffer.point, 1); // moved forward instead
+});
+
+test('keys the mode does not bind fall through to the global keymap', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  interpreter.evaluate(
+    '(set-major-mode! (hash-map :keymap (hash-map "C-d" (quote forward-char))))'
+  );
+  press(interpreter, 'C-f'); // not in the mode map → global keymap
+  assert.equal(buffer.point, 1);
 });
 
 test('C-x ; comments and uncomments a line', async () => {
