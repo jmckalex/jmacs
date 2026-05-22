@@ -17,16 +17,15 @@ in progress.
 
 | Feature | Plan | Status |
 |---------|------|--------|
-| Emacs-style customisation, with a pretty HTML-forms front-end and an `init.lisp` | [`CUSTOMISATION.md`](CUSTOMISATION.md) | planned — awaiting review |
+| The command system — `defcommand`, a command registry, and Emacs-style interactive argument specs | [`COMMAND-SYSTEM.md`](COMMAND-SYSTEM.md) | planned — awaiting review |
 | A reactive Lisp notebook (Observable-style), written in Lisp | [`REACTIVE-NOTEBOOK.md`](REACTIVE-NOTEBOOK.md) | planned — awaiting review |
 | Pretty-printed markdown shown in place of source comments | [`MARKDOWN-COMMENTS.md`](MARKDOWN-COMMENTS.md) | planned — awaiting review |
 
-A natural order: **customisation first** — it gives every later feature
-(the notebook's settings, the markdown-comment render command, the
-sticky-note command) a proper home, and it subsumes the earlier
-loose thread of a per-note stylesheet. The notebook and the
-markdown-comments feature are independent of each other and of
-customisation, and can follow in either order.
+The **command system** is the natural next step — it makes "command" a
+first-class concept (so `M-x` lists every command, bound or not) and
+introduces declarative interactive argument specs, the powerful half of
+Emacs's `(interactive)`. The notebook and the markdown-comments feature
+are independent of it and of each other, and can follow in any order.
 
 ## Smaller follow-ups
 
@@ -42,5 +41,8 @@ customisation, and can follow in either order.
 For context — the work since the initial build: the mode system, the
 startup splash, double-click word selection, the scroll-bounce fix,
 `C-x b` buffer creation, the `C-x p` REPL toggle, mode-specific native
-menus, and the sticky-notes feature (rendering via an external command,
-MathJax, colour headers, collapse/expand, persistence, embedded media).
+menus, the sticky-notes feature (rendering via an external command,
+MathJax, colour headers, collapse/expand, persistence, embedded media),
+and **Emacs-style customisation** — `defcustom`, the buffer-kind /
+view-kind mechanism, the HTML customisation buffer, persistence and an
+`init.lisp` ([`CUSTOMISATION.md`](CUSTOMISATION.md)).
