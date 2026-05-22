@@ -1,0 +1,766 @@
+Title: jmacs Command Reference
+Author: J. McKenzie Alexander
+Date: 2026-05-22
+---
+
+# jmacs Command Reference
+
+This document describes every procedure in the jmacs standard library —
+`packages/stdlib/lisp/*.lisp`. These are the editor's commands and the
+machinery that dispatches them: ordinary Lisp, built on the buffer
+primitives (`buffer-primitives.jmd`) and the core language
+(`lisp-core.jmd`).
+
+Entries are grouped by task. A *command* — a procedure of no arguments,
+runnable by name with `M-x` and usually bound to a key — is the common
+case; this file also documents the dispatch, palette and mode
+machinery that the commands rely on. See `index.jmd` for how to read an
+entry and what the conventions mean.
+
+Key bindings are given in the manual's notation: `C-` is Control or
+Command, `M-` is Option, `S-` is Shift.
+
+---
+
+## Cursor movement
+
+Defined in `editing.lisp`. Each is a thin command over a buffer
+primitive; the command is the layer the keymap binds and the layer you
+redefine.
+
+### `forward-char`
+`(forward-char)`
+
+Move the cursor one character to the right. Bound to `→` and `C-f`.
+
+### `backward-char`
+`(backward-char)`
+
+Move the cursor one character to the left. Bound to `←` and `C-b`.
+
+### `next-line`
+`(next-line)`
+
+Move the cursor down one line. Bound to `↓` and `C-n`.
+
+### `previous-line`
+`(previous-line)`
+
+Move the cursor up one line. Bound to `↑` and `C-p`.
+
+### `move-beginning-of-line`
+`(move-beginning-of-line)`
+
+Move the cursor to the start of the current line. Bound to `Home`,
+`C-a` and `C-←`.
+
+### `move-end-of-line`
+`(move-end-of-line)`
+
+Move the cursor to the end of the current line. Bound to `End`, `C-e`
+and `C-→`.
+
+### `beginning-of-buffer`
+`(beginning-of-buffer)`
+
+Move the cursor to the start of the buffer. Bound to `C-↑` and `M-<`.
+
+### `end-of-buffer`
+`(end-of-buffer)`
+
+Move the cursor to the end of the buffer. Bound to `C-↓` and `M->`.
+
+### `forward-word`
+`(forward-word)`
+
+Move forward to the end of the next word. Bound to `M-f`. A *word* is a
+run of word characters, as decided by the `word-forward-offset`
+primitive.
+
+### `backward-word`
+`(backward-word)`
+
+Move backward to the start of the previous word. Bound to `M-b`.
+
+### `forward-sentence`
+`(forward-sentence)`
+
+Move forward to the end of the sentence. Bound to `M-e`. A sentence
+ends at `.`, `!` or `?` followed by whitespace or the buffer's end.
+
+### `backward-sentence`
+`(backward-sentence)`
+
+Move backward to the start of the sentence. Bound to `M-a`.
+
+### `back-to-indentation`
+`(back-to-indentation)`
+
+Move the cursor to the first non-blank character of the line. Bound to
+`M-m`. Computed as the line start plus the length of the line's
+leading indentation.
+
+### `goto-line`
+`(goto-line)`
+
+Prompt for a line number and move the cursor to that line. Bound to
+`M-g`. The prompt runs in the minibuffer (host code).
+
+### `recenter`
+`(recenter)`
+
+Scroll so the cursor's line is centred in the viewport. Bound to `C-l`.
+
+### `scroll-up`
+`(scroll-up)`
+
+Move the cursor forward by roughly one screenful. Bound to `C-v`.
+Implemented as `page-lines` repetitions of `cursor-down!`.
+
+### `scroll-down`
+`(scroll-down)`
+
+Move the cursor backward by roughly one screenful. Bound to `M-v`.
+
+## Movement that extends the selection
+
+Defined in `editing.lisp`. These pass `#t` to their buffer primitive,
+which extends the selection as it moves (the Shift-select forms). They
+exist as separate commands so the keymap can bind the shifted keys.
+
+### `forward-char-extending`
+`(forward-char-extending)`
+
+Move one character right, extending the selection. Bound to `S-→` and
+`C-S-f`.
+
+### `backward-char-extending`
+`(backward-char-extending)`
+
+Move one character left, extending the selection. Bound to `S-←` and
+`C-S-b`.
+
+### `next-line-extending`
+`(next-line-extending)`
+
+Move down one line, extending the selection. Bound to `S-↓` and
+`C-S-n`.
+
+### `previous-line-extending`
+`(previous-line-extending)`
+
+Move up one line, extending the selection. Bound to `S-↑` and `C-S-p`.
+
+### `beginning-of-line-extending`
+`(beginning-of-line-extending)`
+
+Move to the line start, extending the selection. Bound to `S-Home` and
+`C-S-a`.
+
+### `end-of-line-extending`
+`(end-of-line-extending)`
+
+Move to the line end, extending the selection. Bound to `S-End` and
+`C-S-e`.
+
+## The mark and the region
+
+The *mark* is the selection anchor; the *region* is the text between
+mark and point. Once the mark is set, ordinary movement extends the
+region until it is cleared. See the manual §4.2.
+
+### `set-mark-command`
+`(set-mark-command)`
+
+Set the mark at the cursor, starting a region. Bound to `C-SPC`. While
+the mark is set, cursor movement extends the region; `C-g` clears it.
+Defined in `editing.lisp`.
+
+### `mark-whole-buffer`
+`(mark-whole-buffer)`
+
+Select the entire buffer — move point to the end and set the mark at
+the start. Bound to `C-x h`. Defined in `editing.lisp`.
+
+### `exchange-point-and-mark`
+`(exchange-point-and-mark)`
+
+Move point to the mark and the mark to where point was. Bound to
+`C-x C-x`. Does nothing if the mark is not set. Defined in
+`editing.lisp`.
+
+### `keyboard-quit`
+`(keyboard-quit)`
+
+Abort a partial key sequence and clear the selection. Bound to `C-g`.
+Resets the active prefix keymap and clears the mark. Defined in
+`keymap.lisp`.
+
+## Editing text
+
+Defined in `editing.lisp`.
+
+### `delete-backward`
+`(delete-backward)`
+
+Delete the character before the cursor, or the selection if one is
+active. Bound to `Backspace`.
+
+### `delete-forward`
+`(delete-forward)`
+
+Delete the character after the cursor, or the selection if one is
+active. Bound to `Delete` and `C-d`.
+
+### `transpose-chars`
+`(transpose-chars)`
+
+Swap the two characters before the cursor. Bound to `C-t`. Does nothing
+when the cursor is within the first two characters of the buffer.
+
+### `newline`
+`(newline)`
+
+Insert a line break, copying the current line's leading indentation
+onto the new line. Bound to `Enter` and `C-j`.
+
+### `open-line`
+`(open-line)`
+
+Insert a newline after the cursor, leaving the cursor before it — opens
+a blank line below without descending onto it. Bound to `C-o`.
+
+### `insert-tab`
+`(insert-tab)`
+
+Insert two spaces at the cursor. Bound to `Tab`. jmacs indents with
+spaces.
+
+### `fill-paragraph`
+`(fill-paragraph)`
+
+Re-wrap the paragraph around the cursor to the fill column (72), keeping
+the paragraph's indentation. Bound to `M-q`. The paragraph is the run
+of non-blank lines around the cursor; does nothing on a blank line.
+
+### `comment-line`
+`(comment-line)`
+
+Comment or uncomment the current line. Bound to `C-x ;`. Uses the
+comment prefix of the buffer's major mode (`comment-prefix`); toggles —
+adds the prefix if absent, removes it if present.
+
+### `replace-string`
+`(replace-string)`
+
+Prompt for a string and a replacement, then replace every occurrence.
+Bound to `M-r`. The prompt runs in the minibuffer (host code).
+
+## Undo
+
+Defined in `editing.lisp`. Undo is currently per-edit — one keystroke is
+one undoable step.
+
+### `undo`
+`(undo)`
+
+Undo the last change. Bound to `C-z`.
+
+### `redo`
+`(redo)`
+
+Redo the last undone change. Bound to `C-S-z`.
+
+## The kill ring
+
+Defined in `kill.lisp`. Killed text — cut or copied — is pushed onto the
+*kill ring*, a list of recent kills held in the variable `*kill-ring*`,
+and yanked back from it. See the manual §4.5.
+
+### `*kill-ring*`
+
+The kill ring itself: a list of killed strings, most recent first.
+Ordinary Lisp state — inspect or rebind it like any variable.
+
+### `kill-ring-add!`
+`(kill-ring-add! text)`
+
+Push `text` onto the kill ring. The mutating primitive the kill
+commands are built on.
+
+### `kill-ring-top`
+`(kill-ring-top)`
+
+The most recent kill, or an empty string when the ring is empty.
+
+### `copy-region`
+`(copy-region)`
+
+Copy the selected text to the kill ring and clear the mark. Bound to
+`M-w`. Does nothing when no region is active.
+
+### `kill-region`
+`(kill-region)`
+
+Cut the selected text to the kill ring. Bound to `C-w`. Does nothing
+when no region is active.
+
+### `kill-line`
+`(kill-line)`
+
+Kill from the cursor to the end of the line; at a line's end, kill the
+newline instead. Bound to `C-k`.
+
+### `kill-word`
+`(kill-word)`
+
+Kill forward to the end of the next word. Bound to `M-d`.
+
+### `kill-sentence`
+`(kill-sentence)`
+
+Kill forward to the end of the sentence. Bound to `M-k`.
+
+### `backward-kill-word`
+`(backward-kill-word)`
+
+Kill backward to the start of the previous word. Bound to `M-Backspace`.
+
+### `yank`
+`(yank)`
+
+Insert the most recent kill at the cursor. Bound to `C-y`.
+
+## Files
+
+Defined in `files.lisp`. These wrap host primitives; the file dialog
+and the filesystem work happen in the Electron main process, reached
+over IPC.
+
+### `find-file`
+`(find-file)`
+
+Open a file, replacing the current buffer's contents. Bound to
+`C-x C-f`.
+
+### `save-buffer`
+`(save-buffer)`
+
+Save the current buffer to its file. Bound to `C-x C-s`.
+
+## Buffers
+
+Defined in `buffers.lisp`. The editor holds a list of buffers with one
+current; these commands change which is current and re-point the view.
+
+### `next-buffer`
+`(next-buffer)`
+
+Switch to the next buffer in the list. Bound to `C-x →`.
+
+### `previous-buffer`
+`(previous-buffer)`
+
+Switch to the previous buffer in the list. Bound to `C-x ←`.
+
+### `new-buffer`
+`(new-buffer)`
+
+Create a fresh empty buffer and switch to it. Bound to `C-x n`.
+
+### `switch-buffer`
+`(switch-buffer)`
+
+Switch to a buffer chosen by name, with completion. Bound to `C-x b`.
+The chooser runs in the minibuffer (host code).
+
+## Search and replace
+
+Defined in `search.lisp`. The interactive search loop runs in the
+minibuffer (host code); these commands start it.
+
+### `isearch-forward`
+`(isearch-forward)`
+
+Begin an incremental forward search in the current buffer. Bound to
+`C-s`.
+
+### `isearch-backward`
+`(isearch-backward)`
+
+Begin an incremental backward search in the current buffer. Bound to
+`C-r`.
+
+## The command palette
+
+Defined in `palette.lisp`. The palette — `M-x` — offers every command
+reachable from the keymap. It is loaded after `keymap.lisp` so it can
+read `the-keymap`.
+
+### `execute-command`
+`(execute-command)`
+
+Prompt for a command by name and run it — the `M-x` command. Bound to
+`M-x`. The interactive matching loop runs in the minibuffer.
+
+### `command-names`
+`(command-names)`
+
+A list of every command name reachable from the keymap, as strings.
+This is the set the palette offers.
+
+### `-keymap-commands`
+`(-keymap-commands keymap)`
+
+Collect command names from `keymap` and any nested keymaps, recursively.
+An internal helper for `command-names` (the leading `-` marks it
+internal).
+
+## Help — the editor describes itself
+
+Defined in `help.lisp`. Every command keeps its docstring; these
+commands surface it. Their output goes to the REPL.
+
+### `describe-key`
+`(describe-key)`
+
+Describe the command bound to the next key pressed. Bound to `C-h k`.
+Reads one keystroke, then reports whether the key is unbound, is a
+prefix, or runs a command — and for a command, prints its docstring.
+
+### `describe-command`
+`(describe-command)`
+
+Prompt for a command by name and show its documentation. Bound to
+`C-h f`. The prompt runs in the minibuffer (host code).
+
+### `describe-named-command`
+`(describe-named-command name)`
+
+Print the documentation of the command called `name` (a string).
+Resolves the name to a symbol, evaluates it, and prints its docstring —
+or `(no documentation)` if it has none. The non-interactive core that
+`describe-command` is built around.
+
+## Editor commands
+
+Defined in `system.lisp`.
+
+### `reload-stdlib`
+`(reload-stdlib)`
+
+Re-evaluate the standard library, picking up any edits to it. Bound to
+`C-x C-r`. Because commands are bound by name and resolved late, the
+running editor switches to the new definitions at once — hot reload.
+
+### `quit-editor`
+`(quit-editor)`
+
+Quit the editor. Bound to `C-x C-c`.
+
+## Markdown writing commands
+
+Defined in `markdown.lisp`, loaded after `modes.lisp` and `keymap.lisp`.
+They emit *JMarkdown* syntax and are bound under the `C-c` prefix of
+`markdown-mode` (§*The markdown-mode keymap* below), so they are active
+only in a Markdown buffer.
+
+### `surround`
+`(surround opener closer)`
+
+Wrap the selection in `opener` and `closer`; with no selection, insert
+the pair and place the cursor between them. The helper the inline
+formatting commands are built on.
+
+### `insert-at-line-start`
+`(insert-at-line-start text)`
+
+Insert `text` at the start of the current line, leaving the cursor in
+its original position relative to the text. The helper the block
+commands are built on.
+
+### `markdown-bold`
+`(markdown-bold)`
+
+Make the selection strong — JMarkdown `*…*`. Bound to `C-c b`.
+
+### `markdown-italic`
+`(markdown-italic)`
+
+Make the selection emphasised — JMarkdown `/…/`. Bound to `C-c i`.
+
+### `markdown-code`
+`(markdown-code)`
+
+Make the selection inline code — `` `…` ``. Bound to `C-c c`.
+
+### `markdown-highlight`
+`(markdown-highlight)`
+
+Highlight the selection — JMarkdown `==…==`. Bound to `C-c h`.
+
+### `markdown-insert-link`
+`(markdown-insert-link)`
+
+Insert a link, wrapping the selection as the link text and leaving the
+cursor in the URL slot. Bound to `C-c l`.
+
+### `markdown-insert-cite`
+`(markdown-insert-cite)`
+
+Insert a JMarkdown `\cite{}` citation, cursor inside the braces. Bound
+to `C-c k`.
+
+### `markdown-insert-footnote`
+`(markdown-insert-footnote)`
+
+Insert a JMarkdown footnote `[^: ]`, cursor in the body. Bound to
+`C-c f`.
+
+### `markdown-heading-1` … `markdown-heading-6`
+`(markdown-heading-1)` … `(markdown-heading-6)`
+
+Make the current line a heading of the given level — prepend `#`,
+`##`, … `######`. Bound to `C-c 1` through `C-c 6`.
+
+### `markdown-blockquote`
+`(markdown-blockquote)`
+
+Make the current line a blockquote — prepend `> `. Bound to `C-c q`.
+
+### `markdown-list-item`
+`(markdown-list-item)`
+
+Make the current line a list item — prepend `- `. Bound to `C-c -`.
+
+## The math minor mode
+
+Defined in `markdown.lisp`. An AUCTeX-style minor mode: with it on, a
+backtick followed by a key inserts a LaTeX math symbol.
+
+### `math-insert-symbol`
+`(math-insert-symbol)`
+
+Read a key and insert the LaTeX math symbol it names; an unmapped key
+is inserted as itself (so `` ` `` then `` ` `` gives a literal
+backtick). Bound to `` ` `` in `math-mode-map`. Looks the key up in
+`*math-symbols*`.
+
+### `toggle-math-mode`
+`(toggle-math-mode)`
+
+Toggle the math symbol-insertion minor mode in the current buffer.
+Bound to `C-c m` in `markdown-mode`.
+
+### `*math-symbols*`
+
+The map from a key to a LaTeX symbol string used by `math-insert-symbol`
+— `"a"` → `"\alpha"`, `"8"` → `"\infty"`, and so on. Edit it to change
+or extend the symbol set.
+
+## Key dispatch
+
+Defined in `keymap.lisp`. A *keymap* maps a key string to either a
+command name (a symbol) or a nested keymap (a prefix). The renderer
+reports each keystroke as a normalised string; `handle-key` dispatches
+it. See the manual §5 and `docs/spec/modes.md` §6.
+
+### `the-keymap`
+
+The root keymap — the global key bindings. A buffer's mode keymaps are
+consulted ahead of it (`keymap-chain`).
+
+### `c-x-keymap`, `c-h-keymap`
+
+The nested keymaps reached through the `C-x` and `C-h` prefixes. Bound
+into `the-keymap` under `"C-x"` and `"C-h"`.
+
+### `active-keymap`
+
+While a key sequence is in progress, holds the prefix keymap the next
+keystroke is looked up in; `nil` at rest, meaning the next key is
+resolved through the buffer's mode chain.
+
+### `*key-reader*`
+
+A procedure set to receive the *next* keystroke instead of the keymap,
+or `nil`. This is how a command such as `describe-key` reads a key.
+
+### `reset-keymap!`
+`(reset-keymap!)`
+
+Return dispatch to rest — set `active-keymap` to `nil` so the next key
+resolves through the modes.
+
+### `keymap-chain`
+`(keymap-chain)`
+
+The keymaps to resolve a key through, highest precedence first: the
+minor-mode keymaps, then the major-mode keymap, then `the-keymap`.
+
+### `lookup-in-chain`
+`(lookup-in-chain key maps)`
+
+The first binding for `key` among the list `maps`, skipping `nil` maps.
+Returns `nil` if none binds it.
+
+### `lookup-key`
+`(lookup-key key)`
+
+Resolve `key` to a binding — through the active prefix map when
+mid-sequence, otherwise through the buffer's mode chain
+(`keymap-chain`).
+
+### `self-insert-key?`
+`(self-insert-key? key)`
+
+True when `key` is a single character — text to be inserted rather than
+a command.
+
+### `read-next-key`
+`(read-next-key callback)`
+
+Route the next keystroke to `callback` rather than the keymap, by
+setting `*key-reader*`. The mechanism behind `describe-key` and
+`math-insert-symbol`.
+
+### `handle-key`
+`(handle-key key)`
+
+Dispatch `key` — the entry point the host calls on every keystroke. If a
+key-reader is pending, it receives the key; otherwise `key` runs a
+command, begins a key sequence, or self-inserts. Returns `#t` when the
+key was handled.
+
+## Modes
+
+Defined in `modes.lisp`. A mode is a Lisp map carrying a display name,
+an optional keymap, a comment prefix and a highlighter hint. See
+`docs/spec/modes.md`.
+
+### `define-mode`
+`(define-mode name pair…)` — *macro*
+
+Define a mode. Sugar for `define` over a map literal:
+`(define-mode lisp-mode :name "Lisp" :highlight :lisp …)` binds
+`lisp-mode` to `{:name "Lisp" :highlight :lisp …}`.
+
+### `lisp-mode-map`, `markdown-mode-map`
+
+Mode keymaps, declared empty in `modes.lisp` and filled in by feature
+files (`markdown.lisp` fills `markdown-mode-map`). A mode names its
+keymap by symbol, so later edits to the map are seen live.
+
+### `register-mode`
+`(register-mode suffix mode)`
+
+Associate a filename `suffix` with a major `mode`. Adds an entry to
+`*mode-registry*`.
+
+### `*mode-registry*`
+
+The list of `(suffix . mode)` pairs that maps filenames to major modes.
+
+### `registry-lookup`
+`(registry-lookup entries name)`
+
+Find the mode for `name` among the registry `entries`, or
+`fundamental-mode` if none matches. Internal helper for `mode-for-name`.
+
+### `mode-for-name`
+`(mode-for-name name)`
+
+The major mode registered for a buffer `name`, by filename suffix.
+
+### `run-mode-hook`
+`(run-mode-hook mode key)`
+
+Run `mode`'s hook stored under `key` — `:on-enable` or `:on-disable` — a
+procedure, if it has one. Safe on a `nil` mode.
+
+### `switch-major-mode`
+`(switch-major-mode mode)`
+
+Make `mode` the current buffer's major mode, running the old mode's
+`:on-disable` hook and the new mode's `:on-enable` hook.
+
+### `choose-major-mode!`
+`(choose-major-mode!)`
+
+Set the current buffer's major mode from its name (`mode-for-name`). The
+host calls this when a buffer is created, opened, or renamed.
+
+### `major-mode-name`
+`(major-mode-name)`
+
+The display name of the current buffer's major mode — `"Fundamental"`
+when there is none. Used by the modeline.
+
+### `resolve-keymap`
+`(resolve-keymap k)`
+
+Resolve a mode's `:keymap` — a symbol naming a keymap, or a keymap
+itself. Resolving by name keeps the keymap live-editable.
+
+### `major-mode-keymap`
+`(major-mode-keymap)`
+
+The current buffer's major-mode keymap, or `nil`.
+
+### `comment-prefix`
+`(comment-prefix)`
+
+The comment prefix of the current buffer's major mode — `";; "` when
+there is none. Used by `comment-line`.
+
+### `minor-modes`
+`(minor-modes)`
+
+The current buffer's active minor modes, as a list (empty when none).
+
+### `mode-priority`
+`(mode-priority mode)`
+
+A mode's `:priority` — default `0`. Higher-priority minor modes are
+consulted first in the keymap chain.
+
+### `insert-by-priority`
+`(insert-by-priority mode modes)`
+
+Insert `mode` into the list `modes`, keeping descending `:priority`
+order. Internal helper for `enable-minor-mode`.
+
+### `without-item`
+`(without-item item lst)`
+
+`lst` with the first `item` removed, compared by identity. Internal
+helper for `disable-minor-mode`.
+
+### `enable-minor-mode`
+`(enable-minor-mode mode)`
+
+Activate a minor `mode` in the current buffer, in priority order, and
+run its `:on-enable` hook. Idempotent — does nothing if already active.
+
+### `disable-minor-mode`
+`(disable-minor-mode mode)`
+
+Deactivate a minor `mode` in the current buffer and run its
+`:on-disable` hook.
+
+### `minor-mode-keymaps`
+`(minor-mode-keymaps)`
+
+The keymaps of the active minor modes, highest priority first. Part of
+the `keymap-chain`.
+
+### `join-minor-names`
+`(join-minor-names modes)`
+
+Each mode's name in `modes`, two-space-prefixed and concatenated.
+Internal helper for `minor-mode-line`.
+
+### `minor-mode-line`
+`(minor-mode-line)`
+
+The active minor mode names, formatted for the modeline.
