@@ -322,10 +322,19 @@ app.whenReady().then(() => {
         const line1 = document.querySelectorAll('.editor-line')[1].getBoundingClientRect();
         click(line1.right + 90, line1.top + 4);
         await frame();
+        const endOfLine = document.getElementById('modeline-position').textContent;
+        // Double-click selects the word under the pointer.
+        const line0b = document.querySelectorAll('.editor-line')[0].getBoundingClientRect();
+        editor.dispatchEvent(new MouseEvent('dblclick', {
+          clientX: line0b.left + 12, clientY: line0b.top + 4,
+          bubbles: true, cancelable: true,
+        }));
+        await frame();
         return {
           before,
           after,
-          endOfLine: document.getElementById('modeline-position').textContent,
+          endOfLine,
+          wordSelected: document.querySelectorAll('.editor-selection-rect').length > 0,
         };
       })()`);
       console.log('  mouse:', JSON.stringify(mouse));
@@ -435,7 +444,8 @@ app.whenReady().then(() => {
       const replaceOk = replace.text === 'bar bar bar';
       const mouseOk =
         mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
-        mouse.endOfLine.includes('Ln 2') && mouse.endOfLine.includes('Col 5');
+        mouse.endOfLine.includes('Ln 2') && mouse.endOfLine.includes('Col 5') &&
+        mouse.wordSelected;
       const markdownOk = markdown.headings > 0;
       const virtualOk =
         virtual.lineDivs > 0 && virtual.lineDivs < 120 &&

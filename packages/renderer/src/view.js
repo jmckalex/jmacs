@@ -359,6 +359,22 @@ export function createEditorView(buffer, container, options = {}) {
     event.preventDefault();
   });
 
+  // Double-click selects the word under the pointer.
+  root.addEventListener('dblclick', (event) => {
+    const offset = offsetFromPoint(event.clientX, event.clientY);
+    if (offset === null) return;
+    const text = activeBuffer.text;
+    const isWord = (ch) => ch !== undefined && /\w/.test(ch);
+    let start = offset;
+    let end = offset;
+    while (start > 0 && isWord(text[start - 1])) start -= 1;
+    while (end < text.length && isWord(text[end])) end += 1;
+    if (end > start) {
+      activeBuffer.moveTo(start);
+      activeBuffer.moveTo(end, { extend: true });
+    }
+  });
+
   render();
   root.focus();
 
