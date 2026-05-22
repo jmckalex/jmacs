@@ -674,20 +674,21 @@ const editorView = createEditorView(
   }
 );
 
+// The command sticky notes are rendered through. Hardcoded for now so
+// notes render out of the box; the *jmarkdown-command* Lisp variable
+// overrides it when set.
+const DEFAULT_JMARKDOWN_COMMAND = 'jmarkdown --to html --fragment';
+
 // Render a sticky note's JMarkdown source to HTML through the shell
-// command in *jmarkdown-command*. Throwing — when no command is set,
-// or the command fails — makes the notes module fall back to showing
-// the raw source.
+// command. Throwing — the command failed, e.g. it is not installed —
+// makes the notes module fall back to showing the raw source.
 async function renderNoteHtml(source) {
-  let command = null;
+  let command = DEFAULT_JMARKDOWN_COMMAND;
   try {
     const value = interpreter.evaluate('*jmarkdown-command*');
-    if (typeof value === 'string') command = value;
+    if (typeof value === 'string' && value.trim() !== '') command = value;
   } catch {
-    command = null;
-  }
-  if (command === null || command.trim() === '') {
-    throw new Error('no JMarkdown command configured');
+    // *jmarkdown-command* unset or unreadable — keep the default.
   }
   const result = await window.host.renderJMarkdown(command, source);
   if (result && typeof result.html === 'string') return result.html;

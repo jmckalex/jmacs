@@ -517,7 +517,11 @@ app.whenReady().then(() => {
         await frame();
         submit('(goto! 0)');
         await frame();
-        // With no render command set, a note shows its raw source.
+        // Drive the render pipeline with a controlled command — 'cat'
+        // echoes the source, so the output here is deterministic and
+        // independent of whether a real JMarkdown binary is installed.
+        submit('(set! *jmarkdown-command* "cat")');
+        await frame();
         submit('(note-set-source! (note-create!) "sticky body text")');
         await frame();
         const note = document.querySelector('.sticky-note');
@@ -527,10 +531,7 @@ app.whenReady().then(() => {
         await frame();
         await frame();
         const after = note ? note.getBoundingClientRect().top : 0;
-        // With a render command, the source is piped through it: 'cat'
-        // echoes it verbatim, so an HTML tag becomes a real element.
-        submit('(set! *jmarkdown-command* "cat")');
-        await frame();
+        // An HTML tag in the source becomes a real element once rendered.
         submit('(note-set-source! (note-create!) "<b>bold note</b>")');
         await wait(500);
         // Persistence: notes round-trip through a .jmacs-metadata file.
