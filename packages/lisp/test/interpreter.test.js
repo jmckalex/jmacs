@@ -221,6 +221,12 @@ test('string-prefix? tests how a string begins', () => {
   assert.equal(run('(string-prefix? "" "abc")'), true);
 });
 
+test('string-suffix? tests how a string ends', () => {
+  assert.equal(run('(string-suffix? "cd" "abcd")'), true);
+  assert.equal(run('(string-suffix? "x" "abcd")'), false);
+  assert.equal(run('(string-suffix? "" "abc")'), true);
+});
+
 // --- output -------------------------------------------------------------
 
 test('print writes to the output sink', () => {

@@ -571,6 +571,37 @@ test('M-k kills to the end of the sentence', async () => {
   assert.equal(buffer.text, 'First sentence. Second.');
 });
 
+// --- modes --------------------------------------------------------------
+
+test('define-mode builds a mode the accessors can read', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate('(set-major-mode! lisp-mode)');
+  assert.equal(interpreter.evaluate('(major-mode-name)'), 'Lisp');
+  assert.equal(interpreter.evaluate('(comment-prefix)'), ';; ');
+});
+
+test('mode-for-name picks a major mode by filename suffix', async () => {
+  const { interpreter } = await editor();
+  assert.ok(interpreter.evaluate('(eq? (mode-for-name "core.lisp") lisp-mode)'));
+  assert.ok(interpreter.evaluate('(eq? (mode-for-name "notes.md") markdown-mode)'));
+  assert.ok(interpreter.evaluate('(eq? (mode-for-name "x.txt") fundamental-mode)'));
+});
+
+test('choose-major-mode! sets the buffer mode from its name', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate('(choose-major-mode!)'); // the test buffer is "test"
+  assert.ok(interpreter.evaluate('(eq? (buffer-major-mode) fundamental-mode)'));
+});
+
+test('comment-line uses the major mode comment prefix', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  interpreter.evaluate('(set-major-mode! javascript-mode)');
+  buffer.moveTo(0);
+  press(interpreter, 'C-x');
+  press(interpreter, ';');
+  assert.equal(buffer.text, '// hello');
+});
+
 test('C-x ; comments and uncomments a line', async () => {
   const { buffer, interpreter } = await editor('hello');
   buffer.moveTo(0);

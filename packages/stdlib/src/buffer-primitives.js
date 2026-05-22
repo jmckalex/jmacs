@@ -107,9 +107,11 @@ export function createBufferPrimitives(session) {
     'line-start': () => buffer().lineAt(buffer().point).from,
     'line-end': () => buffer().lineAt(buffer().point).to,
     'line-indent': () => /^[ \t]*/.exec(buffer().lineAt(buffer().point).text)[0],
-    'comment-prefix': () => {
-      const name = buffer().name;
-      return name.endsWith('.js') || name.endsWith('.mjs') ? '// ' : ';; ';
+    // --- modes — L2 stores the mode; the stdlib gives it meaning -------
+    'buffer-major-mode': () => buffer().majorMode ?? NIL,
+    'set-major-mode!': (args) => {
+      buffer().majorMode = args[0];
+      return NIL;
     },
     'word-forward-offset': () => forwardWord(buffer().text, buffer().point),
     'word-backward-offset': () => backwardWord(buffer().text, buffer().point),
