@@ -75,6 +75,30 @@ app.whenReady().then(() => {
       }))()`);
       console.log('  rendered:', JSON.stringify(render));
 
+      // The startup splash: present in the background layer, and
+      // dismissed (no longer visible) once a buffer is switched.
+      const splash = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const present =
+          document.querySelector('.editor-background .splash.is-visible')
+            !== null;
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        submit('(next-buffer!)');     // a switch dismisses the splash
+        submit('(previous-buffer!)'); // ... and back: the count is intact
+        await frame();
+        return {
+          present,
+          dismissed: document.querySelector('.splash.is-visible') === null,
+        };
+      })()`);
+      console.log('  splash:', JSON.stringify(splash));
+
       // Drive the real input path: dispatch key events at the editor
       // and confirm the projected DOM changes.
       const input = await win.webContents.executeJavaScript(`(async () => {
@@ -485,12 +509,13 @@ app.whenReady().then(() => {
         modes.lisp.includes('Lisp') && modes.txt.includes('Fundamental') &&
         modes.math.includes('Math') && modes.mathText.includes('Gamma');
       const layersOk = layers.background && layers.overlay && layers.ordered;
+      const splashOk = splash.present && splash.dismissed;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
-        markdownOk && virtualOk && modesOk && layersOk
+        markdownOk && virtualOk && modesOk && layersOk && splashOk
       ) {
         finish(
           0,
@@ -538,8 +563,10 @@ app.whenReady().then(() => {
         );
       } else if (!modesOk) {
         finish(1, `modes did not work (${JSON.stringify(modes)})`);
-      } else {
+      } else if (!layersOk) {
         finish(1, `the view layers did not work (${JSON.stringify(layers)})`);
+      } else {
+        finish(1, `the splash did not work (${JSON.stringify(splash)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

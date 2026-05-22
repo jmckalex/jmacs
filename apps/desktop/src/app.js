@@ -21,33 +21,31 @@ import {
   fuzzyFilter,
 } from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
+import { createSplash } from './splash.js';
 
-const WELCOME = `Welcome.
+const WELCOME = `
 
-A Lisp-extensible editor — a successor in spirit to Emacs, on a clean
-foundation. Every key you press runs a command from the standard
-library in packages/stdlib/lisp/. Nothing here is hardcoded.
+      jmacs
 
-  Move      arrows, or C-f C-b C-n C-p, C-a C-e, M-f M-b (word)
-  Edit      C-d delete, C-t transpose, C-x ; comment, M-r replace
-  Kill ring C-w cut, M-w copy, C-k kill line, C-y yank
-  Search    C-s forward, C-r backward      M-g goto line
-  Files     C-x C-f open, C-x C-s save
-  Buffers   C-x b switch, C-x n new, C-x left/right
-  History   C-z undo, C-S-z redo
-  Help      C-h k describe a key, C-h f a command
-  Run       M-x command palette
-  System    C-x C-r reload the editor's own Lisp — hot reload
 
-The REPL below shares this interpreter and these buffers. Try:
+      A Lisp-extensible editor — a successor in spirit to Emacs, on a
+      clean, legible foundation. Every key you press runs a command
+      defined in Lisp; nothing here is hardcoded.
 
-  (doc forward-char)              ;; the editor describing itself
-  (module m (export hi) (define (hi) "hello"))   ;; a Lisp module
-  (insert! "  <- written by Lisp")
 
-Press C-x b to visit scratch.lisp — syntax-highlighted, with a gutter,
-current-line band, and matching-bracket outlines. This text is a live
-buffer; type anywhere.
+      Getting around
+
+        C-h k    describe a key         C-x C-f   open a file
+        M-x      run a command          C-x C-s   save the buffer
+        C-x b    switch buffer          C-x C-c   quit
+        C-x C-r  reload the editor's own Lisp — hot reload
+
+
+      The REPL below shares this interpreter and these buffers.
+      Try  (doc forward-char)  or  (insert! "  <- from Lisp").
+
+
+      This is an ordinary, editable buffer. Type anywhere to begin.
 `;
 
 const SCRATCH = `;; scratch.lisp — a buffer for evaluating Lisp.
@@ -109,7 +107,10 @@ function watchCurrentBuffer() {
   unwatch();
   const buffer = session.current;
   unwatch = buffer.onChange((event) => {
-    if (event.change !== null) dirtyBuffers.add(buffer);
+    if (event.change !== null) {
+      dirtyBuffers.add(buffer);
+      dismissSplash();
+    }
     updateModeline();
   });
 }
@@ -128,6 +129,7 @@ function ensureMajorMode() {
 /** Switch to the buffer at `index`: re-point the view and the modeline. */
 function switchToBuffer(index) {
   if (index < 0 || index >= buffers.length) return;
+  dismissSplash();
   currentIndex = index;
   editorView.setBuffer(session.current);
   watchCurrentBuffer();
@@ -566,3 +568,17 @@ watchCurrentBuffer();
 ensureMajorMode();
 updateModeline();
 editorView.focus();
+
+// The startup splash: the editor's own Lisp, behind the welcome text.
+// It lives in the view's background layer and is dismissed — faded out
+// and removed — the first time a buffer is edited or switched.
+const splash = createSplash();
+let splashLive = true;
+function dismissSplash() {
+  if (!splashLive) return;
+  splashLive = false;
+  splash.classList.remove('is-visible');
+  setTimeout(() => splash.remove(), 1100);
+}
+editorView.backgroundLayer.append(splash);
+requestAnimationFrame(() => splash.classList.add('is-visible'));

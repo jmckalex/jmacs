@@ -223,6 +223,42 @@ body {
   box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
+/* --- startup splash ---------------------------------------------------- */
+/* The editor's own Lisp, tilted into the distance behind the welcome
+   text. Drawn into the view's background layer; dismissed on first use. */
+
+.splash {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 1.2s ease;
+  /* Fade the code-art out toward the left, clear of the welcome text. */
+  -webkit-mask-image: linear-gradient(100deg, transparent 38%, #000 82%);
+  mask-image: linear-gradient(100deg, transparent 38%, #000 82%);
+}
+
+.splash.is-visible {
+  opacity: 0.66;
+}
+
+/* The code panel: its near (left) edge sits in the clear right third,
+   the rest receding off the right edge. */
+.splash-code {
+  position: absolute;
+  top: 50%;
+  left: 42%;
+  width: 74%;
+  height: auto;
+  transform: translateY(-52%) perspective(1700px) rotateY(-19deg)
+    rotateX(6deg) rotate(1.5deg);
+  transform-origin: left center;
+}
+
+.splash-code text {
+  font-family: var(--font-mono);
+}
+
 /* --- modeline ---------------------------------------------------------- */
 
 .modeline {
