@@ -52,6 +52,13 @@ list of uniformly-text buffers. The change:
   last text buffer — so `buffer-text` and friends stay well-defined
   while the customisation buffer is on screen. (See Risks.)
 
+Per Emacs, customisation buffers are **scoped and plural**: `customize`
+opens the root group, `customize-group` a chosen group, and
+`customize-variable` a single setting — each its own buffer, several
+able to coexist in the list. They share one customisation *view*
+component, re-pointed per buffer exactly as the editor view is
+re-pointed across text buffers.
+
 This "buffer-kind / view-kind" mechanism is the *general-purpose
 buffer/view interface*; customisation is its first client and the
 reactive notebook will be its second.
@@ -204,16 +211,14 @@ default in `app.js` collapses to a single source of truth.
 - **A broken `init.lisp`** — per-file try/catch; the error must be
   visible (the REPL).
 
-## Open questions for the architect
+## Settled
 
-1. **One customisation buffer or several?** Emacs opens a separate
-   Customize buffer per group/variable. v1 plans a single customisation
-   buffer; confirm.
-2. **Group-tree depth** in the view — two levels for v1, or arbitrary
-   nesting from the start (the data model supports either).
-3. **`init.lisp` vs `custom.lisp` precedence** when both set the same
-   variable — plan loads `custom.lisp` then `init.lisp`, so hand edits
-   win.
+- **Separate customisation buffers per group/variable** — `customize`,
+  `customize-group`, `customize-variable`, Emacs-style.
+- **Group-tree depth** — arbitrary nesting (the data model already
+  supports it); the view renders the tree it is given.
+- **`init.lisp` vs `custom.lisp` precedence** — `custom.lisp` loads
+  first, then `init.lisp`, so a hand edit wins over the UI.
 
 ## Critical files
 
