@@ -2,6 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { highlightLine, languageForName } from '../src/highlight.js';
+// `languageForName` consults the language registry for tree-sitter
+// languages; loading these modules registers JavaScript, HTML and
+// Python. The desktop app does the same discovery dynamically at
+// startup. See `../src/languages/README.md`.
+import '../src/languages/javascript.js';
+import '../src/languages/html.js';
+import '../src/languages/python.js';
 
 /** The faces of a highlighted line, in order. */
 const faces = (text, lang) => highlightLine(text, lang).map((r) => r.face);

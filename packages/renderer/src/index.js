@@ -25,11 +25,14 @@ export { applyIntent, handleKeyEvent } from './commands.js';
 export { fuzzyFilter } from './fuzzy.js';
 export { highlightLine, languageForName } from './highlight.js';
 export { splitIntoLineRuns } from './runs.js';
+export { createTreeSitterHighlighter } from './treesitter.js';
 export {
-  createJavaScriptHighlighter,
-  createHtmlHighlighter,
-  createPythonHighlighter,
-} from './treesitter.js';
+  registerLanguage,
+  registeredLanguages,
+  languageForFilename,
+  loadLanguageHighlighters,
+  clearLanguages,
+} from './language-registry.js';
 export { matchingBracket } from './brackets.js';
 export { findColourLiterals, normaliseToHex } from './colour-literals.js';
 export { openColourPicker } from './colour-picker.js';

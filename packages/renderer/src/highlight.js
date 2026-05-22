@@ -10,7 +10,13 @@
  * Highlighting is line-independent for v0: a string or block comment
  * that spans lines is highlighted only on its first line. Pure and
  * DOM-free, so it is tested on its own.
+ *
+ * For tree-sitter languages, `languageForName` also consults the
+ * language registry (`./language-registry.js`), so adding a new
+ * tree-sitter language is a drop-in (see `./languages/README.md`).
  */
+
+import { languageForFilename } from './language-registry.js';
 
 /** A maximal stretch of a line sharing one highlight face. */
 /** @typedef {{ text: string, face: string | null }} Run */
@@ -36,17 +42,20 @@ const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 
 /**
  * Choose a language from a buffer name.
+ *
+ * The built-in table here covers the hand-tokenized languages — the
+ * Lisp dialect, Markdown, LaTeX and Makefile. Tree-sitter languages
+ * (JavaScript, HTML, Python and any other drop-ins) come from the
+ * language registry. See `./languages/README.md`.
+ *
  * @param {string} name
  * @returns {string} A language tag, or `'plain'`.
  */
 export function languageForName(name) {
   if (typeof name !== 'string') return 'plain';
   if (name.endsWith('.lisp')) return 'lisp';
-  if (name.endsWith('.js') || name.endsWith('.mjs')) return 'javascript';
   if (name.endsWith('.md') || name.endsWith('.jmd')) return 'markdown';
-  if (name.endsWith('.html') || name.endsWith('.htm')) return 'html';
   if (name.endsWith('.tex') || name.endsWith('.latex')) return 'latex';
-  if (name.endsWith('.py')) return 'python';
   if (
     name.endsWith('Makefile') ||
     name.endsWith('makefile') ||
@@ -54,6 +63,8 @@ export function languageForName(name) {
   ) {
     return 'makefile';
   }
+  const fromRegistry = languageForFilename(name);
+  if (fromRegistry !== null) return fromRegistry;
   return 'plain';
 }
 
