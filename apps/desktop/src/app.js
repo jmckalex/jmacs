@@ -438,6 +438,7 @@ const interpreter = createInterpreter({
       editorView.recenter();
       return NIL;
     },
+    'page-lines': () => editorView.pageLines(),
 
     // Buffer-list commands — they re-point the editor view.
     'next-buffer!': () => {

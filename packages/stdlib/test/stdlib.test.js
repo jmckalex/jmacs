@@ -69,6 +69,7 @@ async function editor(initialText = 'hello world') {
       'start-goto-line!': () => NIL,
       'start-replace!': () => NIL,
       'recenter!': () => NIL,
+      'page-lines': () => 3,
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
@@ -480,6 +481,49 @@ test('C-l is bound to recenter', async () => {
   const { interpreter } = await editor();
   assert.ok(interpreter.evaluate('(eq? (get the-keymap "C-l") (quote recenter))'));
   assert.equal(press(interpreter, 'C-l'), true);
+});
+
+// --- more classic Emacs keys --------------------------------------------
+
+test('C-o opens a line after the cursor', async () => {
+  const { buffer, interpreter } = await editor('abc');
+  buffer.moveTo(1);
+  press(interpreter, 'C-o');
+  assert.equal(buffer.text, 'a\nbc');
+  assert.equal(buffer.point, 1);
+});
+
+test('M-m moves to the first non-blank character', async () => {
+  const { buffer, interpreter } = await editor('    hello');
+  buffer.moveTo(9);
+  press(interpreter, 'M-m');
+  assert.equal(buffer.point, 4);
+});
+
+test('C-x C-x exchanges point and mark', async () => {
+  const { buffer, interpreter } = await editor('hello world');
+  buffer.moveTo(2);
+  buffer.setMark(8);
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-x');
+  assert.equal(buffer.point, 8);
+  assert.equal(buffer.mark, 2);
+});
+
+test('C-v moves forward by a screenful', async () => {
+  const { buffer, interpreter } = await editor('l0\nl1\nl2\nl3\nl4\nl5');
+  buffer.moveTo(0);
+  press(interpreter, 'C-v'); // page-lines is mocked to 3
+  assert.equal(buffer.positionAt(buffer.point).line, 3);
+});
+
+test('M-< and M-> jump to the buffer ends', async () => {
+  const { buffer, interpreter } = await editor('first\nmiddle\nlast');
+  buffer.moveTo(8);
+  press(interpreter, 'M-S-period');
+  assert.equal(buffer.point, buffer.length);
+  press(interpreter, 'M-S-comma');
+  assert.equal(buffer.point, 0);
 });
 
 test('C-x ; comments and uncomments a line', async () => {

@@ -21,7 +21,8 @@
    "left"  'previous-buffer
    "n"     'new-buffer
    "h"     'mark-whole-buffer
-   ";"     'comment-line})
+   ";"     'comment-line
+   "C-x"   'exchange-point-and-mark})
 
 ;; The C-h prefix map — help.
 (define c-h-keymap
@@ -58,6 +59,9 @@
    "C-e"          'move-end-of-line
    "C-d"          'delete-forward
    "C-t"          'transpose-chars
+   "C-o"          'open-line
+   "C-j"          'newline
+   "C-v"          'scroll-up
    "C-l"          'recenter
    "C-g"          'keyboard-quit
    "C-z"          'undo
@@ -71,8 +75,13 @@
    "C-y"          'yank
    "M-f"          'forward-word
    "M-b"          'backward-word
+   "M-m"          'back-to-indentation
+   "M-v"          'scroll-down
    "M-g"          'goto-line
    "M-r"          'replace-string
+   ;; M-< and M-> — the symbols arrive shifted.
+   "M-S-comma"    'beginning-of-buffer
+   "M-S-period"   'end-of-buffer
    "M-d"          'kill-word
    "M-backspace"  'backward-kill-word
    "C-x"          c-x-keymap

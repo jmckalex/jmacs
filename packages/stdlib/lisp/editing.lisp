@@ -59,6 +59,26 @@
   "Scroll so the cursor's line is centred in the viewport."
   (recenter!))
 
+(define (back-to-indentation)
+  "Move the cursor to the first non-blank character of the line."
+  (goto! (+ (line-start) (string-length (line-indent)))))
+
+(define (exchange-point-and-mark)
+  "Move point to the mark, and the mark to where point was."
+  (let ((m (mark)))
+    (when (not (nil? m))
+      (let ((p (point)))
+        (goto! m)
+        (set-mark! p)))))
+
+(define (scroll-up)
+  "Move the cursor forward by roughly one screenful."
+  (for-each (lambda (i) (cursor-down! #f)) (range (page-lines))))
+
+(define (scroll-down)
+  "Move the cursor backward by roughly one screenful."
+  (for-each (lambda (i) (cursor-up! #f)) (range (page-lines))))
+
 ;; --- movement that extends the selection -------------------------------
 
 (define (forward-char-extending) (cursor-right! #t))
@@ -90,6 +110,12 @@
 (define (newline)
   "Insert a line break, copying the current line's indentation."
   (insert! (str "\n" (line-indent))))
+
+(define (open-line)
+  "Insert a newline after the cursor, leaving the cursor before it."
+  (let ((p (point)))
+    (insert! "\n")
+    (goto! p)))
 
 (define (mark-whole-buffer)
   "Select the entire buffer."

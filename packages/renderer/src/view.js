@@ -337,6 +337,12 @@ export function createEditorView(buffer, container, options = {}) {
       cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
     },
 
+    /** Roughly how many lines fit in the viewport — used for paging. */
+    pageLines() {
+      const lineHeight = cursorEl.getBoundingClientRect().height || 22;
+      return Math.max(1, Math.floor(root.clientHeight / lineHeight) - 1);
+    },
+
     setBuffer(next) {
       if (next === activeBuffer) return;
       unsubscribe();
