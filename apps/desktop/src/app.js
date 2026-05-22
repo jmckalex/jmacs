@@ -22,26 +22,30 @@ import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 
 const WELCOME = `Welcome.
 
-This is a Lisp-extensible editor. The whole stack is running:
+A Lisp-extensible editor — a successor in spirit to Emacs, on a clean
+foundation. Every key you press runs a command from the standard
+library in packages/stdlib/lisp/. Nothing here is hardcoded.
 
-  storage   (L1)   the text itself
-  buffer    (L2)   cursor, selection, editing commands, undo
-  lisp      (L3)   a custom Lisp — reader, evaluator, macros, modules
-  stdlib           the editor's commands and keymap, in Lisp
-  renderer  (L4)   these lines, the cursor, the REPL below
+  Move      arrows, or C-f C-b C-n C-p, C-a C-e, M-f M-b (word)
+  Edit      C-d delete, C-t transpose, C-x ; comment, M-r replace
+  Kill ring C-w cut, M-w copy, C-k kill line, C-y yank
+  Search    C-s forward, C-r backward      M-g goto line
+  Files     C-x C-f open, C-x C-s save
+  Buffers   C-x b switch, C-x n new, C-x left/right
+  History   C-z undo, C-S-z redo
+  Help      C-h k describe a key, C-h f a command
+  Run       M-x command palette
+  System    C-x C-r reload the editor's own Lisp — hot reload
 
-Every key you press runs a Lisp command from packages/stdlib/lisp/.
+The REPL below shares this interpreter and these buffers. Try:
 
-  C-x C-f open a file      C-x C-s save the buffer
-  C-x b   next buffer      C-x n   new buffer
-  C-x C-r reload the editor's own Lisp (hot reload)
-  C-z     undo             C-S-z   redo
+  (doc forward-char)              ;; the editor describing itself
+  (module m (export hi) (define (hi) "hello"))   ;; a Lisp module
+  (insert! "  <- written by Lisp")
 
-The REPL below shares this interpreter. Try:
-
-  (doc forward-char)        ;; ask a command what it does
-  (module m (export hi) (define (hi) "hello"))
-  (insert! "  <- from Lisp")
+Press C-x b to visit scratch.lisp — syntax-highlighted, with a gutter,
+current-line band, and matching-bracket outlines. This text is a live
+buffer; type anywhere.
 `;
 
 const SCRATCH = `;; scratch.lisp — a buffer for evaluating Lisp.
