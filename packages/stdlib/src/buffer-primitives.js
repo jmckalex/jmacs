@@ -91,8 +91,12 @@ export function createBufferPrimitives(session) {
   /** The buffer to act on right now. */
   const buffer = () => session.current;
 
-  /** Whether a movement call asked to extend the selection. */
-  const extend = (args) => ({ extend: args[0] === true });
+  // Movement extends the selection when the call asks (a #t argument —
+  // shift-style) or when the mark is set: once a region is active, the
+  // cursor keeps extending it until the mark is cleared (C-g, an edit).
+  const extend = (args) => ({
+    extend: args[0] === true || buffer().mark !== null,
+  });
 
   return {
     // --- reading --------------------------------------------------------
@@ -195,7 +199,8 @@ export function createBufferPrimitives(session) {
       return NIL;
     },
     'goto!': (args) => {
-      buffer().moveTo(offset(args[0]));
+      // Like the cursor commands, a jump extends an active region.
+      buffer().moveTo(offset(args[0]), { extend: buffer().mark !== null });
       return NIL;
     },
 

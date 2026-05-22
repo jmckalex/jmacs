@@ -145,6 +145,48 @@ test('shift with an arrow extends the selection', async () => {
   assert.deepEqual(buffer.selection, { start: 1, end: 3 });
 });
 
+test('C-SPC sets the mark, and then movement extends the region', async () => {
+  const { buffer, interpreter } = await editor('hello world');
+  buffer.moveTo(0);
+  press(interpreter, 'C-space');
+  press(interpreter, 'C-f');
+  press(interpreter, 'C-f');
+  assert.deepEqual(buffer.selection, { start: 0, end: 2 });
+});
+
+test('with no mark, plain movement does not select', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  press(interpreter, 'C-f');
+  assert.equal(buffer.selection, null);
+});
+
+test('C-g deactivates the region', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  press(interpreter, 'C-space');
+  press(interpreter, 'C-f');
+  assert.notEqual(buffer.selection, null);
+  press(interpreter, 'C-g');
+  assert.equal(buffer.selection, null);
+});
+
+test('C-S-f extends the selection by a character', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  press(interpreter, 'C-S-f');
+  press(interpreter, 'C-S-f');
+  assert.deepEqual(buffer.selection, { start: 0, end: 2 });
+});
+
+test('word movement extends an active region', async () => {
+  const { buffer, interpreter } = await editor('alpha beta');
+  buffer.moveTo(0);
+  press(interpreter, 'C-space');
+  press(interpreter, 'M-f');
+  assert.deepEqual(buffer.selection, { start: 0, end: 5 });
+});
+
 test('C-z undoes the last change', async () => {
   const { buffer, interpreter } = await editor('start');
   buffer.moveTo(5);

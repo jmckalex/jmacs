@@ -134,6 +134,11 @@
   (goto! (buffer-length))
   (set-mark! 0))
 
+(define (set-mark-command)
+  "Set the mark at the cursor, starting a region (C-SPC). While the
+   mark is set, cursor movement extends the region; C-g clears it."
+  (set-mark! (point)))
+
 (define (comment-line)
   "Comment or uncomment the current line."
   (let ((prefix (comment-prefix))

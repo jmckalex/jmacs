@@ -40,6 +40,13 @@
    "S-right"      'forward-char-extending
    "S-up"         'previous-line-extending
    "S-down"       'next-line-extending
+   "C-S-f"        'forward-char-extending
+   "C-S-b"        'backward-char-extending
+   "C-S-n"        'next-line-extending
+   "C-S-p"        'previous-line-extending
+   "C-S-a"        'beginning-of-line-extending
+   "C-S-e"        'end-of-line-extending
+   "C-space"      'set-mark-command
    "home"         'move-beginning-of-line
    "end"          'move-end-of-line
    "S-home"       'beginning-of-line-extending
