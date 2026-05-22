@@ -47,10 +47,10 @@ const MODIFIER_KEYS = new Set([
  *   returns whether the key was handled. When given, it replaces the
  *   renderer's own built-in keymap — this is how the editor's real,
  *   Lisp-defined keymap takes over.
- * @param {(text: string) => import('./highlight.js').Run[][]}
- *   [options.highlightJavaScript] - A whole-buffer JavaScript
- *   highlighter (tree-sitter). When absent, JavaScript falls back to
- *   the line-based tokenizer.
+ * @param {Record<string, (text: string) =>
+ *   import('./highlight.js').Run[][]>} [options.highlighters] - Whole-
+ *   buffer tree-sitter highlighters, keyed by language. A language with
+ *   no entry falls back to the line-based tokenizer.
  * @returns {EditorView}
  */
 export function createEditorView(buffer, container, options = {}) {
@@ -60,10 +60,10 @@ export function createEditorView(buffer, container, options = {}) {
   // The buffer currently shown; swapped by setBuffer.
   let activeBuffer = buffer;
 
-  const highlightJavaScript =
-    typeof options.highlightJavaScript === 'function'
-      ? options.highlightJavaScript
-      : null;
+  const highlighters =
+    options.highlighters && typeof options.highlighters === 'object'
+      ? options.highlighters
+      : {};
 
   const root = el('div', 'editor');
   root.tabIndex = 0;
@@ -103,9 +103,10 @@ export function createEditorView(buffer, container, options = {}) {
     }
   }
 
-  // The whole-buffer JavaScript highlight is cached, so a scroll-only
+  // The whole-buffer tree-sitter highlight is cached, so a scroll-only
   // render (the text unchanged) does not re-parse the buffer.
   let highlightCacheText = null;
+  let highlightCacheLanguage = null;
   let highlightCache = null;
 
   /**
@@ -136,20 +137,23 @@ export function createEditorView(buffer, container, options = {}) {
       Math.ceil((top + viewport) / lineHeight) + overscan
     );
 
-    // JavaScript uses the tree-sitter highlighter when one was given;
-    // it parses the whole buffer at once. Everything else is line-based.
+    // A language with a tree-sitter highlighter is parsed whole; the
+    // rest are line-based. The whole-buffer parse is cached across
+    // scroll-only renders.
     let perLine = null;
-    if (language === 'javascript' && highlightJavaScript) {
+    const treeSitter = highlighters[language];
+    if (treeSitter) {
       const text = activeBuffer.text;
-      if (text === highlightCacheText) {
+      if (text === highlightCacheText && language === highlightCacheLanguage) {
         perLine = highlightCache;
       } else {
         try {
-          perLine = highlightJavaScript(text);
+          perLine = treeSitter(text);
         } catch {
           perLine = null;
         }
         highlightCacheText = text;
+        highlightCacheLanguage = language;
         highlightCache = perLine;
       }
     }

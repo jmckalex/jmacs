@@ -13,7 +13,9 @@ import { createBuffer } from '@editor/buffer';
 import { createInterpreter, listToArray, NIL, writeString } from '@editor/lisp';
 import {
   createEditorView,
+  createHtmlHighlighter,
   createJavaScriptHighlighter,
+  createPythonHighlighter,
   createMinibuffer,
   createReplView,
   fuzzyFilter,
@@ -522,16 +524,22 @@ try {
   repl.appendError(`standard library failed to load: ${error.message}`);
 }
 
-// The tree-sitter JavaScript highlighter (the Lisp keeps its tokenizer).
-// Highlighting still works without it: JavaScript falls back line-based.
-let highlightJavaScript = null;
-try {
-  const highlighter = await createJavaScriptHighlighter();
-  highlightJavaScript = highlighter.highlight;
-  document.body.dataset.treesitter = 'ready';
-} catch (error) {
-  repl.appendError(`JavaScript highlighter unavailable: ${error.message}`);
+// The tree-sitter highlighters (the Lisp keeps its own tokenizer). Each
+// loads independently; a language whose grammar fails falls back to the
+// line-based tokenizer in highlight.js.
+const highlighters = {};
+for (const [language, create] of [
+  ['javascript', createJavaScriptHighlighter],
+  ['html', createHtmlHighlighter],
+  ['python', createPythonHighlighter],
+]) {
+  try {
+    highlighters[language] = (await create()).highlight;
+  } catch (error) {
+    repl.appendError(`${language} highlighter unavailable: ${error.message}`);
+  }
 }
+document.body.dataset.treesitter = Object.keys(highlighters).join(',');
 
 /** Dispatch a keystroke through the Lisp keymap. */
 function dispatchKey(key) {
@@ -550,7 +558,7 @@ const editorView = createEditorView(
   document.getElementById('editor-host'),
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    highlightJavaScript,
+    highlighters,
   }
 );
 

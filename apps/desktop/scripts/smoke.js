@@ -231,8 +231,9 @@ app.whenReady().then(() => {
       })()`);
       console.log('  palette:', JSON.stringify(palette));
 
-      // Tree-sitter: a .js buffer is highlighted by the grammar, so
-      // typing JavaScript produces keyword and number token spans.
+      // Tree-sitter: JavaScript, Python and HTML buffers are highlighted
+      // by their grammars. The function spans in Python prove it is the
+      // grammar and not the line tokenizer (which never emits @function).
       const treesitter = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
@@ -245,12 +246,23 @@ app.whenReady().then(() => {
         submit('(new-buffer! "smoke.js")');
         submit('(insert! "const answer = 42;")');
         await frame();
+        const keywords = document.querySelectorAll('.tok-keyword').length;
+        const numbers = document.querySelectorAll('.tok-number').length;
+        submit('(new-buffer! "smoke.py")');
+        submit('(insert! "def go(): return go()")');
+        await frame();
+        const pyFunctions = document.querySelectorAll('.tok-function').length;
+        submit('(new-buffer! "smoke.html")');
+        submit('(insert! "<div id=x></div>")');
+        await frame();
+        const htmlTags = document.querySelectorAll('.tok-tag').length;
         return {
-          // 'ready' only when the grammar WASM actually loaded — not
-          // the tokenizer fallback.
-          ready: document.body.dataset.treesitter === 'ready',
-          keywords: document.querySelectorAll('.tok-keyword').length,
-          numbers: document.querySelectorAll('.tok-number').length,
+          // The languages whose grammar WASM actually loaded.
+          langs: document.body.dataset.treesitter,
+          keywords,
+          numbers,
+          pyFunctions,
+          htmlTags,
         };
       })()`);
       console.log('  treesitter:', JSON.stringify(treesitter));
@@ -440,7 +452,11 @@ app.whenReady().then(() => {
       const searchOk = search.opened && search.matched;
       const paletteOk = palette.opened && palette.matched && palette.closed;
       const treesitterOk =
-        treesitter.ready && treesitter.keywords > 0 && treesitter.numbers > 0;
+        treesitter.langs.includes('javascript') &&
+        treesitter.langs.includes('html') &&
+        treesitter.langs.includes('python') &&
+        treesitter.keywords > 0 && treesitter.numbers > 0 &&
+        treesitter.pyFunctions > 0 && treesitter.htmlTags > 0;
       const replaceOk = replace.text === 'bar bar bar';
       const mouseOk =
         mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
@@ -489,7 +505,10 @@ app.whenReady().then(() => {
       } else if (!paletteOk) {
         finish(1, 'the command palette did not work');
       } else if (!treesitterOk) {
-        finish(1, 'tree-sitter JavaScript highlighting did not work');
+        finish(
+          1,
+          `tree-sitter highlighting did not work (${JSON.stringify(treesitter)})`
+        );
       } else if (!replaceOk) {
         finish(1, 'replace-string did not work');
       } else if (!mouseOk) {
