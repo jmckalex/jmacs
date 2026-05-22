@@ -419,6 +419,83 @@ test('C-k at the end of a line kills the newline', async () => {
   assert.equal(buffer.text, 'ab');
 });
 
+// --- yank-pop -----------------------------------------------------------
+
+test('M-y is bound to yank-pop', async () => {
+  const { interpreter } = await editor();
+  assert.ok(
+    interpreter.evaluate('(eq? (get the-keymap "M-y") (quote yank-pop))')
+  );
+});
+
+test('M-y after a yank replaces it with the previous kill', async () => {
+  const { buffer, interpreter } = await editor('');
+  // Build a kill ring: "second" is newer, so on top.
+  interpreter.evaluate('(kill-ring-add! "first")');
+  interpreter.evaluate('(kill-ring-add! "second")');
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'second');
+  press(interpreter, 'M-y');
+  assert.equal(buffer.text, 'first', 'M-y swaps in the previous kill');
+});
+
+test('repeated M-y keeps cycling back through the kill ring', async () => {
+  const { buffer, interpreter } = await editor('');
+  interpreter.evaluate('(kill-ring-add! "one")');
+  interpreter.evaluate('(kill-ring-add! "two")');
+  interpreter.evaluate('(kill-ring-add! "three")');
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'three');
+  press(interpreter, 'M-y');
+  assert.equal(buffer.text, 'two');
+  press(interpreter, 'M-y');
+  assert.equal(buffer.text, 'one');
+  // The ring wraps: a further M-y returns to the most recent kill.
+  press(interpreter, 'M-y');
+  assert.equal(buffer.text, 'three');
+});
+
+test('M-y leaves the cursor after the swapped-in text', async () => {
+  const { buffer, interpreter } = await editor('[]');
+  buffer.moveTo(1); // between the brackets
+  interpreter.evaluate('(kill-ring-add! "x")');
+  interpreter.evaluate('(kill-ring-add! "longer")');
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, '[longer]');
+  press(interpreter, 'M-y');
+  assert.equal(buffer.text, '[x]');
+  assert.equal(buffer.point, 2, 'cursor sits just after the swapped text');
+});
+
+test('M-y with no preceding yank does nothing to the buffer', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(5);
+  interpreter.evaluate('(kill-ring-add! "world")');
+  press(interpreter, 'M-y'); // not after a yank
+  assert.equal(buffer.text, 'hello', 'yank-pop is inert without a prior yank');
+});
+
+test('a command between yank and M-y invalidates yank-pop', async () => {
+  const { buffer, interpreter } = await editor('');
+  interpreter.evaluate('(kill-ring-add! "first")');
+  interpreter.evaluate('(kill-ring-add! "second")');
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'second');
+  press(interpreter, 'right'); // any non-yank command breaks the chain
+  press(interpreter, 'M-y');
+  assert.equal(buffer.text, 'second', 'yank-pop no longer applies');
+});
+
+test('run-command tracks the previous command in *last-command*', async () => {
+  const { interpreter } = await editor();
+  press(interpreter, 'C-y'); // yank
+  press(interpreter, 'M-x'); // execute-command
+  assert.ok(
+    interpreter.evaluate("(eq? *last-command* 'yank)"),
+    '*last-command* holds the command that ran before this one'
+  );
+});
+
 // --- word movement ------------------------------------------------------
 
 test('M-f moves forward by a word', async () => {
