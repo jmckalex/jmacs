@@ -101,14 +101,15 @@
   (set! active-keymap nil))
 
 ;; --- keymap composition ------------------------------------------------
-;; A key is resolved through a chain of keymaps: the major mode's map,
-;; then the global keymap. The first map that binds the key wins, so a
-;; mode can shadow a global binding without disturbing other buffers.
-;; (Minor-mode maps will prepend to this chain in a later phase.)
+;; A key is resolved through a chain of keymaps: the active minor-mode
+;; maps, then the major mode's map, then the global keymap. The first
+;; map that binds the key wins, so a mode can shadow a global binding
+;; without disturbing other buffers.
 
 (define (keymap-chain)
-  "The keymaps to resolve a key through, highest precedence first."
-  (list (major-mode-keymap) the-keymap))
+  "The keymaps to resolve a key through, highest precedence first:
+   the minor-mode maps, then the major-mode map, then the global map."
+  (append (minor-mode-keymaps) (list (major-mode-keymap) the-keymap)))
 
 (define (lookup-in-chain key maps)
   "The first binding for KEY among MAPS, skipping nil maps."

@@ -624,6 +624,66 @@ test('keys the mode does not bind fall through to the global keymap', async () =
   assert.equal(buffer.point, 1);
 });
 
+// --- mode hooks and minor modes -----------------------------------------
+
+test('switching major mode runs the on-disable and on-enable hooks', async () => {
+  const { interpreter, output } = await editor();
+  interpreter.evaluate(
+    '(define mode-a (hash-map :on-disable (lambda () (println "leave-a"))))'
+  );
+  interpreter.evaluate(
+    '(define mode-b (hash-map :on-enable (lambda () (println "enter-b"))))'
+  );
+  interpreter.evaluate('(switch-major-mode mode-a)');
+  interpreter.evaluate('(switch-major-mode mode-b)');
+  const text = output.join('');
+  assert.ok(text.includes('leave-a'));
+  assert.ok(text.includes('enter-b'));
+});
+
+test('a minor mode keymap joins the dispatch chain', async () => {
+  const { buffer, interpreter } = await editor('hello');
+  buffer.moveTo(0);
+  interpreter.evaluate(
+    '(enable-minor-mode (hash-map :keymap (hash-map "C-d" (quote forward-char))))'
+  );
+  press(interpreter, 'C-d');
+  assert.equal(buffer.text, 'hello'); // the minor mode shadowed C-d
+  assert.equal(buffer.point, 1);
+});
+
+test('enable-minor-mode is idempotent and runs on-enable once', async () => {
+  const { interpreter, output } = await editor();
+  interpreter.evaluate(
+    '(define mm (hash-map :on-enable (lambda () (println "on"))))'
+  );
+  interpreter.evaluate('(enable-minor-mode mm)');
+  interpreter.evaluate('(enable-minor-mode mm)');
+  assert.equal(output.join('').split('on').length - 1, 1);
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 1);
+});
+
+test('disable-minor-mode removes the mode and runs on-disable', async () => {
+  const { interpreter, output } = await editor();
+  interpreter.evaluate(
+    '(define mm (hash-map :on-disable (lambda () (println "off"))))'
+  );
+  interpreter.evaluate('(enable-minor-mode mm)');
+  interpreter.evaluate('(disable-minor-mode mm)');
+  assert.ok(output.join('').includes('off'));
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 0);
+});
+
+test('minor modes stack by descending priority', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate('(enable-minor-mode (hash-map :name "low" :priority 1))');
+  interpreter.evaluate('(enable-minor-mode (hash-map :name "high" :priority 9))');
+  assert.equal(
+    interpreter.evaluate('(get (car (minor-modes)) :name "?")'),
+    'high'
+  );
+});
+
 test('C-x ; comments and uncomments a line', async () => {
   const { buffer, interpreter } = await editor('hello');
   buffer.moveTo(0);

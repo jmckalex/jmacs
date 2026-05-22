@@ -113,6 +113,11 @@ export function createBufferPrimitives(session) {
       buffer().majorMode = args[0];
       return NIL;
     },
+    'buffer-minor-modes': () => buffer().minorModes ?? NIL,
+    'set-minor-modes!': (args) => {
+      buffer().minorModes = args[0];
+      return NIL;
+    },
     'word-forward-offset': () => forwardWord(buffer().text, buffer().point),
     'word-backward-offset': () => backwardWord(buffer().text, buffer().point),
     'sentence-forward-offset': () =>

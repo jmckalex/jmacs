@@ -59,10 +59,24 @@
   "The major mode registered for a buffer NAME."
   (registry-lookup *mode-registry* name))
 
+;; --- mode hooks --------------------------------------------------------
+(define (run-mode-hook mode key)
+  "Run MODE's hook stored under KEY (a procedure), if it has one."
+  (unless (nil? mode)
+    (let ((hook (get mode key nil)))
+      (when (procedure? hook) (hook)))))
+
 ;; --- the current buffer's major mode -----------------------------------
+(define (switch-major-mode mode)
+  "Make MODE the current buffer's major mode, running the old mode's
+   :on-disable hook and the new mode's :on-enable hook."
+  (run-mode-hook (buffer-major-mode) :on-disable)
+  (set-major-mode! mode)
+  (run-mode-hook mode :on-enable))
+
 (define (choose-major-mode!)
   "Set the current buffer's major mode from its name."
-  (set-major-mode! (mode-for-name (buffer-name))))
+  (switch-major-mode (mode-for-name (buffer-name))))
 
 (define (major-mode-name)
   "The display name of the current buffer's major mode."
@@ -78,3 +92,47 @@
   "The comment prefix of the current buffer's major mode."
   (let ((m (buffer-major-mode)))
     (if (nil? m) ";; " (get m :comment-prefix ";; "))))
+
+;; --- minor modes -------------------------------------------------------
+;; Minor modes are orthogonal, toggleable. They stack by an explicit
+;; :priority — higher first — ahead of the major mode in the keymap
+;; chain (see keymap.lisp).
+
+(define (minor-modes)
+  "The current buffer's active minor modes, as a list."
+  (let ((m (buffer-minor-modes)))
+    (if (nil? m) (list) m)))
+
+(define (mode-priority mode)
+  "A mode's :priority (default 0)."
+  (get mode :priority 0))
+
+(define (insert-by-priority mode modes)
+  "Insert MODE into MODES, keeping descending :priority order."
+  (cond
+    ((nil? modes) (list mode))
+    ((>= (mode-priority mode) (mode-priority (car modes))) (cons mode modes))
+    (else (cons (car modes) (insert-by-priority mode (cdr modes))))))
+
+(define (without-item item lst)
+  "LST with the first ITEM (compared by identity) removed."
+  (cond
+    ((nil? lst) (list))
+    ((eq? item (car lst)) (cdr lst))
+    (else (cons (car lst) (without-item item (cdr lst))))))
+
+(define (enable-minor-mode mode)
+  "Activate a minor MODE in the current buffer. Idempotent."
+  (unless (member mode (minor-modes))
+    (set-minor-modes! (insert-by-priority mode (minor-modes)))
+    (run-mode-hook mode :on-enable)))
+
+(define (disable-minor-mode mode)
+  "Deactivate a minor MODE in the current buffer."
+  (when (member mode (minor-modes))
+    (set-minor-modes! (without-item mode (minor-modes)))
+    (run-mode-hook mode :on-disable)))
+
+(define (minor-mode-keymaps)
+  "The keymaps of the active minor modes, highest priority first."
+  (map (lambda (m) (get m :keymap nil)) (minor-modes)))
