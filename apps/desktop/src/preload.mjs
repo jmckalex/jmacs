@@ -63,4 +63,20 @@ contextBridge.exposeInMainWorld('host', {
    */
   onMenuCommand: (callback) =>
     ipcRenderer.on('menu:invoke', (_event, command) => callback(command)),
+
+  /**
+   * Read a user config file (e.g. `custom.lisp`, `init.lisp`) from the
+   * per-user data directory, or null when it does not exist.
+   * @param {string} name - A bare filename.
+   * @returns {Promise<string | null>}
+   */
+  readConfigFile: (name) => ipcRenderer.invoke('config:read', { name }),
+
+  /**
+   * Write a user config file to the per-user data directory.
+   * @param {string} name - A bare filename.
+   * @param {string} content
+   */
+  writeConfigFile: (name, content) =>
+    ipcRenderer.invoke('config:write', { name, content }),
 });

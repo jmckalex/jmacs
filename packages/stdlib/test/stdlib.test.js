@@ -105,6 +105,7 @@ async function editor(initialText = 'hello world') {
         noteCalls.push('toggle');
         return NIL;
       },
+      'write-custom-file!': () => NIL,
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
@@ -1026,5 +1027,36 @@ test('defgroup registers a group and customs-in-group finds members', async () =
       '(member "test-group" (map symbol->string (custom-group-names)))'
     ),
     false
+  );
+});
+
+test('custom-set-saved! records a setting as saved', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(DECLARE);
+  interpreter.evaluate('(custom-set-saved! (quote *test-opt*) 30)');
+  assert.equal(interpreter.evaluate('*test-opt*'), 30);
+  assert.equal(
+    interpreter.evaluate('(symbol->string (custom-state (quote *test-opt*)))'),
+    'saved'
+  );
+});
+
+test('customs-to-save lists only settings with a saved value', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(DECLARE);
+  assert.equal(interpreter.evaluate('(length (customs-to-save))'), 0);
+  interpreter.evaluate('(custom-apply! (quote *test-opt*) 5)');
+  interpreter.evaluate('(custom-save! (quote *test-opt*))');
+  assert.equal(interpreter.evaluate('(length (customs-to-save))'), 1);
+});
+
+test('custom-apply-and-save! sets a setting and marks it saved', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(DECLARE);
+  interpreter.evaluate('(custom-apply-and-save! (quote *test-opt*) 42)');
+  assert.equal(interpreter.evaluate('*test-opt*'), 42);
+  assert.equal(
+    interpreter.evaluate('(symbol->string (custom-state (quote *test-opt*)))'),
+    'saved'
   );
 });

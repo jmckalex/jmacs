@@ -8,6 +8,7 @@
  */
 
 import { app, BrowserWindow, ipcMain, protocol } from 'electron';
+import { mkdirSync, rmSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -22,6 +23,13 @@ const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
 
 /** A scratch path the sticky-note metadata round-trip writes beside. */
 const notesPath = join(tmpdir(), 'jmacs-smoke-notes.txt');
+
+// Isolate the smoke run's config files (custom.lisp, init.lisp) in a
+// fresh temp directory, so it never touches the real user data dir.
+const configDir = join(tmpdir(), 'jmacs-smoke-config');
+rmSync(configDir, { recursive: true, force: true });
+mkdirSync(configDir, { recursive: true });
+app.setPath('userData', configDir);
 
 /** The preload script — shared with the real window in main.js. */
 const PRELOAD = join(
@@ -593,6 +601,28 @@ app.whenReady().then(() => {
       console.log('  sticky:', JSON.stringify(sticky));
       await rm(notesPath + '.jmacs-metadata', { force: true });
 
+      // Customisation: init.lisp is written on first run, and a saved
+      // setting is persisted to custom.lisp.
+      const config = await win.webContents.executeJavaScript(`(async () => {
+        const initLoaded =
+          (await window.host.readConfigFile('init.lisp')) !== null;
+        const replInput = document.querySelector('.repl-input');
+        replInput.value =
+          '(custom-apply-and-save! (quote *jmarkdown-command*) "echo smoke")';
+        replInput.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        await new Promise((r) => setTimeout(r, 250));
+        const saved = await window.host.readConfigFile('custom.lisp');
+        return {
+          initLoaded,
+          savedSetting: !!(saved &&
+            saved.includes('*jmarkdown-command*') &&
+            saved.includes('echo smoke')),
+        };
+      })()`);
+      console.log('  config:', JSON.stringify(config));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -643,16 +673,18 @@ app.whenReady().then(() => {
         sticky.expanded &&
         sticky.faLoaded &&
         sticky.persisted;
+      const configOk = config.initLoaded && config.savedSetting;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
-        markdownOk && virtualOk && modesOk && layersOk && splashOk && stickyOk
+        markdownOk && virtualOk && modesOk && layersOk && splashOk &&
+        stickyOk && configOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, virtualisation, sticky notes, search and files all work`
+          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, virtualisation, sticky notes, customisation, search and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -700,8 +732,10 @@ app.whenReady().then(() => {
         finish(1, `the view layers did not work (${JSON.stringify(layers)})`);
       } else if (!splashOk) {
         finish(1, `the splash did not work (${JSON.stringify(splash)})`);
-      } else {
+      } else if (!stickyOk) {
         finish(1, `sticky notes did not work (${JSON.stringify(sticky)})`);
+      } else {
+        finish(1, `customisation did not work (${JSON.stringify(config)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

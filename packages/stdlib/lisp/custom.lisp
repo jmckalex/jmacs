@@ -95,13 +95,57 @@
   (custom-apply! name (custom-default name)))
 
 (define (custom-state name)
-  "The state of setting NAME: 'standard when it holds its default,
-   'set when it has been changed."
+  "The state of setting NAME: 'saved when its value is the persisted
+   value, 'standard when it holds its default, 'set otherwise."
   (let ((entry (custom-entry name)))
     (cond
       ((nil? entry) 'standard)
+      ((and (contains? entry :saved)
+            (equal? (get entry :value nil) (get entry :saved nil)))
+       'saved)
       ((equal? (get entry :value nil) (get entry :default nil)) 'standard)
       (else 'set))))
+
+;; --- persistence -------------------------------------------------------
+;; A setting's value is persisted by recording it as the entry's :saved
+;; value; `save-customizations` writes every saved setting to the
+;; custom file, which `custom-set-saved!` forms reconstitute on load.
+
+(define (custom-set-saved! name value)
+  "Apply VALUE to setting NAME and record it as the saved value. This
+   is the form the persisted custom file is built from."
+  (custom-apply! name value)
+  (let ((entry (custom-entry name)))
+    (when (not (nil? entry))
+      (set! *custom-registry*
+            (assoc *custom-registry* name (assoc entry :saved value))))))
+
+(define (custom-save! name)
+  "Mark setting NAME's current value as its saved value."
+  (let ((entry (custom-entry name)))
+    (when (not (nil? entry))
+      (set! *custom-registry*
+            (assoc *custom-registry* name
+                   (assoc entry :saved (get entry :value nil)))))))
+
+(define (customs-to-save)
+  "A list of (name value) pairs for every setting that has a saved
+   value — the data the custom file is written from."
+  (map (lambda (name)
+         (list name (get (custom-entry name) :saved nil)))
+       (filter (lambda (name) (contains? (custom-entry name) :saved))
+               (keys *custom-registry*))))
+
+(define (save-customizations)
+  "Write every saved setting to the custom file, to persist across
+   restarts."
+  (write-custom-file! (customs-to-save)))
+
+(define (custom-apply-and-save! name value)
+  "Set setting NAME to VALUE for this session and persist it."
+  (custom-apply! name value)
+  (custom-save! name)
+  (save-customizations))
 
 ;; --- queries for the customisation view --------------------------------
 

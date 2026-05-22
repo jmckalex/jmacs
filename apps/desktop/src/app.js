@@ -69,6 +69,28 @@ const SCRATCH = `;; scratch.lisp — a buffer for evaluating Lisp.
 (define greeting "hello, world")
 `;
 
+/** The header of the machine-written custom.lisp settings file. */
+const CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
+;;;
+;;; jmacs writes this file; edits made by hand will be overwritten the
+;;; next time a setting is saved. For free-form configuration, use
+;;; init.lisp instead.
+
+`;
+
+/** The commented init.lisp written into the config directory on first run. */
+const INIT_TEMPLATE = `;;; init.lisp — your jmacs configuration.
+;;;
+;;; This file is evaluated at startup, after the standard library and
+;;; your saved customisations. It is the jmacs equivalent of .emacs:
+;;; ordinary Lisp, so anything goes — set variables, define commands,
+;;; bind keys.
+;;;
+;;; Examples:
+;;;   (custom-apply! '*jmarkdown-command* "pandoc -f markdown -t html")
+;;;   (define (insert-divider) (insert! "\\n---\\n"))
+`;
+
 // --- buffers ------------------------------------------------------------
 
 /** Every open buffer; one is current. */
@@ -572,6 +594,12 @@ const interpreter = createInterpreter({
     },
     'buffer-count': () => buffers.length,
 
+    // Persist the customisation registry's saved settings to disk.
+    'write-custom-file!': (args) => {
+      writeCustomFile(args[0]);
+      return NIL;
+    },
+
     // Sticky notes — see sticky-notes.js and sticky-notes.lisp.
     'note-create!': (args) =>
       stickyNotes.create(typeof args[0] === 'number' ? args[0] : undefined),
@@ -642,10 +670,54 @@ function fetchStdlibSource(name) {
   );
 }
 
+/**
+ * Write the customisation registry's saved settings to custom.lisp.
+ * `pairList` is a Lisp list of (name value) pairs; each value is
+ * wrapped in `quote` so it round-trips whatever its type.
+ */
+function writeCustomFile(pairList) {
+  const lines = listToArray(pairList).map((pair) => {
+    const [name, value] = listToArray(pair);
+    return `(custom-set-saved! (quote ${writeString(name)}) (quote ${writeString(value)}))`;
+  });
+  const text = CUSTOM_FILE_HEADER + lines.join('\n') + '\n';
+  window.host
+    .writeConfigFile('custom.lisp', text)
+    .catch((error) =>
+      repl.appendError(`saving customisations failed: ${error.message}`)
+    );
+}
+
+/**
+ * Load the user's saved customisations and their init.lisp — the
+ * jmacs equivalent of .emacs. The saved file loads first so a hand
+ * edit in init.lisp wins. A broken config file is reported, not fatal.
+ * On first run, a commented init.lisp template is written.
+ */
+async function loadUserConfig() {
+  try {
+    const customSrc = await window.host.readConfigFile('custom.lisp');
+    if (customSrc) interpreter.evaluate(customSrc);
+  } catch (error) {
+    repl.appendError(`custom.lisp: ${error.lispMessage ?? error.message}`);
+  }
+  try {
+    const initSrc = await window.host.readConfigFile('init.lisp');
+    if (initSrc === null) {
+      await window.host.writeConfigFile('init.lisp', INIT_TEMPLATE);
+    } else {
+      interpreter.evaluate(initSrc);
+    }
+  } catch (error) {
+    repl.appendError(`init.lisp: ${error.lispMessage ?? error.message}`);
+  }
+}
+
 /** Re-evaluate the standard library — hot reload of the editor itself. */
 async function reloadStdlib() {
   try {
     await loadStdlib(interpreter, fetchStdlibSource);
+    await loadUserConfig();
     repl.appendNote('standard library reloaded');
   } catch (error) {
     repl.appendError(`reload failed: ${error.message}`);
@@ -659,6 +731,8 @@ try {
 } catch (error) {
   repl.appendError(`standard library failed to load: ${error.message}`);
 }
+
+if (keymapReady) await loadUserConfig();
 
 // The tree-sitter highlighters (the Lisp keeps its own tokenizer). Each
 // loads independently; a language whose grammar fails falls back to the
