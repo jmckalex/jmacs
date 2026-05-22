@@ -233,12 +233,15 @@ app.whenReady().then(() => {
       const palette = await win.webContents.executeJavaScript(`(async () => {
         const editor = document.querySelector('.editor');
         editor.focus();
+        // The real macOS event: Option composes a character into key,
+        // and code carries the physical key.
         editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'x', altKey: true, bubbles: true, cancelable: true,
+          key: '≈', code: 'KeyX', altKey: true, bubbles: true, cancelable: true,
         }));
         const mb = document.querySelector('.minibuffer-input');
         const panel = document.querySelector('.minibuffer');
         const opened = !!mb && panel !== null && !panel.hidden;
+        const focused = document.activeElement === mb;
         let matched = false;
         let closed = false;
         if (opened) {
@@ -251,7 +254,7 @@ app.whenReady().then(() => {
           }));
           closed = panel.hidden;
         }
-        return { opened, matched, closed };
+        return { opened, matched, closed, focused };
       })()`);
       console.log('  palette:', JSON.stringify(palette));
 
@@ -489,7 +492,8 @@ app.whenReady().then(() => {
       const filesOk =
         files.exposed && files.saved && savedContent === 'smoke save ok';
       const searchOk = search.opened && search.matched;
-      const paletteOk = palette.opened && palette.matched && palette.closed;
+      const paletteOk =
+        palette.opened && palette.matched && palette.closed && palette.focused;
       const treesitterOk =
         treesitter.langs.includes('javascript') &&
         treesitter.langs.includes('html') &&

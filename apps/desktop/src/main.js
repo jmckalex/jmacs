@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from './files.js';
+import { installMenu } from './menu.js';
 import { EDITOR_URL, serveAppFile } from './serve.js';
 
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
@@ -39,6 +40,7 @@ function createWindow() {
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   registerFileHandlers();
+  installMenu();
   ipcMain.on('app:quit', () => app.quit());
   createWindow();
 
