@@ -639,6 +639,14 @@ test('mode-for-name picks a major mode by filename suffix', async () => {
   assert.ok(interpreter.evaluate('(eq? (mode-for-name "x.txt") fundamental-mode)'));
 });
 
+test('mode-for-name resolves HTML, LaTeX, Python and Makefile', async () => {
+  const { interpreter } = await editor();
+  assert.ok(interpreter.evaluate('(eq? (mode-for-name "page.html") html-mode)'));
+  assert.ok(interpreter.evaluate('(eq? (mode-for-name "paper.tex") latex-mode)'));
+  assert.ok(interpreter.evaluate('(eq? (mode-for-name "app.py") python-mode)'));
+  assert.ok(interpreter.evaluate('(eq? (mode-for-name "Makefile") makefile-mode)'));
+});
+
 test('choose-major-mode! sets the buffer mode from its name', async () => {
   const { interpreter } = await editor();
   interpreter.evaluate('(choose-major-mode!)'); // the test buffer is "test"

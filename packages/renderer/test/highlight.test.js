@@ -115,3 +115,53 @@ test('Markdown runs reconstruct the line', () => {
     );
   }
 });
+
+test('languageForName recognises the new languages', () => {
+  assert.equal(languageForName('index.html'), 'html');
+  assert.equal(languageForName('paper.tex'), 'latex');
+  assert.equal(languageForName('script.py'), 'python');
+  assert.equal(languageForName('Makefile'), 'makefile');
+  assert.equal(languageForName('build.mk'), 'makefile');
+});
+
+test('HTML: tags, attributes, strings and comments', () => {
+  assert.equal(faced('<div class="a">', 'html', 'tag').text, '<div');
+  assert.equal(faced('<div class="a">', 'html', 'constant').text, 'class');
+  assert.equal(faced('<div class="a">', 'html', 'string').text, '"a"');
+  assert.equal(faced('<!-- note -->', 'html', 'comment').text, '<!-- note -->');
+});
+
+test('LaTeX: commands, math and comments', () => {
+  assert.equal(faced('\\section{Intro}', 'latex', 'keyword').text, '\\section');
+  assert.equal(faced('the $x^2$ term', 'latex', 'string').text, '$x^2$');
+  assert.equal(faced('% a remark', 'latex', 'comment').text, '% a remark');
+});
+
+test('Python: keywords, strings, numbers, comments, decorators', () => {
+  assert.equal(faced('def f():', 'python', 'keyword').text, 'def');
+  assert.equal(faced('x = "hi"', 'python', 'string').text, '"hi"');
+  assert.equal(faced('n = 42', 'python', 'number').text, '42');
+  assert.equal(faced('# note', 'python', 'comment').text, '# note');
+  assert.equal(faced('@decorator', 'python', 'constant').text, '@decorator');
+  assert.equal(faced('x = None', 'python', 'constant').text, 'None');
+});
+
+test('Makefile: targets, variables and comments', () => {
+  assert.equal(faced('build: deps', 'makefile', 'keyword').text, 'build');
+  assert.equal(faced('CC = gcc', 'makefile', 'constant').text, 'CC');
+  assert.equal(faced('\t$(CC) -o', 'makefile', 'constant').text, '$(CC)');
+  assert.deepEqual(highlightLine('# a comment', 'makefile'), [
+    { text: '# a comment', face: 'comment' },
+  ]);
+});
+
+test('the new languages reconstruct the line', () => {
+  for (const [text, lang] of [
+    ['<a href="x">link</a>', 'html'],
+    ['\\emph{word} and $math$', 'latex'],
+    ['def f(x): return x + 1  # ok', 'python'],
+    ['all: build  # the default', 'makefile'],
+  ]) {
+    assert.equal(highlightLine(text, lang).map((r) => r.text).join(''), text);
+  }
+});

@@ -36,6 +36,25 @@
   :comment-prefix "// "
   :highlight :javascript)
 
+(define-mode html-mode
+  :name "HTML"
+  :highlight :html)
+
+(define-mode latex-mode
+  :name "LaTeX"
+  :comment-prefix "% "
+  :highlight :latex)
+
+(define-mode python-mode
+  :name "Python"
+  :comment-prefix "# "
+  :highlight :python)
+
+(define-mode makefile-mode
+  :name "Makefile"
+  :comment-prefix "# "
+  :highlight :makefile)
+
 ;; --- the registry — a filename suffix chooses a major mode -------------
 (define *mode-registry* (list))
 
@@ -43,11 +62,19 @@
   "Associate a filename SUFFIX with a major MODE."
   (set! *mode-registry* (cons (cons suffix mode) *mode-registry*)))
 
-(register-mode ".lisp" lisp-mode)
-(register-mode ".jmd"  markdown-mode)
-(register-mode ".md"   markdown-mode)
-(register-mode ".js"   javascript-mode)
-(register-mode ".mjs"  javascript-mode)
+(register-mode ".lisp"    lisp-mode)
+(register-mode ".jmd"     markdown-mode)
+(register-mode ".md"      markdown-mode)
+(register-mode ".js"      javascript-mode)
+(register-mode ".mjs"     javascript-mode)
+(register-mode ".html"    html-mode)
+(register-mode ".htm"     html-mode)
+(register-mode ".tex"     latex-mode)
+(register-mode ".latex"   latex-mode)
+(register-mode ".py"      python-mode)
+(register-mode "Makefile" makefile-mode)
+(register-mode "makefile" makefile-mode)
+(register-mode ".mk"      makefile-mode)
 
 (define (registry-lookup entries name)
   "Find the mode for NAME among registry ENTRIES, or fundamental-mode."

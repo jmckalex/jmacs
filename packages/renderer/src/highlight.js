@@ -37,13 +37,23 @@ const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 /**
  * Choose a language from a buffer name.
  * @param {string} name
- * @returns {'lisp' | 'javascript' | 'markdown' | 'plain'}
+ * @returns {string} A language tag, or `'plain'`.
  */
 export function languageForName(name) {
   if (typeof name !== 'string') return 'plain';
   if (name.endsWith('.lisp')) return 'lisp';
   if (name.endsWith('.js') || name.endsWith('.mjs')) return 'javascript';
   if (name.endsWith('.md') || name.endsWith('.jmd')) return 'markdown';
+  if (name.endsWith('.html') || name.endsWith('.htm')) return 'html';
+  if (name.endsWith('.tex') || name.endsWith('.latex')) return 'latex';
+  if (name.endsWith('.py')) return 'python';
+  if (
+    name.endsWith('Makefile') ||
+    name.endsWith('makefile') ||
+    name.endsWith('.mk')
+  ) {
+    return 'makefile';
+  }
   return 'plain';
 }
 
@@ -210,17 +220,232 @@ function tokenizeMarkdown(line) {
   return runs;
 }
 
+/** Tokenize one line of HTML. */
+function tokenizeHtml(line) {
+  /** @type {Run[]} */
+  const runs = [];
+  let plain = '';
+  const flush = () => {
+    if (plain !== '') {
+      runs.push({ text: plain, face: null });
+      plain = '';
+    }
+  };
+  const emit = (text, face) => {
+    flush();
+    runs.push({ text, face });
+  };
+
+  let i = 0;
+  let inTag = false;
+  while (i < line.length) {
+    const rest = line.slice(i);
+    let m;
+    if (!inTag && (m = /^<!--.*?(?:-->|$)/.exec(rest))) {
+      emit(m[0], 'comment');
+    } else if (!inTag && (m = /^<\/?[A-Za-z][\w-]*/.exec(rest))) {
+      emit(m[0], 'tag');
+      inTag = true;
+    } else if (inTag && (m = /^\/?>/.exec(rest))) {
+      emit(m[0], 'tag');
+      inTag = false;
+    } else if (inTag && (m = /^"[^"]*"|^'[^']*'/.exec(rest))) {
+      emit(m[0], 'string');
+    } else if (inTag && (m = /^[A-Za-z][\w-]*/.exec(rest))) {
+      emit(m[0], 'constant'); // an attribute name
+    } else if (!inTag && (m = /^&[A-Za-z#]\w*;/.exec(rest))) {
+      emit(m[0], 'constant'); // a character entity
+    } else {
+      plain += line[i];
+      i += 1;
+      continue;
+    }
+    i += m[0].length;
+  }
+  flush();
+  return runs;
+}
+
+/** Tokenize one line of LaTeX. */
+function tokenizeLatex(line) {
+  /** @type {Run[]} */
+  const runs = [];
+  let plain = '';
+  const flush = () => {
+    if (plain !== '') {
+      runs.push({ text: plain, face: null });
+      plain = '';
+    }
+  };
+  const emit = (text, face) => {
+    flush();
+    runs.push({ text, face });
+  };
+
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === '%') {
+      emit(line.slice(i), 'comment');
+      i = line.length;
+      break;
+    }
+    const rest = line.slice(i);
+    let m;
+    if ((m = /^\\([A-Za-z]+\*?|.)/.exec(rest))) {
+      emit(m[0], 'keyword'); // a control sequence
+      i += m[0].length;
+    } else if ((m = /^\$[^$]*\$/.exec(rest))) {
+      emit(m[0], 'string'); // inline math
+      i += m[0].length;
+    } else if ('{}[]'.includes(line[i])) {
+      emit(line[i], 'paren');
+      i += 1;
+    } else {
+      plain += line[i];
+      i += 1;
+    }
+  }
+  flush();
+  return runs;
+}
+
+/** Python keywords. */
+const PYTHON_KEYWORDS = new Set([
+  'def', 'class', 'lambda', 'if', 'elif', 'else', 'for', 'while', 'return',
+  'import', 'from', 'as', 'with', 'try', 'except', 'finally', 'raise',
+  'yield', 'pass', 'break', 'continue', 'global', 'nonlocal', 'del',
+  'assert', 'async', 'await', 'and', 'or', 'not', 'in', 'is',
+]);
+
+/** Classify a bare Python word. */
+function classifyPython(word) {
+  if (word === 'None' || word === 'True' || word === 'False') return 'constant';
+  if (PYTHON_KEYWORDS.has(word)) return 'keyword';
+  return null;
+}
+
+/** Tokenize one line of Python. */
+function tokenizePython(line) {
+  /** @type {Run[]} */
+  const runs = [];
+  const push = (text, face) => {
+    if (text !== '') runs.push({ text, face });
+  };
+
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === '#') {
+      push(line.slice(i), 'comment');
+      break;
+    }
+    const triple = line.slice(i, i + 3);
+    if (triple === '"""' || triple === "'''") {
+      const end = line.indexOf(triple, i + 3);
+      const j = end === -1 ? line.length : end + 3;
+      push(line.slice(i, j), 'string');
+      i = j;
+    } else if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== ch) j += line[j] === '\\' ? 2 : 1;
+      j = Math.min(j + 1, line.length);
+      push(line.slice(i, j), 'string');
+      i = j;
+    } else if (ch === '@' && /[A-Za-z_]/.test(line[i + 1] ?? '')) {
+      let j = i + 1;
+      while (j < line.length && /[\w.]/.test(line[j])) j += 1;
+      push(line.slice(i, j), 'constant'); // a decorator
+      i = j;
+    } else if (/\s/.test(ch)) {
+      let j = i;
+      while (j < line.length && /\s/.test(line[j])) j += 1;
+      push(line.slice(i, j), null);
+      i = j;
+    } else if (/[A-Za-z_]/.test(ch)) {
+      let j = i;
+      while (j < line.length && /\w/.test(line[j])) j += 1;
+      const word = line.slice(i, j);
+      push(word, classifyPython(word));
+      i = j;
+    } else if (/[0-9]/.test(ch)) {
+      let j = i;
+      while (j < line.length && /[0-9._eExXoObBa-fA-F]/.test(line[j])) j += 1;
+      push(line.slice(i, j), 'number');
+      i = j;
+    } else {
+      push(ch, 'operator');
+      i += 1;
+    }
+  }
+  return runs;
+}
+
+/** Tokenize one line of a Makefile. */
+function tokenizeMakefile(line) {
+  if (/^\s*#/.test(line)) return [{ text: line, face: 'comment' }];
+
+  /** @type {Run[]} */
+  const runs = [];
+  let plain = '';
+  const flush = () => {
+    if (plain !== '') {
+      runs.push({ text: plain, face: null });
+      plain = '';
+    }
+  };
+  const emit = (text, face) => {
+    flush();
+    runs.push({ text, face });
+  };
+
+  let i = 0;
+  let m;
+  // A rule target, or a variable assignment, beginning the line.
+  if (line[0] !== '\t' && (m = /^([A-Za-z0-9_.%/-]+)(\s*)(:)(?!=)/.exec(line))) {
+    emit(m[1], 'keyword');
+    plain += m[2];
+    emit(m[3], 'operator');
+    i = m[0].length;
+  } else if ((m = /^([A-Za-z_]\w*)(\s*)([:?+]?=)/.exec(line))) {
+    emit(m[1], 'constant');
+    plain += m[2];
+    emit(m[3], 'operator');
+    i = m[0].length;
+  }
+  while (i < line.length) {
+    if (line[i] === '#') {
+      emit(line.slice(i), 'comment');
+      i = line.length;
+      break;
+    }
+    const ref = /^\$[({][^)}]*[)}]/.exec(line.slice(i));
+    if (ref) {
+      emit(ref[0], 'constant'); // a variable reference
+      i += ref[0].length;
+    } else {
+      plain += line[i];
+      i += 1;
+    }
+  }
+  flush();
+  return runs;
+}
+
 /**
  * Split a line into highlighted runs. The runs' texts always
  * concatenate back to the original line.
  *
  * @param {string} text - One line, without its newline.
- * @param {'lisp' | 'javascript' | 'markdown' | 'plain'} language
+ * @param {string} language
  * @returns {Run[]}
  */
 export function highlightLine(text, language) {
   if (language === 'lisp') return tokenizeLisp(text);
   if (language === 'javascript') return tokenizeJavaScript(text);
   if (language === 'markdown') return tokenizeMarkdown(text);
+  if (language === 'html') return tokenizeHtml(text);
+  if (language === 'latex') return tokenizeLatex(text);
+  if (language === 'python') return tokenizePython(text);
+  if (language === 'makefile') return tokenizeMakefile(text);
   return text === '' ? [] : [{ text, face: null }];
 }
