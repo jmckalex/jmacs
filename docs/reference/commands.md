@@ -28,10 +28,13 @@ Defined in `editing.lisp`. Each is a thin command over a buffer
 primitive; the command is the layer the keymap binds and the layer you
 redefine.
 
+:::function{name="forward-char" path="reference/commands/forward-char.html"}
 ### `forward-char`
 `(forward-char)`
 
 Move the cursor one character to the right. Bound to `→` and `C-f`.
+Cousin of cmd(backward-char).
+:::
 
 ### `backward-char`
 `(backward-char)`

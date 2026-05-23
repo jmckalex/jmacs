@@ -424,3 +424,67 @@ The per-function reference lives in `docs/reference/`:
 
 For the language itself — its evaluation model, special forms, macros,
 modules, errors — read `docs/spec/lisp.md`.
+
+[[reference/index.md]]
+[[reference/commands.md]]
+[[reference/buffer-primitives.md]]
+[[reference/lisp-core.md]]
+
+<script data-type="jmarkdown">
+  // The cross-link helper. After this <script>, any `cmd(name)` written
+  // in markdown body text (inline) expands to an <a> with both the
+  // relative href (for browser use) and a data-jmacs-doc attribute
+  // (intercepted by the editor's doc-view). The function entries below
+  // each declare their own `path`; this helper assumes the convention
+  // `reference/commands/<name>.html`. For names whose path doesn't
+  // follow the convention, write the anchor by hand.
+  global.cmd = function (name) {
+    return `<a href="reference/commands/${name}.html" data-jmacs-doc="${name}">${name}</a>`;
+  };
+  export_to_jmarkdown('cmd');
+</script>
+
+<script data-type="jmarkdown-postprocess">
+  // Split the rendered document into per-function pages and write the
+  // name → path manifest. The output directory is passed in by
+  // scripts/build-docs.js via the JMACS_DOCS_OUT env var (default
+  // 'docs/build' when run directly).
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const outDir = process.env.JMACS_DOCS_OUT || 'docs/build';
+  const manifest = {};
+  $('function').each((_, el) => {
+    const $el = $(el);
+    const name = $el.attr('name');
+    const target = $el.attr('path');
+    if (!name || !target) return;
+    const file = path.join(outDir, target);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Each per-function page links docs.css with a relative path so
+    // it works at any depth under docs/build/.
+    const depth = target.split('/').length - 1;
+    const cssHref = '../'.repeat(depth) + 'assets/docs.css';
+    const fragment = $el.html();
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>${name} — jmacs</title>
+<link rel="stylesheet" href="${cssHref}">
+</head>
+<body>
+<article class="doc-page function-page" data-jmacs-doc-name="${name}">
+${fragment}
+</article>
+</body>
+</html>`;
+    fs.writeFileSync(file, html);
+    manifest[name] = target;
+  });
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(outDir, 'manifest.json'),
+    JSON.stringify(manifest, null, 2)
+  );
+  console.error(`build-docs (postprocess): wrote ${Object.keys(manifest).length} function page(s)`);
+</script>

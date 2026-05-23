@@ -8,6 +8,7 @@
   "license": "GPL-3.0-or-later",
   "scripts": {
     "test": "pnpm -r --if-present test",
-    "dev": "pnpm --filter @editor/desktop dev"
+    "dev": "pnpm --filter @editor/desktop dev",
+    "docs": "node scripts/build-docs.js"
   }
 }

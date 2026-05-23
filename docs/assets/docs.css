@@ -1,0 +1,136 @@
+/*
+ * jmacs documentation — typography and link styling.
+ *
+ * Loaded by both the standalone pages opened in a browser and the
+ * doc-view inside the editor (over app://docs/assets/docs.css). Kept
+ * deliberately small; the editor's own theme variables provide colour.
+ */
+
+:root {
+  /* Fallback values when opened in a plain browser. Inside the editor,
+     these are overridden by the theme's --bg, --fg, etc. (see
+     packages/stdlib/lisp/themes.lisp). */
+  --doc-bg: var(--bg, #fdf6e3);
+  --doc-fg: var(--fg, #586e75);
+  --doc-link: var(--accent, #268bd2);
+  --doc-mono: var(--font-mono,
+    "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas, monospace);
+}
+
+html {
+  background: var(--doc-bg);
+  color: var(--doc-fg);
+}
+
+body {
+  max-width: 48rem;
+  margin: 2rem auto;
+  padding: 0 1.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+article.doc-page {
+  /* When loaded into the editor's doc-view, body styles don't apply —
+     restore them on the article. */
+  max-width: 48rem;
+  margin: 2rem auto;
+  padding: 0 1.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--doc-fg);
+}
+
+h1, h2, h3, h4 {
+  font-weight: 600;
+  margin-top: 1.8em;
+  margin-bottom: 0.5em;
+  line-height: 1.25;
+}
+
+h1 { font-size: 1.9em; }
+h2 { font-size: 1.45em; }
+h3 { font-size: 1.2em; }
+h4 { font-size: 1.05em; }
+
+p { margin: 0.6em 0; }
+
+code, kbd, pre {
+  font-family: var(--doc-mono);
+  font-size: 0.92em;
+}
+
+code {
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--doc-fg) 8%, transparent);
+}
+
+pre {
+  padding: 0.8em 1em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--doc-fg) 5%, transparent);
+  overflow-x: auto;
+}
+
+pre code {
+  background: transparent;
+  padding: 0;
+}
+
+a {
+  color: var(--doc-link);
+  text-decoration: none;
+  border-bottom: 1px dotted color-mix(in srgb, var(--doc-link) 50%, transparent);
+}
+
+a:hover {
+  border-bottom-style: solid;
+}
+
+/* Cross-references to other doc pages — emphasised. */
+a[data-jmacs-doc] {
+  font-family: var(--doc-mono);
+  font-size: 0.95em;
+  padding: 0 0.15em;
+}
+
+/* A function entry — visible only on the standalone per-function page,
+   where the body's wrapping article gets a thin top border. */
+function, .function-page {
+  display: block;
+  padding-top: 1em;
+  border-top: 1px solid color-mix(in srgb, var(--doc-fg) 18%, transparent);
+}
+
+function:first-of-type, .function-page:first-of-type {
+  border-top: none;
+}
+
+table {
+  border-collapse: collapse;
+  margin: 1em 0;
+}
+
+th, td {
+  padding: 0.4em 0.8em;
+  border: 1px solid color-mix(in srgb, var(--doc-fg) 18%, transparent);
+  text-align: left;
+}
+
+th { font-weight: 600; }
+
+hr {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--doc-fg) 18%, transparent);
+  margin: 2em 0;
+}
+
+blockquote {
+  margin: 1em 0;
+  padding: 0.3em 1em;
+  border-left: 3px solid color-mix(in srgb, var(--doc-link) 60%, transparent);
+  color: color-mix(in srgb, var(--doc-fg) 85%, transparent);
+}
