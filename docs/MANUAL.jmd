@@ -449,24 +449,42 @@ modules, errors — read `docs/spec/lisp.md`.
   // name → path manifest. The output directory is passed in by
   // scripts/build-docs.js via the JMACS_DOCS_OUT env var (default
   // 'docs/build' when run directly).
+  //
+  // Collisions: two different functions can share a short name (a
+  // primitive vs a command — e.g. `newline`). For each name with
+  // multiple entries the manifest carries every qualified
+  // `<tier>:<name>` form *and* a bare-name form pointing at the
+  // preferred tier. PREFERRED_TIERS below decides who wins the bare
+  // form: commands first (the user-facing layer), then lisp-core,
+  // then buffer-primitives. The qualified forms surface in the
+  // fuzzy search so callers can still reach either page.
   const fs = require('node:fs');
   const path = require('node:path');
   const outDir = process.env.JMACS_DOCS_OUT || 'docs/build';
-  const manifest = {};
+  const PREFERRED_TIERS = ['commands', 'lisp-core', 'buffer-primitives'];
+  // Tier inferred from path: reference/<tier>/<name>.html — anything
+  // outside this shape goes into the catch-all bucket 'other'.
+  function tierOfPath(p) {
+    const m = /^reference\/([^/]+)\//.exec(p);
+    return m ? m[1] : 'other';
+  }
+  const entries = []; // { name, path, tier }
+  const seenNames = new Map(); // name → [{ path, tier }, …]
+  function note(name, target) {
+    const tier = tierOfPath(target);
+    entries.push({ name, path: target, tier });
+    if (!seenNames.has(name)) seenNames.set(name, []);
+    seenNames.get(name).push({ path: target, tier });
+  }
   $('function').each((_, el) => {
     const $el = $(el);
     const name = $el.attr('name');
     const target = $el.attr('path');
     if (!name || !target) return;
-    // An entry can document several names at once — the directive's
-    // `aliases` attribute is space-separated; every alias lands in
-    // the manifest pointing at the same page.
     const aliasAttr = $el.attr('aliases') || '';
     const aliases = aliasAttr.split(/\s+/).filter(Boolean);
     const file = path.join(outDir, target);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    // Each per-function page links docs.css with a relative path so
-    // it works at any depth under docs/build/.
     const depth = target.split('/').length - 1;
     const cssHref = '../'.repeat(depth) + 'assets/docs.css';
     const fragment = $el.html();
@@ -484,21 +502,33 @@ ${fragment}
 </body>
 </html>`;
     fs.writeFileSync(file, html);
-    // Two different functions with the same name (a primitive vs a
-    // command, say) point to two distinct pages. The manifest can
-    // only hold one mapping per name; the LAST `:::function{}`
-    // encountered wins. Warn so the collision is visible.
-    if (manifest[name] !== undefined && manifest[name] !== target) {
-      console.error(`build-docs: name "${name}" maps to multiple pages — keeping ${target}, dropped ${manifest[name]}`);
-    }
-    manifest[name] = target;
-    for (const alias of aliases) {
-      if (manifest[alias] !== undefined && manifest[alias] !== target) {
-        console.error(`build-docs: alias "${alias}" maps to multiple pages — keeping ${target}, dropped ${manifest[alias]}`);
-      }
-      manifest[alias] = target;
-    }
+    note(name, target);
+    for (const alias of aliases) note(alias, target);
   });
+  const manifest = {};
+  for (const [name, hits] of seenNames.entries()) {
+    if (hits.length === 1) {
+      manifest[name] = hits[0].path;
+      continue;
+    }
+    // Multiple tiers for the same bare name: every tier gets a
+    // qualified entry; the preferred tier wins the bare name.
+    for (const hit of hits) manifest[`${hit.tier}:${name}`] = hit.path;
+    const preferred =
+      hits.find((h) => PREFERRED_TIERS.indexOf(h.tier) >= 0) ?? hits[0];
+    const ranked = [...hits].sort((a, b) => {
+      const ai = PREFERRED_TIERS.indexOf(a.tier);
+      const bi = PREFERRED_TIERS.indexOf(b.tier);
+      return (ai < 0 ? PREFERRED_TIERS.length : ai)
+        - (bi < 0 ? PREFERRED_TIERS.length : bi);
+    });
+    manifest[name] = ranked[0].path;
+    console.error(
+      `build-docs: name "${name}" appears in ${hits.length} tiers (` +
+      hits.map((h) => h.tier).join(', ') +
+      `); bare form resolves to ${ranked[0].tier}.`
+    );
+  }
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(
     path.join(outDir, 'manifest.json'),
