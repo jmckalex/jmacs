@@ -359,3 +359,80 @@ commit + this log/notes commit, `pnpm test` green (472 tests),
 rules.
 
 ---
+
+## [2026-05-23 11:10] Overnight chain B2–B6 + D1–D3: ready to fast-forward main
+
+**Context**: B1 is on `agent-b1-lang-json` (committed earlier). Per
+the run note, the rest of Track B (B2 CSS, B3 TypeScript, B4 Rust,
+B5 Go, B6 Bash) and Track D (D1 themes, D2 mode-specific keymaps,
+D3 multi-line highlighting) were built. To match the "chain branches
+off B1 tip" preference, each task's branch was created from the
+previous task's tip rather than merged into main as it landed.
+
+**The branch chain** (all linear; each branch is a fast-forward of
+the previous):
+- `agent-b1-lang-json` → `ae1fd66`
+- `agent-b2-lang-css` → `ecb3404`
+- `agent-b3-lang-typescript` → `9e45b27`
+- `agent-b4-lang-rust` → `4bb0e4b`
+- `agent-b5-lang-go` → `e8830aa`
+- `agent-b6-lang-bash` → `1b70a86`
+- `agent-d1-themes` → `0bae397`
+- `agent-d2-mode-keymaps` → `11a0687`
+- `agent-d3-multiline-highlight` → `b06f266` (current HEAD)
+
+Main is at `01cabeb` (T0). A `git merge --ff-only agent-d3-multiline-highlight`
+on main lands the whole chain. (You denied an earlier attempt to do
+that automatically; flagging for explicit approval.)
+
+**Deviations from the per-task shared-file list, by task:**
+- **B4 (Rust):** discovered that `self` / `super` / `crate` are named
+  nodes in tree-sitter-rust, not anonymous tokens. Putting them in a
+  `[ "fn" "let" … "crate" ]` alternation throws `Bad node name
+  'crate'` at Query construction; they each need a `(name) @keyword`
+  capture instead. `mut` is wrapped in `mutable_specifier` for the
+  same reason. Recorded in the language file's comments.
+- **B6 (Bash):** the same gotcha — `time`, `return`, `local`,
+  `export`, `declare`, `readonly`, `unset` aren't anonymous tokens.
+  `time` is a named node; the others are builtin words used in
+  command position. They ride the `(command_name (word) @function)`
+  capture, not the keyword alternation. Recorded in the language
+  file's comments.
+- **D1 (theme system):** the plan listed only `styles.css`,
+  `themes.lisp` (new) and `app.js` as shared. Two extras were
+  genuinely needed: (a) one line in `packages/stdlib/src/index.js`
+  to add `themes.lisp` to `STDLIB_FILES` (same single-append pattern
+  every Track C task used), and (b) `:on-change` support added to
+  `custom-register!` and `custom-apply!` in `custom.lisp` — the
+  plan's "`:on-change` applying the theme" phrasing implied the
+  feature, but no such hook existed yet. The hook is strictly
+  additive (default `nil`, only invoked when a procedure) and is
+  useful beyond themes.
+- **D2 (mode-specific keymaps):** the plan listed no shared files.
+  `modes.lisp` gained four lines (two empty mode-map declarations
+  for LaTeX and Makefile, two `:keymap` references) to match the
+  `markdown-mode-map` pattern. `STDLIB_FILES` gained two entries
+  for the new `latex.lisp` and `makefile.lisp` feature files.
+
+**Integration-pass note (now N/A because of the chain).** Each
+task above is a clean append to the prior tip — no rebase or
+merge-conflict resolution is needed. The whole night ff-merges in
+one go.
+
+**Results.** All 490 tests across the workspace pass on the chain
+HEAD:
+
+| Package | Tests |
+|---------|-------|
+| `apps/desktop` | 11 |
+| `packages/storage` | 47 |
+| `packages/lisp` | 68 |
+| `packages/buffer` | 35 |
+| `packages/renderer` | 137 |
+| `packages/stdlib` | 192 |
+
+`pnpm --filter @editor/desktop smoke` — PASS, with new arms for
+JSON / CSS / TypeScript / Rust / Go / Bash highlighters and the
+theme-switching check.
+
+---
