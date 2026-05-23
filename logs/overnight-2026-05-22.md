@@ -820,3 +820,38 @@ goTypes: 1` and `go` in `langs`.
 - (this log entry)
 
 ---
+
+## B6 — Bash  (branch `agent-b6-lang-bash`)
+
+**What was built.** Bash as a drop-in. Six tree-sitter languages
+now ride the T0 registry.
+
+- Vendored `tree-sitter-bash.wasm` from `tree-sitter-bash@0.25.1`.
+- `packages/renderer/src/languages/bash.js` — comments, two
+  string flavours plus heredoc bodies, numbers, the
+  control-flow keyword set, function_definition names,
+  command_name (the bare word that opens a command, captured
+  as `@function`), variable_name and `$VAR`/`${VAR}` expansions.
+  Several "keyword-looking" words (`time`, `return`, `local`,
+  `export`, `declare`, `readonly`, `unset`) are *not* anonymous
+  tokens in this grammar — `time` is a named node and the
+  others are simply builtin words used in command position, so
+  they ride the `command_name` capture rather than the literal
+  alternation. The Query constructor will throw
+  `Bad node name 'time'` etc. if they are listed as `"time"`.
+- `packages/stdlib/lisp/languages/bash.lisp` defines `bash-mode`
+  (`:comment-prefix "# "`) for `.sh` and `.bash`.
+- Smoke arm: `(insert! "if true; then echo hi; fi")` into
+  `smoke.sh`; asserts ≥1 `.tok-keyword` and ≥1 `.tok-function`.
+
+**Tests.** `pnpm test` — 472 tests, 0 failures.
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS.
+`langs:"bash,css,go,html,javascript,json,python,rust,typescript"`;
+`shKeywords: 3, shFunctions: 2`.
+
+**Commits.**
+- `54f056f` feat(b6): add the Bash tree-sitter language
+- (this log entry)
+
+---
