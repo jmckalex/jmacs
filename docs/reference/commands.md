@@ -1008,17 +1008,18 @@ The `M-n` prefix map (defined in `keymap.lisp`): `n` add, `e` edit,
 `the-keymap` under `"M-n"`.
 :::
 
-:::function{name="*jmarkdown-command*" path="reference/commands/*jmarkdown-command*.html"}
-### `*jmarkdown-command*`
+:::function{name="*markdown-interpreter*" path="reference/commands/markdown-interpreter.html"}
+### `*markdown-interpreter*`
 
-An optional override for the shell command that renders a note's
-JMarkdown source to HTML — jmacs runs the command, feeds the note's
-source on stdin, and shows whatever HTML it prints. `nil` (the default)
-uses the editor's built-in default, `multimarkdown -s`. Set it to
-choose another processor:
+The Markdown renderer for sticky notes and live docstrings shown in
+the documentation viewer. The default is `"marked"` — a known-working
+CommonMark+GFM library bundled with the editor (`marked.js`), which
+requires no external programs. Any other string is treated as a
+shell command that reads Markdown on stdin and prints HTML on stdout
+— useful when you want a richer dialect (JMarkdown, pandoc):
 
 ```lisp
-(set! *jmarkdown-command* "pandoc -f markdown -t html")
+(set! *markdown-interpreter* "pandoc -f markdown -t html")
 ```
 :::
 

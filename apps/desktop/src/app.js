@@ -28,6 +28,7 @@ import {
   createTreeSitterHighlighter,
   fuzzyFilter,
   loadLanguageHighlighters,
+  renderMarkdown,
 } from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 import { createSplash } from './splash.js';
@@ -90,7 +91,7 @@ const INIT_TEMPLATE = `;;; init.lisp — your jmacs configuration.
 ;;; bind keys.
 ;;;
 ;;; Examples:
-;;;   (custom-apply! '*jmarkdown-command* "pandoc -f markdown -t html")
+;;;   (custom-apply! '*markdown-interpreter* "pandoc -f markdown -t html")
 ;;;   (define (insert-divider) (insert! "\\n---\\n"))
 `;
 
@@ -254,6 +255,50 @@ async function openDocBuffer(docName) {
     name: `*Doc: ${docName}*`,
     docName,
     html: page.html,
+  });
+  switchToBuffer(buffers.length - 1);
+}
+
+/** Minimal HTML-escape for embedding a user-supplied name into an
+ *  attribute or text node. */
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** Render NAME's docstring as Markdown and show it in a doc buffer.
+ *  Reuses any existing doc buffer for the same NAME. This is the
+ *  live path — for user-defined procedures whose documentation
+ *  isn't in the pre-built manifest. */
+async function openDocstringBuffer(docName, source) {
+  const existing = buffers.findIndex(
+    (buffer) => buffer.kind === 'doc' && buffer.docName === docName
+  );
+  if (existing >= 0) {
+    switchToBuffer(existing);
+    return;
+  }
+  let body;
+  try {
+    body = await renderMarkdownHtml(source);
+  } catch (error) {
+    repl.appendError(`doc render failed: ${error.message}`);
+    return;
+  }
+  // Frame the rendered body so the doc-view's article styling
+  // applies. The synthesised header matches the static pages'
+  // shape: <h3><code>name</code></h3>, then the prose.
+  const html =
+    `<h3 class="doc-name"><code>${escapeHtml(docName)}</code></h3>\n` +
+    `<div class="doc-docstring">${body}</div>`;
+  buffers.push({
+    kind: 'doc',
+    name: `*Doc: ${docName}*`,
+    docName,
+    html,
   });
   switchToBuffer(buffers.length - 1);
 }
@@ -593,6 +638,17 @@ const interpreter = createInterpreter({
       const name = String(args[0] ?? '');
       if (name === '') return NIL;
       openDocBuffer(name);
+      return NIL;
+    },
+    // Documentation (live path): NAME's docstring is Markdown; render
+    // it through `*markdown-interpreter*` and show the result in a
+    // doc-kind buffer. Used by `(open-doc …)` for user-defined
+    // procedures that aren't in the pre-built manifest.
+    'open-docstring-page!': (args) => {
+      const name = String(args[0] ?? '');
+      const source = String(args[1] ?? '');
+      if (name === '' || source === '') return NIL;
+      openDocstringBuffer(name, source);
       return NIL;
     },
     // Documentation: return the (cached) list of doc-page names, or
@@ -1124,27 +1180,44 @@ const docView = createDocView(document.getElementById('editor-host'), {
 });
 docView.element.style.display = 'none';
 
-// The command sticky notes are rendered through. Hardcoded for now so
-// notes render out of the box; the *jmarkdown-command* Lisp variable
-// overrides it when set. It must read the note source on stdin and
-// print HTML to stdout.
-const DEFAULT_JMARKDOWN_COMMAND = 'multimarkdown -s';
+// The Markdown renderer used for sticky notes and the live-docstring
+// path in the doc-view. Driven by the `*markdown-interpreter*` Lisp
+// variable: the magic value `"marked"` selects the bundled marked.js
+// library; any other string is a shell command that reads Markdown
+// on stdin and prints HTML on stdout.
+const DEFAULT_MARKDOWN_INTERPRETER = 'marked';
 
-// Render a sticky note's JMarkdown source to HTML through the shell
-// command. Throwing — the command failed, e.g. it is not installed —
-// makes the notes module fall back to showing the raw source.
-async function renderNoteHtml(source) {
-  let command = DEFAULT_JMARKDOWN_COMMAND;
+/** The current `*markdown-interpreter*` setting, falling back to the
+ *  default if the Lisp side isn't ready or the value is empty. */
+function currentMarkdownInterpreter() {
   try {
-    const value = interpreter.evaluate('*jmarkdown-command*');
-    if (typeof value === 'string' && value.trim() !== '') command = value;
+    const value = interpreter.evaluate('*markdown-interpreter*');
+    if (typeof value === 'string' && value.trim() !== '') return value;
   } catch {
-    // *jmarkdown-command* unset or unreadable — keep the default.
+    // Not yet defined — fall through to the default.
   }
-  const result = await window.host.renderJMarkdown(command, source);
-  if (result && typeof result.html === 'string') return result.html;
-  throw new Error(result?.error ?? 'JMarkdown render failed');
+  return DEFAULT_MARKDOWN_INTERPRETER;
 }
+
+/**
+ * Render a Markdown source string to an HTML fragment.
+ *
+ * Returns a Promise resolving to the HTML; throws when the chosen
+ * interpreter fails. The marked path is synchronous internally but
+ * returns a Promise for shape parity with the shell-out path.
+ */
+async function renderMarkdownHtml(source) {
+  const interp = currentMarkdownInterpreter();
+  if (interp === 'marked') return renderMarkdown(source);
+  const result = await window.host.renderJMarkdown(interp, source);
+  if (result && typeof result.html === 'string') return result.html;
+  throw new Error(result?.error ?? `${interp} render failed`);
+}
+
+// Sticky notes call this; the doc-view's live-docstring path does
+// the same. Throwing — the command failed, e.g. it is not installed
+// — makes the notes module fall back to showing the raw source.
+const renderNoteHtml = renderMarkdownHtml;
 
 // Sticky notes fill the view's overlay layer; they ride the document.
 const stickyNotes = createStickyNotes({

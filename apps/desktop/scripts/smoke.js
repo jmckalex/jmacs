@@ -529,7 +529,7 @@ app.whenReady().then(() => {
         // A fresh markdown buffer; 'cat' echoes the source verbatim.
         submit('(new-buffer! "preview.md")');
         await frame();
-        submit('(set! *jmarkdown-command* "cat")');
+        submit('(set! *markdown-interpreter* "cat")');
         await frame();
         const editor = document.querySelector('.editor');
         editor.focus();
@@ -671,7 +671,7 @@ app.whenReady().then(() => {
         // Drive the render pipeline with a controlled command — 'cat'
         // echoes the source, so the output here is deterministic and
         // independent of whether a real JMarkdown binary is installed.
-        submit('(set! *jmarkdown-command* "cat")');
+        submit('(set! *markdown-interpreter* "cat")');
         await frame();
         submit('(note-set-source! (note-create!) "sticky body text")');
         await frame();
@@ -751,7 +751,7 @@ app.whenReady().then(() => {
           (await window.host.readConfigFile('init.lisp')) !== null;
         const replInput = document.querySelector('.repl-input');
         replInput.value =
-          '(custom-apply-and-save! (quote *jmarkdown-command*) "echo smoke")';
+          '(custom-apply-and-save! (quote *markdown-interpreter*) "echo smoke")';
         replInput.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
@@ -784,7 +784,7 @@ app.whenReady().then(() => {
         return {
           initLoaded,
           savedSetting: !!(saved &&
-            saved.includes('*jmarkdown-command*') &&
+            saved.includes('*markdown-interpreter*') &&
             saved.includes('echo smoke')),
           customizeShown,
           settingRendered,

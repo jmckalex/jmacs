@@ -38,12 +38,29 @@
   "True if NAME has a doc page in the built manifest."
   (if (member name (doc-manifest)) #t #f))
 
+(define (doc-source-for-name name)
+  "The docstring of the procedure bound to NAME, or `nil` when the
+   symbol is unbound, doesn't name a procedure, or has no docstring.
+   Used by `open-doc` as the source for live (user-defined) docs."
+  (try
+    (let ((value (eval (string->symbol name))))
+      (if (procedure? value)
+          (let ((source (doc value)))
+            (if (string? source) source nil))
+          nil))
+    (catch err nil)))
+
 (defcommand open-doc (name)
-  "Open the documentation page for the function called NAME.
-   Prompts for the name; opens it in a `doc`-kind buffer; falls
-   back to a REPL message when the docs haven't been built or
-   the name is unknown."
+  "Open the documentation page for the function called NAME. The
+   pre-built reference is consulted first; for user-defined
+   procedures that aren't in the manifest, the docstring is
+   rendered as Markdown and shown in a doc buffer. Falls back to
+   a REPL message when NAME names nothing documented."
   (interactive (string "Documentation for: "))
-  (if (doc-known? name)
-      (open-doc! name)
-      (println (str "no doc page for " name))))
+  (cond
+    ((doc-known? name) (open-doc! name))
+    (else
+      (let ((source (doc-source-for-name name)))
+        (if (string? source)
+            (open-docstring-page! name source)
+            (println (str "no doc page for " name)))))))

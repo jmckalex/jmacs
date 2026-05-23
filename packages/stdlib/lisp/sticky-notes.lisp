@@ -10,16 +10,21 @@
 ;;; under the M-n prefix (see keymap.lisp). Notes are also fully
 ;;; scriptable: the primitives are ordinary Lisp procedures.
 
-;; *jmarkdown-command* is a customisable setting (see custom.lisp): the
-;; shell command that renders a note's JMarkdown source to HTML — jmacs
-;; feeds the source on stdin and shows the command's stdout. Change it
-;; through the customisation UI, or directly, e.g.
-;;   (custom-apply! '*jmarkdown-command* "pandoc -f markdown -t html")
+;; *markdown-interpreter* is a customisable setting (see custom.lisp):
+;; the Markdown renderer used for both sticky notes and the live
+;; docstring path in the documentation viewer. The default is "marked"
+;; — the bundled marked.js library, a known-working CommonMark+GFM
+;; renderer that requires no external programs. Any other string is
+;; treated as a shell command: jmacs feeds the source on stdin and
+;; shows the command's stdout (the original integration path, kept
+;; for users who want JMarkdown or pandoc features). Change it
+;; through the customisation UI, or directly:
+;;   (custom-apply! '*markdown-interpreter* "pandoc -f markdown -t html")
 (defgroup 'sticky-notes 'jmacs "Sticky notes overlaid on the buffer.")
 
-(defcustom *jmarkdown-command* "multimarkdown -s" :string
+(defcustom *markdown-interpreter* "marked" :string
   :group 'sticky-notes
-  :doc "Shell command that renders a sticky note's JMarkdown source to HTML; the source is fed on stdin, the HTML read from the command's stdout.")
+  :doc "Markdown renderer for sticky notes and live docstrings. \"marked\" selects the bundled marked.js library; any other string is a shell command that reads Markdown on stdin and prints HTML on stdout.")
 
 (defcommand add-sticky-note ()
   "Create a sticky note at the cursor and open it for editing."

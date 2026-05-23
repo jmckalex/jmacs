@@ -129,6 +129,10 @@ async function editor(initialText = 'hello world') {
         docCalls.push(String(args[0] ?? ''));
         return NIL;
       },
+      'open-docstring-page!': (args) => {
+        docCalls.push(`docstring:${String(args[0] ?? '')}`);
+        return NIL;
+      },
     },
   });
   await loadStdlib(
@@ -1043,11 +1047,11 @@ test('M-n t toggles sticky-note visibility', async () => {
   assert.deepEqual(noteCalls, ['toggle']);
 });
 
-test('the JMarkdown render command is a registered custom setting', async () => {
+test('the Markdown interpreter is a registered custom setting', async () => {
   const { interpreter } = await editor();
-  assert.equal(interpreter.evaluate('*jmarkdown-command*'), 'multimarkdown -s');
+  assert.equal(interpreter.evaluate('*markdown-interpreter*'), 'marked');
   assert.equal(
-    interpreter.evaluate('(custom-registered? (quote *jmarkdown-command*))'),
+    interpreter.evaluate('(custom-registered? (quote *markdown-interpreter*))'),
     true
   );
 });
@@ -1199,8 +1203,8 @@ test('custom-field returns a setting as flat data for the view', async () => {
 
 test('custom-group-model lists a group title and its settings', async () => {
   const { interpreter } = await editor();
-  // The sticky-notes group and *jmarkdown-command* are declared by the
-  // standard library itself.
+  // The sticky-notes group and *markdown-interpreter* are declared by
+  // the standard library itself.
   const model = listToArray(
     interpreter.evaluate('(custom-group-model (quote sticky-notes))')
   );
@@ -2002,4 +2006,30 @@ test('describe-named-command falls back to REPL when no doc is built', async () 
   );
   // open-doc! was NOT called.
   assert.deepEqual(docCalls, []);
+});
+
+test('open-doc renders a user-defined docstring through the live path', async () => {
+  const { interpreter, docCalls } = await editor();
+  // Define a procedure with a Markdown docstring, then ask for its doc.
+  interpreter.evaluate(`
+    (define (my-cmd)
+      "A *user-defined* function with **Markdown** in its docstring.
+
+       Multiple paragraphs are fine."
+      42)
+  `);
+  interpreter.evaluate('(open-doc "my-cmd")');
+  // doc-known? is false (no manifest); the docstring path fires.
+  assert.deepEqual(docCalls, ['docstring:my-cmd']);
+});
+
+test('open-doc still falls back to REPL when the name has no docstring', async () => {
+  const { interpreter, docCalls, output } = await editor();
+  interpreter.evaluate('(define (no-doc-cmd) 1)');
+  interpreter.evaluate('(open-doc "no-doc-cmd")');
+  assert.deepEqual(docCalls, []);
+  assert.ok(
+    output.some((line) => line.includes('no doc page for no-doc-cmd')),
+    `expected REPL fallback; got ${JSON.stringify(output)}`
+  );
 });
