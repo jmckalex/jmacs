@@ -133,6 +133,10 @@ async function editor(initialText = 'hello world') {
         docCalls.push(`docstring:${String(args[0] ?? '')}`);
         return NIL;
       },
+      'start-doc-search!': () => {
+        docCalls.push('search');
+        return NIL;
+      },
     },
   });
   await loadStdlib(
@@ -2032,4 +2036,11 @@ test('open-doc still falls back to REPL when the name has no docstring', async (
     output.some((line) => line.includes('no doc page for no-doc-cmd')),
     `expected REPL fallback; got ${JSON.stringify(output)}`
   );
+});
+
+test('C-h a runs apropos-doc through the search primitive', async () => {
+  const { interpreter, docCalls } = await editor();
+  press(interpreter, 'C-h');
+  press(interpreter, 'a');
+  assert.deepEqual(docCalls, ['search']);
 });

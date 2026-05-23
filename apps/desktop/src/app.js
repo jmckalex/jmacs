@@ -478,6 +478,54 @@ function startSearch(initialDirection) {
 
 // --- command palette (M-x) ---------------------------------------------
 
+/** Run the apropos-doc fuzzy search in the minibuffer. */
+function startDocSearch() {
+  let names;
+  try {
+    names = listToArray(interpreter.call('doc-manifest')).map(String);
+  } catch (error) {
+    repl.appendError(
+      `apropos-doc: ${error.lispMessage ?? error.message}`
+    );
+    return;
+  }
+  if (names.length === 0) {
+    repl.appendOutput(
+      'apropos-doc: no docs are loaded — run `pnpm run docs` and reload.'
+    );
+    return;
+  }
+  minibuffer.prompt('Doc: ', {
+    onChange(query) {
+      const matches = fuzzyFilter(query, names);
+      if (matches.length === 0) {
+        minibuffer.setStatus('no matching doc');
+        return;
+      }
+      const shown = matches.slice(0, 6);
+      minibuffer.setStatus(
+        `[${shown[0]}]` +
+          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
+      );
+    },
+    onSubmit(query) {
+      editorView.focus();
+      const chosen = fuzzyFilter(query, names)[0];
+      if (chosen === undefined) return;
+      try {
+        interpreter.evaluate(`(open-doc ${JSON.stringify(chosen)})`);
+      } catch (error) {
+        repl.appendError(
+          error.lispMessage ?? error.message ?? String(error)
+        );
+      }
+    },
+    onCancel() {
+      editorView.focus();
+    },
+  });
+}
+
 /** Run the command palette in the minibuffer. */
 function startCommandPalette() {
   const names = [...new Set(listToArray(interpreter.call('command-names')))];
@@ -639,6 +687,13 @@ const interpreter = createInterpreter({
       const name = String(args[0] ?? '');
       if (name === '') return NIL;
       openDocBuffer(name);
+      return NIL;
+    },
+    // Documentation: open the fuzzy-search minibuffer with the
+    // manifest's names as candidates; submit opens the matching
+    // doc page.
+    'start-doc-search!': () => {
+      startDocSearch();
       return NIL;
     },
     // Documentation (live path): NAME's docstring is Markdown; render

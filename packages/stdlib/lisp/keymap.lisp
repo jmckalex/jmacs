@@ -31,7 +31,8 @@
 ;; The C-h prefix map — help.
 (define c-h-keymap
   {"k" 'describe-key
-   "f" 'describe-command})
+   "f" 'describe-command
+   "a" 'apropos-doc})
 
 ;; The M-n prefix map — sticky notes (see sticky-notes.lisp).
 (define sticky-note-keymap

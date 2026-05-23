@@ -50,6 +50,11 @@
           nil))
     (catch err nil)))
 
+(defcommand apropos-doc ()
+  "Fuzzy-search the documentation manifest in the minibuffer; open
+   the matching doc page in the doc-view. Bound to `C-h a`."
+  (start-doc-search!))
+
 (defcommand open-doc (name)
   "Open the documentation page for the function called NAME. The
    pre-built reference is consulted first; for user-defined
