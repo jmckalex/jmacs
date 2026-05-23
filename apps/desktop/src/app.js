@@ -572,7 +572,12 @@ function startCommandPalette() {
  * switch.
  */
 function startBufferSwitcher() {
-  const names = buffers.map((buffer) => buffer.name);
+  // The current buffer is excluded from the candidates so the
+  // suggestion the minibuffer shows in brackets is always a
+  // different buffer — pressing Enter is then a useful switch.
+  const names = buffers
+    .filter((_, index) => index !== currentIndex)
+    .map((buffer) => buffer.name);
 
   minibuffer.prompt('Buffer: ', {
     onChange(query) {
@@ -591,9 +596,14 @@ function startBufferSwitcher() {
     onSubmit(query) {
       editorView.focus();
       const trimmed = query.trim();
-      if (trimmed === '') return;
       // An exact name switches; otherwise the best fuzzy match does.
-      const exact = buffers.findIndex((buffer) => buffer.name === trimmed);
+      // A blank Enter accepts whatever the bracketed suggestion is —
+      // the first fuzzy match against the empty query, i.e. the first
+      // candidate alphabetically.
+      const exact =
+        trimmed === ''
+          ? -1
+          : buffers.findIndex((buffer) => buffer.name === trimmed);
       if (exact >= 0) {
         switchToBuffer(exact);
         return;
@@ -603,6 +613,7 @@ function startBufferSwitcher() {
         switchToBuffer(buffers.findIndex((buffer) => buffer.name === chosen));
         return;
       }
+      if (trimmed === '') return; // nothing to switch to, nothing to create.
       // No open buffer matches the typed name — create one.
       buffers.push(createBuffer('', { name: trimmed }));
       switchToBuffer(buffers.length - 1);
