@@ -855,3 +855,76 @@ now ride the T0 registry.
 - (this log entry)
 
 ---
+
+## D1 — theme system  (branch `agent-d1-themes`)
+
+**What was built.** A user-switchable colour theme — three themes
+ship, the REPL and the Customize UI both apply changes live.
+
+- New file `packages/stdlib/lisp/themes.lisp` — the theme
+  registry (`define-theme`), three themes (`dark` Mariana, the
+  current default; `light` Solarized Light; `midnight`,
+  near-black dark) and the user-facing `*theme*` defcustom
+  (`:choice` over the three names, `:group 'appearance`).
+- `apps/desktop/styles.css` — the syntax-highlight palette
+  (`--tok-comment`, `--tok-string`, `--tok-number`,
+  `--tok-keyword`, `--tok-constant`, `--tok-function`,
+  `--tok-type`, `--tok-tag`, `--tok-operator`, `--tok-paren`,
+  `--tok-heading`, `--tok-code`, `--tok-link`) is lifted to
+  `:root` next to the existing backgrounds and foregrounds; the
+  `.tok-*` rules `var(--…)` them.
+- `apps/desktop/src/app.js` — a new host primitive
+  `apply-theme!` reads `current-theme-css-vars` from Lisp and
+  writes each `--var` onto `document.documentElement.style`.
+  `applyCurrentTheme` is called once at startup (after the user
+  config loads) and once on hot reload; settings changed
+  through `applyCustomSetting` / `saveCustomSetting` also
+  trigger it. The REPL path goes through the on-change hook
+  instead (see below).
+- `packages/stdlib/lisp/custom.lisp` — a small `:on-change`
+  hook in `custom-register!` and `custom-apply!`. The hook is
+  a `(lambda (name value) …)` stored on the registry entry;
+  `custom-apply!` calls it after applying. The theme
+  defcustom binds it to `(lambda (n v) (apply-theme!))`, so a
+  REPL `(custom-apply! '*theme* 'light)` updates the document
+  immediately. This unblocks future settings that need a
+  side-effect on change.
+- `packages/stdlib/src/index.js` — `themes.lisp` is added to
+  `STDLIB_FILES`, between `modes.lisp` and `keymap.lisp`. One
+  append.
+
+**Decision / deviation from the plan.** The brief listed the
+shared files as `styles.css`, `themes.lisp` (new), `app.js`.
+Two extras were genuinely needed:
+
+1. `STDLIB_FILES` (one line in `packages/stdlib/src/index.js`)
+   to make `themes.lisp` part of the loaded core. This is the
+   same single-append pattern used by every Track C feature
+   (yank-pop, line-ops, occur, expand-region), so flagged but
+   not novel.
+2. `custom.lisp` — the `:on-change` hook the plan explicitly
+   asks for ("`app.js` (the `:on-change` applying the theme)")
+   isn't an existing primitive. Two small edits to
+   `custom-register!` and `custom-apply!` add it. The hook is
+   strictly additive — every existing setting keeps working
+   because `:on-change` is read with a `nil` default and only
+   invoked when it's a procedure. It's also a feature with
+   value beyond themes (any setting that needs a side-effect on
+   change can use it).
+
+**Tests.** `pnpm test` — 475 tests, 0 failures (+3 new theme
+tests covering the registry, the `:choice` defcustom and the
+`current-theme-css-vars` switch).
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS. The
+new `themes:` arm reports `{"bgDark":"#2b333b","bgLight":"#fdf6e3",
+"fgLight":"#586e75","bgMidnight":"#0d1117","bgBack":"#2b333b",
+"differ":true,"restored":true}` — three themes apply distinct
+backgrounds and a switch back to `dark` restores the original
+value.
+
+**Commits.**
+- `8a2957c` feat(d1): add the theme system
+- (this log entry)
+
+---
