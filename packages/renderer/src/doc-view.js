@@ -46,6 +46,11 @@ export function docLinkName(target) {
  * @param {(name: string) => void} [options.openDoc] - Called when the
  *   user clicks a `[data-jmacs-doc]` cross-link. The argument is the
  *   value of the attribute (the function name).
+ * @param {(text: string, language: string) =>
+ *   import('./highlight.js').Run[][] | null} [options.highlightCode] -
+ *   Returns per-line highlight runs for a code block's body, or null
+ *   when the language isn't known. Called once per
+ *   `pre code[class*="language-"]` after the page renders.
  * @returns {{element: HTMLElement, setBuffer: (buffer: object | null)
  *   => void, focus: () => void}}
  */
@@ -54,6 +59,8 @@ export function createDocView(container, options = {}) {
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const openDoc =
     typeof options.openDoc === 'function' ? options.openDoc : null;
+  const highlightCode =
+    typeof options.highlightCode === 'function' ? options.highlightCode : null;
 
   const root = doc.createElement('div');
   root.className = 'doc-view';
@@ -91,6 +98,50 @@ export function createDocView(container, options = {}) {
     if (onKey && onKey(keyEventToString(event))) event.preventDefault();
   });
 
+  /** Replace `code`'s children with the per-line highlight runs from
+   *  `highlightCode`. Each line's runs become `<span class="tok-…">`
+   *  nodes; newlines are inserted between lines so the existing
+   *  `<pre>` line-breaking is preserved. */
+  function applyCodeHighlight(code, language) {
+    if (!highlightCode) return;
+    let perLine;
+    try {
+      perLine = highlightCode(code.textContent, language);
+    } catch {
+      return;
+    }
+    if (!Array.isArray(perLine) || perLine.length === 0) return;
+    code.replaceChildren();
+    for (let i = 0; i < perLine.length; i += 1) {
+      if (i > 0) code.append(doc.createTextNode('\n'));
+      const runs = perLine[i];
+      if (!Array.isArray(runs)) continue;
+      for (const run of runs) {
+        if (run.face === null || run.face === undefined) {
+          code.append(doc.createTextNode(run.text));
+        } else {
+          const span = doc.createElement('span');
+          span.className = `tok-${run.face}`;
+          span.textContent = run.text;
+          code.append(span);
+        }
+      }
+    }
+  }
+
+  /** Walk every code block with a `language-…` class and re-highlight
+   *  it through the renderer's pipeline. Block-language is taken from
+   *  the class name (jmarkdown + marked both use the same convention). */
+  function highlightAllCodeBlocks() {
+    if (!highlightCode) return;
+    const codes = article.querySelectorAll('pre code[class*="language-"]');
+    for (const code of codes) {
+      const match = code.className.match(/language-([\w-]+)/);
+      if (!match) continue;
+      applyCodeHighlight(code, match[1]);
+    }
+  }
+
   /**
    * Show a doc buffer. The buffer carries
    * `{kind:'doc', name, docName, html}` — `html` is the per-function
@@ -106,6 +157,7 @@ export function createDocView(container, options = {}) {
       return;
     }
     article.innerHTML = buffer.html;
+    highlightAllCodeBlocks();
     root.scrollTop = 0;
   }
 

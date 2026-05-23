@@ -27,6 +27,7 @@ import {
   createReplView,
   createTreeSitterHighlighter,
   fuzzyFilter,
+  highlightLine,
   loadLanguageHighlighters,
   renderMarkdown,
 } from '@editor/renderer';
@@ -1160,6 +1161,23 @@ const imageView = createImageView(document.getElementById('editor-host'), {
 });
 imageView.element.style.display = 'none';
 
+/** Highlight a code block's body with the same pipeline the editor
+ *  view uses: tree-sitter where we have a grammar (Track B languages),
+ *  the hand-tokenizer fallback for the rest. Returns per-line runs;
+ *  the doc-view turns them into `<span class="tok-…">` spans. */
+function highlightCodeForDocView(text, language) {
+  if (typeof text !== 'string' || text === '') return null;
+  const treeSitter = highlighters[language];
+  if (treeSitter) {
+    try {
+      return treeSitter(text);
+    } catch {
+      /* fall through to the line tokenizer */
+    }
+  }
+  return text.split('\n').map((line) => highlightLine(line, language));
+}
+
 // The documentation view — the view a `doc`-kind buffer is shown
 // through. Cross-links inside the rendered HTML carry
 // `data-jmacs-doc="name"`; clicking one routes through Lisp's
@@ -1177,6 +1195,7 @@ const docView = createDocView(document.getElementById('editor-host'), {
       openDocBuffer(name);
     }
   },
+  highlightCode: highlightCodeForDocView,
 });
 docView.element.style.display = 'none';
 
