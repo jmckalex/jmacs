@@ -458,6 +458,11 @@ modules, errors — read `docs/spec/lisp.md`.
     const name = $el.attr('name');
     const target = $el.attr('path');
     if (!name || !target) return;
+    // An entry can document several names at once — the directive's
+    // `aliases` attribute is space-separated; every alias lands in
+    // the manifest pointing at the same page.
+    const aliasAttr = $el.attr('aliases') || '';
+    const aliases = aliasAttr.split(/\s+/).filter(Boolean);
     const file = path.join(outDir, target);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     // Each per-function page links docs.css with a relative path so
@@ -479,7 +484,20 @@ ${fragment}
 </body>
 </html>`;
     fs.writeFileSync(file, html);
+    // Two different functions with the same name (a primitive vs a
+    // command, say) point to two distinct pages. The manifest can
+    // only hold one mapping per name; the LAST `:::function{}`
+    // encountered wins. Warn so the collision is visible.
+    if (manifest[name] !== undefined && manifest[name] !== target) {
+      console.error(`build-docs: name "${name}" maps to multiple pages — keeping ${target}, dropped ${manifest[name]}`);
+    }
     manifest[name] = target;
+    for (const alias of aliases) {
+      if (manifest[alias] !== undefined && manifest[alias] !== target) {
+        console.error(`build-docs: alias "${alias}" maps to multiple pages — keeping ${target}, dropped ${manifest[alias]}`);
+      }
+      manifest[alias] = target;
+    }
   });
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(

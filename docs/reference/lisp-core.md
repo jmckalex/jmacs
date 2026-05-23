@@ -30,376 +30,497 @@ type or arity mismatch.
 
 ## Constants
 
+:::function{name="nil" aliases="true false" path="reference/lisp-core/nil.html"}
 ### `nil`, `true`, `false`
 
 `nil` is the empty list — also the editor's "no value". `true` and
 `false` are the booleans, equal to the reader's `#t` and `#f`. Only
 `#f` is false; `nil`, `0` and `""` are all truthy (`docs/spec/lisp.md`
 §3).
+:::
 
 ## Arithmetic
 
+:::function{name="+" aliases="*" path="reference/lisp-core/%2B.html"}
 ### `+` / `*`
 `(+ x …)` / `(* x …)`
 
 Sum and product of the arguments. `(+)` is `0`, `(*)` is `1`.
+:::
 
+:::function{name="-" path="reference/lisp-core/-.html"}
 ### `-`
 `(- x …)`
 
 With one argument, negation; with more, left-to-right subtraction.
+:::
 
+:::function{name="/" path="reference/lisp-core/%2F.html"}
 ### `/`
 `(/ x …)`
 
 With one argument, reciprocal; with more, left-to-right division.
 Raises an error on division by zero.
+:::
 
+:::function{name="mod" aliases="quotient remainder" path="reference/lisp-core/mod.html"}
 ### `mod` / `quotient` / `remainder`
 `(mod a b)` / `(quotient a b)` / `(remainder a b)`
 
 `mod` is the result with the sign of the divisor (always non-negative
 for a positive `b`); `quotient` is truncating integer division;
 `remainder` keeps the sign of the dividend.
+:::
 
+:::function{name="abs" path="reference/lisp-core/abs.html"}
 ### `abs`
 `(abs x)`
 
 Absolute value.
+:::
 
+:::function{name="min" aliases="max" path="reference/lisp-core/min.html"}
 ### `min` / `max`
 `(min x …)` / `(max x …)`
 
 Least and greatest of the arguments.
+:::
 
+:::function{name="inc" aliases="dec" path="reference/lisp-core/inc.html"}
 ### `inc` / `dec`
 `(inc x)` / `(dec x)`
 
 `x` plus one / minus one.
+:::
 
+:::function{name="expt" path="reference/lisp-core/expt.html"}
 ### `expt`
 `(expt base power)`
 
 `base` raised to `power`.
+:::
 
+:::function{name="sqrt" path="reference/lisp-core/sqrt.html"}
 ### `sqrt`
 `(sqrt x)`
 
 Square root.
+:::
 
 ## Numeric comparison
 
+:::function{name="=" aliases="< > <= >=" path="reference/lisp-core/%3D.html"}
 ### `=` `<` `>` `<=` `>=`
 `(= x …)`, `(< x …)`, `(> x …)`, `(<= x …)`, `(>= x …)`
 
 Chained numeric comparison: true when every adjacent pair is in the
 given relation. `(< 1 2 3)` is true. Numbers only — for general
 equality use `equal?`.
+:::
 
 ## Type predicates
 
+:::function{name="nil?" aliases="pair? list?" path="reference/lisp-core/nil%3F.html"}
 ### `nil?` `pair?` `list?`
 `(nil? x)` `(pair? x)` `(list? x)`
 
 `nil?` — the empty list; `pair?` — a cons cell; `list?` — `nil` or a
 proper (`nil`-terminated) chain of pairs.
+:::
 
+:::function{name="number?" aliases="string? symbol? keyword? boolean? procedure? vector? map?" path="reference/lisp-core/number%3F.html"}
 ### `number?` `string?` `symbol?` `keyword?` `boolean?` `procedure?` `vector?` `map?`
 `(number? x)` … `(map? x)`
 
 True when `x` is of the named type. `procedure?` is true for
 primitives, closures and macros alike.
+:::
 
+:::function{name="zero?" aliases="positive? negative? even? odd?" path="reference/lisp-core/zero%3F.html"}
 ### `zero?` `positive?` `negative?` `even?` `odd?`
 `(zero? x)` … `(odd? x)`
 
 Numeric predicates on a single number.
+:::
 
+:::function{name="empty?" path="reference/lisp-core/empty%3F.html"}
 ### `empty?`
 `(empty? x)`
 
 True when `x` is empty: `nil`, an empty vector, an empty string, or an
 empty map. False for any other value.
+:::
 
 ## Equality and logic
 
+:::function{name="eq?" path="reference/lisp-core/eq%3F.html"}
 ### `eq?`
 `(eq? a b)`
 
 Identity equality — JavaScript `===`. True for identical objects, equal
 numbers, interned symbols and keywords.
+:::
 
+:::function{name="equal?" path="reference/lisp-core/equal%3F.html"}
 ### `equal?`
 `(equal? a b)`
 
 Deep structural equality — compares the contents of pairs, vectors and
 maps recursively.
+:::
 
+:::function{name="not" path="reference/lisp-core/not.html"}
 ### `not`
 `(not x)`
 
 True when `x` is exactly `false`; false for every other value
 (including `nil`).
+:::
 
 ## Pairs and lists
 
+:::function{name="cons" path="reference/lisp-core/cons.html"}
 ### `cons`
 `(cons head tail)`
 
 A new pair. With a list `tail`, prepends an element.
+:::
 
+:::function{name="car" aliases="cdr" path="reference/lisp-core/car.html"}
 ### `car` / `cdr`
 `(car pair)` / `(cdr pair)`
 
 The head and tail of a pair. Both raise an error on a non-pair.
+:::
 
+:::function{name="first" aliases="rest" path="reference/lisp-core/first.html"}
 ### `first` / `rest`
 `(first x)` / `(rest x)`
 
 Like `car` / `cdr`, but return `nil` for a non-pair rather than
 erroring — the gentle accessors.
+:::
 
+:::function{name="list" path="reference/lisp-core/list.html"}
 ### `list`
 `(list x …)`
 
 A list of the arguments.
+:::
 
+:::function{name="length" path="reference/lisp-core/length.html"}
 ### `length`
 `(length x)`
 
 The number of elements in a list, vector or string, or entries in a
 map.
+:::
 
+:::function{name="append" path="reference/lisp-core/append.html"}
 ### `append`
 `(append list … tail)`
 
 Concatenate the lists, sharing the final argument as the tail (it need
 not be a list — `(append '(1 2) 3)` is the improper list `(1 2 . 3)`).
+:::
 
+:::function{name="reverse" path="reference/lisp-core/reverse.html"}
 ### `reverse`
 `(reverse list)`
 
 The list, reversed.
+:::
 
+:::function{name="nth" path="reference/lisp-core/nth.html"}
 ### `nth`
 `(nth seq i)`
 
 The element of a list or vector `seq` at zero-based index `i`. Errors
 when `i` is out of range.
+:::
 
+:::function{name="last" path="reference/lisp-core/last.html"}
 ### `last`
 `(last list)`
 
 The final element of a list, or `nil` when it is empty.
+:::
 
+:::function{name="member" path="reference/lisp-core/member.html"}
 ### `member`
 `(member x list)`
 
 The first sublist of `list` whose head is `equal?` to `x`, or `false`
 when `x` is not present. The truthy result doubles as a "found" flag.
+:::
 
 ## Higher-order procedures
 
 These accept lists *or* vectors for their sequence arguments; they
 return lists.
 
+:::function{name="apply" path="reference/lisp-core/apply.html"}
 ### `apply`
 `(apply proc arg … list)`
 
 Call `proc` with the leading arguments followed by the elements of the
 final `list`.
+:::
 
+:::function{name="map" path="reference/lisp-core/map.html"}
 ### `map`
 `(map proc seq …)`
 
 Apply `proc` across one or more sequences in step, collecting the
 results. With several sequences, stops at the shortest.
+:::
 
+:::function{name="filter" path="reference/lisp-core/filter.html"}
 ### `filter`
 `(filter pred seq)`
 
 The elements of `seq` for which `pred` does not return `false`.
+:::
 
+:::function{name="reduce" path="reference/lisp-core/reduce.html"}
 ### `reduce`
 `(reduce proc init seq)`
 
 Fold `seq` left-to-right: `(proc (proc init e1) e2) …`.
+:::
 
+:::function{name="for-each" path="reference/lisp-core/for-each.html"}
 ### `for-each`
 `(for-each proc seq)`
 
 Apply `proc` to each element of `seq` for its side effect; returns
 `nil`.
+:::
 
+:::function{name="range" path="reference/lisp-core/range.html"}
 ### `range`
 `(range end)` / `(range start end)` / `(range start end step)`
 
 A list of numbers from `start` (default `0`) up to but excluding
 `end`, by `step` (default `1`). A negative step counts down. A zero
 step is an error.
+:::
 
 ## Strings
 
+:::function{name="str" path="reference/lisp-core/str.html"}
 ### `str`
 `(str x …)`
 
 Concatenate the arguments' display forms into one string — coerces
 non-strings (numbers, symbols, …). The everyday string-builder.
+:::
 
+:::function{name="string-append" path="reference/lisp-core/string-append.html"}
 ### `string-append`
 `(string-append s …)`
 
 Concatenate strings. Unlike `str`, every argument must already be a
 string.
+:::
 
+:::function{name="string-length" path="reference/lisp-core/string-length.html"}
 ### `string-length`
 `(string-length s)`
 
 The number of characters in `s`.
+:::
 
+:::function{name="substring" path="reference/lisp-core/substring.html"}
 ### `substring`
 `(substring s start [end])`
 
 The slice of `s` from `start` to `end` (or to the end of the string).
+:::
 
+:::function{name="string-upcase" aliases="string-downcase" path="reference/lisp-core/string-upcase.html"}
 ### `string-upcase` / `string-downcase`
 `(string-upcase s)` / `(string-downcase s)`
 
 `s` with every letter in upper or lower case.
+:::
 
+:::function{name="string-split" path="reference/lisp-core/string-split.html"}
 ### `string-split`
 `(string-split s sep)`
 
 `s` split on every occurrence of the string `sep`, as a list of
 substrings.
+:::
 
+:::function{name="string-contains?" path="reference/lisp-core/string-contains%3F.html"}
 ### `string-contains?`
 `(string-contains? s sub)`
 
 True when `s` contains `sub`.
+:::
 
+:::function{name="string-prefix?" aliases="string-suffix?" path="reference/lisp-core/string-prefix%3F.html"}
 ### `string-prefix?` / `string-suffix?`
 `(string-prefix? prefix s)` / `(string-suffix? suffix s)`
 
 True when `s` starts with `prefix` / ends with `suffix`. Note the
 argument order: the affix comes first. `string-suffix?` is what the
 mode registry matches filenames with.
+:::
 
+:::function{name="string->symbol" aliases="symbol->string" path="reference/lisp-core/string-%3Esymbol.html"}
 ### `string->symbol` / `symbol->string`
 `(string->symbol s)` / `(symbol->string sym)`
 
 Convert between a string and an interned symbol.
+:::
 
+:::function{name="string->number" path="reference/lisp-core/string-%3Enumber.html"}
 ### `string->number`
 `(string->number s)`
 
 The number `s` denotes, or `false` when it is not numeric.
+:::
 
+:::function{name="number->string" path="reference/lisp-core/number-%3Estring.html"}
 ### `number->string`
 `(number->string n)`
 
 The decimal string for the number `n`.
+:::
 
 ## Vectors
 
 A vector is a fixed JavaScript array; vectors are frozen (immutable).
 
+:::function{name="vector" path="reference/lisp-core/vector.html"}
 ### `vector`
 `(vector x …)`
 
 A vector of the arguments.
+:::
 
+:::function{name="vector-ref" path="reference/lisp-core/vector-ref.html"}
 ### `vector-ref`
 `(vector-ref v i)`
 
 The element at zero-based index `i`. Errors when `i` is out of range.
+:::
 
+:::function{name="vector-length" path="reference/lisp-core/vector-length.html"}
 ### `vector-length`
 `(vector-length v)`
 
 The number of elements in `v`.
+:::
 
+:::function{name="vector->list" aliases="list->vector" path="reference/lisp-core/vector-%3Elist.html"}
 ### `vector->list` / `list->vector`
 `(vector->list v)` / `(list->vector list)`
 
 Convert between a vector and a list.
+:::
 
 ## Maps
 
 A map is an immutable key-value table. The "mutating" operations return
 a *new* map.
 
+:::function{name="hash-map" path="reference/lisp-core/hash-map.html"}
 ### `hash-map`
 `(hash-map k v …)`
 
 A map from alternating key/value arguments. The map literal `{…}` is
 sugar for this. Requires an even number of arguments.
+:::
 
+:::function{name="get" path="reference/lisp-core/get.html"}
 ### `get`
 `(get coll key [fallback])`
 
 The value for `key` in a map, or the element at index `key` in a
 vector. Returns `fallback` (default `nil`) when the key or index is
 absent.
+:::
 
+:::function{name="assoc" path="reference/lisp-core/assoc.html"}
 ### `assoc`
 `(assoc map key value)`
 
 A copy of `map` with `key` set to `value`.
+:::
 
+:::function{name="dissoc" path="reference/lisp-core/dissoc.html"}
 ### `dissoc`
 `(dissoc map key)`
 
 A copy of `map` with `key` removed.
+:::
 
+:::function{name="contains?" path="reference/lisp-core/contains%3F.html"}
 ### `contains?`
 `(contains? map key)`
 
 True when `map` has an entry for `key`.
+:::
 
+:::function{name="keys" aliases="vals" path="reference/lisp-core/keys.html"}
 ### `keys` / `vals`
 `(keys map)` / `(vals map)`
 
 The keys / values of `map`, as a list.
+:::
 
 ## Symbols
 
+:::function{name="gensym" path="reference/lisp-core/gensym.html"}
 ### `gensym`
 `(gensym [prefix])`
 
 A fresh, unique symbol — `prefix` (default `g`) plus a counter. Use it
 for names introduced by a macro, since macros are not hygienic in v0
 (`docs/spec/lisp.md` §5).
+:::
 
 ## Output
 
 The output sink is the REPL.
 
+:::function{name="display" path="reference/lisp-core/display.html"}
 ### `display`
 `(display x)`
 
 Write `x` in its human-readable display form (a string is written
 without quotes).
+:::
 
+:::function{name="write" path="reference/lisp-core/write.html"}
 ### `write`
 `(write x)`
 
 Write `x` in its machine-readable form (a string is written *with*
 quotes and escapes) — the form the reader could read back.
+:::
 
+:::function{name="newline" path="reference/lisp-core/newline.html"}
 ### `newline`
 `(newline)`
 
 Write a line break.
+:::
 
+:::function{name="print" aliases="println" path="reference/lisp-core/print.html"}
 ### `print` / `println`
 `(print x …)` / `(println x …)`
 
 Write the arguments' display forms, space-separated. `println` adds a
 trailing newline.
+:::
 
 ## Errors
 
+:::function{name="error" path="reference/lisp-core/error.html"}
 ### `error`
 `(error message irritant …)`
 
@@ -407,33 +528,43 @@ Signal an error: raise a `LispError` carrying `message` and any
 `irritant` values. Caught by `(try … (catch e …))`, where `e` is bound
 to a condition map with `:message` and `:irritants` (`docs/spec/lisp.md`
 §7).
+:::
 
 ## Introspection
 
 The editor's "explain itself" principle. See also `commands.jmd` —
 `describe-key`, `describe-command` — for the interactive surface.
 
+:::function{name="identity" path="reference/lisp-core/identity.html"}
 ### `identity`
 `(identity x)`
 
 `x`, unchanged. Useful as a default transform.
+:::
 
+:::function{name="type-of" path="reference/lisp-core/type-of.html"}
 ### `type-of`
 `(type-of x)`
 
 A keyword naming `x`'s type — `:number`, `:string`, `:pair`, and so on.
+:::
 
+:::function{name="doc" path="reference/lisp-core/doc.html"}
 ### `doc`
 `(doc proc)`
 
 The docstring of a procedure defined with `define`, or `nil`. A
 procedure's docstring is the leading string literal in its body.
+:::
 
+:::function{name="where-defined" path="reference/lisp-core/where-defined.html"}
 ### `where-defined`
 `(where-defined proc)`
 
 The `"line:col"` a procedure was defined at, or `nil` for a primitive.
+:::
 
+:::function{name="describe" path="reference/lisp-core/describe.html"}
 ### `describe`
 `(describe x)`
 
@@ -448,36 +579,45 @@ A map describing `x`: its `:kind`, and — for a procedure — its `:name`,
 The prelude is a little Lisp evaluated at startup, on top of the
 primitives — defining the common control macros in Lisp dogfoods the
 macro system. It is in `packages/lisp/src/interpreter.js`.
+:::
 
 ## Control-flow macros
 
 Both are built from the `if` special form.
 
+:::function{name="when" path="reference/lisp-core/when.html"}
 ### `when`
 `(when test body …)` — *macro*
 
 Evaluate `body` in sequence when `test` is truthy; otherwise `nil`. An
 `if` with no else branch and an implicit `begin`.
+:::
 
+:::function{name="unless" path="reference/lisp-core/unless.html"}
 ### `unless`
 `(unless test body …)` — *macro*
 
 Evaluate `body` in sequence when `test` is *false*y; otherwise `nil`.
 The complement of `when`.
+:::
 
 ## List accessors
 
 Composed `car`/`cdr` accessors, read inside-out as usual.
 
+:::function{name="caar" aliases="cadr caddr cddr" path="reference/lisp-core/caar.html"}
 ### `caar` / `cadr` / `caddr` / `cddr`
 `(caar p)` `(cadr p)` `(caddr p)` `(cddr p)`
 
 `caar` — the head of the head; `cadr` — the second element; `caddr` —
 the third element; `cddr` — the list with its first two elements
 dropped.
+:::
 
+:::function{name="second" aliases="third" path="reference/lisp-core/second.html"}
 ### `second` / `third`
 `(second list)` / `(third list)`
 
 The second and third elements of a list — readable names for `cadr`
 and `caddr`.
+:::

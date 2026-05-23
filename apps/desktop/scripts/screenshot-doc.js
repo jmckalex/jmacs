@@ -18,6 +18,7 @@ import { registerFileHandlers } from '../src/files.js';
 import { EDITOR_URL, serveAppFile } from '../src/serve.js';
 
 const outPath = process.argv[2] ?? 'doc-view-screenshot.png';
+const docName = process.argv[3] ?? 'forward-char';
 
 const PRELOAD = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -51,7 +52,7 @@ app.whenReady().then(() => {
     await win.webContents.executeJavaScript(`(async () => {
       const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
       const replInput = document.querySelector('.repl-input');
-      replInput.value = '(open-doc "forward-char")';
+      replInput.value = '(open-doc "${docName.replace(/"/g, '\\"')}")';
       replInput.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Enter', bubbles: true, cancelable: true,
       }));
