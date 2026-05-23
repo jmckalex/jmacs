@@ -685,3 +685,36 @@ needed. T0's plug-in mechanism does what it was meant to.
 - (this log entry)
 
 ---
+
+## B2 — CSS  (branch `agent-b2-lang-css`)
+
+**What was built.** Second drop-in language on the T0 registry.
+
+- Vendored `tree-sitter-css.wasm` (`tree-sitter-css@0.25.0`) and
+  set `tree-sitter-css: false` in `pnpm-workspace.yaml`.
+- `packages/renderer/src/languages/css.js` registers `css`
+  (suffix `.css`). The highlight query captures comments, strings,
+  numbers + units, property names (`@keyword`), tag selectors
+  (`@tag`), class/id names (`@type`), function names, `!important`
+  (`@operator`) and at-keywords like `@media`.
+- `packages/stdlib/lisp/languages/css.lisp` defines `css-mode`
+  with `:comment-prefix "/* "` (CSS uses block comments; the
+  prefix isn't a perfect fit but matches the comment-prefix
+  contract).
+- Smoke arm: `(insert! "p { color: red; }")` into `smoke.css`,
+  asserts ≥1 `.tok-keyword` (property) and ≥1 `.tok-tag` (`p`).
+
+**Tests.** `pnpm test` — 472 tests, 0 failures (no new unit
+tests; exercised end-to-end via smoke).
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS. The
+treesitter line: `{"langs":"css,html,javascript,json,python",
+"keywords":1, "numbers":1, "pyFunctions":2, "htmlTags":2,
+"jsonNumbers":1, "jsonConstants":2, "cssKeywords":1,
+"cssTags":1}`.
+
+**Commits.**
+- `03800ee` feat(b2): add the CSS tree-sitter language
+- (this log entry)
+
+---
