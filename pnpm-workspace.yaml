@@ -11,3 +11,4 @@ allowBuilds:
   tree-sitter-python: false
   tree-sitter-json: false
   tree-sitter-css: false
+  tree-sitter-typescript: false
