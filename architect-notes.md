@@ -321,3 +321,41 @@ commits + this log/notes commit, `pnpm test` green (all packages),
 `pnpm --filter @editor/desktop smoke` PASS. Not merged, per the rules.
 
 ---
+
+## [2026-05-23 09:35] Agent B1 / JSON language: clean drop-in, no shared-registry wiring
+
+**Context**: Task B1 — add the JSON tree-sitter language — is done on
+branch `agent-b1-lang-json`. This is the first language built on
+T0's drop-in mechanism; the experience validates the design.
+
+**Integration pass note**: B1 needs **no** shared-registry wiring.
+The feature is self-contained:
+- New files: `packages/renderer/src/languages/json.js`,
+  `packages/stdlib/lisp/languages/json.lisp`, vendored
+  `packages/renderer/vendor/tree-sitter-json.wasm`.
+- `packages/renderer/package.json` — one devDependency line
+  (`tree-sitter-json: 0.24.8`).
+- `pnpm-workspace.yaml` — one row in `allowBuilds`
+  (`tree-sitter-json: false`, matching the other tree-sitter
+  packages).
+- `packages/renderer/vendor/README.md` — one row appended to the
+  vendored-files table.
+- `apps/desktop/scripts/smoke.js` — JSON arm added to the
+  existing treesitter check (a `smoke.json` buffer with
+  `[1, true, null]`; asserts ≥1 `.tok-number` and ≥1
+  `.tok-constant` span, since JSON has no fallback tokenizer
+  and any tok-* span proves the grammar loaded). All additive
+  inside the existing `treesitter` IIFE — should merge cleanly.
+
+Merge order B: should apply trivially. Only `smoke.js`,
+`pnpm-workspace.yaml`, `pnpm-lock.yaml` and the renderer
+`package.json` could collide with sibling B-track agents; each
+of those changes is an append-only single row / line. The two
+new feature files and the vendored grammar are pure additions.
+
+**State of the work**: branch `agent-b1-lang-json`, one feature
+commit + this log/notes commit, `pnpm test` green (472 tests),
+`pnpm --filter @editor/desktop smoke` PASS. Not merged, per the
+rules.
+
+---

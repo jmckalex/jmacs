@@ -597,3 +597,91 @@ the language entirely.
 - (this log entry)
 
 ---
+
+## B1 — JSON  (branch `agent-b1-lang-json`)
+
+**What was built.** The first drop-in language on the T0 registry —
+proof that the "add a language" instructions actually work.
+
+- Vendored `tree-sitter-json.wasm` (from `tree-sitter-json@0.24.8`)
+  into `packages/renderer/vendor/`. `pnpm-workspace.yaml` was
+  updated to disable its postinstall (consistent with the other
+  tree-sitter packages — we use only the prebuilt grammar, never
+  the native binding).
+- New file `packages/renderer/src/languages/json.js` registers the
+  JSON language: tag `json`, grammar `tree-sitter-json.wasm`,
+  suffix `.json`. The highlight query captures string / number /
+  true / false / null onto `@string`, `@number`, `@constant`, and
+  uses `(pair key: (string) @keyword)` so the keys of an object
+  stand out against the values.
+- New file `packages/stdlib/lisp/languages/json.lisp` defines
+  `json-mode` (with `:highlight :json` and no `:comment-prefix` —
+  JSON has no comments in the standard) and registers `.json`.
+- `apps/desktop/scripts/smoke.js` — added a JSON arm to the
+  existing treesitter check. The new buffer `smoke.json` is
+  populated with `[1, true, null]` (a numeric/constant array, no
+  embedded double-quotes to bounce through both layers of
+  `executeJavaScript`→repl escaping); the assertion is one
+  `.tok-number` and two `.tok-constant` spans. JSON has no
+  fallback line tokenizer in `highlight.js`, so any tok-* span
+  proves the grammar loaded — that is the v0 acceptance check for
+  Track B.
+
+**Key decisions / deviations.**
+
+- *No edit to any file outside this task's territory.* Per T0's
+  acceptance check, `treesitter.js`, `app.js`, `highlight.js`,
+  `index.js` (renderer) and `index.js` (stdlib) were not touched.
+  The diff is: a new `languages/json.js`, a new
+  `languages/json.lisp`, the vendored `.wasm`, one
+  `package.json` line, one `pnpm-workspace.yaml` line, one
+  vendor README row — and the smoke check.
+- *No `:comment-prefix` in the mode.* Standard JSON has no
+  comments. HTML's mode does the same.
+- *No tokenizer fallback added to `highlight.js`.* T0's README
+  explicitly allows this for new languages: a `.json` opened
+  while the grammar is missing renders plain. Acceptable for v0
+  and avoids a duplicate code path.
+- *Smoke uses a non-quoted JSON value.* The first attempt
+  inserted `{"k":42}`. The double-escape through
+  `executeJavaScript` (template literal) → REPL (Lisp string
+  reader) is fragile — the inner `\"`s ended up closing the Lisp
+  string early and the buffer contained garbage, so `jsonKeys`
+  was 0 even though the grammar had loaded. Switched to
+  `[1, true, null]` instead, which is just as good a probe and
+  doesn't need any escapes. (Separately: I introduced a backtick
+  inside a template-literal comment on the way through, which
+  silently broke the smoke script's outer template literal and
+  surfaced as Electron's main process crashing with
+  "SyntaxError: missing ) after argument list". `node --check`
+  on the smoke file pinpoints these instantly — worth keeping in
+  mind.)
+
+**Tests.** `pnpm test` — 472 tests, 0 failures (unchanged — no
+new unit tests; the language is exercised end-to-end by the smoke
+check).
+
+| Package | Tests | New |
+|---------|-------|-----|
+| `apps/desktop` | 11 | 0 |
+| `packages/storage` | 47 | 0 |
+| `packages/lisp` | 68 | 0 |
+| `packages/buffer` | 35 | 0 |
+| `packages/renderer` | 129 | 0 |
+| `packages/stdlib` | 182 | 0 |
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS. The
+`treesitter:` line now reports `{"langs":"html,javascript,json,
+python", "keywords":1, "numbers":1, "pyFunctions":2,
+"htmlTags":2, "jsonNumbers":1, "jsonConstants":2}`.
+
+**Acceptance check.** Opening a `.json` file shows it in
+`json-mode` with tree-sitter highlighting; no per-language edit
+to `treesitter.js` / `app.js` / `highlight.js` / `index.js` was
+needed. T0's plug-in mechanism does what it was meant to.
+
+**Commits.**
+- `4cc0f64` feat(b1): add the JSON tree-sitter language
+- (this log entry)
+
+---
