@@ -8,7 +8,8 @@
     "dev": "electron .",
     "test": "node --test",
     "smoke": "electron scripts/smoke.js",
-    "screenshot": "electron scripts/screenshot.js"
+    "screenshot": "electron scripts/screenshot.js",
+    "screenshot-doc": "electron scripts/screenshot-doc.js"
   },
   "license": "GPL-3.0-or-later",
   "private": true,
