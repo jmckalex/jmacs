@@ -10,3 +10,4 @@ allowBuilds:
   tree-sitter-html: false
   tree-sitter-python: false
   tree-sitter-json: false
+  tree-sitter-css: false

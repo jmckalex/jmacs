@@ -326,6 +326,13 @@ app.whenReady().then(() => {
         await frame();
         const jsonNumbers = document.querySelectorAll('.tok-number').length;
         const jsonConstants = document.querySelectorAll('.tok-constant').length;
+        submit('(new-buffer! "smoke.css")');
+        submit('(insert! "p { color: red; }")');
+        await frame();
+        // CSS has no fallback tokenizer either — tok-keyword (the
+        // property name "color") proves the grammar loaded.
+        const cssKeywords = document.querySelectorAll('.tok-keyword').length;
+        const cssTags = document.querySelectorAll('.tok-tag').length;
         return {
           // The languages whose grammar WASM actually loaded.
           langs: document.body.dataset.treesitter,
@@ -335,6 +342,8 @@ app.whenReady().then(() => {
           htmlTags,
           jsonNumbers,
           jsonConstants,
+          cssKeywords,
+          cssTags,
         };
       })()`);
       console.log('  treesitter:', JSON.stringify(treesitter));
@@ -853,9 +862,11 @@ app.whenReady().then(() => {
         treesitter.langs.includes('html') &&
         treesitter.langs.includes('python') &&
         treesitter.langs.includes('json') &&
+        treesitter.langs.includes('css') &&
         treesitter.keywords > 0 && treesitter.numbers > 0 &&
         treesitter.pyFunctions > 0 && treesitter.htmlTags > 0 &&
-        treesitter.jsonNumbers > 0 && treesitter.jsonConstants > 0;
+        treesitter.jsonNumbers > 0 && treesitter.jsonConstants > 0 &&
+        treesitter.cssKeywords > 0 && treesitter.cssTags > 0;
       const replaceOk = replace.text === 'bar bar bar';
       const mouseOk =
         mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&

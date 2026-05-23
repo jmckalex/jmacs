@@ -16,6 +16,7 @@
   "license": "GPL-3.0-or-later",
   "private": true,
   "devDependencies": {
+    "tree-sitter-css": "0.25.0",
     "tree-sitter-html": "0.23.2",
     "tree-sitter-javascript": "0.25.0",
     "tree-sitter-json": "0.24.8",
