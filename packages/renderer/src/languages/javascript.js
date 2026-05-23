@@ -13,31 +13,96 @@
  *
  * No other file is touched. See `../language-registry.js` for the API
  * and `./README.md` for the step-by-step.
+ *
+ * The highlight query targets Sublime-Text-style coverage: keywords,
+ * numbers, strings (with the `${…}` interpolation punctuation faced
+ * separately), operators, punctuation, function declarations and call
+ * sites (including methods and private methods), object property keys,
+ * shorthand properties, and types in class / new / extends positions.
+ * Variables bound to a function or arrow are faced as functions so
+ * `const foo = () => {}` reads at a glance.
  */
 
 import { registerLanguage } from '../language-registry.js';
 
 const QUERY = `
+  ; --- comments / strings / numbers ------------------------------------
   (comment) @comment
   (string) @string
   (template_string) @string
   (regex) @string
   (number) @number
+
+  ; Template-literal interpolation: the \${ … } punctuation reads as an
+  ; operator so embedded expressions stand out from the string body.
+  (template_substitution "\${" @operator)
+  (template_substitution "}" @operator)
+
+  ; --- keywords --------------------------------------------------------
   [
     "const" "let" "var" "function" "return" "if" "else" "for" "while"
     "do" "class" "extends" "new" "import" "export" "from" "as" "default"
     "typeof" "instanceof" "in" "of" "void" "delete" "await" "async"
     "yield" "throw" "try" "catch" "finally" "switch" "case" "break"
-    "continue" "static" "get" "set"
+    "continue" "static" "get" "set" "debugger"
   ] @keyword
+
+  ; this / super read as language-built-in variables; group with keywords.
+  (this) @keyword
+  (super) @keyword
+
+  ; --- literal constants ----------------------------------------------
   [ (true) (false) (null) (undefined) ] @constant
+
+  ; --- operators -------------------------------------------------------
+  [
+    "=" "+=" "-=" "*=" "/=" "%=" "**="
+    "<<=" ">>=" ">>>=" "&=" "|=" "^=" "&&=" "||=" "??="
+    "+" "-" "*" "/" "%" "**" "++" "--"
+    "==" "===" "!=" "!==" "<" ">" "<=" ">="
+    "&&" "||" "!" "??"
+    "&" "|" "^" "~" "<<" ">>" ">>>"
+    "=>" "?" "..."
+  ] @operator
+  (optional_chain) @operator
+
+  ; --- punctuation -----------------------------------------------------
+  [ "(" ")" "[" "]" "{" "}" ] @paren
+
+  ; --- functions -------------------------------------------------------
+  ; Declarations and named expressions.
   (function_declaration name: (identifier) @function)
+  (function_expression name: (identifier) @function)
+
+  ; Class and object methods, including private (#-prefixed) methods.
   (method_definition name: (property_identifier) @function)
+  (method_definition name: (private_property_identifier) @function)
+
+  ; Call sites.
   (call_expression function: (identifier) @function)
   (call_expression
     function: (member_expression property: (property_identifier) @function))
+  (call_expression
+    function: (member_expression property: (private_property_identifier) @function))
+
+  ; Variables bound directly to a function value — give the binding name
+  ; the function face so \`const foo = () => …\` reads consistently with
+  ; a function declaration.
+  (variable_declarator
+    name: (identifier) @function
+    value: [(arrow_function) (function_expression)])
+
+  ; --- types -----------------------------------------------------------
   (class_declaration name: (identifier) @type)
   (new_expression constructor: (identifier) @type)
+  (class_heritage (identifier) @type)
+
+  ; --- object literal property keys -----------------------------------
+  (pair key: (property_identifier) @constant)
+  (pair key: (string) @string)
+  (pair key: (number) @number)
+  (shorthand_property_identifier) @constant
+  (shorthand_property_identifier_pattern) @constant
 `;
 
 registerLanguage({
