@@ -47,6 +47,7 @@ export const STDLIB_FILES = Object.freeze([
   'makefile.lisp',
   'sticky-notes.lisp',
   'palette.lisp',
+  'docs.lisp',
   'help.lisp',
 ]);
 

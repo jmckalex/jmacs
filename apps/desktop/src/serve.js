@@ -37,23 +37,32 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 /**
- * Handle an `app://editor/...` request by serving the matching
- * repo-relative file. Register with `protocol.handle('app', ...)` once
- * the app is ready.
+ * Handle an `app://…/…` request by serving the matching file. Two
+ * hosts are supported:
  *
- * A URL ending with a slash and the query string `?list` returns a JSON
- * array of the directory's entries (bare names, no directories). The
- * language registry uses this to discover language modules and Lisp
- * mode files at startup.
+ *   - `app://editor/<path>` — the renderer's modules, the vendored
+ *     tree-sitter assets, the editor page itself. Resolves to the
+ *     repository root.
+ *   - `app://docs/<path>` — the built documentation. Resolves to
+ *     `docs/build/<path>`. Returns 404 when the docs haven't been
+ *     built yet (no `docs/build/`).
+ *
+ * Register with `protocol.handle('app', ...)` once the app is ready.
+ *
+ * A URL ending with a slash and the query string `?list` returns a
+ * JSON array of the directory's entries (bare names, no
+ * directories). The language registry uses this to discover language
+ * modules and Lisp mode files at startup.
  *
  * @param {Request} request
  * @returns {Promise<Response>}
  */
 export async function serveAppFile(request) {
   const url = new URL(request.url);
-  const filePath = join(repoRoot, decodeURIComponent(url.pathname));
-  // Refuse to serve anything outside the repository.
-  if (filePath !== repoRoot && !filePath.startsWith(repoRoot + '/')) {
+  const base = url.host === 'docs' ? join(repoRoot, 'docs', 'build') : repoRoot;
+  const filePath = join(base, decodeURIComponent(url.pathname));
+  // Refuse to serve anything outside the host's base.
+  if (filePath !== base && !filePath.startsWith(base + '/')) {
     return new Response('Forbidden', { status: 403 });
   }
   if (url.pathname.endsWith('/') && url.searchParams.has('list')) {

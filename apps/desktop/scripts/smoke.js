@@ -8,15 +8,28 @@
  */
 
 import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from '../src/files.js';
 import { renderJMarkdown } from '../src/jmarkdown.js';
 import { EDITOR_URL, serveAppFile } from '../src/serve.js';
+
+const repoRoot = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '..', '..', '..'
+);
+
+/** True when `docs/build/manifest.json` already exists — meaning the
+ *  user has run `pnpm run docs` before. We do NOT build the docs from
+ *  inside the smoke: spawning a subprocess in Electron's main thread
+ *  before `app.whenReady()` keeps the dock icon bouncing for a few
+ *  seconds, which is needlessly slow. The doc-view smoke arm is
+ *  skipped when the manifest isn't present. */
+const docsBuilt = existsSync(join(repoRoot, 'docs', 'build', 'manifest.json'));
 
 /** A scratch path the file round-trip writes to. */
 const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
@@ -902,6 +915,53 @@ app.whenReady().then(() => {
       })()`);
       console.log('  swatches:', JSON.stringify(swatches));
 
+      // Documentation: open the forward-char doc page; the doc-view
+      // shows the HTML the build produced; clicking a [data-jmacs-doc]
+      // link inside opens a second doc buffer.
+      const docs = docsBuilt
+        ? await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        submit('(open-doc "forward-char")');
+        // The first await yields to the REPL; the open-doc primitive
+        // dispatches an async fetch through host.readDocPage, then a
+        // buffer switch. A handful of frames is enough for both.
+        for (let i = 0; i < 6; i += 1) await frame();
+        const view = document.querySelector('.doc-view');
+        const shown = !!(view && getComputedStyle(view).display !== 'none');
+        const page = view ? view.querySelector('.doc-page') : null;
+        const pageText = page ? page.textContent : '';
+        // Click the first cross-link inside the page (the cmd() helper
+        // emits the backward-char reference).
+        const xref = page ? page.querySelector('[data-jmacs-doc]') : null;
+        const xrefName = xref ? xref.getAttribute('data-jmacs-doc') : '';
+        if (xref) {
+          xref.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          for (let i = 0; i < 6; i += 1) await frame();
+        }
+        const secondPage = document.querySelector('.doc-view .doc-page');
+        const secondText = secondPage ? secondPage.textContent : '';
+        return {
+          shown,
+          containsName: pageText.includes('forward-char'),
+          hasXref: xref !== null,
+          xrefName,
+          secondShown: !!(secondPage && secondText.length > 0),
+          // After the click the second buffer should be different from
+          // the first — we look for the cross-link target name in the
+          // active page's text.
+          switched: secondText.length > 0 && secondText.includes(xrefName || '__none__'),
+        };
+      })()`)
+        : { skipped: true };
+      console.log('  docs:', JSON.stringify(docs));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -989,13 +1049,25 @@ app.whenReady().then(() => {
         swatches.firstBefore.includes('#ff8800') &&
         swatches.edited.includes('#00ccff') &&
         !swatches.edited.includes('#ff8800');
+      // Docs arm: only enforced when the docs were built. If the
+      // local environment has no jmarkdown, the build is skipped
+      // and docsOk is trivially true (with a logged note).
+      const docsOk =
+        docs.skipped === true
+          ? true
+          : docs.shown &&
+            docs.containsName &&
+            docs.hasXref &&
+            docs.secondShown &&
+            docs.switched;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
         markdownOk && previewOk && virtualOk && modesOk && layersOk &&
-        splashOk && stickyOk && configOk && themesOk && imageOk && swatchesOk
+        splashOk && stickyOk && configOk && themesOk && imageOk && swatchesOk &&
+        docsOk
       ) {
         finish(
           0,
@@ -1060,6 +1132,8 @@ app.whenReady().then(() => {
         finish(1, `themes did not work (${JSON.stringify(themes)})`);
       } else if (!imageOk) {
         finish(1, `image buffers did not work (${JSON.stringify(image)})`);
+      } else if (!docsOk) {
+        finish(1, `docs did not work (${JSON.stringify(docs)})`);
       } else {
         finish(
           1,

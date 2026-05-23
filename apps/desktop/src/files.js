@@ -5,8 +5,45 @@
  */
 
 import { app, dialog, ipcMain } from 'electron';
-import { readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, extname, join } from 'node:path';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// apps/desktop/src/files.js → repository root.
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const docsBuildDir = join(repoRoot, 'docs', 'build');
+
+/** Cached parse of docs/build/manifest.json, refreshed when mtime
+ *  changes. `null` = unloaded; `false` = manifest does not exist. */
+let docManifestCache = null;
+let docManifestMtimeMs = 0;
+
+/**
+ * Read (and cache) the documentation manifest produced by
+ * `pnpm run docs`. Returns the parsed object, or `null` when the
+ * manifest doesn't exist yet (docs haven't been built).
+ */
+async function loadDocManifest() {
+  const path = join(docsBuildDir, 'manifest.json');
+  try {
+    const info = await stat(path);
+    if (
+      docManifestCache &&
+      docManifestCache !== false &&
+      info.mtimeMs === docManifestMtimeMs
+    ) {
+      return docManifestCache;
+    }
+    const raw = await readFile(path, 'utf8');
+    docManifestCache = JSON.parse(raw);
+    docManifestMtimeMs = info.mtimeMs;
+    return docManifestCache;
+  } catch {
+    docManifestCache = false;
+    docManifestMtimeMs = 0;
+    return null;
+  }
+}
 
 /** The companion file holding a file's jmacs metadata (sticky notes). */
 const metadataPath = (filePath) => `${filePath}.jmacs-metadata`;
@@ -129,5 +166,34 @@ export function registerFileHandlers() {
     if (target === null) throw new Error('invalid config file name');
     await writeFile(target, payload?.content ?? '', 'utf8');
     return { path: target };
+  });
+
+  // Documentation: read the manifest produced by `pnpm run docs`.
+  // Returns { names: [...] } or null when no manifest exists yet.
+  ipcMain.handle('doc:manifest', async () => {
+    const map = await loadDocManifest();
+    if (map === null) return null;
+    return { names: Object.keys(map) };
+  });
+
+  // Documentation: read the rendered HTML for a doc page by name.
+  // Returns { name, path, html } or null when the name is unknown
+  // or the file can't be read.
+  ipcMain.handle('doc:read', async (_event, payload) => {
+    const map = await loadDocManifest();
+    if (map === null) return null;
+    const name = payload?.name;
+    if (typeof name !== 'string') return null;
+    const relPath = map[name];
+    if (typeof relPath !== 'string') return null;
+    const absPath = join(docsBuildDir, relPath);
+    // Refuse to read outside docs/build/.
+    if (!absPath.startsWith(docsBuildDir + '/')) return null;
+    try {
+      const html = await readFile(absPath, 'utf8');
+      return { name, path: relPath, html };
+    } catch {
+      return null;
+    }
   });
 }

@@ -14,6 +14,7 @@ export {
 } from './markdown-preview.js';
 export { createMinibuffer } from './minibuffer.js';
 export { createCustomizeView } from './customize.js';
+export { createDocView } from './doc-view.js';
 export {
   createImageView,
   isImageName,

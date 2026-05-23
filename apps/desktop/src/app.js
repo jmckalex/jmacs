@@ -19,6 +19,7 @@ import {
 } from '@editor/lisp';
 import {
   createCustomizeView,
+  createDocView,
   createEditorView,
   createImageView,
   createMarkdownPreview,
@@ -174,11 +175,12 @@ function ensureMajorMode() {
 }
 
 /** Show the view for `kind` — the editor view, the customisation view,
- *  or the image view — hiding the other two. */
+ *  the image view, or the documentation view — hiding the others. */
 function mountView(kind) {
   editorView.element.style.display = kind === 'text' ? '' : 'none';
   customizeView.element.style.display = kind === 'customize' ? '' : 'none';
   imageView.element.style.display = kind === 'image' ? '' : 'none';
+  docView.element.style.display = kind === 'doc' ? '' : 'none';
 }
 
 /** Switch to the buffer at `index`: mount the matching view, re-point
@@ -196,6 +198,10 @@ function switchToBuffer(index) {
     mountView('image');
     imageView.setBuffer(buffer);
     imageView.focus();
+  } else if (buffer.kind === 'doc') {
+    mountView('doc');
+    docView.setBuffer(buffer);
+    docView.focus();
   } else {
     currentTextBuffer = buffer;
     mountView('text');
@@ -220,6 +226,36 @@ function openCustomize(name, scope) {
     index = buffers.length - 1;
   }
   switchToBuffer(index);
+}
+
+/** Find or create the doc buffer for `docName`, fetching the HTML from
+ *  the host if it isn't already open. */
+async function openDocBuffer(docName) {
+  const existing = buffers.findIndex(
+    (buffer) => buffer.kind === 'doc' && buffer.docName === docName
+  );
+  if (existing >= 0) {
+    switchToBuffer(existing);
+    return;
+  }
+  let page;
+  try {
+    page = await window.host.readDocPage(docName);
+  } catch (error) {
+    repl.appendError(`doc: ${error.message}`);
+    return;
+  }
+  if (page === null) {
+    repl.appendError(`no doc page for ${docName}`);
+    return;
+  }
+  buffers.push({
+    kind: 'doc',
+    name: `*Doc: ${docName}*`,
+    docName,
+    html: page.html,
+  });
+  switchToBuffer(buffers.length - 1);
 }
 
 // --- file open / save ---------------------------------------------------
@@ -519,6 +555,12 @@ const repl = createReplView(document.getElementById('repl-host'), {
   onSubmit: evaluateInRepl,
 });
 
+/** Cached doc-page names from `docs/build/manifest.json`. The
+ *  `load-doc-manifest!` primitive returns this; populated near
+ *  startup once the host has read the file. `null` means unknown
+ *  / not loaded; `[]` means the manifest existed but is empty. */
+let docManifestNames = null;
+
 const interpreter = createInterpreter({
   write: (text) => repl.appendOutput(text),
   primitives: {
@@ -544,6 +586,22 @@ const interpreter = createInterpreter({
       applyCurrentTheme();
       return NIL;
     },
+    // Documentation: open the doc page for NAME in a doc-kind buffer.
+    // The page HTML is read from docs/build/ by the host (the
+    // renderer is sandboxed). Unknown names print to the REPL.
+    'open-doc!': (args) => {
+      const name = String(args[0] ?? '');
+      if (name === '') return NIL;
+      openDocBuffer(name);
+      return NIL;
+    },
+    // Documentation: return the (cached) list of doc-page names, or
+    // `()` when the docs haven't been built. The Lisp side caches
+    // this in *doc-manifest*. The manifest itself is fetched once
+    // at startup (see `loadDocManifest` below) so this primitive
+    // can be synchronous.
+    'load-doc-manifest!': () =>
+      docManifestNames === null ? NIL : arrayToList(docManifestNames),
     'start-search!': () => {
       startSearch('forward');
       return NIL;
@@ -829,6 +887,20 @@ try {
 if (keymapReady) await loadUserConfig();
 if (keymapReady) applyCurrentTheme();
 
+// Kick off the doc manifest fetch — fire-and-forget. The
+// `load-doc-manifest!` primitive returns the cached value once it
+// arrives (so the Lisp side can stay synchronous); the very first
+// caller before the fetch completes sees `nil` and the Lisp side
+// re-queries on next access.
+window.host
+  .readDocManifest()
+  .then((manifest) => {
+    if (manifest !== null) docManifestNames = manifest.names;
+  })
+  .catch(() => {
+    /* leave docManifestNames null */
+  });
+
 // Tree-sitter languages are drop-ins: discover the JS registration
 // modules in `packages/renderer/src/languages/` (each one registers
 // its grammar + query + suffixes on import), then instantiate one
@@ -1031,6 +1103,26 @@ const imageView = createImageView(document.getElementById('editor-host'), {
   ...(keymapReady ? { onKey: dispatchKey } : {}),
 });
 imageView.element.style.display = 'none';
+
+// The documentation view — the view a `doc`-kind buffer is shown
+// through. Cross-links inside the rendered HTML carry
+// `data-jmacs-doc="name"`; clicking one routes through Lisp's
+// `open-doc`, which calls `open-doc!` (host primitive) below.
+const docView = createDocView(document.getElementById('editor-host'), {
+  ...(keymapReady ? { onKey: dispatchKey } : {}),
+  openDoc: (name) => {
+    if (keymapReady) {
+      try {
+        interpreter.call('open-doc', name);
+      } catch (error) {
+        repl.appendError(`open-doc: ${error.lispMessage ?? error.message}`);
+      }
+    } else {
+      openDocBuffer(name);
+    }
+  },
+});
+docView.element.style.display = 'none';
 
 // The command sticky notes are rendered through. Hardcoded for now so
 // notes render out of the box; the *jmarkdown-command* Lisp variable

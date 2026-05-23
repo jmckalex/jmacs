@@ -79,4 +79,18 @@ contextBridge.exposeInMainWorld('host', {
    */
   writeConfigFile: (name, content) =>
     ipcRenderer.invoke('config:write', { name, content }),
+
+  /**
+   * Read the documentation manifest (the list of doc-page names
+   * produced by `pnpm run docs`). Returns `{ names: string[] }` or
+   * `null` when the docs haven't been built yet.
+   */
+  readDocManifest: () => ipcRenderer.invoke('doc:manifest'),
+
+  /**
+   * Read the rendered HTML of a doc page by name. Returns
+   * `{ name, path, html }` or `null` when the name is unknown.
+   * @param {string} name
+   */
+  readDocPage: (name) => ipcRenderer.invoke('doc:read', { name }),
 });

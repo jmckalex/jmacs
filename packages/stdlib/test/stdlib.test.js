@@ -26,6 +26,7 @@ async function editor(initialText = 'hello world') {
   const previewCalls = [];
   const minibufferPrompts = [];
   const output = [];
+  const docCalls = [];
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
     primitives: {
@@ -118,6 +119,16 @@ async function editor(initialText = 'hello world') {
       },
       'write-custom-file!': () => NIL,
       'apply-theme!': () => NIL,
+      // Documentation primitives: by default the test environment
+      // has no doc manifest (`()`), so `doc-known?` is always false
+      // and help commands fall back to the REPL. Individual tests
+      // can override these by re-creating the editor with a custom
+      // set of primitives if needed.
+      'load-doc-manifest!': () => NIL,
+      'open-doc!': (args) => {
+        docCalls.push(String(args[0] ?? ''));
+        return NIL;
+      },
     },
   });
   await loadStdlib(
@@ -140,6 +151,7 @@ async function editor(initialText = 'hello world') {
     previewCalls,
     minibufferPrompts,
     output,
+    docCalls,
   };
 }
 
@@ -1961,4 +1973,33 @@ test('python-insert-print inserts print() with the cursor between the parens', a
   interpreter.evaluate('(python-insert-print)');
   assert.equal(buffer.text, 'print()');
   assert.equal(buffer.point, 'print('.length);
+});
+
+// --- documentation (docs.lisp + help.lisp integration) ---------------
+
+test('doc-known? returns false when no manifest is loaded', async () => {
+  const { interpreter } = await editor();
+  assert.equal(interpreter.evaluate('(doc-known? "forward-char")'), false);
+});
+
+test('open-doc on an unknown name prints to the REPL', async () => {
+  const { interpreter, output } = await editor();
+  interpreter.evaluate('(open-doc "no-such-function")');
+  assert.ok(
+    output.some((line) => line.includes('no doc page for no-such-function')),
+    `expected REPL message; got ${JSON.stringify(output)}`
+  );
+});
+
+test('describe-named-command falls back to REPL when no doc is built', async () => {
+  const { interpreter, output, docCalls } = await editor();
+  interpreter.evaluate('(describe-named-command "forward-char")');
+  // The REPL fallback prints "<name>:" and the docstring (or the
+  // marker when no docstring exists).
+  assert.ok(
+    output.some((line) => line.includes('forward-char:')),
+    `expected REPL fallback; got ${JSON.stringify(output)}`
+  );
+  // open-doc! was NOT called.
+  assert.deepEqual(docCalls, []);
 });
