@@ -372,10 +372,29 @@
 
 (define (jukebox-toggle-play)
   "Pause playback if a track is playing, otherwise play the current
-   track. Bound to SPC."
-  (if (audio-playing?)
-      (begin (pause-audio!) (jukebox-refresh-panel!))
-      (jukebox-play-current)))
+   track. Bound to SPC.
+
+   If :index isn't a usable number — the buffer was just opened and
+   nothing's been chosen yet, or a previous command left :index in
+   some odd state — fall back to the track under point (or track 0
+   if point is off the list). Without this, the user has to press
+   RET or n before SPC will do anything; with it, SPC plays
+   immediately."
+  (cond
+    ((audio-playing?)
+      (pause-audio!)
+      (jukebox-refresh-panel!))
+    (else
+      (let* ((state (jukebox-state))
+             (index (and (map? state) (get state :index nil)))
+             (tracks (if (map? state) (get state :tracks (list)) (list))))
+        (when (> (length tracks) 0)
+          (unless (and (number? index)
+                       (>= index 0)
+                       (< index (length tracks)))
+            (let ((fallback (or (jukebox-track-at-point) 0)))
+              (update-jukebox-state! :index fallback)))
+          (jukebox-play-current))))))
 
 (define (jukebox-play-at-point)
   "Play the track on the line under point. Bound to RET."

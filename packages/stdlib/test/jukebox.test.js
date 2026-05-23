@@ -330,6 +330,28 @@ test('SPC starts playing the current track', async () => {
   assert.deepEqual(audioCalls[0], ['play', '/m/a.mp3']);
 });
 
+test('SPC self-heals when :index is missing (defensive fallback)', async () => {
+  // Regression: a user reported "I have to press Enter before SPC
+  // plays". The cause was that the buffer's :index could end up nil
+  // (e.g. set to nil by some path, or never initialised in some flow
+  // we hadn't traced) — without a fallback, SPC silently did
+  // nothing. SPC should always play *something* when the jukebox has
+  // tracks. The test simulates that broken state directly: forces
+  // :index to nil after opening the jukebox, then asserts that SPC
+  // still plays.
+  const { interpreter, audioCalls, directoryListings } = await jukeboxEditor();
+  directoryListings.set('/m', ['a.mp3', 'b.mp3', 'c.mp3']);
+  interpreter.call('jukebox', '/m');
+  // Force :index to nil — the symptom path.
+  interpreter.evaluate('(update-jukebox-state! :index nil)');
+  // SPC should still play track 0 (or the track at point, which is
+  // line 10 = index 0 after the panel render).
+  interpreter.call('handle-key', ' ');
+  const plays = audioCalls.filter((c) => c[0] === 'play');
+  assert.equal(plays.length, 1);
+  assert.equal(plays[0][1], '/m/a.mp3');
+});
+
 test('n advances to the next track and plays it', async () => {
   const { interpreter, audioCalls, directoryListings } = await jukeboxEditor();
   directoryListings.set('/m', ['a.mp3', 'b.mp3', 'c.mp3']);
