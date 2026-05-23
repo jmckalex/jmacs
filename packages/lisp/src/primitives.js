@@ -129,6 +129,16 @@ export function installPrimitives(env, { write }) {
   def('dec', (a) => num('dec', a[0]) - 1);
   def('expt', (a) => num('expt', a[0]) ** num('expt', a[1]));
   def('sqrt', (a) => Math.sqrt(num('sqrt', a[0])));
+  def('floor', (a) => Math.floor(num('floor', a[0])));
+  def('ceiling', (a) => Math.ceil(num('ceiling', a[0])));
+  def('round', (a) => Math.round(num('round', a[0])));
+  // A random integer in [0, n). With no argument, a random real in [0, 1).
+  // Used by jukebox-mode for Fisher–Yates shuffle.
+  def('random', (a) => {
+    if (a.length === 0) return Math.random();
+    const n = num('random', a[0]);
+    return Math.floor(Math.random() * n);
+  });
 
   // --- numeric comparison ----------------------------------------------
   const chain = (name, ok) => (a) => {

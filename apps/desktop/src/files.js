@@ -5,7 +5,8 @@
  */
 
 import { app, dialog, ipcMain } from 'electron';
-import { readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
+import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -109,6 +110,17 @@ export function registerFileHandlers() {
     return { path, name: basename(path), content };
   });
 
+  // Show a directory-only open dialog. Used by jukebox-mode.
+  ipcMain.handle('directory:open', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0];
+  });
+
   // Write content to a path; with no path, prompt for one first.
   ipcMain.handle('file:save', async (_event, payload) => {
     let target = payload?.path ?? null;
@@ -131,6 +143,37 @@ export function registerFileHandlers() {
       return JSON.parse(content);
     } catch {
       return null;
+    }
+  });
+
+  // List the (non-hidden) entries of a directory. Returns an array of
+  // filenames or null when the path cannot be read — used by
+  // jukebox-mode to discover audio files and album art.
+  ipcMain.handle('directory:list', async (_event, payload) => {
+    try {
+      const entries = await readdir(payload?.path, { withFileTypes: true });
+      return entries
+        .filter((entry) => !entry.name.startsWith('.'))
+        .map((entry) => entry.name)
+        .sort((a, b) => a.localeCompare(b));
+    } catch {
+      return null;
+    }
+  });
+
+  // The same listing, synchronously. The Lisp interpreter is synchronous,
+  // so the jukebox-mode Lisp calls this directly to read a directory in
+  // the middle of building its panel. Used sparingly — sync IPC blocks
+  // the renderer thread.
+  ipcMain.on('directory:list-sync', (event, payload) => {
+    try {
+      const entries = readdirSync(payload?.path, { withFileTypes: true });
+      event.returnValue = entries
+        .filter((entry) => !entry.name.startsWith('.'))
+        .map((entry) => entry.name)
+        .sort((a, b) => a.localeCompare(b));
+    } catch {
+      event.returnValue = null;
     }
   });
 

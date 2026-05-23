@@ -26,6 +26,28 @@ contextBridge.exposeInMainWorld('host', {
   quit: () => ipcRenderer.send('app:quit'),
 
   /**
+   * List a directory's non-hidden entries, sorted alphabetically. Returns
+   * null when the path cannot be read.
+   * @param {string} path
+   * @returns {Promise<string[] | null>}
+   */
+  listDirectory: (path) => ipcRenderer.invoke('directory:list', { path }),
+
+  /**
+   * Show a directory-only open dialog. Returns the chosen path or null.
+   * @returns {Promise<string | null>}
+   */
+  openDirectory: () => ipcRenderer.invoke('directory:open'),
+
+  /**
+   * The same listing, synchronously — the Lisp interpreter is
+   * synchronous, so jukebox-mode reaches the filesystem this way.
+   * @param {string} path
+   * @returns {string[] | null}
+   */
+  listDirectorySync: (path) => ipcRenderer.sendSync('directory:list-sync', { path }),
+
+  /**
    * Render JMarkdown `source` to HTML by running `command` (a shell
    * command) with the source on stdin.
    * @param {string} command
