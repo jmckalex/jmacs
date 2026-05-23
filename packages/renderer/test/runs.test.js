@@ -82,3 +82,75 @@ test('unsorted ranges are handled', () => {
     ],
   ]);
 });
+
+/**
+ * Capture `console.warn` for the body of a function and return whatever
+ * the function returned plus the list of warning calls.
+ */
+function withCapturedWarn(fn) {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    const result = fn();
+    return { result, warnings };
+  } finally {
+    console.warn = original;
+  }
+}
+
+test('overlap safety: identical ranges resolve to the later input', () => {
+  // A buggy upstream emits the same range twice with different faces.
+  // The splitter's tie-break is deterministic: the later-input face
+  // wins, and a single warning is emitted.
+  const { result, warnings } = withCapturedWarn(() =>
+    splitIntoLineRuns('hello', [
+      { start: 0, end: 5, face: 'first' },
+      { start: 0, end: 5, face: 'second' },
+    ])
+  );
+  assert.deepEqual(result, [[{ text: 'hello', face: 'second' }]]);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /overlapping ranges/);
+});
+
+test('overlap safety: order in the input determines the winner, not the order in the array', () => {
+  // Swap the input order — now 'first' is later in the input, so it wins.
+  const { result } = withCapturedWarn(() =>
+    splitIntoLineRuns('hello', [
+      { start: 0, end: 5, face: 'second' },
+      { start: 0, end: 5, face: 'first' },
+    ])
+  );
+  assert.deepEqual(result, [[{ text: 'hello', face: 'first' }]]);
+});
+
+test('overlap safety: non-tie overlap is detected and still produces stable output', () => {
+  // A=[0,10) and B=[3,5) — nested, no tie at start. The existing
+  // "outer wins" behaviour for nested ranges is preserved; a warning
+  // still fires because the contract is "no overlap".
+  const { result, warnings } = withCapturedWarn(() =>
+    splitIntoLineRuns('0123456789', [
+      { start: 0, end: 10, face: 'outer' },
+      { start: 3, end: 5, face: 'inner' },
+    ])
+  );
+  assert.deepEqual(result, [[{ text: '0123456789', face: 'outer' }]]);
+  assert.equal(warnings.length, 1);
+});
+
+test('overlap safety: no warning on adjacent (non-overlapping) ranges', () => {
+  const { result, warnings } = withCapturedWarn(() =>
+    splitIntoLineRuns('abcdef', [
+      { start: 0, end: 3, face: 'a' },
+      { start: 3, end: 6, face: 'b' },
+    ])
+  );
+  assert.deepEqual(result, [
+    [
+      { text: 'abc', face: 'a' },
+      { text: 'def', face: 'b' },
+    ],
+  ]);
+  assert.equal(warnings.length, 0);
+});

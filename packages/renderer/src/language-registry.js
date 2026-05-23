@@ -14,6 +14,12 @@
  * `.lisp` mode file in `packages/stdlib/lisp/languages/`, and the
  * grammar's `.wasm` in `../vendor/`. See `./languages/README.md`.
  *
+ * A spec may optionally declare an `injectionQuery`, in which case the
+ * registry threads a `getHighlighter` closure into the language so its
+ * outer grammar can splice another language's highlighter into nodes
+ * marked `@injection.content` (a fenced code block, a `<script>` body,
+ * a `<?php ... ?>` region). See {@link loadLanguageHighlighters}.
+ *
  * The registry is a *data* registry. It does not load the grammars
  * itself — call {@link loadLanguageHighlighters} from a place that knows
  * how to create a tree-sitter highlighter (the desktop app does, in
@@ -26,6 +32,12 @@
  * @property {string} grammar - The grammar `.wasm` filename in `../vendor/`.
  * @property {string} query - The highlight query (a tree-sitter S-expression).
  * @property {string[]} suffixes - Filename suffixes that pick this language.
+ *   May be empty for languages reached only via injection (e.g. an
+ *   inline-markdown grammar that is never selected by file extension).
+ * @property {string} [injectionQuery] - A second query that marks
+ *   `@injection.content` regions paired with a language tag. When set,
+ *   the loader threads a `getHighlighter` lookup into the highlighter
+ *   so inner ranges render in the injected language's palette.
  */
 
 /** @type {Map<string, LanguageSpec>} */
@@ -48,15 +60,26 @@ export function registerLanguage(spec) {
   if (typeof spec.query !== 'string') {
     throw new Error(`language ${spec.tag}: missing query`);
   }
-  if (!Array.isArray(spec.suffixes) || spec.suffixes.length === 0) {
+  if (!Array.isArray(spec.suffixes)) {
     throw new Error(`language ${spec.tag}: missing suffixes`);
   }
-  registry.set(spec.tag, {
+  if (
+    spec.injectionQuery !== undefined &&
+    typeof spec.injectionQuery !== 'string'
+  ) {
+    throw new Error(`language ${spec.tag}: injectionQuery must be a string`);
+  }
+  /** @type {LanguageSpec} */
+  const stored = {
     tag: spec.tag,
     grammar: spec.grammar,
     query: spec.query,
     suffixes: [...spec.suffixes],
-  });
+  };
+  if (spec.injectionQuery !== undefined) {
+    stored.injectionQuery = spec.injectionQuery;
+  }
+  registry.set(spec.tag, stored);
 }
 
 /**
@@ -78,7 +101,8 @@ export function clearLanguages() {
 /**
  * Find the language tag whose suffixes match a buffer name. Returns
  * `null` when nothing matches — the caller falls back to its built-in
- * table.
+ * table. Languages registered with an empty `suffixes` list are never
+ * selected here (they're reached only via injection).
  *
  * @param {string} name
  * @returns {string | null}
@@ -95,28 +119,53 @@ export function languageForFilename(name) {
 
 /**
  * Instantiate a tree-sitter highlighter for every registered language.
- * The caller supplies the grammar-loading factory (it depends on the
- * runtime's vendored `.wasm` path); each language fails independently,
- * so a missing grammar disables only that language.
  *
- * @param {(grammar: string, query: string) =>
- *   Promise<{highlight: (text: string) => import('./highlight.js').Run[][]}>
- * } create - Build a tree-sitter highlighter from a grammar file and a query.
+ * Languages whose spec declares an `injectionQuery` get a
+ * `getHighlighter` closure threaded into them; that closure reads the
+ * map being populated by this loop, so by the time any `highlight()`
+ * call actually fires (well after this returns), every sibling is in
+ * place. The result: a PHP highlighter can recurse into HTML, which
+ * recurses into JavaScript or CSS, all using each other's fully-built
+ * highlighters.
+ *
+ * Each language fails independently — a missing grammar disables only
+ * that language. If an injection's inner language is the missing one,
+ * the outer face survives on the injected range (see
+ * `treesitter.js#captures`).
+ *
+ * @param {(grammar: string, query: string, options?: {
+ *   injectionQuery?: string,
+ *   getHighlighter?: (tag: string) => import('./treesitter.js').Highlighter | undefined,
+ * }) => Promise<import('./treesitter.js').Highlighter>
+ * } create - Build a tree-sitter highlighter from a grammar file, a
+ *   query, and (when set) an injection query plus a sibling-lookup.
  * @param {(tag: string, error: Error) => void} [onError] - Called when a
  *   language's grammar fails to load. Defaults to ignoring the error.
  * @returns {Promise<Record<string, (text: string) => import('./highlight.js').Run[][]>>}
  *   A map from language tag to a `highlight(text)` function.
  */
 export async function loadLanguageHighlighters(create, onError = () => {}) {
-  /** @type {Record<string, (text: string) => import('./highlight.js').Run[][]>} */
+  /** @type {Record<string, import('./treesitter.js').Highlighter>} */
   const highlighters = {};
+  /** Closure read lazily at highlight time, after the loop populates. */
+  const getHighlighter = (tag) => highlighters[tag];
+
   for (const spec of registry.values()) {
     try {
-      const highlighter = await create(spec.grammar, spec.query);
-      highlighters[spec.tag] = highlighter.highlight;
+      const options = spec.injectionQuery
+        ? { injectionQuery: spec.injectionQuery, getHighlighter }
+        : undefined;
+      const highlighter = await create(spec.grammar, spec.query, options);
+      highlighters[spec.tag] = highlighter;
     } catch (error) {
       onError(spec.tag, error);
     }
   }
-  return highlighters;
+
+  /** @type {Record<string, (text: string) => import('./highlight.js').Run[][]>} */
+  const exposed = {};
+  for (const [tag, highlighter] of Object.entries(highlighters)) {
+    exposed[tag] = (text) => highlighter.highlight(text);
+  }
+  return exposed;
 }

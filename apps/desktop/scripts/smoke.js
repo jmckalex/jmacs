@@ -329,6 +329,15 @@ app.whenReady().then(() => {
         submit('(insert! "<div id=x></div>")');
         await frame();
         const htmlTags = document.querySelectorAll('.tok-tag').length;
+        // HTML → CSS language injection: a <style> body in an HTML
+        // buffer must be highlighted with CSS faces. The HTML
+        // grammar's own highlight query never produces tok-keyword
+        // for this snippet (no doctype, no JS) — so a non-zero count
+        // here proves the inner CSS highlighter ran on the raw_text.
+        submit('(new-buffer! "smoke-injection.html")');
+        submit('(insert! "<style>p { color: red; }</style>")');
+        await frame();
+        const htmlInjectsCss = document.querySelectorAll('.tok-keyword').length;
         submit('(new-buffer! "smoke.json")');
         // No embedded double-quotes here: those would need backslash
         // escapes through both layers (executeJavaScript and repl).
@@ -373,6 +382,7 @@ app.whenReady().then(() => {
           numbers,
           pyFunctions,
           htmlTags,
+          htmlInjectsCss,
           jsonNumbers,
           jsonConstants,
           cssKeywords,
@@ -1032,6 +1042,7 @@ app.whenReady().then(() => {
         treesitter.langs.includes('bash') &&
         treesitter.keywords > 0 && treesitter.numbers > 0 &&
         treesitter.pyFunctions > 0 && treesitter.htmlTags > 0 &&
+        treesitter.htmlInjectsCss > 0 &&
         treesitter.jsonNumbers > 0 && treesitter.jsonConstants > 0 &&
         treesitter.cssKeywords > 0 && treesitter.cssTags > 0 &&
         treesitter.tsKeywords > 0 && treesitter.tsTypes > 0 &&
