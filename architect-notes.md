@@ -495,3 +495,94 @@ agent-docs-system` from main lands the whole sequence in one
 fast-forward.
 
 ---
+
+## [2026-05-23] agent-markdown / Phase 2: package ships no prebuilt wasm — need a build path
+
+**Context**: Implementing Phase 2 of the tree-sitter language injection
+plan (`plans/LANGUAGE-INJECTION.md`) — vendoring the markdown block +
+inline grammars and wiring them up via the injection pipeline that
+landed in phase 1 (`a1573ed`).
+
+**Question/blocker**: `@tree-sitter-grammars/tree-sitter-markdown@0.3.2`
+ships C source and **native `.node` prebuilds** for Node.js bindings,
+but **no `.wasm` files**. The editor loads grammars over `app://` and
+calls `Language.load(new Uint8Array(...))` — it can only consume
+WebAssembly, not native `.node` modules. The task brief was explicit:
+"If the package ships only source (no prebuilt wasm), STOP and write a
+note to architect-notes.md describing what you found — don't try to
+build from source unsupervised." So I'm stopping here.
+
+What's in the package:
+
+```
+node_modules/.../@tree-sitter-grammars/tree-sitter-markdown/
+├── prebuilds/{darwin-arm64,darwin-x64,linux-x64,win32-x64}/
+│   └── @tree-sitter-grammars+tree-sitter-markdown.node      # native, not wasm
+├── tree-sitter-markdown/
+│   ├── src/{parser.c, scanner.c, tree_sitter/, grammar.json, node-types.json}
+│   ├── queries/{highlights.scm, injections.scm}
+│   └── grammar.js
+├── tree-sitter-markdown-inline/
+│   ├── src/{parser.c, scanner.c, tree_sitter/, grammar.json, node-types.json}
+│   ├── queries/{highlights.scm, injections.scm}
+│   └── grammar.js
+└── common/grammar.js
+```
+
+No `.wasm` anywhere. The package's only `build` script (`scripts/build.js`)
+builds the native `.node` binding via `node-gyp-build`.
+
+The PHP situation is the same in spirit but already solved: the
+`tree-sitter-php.wasm` and `tree-sitter-php_only.wasm` files in
+`packages/renderer/vendor/` (untracked, ~1MB each, dated May 23 18:30)
+were clearly produced out of band — possibly by you, possibly by the
+agent-php branch. The same trick is needed here for markdown.
+
+**Options considered**:
+
+1. **Install `tree-sitter-cli` (and Emscripten) and run
+   `tree-sitter build --wasm` for both subdirectories.** This is the
+   plan document's own suggestion ("vendor a small build step in
+   `scripts/build-grammars.sh`, one-time, run when refreshing the
+   grammar version, not per-developer"). The build needs either
+   Docker or an Emscripten toolchain locally — neither is currently
+   set up in this worktree, and the brief told me not to do this
+   unsupervised. Pro: reproducible, future-proof. Con: adds a
+   build-tooling story to the repo that doesn't exist today.
+2. **Fetch prebuilt `.wasm` from a known mirror.** e.g. the
+   [tree-sitter wasm-prebuilds](https://github.com/tree-sitter/tree-sitter)
+   nightly artifacts, or Helix / Zed's vendored copies. Pro: zero
+   build setup. Con: pinning provenance to a third party; the
+   markdown grammar specifically is a niche enough package that I'm
+   not certain a stable mirror exists.
+3. **Pick a different markdown grammar package that does ship
+   prebuilt wasm.** I haven't surveyed alternatives — the plan
+   document specifically names `@tree-sitter-grammars/tree-sitter-markdown@0.3.2`
+   as the maintained choice. If a sibling project (e.g.
+   `tree-sitter-md` or similar) ships wasm and is good enough,
+   that's the lightest change.
+
+**State of the work**: Branch `agent-markdown` is rebased onto current
+main (a1573ed) so it has the phase 1 injection pipeline. The only
+changes on the branch beyond main are:
+
+- `packages/renderer/package.json` — `@tree-sitter-grammars/tree-sitter-markdown@0.3.2` added as a devDependency (pinned).
+- `pnpm-lock.yaml` — updated by the install.
+- `pnpm-workspace.yaml` — `'@tree-sitter-grammars/tree-sitter-markdown': false` added to `allowBuilds` (per the existing convention; pnpm prompted on first install).
+
+Nothing committed yet. No `.wasm` was copied because there's nothing
+to copy. No `languages/markdown.js`, `languages/markdown-inline.js`,
+or `markdown.lisp` was written, and no smoke arm extended, because
+without the grammar binaries those would dead-letter at load time.
+
+If you want me to resume:
+- If option 1: tell me what build tool to use (local `tree-sitter-cli`
+  + Emscripten, or `tree-sitter generate && tree-sitter build --wasm`
+  via Docker) and I'll add `scripts/build-grammars.sh`, run it, and
+  commit the artefacts.
+- If option 2 or 3: point me at the mirror or alternative package.
+
+In the meantime I'll leave the branch in the worktree (`agent-markdown`,
+locked) so the staged install survives.
+
+---

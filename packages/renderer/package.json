@@ -17,6 +17,7 @@
   "license": "GPL-3.0-or-later",
   "private": true,
   "devDependencies": {
+    "@tree-sitter-grammars/tree-sitter-markdown": "0.3.2",
     "tree-sitter-bash": "0.25.1",
     "tree-sitter-css": "0.25.0",
     "tree-sitter-go": "0.25.0",
