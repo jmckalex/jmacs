@@ -1,0 +1,39 @@
+/**
+ * @file Markdown (inline grammar) — tree-sitter language registration.
+ *
+ * The inline grammar handles what lives inside a paragraph or list
+ * item: emphasis, strong, inline code, links, autolinks, escapes. It's
+ * registered with **no suffixes** because no file extension picks it
+ * directly — the block grammar (`./markdown.js`) injects every
+ * paragraph's content into it.
+ *
+ * The wasm binary is produced by `scripts/build-grammars.sh` alongside
+ * `tree-sitter-markdown.wasm`.
+ */
+
+import { registerLanguage } from '../language-registry.js';
+
+const QUERY = `
+  (emphasis) @emphasis
+  (strong_emphasis) @strong
+  (code_span) @code
+  (code_span_delimiter) @paren
+  (emphasis_delimiter) @paren
+
+  (link_destination) @link
+  (link_label) @link
+  (link_text) @link
+  (uri_autolink) @link
+
+  (image_description) @link
+
+  (backslash_escape) @constant
+  (hard_line_break) @constant
+`;
+
+registerLanguage({
+  tag: 'markdown_inline',
+  grammar: 'tree-sitter-markdown-inline.wasm',
+  query: QUERY,
+  suffixes: [],
+});

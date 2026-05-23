@@ -387,6 +387,27 @@ app.whenReady().then(() => {
         await frame();
         const shKeywords = document.querySelectorAll('.tok-keyword').length;
         const shFunctions = document.querySelectorAll('.tok-function').length;
+        // Markdown: a .md buffer with a heading and a fenced JS block
+        // exercises both the markdown block grammar (the heading) and
+        // the markdown -> javascript injection (the fence body). The
+        // body 'const x = 1;' contributes one tok-keyword span ('const')
+        // which proves the inner JS highlighter ran on the
+        // code_fence_content; the heading contributes one tok-heading.
+        // (A '\`\`\`lisp' fence is **not** used here because the lisp
+        // highlighter is the line tokenizer, not a tree-sitter grammar,
+        // and the injection pipeline only resolves tree-sitter inner
+        // highlighters — so a lisp fence would render as plain
+        // tok-code, not as lisp keywords.)
+        submit('(new-buffer! "smoke.md")');
+        // Four backslashes in the template literal → two in the JS
+        // string → one backslash-n pair in the Lisp source, which the
+        // reader's string-escape table maps to a real newline. (Using
+        // a real newline here would be stripped, since the REPL is a
+        // single-line <input>.)
+        submit('(insert! "# heading\\\\n\\\\n\`\`\`javascript\\\\nconst x = 1;\\\\n\`\`\`\\\\n")');
+        await frame();
+        const mdHeadings = document.querySelectorAll('.tok-heading').length;
+        const mdInjectsJs = document.querySelectorAll('.tok-keyword').length;
         return {
           // The languages whose grammar WASM actually loaded.
           langs: document.body.dataset.treesitter,
@@ -409,6 +430,8 @@ app.whenReady().then(() => {
           goTypes,
           shKeywords,
           shFunctions,
+          mdHeadings,
+          mdInjectsJs,
         };
       })()`);
       console.log('  treesitter:', JSON.stringify(treesitter));
@@ -1055,6 +1078,7 @@ app.whenReady().then(() => {
         treesitter.langs.includes('go') &&
         treesitter.langs.includes('bash') &&
         treesitter.langs.includes('php') &&
+        treesitter.langs.includes('markdown') &&
         treesitter.keywords > 0 && treesitter.numbers > 0 &&
         treesitter.pyFunctions > 0 && treesitter.htmlTags > 0 &&
         treesitter.htmlInjectsCss > 0 &&
@@ -1064,7 +1088,8 @@ app.whenReady().then(() => {
         treesitter.tsKeywords > 0 && treesitter.tsTypes > 0 &&
         treesitter.rsKeywords > 0 && treesitter.rsTypes > 0 &&
         treesitter.goKeywords > 0 && treesitter.goTypes > 0 &&
-        treesitter.shKeywords > 0 && treesitter.shFunctions > 0;
+        treesitter.shKeywords > 0 && treesitter.shFunctions > 0 &&
+        treesitter.mdHeadings > 0 && treesitter.mdInjectsJs > 0;
       const replaceOk = replace.text === 'bar bar bar';
       const mouseOk =
         mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&

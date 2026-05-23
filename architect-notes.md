@@ -495,3 +495,171 @@ agent-docs-system` from main lands the whole sequence in one
 fast-forward.
 
 ---
+
+## [2026-05-23] agent-markdown / Phase 2: package ships no prebuilt wasm — need a build path
+
+**Context**: Implementing Phase 2 of the tree-sitter language injection
+plan (`plans/LANGUAGE-INJECTION.md`) — vendoring the markdown block +
+inline grammars and wiring them up via the injection pipeline that
+landed in phase 1 (`a1573ed`).
+
+**Question/blocker**: `@tree-sitter-grammars/tree-sitter-markdown@0.3.2`
+ships C source and **native `.node` prebuilds** for Node.js bindings,
+but **no `.wasm` files**. The editor loads grammars over `app://` and
+calls `Language.load(new Uint8Array(...))` — it can only consume
+WebAssembly, not native `.node` modules. The task brief was explicit:
+"If the package ships only source (no prebuilt wasm), STOP and write a
+note to architect-notes.md describing what you found — don't try to
+build from source unsupervised." So I'm stopping here.
+
+What's in the package:
+
+```
+node_modules/.../@tree-sitter-grammars/tree-sitter-markdown/
+├── prebuilds/{darwin-arm64,darwin-x64,linux-x64,win32-x64}/
+│   └── @tree-sitter-grammars+tree-sitter-markdown.node      # native, not wasm
+├── tree-sitter-markdown/
+│   ├── src/{parser.c, scanner.c, tree_sitter/, grammar.json, node-types.json}
+│   ├── queries/{highlights.scm, injections.scm}
+│   └── grammar.js
+├── tree-sitter-markdown-inline/
+│   ├── src/{parser.c, scanner.c, tree_sitter/, grammar.json, node-types.json}
+│   ├── queries/{highlights.scm, injections.scm}
+│   └── grammar.js
+└── common/grammar.js
+```
+
+No `.wasm` anywhere. The package's only `build` script (`scripts/build.js`)
+builds the native `.node` binding via `node-gyp-build`.
+
+The PHP situation is the same in spirit but already solved: the
+`tree-sitter-php.wasm` and `tree-sitter-php_only.wasm` files in
+`packages/renderer/vendor/` (untracked, ~1MB each, dated May 23 18:30)
+were clearly produced out of band — possibly by you, possibly by the
+agent-php branch. The same trick is needed here for markdown.
+
+**Options considered**:
+
+1. **Install `tree-sitter-cli` (and Emscripten) and run
+   `tree-sitter build --wasm` for both subdirectories.** This is the
+   plan document's own suggestion ("vendor a small build step in
+   `scripts/build-grammars.sh`, one-time, run when refreshing the
+   grammar version, not per-developer"). The build needs either
+   Docker or an Emscripten toolchain locally — neither is currently
+   set up in this worktree, and the brief told me not to do this
+   unsupervised. Pro: reproducible, future-proof. Con: adds a
+   build-tooling story to the repo that doesn't exist today.
+2. **Fetch prebuilt `.wasm` from a known mirror.** e.g. the
+   [tree-sitter wasm-prebuilds](https://github.com/tree-sitter/tree-sitter)
+   nightly artifacts, or Helix / Zed's vendored copies. Pro: zero
+   build setup. Con: pinning provenance to a third party; the
+   markdown grammar specifically is a niche enough package that I'm
+   not certain a stable mirror exists.
+3. **Pick a different markdown grammar package that does ship
+   prebuilt wasm.** I haven't surveyed alternatives — the plan
+   document specifically names `@tree-sitter-grammars/tree-sitter-markdown@0.3.2`
+   as the maintained choice. If a sibling project (e.g.
+   `tree-sitter-md` or similar) ships wasm and is good enough,
+   that's the lightest change.
+
+**State of the work**: Branch `agent-markdown` is rebased onto current
+main (a1573ed) so it has the phase 1 injection pipeline. The only
+changes on the branch beyond main are:
+
+- `packages/renderer/package.json` — `@tree-sitter-grammars/tree-sitter-markdown@0.3.2` added as a devDependency (pinned).
+- `pnpm-lock.yaml` — updated by the install.
+- `pnpm-workspace.yaml` — `'@tree-sitter-grammars/tree-sitter-markdown': false` added to `allowBuilds` (per the existing convention; pnpm prompted on first install).
+
+Nothing committed yet. No `.wasm` was copied because there's nothing
+to copy. No `languages/markdown.js`, `languages/markdown-inline.js`,
+or `markdown.lisp` was written, and no smoke arm extended, because
+without the grammar binaries those would dead-letter at load time.
+
+If you want me to resume:
+- If option 1: tell me what build tool to use (local `tree-sitter-cli`
+  + Emscripten, or `tree-sitter generate && tree-sitter build --wasm`
+  via Docker) and I'll add `scripts/build-grammars.sh`, run it, and
+  commit the artefacts.
+- If option 2 or 3: point me at the mirror or alternative package.
+
+In the meantime I'll leave the branch in the worktree (`agent-markdown`,
+locked) so the staged install survives.
+
+---
+
+## [2026-05-23] agent-markdown / Phase 2: complete — wasm built, pipeline green
+
+**Resolution of the blocker above.** You built both
+`tree-sitter-markdown.wasm` and `tree-sitter-markdown-inline.wasm`
+locally via `tree-sitter-cli` + Docker/Emscripten and dropped them in
+`/tmp/md-build/`. This session vendored them and finished phase 2.
+
+**What landed on `agent-markdown` since `3dfadf9`** (this commit
+brings the branch to the state intended by `plans/LANGUAGE-INJECTION.md`
+§Markdown):
+
+- `packages/renderer/vendor/tree-sitter-markdown.wasm` and
+  `tree-sitter-markdown-inline.wasm` — the two new grammars (committed
+  binaries; ~370 KB each).
+- `packages/renderer/src/languages/markdown.js` — block grammar
+  registration with highlight query (headings, fenced-code delimiters,
+  list/blockquote markers, info-string, link targets) and the
+  injection query from the plan, verbatim.
+- `packages/renderer/src/languages/markdown-inline.js` — inline grammar
+  registration. `suffixes: []` (reached only via injection).
+- `packages/stdlib/lisp/languages/markdown.lisp` — adds the
+  `.markdown` suffix mapping to the existing `markdown-mode` in
+  `modes.lisp` (which already covers `.md`/`.jmd`).
+- `scripts/build-grammars.sh` — the build path you used, captured as a
+  one-shot script so the next grammar refresh is reproducible. Not
+  marked executable from the agent; chmod when you want it runnable.
+- `pnpm-workspace.yaml` — added `tree-sitter-cli: true` to
+  `allowBuilds` (the CLI's postinstall downloads the prebuilt platform
+  binary; we want that).
+- `packages/renderer/package.json` — `tree-sitter-cli: 0.25.5` as
+  devDep so the build script has its binary on hand.
+- `packages/renderer/vendor/README.md` — two new rows plus a paragraph
+  explaining that the markdown wasms are built locally, not copied
+  from npm.
+- `apps/desktop/scripts/smoke.js` — markdown arm in the treesitter
+  IIFE: a `.md` buffer with `# heading` + a fenced `javascript` block;
+  asserts `tok-heading > 0` and `tok-keyword > 0` (the latter proves
+  the markdown → javascript injection ran; the inner JS highlighter's
+  `const` capture lights up). `markdown` added to the `langs.includes`
+  assertions.
+
+**One judgement call, please review**: the brief asked for a
+`\`\`\`lisp` fence body with `(define x 1)` in the smoke arm, on the
+assumption that injection would resolve to a Lisp highlighter. The
+editor's Lisp dialect has **no tree-sitter grammar** — it's the
+hand-written `tokenizeLisp` in `highlight.js`, which never registers
+itself with the tree-sitter registry. Injection only resolves inner
+highlighters out of that registry, so a `\`\`\`lisp` fence would
+silently render with the outer `code` face. I swapped in
+`\`\`\`javascript` instead (whose grammar *is* registered) so the
+smoke assertion actually proves injection works. Same shape, same
+proof. If you'd rather we register the lisp tokenizer as a synthetic
+"inner" highlighter, that's a small follow-up — happy to tackle it
+under a fresh brief.
+
+**One small smoke-harness gotcha** (kept locally with a comment):
+`replInput.value = source` goes through a single-line `<input>`, which
+strips literal newlines. The lisp source therefore has to escape
+newlines as a literal `\\n` pair (four backslashes in the JS template
+literal → two in the JS string → the `\n` escape the Lisp string
+reader expects → a real newline in the inserted text). First pass of
+the smoke arm passed only the heading because the fence newlines
+collapsed; the fix was a mechanical re-escape.
+
+**State of the work**: branch `agent-markdown`, one new feature commit
+on top of `3dfadf9`. `pnpm test` green across all packages
+(47 + 68 + 12 + 35 + 160 + 206 = 528 tests). `pnpm --filter
+@editor/desktop smoke` PASS; the markdown line in the treesitter log:
+
+```
+treesitter: {"langs":"bash,css,go,html,javascript,json,markdown_inline,markdown,python,rust,typescript",...,"mdHeadings":1,"mdInjectsJs":2}
+```
+
+Not merged. Ready for you to ff-merge or review.
+
+---

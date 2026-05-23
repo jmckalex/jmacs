@@ -31,9 +31,15 @@ importers:
         specifier: ^18.0.4
         version: 18.0.4
     devDependencies:
+      '@tree-sitter-grammars/tree-sitter-markdown':
+        specifier: 0.3.2
+        version: 0.3.2
       tree-sitter-bash:
         specifier: 0.25.1
         version: 0.25.1
+      tree-sitter-cli:
+        specifier: 0.25.5
+        version: 0.25.5
       tree-sitter-css:
         specifier: 0.25.0
         version: 0.25.0
@@ -81,6 +87,15 @@ packages:
   '@electron/get@5.0.0':
     resolution: {integrity: sha512-pjoBpru1KdEtcExBnuHAP1cAc/5faoedw0hzJkL3o4/IJp7HNF1+fbrdxT3gMYRX2oJfvnA/WXeCTVQpYYxyJA==}
     engines: {node: '>=22.12.0'}
+
+  '@tree-sitter-grammars/tree-sitter-markdown@0.3.2':
+    resolution: {integrity: sha512-hQXCcDVvg2t4E8cn7zz6jjIBerzk9E9ZlHxJp5IrUOpY4s1YVpXJbMeWZks2/V7lmkPRnnkM8IrTbQ5ltwEOnA==}
+    peerDependencies:
+      tree-sitter: ^0.21.1
+      tree_sitter: '*'
+    peerDependenciesMeta:
+      tree_sitter:
+        optional: true
 
   '@types/node@24.12.4':
     resolution: {integrity: sha512-GUUEShf+PBCGW2KaXwcIt3Yk+e3pkKwWKb9GSyM9WQVE+ep2jzmHdGsHzu4wgcZy5fN9FBdVzjpBQsYlpfpgLA==}
@@ -172,6 +187,11 @@ packages:
     peerDependenciesMeta:
       tree-sitter:
         optional: true
+
+  tree-sitter-cli@0.25.5:
+    resolution: {integrity: sha512-aLAyf+T3Y5psFZPgd7bUovhhJtplD1hk1mIwMsSZGwoEa6iGgqeGYmV9zgjatT5bMPUfcKX9x1xZfYim7aItjQ==}
+    engines: {node: '>=12.0.0'}
+    hasBin: true
 
   tree-sitter-css@0.25.0:
     resolution: {integrity: sha512-FRc9R8ePrwJiUhZsuZ/wcFQ3K8Z+9yCgDrrUjuYswGWlN89UvcB9vslTUGZElQWGwhS8sUw3/r2n4lpb2sxT4Q==}
@@ -284,6 +304,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@tree-sitter-grammars/tree-sitter-markdown@0.3.2':
+    dependencies:
+      node-addon-api: 8.7.0
+      node-gyp-build: 4.8.4
+
   '@types/node@24.12.4':
     dependencies:
       undici-types: 7.16.0
@@ -366,6 +391,8 @@ snapshots:
     dependencies:
       node-addon-api: 8.7.0
       node-gyp-build: 4.8.4
+
+  tree-sitter-cli@0.25.5: {}
 
   tree-sitter-css@0.25.0:
     dependencies:

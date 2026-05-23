@@ -16,3 +16,9 @@ allowBuilds:
   tree-sitter-go: false
   tree-sitter-bash: false
   tree-sitter-php: false
+  '@tree-sitter-grammars/tree-sitter-markdown': false
+  # tree-sitter CLI: postinstall downloads the prebuilt platform binary,
+  # which we *do* want — `scripts/build-grammars.sh` shells out to it to
+  # produce the vendored markdown wasm files. Unlike the grammar
+  # packages, no native gyp build runs here.
+  tree-sitter-cli: true
