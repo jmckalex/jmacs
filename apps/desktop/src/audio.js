@@ -60,10 +60,15 @@ export function createAudioController() {
         el.src = pathToUrl(path);
         currentPath = path;
       }
-      // play() returns a promise that rejects on autoplay block; we
-      // swallow it so the Lisp call stays simple — the jukebox panel
-      // will show no progress, which is enough feedback.
-      el.play().catch(() => {});
+      // play() returns a promise that rejects on autoplay block, on a
+      // file:// URL the renderer can't load, on an unsupported codec —
+      // silent failures are the worst way to debug a jukebox, so surface
+      // the reason on the renderer console. The Lisp call still returns;
+      // the panel just shows no progress.
+      el.play().catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`audio.play(${path}) failed:`, err?.message ?? err);
+      });
     },
     pause() {
       if (element) element.pause();

@@ -489,8 +489,12 @@
 ;; --- the keymap ------------------------------------------------------
 ;; jukebox-mode-map is declared empty in modes.lisp; fill it in here.
 
+;; NB. The renderer's keymap.js returns unmodified printable keys as the
+;; literal character — so SPC arrives as " ", not "space". Named-key
+;; aliases (NAMED_KEYS) only resolve when a modifier is held: C-space,
+;; M-space. Keep the binding as " " for the bare press.
 (set! jukebox-mode-map
-  {"space" 'jukebox-toggle-play
+  {" "     'jukebox-toggle-play
    "enter" 'jukebox-play-at-point
    "n"     'jukebox-next
    "p"     'jukebox-prev
