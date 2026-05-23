@@ -45,4 +45,5 @@ registerLanguage({
   grammar: 'tree-sitter-javascript.wasm',
   query: QUERY,
   suffixes: ['.js', '.mjs'],
+  aliases: ['js', 'mjs', 'node'],
 });

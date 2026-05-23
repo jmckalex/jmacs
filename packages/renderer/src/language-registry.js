@@ -34,6 +34,12 @@
  * @property {string[]} suffixes - Filename suffixes that pick this language.
  *   May be empty for languages reached only via injection (e.g. an
  *   inline-markdown grammar that is never selected by file extension).
+ * @property {string[]} [aliases] - Extra tags the injection lookup will
+ *   resolve to this language. Markdown fences commonly use shortened
+ *   names — ` ```js ` for JavaScript, ` ```py ` for Python — that the
+ *   info-string capture matches verbatim. Each alias becomes another
+ *   entry in the highlighter map; they are not consulted for filename
+ *   matching.
  * @property {string} [injectionQuery] - A second query that marks
  *   `@injection.content` regions paired with a language tag. When set,
  *   the loader threads a `getHighlighter` lookup into the highlighter
@@ -69,6 +75,9 @@ export function registerLanguage(spec) {
   ) {
     throw new Error(`language ${spec.tag}: injectionQuery must be a string`);
   }
+  if (spec.aliases !== undefined && !Array.isArray(spec.aliases)) {
+    throw new Error(`language ${spec.tag}: aliases must be a string[]`);
+  }
   /** @type {LanguageSpec} */
   const stored = {
     tag: spec.tag,
@@ -78,6 +87,9 @@ export function registerLanguage(spec) {
   };
   if (spec.injectionQuery !== undefined) {
     stored.injectionQuery = spec.injectionQuery;
+  }
+  if (spec.aliases !== undefined) {
+    stored.aliases = [...spec.aliases];
   }
   registry.set(spec.tag, stored);
 }
@@ -157,6 +169,15 @@ export async function loadLanguageHighlighters(create, onError = () => {}) {
         : undefined;
       const highlighter = await create(spec.grammar, spec.query, options);
       highlighters[spec.tag] = highlighter;
+      // Alias entries point at the same highlighter so an injection's
+      // info-string capture (` ```js `, ` ```py `, …) resolves to the
+      // canonical language. Aliases never shadow a real tag — if
+      // another language already claimed the name, leave it alone.
+      if (Array.isArray(spec.aliases)) {
+        for (const alias of spec.aliases) {
+          if (!(alias in highlighters)) highlighters[alias] = highlighter;
+        }
+      }
     } catch (error) {
       onError(spec.tag, error);
     }

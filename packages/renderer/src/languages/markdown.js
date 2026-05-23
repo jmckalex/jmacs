@@ -57,5 +57,6 @@ registerLanguage({
   grammar: 'tree-sitter-markdown.wasm',
   query: QUERY,
   suffixes: ['.md', '.markdown'],
+  aliases: ['md'],
   injectionQuery: INJECTION_QUERY,
 });

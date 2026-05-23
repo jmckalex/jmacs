@@ -397,6 +397,9 @@ app.whenReady().then(() => {
         // body 'const x = 1;' contributes one tok-keyword span ('const')
         // which proves the inner JS highlighter ran on the
         // code_fence_content; the heading contributes one tok-heading.
+        // The fence info-string is '\`\`\`js' (the short alias) rather
+        // than the full 'javascript' name — proves the registry's
+        // alias system resolves common markdown fence names.
         // (A '\`\`\`lisp' fence is **not** used here because the lisp
         // highlighter is the line tokenizer, not a tree-sitter grammar,
         // and the injection pipeline only resolves tree-sitter inner
@@ -408,7 +411,7 @@ app.whenReady().then(() => {
         // reader's string-escape table maps to a real newline. (Using
         // a real newline here would be stripped, since the REPL is a
         // single-line <input>.)
-        submit('(insert! "# heading\\\\n\\\\n\`\`\`javascript\\\\nconst x = 1;\\\\n\`\`\`\\\\n")');
+        submit('(insert! "# heading\\\\n\\\\n\`\`\`js\\\\nconst x = 1;\\\\n\`\`\`\\\\n")');
         await frame();
         const mdHeadings = document.querySelectorAll('.tok-heading').length;
         const mdInjectsJs = document.querySelectorAll('.tok-keyword').length;

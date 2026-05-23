@@ -29,4 +29,5 @@ registerLanguage({
   grammar: 'tree-sitter-bash.wasm',
   query: QUERY,
   suffixes: ['.sh', '.bash'],
+  aliases: ['sh', 'shell', 'zsh'],
 });

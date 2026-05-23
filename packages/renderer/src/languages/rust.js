@@ -40,4 +40,5 @@ registerLanguage({
   grammar: 'tree-sitter-rust.wasm',
   query: QUERY,
   suffixes: ['.rs'],
+  aliases: ['rs'],
 });

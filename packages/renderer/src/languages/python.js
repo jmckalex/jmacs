@@ -30,4 +30,5 @@ registerLanguage({
   grammar: 'tree-sitter-python.wasm',
   query: QUERY,
   suffixes: ['.py'],
+  aliases: ['py', 'python3'],
 });

@@ -177,6 +177,46 @@ test('loadLanguageHighlighters threads getHighlighter only into injection-bearin
   assert.equal(typeof cobolOpts.getHighlighter, 'function');
 });
 
+test('aliases expose the same highlighter under additional tags', async () => {
+  registerLanguage({ ...SPEC, aliases: ['for', 'f'] });
+  let count = 0;
+  const create = async () => {
+    count += 1;
+    return { highlight: () => [], captures: () => [] };
+  };
+  const highlighters = await loadLanguageHighlighters(create);
+  assert.equal(count, 1); // one wasm load, not three
+  assert.ok('fortran' in highlighters);
+  assert.ok('for' in highlighters);
+  assert.ok('f' in highlighters);
+});
+
+test('aliases never overwrite a real registered tag', async () => {
+  // 'rs' is claimed as an alias of fortran, then registered as a
+  // primary tag of another language — the real tag must win.
+  registerLanguage({ ...SPEC, aliases: ['rs'] });
+  registerLanguage({
+    ...SPEC,
+    tag: 'rs',
+    grammar: 'tree-sitter-rs.wasm',
+    suffixes: ['.rs'],
+  });
+  const create = async (grammar) => ({
+    highlight: () => grammar,
+    captures: () => [],
+  });
+  const highlighters = await loadLanguageHighlighters(create);
+  // The 'rs' entry must come from the second registration, not the alias.
+  assert.equal(highlighters.rs(), 'tree-sitter-rs.wasm');
+});
+
+test('registerLanguage rejects a non-array aliases', () => {
+  assert.throws(
+    () => registerLanguage({ ...SPEC, aliases: 'js' }),
+    /aliases must be a string/
+  );
+});
+
 test('getHighlighter resolves siblings lazily, after every language is loaded', async () => {
   // Two languages: A injects B; B is registered *after* A. The
   // closure must read the populated map at injection time, not at

@@ -46,4 +46,5 @@ registerLanguage({
   grammar: 'tree-sitter-typescript.wasm',
   query: QUERY,
   suffixes: ['.ts'],
+  aliases: ['ts'],
 });
