@@ -53,6 +53,10 @@ async function editor(initialText = 'hello world') {
         bufferCalls.push('new');
         return NIL;
       },
+      'kill-buffer!': () => {
+        bufferCalls.push('kill');
+        return NIL;
+      },
       'start-buffer-switcher!': () => {
         bufferCalls.push('switch');
         return NIL;
@@ -2151,4 +2155,12 @@ test('show-eval-log calls the host primitive', async () => {
   interpreter.evaluate('(show-eval-log)');
   assert.ok(evalCalls.includes('show-log'),
     `expected show-log; got ${JSON.stringify(evalCalls)}`);
+});
+
+test('C-x k runs kill-buffer through the host primitive', async () => {
+  const { interpreter, bufferCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'k');
+  assert.ok(bufferCalls.includes('kill'),
+    `expected kill; got ${JSON.stringify(bufferCalls)}`);
 });

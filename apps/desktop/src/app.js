@@ -852,6 +852,45 @@ const interpreter = createInterpreter({
       switchToBuffer(buffers.length - 1);
       return NIL;
     },
+    // Remove a buffer from the list. With no argument, kills the
+    // current buffer; with a name, kills the matching one. Killing
+    // the last buffer is fine — a fresh empty `*scratch*` is created
+    // to keep the list non-empty.
+    'kill-buffer!': (args) => {
+      let target;
+      if (args.length > 0) {
+        const name = String(args[0]);
+        target = buffers.findIndex((buffer) => buffer.name === name);
+      } else {
+        target = currentIndex;
+      }
+      if (target < 0 || target >= buffers.length) return NIL;
+      const wasCurrent = target === currentIndex;
+      buffers.splice(target, 1);
+      if (buffers.length === 0) {
+        buffers.push(createBuffer('', { name: '*scratch*' }));
+        currentIndex = -1;
+        switchToBuffer(0);
+        return NIL;
+      }
+      if (wasCurrent) {
+        // Land on the buffer that took the killed slot, or the
+        // new tail when we removed the last buffer.
+        const next = Math.min(target, buffers.length - 1);
+        currentIndex = -1; // force switchToBuffer to re-mount.
+        switchToBuffer(next);
+      } else if (target < currentIndex) {
+        // The current buffer's index has shifted down by one; just
+        // re-point, no view change.
+        currentIndex -= 1;
+        updateModeline();
+      } else {
+        // The killed buffer was after current — nothing to do beyond
+        // refreshing the modeline (the list length changed).
+        updateModeline();
+      }
+      return NIL;
+    },
     'buffer-count': () => buffers.length,
 
     // Persist the customisation registry's saved settings to disk.

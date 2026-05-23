@@ -19,3 +19,9 @@
 (defcommand switch-buffer ()
   "Switch to a buffer chosen by name, with completion."
   (start-buffer-switcher!))
+
+(defcommand kill-buffer ()
+  "Remove the current buffer from the list and switch to the next
+   one. Killing the last buffer creates a fresh empty `*scratch*`
+   so the list is never empty. Bound to `C-x k`."
+  (kill-buffer!))

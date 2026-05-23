@@ -21,6 +21,7 @@
    "right" 'next-buffer
    "left"  'previous-buffer
    "n"     'new-buffer
+   "k"     'kill-buffer
    "p"     'toggle-repl
    "h"     'mark-whole-buffer
    ";"     'comment-line
