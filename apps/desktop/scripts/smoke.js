@@ -779,6 +779,39 @@ app.whenReady().then(() => {
       })()`);
       console.log('  config:', JSON.stringify(config));
 
+      // Themes: changing *theme* through the customisation registry
+      // rewrites CSS variables on the document root.
+      const themes = await win.webContents.executeJavaScript(`(async () => {
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const cssVar = (name) =>
+          getComputedStyle(document.documentElement)
+            .getPropertyValue(name)
+            .trim();
+        const bgDark = cssVar('--bg');
+        submit('(custom-apply! (quote *theme*) (quote light))');
+        await new Promise((r) => requestAnimationFrame(() => r()));
+        const bgLight = cssVar('--bg');
+        const fgLight = cssVar('--fg');
+        submit('(custom-apply! (quote *theme*) (quote midnight))');
+        await new Promise((r) => requestAnimationFrame(() => r()));
+        const bgMidnight = cssVar('--bg');
+        submit('(custom-apply! (quote *theme*) (quote dark))');
+        await new Promise((r) => requestAnimationFrame(() => r()));
+        const bgBack = cssVar('--bg');
+        return {
+          bgDark, bgLight, fgLight, bgMidnight, bgBack,
+          differ: bgDark !== bgLight && bgLight !== bgMidnight,
+          restored: bgBack === bgDark,
+        };
+      })()`);
+      console.log('  themes:', JSON.stringify(themes));
+
       // Image buffers: opening an image file shows it through the image
       // view — a non-text buffer kind — with the editor view hidden.
       // The dialog is stubbed (above) to choose the scratch PNG.
@@ -941,6 +974,8 @@ app.whenReady().then(() => {
         config.savedSetting &&
         config.customizeShown &&
         config.settingRendered;
+      const themesOk =
+        themes.bgDark !== '' && themes.differ && themes.restored;
       const imageOk =
         image.shown &&
         image.hasDataUrl &&
@@ -960,7 +995,7 @@ app.whenReady().then(() => {
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
         markdownOk && previewOk && virtualOk && modesOk && layersOk &&
-        splashOk && stickyOk && configOk && imageOk && swatchesOk
+        splashOk && stickyOk && configOk && themesOk && imageOk && swatchesOk
       ) {
         finish(
           0,
@@ -1021,6 +1056,8 @@ app.whenReady().then(() => {
         finish(1, `sticky notes did not work (${JSON.stringify(sticky)})`);
       } else if (!configOk) {
         finish(1, `customisation did not work (${JSON.stringify(config)})`);
+      } else if (!themesOk) {
+        finish(1, `themes did not work (${JSON.stringify(themes)})`);
       } else if (!imageOk) {
         finish(1, `image buffers did not work (${JSON.stringify(image)})`);
       } else {

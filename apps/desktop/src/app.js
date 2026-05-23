@@ -537,6 +537,13 @@ const interpreter = createInterpreter({
       reloadStdlib();
       return NIL;
     },
+    // Themes set CSS custom properties on the document root. The Lisp
+    // side holds the palettes and decides which is active; this is the
+    // host hook that reads the current palette and writes it to the DOM.
+    'apply-theme!': () => {
+      applyCurrentTheme();
+      return NIL;
+    },
     'start-search!': () => {
       startSearch('forward');
       return NIL;
@@ -804,6 +811,7 @@ async function reloadStdlib() {
   try {
     await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
     await loadUserConfig();
+    applyCurrentTheme();
     repl.appendNote('standard library reloaded');
   } catch (error) {
     repl.appendError(`reload failed: ${error.message}`);
@@ -819,6 +827,7 @@ try {
 }
 
 if (keymapReady) await loadUserConfig();
+if (keymapReady) applyCurrentTheme();
 
 // Tree-sitter languages are drop-ins: discover the JS registration
 // modules in `packages/renderer/src/languages/` (each one registers
@@ -947,12 +956,31 @@ function getCustomModel(scope) {
   }
 }
 
+/** Apply the current theme: read each (--var . value) pair from Lisp
+ *  and write it to the document root's inline style. Settings the
+ *  theme leaves out (font-size, font-mono, …) keep the :root defaults. */
+function applyCurrentTheme() {
+  try {
+    const pairs = listToArray(interpreter.call('current-theme-css-vars'));
+    for (const pair of pairs) {
+      const cssVar = String(pair.head);
+      const value = String(pair.tail ?? '');
+      if (cssVar.startsWith('--') && value !== '') {
+        document.documentElement.style.setProperty(cssVar, value);
+      }
+    }
+  } catch (error) {
+    repl.appendError(`theme: ${error.lispMessage ?? error.message}`);
+  }
+}
+
 /** Apply a setting for the session — a value, quote-wrapped to survive
  *  its type. */
 function applyCustomSetting(name, value) {
   interpreter.evaluate(
     `(custom-apply! (quote ${name}) (quote ${writeString(value)}))`
   );
+  if (name === '*theme*') applyCurrentTheme();
 }
 
 /** Apply a setting and persist it. */
@@ -960,11 +988,13 @@ function saveCustomSetting(name, value) {
   interpreter.evaluate(
     `(custom-apply-and-save! (quote ${name}) (quote ${writeString(value)}))`
   );
+  if (name === '*theme*') applyCurrentTheme();
 }
 
 /** Reset a setting to its default value. */
 function resetCustomSetting(name) {
   interpreter.evaluate(`(custom-reset! (quote ${name}))`);
+  if (name === '*theme*') applyCurrentTheme();
 }
 
 /** Open a customisation buffer for a scope — a subgroup or a variable. */

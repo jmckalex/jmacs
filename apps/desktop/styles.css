@@ -6,7 +6,9 @@
  */
 
 :root {
-  /* Mariana — the default dark scheme of Sublime Text. */
+  /* Mariana — the default dark scheme of Sublime Text. Theme settings
+     here are the baseline; themes.lisp swaps them at runtime via
+     document.documentElement.style.setProperty. */
   --bg: #2b333b;
   --bg-chrome: #262d34;
   --bg-editor: #303841;
@@ -17,6 +19,23 @@
   --result: #99c794;
   --error: #ec5f67;
   --selection: rgba(102, 153, 204, 0.27);
+
+  /* Syntax-highlight palette. The hand-tokenizer and the tree-sitter
+     pipeline both emit `.tok-<face>` spans; these vars carry their
+     colours so a theme can swap them. */
+  --tok-comment: #7c8f9e;
+  --tok-string: #99c794;
+  --tok-number: #f9ae58;
+  --tok-keyword: #c594c5;
+  --tok-constant: #5fb4b4;
+  --tok-function: #6699cc;
+  --tok-type: #fac863;
+  --tok-tag: #ec5f67;
+  --tok-operator: #a3acb9;
+  --tok-paren: #8b98a6;
+  --tok-heading: #fac863;
+  --tok-code: #99c794;
+  --tok-link: #6699cc;
 
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas,
     monospace;
@@ -473,52 +492,54 @@ body.markdown-preview-hidden .markdown-preview-host {
   user-select: none;
 }
 
-/* --- syntax highlighting — Mariana palette ------------------------------ */
+/* --- syntax highlighting ------------------------------------------------ */
+/* Colours live in CSS custom properties at :root (see the head of this
+   file) so themes can swap the palette wholesale. */
 
 .tok-comment {
-  color: #7c8f9e;
+  color: var(--tok-comment);
   font-style: italic;
 }
 
 .tok-string {
-  color: #99c794;
+  color: var(--tok-string);
 }
 
 .tok-number {
-  color: #f9ae58;
+  color: var(--tok-number);
 }
 
 .tok-keyword {
-  color: #c594c5;
+  color: var(--tok-keyword);
 }
 
 .tok-constant {
-  color: #5fb4b4;
+  color: var(--tok-constant);
 }
 
 .tok-function {
-  color: #6699cc;
+  color: var(--tok-function);
 }
 
 .tok-type {
-  color: #fac863;
+  color: var(--tok-type);
 }
 
 .tok-tag {
-  color: #ec5f67;
+  color: var(--tok-tag);
 }
 
 .tok-operator {
-  color: #a3acb9;
+  color: var(--tok-operator);
 }
 
 .tok-paren {
-  color: #8b98a6;
+  color: var(--tok-paren);
 }
 
 /* Markdown / JMarkdown */
 .tok-heading {
-  color: #fac863;
+  color: var(--tok-heading);
   font-weight: 600;
 }
 
@@ -532,11 +553,11 @@ body.markdown-preview-hidden .markdown-preview-host {
 }
 
 .tok-code {
-  color: #99c794;
+  color: var(--tok-code);
 }
 
 .tok-link {
-  color: #6699cc;
+  color: var(--tok-link);
   text-decoration: underline;
 }
 

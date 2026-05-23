@@ -37,6 +37,7 @@ export const STDLIB_FILES = Object.freeze([
   'expand-region.lisp',
   'system.lisp',
   'modes.lisp',
+  'themes.lisp',
   'keymap.lisp',
   // These read the keymap, so they load after it.
   'auto-pair.lisp',

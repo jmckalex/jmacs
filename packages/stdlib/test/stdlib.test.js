@@ -117,6 +117,7 @@ async function editor(initialText = 'hello world') {
         return NIL;
       },
       'write-custom-file!': () => NIL,
+      'apply-theme!': () => NIL,
     },
   });
   await loadStdlib(
@@ -1859,4 +1860,48 @@ test('expand-region keeps growing around the original anchor, not point', async 
   assert.deepEqual(buffer.selection, { start: 0, end: 3 });
   press(interpreter, 'C-equal'); // line containing the anchor
   assert.deepEqual(buffer.selection, { start: 0, end: 7 });
+});
+
+// --- themes -----------------------------------------------------------
+
+test('three themes are registered with distinct palettes', async () => {
+  const { interpreter } = await editor();
+  const names = listToArray(interpreter.call('registered-themes'))
+    .map((s) => s.name).sort();
+  assert.deepEqual(names, ['dark', 'light', 'midnight']);
+  // Each theme defines a --bg value; the three should all differ.
+  const bgs = names.map(
+    (n) => interpreter.evaluate(`(get (theme-vars (quote ${n})) "--bg" "")`)
+  );
+  assert.equal(new Set(bgs).size, 3);
+});
+
+test('the *theme* setting defaults to dark and is a :choice', async () => {
+  const { interpreter } = await editor();
+  assert.equal(interpreter.evaluate('*theme*').name, 'dark');
+  const field = listToArray(
+    interpreter.evaluate('(custom-field (quote *theme*))')
+  );
+  // field = (name type value default doc state options)
+  assert.equal(String(field[1]), ':choice');
+  const options = listToArray(field[6]).map((s) => s.name);
+  assert.deepEqual(options.sort(), ['dark', 'light', 'midnight']);
+});
+
+test('current-theme-css-vars switches with *theme*', async () => {
+  const { interpreter } = await editor();
+  const bgFor = (name) => {
+    interpreter.evaluate(`(custom-apply! (quote *theme*) (quote ${name}))`);
+    const pairs = listToArray(interpreter.call('current-theme-css-vars'));
+    for (const pair of pairs) {
+      if (String(pair.head) === '--bg') return String(pair.tail);
+    }
+    return '';
+  };
+  const dark = bgFor('dark');
+  const light = bgFor('light');
+  const midnight = bgFor('midnight');
+  assert.notEqual(dark, light);
+  assert.notEqual(dark, midnight);
+  assert.notEqual(light, midnight);
 });

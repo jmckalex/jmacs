@@ -40,9 +40,11 @@
 
 (define (custom-register! name default type . options)
   "Record a setting in the registry. OPTIONS is keyword pairs —
-   :group, :doc, :options. On a re-register (a hot reload) the
-   existing :value is kept, so a setting the user has customised is
-   not reset to its default."
+   :group, :doc, :options, :on-change. On a re-register (a hot
+   reload) the existing :value is kept, so a setting the user has
+   customised is not reset to its default. :on-change is a
+   (lambda (name value)) called by `custom-apply!` whenever the
+   setting's value changes."
   (let ((existing (custom-entry name))
         (opts (apply hash-map options)))
     (let ((value (if (nil? existing)
@@ -56,7 +58,8 @@
                              :type type
                              :group (get opts :group 'jmacs)
                              :doc (get opts :doc "")
-                             :options (get opts :options nil)))))))
+                             :options (get opts :options nil)
+                             :on-change (get opts :on-change nil)))))))
 
 ;; defcustom — declare a setting and define it as an ordinary variable.
 ;; (defcustom *name* default :type :group 'g :doc "…")
@@ -81,14 +84,17 @@
     (if (nil? entry) nil (get entry :default nil))))
 
 (define (custom-apply! name value)
-  "Set setting NAME to VALUE for this session: update the registry and
-   the live variable. Does nothing for an unregistered setting."
+  "Set setting NAME to VALUE for this session: update the registry,
+   the live variable, and run its :on-change hook if one is set.
+   Does nothing for an unregistered setting."
   (let ((entry (custom-entry name)))
     (when (not (nil? entry))
       (set! *custom-registry*
             (assoc *custom-registry* name (assoc entry :value value)))
       ;; The variable is named by data, so build and evaluate a set!.
-      (eval (list 'set! name (list 'quote value))))))
+      (eval (list 'set! name (list 'quote value)))
+      (let ((hook (get entry :on-change nil)))
+        (when (procedure? hook) (hook name value))))))
 
 (define (custom-reset! name)
   "Reset setting NAME to its default value."
