@@ -9,3 +9,4 @@ allowBuilds:
   tree-sitter-javascript: false
   tree-sitter-html: false
   tree-sitter-python: false
+  tree-sitter-json: false

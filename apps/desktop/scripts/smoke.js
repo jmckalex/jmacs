@@ -316,6 +316,16 @@ app.whenReady().then(() => {
         submit('(insert! "<div id=x></div>")');
         await frame();
         const htmlTags = document.querySelectorAll('.tok-tag').length;
+        submit('(new-buffer! "smoke.json")');
+        // No embedded double-quotes here: those would need backslash
+        // escapes through both layers (executeJavaScript and repl).
+        // A numeric/constant array still proves the grammar loaded:
+        // JSON has no fallback tokenizer that could emit @number or
+        // @constant otherwise.
+        submit('(insert! "[1, true, null]")');
+        await frame();
+        const jsonNumbers = document.querySelectorAll('.tok-number').length;
+        const jsonConstants = document.querySelectorAll('.tok-constant').length;
         return {
           // The languages whose grammar WASM actually loaded.
           langs: document.body.dataset.treesitter,
@@ -323,6 +333,8 @@ app.whenReady().then(() => {
           numbers,
           pyFunctions,
           htmlTags,
+          jsonNumbers,
+          jsonConstants,
         };
       })()`);
       console.log('  treesitter:', JSON.stringify(treesitter));
@@ -840,8 +852,10 @@ app.whenReady().then(() => {
         treesitter.langs.includes('javascript') &&
         treesitter.langs.includes('html') &&
         treesitter.langs.includes('python') &&
+        treesitter.langs.includes('json') &&
         treesitter.keywords > 0 && treesitter.numbers > 0 &&
-        treesitter.pyFunctions > 0 && treesitter.htmlTags > 0;
+        treesitter.pyFunctions > 0 && treesitter.htmlTags > 0 &&
+        treesitter.jsonNumbers > 0 && treesitter.jsonConstants > 0;
       const replaceOk = replace.text === 'bar bar bar';
       const mouseOk =
         mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
