@@ -962,6 +962,48 @@ app.whenReady().then(() => {
         : { skipped: true };
       console.log('  docs:', JSON.stringify(docs));
 
+      // Documentation (live path): a user-defined procedure with a
+      // Markdown docstring opens through the doc-view too. This arm
+      // doesn't depend on `pnpm run docs` — it exercises the
+      // marked.js pipeline directly.
+      const liveDocs = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        // Define a procedure whose docstring is Markdown. The
+        // \\\\\\\\n sequences become \\\\n in the inner JS string,
+        // which the Lisp reader then converts to real newlines so
+        // marked sees a proper multi-paragraph document.
+        // Earlier smoke arms set *markdown-interpreter* to "cat" /
+        // "echo smoke" for their own purposes; reset to the bundled
+        // marked.js path before exercising the live-doc renderer.
+        submit('(set! *markdown-interpreter* "marked")');
+        submit('(define (smoke-doc-fn) "Smoke test for _live_ Markdown.\\\\n\\\\nIncludes:\\\\n\\\\n- A **bold** word.\\\\n- An /italic/ word.\\\\n\\\\nThe end." nil)');
+        await frame();
+        submit('(open-doc "smoke-doc-fn")');
+        for (let i = 0; i < 8; i += 1) await frame();
+        const view = document.querySelector('.doc-view');
+        const shown = !!(view && getComputedStyle(view).display !== 'none');
+        const page = view ? view.querySelector('.doc-page') : null;
+        const html = page ? page.innerHTML : '';
+        return {
+          shown,
+          // marked's rendered output uses these tags for **bold**,
+          // _italic_ and bullet lists. Their presence proves the
+          // Markdown pipeline ran end-to-end.
+          hasStrong: /<strong>bold<\\/strong>/.test(html),
+          hasEm: /<em>live<\\/em>/.test(html),
+          hasList: /<ul>[\\s\\S]*<li>/.test(html),
+          modeline: document.querySelector('.modeline')?.textContent ?? '',
+        };
+      })()`);
+      console.log('  liveDocs:', JSON.stringify(liveDocs));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -1060,6 +1102,15 @@ app.whenReady().then(() => {
             docs.hasXref &&
             docs.secondShown &&
             docs.switched;
+      // The live-docstring arm always runs — it doesn't need the
+      // pre-built docs. The user-defined function's Markdown
+      // docstring must round-trip through marked.js.
+      const liveDocsOk =
+        liveDocs.shown &&
+        liveDocs.hasStrong &&
+        liveDocs.hasEm &&
+        liveDocs.hasList &&
+        liveDocs.modeline.includes('*Doc: smoke-doc-fn*');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -1067,7 +1118,7 @@ app.whenReady().then(() => {
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
         markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && imageOk && swatchesOk &&
-        docsOk
+        docsOk && liveDocsOk
       ) {
         finish(
           0,
@@ -1134,6 +1185,8 @@ app.whenReady().then(() => {
         finish(1, `image buffers did not work (${JSON.stringify(image)})`);
       } else if (!docsOk) {
         finish(1, `docs did not work (${JSON.stringify(docs)})`);
+      } else if (!liveDocsOk) {
+        finish(1, `live docstring rendering did not work (${JSON.stringify(liveDocs)})`);
       } else {
         finish(
           1,
