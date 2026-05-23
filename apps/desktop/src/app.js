@@ -12,6 +12,7 @@
 import { createBuffer } from '@editor/buffer';
 import {
   arrayToList,
+  cons,
   createInterpreter,
   listToArray,
   NIL,
@@ -22,11 +23,14 @@ import {
   createDocView,
   createEditorView,
   createHoverDoc,
+  createInlineEval,
   createImageView,
   createMarkdownPreview,
   createMinibuffer,
   createReplView,
   createTreeSitterHighlighter,
+  formBoundsAtPoint,
+  formBoundsBeforePoint,
   fuzzyFilter,
   highlightLine,
   loadLanguageHighlighters,
@@ -697,6 +701,45 @@ const interpreter = createInterpreter({
       startDocSearch();
       return NIL;
     },
+    // Inline eval: the bounds of the form enclosing point in the
+    // current buffer, as a `(start . end)` pair, or nil.
+    'form-bounds-at-point!': () => {
+      if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
+        return NIL;
+      }
+      const bounds = formBoundsAtPoint(
+        currentTextBuffer.text,
+        currentTextBuffer.point,
+        'lisp'
+      );
+      return bounds === null ? NIL : cons(bounds.start, bounds.end);
+    },
+    // Inline eval: the bounds of the form immediately before point.
+    'form-bounds-before-point!': () => {
+      if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
+        return NIL;
+      }
+      const bounds = formBoundsBeforePoint(
+        currentTextBuffer.text,
+        currentTextBuffer.point,
+        'lisp'
+      );
+      return bounds === null ? NIL : cons(bounds.start, bounds.end);
+    },
+    // Inline eval: evaluate the current buffer's source in
+    // [start, end) and show the result as a pill overlay.
+    'eval-region!': (args) => {
+      const start = Number(args[0]);
+      const end = Number(args[1]);
+      if (!Number.isInteger(start) || !Number.isInteger(end)) return NIL;
+      evalRegionWithOverlay(start, end);
+      return NIL;
+    },
+    // Inline eval: open (or reuse) the *Eval log* buffer.
+    'show-eval-log!': () => {
+      openEvalLogBuffer();
+      return NIL;
+    },
     // Documentation (live path): NAME's docstring is Markdown; render
     // it through `*markdown-interpreter*` and show the result in a
     // doc-kind buffer. Used by `(open-doc …)` for user-defined
@@ -1307,6 +1350,99 @@ const hoverDoc = createHoverDoc(editorView.element, {
     }
   },
 });
+
+/** Inline-evaluation overlay — the pill that pops next to a Lisp
+ *  form when the user evaluates it (`C-x C-e`, `C-RET`). */
+const inlineEval = createInlineEval({
+  overlayLayer: editorView.overlayLayer,
+  getBuffer: () => currentTextBuffer,
+});
+
+/** Most-recent-first log of evaluations, capped at `EVAL_LOG_MAX`. */
+const EVAL_LOG_MAX = 50;
+const evalLog = [];
+
+/** Take a substring out of the current buffer with the same bounds
+ *  the Lisp side computed. */
+function bufferSlice(start, end) {
+  if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
+    return '';
+  }
+  const text = currentTextBuffer.text;
+  if (start < 0 || end > text.length || start >= end) return '';
+  return text.slice(start, end);
+}
+
+/** Format a short result label for the pill: writeString-quoted,
+ *  collapsed to a single line, truncated to keep the pill compact. */
+function formatResultLabel(value) {
+  let raw;
+  try {
+    raw = writeString(value);
+  } catch (error) {
+    raw = String(value);
+  }
+  const oneLine = raw.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 80 ? oneLine.slice(0, 77) + '…' : oneLine;
+}
+
+function formatErrorLabel(error) {
+  const message = error?.lispMessage ?? error?.message ?? String(error);
+  const oneLine = String(message).replace(/\s+/g, ' ').trim();
+  return oneLine.length > 80 ? oneLine.slice(0, 77) + '…' : oneLine;
+}
+
+/** Record an eval in the log. */
+function pushEvalLog(entry) {
+  evalLog.unshift({ ...entry, at: new Date().toISOString() });
+  if (evalLog.length > EVAL_LOG_MAX) evalLog.length = EVAL_LOG_MAX;
+}
+
+/** Evaluate the source in [start, end), show a pill at `end`, and
+ *  log the eval. Errors surface on the pill AND in the REPL with
+ *  the full stack trace. */
+function evalRegionWithOverlay(start, end) {
+  const source = bufferSlice(start, end);
+  if (source === '') {
+    repl.appendError('eval: nothing to evaluate');
+    return;
+  }
+  try {
+    const result = interpreter.evaluate(source);
+    const label = formatResultLabel(result);
+    inlineEval.showResult(end, label);
+    pushEvalLog({ source, ok: true, label });
+  } catch (error) {
+    const label = formatErrorLabel(error);
+    inlineEval.showError(end, `! ${label}`);
+    pushEvalLog({ source, ok: false, label });
+    repl.appendError(
+      `eval ${source}\n  ${error.lispMessage ?? error.message ?? String(error)}`
+    );
+  }
+}
+
+/** Open (or reuse) a buffer showing the eval log. */
+function openEvalLogBuffer() {
+  const name = '*Eval log*';
+  const text = evalLog.length === 0
+    ? '(no evaluations yet)'
+    : evalLog.map((entry) => {
+        const marker = entry.ok ? '⇒' : '!';
+        return `${entry.at}\n  ${entry.source}\n  ${marker} ${entry.label}`;
+      }).join('\n\n');
+  let index = buffers.findIndex(
+    (buffer) => buffer.kind !== 'doc' && buffer.kind !== 'image' &&
+      buffer.kind !== 'customize' && buffer.name === name
+  );
+  if (index < 0) {
+    buffers.push(createBuffer(text, { name }));
+    index = buffers.length - 1;
+  } else {
+    buffers[index].setText(text);
+  }
+  switchToBuffer(index);
+}
 
 // The Markdown renderer used for sticky notes and the live-docstring
 // path in the doc-view. Driven by the `*markdown-interpreter*` Lisp

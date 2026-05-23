@@ -16,6 +16,7 @@ export { createMinibuffer } from './minibuffer.js';
 export { createCustomizeView } from './customize.js';
 export { createDocView } from './doc-view.js';
 export { createHoverDoc } from './hover-doc.js';
+export { createInlineEval } from './inline-eval.js';
 export { renderMarkdown } from './markdown.js';
 export {
   createImageView,
@@ -36,7 +37,11 @@ export {
   loadLanguageHighlighters,
   clearLanguages,
 } from './language-registry.js';
-export { matchingBracket } from './brackets.js';
+export {
+  matchingBracket,
+  formBoundsAtPoint,
+  formBoundsBeforePoint,
+} from './brackets.js';
 export { findColourLiterals, normaliseToHex } from './colour-literals.js';
 export { openColourPicker } from './colour-picker.js';
 export {

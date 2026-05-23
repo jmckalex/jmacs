@@ -1226,3 +1226,40 @@ textarea.customize-widget {
   font-size: 11px;
   color: var(--accent);
 }
+
+/* Inline-evaluation result pill — pops next to a form when the user
+   evaluates it (C-x C-e / C-RET). Lives on the editor's overlay
+   layer, so it scrolls with the buffer and disappears when the
+   buffer changes. */
+
+.inline-eval {
+  position: absolute;
+  z-index: 6;
+  padding: 0 0.6em;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: calc(var(--font-size) * 0.92);
+  line-height: 1lh;
+  white-space: pre;
+  max-width: 60ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  transition: opacity 0.4s ease-out;
+}
+
+.inline-eval.is-result {
+  background: color-mix(in srgb, var(--result) 18%, transparent);
+  color: var(--result);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--result) 40%, transparent);
+}
+
+.inline-eval.is-error {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  color: var(--error);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--error) 40%, transparent);
+}
+
+.inline-eval.is-fading {
+  opacity: 0;
+}

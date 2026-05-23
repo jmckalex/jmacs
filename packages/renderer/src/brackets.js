@@ -113,6 +113,92 @@ function matchBackward(text, i, mask) {
 }
 
 /**
+ * The offset of the open bracket of the form enclosing `point`, or
+ * `-1` if `point` is not inside any form. Brackets inside strings
+ * and comments are ignored. Used by the inline-evaluation commands
+ * to find the form-at-point.
+ *
+ * @param {string} text
+ * @param {number} point
+ * @param {'lisp' | 'javascript' | 'plain'} [language='plain']
+ * @returns {number}
+ */
+function findEnclosingOpen(text, point, language) {
+  const mask = nonCodeMask(text, language);
+  let depth = 0;
+  for (let i = point - 1; i >= 0; i -= 1) {
+    if (mask[i]) continue;
+    const ch = text[i];
+    if (Object.hasOwn(OPENERS, ch)) {
+      if (depth === 0) return i;
+      depth -= 1;
+    } else if (Object.hasOwn(CLOSERS, ch)) {
+      depth += 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The (start, end) of the form enclosing `point`, half-open
+ * (`end` is just past the closing bracket). Returns `null` when
+ * `point` is not inside any complete form.
+ *
+ * @param {string} text
+ * @param {number} point
+ * @param {'lisp' | 'javascript' | 'plain'} [language='plain']
+ * @returns {{ start: number, end: number } | null}
+ */
+export function formBoundsAtPoint(text, point, language = 'plain') {
+  const open = findEnclosingOpen(text, point, language);
+  if (open < 0) return null;
+  const mask = nonCodeMask(text, language);
+  const close = matchForward(text, open, mask);
+  if (close < 0) return null;
+  return { start: open, end: close + 1 };
+}
+
+/**
+ * The (start, end) of the complete form immediately before `point`.
+ * If the char just before point is a closer, returns its full form.
+ * If it's part of a bare atom (symbol / number / `"string"`), scans
+ * back to the atom's start. Returns `null` when there isn't one.
+ *
+ * @param {string} text
+ * @param {number} point
+ * @param {'lisp' | 'javascript' | 'plain'} [language='plain']
+ * @returns {{ start: number, end: number } | null}
+ */
+export function formBoundsBeforePoint(text, point, language = 'plain') {
+  // Skip trailing whitespace.
+  let end = point;
+  while (end > 0 && /\s/.test(text[end - 1])) end -= 1;
+  if (end === 0) return null;
+  const mask = nonCodeMask(text, language);
+  const ch = text[end - 1];
+  if (Object.hasOwn(CLOSERS, ch) && !mask[end - 1]) {
+    const open = matchBackward(text, end - 1, mask);
+    if (open < 0) return null;
+    return { start: open, end };
+  }
+  if (ch === '"' && !mask[end - 1]) {
+    // The string just ended here — scan back to its opening quote.
+    // `mask[i]` is set for every char inside a string (including the
+    // opening quote); the first index where it flips to 0 is one
+    // past the opener.
+    let i = end - 2;
+    while (i >= 0 && mask[i]) i -= 1;
+    return { start: i + 1, end };
+  }
+  // An atom — scan back over symbol chars.
+  const ATOM_DELIM = /[\s()[\]{}";'`,]/;
+  let start = end - 1;
+  while (start > 0 && !ATOM_DELIM.test(text[start - 1])) start -= 1;
+  if (start >= end) return null;
+  return { start, end };
+}
+
+/**
  * The bracket pair to highlight for a cursor at `point`, or `null`.
  * A close bracket immediately before the cursor, or an open bracket at
  * the cursor, is matched to its partner. Brackets inside strings and

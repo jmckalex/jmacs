@@ -27,6 +27,7 @@ async function editor(initialText = 'hello world') {
   const minibufferPrompts = [];
   const output = [];
   const docCalls = [];
+  const evalCalls = [];
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
     primitives: {
@@ -137,6 +138,22 @@ async function editor(initialText = 'hello world') {
         docCalls.push('search');
         return NIL;
       },
+      'form-bounds-at-point!': () => {
+        evalCalls.push('bounds-at');
+        return NIL;
+      },
+      'form-bounds-before-point!': () => {
+        evalCalls.push('bounds-before');
+        return NIL;
+      },
+      'eval-region!': (args) => {
+        evalCalls.push(`eval-region:${args[0]}-${args[1]}`);
+        return NIL;
+      },
+      'show-eval-log!': () => {
+        evalCalls.push('show-log');
+        return NIL;
+      },
     },
   });
   await loadStdlib(
@@ -160,6 +177,7 @@ async function editor(initialText = 'hello world') {
     minibufferPrompts,
     output,
     docCalls,
+    evalCalls,
   };
 }
 
@@ -2107,4 +2125,30 @@ test('C-h . runs describe-symbol-at-point', async () => {
     output.length > 0,
     `expected C-h . to produce output; got ${JSON.stringify(output)}`
   );
+});
+
+// --- inline eval ---------------------------------------------------
+
+test('C-RET runs eval-expression-at-point through the host primitives', async () => {
+  const { interpreter, evalCalls } = await editor();
+  press(interpreter, 'C-enter');
+  // The command first asks for bounds; the mock returns nil, so the
+  // print-fallback fires (no eval-region) — but bounds-at was called.
+  assert.ok(evalCalls.includes('bounds-at'),
+    `expected bounds-at; got ${JSON.stringify(evalCalls)}`);
+});
+
+test('C-x C-e runs eval-expression-before-point through the host primitives', async () => {
+  const { interpreter, evalCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-e');
+  assert.ok(evalCalls.includes('bounds-before'),
+    `expected bounds-before; got ${JSON.stringify(evalCalls)}`);
+});
+
+test('show-eval-log calls the host primitive', async () => {
+  const { interpreter, evalCalls } = await editor();
+  interpreter.evaluate('(show-eval-log)');
+  assert.ok(evalCalls.includes('show-log'),
+    `expected show-log; got ${JSON.stringify(evalCalls)}`);
 });

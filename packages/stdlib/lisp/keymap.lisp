@@ -26,7 +26,8 @@
    ";"     'comment-line
    "C-d"   'duplicate-line
    "C-j"   'join-line
-   "C-x"   'exchange-point-and-mark})
+   "C-x"   'exchange-point-and-mark
+   "C-e"   'eval-expression-before-point})
 
 ;; The C-h prefix map — help.
 (define c-h-keymap
@@ -120,6 +121,8 @@
    ;; expand-region — C-= as the spec names it; the host normalises that
    ;; keystroke (event.code "Equal") to "C-equal".
    "C-equal"      'expand-region
+   ;; CIDER-style inline eval — C-Enter evaluates the form at point.
+   "C-enter"      'eval-expression-at-point
    "C-x"          c-x-keymap
    "C-h"          c-h-keymap
    "M-n"          sticky-note-keymap
