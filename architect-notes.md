@@ -586,3 +586,80 @@ In the meantime I'll leave the branch in the worktree (`agent-markdown`,
 locked) so the staged install survives.
 
 ---
+
+## [2026-05-23] agent-markdown / Phase 2: complete — wasm built, pipeline green
+
+**Resolution of the blocker above.** You built both
+`tree-sitter-markdown.wasm` and `tree-sitter-markdown-inline.wasm`
+locally via `tree-sitter-cli` + Docker/Emscripten and dropped them in
+`/tmp/md-build/`. This session vendored them and finished phase 2.
+
+**What landed on `agent-markdown` since `3dfadf9`** (this commit
+brings the branch to the state intended by `plans/LANGUAGE-INJECTION.md`
+§Markdown):
+
+- `packages/renderer/vendor/tree-sitter-markdown.wasm` and
+  `tree-sitter-markdown-inline.wasm` — the two new grammars (committed
+  binaries; ~370 KB each).
+- `packages/renderer/src/languages/markdown.js` — block grammar
+  registration with highlight query (headings, fenced-code delimiters,
+  list/blockquote markers, info-string, link targets) and the
+  injection query from the plan, verbatim.
+- `packages/renderer/src/languages/markdown-inline.js` — inline grammar
+  registration. `suffixes: []` (reached only via injection).
+- `packages/stdlib/lisp/languages/markdown.lisp` — adds the
+  `.markdown` suffix mapping to the existing `markdown-mode` in
+  `modes.lisp` (which already covers `.md`/`.jmd`).
+- `scripts/build-grammars.sh` — the build path you used, captured as a
+  one-shot script so the next grammar refresh is reproducible. Not
+  marked executable from the agent; chmod when you want it runnable.
+- `pnpm-workspace.yaml` — added `tree-sitter-cli: true` to
+  `allowBuilds` (the CLI's postinstall downloads the prebuilt platform
+  binary; we want that).
+- `packages/renderer/package.json` — `tree-sitter-cli: 0.25.5` as
+  devDep so the build script has its binary on hand.
+- `packages/renderer/vendor/README.md` — two new rows plus a paragraph
+  explaining that the markdown wasms are built locally, not copied
+  from npm.
+- `apps/desktop/scripts/smoke.js` — markdown arm in the treesitter
+  IIFE: a `.md` buffer with `# heading` + a fenced `javascript` block;
+  asserts `tok-heading > 0` and `tok-keyword > 0` (the latter proves
+  the markdown → javascript injection ran; the inner JS highlighter's
+  `const` capture lights up). `markdown` added to the `langs.includes`
+  assertions.
+
+**One judgement call, please review**: the brief asked for a
+`\`\`\`lisp` fence body with `(define x 1)` in the smoke arm, on the
+assumption that injection would resolve to a Lisp highlighter. The
+editor's Lisp dialect has **no tree-sitter grammar** — it's the
+hand-written `tokenizeLisp` in `highlight.js`, which never registers
+itself with the tree-sitter registry. Injection only resolves inner
+highlighters out of that registry, so a `\`\`\`lisp` fence would
+silently render with the outer `code` face. I swapped in
+`\`\`\`javascript` instead (whose grammar *is* registered) so the
+smoke assertion actually proves injection works. Same shape, same
+proof. If you'd rather we register the lisp tokenizer as a synthetic
+"inner" highlighter, that's a small follow-up — happy to tackle it
+under a fresh brief.
+
+**One small smoke-harness gotcha** (kept locally with a comment):
+`replInput.value = source` goes through a single-line `<input>`, which
+strips literal newlines. The lisp source therefore has to escape
+newlines as a literal `\\n` pair (four backslashes in the JS template
+literal → two in the JS string → the `\n` escape the Lisp string
+reader expects → a real newline in the inserted text). First pass of
+the smoke arm passed only the heading because the fence newlines
+collapsed; the fix was a mechanical re-escape.
+
+**State of the work**: branch `agent-markdown`, one new feature commit
+on top of `3dfadf9`. `pnpm test` green across all packages
+(47 + 68 + 12 + 35 + 160 + 206 = 528 tests). `pnpm --filter
+@editor/desktop smoke` PASS; the markdown line in the treesitter log:
+
+```
+treesitter: {"langs":"bash,css,go,html,javascript,json,markdown_inline,markdown,python,rust,typescript",...,"mdHeadings":1,"mdInjectsJs":2}
+```
+
+Not merged. Ready for you to ff-merge or review.
+
+---

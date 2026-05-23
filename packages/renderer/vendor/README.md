@@ -20,9 +20,21 @@ by `src/treesitter.js`.
 | `tree-sitter-rust.wasm` | `tree-sitter-rust@0.24.0` | the Rust grammar |
 | `tree-sitter-go.wasm` | `tree-sitter-go@0.25.0` | the Go grammar |
 | `tree-sitter-bash.wasm` | `tree-sitter-bash@0.25.1` | the Bash grammar |
+| `tree-sitter-markdown.wasm` | `@tree-sitter-grammars/tree-sitter-markdown@0.3.2` | the Markdown block grammar (built locally — see below) |
+| `tree-sitter-markdown-inline.wasm` | `@tree-sitter-grammars/tree-sitter-markdown@0.3.2` | the Markdown inline grammar (built locally — see below) |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
+
+Most grammars ship a prebuilt `.wasm` on npm; the two Markdown
+grammars do not — `@tree-sitter-grammars/tree-sitter-markdown@0.3.2`
+ships only C source plus native Node bindings. They are built locally
+from that source by `scripts/build-grammars.sh` at the repo root,
+which shells out to `tree-sitter build --wasm --docker` (the
+`tree-sitter-cli` dev dependency provides the binary; Docker provides
+the Emscripten toolchain). The build is a one-time step run when the
+markdown grammar version changes — the produced `.wasm` is committed
+alongside the others.
 
 Tree-sitter is used for JavaScript, HTML and Python. The editor's Lisp
 dialect is custom and still evolving — it has no grammar, and keeps its
