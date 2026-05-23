@@ -490,7 +490,7 @@
 ;; jukebox-mode-map is declared empty in modes.lisp; fill it in here.
 
 (set! jukebox-mode-map
-  {" "     'jukebox-toggle-play
+  {"space" 'jukebox-toggle-play
    "enter" 'jukebox-play-at-point
    "n"     'jukebox-next
    "p"     'jukebox-prev

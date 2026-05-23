@@ -6,8 +6,14 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import { homedir } from 'node:os';
 
 contextBridge.exposeInMainWorld('host', {
+  /** The current user's home directory — used by the renderer to
+   *  expand `~/…` paths a user types from the REPL into something the
+   *  filesystem and `file://` URL scheme will accept. */
+  homeDirectory: homedir(),
+
   /**
    * Show an open dialog and read the chosen file.
    * @returns {Promise<{path: string, name: string, content: string} | null>}

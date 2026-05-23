@@ -319,10 +319,13 @@ test('jukebox with no argument prompts for a directory', async () => {
 });
 
 test('SPC starts playing the current track', async () => {
+  // The renderer's keymap.js normalises the literal space character to
+  // the string "space" before handle-key sees it, so the binding key
+  // must be "space" too.
   const { interpreter, audioCalls, directoryListings } = await jukeboxEditor();
   directoryListings.set('/m', ['a.mp3', 'b.mp3']);
   interpreter.call('jukebox', '/m');
-  interpreter.call('handle-key', ' ');
+  interpreter.call('handle-key', 'space');
   assert.deepEqual(audioCalls[0], ['play', '/m/a.mp3']);
 });
 

@@ -316,6 +316,19 @@ async function openDocstringBuffer(docName, source) {
 // ended event is wired further down, once the interpreter exists.
 const audio = createAudioController();
 
+/** Expand `~/foo` paths a user types from the REPL — the filesystem
+ *  layer (Node's fs in the main process) does it via the IPC helper
+ *  in `files.js`, but `play-audio!` and `open-image-file!` build URLs
+ *  and dispatch directly from the renderer, so they need the same
+ *  expansion at their own entry. */
+const HOME = window.host?.homeDirectory ?? '';
+function expandTilde(path) {
+  if (typeof path !== 'string' || HOME === '') return path;
+  if (path === '~') return HOME;
+  if (path.startsWith('~/')) return HOME + '/' + path.slice(2);
+  return path;
+}
+
 // --- file open / save ---------------------------------------------------
 
 async function openFileInteractive() {
@@ -716,7 +729,7 @@ const interpreter = createInterpreter({
     // Mirrors `open-file!` for an explicit path; jukebox-mode uses this
     // for M-RET on the album-art file.
     'open-image-file!': (args) => {
-      const filePath = String(args[0] ?? '');
+      const filePath = expandTilde(String(args[0] ?? ''));
       if (filePath === '') return NIL;
       openImageByPath(filePath);
       return NIL;
@@ -1063,7 +1076,7 @@ const interpreter = createInterpreter({
       return entries === null ? NIL : arrayToList(entries);
     },
     'play-audio!': (args) => {
-      audio.play(String(args[0]));
+      audio.play(expandTilde(String(args[0])));
       return NIL;
     },
     'pause-audio!': () => {

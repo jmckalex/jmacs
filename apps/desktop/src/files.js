@@ -7,8 +7,25 @@
 import { app, dialog, ipcMain } from 'electron';
 import { readdirSync } from 'node:fs';
 import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+/**
+ * Expand a leading `~` (or `~/…`) to the current user's home directory.
+ * Paths a user types from the REPL (e.g. `(jukebox "~/Music/foo")`)
+ * arrive verbatim — Node does not do the shell's tilde expansion. Used
+ * by every IPC handler that touches a user-supplied path.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+function expandTilde(path) {
+  if (typeof path !== 'string') return path;
+  if (path === '~') return homedir();
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2));
+  return path;
+}
 
 // apps/desktop/src/files.js → repository root.
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -115,8 +132,9 @@ export function registerFileHandlers() {
   // (e.g. jukebox-mode's M-RET on the album-art file) can hand a path
   // to the same image-buffer pipeline `file:open` feeds into.
   ipcMain.handle('file:open-path', async (_event, payload) => {
-    const path = payload?.path;
-    if (typeof path !== 'string' || path === '') return null;
+    const raw = payload?.path;
+    if (typeof raw !== 'string' || raw === '') return null;
+    const path = expandTilde(raw);
     try {
       const mime = imageMimeType(path);
       if (mime !== null) {
@@ -171,7 +189,9 @@ export function registerFileHandlers() {
   // jukebox-mode to discover audio files and album art.
   ipcMain.handle('directory:list', async (_event, payload) => {
     try {
-      const entries = await readdir(payload?.path, { withFileTypes: true });
+      const entries = await readdir(expandTilde(payload?.path), {
+        withFileTypes: true,
+      });
       return entries
         .filter((entry) => !entry.name.startsWith('.'))
         .map((entry) => entry.name)
@@ -187,7 +207,9 @@ export function registerFileHandlers() {
   // the renderer thread.
   ipcMain.on('directory:list-sync', (event, payload) => {
     try {
-      const entries = readdirSync(payload?.path, { withFileTypes: true });
+      const entries = readdirSync(expandTilde(payload?.path), {
+        withFileTypes: true,
+      });
       event.returnValue = entries
         .filter((entry) => !entry.name.startsWith('.'))
         .map((entry) => entry.name)
