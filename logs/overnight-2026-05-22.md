@@ -791,3 +791,32 @@ treesitter line shows `rust` in `langs`, plus
 - (this log entry)
 
 ---
+
+## B5 — Go  (branch `agent-b5-lang-go`)
+
+**What was built.** Go as a drop-in.
+
+- Vendored `tree-sitter-go.wasm` from `tree-sitter-go@0.25.0`.
+- `packages/renderer/src/languages/go.js` — comments, three
+  string types, int/float/rune literals; the full Go keyword
+  alternation (anonymous tokens in this grammar, unlike Rust);
+  `(true) (false) (nil) (iota)` as named-node constants; both
+  `function_declaration` and `method_declaration` captured as
+  `@function`; call_expression + selector_expression for
+  method calls; `type_spec` + `type_identifier` as `@type`.
+- `packages/stdlib/lisp/languages/go.lisp` defines `go-mode`
+  (`:comment-prefix "// "`) for `.go`.
+- Smoke arm: `(insert! "package p; func F() int32 { return 0 }")`
+  into `smoke.go`; asserts ≥1 `.tok-keyword` and ≥1 `.tok-type`.
+
+**Tests.** `pnpm test` — 472 tests, 0 failures.
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS. The
+treesitter line: `… "rust", "typescript", … goKeywords: 3,
+goTypes: 1` and `go` in `langs`.
+
+**Commits.**
+- `623f3e3` feat(b5): add the Go tree-sitter language
+- (this log entry)
+
+---
