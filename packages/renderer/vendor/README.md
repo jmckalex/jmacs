@@ -18,6 +18,7 @@ by `src/treesitter.js`.
 | `tree-sitter-typescript.wasm` | `tree-sitter-typescript@0.23.2` | the TypeScript grammar |
 | `tree-sitter-rust.wasm` | `tree-sitter-rust@0.24.0` | the Rust grammar |
 | `tree-sitter-go.wasm` | `tree-sitter-go@0.25.0` | the Go grammar |
+| `tree-sitter-bash.wasm` | `tree-sitter-bash@0.25.1` | the Bash grammar |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.

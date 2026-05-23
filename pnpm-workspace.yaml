@@ -14,3 +14,4 @@ allowBuilds:
   tree-sitter-typescript: false
   tree-sitter-rust: false
   tree-sitter-go: false
+  tree-sitter-bash: false
