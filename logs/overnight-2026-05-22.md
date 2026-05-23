@@ -751,3 +751,43 @@ typescript", … "tsKeywords":1, "tsTypes":1}`.
 - (this log entry)
 
 ---
+
+## B4 — Rust  (branch `agent-b4-lang-rust`)
+
+**What was built.** Rust as a drop-in.
+
+- Vendored `tree-sitter-rust.wasm` from `tree-sitter-rust@0.24.0`.
+- `packages/renderer/src/languages/rust.js` — the Rust keyword
+  list, plus three queries that needed to use *named-node*
+  syntax rather than anonymous-literal syntax: `(self)`,
+  `(super)`, `(crate)` are named nodes in this grammar (not
+  anonymous tokens), so `"self"` / `"super"` / `"crate"` in a
+  `[ … ]` alternation makes the Query constructor throw
+  `Bad node name 'crate'`. Captures function_item names,
+  call_expression function names (including method calls via
+  `field_expression`), struct/enum/trait declarations,
+  type_identifier and primitive_type.
+- `packages/stdlib/lisp/languages/rust.lisp` defines `rust-mode`
+  (`:comment-prefix "// "`) for `.rs`.
+- Smoke arm: `(insert! "fn go() -> u32 { 1 }")` into
+  `smoke.rs`; asserts ≥1 `.tok-keyword` and ≥1 `.tok-type`.
+
+**Decision / deviation.** Hit `Bad node name 'crate'` on the
+first attempt; root cause was the grammar treating `self` /
+`super` / `crate` as named nodes (not anonymous tokens) and
+mutable_specifier wrapping the `mut` token. Pulled those out
+of the `[ "fn" "let" … ]` alternation and gave each its own
+`(node-name) @keyword` capture. Worth keeping in mind for B5
+and B6.
+
+**Tests.** `pnpm test` — 472 tests, 0 failures.
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS. The
+treesitter line shows `rust` in `langs`, plus
+`rsKeywords: 1, rsTypes: 1`.
+
+**Commits.**
+- `fe88b58` feat(b4): add the Rust tree-sitter language
+- (this log entry)
+
+---
