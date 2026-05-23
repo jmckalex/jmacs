@@ -1,0 +1,98 @@
+/**
+ * @file Audio playback — a thin wrapper around a single shared
+ * HTMLAudioElement, exposed to Lisp through `app.js`. The jukebox-mode
+ * standard library drives playback through these primitives.
+ *
+ * Only one track plays at a time. Asking to play a different path stops
+ * whatever was playing and starts the new path; asking to play the same
+ * path resumes (if paused) or starts from the beginning.
+ *
+ * v1 keeps the contract tiny: play, pause, stop, query time/duration,
+ * and a single `onEnded` callback the jukebox uses to auto-advance.
+ */
+
+/**
+ * Create an audio controller. The renderer calls this once; the returned
+ * object's methods become Lisp primitives.
+ *
+ * @returns {{
+ *   play(path: string): void,
+ *   pause(): void,
+ *   stop(): void,
+ *   currentTime(): number,
+ *   duration(): number,
+ *   currentPath(): string | null,
+ *   isPlaying(): boolean,
+ *   onEnded(callback: () => void): void,
+ * }}
+ */
+export function createAudioController() {
+  /** @type {HTMLAudioElement | null} */
+  let element = null;
+  /** @type {string | null} */
+  let currentPath = null;
+  /** @type {(() => void) | null} */
+  let endedCallback = null;
+
+  /** Lazily construct the audio element on first use. */
+  function ensureElement() {
+    if (element) return element;
+    element = new Audio();
+    element.preload = 'metadata';
+    element.addEventListener('ended', () => {
+      if (endedCallback) endedCallback();
+    });
+    return element;
+  }
+
+  /** A filesystem path → a renderable `file://` URL. */
+  function pathToUrl(path) {
+    if (path.startsWith('file://')) return path;
+    // Encode each segment but keep slashes; spaces and unicode are
+    // common in audio filenames.
+    return 'file://' + path.split('/').map(encodeURIComponent).join('/');
+  }
+
+  return {
+    play(path) {
+      const el = ensureElement();
+      if (path !== currentPath) {
+        el.src = pathToUrl(path);
+        currentPath = path;
+      }
+      // play() returns a promise that rejects on autoplay block; we
+      // swallow it so the Lisp call stays simple — the jukebox panel
+      // will show no progress, which is enough feedback.
+      el.play().catch(() => {});
+    },
+    pause() {
+      if (element) element.pause();
+    },
+    stop() {
+      if (!element) return;
+      element.pause();
+      element.currentTime = 0;
+      // Drop the src so the next play() of the same path starts fresh.
+      element.removeAttribute('src');
+      element.load();
+      currentPath = null;
+    },
+    currentTime() {
+      return element ? element.currentTime || 0 : 0;
+    },
+    duration() {
+      if (!element) return 0;
+      const d = element.duration;
+      return Number.isFinite(d) ? d : 0;
+    },
+    currentPath() {
+      return currentPath;
+    },
+    isPlaying() {
+      return element !== null && !element.paused && !element.ended;
+    },
+    onEnded(callback) {
+      endedCallback = callback;
+    },
+  };
+}

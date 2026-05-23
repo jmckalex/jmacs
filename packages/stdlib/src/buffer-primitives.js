@@ -236,6 +236,14 @@ export function createBufferPrimitives(session) {
       buf.deleteForward(Math.abs(b - a));
       return NIL;
     },
+    'set-buffer-text!': (args) => {
+      buffer().setText(String(args[0]));
+      return NIL;
+    },
+    'set-buffer-name!': (args) => {
+      buffer().name = String(args[0]);
+      return NIL;
+    },
 
     // --- history --------------------------------------------------------
     'undo!': () => {

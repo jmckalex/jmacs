@@ -15,6 +15,16 @@ contextBridge.exposeInMainWorld('host', {
   openFile: () => ipcRenderer.invoke('file:open'),
 
   /**
+   * Read a file by an explicit path — no dialog. Image suffixes come
+   * back as a `data:` URL in `imageSrc`; other files come back as
+   * UTF-8 text in `content`.
+   * @param {string} path
+   * @returns {Promise<{path: string, name: string, content?: string,
+   *   imageSrc?: string} | null>}
+   */
+  openFilePath: (path) => ipcRenderer.invoke('file:open-path', { path }),
+
+  /**
    * Save content to a file. With a null path, prompts for one.
    * @param {string | null} path
    * @param {string} content
@@ -24,6 +34,28 @@ contextBridge.exposeInMainWorld('host', {
 
   /** Quit the application. */
   quit: () => ipcRenderer.send('app:quit'),
+
+  /**
+   * List a directory's non-hidden entries, sorted alphabetically. Returns
+   * null when the path cannot be read.
+   * @param {string} path
+   * @returns {Promise<string[] | null>}
+   */
+  listDirectory: (path) => ipcRenderer.invoke('directory:list', { path }),
+
+  /**
+   * Show a directory-only open dialog. Returns the chosen path or null.
+   * @returns {Promise<string | null>}
+   */
+  openDirectory: () => ipcRenderer.invoke('directory:open'),
+
+  /**
+   * The same listing, synchronously — the Lisp interpreter is
+   * synchronous, so jukebox-mode reaches the filesystem this way.
+   * @param {string} path
+   * @returns {string[] | null}
+   */
+  listDirectorySync: (path) => ipcRenderer.sendSync('directory:list-sync', { path }),
 
   /**
    * Render JMarkdown `source` to HTML by running `command` (a shell

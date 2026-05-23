@@ -9,7 +9,7 @@
 
 import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +48,9 @@ writeFileSync(
     'base64'
   )
 );
+
+/** A scratch directory the jukebox smoke arm seeds with fake audio files. */
+const jukeboxDir = join(tmpdir(), 'jmacs-smoke-jukebox');
 
 // Isolate the smoke run's config files (custom.lisp, init.lisp) in a
 // fresh temp directory, so it never touches the real user data dir.
@@ -1140,6 +1143,58 @@ app.whenReady().then(() => {
       })()`);
       console.log('  bufferMenu:', JSON.stringify(bufferMenu));
 
+      // Jukebox: seed a directory with placeholder audio files (their
+      // contents are irrelevant — the smoke checks panel rendering and
+      // mode binding, not real audio decode), then run (jukebox <dir>)
+      // and confirm the buffer is named, in jukebox-mode, and lists
+      // every track.
+      await mkdir(jukeboxDir, { recursive: true });
+      await Promise.all([
+        writeFile(join(jukeboxDir, 'silence.mp3'), ''),
+        writeFile(join(jukeboxDir, 'second.flac'), ''),
+        writeFile(join(jukeboxDir, 'cover.jpg'), ''),
+        writeFile(join(jukeboxDir, 'readme.txt'), 'ignore me'),
+      ]);
+      const jukebox = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const lastResult = () => {
+          const all = document.querySelectorAll('.repl-result');
+          return all.length ? all[all.length - 1].textContent : '';
+        };
+        submit('(jukebox ${JSON.stringify(jukeboxDir)})');
+        await frame();
+        const name = document.getElementById('modeline-name').textContent;
+        const body = Array.from(
+          document.querySelectorAll('.editor-line')
+        ).map((l) => l.textContent).join('\\n');
+        // The mode menu reflects the active major mode keymap.
+        submit('(major-mode-name)');
+        const major = lastResult();
+        // Pressing s toggles the shuffle flag — visible in the panel.
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 's', bubbles: true, cancelable: true,
+        }));
+        await frame();
+        const afterShuffle = Array.from(
+          document.querySelectorAll('.editor-line')
+        ).map((l) => l.textContent).join('\\n');
+        return { name, body, major, afterShuffle };
+      })()`);
+      console.log('  jukebox:', JSON.stringify({
+        name: jukebox.name, major: jukebox.major,
+        bodyLen: jukebox.body.length, hasShuffle: jukebox.afterShuffle.includes('SHUFFLE'),
+      }));
+      await rm(jukeboxDir, { recursive: true, force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -1262,6 +1317,14 @@ app.whenReady().then(() => {
         bufferMenu.rowCount >= 4 &&
         bufferMenu.targetGone &&
         bufferMenu.keepStill;
+      const jukeboxOk =
+        jukebox.name.includes('Jukebox:') &&
+        jukebox.major.includes('Jukebox') &&
+        jukebox.body.includes('silence.mp3') &&
+        jukebox.body.includes('second.flac') &&
+        jukebox.body.includes('cover.jpg') &&
+        !jukebox.body.includes('readme.txt') &&
+        jukebox.afterShuffle.includes('SHUFFLE');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -1269,7 +1332,7 @@ app.whenReady().then(() => {
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
         markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && imageOk && swatchesOk &&
-        docsOk && liveDocsOk && bufferMenuOk
+        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk
       ) {
         finish(
           0,
@@ -1340,11 +1403,13 @@ app.whenReady().then(() => {
         finish(1, `live docstring rendering did not work (${JSON.stringify(liveDocs)})`);
       } else if (!bufferMenuOk) {
         finish(1, `buffer menu did not work (${JSON.stringify(bufferMenu)})`);
-      } else {
+      } else if (!swatchesOk) {
         finish(
           1,
           `colour swatches did not work (${JSON.stringify(swatches)})`
         );
+      } else {
+        finish(1, `jukebox did not work (${JSON.stringify(jukebox)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

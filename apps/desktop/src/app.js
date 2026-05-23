@@ -38,6 +38,7 @@ import {
   renderMarkdown,
 } from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
+import { createAudioController } from './audio.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 
@@ -310,6 +311,11 @@ async function openDocstringBuffer(docName, source) {
   switchToBuffer(buffers.length - 1);
 }
 
+// --- audio playback (jukebox mode) --------------------------------------
+// A single shared HTMLAudioElement, driven by the Lisp jukebox. The
+// ended event is wired further down, once the interpreter exists.
+const audio = createAudioController();
+
 // --- file open / save ---------------------------------------------------
 
 async function openFileInteractive() {
@@ -339,6 +345,30 @@ async function openFileInteractive() {
     switchToBuffer(buffers.length - 1);
   } catch (error) {
     repl.appendError(`open failed: ${error.message}`);
+  }
+}
+
+/**
+ * Open an image file by an explicit path, dialog-free. Mounts an
+ * `image`-kind buffer for it and switches to it — the same view the
+ * dialog path produces. Used by jukebox-mode's M-RET on album art.
+ */
+async function openImageByPath(filePath) {
+  try {
+    const result = await window.host.openFilePath(filePath);
+    if (result === null || typeof result.imageSrc !== 'string') {
+      repl.appendError(`open-image: not an image or unreadable (${filePath})`);
+      return;
+    }
+    buffers.push({
+      kind: 'image',
+      name: result.name,
+      filePath: result.path,
+      src: result.imageSrc,
+    });
+    switchToBuffer(buffers.length - 1);
+  } catch (error) {
+    repl.appendError(`open-image failed: ${error.message}`);
   }
 }
 
@@ -682,6 +712,15 @@ const interpreter = createInterpreter({
       openFileInteractive();
       return NIL;
     },
+    // Open an image file at PATH (a string) as an image-kind buffer.
+    // Mirrors `open-file!` for an explicit path; jukebox-mode uses this
+    // for M-RET on the album-art file.
+    'open-image-file!': (args) => {
+      const filePath = String(args[0] ?? '');
+      if (filePath === '') return NIL;
+      openImageByPath(filePath);
+      return NIL;
+    },
     'save-buffer!': () => {
       saveBufferInteractive();
       return NIL;
@@ -1015,7 +1054,66 @@ const interpreter = createInterpreter({
       stickyNotes.toggle();
       return NIL;
     },
+
+    // Jukebox audio — see audio.js and jukebox.lisp. Each primitive is
+    // a thin wrapper over the shared HTMLAudioElement; the panel layout
+    // and playlist logic live entirely in Lisp.
+    'list-directory': (args) => {
+      const entries = window.host.listDirectorySync(String(args[0]));
+      return entries === null ? NIL : arrayToList(entries);
+    },
+    'play-audio!': (args) => {
+      audio.play(String(args[0]));
+      return NIL;
+    },
+    'pause-audio!': () => {
+      audio.pause();
+      return NIL;
+    },
+    'stop-audio!': () => {
+      audio.stop();
+      return NIL;
+    },
+    'audio-current-time': () => audio.currentTime(),
+    'audio-duration': () => audio.duration(),
+    'audio-playing?': () => audio.isPlaying(),
+    'audio-current-path': () => {
+      const p = audio.currentPath();
+      return p === null ? NIL : p;
+    },
+    // Show the directory picker; on confirm, dispatch the chosen path
+    // back into Lisp via the jukebox callback. Mirrors how `open-file!`
+    // returns immediately and the file is shown when the dialog resolves.
+    'prompt-directory!': () => {
+      window.host
+        .openDirectory()
+        .then((path) => {
+          if (path === null) return;
+          try {
+            interpreter.call('jukebox-on-directory-chosen', path);
+          } catch (error) {
+            repl.appendError(
+              error.lispMessage ?? error.message ?? String(error)
+            );
+          }
+        })
+        .catch((error) => {
+          repl.appendError(`directory open failed: ${error.message}`);
+        });
+      return NIL;
+    },
   },
+});
+
+// Auto-advance: the audio element fires `ended`, which the jukebox
+// translates into a "next track" command. Other contexts have no such
+// command, so the call silently no-ops.
+audio.onEnded(() => {
+  try {
+    interpreter.call('jukebox-track-ended');
+  } catch {
+    // No jukebox loaded — that is fine; the track has simply finished.
+  }
 });
 
 /** Evaluate a line of REPL input and show the result. */

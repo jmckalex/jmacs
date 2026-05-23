@@ -28,6 +28,7 @@
    ";"     'comment-line
    "C-d"   'duplicate-line
    "C-j"   'join-line
+   "j"     'jukebox
    "C-x"   'exchange-point-and-mark
    "C-e"   'eval-expression-before-point})
 
