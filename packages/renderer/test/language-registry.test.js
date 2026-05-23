@@ -50,13 +50,25 @@ test('registerLanguage validates the spec', () => {
     () => registerLanguage({ tag: 'x', grammar: 'g.wasm' }),
     /missing query/
   );
+  // suffixes is required as an array — an empty array is allowed for
+  // injection-only languages (e.g. markdown_inline, reached only via
+  // a fenced-block injection).
   assert.throws(
     () =>
       registerLanguage({
         tag: 'x',
         grammar: 'g.wasm',
         query: '',
-        suffixes: [],
+      }),
+    /missing suffixes/
+  );
+  assert.throws(
+    () =>
+      registerLanguage({
+        tag: 'x',
+        grammar: 'g.wasm',
+        query: '',
+        suffixes: 'not-an-array',
       }),
     /missing suffixes/
   );
@@ -111,4 +123,92 @@ test('loadLanguageHighlighters reports per-language failures and continues', asy
   assert.deepEqual(errors, [['fortran', 'boom']]);
   assert.ok('cobol' in highlighters);
   assert.ok(!('fortran' in highlighters));
+});
+
+test('registerLanguage accepts an empty suffixes array (injection-only language)', () => {
+  registerLanguage({ ...SPEC, suffixes: [] });
+  // No suffix means it is never selected by filename.
+  assert.equal(languageForFilename('alpha.f90'), null);
+  // It does appear in the registry, though, so injection can reach it.
+  assert.equal(registeredLanguages().length, 1);
+});
+
+test('registerLanguage stores an injectionQuery when provided', () => {
+  registerLanguage({
+    ...SPEC,
+    injectionQuery:
+      '((script_element (raw_text) @injection.content) ' +
+      '(#set! injection.language "javascript"))',
+  });
+  assert.match(registeredLanguages()[0].injectionQuery, /injection\.content/);
+});
+
+test('registerLanguage rejects a non-string injectionQuery', () => {
+  assert.throws(
+    () => registerLanguage({ ...SPEC, injectionQuery: 42 }),
+    /injectionQuery must be a string/
+  );
+});
+
+test('loadLanguageHighlighters threads getHighlighter only into injection-bearing languages', async () => {
+  registerLanguage(SPEC); // no injection
+  registerLanguage({
+    ...SPEC,
+    tag: 'cobol',
+    grammar: 'tree-sitter-cobol.wasm',
+    suffixes: ['.cob'],
+    injectionQuery: '((x) @injection.content)',
+  });
+  /** @type {Record<string, object | undefined>} */
+  const seenOptions = {};
+  const create = async (grammar, _query, options) => {
+    seenOptions[grammar] = options;
+    return {
+      highlight: () => [],
+      captures: () => [],
+    };
+  };
+  await loadLanguageHighlighters(create);
+  // The plain language got no options at all.
+  assert.equal(seenOptions['tree-sitter-fortran.wasm'], undefined);
+  // The injection-bearing one got the query and a lookup closure.
+  const cobolOpts = seenOptions['tree-sitter-cobol.wasm'];
+  assert.equal(typeof cobolOpts.injectionQuery, 'string');
+  assert.equal(typeof cobolOpts.getHighlighter, 'function');
+});
+
+test('getHighlighter resolves siblings lazily, after every language is loaded', async () => {
+  // Two languages: A injects B; B is registered *after* A. The
+  // closure must read the populated map at injection time, not at
+  // load time — so the lookup for B succeeds even though it had not
+  // been built when A was constructed.
+  registerLanguage({
+    tag: 'a',
+    grammar: 'a.wasm',
+    query: '',
+    suffixes: ['.a'],
+    injectionQuery: '((x) @injection.content)',
+  });
+  registerLanguage({
+    tag: 'b',
+    grammar: 'b.wasm',
+    query: '',
+    suffixes: ['.b'],
+  });
+  /** @type {(tag: string) => unknown} */
+  let capturedLookup = null;
+  const create = async (grammar, _query, options) => {
+    if (options) capturedLookup = options.getHighlighter;
+    return {
+      highlight: () => [],
+      captures: () => [`captured-${grammar}`],
+    };
+  };
+  await loadLanguageHighlighters(create);
+  assert.equal(typeof capturedLookup, 'function');
+  // The closure must see 'b' even though A was constructed before B.
+  const innerB = capturedLookup('b');
+  assert.ok(innerB);
+  assert.equal(typeof innerB.captures, 'function');
+  assert.deepEqual(innerB.captures(''), ['captured-b.wasm']);
 });

@@ -13,6 +13,15 @@
  * the faces the theme styles. Where a capture nests inside another —
  * a call inside an f-string, say — `splitIntoLineRuns` keeps the outer
  * one.
+ *
+ * Some grammars (Markdown, HTML, PHP) describe documents whose nodes
+ * contain source in *another* language: a fenced code block, a
+ * `<script>` body, a `<?php ... ?>` block. An optional second query —
+ * the *injection query* — captures those regions paired with a
+ * language tag, and the highlighter runs the inner language's
+ * highlighter recursively on each region. The outer face on an
+ * injected region is dropped; the inner ranges take its place.
+ * Recursion is depth-capped to guard against grammar-pair cycles.
  */
 
 import { Language, Parser, Query } from '../vendor/web-tree-sitter.js';
@@ -22,9 +31,41 @@ import { splitIntoLineRuns } from './runs.js';
 const VENDOR = 'app://editor/packages/renderer/vendor';
 
 /**
+ * Maximum nesting depth for language injection. PHP → HTML → JS/CSS is
+ * a legitimate three-level chain; four is one beyond that, leaving room
+ * for one unanticipated layer while still terminating any pathological
+ * grammar-pair that injects each other. When the cap is reached, the
+ * outer face survives on the would-be-injected range.
+ *
+ * Exported so tests can assert against the limit without hard-coding.
+ */
+export const MAX_INJECTION_DEPTH = 4;
+
+/**
+ * @typedef {{ start: number, end: number, face: string }} CaptureRange
+ *   Absolute character offsets in the highlighted text.
+ */
+
+/**
  * @typedef {object} Highlighter
  * @property {(text: string) => import('./highlight.js').Run[][]} highlight -
  *   Highlight source into one array of runs per line.
+ * @property {(text: string, depth?: number) => CaptureRange[]} captures -
+ *   Raw absolute-offset capture ranges. Used by the injection pipeline
+ *   to splice an inner language's tokens into an outer document.
+ */
+
+/**
+ * @typedef {object} CreateHighlighterOptions
+ * @property {string} [injectionQuery] -
+ *   A second tree-sitter query whose matches each pair an
+ *   `@injection.content` capture (the region to inject into) with a
+ *   language tag — either an `@injection.language` capture whose text
+ *   is the tag, or a `(#set! injection.language "name")` predicate.
+ * @property {(tag: string) => Highlighter | undefined} [getHighlighter] -
+ *   Look up the highlighter to use for an injection's language tag.
+ *   Required when `injectionQuery` is set; missing inner highlighters
+ *   degrade gracefully (the outer face survives on that region).
  */
 
 /** The web-tree-sitter runtime is initialised once, lazily. */
@@ -42,9 +83,14 @@ function initRuntime() {
  *
  * @param {string} grammarFile - A `.wasm` file name in `../vendor/`.
  * @param {string} querySource - The highlight query.
+ * @param {CreateHighlighterOptions} [options]
  * @returns {Promise<Highlighter>}
  */
-export async function createTreeSitterHighlighter(grammarFile, querySource) {
+export async function createTreeSitterHighlighter(
+  grammarFile,
+  querySource,
+  options = {}
+) {
   await initRuntime();
 
   const response = await fetch(`${VENDOR}/${grammarFile}`);
@@ -55,18 +101,163 @@ export async function createTreeSitterHighlighter(grammarFile, querySource) {
   const parser = new Parser();
   parser.setLanguage(language);
   const query = new Query(language, querySource);
+  const injectionQuery = options.injectionQuery
+    ? new Query(language, options.injectionQuery)
+    : null;
+  const getHighlighter = options.getHighlighter;
+
+  /**
+   * @param {string} text
+   * @param {number} depth - Current nesting depth; outermost call is 0.
+   * @returns {CaptureRange[]}
+   */
+  function captures(text, depth = 0) {
+    const tree = parser.parse(text);
+    /** @type {CaptureRange[]} */
+    const outerRanges = query.captures(tree.rootNode).map((capture) => ({
+      start: capture.node.startIndex,
+      end: capture.node.endIndex,
+      face: capture.name,
+    }));
+    const injections = injectionQuery
+      ? collectInjections(injectionQuery, tree.rootNode)
+      : [];
+    tree.delete();
+    return spliceInjections(
+      text,
+      outerRanges,
+      injections,
+      getHighlighter,
+      depth
+    );
+  }
 
   return {
     highlight(text) {
-      const tree = parser.parse(text);
-      // Extract plain data before freeing the tree.
-      const ranges = query.captures(tree.rootNode).map((capture) => ({
-        start: capture.node.startIndex,
-        end: capture.node.endIndex,
-        face: capture.name,
-      }));
-      tree.delete();
-      return splitIntoLineRuns(text, ranges);
+      return splitIntoLineRuns(text, captures(text, 0));
     },
+    captures,
   };
+}
+
+/**
+ * Merge outer-grammar captures with the inner-language captures their
+ * injection regions produce. The pure heart of the injection algorithm
+ * — no parser, no query, no I/O — so the test suite can exercise it
+ * directly without loading any grammar.
+ *
+ * For each injection, the inner highlighter (looked up via `getHighlighter`)
+ * is called recursively with `depth + 1`; its returned ranges are
+ * shifted by the injection's start so they live in the outer
+ * coordinate space. Outer ranges fully contained in any *live*
+ * injection (one whose inner highlighter resolved) are dropped — the
+ * inner ranges take their place. Outer ranges that fall outside every
+ * live injection, or inside a missing one, survive untouched.
+ *
+ * Recursion stops at {@link MAX_INJECTION_DEPTH}: at the cap the
+ * outer ranges are returned as-is, leaving the outer face on what
+ * would have been an injected region.
+ *
+ * @param {string} text - The text the outer captures are over.
+ * @param {CaptureRange[]} outerRanges
+ * @param {{ start: number, end: number, language: string }[]} injections
+ * @param {((tag: string) => Highlighter | undefined) | undefined} getHighlighter
+ * @param {number} depth - Outer call is 0; recursive call is parent + 1.
+ * @returns {CaptureRange[]}
+ */
+export function spliceInjections(
+  text,
+  outerRanges,
+  injections,
+  getHighlighter,
+  depth
+) {
+  if (
+    !getHighlighter ||
+    injections.length === 0 ||
+    depth >= MAX_INJECTION_DEPTH
+  ) {
+    return outerRanges;
+  }
+
+  /** @type {{ start: number, end: number }[]} */
+  const liveInjections = [];
+  /** @type {CaptureRange[]} */
+  const innerRanges = [];
+
+  for (const injection of injections) {
+    const inner = getHighlighter(injection.language);
+    if (!inner || typeof inner.captures !== 'function') continue;
+    const sliced = text.slice(injection.start, injection.end);
+    const ranges = inner.captures(sliced, depth + 1);
+    for (const r of ranges) {
+      innerRanges.push({
+        start: r.start + injection.start,
+        end: r.end + injection.start,
+        face: r.face,
+      });
+    }
+    liveInjections.push({ start: injection.start, end: injection.end });
+  }
+
+  if (liveInjections.length === 0) return outerRanges;
+
+  const filteredOuter = outerRanges.filter(
+    (r) => !rangeFullyContainedInAny(r, liveInjections)
+  );
+  return filteredOuter.concat(innerRanges);
+}
+
+/**
+ * Pull `{ start, end, language }` from an injection query's matches.
+ * The language tag comes from either an `@injection.language` capture
+ * (its node text) or a `(#set! injection.language "name")` directive.
+ * Matches missing either the content capture or the language tag are
+ * silently skipped — that's how the grammar marks "no inner language
+ * for this region".
+ *
+ * @param {object} injectionQuery
+ * @param {object} rootNode
+ * @returns {{ start: number, end: number, language: string }[]}
+ */
+function collectInjections(injectionQuery, rootNode) {
+  const matches = injectionQuery.matches(rootNode);
+  const result = [];
+  for (const match of matches) {
+    let contentNode = null;
+    let languageFromCapture = null;
+    for (const capture of match.captures) {
+      if (capture.name === 'injection.content') contentNode = capture.node;
+      else if (capture.name === 'injection.language') {
+        languageFromCapture = capture.node.text;
+      }
+    }
+    if (!contentNode) continue;
+    const language =
+      languageFromCapture ??
+      match.setProperties?.['injection.language'] ??
+      null;
+    if (!language) continue;
+    result.push({
+      start: contentNode.startIndex,
+      end: contentNode.endIndex,
+      language,
+    });
+  }
+  return result;
+}
+
+/**
+ * True if range `r` is fully inside any of the given regions. Used to
+ * drop outer-highlighter captures that the inner highlighter is about
+ * to replace.
+ *
+ * @param {{ start: number, end: number }} r
+ * @param {{ start: number, end: number }[]} regions
+ */
+function rangeFullyContainedInAny(r, regions) {
+  for (const region of regions) {
+    if (r.start >= region.start && r.end <= region.end) return true;
+  }
+  return false;
 }
