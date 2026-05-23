@@ -126,11 +126,18 @@ export function createHoverDoc(editorEl, options) {
     hide();
   });
 
-  /** Move the tooltip out of the way when the user clicks/scrolls. */
+  /** Move the tooltip out of the way when the user clicks/scrolls.
+   *  Note: we deliberately do NOT hide on `editorEl.mouseleave` —
+   *  the tooltip lives on document.body, so the mouse leaves the
+   *  editor the moment it enters the tooltip, and a `mouseleave`
+   *  handler would close the tooltip just as the user reaches for
+   *  the click-to-open link. Cancelling the pending show-timer is
+   *  enough: a visible tooltip persists until the user clicks
+   *  (anywhere) or scrolls. */
   editorEl.addEventListener('mousedown', hide);
   editorEl.addEventListener('wheel', hide, { passive: true });
   editorEl.addEventListener('scroll', hide, { passive: true });
-  editorEl.addEventListener('mouseleave', hide);
+  editorEl.addEventListener('mouseleave', () => clearShowTimer());
 
   editorEl.addEventListener('mousemove', (event) => {
     // Skip when the cursor is over a UI overlay (sticky notes etc.).
