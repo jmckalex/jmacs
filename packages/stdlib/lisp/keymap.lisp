@@ -18,6 +18,7 @@
    "C-r"   'reload-stdlib
    "C-c"   'quit-editor
    "b"     'switch-buffer
+   "C-b"   'buffer-menu
    "right" 'next-buffer
    "left"  'previous-buffer
    "n"     'new-buffer

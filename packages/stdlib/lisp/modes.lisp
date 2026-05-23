@@ -17,6 +17,7 @@
 (define markdown-mode-map {})
 (define latex-mode-map {})
 (define makefile-mode-map {})
+(define buffer-menu-mode-map {})
 
 ;; --- the modes ---------------------------------------------------------
 (define-mode fundamental-mode
@@ -48,6 +49,14 @@
   :comment-prefix "# "
   :keymap 'makefile-mode-map
   :highlight :makefile)
+
+;; The buffer-menu mode — the *Buffer List* buffer is plain text with a
+;; keymap that turns RET/d/u/x/g/q into menu actions. No suffix is
+;; registered; the mode is set explicitly when `buffer-menu` opens the
+;; list. See `buffer-menu.lisp`.
+(define-mode buffer-menu-mode
+  :name "BufMenu"
+  :keymap 'buffer-menu-mode-map)
 
 ;; --- the registry — a filename suffix chooses a major mode -------------
 (define *mode-registry* (list))

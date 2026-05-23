@@ -1014,6 +1014,95 @@ app.whenReady().then(() => {
       })()`);
       console.log('  liveDocs:', JSON.stringify(liveDocs));
 
+      // Buffer menu: C-x C-b opens *Buffer List* with one row per
+      // open buffer; marking and executing kills the marked buffer.
+      // We drive the read-back through (buffer-text) in the REPL —
+      // the editor view is virtualised, so .innerText only shows the
+      // visible window.
+      const bufferMenu = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const lastResult = () => {
+          const all = document.querySelectorAll('.repl-result');
+          return all.length ? all[all.length - 1].textContent : '';
+        };
+        // Seed a couple of throwaway buffers to mark and kill.
+        submit('(new-buffer! "bm-target.txt")');
+        await frame();
+        submit('(new-buffer! "bm-keep.txt")');
+        await frame();
+        // Open the menu via the bound key.
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'b', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        await frame();
+        // Read the menu contents from Lisp.
+        submit('(buffer-name)');
+        const menuName = lastResult();
+        submit('(buffer-text)');
+        const text = JSON.parse(lastResult());
+        const lines = text.split('\\n').filter((l) => l.length > 0);
+        const rowCount = lines.length - 1; // minus the header
+        const listsTarget = text.includes('bm-target.txt');
+        const listsKeep = text.includes('bm-keep.txt');
+        const listsSelf = text.includes('*Buffer List*');
+        // Mark bm-target and execute. We use Lisp to do the navigation:
+        // a goto-line based on the line that contains bm-target.
+        submit('(define (-bm-find-row i)'
+          + ' (goto-line! (+ i 1))'
+          + ' (cond ((>= i (buffer-line-count)) nil)'
+          + ' ((string-contains? (current-line-text) "bm-target.txt") i)'
+          + ' (else (-bm-find-row (+ i 1)))))');
+        await wait(20);
+        submit('(-bm-find-row 0)');
+        await wait(50);
+        submit('(current-line-text)');
+        await wait(50);
+        const cursorLine = lastResult();
+        editor.focus();
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'd', bubbles: true, cancelable: true,
+        }));
+        await frame();
+        // Capture the marked-state mid-flight so a failure tells us
+        // whether marking or execution broke.
+        submit('(current-line-text)');
+        await wait(50);
+        const afterMark = lastResult();
+        editor.focus();
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'x', bubbles: true, cancelable: true,
+        }));
+        await wait(100);
+        submit('(buffer-text)');
+        await wait(50);
+        const after = JSON.parse(lastResult());
+        return {
+          menuName,
+          rowCount,
+          listsTarget,
+          listsKeep,
+          listsSelf,
+          cursorLine,
+          afterMark,
+          targetGone: !after.includes('bm-target.txt'),
+          keepStill: after.includes('bm-keep.txt'),
+        };
+      })()`);
+      console.log('  bufferMenu:', JSON.stringify(bufferMenu));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -1122,6 +1211,16 @@ app.whenReady().then(() => {
         liveDocs.hasEm &&
         liveDocs.hasList &&
         liveDocs.modeline.includes('*Doc: smoke-doc-fn*');
+      // Buffer menu arm: header present, both seeded buffers listed,
+      // *Buffer List* lists itself, and `d` then `x` removes the
+      // marked buffer.
+      const bufferMenuOk =
+        bufferMenu.listsTarget &&
+        bufferMenu.listsKeep &&
+        bufferMenu.listsSelf &&
+        bufferMenu.rowCount >= 4 &&
+        bufferMenu.targetGone &&
+        bufferMenu.keepStill;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -1129,7 +1228,7 @@ app.whenReady().then(() => {
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
         markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && imageOk && swatchesOk &&
-        docsOk && liveDocsOk
+        docsOk && liveDocsOk && bufferMenuOk
       ) {
         finish(
           0,
@@ -1198,6 +1297,8 @@ app.whenReady().then(() => {
         finish(1, `docs did not work (${JSON.stringify(docs)})`);
       } else if (!liveDocsOk) {
         finish(1, `live docstring rendering did not work (${JSON.stringify(liveDocs)})`);
+      } else if (!bufferMenuOk) {
+        finish(1, `buffer menu did not work (${JSON.stringify(bufferMenu)})`);
       } else {
         finish(
           1,
