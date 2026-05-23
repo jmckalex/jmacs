@@ -338,6 +338,18 @@ app.whenReady().then(() => {
         submit('(insert! "<style>p { color: red; }</style>")');
         await frame();
         const htmlInjectsCss = document.querySelectorAll('.tok-keyword').length;
+        // PHP (mixed) — a <?php ?> block plus surrounding HTML. The
+        // PHP grammar's own captures cover the keyword, variable and
+        // string inside the tag; the (text) node outside is injected
+        // as HTML, so an HTML tag in the surrounding markup gets a
+        // .tok-tag span from the inner HTML highlighter. Both counts
+        // non-zero prove PHP loaded and the HTML injection ran.
+        submit('(new-buffer! "smoke.php")');
+        submit('(insert! "<?php echo 1; ?> <b>html</b>")');
+        await frame();
+        await frame();
+        const phpKeywords = document.querySelectorAll('.tok-keyword').length;
+        const phpTags = document.querySelectorAll('.tok-tag').length;
         submit('(new-buffer! "smoke.json")');
         // No embedded double-quotes here: those would need backslash
         // escapes through both layers (executeJavaScript and repl).
@@ -383,6 +395,8 @@ app.whenReady().then(() => {
           pyFunctions,
           htmlTags,
           htmlInjectsCss,
+          phpKeywords,
+          phpTags,
           jsonNumbers,
           jsonConstants,
           cssKeywords,
@@ -1040,9 +1054,11 @@ app.whenReady().then(() => {
         treesitter.langs.includes('rust') &&
         treesitter.langs.includes('go') &&
         treesitter.langs.includes('bash') &&
+        treesitter.langs.includes('php') &&
         treesitter.keywords > 0 && treesitter.numbers > 0 &&
         treesitter.pyFunctions > 0 && treesitter.htmlTags > 0 &&
         treesitter.htmlInjectsCss > 0 &&
+        treesitter.phpKeywords > 0 && treesitter.phpTags > 0 &&
         treesitter.jsonNumbers > 0 && treesitter.jsonConstants > 0 &&
         treesitter.cssKeywords > 0 && treesitter.cssTags > 0 &&
         treesitter.tsKeywords > 0 && treesitter.tsTypes > 0 &&

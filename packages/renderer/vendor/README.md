@@ -20,6 +20,8 @@ by `src/treesitter.js`.
 | `tree-sitter-rust.wasm` | `tree-sitter-rust@0.24.0` | the Rust grammar |
 | `tree-sitter-go.wasm` | `tree-sitter-go@0.25.0` | the Go grammar |
 | `tree-sitter-bash.wasm` | `tree-sitter-bash@0.25.1` | the Bash grammar |
+| `tree-sitter-php.wasm` | `tree-sitter-php@0.24.2` | the PHP grammar (mixed HTML + `<?php … ?>`) |
+| `tree-sitter-php_only.wasm` | `tree-sitter-php@0.24.2` | the pure-PHP grammar (no surrounding HTML) |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
