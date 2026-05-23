@@ -172,3 +172,88 @@ test('the new languages reconstruct the line', () => {
     assert.equal(highlightLine(text, lang).map((r) => r.text).join(''), text);
   }
 });
+
+// --- multi-line tokenizers --------------------------------------------
+
+import { highlightBuffer, highlightLatexBuffer, highlightMakefileBuffer } from '../src/highlight.js';
+
+/** A line's faces, in order. */
+const lineFaces = (lines, n) => lines[n].map((r) => r.face);
+/** A line's text, reconstructed. */
+const lineText = (lines, n) => lines[n].map((r) => r.text).join('');
+
+test('the whole-buffer dispatcher returns null for languages without one', () => {
+  assert.equal(highlightBuffer('x = 1', 'python'), null);
+  assert.equal(highlightBuffer('const x = 1', 'javascript'), null);
+});
+
+test('LaTeX: a single line still tokenizes', () => {
+  const lines = highlightLatexBuffer('\\emph{word} % note');
+  assert.equal(lines.length, 1);
+  assert.deepEqual(lineFaces(lines, 0), ['keyword', 'paren', null, 'paren', null, 'comment']);
+  assert.equal(lineText(lines, 0), '\\emph{word} % note');
+});
+
+test('LaTeX verbatim: every body line is styled past the begin', () => {
+  const src = '\\begin{verbatim}\nfoo bar\nbaz\n\\end{verbatim}';
+  const lines = highlightLatexBuffer(src);
+  assert.equal(lines.length, 4);
+  // The opening line: the \begin{verbatim} is keyword-styled.
+  assert.ok(lines[0].some((r) => r.face === 'keyword'));
+  // Body lines are styled wholesale as 'string'.
+  assert.deepEqual(lines[1], [{ text: 'foo bar', face: 'string' }]);
+  assert.deepEqual(lines[2], [{ text: 'baz', face: 'string' }]);
+  // The closing line: the \end{verbatim} is keyword-styled.
+  assert.ok(lines[3].some((r) => r.face === 'keyword'));
+});
+
+test('LaTeX display math \\[...\\]: spans across lines', () => {
+  const src = '\\[\nE = mc^2\n\\]';
+  const lines = highlightLatexBuffer(src);
+  assert.equal(lines.length, 3);
+  // The body is one 'string' run; the closing \] is keyword.
+  assert.deepEqual(lines[1], [{ text: 'E = mc^2', face: 'string' }]);
+  assert.ok(lines[2].some((r) => r.face === 'keyword' && r.text === '\\]'));
+});
+
+test('LaTeX: comments do not start a block, even when next to \\begin', () => {
+  const lines = highlightLatexBuffer('% \\begin{verbatim}\nplain text');
+  assert.equal(lines.length, 2);
+  // The first line is the whole comment, no block entered.
+  assert.deepEqual(lines[0], [{ text: '% \\begin{verbatim}', face: 'comment' }]);
+  // The second line is plain text, NOT styled as string.
+  assert.deepEqual(lines[1], [{ text: 'plain text', face: null }]);
+});
+
+test('LaTeX: lines reconstruct the source after splitting on \\n', () => {
+  const src = '\\section{Intro}\n\\begin{align}\na = b\nc = d\n\\end{align}\n% done';
+  const lines = highlightLatexBuffer(src);
+  const expected = src.split('\n');
+  assert.equal(lines.length, expected.length);
+  for (let i = 0; i < expected.length; i += 1) {
+    assert.equal(lineText(lines, i), expected[i]);
+  }
+});
+
+test('Makefile define ... endef: the body lines are styled', () => {
+  const src = 'define greeting\n  hello\n  world\nendef\nall:';
+  const lines = highlightMakefileBuffer(src);
+  assert.equal(lines.length, 5);
+  // The opening "define greeting" — `define` keyword, the name as constant.
+  assert.ok(lines[0].some((r) => r.face === 'keyword' && r.text === 'define'));
+  assert.ok(lines[0].some((r) => r.face === 'constant' && r.text === 'greeting'));
+  assert.deepEqual(lines[1], [{ text: '  hello', face: 'string' }]);
+  assert.deepEqual(lines[2], [{ text: '  world', face: 'string' }]);
+  // The closing endef.
+  assert.ok(lines[3].some((r) => r.face === 'keyword' && r.text === 'endef'));
+  // After endef, normal makefile tokenizing resumes — `all` is a target.
+  assert.ok(lines[4].some((r) => r.face === 'keyword' && r.text === 'all'));
+});
+
+test('Makefile: lines outside define still go through the per-line tokenizer', () => {
+  const src = 'CC = gcc\nall: build\n\t$(CC) -o app';
+  const lines = highlightMakefileBuffer(src);
+  assert.ok(lines[0].some((r) => r.face === 'constant' && r.text === 'CC'));
+  assert.ok(lines[1].some((r) => r.face === 'keyword' && r.text === 'all'));
+  assert.ok(lines[2].some((r) => r.face === 'constant' && r.text === '$(CC)'));
+});

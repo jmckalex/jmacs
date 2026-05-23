@@ -460,3 +460,192 @@ export function highlightLine(text, language) {
   if (language === 'makefile') return tokenizeMakefile(text);
   return text === '' ? [] : [{ text, face: null }];
 }
+
+// --- multi-line tokenizers -------------------------------------------
+// Whole-buffer tokenizers for languages whose constructs span lines.
+// Each returns an array with one Run[] per line — the per-line view
+// uses these in preference to highlightLine where they are defined.
+
+/** Push RUN onto LINE if it has any text. */
+function flushTo(run, line) {
+  if (run.text !== '') line.push({ text: run.text, face: run.face });
+}
+
+/**
+ * The LaTeX environments and delimiters that carry highlighting across
+ * line breaks: verbatim and the various display-math environments. The
+ * body is styled as `string` (the tree-sitter `string` face is used for
+ * any literal-text run; the line tokenizer already styles `$…$` as
+ * string, so this is consistent).
+ */
+const LATEX_BLOCK_BEGIN =
+  /^\\begin\{(verbatim|equation|equation\*|align|align\*|displaymath|gather|gather\*)\}/;
+const LATEX_BLOCK_END =
+  /^\\end\{(verbatim|equation|equation\*|align|align\*|displaymath|gather|gather\*)\}/;
+
+/**
+ * Tokenize a whole LaTeX buffer into per-line runs. The block-spanning
+ * cases — `\begin{verbatim}` … `\end{verbatim}` and the various
+ * display-math environments, plus `\[ … \]` — are highlighted past
+ * their opening line.
+ *
+ * @param {string} text
+ * @returns {Run[][]}
+ */
+export function highlightLatexBuffer(text) {
+  /** @type {Run[][]} */
+  const lines = [];
+  /** @type {Run[]} */
+  let line = [];
+  let plain = { text: '', face: null };
+  let inBlock = false;
+
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\n') {
+      flushTo(plain, line);
+      lines.push(line);
+      line = [];
+      plain = { text: '', face: inBlock ? 'string' : null };
+      i += 1;
+      continue;
+    }
+    const rest = text.slice(i);
+    if (inBlock) {
+      let m;
+      if ((m = LATEX_BLOCK_END.exec(rest))) {
+        flushTo(plain, line);
+        line.push({ text: m[0], face: 'keyword' });
+        plain = { text: '', face: null };
+        inBlock = false;
+        i += m[0].length;
+        continue;
+      }
+      if (rest.slice(0, 2) === '\\]') {
+        flushTo(plain, line);
+        line.push({ text: '\\]', face: 'keyword' });
+        plain = { text: '', face: null };
+        inBlock = false;
+        i += 2;
+        continue;
+      }
+      plain.text += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '%') {
+      flushTo(plain, line);
+      const eol = text.indexOf('\n', i);
+      const stop = eol === -1 ? text.length : eol;
+      line.push({ text: text.slice(i, stop), face: 'comment' });
+      plain = { text: '', face: null };
+      i = stop;
+      continue;
+    }
+    let m;
+    if ((m = LATEX_BLOCK_BEGIN.exec(rest))) {
+      flushTo(plain, line);
+      line.push({ text: m[0], face: 'keyword' });
+      plain = { text: '', face: 'string' };
+      inBlock = true;
+      i += m[0].length;
+      continue;
+    }
+    if (rest.slice(0, 2) === '\\[') {
+      flushTo(plain, line);
+      line.push({ text: '\\[', face: 'keyword' });
+      plain = { text: '', face: 'string' };
+      inBlock = true;
+      i += 2;
+      continue;
+    }
+    if ((m = /^\\([A-Za-z]+\*?|.)/.exec(rest))) {
+      flushTo(plain, line);
+      line.push({ text: m[0], face: 'keyword' });
+      plain = { text: '', face: null };
+      i += m[0].length;
+      continue;
+    }
+    if ((m = /^\$[^$\n]*\$/.exec(rest))) {
+      flushTo(plain, line);
+      line.push({ text: m[0], face: 'string' });
+      plain = { text: '', face: null };
+      i += m[0].length;
+      continue;
+    }
+    if ('{}[]'.includes(ch)) {
+      flushTo(plain, line);
+      line.push({ text: ch, face: 'paren' });
+      plain = { text: '', face: null };
+      i += 1;
+      continue;
+    }
+    plain.text += ch;
+    i += 1;
+  }
+  flushTo(plain, line);
+  lines.push(line);
+  return lines;
+}
+
+/**
+ * Tokenize a whole Makefile into per-line runs. The line tokenizer
+ * already handles the single-line cases (targets, assignments,
+ * `$(VAR)` refs, `#` comments); this pass adds `define …` /
+ * `endef` blocks, whose body lines are styled as `string`.
+ *
+ * @param {string} text
+ * @returns {Run[][]}
+ */
+export function highlightMakefileBuffer(text) {
+  const rawLines = text.split('\n');
+  /** @type {Run[][]} */
+  const result = [];
+  let inDefine = false;
+  for (const line of rawLines) {
+    if (inDefine) {
+      const endMatch = /^endef\b/.exec(line);
+      if (endMatch) {
+        const runs = [{ text: 'endef', face: 'keyword' }];
+        if (line.length > 'endef'.length) {
+          runs.push({ text: line.slice('endef'.length), face: null });
+        }
+        result.push(runs);
+        inDefine = false;
+        continue;
+      }
+      result.push(line === '' ? [] : [{ text: line, face: 'string' }]);
+      continue;
+    }
+    const startMatch = /^(define)(\s+)(\w+)(.*)$/.exec(line);
+    if (startMatch) {
+      result.push([
+        { text: startMatch[1], face: 'keyword' },
+        { text: startMatch[2], face: null },
+        { text: startMatch[3], face: 'constant' },
+        ...(startMatch[4] !== ''
+          ? [{ text: startMatch[4], face: null }]
+          : []),
+      ]);
+      inDefine = true;
+      continue;
+    }
+    result.push(tokenizeMakefile(line));
+  }
+  return result;
+}
+
+/**
+ * The whole-buffer tokenizer for a language, or null if none. The view
+ * uses this in preference to `highlightLine` when defined.
+ *
+ * @param {string} text
+ * @param {string} language
+ * @returns {Run[][] | null}
+ */
+export function highlightBuffer(text, language) {
+  if (language === 'latex') return highlightLatexBuffer(text);
+  if (language === 'makefile') return highlightMakefileBuffer(text);
+  return null;
+}

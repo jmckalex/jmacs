@@ -19,7 +19,7 @@
 import { toLines, selectionRects } from './projection.js';
 import { handleKeyEvent } from './commands.js';
 import { keyEventToString } from './keymap.js';
-import { highlightLine, languageForName } from './highlight.js';
+import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
 import { matchingBracket } from './brackets.js';
 import { createColourSwatches } from './colour-swatches.js';
 
@@ -167,13 +167,16 @@ export function createEditorView(buffer, container, options = {}) {
       Math.ceil((top + viewport) / lineHeight) + overscan
     );
 
-    // A language with a tree-sitter highlighter is parsed whole; the
-    // rest are line-based. The whole-buffer parse is cached across
+    // A language with a tree-sitter highlighter is parsed whole; a
+    // language with a built-in whole-buffer tokenizer (LaTeX,
+    // Makefile — multi-line constructs need to see across line
+    // breaks) goes through `highlightBuffer`; the rest are
+    // line-based. The whole-buffer parse is cached across
     // scroll-only renders.
     let perLine = null;
     const treeSitter = highlighters[language];
+    const text = activeBuffer.text;
     if (treeSitter) {
-      const text = activeBuffer.text;
       if (text === highlightCacheText && language === highlightCacheLanguage) {
         perLine = highlightCache;
       } else {
@@ -182,6 +185,20 @@ export function createEditorView(buffer, container, options = {}) {
         } catch {
           perLine = null;
         }
+        highlightCacheText = text;
+        highlightCacheLanguage = language;
+        highlightCache = perLine;
+      }
+    } else if (
+      text === highlightCacheText &&
+      language === highlightCacheLanguage &&
+      highlightCache !== null
+    ) {
+      perLine = highlightCache;
+    } else {
+      const whole = highlightBuffer(text, language);
+      if (whole !== null) {
+        perLine = whole;
         highlightCacheText = text;
         highlightCacheLanguage = language;
         highlightCache = perLine;
