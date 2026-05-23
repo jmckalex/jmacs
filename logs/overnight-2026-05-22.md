@@ -718,3 +718,36 @@ treesitter line: `{"langs":"css,html,javascript,json,python",
 - (this log entry)
 
 ---
+
+## B3 — TypeScript  (branch `agent-b3-lang-typescript`)
+
+**What was built.** Third drop-in language, sharing JS's structure
+with TS-only additions.
+
+- Vendored `tree-sitter-typescript.wasm` from
+  `tree-sitter-typescript@0.23.2`. The package also ships a
+  `tsx` grammar; only the `typescript` one is registered (a
+  `.tsx` file would need its own registration).
+- `packages/renderer/src/languages/typescript.js` — the JS
+  query plus TS-only keywords (`type` / `interface` / `enum` /
+  `public` / `private` / `readonly` / `keyof` / `infer` and
+  friends) and `type_identifier` / `predefined_type` →
+  `@type`.
+- `packages/stdlib/lisp/languages/typescript.lisp` — defines
+  `typescript-mode` with `:comment-prefix "// "` and registers
+  `.ts`.
+- Smoke arm: `(insert! "const n: number = 1;")` into
+  `smoke.ts`, asserts ≥1 `.tok-keyword` (const) and ≥1
+  `.tok-type` (number).
+
+**Tests.** `pnpm test` — 472 tests, 0 failures.
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS. The
+treesitter line: `{"langs":"css,html,javascript,json,python,
+typescript", … "tsKeywords":1, "tsTypes":1}`.
+
+**Commits.**
+- `16efbee` feat(b3): add the TypeScript tree-sitter language
+- (this log entry)
+
+---
