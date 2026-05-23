@@ -45,12 +45,17 @@ export function createAudioController() {
     return element;
   }
 
-  /** A filesystem path → a renderable `file://` URL. */
+  /**
+   * A filesystem path → a renderable `media://` URL. The renderer page
+   * is at `app://editor/...`, a privileged origin Chromium will not
+   * fetch `file://` from cross-origin; the `media://` scheme registered
+   * in `serve.js` streams arbitrary local files through the main
+   * process (with Range support, so the `<audio>` element can seek).
+   * Spaces and unicode in audio filenames need per-segment encoding.
+   */
   function pathToUrl(path) {
-    if (path.startsWith('file://')) return path;
-    // Encode each segment but keep slashes; spaces and unicode are
-    // common in audio filenames.
-    return 'file://' + path.split('/').map(encodeURIComponent).join('/');
+    if (/^(media|file|https?|blob|data):/.test(path)) return path;
+    return 'media://localhost' + path.split('/').map(encodeURIComponent).join('/');
   }
 
   return {

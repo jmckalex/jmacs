@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { registerFileHandlers } from './files.js';
 import { renderJMarkdown } from './jmarkdown.js';
 import { buildAppMenu } from './menu.js';
-import { EDITOR_URL, serveAppFile } from './serve.js';
+import { EDITOR_URL, serveAppFile, serveMediaFile } from './serve.js';
 
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
 
@@ -49,6 +49,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
+  protocol.handle('media', serveMediaFile);
   registerFileHandlers();
   buildAppMenu(null, dispatchMenuCommand);
   ipcMain.on('app:quit', () => app.quit());

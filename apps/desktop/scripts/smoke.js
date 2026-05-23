@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from '../src/files.js';
 import { renderJMarkdown } from '../src/jmarkdown.js';
-import { EDITOR_URL, serveAppFile } from '../src/serve.js';
+import { EDITOR_URL, serveAppFile, serveMediaFile } from '../src/serve.js';
 
 const repoRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -79,6 +79,7 @@ function finish(code, message) {
 
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
+  protocol.handle('media', serveMediaFile);
   registerFileHandlers();
   // The image-buffer check drives the real `file:open` path; with no
   // way to click a native dialog, stub it to choose the scratch image.
