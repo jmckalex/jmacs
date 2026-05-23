@@ -976,3 +976,44 @@ sample per mode).
 - (this log entry)
 
 ---
+
+## D3 — multi-line highlighting  (branch `agent-d3-multiline-highlight`)
+
+**What was built.** A whole-buffer tokenization pass for LaTeX
+and Makefile, alongside the per-line tokenizer that handles
+everything else. Multi-line constructs now highlight past their
+opening line.
+
+- LaTeX: `\begin{verbatim}` / `\begin{equation}` /
+  `\begin{equation*}` / `\begin{align}` / `\begin{align*}` /
+  `\begin{displaymath}` / `\begin{gather}` / `\begin{gather*}`
+  and the matching `\end{…}`, plus `\[ … \]`, span lines. The
+  body is styled as `string`; the delimiters as `keyword`.
+  Comments still win over the block-begin pattern — a `%` line
+  ending with `\begin{verbatim}` is a comment and does not
+  enter a block.
+- Makefile: `define NAME` / `endef` blocks. Body lines are
+  styled as `string`; `define` and `endef` are `keyword`, the
+  variable name on the opening line is `constant`. Lines
+  outside a define fall through to the per-line tokenizer
+  (targets, assignments, `$(VAR)` refs, `#` comments).
+
+The renderer now exports `highlightBuffer(text, language)` —
+the dispatcher used by the view. The view calls it before its
+per-line fallback; non-null results are cached the same way
+the tree-sitter parse is.
+
+**Tests.** `pnpm test` — 137 renderer tests pass (+9 new tests
+covering both tokenizers: single-line tokenization still
+works, blocks span lines, comments don't start blocks,
+reconstructibility holds, lines outside a define still use the
+per-line tokenizer).
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS.
+
+**Commits.**
+- `eb12fa3` feat(d3): multi-line highlighting for LaTeX and
+  Makefile
+- (this log entry)
+
+---
