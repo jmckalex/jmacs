@@ -436,3 +436,62 @@ JSON / CSS / TypeScript / Rust / Go / Bash highlighters and the
 theme-switching check.
 
 ---
+
+## [2026-05-23 13:30] Agent docs-system: in-editor documentation, ready for review
+
+**Context**: Built an in-editor documentation system on branch
+`agent-docs-system`, layered on top of the overnight Track B/D chain.
+Seven commits since `agent-d3-multiline-highlight`; not merged. Full
+write-up in `logs/docs-system-2026-05-23.md`.
+
+**What's there**:
+- A separate `pnpm run docs` build that renders `docs/MANUAL.jmd`
+  (which `[[…]]`-includes the four topic .md files) into
+  `docs/build/`. The .jmd's postprocessor splits the result into
+  per-function pages and writes a `name → path` manifest.
+- A new `doc` buffer kind (peer of `customize` and `image`) that
+  shows the rendered HTML and intercepts `[data-jmacs-doc]` cross-
+  links. `C-h f` / `M-x describe-command` route through it.
+- For user-defined procedures that aren't in the static manifest,
+  the docstring is rendered live as Markdown via a vendored
+  `marked.js@18.0.4` and shown in the same doc buffer.
+- `*jmarkdown-command*` renamed to `*markdown-interpreter*`.
+  Default is `"marked"`; any other string falls back to the
+  original shell-command path (`pandoc`, `multimarkdown`, etc.).
+
+**Things to flag for review**:
+
+1. *Name collision in the manifest.* `newline` is both a Lisp-core
+   primitive (writes a line break) and an editor command (inserts
+   into the buffer). The migration emits two `:::function{}` entries
+   with the same `name`; the build now prints a warning and the
+   last-written entry wins (currently lisp-core). Both HTML pages
+   exist on disk but only one is reachable by name. Worth deciding
+   whether to disambiguate by namespace (e.g. `commands:newline` vs
+   `lisp-core:newline`).
+2. *The rendered pages still carry `data-source-line` attributes*
+   from jmarkdown's source-mapping feature on every block. They are
+   harmless but inflate the HTML; the postprocessor could strip them.
+3. *Custom.lisp `:on-change` was extended (in the D1 theme work)*
+   to call a procedure on a setting change; the docs change relies
+   on it indirectly through `(custom-apply! '*markdown-interpreter*
+   …)` continuing to fire any hook. Currently no docs setting uses
+   it, so no behaviour change.
+4. *Smoke state leaks between arms*: setting
+   `*markdown-interpreter*` early in the smoke (sticky notes,
+   markdown preview) carried into the live-docs arm and broke it
+   until reset. The arm now explicitly resets to `"marked"` — the
+   broader lesson is that the smoke runs a single Lisp session and
+   per-arm state should reset to defaults if it matters.
+
+**Branch chain at this point** (linear, each ff-merges off prior):
+- `agent-b1-lang-json` … `agent-b6-lang-bash` (Track B)
+- `agent-d1-themes`, `agent-d2-mode-keymaps`,
+  `agent-d3-multiline-highlight` (Track D)
+- `agent-docs-system` (current HEAD: `20b31ad`)
+
+Main is still at `01cabeb` (T0). A `git merge --ff-only
+agent-docs-system` from main lands the whole sequence in one
+fast-forward.
+
+---
