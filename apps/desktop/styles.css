@@ -1160,3 +1160,69 @@ textarea.customize-widget {
   font-family: var(--font-mono);
   padding: 0 0.15em;
 }
+
+/* The hover-doc tooltip — appears when the mouse rests on a Lisp
+   symbol that has documentation. Click to open the full page. */
+
+.hover-doc-tooltip {
+  position: fixed;
+  z-index: 50;
+  max-width: 360px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
+  border-radius: 6px;
+  background: var(--bg-chrome);
+  color: var(--fg);
+  box-shadow: 0 6px 18px #00000060;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12.5px;
+  line-height: 1.45;
+  cursor: pointer;
+  user-select: none;
+  pointer-events: auto;
+}
+
+.hover-doc-tooltip code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 0;
+  background: transparent;
+}
+
+.hover-doc-name {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.hover-doc-source {
+  font-size: 11px;
+  color: var(--fg-dim);
+  margin-bottom: 6px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hover-doc-preview {
+  margin: 4px 0 6px;
+  color: var(--fg);
+}
+
+.hover-doc-preview p:first-child {
+  margin-top: 0;
+}
+
+.hover-doc-preview p:last-child {
+  margin-bottom: 0;
+}
+
+.hover-doc-preview code {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  padding: 0 0.25em;
+  border-radius: 3px;
+}
+
+.hover-doc-open {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--accent);
+}

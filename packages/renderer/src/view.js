@@ -455,6 +455,10 @@ export function createEditorView(buffer, container, options = {}) {
       return Math.max(1, Math.floor(root.clientHeight / lineHeight) - 1);
     },
 
+    /** The buffer offset for a viewport pixel position. Exposed so
+     *  the hover-doc tooltip can resolve a mouse coordinate. */
+    offsetFromPoint,
+
     setBuffer(next) {
       if (next === activeBuffer) return;
       unsubscribe();

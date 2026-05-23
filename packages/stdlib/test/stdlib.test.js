@@ -2044,3 +2044,67 @@ test('C-h a runs apropos-doc through the search primitive', async () => {
   press(interpreter, 'a');
   assert.deepEqual(docCalls, ['search']);
 });
+
+// --- symbol-at-point / describe-symbol-at-point --------------------
+
+test('symbol-at-offset returns the Lisp symbol straddling a position', async () => {
+  const { interpreter } = await editor();
+  const probe = (text, pos) =>
+    interpreter.evaluate(
+      `(symbol-at-offset ${JSON.stringify(text)} ${pos})`
+    );
+  // Inside the symbol.
+  assert.equal(probe('(forward-char)', 5), 'forward-char');
+  // At the start.
+  assert.equal(probe('forward-char', 0), 'forward-char');
+  // Just past the end (the "char before" rule allows this — same
+  // semantics as expand-region-word-bounds).
+  assert.equal(probe('forward-char', 'forward-char'.length), 'forward-char');
+  // Between two delimiters with nothing in between: nil.
+  assert.equal(probe('()', 1), NIL);
+  // Inside whitespace with no symbol either side: nil.
+  assert.equal(probe('   foo', 1), NIL);
+  // Symbols with question marks and bangs are still symbols.
+  assert.equal(probe('(nil?)', 1), 'nil?');
+  assert.equal(probe('(set! x 1)', 3), 'set!');
+  // A keyword (leading colon) is one symbol.
+  assert.equal(probe(':highlight', 3), ':highlight');
+});
+
+test('describe-symbol-at-point uses the symbol under the cursor', async () => {
+  // The buffer's text is what symbol-at-point reads; define a
+  // procedure with a Markdown docstring and put the cursor on its
+  // name to drive the live-doc path.
+  const { interpreter, buffer, docCalls } = await editor('(my-fn)');
+  interpreter.evaluate('(define (my-fn) "Live docs for *my-fn*." nil)');
+  buffer.moveTo(3); // inside "my-fn"
+  interpreter.evaluate('(describe-symbol-at-point)');
+  // With no manifest entry, the symbol's docstring is rendered live.
+  assert.deepEqual(docCalls, ['docstring:my-fn']);
+});
+
+test('describe-symbol-at-point with no symbol at point prints to the REPL', async () => {
+  const { interpreter, buffer, docCalls, output } = await editor('(   )');
+  buffer.moveTo(2); // on the whitespace, nothing on either side
+  interpreter.evaluate('(describe-symbol-at-point)');
+  assert.deepEqual(docCalls, []);
+  assert.ok(
+    output.some((line) => line.includes('no symbol at point')),
+    `expected the fallback message; got ${JSON.stringify(output)}`
+  );
+});
+
+test('C-h . runs describe-symbol-at-point', async () => {
+  const { interpreter, output } = await editor('(forward-char)');
+  // No symbol under point at offset 0 — point is on the '('
+  // which is a delimiter, so the symbol bound starts at 1.
+  // The buffer's default cursor is at 0; that gives nil.
+  press(interpreter, 'C-h');
+  press(interpreter, '.');
+  // Either path is acceptable — what matters is the keymap routed
+  // here and produced *some* output rather than crashing.
+  assert.ok(
+    output.length > 0,
+    `expected C-h . to produce output; got ${JSON.stringify(output)}`
+  );
+});

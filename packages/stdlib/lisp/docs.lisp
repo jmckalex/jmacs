@@ -50,6 +50,64 @@
           nil))
     (catch err nil)))
 
+;; --- symbol at a buffer offset -----------------------------------------
+;; The hover-tooltip and `describe-symbol-at-point` both need the
+;; Lisp symbol straddling a buffer offset. Symbol chars are anything
+;; that isn't whitespace and isn't a reader delimiter — matches the
+;; reader's tokenizer in `packages/lisp/src/reader.js`.
+
+(define (-doc-symbol-char? ch)
+  "True when CH is a single character that can appear inside a Lisp
+   symbol — anything that isn't whitespace and isn't a delimiter
+   (`()[]{}\"`;'`,)."
+  (and (= (string-length ch) 1)
+       (not (string-contains? " \t\n\r" ch))
+       (not (string-contains? "()[]{}\";'`," ch))))
+
+(define (symbol-at-offset text pos)
+  "The Lisp symbol straddling POS in TEXT, or `nil` when POS is not
+   inside (or just past) a symbol. The semantics match
+   `expand-region-word-bounds` — POS counts as inside when the char
+   at POS or just before is a symbol char."
+  (let ((here (-doc-symbol-char? (-char-at text pos)))
+        (prev (-doc-symbol-char? (-char-at text (- pos 1)))))
+    (if (or here prev)
+        (let ((start (-scan-back text pos -doc-symbol-char?))
+              (end (-scan-forward text pos -doc-symbol-char?)))
+          (if (= start end) nil (substring text start end)))
+        nil)))
+
+(define (symbol-at-point)
+  "The Lisp symbol straddling the cursor in the current buffer, or
+   `nil`. Used by `describe-symbol-at-point` and the hover
+   tooltip."
+  (symbol-at-offset (buffer-text) (point)))
+
+(define (doc-summary-for name)
+  "A small tuple describing what documentation is available for NAME,
+   used by the hover tooltip. Returns:
+     (\"manifest\" NAME)            — a pre-built doc page
+     (\"live\"     NAME SOURCE)      — only a docstring
+   or `nil` when NAME has no documentation. The list shape keeps the
+   JS side simple: a `listToArray` is enough to unpack."
+  (cond
+    ((doc-known? name) (list "manifest" name))
+    (else
+      (let ((source (doc-source-for-name name)))
+        (if (string? source)
+            (list "live" name source)
+            nil)))))
+
+(defcommand describe-symbol-at-point ()
+  "Open the documentation for the Lisp symbol under the cursor.
+   Routes through `open-doc`, so the static manifest is tried
+   first and the live docstring is rendered as a fallback. Bound
+   to `C-h .`."
+  (let ((name (symbol-at-point)))
+    (cond
+      ((nil? name) (println "no symbol at point"))
+      (else (open-doc name)))))
+
 (defcommand apropos-doc ()
   "Fuzzy-search the documentation manifest in the minibuffer; open
    the matching doc page in the doc-view. Bound to `C-h a`."

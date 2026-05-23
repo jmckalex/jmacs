@@ -15,6 +15,7 @@ export {
 export { createMinibuffer } from './minibuffer.js';
 export { createCustomizeView } from './customize.js';
 export { createDocView } from './doc-view.js';
+export { createHoverDoc } from './hover-doc.js';
 export { renderMarkdown } from './markdown.js';
 export {
   createImageView,

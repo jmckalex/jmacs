@@ -21,6 +21,7 @@ import {
   createCustomizeView,
   createDocView,
   createEditorView,
+  createHoverDoc,
   createImageView,
   createMarkdownPreview,
   createMinibuffer,
@@ -1253,6 +1254,59 @@ const docView = createDocView(document.getElementById('editor-host'), {
   highlightCode: highlightCodeForDocView,
 });
 docView.element.style.display = 'none';
+
+/** The hover-doc tooltip — appears beside the cursor when the mouse
+ *  rests on a documented Lisp symbol. The lookup chain mirrors
+ *  `open-doc`: pre-built manifest first, then the live docstring. */
+const hoverDoc = createHoverDoc(editorView.element, {
+  offsetFromPoint: (x, y) => editorView.offsetFromPoint(x, y),
+  symbolAtOffset: (offset) => {
+    if (!keymapReady) return null;
+    try {
+      const result = interpreter.evaluate(
+        `(symbol-at-offset (buffer-text) ${offset})`
+      );
+      return typeof result === 'string' ? result : null;
+    } catch {
+      return null;
+    }
+  },
+  summarise: (symbol) => {
+    if (!keymapReady) return null;
+    let value;
+    try {
+      value = interpreter.call('doc-summary-for', symbol);
+    } catch {
+      return null;
+    }
+    if (value === NIL || value === null || value === undefined) return null;
+    const parts = listToArray(value);
+    if (parts.length < 2) return null;
+    const [kind, name, source] = parts.map((part) =>
+      typeof part === 'string' ? part : String(part)
+    );
+    if (kind === 'manifest') return { kind: 'manifest', name };
+    if (kind === 'live') {
+      let preview = '';
+      try {
+        const trimmed = (source ?? '').slice(0, 320);
+        preview = renderMarkdown(trimmed);
+      } catch {
+        preview = '';
+      }
+      return { kind: 'live', name, preview };
+    }
+    return null;
+  },
+  openDoc: (symbol) => {
+    if (!keymapReady) return;
+    try {
+      interpreter.call('open-doc', symbol);
+    } catch (error) {
+      repl.appendError(`open-doc: ${error.lispMessage ?? error.message}`);
+    }
+  },
+});
 
 // The Markdown renderer used for sticky notes and the live-docstring
 // path in the doc-view. Driven by the `*markdown-interpreter*` Lisp
