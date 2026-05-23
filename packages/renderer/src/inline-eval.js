@@ -77,7 +77,7 @@ export function createInlineEval(options) {
     const { line, column } = buffer.positionAt(offset);
     if (pill === null) return;
     pill.style.top = `calc(${line} * 1lh)`;
-    pill.style.left = `calc(${column} * 1ch + 0.5ch)`;
+    pill.style.left = `calc(${column} * 1ch + 1em)`;
   }
 
   function watchBufferForChange(buffer) {
