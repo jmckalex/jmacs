@@ -928,3 +928,51 @@ value.
 - (this log entry)
 
 ---
+
+## D2 — mode-specific keymaps  (branch `agent-d2-mode-keymaps`)
+
+**What was built.** The HTML, Python, LaTeX and Makefile modes
+now have their own keymaps with a few apt writing commands each.
+
+- HTML (`packages/stdlib/lisp/languages/html.lisp`):
+  `html-bold`, `html-italic`, `html-code`, `html-link`,
+  `html-paragraph`, `html-heading-1/2/3`, `html-comment-line`.
+- Python (`packages/stdlib/lisp/languages/python.lisp`):
+  `python-insert-print`, `python-fstring`,
+  `python-insert-self-dot`, `python-insert-pass`,
+  `python-shebang`.
+- LaTeX (new `packages/stdlib/lisp/latex.lisp`):
+  `latex-textbf`, `latex-textit`, `latex-emph`,
+  `latex-math-inline`, `latex-math-display`, `latex-section`,
+  `latex-subsection`, `latex-itemize`, `latex-enumerate`.
+- Makefile (new `packages/stdlib/lisp/makefile.lisp`):
+  `makefile-target`, `makefile-phony`, `makefile-variable`,
+  `makefile-include`, `makefile-tab` (recipes need a tab).
+
+Each mode's bindings live under a `C-c` prefix — the same shape
+markdown-mode-map uses (`C-c b` for bold, etc.) so the muscle
+memory carries across modes. `modes.lisp` gains four
+declarations: `latex-mode-map`, `makefile-mode-map` (declared
+empty there; filled by the feature files) and `:keymap`
+references on `latex-mode` and `makefile-mode`. The HTML and
+Python mode files (in `languages/`) declare their own maps
+inline.
+
+**Decision / deviation from the plan.** The plan didn't list
+shared files for D2; modes.lisp gets a small, surgical change
+(four lines added) to make the mode-keymap mechanism work
+exactly like markdown's. STDLIB_FILES gets two entries between
+markdown.lisp and sticky-notes.lisp.
+
+**Tests.** `pnpm test` — 192 stdlib tests pass (+7 new tests
+covering each mode-map's existence and a small behavioural
+sample per mode).
+
+**Smoke.** `pnpm --filter @editor/desktop smoke` — PASS.
+
+**Commits.**
+- `1ea5eaa` feat(d2): give HTML / Python / LaTeX / Makefile
+  their own keymaps
+- (this log entry)
+
+---
