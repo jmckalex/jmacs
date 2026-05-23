@@ -1905,3 +1905,60 @@ test('current-theme-css-vars switches with *theme*', async () => {
   assert.notEqual(dark, midnight);
   assert.notEqual(light, midnight);
 });
+
+// --- mode-specific keymaps -------------------------------------------
+
+test('html-mode has a C-c keymap with html-bold under "b"', async () => {
+  const { interpreter } = await editor();
+  const km = interpreter.evaluate(
+    "(get (get (resolve-keymap 'html-mode-map) \"C-c\" {}) \"b\" nil)"
+  );
+  assert.equal(String(km && km.name), 'html-bold');
+});
+
+test('python-mode has a C-c keymap with python-insert-print under "p"', async () => {
+  const { interpreter } = await editor();
+  const km = interpreter.evaluate(
+    "(get (get (resolve-keymap 'python-mode-map) \"C-c\" {}) \"p\" nil)"
+  );
+  assert.equal(String(km && km.name), 'python-insert-print');
+});
+
+test('latex-mode has a C-c keymap with latex-textbf under "b"', async () => {
+  const { interpreter } = await editor();
+  const km = interpreter.evaluate(
+    "(get (get (resolve-keymap 'latex-mode-map) \"C-c\" {}) \"b\" nil)"
+  );
+  assert.equal(String(km && km.name), 'latex-textbf');
+});
+
+test('makefile-mode has a C-c keymap with makefile-target under "t"', async () => {
+  const { interpreter } = await editor();
+  const km = interpreter.evaluate(
+    "(get (get (resolve-keymap 'makefile-mode-map) \"C-c\" {}) \"t\" nil)"
+  );
+  assert.equal(String(km && km.name), 'makefile-target');
+});
+
+test('html-bold wraps the selection in <strong>...</strong>', async () => {
+  const { interpreter, buffer } = await editor('hello world');
+  buffer.moveTo(0);
+  interpreter.evaluate('(set-mark! 5)');
+  interpreter.evaluate('(html-bold)');
+  assert.equal(buffer.text, '<strong>hello</strong> world');
+});
+
+test('latex-emph wraps the selection in \\emph{...}', async () => {
+  const { interpreter, buffer } = await editor('lorem ipsum');
+  buffer.moveTo(0);
+  interpreter.evaluate('(set-mark! 5)');
+  interpreter.evaluate('(latex-emph)');
+  assert.equal(buffer.text, '\\emph{lorem} ipsum');
+});
+
+test('python-insert-print inserts print() with the cursor between the parens', async () => {
+  const { interpreter, buffer } = await editor('');
+  interpreter.evaluate('(python-insert-print)');
+  assert.equal(buffer.text, 'print()');
+  assert.equal(buffer.point, 'print('.length);
+});

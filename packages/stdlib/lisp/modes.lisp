@@ -15,6 +15,8 @@
 ;; the map in later and edits to it are seen live (see resolve-keymap).
 (define lisp-mode-map {})
 (define markdown-mode-map {})
+(define latex-mode-map {})
+(define makefile-mode-map {})
 
 ;; --- the modes ---------------------------------------------------------
 (define-mode fundamental-mode
@@ -38,11 +40,13 @@
 (define-mode latex-mode
   :name "LaTeX"
   :comment-prefix "% "
+  :keymap 'latex-mode-map
   :highlight :latex)
 
 (define-mode makefile-mode
   :name "Makefile"
   :comment-prefix "# "
+  :keymap 'makefile-mode-map
   :highlight :makefile)
 
 ;; --- the registry — a filename suffix chooses a major mode -------------

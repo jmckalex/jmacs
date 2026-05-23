@@ -43,6 +43,8 @@ export const STDLIB_FILES = Object.freeze([
   'auto-pair.lisp',
   'menus.lisp',
   'markdown.lisp',
+  'latex.lisp',
+  'makefile.lisp',
   'sticky-notes.lisp',
   'palette.lisp',
   'help.lisp',
