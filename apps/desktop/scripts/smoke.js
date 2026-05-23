@@ -338,6 +338,11 @@ app.whenReady().then(() => {
         await frame();
         const tsKeywords = document.querySelectorAll('.tok-keyword').length;
         const tsTypes = document.querySelectorAll('.tok-type').length;
+        submit('(new-buffer! "smoke.rs")');
+        submit('(insert! "fn go() -> u32 { 1 }")');
+        await frame();
+        const rsKeywords = document.querySelectorAll('.tok-keyword').length;
+        const rsTypes = document.querySelectorAll('.tok-type').length;
         return {
           // The languages whose grammar WASM actually loaded.
           langs: document.body.dataset.treesitter,
@@ -351,6 +356,8 @@ app.whenReady().then(() => {
           cssTags,
           tsKeywords,
           tsTypes,
+          rsKeywords,
+          rsTypes,
         };
       })()`);
       console.log('  treesitter:', JSON.stringify(treesitter));
@@ -871,11 +878,13 @@ app.whenReady().then(() => {
         treesitter.langs.includes('json') &&
         treesitter.langs.includes('css') &&
         treesitter.langs.includes('typescript') &&
+        treesitter.langs.includes('rust') &&
         treesitter.keywords > 0 && treesitter.numbers > 0 &&
         treesitter.pyFunctions > 0 && treesitter.htmlTags > 0 &&
         treesitter.jsonNumbers > 0 && treesitter.jsonConstants > 0 &&
         treesitter.cssKeywords > 0 && treesitter.cssTags > 0 &&
-        treesitter.tsKeywords > 0 && treesitter.tsTypes > 0;
+        treesitter.tsKeywords > 0 && treesitter.tsTypes > 0 &&
+        treesitter.rsKeywords > 0 && treesitter.rsTypes > 0;
       const replaceOk = replace.text === 'bar bar bar';
       const mouseOk =
         mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&

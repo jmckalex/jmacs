@@ -16,6 +16,7 @@ by `src/treesitter.js`.
 | `tree-sitter-json.wasm` | `tree-sitter-json@0.24.8` | the JSON grammar |
 | `tree-sitter-css.wasm` | `tree-sitter-css@0.25.0` | the CSS grammar |
 | `tree-sitter-typescript.wasm` | `tree-sitter-typescript@0.23.2` | the TypeScript grammar |
+| `tree-sitter-rust.wasm` | `tree-sitter-rust@0.24.0` | the Rust grammar |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.

@@ -12,3 +12,4 @@ allowBuilds:
   tree-sitter-json: false
   tree-sitter-css: false
   tree-sitter-typescript: false
+  tree-sitter-rust: false
