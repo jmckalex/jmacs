@@ -14,6 +14,7 @@ import {
   arrayToList,
   cons,
   createInterpreter,
+  keyword,
   listToArray,
   NIL,
   writeString,
@@ -903,6 +904,48 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'buffer-count': () => buffers.length,
+    // Switch to the buffer named NAME, if there is one. No-op (returns
+    // nil) if no buffer carries that name; otherwise switches and
+    // returns #t. The Lisp-side `buffer-menu` uses this to jump to a
+    // buffer by name from the *Buffer List* selection.
+    'switch-to-buffer!': (args) => {
+      const name = String(args[0] ?? '');
+      if (name === '') return NIL;
+      const index = buffers.findIndex((buffer) => buffer.name === name);
+      if (index < 0) return NIL;
+      switchToBuffer(index);
+      return true;
+    },
+    // A snapshot of every open buffer as a list of hash-maps with keys
+    // :name, :kind (a string — "text", "doc", "image", "customize"),
+    // :mode (the major-mode display name, or nil for non-text buffers),
+    // :line-count (an integer, 0 for non-text), :file (the absolute
+    // path, or nil), :modified (#t for buffers with unsaved changes).
+    // The Lisp `buffer-menu` reads this to render *Buffer List*.
+    'list-buffers': () => {
+      const records = buffers.map((buffer) => {
+        const record = new Map();
+        record.set(keyword('name'), buffer.name ?? '');
+        // Text buffers have no `kind` property; everything else does.
+        record.set(keyword('kind'), buffer.kind ?? 'text');
+        // The major mode's display name lives on the L2 buffer for text
+        // buffers; non-text buffers don't carry a mode.
+        const major = buffer.majorMode;
+        const modeName =
+          major && typeof major.get === 'function'
+            ? major.get(keyword('name')) ?? NIL
+            : NIL;
+        record.set(keyword('mode'), modeName);
+        record.set(
+          keyword('line-count'),
+          typeof buffer.lineCount === 'number' ? buffer.lineCount : 0
+        );
+        record.set(keyword('file'), buffer.filePath ?? NIL);
+        record.set(keyword('modified'), dirtyBuffers.has(buffer));
+        return record;
+      });
+      return arrayToList(records);
+    },
 
     // Persist the customisation registry's saved settings to disk.
     'write-custom-file!': (args) => {
