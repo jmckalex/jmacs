@@ -15,6 +15,16 @@ contextBridge.exposeInMainWorld('host', {
   openFile: () => ipcRenderer.invoke('file:open'),
 
   /**
+   * Read a file by an explicit path — no dialog. Image suffixes come
+   * back as a `data:` URL in `imageSrc`; other files come back as
+   * UTF-8 text in `content`.
+   * @param {string} path
+   * @returns {Promise<{path: string, name: string, content?: string,
+   *   imageSrc?: string} | null>}
+   */
+  openFilePath: (path) => ipcRenderer.invoke('file:open-path', { path }),
+
+  /**
    * Save content to a file. With a null path, prompts for one.
    * @param {string | null} path
    * @param {string} content

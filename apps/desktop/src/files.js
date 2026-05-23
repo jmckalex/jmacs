@@ -110,6 +110,26 @@ export function registerFileHandlers() {
     return { path, name: basename(path), content };
   });
 
+  // Open a file by an explicit path — no dialog. Mirrors `file:open`
+  // for image-vs-text handling so callers from inside the renderer
+  // (e.g. jukebox-mode's M-RET on the album-art file) can hand a path
+  // to the same image-buffer pipeline `file:open` feeds into.
+  ipcMain.handle('file:open-path', async (_event, payload) => {
+    const path = payload?.path;
+    if (typeof path !== 'string' || path === '') return null;
+    try {
+      const mime = imageMimeType(path);
+      if (mime !== null) {
+        const imageSrc = await readImageDataUrl(path, mime);
+        return { path, name: basename(path), imageSrc };
+      }
+      const content = await readFile(path, 'utf8');
+      return { path, name: basename(path), content };
+    } catch {
+      return null;
+    }
+  });
+
   // Show a directory-only open dialog. Used by jukebox-mode.
   ipcMain.handle('directory:open', async () => {
     const result = await dialog.showOpenDialog({

@@ -15,9 +15,11 @@
 ;;;
 ;;; Album-art ID3/MP4 extraction is out of scope: only an art file
 ;;; that already sits in the directory (cover.jpg, folder.png, ...)
-;;; is reported. M-RET would open it in an image buffer, but the
-;;; editor has no image buffer kind yet — for v1 the art filename
-;;; is simply echoed to the REPL so the user can open it manually.
+;;; is reported. M-RET opens the art file as an image buffer via the
+;;; host `open-image-file!` primitive.
+;;;
+;;; q stops playback and then kills the jukebox buffer via the Lisp
+;;; `kill-buffer` command (`C-x k`), keeping the buffer list tidy.
 
 ;; --- audio extensions and album-art filenames -------------------------
 
@@ -213,7 +215,7 @@
       "\n"
       "  SPC play/pause   RET play at point   n next   p prev\n"
       "  s toggle shuffle    R randomise order    j/k move down/up\n"
-      "  g refresh           M-RET album art      q quit\n")))
+      "  g refresh           M-RET open art       q kill buffer\n")))
 
 (define (-render-progress state)
   "The play marker, progress bar, and time read-out."
@@ -464,28 +466,25 @@
       (jukebox-open! (get state :dir "")))))
 
 (define (jukebox-quit)
-  "Stop any playing audio and leave the jukebox buffer. Bound to q.
+  "Stop any playing audio and kill the jukebox buffer. Bound to q.
 
-   For v1 the buffer itself is not killed — switching away is enough,
-   and there is no kill-buffer command in the standard library yet."
+   Drops the buffer's jukebox state too — a future `(jukebox dir)`
+   for the same directory rebuilds it fresh, so a stale entry would
+   only waste memory."
   (stop-audio!)
-  (let ((state (jukebox-state)))
-    (when (map? state)
-      (update-jukebox-state! :index (get state :index nil))))
-  (jukebox-refresh-panel!)
-  (next-buffer!))
+  (set! *jukebox-buffers* (dissoc *jukebox-buffers* (buffer-name)))
+  (kill-buffer))
 
 (define (jukebox-open-art)
-  "Echo the album-art filename's full path to the REPL. A future
-   image-buffer mode could open it directly — for v1 the user opens
-   it through the OS. Bound to M-RET."
+  "Open the album-art file as an image buffer. With no art file in the
+   directory, prints a note to the REPL. Bound to M-RET."
   (let ((state (jukebox-state)))
     (when (map? state)
       (let ((art (get state :art nil))
             (dir (get state :dir "")))
         (if (nil? art)
             (println "Jukebox: no album-art file in this directory.")
-            (println (str "Jukebox album art: " (-path-join dir art))))))))
+            (open-image-file! (-path-join dir art)))))))
 
 ;; --- the keymap ------------------------------------------------------
 ;; jukebox-mode-map is declared empty in modes.lisp; fill it in here.

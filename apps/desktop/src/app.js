@@ -348,6 +348,30 @@ async function openFileInteractive() {
   }
 }
 
+/**
+ * Open an image file by an explicit path, dialog-free. Mounts an
+ * `image`-kind buffer for it and switches to it — the same view the
+ * dialog path produces. Used by jukebox-mode's M-RET on album art.
+ */
+async function openImageByPath(filePath) {
+  try {
+    const result = await window.host.openFilePath(filePath);
+    if (result === null || typeof result.imageSrc !== 'string') {
+      repl.appendError(`open-image: not an image or unreadable (${filePath})`);
+      return;
+    }
+    buffers.push({
+      kind: 'image',
+      name: result.name,
+      filePath: result.path,
+      src: result.imageSrc,
+    });
+    switchToBuffer(buffers.length - 1);
+  } catch (error) {
+    repl.appendError(`open-image failed: ${error.message}`);
+  }
+}
+
 async function saveBufferInteractive() {
   const buffer = session.current;
   try {
@@ -686,6 +710,15 @@ const interpreter = createInterpreter({
     // File commands run async work and return at once.
     'open-file!': () => {
       openFileInteractive();
+      return NIL;
+    },
+    // Open an image file at PATH (a string) as an image-kind buffer.
+    // Mirrors `open-file!` for an explicit path; jukebox-mode uses this
+    // for M-RET on the album-art file.
+    'open-image-file!': (args) => {
+      const filePath = String(args[0] ?? '');
+      if (filePath === '') return NIL;
+      openImageByPath(filePath);
       return NIL;
     },
     'save-buffer!': () => {

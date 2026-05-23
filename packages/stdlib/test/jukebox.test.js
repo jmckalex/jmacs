@@ -117,6 +117,31 @@ async function jukeboxEditor() {
         audioCalls.push(['prompt-directory']);
         return NIL;
       },
+      // kill-buffer drops the current buffer from the local list and
+      // falls back to the first surviving one — the lightweight stub
+      // is enough to assert that q ran through to here.
+      'kill-buffer!': (args) => {
+        const name =
+          args.length > 0 ? String(args[0]) : current ? current.name : null;
+        const index = buffers.findIndex((b) => b.name === name);
+        if (index >= 0) {
+          buffers.splice(index, 1);
+          if (buffers.length === 0) {
+            const fresh = createBuffer('', { name: '*scratch*' });
+            buffers.push(fresh);
+            current = fresh;
+          } else if (current && current.name === name) {
+            current = buffers[Math.min(index, buffers.length - 1)];
+          }
+        }
+        audioCalls.push(['kill-buffer', name]);
+        return NIL;
+      },
+      // M-RET on album art reaches this primitive with the full path.
+      'open-image-file!': (args) => {
+        audioCalls.push(['open-image-file', String(args[0])]);
+        return NIL;
+      },
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
@@ -364,13 +389,62 @@ test('R replaces the playlist with a permutation', async () => {
   assert.deepEqual([...after].sort(), [...tracks].sort());
 });
 
-test('q stops playback', async () => {
+test('q stops playback and kills the jukebox buffer', async () => {
   const { interpreter, audioCalls, directoryListings } = await jukeboxEditor();
   directoryListings.set('/m', ['a.mp3']);
   interpreter.call('jukebox', '/m');
   interpreter.call('handle-key', ' '); // play
   interpreter.call('handle-key', 'q'); // quit
-  assert.ok(audioCalls.some((c) => c[0] === 'stop'));
+  assert.ok(
+    audioCalls.some((c) => c[0] === 'stop'),
+    'playback should have been stopped'
+  );
+  const kill = audioCalls.find((c) => c[0] === 'kill-buffer');
+  assert.ok(kill, 'kill-buffer! should have been called by q');
+  assert.equal(kill[1], '*Jukebox: /m*');
+});
+
+test('q drops the buffer-local jukebox state', async () => {
+  const { interpreter, directoryListings } = await jukeboxEditor();
+  directoryListings.set('/m', ['a.mp3']);
+  interpreter.call('jukebox', '/m');
+  // The state map carries one entry while the buffer is open.
+  assert.ok(
+    interpreter.evaluate('(map? (get *jukebox-buffers* "*Jukebox: /m*" nil))'),
+    'state should be present before quit'
+  );
+  interpreter.call('handle-key', 'q');
+  assert.equal(
+    interpreter.evaluate('(get *jukebox-buffers* "*Jukebox: /m*" nil)'),
+    NIL,
+    'state should be removed after quit'
+  );
+});
+
+test('M-RET opens the album-art file via open-image-file!', async () => {
+  const { interpreter, audioCalls, directoryListings } = await jukeboxEditor();
+  directoryListings.set('/m', ['cover.jpg', 'a.mp3']);
+  interpreter.call('jukebox', '/m');
+  interpreter.call('handle-key', 'M-enter');
+  const opened = audioCalls.find((c) => c[0] === 'open-image-file');
+  assert.ok(opened, 'open-image-file! should have been called');
+  assert.equal(opened[1], '/m/cover.jpg');
+});
+
+test('M-RET with no album art prints to the REPL and does not open anything', async () => {
+  const { interpreter, audioCalls, directoryListings, replOutput } =
+    await jukeboxEditor();
+  directoryListings.set('/m', ['a.mp3']);
+  interpreter.call('jukebox', '/m');
+  interpreter.call('handle-key', 'M-enter');
+  assert.ok(
+    !audioCalls.some((c) => c[0] === 'open-image-file'),
+    'no image should be opened'
+  );
+  assert.ok(
+    replOutput.some((line) => /no album-art/i.test(line)),
+    `REPL should explain the absence; got ${JSON.stringify(replOutput)}`
+  );
 });
 
 test('jukebox-track-ended advances to the next track', async () => {
