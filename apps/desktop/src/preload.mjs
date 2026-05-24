@@ -119,6 +119,19 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('config:write', { name, content }),
 
   /**
+   * Read the face-overrides JSON file (`<userData>/faces.json`).
+   * Returns `{ global, themes }` or `null` when no file exists yet.
+   */
+  readFaces: () => ipcRenderer.invoke('faces:read'),
+
+  /**
+   * Write the face-overrides JSON file. `data` must be the same
+   * shape that `readFaces` returns: `{ global, themes }`.
+   * @param {{global: object, themes: object}} data
+   */
+  writeFaces: (data) => ipcRenderer.invoke('faces:write', { data }),
+
+  /**
    * Read the documentation manifest (the list of doc-page names
    * produced by `pnpm run docs`). Returns `{ names: string[] }` or
    * `null` when the docs haven't been built yet.

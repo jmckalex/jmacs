@@ -2126,21 +2126,19 @@ test('attributes not overridden fall back to the default', async () => {
   assert.equal(slant && slant.name, 'italic');
 });
 
-test('set-face-attribute triggers the face-style applier hook', async () => {
+test('set-face-attribute triggers the saver hook', async () => {
   const { interpreter } = await editor();
-  let calls = 0;
-  // Install a JS-side applier through a synthetic primitive — but
-  // simpler: define the applier in Lisp as a counter mutator.
-  interpreter.evaluate('(define *test-applier-calls* 0)');
+  // Install a Lisp-side saver that counts invocations.
+  interpreter.evaluate('(define *test-saver-calls* 0)');
   interpreter.evaluate(
-    "(set-face-style-applier! (lambda (styles) (set! *test-applier-calls* (+ *test-applier-calls* 1))))"
+    "(set-face-overrides-saver! (lambda () (set! *test-saver-calls* (+ *test-saver-calls* 1))))"
   );
   interpreter.evaluate(
     "(set-face-attribute 'keyword :foreground \"#ff0000\")"
   );
   interpreter.evaluate("(reset-face 'keyword)");
-  const n = interpreter.evaluate('*test-applier-calls*');
-  assert.ok(n >= 2, `expected applier called twice, got ${n}`);
+  const n = interpreter.evaluate('*test-saver-calls*');
+  assert.ok(n >= 2, `expected saver called twice, got ${n}`);
 });
 
 // --- mode-specific keymaps -------------------------------------------

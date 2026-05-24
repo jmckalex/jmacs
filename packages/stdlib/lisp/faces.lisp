@@ -32,10 +32,11 @@
 ;;   :themes  -> { theme-name -> { face-name -> face-attrs } }
 (define *face-overrides* (hash-map :global {} :themes {}))
 
-;; A hook the renderer side installs (with `set-face-style-applier!`)
-;; so any face change can trigger CSS regeneration. Set to nil at boot;
-;; the host plumbs in `apply-face-styles!` when it's ready.
-(define *face-style-applier* nil)
+;; Regeneration of `<style id="face-overrides">` lives in the host:
+;; the primitive `apply-face-styles!` reads `current-face-styles` and
+;; writes the style element. Tests stub it as a no-op. There is no
+;; intermediate hook — Lisp code calls the primitive directly via
+;; `-on-face-change!`.
 
 ;; --- the face constructor ---------------------------------------------
 
@@ -160,19 +161,6 @@
   "The data the renderer paints into `<style id=\"face-overrides\">`.
    An alist of (face-name . ((:attr . value) …))."
   (faces->alist (current-resolved-faces)))
-
-;; --- the renderer hook ------------------------------------------------
-
-(define (set-face-style-applier! fn)
-  "Install a one-argument procedure the face system calls after any
-   change. The argument is the current-face-styles alist."
-  (set! *face-style-applier* fn))
-
-(define (apply-face-styles!)
-  "Run the installed applier with the current resolved faces. Called
-   after every override change and at startup."
-  (when (procedure? *face-style-applier*)
-    (*face-style-applier* (current-face-styles))))
 
 ;; --- a hook the persistence layer installs (Phase 3) ------------------
 ;; Any change to *face-overrides* runs this — the host sets it to the

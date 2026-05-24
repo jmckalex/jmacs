@@ -17,6 +17,7 @@ import {
   keyword,
   listToArray,
   NIL,
+  sym,
   writeString,
 } from '@editor/lisp';
 import {
@@ -39,6 +40,11 @@ import {
 } from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 import { createAudioController } from './audio.js';
+import {
+  emptyOverrides,
+  jsonToLispOverrides,
+  lispToJsonOverrides,
+} from './face-overrides.js';
 import { applyFaceStyles } from './face-styles.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
@@ -716,6 +722,18 @@ const repl = createReplView(document.getElementById('repl-host'), {
  *  / not loaded; `[]` means the manifest existed but is empty. */
 let docManifestNames = null;
 
+/** Cached face-overrides loaded from `faces.json` at startup. Lisp
+ *  reads this via `load-face-overrides!` and installs it before the
+ *  first paint, so any user overrides are present from the start.
+ *  `null` until the file has been read (it may be missing entirely
+ *  on first launch — that case fills it with `emptyOverrides()`). */
+let faceOverridesCache = null;
+
+/** The Sym / Keyword constructors face-overrides.js needs to build
+ *  Lisp-shaped maps. Passed in so that module stays free of a hard
+ *  dependency on `@editor/lisp` (the unit tests use stand-ins). */
+const lispFactories = { keyword, sym };
+
 const interpreter = createInterpreter({
   write: (text) => repl.appendOutput(text),
   primitives: {
@@ -831,6 +849,30 @@ const interpreter = createInterpreter({
     // can be synchronous.
     'load-doc-manifest!': () =>
       docManifestNames === null ? NIL : arrayToList(docManifestNames),
+
+    // Face customisation: return the face-overrides hash-map loaded
+    // from faces.json at startup, or an empty-overrides map when no
+    // file existed. Called once from Lisp right after stdlib load.
+    'load-face-overrides!': () =>
+      faceOverridesCache ?? emptyOverrides(lispFactories),
+
+    // Face customisation: write the live overrides to faces.json.
+    // The Lisp side passes its current `*face-overrides*` map; we
+    // convert it back to the JSON shape and hand it to the host.
+    'write-face-overrides!': (args) => {
+      const overrides = args[0];
+      try {
+        const json = lispToJsonOverrides(overrides, lispFactories);
+        // Fire-and-forget; the write is small and the next read
+        // will pick up whatever was last written.
+        window.host.writeFaces(json);
+      } catch (error) {
+        repl.appendError(
+          `faces:write: ${error.lispMessage ?? error.message}`
+        );
+      }
+      return NIL;
+    },
     'start-search!': () => {
       startSearch('forward');
       return NIL;
@@ -1237,6 +1279,11 @@ const stdlibOptions = { listLanguageFiles: listStdlibLanguageFiles };
 async function reloadStdlib() {
   try {
     await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
+    // Reapply face hooks + overrides: a fresh stdlib reset both.
+    installFacePersistence();
+    if (faceOverridesCache !== null) {
+      interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
+    }
     await loadUserConfig();
     applyCurrentTheme();
     applyCurrentFaceStyles();
@@ -1246,12 +1293,38 @@ async function reloadStdlib() {
   }
 }
 
+/** Wire the renderer-side face persistence into the Lisp face system.
+ *  After this runs, every `set-face-attribute` persists to faces.json.
+ *  CSS regeneration is already handled by the `apply-face-styles!`
+ *  primitive that Lisp calls directly on every change. */
+function installFacePersistence() {
+  interpreter.evaluate(
+    '(set-face-overrides-saver! (lambda () (write-face-overrides! (current-face-overrides))))'
+  );
+}
+
 let keymapReady = false;
 try {
   await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
   keymapReady = true;
 } catch (error) {
   repl.appendError(`standard library failed to load: ${error.message}`);
+}
+
+// Face overrides: read faces.json (or get null if it's missing) and
+// install into the Lisp face system before the first paint. The
+// stdlib has already loaded `faces.lisp`, so the mutators exist.
+if (keymapReady) {
+  installFacePersistence();
+  try {
+    const json = await window.host.readFaces();
+    faceOverridesCache = jsonToLispOverrides(json, lispFactories);
+    interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
+  } catch (error) {
+    repl.appendError(
+      `faces: failed to load overrides — ${error.lispMessage ?? error.message}`
+    );
+  }
 }
 
 if (keymapReady) await loadUserConfig();

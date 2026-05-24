@@ -253,6 +253,32 @@ export function registerFileHandlers() {
     return { path: target };
   });
 
+  // Face customisation: read `<userData>/faces.json`. Returns the
+  // parsed JSON (a {global, themes} object) or null when no file
+  // exists yet — the first launch has no overrides.
+  ipcMain.handle('faces:read', async () => {
+    const target = configPath('faces.json');
+    if (target === null) return null;
+    try {
+      const text = await readFile(target, 'utf8');
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  });
+
+  // Face customisation: write `<userData>/faces.json`. Atomic-ish:
+  // payload.data is JSON-serialised and written in one call. The
+  // file is small (~few KB at most) so we don't bother with a
+  // temp-file dance.
+  ipcMain.handle('faces:write', async (_event, payload) => {
+    const target = configPath('faces.json');
+    if (target === null) throw new Error('invalid faces target');
+    const data = payload?.data ?? { global: {}, themes: {} };
+    await writeFile(target, JSON.stringify(data, null, 2), 'utf8');
+    return { path: target };
+  });
+
   // Documentation: read the manifest produced by `pnpm run docs`.
   // Returns { names: [...] } or null when no manifest exists yet.
   ipcMain.handle('doc:manifest', async () => {
