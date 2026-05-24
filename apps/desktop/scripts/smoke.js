@@ -879,6 +879,57 @@ app.whenReady().then(() => {
       })()`);
       console.log('  themes:', JSON.stringify(themes));
 
+      // Face customisation: open the customize-faces buffer, then set
+      // the keyword face's foreground via the Lisp API and assert the
+      // computed `.tok-keyword` colour (from the live swatch inside
+      // the customize buffer) reflects the override. Reset, then
+      // assert the default colour is back.
+      const faces = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        // Open the Faces customize buffer — it renders one live
+        // .tok-keyword swatch we can read.
+        submit('(customize-faces)');
+        await new Promise((r) => setTimeout(r, 250));
+        await frame();
+        const cv = document.querySelector('.customize');
+        const customizeShown = !!(cv && getComputedStyle(cv).display !== 'none');
+        const faceRows = cv ? cv.querySelectorAll('.customize-face-row').length : 0;
+        const swatchFor = (face) => {
+          const row = cv && cv.querySelector(\`[data-face-name="\${face}"]\`);
+          if (!row) return null;
+          const span = row.querySelector(\`.tok-\${face}\`);
+          if (!span) return null;
+          return getComputedStyle(span).color;
+        };
+        const before = swatchFor('keyword');
+        // Override the keyword face to bright red.
+        submit('(set-face-attribute (quote keyword) :foreground "#ff0000")');
+        await new Promise((r) => setTimeout(r, 150));
+        await frame();
+        const after = swatchFor('keyword');
+        // Reset.
+        submit('(reset-face (quote keyword))');
+        await new Promise((r) => setTimeout(r, 150));
+        await frame();
+        const reset = swatchFor('keyword');
+        return {
+          before, after, reset,
+          changed: !!(before && after && before !== after),
+          restored: !!(before && reset && before === reset),
+          customizeShown,
+          faceRows,
+          redLike: after === 'rgb(255, 0, 0)',
+        };
+      })()`);
+      console.log('  faces:', JSON.stringify(faces));
+
       // Image buffers: opening an image file shows it through the image
       // view — a non-text buffer kind — with the editor view hidden.
       // The dialog is stubbed (above) to choose the scratch PNG.
@@ -1278,6 +1329,11 @@ app.whenReady().then(() => {
         config.settingRendered;
       const themesOk =
         themes.bgDark !== '' && themes.differ && themes.restored;
+      const facesOk =
+        faces.changed &&
+        faces.restored &&
+        faces.customizeShown &&
+        faces.faceRows >= 13;
       const imageOk =
         image.shown &&
         image.hasDataUrl &&
@@ -1335,7 +1391,7 @@ app.whenReady().then(() => {
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
         markdownOk && previewOk && virtualOk && modesOk && layersOk &&
-        splashOk && stickyOk && configOk && themesOk && imageOk && swatchesOk &&
+        splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk
       ) {
         finish(
@@ -1399,6 +1455,8 @@ app.whenReady().then(() => {
         finish(1, `customisation did not work (${JSON.stringify(config)})`);
       } else if (!themesOk) {
         finish(1, `themes did not work (${JSON.stringify(themes)})`);
+      } else if (!facesOk) {
+        finish(1, `face customisation did not work (${JSON.stringify(faces)})`);
       } else if (!imageOk) {
         finish(1, `image buffers did not work (${JSON.stringify(image)})`);
       } else if (!docsOk) {

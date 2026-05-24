@@ -282,3 +282,134 @@
   "Return the live overrides map. The persistence layer reads this
    to know what to write."
   *face-overrides*)
+
+;; --- the customisation buffer model -----------------------------------
+;; The customize view reads `face-row` for each registered face and
+;; renders the appropriate widgets. Each row is a list of plain data
+;; — strings, values, booleans — so the view does not need to know
+;; about hash-maps or keywords.
+
+(define (-face-state name)
+  "The state symbol for face NAME: 'set when any override touches it
+   under any theme, 'standard when no override does."
+  (let ((globals (-global-overrides))
+        (themes (get *face-overrides* :themes {})))
+    (let ((overridden-globally? (contains? globals name)))
+      (if overridden-globally?
+          'set
+          (-face-state-themes (keys themes) themes name)))))
+
+(define (-face-state-themes theme-names themes name)
+  "Walk THEME-NAMES looking for a per-theme override of face NAME.
+   Returns 'set when one is found, 'standard otherwise."
+  (cond
+    ((nil? theme-names) 'standard)
+    ((contains? (get themes (car theme-names) {}) name) 'set)
+    (else (-face-state-themes (cdr theme-names) themes name))))
+
+(define (face-row name)
+  "A face's data for the customize view: a list
+   (name doc foreground background weight slant underline strike state)
+   with each value as a string / boolean / nil, ready for widgets."
+  (let ((entry (face-entry name)))
+    (list (symbol->string name)
+          (get entry :doc "")
+          (or (face-attribute name :foreground) "")
+          (or (face-attribute name :background) "")
+          (-symbol-or-default (face-attribute name :weight) "normal")
+          (-symbol-or-default (face-attribute name :slant) "normal")
+          (-truthy? (face-attribute name :underline))
+          (-truthy? (face-attribute name :strike-through))
+          (symbol->string (-face-state name)))))
+
+(define (-symbol-or-default value default)
+  "Render a symbol/keyword value as a string, or DEFAULT when nil."
+  (cond
+    ((nil? value) default)
+    ((symbol? value) (symbol->string value))
+    ((keyword? value) (symbol->string value))
+    (else (str value))))
+
+(define (-truthy? value)
+  "True when VALUE is something other than nil / #f. Bare #f and
+   nil both count as false; any other value (a string, a keyword,
+   #t) counts as true."
+  (cond
+    ((nil? value) false)
+    ((eq? value false) false)
+    (else true)))
+
+(define (face-rows)
+  "The data the customize view's Faces group renders: one face-row
+   per registered face, ordered as registered (insertion order)."
+  (map face-row (registered-faces)))
+
+;; --- the commands -----------------------------------------------------
+;; `customize-face` opens the customize buffer scrolled to face NAME;
+;; the describe-face command (parallel agent) will dispatch to this.
+
+(define (customize-face name)
+  "Open the customisation buffer for the single face NAME (a symbol)."
+  (open-customize-face! (symbol->string name)))
+
+(defcommand customize-faces ()
+  "Open the customisation buffer scoped to the Faces group."
+  (open-customize-faces!))
+
+;; --- string-keyed mutators for the host -------------------------------
+;; The renderer (a JS module) speaks strings, not symbols / keywords.
+;; These wrappers accept strings and intern them on the Lisp side.
+
+(define (set-face-attribute-by-strings face-str attr-str value . options)
+  "Wrapper around `set-face-attribute` that takes face name and
+   attribute as strings — what the customize view's widgets feed back.
+   Boolean values come through as JS booleans; symbolic values
+   (weight \"bold\", slant \"italic\") arrive as strings."
+  (let ((face-name (string->symbol face-str))
+        (attr (string->keyword attr-str)))
+    (let ((coerced (-coerce-attr-value attr-str value)))
+      (apply set-face-attribute face-name attr coerced options))))
+
+(define (-coerce-attr-value attr value)
+  "Translate a value that arrived from the renderer's widget into
+   the canonical Lisp form: weight/slant become keywords; underline /
+   strike-through stay boolean; colours stay strings."
+  (cond
+    ((or (string=? attr "weight") (string=? attr "slant"))
+     (if (string? value) (string->keyword value) value))
+    (else value)))
+
+(define (reset-face-by-string face-str)
+  "Drop the global override of face FACE-STR."
+  (reset-face (string->symbol face-str)))
+
+;; --- the customize view model for faces -------------------------------
+;; The customize view asks for a group model when it shows a group's
+;; settings; for faces, we return a similar shape with a :faces array
+;; instead of :settings. The host's JS bridge knows to render face rows.
+
+(define (faces-group-model)
+  "The model for the 'Faces' customize group: title, doc, parent,
+   no subgroups, and the rows for every registered face."
+  (list "faces"
+        "Per-token syntax-highlighting faces. Each face has a
+         foreground colour, optional background, weight, slant,
+         underline and strike-through. Changes are live and persist
+         across restarts."
+        "jmacs"
+        '()
+        (face-rows)))
+
+(define (face-single-model name-str)
+  "The model for a single-face customize buffer: like the faces-group
+   model but with just one face row, no parent link beyond the group."
+  (list "face"
+        (get (face-entry (string->symbol name-str)) :doc "")
+        "faces"
+        '()
+        (list (face-row (string->symbol name-str)))))
+
+;; Register a 'faces' customize group so it shows up in the top-level
+;; customize buffer as a link the user can click into.
+(defgroup 'faces 'jmacs
+  "Per-token font faces — colours, weight, slant, decoration.")

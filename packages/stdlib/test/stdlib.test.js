@@ -2126,6 +2126,87 @@ test('attributes not overridden fall back to the default', async () => {
   assert.equal(slant && slant.name, 'italic');
 });
 
+test('face-row returns a flat list of values for the customize view', async () => {
+  const { interpreter } = await editor();
+  const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
+  // (name doc foreground background weight slant underline strike state)
+  assert.equal(row.length, 9);
+  assert.equal(row[0], 'keyword');
+  assert.equal(typeof row[1], 'string');
+  assert.equal(typeof row[2], 'string'); // foreground is a colour string
+  // weight & slant arrive as plain strings ('normal' when unset).
+  assert.equal(row[4], 'normal');
+  assert.equal(row[5], 'normal');
+  assert.equal(typeof row[6], 'boolean');
+  assert.equal(typeof row[7], 'boolean');
+  assert.equal(row[8], 'standard'); // no overrides yet
+});
+
+test('face-row reports state \"set\" after an override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate("(set-face-attribute 'keyword :foreground \"#abc\")");
+  const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
+  assert.equal(row[2], '#abc');
+  assert.equal(row[8], 'set');
+});
+
+test('face-row reports state \"set\" after a per-theme override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#abc\" :theme 'dark)"
+  );
+  const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
+  assert.equal(row[8], 'set');
+});
+
+test('faces-group-model returns the model the customize view consumes', async () => {
+  const { interpreter } = await editor();
+  const model = listToArray(interpreter.call('faces-group-model'));
+  // (title doc parent subgroups face-rows)
+  assert.equal(model[0], 'faces');
+  assert.equal(model[2], 'jmacs');
+  const rows = listToArray(model[4]);
+  assert.ok(rows.length >= 13);
+});
+
+test('face-single-model returns one face row', async () => {
+  const { interpreter } = await editor();
+  const model = listToArray(
+    interpreter.evaluate('(face-single-model "keyword")')
+  );
+  const rows = listToArray(model[4]);
+  assert.equal(rows.length, 1);
+  const row = listToArray(rows[0]);
+  assert.equal(row[0], 'keyword');
+});
+
+test('set-face-attribute-by-strings coerces weight strings to keywords', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    '(set-face-attribute-by-strings "keyword" "weight" "bold")'
+  );
+  const weight = interpreter.evaluate("(face-attribute 'keyword :weight)");
+  assert.equal(weight && weight.name, 'bold');
+});
+
+test('reset-face-by-string drops the global override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#abc\")"
+  );
+  interpreter.evaluate('(reset-face-by-string "keyword")');
+  const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
+  assert.equal(row[8], 'standard');
+});
+
+test('faces is a registered customize group under jmacs', async () => {
+  const { interpreter } = await editor();
+  const parent = interpreter.evaluate(
+    "(get (get *custom-groups* 'faces {}) :parent nil)"
+  );
+  assert.equal(parent && parent.name, 'jmacs');
+});
+
 test('set-face-attribute triggers the saver hook', async () => {
   const { interpreter } = await editor();
   // Install a Lisp-side saver that counts invocations.

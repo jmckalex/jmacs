@@ -1068,6 +1068,18 @@ const interpreter = createInterpreter({
       openCustomScope({ variable: String(args[0]) });
       return NIL;
     },
+    // Customize one specific face — opens the customize buffer scoped
+    // to a single face row (and scrolled to it).
+    'open-customize-face!': (args) => {
+      openCustomScope({ face: String(args[0]) });
+      return NIL;
+    },
+    // Customize all faces — opens the customize buffer with the
+    // 'Faces' group as its scope.
+    'open-customize-faces!': () => {
+      openCustomScope({ group: 'faces' });
+      return NIL;
+    },
 
     // Sticky notes — see sticky-notes.js and sticky-notes.lisp.
     'note-create!': (args) =>
@@ -1437,6 +1449,22 @@ function fieldToSetting(field) {
   };
 }
 
+/** Turn a `face-row` Lisp list into a plain face object. */
+function rowToFace(row) {
+  const r = listToArray(row);
+  return {
+    name: String(r[0]),
+    doc: String(r[1] ?? ''),
+    foreground: typeof r[2] === 'string' ? r[2] : '',
+    background: typeof r[3] === 'string' ? r[3] : '',
+    weight: String(r[4] ?? 'normal'),
+    slant: String(r[5] ?? 'normal'),
+    underline: r[6] === true,
+    strikeThrough: r[7] === true,
+    state: String(r[8] ?? 'standard'),
+  };
+}
+
 /** The model the customisation view renders for a buffer's scope. */
 function getCustomModel(scope) {
   if (!keymapReady) return null;
@@ -1451,6 +1479,34 @@ function getCustomModel(scope) {
         parent: null,
         groups: [],
         settings: [fieldToSetting(field)],
+        faces: [],
+      };
+    }
+    if (scope.face) {
+      const model = listToArray(
+        interpreter.evaluate(
+          `(face-single-model ${writeString(scope.face)})`
+        )
+      );
+      return {
+        title: scope.face,
+        doc: model[1],
+        parent: model[2] === NIL ? null : String(model[2]),
+        groups: [],
+        settings: [],
+        faces: listToArray(model[4]).map(rowToFace),
+        scrollToFace: scope.face,
+      };
+    }
+    if (scope.group === 'faces') {
+      const model = listToArray(interpreter.call('faces-group-model'));
+      return {
+        title: model[0],
+        doc: model[1],
+        parent: model[2] === NIL ? null : String(model[2]),
+        groups: [],
+        settings: [],
+        faces: listToArray(model[4]).map(rowToFace),
       };
     }
     const model = listToArray(
@@ -1465,6 +1521,7 @@ function getCustomModel(scope) {
         return { name: g[0], doc: g[1] };
       }),
       settings: listToArray(model[4]).map(fieldToSetting),
+      faces: [],
     };
   } catch (error) {
     repl.appendError(`customize: ${error.lispMessage ?? error.message}`);
@@ -1524,10 +1581,32 @@ function resetCustomSetting(name) {
   if (name === '*theme*') applyCurrentTheme();
 }
 
-/** Open a customisation buffer for a scope — a subgroup or a variable. */
+/** Apply a face-attribute change from the customize view. The widget
+ *  passes everything as strings/booleans; the wrapper coerces. */
+function setFaceFromView(faceName, attr, value) {
+  const valueSrc =
+    typeof value === 'boolean'
+      ? (value ? 'true' : 'false')
+      : writeString(String(value));
+  interpreter.evaluate(
+    `(set-face-attribute-by-strings ${writeString(faceName)} ${writeString(attr)} ${valueSrc})`
+  );
+}
+
+/** Reset a face — drop the global override and rerender. */
+function resetFaceFromView(faceName) {
+  interpreter.evaluate(
+    `(reset-face-by-string ${writeString(faceName)})`
+  );
+}
+
+/** Open a customisation buffer for a scope — a subgroup, a variable,
+ *  or a single face. */
 function openCustomScope(scope) {
   if (scope.variable) {
     openCustomize(`*Customize: ${scope.variable}*`, scope);
+  } else if (scope.face) {
+    openCustomize(`*Customize Face: ${scope.face}*`, scope);
   } else {
     openCustomize(`*Customize: ${scope.group}*`, scope);
   }
@@ -1546,6 +1625,8 @@ const customizeView = createCustomizeView(
     saveSetting: saveCustomSetting,
     resetSetting: resetCustomSetting,
     openScope: openCustomScope,
+    setFaceAttribute: setFaceFromView,
+    resetFace: resetFaceFromView,
   }
 );
 customizeView.element.style.display = 'none';
