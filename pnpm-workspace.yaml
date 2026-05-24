@@ -22,3 +22,4 @@ allowBuilds:
   # produce the vendored markdown wasm files. Unlike the grammar
   # packages, no native gyp build runs here.
   tree-sitter-cli: true
+  '@pfoerster/tree-sitter-latex': false
