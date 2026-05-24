@@ -362,6 +362,41 @@ async function openFileInteractive() {
 }
 
 /**
+ * Open a file by an explicit path, dialog-free — the find-file flow
+ * (C-x C-f) drives this with the path it gathered through the
+ * minibuffer's TAB completion. An image suffix lands in an image
+ * buffer; any other readable file becomes a text buffer with its
+ * sticky-note metadata loaded.
+ */
+async function openFileByPath(filePath) {
+  try {
+    const result = await window.host.openFilePath(filePath);
+    if (result === null) {
+      repl.appendError(`open: unreadable (${filePath})`);
+      return;
+    }
+    if (typeof result.imageSrc === 'string') {
+      buffers.push({
+        kind: 'image',
+        name: result.name,
+        filePath: result.path,
+        src: result.imageSrc,
+      });
+      switchToBuffer(buffers.length - 1);
+      return;
+    }
+    const buffer = createBuffer(result.content, { name: result.name });
+    buffer.filePath = result.path;
+    const metadata = await window.host.readMetadata(result.path);
+    if (metadata) buffer.metadata = metadata;
+    buffers.push(buffer);
+    switchToBuffer(buffers.length - 1);
+  } catch (error) {
+    repl.appendError(`open failed: ${error.message}`);
+  }
+}
+
+/**
  * Open an image file by an explicit path, dialog-free. Mounts an
  * `image`-kind buffer for it and switches to it — the same view the
  * dialog path produces. Used by jukebox-mode's M-RET on album art.
@@ -725,6 +760,15 @@ const interpreter = createInterpreter({
       openFileInteractive();
       return NIL;
     },
+    // Open a file by an explicit path — no dialog. The find-file
+    // minibuffer flow drives this with the path it has gathered.
+    // Returns nil; errors are reported in the REPL.
+    'open-file-path!': (args) => {
+      const filePath = expandTilde(String(args[0] ?? ''));
+      if (filePath === '') return NIL;
+      openFileByPath(filePath);
+      return NIL;
+    },
     // Show a transient message in the minibuffer's echo area (the
     // status line at the foot of the window). Used by the keymap to
     // surface a mid-build chord prefix ("C-x-"), among other things.
@@ -736,6 +780,10 @@ const interpreter = createInterpreter({
       minibuffer.clearStatus();
       return NIL;
     },
+    // The current user's home directory — find-file uses it as the
+    // starting point for its TAB-completion path. An empty string is
+    // returned when the host does not know the home (unlikely).
+    'home-directory': () => HOME,
     // Open an image file at PATH (a string) as an image-kind buffer.
     // Mirrors `open-file!` for an explicit path; jukebox-mode uses this
     // for M-RET on the album-art file.
@@ -1085,6 +1133,53 @@ const interpreter = createInterpreter({
     'list-directory': (args) => {
       const entries = window.host.listDirectorySync(String(args[0]));
       return entries === null ? NIL : arrayToList(entries);
+    },
+    // Directory listing with per-entry type info, synchronous. Returns
+    // a list of (name . type) pairs where type is the keyword
+    // :directory or :file. The find-file Lisp completer uses this to
+    // add a trailing "/" to directory completions, so further typing
+    // keeps descending. Returns nil when the path can't be read.
+    'list-directory-paths': (args) => {
+      const path = expandTilde(String(args[0] ?? ''));
+      const entries = window.host.listDirectoryWithTypesSync(path);
+      if (entries === null) return NIL;
+      return arrayToList(
+        entries.map((entry) => cons(entry.name, keyword(entry.type)))
+      );
+    },
+    // Open a completing minibuffer: a prompt the Lisp side drives
+    // through `minibuffer-tab-complete` on Tab and the usual
+    // `minibuffer-delivered` on submit/cancel. This is what `find-file`
+    // uses to gather a path with TAB completion. The handler is
+    // implemented in Lisp (see files.lisp) so the policy — what to
+    // complete against, what to show when ambiguous — stays in
+    // userland.
+    'open-completing-minibuffer!': (args) => {
+      const promptText = String(args[0] ?? '');
+      const initialValue = args.length > 1 ? String(args[1] ?? '') : '';
+      minibuffer.prompt(promptText, {
+        initialValue,
+        onSubmit(value) {
+          editorView.focus();
+          interpreter.call('minibuffer-delivered', value);
+        },
+        onCancel() {
+          editorView.focus();
+          interpreter.call('minibuffer-delivered', NIL);
+        },
+        onTab(value) {
+          try {
+            const result = interpreter.call('minibuffer-tab-complete', value);
+            if (typeof result === 'string') return result;
+          } catch (error) {
+            repl.appendError(
+              `tab-complete: ${error.lispMessage ?? error.message}`
+            );
+          }
+          return value;
+        },
+      });
+      return NIL;
     },
     'play-audio!': (args) => {
       audio.play(expandTilde(String(args[0])));

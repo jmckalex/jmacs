@@ -164,6 +164,10 @@ async function buildEditor(seed = [{ name: 'alpha.txt', text: 'alpha' }]) {
       'show-eval-log!': () => NIL,
       'show-status!': () => NIL,
       'clear-status!': () => NIL,
+      'home-directory': () => '',
+      'list-directory-paths': () => NIL,
+      'open-file-path!': () => NIL,
+      'open-completing-minibuffer!': () => NIL,
     },
   });
 

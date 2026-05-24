@@ -64,6 +64,16 @@ contextBridge.exposeInMainWorld('host', {
   listDirectorySync: (path) => ipcRenderer.sendSync('directory:list-sync', { path }),
 
   /**
+   * A directory listing with per-entry type info — each result is
+   * `{ name, type }` where `type` is `"directory"` or `"file"`.
+   * Find-file's tab-completion uses this synchronously.
+   * @param {string} path
+   * @returns {{name: string, type: 'directory' | 'file'}[] | null}
+   */
+  listDirectoryWithTypesSync: (path) =>
+    ipcRenderer.sendSync('directory:list-with-types-sync', { path }),
+
+  /**
    * Render JMarkdown `source` to HTML by running `command` (a shell
    * command) with the source on stdin.
    * @param {string} command

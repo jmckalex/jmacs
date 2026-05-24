@@ -146,6 +146,12 @@ async function jukeboxEditor() {
       // transition; no-ops in the jukebox harness.
       'show-status!': () => NIL,
       'clear-status!': () => NIL,
+      // The find-file flow's primitives — unused here, but registered
+      // because files.lisp references them at load time.
+      'home-directory': () => '',
+      'list-directory-paths': () => NIL,
+      'open-file-path!': () => NIL,
+      'open-completing-minibuffer!': () => NIL,
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));
