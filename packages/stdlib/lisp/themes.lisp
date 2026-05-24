@@ -48,8 +48,8 @@
    "--tok-function" "#6699cc"
    "--tok-type"     "#fac863"
    "--tok-tag"      "#ec5f67"
-   "--tok-operator" "#a3acb9"
-   "--tok-paren"    "#8b98a6"
+   "--tok-operator" "#62b3b2"
+   "--tok-paren"    "#6b7785"
    "--tok-heading"  "#fac863"
    "--tok-code"     "#99c794"
    "--tok-link"     "#6699cc"))
@@ -75,8 +75,8 @@
    "--tok-function" "#268bd2"
    "--tok-type"     "#b58900"
    "--tok-tag"      "#dc322f"
-   "--tok-operator" "#586e75"
-   "--tok-paren"    "#93a1a1"
+   "--tok-operator" "#2aa198"
+   "--tok-paren"    "#b8c4c4"
    "--tok-heading"  "#268bd2"
    "--tok-code"     "#2aa198"
    "--tok-link"     "#268bd2"))
@@ -102,8 +102,8 @@
    "--tok-function" "#d2a8ff"
    "--tok-type"     "#ffa657"
    "--tok-tag"      "#7ee787"
-   "--tok-operator" "#c9d1d9"
-   "--tok-paren"    "#8b949e"
+   "--tok-operator" "#56d4dd"
+   "--tok-paren"    "#6e7681"
    "--tok-heading"  "#ffa657"
    "--tok-code"     "#a5d6ff"
    "--tok-link"     "#58a6ff"))
