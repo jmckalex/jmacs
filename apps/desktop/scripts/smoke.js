@@ -98,6 +98,56 @@ function buildID3v23WithAPIC(mime, picture) {
   ]);
 }
 
+/** Build an ID3v2.3 text frame: 4-byte ID + 4-byte plain BE size +
+ *  2-byte flags + 1-byte encoding (ISO-8859-1) + ASCII text. */
+function id3v23TextFrame(id, value) {
+  const payload = Buffer.concat([Buffer.from([0]), Buffer.from(value, 'ascii')]);
+  return Buffer.concat([
+    Buffer.from(id, 'ascii'),
+    Buffer.from([
+      (payload.length >> 24) & 0xff, (payload.length >> 16) & 0xff,
+      (payload.length >> 8) & 0xff, payload.length & 0xff,
+    ]),
+    Buffer.from([0, 0]),
+    payload,
+  ]);
+}
+
+/** Build a tag with APIC + TIT2/TPE1/TALB text frames so the same
+ *  seeded file exercises both the art extractor and the metadata
+ *  formatter. */
+function buildID3v23Tagged(title, artist, album, mime, picture) {
+  const apicPayload = Buffer.concat([
+    Buffer.from([0]),
+    Buffer.from(mime, 'ascii'),
+    Buffer.from([0]),
+    Buffer.from([3]),
+    Buffer.from([0]),
+    picture,
+  ]);
+  const apic = Buffer.concat([
+    Buffer.from('APIC', 'ascii'),
+    Buffer.from([
+      (apicPayload.length >> 24) & 0xff, (apicPayload.length >> 16) & 0xff,
+      (apicPayload.length >> 8) & 0xff, apicPayload.length & 0xff,
+    ]),
+    Buffer.from([0, 0]),
+    apicPayload,
+  ]);
+  const frames = Buffer.concat([
+    id3v23TextFrame('TIT2', title),
+    id3v23TextFrame('TPE1', artist),
+    id3v23TextFrame('TALB', album),
+    apic,
+  ]);
+  return Buffer.concat([
+    Buffer.from('ID3', 'ascii'),
+    Buffer.from([3, 0, 0]),
+    syncsafeInt32(frames.length),
+    frames,
+  ]);
+}
+
 // Isolate the smoke run's config files (custom.lisp, init.lisp) in a
 // fresh temp directory, so it never touches the real user data dir.
 const configDir = join(tmpdir(), 'jmacs-smoke-config');
@@ -1205,7 +1255,14 @@ app.whenReady().then(() => {
       // The `aaa-` prefix keeps it first in the alphabetic track
       // ordering, so it's the initial "now playing" the embedded-art
       // assertion runs against.
-      const embeddedMp3 = buildID3v23WithAPIC('image/jpeg', SAMPLE_JPEG_BYTES);
+      // aaa-silence.mp3 also carries TIT2/TPE1/TALB frames so the
+      // jukebox view's row label is `"Test", A, B` rather than the
+      // bare filename — proves the metadata parser + IPC + Lisp
+      // formatter all wired through. The APIC frame is still here too.
+      const embeddedMp3 = buildID3v23Tagged(
+        'Test', 'A', 'B', 'image/jpeg', SAMPLE_JPEG_BYTES
+      );
+      void buildID3v23WithAPIC; // kept for compatibility / readability
       await Promise.all([
         writeFile(join(jukeboxDir, 'aaa-silence.mp3'), embeddedMp3),
         writeFile(join(jukeboxDir, 'second.flac'), ''),
@@ -1457,7 +1514,11 @@ app.whenReady().then(() => {
         jukebox.visible &&
         jukebox.hasAudio &&
         jukebox.hasArt &&
-        jukebox.tracks.includes('aaa-silence.mp3') &&
+        // The tagged MP3 (TIT2/TPE1/TALB = Test/A/B) is rendered
+        // through the default *jukebox-track-format* — the row text
+        // is the formatted label rather than the filename.
+        jukebox.tracks.includes('"Test", A, B') &&
+        // The untagged FLAC falls back to its bare filename.
         jukebox.tracks.includes('second.flac') &&
         !jukebox.tracks.includes('readme.txt') &&
         // Clicking a track row points the audio element at one of them.

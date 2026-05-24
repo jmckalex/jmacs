@@ -263,6 +263,61 @@ function killBufferByName(name) {
   killBufferAtIndex(buffers.findIndex((buffer) => buffer.name === name));
 }
 
+/** Join DIR and NAME with a single slash. Tiny helper used to build
+ *  the absolute path for each jukebox track. */
+function joinPath(dir, name) {
+  const trimmed = typeof dir === 'string' && dir.endsWith('/')
+    ? dir.slice(0, -1)
+    : String(dir ?? '');
+  return `${trimmed}/${name}`;
+}
+
+/** Ask Lisp to format the display label for PATH using the current
+ *  `*jukebox-track-format*` template. A failure (interpreter not
+ *  ready, format-track not yet defined, anything thrown from the
+ *  template) falls back to the bare filename — one bad tag must not
+ *  break the whole listing. */
+function formatTrackLabel(path) {
+  if (!keymapReady) return basenameOf(path);
+  try {
+    const result = interpreter.call('format-track', path);
+    if (typeof result === 'string' && result !== '') return result;
+  } catch {
+    /* fall through */
+  }
+  return basenameOf(path);
+}
+
+/** The bare filename component of PATH. */
+function basenameOf(path) {
+  const slash = String(path).lastIndexOf('/');
+  return slash >= 0 ? path.slice(slash + 1) : path;
+}
+
+/** Refresh the labels of every open jukebox buffer. Called by the
+ *  `*jukebox-track-format*` :on-change hook so a user customising the
+ *  format string sees the change apply to already-open jukeboxes. */
+function refreshAllJukeboxLabels() {
+  let touched = false;
+  for (const buffer of buffers) {
+    if (buffer.kind !== 'jukebox' || !Array.isArray(buffer.tracks)) continue;
+    buffer.labels = buffer.tracks.map((track) =>
+      formatTrackLabel(joinPath(buffer.dir, track))
+    );
+    touched = true;
+  }
+  // Re-mount the current view so the change is visible immediately
+  // (a buffer's labels are read in setBuffer). switchToBuffer with
+  // currentIndex forces a re-mount; we only do it when the current
+  // buffer is a jukebox so other views aren't disturbed.
+  if (touched && currentIndex >= 0 &&
+      buffers[currentIndex].kind === 'jukebox') {
+    const i = currentIndex;
+    currentIndex = -1;
+    switchToBuffer(i);
+  }
+}
+
 /** Build a fresh tracks/art listing for DIR and create-or-refresh the
  *  matching jukebox buffer. Reusing an existing buffer by name keeps
  *  the user's switch history sane — `(jukebox "/m")` twice does not
@@ -285,6 +340,14 @@ function openJukeboxForDirectory(dir) {
   }
   const tracks = entries.filter(isAudioFile);
   const art = findArt(entries);
+  // Format the display label for each track via the Lisp helper.
+  // Doing this up front (rather than per-row) keeps the renderer free
+  // of IPC chatter when the buffer mounts. A formatting error per
+  // file degrades to the bare filename — one malformed tag must not
+  // break the whole listing.
+  const labels = tracks.map((track) =>
+    formatTrackLabel(joinPath(dir, track))
+  );
   const name = `*Jukebox: ${dir}*`;
   let index = buffers.findIndex(
     (buffer) => buffer.kind === 'jukebox' && buffer.name === name
@@ -297,6 +360,7 @@ function openJukeboxForDirectory(dir) {
     name,
     dir,
     tracks,
+    labels,
     art,
   };
   record.refresh = () => openJukeboxForDirectory(dir);
@@ -1146,6 +1210,13 @@ const interpreter = createInterpreter({
       const dir = expandTilde(String(args[0] ?? ''));
       if (dir === '') return NIL;
       openJukeboxForDirectory(dir);
+      return NIL;
+    },
+    // Refresh the `labels` array on every open jukebox buffer. Called
+    // by the `*jukebox-track-format*` :on-change hook so a user
+    // customising the format string sees it take effect immediately.
+    'refresh-jukebox-labels!': () => {
+      refreshAllJukeboxLabels();
       return NIL;
     },
     // Read an audio file's embedded tag metadata as a Lisp hash-map
