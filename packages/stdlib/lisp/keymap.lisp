@@ -98,6 +98,12 @@
    "C-S-z"        'redo
    "C-s"          'isearch-forward
    "C-r"          'isearch-backward
+   "C-M-s"        'isearch-regexp-forward
+   "C-M-r"        'isearch-regexp-backward
+   ;; M-% (query-replace) — Shift+5 is "%", so the normalised key is M-S-5.
+   "M-S-5"        'query-replace
+   ;; C-M-% (replace-regexp) — likewise C-M-S-5.
+   "C-M-S-5"      'replace-regexp
    "M-x"          'execute-command
    "C-w"          'kill-region
    "M-w"          'copy-region

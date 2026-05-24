@@ -29,6 +29,13 @@ import { keyEventToString } from './keymap.js';
  *   Open the minibuffer with a prompt and handlers.
  * @property {(text: string) => void} setStatus - Show a status note
  *   after the input (e.g. "no match").
+ * @property {(text: string) => void} showMessage - Display TEXT as a
+ *   transient one-line message in the minibuffer area (no input
+ *   field; focus stays where it was). Used for the `y`/`n`/`q`-style
+ *   prompts driven by `read-next-key`, where the keystroke is the
+ *   answer.
+ * @property {() => void} clearMessage - Hide a message shown by
+ *   `showMessage`.
  * @property {() => void} close - Hide the minibuffer.
  * @property {() => boolean} isOpen - Whether the minibuffer is showing.
  */
@@ -65,6 +72,7 @@ export function createMinibuffer(container) {
     root.hidden = true;
     handlers = null;
     input.value = '';
+    input.hidden = false;
     statusEl.textContent = '';
   }
 
@@ -99,6 +107,7 @@ export function createMinibuffer(container) {
       handlers = h;
       promptEl.textContent = promptText;
       input.value = h.initialValue ?? '';
+      input.hidden = false;
       statusEl.textContent = '';
       root.hidden = false;
       input.focus();
@@ -109,6 +118,30 @@ export function createMinibuffer(container) {
 
     setStatus(text) {
       statusEl.textContent = text;
+    },
+
+    /**
+     * Show a one-line message in the minibuffer panel without taking
+     * focus or installing a prompt — the message rides in the prompt
+     * slot, the input field is hidden. Used by commands that drive a
+     * `y`/`n` answer through `read-next-key`.
+     */
+    showMessage(text) {
+      // If a real prompt is open it owns the panel; messages are
+      // suppressed so they cannot clobber the prompt or its input.
+      if (handlers !== null) return;
+      promptEl.textContent = text;
+      input.value = '';
+      input.hidden = true;
+      statusEl.textContent = '';
+      root.hidden = false;
+    },
+
+    clearMessage() {
+      if (handlers !== null) return;
+      promptEl.textContent = '';
+      input.hidden = false;
+      root.hidden = true;
     },
 
     close,
