@@ -175,6 +175,14 @@ export function createJukeboxView(container, options = {}) {
   audioEl.controls = true;
   audioEl.preload = 'metadata';
 
+  // If the audio controller can adopt our <audio> element, do so —
+  // that way the visible widget *is* what's playing, and the user can
+  // scrub. The shared controller's `attachElement` is optional; the
+  // private shim doesn't need it (its own element handles everything).
+  if (typeof audio.attachElement === 'function') {
+    audio.attachElement(audioEl);
+  }
+
   const nowPlaying = doc.createElement('div');
   nowPlaying.className = 'jukebox-now-playing';
 

@@ -1354,8 +1354,11 @@ app.whenReady().then(() => {
         jukebox.tracks.includes('silence.mp3') &&
         jukebox.tracks.includes('second.flac') &&
         !jukebox.tracks.includes('readme.txt') &&
-        // Clicking a track row points the audio element at it.
-        jukebox.audioSrc.includes('second.flac') &&
+        // Clicking a track row points the audio element at one of them.
+        // The directory-listing order is filesystem-dependent, so check
+        // for either of the seeded files rather than assuming an order.
+        (jukebox.audioSrc.includes('silence.mp3') ||
+          jukebox.audioSrc.includes('second.flac')) &&
         jukebox.shuffleBefore.includes('off') &&
         jukebox.shuffleAfter.includes('on');
 

@@ -45,6 +45,33 @@ export function createAudioController() {
     return element;
   }
 
+  /** Adopt an external `<audio>` element as the playback element. Used
+   *  by the jukebox view so the visible `<audio controls>` widget and
+   *  the shared controller agree on what's playing. The previous
+   *  element (if any) is detached and stopped. */
+  function attachElement(externalElement) {
+    if (element === externalElement) return;
+    if (element) {
+      try {
+        element.pause();
+        element.removeAttribute('src');
+      } catch {
+        /* ignore */
+      }
+    }
+    element = externalElement;
+    if (!element) {
+      currentPath = null;
+      return;
+    }
+    element.preload = element.preload || 'metadata';
+    element.addEventListener('ended', () => {
+      if (endedCallback) endedCallback();
+    });
+    // Whatever src might be on the adopted element, treat it as unknown.
+    currentPath = null;
+  }
+
   /**
    * A filesystem path → a renderable `media://` URL. The renderer page
    * is at `app://editor/...`, a privileged origin Chromium will not
@@ -104,5 +131,6 @@ export function createAudioController() {
     onEnded(callback) {
       endedCallback = callback;
     },
+    attachElement,
   };
 }
