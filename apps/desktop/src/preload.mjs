@@ -131,4 +131,14 @@ contextBridge.exposeInMainWorld('host', {
    * @param {string} name
    */
   readDocPage: (name) => ipcRenderer.invoke('doc:read', { name }),
+
+  /**
+   * Read the embedded album art from an audio file. Returns
+   * `{ mime, dataUrl }` (the `dataUrl` is ready for `<img src>`) or
+   * `null` when the format is unsupported, the file is unreadable,
+   * or no art is present. Used by the jukebox view.
+   * @param {string} path
+   * @returns {Promise<{ mime: string, dataUrl: string } | null>}
+   */
+  audioAlbumArt: (path) => ipcRenderer.invoke('audio:album-art', { path }),
 });

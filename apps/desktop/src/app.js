@@ -1587,6 +1587,12 @@ const jukeboxView = createJukeboxView(
     audio,
     openImage: (path) => openImageByPath(expandTilde(path)),
     report: (message) => repl.appendNote(message),
+    // Embedded album-art lookup: the host IPC reads the file's tag
+    // and returns `{ mime, dataUrl }` or null. The view shows the
+    // dataUrl when present, falls back to the directory's sidecar
+    // cover otherwise.
+    getEmbeddedArt: (path) =>
+      window.host.audioAlbumArt(expandTilde(path)),
   }
 );
 jukeboxView.element.style.display = 'none';

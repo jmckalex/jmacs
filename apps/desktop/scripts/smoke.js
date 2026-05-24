@@ -52,6 +52,52 @@ writeFileSync(
 /** A scratch directory the jukebox smoke arm seeds with fake audio files. */
 const jukeboxDir = join(tmpdir(), 'jmacs-smoke-jukebox');
 
+/** A minimal (not standards-perfect, but JPEG-sniffable) byte string
+ *  the smoke uses as embedded album-art for the seeded MP3. The art
+ *  parser sniffs the MIME from the SOI marker (`FF D8 FF`), so a few
+ *  bytes are enough; the renderer only needs them to be base64-able
+ *  into a `data:` URL. */
+const SAMPLE_JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+
+/** Encode `n` into 4 syncsafe bytes (7 bits per byte) — the ID3v2 tag
+ *  size and v2.4 frame sizes use this encoding so the bytes never
+ *  collide with the MPEG sync word inside the audio stream. */
+function syncsafeInt32(n) {
+  return Buffer.from([
+    (n >> 21) & 0x7f, (n >> 14) & 0x7f, (n >> 7) & 0x7f, n & 0x7f,
+  ]);
+}
+
+/** Build a minimal ID3v2.3 tag carrying a single APIC frame whose
+ *  payload is `picture` bytes labelled with `mime`. The output is a
+ *  valid prefix the smoke can drop on disk as an `.mp3`; the art
+ *  extractor in `audio-art.js` parses it round-trip. */
+function buildID3v23WithAPIC(mime, picture) {
+  const payload = Buffer.concat([
+    Buffer.from([0]),                  // text encoding: ISO-8859-1
+    Buffer.from(mime, 'ascii'),
+    Buffer.from([0]),                  // MIME NUL
+    Buffer.from([3]),                  // picture type: cover (front)
+    Buffer.from([0]),                  // empty description + NUL
+    picture,
+  ]);
+  const frame = Buffer.concat([
+    Buffer.from('APIC', 'ascii'),
+    Buffer.from([
+      (payload.length >> 24) & 0xff, (payload.length >> 16) & 0xff,
+      (payload.length >> 8) & 0xff, payload.length & 0xff,
+    ]),                                // v2.3: plain big-endian size
+    Buffer.from([0, 0]),               // flags
+    payload,
+  ]);
+  return Buffer.concat([
+    Buffer.from('ID3', 'ascii'),
+    Buffer.from([3, 0, 0]),            // v2.3.0, no flags
+    syncsafeInt32(frame.length),
+    frame,
+  ]);
+}
+
 // Isolate the smoke run's config files (custom.lisp, init.lisp) in a
 // fresh temp directory, so it never touches the real user data dir.
 const configDir = join(tmpdir(), 'jmacs-smoke-config');
@@ -1153,8 +1199,15 @@ app.whenReady().then(() => {
       // toggle flips on user interaction), then run `(jukebox <dir>)`
       // and inspect the rendered DOM.
       await mkdir(jukeboxDir, { recursive: true });
+      // aaa-silence.mp3 carries a real ID3v2 tag with an embedded APIC
+      // picture so the smoke can verify the view shows it as a
+      // `data:` URL (i.e. the extraction pipeline ran end-to-end).
+      // The `aaa-` prefix keeps it first in the alphabetic track
+      // ordering, so it's the initial "now playing" the embedded-art
+      // assertion runs against.
+      const embeddedMp3 = buildID3v23WithAPIC('image/jpeg', SAMPLE_JPEG_BYTES);
       await Promise.all([
-        writeFile(join(jukeboxDir, 'silence.mp3'), ''),
+        writeFile(join(jukeboxDir, 'aaa-silence.mp3'), embeddedMp3),
         writeFile(join(jukeboxDir, 'second.flac'), ''),
         writeFile(join(jukeboxDir, 'cover.jpg'), ''),
         writeFile(join(jukeboxDir, 'readme.txt'), 'ignore me'),
@@ -1176,6 +1229,17 @@ app.whenReady().then(() => {
         submit('(jukebox ${JSON.stringify(jukeboxDir)})');
         await frame();
         await frame();
+        // Embedded-art lookup is async (IPC round-trip); wait for the
+        // <img src> to flip from the sidecar's media:// URL to the
+        // data: URL the parser produces. Poll a handful of frames so
+        // the smoke isn't flaky on slow CI.
+        const waitFor = async (predicate, max) => {
+          for (let i = 0; i < max; i += 1) {
+            if (predicate()) return true;
+            await frame();
+          }
+          return predicate();
+        };
         const view = document.querySelector('.jukebox-view');
         const visible = view && view.style.display !== 'none';
         const name = document.getElementById('modeline-name').textContent;
@@ -1185,6 +1249,15 @@ app.whenReady().then(() => {
           : [];
         const art = view ? view.querySelector('.jukebox-art-image') : null;
         const hasArt = !!(art && art.getAttribute('src'));
+        // Wait for the embedded art to land. aaa-silence.mp3 (the seeded
+        // first track) carries an APIC frame; the view should switch
+        // its <img src> to a data:image/jpeg;base64,... URL.
+        await waitFor(
+          () => !!(art && (art.getAttribute('src') || '').startsWith('data:')),
+          30
+        );
+        const artSrcAfterEmbed = art ? (art.getAttribute('src') || '') : '';
+        const embeddedArtShown = artSrcAfterEmbed.startsWith('data:');
         const audioEl = view ? view.querySelector('audio.jukebox-audio') : null;
         const hasAudio = !!audioEl;
         // Click the second track row → the audio element's src should
@@ -1206,7 +1279,7 @@ app.whenReady().then(() => {
 
         // Keymap forwarding: with the jukebox view focused, fire
         // C-x then k as keydowns. The view must forward both to the
-        // global keymap; `C-x k` (kill-buffer) then removes the
+        // global keymap; C-x k (kill-buffer) then removes the
         // jukebox buffer. Without the keymap fix the keys are eaten
         // by the view and the buffer survives.
         if (view) view.focus();
@@ -1239,6 +1312,8 @@ app.whenReady().then(() => {
           shuffleAfter,
           jukeboxStillVisible,
           afterKillName: modelineName,
+          embeddedArtShown,
+          artSrcPrefix: artSrcAfterEmbed.slice(0, 30),
         };
       })()`);
       console.log('  jukebox:', JSON.stringify({
@@ -1250,6 +1325,8 @@ app.whenReady().then(() => {
         shuffleFlip: jukebox.shuffleBefore + ' -> ' + jukebox.shuffleAfter,
         killedByCx: !jukebox.jukeboxStillVisible,
         afterKillName: jukebox.afterKillName,
+        embeddedArt: jukebox.embeddedArtShown,
+        artSrcPrefix: jukebox.artSrcPrefix,
       }));
       await rm(jukeboxDir, { recursive: true, force: true });
 
@@ -1380,20 +1457,24 @@ app.whenReady().then(() => {
         jukebox.visible &&
         jukebox.hasAudio &&
         jukebox.hasArt &&
-        jukebox.tracks.includes('silence.mp3') &&
+        jukebox.tracks.includes('aaa-silence.mp3') &&
         jukebox.tracks.includes('second.flac') &&
         !jukebox.tracks.includes('readme.txt') &&
         // Clicking a track row points the audio element at one of them.
         // The directory-listing order is filesystem-dependent, so check
         // for either of the seeded files rather than assuming an order.
-        (jukebox.audioSrc.includes('silence.mp3') ||
+        (jukebox.audioSrc.includes('aaa-silence.mp3') ||
           jukebox.audioSrc.includes('second.flac')) &&
         jukebox.shuffleBefore.includes('off') &&
         jukebox.shuffleAfter.includes('on') &&
         // C-x k from the focused jukebox view kills the buffer and
         // takes the user back to a different (non-jukebox) buffer.
         !jukebox.jukeboxStillVisible &&
-        !jukebox.afterKillName.includes('Jukebox:');
+        !jukebox.afterKillName.includes('Jukebox:') &&
+        // Embedded album art extracted from aaa-silence.mp3's ID3 tag
+        // ends up on the <img> as a data: URL — the parser, the IPC
+        // handler, and the view all wired through.
+        jukebox.embeddedArtShown;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
