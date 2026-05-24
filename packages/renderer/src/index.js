@@ -23,6 +23,15 @@ export {
   isImageName,
   mimeTypeForImage,
 } from './image-view.js';
+export {
+  AUDIO_SUFFIXES,
+  ART_FILENAMES,
+  createJukeboxView,
+  findArt,
+  isAudioFile,
+  joinPath,
+  shufflePermutation,
+} from './jukebox-view.js';
 export { toLines, selectionRects } from './projection.js';
 export { resolveKey, keyEventToString } from './keymap.js';
 export { applyIntent, handleKeyEvent } from './commands.js';

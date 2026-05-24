@@ -26,14 +26,17 @@ import {
   createHoverDoc,
   createInlineEval,
   createImageView,
+  createJukeboxView,
   createMarkdownPreview,
   createMinibuffer,
   createReplView,
   createTreeSitterHighlighter,
+  findArt,
   formBoundsAtPoint,
   formBoundsBeforePoint,
   fuzzyFilter,
   highlightLine,
+  isAudioFile,
   loadLanguageHighlighters,
   renderMarkdown,
 } from '@editor/renderer';
@@ -184,12 +187,14 @@ function ensureMajorMode() {
 }
 
 /** Show the view for `kind` — the editor view, the customisation view,
- *  the image view, or the documentation view — hiding the others. */
+ *  the image view, the documentation view, or the jukebox view —
+ *  hiding the others. */
 function mountView(kind) {
   editorView.element.style.display = kind === 'text' ? '' : 'none';
   customizeView.element.style.display = kind === 'customize' ? '' : 'none';
   imageView.element.style.display = kind === 'image' ? '' : 'none';
   docView.element.style.display = kind === 'doc' ? '' : 'none';
+  jukeboxView.element.style.display = kind === 'jukebox' ? '' : 'none';
 }
 
 /** Switch to the buffer at `index`: mount the matching view, re-point
@@ -211,6 +216,10 @@ function switchToBuffer(index) {
     mountView('doc');
     docView.setBuffer(buffer);
     docView.focus();
+  } else if (buffer.kind === 'jukebox') {
+    mountView('jukebox');
+    jukeboxView.setBuffer(buffer);
+    jukeboxView.focus();
   } else {
     currentTextBuffer = buffer;
     mountView('text');
@@ -223,6 +232,87 @@ function switchToBuffer(index) {
     syncMarkdownPreviewToBuffer();
   }
   updateModeline();
+}
+
+/** Remove the buffer at INDEX from the list, mirroring the semantics
+ *  of `kill-buffer!`. Out-of-range indices are a no-op. */
+function killBufferAtIndex(target) {
+  if (target < 0 || target >= buffers.length) return;
+  const wasCurrent = target === currentIndex;
+  buffers.splice(target, 1);
+  if (buffers.length === 0) {
+    buffers.push(createBuffer('', { name: '*scratch*' }));
+    currentIndex = -1;
+    switchToBuffer(0);
+    return;
+  }
+  if (wasCurrent) {
+    const next = Math.min(target, buffers.length - 1);
+    currentIndex = -1; // force switchToBuffer to re-mount.
+    switchToBuffer(next);
+  } else if (target < currentIndex) {
+    currentIndex -= 1;
+    updateModeline();
+  } else {
+    updateModeline();
+  }
+}
+
+/** Kill the (first) buffer with NAME, if any. */
+function killBufferByName(name) {
+  killBufferAtIndex(buffers.findIndex((buffer) => buffer.name === name));
+}
+
+/** Build a fresh tracks/art listing for DIR and create-or-refresh the
+ *  matching jukebox buffer. Reusing an existing buffer by name keeps
+ *  the user's switch history sane — `(jukebox "/m")` twice does not
+ *  pile up two entries.
+ *
+ *  The host owns the filesystem; the view never touches it. This
+ *  function is the bridge.
+ */
+function openJukeboxForDirectory(dir) {
+  let entries;
+  try {
+    entries = window.host.listDirectorySync(dir);
+  } catch (error) {
+    repl.appendError(`jukebox: ${error.message}`);
+    return;
+  }
+  if (entries === null) {
+    repl.appendError(`jukebox: cannot read directory ${dir}`);
+    return;
+  }
+  const tracks = entries.filter(isAudioFile);
+  const art = findArt(entries);
+  const name = `*Jukebox: ${dir}*`;
+  let index = buffers.findIndex(
+    (buffer) => buffer.kind === 'jukebox' && buffer.name === name
+  );
+  // The jukebox buffer carries two callbacks the view invokes: a
+  // refresh (re-read the dir and rebuild) and a quit (stop, remove
+  // the buffer, restore the previous one).
+  const record = {
+    kind: 'jukebox',
+    name,
+    dir,
+    tracks,
+    art,
+  };
+  record.refresh = () => openJukeboxForDirectory(dir);
+  record.quit = () => {
+    audio.stop();
+    killBufferByName(name);
+  };
+  if (index >= 0) {
+    // Reuse the slot — keep `kind` and `name` stable but refresh
+    // payload. The view's setBuffer rebuilds from the new fields.
+    Object.assign(buffers[index], record);
+  } else {
+    buffers.push(record);
+    index = buffers.length - 1;
+  }
+  switchToBuffer(index);
 }
 
 /** Find or create the customisation buffer named `name`, switch to it. */
@@ -921,38 +1011,11 @@ const interpreter = createInterpreter({
     // the last buffer is fine — a fresh empty `*scratch*` is created
     // to keep the list non-empty.
     'kill-buffer!': (args) => {
-      let target;
-      if (args.length > 0) {
-        const name = String(args[0]);
-        target = buffers.findIndex((buffer) => buffer.name === name);
-      } else {
-        target = currentIndex;
-      }
-      if (target < 0 || target >= buffers.length) return NIL;
-      const wasCurrent = target === currentIndex;
-      buffers.splice(target, 1);
-      if (buffers.length === 0) {
-        buffers.push(createBuffer('', { name: '*scratch*' }));
-        currentIndex = -1;
-        switchToBuffer(0);
-        return NIL;
-      }
-      if (wasCurrent) {
-        // Land on the buffer that took the killed slot, or the
-        // new tail when we removed the last buffer.
-        const next = Math.min(target, buffers.length - 1);
-        currentIndex = -1; // force switchToBuffer to re-mount.
-        switchToBuffer(next);
-      } else if (target < currentIndex) {
-        // The current buffer's index has shifted down by one; just
-        // re-point, no view change.
-        currentIndex -= 1;
-        updateModeline();
-      } else {
-        // The killed buffer was after current — nothing to do beyond
-        // refreshing the modeline (the list length changed).
-        updateModeline();
-      }
+      const target =
+        args.length > 0
+          ? buffers.findIndex((buffer) => buffer.name === String(args[0]))
+          : currentIndex;
+      killBufferAtIndex(target);
       return NIL;
     },
     'buffer-count': () => buffers.length,
@@ -1068,12 +1131,22 @@ const interpreter = createInterpreter({
       return NIL;
     },
 
-    // Jukebox audio — see audio.js and jukebox.lisp. Each primitive is
-    // a thin wrapper over the shared HTMLAudioElement; the panel layout
-    // and playlist logic live entirely in Lisp.
+    // Jukebox audio — see audio.js and jukebox-view.js. Each primitive
+    // is a thin wrapper over the shared HTMLAudioElement; the panel
+    // layout and playlist logic live in the jukebox view (Layer 4).
     'list-directory': (args) => {
       const entries = window.host.listDirectorySync(String(args[0]));
       return entries === null ? NIL : arrayToList(entries);
+    },
+    // Open (or refresh) the jukebox buffer for DIR. The host reads
+    // the directory, filters to audio files, finds an art file, then
+    // creates a `jukebox`-kind buffer carrying the state the view
+    // needs — no Lisp panel rendering, no buffer text to maintain.
+    'open-jukebox-buffer!': (args) => {
+      const dir = expandTilde(String(args[0] ?? ''));
+      if (dir === '') return NIL;
+      openJukeboxForDirectory(dir);
+      return NIL;
     },
     'play-audio!': (args) => {
       audio.play(expandTilde(String(args[0])));
@@ -1501,6 +1574,22 @@ const docView = createDocView(document.getElementById('editor-host'), {
   highlightCode: highlightCodeForDocView,
 });
 docView.element.style.display = 'none';
+
+// The jukebox view — the view a `jukebox`-kind buffer is shown
+// through. Replaces the old text-buffer jukebox mode. The shared
+// audio controller is passed in so `audio-playing?` and friends
+// stay truthful; `openImage` routes M-RET on the album art through
+// the same image-buffer path the dialog uses.
+const jukeboxView = createJukeboxView(
+  document.getElementById('editor-host'),
+  {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    audio,
+    openImage: (path) => openImageByPath(expandTilde(path)),
+    report: (message) => repl.appendNote(message),
+  }
+);
+jukeboxView.element.style.display = 'none';
 
 /** The hover-doc tooltip — appears beside the cursor when the mouse
  *  rests on a documented Lisp symbol. The lookup chain mirrors
