@@ -136,9 +136,32 @@
 ;; resolved through the buffer's mode chain (see lookup-key).
 (define active-keymap nil)
 
+;; The keys typed in the current sequence, joined with spaces. When
+;; `active-keymap` is nil this is the empty string and the echo area
+;; is clear; mid-sequence it shows what's been typed so far, with a
+;; trailing dash signalling that more keys are coming.
+(define *chord-prefix* "")
+
+;; show-status! / clear-status! are host primitives that route to the
+;; minibuffer's echo area. Tests register no-op versions; the real app
+;; wires them to the minibuffer module.
+
 (define (reset-keymap!)
-  "Return dispatch to rest — resolve the next key through the modes."
-  (set! active-keymap nil))
+  "Return dispatch to rest — resolve the next key through the modes,
+   and clear any chord-prefix display in the echo area."
+  (set! active-keymap nil)
+  (set! *chord-prefix* "")
+  (clear-status!))
+
+(define (-extend-chord-prefix! key)
+  "Append KEY to the chord-prefix display and show it in the echo
+   area with a trailing dash — the visual signal that more keys are
+   expected. Called when a prefix key has just been resolved."
+  (set! *chord-prefix*
+        (if (= (string-length *chord-prefix*) 0)
+            key
+            (str *chord-prefix* " " key)))
+  (show-status! (str *chord-prefix* "-")))
 
 ;; --- keymap composition ------------------------------------------------
 ;; A key is resolved through a chain of keymaps: the active minor-mode
@@ -189,7 +212,12 @@
 (define (handle-key key)
   "Dispatch KEY. If a key-reader is pending it receives the key;
    otherwise KEY runs a command, begins a sequence, or self-inserts.
-   Returns #t when the key was handled."
+   Returns #t when the key was handled.
+
+   While a multi-key sequence is in progress the keys typed so far
+   are echoed to the minibuffer's status area (Emacs's \"echo area\")
+   with a trailing dash. The display is cleared when a command runs,
+   when C-g aborts, and when a mid-sequence key is unbound."
   (if (not (nil? *key-reader*))
       (let ((reader *key-reader*))
         (set! *key-reader* nil)
@@ -197,16 +225,22 @@
         #t)
       (let ((binding (lookup-key key)))
         (cond
-          ;; A nested keymap: KEY is a prefix — wait for the next key.
+          ;; A nested keymap: KEY is a prefix — wait for the next key
+          ;; and show the running prefix in the echo area.
           ((map? binding)
            (set! active-keymap binding)
+           (-extend-chord-prefix! key)
            #t)
-          ;; A command name: run it, then return to rest.
+          ;; A command name: run it, then return to rest. The chord
+          ;; display is cleared by reset-keymap! before the command
+          ;; runs, so a command's own echo-area message is not
+          ;; overwritten by the cleanup.
           ((symbol? binding)
            (reset-keymap!)
            (run-command binding)
            #t)
-          ;; Mid-sequence with nothing bound: the sequence is undefined.
+          ;; Mid-sequence with nothing bound: the sequence is
+          ;; undefined; reset and clear the chord display.
           ((not (nil? active-keymap))
            (reset-keymap!)
            #t)

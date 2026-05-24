@@ -725,6 +725,17 @@ const interpreter = createInterpreter({
       openFileInteractive();
       return NIL;
     },
+    // Show a transient message in the minibuffer's echo area (the
+    // status line at the foot of the window). Used by the keymap to
+    // surface a mid-build chord prefix ("C-x-"), among other things.
+    'show-status!': (args) => {
+      minibuffer.setStatus(String(args[0] ?? ''));
+      return NIL;
+    },
+    'clear-status!': () => {
+      minibuffer.clearStatus();
+      return NIL;
+    },
     // Open an image file at PATH (a string) as an image-kind buffer.
     // Mirrors `open-file!` for an explicit path; jukebox-mode uses this
     // for M-RET on the album-art file.

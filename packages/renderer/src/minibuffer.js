@@ -1,11 +1,18 @@
 /**
  * @file The minibuffer — a one-line prompt at the foot of the window
  * for input that is not buffer text: incremental search, the command
- * palette, and (later) find-file. It is a plain DOM component; callers
- * drive it through the `prompt` handlers.
+ * palette, find-file. It is a plain DOM component; callers drive it
+ * through the `prompt` handlers.
  *
  * While the minibuffer is open it holds keyboard focus, so the editor
  * surface does not see those keystrokes — exactly as for the REPL.
+ *
+ * When no prompt is open, the same row is reused as an *echo area* —
+ * the place where transient host messages (a chord prefix mid-build,
+ * a quick note) appear. The echo area is hidden while a prompt is
+ * open, so the prompt's own `setStatus` writes to its own status
+ * (e.g. an isearch "no match") without competing with the chord
+ * prefix display.
  */
 
 import { keyEventToString } from './keymap.js';
@@ -20,6 +27,11 @@ import { keyEventToString } from './keymap.js';
  * @property {(key: string, value: string) => boolean} [onKey] - Called
  *   for every keystroke; returning true consumes the key (used, for
  *   example, so a search can catch a repeated C-s).
+ * @property {(value: string) => (string | void)} [onTab] - Called on
+ *   Tab. Returning a string replaces the input value with it (the
+ *   typical "complete to longest common prefix" path); returning
+ *   undefined or the same string consumes the Tab without changing
+ *   the input.
  */
 
 /**
@@ -28,9 +40,13 @@ import { keyEventToString } from './keymap.js';
  * @property {(prompt: string, handlers: MinibufferPrompt) => void} prompt -
  *   Open the minibuffer with a prompt and handlers.
  * @property {(text: string) => void} setStatus - Show a status note
- *   after the input (e.g. "no match").
- * @property {() => void} close - Hide the minibuffer.
- * @property {() => boolean} isOpen - Whether the minibuffer is showing.
+ *   after the input (e.g. "no match"). While a prompt is open this
+ *   appears in the prompt row; with no prompt open it shows in the
+ *   echo area.
+ * @property {() => void} clearStatus - Clear the status note.
+ * @property {() => void} close - Hide the minibuffer prompt row.
+ * @property {() => boolean} isOpen - Whether the minibuffer is showing
+ *   a prompt.
  */
 
 /**
@@ -47,6 +63,7 @@ export function createMinibuffer(container) {
     return node;
   };
 
+  // The prompt row — visible only while a prompt is open.
   const root = el('div', 'minibuffer');
   const promptEl = el('span', 'minibuffer-prompt');
   const input = el('input', 'minibuffer-input');
@@ -58,6 +75,13 @@ export function createMinibuffer(container) {
   container.append(root);
   root.hidden = true;
 
+  // The echo area — visible whenever the prompt row is hidden. Status
+  // text the host sets while no prompt is active appears here (e.g. a
+  // mid-build chord prefix like "C-x-").
+  const echoEl = el('div', 'minibuffer-echo');
+  container.append(echoEl);
+  echoEl.hidden = true;
+
   /** @type {MinibufferPrompt | null} */
   let handlers = null;
 
@@ -66,12 +90,27 @@ export function createMinibuffer(container) {
     handlers = null;
     input.value = '';
     statusEl.textContent = '';
+    // The echo area shows again — its current text (if any) is whatever
+    // the host last set; an open echo with empty text stays hidden.
+    if (echoEl.textContent !== '') echoEl.hidden = false;
   }
 
   input.addEventListener('keydown', (event) => {
     if (handlers === null) return;
     if (handlers.onKey && handlers.onKey(keyEventToString(event), input.value)) {
       event.preventDefault();
+      return;
+    }
+    if (event.key === 'Tab' && handlers.onTab) {
+      event.preventDefault();
+      const next = handlers.onTab(input.value);
+      if (typeof next === 'string' && next !== input.value) {
+        input.value = next;
+        // Move the cursor to the end so further typing extends the
+        // completion rather than splitting it.
+        input.setSelectionRange(next.length, next.length);
+        handlers.onChange?.(next);
+      }
       return;
     }
     if (event.key === 'Enter') {
@@ -101,6 +140,9 @@ export function createMinibuffer(container) {
       input.value = h.initialValue ?? '';
       statusEl.textContent = '';
       root.hidden = false;
+      // Hide the echo area while a prompt is open — the prompt row
+      // owns the line, and a stale chord prefix would just be noise.
+      echoEl.hidden = true;
       input.focus();
       // Report the starting value so callers can render initial state
       // (e.g. the command palette listing every command).
@@ -108,7 +150,20 @@ export function createMinibuffer(container) {
     },
 
     setStatus(text) {
-      statusEl.textContent = text;
+      if (!root.hidden) {
+        // A prompt is open — the status sits beside the input.
+        statusEl.textContent = text;
+      } else {
+        // No prompt — write to the echo area.
+        echoEl.textContent = text;
+        echoEl.hidden = text === '';
+      }
+    },
+
+    clearStatus() {
+      statusEl.textContent = '';
+      echoEl.textContent = '';
+      echoEl.hidden = true;
     },
 
     close,

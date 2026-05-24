@@ -142,6 +142,10 @@ async function jukeboxEditor() {
         audioCalls.push(['open-image-file', String(args[0])]);
         return NIL;
       },
+      // Echo-area primitives the keymap calls on every chord
+      // transition; no-ops in the jukebox harness.
+      'show-status!': () => NIL,
+      'clear-status!': () => NIL,
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'));

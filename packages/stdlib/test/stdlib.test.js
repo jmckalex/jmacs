@@ -28,6 +28,7 @@ async function editor(initialText = 'hello world') {
   const output = [];
   const docCalls = [];
   const evalCalls = [];
+  const statusCalls = [];
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
     primitives: {
@@ -158,6 +159,17 @@ async function editor(initialText = 'hello world') {
         evalCalls.push('show-log');
         return NIL;
       },
+      // The keymap's chord-prefix display calls these on every
+      // sequence transition; tests assert on `statusCalls` to confirm
+      // the echo area was updated.
+      'show-status!': (args) => {
+        statusCalls.push(String(args[0] ?? ''));
+        return NIL;
+      },
+      'clear-status!': () => {
+        statusCalls.push(null);
+        return NIL;
+      },
     },
   });
   await loadStdlib(
@@ -182,6 +194,7 @@ async function editor(initialText = 'hello world') {
     output,
     docCalls,
     evalCalls,
+    statusCalls,
   };
 }
 
@@ -372,6 +385,50 @@ test('plain keys still work after a completed sequence', async () => {
   press(interpreter, 'C-s');
   press(interpreter, 'right');
   assert.equal(buffer.point, 1);
+});
+
+// --- chord-prefix display in the echo area -----------------------------
+
+test('a prefix key echoes the running chord in the status area', async () => {
+  const { interpreter, statusCalls } = await editor();
+  press(interpreter, 'C-x');
+  // The most recent status update is the chord with a trailing dash.
+  assert.equal(statusCalls.at(-1), 'C-x-');
+});
+
+test('a multi-key prefix shows every step', async () => {
+  const { interpreter, statusCalls } = await editor();
+  // M-n is a prefix to the sticky-note keymap; first the prefix is
+  // shown, then a deeper prefix would append (M-n only has leaf
+  // bindings here, but show the first-step echo is enough).
+  press(interpreter, 'M-n');
+  assert.equal(statusCalls.at(-1), 'M-n-');
+});
+
+test('completing a sequence clears the echo area before the command runs', async () => {
+  const { interpreter, statusCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-s');
+  // The last status entry from the dispatch was a clear (null).
+  // A command that itself sets status (none of the save path does)
+  // would be visible after this.
+  assert.equal(statusCalls.at(-1), null);
+});
+
+test('C-g during a prefix sequence clears the chord display', async () => {
+  const { interpreter, statusCalls } = await editor();
+  press(interpreter, 'C-x');
+  assert.equal(statusCalls.at(-1), 'C-x-');
+  press(interpreter, 'C-g');
+  // The C-g aborts mid-sequence; reset-keymap! clears the echo.
+  assert.equal(statusCalls.at(-1), null);
+});
+
+test('an unbound key mid-sequence clears the chord display', async () => {
+  const { interpreter, statusCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'F12'); // not in c-x-keymap
+  assert.equal(statusCalls.at(-1), null);
 });
 
 // --- multiple buffers ---------------------------------------------------
@@ -2164,3 +2221,4 @@ test('C-x k runs kill-buffer through the host primitive', async () => {
   assert.ok(bufferCalls.includes('kill'),
     `expected kill; got ${JSON.stringify(bufferCalls)}`);
 });
+
