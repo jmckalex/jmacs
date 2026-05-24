@@ -27,6 +27,7 @@ export { toLines, selectionRects } from './projection.js';
 export { resolveKey, keyEventToString } from './keymap.js';
 export { applyIntent, handleKeyEvent } from './commands.js';
 export { fuzzyFilter } from './fuzzy.js';
+export { createSplitter } from './splitter.js';
 export { highlightLine, languageForName } from './highlight.js';
 export { splitIntoLineRuns } from './runs.js';
 export { createTreeSitterHighlighter } from './treesitter.js';
