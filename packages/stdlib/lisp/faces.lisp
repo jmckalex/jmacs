@@ -173,3 +173,124 @@
    after every override change and at startup."
   (when (procedure? *face-style-applier*)
     (*face-style-applier* (current-face-styles))))
+
+;; --- a hook the persistence layer installs (Phase 3) ------------------
+;; Any change to *face-overrides* runs this — the host sets it to the
+;; routine that writes faces.json. Default: do nothing.
+(define *face-overrides-saver* nil)
+
+(define (set-face-overrides-saver! fn)
+  "Install a zero-argument procedure called after every change to the
+   in-memory face overrides. The procedure receives no arguments and
+   reads the live `*face-overrides*` value itself."
+  (set! *face-overrides-saver* fn))
+
+(define (-on-face-change!)
+  "Internal: rerun CSS generation and persist after a change."
+  (apply-face-styles!)
+  (when (procedure? *face-overrides-saver*)
+    (*face-overrides-saver*)))
+
+;; --- mutators ---------------------------------------------------------
+;; Three layers: a `:theme` kwarg targets a per-theme override; no
+;; `:theme` targets the global override. The data layout mirrors
+;; faces.json: top-level keys :global and :themes.
+
+(define (-global-overrides)
+  "The global-overrides sub-map."
+  (get *face-overrides* :global {}))
+
+(define (-theme-overrides theme)
+  "The per-theme overrides sub-map for THEME."
+  (get (get *face-overrides* :themes {}) theme {}))
+
+(define (-set-global-face! name face)
+  "Replace the global override for face NAME with FACE (a hash-map of
+   attributes). An empty face removes the entry entirely."
+  (let ((globals (-global-overrides)))
+    (let ((updated (if (= (length face) 0)
+                       (dissoc globals name)
+                       (assoc globals name face))))
+      (set! *face-overrides*
+            (assoc *face-overrides* :global updated)))))
+
+(define (-set-theme-face! theme name face)
+  "Replace the per-theme override for NAME under THEME with FACE."
+  (let ((themes (get *face-overrides* :themes {})))
+    (let ((theme-map (get themes theme {})))
+      (let ((updated-theme
+             (if (= (length face) 0)
+                 (dissoc theme-map name)
+                 (assoc theme-map name face))))
+        (let ((themes2
+               (if (= (length updated-theme) 0)
+                   (dissoc themes theme)
+                   (assoc themes theme updated-theme))))
+          (set! *face-overrides*
+                (assoc *face-overrides* :themes themes2)))))))
+
+(define (set-face-attribute name attr value . options)
+  "Set ATTR of face NAME to VALUE.
+
+   Without :theme — modifies the global override. With (:theme 'dark)
+   — modifies the per-theme override for that theme. Triggers CSS
+   regeneration and (when installed) persistence."
+  (let ((opts (apply hash-map options)))
+    (let ((theme (get opts :theme nil)))
+      (if (nil? theme)
+          (let ((current (face-global-override name)))
+            (-set-global-face! name (assoc current attr value)))
+          (let ((current (face-theme-override name theme)))
+            (-set-theme-face! theme name (assoc current attr value))))
+      (-on-face-change!))))
+
+(define (set-face! name attrs . options)
+  "Replace every overridden attribute of face NAME with the attribute
+   map ATTRS at once (still layered over the default — attributes not
+   in ATTRS fall back to the default). Same :theme kwarg as
+   set-face-attribute."
+  (let ((opts (apply hash-map options)))
+    (let ((theme (get opts :theme nil)))
+      (if (nil? theme)
+          (-set-global-face! name attrs)
+          (-set-theme-face! theme name attrs))
+      (-on-face-change!))))
+
+(define (reset-face name . options)
+  "Drop overrides for face NAME. Without :theme, drops the global
+   override only. With (:theme 'dark), drops the per-theme override
+   for that theme only."
+  (let ((opts (apply hash-map options)))
+    (let ((theme (get opts :theme nil)))
+      (if (nil? theme)
+          (-set-global-face! name {})
+          (-set-theme-face! theme name {}))
+      (-on-face-change!))))
+
+(define (reset-all-faces)
+  "Wipe every override — global and per-theme. The renderer reverts
+   to built-in defaults for the active theme."
+  (set! *face-overrides* (hash-map :global {} :themes {}))
+  (-on-face-change!))
+
+;; --- the persistence shape --------------------------------------------
+;; Read by `set-face-overrides!` to install a faces.json blob the host
+;; loaded at startup. The blob is plain Lisp data — two top-level keys:
+;;   :global { name -> face }
+;;   :themes { theme -> { name -> face } }
+;; Faces themselves are hash-maps of attribute keyword -> value.
+
+(define (set-face-overrides! overrides)
+  "Replace the live overrides with OVERRIDES (a hash-map shaped as
+   above). Triggers CSS regeneration but DOES NOT call the saver —
+   the host calls this during load, when persisting back would loop."
+  (set! *face-overrides*
+        (hash-map
+         :global (get overrides :global {})
+         :themes (get overrides :themes {})))
+  (apply-face-styles!))
+
+(define (current-face-overrides)
+  "Return the live overrides map. The persistence layer reads this
+   to know what to write."
+  *face-overrides*)

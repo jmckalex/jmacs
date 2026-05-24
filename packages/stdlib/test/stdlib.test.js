@@ -2024,6 +2024,125 @@ test('current-face-styles returns an alist for every face', async () => {
   assert.ok(keys.includes('slant'));
 });
 
+// --- face overrides (Phase 2) -----------------------------------------
+
+test('set-face-attribute applies a global override the resolver sees', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#ff0000\")"
+  );
+  // Active theme is `dark` by default; the global override wins over it.
+  const fg = interpreter.evaluate(
+    "(face-attribute 'keyword :foreground)"
+  );
+  assert.equal(fg, '#ff0000');
+});
+
+test('a per-theme override beats the global override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#ff0000\")"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#00ff00\" :theme 'dark)"
+  );
+  // Active theme is dark — per-theme wins.
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    '#00ff00'
+  );
+  // And the global remains visible under a different theme.
+  interpreter.evaluate("(custom-apply! (quote *theme*) (quote light))");
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    '#ff0000'
+  );
+});
+
+test('reset-face drops the global override', async () => {
+  const { interpreter } = await editor();
+  const original = interpreter.evaluate(
+    "(face-attribute 'keyword :foreground)"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#abcdef\")"
+  );
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    '#abcdef'
+  );
+  interpreter.evaluate("(reset-face 'keyword)");
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    original
+  );
+});
+
+test('reset-face with :theme drops only the per-theme override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#111111\")"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#222222\" :theme 'dark)"
+  );
+  interpreter.evaluate("(reset-face 'keyword :theme 'dark)");
+  // The global override survives — dark theme no longer has its own.
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    '#111111'
+  );
+});
+
+test('reset-all-faces wipes both layers', async () => {
+  const { interpreter } = await editor();
+  const original = interpreter.evaluate(
+    "(face-attribute 'keyword :foreground)"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#111111\")"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#222222\" :theme 'dark)"
+  );
+  interpreter.evaluate("(reset-all-faces)");
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    original
+  );
+});
+
+test('attributes not overridden fall back to the default', async () => {
+  const { interpreter } = await editor();
+  // comment is italic by default; setting its colour must not strip italic.
+  interpreter.evaluate(
+    "(set-face-attribute 'comment :foreground \"#abcdef\")"
+  );
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'comment :foreground)"),
+    '#abcdef'
+  );
+  const slant = interpreter.evaluate("(face-attribute 'comment :slant)");
+  assert.equal(slant && slant.name, 'italic');
+});
+
+test('set-face-attribute triggers the face-style applier hook', async () => {
+  const { interpreter } = await editor();
+  let calls = 0;
+  // Install a JS-side applier through a synthetic primitive — but
+  // simpler: define the applier in Lisp as a counter mutator.
+  interpreter.evaluate('(define *test-applier-calls* 0)');
+  interpreter.evaluate(
+    "(set-face-style-applier! (lambda (styles) (set! *test-applier-calls* (+ *test-applier-calls* 1))))"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#ff0000\")"
+  );
+  interpreter.evaluate("(reset-face 'keyword)");
+  const n = interpreter.evaluate('*test-applier-calls*');
+  assert.ok(n >= 2, `expected applier called twice, got ${n}`);
+});
+
 // --- mode-specific keymaps -------------------------------------------
 
 test('html-mode has a C-c keymap with html-bold under "b"', async () => {
