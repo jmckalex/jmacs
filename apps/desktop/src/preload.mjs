@@ -141,4 +141,32 @@ contextBridge.exposeInMainWorld('host', {
    * @returns {Promise<{ mime: string, dataUrl: string } | null>}
    */
   audioAlbumArt: (path) => ipcRenderer.invoke('audio:album-art', { path }),
+
+  /**
+   * Read an audio file's embedded tag metadata. Returns
+   * `{ title, artist, album, track, year, genre, duration }` (with
+   * `null` for any field that the tag did not carry) or `null` when
+   * the format is unsupported, the file is unreadable, or no
+   * recognised tag block is present.
+   * @param {string} path
+   * @returns {Promise<{
+   *   title: string | null,
+   *   artist: string | null,
+   *   album: string | null,
+   *   track: number | null,
+   *   year: number | null,
+   *   genre: string | null,
+   *   duration: number | null,
+   * } | null>}
+   */
+  audioMetadata: (path) => ipcRenderer.invoke('audio:metadata', { path }),
+
+  /**
+   * The same metadata, synchronously — the Lisp interpreter is
+   * synchronous, so the `(audio-metadata path)` primitive reaches
+   * the filesystem this way. Mirrors `listDirectorySync`.
+   * @param {string} path
+   */
+  audioMetadataSync: (path) =>
+    ipcRenderer.sendSync('audio:metadata-sync', { path }),
 });

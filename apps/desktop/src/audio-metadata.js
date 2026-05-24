@@ -16,6 +16,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 
 /** Recognised audio suffixes → which parser handles them. */
 const FORMAT_BY_SUFFIX = {
@@ -75,13 +76,47 @@ export async function extractMetadata(path) {
   } catch {
     return null;
   }
+  return extractFromBytes(buffer, format);
+}
+
+/**
+ * The synchronous twin of `extractMetadata` — same dispatch, same
+ * failure-to-null contract, with `readFileSync` instead of the async
+ * `readFile`. Used by the IPC `audio:metadata-sync` handler the Lisp
+ * primitive reaches: the interpreter is synchronous, so the host has
+ * to read the bytes before yielding back to JS.
+ *
+ * @param {string} path
+ * @returns {AudioMetadata | null}
+ */
+export function extractMetadataSync(path) {
+  if (typeof path !== 'string' || path === '') return null;
+  const suffix = path.slice(path.lastIndexOf('.')).toLowerCase();
+  const format = FORMAT_BY_SUFFIX[suffix];
+  if (!format) return null;
+  let buffer;
+  try {
+    buffer = readFileSync(path);
+  } catch {
+    return null;
+  }
+  return extractFromBytes(buffer, format);
+}
+
+/**
+ * Dispatch parsing to the right per-format reader. Any parser
+ * blow-up degrades to `null`.
+ *
+ * @param {Buffer} buffer
+ * @param {'id3' | 'mp4' | 'ogg'} format
+ * @returns {AudioMetadata | null}
+ */
+function extractFromBytes(buffer, format) {
   try {
     if (format === 'id3') return extractMP3Metadata(buffer);
     if (format === 'mp4') return extractMP4Metadata(buffer);
     if (format === 'ogg') return extractOGGMetadata(buffer);
   } catch {
-    // Any parser blow-up degrades to "no metadata" — the jukebox
-    // never wants to error out over a malformed tag.
     return null;
   }
   return null;

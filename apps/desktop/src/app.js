@@ -1148,6 +1148,28 @@ const interpreter = createInterpreter({
       openJukeboxForDirectory(dir);
       return NIL;
     },
+    // Read an audio file's embedded tag metadata as a Lisp hash-map
+    // keyed by :title :artist :album :track :year :genre :duration.
+    // Missing fields are nil; an unsupported / unreadable file is nil
+    // overall. The IPC round-trip is synchronous (Lisp interpreter is
+    // synchronous), mirroring `list-directory` above.
+    'audio-metadata': (args) => {
+      const path = expandTilde(String(args[0] ?? ''));
+      if (path === '') return NIL;
+      const meta = window.host.audioMetadataSync(path);
+      if (meta === null || meta === undefined) return NIL;
+      const map = new Map();
+      const set = (key, value) =>
+        map.set(keyword(key), value === null || value === undefined ? NIL : value);
+      set('title', meta.title);
+      set('artist', meta.artist);
+      set('album', meta.album);
+      set('track', meta.track);
+      set('year', meta.year);
+      set('genre', meta.genre);
+      set('duration', meta.duration);
+      return map;
+    },
     'play-audio!': (args) => {
       audio.play(expandTilde(String(args[0])));
       return NIL;
