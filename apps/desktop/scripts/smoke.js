@@ -919,6 +919,26 @@ app.whenReady().then(() => {
         await new Promise((r) => setTimeout(r, 150));
         await frame();
         const reset = swatchFor('keyword');
+
+        // Inheritance: declare a child face that inherits from
+        // \`keyword\`, then override the parent's foreground and assert
+        // the child face's resolved foreground reflects the change.
+        const lastResult = () => {
+          const all = document.querySelectorAll('.repl-result');
+          return all.length ? all[all.length - 1].textContent.trim() : '';
+        };
+        submit('(defface (quote smoke-keyword-child) from (quote keyword))');
+        await new Promise((r) => setTimeout(r, 100));
+        await frame();
+        submit('(set-face-attribute (quote keyword) :foreground "#00ff00")');
+        await new Promise((r) => setTimeout(r, 100));
+        await frame();
+        submit('(face-attribute (quote smoke-keyword-child) :foreground)');
+        await new Promise((r) => setTimeout(r, 100));
+        const inheritedAfter = lastResult();
+        submit('(reset-face (quote keyword))');
+        await new Promise((r) => setTimeout(r, 100));
+
         return {
           before, after, reset,
           changed: !!(before && after && before !== after),
@@ -926,6 +946,8 @@ app.whenReady().then(() => {
           customizeShown,
           faceRows,
           redLike: after === 'rgb(255, 0, 0)',
+          inheritedAfter,
+          inheritsParentOverride: inheritedAfter.includes('#00ff00'),
         };
       })()`);
       console.log('  faces:', JSON.stringify(faces));
@@ -1333,7 +1355,8 @@ app.whenReady().then(() => {
         faces.changed &&
         faces.restored &&
         faces.customizeShown &&
-        faces.faceRows >= 13;
+        faces.faceRows >= 13 &&
+        faces.inheritsParentOverride;
       const imageOk =
         image.shown &&
         image.hasDataUrl &&

@@ -22,9 +22,11 @@
 ;;; `<style id="face-overrides">` element. No CSS variables for tokens.
 
 ;; face-name (a symbol) -> face descriptor map. A descriptor:
-;;   {:name :doc :default-light :default-dark :default-midnight}
+;;   {:name :doc :parent :default-light :default-dark :default-midnight}
 ;; Each :default-<theme> is itself a face map: a hash-map of attribute
-;; symbols (e.g. :foreground) to values.
+;; symbols (e.g. :foreground) to values. `:parent` is either nil or a
+;; symbol naming another registered face — used by the resolver to layer
+;; the parent's resolved face under the child's own attributes.
 (define *face-registry* {})
 
 ;; In-memory overrides. The structure mirrors faces.json:
@@ -48,10 +50,11 @@
 
 ;; --- registration -----------------------------------------------------
 
-(define (defface name . options)
-  "Register a face NAME (a symbol). OPTIONS is keyword pairs:
+(define (-defface-impl name parent options)
+  "Underlying registration routine. NAME (a symbol), PARENT (nil or a
+   symbol naming another face), and OPTIONS (a list of keyword pairs:
    :doc string, :default-light face, :default-dark face,
-   :default-midnight face. On a hot reload the existing overrides
+   :default-midnight face). On a hot reload the existing overrides
    survive — only the registry entry is rewritten."
   (let ((opts (apply hash-map options)))
     (set! *face-registry*
@@ -59,9 +62,32 @@
                  (hash-map
                   :name name
                   :doc (get opts :doc "")
+                  :parent parent
                   :default-light    (get opts :default-light {})
                   :default-dark     (get opts :default-dark {})
                   :default-midnight (get opts :default-midnight {}))))))
+
+;; defface — register a face with optional `from PARENT` inheritance.
+;;
+;;   (defface 'name :doc "…" :default-light (face …) …)
+;;   (defface 'name from 'parent :doc "…" :default-light (face …) …)
+;;
+;; The `from` keyword is a single literal symbol between the face name
+;; and the first keyword option. Single parent only — multi-inheritance
+;; would force semantic choices we'd rather avoid. The child's per-theme
+;; attributes layer on top of the parent's resolved face; see
+;; `resolve-face` below for the full layering rule (parent chain bottom-
+;; up, then user overrides at each level).
+(defmacro defface (name . rest)
+  (let* ((has-from (and (pair? rest)
+                        (symbol? (car rest))
+                        (eq? (car rest) 'from)))
+         (parent-form (if has-from (car (cdr rest)) nil))
+         (options (if has-from (cdr (cdr rest)) rest)))
+    (list '-defface-impl
+          name
+          (if has-from parent-form nil)
+          (cons 'list options))))
 
 (define (face-registered? name)
   "True when NAME names a registered face."
@@ -77,9 +103,9 @@
 
 ;; --- resolution -------------------------------------------------------
 
-(define (face-default name theme)
-  "The built-in default for face NAME under THEME (a symbol).
-   Returns an empty map for an unknown face or theme."
+(define (-face-own-default name theme)
+  "The face's OWN per-theme default attributes (no inheritance),
+   straight from the registry. Empty map for an unknown face."
   (let ((entry (face-entry name)))
     (cond
       ((nil? entry) {})
@@ -87,6 +113,27 @@
       ((eq? theme 'dark)     (get entry :default-dark     {}))
       ((eq? theme 'midnight) (get entry :default-midnight {}))
       (else                  (get entry :default-dark     {})))))
+
+(define (face-parent name)
+  "The parent face NAME inherits from, or nil. Unknown faces return nil."
+  (let ((entry (face-entry name)))
+    (if (nil? entry) nil (get entry :parent nil))))
+
+(define (face-default name theme)
+  "The built-in default for face NAME under THEME (a symbol). Equivalent
+   to the face's own theme-block; does NOT walk the parent chain. Kept
+   for backward compatibility with introspection tooling; the full
+   inheritance-aware resolution lives in `resolve-face`."
+  (-face-own-default name theme))
+
+(define (-format-cycle names)
+  "Render a list of face symbols as `a -> b -> c -> a` for cycle errors."
+  (cond
+    ((nil? names) "")
+    ((nil? (cdr names)) (symbol->string (car names)))
+    (else (string-append (symbol->string (car names))
+                         " -> "
+                         (-format-cycle (cdr names))))))
 
 (define (face-global-override name)
   "The user's global override for face NAME, or an empty map."
@@ -108,14 +155,42 @@
    OVER win; keys present only in BASE are preserved."
   (-merge-faces-step (keys over) over base))
 
-(define (resolve-face name theme)
-  "The fully-resolved face for NAME under THEME: built-in default
-   layered with the user's global override layered with the user's
-   per-theme override. The result is a flat hash-map of attribute
-   keywords to values."
+(define (-resolve-one name theme)
+  "The fully-resolved attribute map contributed by a single face NAME
+   under THEME — its own theme-default layered with its user global and
+   per-theme overrides. No inheritance is walked here; the chain walker
+   composes these per-face contributions bottom-up."
   (merge-faces
-   (merge-faces (face-default name theme) (face-global-override name))
+   (merge-faces (-face-own-default name theme) (face-global-override name))
    (face-theme-override name theme)))
+
+(define (-resolve-with-chain name theme visited)
+  "Walk the parent chain from NAME up to the topmost ancestor, then
+   layer each face's `(default + user-overrides)` contribution back
+   down. VISITED tracks names already on the chain — a repeat raises a
+   `face inheritance cycle` error naming the path."
+  (cond
+    ((nil? name) {})
+    ((nil? (face-entry name)) {})
+    ((member name visited)
+     (error (str "face inheritance cycle: "
+                 (-format-cycle (reverse (cons name visited))))))
+    (else
+     (let ((parent (face-parent name))
+           (own (-resolve-one name theme)))
+       (if (nil? parent)
+           own
+           (merge-faces
+            (-resolve-with-chain parent theme (cons name visited))
+            own))))))
+
+(define (resolve-face name theme)
+  "The fully-resolved face for NAME under THEME, with inheritance.
+   The parent chain (topmost ancestor first) contributes its
+   `(default + user-overrides)` first; each child layers its own
+   `(default + user-overrides)` on top. The result is a flat hash-map
+   of attribute keywords to values."
+  (-resolve-with-chain name theme '()))
 
 (define (face-attribute name attr . options)
   "Return one attribute of face NAME. With no :theme, uses the active
