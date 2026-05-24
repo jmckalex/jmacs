@@ -119,6 +119,21 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('config:write', { name, content }),
 
   /**
+   * Read the persisted session JSON written on last quit. Returns the
+   * parsed object (the shape produced by `session.js`'s `serialise`),
+   * or null when there is no saved session.
+   * @returns {Promise<object | null>}
+   */
+  readSession: () => ipcRenderer.invoke('session:read'),
+
+  /**
+   * Write the persisted session JSON. Called debounced on buffer-list
+   * changes and on pagehide.
+   * @param {object} data - The shape produced by `serialise`.
+   */
+  writeSession: (data) => ipcRenderer.invoke('session:write', { data }),
+
+  /**
    * Read the documentation manifest (the list of doc-page names
    * produced by `pnpm run docs`). Returns `{ names: string[] }` or
    * `null` when the docs haven't been built yet.

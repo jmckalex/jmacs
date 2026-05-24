@@ -107,6 +107,14 @@ function configPath(name) {
   return join(app.getPath('userData'), name);
 }
 
+/** Where the persistent-session payload is written. A bare filename
+ *  inside the per-user data directory, so it sits next to custom.lisp
+ *  and init.lisp. */
+const sessionFileName = 'session.json';
+function sessionPath() {
+  return join(app.getPath('userData'), sessionFileName);
+}
+
 /** Register the `file:*` IPC handlers. Call once, after the app is ready. */
 export function registerFileHandlers() {
   // Show an open dialog and read the chosen file. An image file is
@@ -250,6 +258,27 @@ export function registerFileHandlers() {
     const target = configPath(payload?.name);
     if (target === null) throw new Error('invalid config file name');
     await writeFile(target, payload?.content ?? '', 'utf8');
+    return { path: target };
+  });
+
+  // Persistent session: read the session JSON written on last quit.
+  // Returns the parsed object, or null when the file is absent or
+  // unreadable — a missing session is normal on first run.
+  ipcMain.handle('session:read', async () => {
+    try {
+      const content = await readFile(sessionPath(), 'utf8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  });
+
+  // Persistent session: write the session JSON. The renderer pickles
+  // its buffer list (debounced + on pagehide) through this handler.
+  ipcMain.handle('session:write', async (_event, payload) => {
+    const target = sessionPath();
+    const data = payload?.data ?? { buffers: [], currentPath: null };
+    await writeFile(target, JSON.stringify(data, null, 2), 'utf8');
     return { path: target };
   });
 
