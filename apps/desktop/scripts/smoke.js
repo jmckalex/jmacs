@@ -1203,6 +1203,31 @@ app.whenReady().then(() => {
         if (shuffleBtn) shuffleBtn.click();
         await frame();
         const shuffleAfter = shuffleBtn ? shuffleBtn.textContent : '';
+
+        // Keymap forwarding: with the jukebox view focused, fire
+        // C-x then k as keydowns. The view must forward both to the
+        // global keymap; `C-x k` (kill-buffer) then removes the
+        // jukebox buffer. Without the keymap fix the keys are eaten
+        // by the view and the buffer survives.
+        if (view) view.focus();
+        const target = view || document.body;
+        target.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'x', code: 'KeyX', ctrlKey: true,
+          bubbles: true, cancelable: true,
+        }));
+        target.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'k', code: 'KeyK',
+          bubbles: true, cancelable: true,
+        }));
+        await frame();
+        await frame();
+        // The jukebox view's container is hidden once the jukebox
+        // buffer is gone (the next buffer's view is mounted instead).
+        const jukeboxStillVisible =
+          !!view && view.style.display !== 'none';
+        const modelineName =
+          document.getElementById('modeline-name').textContent;
+
         return {
           name,
           visible,
@@ -1212,6 +1237,8 @@ app.whenReady().then(() => {
           audioSrc,
           shuffleBefore,
           shuffleAfter,
+          jukeboxStillVisible,
+          afterKillName: modelineName,
         };
       })()`);
       console.log('  jukebox:', JSON.stringify({
@@ -1221,6 +1248,8 @@ app.whenReady().then(() => {
         hasArt: jukebox.hasArt,
         hasAudio: jukebox.hasAudio,
         shuffleFlip: jukebox.shuffleBefore + ' -> ' + jukebox.shuffleAfter,
+        killedByCx: !jukebox.jukeboxStillVisible,
+        afterKillName: jukebox.afterKillName,
       }));
       await rm(jukeboxDir, { recursive: true, force: true });
 
@@ -1360,7 +1389,11 @@ app.whenReady().then(() => {
         (jukebox.audioSrc.includes('silence.mp3') ||
           jukebox.audioSrc.includes('second.flac')) &&
         jukebox.shuffleBefore.includes('off') &&
-        jukebox.shuffleAfter.includes('on');
+        jukebox.shuffleAfter.includes('on') &&
+        // C-x k from the focused jukebox view kills the buffer and
+        // takes the user back to a different (non-jukebox) buffer.
+        !jukebox.jukeboxStillVisible &&
+        !jukebox.afterKillName.includes('Jukebox:');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&

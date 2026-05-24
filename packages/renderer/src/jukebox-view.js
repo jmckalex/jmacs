@@ -399,15 +399,20 @@ export function createJukeboxView(container, options = {}) {
     if (buffer !== null) step(1);
   });
 
-  // The view's keyboard model: chord keys (anything with a modifier or
-  // a named key like Enter/Escape) goes through `onKey` so the global
-  // keymap stays in charge; bare letter keys are jukebox shortcuts.
+  // The view's keyboard model: chord keys (anything with a modifier)
+  // ALWAYS go through `onKey` so the global keymap (`C-x k`, `C-x b`,
+  // `C-x C-right`, `M-1`, `M-x`, …) stays reachable even when focus is
+  // sitting on one of the view's buttons. Bare jukebox shortcuts (SPC,
+  // RET, n, p, …) are only intercepted when focus is on the view root —
+  // a focused button gets its normal browser activation instead.
+  // Anything we don't claim falls through to the global keymap, so the
+  // editor's bare-key bindings stay live in a jukebox buffer too.
   root.addEventListener('keydown', (event) => {
     if (MODIFIERS.has(event.key)) return;
-    if (FORM_TAGS.has(event.target.tagName)) return;
     const keyStr = keyEventToString(event);
 
-    // Modifier chords: hand to the global keymap.
+    // Modifier chords go straight to the global keymap. The `M-enter`
+    // exception is the view's only Alt binding — opens the album art.
     if (
       event.ctrlKey || event.metaKey ||
       (event.altKey && keyStr !== 'M-enter')
@@ -416,12 +421,18 @@ export function createJukeboxView(container, options = {}) {
       return;
     }
 
-    // M-RET → open album art.
+    // M-RET → open album art (works regardless of focus target).
     if (keyStr === 'M-enter') {
       event.preventDefault();
       openArt();
       return;
     }
+
+    // Bare keys on form controls: let the browser handle the
+    // interaction (Tab navigation, Enter/Space to activate a button).
+    // The chord branch above already handled modified keys, so the
+    // global keymap still receives `C-x k` etc. from a focused button.
+    if (FORM_TAGS.has(event.target.tagName)) return;
 
     // Bare named keys (Enter, Tab, …) — handle the ones we use, hand
     // the rest to the global keymap.
