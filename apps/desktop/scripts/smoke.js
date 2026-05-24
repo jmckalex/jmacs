@@ -443,6 +443,37 @@ app.whenReady().then(() => {
       })()`);
       console.log('  treesitter:', JSON.stringify(treesitter));
 
+      // describe-face-at-point (C-h F): in a .js buffer containing
+      // `function foo() {}`, with point inside `function`, the
+      // command opens a *Doc: Face at point* buffer whose HTML names
+      // the `keyword` face.
+      const faceInfo = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        submit('(new-buffer! "face-smoke.js")');
+        await frame();
+        submit('(insert! "function foo() {}")');
+        await frame();
+        submit('(goto! 3)');            // inside 'function'
+        submit('(describe-face-at-point)');
+        for (let i = 0; i < 8; i += 1) await frame();
+        const modeline = document.getElementById('modeline-name')?.textContent ?? '';
+        const docPage = document.querySelector('.doc-view .doc-page');
+        const text = docPage ? docPage.textContent : '';
+        return {
+          modeline,
+          mentionsKeyword: text.includes('keyword'),
+          mentionsTokKeyword: text.includes('tok-keyword'),
+        };
+      })()`);
+      console.log('  faceInfo:', JSON.stringify(faceInfo));
+
       // The background and overlay layers exist and are stacked right.
       const layers = await win.webContents.executeJavaScript(`(() => {
         const z = (sel) =>
@@ -1319,6 +1350,10 @@ app.whenReady().then(() => {
         treesitter.goKeywords > 0 && treesitter.goTypes > 0 &&
         treesitter.shKeywords > 0 && treesitter.shFunctions > 0 &&
         treesitter.mdHeadings > 0 && treesitter.mdInjectsJs > 0;
+      const faceInfoOk =
+        faceInfo.modeline.includes('*Doc: Face at point*') &&
+        faceInfo.mentionsKeyword &&
+        faceInfo.mentionsTokKeyword;
       const replaceOk = replace.text === 'bar bar bar';
       const mouseOk =
         mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
@@ -1430,8 +1465,8 @@ app.whenReady().then(() => {
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
-        searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
-        markdownOk && previewOk && virtualOk && modesOk && layersOk &&
+        searchOk && paletteOk && treesitterOk && faceInfoOk && replaceOk &&
+        mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && splittersOk
       ) {
@@ -1467,6 +1502,11 @@ app.whenReady().then(() => {
         finish(
           1,
           `tree-sitter highlighting did not work (${JSON.stringify(treesitter)})`
+        );
+      } else if (!faceInfoOk) {
+        finish(
+          1,
+          `describe-face-at-point did not work (${JSON.stringify(faceInfo)})`
         );
       } else if (!replaceOk) {
         finish(1, 'replace-string did not work');

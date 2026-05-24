@@ -51,6 +51,7 @@ export const STDLIB_FILES = Object.freeze([
   'palette.lisp',
   'docs.lisp',
   'help.lisp',
+  'face-info.lisp',
   'inline-eval.lisp',
 ]);
 

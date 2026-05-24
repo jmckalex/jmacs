@@ -153,8 +153,15 @@ export function languageForFilename(name) {
  *   query, and (when set) an injection query plus a sibling-lookup.
  * @param {(tag: string, error: Error) => void} [onError] - Called when a
  *   language's grammar fails to load. Defaults to ignoring the error.
- * @returns {Promise<Record<string, (text: string) => import('./highlight.js').Run[][]>>}
- *   A map from language tag to a `highlight(text)` function.
+ * @returns {Promise<Record<string, ((text: string) =>
+ *   import('./highlight.js').Run[][]) & {
+ *     captures: (text: string) => import('./treesitter.js').CaptureRange[]
+ *   }>>}
+ *   A map from language tag to a `highlight(text)` callable. The same
+ *   callable also exposes the underlying highlighter's `captures(text)`
+ *   as a property — the diagnostic command `describe-face-at-point`
+ *   uses it to surface the tree-sitter capture under the cursor without
+ *   needing a second registry.
  */
 export async function loadLanguageHighlighters(create, onError = () => {}) {
   /** @type {Record<string, import('./treesitter.js').Highlighter>} */
@@ -183,10 +190,14 @@ export async function loadLanguageHighlighters(create, onError = () => {}) {
     }
   }
 
-  /** @type {Record<string, (text: string) => import('./highlight.js').Run[][]>} */
   const exposed = {};
   for (const [tag, highlighter] of Object.entries(highlighters)) {
-    exposed[tag] = (text) => highlighter.highlight(text);
+    const fn = (text) => highlighter.highlight(text);
+    // Expose the raw capture list as a property on the callable so a
+    // caller that wants the capture ranges (rather than the per-line
+    // run projection) can reach them without a second registry.
+    fn.captures = (text) => highlighter.captures(text);
+    exposed[tag] = fn;
   }
   return exposed;
 }

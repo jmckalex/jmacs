@@ -5,7 +5,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createBuffer } from '@editor/buffer';
-import { createInterpreter, listToArray, NIL } from '@editor/lisp';
+import {
+  arrayToList,
+  cons,
+  createInterpreter,
+  listToArray,
+  NIL,
+} from '@editor/lisp';
 import { createBufferPrimitives, loadStdlib } from '../src/index.js';
 
 const lispDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lisp');
@@ -14,8 +20,17 @@ const languagesDir = join(lispDir, 'languages');
 /**
  * Build a buffer with the standard library loaded against it. The file
  * primitives are mocked: each call is recorded in `fileCalls`.
+ *
+ * @param {string} [initialText]
+ * @param {object} [options]
+ * @param {*} [options.captures] - The Lisp value to return from the
+ *   stub `tree-sitter-captures-for-buffer!` primitive. Defaults to
+ *   `NIL` (no tree-sitter language).
+ * @param {Record<string, string>} [options.faceColors] - Map of face
+ *   name (`'keyword'`) to colour string the stub `face-color-for`
+ *   returns; missing faces resolve to `''`.
  */
-async function editor(initialText = 'hello world') {
+async function editor(initialText = 'hello world', options = {}) {
   const buffer = createBuffer(initialText, { name: 'test' });
   const fileCalls = [];
   const bufferCalls = [];
@@ -28,6 +43,9 @@ async function editor(initialText = 'hello world') {
   const output = [];
   const docCalls = [];
   const evalCalls = [];
+  const tsCalls = [];
+  const captures = options.captures ?? NIL;
+  const faceColors = options.faceColors ?? {};
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
     primitives: {
@@ -158,6 +176,19 @@ async function editor(initialText = 'hello world') {
         evalCalls.push('show-log');
         return NIL;
       },
+      // `describe-face-at-point` reaches the host through these two
+      // primitives. The default stub returns `nil` (no language) so
+      // most tests can ignore them; tests that exercise the command
+      // pass `captures` and `faceColors` to override.
+      'tree-sitter-captures-for-buffer!': () => {
+        tsCalls.push('captures');
+        return captures;
+      },
+      'face-color-for': (a) => {
+        const face = String(a[0] ?? '');
+        tsCalls.push(`color:${face}`);
+        return faceColors[face] ?? '';
+      },
     },
   });
   await loadStdlib(
@@ -182,6 +213,7 @@ async function editor(initialText = 'hello world') {
     output,
     docCalls,
     evalCalls,
+    tsCalls,
   };
 }
 
@@ -2163,4 +2195,151 @@ test('C-x k runs kill-buffer through the host primitive', async () => {
   press(interpreter, 'k');
   assert.ok(bufferCalls.includes('kill'),
     `expected kill; got ${JSON.stringify(bufferCalls)}`);
+});
+
+// --- describe-face-at-point (face-info.lisp) ---------------------------
+
+/** Build the (LANGUAGE . CAPTURES) value the captures primitive returns,
+ *  from a language tag and a list of `[start, end, face]` tuples. */
+function captureValue(language, ranges) {
+  const captures = arrayToList(
+    ranges.map(([s, e, f]) => arrayToList([s, e, f]))
+  );
+  return cons(language, captures);
+}
+
+test('smallest-covering-capture picks the narrowest range over a point', async () => {
+  const { interpreter } = await editor();
+  // Three captures: an outer string spanning [0, 20), a function inside
+  // it at [4, 11), an operator at [4, 6). For point 5 the operator —
+  // the narrowest — must win.
+  assert.equal(
+    interpreter.evaluate(`
+      (caddr
+        (smallest-covering-capture
+          (list (list 0 20 "string")
+                (list 4 11 "function")
+                (list 4 6 "operator"))
+          5))`),
+    'operator'
+  );
+});
+
+test('smallest-covering-capture returns nil when no capture covers point', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate(`
+      (nil?
+        (smallest-covering-capture
+          (list (list 0 3 "a") (list 10 14 "b"))
+          7))`),
+    true
+  );
+});
+
+test('smallest-covering-capture treats the end offset as exclusive', async () => {
+  const { interpreter } = await editor();
+  // [4, 6) covers points 4 and 5 but not 6.
+  assert.equal(
+    interpreter.evaluate(`
+      (nil?
+        (smallest-covering-capture
+          (list (list 4 6 "op"))
+          6))`),
+    true
+  );
+  assert.equal(
+    interpreter.evaluate(`
+      (caddr
+        (smallest-covering-capture
+          (list (list 4 6 "op"))
+          5))`),
+    'op'
+  );
+});
+
+test('describe-face-at-point messages when no tree-sitter language is registered', async () => {
+  const { interpreter, output, docCalls } = await editor();
+  interpreter.evaluate('(describe-face-at-point)');
+  assert.ok(
+    output.some((m) => m.includes('no tree-sitter language')),
+    `expected the no-language message; got ${JSON.stringify(output)}`
+  );
+  // No doc page is opened in this branch.
+  assert.deepEqual(docCalls, []);
+});
+
+test('describe-face-at-point opens a doc page with the captured face', async () => {
+  // The buffer is `function foo() {}`; cursor at offset 3 (inside
+  // `function`). The stub returns one outer @keyword capture covering
+  // the whole keyword, and a narrower @operator covering nothing
+  // around point — the keyword wins.
+  const captures = captureValue('javascript', [
+    [0, 8, 'keyword'],   // 'function'
+    [9, 12, 'function'], // 'foo'
+  ]);
+  const { buffer, interpreter, docCalls } = await editor(
+    'function foo() {}',
+    { captures, faceColors: { keyword: '#c594c5' } }
+  );
+  buffer.moveTo(3);
+  interpreter.evaluate('(describe-face-at-point)');
+  const [call] = docCalls;
+  assert.ok(call, `expected a doc page; got ${JSON.stringify(docCalls)}`);
+  // The host stub records `docstring:<name>` for open-docstring-page!.
+  assert.equal(call, 'docstring:Face at point');
+});
+
+test('describe-face-at-point reports when no capture covers point', async () => {
+  // A capture exists, but it does not cover offset 0.
+  const captures = captureValue('javascript', [
+    [5, 9, 'keyword'],
+  ]);
+  const { interpreter, output, docCalls } = await editor('abc', { captures });
+  interpreter.evaluate('(describe-face-at-point)');
+  assert.ok(
+    output.some((m) => m.includes('no capture covers point')),
+    `expected no-capture message; got ${JSON.stringify(output)}`
+  );
+  assert.deepEqual(docCalls, []);
+});
+
+test('the rendered face-info body names the face, CSS class and resolved colour', async () => {
+  const { interpreter, faceColors: _f } = await editor('', {
+    faceColors: { keyword: '#c594c5' },
+  });
+  const body = interpreter.evaluate(
+    '(-face-info-render "javascript" "keyword" 0 8 "#c594c5" "function")'
+  );
+  assert.ok(typeof body === 'string');
+  assert.ok(body.includes('`keyword`'),
+    `expected the face name; got: ${body}`);
+  assert.ok(body.includes('`tok-keyword`'),
+    `expected the CSS class; got: ${body}`);
+  assert.ok(body.includes('`--tok-keyword`'),
+    `expected the CSS variable; got: ${body}`);
+  assert.ok(body.includes('`#c594c5`'),
+    `expected the resolved colour; got: ${body}`);
+  assert.ok(body.includes('[0, 8)'),
+    `expected the range; got: ${body}`);
+});
+
+test('describe-syntax-at-point is an alias that runs the same command', async () => {
+  const captures = captureValue('javascript', [[0, 8, 'keyword']]);
+  const { interpreter, docCalls } = await editor(
+    'function foo() {}',
+    { captures }
+  );
+  interpreter.evaluate('(describe-syntax-at-point)');
+  assert.deepEqual(docCalls, ['docstring:Face at point']);
+});
+
+test('C-h F is bound to describe-face-at-point', async () => {
+  const { interpreter } = await editor();
+  assert.ok(
+    interpreter.evaluate(
+      '(eq? (get c-h-keymap "F") (quote describe-face-at-point))'
+    ),
+    'C-h F must run describe-face-at-point'
+  );
 });
