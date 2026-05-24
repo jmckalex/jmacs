@@ -124,6 +124,7 @@ async function editor(initialText = 'hello world') {
       },
       'write-custom-file!': () => NIL,
       'apply-theme!': () => NIL,
+      'apply-face-styles!': () => NIL,
       // Documentation primitives: by default the test environment
       // has no doc manifest (`()`), so `doc-known?` is always false
       // and help commands fall back to the REPL. Individual tests
@@ -1946,6 +1947,81 @@ test('current-theme-css-vars switches with *theme*', async () => {
   assert.notEqual(dark, light);
   assert.notEqual(dark, midnight);
   assert.notEqual(light, midnight);
+});
+
+// --- faces ------------------------------------------------------------
+
+test('the 13 built-in token faces are registered', async () => {
+  const { interpreter } = await editor();
+  const names = listToArray(interpreter.call('registered-faces'))
+    .map((s) => s.name).sort();
+  assert.deepEqual(
+    names,
+    [
+      'code', 'comment', 'constant', 'function', 'heading', 'keyword',
+      'link', 'number', 'operator', 'paren', 'string', 'tag', 'type',
+    ]
+  );
+});
+
+test('defface stores per-theme defaults that face-default returns', async () => {
+  const { interpreter } = await editor();
+  const dark = interpreter.evaluate(
+    "(get (face-default 'keyword 'dark) :foreground nil)"
+  );
+  const light = interpreter.evaluate(
+    "(get (face-default 'keyword 'light) :foreground nil)"
+  );
+  const midnight = interpreter.evaluate(
+    "(get (face-default 'keyword 'midnight) :foreground nil)"
+  );
+  assert.equal(typeof dark, 'string');
+  assert.equal(typeof light, 'string');
+  assert.equal(typeof midnight, 'string');
+  assert.notEqual(dark, light);
+  assert.notEqual(dark, midnight);
+});
+
+test('comment is italic by default in every shipped theme', async () => {
+  const { interpreter } = await editor();
+  for (const theme of ['light', 'dark', 'midnight']) {
+    const slant = interpreter.evaluate(
+      `(get (face-default 'comment '${theme}) :slant nil)`
+    );
+    assert.equal(slant && slant.name, 'italic', `${theme} comment slant`);
+  }
+});
+
+test('face-attribute on an unset attribute returns nil', async () => {
+  const { interpreter } = await editor();
+  // No background is set by default for `keyword`.
+  const bg = interpreter.evaluate(
+    "(face-attribute 'keyword :background)"
+  );
+  assert.equal(bg, NIL);
+});
+
+test('face-attribute reads the active theme by default', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate("(custom-apply! (quote *theme*) (quote light))");
+  const light = interpreter.evaluate("(face-attribute 'keyword :foreground)");
+  interpreter.evaluate("(custom-apply! (quote *theme*) (quote dark))");
+  const dark = interpreter.evaluate("(face-attribute 'keyword :foreground)");
+  assert.notEqual(light, dark);
+});
+
+test('current-face-styles returns an alist for every face', async () => {
+  const { interpreter } = await editor();
+  const alist = listToArray(interpreter.call('current-face-styles'));
+  assert.ok(alist.length >= 13);
+  // Each entry: (face-name . ((:attr . value) …)).
+  const byName = new Map(alist.map((c) => [c.head.name, listToArray(c.tail)]));
+  const commentAttrs = byName.get('comment');
+  assert.ok(commentAttrs);
+  // The default for comment includes :foreground and :slant.
+  const keys = commentAttrs.map((c) => c.head.name).sort();
+  assert.ok(keys.includes('foreground'));
+  assert.ok(keys.includes('slant'));
 });
 
 // --- mode-specific keymaps -------------------------------------------

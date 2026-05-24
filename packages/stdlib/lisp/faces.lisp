@@ -1,0 +1,175 @@
+;;; faces.lisp — the customisation surface for font faces.
+;;;
+;;; A *face* is a tagged attribute set: foreground colour, background
+;;; colour, weight, slant, underline, strike-through. Syntax highlight
+;;; tokens (tree-sitter capture names like `@keyword`) become CSS
+;;; classes (`tok-keyword`) painted by face attributes.
+;;;
+;;; This file defines the registration primitive `defface` and the
+;;; resolution machinery that combines, for a given face and the active
+;;; theme:
+;;;
+;;;   1. the built-in default registered by `defface` for the theme;
+;;;   2. the user's per-theme override (under `themes.<name>`); and
+;;;   3. the user's global override (under `global`).
+;;;
+;;; More-specific wins (per-theme beats global beats default), but any
+;;; attribute the user did not override falls through to the default.
+;;;
+;;; The companion file `themes.lisp` is rewritten as a sequence of
+;;; `defface` forms — one per face — supplying the three theme defaults.
+;;; The Lisp side hands the host a resolved face map; the host writes a
+;;; `<style id="face-overrides">` element. No CSS variables for tokens.
+
+;; face-name (a symbol) -> face descriptor map. A descriptor:
+;;   {:name :doc :default-light :default-dark :default-midnight}
+;; Each :default-<theme> is itself a face map: a hash-map of attribute
+;; symbols (e.g. :foreground) to values.
+(define *face-registry* {})
+
+;; In-memory overrides. The structure mirrors faces.json:
+;;   :global  -> { face-name -> face-attrs }
+;;   :themes  -> { theme-name -> { face-name -> face-attrs } }
+(define *face-overrides* (hash-map :global {} :themes {}))
+
+;; A hook the renderer side installs (with `set-face-style-applier!`)
+;; so any face change can trigger CSS regeneration. Set to nil at boot;
+;; the host plumbs in `apply-face-styles!` when it's ready.
+(define *face-style-applier* nil)
+
+;; --- the face constructor ---------------------------------------------
+
+(define (face . pairs)
+  "Build a face descriptor (a hash-map) from keyword-value pairs:
+   (face :foreground \"#aaa\" :weight :bold). Any attribute may be
+   omitted; consumers must tolerate missing keys."
+  (apply hash-map pairs))
+
+;; --- registration -----------------------------------------------------
+
+(define (defface name . options)
+  "Register a face NAME (a symbol). OPTIONS is keyword pairs:
+   :doc string, :default-light face, :default-dark face,
+   :default-midnight face. On a hot reload the existing overrides
+   survive — only the registry entry is rewritten."
+  (let ((opts (apply hash-map options)))
+    (set! *face-registry*
+          (assoc *face-registry* name
+                 (hash-map
+                  :name name
+                  :doc (get opts :doc "")
+                  :default-light    (get opts :default-light {})
+                  :default-dark     (get opts :default-dark {})
+                  :default-midnight (get opts :default-midnight {}))))))
+
+(define (face-registered? name)
+  "True when NAME names a registered face."
+  (contains? *face-registry* name))
+
+(define (face-entry name)
+  "The registry entry for face NAME, or nil."
+  (get *face-registry* name nil))
+
+(define (registered-faces)
+  "The names of every registered face."
+  (keys *face-registry*))
+
+;; --- resolution -------------------------------------------------------
+
+(define (face-default name theme)
+  "The built-in default for face NAME under THEME (a symbol).
+   Returns an empty map for an unknown face or theme."
+  (let ((entry (face-entry name)))
+    (cond
+      ((nil? entry) {})
+      ((eq? theme 'light)    (get entry :default-light    {}))
+      ((eq? theme 'dark)     (get entry :default-dark     {}))
+      ((eq? theme 'midnight) (get entry :default-midnight {}))
+      (else                  (get entry :default-dark     {})))))
+
+(define (face-global-override name)
+  "The user's global override for face NAME, or an empty map."
+  (get (get *face-overrides* :global {}) name {}))
+
+(define (face-theme-override name theme)
+  "The user's per-theme override for face NAME under THEME, or {}."
+  (get (get (get *face-overrides* :themes {}) theme {}) name {}))
+
+(define (-merge-faces-step ks over acc)
+  "Tail-recursive helper for merge-faces."
+  (if (nil? ks)
+      acc
+      (-merge-faces-step (cdr ks) over
+                         (assoc acc (car ks) (get over (car ks) nil)))))
+
+(define (merge-faces base over)
+  "Layer face OVER atop BASE, attribute by attribute. Keys present in
+   OVER win; keys present only in BASE are preserved."
+  (-merge-faces-step (keys over) over base))
+
+(define (resolve-face name theme)
+  "The fully-resolved face for NAME under THEME: built-in default
+   layered with the user's global override layered with the user's
+   per-theme override. The result is a flat hash-map of attribute
+   keywords to values."
+  (merge-faces
+   (merge-faces (face-default name theme) (face-global-override name))
+   (face-theme-override name theme)))
+
+(define (face-attribute name attr . options)
+  "Return one attribute of face NAME. With no :theme, uses the active
+   theme (*theme*). With (:theme 'dark), uses that theme explicitly."
+  (let ((opts (apply hash-map options)))
+    (let ((theme (get opts :theme *theme*)))
+      (get (resolve-face name theme) attr nil))))
+
+;; --- the data the host paints with ------------------------------------
+
+(define (-resolved-faces-step names theme acc)
+  "Tail-recursive helper for resolved-faces."
+  (if (nil? names)
+      acc
+      (-resolved-faces-step
+       (cdr names) theme
+       (assoc acc (car names) (resolve-face (car names) theme)))))
+
+(define (resolved-faces theme)
+  "A hash-map of face-name -> resolved face for every registered face
+   under THEME. This is what the host renderer turns into CSS."
+  (-resolved-faces-step (registered-faces) theme {}))
+
+(define (current-resolved-faces)
+  "The resolved faces for the active theme — what the renderer applies."
+  (resolved-faces *theme*))
+
+(define (face-attribute-list face)
+  "A flat alist ((:foreground . \"#aaa\") (:weight . :bold) …) for a
+   resolved face. Convenient for hosts that walk a list more easily
+   than a hash-map."
+  (map (lambda (k) (cons k (get face k nil))) (keys face)))
+
+(define (faces->alist faces)
+  "Turn a face-name -> face map into an alist
+   ((face-name . face-attribute-list) …) — pure list/cons data the
+   host can walk without map primitives."
+  (map (lambda (name)
+         (cons name (face-attribute-list (get faces name {}))))
+       (keys faces)))
+
+(define (current-face-styles)
+  "The data the renderer paints into `<style id=\"face-overrides\">`.
+   An alist of (face-name . ((:attr . value) …))."
+  (faces->alist (current-resolved-faces)))
+
+;; --- the renderer hook ------------------------------------------------
+
+(define (set-face-style-applier! fn)
+  "Install a one-argument procedure the face system calls after any
+   change. The argument is the current-face-styles alist."
+  (set! *face-style-applier* fn))
+
+(define (apply-face-styles!)
+  "Run the installed applier with the current resolved faces. Called
+   after every override change and at startup."
+  (when (procedure? *face-style-applier*)
+    (*face-style-applier* (current-face-styles))))

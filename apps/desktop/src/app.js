@@ -39,6 +39,7 @@ import {
 } from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 import { createAudioController } from './audio.js';
+import { applyFaceStyles } from './face-styles.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 
@@ -747,6 +748,14 @@ const interpreter = createInterpreter({
     // host hook that reads the current palette and writes it to the DOM.
     'apply-theme!': () => {
       applyCurrentTheme();
+      applyCurrentFaceStyles();
+      return NIL;
+    },
+    // Face customisation: regenerate `<style id="face-overrides">`
+    // from the Lisp-side resolved face map. Called whenever any
+    // override changes, plus on startup and theme switch.
+    'apply-face-styles!': () => {
+      applyCurrentFaceStyles();
       return NIL;
     },
     // Documentation: open the doc page for NAME in a doc-kind buffer.
@@ -1230,6 +1239,7 @@ async function reloadStdlib() {
     await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
     await loadUserConfig();
     applyCurrentTheme();
+    applyCurrentFaceStyles();
     repl.appendNote('standard library reloaded');
   } catch (error) {
     repl.appendError(`reload failed: ${error.message}`);
@@ -1246,6 +1256,7 @@ try {
 
 if (keymapReady) await loadUserConfig();
 if (keymapReady) applyCurrentTheme();
+if (keymapReady) applyCurrentFaceStyles();
 
 // Kick off the doc manifest fetch — fire-and-forget. The
 // `load-doc-manifest!` primitive returns the cached value once it
@@ -1403,6 +1414,17 @@ function applyCurrentTheme() {
     }
   } catch (error) {
     repl.appendError(`theme: ${error.lispMessage ?? error.message}`);
+  }
+}
+
+/** Apply the resolved face map to the document: regenerate
+ *  `<style id="face-overrides">` with one rule per face. */
+function applyCurrentFaceStyles() {
+  try {
+    const alist = listToArray(interpreter.call('current-face-styles'));
+    applyFaceStyles(document, alist, listToArray);
+  } catch (error) {
+    repl.appendError(`face-styles: ${error.lispMessage ?? error.message}`);
   }
 }
 
