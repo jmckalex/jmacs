@@ -18,7 +18,6 @@
 (define latex-mode-map {})
 (define makefile-mode-map {})
 (define buffer-menu-mode-map {})
-(define jukebox-mode-map {})
 
 ;; --- the modes ---------------------------------------------------------
 (define-mode fundamental-mode
@@ -59,12 +58,9 @@
   :name "BufMenu"
   :keymap 'buffer-menu-mode-map)
 
-;; The jukebox mode — the *Jukebox* buffer is a non-text panel-like
-;; buffer whose mode keymap drives playback. The mode is set explicitly
-;; when `jukebox` opens the panel. See `jukebox.lisp`.
-(define-mode jukebox-mode
-  :name "Jukebox"
-  :keymap 'jukebox-mode-map)
+;; Note: a jukebox buffer is *not* a text buffer — it is shown through
+;; the L4 jukebox view, not the editor view, so no major mode applies.
+;; See `jukebox.lisp` and `packages/renderer/src/jukebox-view.js`.
 
 ;; --- the registry — a filename suffix chooses a major mode -------------
 (define *mode-registry* (list))

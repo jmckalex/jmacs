@@ -1148,10 +1148,10 @@ app.whenReady().then(() => {
       console.log('  bufferMenu:', JSON.stringify(bufferMenu));
 
       // Jukebox: seed a directory with placeholder audio files (their
-      // contents are irrelevant — the smoke checks panel rendering and
-      // mode binding, not real audio decode), then run (jukebox <dir>)
-      // and confirm the buffer is named, in jukebox-mode, and lists
-      // every track.
+      // contents are irrelevant — the smoke checks the jukebox view
+      // mounts, lists every track, finds the cover, and the shuffle
+      // toggle flips on user interaction), then run `(jukebox <dir>)`
+      // and inspect the rendered DOM.
       await mkdir(jukeboxDir, { recursive: true });
       await Promise.all([
         writeFile(join(jukeboxDir, 'silence.mp3'), ''),
@@ -1168,34 +1168,59 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        const lastResult = () => {
-          const all = document.querySelectorAll('.repl-result');
-          return all.length ? all[all.length - 1].textContent : '';
-        };
+        // Track the audio controller's play() so the test can assert
+        // the click on a track row reaches it. The renderer stashes the
+        // jukebox view on window for inspection isn't ideal — we read
+        // the DOM instead and rely on the fact that the underlying
+        // HTMLAudioElement updates its src.
         submit('(jukebox ${JSON.stringify(jukeboxDir)})');
         await frame();
-        const name = document.getElementById('modeline-name').textContent;
-        const body = Array.from(
-          document.querySelectorAll('.editor-line')
-        ).map((l) => l.textContent).join('\\n');
-        // The mode menu reflects the active major mode keymap.
-        submit('(major-mode-name)');
-        const major = lastResult();
-        // Pressing s toggles the shuffle flag — visible in the panel.
-        const editor = document.querySelector('.editor');
-        editor.focus();
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 's', bubbles: true, cancelable: true,
-        }));
         await frame();
-        const afterShuffle = Array.from(
-          document.querySelectorAll('.editor-line')
-        ).map((l) => l.textContent).join('\\n');
-        return { name, body, major, afterShuffle };
+        const view = document.querySelector('.jukebox-view');
+        const visible = view && view.style.display !== 'none';
+        const name = document.getElementById('modeline-name').textContent;
+        const tracks = view
+          ? Array.from(view.querySelectorAll('.jukebox-track-button'))
+              .map((b) => b.textContent)
+          : [];
+        const art = view ? view.querySelector('.jukebox-art-image') : null;
+        const hasArt = !!(art && art.getAttribute('src'));
+        const audioEl = view ? view.querySelector('audio.jukebox-audio') : null;
+        const hasAudio = !!audioEl;
+        // Click the second track row → the audio element's src should
+        // change to the second track's media:// URL.
+        const buttons = view
+          ? view.querySelectorAll('.jukebox-track-button')
+          : [];
+        if (buttons.length >= 2) buttons[1].click();
+        await frame();
+        const audioSrc = audioEl ? audioEl.src : '';
+        // Toggle shuffle by clicking the shuffle button.
+        const shuffleBtn = view
+          ? view.querySelector('.jukebox-shuffle')
+          : null;
+        const shuffleBefore = shuffleBtn ? shuffleBtn.textContent : '';
+        if (shuffleBtn) shuffleBtn.click();
+        await frame();
+        const shuffleAfter = shuffleBtn ? shuffleBtn.textContent : '';
+        return {
+          name,
+          visible,
+          tracks,
+          hasArt,
+          hasAudio,
+          audioSrc,
+          shuffleBefore,
+          shuffleAfter,
+        };
       })()`);
       console.log('  jukebox:', JSON.stringify({
-        name: jukebox.name, major: jukebox.major,
-        bodyLen: jukebox.body.length, hasShuffle: jukebox.afterShuffle.includes('SHUFFLE'),
+        name: jukebox.name,
+        visible: jukebox.visible,
+        tracks: jukebox.tracks.length,
+        hasArt: jukebox.hasArt,
+        hasAudio: jukebox.hasAudio,
+        shuffleFlip: jukebox.shuffleBefore + ' -> ' + jukebox.shuffleAfter,
       }));
       await rm(jukeboxDir, { recursive: true, force: true });
 
@@ -1323,12 +1348,16 @@ app.whenReady().then(() => {
         bufferMenu.keepStill;
       const jukeboxOk =
         jukebox.name.includes('Jukebox:') &&
-        jukebox.major.includes('Jukebox') &&
-        jukebox.body.includes('silence.mp3') &&
-        jukebox.body.includes('second.flac') &&
-        jukebox.body.includes('cover.jpg') &&
-        !jukebox.body.includes('readme.txt') &&
-        jukebox.afterShuffle.includes('SHUFFLE');
+        jukebox.visible &&
+        jukebox.hasAudio &&
+        jukebox.hasArt &&
+        jukebox.tracks.includes('silence.mp3') &&
+        jukebox.tracks.includes('second.flac') &&
+        !jukebox.tracks.includes('readme.txt') &&
+        // Clicking a track row points the audio element at it.
+        jukebox.audioSrc.includes('second.flac') &&
+        jukebox.shuffleBefore.includes('off') &&
+        jukebox.shuffleAfter.includes('on');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
