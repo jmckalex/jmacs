@@ -25,10 +25,18 @@ const QUERY = `
   (type (identifier) @type)
 `;
 
+// Python folds at indented blocks — every `def`, `class`, `if`, `for`,
+// `while`, `try`, `with`, `match` opens a `block` child. Capturing the
+// block keeps the header line ("def foo():") visible.
+const FOLD_QUERY = `
+  (block) @fold
+`;
+
 registerLanguage({
   tag: 'python',
   grammar: 'tree-sitter-python.wasm',
   query: QUERY,
+  foldQuery: FOLD_QUERY,
   suffixes: ['.py'],
   aliases: ['py', 'python3'],
 });

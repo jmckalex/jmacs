@@ -24,10 +24,22 @@ const QUERY = `
   (expansion (variable_name) @type)
 `;
 
+// Foldable scopes: function bodies (`{ ... }` or `( ... )`), `do/done`
+// loops and `if/fi`, `case/esac` constructs. Captured nodes' first
+// line is the header line and stays visible.
+const FOLD_QUERY = `
+  (function_definition body: (compound_statement) @fold)
+  (function_definition body: (subshell) @fold)
+  (do_group) @fold
+  (if_statement) @fold
+  (case_statement) @fold
+`;
+
 registerLanguage({
   tag: 'bash',
   grammar: 'tree-sitter-bash.wasm',
   query: QUERY,
+  foldQuery: FOLD_QUERY,
   suffixes: ['.sh', '.bash'],
   aliases: ['sh', 'shell', 'zsh'],
 });

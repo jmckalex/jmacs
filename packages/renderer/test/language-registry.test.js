@@ -97,7 +97,7 @@ test('loadLanguageHighlighters calls create for each language', async () => {
     calls.push(grammar);
     return { highlight: () => [[{ text: query, face: null }]] };
   };
-  const highlighters = await loadLanguageHighlighters(create);
+  const { highlighters } = await loadLanguageHighlighters(create);
   assert.equal(calls.length, 2);
   assert.ok('fortran' in highlighters);
   assert.ok('cobol' in highlighters);
@@ -117,7 +117,7 @@ test('loadLanguageHighlighters reports per-language failures and continues', asy
     if (grammar.includes('fortran')) throw new Error('boom');
     return { highlight: () => [] };
   };
-  const highlighters = await loadLanguageHighlighters(create, (tag, error) => {
+  const { highlighters } = await loadLanguageHighlighters(create, (tag, error) => {
     errors.push([tag, error.message]);
   });
   assert.deepEqual(errors, [['fortran', 'boom']]);
@@ -184,7 +184,7 @@ test('aliases expose the same highlighter under additional tags', async () => {
     count += 1;
     return { highlight: () => [], captures: () => [] };
   };
-  const highlighters = await loadLanguageHighlighters(create);
+  const { highlighters } = await loadLanguageHighlighters(create);
   assert.equal(count, 1); // one wasm load, not three
   assert.ok('fortran' in highlighters);
   assert.ok('for' in highlighters);
@@ -205,7 +205,7 @@ test('aliases never overwrite a real registered tag', async () => {
     highlight: () => grammar,
     captures: () => [],
   });
-  const highlighters = await loadLanguageHighlighters(create);
+  const { highlighters } = await loadLanguageHighlighters(create);
   // The 'rs' entry must come from the second registration, not the alias.
   assert.equal(highlighters.rs(), 'tree-sitter-rs.wasm');
 });
@@ -215,6 +215,58 @@ test('registerLanguage rejects a non-array aliases', () => {
     () => registerLanguage({ ...SPEC, aliases: 'js' }),
     /aliases must be a string/
   );
+});
+
+test('registerLanguage stores a foldQuery when provided', () => {
+  registerLanguage({
+    ...SPEC,
+    foldQuery: '(block) @fold',
+  });
+  assert.equal(registeredLanguages()[0].foldQuery, '(block) @fold');
+});
+
+test('registerLanguage rejects a non-string foldQuery', () => {
+  assert.throws(
+    () => registerLanguage({ ...SPEC, foldQuery: 42 }),
+    /foldQuery must be a string/
+  );
+});
+
+test('loadLanguageHighlighters threads foldQuery into create and exposes foldCaptures', async () => {
+  registerLanguage(SPEC); // no fold
+  registerLanguage({
+    ...SPEC,
+    tag: 'cobol',
+    grammar: 'tree-sitter-cobol.wasm',
+    suffixes: ['.cob'],
+    foldQuery: '(division) @fold',
+  });
+  /** @type {Record<string, object | undefined>} */
+  const seen = {};
+  const create = async (grammar, _query, options) => {
+    seen[grammar] = options;
+    return {
+      highlight: () => [],
+      captures: () => [],
+      // Only the foldable language gets a foldCaptures method on its
+      // highlighter — mirrors the real treesitter.js behaviour.
+      foldCaptures: grammar.includes('cobol')
+        ? () => [{ start: 0, end: 10 }]
+        : undefined,
+    };
+  };
+  const { highlighters, foldCaptures } = await loadLanguageHighlighters(create);
+  // The plain language got no options.
+  assert.equal(seen['tree-sitter-fortran.wasm'], undefined);
+  // The folding one got the query.
+  assert.equal(seen['tree-sitter-cobol.wasm'].foldQuery, '(division) @fold');
+  // Only the folding language has a foldCaptures entry.
+  assert.ok('cobol' in foldCaptures);
+  assert.equal(typeof foldCaptures.cobol, 'function');
+  assert.ok(!('fortran' in foldCaptures));
+  // Both languages have highlighters.
+  assert.ok('fortran' in highlighters);
+  assert.ok('cobol' in highlighters);
 });
 
 test('getHighlighter resolves siblings lazily, after every language is loaded', async () => {

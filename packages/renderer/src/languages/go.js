@@ -27,9 +27,19 @@ const QUERY = `
   (type_identifier) @type
 `;
 
+// Foldable scopes: braced blocks (function bodies, control flow) and
+// struct/interface bodies. The body's opening `{` shares the header
+// line, which stays visible.
+const FOLD_QUERY = `
+  (block) @fold
+  (field_declaration_list) @fold
+  (interface_type) @fold
+`;
+
 registerLanguage({
   tag: 'go',
   grammar: 'tree-sitter-go.wasm',
   query: QUERY,
+  foldQuery: FOLD_QUERY,
   suffixes: ['.go'],
 });

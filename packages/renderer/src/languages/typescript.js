@@ -41,10 +41,23 @@ const QUERY = `
   (predefined_type) @type
 `;
 
+// Foldable scopes: same as JavaScript, plus interface and enum bodies.
+const FOLD_QUERY = `
+  (statement_block) @fold
+  (class_body) @fold
+  (object) @fold
+  (array) @fold
+  (switch_body) @fold
+  (interface_body) @fold
+  (enum_body) @fold
+  (object_type) @fold
+`;
+
 registerLanguage({
   tag: 'typescript',
   grammar: 'tree-sitter-typescript.wasm',
   query: QUERY,
+  foldQuery: FOLD_QUERY,
   suffixes: ['.ts'],
   aliases: ['ts'],
 });

@@ -53,6 +53,11 @@ export const MAX_INJECTION_DEPTH = 4;
  * @property {(text: string, depth?: number) => CaptureRange[]} captures -
  *   Raw absolute-offset capture ranges. Used by the injection pipeline
  *   to splice an inner language's tokens into an outer document.
+ * @property {(text: string) => import('./folding.js').FoldCapture[]} [foldCaptures] -
+ *   Absolute-offset ranges of foldable scopes (`(node) @fold` matches),
+ *   present when the language declared a `foldQuery`. Single-line
+ *   captures are *not* filtered here — the pure `foldRanges` consumer
+ *   handles that.
  */
 
 /**
@@ -66,6 +71,10 @@ export const MAX_INJECTION_DEPTH = 4;
  *   Look up the highlighter to use for an injection's language tag.
  *   Required when `injectionQuery` is set; missing inner highlighters
  *   degrade gracefully (the outer face survives on that region).
+ * @property {string} [foldQuery] -
+ *   A query whose `@fold` captures mark foldable nodes. When set, the
+ *   returned highlighter exposes `foldCaptures(text)` for the view
+ *   layer to consume (`./folding.js`).
  */
 
 /** The web-tree-sitter runtime is initialised once, lazily. */
@@ -104,6 +113,9 @@ export async function createTreeSitterHighlighter(
   const injectionQuery = options.injectionQuery
     ? new Query(language, options.injectionQuery)
     : null;
+  const foldQuery = options.foldQuery
+    ? new Query(language, options.foldQuery)
+    : null;
   const getHighlighter = options.getHighlighter;
 
   /**
@@ -132,12 +144,36 @@ export async function createTreeSitterHighlighter(
     );
   }
 
-  return {
+  /**
+   * Collect `@fold` captures over `text` as absolute character offsets.
+   * Returns an empty list when no fold query was given. Single-line
+   * captures are kept here; the pure `foldRanges` consumer drops them.
+   *
+   * @param {string} text
+   * @returns {import('./folding.js').FoldCapture[]}
+   */
+  function foldCaptures(text) {
+    if (!foldQuery) return [];
+    const tree = parser.parse(text);
+    const matches = foldQuery.captures(tree.rootNode);
+    /** @type {import('./folding.js').FoldCapture[]} */
+    const ranges = matches.map((m) => ({
+      start: m.node.startIndex,
+      end: m.node.endIndex,
+    }));
+    tree.delete();
+    return ranges;
+  }
+
+  /** @type {Highlighter} */
+  const highlighter = {
     highlight(text) {
       return splitIntoLineRuns(text, captures(text, 0));
     },
     captures,
   };
+  if (foldQuery) highlighter.foldCaptures = foldCaptures;
+  return highlighter;
 }
 
 /**

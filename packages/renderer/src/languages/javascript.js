@@ -105,10 +105,23 @@ const QUERY = `
   (shorthand_property_identifier_pattern) @constant
 `;
 
+// Foldable scopes: function/method/class bodies (captured via the
+// containing `statement_block`), object and array literals, and
+// `switch`. Capturing the body — not its parent — keeps the header
+// line visible.
+const FOLD_QUERY = `
+  (statement_block) @fold
+  (class_body) @fold
+  (object) @fold
+  (array) @fold
+  (switch_body) @fold
+`;
+
 registerLanguage({
   tag: 'javascript',
   grammar: 'tree-sitter-javascript.wasm',
   query: QUERY,
+  foldQuery: FOLD_QUERY,
   suffixes: ['.js', '.mjs'],
   aliases: ['js', 'mjs', 'node'],
 });

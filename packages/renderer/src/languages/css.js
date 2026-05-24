@@ -22,9 +22,15 @@ const QUERY = `
   (at_keyword) @keyword
 `;
 
+// Foldable scopes: rule and @-rule bodies (`{ ... }`).
+const FOLD_QUERY = `
+  (block) @fold
+`;
+
 registerLanguage({
   tag: 'css',
   grammar: 'tree-sitter-css.wasm',
   query: QUERY,
+  foldQuery: FOLD_QUERY,
   suffixes: ['.css'],
 });

@@ -142,6 +142,45 @@ body {
   color: var(--fg);
 }
 
+/* Fold marker: the ▾ / ▸ glyph that sits to the left of the line number
+   on foldable lines. Click to toggle the fold. */
+.editor-fold-marker {
+  position: absolute;
+  right: 100%;
+  margin-right: 4px;
+  padding: 0 4px;
+  font: inherit;
+  background: transparent;
+  color: var(--fg-dim);
+  border: none;
+  cursor: pointer;
+  opacity: 0.45;
+  line-height: 1lh;
+  height: 1lh;
+}
+
+.editor-line-no:hover .editor-fold-marker,
+.editor-fold-marker:hover {
+  opacity: 1;
+  color: var(--fg);
+}
+
+/* The numeric line number when a fold marker is also present. */
+.editor-line-no-num {
+  display: inline-block;
+}
+
+/* The `…` glyph appended to a folded header line. */
+.editor-fold-ellipsis {
+  display: inline;
+  color: var(--fg-dim);
+  opacity: 0.7;
+  margin-left: 0.5ch;
+  padding: 0 0.4ch;
+  border-radius: 3px;
+  background: #ffffff14;
+}
+
 .editor-content {
   position: relative;
   flex: 1 1 auto;
