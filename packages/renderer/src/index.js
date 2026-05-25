@@ -30,6 +30,7 @@ export {
   mimeTypeForAudio,
   mimeTypeForVideo,
 } from './media-view.js';
+export { createAudioView, formatDuration } from './audio-view.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,
