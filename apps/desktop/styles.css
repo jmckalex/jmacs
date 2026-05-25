@@ -1278,44 +1278,20 @@ textarea.customize-widget {
   background: var(--bg-editor);
   color: var(--fg);
   font-family: system-ui, sans-serif;
-  overflow: hidden;
+  /* The inner .audio-layout is content-sized; if a track has so much
+     metadata (or the error block is shown) that the layout exceeds
+     the pane, the whole view scrolls rather than clipping. */
+  overflow: auto;
 }
 
-/* When the current buffer is an audio buffer, the workspace shrinks
-   vertically to fit the audio view's natural content height and the
-   REPL pane claims the slack — far less wasted dark space below the
-   play controls than the default fill-the-pane layout. The body class
-   is toggled by `mountView` in app.js. The repl splitter is hidden in
-   this mode because the editor pane no longer has a slack to give. */
-body.audio-buffer-active .workspace {
-  flex: 0 0 auto;
-}
-
-body.audio-buffer-active #repl-host {
-  flex: 1 1 auto;
-}
-
-body.audio-buffer-active #repl-splitter {
-  display: none;
-}
-
-body.audio-buffer-active .audio-view {
-  height: auto;
-}
-
-body.audio-buffer-active .audio-meta {
-  flex: 0 0 auto;
-  overflow: visible;
-}
-
-body.audio-buffer-active .audio-player {
-  margin-top: 12px;
-}
-
+/* The layout block sizes to its natural content height; anything below
+   it inside the .audio-view is editor background. The REPL splitter
+   still owns the editor/REPL boundary so the user can drag it as
+   usual. */
 .audio-layout {
   display: flex;
   align-items: stretch;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
   gap: 24px;
   padding: 24px;
@@ -1379,8 +1355,7 @@ body.audio-buffer-active .audio-player {
   gap: 4px 16px;
   margin: 8px 0 0 0;
   font-size: 12.5px;
-  flex: 1 1 auto;
-  overflow: auto;
+  flex: 0 0 auto;
   align-content: start;
 }
 
@@ -1401,7 +1376,6 @@ body.audio-buffer-active .audio-player {
 .audio-player {
   flex: 0 0 auto;
   width: 100%;
-  margin-top: auto;
 }
 
 /* --- video view ------------------------------------------------------- */

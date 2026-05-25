@@ -1568,24 +1568,23 @@ app.whenReady().then(() => {
         const albumArtSrc = albumArt
           ? (albumArt.getAttribute('src') || '')
           : '';
-        // Audio buffers shrink the editor pane to fit the view's
-        // natural content; \`body.audio-buffer-active\` flips the
-        // workspace/repl flex so the REPL takes the slack. Structural
-        // check: the body class is set, and the editor pane's height
-        // matches the audio view's natural content height (i.e. they
-        // size together — neither is being clamped or overflowing).
-        const editorHost = document.getElementById('editor-host');
-        const audioPaneHeight = editorHost
-          ? editorHost.getBoundingClientRect().height
-          : 0;
-        const audioBodyActive = document.body.classList.contains('audio-buffer-active');
-        const audioViewHeight = audioView
-          ? audioView.getBoundingClientRect().height
-          : 0;
-        const audioPaneFitsContent =
-          audioBodyActive &&
-          audioPaneHeight > 0 &&
-          Math.abs(audioPaneHeight - audioViewHeight) < 2;
+        // The inner .audio-layout is content-sized (flex: 0 0 auto),
+        // so the play controls sit right under the metadata instead of
+        // being pushed to the pane's bottom. The REPL splitter still
+        // owns the editor / REPL boundary so the user can drag it as
+        // usual.
+        const audioLayout = audioView
+          ? audioView.querySelector('.audio-layout')
+          : null;
+        const audioLayoutStyle = audioLayout
+          ? getComputedStyle(audioLayout)
+          : null;
+        const audioLayoutIsContentSized = !!(
+          audioLayoutStyle &&
+          audioLayoutStyle.flexGrow === '0' &&
+          audioLayoutStyle.flexShrink === '0' &&
+          audioLayoutStyle.flexBasis === 'auto'
+        );
         // \`q\` on the focused view dismisses the buffer; the audio
         // view should be hidden afterwards and the modeline back on a
         // different buffer.
@@ -1643,7 +1642,7 @@ app.whenReady().then(() => {
         return {
           audioShown, audioName, hasAudioEl, audioSrc,
           titleText, subtitleText, metaText, albumArtSrc,
-          audioPaneFitsContent, audioBodyActive, audioPaneHeight,
+          audioLayoutIsContentSized,
           audioStillVisible, afterAudioKill,
           videoShown, videoName, hasVideoEl, videoSrc,
           captionName, captionPath,
@@ -1660,9 +1659,7 @@ app.whenReady().then(() => {
           metaRows: mediaViews.metaText.length,
           albumArtIsDataUrl:
             mediaViews.albumArtSrc.startsWith('data:image/'),
-          paneFitsContent: mediaViews.audioPaneFitsContent,
-          paneHeight: Math.round(mediaViews.audioPaneHeight),
-          bodyClassActive: mediaViews.audioBodyActive,
+          layoutIsContentSized: mediaViews.audioLayoutIsContentSized,
           dismissed: !mediaViews.audioStillVisible,
         },
         video: {
