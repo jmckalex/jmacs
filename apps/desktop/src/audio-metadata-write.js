@@ -258,6 +258,9 @@ export function writeMetadataSync(path, fields) {
   if (ext === '.m4a' || ext === '.mp4' || ext === '.m4b') {
     return writeMP4Sync(path, fields);
   }
+  if (ext === '.ogg' || ext === '.oga') {
+    return writeOGGSync(path, fields);
+  }
   return { ok: false, error: `unsupported format: ${ext || '(no extension)'}` };
 }
 
@@ -644,6 +647,386 @@ export function writeMP4Sync(path, fields) {
   try {
     const buf = readFileSync(path);
     const newBuf = serialiseMP4(buf, fields);
+    writeAtomic(path, newBuf);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ogg Vorbis
+// ---------------------------------------------------------------------------
+
+/**
+ * Ogg Vorbis structure: a stream of pages, each carrying segments,
+ * each segment between 0 and 255 bytes. A logical packet is the
+ * concatenation of segments terminated by a segment < 255 (or one of
+ * exactly 0 bytes when a packet ends on a 255-byte boundary). Vorbis
+ * uses three header packets: identification, comment, setup. The
+ * audio packets follow.
+ *
+ * Our writer rebuilds the comment packet from the new metadata and
+ * re-emits the header pages. Audio pages are copied verbatim from
+ * the original — same sequence numbers, same CRCs — as long as the
+ * new header layout uses the same page count as the original. When
+ * it doesn't (rare: comment packet grew or shrank into a different
+ * number of pages), the audio pages get their sequence numbers
+ * patched and CRCs recomputed.
+ *
+ * Cover art preservation: Vorbis encodes cover art inside the
+ * comment block as a base64-encoded METADATA_BLOCK_PICTURE field.
+ * It survives a write naturally — the writer treats it as just
+ * another comment field.
+ */
+
+/** Pre-computed Ogg CRC32 table. Polynomial 0x04C11DB7, unreflected,
+ *  no init/final XOR. */
+const OGG_CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let crc = i << 24;
+    for (let j = 0; j < 8; j++) {
+      crc = (crc & 0x80000000) !== 0
+        ? ((crc << 1) ^ 0x04c11db7) >>> 0
+        : (crc << 1) >>> 0;
+    }
+    t[i] = crc;
+  }
+  return t;
+})();
+
+/** Compute the Ogg CRC32 over `buf`. The page's CRC field at bytes
+ *  22–25 must be zeroed before calling, then the result written
+ *  back as a little-endian uint32. */
+export function oggCrc32(buf) {
+  let crc = 0;
+  for (let i = 0; i < buf.length; i++) {
+    crc = (((crc << 8) >>> 0) ^ OGG_CRC_TABLE[((crc >>> 24) ^ buf[i]) & 0xff]) >>> 0;
+  }
+  return crc;
+}
+
+/** Walk the Ogg pages in `buf` and return one descriptor per page:
+ *  `{ start, end, headerType, granule, serial, sequence, segments }`.
+ *  `segments` is the per-segment byte-length array. */
+export function listOggPages(buf) {
+  const pages = [];
+  let cursor = 0;
+  while (cursor + 27 <= buf.length) {
+    if (
+      buf[cursor] !== 0x4f || buf[cursor + 1] !== 0x67 ||
+      buf[cursor + 2] !== 0x67 || buf[cursor + 3] !== 0x53
+    ) {
+      break;
+    }
+    const headerType = buf[cursor + 5];
+    // Granule: 8-byte little-endian signed; we only need the bytes,
+    // not the value, so just keep them.
+    const granule = buf.subarray(cursor + 6, cursor + 14);
+    const serial = buf.readUInt32LE(cursor + 14);
+    const sequence = buf.readUInt32LE(cursor + 18);
+    const segCount = buf[cursor + 26];
+    const segTableStart = cursor + 27;
+    const dataStart = segTableStart + segCount;
+    if (dataStart > buf.length) break;
+    const segments = new Array(segCount);
+    let payloadLen = 0;
+    for (let i = 0; i < segCount; i++) {
+      segments[i] = buf[segTableStart + i];
+      payloadLen += segments[i];
+    }
+    const end = dataStart + payloadLen;
+    if (end > buf.length) break;
+    pages.push({
+      start: cursor,
+      end,
+      headerType,
+      granule,
+      serial,
+      sequence,
+      segments,
+      dataStart,
+    });
+    cursor = end;
+  }
+  return pages;
+}
+
+/** Read packets from the Ogg page list until `count` packets have
+ *  been assembled (or the stream ends). Returns an array of
+ *  `{ bytes, endPageIndex }`. A packet ends on the first segment of
+ *  length < 255 (including a 0-length terminator). */
+export function readOggPackets(buf, pages, count) {
+  const packets = [];
+  let current = [];
+  for (let p = 0; p < pages.length && packets.length < count; p++) {
+    const page = pages[p];
+    let dataCursor = page.dataStart;
+    for (let s = 0; s < page.segments.length; s++) {
+      const segLen = page.segments[s];
+      current.push(buf.subarray(dataCursor, dataCursor + segLen));
+      dataCursor += segLen;
+      if (segLen < 255) {
+        const total = current.reduce((sum, seg) => sum + seg.length, 0);
+        const bytes = Buffer.alloc(total);
+        let off = 0;
+        for (const seg of current) {
+          seg.copy(bytes, off);
+          off += seg.length;
+        }
+        packets.push({ bytes, endPageIndex: p });
+        current = [];
+        if (packets.length >= count) break;
+      }
+    }
+  }
+  return packets;
+}
+
+/** Build a Vorbis comment packet from `fields`. Structure:
+ *
+ *    0x03 + "vorbis" + vendor-length-LE + vendor + comment-count-LE +
+ *      [ length-LE + "KEY=VALUE" ]* + 0x01 (framing bit)
+ *
+ *  Renderer-side keys map to the Vorbis-comment names in capitals.
+ *  Cover passes through as METADATA_BLOCK_PICTURE (base64-encoded
+ *  FLAC picture block) — out of scope for our writer; we preserve
+ *  it via the vendor string + comments roundtrip only.
+ */
+export function buildVorbisCommentPacket(fields, { vendor = 'jmacs' } = {}) {
+  const vendorBuf = Buffer.from(String(vendor), 'utf8');
+  const entries = [];
+  const map = {
+    title: 'TITLE',
+    artist: 'ARTIST',
+    album: 'ALBUM',
+    year: 'DATE',
+    genre: 'GENRE',
+  };
+  const consumed = new Set(['duration', 'file', 'format', 'path', 'cover', 'track']);
+  for (const [key, name] of Object.entries(map)) {
+    consumed.add(key);
+    const value = fields[key];
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text === '') continue;
+    entries.push(`${name}=${text}`);
+  }
+  if (fields.track !== null && fields.track !== undefined && fields.track !== '') {
+    entries.push(`TRACKNUMBER=${String(fields.track).trim()}`);
+  }
+  const extras = Object.keys(fields)
+    .filter((key) => !consumed.has(key))
+    .sort();
+  for (const key of extras) {
+    const value = fields[key];
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text === '') continue;
+    entries.push(`${key.toUpperCase()}=${text}`);
+  }
+
+  const entryBufs = entries.map((entry) => {
+    const data = Buffer.from(entry, 'utf8');
+    const out = Buffer.alloc(4 + data.length);
+    out.writeUInt32LE(data.length, 0);
+    data.copy(out, 4);
+    return out;
+  });
+  const totalEntries = entryBufs.reduce((sum, b) => sum + b.length, 0);
+  const packet = Buffer.alloc(
+    1 + 6 + 4 + vendorBuf.length + 4 + totalEntries + 1
+  );
+  let cursor = 0;
+  packet[cursor++] = 0x03;
+  packet.write('vorbis', cursor, 'ascii');
+  cursor += 6;
+  packet.writeUInt32LE(vendorBuf.length, cursor);
+  cursor += 4;
+  vendorBuf.copy(packet, cursor);
+  cursor += vendorBuf.length;
+  packet.writeUInt32LE(entryBufs.length, cursor);
+  cursor += 4;
+  for (const entry of entryBufs) {
+    entry.copy(packet, cursor);
+    cursor += entry.length;
+  }
+  packet[cursor++] = 0x01; // framing bit
+  return packet;
+}
+
+/** Build one Ogg page carrying `packets`. The segment table records
+ *  packet boundaries. `headerType` bits: 0x02 for BOS, 0x04 for EOS.
+ *  Throws when the packets together require more than 255 segments
+ *  (the per-page limit). */
+export function buildOggPage(packets, { headerType, granule, serial, sequence }) {
+  const segments = [];
+  const payloadChunks = [];
+  for (const packet of packets) {
+    let remaining = packet.length;
+    let offset = 0;
+    while (remaining >= 255) {
+      segments.push(255);
+      payloadChunks.push(packet.subarray(offset, offset + 255));
+      remaining -= 255;
+      offset += 255;
+    }
+    segments.push(remaining);
+    payloadChunks.push(packet.subarray(offset, offset + remaining));
+  }
+  if (segments.length > 255) {
+    throw new Error(
+      `ogg: ${segments.length} segments would exceed the 255-segment ` +
+      'per-page limit'
+    );
+  }
+  const payload = Buffer.concat(payloadChunks);
+  const page = Buffer.alloc(27 + segments.length + payload.length);
+  page.write('OggS', 0, 'ascii');
+  page[4] = 0; // version
+  page[5] = headerType & 0xff;
+  // 8-byte granule. Header pages use 0; we accept either a Buffer
+  // (copy verbatim) or a number/bigint (write as LE 64-bit).
+  if (Buffer.isBuffer(granule)) {
+    granule.copy(page, 6, 0, Math.min(8, granule.length));
+  }
+  // else stays zero.
+  page.writeUInt32LE(serial >>> 0, 14);
+  page.writeUInt32LE(sequence >>> 0, 18);
+  // CRC stays zero in the buffer; we compute and overwrite next.
+  page[26] = segments.length;
+  for (let i = 0; i < segments.length; i++) page[27 + i] = segments[i];
+  payload.copy(page, 27 + segments.length);
+  page.writeUInt32LE(oggCrc32(page), 22);
+  return page;
+}
+
+/** Patch the sequence number of an Ogg page in place and recompute
+ *  its CRC. Used when our re-emitted header pages don't match the
+ *  original header page count and the audio pages need to be
+ *  renumbered. */
+function patchOggPageSequence(buf, pageStart, pageEnd, newSequence) {
+  // The page header is 27 bytes + segment table. Sequence at +18,
+  // CRC at +22. The whole page (with CRC zeroed) is the CRC input.
+  buf.writeUInt32LE(newSequence >>> 0, pageStart + 18);
+  // Zero CRC for re-computation.
+  buf.writeUInt32LE(0, pageStart + 22);
+  const crc = oggCrc32(buf.subarray(pageStart, pageEnd));
+  buf.writeUInt32LE(crc, pageStart + 22);
+}
+
+/** Serialise a complete Ogg Vorbis file with new metadata. Throws
+ *  when the file isn't a valid Vorbis stream (missing pages, missing
+ *  identification/comment/setup packets, multi-stream Ogg, …). */
+export function serialiseOGG(buf, fields) {
+  const pages = listOggPages(buf);
+  if (pages.length === 0) throw new Error('ogg: no pages found');
+  if ((pages[0].headerType & 0x02) === 0) {
+    throw new Error('ogg: first page is not BOS');
+  }
+  // Multi-stream Ogg (chained or grouped streams) — we only handle
+  // single-bitstream Vorbis files. Detect by serial number changes.
+  const serial = pages[0].serial;
+  for (const page of pages) {
+    if (page.serial !== serial) {
+      throw new Error('ogg: multi-bitstream files are unsupported');
+    }
+  }
+
+  const headerPackets = readOggPackets(buf, pages, 3);
+  if (headerPackets.length < 3) {
+    throw new Error('ogg: stream has fewer than 3 logical packets');
+  }
+  const [idPacket, , setupPacket] = headerPackets;
+  if (idPacket.bytes.length < 7 || idPacket.bytes[0] !== 0x01) {
+    throw new Error('ogg: first packet is not a Vorbis identification packet');
+  }
+
+  // Preserve the original vendor string when present so round-trips
+  // through a third-party tool don't churn the bytes unnecessarily.
+  const originalComment = headerPackets[1].bytes;
+  let vendor = 'jmacs';
+  if (originalComment.length > 11 && originalComment[0] === 0x03) {
+    const vendorLen = originalComment.readUInt32LE(7);
+    if (7 + 4 + vendorLen <= originalComment.length) {
+      vendor = originalComment.subarray(11, 11 + vendorLen).toString('utf8');
+    }
+  }
+  const newComment = buildVorbisCommentPacket(fields, { vendor });
+
+  // Page 0: identification packet (BOS). Re-emit so its sequence
+  // (always 0) is canonical. The identification packet's bytes are
+  // copied verbatim from the original.
+  const newPage0 = buildOggPage([idPacket.bytes], {
+    headerType: 0x02,
+    granule: Buffer.alloc(8),
+    serial,
+    sequence: 0,
+  });
+
+  // Pages 1..: new comment + setup packet. Try to fit in one page;
+  // expand to multiple if necessary.
+  const newHeaderPages = [];
+  newHeaderPages.push(newPage0);
+  // Compute segment count for both packets combined.
+  const combinedSegmentCount =
+    Math.floor(newComment.length / 255) + 1 +
+    Math.floor(setupPacket.bytes.length / 255) + 1;
+  if (combinedSegmentCount <= 255) {
+    newHeaderPages.push(buildOggPage([newComment, setupPacket.bytes], {
+      headerType: 0x00,
+      granule: Buffer.alloc(8),
+      serial,
+      sequence: 1,
+    }));
+  } else {
+    newHeaderPages.push(buildOggPage([newComment], {
+      headerType: 0x00,
+      granule: Buffer.alloc(8),
+      serial,
+      sequence: 1,
+    }));
+    newHeaderPages.push(buildOggPage([setupPacket.bytes], {
+      headerType: 0x00,
+      granule: Buffer.alloc(8),
+      serial,
+      sequence: 2,
+    }));
+  }
+
+  const audioFirstPageIndex = headerPackets[2].endPageIndex + 1;
+  const audioStartByte =
+    audioFirstPageIndex < pages.length
+      ? pages[audioFirstPageIndex].start
+      : buf.length;
+  const audioBytes = Buffer.from(buf.subarray(audioStartByte));
+  // Patch audio page sequence numbers when our new header count
+  // doesn't match the original. The first audio page sequence
+  // we want is `newHeaderPages.length`; the original was
+  // `audioFirstPageIndex` (which is also the count of original
+  // header pages).
+  const desiredFirstAudioSeq = newHeaderPages.length;
+  const originalFirstAudioSeq = audioFirstPageIndex;
+  if (desiredFirstAudioSeq !== originalFirstAudioSeq) {
+    // Walk audio pages in `audioBytes` and re-sequence + re-CRC each.
+    const audioPages = listOggPages(audioBytes);
+    let seq = desiredFirstAudioSeq;
+    for (const page of audioPages) {
+      patchOggPageSequence(audioBytes, page.start, page.end, seq);
+      seq += 1;
+    }
+  }
+
+  return Buffer.concat([...newHeaderPages, audioBytes]);
+}
+
+/** Read the file at `path`, rewrite it with new metadata, atomically
+ *  rename into place. */
+export function writeOGGSync(path, fields) {
+  try {
+    const buf = readFileSync(path);
+    const newBuf = serialiseOGG(buf, fields);
     writeAtomic(path, newBuf);
     return { ok: true };
   } catch (error) {

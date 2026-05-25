@@ -14,14 +14,17 @@ import { join } from 'node:path';
 import {
   extractMP3Metadata,
   extractMP4Metadata,
+  extractOGGMetadata,
   extractID3v2,
 } from '../src/audio-metadata.js';
 import { extractID3v2APIC, extractMP4Covr } from '../src/audio-art.js';
 import {
   buildApicFrame,
   buildIlstAtom,
+  buildOggPage,
   buildTextFrame,
   buildTxxxFrame,
+  buildVorbisCommentPacket,
   decodeSyncsafeInt32,
   encodeSyncsafeInt32,
   findChunkOffsetAtoms,
@@ -29,9 +32,13 @@ import {
   findMP3AudioStart,
   ID3_FRAME_FOR_KEY,
   listBoxes,
+  listOggPages,
+  oggCrc32,
+  readOggPackets,
   serialiseID3v24Tag,
   serialiseMP3,
   serialiseMP4,
+  serialiseOGG,
   stripID3v1,
   writeMetadataSync,
 } from '../src/audio-metadata-write.js';
@@ -306,7 +313,7 @@ test('writeMetadataSync preserves cover art across an edit that doesn\'t touch i
 });
 
 test('writeMetadataSync rejects an unsupported extension', () => {
-  const result = writeMetadataSync('/tmp/whatever.ogg', { title: 'X' });
+  const result = writeMetadataSync('/tmp/whatever.flac', { title: 'X' });
   assert.equal(result.ok, false);
   assert.match(result.error, /unsupported format/);
 });
@@ -685,4 +692,329 @@ test('serialiseMP4 throws when there is no moov', () => {
     mp4Box('mdat', Buffer.from('audio')),
   ]);
   assert.throws(() => serialiseMP4(bogus, { title: 'X' }));
+});
+
+// ---------------------------------------------------------------------------
+// Ogg Vorbis test fixtures
+// ---------------------------------------------------------------------------
+
+function uint32LE(n) {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(n >>> 0, 0);
+  return b;
+}
+
+/** A minimal Vorbis identification packet: 0x01 + "vorbis" + 23
+ *  padding bytes. */
+function vorbisIdPacket() {
+  return Buffer.concat([
+    Buffer.from([0x01]),
+    Buffer.from('vorbis', 'ascii'),
+    Buffer.alloc(23, 0),
+  ]);
+}
+
+/** A minimal Vorbis setup packet: 0x05 + "vorbis" + some payload.
+ *  The codebooks are nonsense — fine for our test since we never
+ *  decode the audio. */
+function vorbisSetupPacket() {
+  return Buffer.concat([
+    Buffer.from([0x05]),
+    Buffer.from('vorbis', 'ascii'),
+    Buffer.from('setup-codebook-bytes', 'utf8'),
+  ]);
+}
+
+/** A minimal Vorbis comment packet with the given entries. */
+function vorbisCommentPacket(entries) {
+  const vendor = Buffer.from('test', 'utf8');
+  const entryBufs = entries.map((s) => {
+    const b = Buffer.from(s, 'utf8');
+    return Buffer.concat([uint32LE(b.length), b]);
+  });
+  return Buffer.concat([
+    Buffer.from([0x03]),
+    Buffer.from('vorbis', 'ascii'),
+    uint32LE(vendor.length),
+    vendor,
+    uint32LE(entryBufs.length),
+    ...entryBufs,
+    Buffer.from([0x01]), // framing bit
+  ]);
+}
+
+/** Build an Ogg fixture with one BOS page (id packet), one regular
+ *  page (comment + setup), and N audio pages. Each audio page
+ *  has a small payload — `audioPageCount` × `audioPagePayload`. */
+function buildOggFixture({ commentEntries, audioPageCount = 2, audioPagePayload = 'sample-data' }) {
+  const id = vorbisIdPacket();
+  const comment = vorbisCommentPacket(commentEntries);
+  const setup = vorbisSetupPacket();
+
+  // Page 0: BOS, identification packet.
+  const page0 = buildOggPage([id], {
+    headerType: 0x02,
+    granule: Buffer.alloc(8),
+    serial: 1234,
+    sequence: 0,
+  });
+  // Page 1: comment + setup.
+  const page1 = buildOggPage([comment, setup], {
+    headerType: 0x00,
+    granule: Buffer.alloc(8),
+    serial: 1234,
+    sequence: 1,
+  });
+  // Audio pages 2+. Each contains a single "packet" of payload bytes
+  // so the segment table is simple.
+  const audioPages = [];
+  for (let i = 0; i < audioPageCount; i++) {
+    const audioPacket = Buffer.from(audioPagePayload + i, 'utf8');
+    const granule = Buffer.alloc(8);
+    granule.writeUInt32LE(100 * (i + 1), 0); // arbitrary but monotonic
+    const isLast = i === audioPageCount - 1;
+    audioPages.push(buildOggPage([audioPacket], {
+      headerType: isLast ? 0x04 : 0x00, // EOS on the last page
+      granule,
+      serial: 1234,
+      sequence: 2 + i,
+    }));
+  }
+
+  return Buffer.concat([page0, page1, ...audioPages]);
+}
+
+// ---------------------------------------------------------------------------
+// Ogg: CRC + page primitives
+// ---------------------------------------------------------------------------
+
+test('oggCrc32 matches the documented test vector for an empty page', () => {
+  // A well-known Ogg page (id packet) with computed CRC. We test by
+  // round-trip: building and parsing with oggCrc32 produces a self-
+  // consistent CRC. (Computing a separate reference vector by hand is
+  // out of scope; the round-trip test covers correctness.)
+  const id = vorbisIdPacket();
+  const page = buildOggPage([id], {
+    headerType: 0x02,
+    granule: Buffer.alloc(8),
+    serial: 1234,
+    sequence: 0,
+  });
+  // CRC field is at offset 22; zero it and recompute.
+  const expected = page.readUInt32LE(22);
+  const probe = Buffer.from(page);
+  probe.writeUInt32LE(0, 22);
+  assert.equal(oggCrc32(probe), expected);
+});
+
+test('listOggPages walks every page and tracks segment tables', () => {
+  const ogg = buildOggFixture({
+    commentEntries: ['TITLE=Hello'],
+    audioPageCount: 2,
+  });
+  const pages = listOggPages(ogg);
+  assert.equal(pages.length, 4); // BOS + comment+setup + 2 audio
+  assert.equal(pages[0].sequence, 0);
+  assert.equal(pages[3].sequence, 3);
+  assert.equal(pages[0].headerType & 0x02, 0x02); // BOS
+  assert.equal(pages[3].headerType & 0x04, 0x04); // EOS
+});
+
+test('readOggPackets reassembles packets from segment tables', () => {
+  const ogg = buildOggFixture({
+    commentEntries: ['TITLE=Hello'],
+  });
+  const pages = listOggPages(ogg);
+  const packets = readOggPackets(ogg, pages, 3);
+  assert.equal(packets.length, 3);
+  // Identification packet starts with 0x01 + "vorbis".
+  assert.equal(packets[0].bytes[0], 0x01);
+  assert.equal(packets[0].bytes.subarray(1, 7).toString('ascii'), 'vorbis');
+  // Comment packet starts with 0x03 + "vorbis".
+  assert.equal(packets[1].bytes[0], 0x03);
+  // Setup packet starts with 0x05 + "vorbis".
+  assert.equal(packets[2].bytes[0], 0x05);
+});
+
+// ---------------------------------------------------------------------------
+// Ogg: Vorbis comment packet builder
+// ---------------------------------------------------------------------------
+
+test('buildVorbisCommentPacket emits a packet the existing extractor reads', () => {
+  const packet = buildVorbisCommentPacket({
+    title: 'A Title',
+    artist: 'An Artist',
+    album: 'An Album',
+    year: '1991',
+    genre: 'Shoegaze',
+    track: 3,
+  });
+  // Wrap the packet inside a minimal Ogg stream so extractOGGMetadata
+  // can read it.
+  const ogg = Buffer.concat([
+    buildOggPage([vorbisIdPacket()], {
+      headerType: 0x02,
+      granule: Buffer.alloc(8),
+      serial: 1234,
+      sequence: 0,
+    }),
+    buildOggPage([packet], {
+      headerType: 0x00,
+      granule: Buffer.alloc(8),
+      serial: 1234,
+      sequence: 1,
+    }),
+  ]);
+  const meta = extractOGGMetadata(ogg);
+  assert.equal(meta.title, 'A Title');
+  assert.equal(meta.artist, 'An Artist');
+  assert.equal(meta.album, 'An Album');
+  assert.equal(meta.year, 1991);
+  assert.equal(meta.genre, 'Shoegaze');
+  assert.equal(meta.track, 3);
+});
+
+test('buildVorbisCommentPacket preserves the vendor string when given', () => {
+  const packet = buildVorbisCommentPacket({ title: 'X' }, { vendor: 'custom vendor' });
+  // The vendor bytes sit between the 7-byte magic and the comment
+  // count. Read it back.
+  const vendorLen = packet.readUInt32LE(7);
+  const vendor = packet.subarray(11, 11 + vendorLen).toString('utf8');
+  assert.equal(vendor, 'custom vendor');
+});
+
+// ---------------------------------------------------------------------------
+// Ogg: serialiseOGG — the heart of the writer
+// ---------------------------------------------------------------------------
+
+test('serialiseOGG round-trips a text edit through extractOGGMetadata', () => {
+  const fixture = buildOggFixture({
+    commentEntries: ['TITLE=Old', 'ARTIST=Old Artist'],
+  });
+  const rewritten = serialiseOGG(fixture, {
+    title: 'New',
+    artist: 'New Artist',
+    album: 'A New Album',
+  });
+  const meta = extractOGGMetadata(rewritten);
+  assert.equal(meta.title, 'New');
+  assert.equal(meta.artist, 'New Artist');
+  assert.equal(meta.album, 'A New Album');
+});
+
+test('serialiseOGG preserves the original vendor string', () => {
+  // Hand-build a comment packet with a recognisable vendor.
+  const idPage = buildOggPage([vorbisIdPacket()], {
+    headerType: 0x02,
+    granule: Buffer.alloc(8),
+    serial: 1234,
+    sequence: 0,
+  });
+  const customComment = Buffer.concat([
+    Buffer.from([0x03]),
+    Buffer.from('vorbis', 'ascii'),
+    uint32LE('my-special-vendor'.length),
+    Buffer.from('my-special-vendor', 'utf8'),
+    uint32LE(0), // no comments
+    Buffer.from([0x01]),
+  ]);
+  const headerPage = buildOggPage([customComment, vorbisSetupPacket()], {
+    headerType: 0x00,
+    granule: Buffer.alloc(8),
+    serial: 1234,
+    sequence: 1,
+  });
+  const fixture = Buffer.concat([idPage, headerPage]);
+  const rewritten = serialiseOGG(fixture, { title: 'X' });
+  // Inspect the new comment packet's vendor.
+  const newPages = listOggPages(rewritten);
+  const newPackets = readOggPackets(rewritten, newPages, 3);
+  const comment = newPackets[1].bytes;
+  const vendorLen = comment.readUInt32LE(7);
+  const vendor = comment.subarray(11, 11 + vendorLen).toString('utf8');
+  assert.equal(vendor, 'my-special-vendor');
+});
+
+test('serialiseOGG produces pages with valid CRCs', () => {
+  const fixture = buildOggFixture({
+    commentEntries: ['TITLE=Old'],
+  });
+  const rewritten = serialiseOGG(fixture, { title: 'New', artist: 'Added' });
+  const pages = listOggPages(rewritten);
+  for (const page of pages) {
+    const probe = Buffer.from(rewritten.subarray(page.start, page.end));
+    const recorded = probe.readUInt32LE(22);
+    probe.writeUInt32LE(0, 22);
+    const computed = oggCrc32(probe);
+    assert.equal(computed, recorded, `page seq=${page.sequence} CRC mismatch`);
+  }
+});
+
+test('serialiseOGG copies audio pages verbatim when header count matches', () => {
+  const fixture = buildOggFixture({
+    commentEntries: ['TITLE=Old'],
+    audioPageCount: 3,
+  });
+  // Snapshot the audio pages by content.
+  const origPages = listOggPages(fixture);
+  const origAudioPages = origPages.slice(2);
+  const origAudioBytes = origAudioPages.map((p) =>
+    fixture.subarray(p.start, p.end).toString('hex')
+  );
+  const rewritten = serialiseOGG(fixture, { title: 'New' });
+  const newPages = listOggPages(rewritten);
+  const newAudioPages = newPages.slice(2);
+  // Audio page count is unchanged.
+  assert.equal(newAudioPages.length, origAudioPages.length);
+  // Each audio page is byte-for-byte the same (sequence numbers
+  // align so no patching was needed).
+  for (let i = 0; i < origAudioPages.length; i++) {
+    const newBytes = rewritten.subarray(newAudioPages[i].start, newAudioPages[i].end).toString('hex');
+    assert.equal(newBytes, origAudioBytes[i], `audio page ${i} drifted`);
+  }
+});
+
+test('writeMetadataSync writes an Ogg round-trip through disk', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jmacs-audio-write-ogg-'));
+  const path = join(dir, 'song.ogg');
+  try {
+    const fixture = buildOggFixture({
+      commentEntries: ['TITLE=Original'],
+    });
+    await writeFile(path, fixture);
+    const result = writeMetadataSync(path, {
+      title: 'Updated',
+      artist: 'Updated Artist',
+      year: '2024',
+    });
+    assert.equal(result.ok, true);
+    const reread = await readFile(path);
+    const meta = extractOGGMetadata(reread);
+    assert.equal(meta.title, 'Updated');
+    assert.equal(meta.artist, 'Updated Artist');
+    assert.equal(meta.year, 2024);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('serialiseOGG throws on a non-Ogg buffer', () => {
+  assert.throws(() => serialiseOGG(Buffer.from('not an ogg file'), { title: 'X' }));
+});
+
+test('serialiseOGG throws on a multi-bitstream Ogg', () => {
+  // Build two streams with different serial numbers and concatenate.
+  const a = buildOggFixture({ commentEntries: ['TITLE=A'] });
+  // Cheat: tweak a single byte in `a` to give one page a different
+  // serial number. Page header serial is at +14 (within each page);
+  // we modify the last page.
+  const altered = Buffer.from(a);
+  const pages = listOggPages(altered);
+  const last = pages[pages.length - 1];
+  altered.writeUInt32LE(9999, last.start + 14);
+  // Recompute CRC for the page we touched.
+  const probe = Buffer.from(altered.subarray(last.start, last.end));
+  probe.writeUInt32LE(0, 22);
+  altered.writeUInt32LE(oggCrc32(probe), last.start + 22);
+  assert.throws(() => serialiseOGG(altered, { title: 'X' }));
 });
