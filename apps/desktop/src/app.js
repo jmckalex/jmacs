@@ -210,6 +210,10 @@ function mountView(kind) {
   jukeboxView.element.style.display = kind === 'jukebox' ? '' : 'none';
   audioView.element.style.display = kind === 'audio' ? '' : 'none';
   videoView.element.style.display = kind === 'video' ? '' : 'none';
+  // Audio buffers fit their pane to their content (see the
+  // `body.audio-buffer-active` rules in styles.css); the REPL pane
+  // grows to fill the slack.
+  document.body.classList.toggle('audio-buffer-active', kind === 'audio');
   // Pause the standalone media players on unmount — the jukebox owns
   // the shared audio controller and looks after itself.
   if (kind !== 'audio') audioView.setBuffer(null);

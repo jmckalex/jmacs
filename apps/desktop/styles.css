@@ -1281,6 +1281,37 @@ textarea.customize-widget {
   overflow: hidden;
 }
 
+/* When the current buffer is an audio buffer, the workspace shrinks
+   vertically to fit the audio view's natural content height and the
+   REPL pane claims the slack — far less wasted dark space below the
+   play controls than the default fill-the-pane layout. The body class
+   is toggled by `mountView` in app.js. The repl splitter is hidden in
+   this mode because the editor pane no longer has a slack to give. */
+body.audio-buffer-active .workspace {
+  flex: 0 0 auto;
+}
+
+body.audio-buffer-active #repl-host {
+  flex: 1 1 auto;
+}
+
+body.audio-buffer-active #repl-splitter {
+  display: none;
+}
+
+body.audio-buffer-active .audio-view {
+  height: auto;
+}
+
+body.audio-buffer-active .audio-meta {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+body.audio-buffer-active .audio-player {
+  margin-top: 12px;
+}
+
 .audio-layout {
   display: flex;
   align-items: stretch;
