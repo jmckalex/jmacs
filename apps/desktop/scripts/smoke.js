@@ -52,6 +52,14 @@ writeFileSync(
 /** A scratch directory the jukebox smoke arm seeds with fake audio files. */
 const jukeboxDir = join(tmpdir(), 'jmacs-smoke-jukebox');
 
+/** Scratch paths the media-views smoke arm opens through the file
+ *  dialog. The MP3 is a real ID3v2 tag plus a JPEG-sniffable picture
+ *  so the smoke confirms the metadata + album-art pipeline ran end-
+ *  to-end; the MP4 is a stub — the smoke checks the view mounts and
+ *  the src is wired, not that the codec plays. */
+const mediaAudioPath = join(tmpdir(), 'jmacs-smoke-media-audio.mp3');
+const mediaVideoPath = join(tmpdir(), 'jmacs-smoke-media-video.mp4');
+
 /** A minimal (not standards-perfect, but JPEG-sniffable) byte string
  *  the smoke uses as embedded album-art for the seeded MP3. The art
  *  parser sniffs the MIME from the SOI marker (`FF D8 FF`), so a few
@@ -148,6 +156,20 @@ function buildID3v23Tagged(title, artist, album, mime, picture) {
   ]);
 }
 
+// Seed the media-views fixtures: a fully tagged MP3 (so the audio
+// view's title/artist/album row and album-art panel exercise the
+// metadata + art pipelines end-to-end), and a stub MP4 (the smoke
+// asserts the view mounts and the src is wired — it doesn't care
+// that Electron can't decode the bytes).
+writeFileSync(
+  mediaAudioPath,
+  buildID3v23Tagged(
+    'Smoke Song', 'Smoke Artist', 'Smoke Album',
+    'image/jpeg', SAMPLE_JPEG_BYTES
+  )
+);
+writeFileSync(mediaVideoPath, Buffer.from([0, 0, 0, 0]));
+
 // Isolate the smoke run's config files (custom.lisp, init.lisp) in a
 // fresh temp directory, so it never touches the real user data dir.
 const configDir = join(tmpdir(), 'jmacs-smoke-config');
@@ -177,8 +199,11 @@ app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   protocol.handle('media', serveMediaFile);
   registerFileHandlers();
-  // The image-buffer check drives the real `file:open` path; with no
-  // way to click a native dialog, stub it to choose the scratch image.
+  // The image-buffer check drives the real `file:open` path; with
+  // no way to click a native dialog, stub it to choose the scratch
+  // image. The audio/video media-views arms drive `file:open-path`
+  // directly through `host.openFilePath`, so they don't need the
+  // dialog stub at all.
   dialog.showOpenDialog = async () => ({
     canceled: false,
     filePaths: [imagePath],
@@ -1491,6 +1516,144 @@ app.whenReady().then(() => {
       }));
       await rm(jukeboxDir, { recursive: true, force: true });
 
+      // Media views: opening an audio file (a tagged .mp3) mounts the
+      // audio view with the title, artist, album and album art drawn
+      // from the embedded tag; opening a video file (.mp4) mounts the
+      // video view with the filename and absolute path beneath the
+      // <video controls> element. `q` dismisses each. The smoke uses
+      // `open-file-path!` so the dialog stub (still pointing at the
+      // smoke image) stays out of the way.
+      const mediaViews = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+
+        // --- audio view ---
+        submit('(open-file-path! ${JSON.stringify(mediaAudioPath)})');
+        await wait(400);
+        await frame();
+        const audioView = document.querySelector('.audio-view');
+        const audioShown = !!(
+          audioView &&
+          getComputedStyle(audioView).display !== 'none' &&
+          getComputedStyle(document.querySelector('.editor')).display ===
+            'none'
+        );
+        const audioName =
+          document.getElementById('modeline-name')?.textContent ?? '';
+        const audioEl = audioView ? audioView.querySelector('audio.audio-player') : null;
+        const hasAudioEl = !!(audioEl && audioEl.getAttribute('src'));
+        const audioSrc = audioEl ? (audioEl.getAttribute('src') || '') : '';
+        // The embedded TIT2/TPE1/TALB frames must reach the title and
+        // metadata block.
+        const titleText = audioView
+          ? (audioView.querySelector('.audio-title')?.textContent ?? '')
+          : '';
+        const subtitleText = audioView
+          ? (audioView.querySelector('.audio-subtitle')?.textContent ?? '')
+          : '';
+        const metaText = audioView
+          ? Array.from(audioView.querySelectorAll('.audio-meta dd'))
+              .map((dd) => dd.textContent.trim())
+          : [];
+        const albumArt = audioView
+          ? audioView.querySelector('.audio-art-image')
+          : null;
+        const albumArtSrc = albumArt
+          ? (albumArt.getAttribute('src') || '')
+          : '';
+        // \`q\` on the focused view dismisses the buffer; the audio
+        // view should be hidden afterwards and the modeline back on a
+        // different buffer.
+        if (audioView) audioView.focus();
+        const target = audioView || document.body;
+        target.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'q', code: 'KeyQ',
+          bubbles: true, cancelable: true,
+        }));
+        await wait(150);
+        await frame();
+        const audioStillVisible =
+          !!audioView && audioView.style.display !== 'none';
+        const afterAudioKill =
+          document.getElementById('modeline-name')?.textContent ?? '';
+
+        // --- video view ---
+        submit('(open-file-path! ${JSON.stringify(mediaVideoPath)})');
+        await wait(400);
+        await frame();
+        const videoView = document.querySelector('.video-view');
+        const videoShown = !!(
+          videoView &&
+          getComputedStyle(videoView).display !== 'none' &&
+          getComputedStyle(document.querySelector('.editor')).display ===
+            'none'
+        );
+        const videoName =
+          document.getElementById('modeline-name')?.textContent ?? '';
+        const videoEl = videoView
+          ? videoView.querySelector('video.video-player')
+          : null;
+        const hasVideoEl = !!(videoEl && videoEl.getAttribute('src'));
+        const videoSrc = videoEl ? (videoEl.getAttribute('src') || '') : '';
+        const captionName = videoView
+          ? (videoView.querySelector('.video-name')?.textContent ?? '')
+          : '';
+        const captionPath = videoView
+          ? (videoView.querySelector('.video-path')?.textContent ?? '')
+          : '';
+        // \`q\` dismisses.
+        if (videoView) videoView.focus();
+        const videoTarget = videoView || document.body;
+        videoTarget.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'q', code: 'KeyQ',
+          bubbles: true, cancelable: true,
+        }));
+        await wait(150);
+        await frame();
+        const videoStillVisible =
+          !!videoView && videoView.style.display !== 'none';
+        const afterVideoKill =
+          document.getElementById('modeline-name')?.textContent ?? '';
+
+        return {
+          audioShown, audioName, hasAudioEl, audioSrc,
+          titleText, subtitleText, metaText, albumArtSrc,
+          audioStillVisible, afterAudioKill,
+          videoShown, videoName, hasVideoEl, videoSrc,
+          captionName, captionPath,
+          videoStillVisible, afterVideoKill,
+        };
+      })()`);
+      console.log('  mediaViews:', JSON.stringify({
+        audio: {
+          shown: mediaViews.audioShown,
+          name: mediaViews.audioName,
+          srcPrefix: mediaViews.audioSrc.slice(0, 30),
+          title: mediaViews.titleText,
+          subtitle: mediaViews.subtitleText,
+          metaRows: mediaViews.metaText.length,
+          albumArtIsDataUrl:
+            mediaViews.albumArtSrc.startsWith('data:image/'),
+          dismissed: !mediaViews.audioStillVisible,
+        },
+        video: {
+          shown: mediaViews.videoShown,
+          name: mediaViews.videoName,
+          srcPrefix: mediaViews.videoSrc.slice(0, 30),
+          captionName: mediaViews.captionName,
+          dismissed: !mediaViews.videoStillVisible,
+        },
+      }));
+      await rm(mediaAudioPath, { force: true });
+      await rm(mediaVideoPath, { force: true });
+
       // Splitters: each drag updates a CSS custom property on the
       // document root, and the host persists the final value through
       // panes.json. The check programmatically drives pointer events
@@ -1747,6 +1910,33 @@ app.whenReady().then(() => {
         splitters.stored &&
         Math.abs((splitters.stored.previewWidth ?? 0) - previewWidth) < 3 &&
         Math.abs((splitters.stored.replHeight ?? 0) - replHeight) < 3;
+      // Media views arm: the audio view mounts with the embedded
+      // tag's title/artist/album reaching the title block and the
+      // metadata list, the album art ends up as a data: URL on the
+      // <img>, the <audio> element streams from a media:// URL, and
+      // `q` dismisses the buffer; the video view mounts with the
+      // filename in the caption, a media:// src on the <video>, and
+      // `q` dismisses too.
+      const mediaViewsOk =
+        mediaViews.audioShown &&
+        mediaViews.audioName.includes('jmacs-smoke-media-audio.mp3') &&
+        mediaViews.hasAudioEl &&
+        mediaViews.audioSrc.startsWith('media://') &&
+        mediaViews.titleText === 'Smoke Song' &&
+        mediaViews.subtitleText.includes('Smoke Artist') &&
+        mediaViews.subtitleText.includes('Smoke Album') &&
+        mediaViews.metaText.some((t) => t === 'Smoke Artist') &&
+        mediaViews.metaText.some((t) => t === 'Smoke Album') &&
+        mediaViews.albumArtSrc.startsWith('data:image/') &&
+        !mediaViews.audioStillVisible &&
+        !mediaViews.afterAudioKill.includes('jmacs-smoke-media-audio') &&
+        mediaViews.videoShown &&
+        mediaViews.videoName.includes('jmacs-smoke-media-video.mp4') &&
+        mediaViews.hasVideoEl &&
+        mediaViews.videoSrc.startsWith('media://') &&
+        mediaViews.captionName.includes('jmacs-smoke-media-video.mp4') &&
+        !mediaViews.videoStillVisible &&
+        !mediaViews.afterVideoKill.includes('jmacs-smoke-media-video');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -1754,7 +1944,7 @@ app.whenReady().then(() => {
         searchOk && paletteOk && treesitterOk && faceInfoOk && replaceOk &&
         mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
-        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && splittersOk
+        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk
       ) {
         finish(
           0,
@@ -1839,6 +2029,11 @@ app.whenReady().then(() => {
         );
       } else if (!jukeboxOk) {
         finish(1, `jukebox did not work (${JSON.stringify(jukebox)})`);
+      } else if (!mediaViewsOk) {
+        finish(
+          1,
+          `media views did not work (${JSON.stringify(mediaViews)})`
+        );
       } else {
         finish(1, `splitters did not work (${JSON.stringify(splitters)})`);
       }

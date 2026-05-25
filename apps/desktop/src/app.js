@@ -608,6 +608,31 @@ async function openImageByPath(filePath) {
   }
 }
 
+/**
+ * Open a file by an explicit path, dialog-free, routing it through
+ * the same logic the dialog path uses (image / audio / video / text).
+ * Used by the desktop smoke arm and available to Lisp as
+ * `open-file-path!`.
+ */
+async function openFileByPath(filePath) {
+  try {
+    const result = await window.host.openFilePath(filePath);
+    if (result === null) {
+      repl.appendError(`open-file-path: unreadable (${filePath})`);
+      return;
+    }
+    if (openAsMediaBufferIfRecognised(result)) return;
+    const buffer = createBuffer(result.content ?? '', { name: result.name });
+    buffer.filePath = result.path;
+    const metadata = await window.host.readMetadata(result.path);
+    if (metadata) buffer.metadata = metadata;
+    buffers.push(buffer);
+    switchToBuffer(buffers.length - 1);
+  } catch (error) {
+    repl.appendError(`open-file-path failed: ${error.message}`);
+  }
+}
+
 async function saveBufferInteractive() {
   const buffer = session.current;
   try {
@@ -967,6 +992,16 @@ const interpreter = createInterpreter({
       const filePath = expandTilde(String(args[0] ?? ''));
       if (filePath === '') return NIL;
       openImageByPath(filePath);
+      return NIL;
+    },
+    // Open any file at PATH through the dialog-free path, routing it
+    // through the same image / audio / video / text logic the dialog
+    // uses. The smoke arm calls this to mount audio/video buffers
+    // without a dialog stub; users can call it from the REPL too.
+    'open-file-path!': (args) => {
+      const filePath = expandTilde(String(args[0] ?? ''));
+      if (filePath === '') return NIL;
+      openFileByPath(filePath);
       return NIL;
     },
     'save-buffer!': () => {
