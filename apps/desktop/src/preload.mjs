@@ -201,4 +201,18 @@ contextBridge.exposeInMainWorld('host', {
    */
   audioMetadataSync: (path) =>
     ipcRenderer.sendSync('audio:metadata-sync', { path }),
+
+  /**
+   * Replace the tag metadata on `path` with `fields`. The host parses
+   * the file, mutates the in-memory model, and atomically rewrites
+   * the file. Returns `{ ok: true }` on success or `{ ok: false,
+   * error }` on any failure (unsupported format, read-only file,
+   * malformed input). Synchronous — same reason as
+   * `audioMetadataSync`.
+   *
+   * @param {string} path
+   * @param {object} fields
+   */
+  audioMetadataWriteSync: (path, fields) =>
+    ipcRenderer.sendSync('audio:metadata-write-sync', { path, fields }),
 });

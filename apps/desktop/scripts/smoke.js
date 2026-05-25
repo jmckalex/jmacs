@@ -1686,6 +1686,18 @@ app.whenReady().then(() => {
           ? (composerDd.querySelector('.audio-meta-value')?.textContent ?? '')
           : '';
 
+        // Disk verification: re-read the seeded MP3 through
+        // audioMetadataSync to confirm the edits reached the file.
+        // The ID3v2 writer rebuilds the whole tag, so a successful
+        // edit replaces the old values byte-for-byte. (The album
+        // row was removed; the artist was edited; composer was
+        // added via the plus pill — the sequence exercises the
+        // writer's three paths.)
+        const onDisk = window.host.audioMetadataSync(${JSON.stringify(mediaAudioPath)});
+        const diskArtist = onDisk?.artist ?? '';
+        const diskAlbum = onDisk?.album ?? null;
+        const diskTitle = onDisk?.title ?? '';
+
         // \`q\` on the focused view dismisses the buffer; the audio
         // view should be hidden afterwards and the modeline back on a
         // different buffer.
@@ -1749,6 +1761,7 @@ app.whenReady().then(() => {
           artistValueBefore, artistValueAfter,
           albumRemoved: !albumAfter,
           plusFormShownAfterClick, composerValue,
+          diskArtist, diskAlbum, diskTitle,
           audioStillVisible, afterAudioKill,
           videoShown, videoName, hasVideoEl, videoSrc,
           captionName, captionPath,
@@ -1777,6 +1790,11 @@ app.whenReady().then(() => {
           albumRemoved: mediaViews.albumRemoved,
           plusFormExpanded: mediaViews.plusFormShownAfterClick,
           composerAdded: mediaViews.composerValue,
+          onDisk: {
+            artist: mediaViews.diskArtist,
+            album: mediaViews.diskAlbum,
+            title: mediaViews.diskTitle,
+          },
           dismissed: !mediaViews.audioStillVisible,
         },
         video: {
