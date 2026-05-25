@@ -7,18 +7,36 @@
  * `<style>` element as CSS. When the JS or CSS highlighter is missing
  * (an unavoidable load failure), the inner range falls back to the
  * outer HTML face — see `../treesitter.js`.
+ *
+ * Sublime-Text-style coverage: comments, character entities, doctype,
+ * tag names (with the erroneous-end-tag variant so a `</wrong>` still
+ * paints), attribute names / values, and the structural punctuation
+ * `<`, `</`, `<!`, `>`, `/>` plus the `=` between an attribute name
+ * and its value.
  */
 
 import { registerLanguage } from '../language-registry.js';
 
 const QUERY = `
+  ; --- comments / text-level -------------------------------------------
+  (comment) @comment
+  (entity) @constant
+
+  ; --- tag names -------------------------------------------------------
   (tag_name) @tag
   (erroneous_end_tag_name) @tag
+
+  ; --- doctype ---------------------------------------------------------
   (doctype) @keyword
+
+  ; --- attributes ------------------------------------------------------
   (attribute_name) @constant
   (attribute_value) @string
-  (comment) @comment
-  [ "<" ">" "</" "/>" ] @paren
+  (quoted_attribute_value) @string
+
+  ; --- structural punctuation -----------------------------------------
+  [ "<" ">" "</" "/>" "<!" ] @paren
+  "=" @operator
 `;
 
 const INJECTION_QUERY = `
