@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatDuration } from '../src/audio-view.js';
+import { formatDuration, formatEditError } from '../src/audio-view.js';
 
 test('formatDuration formats seconds under a minute as M:SS', () => {
   assert.equal(formatDuration(0), '0:00');
@@ -37,4 +37,21 @@ test('formatDuration returns the empty string for non-finite inputs', () => {
   assert.equal(formatDuration(null), '');
   assert.equal(formatDuration(undefined), '');
   assert.equal(formatDuration('30'), '');
+});
+
+test('formatEditError prefixes a string error', () => {
+  assert.equal(formatEditError('read-only file'), 'editing failed: read-only file');
+});
+
+test('formatEditError pulls the message out of an Error', () => {
+  assert.equal(
+    formatEditError(new Error('write timed out')),
+    'editing failed: write timed out'
+  );
+});
+
+test('formatEditError falls back to a bare message on missing input', () => {
+  assert.equal(formatEditError(null), 'editing failed');
+  assert.equal(formatEditError(undefined), 'editing failed');
+  assert.equal(formatEditError({}), 'editing failed');
 });

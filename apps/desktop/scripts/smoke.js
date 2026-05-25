@@ -1559,8 +1559,13 @@ app.whenReady().then(() => {
           ? (audioView.querySelector('.audio-subtitle')?.textContent ?? '')
           : '';
         const metaText = audioView
-          ? Array.from(audioView.querySelectorAll('.audio-meta dd'))
-              .map((dd) => dd.textContent.trim())
+          ? Array.from(audioView.querySelectorAll('.audio-meta dd')).map((dd) => {
+              // Editable rows wrap their value in .audio-meta-value
+              // (next to the minus button); derived rows put the value
+              // directly in <dd>. Either way, read the value's text.
+              const valueEl = dd.querySelector('.audio-meta-value');
+              return (valueEl ? valueEl.textContent : dd.textContent).trim();
+            })
           : [];
         const albumArt = audioView
           ? audioView.querySelector('.audio-art-image')
@@ -1585,6 +1590,102 @@ app.whenReady().then(() => {
           audioLayoutStyle.flexShrink === '0' &&
           audioLayoutStyle.flexBasis === 'auto'
         );
+
+        // --- inline-edit affordances (agent-audio-edit-ui) ---
+        // Editable rows carry data-editable="true" + a .audio-meta-
+        // value span + a .audio-meta-minus button. Derived rows
+        // carry .audio-meta-derived. The plus-pill renders below the
+        // metadata list.
+        const editableDds = audioView
+          ? Array.from(audioView.querySelectorAll('.audio-meta dd[data-editable="true"]'))
+          : [];
+        const derivedDds = audioView
+          ? Array.from(audioView.querySelectorAll('.audio-meta dd.audio-meta-derived'))
+          : [];
+        const minusButtons = audioView
+          ? audioView.querySelectorAll('.audio-meta-minus').length
+          : 0;
+        const plusButton = audioView
+          ? audioView.querySelector('.audio-meta-plus-button')
+          : null;
+        const plusFormHiddenInitially = audioView
+          ? !!audioView.querySelector('.audio-meta-plus-form')?.hidden
+          : false;
+        const editableKeys = editableDds.map((dd) => dd.dataset.key).sort();
+
+        // Drive the inline-edit lifecycle: double-click the Artist
+        // value, type a new value, press Enter. The stubbed primitive
+        // returns success, so buffer.metadata updates and the row
+        // repaints with the new text.
+        const artistDd = audioView
+          ? audioView.querySelector('.audio-meta dd[data-key="artist"]')
+          : null;
+        const artistValueBefore = artistDd
+          ? (artistDd.querySelector('.audio-meta-value')?.textContent ?? '')
+          : '';
+        if (artistDd) {
+          artistDd.querySelector('.audio-meta-value').dispatchEvent(
+            new MouseEvent('dblclick', { bubbles: true, cancelable: true })
+          );
+        }
+        await frame();
+        const editingInput = audioView
+          ? audioView.querySelector('.audio-meta-input')
+          : null;
+        if (editingInput) {
+          editingInput.value = 'Edited Artist';
+          editingInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        const artistDdAfter = audioView
+          ? audioView.querySelector('.audio-meta dd[data-key="artist"]')
+          : null;
+        const artistValueAfter = artistDdAfter
+          ? (artistDdAfter.querySelector('.audio-meta-value')?.textContent ?? '')
+          : '';
+
+        // Minus button removes the album row.
+        const albumMinus = audioView
+          ? audioView.querySelector('.audio-meta dd[data-key="album"] .audio-meta-minus')
+          : null;
+        if (albumMinus) {
+          albumMinus.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        const albumAfter = audioView
+          ? audioView.querySelector('.audio-meta dd[data-key="album"]')
+          : null;
+
+        // Plus pill: click to expand, type a key+value, confirm.
+        if (plusButton) {
+          plusButton.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        const plusForm = audioView
+          ? audioView.querySelector('.audio-meta-plus-form')
+          : null;
+        const plusFormShownAfterClick = plusForm ? !plusForm.hidden : false;
+        if (plusForm) {
+          plusForm.querySelector('.audio-meta-plus-key').value = 'composer';
+          plusForm.querySelector('.audio-meta-plus-value').value = 'Smoke Composer';
+          plusForm.querySelector('.audio-meta-plus-confirm').dispatchEvent(
+            new MouseEvent('click', { bubbles: true, cancelable: true })
+          );
+        }
+        await frame();
+        const composerDd = audioView
+          ? audioView.querySelector('.audio-meta dd[data-key="composer"]')
+          : null;
+        const composerValue = composerDd
+          ? (composerDd.querySelector('.audio-meta-value')?.textContent ?? '')
+          : '';
+
         // \`q\` on the focused view dismisses the buffer; the audio
         // view should be hidden afterwards and the modeline back on a
         // different buffer.
@@ -1643,6 +1744,11 @@ app.whenReady().then(() => {
           audioShown, audioName, hasAudioEl, audioSrc,
           titleText, subtitleText, metaText, albumArtSrc,
           audioLayoutIsContentSized,
+          editableKeys, derivedCount: derivedDds.length, minusButtons,
+          plusButton: !!plusButton, plusFormHiddenInitially,
+          artistValueBefore, artistValueAfter,
+          albumRemoved: !albumAfter,
+          plusFormShownAfterClick, composerValue,
           audioStillVisible, afterAudioKill,
           videoShown, videoName, hasVideoEl, videoSrc,
           captionName, captionPath,
@@ -1660,6 +1766,17 @@ app.whenReady().then(() => {
           albumArtIsDataUrl:
             mediaViews.albumArtSrc.startsWith('data:image/'),
           layoutIsContentSized: mediaViews.audioLayoutIsContentSized,
+          editableKeys: mediaViews.editableKeys,
+          derivedCount: mediaViews.derivedCount,
+          minusButtons: mediaViews.minusButtons,
+          plusPresent: mediaViews.plusButton && mediaViews.plusFormHiddenInitially,
+          edited: {
+            before: mediaViews.artistValueBefore,
+            after: mediaViews.artistValueAfter,
+          },
+          albumRemoved: mediaViews.albumRemoved,
+          plusFormExpanded: mediaViews.plusFormShownAfterClick,
+          composerAdded: mediaViews.composerValue,
           dismissed: !mediaViews.audioStillVisible,
         },
         video: {

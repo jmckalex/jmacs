@@ -1479,6 +1479,27 @@ const interpreter = createInterpreter({
       set('duration', meta.duration);
       return map;
     },
+    // Stub writers. The real implementations land per-format in
+    // agent-audio-edit-id3v2 (MP3), agent-audio-edit-mp4 (M4A),
+    // agent-audio-edit-ogg. The view dispatches through these
+    // primitives so the wiring stays stable across the swap.
+    'set-audio-metadata!': (args) => {
+      const path = expandTilde(String(args[0] ?? ''));
+      const key = String(args[1] ?? '');
+      if (path === '' || key === '') return NIL;
+      const value = args[2] === undefined ? '' : String(args[2]);
+      // eslint-disable-next-line no-console
+      console.log(`[stub] set-audio-metadata! ${path} ${key}=${value}`);
+      return NIL;
+    },
+    'remove-audio-metadata!': (args) => {
+      const path = expandTilde(String(args[0] ?? ''));
+      const key = String(args[1] ?? '');
+      if (path === '' || key === '') return NIL;
+      // eslint-disable-next-line no-console
+      console.log(`[stub] remove-audio-metadata! ${path} ${key}`);
+      return NIL;
+    },
     'play-audio!': (args) => {
       audio.play(expandTilde(String(args[0])));
       return NIL;
@@ -2049,6 +2070,32 @@ const jukeboxView = createJukeboxView(
 );
 jukeboxView.element.style.display = 'none';
 
+/** Dispatch a metadata-edit Lisp primitive (`set-audio-metadata!` /
+ *  `remove-audio-metadata!`) on behalf of the audio view's inline-edit
+ *  UI. Returns the shape the view consumes: `{ ok: true }` on success,
+ *  `{ ok: false, error }` on failure. The view applies the resulting
+ *  change to `buffer.metadata` itself, so the primitive doesn't need
+ *  to round-trip the whole metadata object back. */
+function runMetadataEdit(primitiveName, buffer, key, value) {
+  if (!keymapReady) return { ok: false, error: 'interpreter not ready' };
+  if (!buffer || typeof buffer.filePath !== 'string') {
+    return { ok: false, error: 'no audio buffer' };
+  }
+  try {
+    if (value === undefined) {
+      interpreter.call(primitiveName, buffer.filePath, key);
+    } else {
+      interpreter.call(primitiveName, buffer.filePath, key, value);
+    }
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error.lispMessage ?? error.message ?? String(error),
+    };
+  }
+}
+
 // The audio view — the view a single `audio`-kind buffer is shown
 // through (opening one audio file from the dialog, not a directory).
 // Unlike the jukebox, this view owns its own <audio> element so a
@@ -2065,6 +2112,15 @@ const audioView = createAudioView(
         repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
       }
     },
+    // Inline-edit lifecycle. Wired to the stubbed metadata-write
+    // primitives — see `set-audio-metadata!` / `remove-audio-metadata!`
+    // below. The real writers (agent-audio-edit-id3v2 onwards) replace
+    // the stubs without touching the view.
+    onSetMetadata: ({ key, value, buffer }) =>
+      runMetadataEdit('set-audio-metadata!', buffer, key, value),
+    onRemoveMetadata: ({ key, buffer }) =>
+      runMetadataEdit('remove-audio-metadata!', buffer, key, undefined),
+    showError: (message) => repl.appendError(message),
   }
 );
 audioView.element.style.display = 'none';
