@@ -48,7 +48,7 @@
   (hash-map
    "--bg"           "#2b333b"
    "--bg-chrome"    "#262d34"
-   "--bg-editor"    "#303841"
+   "--bg-editor"    "#2e3842"
    "--bg-repl"      "#2b333b"
    "--fg"           "#d8dee9"
    "--fg-dim"       "#7c8f9e"
