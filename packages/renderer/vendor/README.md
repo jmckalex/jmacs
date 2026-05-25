@@ -27,6 +27,7 @@ by `src/treesitter.js`.
 | `tree-sitter-c.wasm` | `tree-sitter-c@0.24.1` | the C grammar |
 | `tree-sitter-cpp.wasm` | `tree-sitter-cpp@0.23.4` | the C++ grammar |
 | `tree-sitter-java.wasm` | `tree-sitter-java@0.23.5` | the Java grammar |
+| `tree-sitter-csharp.wasm` | `tree-sitter-c-sharp@0.23.5` | the C# grammar (renamed from `tree-sitter-c_sharp.wasm`) |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
