@@ -33,6 +33,7 @@ by `src/treesitter.js`.
 | `tree-sitter-yaml.wasm` | `@tree-sitter-grammars/tree-sitter-yaml@0.7.1` | the YAML grammar |
 | `tree-sitter-toml.wasm` | `@tree-sitter-grammars/tree-sitter-toml@0.7.0` | the TOML grammar |
 | `tree-sitter-haskell.wasm` | `tree-sitter-haskell@0.23.1` | the Haskell grammar |
+| `tree-sitter-ocaml.wasm` | `tree-sitter-ocaml@0.24.2` | the OCaml grammar |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
