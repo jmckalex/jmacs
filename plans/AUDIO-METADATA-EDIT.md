@@ -19,8 +19,7 @@ result written back to the file on disk.
 
 This document is the design for that work. It covers the user model,
 the editable-vs-derived split, the host-side writer architecture, the
-Lisp primitive surface, the per-format specifics (the hard part), and
-the sequencing of branches.
+Lisp primitive surface, and per-format serialiser notes.
 
 ## The user model
 
@@ -70,39 +69,69 @@ extensible iTunes-style atoms; Vorbis comments are user-extensible by
 spec. The user can add a `COMPOSER` tag if they want, and we'll write
 it.
 
-## Writer architecture — one writer per container
+## Shape — parser/serialiser pairs, symmetric and rebuilt
+
+The defining design decision: **every write rebuilds the file from
+scratch.** No in-place edits, no padding tricks, no "did the size
+change?" branches. The host-side flow for every mutation:
+
+1. Parse the file into an in-memory model.
+2. Mutate the model.
+3. Re-serialise the model into bytes.
+4. Atomic write (temp file + rename).
+
+This is symmetric with the existing readers. For each container we
+have a `parseX` already; we add a `serialiseX` that's its mirror.
+Round-trip — `parseX → serialiseX → parseX` — is the natural test.
+
+The cost is whole-file I/O on every edit (~30–100 ms on an SSD for a
+typical 3–15 MB music file). That's invisible to the user and
+irrelevant to anything else. The benefits are substantial:
+
+- One code path per format. No padding/no-padding/grew/shrank
+  branching. The MP4 `stco`/`co64` offsets are *outputs* of the
+  serialiser, not something to patch.
+- Cover-art editing falls out for free. Replacing a 500 KB cover is
+  the same code path as renaming an artist.
+- Each format writer is a parser/serialiser pair, testable in
+  isolation, round-trip-asserted, with one failure mode (write
+  failed).
+- The serialiser is the *spec* of what the file looks like. Reading
+  the serialiser tells you what bytes the writer can produce; it's
+  not buried under "did the optimisation fire".
+
+## Writer architecture
 
 A new file `apps/desktop/src/audio-metadata-write.js` (so the read
-path stays self-contained). The public surface:
+path stays self-contained). Public surface, symmetric with the
+extractors:
 
 ```js
 /**
- * Apply `changes` to the audio file at `path`.
+ * Write `metadata` to the audio file at `path`, replacing whatever
+ * tags existed. Derived fields (duration, file, format, path) are
+ * ignored if present.
  *
  * @param {string} path - Absolute path to the file.
- * @param {object} changes - { set: { artist: 'foo', ... },
- *                             remove: ['album', ...] }
+ * @param {object} metadata - The complete new metadata. Keys not
+ *   present are removed; keys present (with non-null values) are set.
  * @returns {{ ok: true } | { ok: false, error: string }}
  */
-export function writeMetadataSync(path, changes) { … }
+export function writeMetadataSync(path, metadata) { … }
 ```
 
 Dispatch by extension, parallel to `extractMetadata`:
 
-- `.mp3`              → `writeID3v2(path, changes)`
-- `.m4a` / `.mp4`     → `writeMP4Metadata(path, changes)`
-- `.ogg` / `.oga`     → `writeOGGMetadata(path, changes)`
+- `.mp3`              → `serialiseMP3(audioStream, metadata)`
+- `.m4a` / `.mp4`     → `serialiseMP4(atomTree, metadata)`
+- `.ogg` / `.oga`     → `serialiseOGG(streamPages, metadata)`
 - otherwise           → `{ ok: false, error: 'unsupported format' }`
 
-Each writer normalises the user-facing key (`artist`) to its
-container-specific frame ID (`TPE1` for ID3, `©ART` for MP4, `ARTIST`
-for Vorbis). The mapping table lives next to the dispatcher.
-
-The writer is **synchronous** — same as the extractors, same as the
-Lisp interpreter. Small writes are not a UI hazard; large rewrites
-(rare) are bounded by file size and disk speed and stay on the call
-stack rather than introducing a host-side Promise the Lisp side
-cannot await.
+Each serialiser takes the *parsed* file model plus the *new* metadata
+and produces a complete byte buffer. The caller (`writeMetadataSync`)
+writes that buffer to a temp file and renames it over the original.
+Rename is atomic on POSIX; on Windows we use `fs.rename` with the
+file closed.
 
 ## Lisp primitive surface
 
@@ -119,10 +148,14 @@ same way `audio-metadata` is registered today:
 (remove-audio-metadata! path key)
 ```
 
+Both are implemented as thin wrappers over `extractMetadataSync` +
+`writeMetadataSync`: read the current metadata, mutate, write. The
+read-modify-write happens inside the single primitive call, so the
+Lisp side sees an atomic operation.
+
 Keys are normalised user-facing names — `artist`, `album`, `track`,
-`year`, `genre`, `title` — mapped to the container's frame ID by the
-writer. The Lisp side never sees `TPE1` or `©ART`; the host hides
-that.
+`year`, `genre`, `title` — mapped to the container's frame ID inside
+the serialiser. The Lisp side never sees `TPE1` or `©ART`.
 
 Adding a non-standard tag uses the same primitive with an arbitrary
 key string. A keyword like `:composer` works as well as `"composer"`.
@@ -133,8 +166,8 @@ the view repaints from authoritative source after each write.
 
 ## Failure handling
 
-The host primitive catches the writer's errors and translates them
-into a Lisp condition the view's command can `try` around:
+The host primitive catches the serialiser's errors and translates
+them into a Lisp condition the view's command can `try` around:
 
 - `enoent` — file missing (deleted out from under us)
 - `eacces` — read-only file or permission denied
@@ -143,130 +176,111 @@ into a Lisp condition the view's command can `try` around:
 - `eparse` — the existing tag couldn't be parsed (the file is
   malformed or uses a feature we don't handle)
 
-The audio view's edit-commit handler reverts the UI on any error
-and writes `"editing failed: <msg>"` to the minibuffer.
+The audio view's edit-commit handler reverts the UI on any error and
+writes `"editing failed: <msg>"` to the minibuffer.
 
 On the Windows `ebusy` case: pause the `<audio>` element, drop its
 `src`, retry once. If the retry succeeds, restore the src and the
-playback position. This is a small per-format quirk worth handling
-because it's the single most likely failure on Windows.
+playback position. The audio view needs to expose a small
+`pauseAndRelease() / resumeFrom(time)` API for this — added alongside
+the UI work.
 
-## ID3v2 writer (the easy one)
+## MP3 / ID3v2 serialiser
 
-ID3v2 tags live at the start of an MP3 file. The structure:
+The MP3 file is `[ID3v2 tag][audio frames][optional ID3v1 tag]`. The
+parser already returns the audio-frames byte range; the serialiser
+emits:
 
-```
-'ID3' + version (2 bytes) + flags (1 byte) + size (4 syncsafe bytes)
-+ frames + padding (0x00…)
-```
-
-The size field is the size of frames + padding, in bytes. Padding is
-typically 0–2KB; iTunes writes ~2KB by default.
-
-The plan: parse the existing tag, modify the frames in memory, write
-back. Two output paths:
-
-- **In-place rewrite** if the new tag (frames + minimum padding) is
-  ≤ the old tag's reserved bytes. Patch the size field, write the
-  new frames, pad to the old size. Audio data after the tag is
-  untouched.
-- **Full rewrite** otherwise. Read the rest of the file (the audio
-  stream), write the new tag + a fresh 2KB padding, then write the
-  audio stream after. Atomic via temp-file + rename.
-
-90%+ of writes go through the in-place path because tag changes are
-small (a few bytes per frame).
+1. A fresh ID3v2.4 tag built from the new metadata (frames in any
+   order, since the spec is order-independent).
+2. 2 KB of `0x00` padding after the last frame (matches iTunes
+   convention; allows third-party tools to grow without rewriting).
+3. The audio frames verbatim from the parsed model.
+4. The ID3v1 tag (if present) verbatim — or we drop it; v1 is
+   superseded.
 
 Frame mapping is small and explicit:
 
 ```js
 const ID3_FRAME_FOR_KEY = {
-  artist: 'TPE1',
-  album:  'TALB',
-  title:  'TIT2',
-  track:  'TRCK',
-  year:   'TYER',  // 2.3 — 2.4 calls it TDRC
-  genre:  'TCON',
+  artist: 'TPE1', album:  'TALB', title:  'TIT2',
+  track:  'TRCK', year:   'TDRC', genre:  'TCON',
 };
 ```
 
-Custom keys (`composer`, etc.) map via a small lookup table or fall
-through to `TXXX:KEY=value` (the standard user-defined frame).
+(`TDRC` is the v2.4 recording-time frame; v2.3's `TYER` is auto-
+promoted on rewrite.) Custom keys map to `TXXX:KEY=value`, the
+standard user-defined frame. Cover art is `APIC`; we write whatever
+bytes the metadata model carries for `cover`.
 
-## MP4 writer (the hard one)
+Text encoding: UTF-8 (encoding byte `0x03`) throughout. ID3v2.4
+allows it; old tools that only read v2.3 see Latin-1 fallback through
+graceful degradation, which is the best we can offer without a
+multi-encoding model.
 
-MP4 metadata lives at `moov/udta/meta/ilst/<atom>`. The view's
-currently-displayed `.m4a` is a Jesus Jones track tagged in this
-format. Each `<atom>` is a 4-byte four-character code (`©nam`,
-`©ART`, `©alb`, `trkn`, `covr`, …) wrapping a `data` atom.
+## MP4 serialiser
 
-The core difficulty: **`stbl/stco` and `stbl/co64` carry absolute
-file offsets to chunks in `mdat`.** Resizing any box before `mdat`
-(including `moov` itself) shifts those offsets and every entry
-must be patched. Get this wrong and the file plays static.
+MP4 metadata lives at `moov/udta/meta/ilst/<atom>`. The serialiser
+takes the parsed atom tree, replaces `ilst`'s children, and writes
+the file out:
 
-Strategy, in order of preference:
+1. Build a new `ilst` atom from the metadata. Atom-per-tag:
+   - String tags (`©nam`, `©ART`, `©alb`, `©day`, `©gen`) wrap their
+     UTF-8 string in a `data` atom of type 1.
+   - `trkn` and `disk` wrap a binary `data` atom of type 0 with
+     `[reserved 16-bit][index 16-bit][total 16-bit][reserved 16-bit]`.
+   - `covr` wraps the image bytes in a `data` atom of type 13 (JPEG)
+     or 14 (PNG) per the sniffed MIME.
+   - Custom keys go in the iTunes-style `----` mean/name/data triplet.
+2. Splice the new `ilst` into the atom tree (replacing the old one).
+3. Walk the tree, emitting bytes. Each `mdat` chunk reference inside
+   `stbl/stco` (32-bit) or `stbl/co64` (64-bit) is written as the
+   chunk's *new* absolute byte offset — which the serialiser knows
+   because it's laying everything out.
+4. If any new offset crosses the 4 GB boundary, the affected `stco`
+   atom is promoted to `co64` (different atom type, 64-bit entries).
+   Otherwise the existing type is kept.
 
-1. **Same-size rewrite** — if the new ilst atom has the exact same
-   byte length as the old one, patch it in place. No offset shifts.
-2. **Eat or grow the `free` atom** — most MP4 files written by music
-   software include a `free` box of padding adjacent to `moov`. If
-   ilst grows by N bytes and `free` is at least N bytes, shrink `free`
-   by N and write moov + ilst + smaller-free. If ilst shrinks, grow
-   `free`. moov's total size is unchanged; mdat offsets are unchanged.
-3. **Full rewrite with offset recompute** — last resort. Build the
-   new moov atom, compute the byte delta between old and new moov,
-   walk every `stco`/`co64` entry in every track and add the delta,
-   then write the file: ftyp + new moov + mdat (verbatim from old).
-   Atomic via temp-file + rename.
-
-Step (2) handles iTunes-tagged files (~95% of consumer-grade `.m4a`
-files in the wild). Step (3) handles the rest.
+The pre-existing `mdat` bytes are copied verbatim — the serialiser
+never touches the audio data. It only rebuilds `moov` and the
+top-level box layout.
 
 Frame mapping:
 
 ```js
 const MP4_ATOM_FOR_KEY = {
-  artist: '\xa9ART',  // ©ART
-  album:  '\xa9alb',  // ©alb
-  title:  '\xa9nam',  // ©nam
-  track:  'trkn',
-  year:   '\xa9day',  // ©day
-  genre:  '\xa9gen',  // ©gen
+  artist: '\xa9ART', album:  '\xa9alb', title:  '\xa9nam',
+  track:  'trkn',    year:   '\xa9day', genre:  '\xa9gen',
+  cover:  'covr',
 };
 ```
 
-`trkn` is encoded specially (a binary atom carrying track-number and
-total-tracks as two 16-bit ints), as is `disk`. Strings use `data`
-atom type 1 (UTF-8). Cover art is `covr` and out of scope for v1
-of the writer — viewing it works; editing the art is a separate
-feature.
+The parser keeps the rest of the atom tree (`ftyp`, `mvhd`, `trak`,
+`mdia`, `mdat`, …) as opaque byte ranges so the serialiser can emit
+them unchanged. Only atoms inside `udta/meta` are mutated. This
+preserves codec config, track timing, and anything else we don't
+care about.
 
-## Ogg Vorbis writer (the fiddly one)
+## Ogg Vorbis serialiser
 
-An Ogg stream is a sequence of pages. Vorbis encodes its
-identification, comment, and setup packets at the start of the
-stream. The comment packet is what we care about. To rewrite:
+The serialiser takes the parsed page sequence and the new metadata,
+emits a complete Ogg stream:
 
-1. Find the comment packet — it spans one or more pages.
-2. Rebuild it: the new packet is `\x03vorbis` + vendor string +
-   user-comment list + framing bit.
-3. Repaginate. If the new packet size > old, push the setup packet
-   (and following pages) further along. Vorbis is robust to this
-   because pages carry their own granule positions and sequence
-   numbers — but the page boundaries must be re-checksummed.
-4. Recompute the CRC32 (custom polynomial, see RFC 3533) for each
-   modified page.
-5. Update sequence numbers if pages were added or removed.
-
-We need a small CRC32-Ogg implementation (~30 lines, table-driven).
-The packet rewrite is straightforward; the pagination is the
-fiddly bit, but the spec is precise.
+1. Build a new Vorbis comment packet: `\x03vorbis` + vendor string +
+   user-comment count + `KEY=VALUE` entries + framing bit.
+2. Re-paginate the stream from scratch. The first page carries the
+   identification packet (verbatim); subsequent pages carry the new
+   comment packet + the setup packet (verbatim).
+3. Recompute the per-page CRC32 (custom polynomial, RFC 3533).
+4. Renumber page sequence numbers from zero.
 
 Frame mapping is trivial — Vorbis comment field names are
 user-facing strings, case-insensitive, and the standard names are
-exactly what we use (`ARTIST`, `ALBUM`, `TITLE`, `TRACKNUMBER`,
-`DATE`, `GENRE`).
+exactly the user-facing ones (`ARTIST`, `ALBUM`, `TITLE`,
+`TRACKNUMBER`, `DATE`, `GENRE`).
+
+A small CRC32-Ogg implementation (~30 lines, table-driven) is the
+only piece of new infrastructure needed.
 
 ## UI flow inside the audio view
 
@@ -302,66 +316,65 @@ Each phase is its own branch off `main`, merged via `--no-ff`.
    The plus pill and minus button render; the inline edit lifecycle
    is complete; failures are simulated by alternating the fake
    primitive between success and failure. Lets us iterate on the
-   look and feel before any writer work lands.
-2. **agent-audio-edit-id3v2** — the ID3v2 writer + `set-audio-
-   metadata!` / `remove-audio-metadata!` for `.mp3` files only.
-   Other formats return `'unsupported format'`. Round-trip tests
-   live in `apps/desktop/test/audio-metadata-write.test.js`.
-3. **agent-audio-edit-mp4** — the MP4 writer for `.m4a` and `.mp4`.
-   Steps (1) and (2) of the strategy land first; step (3) (full
-   offset recompute) follows in the same branch only if the test
-   corpus needs it.
-4. **agent-audio-edit-ogg** — the Ogg Vorbis writer. Lowest
-   priority because the existing `.flac` / `.wav` extraction gap
-   (noted in the prior handover) suggests Ogg-family files are
-   rare in the architect's workflow.
+   look and feel before any writer work lands. Also lands the
+   `pauseAndRelease() / resumeFrom(time)` API on the audio view.
+2. **agent-audio-edit-id3v2** — the ID3v2 serialiser + the
+   `extractMetadataSync` + `writeMetadataSync` wiring for `.mp3`.
+   Round-trip tests in `apps/desktop/test/audio-metadata-write.test.js`
+   (parse → mutate → serialise → parse → assert). The Lisp primitive
+   gets registered here and the stubbed UI starts firing real writes.
+   Other formats still error `'unsupported format'`.
+3. **agent-audio-edit-mp4** — the MP4 serialiser for `.m4a` and
+   `.mp4`. Round-trip tests against a real iTunes-tagged fixture
+   (we can vendor one in `tests/fixtures/`).
+4. **agent-audio-edit-ogg** — the Ogg Vorbis serialiser. Lowest
+   priority because Ogg-family files are rare in the architect's
+   workflow.
 
 Each branch lands a smoke arm at the bottom of `scripts/smoke.js`
-that drives a round-trip through its writer.
+that drives a round-trip through its serialiser.
 
 ## Testing strategy
 
-For each writer, round-trip in three layers:
+The always-rewrite design makes round-tripping the natural test for
+every format. Three layers:
 
-- **Pure-host unit tests** in `apps/desktop/test/audio-metadata-
-  write.test.js`. Build a tagged file in memory, write through the
-  writer, re-extract with the existing reader, assert equality.
+- **Parser/serialiser round-trip.** Build a tagged file in memory,
+  parse it, immediately re-serialise without mutation, assert the
+  output equals the input byte-for-byte. This is the strictest
+  honesty test: it forces the parser to capture enough information
+  for the serialiser to reproduce.
+- **Read-modify-write round-trip.** Parse → mutate one field →
+  serialise → parse → assert the field changed and others didn't.
 - **Negative-path tests.** Read-only file → `eacces`. Missing file
-  → `enoent`. Malformed input → `eparse`. Unrecognised key → either
-  silent fallthrough (Vorbis) or `TXXX` (ID3) — either way, no
-  throw.
-- **Smoke arm** in `apps/desktop/scripts/smoke.js`. Seed a real
-  ID3v2-tagged MP3, mount it through the audio view, drive the UI
-  to change a tag, read the file back, assert the new value is on
-  disk. Same for MP4 and Ogg in their respective branches.
+  → `enoent`. Malformed input → `eparse`.
+
+Per-format smoke arms in `apps/desktop/scripts/smoke.js` exercise
+the full path: seed a tagged file on disk → mount via the audio view
+→ drive the UI to edit a tag → read the file back through `extract` →
+assert the new value is on disk.
 
 ## Risks and open questions
 
-- **Cover art editing** is out of scope. Viewing works; replacing
-  the embedded art would re-open every offset question and is its
-  own feature. Defer to a later branch.
-- **Lossy round-trips.** ID3v2 has multiple text-encoding choices
-  (Latin-1, UTF-16, UTF-8). The writer always writes UTF-8 (ID3v2.4)
-  or ISO-8859-1 (ID3v2.3) depending on the file's existing version,
-  to keep round-trips clean. Mojibake risk for files written by
-  ancient tools — flag in tests, not blocking.
-- **MP4 step (3) is real work.** If the iTunes-style padding
-  assumption holds for the architect's library (a quick survey can
-  confirm), step (3) might never be needed and the MP4 branch is
-  cheaper. Worth a 10-minute audit before committing to the full
-  rewrite path.
+- **Parser fidelity.** Round-trip-without-mutation must produce
+  identical bytes. The MP4 parser currently doesn't track the order
+  of unknown atoms or their exact byte ranges; the serialiser would
+  need a fallback "passthrough" representation for anything it
+  doesn't understand. This is the only material implementation cost
+  of the rewrite-everything design. Tractable; flagged so we don't
+  pretend it's free.
 - **Playback during write.** The audio view's `<audio>` element
-  holds the file open. On macOS/Linux that's fine; on Windows the
-  rename can fail. The plan is "pause, drop src, retry, restore"
-  but the audio view doesn't currently expose hooks for that.
-  Worth adding a method to the view's API in agent-audio-edit-ui.
-- **The audio-view caches its buffer's `metadata` field**, set
-  by the host when the buffer is created. Writes that succeed
-  need to update this cache or the view will paint stale values
-  the next time it mounts. The `with-audio-buffer-rewrite!` macro
-  handles this; the buffer-side mechanism (a setter on the buffer's
-  metadata) needs to land alongside the UI.
-- **Locale-sensitive sorting** of the metadata rows isn't a
-  problem today (the view renders in extraction order), but if we
-  start letting users add arbitrary keys the row order should
-  probably stabilise. Out of scope; flag if it bites.
+  holds the file open. macOS/Linux can rename a file out from under
+  an open handle; Windows can't. The `pauseAndRelease / resumeFrom`
+  API on the view in step 1 handles this. The host primitive calls
+  it before the temp-file rename.
+- **The audio-view caches its buffer's `metadata` field**, set by
+  the host when the buffer is created. Writes that succeed need to
+  update this cache or the view will paint stale values on the
+  next remount. The `with-audio-buffer-rewrite!` macro handles
+  this; the buffer-side mechanism (a setter on the buffer's
+  metadata) needs to land alongside the UI in step 1.
+- **Locale-sensitive sorting** of the metadata rows isn't a problem
+  today (the view renders in extraction order), but if we start
+  letting users add arbitrary keys the row order should probably
+  stabilise. Defer; flag if it bites.
