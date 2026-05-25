@@ -205,6 +205,33 @@ colour-swatch modal integration and live swatch preview. Wire the
 - `apps/desktop/src/files.js` — `faces:read` / `faces:write` IPC.
 - `apps/desktop/src/preload.mjs` — `host.readFaces` / `host.writeFaces`.
 
+## Inheritance (added 2026-05-24)
+
+A face can inherit from another with the `from` keyword between the
+name and the first kwarg:
+
+```lisp
+(defface 'link-visited from 'link
+  :doc "A visited hyperlink."
+  :default-light (face :foreground "#6c71c4")
+  :default-dark  (face :foreground "#c594c5"))
+```
+
+Single parent only (no multi-inheritance — keeps the semantics
+obvious). The parent chain is walked bottom-up: each face's
+`(default + user-overrides)` contribution is composed from the topmost
+ancestor down, with descendant attributes winning on conflict. As a
+consequence, a user override on a parent flows into any child that
+does not override the same attribute. Cycles (a `from`-chain that
+loops back to itself) raise a `face inheritance cycle: a -> b -> a`
+error at resolution time.
+
+The override-layer ordering in the section above becomes: for the
+queried face and each ancestor, `(built-in default → user global →
+user per-theme)`; ancestors layer under descendants. The built-in
+faces in `themes.lisp` are all independent — inheritance is offered as
+a capability for third-party language modules and user `init.lisp`.
+
 ## What's deliberately NOT in this plan
 
 - **Live theme editor** (build a theme from scratch in the UI). The
