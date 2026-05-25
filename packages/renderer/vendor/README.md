@@ -26,6 +26,7 @@ by `src/treesitter.js`.
 | `tree-sitter-markdown-inline.wasm` | `@tree-sitter-grammars/tree-sitter-markdown@0.3.2` | the Markdown inline grammar (built locally — see below) |
 | `tree-sitter-c.wasm` | `tree-sitter-c@0.24.1` | the C grammar |
 | `tree-sitter-cpp.wasm` | `tree-sitter-cpp@0.23.4` | the C++ grammar |
+| `tree-sitter-java.wasm` | `tree-sitter-java@0.23.5` | the Java grammar |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
