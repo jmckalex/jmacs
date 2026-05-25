@@ -44,6 +44,7 @@ by `src/treesitter.js`.
 | `tree-sitter-xml.wasm` | `tree-sitter-xml@1.0.0` | the XML grammar (built locally) |
 | `tree-sitter-graphql.wasm` | `tree-sitter-graphql@1.0.0` | the GraphQL grammar (built locally) |
 | `tree-sitter-kotlin.wasm` | `tree-sitter-kotlin@0.3.8` | the Kotlin grammar (built locally) |
+| `tree-sitter-swift.wasm` | `tree-sitter-swift@0.7.1` | the Swift grammar (built locally) |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
