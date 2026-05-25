@@ -95,7 +95,7 @@ build_clojure() {
 
 build_scheme() {
   build_grammar \
-    "${PNPM_STORE}/tree-sitter-scheme@1.0.0/node_modules/tree-sitter-scheme" \
+    "${PNPM_STORE}/@6cdh+tree-sitter-scheme@0.24.7-1/node_modules/@6cdh/tree-sitter-scheme" \
     scheme source.scheme tree-sitter-scheme.wasm
 }
 

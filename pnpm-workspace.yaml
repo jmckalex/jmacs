@@ -38,7 +38,7 @@ allowBuilds:
   tree-sitter-graphql: false
   tree-sitter-kotlin: false
   tree-sitter-nix: false
-  tree-sitter-scheme: false
+  '@6cdh/tree-sitter-scheme': false
   tree-sitter-swift: false
   tree-sitter-xml: false
   tree-sitter-zig: false

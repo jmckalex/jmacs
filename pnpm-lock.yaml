@@ -31,6 +31,9 @@ importers:
         specifier: ^18.0.4
         version: 18.0.4
     devDependencies:
+      '@6cdh/tree-sitter-scheme':
+        specifier: 0.24.7-1
+        version: 0.24.7-1
       '@derekstride/tree-sitter-sql':
         specifier: 0.3.11
         version: 0.3.11
@@ -112,9 +115,6 @@ importers:
       tree-sitter-rust:
         specifier: 0.24.0
         version: 0.24.0
-      tree-sitter-scheme:
-        specifier: 1.0.0
-        version: 1.0.0
       tree-sitter-swift:
         specifier: 0.7.1
         version: 0.7.1
@@ -143,6 +143,15 @@ importers:
   packages/storage: {}
 
 packages:
+
+  '@6cdh/tree-sitter-scheme@0.24.7-1':
+    resolution: {integrity: sha512-THIRms5EacgnUsVd3sF3HVFJVUsGJTjq/hHhdj325KUEsDZg3vPGVFH8PVZz8Si2U50gY5YhfoyGqAcv88Xang==}
+    peerDependencies:
+      tree-sitter: ^0.21.1
+      tree_sitter: '*'
+    peerDependenciesMeta:
+      tree_sitter:
+        optional: true
 
   '@derekstride/tree-sitter-sql@0.3.11':
     resolution: {integrity: sha512-YRtTXVWK4n7/3BUGchhGcW/IF1u2ldR2fd0t3Uw7ymbGXcRfiG3v1T6N43jQKXz2LwN+Nx+Ab96T0HtusBVH9g==}
@@ -459,9 +468,6 @@ packages:
       tree-sitter:
         optional: true
 
-  tree-sitter-scheme@1.0.0:
-    resolution: {integrity: sha512-i1xquQ36PZMyapfBAz+FJQu4SW0MFLOQBUXhj0bsiv5J6Y0aqkrdJ1HV7UvDD2Qum+6eIC1MgTO9pLzW/PNZjw==}
-
   tree-sitter-swift@0.7.1:
     resolution: {integrity: sha512-pneKVTuGamaBsqqqfB9BvNQjktzh/0IVPR54jLB5Fq/JTDQwYHd0Wo6pVyZ5jAYpbztzq+rJ/rpL9ruxTmSoKw==}
     peerDependencies:
@@ -507,6 +513,11 @@ packages:
     resolution: {integrity: sha512-p4a9I6X6nu6IhoGmBqAcbJy1mlC4j27vEPZX9F4L4/vZT3Lyq1VkFHw/V/PUcB9Buo+DG3iHkT0x3Qya58zc3g==}
 
 snapshots:
+
+  '@6cdh/tree-sitter-scheme@0.24.7-1':
+    dependencies:
+      node-addon-api: 8.7.0
+      node-gyp-build: 4.8.4
 
   '@derekstride/tree-sitter-sql@0.3.11':
     dependencies:
@@ -746,10 +757,6 @@ snapshots:
     dependencies:
       node-addon-api: 8.7.0
       node-gyp-build: 4.8.4
-
-  tree-sitter-scheme@1.0.0:
-    dependencies:
-      nan: 2.27.0
 
   tree-sitter-swift@0.7.1:
     dependencies:
