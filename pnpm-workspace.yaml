@@ -30,3 +30,6 @@ allowBuilds:
   tree-sitter-cpp: false
   tree-sitter-java: false
   tree-sitter-ruby: false
+  tree-sitter-elixir: false
+  tree-sitter-haskell: false
+  tree-sitter-ocaml: false
