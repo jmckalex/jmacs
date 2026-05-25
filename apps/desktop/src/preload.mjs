@@ -15,18 +15,23 @@ contextBridge.exposeInMainWorld('host', {
   homeDirectory: homedir(),
 
   /**
-   * Show an open dialog and read the chosen file.
-   * @returns {Promise<{path: string, name: string, content: string} | null>}
+   * Show an open dialog and read the chosen file. The shape of the
+   * result depends on the file's suffix:
+   *   - image: `{ path, name, imageSrc }` (a `data:` URL)
+   *   - audio: `{ path, name, mediaKind: 'audio', src, metadata?,
+   *              albumArtSrc? }` — `src` is a `media://` URL the
+   *              `<audio>` element streams from
+   *   - video: `{ path, name, mediaKind: 'video', src }`
+   *   - text:  `{ path, name, content }`
+   * @returns {Promise<object | null>}
    */
   openFile: () => ipcRenderer.invoke('file:open'),
 
   /**
-   * Read a file by an explicit path — no dialog. Image suffixes come
-   * back as a `data:` URL in `imageSrc`; other files come back as
-   * UTF-8 text in `content`.
+   * Read a file by an explicit path — no dialog. Same routing as
+   * `openFile` above.
    * @param {string} path
-   * @returns {Promise<{path: string, name: string, content?: string,
-   *   imageSrc?: string} | null>}
+   * @returns {Promise<object | null>}
    */
   openFilePath: (path) => ipcRenderer.invoke('file:open-path', { path }),
 

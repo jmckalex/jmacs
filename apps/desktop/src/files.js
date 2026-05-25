@@ -81,6 +81,20 @@ const IMAGE_MIME_TYPES = {
   '.webp': 'image/webp',
 };
 
+/** Audio file suffixes the open path should route to the audio view.
+ *  Mirrors `AUDIO_MIME_TYPES` in `packages/renderer/src/media-view.js`;
+ *  the main process keeps its own copy because it cannot import the
+ *  renderer package. */
+const AUDIO_SUFFIXES = new Set([
+  '.mp3', '.flac', '.wav', '.ogg', '.oga', '.m4a', '.aac', '.opus',
+]);
+
+/** Video file suffixes the open path should route to the video view.
+ *  Same shape as `AUDIO_SUFFIXES`. */
+const VIDEO_SUFFIXES = new Set([
+  '.mp4', '.m4v', '.webm', '.mov', '.mkv',
+]);
+
 /** The image MIME type for a path, by its suffix, or `null` when the
  *  path is not a recognised image. The renderer's `mimeTypeForImage`
  *  (in `@editor/renderer`) is the unit-tested twin of this logic; this
@@ -89,6 +103,27 @@ const IMAGE_MIME_TYPES = {
 function imageMimeType(filePath) {
   if (typeof filePath !== 'string') return null;
   return IMAGE_MIME_TYPES[extname(filePath).toLowerCase()] ?? null;
+}
+
+/** `'audio' | 'video' | null` for a path, by its suffix. Tells the
+ *  open path which non-text view (if any) should mount instead of
+ *  reading the file as UTF-8. */
+function mediaKindFor(filePath) {
+  if (typeof filePath !== 'string') return null;
+  const suffix = extname(filePath).toLowerCase();
+  if (AUDIO_SUFFIXES.has(suffix)) return 'audio';
+  if (VIDEO_SUFFIXES.has(suffix)) return 'video';
+  return null;
+}
+
+/** Build a `media://localhost/...` URL the renderer can fetch through
+ *  the main process's media-scheme handler. Per-segment encoding so
+ *  spaces and unicode in a path survive. */
+function mediaUrl(filePath) {
+  return (
+    'media://localhost' +
+    filePath.split('/').map(encodeURIComponent).join('/')
+  );
 }
 
 /**
@@ -118,42 +153,99 @@ function panesPath() {
   return join(app.getPath('userData'), 'panes.json');
 }
 
+/**
+ * Read PATH and shape it for whichever buffer kind the renderer should
+ * mount. Returns:
+ *
+ * - `{ path, name, imageSrc }` for an image suffix.
+ * - `{ path, name, mediaKind: 'audio', src, metadata?, albumArtSrc? }`
+ *   for an audio suffix — `metadata` and `albumArtSrc` are best-effort;
+ *   either may be absent if the file carries no recognised tag block.
+ * - `{ path, name, mediaKind: 'video', src }` for a video suffix.
+ * - `{ path, name, content }` for anything else.
+ *
+ * The renderer's `openFileInteractive` switches on `imageSrc` /
+ * `mediaKind` to pick the right view; the text path is the fallback.
+ *
+ * @param {string} path - An absolute filesystem path.
+ * @returns {Promise<object>}
+ */
+async function readPathAsBuffer(path) {
+  const imageMime = imageMimeType(path);
+  if (imageMime !== null) {
+    const imageSrc = await readImageDataUrl(path, imageMime);
+    return { path, name: basename(path), imageSrc };
+  }
+  const mediaKind = mediaKindFor(path);
+  if (mediaKind === 'audio') {
+    const src = mediaUrl(path);
+    // Tag metadata + album art are nice-to-haves; either can fail
+    // (unsupported container, no tag block, malformed picture frame)
+    // and the audio view still works without them.
+    let metadata = null;
+    try {
+      metadata = await extractMetadata(path);
+    } catch {
+      metadata = null;
+    }
+    let albumArtSrc = null;
+    try {
+      const art = await extractAlbumArt(path);
+      if (art) {
+        albumArtSrc =
+          `data:${art.mime};base64,${art.data.toString('base64')}`;
+      }
+    } catch {
+      albumArtSrc = null;
+    }
+    return {
+      path,
+      name: basename(path),
+      mediaKind,
+      src,
+      ...(metadata ? { metadata } : {}),
+      ...(albumArtSrc ? { albumArtSrc } : {}),
+    };
+  }
+  if (mediaKind === 'video') {
+    return {
+      path,
+      name: basename(path),
+      mediaKind,
+      src: mediaUrl(path),
+    };
+  }
+  const content = await readFile(path, 'utf8');
+  return { path, name: basename(path), content };
+}
+
 /** Register the `file:*` IPC handlers. Call once, after the app is ready. */
 export function registerFileHandlers() {
   // Show an open dialog and read the chosen file. An image file is
   // read as a `data:` URL (in `imageSrc`) so the renderer can display
-  // it; any other file is read as UTF-8 text (in `content`).
+  // it. An audio or video file comes back as `{ mediaKind, src,
+  // metadata?, albumArtSrc? }`, where `src` is a `media://` URL the
+  // renderer's <audio>/<video> element streams from. Any other file
+  // is read as UTF-8 text (in `content`).
   ipcMain.handle('file:open', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openFile'] });
     if (result.canceled || result.filePaths.length === 0) {
       return null;
     }
     const path = result.filePaths[0];
-    const mime = imageMimeType(path);
-    if (mime !== null) {
-      const imageSrc = await readImageDataUrl(path, mime);
-      return { path, name: basename(path), imageSrc };
-    }
-    const content = await readFile(path, 'utf8');
-    return { path, name: basename(path), content };
+    return readPathAsBuffer(path);
   });
 
   // Open a file by an explicit path — no dialog. Mirrors `file:open`
-  // for image-vs-text handling so callers from inside the renderer
-  // (e.g. jukebox-mode's M-RET on the album-art file) can hand a path
-  // to the same image-buffer pipeline `file:open` feeds into.
+  // for image / audio / video / text routing so callers from inside
+  // the renderer (e.g. jukebox-mode's M-RET on the album-art file)
+  // can hand a path to the same view-buffer pipeline `file:open`
+  // feeds into.
   ipcMain.handle('file:open-path', async (_event, payload) => {
     const raw = payload?.path;
     if (typeof raw !== 'string' || raw === '') return null;
-    const path = expandTilde(raw);
     try {
-      const mime = imageMimeType(path);
-      if (mime !== null) {
-        const imageSrc = await readImageDataUrl(path, mime);
-        return { path, name: basename(path), imageSrc };
-      }
-      const content = await readFile(path, 'utf8');
-      return { path, name: basename(path), content };
+      return await readPathAsBuffer(expandTilde(raw));
     } catch {
       return null;
     }
