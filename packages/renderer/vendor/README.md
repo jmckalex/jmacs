@@ -34,6 +34,7 @@ by `src/treesitter.js`.
 | `tree-sitter-toml.wasm` | `@tree-sitter-grammars/tree-sitter-toml@0.7.0` | the TOML grammar |
 | `tree-sitter-haskell.wasm` | `tree-sitter-haskell@0.23.1` | the Haskell grammar |
 | `tree-sitter-ocaml.wasm` | `tree-sitter-ocaml@0.24.2` | the OCaml grammar |
+| `tree-sitter-elixir.wasm` | `tree-sitter-elixir@0.3.5` | the Elixir grammar |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
