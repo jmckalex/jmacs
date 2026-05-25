@@ -155,13 +155,15 @@ export function languageForFilename(name) {
  *   language's grammar fails to load. Defaults to ignoring the error.
  * @returns {Promise<Record<string, ((text: string) =>
  *   import('./highlight.js').Run[][]) & {
- *     captures: (text: string) => import('./treesitter.js').CaptureRange[]
+ *     captures: (text: string) => import('./treesitter.js').CaptureRange[],
+ *     nodeAtPoint: (text: string, pos: number) =>
+ *       import('./treesitter.js').NodeInfo | null
  *   }>>}
  *   A map from language tag to a `highlight(text)` callable. The same
  *   callable also exposes the underlying highlighter's `captures(text)`
- *   as a property — the diagnostic command `describe-face-at-point`
- *   uses it to surface the tree-sitter capture under the cursor without
- *   needing a second registry.
+ *   and `nodeAtPoint(text, pos)` as properties — the diagnostic command
+ *   `describe-face-at-point` uses them to surface either the tree-sitter
+ *   capture under the cursor or, when none exists, the bare node type.
  */
 export async function loadLanguageHighlighters(create, onError = () => {}) {
   /** @type {Record<string, import('./treesitter.js').Highlighter>} */
@@ -197,6 +199,7 @@ export async function loadLanguageHighlighters(create, onError = () => {}) {
     // caller that wants the capture ranges (rather than the per-line
     // run projection) can reach them without a second registry.
     fn.captures = (text) => highlighter.captures(text);
+    fn.nodeAtPoint = (text, pos) => highlighter.nodeAtPoint(text, pos);
     exposed[tag] = fn;
   }
   return exposed;

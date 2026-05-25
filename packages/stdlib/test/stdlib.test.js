@@ -9,6 +9,7 @@ import {
   arrayToList,
   cons,
   createInterpreter,
+  keyword,
   listToArray,
   NIL,
 } from '@editor/lisp';
@@ -29,6 +30,10 @@ const languagesDir = join(lispDir, 'languages');
  * @param {Record<string, string>} [options.faceColors] - Map of face
  *   name (`'keyword'`) to colour string the stub `face-color-for`
  *   returns; missing faces resolve to `''`.
+ * @param {object | null} [options.nodeAtPoint] - Plain-object shape
+ *   `{language, type, start, end, ancestors}` the stub
+ *   `tree-sitter-node-at-point!` returns (wrapped into a hash-map
+ *   to match the real primitive's shape). Defaults to `NIL`.
  */
 async function editor(initialText = 'hello world', options = {}) {
   const buffer = createBuffer(initialText, { name: 'test' });
@@ -46,6 +51,17 @@ async function editor(initialText = 'hello world', options = {}) {
   const tsCalls = [];
   const captures = options.captures ?? NIL;
   const faceColors = options.faceColors ?? {};
+  const nodeAtPoint = (() => {
+    const raw = options.nodeAtPoint;
+    if (raw === null || raw === undefined) return NIL;
+    const record = new Map();
+    record.set(keyword('language'), raw.language ?? '');
+    record.set(keyword('type'), raw.type ?? '');
+    record.set(keyword('start'), raw.start ?? 0);
+    record.set(keyword('end'), raw.end ?? 0);
+    record.set(keyword('ancestors'), arrayToList(raw.ancestors ?? []));
+    return record;
+  })();
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
     primitives: {
@@ -184,6 +200,10 @@ async function editor(initialText = 'hello world', options = {}) {
       'tree-sitter-captures-for-buffer!': () => {
         tsCalls.push('captures');
         return captures;
+      },
+      'tree-sitter-node-at-point!': (a) => {
+        tsCalls.push(`node-at:${a[0] ?? 0}`);
+        return nodeAtPoint;
       },
       'face-color-for': (a) => {
         const face = String(a[0] ?? '');
@@ -2588,7 +2608,9 @@ test('describe-face-at-point opens a doc page with the captured face', async () 
 });
 
 test('describe-face-at-point reports when no capture covers point', async () => {
-  // A capture exists, but it does not cover offset 0.
+  // A capture exists, but it does not cover offset 0, and the stub
+  // `tree-sitter-node-at-point!` defaults to nil. The command falls
+  // back to the REPL message.
   const captures = captureValue('javascript', [
     [5, 9, 'keyword'],
   ]);
@@ -2599,6 +2621,101 @@ test('describe-face-at-point reports when no capture covers point', async () => 
     `expected no-capture message; got ${JSON.stringify(output)}`
   );
   assert.deepEqual(docCalls, []);
+});
+
+test('describe-face-at-point falls back to node info when no capture covers point', async () => {
+  // When no capture covers point but `tree-sitter-node-at-point!`
+  // returns a node, the command opens a doc page describing the raw
+  // tree-sitter node so the user can write a query rule against it.
+  const captures = captureValue('javascript', [
+    [5, 9, 'keyword'],
+  ]);
+  const { interpreter, output, docCalls } = await editor(
+    'abc def',
+    {
+      captures,
+      nodeAtPoint: {
+        language: 'javascript',
+        type: 'identifier',
+        start: 0,
+        end: 3,
+        ancestors: ['call_expression', 'expression_statement'],
+      },
+    }
+  );
+  interpreter.evaluate('(describe-face-at-point)');
+  assert.deepEqual(docCalls, ['docstring:Face at point']);
+  // The REPL fallback message must NOT fire when node info is available.
+  assert.ok(
+    !output.some((m) => m.includes('no capture covers point')),
+    `did not expect REPL fallback; got ${JSON.stringify(output)}`
+  );
+});
+
+test('-face-info-render-ancestors renders the parent chain with left arrows', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate(
+      '(-face-info-render-ancestors (quote ()))'
+    ),
+    '(none)'
+  );
+  assert.equal(
+    interpreter.evaluate(
+      '(-face-info-render-ancestors (list "member_expression"))'
+    ),
+    'member_expression'
+  );
+  assert.equal(
+    interpreter.evaluate(
+      '(-face-info-render-ancestors '
+      + '(list "member_expression" "call_expression" "expression_statement"))'
+    ),
+    'member_expression ← call_expression ← expression_statement'
+  );
+});
+
+test('the no-capture render names the node, ancestor chain, and query template', async () => {
+  const { interpreter } = await editor();
+  const body = interpreter.evaluate(
+    '(-face-info-render-no-capture '
+    + '  "javascript" "identifier" 12 18 '
+    + '  (list "call_expression" "expression_statement") '
+    + '  "foo.bar")'
+  );
+  assert.ok(typeof body === 'string');
+  assert.ok(body.includes('No face here'),
+    `expected the lead message; got: ${body}`);
+  assert.ok(body.includes('`identifier`'),
+    `expected the node type; got: ${body}`);
+  assert.ok(body.includes('call_expression ← expression_statement'),
+    `expected the ancestor chain; got: ${body}`);
+  assert.ok(body.includes('`javascript`'),
+    `expected the language name; got: ${body}`);
+  assert.ok(body.includes('[12, 18)'),
+    `expected the range; got: ${body}`);
+  assert.ok(body.includes('foo.bar'),
+    `expected the snippet text; got: ${body}`);
+  // The query template uses the immediate parent + node type.
+  assert.ok(body.includes('(call_expression (identifier) @<face>)'),
+    `expected a query rule template; got: ${body}`);
+  // Path hint for where to add the rule.
+  assert.ok(body.includes('packages/renderer/src/languages/javascript.js'),
+    `expected the file path hint; got: ${body}`);
+});
+
+test('the no-capture render handles a rootless node (no ancestors)', async () => {
+  const { interpreter } = await editor();
+  const body = interpreter.evaluate(
+    '(-face-info-render-no-capture '
+    + '  "javascript" "program" 0 0 (quote ()) "")'
+  );
+  // With no parent, the query template degrades to a bare node match
+  // — useful enough to start from.
+  assert.ok(body.includes('(program) @<face>'),
+    `expected a bare-node template; got: ${body}`);
+  assert.ok(body.includes('(none)'),
+    `expected the ancestor chain to render as (none); got: ${body}`);
 });
 
 test('the rendered face-info body names the face, CSS class and resolved colour', async () => {

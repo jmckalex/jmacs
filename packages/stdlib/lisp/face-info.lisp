@@ -81,14 +81,60 @@
     "**Text:**\n\n"
     "```\n" snippet "\n```\n"))
 
+(define (-face-info-render-ancestors ancestors)
+  "Render ANCESTORS (immediate parent first) as a left-arrowed chain,
+   or `(none)` when the list is empty."
+  (cond
+    ((nil? ancestors) "(none)")
+    (else
+      (reduce (lambda (acc next) (str acc " ← " next))
+              (car ancestors)
+              (cdr ancestors)))))
+
+(define (-face-info-render-no-capture
+          lang node-type start end ancestors snippet)
+  "Build the Markdown body for the no-capture diagnostic page. Used
+   when tree-sitter has parsed the construct under the cursor but no
+   query rule fires on it — the user needs the node type and parent
+   chain to write a query rule."
+  (let ((parent (if (nil? ancestors) "" (car ancestors))))
+    (str
+      "**No face here** — tree-sitter parsed this construct but no "
+      "query rule in the `" lang "` highlighter fires on it. The "
+      "diagnostic below is the raw node info you'd write a rule against.\n\n"
+      "**Node type:** `" node-type "`\n\n"
+      "**Ancestor chain:** `"
+      (-face-info-render-ancestors ancestors) "`\n\n"
+      "**Language:** `" lang "`\n\n"
+      "**Range:** `[" (number->string start)
+      ", " (number->string end) ")`\n\n"
+      "**Text:**\n\n"
+      "```\n" snippet "\n```\n\n"
+      "To face this construct, add a query rule to "
+      "`packages/renderer/src/languages/" lang ".js`. A typical shape:\n\n"
+      "```\n"
+      (cond
+        ((= (string-length parent) 0)
+         (str "(" node-type ") @<face>"))
+        (else
+          (str "(" parent " (" node-type ") @<face>)")))
+      "\n```\n\n"
+      "…where `<face>` is one of the registered faces (`@function`, "
+      "`@variable`, `@constant`, `@type`, …). The most-specific "
+      "capture covering a position wins, so adding a narrow rule "
+      "won't disturb existing ones.\n")))
+
 ;; --- the command ------------------------------------------------------
 
 (defcommand describe-face-at-point ()
   "Open a `*Face at point*` doc buffer describing the tree-sitter
    capture under the cursor: face name, CSS class, the active theme's
-   resolved colour, the captured range, and the text it covers. The
-   user's diagnostic tool when customising the colour theme. Bound
-   to `C-h F`; aliased as `describe-syntax-at-point`."
+   resolved colour, the captured range, and the text it covers. When
+   no capture covers point but tree-sitter has parsed the construct,
+   fall back to surfacing the raw node type and parent chain so the
+   user knows what query rule they'd write to face it. The user's
+   diagnostic tool when customising the colour theme. Bound to
+   `C-h F`; aliased as `describe-syntax-at-point`."
   (let ((info (tree-sitter-captures-for-buffer!)))
     (cond
       ((nil? info)
@@ -100,9 +146,22 @@
                (chosen (smallest-covering-capture captures pos)))
           (cond
             ((nil? chosen)
-             (println (str "no capture covers point ("
-                           (number->string pos)
-                           ") in this " lang " buffer")))
+             (let ((node (tree-sitter-node-at-point! pos)))
+               (cond
+                 ((nil? node)
+                  (println (str "no capture covers point ("
+                                (number->string pos)
+                                ") in this " lang " buffer")))
+                 (else
+                   (let* ((node-type (get node :type ""))
+                          (start (get node :start 0))
+                          (end (get node :end 0))
+                          (ancestors (get node :ancestors nil))
+                          (snippet (-face-info-clip (buffer-text) start end))
+                          (body (-face-info-render-no-capture
+                                  lang node-type start end
+                                  ancestors snippet)))
+                     (open-docstring-page! "Face at point" body))))))
             (else
               (let* ((start (car chosen))
                      (end (cadr chosen))

@@ -47,12 +47,28 @@ export const MAX_INJECTION_DEPTH = 4;
  */
 
 /**
+ * @typedef {object} NodeInfo
+ * @property {string} type - The tree-sitter node type at the position.
+ * @property {number} start - Start offset (inclusive).
+ * @property {number} end - End offset (exclusive).
+ * @property {string[]} ancestors - The node-type chain from the
+ *   immediate parent outward, capped at a small number of levels.
+ */
+
+/**
  * @typedef {object} Highlighter
  * @property {(text: string) => import('./highlight.js').Run[][]} highlight -
  *   Highlight source into one array of runs per line.
  * @property {(text: string, depth?: number) => CaptureRange[]} captures -
  *   Raw absolute-offset capture ranges. Used by the injection pipeline
  *   to splice an inner language's tokens into an outer document.
+ * @property {(text: string, pos: number) => NodeInfo | null} nodeAtPoint -
+ *   The smallest tree-sitter node covering POS in TEXT, plus its
+ *   parent-type chain. Powers the diagnostic side of
+ *   `describe-face-at-point`: when no capture covers point, the user
+ *   still needs to know what tree-sitter calls the construct so they
+ *   can write a query rule. Returns null for empty input or when no
+ *   node covers POS.
  */
 
 /**
@@ -132,11 +148,43 @@ export async function createTreeSitterHighlighter(
     );
   }
 
+  /**
+   * @param {string} text
+   * @param {number} pos
+   * @returns {NodeInfo | null}
+   */
+  function nodeAtPoint(text, pos) {
+    if (typeof text !== 'string' || text.length === 0) return null;
+    const tree = parser.parse(text);
+    const node = tree.rootNode.descendantForIndex(pos, pos);
+    if (!node) {
+      tree.delete();
+      return null;
+    }
+    const ancestors = [];
+    let current = node.parent;
+    // Four levels is enough context to write a query rule against
+    // without flooding the report.
+    while (current && ancestors.length < 4) {
+      ancestors.push(current.type);
+      current = current.parent;
+    }
+    const info = {
+      type: node.type,
+      start: node.startIndex,
+      end: node.endIndex,
+      ancestors,
+    };
+    tree.delete();
+    return info;
+  }
+
   return {
     highlight(text) {
       return splitIntoLineRuns(text, captures(text, 0));
     },
     captures,
+    nodeAtPoint,
   };
 }
 

@@ -1025,6 +1025,41 @@ const interpreter = createInterpreter({
       );
       return cons(language, captures);
     },
+    // `describe-face-at-point` fallback — when no capture covers point,
+    // surface the tree-sitter node info so the user knows what query
+    // rule they'd write to face it. Returns a hash-map with `:language`,
+    // `:type` (the node's tree-sitter type), `:start`, `:end`, and
+    // `:ancestors` (a list of parent-type strings, immediate-parent
+    // first), or `nil` when the buffer has no tree-sitter language or
+    // no node covers point.
+    'tree-sitter-node-at-point!': (args) => {
+      if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
+        return NIL;
+      }
+      const name = currentTextBuffer.name;
+      const language = languageForFilename(name);
+      if (language === null) return NIL;
+      const highlighter = highlighters[language];
+      if (!highlighter || typeof highlighter.nodeAtPoint !== 'function') {
+        return NIL;
+      }
+      const pos = Number.isInteger(args[0]) ? args[0] : 0;
+      let info;
+      try {
+        info = highlighter.nodeAtPoint(currentTextBuffer.text, pos);
+      } catch (error) {
+        repl.appendError(`tree-sitter nodeAtPoint: ${error.message}`);
+        return NIL;
+      }
+      if (info === null) return NIL;
+      const record = new Map();
+      record.set(keyword('language'), language);
+      record.set(keyword('type'), info.type);
+      record.set(keyword('start'), info.start);
+      record.set(keyword('end'), info.end);
+      record.set(keyword('ancestors'), arrayToList(info.ancestors));
+      return record;
+    },
     // `describe-face-at-point` (C-h F) — resolve a face name to the
     // CSS colour the active theme renders it with. Reads the runtime
     // value of `--tok-<face>` from `document.documentElement`. Falls
