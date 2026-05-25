@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   isAudioFileName,
   isVideoFileName,
+  mediaErrorAdvice,
   mediaUrlForPath,
   mimeTypeForAudio,
   mimeTypeForVideo,
@@ -96,4 +97,64 @@ test('mediaUrlForPath leaves a URL with a recognised scheme untouched', () => {
 test('mediaUrlForPath tolerates non-string input', () => {
   assert.equal(mediaUrlForPath(null), '');
   assert.equal(mediaUrlForPath(undefined), '');
+});
+
+test('mediaErrorAdvice returns null for ABORTED (user-initiated)', () => {
+  // ABORTED fires when the user pauses-and-seeks mid-load. Not an
+  // error the view should plaster a message over.
+  assert.equal(mediaErrorAdvice({ code: 1 }, 'clip.mp4'), null);
+  assert.equal(mediaErrorAdvice(null, 'clip.mp4'), null);
+  assert.equal(mediaErrorAdvice(undefined, 'clip.mp4'), null);
+});
+
+test('mediaErrorAdvice tailors SRC_NOT_SUPPORTED for .mkv to a remux command', () => {
+  // The .mkv case is the most common SRC_NOT_SUPPORTED jmacs sees;
+  // a stream-copy remux is nearly always instant and lossless.
+  const advice = mediaErrorAdvice({ code: 4 }, 'movie.mkv');
+  assert.ok(advice);
+  assert.match(advice.headline, /Matroska|\.mkv/i);
+  assert.match(advice.command, /^ffmpeg .* -c copy /);
+  assert.match(advice.command, /movie\.mkv/);
+  assert.match(advice.command, /movie\.mp4/);
+});
+
+test('mediaErrorAdvice gives a generic re-encode command for other unsupported sources', () => {
+  // A SRC_NOT_SUPPORTED on an .mp4 means the codec inside (e.g. HEVC,
+  // AC-3) is the problem, not the container. Need a re-encode rather
+  // than a stream copy.
+  const advice = mediaErrorAdvice({ code: 4 }, 'hevc.mp4');
+  assert.ok(advice);
+  assert.match(advice.headline, /codec/i);
+  assert.match(advice.command, /libx264/);
+  assert.match(advice.command, /-c:a aac/);
+});
+
+test('mediaErrorAdvice surfaces a DECODE error with re-encode advice', () => {
+  const advice = mediaErrorAdvice({ code: 3 }, 'broken.mp4');
+  assert.ok(advice);
+  assert.match(advice.headline, /decode/i);
+  assert.match(advice.command, /libx264/);
+});
+
+test('mediaErrorAdvice surfaces a NETWORK error without a command', () => {
+  const advice = mediaErrorAdvice({ code: 2 }, 'missing.mp4');
+  assert.ok(advice);
+  assert.match(advice.headline, /read|fetch/i);
+  assert.equal(advice.command, null);
+  assert.equal(advice.suggestion, null);
+});
+
+test('mediaErrorAdvice falls back to a generic block for an unknown code', () => {
+  const advice = mediaErrorAdvice({ code: 99, message: 'something odd' }, 'x');
+  assert.ok(advice);
+  assert.match(advice.headline, /playback/i);
+  assert.equal(advice.detail, 'something odd');
+});
+
+test('mediaErrorAdvice tolerates a missing name', () => {
+  const advice = mediaErrorAdvice({ code: 4 }, '');
+  assert.ok(advice);
+  // Command falls back to a default placeholder so the example is
+  // still copy-pasteable.
+  assert.match(advice.command, /^ffmpeg /);
 });

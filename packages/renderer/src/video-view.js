@@ -24,7 +24,7 @@
  */
 
 import { keyEventToString } from './keymap.js';
-import { mimeTypeForVideo } from './media-view.js';
+import { mediaErrorAdvice, mimeTypeForVideo } from './media-view.js';
 
 /** A bare modifier press is not a key in its own right. */
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
@@ -65,6 +65,13 @@ export function createVideoView(container, options = {}) {
   videoEl.preload = 'metadata';
   stage.append(videoEl);
 
+  // Error block, only shown when the <video> element fires an `error`
+  // event (almost always SRC_NOT_SUPPORTED — Chromium can't decode the
+  // codec or container). The block replaces the broken element and
+  // tells the user exactly what's wrong and how to convert.
+  const errorBlock = buildErrorBlock(doc);
+  stage.append(errorBlock.root);
+
   const caption = doc.createElement('div');
   caption.className = 'video-caption';
   const nameEl = doc.createElement('div');
@@ -88,6 +95,23 @@ export function createVideoView(container, options = {}) {
     nameEl.textContent = mime ? `${buffer.name}  —  ${mime}` : buffer.name;
     pathEl.textContent = buffer.filePath ?? '';
   }
+
+  /** Hide the player and show the error block. */
+  function showError() {
+    const advice = mediaErrorAdvice(videoEl.error, buffer ? buffer.name : '');
+    if (!advice) return;
+    videoEl.style.display = 'none';
+    errorBlock.show(advice);
+  }
+
+  /** Clear the error block — called every time a new buffer mounts so
+   *  switching from a broken file to a working one shows the player. */
+  function clearError() {
+    videoEl.style.display = '';
+    errorBlock.hide();
+  }
+
+  videoEl.addEventListener('error', showError);
 
   root.addEventListener('keydown', (event) => {
     if (MODIFIERS.has(event.key)) return;
@@ -140,6 +164,7 @@ export function createVideoView(container, options = {}) {
       }
     }
     buffer = next;
+    clearError();
     if (!buffer || typeof buffer.src !== 'string') {
       videoEl.removeAttribute('src');
       paint();
@@ -169,5 +194,88 @@ export function createVideoView(container, options = {}) {
     setBuffer,
     focus: () => root.focus(),
     destroy,
+  };
+}
+
+/**
+ * Build the error-block element shown when the `<video>`/`<audio>`
+ * element's `error` event fires. Exposed via factory so both views
+ * use the same DOM shape and styling. The block is hidden by default;
+ * `show(advice)` populates and reveals it, `hide()` empties it.
+ *
+ * @param {Document} doc
+ */
+export function buildErrorBlock(doc) {
+  const root = doc.createElement('div');
+  root.className = 'media-error';
+  root.hidden = true;
+
+  const headline = doc.createElement('div');
+  headline.className = 'media-error-headline';
+  root.append(headline);
+
+  const detail = doc.createElement('p');
+  detail.className = 'media-error-detail';
+  root.append(detail);
+
+  const suggestion = doc.createElement('p');
+  suggestion.className = 'media-error-suggestion';
+  root.append(suggestion);
+
+  const commandRow = doc.createElement('div');
+  commandRow.className = 'media-error-command-row';
+  const commandEl = doc.createElement('code');
+  commandEl.className = 'media-error-command';
+  const copyBtn = doc.createElement('button');
+  copyBtn.className = 'media-error-copy';
+  copyBtn.type = 'button';
+  copyBtn.textContent = 'Copy';
+  copyBtn.title = 'Copy command to clipboard';
+  commandRow.append(commandEl, copyBtn);
+  root.append(commandRow);
+
+  copyBtn.addEventListener('click', async () => {
+    const text = commandEl.textContent ?? '';
+    if (!text) return;
+    try {
+      const nav = doc.defaultView?.navigator;
+      if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
+        await nav.clipboard.writeText(text);
+        copyBtn.textContent = 'Copied';
+        setTimeout(() => {
+          copyBtn.textContent = 'Copy';
+        }, 1200);
+      }
+    } catch {
+      /* clipboard may be unavailable; the user can still read + paste */
+    }
+  });
+
+  return {
+    root,
+    show(advice) {
+      headline.textContent = advice.headline;
+      detail.textContent = advice.detail;
+      if (advice.suggestion) {
+        suggestion.textContent = advice.suggestion;
+        suggestion.hidden = false;
+      } else {
+        suggestion.hidden = true;
+      }
+      if (advice.command) {
+        commandEl.textContent = advice.command;
+        commandRow.hidden = false;
+      } else {
+        commandRow.hidden = true;
+      }
+      root.hidden = false;
+    },
+    hide() {
+      root.hidden = true;
+      headline.textContent = '';
+      detail.textContent = '';
+      suggestion.textContent = '';
+      commandEl.textContent = '';
+    },
   };
 }

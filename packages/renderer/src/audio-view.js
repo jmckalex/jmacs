@@ -29,7 +29,8 @@
  */
 
 import { keyEventToString } from './keymap.js';
-import { mimeTypeForAudio } from './media-view.js';
+import { mediaErrorAdvice, mimeTypeForAudio } from './media-view.js';
+import { buildErrorBlock } from './video-view.js';
 
 /** A bare modifier press is not a key in its own right. */
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
@@ -120,8 +121,30 @@ export function createAudioView(container, options = {}) {
   audioEl.preload = 'metadata';
   right.append(audioEl);
 
+  // Error block shown when the <audio> element fires `error` — usually
+  // an unsupported codec inside an otherwise-recognised container.
+  // Sits between the metadata block and the player.
+  const errorBlock = buildErrorBlock(doc);
+  right.insertBefore(errorBlock.root, audioEl);
+
   /** The audio buffer currently shown, or `null`. */
   let buffer = null;
+
+  /** Hide the player and show the error block. */
+  function showError() {
+    const advice = mediaErrorAdvice(audioEl.error, buffer ? buffer.name : '');
+    if (!advice) return;
+    audioEl.style.display = 'none';
+    errorBlock.show(advice);
+  }
+
+  /** Reset error state — called on every new buffer mount. */
+  function clearError() {
+    audioEl.style.display = '';
+    errorBlock.hide();
+  }
+
+  audioEl.addEventListener('error', showError);
 
   /** Append one (term, value) row to the metadata list. Empty values
    *  are skipped — a missing field shouldn't waste a row. */
@@ -246,6 +269,7 @@ export function createAudioView(container, options = {}) {
       }
     }
     buffer = next;
+    clearError();
     if (!buffer || typeof buffer.src !== 'string') {
       audioEl.removeAttribute('src');
       paint();

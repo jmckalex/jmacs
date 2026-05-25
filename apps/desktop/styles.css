@@ -1425,6 +1425,80 @@ textarea.customize-widget {
   overflow-wrap: anywhere;
 }
 
+/* --- media error block ------------------------------------------------ */
+/* Shown by audio-view / video-view when the <audio>/<video> element
+   fires `error` (almost always SRC_NOT_SUPPORTED — Chromium can't
+   decode the codec or container). Sits where the player would. The
+   message names the format, explains why it doesn't work, and shows
+   a one-liner ffmpeg command the user can copy and run. */
+
+.media-error {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 20px 24px;
+  background: #00000033;
+  border: 1px solid #ffffff14;
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+}
+
+.media-error-headline {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.media-error-detail {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.media-error-suggestion {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-dim);
+}
+
+.media-error-command-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.media-error-command {
+  flex: 1 1 auto;
+  padding: 8px 10px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--fg);
+  background: #00000044;
+  border: 1px solid #ffffff14;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.media-error-copy {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-chrome);
+  border: 1px solid #ffffff22;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.media-error-copy:hover {
+  background: var(--bg-editor);
+}
+
 /* --- colour swatches --------------------------------------------------- */
 /* An inline swatch placed beside every colour literal in code. Clicking
    it opens the modal colour chooser. */
