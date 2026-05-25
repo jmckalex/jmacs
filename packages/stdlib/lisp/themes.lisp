@@ -86,7 +86,7 @@
    "--selection"    "rgba(88, 166, 255, 0.22)"))
 
 ;; --- face defaults — one defface per token face ------------------------
-;; The 13 built-in token faces, each with three per-theme defaults.
+;; The 14 built-in token faces, each with three per-theme defaults.
 ;; @comment is italicised in all three themes (Sublime/VSCode convention).
 
 (defface 'comment
@@ -124,6 +124,14 @@
   :default-light    (face :foreground "#268bd2")
   :default-dark     (face :foreground "#6699cc")
   :default-midnight (face :foreground "#d2a8ff"))
+
+(defface 'variable
+  :doc "Variable names in declaration position — function parameters,
+        catch bindings, and similar. Sublime-style: only declarations
+        get a face; references in the body read as default text."
+  :default-light    (face :foreground "#b07d3c")
+  :default-dark     (face :foreground "#e8a87c")
+  :default-midnight (face :foreground "#ffcb6b"))
 
 (defface 'type
   :doc "Type names, class names, type-position identifiers."

@@ -1983,7 +1983,7 @@ test('current-theme-css-vars switches with *theme*', async () => {
 
 // --- faces ------------------------------------------------------------
 
-test('the 13 built-in token faces are registered', async () => {
+test('the 14 built-in token faces are registered', async () => {
   const { interpreter } = await editor();
   const names = listToArray(interpreter.call('registered-faces'))
     .map((s) => s.name).sort();
@@ -1992,6 +1992,7 @@ test('the 13 built-in token faces are registered', async () => {
     [
       'code', 'comment', 'constant', 'function', 'heading', 'keyword',
       'link', 'number', 'operator', 'paren', 'string', 'tag', 'type',
+      'variable',
     ]
   );
 });

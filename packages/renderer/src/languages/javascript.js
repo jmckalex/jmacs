@@ -92,6 +92,17 @@ const QUERY = `
     name: (identifier) @function
     value: [(arrow_function) (function_expression)])
 
+  ; --- variables -------------------------------------------------------
+  ; Function/method/arrow parameters and catch bindings. Plain
+  ; declarations only — references in the body stay unfaced
+  ; (Sublime-style). Defaults, rest, and destructuring covered below.
+  (formal_parameters (identifier) @variable)
+  (formal_parameters (rest_pattern (identifier) @variable))
+  (formal_parameters
+    (assignment_pattern left: (identifier) @variable))
+  (arrow_function parameter: (identifier) @variable)
+  (catch_clause parameter: (identifier) @variable)
+
   ; --- types -----------------------------------------------------------
   (class_declaration name: (identifier) @type)
   (new_expression constructor: (identifier) @type)

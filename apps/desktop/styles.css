@@ -29,6 +29,7 @@
   --tok-keyword: #c594c5;
   --tok-constant: #5fb4b4;
   --tok-function: #6699cc;
+  --tok-variable: #e8a87c;
   --tok-type: #fac863;
   --tok-tag: #ec5f67;
   --tok-operator: #62b3b2;
@@ -564,6 +565,10 @@ body.markdown-preview-hidden #preview-splitter {
 
 .tok-function {
   color: var(--tok-function);
+}
+
+.tok-variable {
+  color: var(--tok-variable);
 }
 
 .tok-type {
