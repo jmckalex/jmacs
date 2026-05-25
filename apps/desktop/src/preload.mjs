@@ -119,6 +119,20 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('config:write', { name, content }),
 
   /**
+   * Read the persisted splitter pane sizes, or null when none have
+   * been saved yet. The shape is `{ previewWidth?: number,
+   * replHeight?: number }`.
+   * @returns {Promise<{previewWidth?: number, replHeight?: number} | null>}
+   */
+  readPanes: () => ipcRenderer.invoke('panes:read'),
+
+  /**
+   * Persist the splitter pane sizes.
+   * @param {{previewWidth?: number, replHeight?: number}} data
+   */
+  writePanes: (data) => ipcRenderer.invoke('panes:write', { data }),
+
+  /**
    * Read the documentation manifest (the list of doc-page names
    * produced by `pnpm run docs`). Returns `{ names: string[] }` or
    * `null` when the docs haven't been built yet.

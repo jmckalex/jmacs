@@ -110,6 +110,14 @@ function configPath(name) {
   return join(app.getPath('userData'), name);
 }
 
+/** Where the splitter pane sizes are persisted — a small JSON file in
+ *  the per-user data directory. Separate from custom.lisp because it
+ *  is host UI state, not a Lisp customisation: the renderer reads it
+ *  before the standard library is even loaded. */
+function panesPath() {
+  return join(app.getPath('userData'), 'panes.json');
+}
+
 /** Register the `file:*` IPC handlers. Call once, after the app is ready. */
 export function registerFileHandlers() {
   // Show an open dialog and read the chosen file. An image file is
@@ -254,6 +262,28 @@ export function registerFileHandlers() {
     if (target === null) throw new Error('invalid config file name');
     await writeFile(target, payload?.content ?? '', 'utf8');
     return { path: target };
+  });
+
+  // Persisted splitter pane sizes (preview width, REPL height). Returns
+  // the parsed object or null when the file does not exist. The shape
+  // is `{ previewWidth: number, replHeight: number }`; either field
+  // may be absent, in which case the renderer falls back to the CSS
+  // default for that variable.
+  ipcMain.handle('panes:read', async () => {
+    try {
+      const content = await readFile(panesPath(), 'utf8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  });
+
+  // Persist the splitter pane sizes. Always overwritten in full so the
+  // file shape stays predictable; callers pass the whole object.
+  ipcMain.handle('panes:write', async (_event, payload) => {
+    const data = payload?.data ?? {};
+    await writeFile(panesPath(), JSON.stringify(data, null, 2), 'utf8');
+    return { path: panesPath() };
   });
 
   // Documentation: read the manifest produced by `pnpm run docs`.

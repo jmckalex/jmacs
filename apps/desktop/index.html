@@ -50,8 +50,23 @@
 
     <div id="workspace" class="workspace">
       <main id="editor-host" class="editor-host"></main>
+      <div
+        id="preview-splitter"
+        class="splitter splitter-horizontal"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the Markdown preview pane"
+      ></div>
       <section id="markdown-preview-host" class="markdown-preview-host"></section>
     </div>
+
+    <div
+      id="repl-splitter"
+      class="splitter splitter-vertical"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize the REPL pane"
+    ></div>
 
     <section id="repl-host" class="repl-host"></section>
 

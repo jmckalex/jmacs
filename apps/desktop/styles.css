@@ -41,6 +41,13 @@
     monospace;
   --font-size: 14px;
   --line-height: 1.65;
+
+  /* Pane sizes — written live by the splitters (see splitter.js) and
+     restored from disk at startup. Stay in pixels so the splitter
+     and the layout speak the same unit. Defaults preserve the
+     historical fixed widths the styles used before resizing landed. */
+  --preview-width: 350px;
+  --repl-height: 246px;
 }
 
 * {
@@ -91,8 +98,9 @@ body {
 
 /* --- editor surface ---------------------------------------------------- */
 
-/* The editor and the Markdown preview pane sit side by side; the
-   workspace row takes the vertical space the REPL leaves free. */
+/* The editor and the Markdown preview pane sit side by side, with a
+   6px splitter (#preview-splitter) between them. The workspace row
+   takes the vertical space the REPL leaves free. */
 .workspace {
   flex: 1 1 auto;
   min-height: 0;
@@ -310,14 +318,16 @@ body {
 /* --- REPL --------------------------------------------------------------- */
 
 .repl-host {
-  flex: 0 0 246px;
+  flex: 0 0 var(--repl-height);
   min-height: 0;
   background: var(--bg-repl);
   border-top: 1px solid #00000055;
 }
 
-/* toggle-repl (C-x p) hides the panel; the editor takes the freed space. */
-body.repl-hidden .repl-host {
+/* toggle-repl (C-x p) hides the panel; the editor takes the freed space.
+   The splitter goes with it — there's nothing to resize. */
+body.repl-hidden .repl-host,
+body.repl-hidden #repl-splitter {
   display: none;
 }
 
@@ -402,16 +412,20 @@ body.repl-hidden .repl-host {
 /* --- Markdown preview pane --------------------------------------------- */
 
 /* The preview pane sits to the right of the editor. markdown-preview
-   (C-c v) toggles it; hidden, the editor reclaims the width. */
+   (C-c v) toggles it; hidden, the editor reclaims the width. Its
+   width is driven by --preview-width through the workspace grid. */
 .markdown-preview-host {
-  flex: 0 0 42%;
+  flex: 0 0 var(--preview-width);
   min-width: 0;
   min-height: 0;
   background: var(--bg-chrome);
   border-left: 1px solid #00000055;
 }
 
-body.markdown-preview-hidden .markdown-preview-host {
+/* When the preview is hidden, the splitter goes with it — there's
+   nothing to resize. */
+body.markdown-preview-hidden .markdown-preview-host,
+body.markdown-preview-hidden #preview-splitter {
   display: none;
 }
 
@@ -455,6 +469,37 @@ body.markdown-preview-hidden .markdown-preview-host {
   background: #f4f4f4;
   padding: 8px 10px;
   border-radius: 4px;
+}
+
+/* --- drag-resize splitters --------------------------------------------- */
+/* Two 6px hit areas that the splitter module (renderer/splitter.js)
+   binds pointer events to. The horizontal one sits between the editor
+   and the preview pane (a track inside the workspace grid); the
+   vertical one between the workspace and the REPL (a flex item in
+   the body column). Each drag writes a CSS custom property
+   (--preview-width / --repl-height) the layout reads — the splitter
+   is layout-agnostic, the variable is the only contract. */
+.splitter {
+  flex: 0 0 auto;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.splitter:hover,
+.splitter:active {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.splitter-horizontal {
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.splitter-vertical {
+  width: 100%;
+  height: 6px;
+  cursor: row-resize;
 }
 
 /* --- minibuffer --------------------------------------------------------- */

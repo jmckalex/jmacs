@@ -1387,6 +1387,87 @@ app.whenReady().then(() => {
       }));
       await rm(jukeboxDir, { recursive: true, force: true });
 
+      // Splitters: each drag updates a CSS custom property on the
+      // document root, and the host persists the final value through
+      // panes.json. The check programmatically drives pointer events
+      // at each splitter, reads back the CSS variable, then reads
+      // panes.json through the host bridge to confirm persistence.
+      const splitters = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const cssVar = (name) => getComputedStyle(document.documentElement)
+          .getPropertyValue(name).trim();
+        // Show the preview pane so its splitter has something to act on.
+        submit('(new-buffer! "splitter.md")');
+        await frame();
+        submit('(set! *markdown-interpreter* "cat")');
+        await frame();
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'v', bubbles: true, cancelable: true,
+        }));
+        await wait(400);
+        const previewSplit = document.getElementById('preview-splitter');
+        const replSplit = document.getElementById('repl-splitter');
+        const previewShown = !!(previewSplit
+          && getComputedStyle(previewSplit).display !== 'none');
+        const replShown = !!(replSplit
+          && getComputedStyle(replSplit).display !== 'none');
+        // Drag the preview splitter: the new preview width is measured
+        // from the workspace's right edge. Aim for ~280px.
+        const workspace = document.getElementById('workspace');
+        const wsRect = workspace.getBoundingClientRect();
+        const targetPreviewX = wsRect.right - 280;
+        const previewBefore = cssVar('--preview-width');
+        previewSplit.dispatchEvent(new PointerEvent('pointerdown', {
+          pointerId: 1, button: 0, bubbles: true, cancelable: true,
+        }));
+        previewSplit.dispatchEvent(new PointerEvent('pointermove', {
+          pointerId: 1, clientX: targetPreviewX, bubbles: true, cancelable: true,
+        }));
+        previewSplit.dispatchEvent(new PointerEvent('pointerup', {
+          pointerId: 1, bubbles: true, cancelable: true,
+        }));
+        await frame();
+        const previewAfter = cssVar('--preview-width');
+        // Drag the REPL splitter: the new REPL height is measured from
+        // the viewport's bottom edge. Aim for ~180px.
+        const targetReplY = window.innerHeight - 180;
+        const replBefore = cssVar('--repl-height');
+        replSplit.dispatchEvent(new PointerEvent('pointerdown', {
+          pointerId: 2, button: 0, bubbles: true, cancelable: true,
+        }));
+        replSplit.dispatchEvent(new PointerEvent('pointermove', {
+          pointerId: 2, clientY: targetReplY, bubbles: true, cancelable: true,
+        }));
+        replSplit.dispatchEvent(new PointerEvent('pointerup', {
+          pointerId: 2, bubbles: true, cancelable: true,
+        }));
+        await frame();
+        const replAfter = cssVar('--repl-height');
+        // Give the writePanes IPC a beat to flush to disk.
+        await wait(150);
+        const stored = await window.host.readPanes();
+        return {
+          previewShown, replShown,
+          previewBefore, previewAfter,
+          replBefore, replAfter,
+          stored,
+        };
+      })()`);
+      console.log('  splitters:', JSON.stringify(splitters));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -1536,6 +1617,22 @@ app.whenReady().then(() => {
         // ends up on the <img> as a data: URL — the parser, the IPC
         // handler, and the view all wired through.
         jukebox.embeddedArtShown;
+      // Splitter arm: both splitters are visible when their pane is
+      // visible; dragging updates the CSS variable; and the new size
+      // is persisted through panes.json. Sizes are within 2px of the
+      // requested target — a one-pixel rounding wobble is fine.
+      const previewWidth = parseFloat(splitters.previewAfter);
+      const replHeight = parseFloat(splitters.replAfter);
+      const splittersOk =
+        splitters.previewShown &&
+        splitters.replShown &&
+        splitters.previewBefore !== splitters.previewAfter &&
+        splitters.replBefore !== splitters.replAfter &&
+        Math.abs(previewWidth - 280) < 3 &&
+        Math.abs(replHeight - 180) < 3 &&
+        splitters.stored &&
+        Math.abs((splitters.stored.previewWidth ?? 0) - previewWidth) < 3 &&
+        Math.abs((splitters.stored.replHeight ?? 0) - replHeight) < 3;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -1543,11 +1640,11 @@ app.whenReady().then(() => {
         searchOk && paletteOk && treesitterOk && replaceOk && mouseOk &&
         markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && imageOk && swatchesOk &&
-        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk
+        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && splittersOk
       ) {
         finish(
           0,
-          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, markdown preview, virtualisation, sticky notes, colour swatches, customisation, image buffers, search and files all work`
+          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, markdown preview, virtualisation, sticky notes, colour swatches, customisation, image buffers, splitters, search and files all work`
         );
       } else if (!renderOk) {
         finish(1, 'editor did not render expected DOM');
@@ -1619,8 +1716,10 @@ app.whenReady().then(() => {
           1,
           `colour swatches did not work (${JSON.stringify(swatches)})`
         );
-      } else {
+      } else if (!jukeboxOk) {
         finish(1, `jukebox did not work (${JSON.stringify(jukebox)})`);
+      } else {
+        finish(1, `splitters did not work (${JSON.stringify(splitters)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

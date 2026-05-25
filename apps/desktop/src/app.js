@@ -30,6 +30,7 @@ import {
   createMarkdownPreview,
   createMinibuffer,
   createReplView,
+  createSplitter,
   createTreeSitterHighlighter,
   findArt,
   formBoundsAtPoint,
@@ -1973,6 +1974,79 @@ watchCurrentBuffer();
 ensureMajorMode();
 updateModeline();
 editorView.focus();
+
+// --- splitters ---------------------------------------------------------
+// Drag-resizable boundaries between the editor and the Markdown
+// preview pane, and between the workspace and the REPL. Each
+// splitter writes a CSS custom property the layout reads from
+// (--preview-width / --repl-height); the host persists the final
+// value through panes.json after each drag.
+
+const workspaceEl = document.getElementById('workspace');
+const previewSplitterEl = document.getElementById('preview-splitter');
+const replSplitterEl = document.getElementById('repl-splitter');
+
+/** The persisted pane sizes — read once at startup and re-saved after
+ *  each drag, so the layout survives quits. */
+let persistedPanes = {};
+
+/** Persist the current sizes, swallowing IPC failures (the next save
+ *  will catch any one-off hiccup; we never block on disk). */
+function savePanes() {
+  if (typeof window.host?.writePanes !== 'function') return;
+  window.host.writePanes(persistedPanes).catch(() => {
+    /* a transient write failure should not interrupt the user */
+  });
+}
+
+const previewSplitter = createSplitter({
+  orientation: 'horizontal',
+  element: previewSplitterEl,
+  target: workspaceEl,
+  cssVar: '--preview-width',
+  min: 200,
+  // The editor needs at least 300px to remain usable.
+  max: () => Math.max(200, workspaceEl.getBoundingClientRect().width - 300),
+  onResize: (value) => {
+    persistedPanes.previewWidth = value;
+    savePanes();
+  },
+});
+
+const replSplitter = createSplitter({
+  orientation: 'vertical',
+  element: replSplitterEl,
+  target: document.body,
+  cssVar: '--repl-height',
+  min: 80,
+  // The workspace + chrome above the REPL needs at least 300px.
+  max: () => Math.max(80, window.innerHeight - 300),
+  onResize: (value) => {
+    persistedPanes.replHeight = value;
+    savePanes();
+  },
+});
+
+// Read any persisted sizes and apply them. The read runs in the
+// background so it never blocks the first paint; whatever it finds is
+// applied as soon as it arrives.
+if (typeof window.host?.readPanes === 'function') {
+  window.host
+    .readPanes()
+    .then((stored) => {
+      if (!stored || typeof stored !== 'object') return;
+      persistedPanes = { ...stored };
+      if (typeof stored.previewWidth === 'number') {
+        previewSplitter.set(stored.previewWidth);
+      }
+      if (typeof stored.replHeight === 'number') {
+        replSplitter.set(stored.replHeight);
+      }
+    })
+    .catch(() => {
+      /* no saved sizes — the defaults stand */
+    });
+}
 
 // Native menus: run a command chosen from a menu, and publish the
 // current buffer's mode menu to the host.
