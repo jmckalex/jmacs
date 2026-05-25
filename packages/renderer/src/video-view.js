@@ -226,30 +226,8 @@ export function buildErrorBlock(doc) {
   commandRow.className = 'media-error-command-row';
   const commandEl = doc.createElement('code');
   commandEl.className = 'media-error-command';
-  const copyBtn = doc.createElement('button');
-  copyBtn.className = 'media-error-copy';
-  copyBtn.type = 'button';
-  copyBtn.textContent = 'Copy';
-  copyBtn.title = 'Copy command to clipboard';
-  commandRow.append(commandEl, copyBtn);
+  commandRow.append(commandEl);
   root.append(commandRow);
-
-  copyBtn.addEventListener('click', async () => {
-    const text = commandEl.textContent ?? '';
-    if (!text) return;
-    try {
-      const nav = doc.defaultView?.navigator;
-      if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
-        await nav.clipboard.writeText(text);
-        copyBtn.textContent = 'Copied';
-        setTimeout(() => {
-          copyBtn.textContent = 'Copy';
-        }, 1200);
-      }
-    } catch {
-      /* clipboard may be unavailable; the user can still read + paste */
-    }
-  });
 
   return {
     root,

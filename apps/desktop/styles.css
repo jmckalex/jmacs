@@ -1446,6 +1446,14 @@ textarea.customize-widget {
   font-family: system-ui, sans-serif;
 }
 
+/* The class above sets `display: flex`, which has the same specificity
+   as the UA's `[hidden] { display: none }`. Without this rule, an
+   empty error block leaks into the layout (taking flex space, pushing
+   the video off-centre) even when JS sets `hidden`. */
+.media-error[hidden] {
+  display: none;
+}
+
 .media-error-headline {
   font-size: 15px;
   font-weight: 600;
@@ -1481,22 +1489,6 @@ textarea.customize-widget {
   border-radius: 4px;
   overflow-x: auto;
   white-space: nowrap;
-}
-
-.media-error-copy {
-  flex: 0 0 auto;
-  padding: 0 12px;
-  font-family: system-ui, sans-serif;
-  font-size: 12px;
-  color: var(--fg);
-  background: var(--bg-chrome);
-  border: 1px solid #ffffff22;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.media-error-copy:hover {
-  background: var(--bg-editor);
 }
 
 /* --- colour swatches --------------------------------------------------- */
