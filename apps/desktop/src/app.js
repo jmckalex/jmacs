@@ -1532,6 +1532,14 @@ function highlightCodeForDocView(text, language) {
 // `open-doc`, which calls `open-doc!` (host primitive) below.
 const docView = createDocView(document.getElementById('editor-host'), {
   ...(keymapReady ? { onKey: dispatchKey } : {}),
+  closeBuffer: () => {
+    if (!keymapReady) return;
+    try {
+      interpreter.call('kill-buffer');
+    } catch (error) {
+      repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+    }
+  },
   openDoc: (name) => {
     if (keymapReady) {
       try {
