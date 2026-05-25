@@ -37,6 +37,7 @@ by `src/treesitter.js`.
 | `tree-sitter-elixir.wasm` | `tree-sitter-elixir@0.3.5` | the Elixir grammar |
 | `tree-sitter-clojure.wasm` | `tree-sitter-clojure@0.4.0` | the Clojure grammar (built locally — see below) |
 | `tree-sitter-scheme.wasm` | `@6cdh/tree-sitter-scheme@0.24.7-1` | the Scheme grammar (built locally) |
+| `tree-sitter-erlang.wasm` | WhatsApp/tree-sitter-erlang @ tag `0.18` | the Erlang grammar (no maintained npm; cloned & built locally) |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
