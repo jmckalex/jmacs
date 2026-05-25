@@ -19,15 +19,31 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createBuffer } from '@editor/buffer';
-import { createInterpreter, NIL } from '@editor/lisp';
+import { createInterpreter, keyword, NIL } from '@editor/lisp';
 import { createBufferPrimitives, loadStdlib } from '../src/index.js';
 
 const lispDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lisp');
 
+/** Build a Lisp metadata map for the `audio-metadata` stub from a
+ *  plain JS object — null fields become NIL, the rest map straight
+ *  through under their keyword keys. */
+function metadataMap(fields) {
+  const m = new Map();
+  for (const key of ['title', 'artist', 'album', 'track', 'year',
+                     'genre', 'duration']) {
+    const v = fields[key];
+    m.set(keyword(key), v === null || v === undefined ? NIL : v);
+  }
+  return m;
+}
+
 /** Build a minimal editor with stubs for every host primitive the
  *  jukebox command path touches. Each call into a stub is recorded so
- *  a test can read what happened. */
-async function jukeboxEditor() {
+ *  a test can read what happened.
+ *
+ *  Pass `audioMetadata` (a `path → fields | null` function) to drive
+ *  the metadata stub for tests of `format-track`. */
+async function jukeboxEditor(options = {}) {
   const buffer = createBuffer('', { name: 'scratch' });
   const calls = [];
   const session = {
@@ -35,6 +51,7 @@ async function jukeboxEditor() {
       return buffer;
     },
   };
+  const audioMetadata = options.audioMetadata ?? (() => null);
 
   const interpreter = createInterpreter({
     write: () => {},
@@ -77,6 +94,16 @@ async function jukeboxEditor() {
         calls.push(['prompt-directory']);
         return NIL;
       },
+      'refresh-jukebox-labels!': () => {
+        calls.push(['refresh-jukebox-labels']);
+        return NIL;
+      },
+      'audio-metadata': (args) => {
+        const fields = audioMetadata(String(args[0]));
+        return fields === null || fields === undefined
+          ? NIL
+          : metadataMap(fields);
+      },
     },
   });
   await loadStdlib(interpreter, (name) =>
@@ -107,6 +134,47 @@ test('C-x j is still bound to jukebox', async () => {
   const { interpreter } = await jukeboxEditor();
   assert.ok(
     interpreter.evaluate('(eq? (get c-x-keymap "j") (quote jukebox))')
+  );
+});
+
+test('format-track renders metadata through the default template', async () => {
+  const { interpreter } = await jukeboxEditor({
+    audioMetadata: (path) =>
+      path === '/m/song.mp3'
+        ? { title: 'Cat People', artist: 'Bowie', album: "Let's Dance" }
+        : null,
+  });
+  const result = interpreter.call('format-track', '/m/song.mp3');
+  assert.equal(result, '"Cat People", Bowie, Let\'s Dance');
+});
+
+test('format-track falls back to the bare filename when metadata is missing', async () => {
+  const { interpreter } = await jukeboxEditor();
+  const result = interpreter.call('format-track', '/m/untagged.flac');
+  assert.equal(result, 'untagged.flac');
+});
+
+test('format-track honours a customised *jukebox-track-format*', async () => {
+  const { interpreter } = await jukeboxEditor({
+    audioMetadata: () => ({
+      title: 'Heroes', artist: 'Bowie', track: 3, year: 1977,
+    }),
+  });
+  interpreter.evaluate(
+    '(custom-apply! (quote *jukebox-track-format*) "{track}. {title} ({year})")'
+  );
+  const result = interpreter.call('format-track', '/m/whatever.mp3');
+  assert.equal(result, '3. Heroes (1977)');
+});
+
+test('customising *jukebox-track-format* fires the refresh-jukebox-labels! hook', async () => {
+  const { interpreter, calls } = await jukeboxEditor();
+  interpreter.evaluate(
+    '(custom-apply! (quote *jukebox-track-format*) "{title}")'
+  );
+  assert.ok(
+    calls.some((c) => c[0] === 'refresh-jukebox-labels'),
+    'refresh-jukebox-labels! should have been called by the on-change hook'
   );
 });
 

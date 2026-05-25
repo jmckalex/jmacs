@@ -32,3 +32,118 @@
    directory-picker dialog. Bridges the dialog's callback into the
    `open-jukebox-buffer!` primitive."
   (open-jukebox-buffer! path))
+
+;;; --- track display formatting --------------------------------------------
+;;; The jukebox view shows one row per audio file. By default that row
+;;; reads `"Title", Artist, Album` — pulled from the file's embedded
+;;; tags via the (audio-metadata path) primitive. The format is a
+;;; template string with `{placeholders}` the user can customise:
+;;;   {title}    {artist}   {album}    {track}
+;;;   {year}     {genre}    {filename} (the bare filename, no extension)
+;;; Missing fields render as the empty string; an untagged or
+;;; unsupported file falls back to the bare filename.
+
+(defgroup 'jukebox 'jmacs "Jukebox view: how audio files are listed.")
+
+(defcustom *jukebox-track-format* "\"{title}\", {artist}, {album}" :string
+  :group 'jukebox
+  :on-change (lambda (name value) (refresh-jukebox-labels!))
+  :doc "Template used by `format-track` to render each row in a jukebox
+   buffer. Supported placeholders, in `{braces}`:
+       {title}    the song title
+       {artist}   the performing artist
+       {album}    the album name
+       {track}    the track number
+       {year}     the release year
+       {genre}    the genre
+       {filename} the bare filename without its extension
+   Missing fields render as the empty string. A file with no usable
+   metadata (no ID3 tag, unsupported container, …) falls back to its
+   bare filename regardless of the template.")
+
+(define (-jukebox-basename path)
+  "The bare filename component of PATH (everything after the last `/`)."
+  (let ((parts (string-split path "/")))
+    (car (reverse parts))))
+
+(define (-jukebox-drop-last items)
+  "ITEMS without its final element. Used to strip the suffix from a
+   dotted-split filename."
+  (cond ((nil? items) (list))
+        ((nil? (cdr items)) (list))
+        (else (cons (car items) (-jukebox-drop-last (cdr items))))))
+
+(define (-jukebox-join-with parts separator)
+  "Concatenate PARTS, interleaving SEPARATOR between adjacent
+   elements. `'(\"a\" \"b\" \"c\") \".\"` → `\"a.b.c\"`."
+  (cond ((nil? parts) "")
+        ((nil? (cdr parts)) (car parts))
+        (else
+         (string-append (car parts) separator
+                        (-jukebox-join-with (cdr parts) separator)))))
+
+(define (-jukebox-strip-suffix name)
+  "NAME without its trailing dotted suffix, if any. `foo.mp3` → `foo`,
+   `weird.name.flac` → `weird.name`, `noext` → `noext`."
+  (let ((parts (string-split name ".")))
+    (if (< (length parts) 2)
+        name
+        (-jukebox-join-with (-jukebox-drop-last parts) "."))))
+
+(define (-jukebox-field meta key)
+  "Render the value of METADATA at KEY for the template — nil and
+   non-strings come out as the empty string."
+  (let ((value (get meta key nil)))
+    (cond ((nil? value) "")
+          ((string? value) value)
+          (else (str value)))))
+
+(define (-jukebox-apply-template template meta filename-stem)
+  "Substitute every {placeholder} in TEMPLATE with the matching field
+   from METADATA (or the filename stem for {filename}). Sequential
+   rewrites — each builds on the prior. Plain and readable beats fancy
+   here."
+  (let* ((s template)
+         (s (string-template-replace s "{title}"
+                                     (-jukebox-field meta :title)))
+         (s (string-template-replace s "{artist}"
+                                     (-jukebox-field meta :artist)))
+         (s (string-template-replace s "{album}"
+                                     (-jukebox-field meta :album)))
+         (s (string-template-replace s "{track}"
+                                     (-jukebox-field meta :track)))
+         (s (string-template-replace s "{year}"
+                                     (-jukebox-field meta :year)))
+         (s (string-template-replace s "{genre}"
+                                     (-jukebox-field meta :genre)))
+         (s (string-template-replace s "{filename}" filename-stem)))
+    s))
+
+(define (string-template-replace text needle replacement)
+  "Replace every occurrence of NEEDLE in TEXT with REPLACEMENT.
+   A non-string REPLACEMENT is rendered via (str …)."
+  (let ((parts (string-split text needle))
+        (rep (if (string? replacement) replacement (str replacement))))
+    (-jukebox-join-with parts rep)))
+
+(define (-jukebox-meta-usable? meta)
+  "True when METADATA carries at least a title or an artist — the
+   bare minimum that makes a formatted row more useful than the
+   filename."
+  (and (not (nil? meta))
+       (or (and (string? (get meta :title nil))
+                (not (equal? (get meta :title nil) "")))
+           (and (string? (get meta :artist nil))
+                (not (equal? (get meta :artist nil) ""))))))
+
+(define (format-track path)
+  "The display string for the jukebox row at PATH. Reads the file's
+   embedded tag metadata and substitutes it into the
+   `*jukebox-track-format*` template. Falls back to the bare filename
+   (without extension) when the metadata is missing or unusable."
+  (let* ((filename (-jukebox-basename path))
+         (stem (-jukebox-strip-suffix filename))
+         (meta (audio-metadata path)))
+    (if (-jukebox-meta-usable? meta)
+        (-jukebox-apply-template *jukebox-track-format* meta stem)
+        filename)))

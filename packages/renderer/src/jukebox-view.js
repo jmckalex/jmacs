@@ -108,6 +108,11 @@ export function joinPath(dir, name) {
  *
  * @param {HTMLElement} container - Where to mount the view.
  * @param {object} [options]
+ * The buffer's `tracks` are bare filenames (used to build the play
+ * paths); when the buffer also carries a `labels` array of the same
+ * length, the view shows `labels[i]` in the track list and now-playing
+ * line. Without `labels`, it falls back to the filename.
+ *
  * @param {(key: string) => boolean} [options.onKey] - Forwarded for
  *   chord keys (so `C-x b`, `M-x`, … still work here).
  * @param {{
@@ -247,6 +252,11 @@ export function createJukeboxView(container, options = {}) {
   /** A mutable copy of `buffer.tracks` so shuffle/randomise can reorder
    *  without mutating the host's record. */
   let tracks = [];
+  /** Parallel to `tracks`: the formatted display string per track
+   *  (e.g. `"Cat People", David Bowie, Let's Dance`). Empty when the
+   *  host doesn't compute formatted labels — in that case the view
+   *  falls back to the filename. */
+  let labels = [];
   /** The index of the track presented as "now playing", or `null`. */
   let index = null;
   let shuffleOn = false;
@@ -344,14 +354,22 @@ export function createJukeboxView(container, options = {}) {
   function randomise() {
     if (tracks.length === 0) return;
     const currentTrack = index !== null ? tracks[index] : null;
-    tracks = shufflePermutation(tracks);
+    // Build a permutation of indices, then reorder both tracks AND
+    // labels by the same permutation so the row text continues to
+    // match the row file.
+    const order = shufflePermutation(tracks.map((_, i) => i));
+    tracks = order.map((i) => tracks[i]);
+    if (labels.length === tracks.length) labels = order.map((i) => labels[i]);
     if (currentTrack) {
       const next = tracks.indexOf(currentTrack);
       index = next >= 0 ? next : 0;
     } else {
       index = 0;
     }
-    if (buffer) buffer.tracks = tracks.slice();
+    if (buffer) {
+      buffer.tracks = tracks.slice();
+      if (labels.length === tracks.length) buffer.labels = labels.slice();
+    }
     redraw();
   }
 
@@ -384,14 +402,22 @@ export function createJukeboxView(container, options = {}) {
    *  so a directory of mixed albums shows each track's own picture
    *  rather than a single misleading cover.jpg. M-RET still targets the
    *  sidecar file when one exists; embedded art has no path to open. */
+  /** Display label for the track at I — the formatted label when the
+   *  host computed one, otherwise the bare filename. */
+  function labelAt(i) {
+    if (i === null || i < 0 || i >= tracks.length) return null;
+    if (labels.length === tracks.length && typeof labels[i] === 'string'
+        && labels[i] !== '') {
+      return labels[i];
+    }
+    return tracks[i];
+  }
+
   function paintArt() {
     if (embeddedArtUrl) {
       artImg.src = embeddedArtUrl;
       artImg.style.display = '';
-      const trackName =
-        index !== null && index >= 0 && index < tracks.length
-          ? tracks[index]
-          : 'current track';
+      const trackName = labelAt(index) ?? 'current track';
       artNote.textContent = art
         ? `Album art: embedded in ${trackName}` +
           `    (M-RET to open ${art})`
@@ -418,14 +444,14 @@ export function createJukeboxView(container, options = {}) {
   function paintTracks() {
     list.replaceChildren();
     trackHeading.textContent = `Tracks (${tracks.length})`;
-    tracks.forEach((track, i) => {
+    tracks.forEach((_track, i) => {
       const li = doc.createElement('li');
       li.className = 'jukebox-track';
       if (i === index) li.classList.add('is-current');
       const btn = doc.createElement('button');
       btn.type = 'button';
       btn.className = 'jukebox-track-button';
-      btn.textContent = track;
+      btn.textContent = labelAt(i) ?? '';
       btn.addEventListener('click', () => playAt(i));
       li.append(btn);
       list.append(li);
@@ -434,10 +460,7 @@ export function createJukeboxView(container, options = {}) {
 
   /** Update the "Now playing" line and the shuffle button label. */
   function paintStatus() {
-    const current =
-      index !== null && index >= 0 && index < tracks.length
-        ? tracks[index]
-        : null;
+    const current = labelAt(index);
     nowPlaying.textContent = current
       ? `Now playing: ${current}`
       : 'Nothing selected.';
@@ -564,6 +587,7 @@ export function createJukeboxView(container, options = {}) {
     buffer = next;
     if (!buffer) {
       tracks = [];
+      labels = [];
       index = null;
       shuffleOn = false;
       dir = '';
@@ -575,6 +599,9 @@ export function createJukeboxView(container, options = {}) {
     }
     dir = String(buffer.dir ?? '');
     tracks = Array.isArray(buffer.tracks) ? buffer.tracks.slice() : [];
+    labels = Array.isArray(buffer.labels) && buffer.labels.length === tracks.length
+      ? buffer.labels.slice()
+      : [];
     art = typeof buffer.art === 'string' ? buffer.art : null;
     index = tracks.length > 0 ? 0 : null;
     shuffleOn = false;

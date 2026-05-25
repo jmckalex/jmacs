@@ -12,6 +12,7 @@ import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { extractAlbumArt } from './audio-art.js';
+import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 
 /**
  * Expand a leading `~` (or `~/…`) to the current user's home directory.
@@ -269,6 +270,30 @@ export function registerFileHandlers() {
   // is unsupported, unreadable, or carries no art. Used by the
   // jukebox view so a track without a sidecar cover.jpg still gets
   // its picture displayed.
+  // Read an audio file's embedded tag metadata (title, artist, album,
+  // track, year, genre, duration). Returns the shaped object or null
+  // when the format is unsupported, the file is unreadable, or no
+  // recognised tag block is present. Used by the jukebox to format
+  // track-list rows from real tags rather than raw filenames.
+  ipcMain.handle('audio:metadata', async (_event, payload) => {
+    const raw = payload?.path;
+    if (typeof raw !== 'string' || raw === '') return null;
+    return extractMetadata(expandTilde(raw));
+  });
+
+  // The synchronous twin. The Lisp interpreter is synchronous, so the
+  // (audio-metadata path) host primitive reaches the filesystem via
+  // sendSync — the same pattern listDirectorySync uses. Metadata
+  // extraction is small file IO so the latency is fine.
+  ipcMain.on('audio:metadata-sync', (event, payload) => {
+    const raw = payload?.path;
+    if (typeof raw !== 'string' || raw === '') {
+      event.returnValue = null;
+      return;
+    }
+    event.returnValue = extractMetadataSync(expandTilde(raw));
+  });
+
   ipcMain.handle('audio:album-art', async (_event, payload) => {
     const raw = payload?.path;
     if (typeof raw !== 'string' || raw === '') return null;
