@@ -746,8 +746,12 @@ body.markdown-preview-hidden #preview-splitter {
 }
 
 .sticky-note.is-collapsed {
-  width: 30px !important;
-  height: 30px !important;
+  /* The note's metadata `icon-size: N` (parsed and clamped by
+     sticky-notes.js) sets `--sticky-icon-size` inline; absent or
+     invalid values fall back to the 30px default. The icon glyph
+     scales to 75% of the box so the proportions hold across sizes. */
+  width: var(--sticky-icon-size, 30px) !important;
+  height: var(--sticky-icon-size, 30px) !important;
   min-width: 0;
   min-height: 0;
   /* Collapsed, only the icon shows — no panel behind it. !important
@@ -769,7 +773,7 @@ body.markdown-preview-hidden #preview-splitter {
   justify-content: center;
   width: 100%;
   height: 100%;
-  font-size: 22.5px;
+  font-size: calc(var(--sticky-icon-size, 30px) * 0.75);
   color: #e6cd86;
   cursor: move;
 }

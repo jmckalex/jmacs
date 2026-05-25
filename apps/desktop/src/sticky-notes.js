@@ -77,6 +77,27 @@ export function parseNoteSource(source) {
 }
 
 /**
+ * Validate a metadata `icon-size` value. Accepts a bare number or one
+ * with a `px` suffix; clamps to a sane range so a typo like
+ * `icon-size: 9999` can't take over the viewport. Returns the pixel
+ * value as a number, or `null` when the input is missing or invalid.
+ *
+ * The bounds (12px–256px): under 12 the Font Awesome glyph stops
+ * rendering recognisably; over 256 the note would dwarf the editor.
+ *
+ * @param {unknown} raw
+ * @returns {number | null}
+ */
+export function parseIconSize(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().replace(/px$/i, '').trim();
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) return null;
+  if (value < 12 || value > 256) return null;
+  return value;
+}
+
+/**
  * Create the sticky-notes overlay manager.
  *
  * @param {object} options
@@ -200,6 +221,19 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     entry.body.style.color = valid ? contrastingText(color) : '';
   }
 
+  /** Apply a note's metadata `icon-size` (or clear it back to the
+   *  default). The value is set as a CSS custom property on the note
+   *  root; the collapsed-note CSS reads it via `var(--sticky-icon-size,
+   *  30px)` so an absent or invalid value falls back to the default. */
+  function applyIconSize(entry, raw) {
+    const px = parseIconSize(raw);
+    if (px === null) {
+      entry.root.style.removeProperty('--sticky-icon-size');
+    } else {
+      entry.root.style.setProperty('--sticky-icon-size', `${px}px`);
+    }
+  }
+
   /** Render a note's body from its source (async, cached, race-guarded). */
   function renderBody(id) {
     const note = noteById(id);
@@ -209,6 +243,7 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     // of the Markdown that gets rendered.
     const { meta, body } = parseNoteSource(note.source);
     applyColor(entry, meta.color);
+    applyIconSize(entry, meta['icon-size']);
     const cached = htmlCache.get(body);
     if (cached !== undefined) {
       setBody(entry.body, cached);

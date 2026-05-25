@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { adjustAnchor, parseNoteSource } from '../src/sticky-notes.js';
+import {
+  adjustAnchor,
+  parseIconSize,
+  parseNoteSource,
+} from '../src/sticky-notes.js';
 
 /** A BufferChange — `removed`/`inserted` are strings. */
 const change = (start, removed, inserted) => ({ start, removed, inserted });
@@ -59,4 +63,33 @@ test('parseNoteSource handles a header with no body', () => {
   const { meta, body } = parseNoteSource('---\ncolor: #ffcc00\n---');
   assert.equal(meta.color, '#ffcc00');
   assert.equal(body, '');
+});
+
+test('parseNoteSource reads the icon-size key', () => {
+  const { meta } = parseNoteSource('---\nicon-size: 60\n---\nx');
+  assert.equal(meta['icon-size'], '60');
+});
+
+test('parseIconSize accepts a bare number, a px suffix, and surrounding space', () => {
+  assert.equal(parseIconSize('60'), 60);
+  assert.equal(parseIconSize('60px'), 60);
+  assert.equal(parseIconSize('  50  '), 50);
+  assert.equal(parseIconSize('48PX'), 48);
+});
+
+test('parseIconSize rejects values outside the sane 12–256 range', () => {
+  // Under the lower bound: the Font Awesome glyph stops rendering well.
+  assert.equal(parseIconSize('11'), null);
+  // Over the upper bound: the note would dwarf the editor.
+  assert.equal(parseIconSize('257'), null);
+  assert.equal(parseIconSize('9999'), null);
+});
+
+test('parseIconSize rejects malformed input', () => {
+  assert.equal(parseIconSize(''), null);
+  assert.equal(parseIconSize('abc'), null);
+  assert.equal(parseIconSize('-30'), null);
+  assert.equal(parseIconSize(undefined), null);
+  assert.equal(parseIconSize(null), null);
+  assert.equal(parseIconSize(60), null);
 });
