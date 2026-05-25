@@ -1572,6 +1572,72 @@ app.whenReady().then(() => {
       })()`);
       console.log('  splitters:', JSON.stringify(splitters));
 
+      // Language pack: one canonical buffer per newly added language,
+      // each insert-then-frame followed by a face-class count read
+      // through document.querySelectorAll. A non-zero count proves the
+      // grammar loaded and its highlight query produced spans. The
+      // arm is intentionally additive — adding a language is one new
+      // submit + one new count read — and aggregates to a single
+      // boolean. Languages whose grammar is built from C source are
+      // bunched with the npm-prebuilt ones; the .wasm file is the
+      // same shape either way.
+      const langPack = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const counts = (cls) => document.querySelectorAll('.' + cls).length;
+        const open = async (file, body) => {
+          submit('(new-buffer! "' + file + '")');
+          submit('(insert! "' + body.replace(/"/g, '\\\\"').replace(/\\n/g, '\\\\n') + '")');
+          await frame();
+        };
+        const results = {};
+        // Each row: language tag, sample file, one canonical line, and
+        // the face classes expected to have produced at least one span.
+        const cases = [
+          ['c',          'smoke.c',          'int main(void) { return 0; }',     ['tok-keyword','tok-type','tok-number']],
+          ['cpp',        'smoke.cpp',        'class C { int x = 1; };',          ['tok-keyword','tok-type']],
+          ['java',       'smoke.java',       'class C { int x = 1; }',           ['tok-keyword','tok-type']],
+          ['csharp',     'smoke.cs',         'class C { int x = 1; }',           ['tok-keyword','tok-type']],
+          ['ruby',       'smoke.rb',         'def foo; return nil; end',         ['tok-keyword','tok-function']],
+          ['lua',        'smoke.lua',        'local function foo() return 1 end',['tok-keyword','tok-function']],
+          ['yaml',       'smoke.yaml',       'name: smoke',                       ['tok-function']],
+          ['toml',       'smoke.toml',       'name = 42',                         ['tok-function','tok-number']],
+          ['haskell',    'smoke.hs',         'main = putStrLn "hi"',             ['tok-function','tok-string']],
+          ['ocaml',      'smoke.ml',         'let x = 42',                       ['tok-keyword','tok-number']],
+          ['elixir',     'smoke.ex',         'def foo do 1 end',                 ['tok-keyword','tok-number']],
+          ['clojure',    'smoke.clj',        '(defn foo [] 1)',                  ['tok-function','tok-number']],
+          ['scheme',     'smoke.scm',        '(define (foo) 1)',                 ['tok-keyword','tok-number']],
+          ['erlang',     'smoke.erl',        '-module(foo). x() -> 1.',          ['tok-keyword','tok-number']],
+          ['sql',        'smoke.sql',        'SELECT * FROM users;',             ['tok-keyword']],
+          ['dockerfile', 'smoke.dockerfile', 'FROM alpine\\nRUN echo hi',         ['tok-keyword']],
+          ['nix',        'smoke.nix',        'let x = 1; in x',                  ['tok-keyword','tok-number']],
+          ['xml',        'smoke.xml',        '<root attr="v">x</root>',          ['tok-tag','tok-string']],
+          ['graphql',    'smoke.graphql',    'query { user { id } }',            ['tok-keyword','tok-function']],
+          ['kotlin',     'smoke.kt',         'fun foo(): Int = 1',               ['tok-keyword','tok-type','tok-number']],
+          ['swift',      'smoke.swift',      'func foo() -> Int { return 1 }',   ['tok-keyword','tok-type']],
+          ['zig',        'smoke.zig',        'fn foo() i32 { return 1; }',       ['tok-keyword','tok-number']],
+        ];
+        for (const [tag, file, body, classes] of cases) {
+          await open(file, body);
+          // Re-read each class fresh after the buffer is rendered.
+          const found = {};
+          for (const c of classes) found[c] = counts(c);
+          results[tag] = found;
+        }
+        return {
+          // Which language tags actually loaded a tree-sitter grammar.
+          langs: document.body.dataset.treesitter,
+          results,
+        };
+      })()`);
+      console.log('  langPack:', JSON.stringify(langPack));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -1747,6 +1813,39 @@ app.whenReady().then(() => {
         splitters.stored &&
         Math.abs((splitters.stored.previewWidth ?? 0) - previewWidth) < 3 &&
         Math.abs((splitters.stored.replHeight ?? 0) - replHeight) < 3;
+      // Language pack arm: every language tag opened a buffer whose
+      // grammar produced at least one span for every expected face
+      // class. The DOM keeps the spans from the *last* buffer
+      // rendered (the editor doesn't clear them when switching
+      // buffers); each row's counts are read fresh after its insert,
+      // so a non-zero count proves that *this* grammar's highlight
+      // query fired — not a leftover from a sibling.
+      const langPackOk =
+        langPack &&
+        langPack.langs.includes('c') &&
+        langPack.langs.includes('cpp') &&
+        langPack.langs.includes('java') &&
+        langPack.langs.includes('csharp') &&
+        langPack.langs.includes('ruby') &&
+        langPack.langs.includes('lua') &&
+        langPack.langs.includes('yaml') &&
+        langPack.langs.includes('toml') &&
+        langPack.langs.includes('haskell') &&
+        langPack.langs.includes('ocaml') &&
+        langPack.langs.includes('elixir') &&
+        langPack.langs.includes('clojure') &&
+        langPack.langs.includes('scheme') &&
+        langPack.langs.includes('erlang') &&
+        langPack.langs.includes('sql') &&
+        langPack.langs.includes('dockerfile') &&
+        langPack.langs.includes('nix') &&
+        langPack.langs.includes('xml') &&
+        langPack.langs.includes('graphql') &&
+        langPack.langs.includes('kotlin') &&
+        langPack.langs.includes('swift') &&
+        langPack.langs.includes('zig') &&
+        Object.values(langPack.results).every((r) =>
+          Object.values(r).every((n) => n > 0));
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -1754,7 +1853,7 @@ app.whenReady().then(() => {
         searchOk && paletteOk && treesitterOk && faceInfoOk && replaceOk &&
         mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
-        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && splittersOk
+        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && splittersOk && langPackOk
       ) {
         finish(
           0,
@@ -1839,8 +1938,10 @@ app.whenReady().then(() => {
         );
       } else if (!jukeboxOk) {
         finish(1, `jukebox did not work (${JSON.stringify(jukebox)})`);
-      } else {
+      } else if (!splittersOk) {
         finish(1, `splitters did not work (${JSON.stringify(splitters)})`);
+      } else {
+        finish(1, `language pack did not work (${JSON.stringify(langPack)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);
