@@ -124,6 +124,11 @@ export function joinPath(dir, name) {
  *   an image buffer. Called by the M-RET binding on the art file.
  * @param {(message: string) => void} [options.report] - Print a
  *   message to the user (the REPL note path, usually).
+ * @param {(path: string) => Promise<{ dataUrl: string } | null>}
+ *   [options.getEmbeddedArt] - Resolve the embedded picture for an
+ *   audio path (MP3 ID3v2 APIC or MP4 covr). When it resolves to a
+ *   data URL the view shows it in preference to any sidecar art, so
+ *   each track in a mixed-album directory can have its own cover.
  * @returns {{
  *   element: HTMLElement,
  *   setBuffer(buffer: object | null): void,
@@ -140,6 +145,10 @@ export function createJukeboxView(container, options = {}) {
   const openImage =
     typeof options.openImage === 'function' ? options.openImage : null;
   const report = typeof options.report === 'function' ? options.report : null;
+  const getEmbeddedArt =
+    typeof options.getEmbeddedArt === 'function'
+      ? options.getEmbeddedArt
+      : null;
 
   // The shared audio controller, or a fallback that wraps a private
   // <audio>. The shared one is what production uses — the fallback
@@ -245,6 +254,13 @@ export function createJukeboxView(container, options = {}) {
   let dir = '';
   /** Album-art filename within `dir`, or `null`. */
   let art = null;
+  /** Data URL of the embedded picture for the current track, or `null`. */
+  let embeddedArtUrl = null;
+  /** The path the current `embeddedArtUrl` was fetched for. Used to
+   *  drop stale responses when the user jumps tracks faster than the
+   *  IPC round-trip — an in-flight request for the previous track
+   *  must not stomp the new one's art. */
+  let embeddedArtFor = null;
 
   /** Path to feed the audio controller for the track at INDEX. */
   function pathForIndex(i) {
@@ -252,12 +268,45 @@ export function createJukeboxView(container, options = {}) {
     return joinPath(dir, tracks[i]);
   }
 
+  /** Refetch the embedded art for the current track. Resets the cached
+   *  URL synchronously so the UI doesn't show the previous track's
+   *  picture during the IPC round-trip; the result lands on the next
+   *  microtask and triggers a redraw. */
+  function refreshEmbeddedArt() {
+    embeddedArtUrl = null;
+    const path = pathForIndex(index);
+    embeddedArtFor = path;
+    if (!path || !getEmbeddedArt) {
+      redraw();
+      return;
+    }
+    const requested = path;
+    Promise.resolve(getEmbeddedArt(path)).then(
+      (result) => {
+        // Stale response: the user moved on. Drop it.
+        if (embeddedArtFor !== requested) return;
+        embeddedArtUrl = result && typeof result.dataUrl === 'string'
+          ? result.dataUrl
+          : null;
+        redraw();
+      },
+      () => {
+        // Embedded-art lookup is best-effort; leave the cached value
+        // null and let the sidecar fallback (if any) take over.
+        if (embeddedArtFor !== requested) return;
+        embeddedArtUrl = null;
+        redraw();
+      }
+    );
+  }
+
   /** Play the current track. No-op if `index` is null/out of range. */
   function playCurrent() {
     const path = pathForIndex(index);
     if (path === null) return;
     audio.play(path);
-    redraw();
+    // refreshEmbeddedArt does its own redraw (sync + on IPC resolve).
+    refreshEmbeddedArt();
   }
 
   function pause() {
@@ -330,8 +379,25 @@ export function createJukeboxView(container, options = {}) {
 
   // ----- rendering -----
 
-  /** Build the cover-art DOM for the current `art` value. */
+  /** Build the cover-art DOM. Embedded art (extracted from the playing
+   *  file's ID3/MP4 tag) wins over sidecar art, which wins over none —
+   *  so a directory of mixed albums shows each track's own picture
+   *  rather than a single misleading cover.jpg. M-RET still targets the
+   *  sidecar file when one exists; embedded art has no path to open. */
   function paintArt() {
+    if (embeddedArtUrl) {
+      artImg.src = embeddedArtUrl;
+      artImg.style.display = '';
+      const trackName =
+        index !== null && index >= 0 && index < tracks.length
+          ? tracks[index]
+          : 'current track';
+      artNote.textContent = art
+        ? `Album art: embedded in ${trackName}` +
+          `    (M-RET to open ${art})`
+        : `Album art: embedded in ${trackName}`;
+      return;
+    }
     if (art && dir) {
       // The renderer can't load `file://`; the host's `media://`
       // scheme handles ordinary local files. Image files happen to
@@ -341,11 +407,11 @@ export function createJukeboxView(container, options = {}) {
       artImg.src = url;
       artImg.style.display = '';
       artNote.textContent = `Album art: ${art}    (M-RET to open)`;
-    } else {
-      artImg.removeAttribute('src');
-      artImg.style.display = 'none';
-      artNote.textContent = 'No album art in this directory.';
+      return;
     }
+    artImg.removeAttribute('src');
+    artImg.style.display = 'none';
+    artNote.textContent = 'No album art in this directory.';
   }
 
   /** Build the track-list DOM. */
@@ -399,15 +465,20 @@ export function createJukeboxView(container, options = {}) {
     if (buffer !== null) step(1);
   });
 
-  // The view's keyboard model: chord keys (anything with a modifier or
-  // a named key like Enter/Escape) goes through `onKey` so the global
-  // keymap stays in charge; bare letter keys are jukebox shortcuts.
+  // The view's keyboard model: chord keys (anything with a modifier)
+  // ALWAYS go through `onKey` so the global keymap (`C-x k`, `C-x b`,
+  // `C-x C-right`, `M-1`, `M-x`, …) stays reachable even when focus is
+  // sitting on one of the view's buttons. Bare jukebox shortcuts (SPC,
+  // RET, n, p, …) are only intercepted when focus is on the view root —
+  // a focused button gets its normal browser activation instead.
+  // Anything we don't claim falls through to the global keymap, so the
+  // editor's bare-key bindings stay live in a jukebox buffer too.
   root.addEventListener('keydown', (event) => {
     if (MODIFIERS.has(event.key)) return;
-    if (FORM_TAGS.has(event.target.tagName)) return;
     const keyStr = keyEventToString(event);
 
-    // Modifier chords: hand to the global keymap.
+    // Modifier chords go straight to the global keymap. The `M-enter`
+    // exception is the view's only Alt binding — opens the album art.
     if (
       event.ctrlKey || event.metaKey ||
       (event.altKey && keyStr !== 'M-enter')
@@ -416,12 +487,18 @@ export function createJukeboxView(container, options = {}) {
       return;
     }
 
-    // M-RET → open album art.
+    // M-RET → open album art (works regardless of focus target).
     if (keyStr === 'M-enter') {
       event.preventDefault();
       openArt();
       return;
     }
+
+    // Bare keys on form controls: let the browser handle the
+    // interaction (Tab navigation, Enter/Space to activate a button).
+    // The chord branch above already handled modified keys, so the
+    // global keymap still receives `C-x k` etc. from a focused button.
+    if (FORM_TAGS.has(event.target.tagName)) return;
 
     // Bare named keys (Enter, Tab, …) — handle the ones we use, hand
     // the rest to the global keymap.
@@ -491,6 +568,8 @@ export function createJukeboxView(container, options = {}) {
       shuffleOn = false;
       dir = '';
       art = null;
+      embeddedArtUrl = null;
+      embeddedArtFor = null;
       redraw();
       return;
     }
@@ -499,7 +578,10 @@ export function createJukeboxView(container, options = {}) {
     art = typeof buffer.art === 'string' ? buffer.art : null;
     index = tracks.length > 0 ? 0 : null;
     shuffleOn = false;
-    redraw();
+    // Kick off embedded-art lookup for the initial track. The fetch
+    // doesn't block the redraw; the sidecar (if any) shows in the
+    // meantime, then gets replaced if the embedded picture arrives.
+    refreshEmbeddedArt();
   }
 
   return {

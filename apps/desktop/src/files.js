@@ -11,6 +11,8 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { extractAlbumArt } from './audio-art.js';
+
 /**
  * Expand a leading `~` (or `~/…`) to the current user's home directory.
  * Paths a user types from the REPL (e.g. `(jukebox "~/Music/foo")`)
@@ -259,6 +261,24 @@ export function registerFileHandlers() {
     const map = await loadDocManifest();
     if (map === null) return null;
     return { names: Object.keys(map) };
+  });
+
+  // Read the embedded album art from an audio file (MP3 ID3v2 APIC
+  // or MP4 covr). Returns `{ mime, dataUrl }` ready for the
+  // renderer to drop into an `<img src=...>`, or null when the file
+  // is unsupported, unreadable, or carries no art. Used by the
+  // jukebox view so a track without a sidecar cover.jpg still gets
+  // its picture displayed.
+  ipcMain.handle('audio:album-art', async (_event, payload) => {
+    const raw = payload?.path;
+    if (typeof raw !== 'string' || raw === '') return null;
+    const path = expandTilde(raw);
+    const art = await extractAlbumArt(path);
+    if (!art) return null;
+    return {
+      mime: art.mime,
+      dataUrl: `data:${art.mime};base64,${art.data.toString('base64')}`,
+    };
   });
 
   // Documentation: read the rendered HTML for a doc page by name.
