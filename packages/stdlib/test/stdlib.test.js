@@ -62,6 +62,7 @@ async function editor(initialText = 'hello world', options = {}) {
     record.set(keyword('ancestors'), arrayToList(raw.ancestors ?? []));
     return record;
   })();
+  const foldCalls = [];
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
     primitives: {
@@ -119,6 +120,18 @@ async function editor(initialText = 'hello world', options = {}) {
       'replace-all!': () => NIL,
       'recenter!': () => NIL,
       'page-lines': () => 3,
+      'toggle-fold-at-point!': () => {
+        foldCalls.push('toggle');
+        return NIL;
+      },
+      'fold-all!': () => {
+        foldCalls.push('all');
+        return NIL;
+      },
+      'unfold-all!': () => {
+        foldCalls.push('unfold');
+        return NIL;
+      },
       'toggle-repl!': () => {
         replCalls.push('toggle');
         return NIL;
@@ -235,6 +248,7 @@ async function editor(initialText = 'hello world', options = {}) {
     docCalls,
     evalCalls,
     tsCalls,
+    foldCalls,
   };
 }
 
@@ -2756,4 +2770,30 @@ test('C-h F is bound to describe-face-at-point', async () => {
     ),
     'C-h F must run describe-face-at-point'
   );
+});
+
+// --- code folding ------------------------------------------------------
+
+test('C-c TAB runs toggle-fold-at-point through the host primitive', async () => {
+  const { interpreter, foldCalls } = await editor();
+  press(interpreter, 'C-c');
+  press(interpreter, 'tab');
+  assert.ok(foldCalls.includes('toggle'),
+    `expected toggle; got ${JSON.stringify(foldCalls)}`);
+});
+
+test('C-c C-, runs fold-all through the host primitive', async () => {
+  const { interpreter, foldCalls } = await editor();
+  press(interpreter, 'C-c');
+  press(interpreter, 'C-comma');
+  assert.ok(foldCalls.includes('all'),
+    `expected all; got ${JSON.stringify(foldCalls)}`);
+});
+
+test('C-c C-. runs unfold-all through the host primitive', async () => {
+  const { interpreter, foldCalls } = await editor();
+  press(interpreter, 'C-c');
+  press(interpreter, 'C-period');
+  assert.ok(foldCalls.includes('unfold'),
+    `expected unfold; got ${JSON.stringify(foldCalls)}`);
 });

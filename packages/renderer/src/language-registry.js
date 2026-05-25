@@ -44,6 +44,12 @@
  *   `@injection.content` regions paired with a language tag. When set,
  *   the loader threads a `getHighlighter` lookup into the highlighter
  *   so inner ranges render in the injected language's palette.
+ * @property {string} [foldQuery] - A query whose `(node) @fold`
+ *   captures mark foldable scopes — function bodies, class bodies,
+ *   blocks, JSX elements, etc. When set, the highlighter exposes a
+ *   `foldCaptures(text)` method the view uses to compute fold ranges
+ *   (`./folding.js`). A capture whose node spans a single line is
+ *   silently dropped — nothing to fold there.
  */
 
 /** @type {Map<string, LanguageSpec>} */
@@ -75,6 +81,12 @@ export function registerLanguage(spec) {
   ) {
     throw new Error(`language ${spec.tag}: injectionQuery must be a string`);
   }
+  if (
+    spec.foldQuery !== undefined &&
+    typeof spec.foldQuery !== 'string'
+  ) {
+    throw new Error(`language ${spec.tag}: foldQuery must be a string`);
+  }
   if (spec.aliases !== undefined && !Array.isArray(spec.aliases)) {
     throw new Error(`language ${spec.tag}: aliases must be a string[]`);
   }
@@ -87,6 +99,9 @@ export function registerLanguage(spec) {
   };
   if (spec.injectionQuery !== undefined) {
     stored.injectionQuery = spec.injectionQuery;
+  }
+  if (spec.foldQuery !== undefined) {
+    stored.foldQuery = spec.foldQuery;
   }
   if (spec.aliases !== undefined) {
     stored.aliases = [...spec.aliases];
@@ -147,23 +162,30 @@ export function languageForFilename(name) {
  *
  * @param {(grammar: string, query: string, options?: {
  *   injectionQuery?: string,
+ *   foldQuery?: string,
  *   getHighlighter?: (tag: string) => import('./treesitter.js').Highlighter | undefined,
  * }) => Promise<import('./treesitter.js').Highlighter>
  * } create - Build a tree-sitter highlighter from a grammar file, a
- *   query, and (when set) an injection query plus a sibling-lookup.
+ *   query, and (when set) an injection query plus a sibling-lookup, or
+ *   a fold query.
  * @param {(tag: string, error: Error) => void} [onError] - Called when a
  *   language's grammar fails to load. Defaults to ignoring the error.
- * @returns {Promise<Record<string, ((text: string) =>
- *   import('./highlight.js').Run[][]) & {
- *     captures: (text: string) => import('./treesitter.js').CaptureRange[],
- *     nodeAtPoint: (text: string, pos: number) =>
- *       import('./treesitter.js').NodeInfo | null
- *   }>>}
- *   A map from language tag to a `highlight(text)` callable. The same
- *   callable also exposes the underlying highlighter's `captures(text)`
- *   and `nodeAtPoint(text, pos)` as properties — the diagnostic command
- *   `describe-face-at-point` uses them to surface either the tree-sitter
- *   capture under the cursor or, when none exists, the bare node type.
+ * @returns {Promise<{
+ *   highlighters: Record<string, ((text: string) =>
+ *     import('./highlight.js').Run[][]) & {
+ *       captures: (text: string) => import('./treesitter.js').CaptureRange[],
+ *       nodeAtPoint: (text: string, pos: number) =>
+ *         import('./treesitter.js').NodeInfo | null
+ *     }>,
+ *   foldCaptures: Record<string, (text: string) =>
+ *     import('./folding.js').FoldCapture[]>,
+ * }>}
+ *   `highlighters` maps each language tag to a `highlight(text)`
+ *   callable; the callable also exposes the underlying highlighter's
+ *   `captures(text)` and `nodeAtPoint(text, pos)` as properties (the
+ *   diagnostic `describe-face-at-point` uses them). `foldCaptures` is
+ *   a parallel map of fold-capture functions, populated only for
+ *   languages that declared a `foldQuery`.
  */
 export async function loadLanguageHighlighters(create, onError = () => {}) {
   /** @type {Record<string, import('./treesitter.js').Highlighter>} */
@@ -173,9 +195,16 @@ export async function loadLanguageHighlighters(create, onError = () => {}) {
 
   for (const spec of registry.values()) {
     try {
-      const options = spec.injectionQuery
-        ? { injectionQuery: spec.injectionQuery, getHighlighter }
-        : undefined;
+      /** @type {object | undefined} */
+      let options;
+      if (spec.injectionQuery || spec.foldQuery) {
+        options = {};
+        if (spec.injectionQuery) {
+          options.injectionQuery = spec.injectionQuery;
+          options.getHighlighter = getHighlighter;
+        }
+        if (spec.foldQuery) options.foldQuery = spec.foldQuery;
+      }
       const highlighter = await create(spec.grammar, spec.query, options);
       highlighters[spec.tag] = highlighter;
       // Alias entries point at the same highlighter so an injection's
@@ -192,15 +221,19 @@ export async function loadLanguageHighlighters(create, onError = () => {}) {
     }
   }
 
-  const exposed = {};
+  const exposedHighlighters = {};
+  const exposedFolds = {};
   for (const [tag, highlighter] of Object.entries(highlighters)) {
     const fn = (text) => highlighter.highlight(text);
-    // Expose the raw capture list as a property on the callable so a
-    // caller that wants the capture ranges (rather than the per-line
-    // run projection) can reach them without a second registry.
+    // Expose the raw capture list + node-at-point as properties on
+    // the callable so a caller that wants either reach them without
+    // a second registry.
     fn.captures = (text) => highlighter.captures(text);
     fn.nodeAtPoint = (text, pos) => highlighter.nodeAtPoint(text, pos);
-    exposed[tag] = fn;
+    exposedHighlighters[tag] = fn;
+    if (typeof highlighter.foldCaptures === 'function') {
+      exposedFolds[tag] = (text) => highlighter.foldCaptures(text);
+    }
   }
-  return exposed;
+  return { highlighters: exposedHighlighters, foldCaptures: exposedFolds };
 }

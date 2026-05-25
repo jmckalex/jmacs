@@ -46,10 +46,21 @@ const INJECTION_QUERY = `
    (#set! injection.language "css"))
 `;
 
+// Foldable scopes: any element with both an open and a close tag —
+// `<div>...</div>`, `<script>...</script>`, `<style>...</style>`. The
+// `element` node covers the whole pair; folding starts on its open-tag
+// line and ends on its close-tag line.
+const FOLD_QUERY = `
+  (element) @fold
+  (script_element) @fold
+  (style_element) @fold
+`;
+
 registerLanguage({
   tag: 'html',
   grammar: 'tree-sitter-html.wasm',
   query: QUERY,
+  foldQuery: FOLD_QUERY,
   suffixes: ['.html', '.htm'],
   injectionQuery: INJECTION_QUERY,
 });

@@ -53,6 +53,15 @@
 (define m-s-keymap
   {"o" 'occur})
 
+;; The C-c prefix map — at the global root for editor-wide commands.
+;; (Mode-local C-c bindings live in each mode's own keymap and shadow
+;; this map for the mode's buffers.) Note that C-x C-c remains bound to
+;; quit-editor; that lives under the c-x-keymap and is unaffected.
+(define c-c-keymap
+  {"tab"       'toggle-fold-at-point
+   "C-comma"   'fold-all
+   "C-period"  'unfold-all})
+
 ;; The root keymap.
 (define the-keymap
   {"left"         'backward-char
@@ -129,6 +138,7 @@
    "C-enter"      'eval-expression-at-point
    "C-x"          c-x-keymap
    "C-h"          c-h-keymap
+   "C-c"          c-c-keymap
    "M-n"          sticky-note-keymap
    "M-s"          m-s-keymap})
 

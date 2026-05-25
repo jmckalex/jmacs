@@ -1266,6 +1266,18 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'page-lines': () => editorView.pageLines(),
+    'toggle-fold-at-point!': () => {
+      editorView.toggleFoldAtPoint();
+      return NIL;
+    },
+    'fold-all!': () => {
+      editorView.foldAll();
+      return NIL;
+    },
+    'unfold-all!': () => {
+      editorView.unfoldAll();
+      return NIL;
+    },
     'toggle-repl!': () => {
       const hidden = document.body.classList.toggle('repl-hidden');
       if (hidden) editorView.focus();
@@ -1735,7 +1747,7 @@ window.host
 // highlighter per registered language. A grammar that fails to load
 // disables only its language; the rest still highlight.
 await discoverRendererLanguages();
-const highlighters = await loadLanguageHighlighters(
+const { highlighters, foldCaptures } = await loadLanguageHighlighters(
   createTreeSitterHighlighter,
   (tag, error) => {
     repl.appendError(`${tag} highlighter unavailable: ${error.message}`);
@@ -1800,6 +1812,7 @@ const editorView = createEditorView(
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     highlighters,
+    foldCaptures,
   }
 );
 

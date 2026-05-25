@@ -88,10 +88,21 @@ const QUERY = `
   (attribute_item) @function
 `;
 
+// Foldable scopes: braced blocks, struct/enum/trait/impl/match bodies.
+// All hang off a `{ ... }` whose opening brace sits on the header line.
+const FOLD_QUERY = `
+  (block) @fold
+  (declaration_list) @fold
+  (field_declaration_list) @fold
+  (enum_variant_list) @fold
+  (match_block) @fold
+`;
+
 registerLanguage({
   tag: 'rust',
   grammar: 'tree-sitter-rust.wasm',
   query: QUERY,
+  foldQuery: FOLD_QUERY,
   suffixes: ['.rs'],
   aliases: ['rs'],
 });
