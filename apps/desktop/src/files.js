@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
+import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
 
 /**
  * Expand a leading `~` (or `~/…`) to the current user's home directory.
@@ -440,6 +441,24 @@ export function registerFileHandlers() {
       return;
     }
     event.returnValue = extractMetadataSync(expandTilde(raw));
+  });
+
+  // Replace the embedded tag metadata on `path` with `fields`. The
+  // file is parsed, the in-memory model is rebuilt with the new
+  // fields, then re-serialised and atomically renamed into place.
+  // Cover art on the existing file is preserved unless `fields`
+  // explicitly carries a `cover` entry. Synchronous for the same
+  // Lisp-interpreter reason as `audio:metadata-sync`.
+  ipcMain.on('audio:metadata-write-sync', (event, payload) => {
+    const raw = payload?.path;
+    if (typeof raw !== 'string' || raw === '') {
+      event.returnValue = { ok: false, error: 'no path' };
+      return;
+    }
+    const fields = (payload && typeof payload.fields === 'object')
+      ? payload.fields
+      : {};
+    event.returnValue = writeAudioMetadataSync(expandTilde(raw), fields);
   });
 
   ipcMain.handle('audio:album-art', async (_event, payload) => {

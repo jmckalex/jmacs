@@ -1479,25 +1479,35 @@ const interpreter = createInterpreter({
       set('duration', meta.duration);
       return map;
     },
-    // Stub writers. The real implementations land per-format in
-    // agent-audio-edit-id3v2 (MP3), agent-audio-edit-mp4 (M4A),
-    // agent-audio-edit-ogg. The view dispatches through these
-    // primitives so the wiring stays stable across the swap.
+    // Replace one tag on the audio file at `path` with `value` (or
+    // add it if it wasn't present). The host re-serialises the whole
+    // file via writeMetadataSync, dropping unrecognised frames per
+    // the always-rewrite design in plans/AUDIO-METADATA-EDIT.md.
+    // Cover art is preserved by the writer (reads existing APIC).
+    // The renderer's cached metadata on any open buffer is the
+    // source of truth — it carries user-added custom keys that
+    // extractMetadataSync wouldn't surface.
     'set-audio-metadata!': (args) => {
       const path = expandTilde(String(args[0] ?? ''));
       const key = String(args[1] ?? '');
-      if (path === '' || key === '') return NIL;
+      if (path === '' || key === '') {
+        throw new Error('set-audio-metadata!: missing arg');
+      }
       const value = args[2] === undefined ? '' : String(args[2]);
-      // eslint-disable-next-line no-console
-      console.log(`[stub] set-audio-metadata! ${path} ${key}=${value}`);
+      applyAudioMetadataEdit(path, (fields) => {
+        fields[key] = value;
+      });
       return NIL;
     },
     'remove-audio-metadata!': (args) => {
       const path = expandTilde(String(args[0] ?? ''));
       const key = String(args[1] ?? '');
-      if (path === '' || key === '') return NIL;
-      // eslint-disable-next-line no-console
-      console.log(`[stub] remove-audio-metadata! ${path} ${key}`);
+      if (path === '' || key === '') {
+        throw new Error('remove-audio-metadata!: missing arg');
+      }
+      applyAudioMetadataEdit(path, (fields) => {
+        delete fields[key];
+      });
       return NIL;
     },
     'play-audio!': (args) => {
@@ -2075,12 +2085,19 @@ jukeboxView.element.style.display = 'none';
  *  UI. Returns the shape the view consumes: `{ ok: true }` on success,
  *  `{ ok: false, error }` on failure. The view applies the resulting
  *  change to `buffer.metadata` itself, so the primitive doesn't need
- *  to round-trip the whole metadata object back. */
+ *  to round-trip the whole metadata object back.
+ *
+ *  Wraps the call in pause-release / resume-from so the atomic
+ *  temp-file + rename inside the host writer doesn't fight an open
+ *  `<audio>` file handle (a real failure mode on Windows; harmless
+ *  on macOS/Linux but the brief glitch keeps the behaviour
+ *  predictable across platforms). */
 function runMetadataEdit(primitiveName, buffer, key, value) {
   if (!keymapReady) return { ok: false, error: 'interpreter not ready' };
   if (!buffer || typeof buffer.filePath !== 'string') {
     return { ok: false, error: 'no audio buffer' };
   }
+  const snapshot = audioView.pauseAndRelease();
   try {
     if (value === undefined) {
       interpreter.call(primitiveName, buffer.filePath, key);
@@ -2093,7 +2110,49 @@ function runMetadataEdit(primitiveName, buffer, key, value) {
       ok: false,
       error: error.lispMessage ?? error.message ?? String(error),
     };
+  } finally {
+    audioView.resumeFrom(snapshot);
   }
+}
+
+/** Read-modify-write for one audio file's tag metadata. The renderer-
+ *  cached metadata on any open `audio`-kind buffer for `path` is the
+ *  source of truth — it carries user-added custom keys (the plus pill
+ *  writes them) that `extractMetadataSync` doesn't surface. Falls back
+ *  to a fresh extract when no buffer is open for the file.
+ *
+ *  Strips derived fields (`duration`, `file`, `format`, `path`) before
+ *  the write — the writer ignores them, but cleaner not to send them
+ *  over IPC. After a successful write the renderer's cached metadata
+ *  is updated in place so future edits build on the new state.
+ *
+ *  Throws on any write failure so the Lisp primitive surface mirrors
+ *  the established `(file-save) → signal` convention. */
+function applyAudioMetadataEdit(path, mutator) {
+  const buffer = buffers.find(
+    (b) => b.kind === 'audio' && b.filePath === path
+  );
+  const source = buffer
+    ? buffer.metadata
+    : window.host.audioMetadataSync(path);
+  const fields = stripDerivedFields(source ?? {});
+  mutator(fields);
+  const result = window.host.audioMetadataWriteSync(path, fields);
+  if (!result || !result.ok) {
+    throw new Error(result?.error ?? 'metadata write failed');
+  }
+  if (buffer) buffer.metadata = fields;
+}
+
+/** Drop the four read-only rows the audio view renders below the tag
+ *  fields. They're never written to disk. */
+function stripDerivedFields(meta) {
+  const out = { ...(meta ?? {}) };
+  delete out.duration;
+  delete out.file;
+  delete out.format;
+  delete out.path;
+  return out;
 }
 
 // The audio view — the view a single `audio`-kind buffer is shown
