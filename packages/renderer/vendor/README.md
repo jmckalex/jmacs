@@ -35,19 +35,26 @@ by `src/treesitter.js`.
 | `tree-sitter-haskell.wasm` | `tree-sitter-haskell@0.23.1` | the Haskell grammar |
 | `tree-sitter-ocaml.wasm` | `tree-sitter-ocaml@0.24.2` | the OCaml grammar |
 | `tree-sitter-elixir.wasm` | `tree-sitter-elixir@0.3.5` | the Elixir grammar |
+| `tree-sitter-clojure.wasm` | `tree-sitter-clojure@0.4.0` | the Clojure grammar (built locally — see below) |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
 
-Most grammars ship a prebuilt `.wasm` on npm; the two Markdown
-grammars do not — `@tree-sitter-grammars/tree-sitter-markdown@0.3.2`
-ships only C source plus native Node bindings. They are built locally
+Most grammars ship a prebuilt `.wasm` on npm; a handful do not — they
+ship only C source plus native Node bindings. Those are built locally
 from that source by `scripts/build-grammars.sh` at the repo root,
 which shells out to `tree-sitter build --wasm --docker` (the
 `tree-sitter-cli` dev dependency provides the binary; Docker provides
-the Emscripten toolchain). The build is a one-time step run when the
-markdown grammar version changes — the produced `.wasm` is committed
-alongside the others.
+the Emscripten toolchain). The script names each buildable grammar as
+a subcommand (e.g. `./scripts/build-grammars.sh clojure`); run with
+no args to rebuild every source-only grammar. The build is a one-time
+step run when a grammar package version changes — the produced
+`.wasm` files are committed alongside the others.
+
+A small number of grammars have no maintained npm package at all (the
+canonical npm slots were hijacked to security placeholders). Their
+source is cloned at a pinned tag into `vendor-grammars/` and the
+.wasm built from there. See the script for which grammars and tags.
 
 Tree-sitter is used for JavaScript, HTML and Python. The editor's Lisp
 dialect is custom and still evolving — it has no grammar, and keeps its

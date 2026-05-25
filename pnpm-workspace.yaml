@@ -33,3 +33,12 @@ allowBuilds:
   tree-sitter-elixir: false
   tree-sitter-haskell: false
   tree-sitter-ocaml: false
+  '@derekstride/tree-sitter-sql': false
+  tree-sitter-clojure: false
+  tree-sitter-graphql: false
+  tree-sitter-kotlin: false
+  tree-sitter-nix: false
+  tree-sitter-scheme: false
+  tree-sitter-swift: false
+  tree-sitter-xml: false
+  tree-sitter-zig: false
