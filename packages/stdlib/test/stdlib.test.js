@@ -2258,6 +2258,28 @@ test('smallest-covering-capture treats the end offset as exclusive', async () =>
   );
 });
 
+test('smallest-covering-capture handles thousands of captures without blowing the stack', async () => {
+  // Real buffers produce thousands of captures. The interpreter has no
+  // TCO, so a recursive walk over the list overflows the JS stack at
+  // a few hundred captures — `describe-face-at-point` was unusable on
+  // any real source file. Implementation must iterate (via `reduce`)
+  // rather than recurse over CAPTURES.
+  const { interpreter } = await editor();
+  const N = 5000;
+  const items = [];
+  for (let i = 0; i < N; i += 1) {
+    items.push(`(list 0 ${10000 - i} "face${i}")`);
+  }
+  assert.equal(
+    interpreter.evaluate(`
+      (caddr
+        (smallest-covering-capture
+          (list ${items.join(' ')})
+          100))`),
+    `face${N - 1}`
+  );
+});
+
 test('describe-face-at-point messages when no tree-sitter language is registered', async () => {
   const { interpreter, output, docCalls } = await editor();
   interpreter.evaluate('(describe-face-at-point)');

@@ -30,24 +30,6 @@
   "True when CAPTURE's [start, end) covers POS."
   (and (>= pos (car capture)) (< pos (cadr capture))))
 
-(define (-face-info-pick rest best pos)
-  "Worker for `smallest-covering-capture`. Picks the narrowest covering
-   capture from REST against the current BEST (`nil` or a capture)."
-  (cond
-    ((nil? rest) best)
-    ((not (pair? rest)) best)
-    (else
-      (let ((candidate (car rest)))
-        (cond
-          ((not (-face-info-covers? candidate pos))
-           (-face-info-pick (cdr rest) best pos))
-          ((nil? best)
-           (-face-info-pick (cdr rest) candidate pos))
-          ((< (-face-info-range-width candidate)
-              (-face-info-range-width best))
-           (-face-info-pick (cdr rest) candidate pos))
-          (else (-face-info-pick (cdr rest) best pos)))))))
-
 (define (smallest-covering-capture captures pos)
   "Return the smallest-range capture in CAPTURES whose [start, end)
    covers POS, or `nil` when none does. CAPTURES is a list of
@@ -55,8 +37,21 @@
    tree-sitter emits captures in document order, so the outer-grammar
    range comes first and would win without further intervention, but
    for `describe-face-at-point` the smaller range is what the user
-   wants to see."
-  (-face-info-pick captures nil pos))
+   wants to see.
+
+   Implemented with `reduce` rather than recursion: a real buffer
+   yields thousands of captures, and the interpreter has no TCO."
+  (reduce
+    (lambda (best candidate)
+      (cond
+        ((not (-face-info-covers? candidate pos)) best)
+        ((nil? best) candidate)
+        ((< (-face-info-range-width candidate)
+            (-face-info-range-width best))
+         candidate)
+        (else best)))
+    nil
+    captures))
 
 ;; --- text rendering ----------------------------------------------------
 
