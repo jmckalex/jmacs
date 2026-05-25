@@ -43,6 +43,8 @@ export function docLinkName(target) {
  * @param {(key: string) => boolean} [options.onKey] - Dispatches a key
  *   typed in the view, so `C-x b`/`M-x`/`C-h f` work here too.
  *   Returns whether the key was handled.
+ * @param {() => void} [options.closeBuffer] - Called when the user
+ *   presses `q` to dismiss the doc page.
  * @param {(name: string) => void} [options.openDoc] - Called when the
  *   user clicks a `[data-jmacs-doc]` cross-link. The argument is the
  *   value of the attribute (the function name).
@@ -57,6 +59,8 @@ export function docLinkName(target) {
 export function createDocView(container, options = {}) {
   const doc = container.ownerDocument;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
+  const closeBuffer =
+    typeof options.closeBuffer === 'function' ? options.closeBuffer : null;
   const openDoc =
     typeof options.openDoc === 'function' ? options.openDoc : null;
   const highlightCode =
@@ -95,7 +99,21 @@ export function createDocView(container, options = {}) {
     // such controls today, but cheap to guard).
     const tag = event.target.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    if (onKey && onKey(keyEventToString(event))) event.preventDefault();
+    const key = keyEventToString(event);
+    // `q` dismisses the doc page. Until the editor grows a per-buffer
+    // keymap, the text buffer behind us is still the "current buffer"
+    // and `handle-key` would self-insert any printable character into
+    // it — so consume every plain printable here instead of dispatching.
+    if (key === 'q') {
+      event.preventDefault();
+      if (closeBuffer) closeBuffer();
+      return;
+    }
+    if (key.length === 1) {
+      event.preventDefault();
+      return;
+    }
+    if (onKey && onKey(key)) event.preventDefault();
   });
 
   /** Replace `code`'s children with the per-line highlight runs from

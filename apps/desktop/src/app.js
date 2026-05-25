@@ -38,6 +38,7 @@ import {
   fuzzyFilter,
   highlightLine,
   isAudioFile,
+  languageForFilename,
   loadLanguageHighlighters,
   renderMarkdown,
 } from '@editor/renderer';
@@ -970,6 +971,49 @@ const interpreter = createInterpreter({
       openDocstringBuffer(name, source);
       return NIL;
     },
+    // `describe-face-at-point` (C-h F) — surface the tree-sitter
+    // capture under the cursor. Returns (LANGUAGE . CAPTURES), or
+    // `nil` when the current buffer has no tree-sitter language.
+    // CAPTURES is a list of `(start end face)` lists in document order.
+    'tree-sitter-captures-for-buffer!': () => {
+      if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
+        return NIL;
+      }
+      const name = currentTextBuffer.name;
+      const language = languageForFilename(name);
+      if (language === null) return NIL;
+      const highlighter = highlighters[language];
+      if (!highlighter || typeof highlighter.captures !== 'function') {
+        return NIL;
+      }
+      let captureRanges;
+      try {
+        captureRanges = highlighter.captures(currentTextBuffer.text);
+      } catch (error) {
+        repl.appendError(`tree-sitter captures: ${error.message}`);
+        return NIL;
+      }
+      const captures = arrayToList(
+        captureRanges.map((r) => arrayToList([r.start, r.end, r.face]))
+      );
+      return cons(language, captures);
+    },
+    // `describe-face-at-point` (C-h F) — resolve a face name to the
+    // CSS colour the active theme renders it with. Reads the runtime
+    // value of `--tok-<face>` from `document.documentElement`. Falls
+    // back to an empty string when nothing is bound.
+    'face-color-for': (args) => {
+      const face = String(args[0] ?? '');
+      if (face === '') return '';
+      try {
+        const value = getComputedStyle(document.documentElement)
+          .getPropertyValue(`--tok-${face}`)
+          .trim();
+        return value;
+      } catch {
+        return '';
+      }
+    },
     // Documentation: return the (cached) list of doc-page names, or
     // `()` when the docs haven't been built. The Lisp side caches
     // this in *doc-manifest*. The manifest itself is fetched once
@@ -1654,6 +1698,14 @@ function highlightCodeForDocView(text, language) {
 // `open-doc`, which calls `open-doc!` (host primitive) below.
 const docView = createDocView(document.getElementById('editor-host'), {
   ...(keymapReady ? { onKey: dispatchKey } : {}),
+  closeBuffer: () => {
+    if (!keymapReady) return;
+    try {
+      interpreter.call('kill-buffer');
+    } catch (error) {
+      repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+    }
+  },
   openDoc: (name) => {
     if (keymapReady) {
       try {

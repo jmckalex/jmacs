@@ -36,6 +36,7 @@
 (define c-h-keymap
   {"k" 'describe-key
    "f" 'describe-command
+   "F" 'describe-face-at-point
    "a" 'apropos-doc
    "." 'describe-symbol-at-point})
 
