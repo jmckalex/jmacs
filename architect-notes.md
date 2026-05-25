@@ -7,6 +7,92 @@ flagged so the standing instructions can be updated if you disagree.
 
 ---
 
+## [2026-05-25 → 2026-05-26 overnight] Audio metadata edit + two older branches
+
+The full `plans/AUDIO-METADATA-EDIT.md` sequence landed end-to-end:
+
+- `agent-audio-edit-ui` — inline-edit UI for the audio view (double-
+  click a value to edit, red minus button per editable row, dashed
+  plus pill below for new tags). Failures revert the UI and minibuffer
+  the error. Two new methods on the view (`pauseAndRelease`,
+  `resumeFrom`) for the writer's atomic temp-file + rename.
+- `agent-audio-edit-id3v2` — ID3v2.4 writer for `.mp3`. Atomic write
+  + cover preservation + symmetric round-trip tests + real Lisp
+  primitives (`set-audio-metadata!`, `remove-audio-metadata!`).
+- `agent-audio-edit-mp4` — MP4 / M4A serialiser. Parses atom tree,
+  rebuilds `ilst`, patches `stco`/`co64` chunk offsets by the moov
+  size delta, handles slow-start and fast-start layouts, preserves
+  cover art and mdat byte-for-byte. The Jesus Jones `.m4a` is now
+  editable.
+- `agent-audio-edit-ogg` — Ogg Vorbis serialiser. Rebuilds comment
+  packet, recomputes page CRCs (Ogg's documented polynomial 0x04C11DB7
+  unreflected), patches audio page sequence numbers if the new header
+  count drifts from the original.
+
+All four merged via `--no-ff`. 13 + 13 + 12 = 38 new round-trip tests
+across `apps/desktop/test/audio-metadata-write.test.js`; smoke arm
+re-reads the seeded MP3 after the edit lifecycle and asserts disk
+state. Full suite green at the end: 130 desktop, 35 buffer, 228
+renderer, 278 stdlib, 68 lisp.
+
+Two extra older branches landed cleanly:
+
+- `agent-latex` — single conflict in `smoke.js`'s treesitterOk that
+  was straightforward additive (HEAD's faceInfoOk + branch's tex*
+  assertions).
+- `agent-folding` — the `loadLanguageHighlighters` return-shape
+  change the prior handover called out. Reconciled to keep both:
+  the exposed callable retains `captures` + `nodeAtPoint` properties
+  AND the registry returns `{ highlighters, foldCaptures }`.
+  `stdlib.test.js`'s test fixture gained a `foldCalls` channel
+  alongside the existing `tsCalls`. Test failures during the merge
+  flagged an unresolved conflict marker in `language-registry.js`
+  the auto-merge had silently left (Git "Auto-merging" reported
+  but the markers were still in the file). Fixed by hand.
+
+Skipped, with notes:
+
+- `agent-regex-search` — ~230 lines of test conflicts in
+  `stdlib.test.js` that interleave face-info tests (HEAD) with
+  regex tests (branch) plus a trailing `});` that both sides
+  share. Resolution is "keep both" but the diff layout made
+  surgical reconstruction risky without judgement on test order
+  and naming. **Quick path for you:** the regex tests are
+  preserved on the branch; you can either rebase the branch onto
+  current main (the only conflict is the test file) or apply the
+  branch's test additions as a fresh commit.
+- `agent-session` — 12 conflicts across `app.js`, `files.js`,
+  `preload.mjs`, `smoke.js`. Each individual conflict is additive
+  (new IPC handler / new preload entry / new smoke arm) but the
+  surface across four files is substantial. Skipped to keep the
+  overnight session bounded.
+- `agent-reactive-notebook` — the jukebox smoke arm has been
+  rewritten between when this branch was forked and now (HEAD has
+  `jukebox.visible / .hasAudio / .embeddedArtShown`, the branch has
+  `jukebox.major / .body / .afterShuffle`). Resolving means
+  porting the notebook smoke arm onto the new jukebox shape, which
+  needs judgement about what's still relevant.
+- `agent-multi-cursor` — still needs the `hash-set` → `assoc` fix
+  before it can load. Untouched.
+- `agent-lsp`, `agent-chord-find-file`, `agent-file-nav` — binding
+  displacements (K, C-x C-f, C-x p). Taste calls; left for you.
+
+The four asked-for-but-not-started items from the prior handover
+(splits plan-doc, directory tree-view, Finder-style column view)
+weren't started — you asked tonight whether the directory views
+might be a better overnight target, then said to stay with the
+MP4/Ogg writers. Worth confirming you still want those next.
+
+**Test of the audio metadata feature**: open a real `.m4a` (the
+Jesus Jones file from your earlier screenshot), double-click
+"Artist", change it, press Enter. The file should be edited on
+disk. Verify by re-opening or running `(audio-metadata "path")`
+from the REPL. Cover art should survive an edit. The minus button
+removes a tag; the plus pill adds one. On failure (read-only file,
+etc.) the UI reverts and the REPL gets the error message.
+
+---
+
 ## [2026-05-22 overnight, continued] Goto-line, replace, more
 
 You asked me to keep building without greenlighting each step. Six more
