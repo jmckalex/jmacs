@@ -17,6 +17,7 @@ import {
   keyword,
   listToArray,
   NIL,
+  sym,
   writeString,
 } from '@editor/lisp';
 import {
@@ -44,6 +45,12 @@ import {
 } from '@editor/renderer';
 import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
 import { createAudioController } from './audio.js';
+import {
+  emptyOverrides,
+  jsonToLispOverrides,
+  lispToJsonOverrides,
+} from './face-overrides.js';
+import { applyFaceStyles } from './face-styles.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 
@@ -871,6 +878,18 @@ const repl = createReplView(document.getElementById('repl-host'), {
  *  / not loaded; `[]` means the manifest existed but is empty. */
 let docManifestNames = null;
 
+/** Cached face-overrides loaded from `faces.json` at startup. Lisp
+ *  reads this via `load-face-overrides!` and installs it before the
+ *  first paint, so any user overrides are present from the start.
+ *  `null` until the file has been read (it may be missing entirely
+ *  on first launch — that case fills it with `emptyOverrides()`). */
+let faceOverridesCache = null;
+
+/** The Sym / Keyword constructors face-overrides.js needs to build
+ *  Lisp-shaped maps. Passed in so that module stays free of a hard
+ *  dependency on `@editor/lisp` (the unit tests use stand-ins). */
+const lispFactories = { keyword, sym };
+
 const interpreter = createInterpreter({
   write: (text) => repl.appendOutput(text),
   primitives: {
@@ -903,6 +922,14 @@ const interpreter = createInterpreter({
     // host hook that reads the current palette and writes it to the DOM.
     'apply-theme!': () => {
       applyCurrentTheme();
+      applyCurrentFaceStyles();
+      return NIL;
+    },
+    // Face customisation: regenerate `<style id="face-overrides">`
+    // from the Lisp-side resolved face map. Called whenever any
+    // override changes, plus on startup and theme switch.
+    'apply-face-styles!': () => {
+      applyCurrentFaceStyles();
       return NIL;
     },
     // Documentation: open the doc page for NAME in a doc-kind buffer.
@@ -1021,6 +1048,30 @@ const interpreter = createInterpreter({
     // can be synchronous.
     'load-doc-manifest!': () =>
       docManifestNames === null ? NIL : arrayToList(docManifestNames),
+
+    // Face customisation: return the face-overrides hash-map loaded
+    // from faces.json at startup, or an empty-overrides map when no
+    // file existed. Called once from Lisp right after stdlib load.
+    'load-face-overrides!': () =>
+      faceOverridesCache ?? emptyOverrides(lispFactories),
+
+    // Face customisation: write the live overrides to faces.json.
+    // The Lisp side passes its current `*face-overrides*` map; we
+    // convert it back to the JSON shape and hand it to the host.
+    'write-face-overrides!': (args) => {
+      const overrides = args[0];
+      try {
+        const json = lispToJsonOverrides(overrides, lispFactories);
+        // Fire-and-forget; the write is small and the next read
+        // will pick up whatever was last written.
+        window.host.writeFaces(json);
+      } catch (error) {
+        repl.appendError(
+          `faces:write: ${error.lispMessage ?? error.message}`
+        );
+      }
+      return NIL;
+    },
     'start-search!': () => {
       startSearch('forward');
       return NIL;
@@ -1187,6 +1238,18 @@ const interpreter = createInterpreter({
     },
     'open-customize-variable!': (args) => {
       openCustomScope({ variable: String(args[0]) });
+      return NIL;
+    },
+    // Customize one specific face — opens the customize buffer scoped
+    // to a single face row (and scrolled to it).
+    'open-customize-face!': (args) => {
+      openCustomScope({ face: String(args[0]) });
+      return NIL;
+    },
+    // Customize all faces — opens the customize buffer with the
+    // 'Faces' group as its scope.
+    'open-customize-faces!': () => {
+      openCustomScope({ group: 'faces' });
       return NIL;
     },
 
@@ -1439,12 +1502,28 @@ const stdlibOptions = { listLanguageFiles: listStdlibLanguageFiles };
 async function reloadStdlib() {
   try {
     await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
+    // Reapply face hooks + overrides: a fresh stdlib reset both.
+    installFacePersistence();
+    if (faceOverridesCache !== null) {
+      interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
+    }
     await loadUserConfig();
     applyCurrentTheme();
+    applyCurrentFaceStyles();
     repl.appendNote('standard library reloaded');
   } catch (error) {
     repl.appendError(`reload failed: ${error.message}`);
   }
+}
+
+/** Wire the renderer-side face persistence into the Lisp face system.
+ *  After this runs, every `set-face-attribute` persists to faces.json.
+ *  CSS regeneration is already handled by the `apply-face-styles!`
+ *  primitive that Lisp calls directly on every change. */
+function installFacePersistence() {
+  interpreter.evaluate(
+    '(set-face-overrides-saver! (lambda () (write-face-overrides! (current-face-overrides))))'
+  );
 }
 
 let keymapReady = false;
@@ -1455,8 +1534,25 @@ try {
   repl.appendError(`standard library failed to load: ${error.message}`);
 }
 
+// Face overrides: read faces.json (or get null if it's missing) and
+// install into the Lisp face system before the first paint. The
+// stdlib has already loaded `faces.lisp`, so the mutators exist.
+if (keymapReady) {
+  installFacePersistence();
+  try {
+    const json = await window.host.readFaces();
+    faceOverridesCache = jsonToLispOverrides(json, lispFactories);
+    interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
+  } catch (error) {
+    repl.appendError(
+      `faces: failed to load overrides — ${error.lispMessage ?? error.message}`
+    );
+  }
+}
+
 if (keymapReady) await loadUserConfig();
 if (keymapReady) applyCurrentTheme();
+if (keymapReady) applyCurrentFaceStyles();
 
 // Kick off the doc manifest fetch — fire-and-forget. The
 // `load-doc-manifest!` primitive returns the cached value once it
@@ -1564,6 +1660,22 @@ function fieldToSetting(field) {
   };
 }
 
+/** Turn a `face-row` Lisp list into a plain face object. */
+function rowToFace(row) {
+  const r = listToArray(row);
+  return {
+    name: String(r[0]),
+    doc: String(r[1] ?? ''),
+    foreground: typeof r[2] === 'string' ? r[2] : '',
+    background: typeof r[3] === 'string' ? r[3] : '',
+    weight: String(r[4] ?? 'normal'),
+    slant: String(r[5] ?? 'normal'),
+    underline: r[6] === true,
+    strikeThrough: r[7] === true,
+    state: String(r[8] ?? 'standard'),
+  };
+}
+
 /** The model the customisation view renders for a buffer's scope. */
 function getCustomModel(scope) {
   if (!keymapReady) return null;
@@ -1578,6 +1690,34 @@ function getCustomModel(scope) {
         parent: null,
         groups: [],
         settings: [fieldToSetting(field)],
+        faces: [],
+      };
+    }
+    if (scope.face) {
+      const model = listToArray(
+        interpreter.evaluate(
+          `(face-single-model ${writeString(scope.face)})`
+        )
+      );
+      return {
+        title: scope.face,
+        doc: model[1],
+        parent: model[2] === NIL ? null : String(model[2]),
+        groups: [],
+        settings: [],
+        faces: listToArray(model[4]).map(rowToFace),
+        scrollToFace: scope.face,
+      };
+    }
+    if (scope.group === 'faces') {
+      const model = listToArray(interpreter.call('faces-group-model'));
+      return {
+        title: model[0],
+        doc: model[1],
+        parent: model[2] === NIL ? null : String(model[2]),
+        groups: [],
+        settings: [],
+        faces: listToArray(model[4]).map(rowToFace),
       };
     }
     const model = listToArray(
@@ -1592,6 +1732,7 @@ function getCustomModel(scope) {
         return { name: g[0], doc: g[1] };
       }),
       settings: listToArray(model[4]).map(fieldToSetting),
+      faces: [],
     };
   } catch (error) {
     repl.appendError(`customize: ${error.lispMessage ?? error.message}`);
@@ -1614,6 +1755,17 @@ function applyCurrentTheme() {
     }
   } catch (error) {
     repl.appendError(`theme: ${error.lispMessage ?? error.message}`);
+  }
+}
+
+/** Apply the resolved face map to the document: regenerate
+ *  `<style id="face-overrides">` with one rule per face. */
+function applyCurrentFaceStyles() {
+  try {
+    const alist = listToArray(interpreter.call('current-face-styles'));
+    applyFaceStyles(document, alist, listToArray);
+  } catch (error) {
+    repl.appendError(`face-styles: ${error.lispMessage ?? error.message}`);
   }
 }
 
@@ -1640,10 +1792,32 @@ function resetCustomSetting(name) {
   if (name === '*theme*') applyCurrentTheme();
 }
 
-/** Open a customisation buffer for a scope — a subgroup or a variable. */
+/** Apply a face-attribute change from the customize view. The widget
+ *  passes everything as strings/booleans; the wrapper coerces. */
+function setFaceFromView(faceName, attr, value) {
+  const valueSrc =
+    typeof value === 'boolean'
+      ? (value ? 'true' : 'false')
+      : writeString(String(value));
+  interpreter.evaluate(
+    `(set-face-attribute-by-strings ${writeString(faceName)} ${writeString(attr)} ${valueSrc})`
+  );
+}
+
+/** Reset a face — drop the global override and rerender. */
+function resetFaceFromView(faceName) {
+  interpreter.evaluate(
+    `(reset-face-by-string ${writeString(faceName)})`
+  );
+}
+
+/** Open a customisation buffer for a scope — a subgroup, a variable,
+ *  or a single face. */
 function openCustomScope(scope) {
   if (scope.variable) {
     openCustomize(`*Customize: ${scope.variable}*`, scope);
+  } else if (scope.face) {
+    openCustomize(`*Customize Face: ${scope.face}*`, scope);
   } else {
     openCustomize(`*Customize: ${scope.group}*`, scope);
   }
@@ -1662,6 +1836,8 @@ const customizeView = createCustomizeView(
     saveSetting: saveCustomSetting,
     resetSetting: resetCustomSetting,
     openScope: openCustomScope,
+    setFaceAttribute: setFaceFromView,
+    resetFace: resetFaceFromView,
   }
 );
 customizeView.element.style.display = 'none';

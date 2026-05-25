@@ -37,6 +37,9 @@ export const STDLIB_FILES = Object.freeze([
   'expand-region.lisp',
   'system.lisp',
   'modes.lisp',
+  // The face registry loads before themes.lisp, which registers all
+  // built-in faces via `defface`.
+  'faces.lisp',
   'themes.lisp',
   'keymap.lisp',
   // These read the keymap, so they load after it.

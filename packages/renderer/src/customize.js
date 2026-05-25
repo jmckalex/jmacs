@@ -21,6 +21,16 @@ const FORM_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
 /** A bare modifier press is not a key in its own right. */
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
+/** Escape a string for use in a CSS attribute selector. The browser
+ *  ships `CSS.escape`; in test environments we may not have it, so
+ *  fall back to a conservative manual escape. */
+function cssEscape(value) {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+  return String(value).replace(/[^\w-]/g, (c) => `\\${c}`);
+}
+
 /**
  * Create the customisation view.
  *
@@ -30,12 +40,17 @@ const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
  *   typed outside a form control, so `C-x b`/`M-x` work here too.
  * @param {(scope: object) => (object | null)} [options.getModel] -
  *   The model for a buffer's scope: `{title, doc, parent, groups,
- *   settings}`.
+ *   settings, faces}`.
  * @param {(name: string, value: *) => void} [options.applySetting]
  * @param {(name: string, value: *) => void} [options.saveSetting]
  * @param {(name: string) => void} [options.resetSetting]
  * @param {(scope: object) => void} [options.openScope] - Open another
- *   customisation buffer (a subgroup, a variable).
+ *   customisation buffer (a subgroup, a variable, a face).
+ * @param {(face: string, attr: string, value: *) => void}
+ *   [options.setFaceAttribute] - Live-set a face attribute. The
+ *   model the next render picks up reflects this immediately.
+ * @param {(face: string) => void} [options.resetFace] - Drop the
+ *   global override of a face.
  */
 export function createCustomizeView(container, options = {}) {
   const doc = container.ownerDocument;
@@ -45,6 +60,8 @@ export function createCustomizeView(container, options = {}) {
   const saveSetting = options.saveSetting ?? (() => {});
   const resetSetting = options.resetSetting ?? (() => {});
   const openScope = options.openScope ?? (() => {});
+  const setFaceAttribute = options.setFaceAttribute ?? (() => {});
+  const resetFace = options.resetFace ?? (() => {});
 
   const root = doc.createElement('div');
   root.className = 'customize';
@@ -162,6 +179,146 @@ export function createCustomizeView(container, options = {}) {
     render();
   }
 
+  /** Build one face row — name, doc, live swatch, and all the
+   *  widgets. Each widget commits immediately (faces are live), so
+   *  there's no staging here. */
+  function faceRow(face) {
+    const row = doc.createElement('div');
+    row.className = 'customize-row customize-face-row';
+    row.dataset.faceName = face.name;
+
+    const head = doc.createElement('div');
+    head.className = 'customize-row-head';
+    const name = doc.createElement('span');
+    name.className = 'customize-name';
+    name.textContent = face.name;
+    const badge = doc.createElement('span');
+    badge.className = 'customize-state';
+    badge.textContent = face.state;
+    badge.dataset.state = face.state;
+    head.append(name, badge);
+
+    const docEl = doc.createElement('div');
+    docEl.className = 'customize-doc';
+    docEl.textContent = face.doc;
+
+    // Live swatch — a span styled with the .tok-NAME class so the
+    // user can see the current face applied to text.
+    const preview = doc.createElement('div');
+    preview.className = 'customize-face-preview';
+    const swatch = doc.createElement('span');
+    swatch.className = `tok-${face.name}`;
+    swatch.textContent = 'Aa Bb Cc 0123';
+    preview.append(swatch);
+
+    const grid = doc.createElement('div');
+    grid.className = 'customize-face-grid';
+
+    // Foreground colour.
+    grid.append(
+      faceColourField(face.name, 'foreground', 'Foreground', face.foreground),
+    );
+    // Background colour.
+    grid.append(
+      faceColourField(face.name, 'background', 'Background', face.background),
+    );
+    // Weight dropdown.
+    grid.append(
+      faceChoiceField(face.name, 'weight', 'Weight', face.weight, [
+        'normal', 'bold',
+      ]),
+    );
+    // Slant dropdown.
+    grid.append(
+      faceChoiceField(face.name, 'slant', 'Slant', face.slant, [
+        'normal', 'italic',
+      ]),
+    );
+    // Underline / strike-through checkboxes.
+    grid.append(
+      faceBooleanField(face.name, 'underline', 'Underline', face.underline),
+    );
+    grid.append(
+      faceBooleanField(
+        face.name, 'strike-through', 'Strike-through', face.strikeThrough,
+      ),
+    );
+
+    const reset = doc.createElement('button');
+    reset.className = 'customize-reset';
+    reset.textContent = 'Reset';
+    reset.title = 'Drop overrides for this face';
+    reset.addEventListener('click', () => {
+      resetFace(face.name);
+      render();
+    });
+
+    const controls = doc.createElement('div');
+    controls.className = 'customize-controls';
+    controls.append(reset);
+
+    row.append(head, docEl, preview, grid, controls);
+    return row;
+  }
+
+  /** A labelled colour input that commits on change. Empty value
+   *  passes through as an empty string so the resolver falls back
+   *  to the default. */
+  function faceColourField(faceName, attr, label, value) {
+    const field = doc.createElement('label');
+    field.className = 'customize-face-field';
+    const labelEl = doc.createElement('span');
+    labelEl.textContent = label;
+    const input = doc.createElement('input');
+    input.type = 'color';
+    input.value = value && value.startsWith('#') ? value : '#000000';
+    input.addEventListener('change', () => {
+      setFaceAttribute(faceName, attr, input.value);
+      render();
+    });
+    field.append(labelEl, input);
+    return field;
+  }
+
+  /** A labelled select. */
+  function faceChoiceField(faceName, attr, label, value, options) {
+    const field = doc.createElement('label');
+    field.className = 'customize-face-field';
+    const labelEl = doc.createElement('span');
+    labelEl.textContent = label;
+    const select = doc.createElement('select');
+    for (const opt of options) {
+      const el = doc.createElement('option');
+      el.value = opt;
+      el.textContent = opt;
+      if (opt === value) el.selected = true;
+      select.append(el);
+    }
+    select.addEventListener('change', () => {
+      setFaceAttribute(faceName, attr, select.value);
+      render();
+    });
+    field.append(labelEl, select);
+    return field;
+  }
+
+  /** A labelled checkbox. */
+  function faceBooleanField(faceName, attr, label, value) {
+    const field = doc.createElement('label');
+    field.className = 'customize-face-field customize-face-boolean';
+    const input = doc.createElement('input');
+    input.type = 'checkbox';
+    input.checked = value === true;
+    input.addEventListener('change', () => {
+      setFaceAttribute(faceName, attr, input.checked);
+      render();
+    });
+    const labelEl = doc.createElement('span');
+    labelEl.textContent = label;
+    field.append(input, labelEl);
+    return field;
+  }
+
   /** Render the view for the current buffer's scope. */
   function render() {
     root.replaceChildren();
@@ -206,7 +363,14 @@ export function createCustomizeView(container, options = {}) {
 
     for (const setting of model.settings) root.append(settingRow(setting));
 
-    if (model.settings.length === 0 && model.groups.length === 0) {
+    const faces = Array.isArray(model.faces) ? model.faces : [];
+    for (const face of faces) root.append(faceRow(face));
+
+    const isEmpty =
+      model.settings.length === 0 &&
+      model.groups.length === 0 &&
+      faces.length === 0;
+    if (isEmpty) {
       const empty = doc.createElement('p');
       empty.className = 'customize-note';
       empty.textContent = 'No settings in this group.';
@@ -215,23 +379,37 @@ export function createCustomizeView(container, options = {}) {
 
     const footer = doc.createElement('div');
     footer.className = 'customize-footer';
-    const apply = doc.createElement('button');
-    apply.textContent = 'Apply';
-    apply.title = 'Apply staged changes for this session';
-    apply.addEventListener('click', () => commit(applySetting));
-    const save = doc.createElement('button');
-    save.textContent = 'Apply and Save';
-    save.title = 'Apply staged changes and persist them';
-    save.addEventListener('click', () => commit(saveSetting));
-    const revert = doc.createElement('button');
-    revert.textContent = 'Revert';
-    revert.title = 'Discard staged changes';
-    revert.addEventListener('click', () => {
-      staged.clear();
-      render();
-    });
-    footer.append(apply, save, revert);
+    // Apply / Save / Revert only make sense for staged settings. With
+    // a faces-only model the buttons would be confusing; hide them.
+    if (model.settings.length > 0) {
+      const apply = doc.createElement('button');
+      apply.textContent = 'Apply';
+      apply.title = 'Apply staged changes for this session';
+      apply.addEventListener('click', () => commit(applySetting));
+      const save = doc.createElement('button');
+      save.textContent = 'Apply and Save';
+      save.title = 'Apply staged changes and persist them';
+      save.addEventListener('click', () => commit(saveSetting));
+      const revert = doc.createElement('button');
+      revert.textContent = 'Revert';
+      revert.title = 'Discard staged changes';
+      revert.addEventListener('click', () => {
+        staged.clear();
+        render();
+      });
+      footer.append(apply, save, revert);
+    }
     root.append(footer);
+
+    // If the model asked to scroll to a face, do so after layout.
+    if (model.scrollToFace) {
+      const el = root.querySelector(
+        `[data-face-name="${cssEscape(model.scrollToFace)}"]`
+      );
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ block: 'start' });
+      }
+    }
   }
 
   /** Render the view for a customisation buffer. */

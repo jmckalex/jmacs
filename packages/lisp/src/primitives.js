@@ -318,9 +318,21 @@ export function installPrimitives(env, { write }) {
     arity('string-suffix?', a, 2);
     return str('string-suffix?', a[1]).endsWith(str('string-suffix?', a[0]));
   });
+  def('string=?', (a) => {
+    arity('string=?', a, 2);
+    return str('string=?', a[0]) === str('string=?', a[1]);
+  });
   def('string->symbol', (a) => sym(str('string->symbol', a[0])));
   def('symbol->string', (a) => {
-    if (!(a[0] instanceof Sym)) throw new LispError('symbol->string: expected a symbol');
+    if (a[0] instanceof Sym) return a[0].name;
+    if (a[0] instanceof Keyword) return a[0].name;
+    throw new LispError('symbol->string: expected a symbol');
+  });
+  def('string->keyword', (a) => keyword(str('string->keyword', a[0])));
+  def('keyword->string', (a) => {
+    if (!(a[0] instanceof Keyword)) {
+      throw new LispError('keyword->string: expected a keyword');
+    }
     return a[0].name;
   });
   def('string->number', (a) => {

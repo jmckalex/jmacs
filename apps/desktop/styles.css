@@ -957,6 +957,67 @@ textarea.customize-widget {
   background: #ffffff1a;
 }
 
+/* --- customize: face rows --------------------------------------------- */
+/* A face row carries more widgets than a setting row — colour swatches,
+ * weight/slant dropdowns, decoration checkboxes — laid out in a small
+ * grid below the live preview span. */
+
+.customize-face-row {
+  border-left: 2px solid #ffffff14;
+  padding-left: 10px;
+}
+
+.customize-face-preview {
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: var(--bg-editor, #303841);
+  border-radius: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 14px;
+}
+
+.customize-face-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 14px;
+  margin: 8px 0;
+}
+
+.customize-face-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.customize-face-field span {
+  flex: 0 0 auto;
+}
+
+.customize-face-field input,
+.customize-face-field select {
+  font: inherit;
+  font-size: 12px;
+  background: #ffffff08;
+  border: 1px solid #ffffff22;
+  border-radius: 3px;
+  padding: 3px 6px;
+  color: var(--fg);
+}
+
+.customize-face-field input[type='color'] {
+  height: 24px;
+  width: 40px;
+  padding: 1px;
+  cursor: pointer;
+}
+
+.customize-face-boolean {
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+}
+
 /* The image view — the view an `image`-kind buffer is shown through.
    Fit-to-window by default; the toolbar toggles to actual size. */
 

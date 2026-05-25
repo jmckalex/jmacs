@@ -142,6 +142,7 @@ async function editor(initialText = 'hello world', options = {}) {
       },
       'write-custom-file!': () => NIL,
       'apply-theme!': () => NIL,
+      'apply-face-styles!': () => NIL,
       // Documentation primitives: by default the test environment
       // has no doc manifest (`()`), so `doc-known?` is always false
       // and help commands fall back to the REPL. Individual tests
@@ -1978,6 +1979,279 @@ test('current-theme-css-vars switches with *theme*', async () => {
   assert.notEqual(dark, light);
   assert.notEqual(dark, midnight);
   assert.notEqual(light, midnight);
+});
+
+// --- faces ------------------------------------------------------------
+
+test('the 13 built-in token faces are registered', async () => {
+  const { interpreter } = await editor();
+  const names = listToArray(interpreter.call('registered-faces'))
+    .map((s) => s.name).sort();
+  assert.deepEqual(
+    names,
+    [
+      'code', 'comment', 'constant', 'function', 'heading', 'keyword',
+      'link', 'number', 'operator', 'paren', 'string', 'tag', 'type',
+    ]
+  );
+});
+
+test('defface stores per-theme defaults that face-default returns', async () => {
+  const { interpreter } = await editor();
+  const dark = interpreter.evaluate(
+    "(get (face-default 'keyword 'dark) :foreground nil)"
+  );
+  const light = interpreter.evaluate(
+    "(get (face-default 'keyword 'light) :foreground nil)"
+  );
+  const midnight = interpreter.evaluate(
+    "(get (face-default 'keyword 'midnight) :foreground nil)"
+  );
+  assert.equal(typeof dark, 'string');
+  assert.equal(typeof light, 'string');
+  assert.equal(typeof midnight, 'string');
+  assert.notEqual(dark, light);
+  assert.notEqual(dark, midnight);
+});
+
+test('comment is italic by default in every shipped theme', async () => {
+  const { interpreter } = await editor();
+  for (const theme of ['light', 'dark', 'midnight']) {
+    const slant = interpreter.evaluate(
+      `(get (face-default 'comment '${theme}) :slant nil)`
+    );
+    assert.equal(slant && slant.name, 'italic', `${theme} comment slant`);
+  }
+});
+
+test('face-attribute on an unset attribute returns nil', async () => {
+  const { interpreter } = await editor();
+  // No background is set by default for `keyword`.
+  const bg = interpreter.evaluate(
+    "(face-attribute 'keyword :background)"
+  );
+  assert.equal(bg, NIL);
+});
+
+test('face-attribute reads the active theme by default', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate("(custom-apply! (quote *theme*) (quote light))");
+  const light = interpreter.evaluate("(face-attribute 'keyword :foreground)");
+  interpreter.evaluate("(custom-apply! (quote *theme*) (quote dark))");
+  const dark = interpreter.evaluate("(face-attribute 'keyword :foreground)");
+  assert.notEqual(light, dark);
+});
+
+test('current-face-styles returns an alist for every face', async () => {
+  const { interpreter } = await editor();
+  const alist = listToArray(interpreter.call('current-face-styles'));
+  assert.ok(alist.length >= 13);
+  // Each entry: (face-name . ((:attr . value) …)).
+  const byName = new Map(alist.map((c) => [c.head.name, listToArray(c.tail)]));
+  const commentAttrs = byName.get('comment');
+  assert.ok(commentAttrs);
+  // The default for comment includes :foreground and :slant.
+  const keys = commentAttrs.map((c) => c.head.name).sort();
+  assert.ok(keys.includes('foreground'));
+  assert.ok(keys.includes('slant'));
+});
+
+// --- face overrides (Phase 2) -----------------------------------------
+
+test('set-face-attribute applies a global override the resolver sees', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#ff0000\")"
+  );
+  // Active theme is `dark` by default; the global override wins over it.
+  const fg = interpreter.evaluate(
+    "(face-attribute 'keyword :foreground)"
+  );
+  assert.equal(fg, '#ff0000');
+});
+
+test('a per-theme override beats the global override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#ff0000\")"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#00ff00\" :theme 'dark)"
+  );
+  // Active theme is dark — per-theme wins.
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    '#00ff00'
+  );
+  // And the global remains visible under a different theme.
+  interpreter.evaluate("(custom-apply! (quote *theme*) (quote light))");
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    '#ff0000'
+  );
+});
+
+test('reset-face drops the global override', async () => {
+  const { interpreter } = await editor();
+  const original = interpreter.evaluate(
+    "(face-attribute 'keyword :foreground)"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#abcdef\")"
+  );
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    '#abcdef'
+  );
+  interpreter.evaluate("(reset-face 'keyword)");
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    original
+  );
+});
+
+test('reset-face with :theme drops only the per-theme override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#111111\")"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#222222\" :theme 'dark)"
+  );
+  interpreter.evaluate("(reset-face 'keyword :theme 'dark)");
+  // The global override survives — dark theme no longer has its own.
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    '#111111'
+  );
+});
+
+test('reset-all-faces wipes both layers', async () => {
+  const { interpreter } = await editor();
+  const original = interpreter.evaluate(
+    "(face-attribute 'keyword :foreground)"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#111111\")"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#222222\" :theme 'dark)"
+  );
+  interpreter.evaluate("(reset-all-faces)");
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'keyword :foreground)"),
+    original
+  );
+});
+
+test('attributes not overridden fall back to the default', async () => {
+  const { interpreter } = await editor();
+  // comment is italic by default; setting its colour must not strip italic.
+  interpreter.evaluate(
+    "(set-face-attribute 'comment :foreground \"#abcdef\")"
+  );
+  assert.equal(
+    interpreter.evaluate("(face-attribute 'comment :foreground)"),
+    '#abcdef'
+  );
+  const slant = interpreter.evaluate("(face-attribute 'comment :slant)");
+  assert.equal(slant && slant.name, 'italic');
+});
+
+test('face-row returns a flat list of values for the customize view', async () => {
+  const { interpreter } = await editor();
+  const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
+  // (name doc foreground background weight slant underline strike state)
+  assert.equal(row.length, 9);
+  assert.equal(row[0], 'keyword');
+  assert.equal(typeof row[1], 'string');
+  assert.equal(typeof row[2], 'string'); // foreground is a colour string
+  // weight & slant arrive as plain strings ('normal' when unset).
+  assert.equal(row[4], 'normal');
+  assert.equal(row[5], 'normal');
+  assert.equal(typeof row[6], 'boolean');
+  assert.equal(typeof row[7], 'boolean');
+  assert.equal(row[8], 'standard'); // no overrides yet
+});
+
+test('face-row reports state \"set\" after an override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate("(set-face-attribute 'keyword :foreground \"#abc\")");
+  const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
+  assert.equal(row[2], '#abc');
+  assert.equal(row[8], 'set');
+});
+
+test('face-row reports state \"set\" after a per-theme override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#abc\" :theme 'dark)"
+  );
+  const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
+  assert.equal(row[8], 'set');
+});
+
+test('faces-group-model returns the model the customize view consumes', async () => {
+  const { interpreter } = await editor();
+  const model = listToArray(interpreter.call('faces-group-model'));
+  // (title doc parent subgroups face-rows)
+  assert.equal(model[0], 'faces');
+  assert.equal(model[2], 'jmacs');
+  const rows = listToArray(model[4]);
+  assert.ok(rows.length >= 13);
+});
+
+test('face-single-model returns one face row', async () => {
+  const { interpreter } = await editor();
+  const model = listToArray(
+    interpreter.evaluate('(face-single-model "keyword")')
+  );
+  const rows = listToArray(model[4]);
+  assert.equal(rows.length, 1);
+  const row = listToArray(rows[0]);
+  assert.equal(row[0], 'keyword');
+});
+
+test('set-face-attribute-by-strings coerces weight strings to keywords', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    '(set-face-attribute-by-strings "keyword" "weight" "bold")'
+  );
+  const weight = interpreter.evaluate("(face-attribute 'keyword :weight)");
+  assert.equal(weight && weight.name, 'bold');
+});
+
+test('reset-face-by-string drops the global override', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#abc\")"
+  );
+  interpreter.evaluate('(reset-face-by-string "keyword")');
+  const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
+  assert.equal(row[8], 'standard');
+});
+
+test('faces is a registered customize group under jmacs', async () => {
+  const { interpreter } = await editor();
+  const parent = interpreter.evaluate(
+    "(get (get *custom-groups* 'faces {}) :parent nil)"
+  );
+  assert.equal(parent && parent.name, 'jmacs');
+});
+
+test('set-face-attribute triggers the saver hook', async () => {
+  const { interpreter } = await editor();
+  // Install a Lisp-side saver that counts invocations.
+  interpreter.evaluate('(define *test-saver-calls* 0)');
+  interpreter.evaluate(
+    "(set-face-overrides-saver! (lambda () (set! *test-saver-calls* (+ *test-saver-calls* 1))))"
+  );
+  interpreter.evaluate(
+    "(set-face-attribute 'keyword :foreground \"#ff0000\")"
+  );
+  interpreter.evaluate("(reset-face 'keyword)");
+  const n = interpreter.evaluate('*test-saver-calls*');
+  assert.ok(n >= 2, `expected saver called twice, got ${n}`);
 });
 
 // --- mode-specific keymaps -------------------------------------------
