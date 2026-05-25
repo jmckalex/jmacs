@@ -1371,6 +1371,176 @@ textarea.customize-widget {
   margin: 0;
   color: var(--fg);
   overflow-wrap: anywhere;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Derived rows (Duration, File, Format, Path) — values not owned by
+   the user. Slightly muted so the contrast with editable rows is
+   visible without being distracting. */
+.audio-meta dt.audio-meta-derived,
+.audio-meta dd.audio-meta-derived {
+  color: var(--fg-dim);
+}
+
+/* The value span of an editable row. Double-click to enter the
+   inline-edit state — `cursor: text` hints the affordance. */
+.audio-meta-value {
+  cursor: text;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.audio-meta-value:hover {
+  text-decoration: underline dotted 1px var(--fg-dim);
+  text-underline-offset: 3px;
+}
+
+/* The inline-edit input — minimal styling, sits in place of the
+   value span while editing. */
+.audio-meta-input {
+  flex: 1 1 auto;
+  font: inherit;
+  color: var(--fg);
+  background: #00000055;
+  border: 1px solid #ffffff22;
+  border-radius: 3px;
+  padding: 1px 6px;
+  outline: none;
+  min-width: 0;
+}
+
+.audio-meta-input:focus {
+  border-color: #ffffff44;
+}
+
+.audio-title-input {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 2px 8px;
+  width: 100%;
+}
+
+/* Remove-row button — a small red circle, slightly lighter on hover,
+   right-aligned within the row. Only editable rows render one. */
+.audio-meta-minus {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: #c0392b;
+  color: #ffffff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.85;
+}
+
+.audio-meta-minus:hover {
+  background: #e74c3c;
+  opacity: 1;
+}
+
+/* Plus-pill — collapsed: a single button. Expanded: two inputs +
+   confirm/cancel. Sits below the metadata list, before the audio
+   player. */
+.audio-meta-plus {
+  display: flex;
+  align-items: center;
+  margin-top: 12px;
+  font-size: 12.5px;
+}
+
+.audio-meta-plus-button {
+  border: 1px dashed #ffffff44;
+  background: transparent;
+  color: var(--fg-dim);
+  border-radius: 999px;
+  padding: 2px 14px;
+  font-size: 15px;
+  line-height: 1.1;
+  cursor: pointer;
+}
+
+.audio-meta-plus-button:hover {
+  border-color: #ffffff66;
+  color: var(--fg);
+}
+
+.audio-meta-plus-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+}
+
+.audio-meta-plus-form[hidden] {
+  display: none;
+}
+
+.audio-meta-plus-key,
+.audio-meta-plus-value {
+  font: inherit;
+  color: var(--fg);
+  background: #00000055;
+  border: 1px solid #ffffff22;
+  border-radius: 3px;
+  padding: 2px 6px;
+  outline: none;
+}
+
+.audio-meta-plus-key {
+  flex: 0 1 160px;
+}
+
+.audio-meta-plus-value {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.audio-meta-plus-key:focus,
+.audio-meta-plus-value:focus {
+  border-color: #ffffff44;
+}
+
+.audio-meta-plus-confirm,
+.audio-meta-plus-cancel {
+  border: 1px solid #ffffff22;
+  background: var(--bg-chrome);
+  color: var(--fg);
+  border-radius: 3px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.audio-meta-plus-confirm:hover,
+.audio-meta-plus-cancel:hover {
+  background: var(--bg-editor);
+}
+
+.audio-meta-plus-cancel {
+  padding: 2px 8px;
+}
+
+/* The headline is editable too — a hover hint matching .audio-meta-
+   value's affordance. */
+.audio-title {
+  cursor: text;
+}
+
+.audio-title:hover {
+  text-decoration: underline dotted 1px var(--fg-dim);
+  text-underline-offset: 4px;
 }
 
 .audio-player {

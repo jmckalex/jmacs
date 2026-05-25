@@ -56,6 +56,34 @@ export function formatDuration(seconds) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
+/** The metadata keys the user can edit. Anything else the view shows
+ *  (file, format, path) is derived and read-only — see the
+ *  editable-vs-derived discussion in `plans/AUDIO-METADATA-EDIT.md`.
+ *  Title is also editable (via double-click on the headline).
+ *
+ *  Extra keys present in `buffer.metadata` (e.g. `composer`) appear
+ *  as editable rows below the standard ones.
+ */
+const STANDARD_EDITABLE_KEYS = ['artist', 'album', 'track', 'year', 'genre'];
+
+/** Map standard meta keys to the labels shown in the row's <dt>. */
+const KEY_LABELS = {
+  artist: 'Artist',
+  album: 'Album',
+  track: 'Track',
+  year: 'Year',
+  genre: 'Genre',
+};
+
+/** A one-line failure message for the minibuffer. Accepts a string,
+ *  an Error-like with `.message`, or `null`/`undefined`. */
+export function formatEditError(error) {
+  if (!error) return 'editing failed';
+  if (typeof error === 'string') return `editing failed: ${error}`;
+  if (typeof error.message === 'string') return `editing failed: ${error.message}`;
+  return 'editing failed';
+}
+
 /**
  * Create the audio view.
  *
@@ -67,14 +95,33 @@ export function formatDuration(seconds) {
  *   key was handled.
  * @param {() => void} [options.closeBuffer] - Called when the user
  *   presses `q` to dismiss the audio buffer.
- * @returns {{element: HTMLElement, setBuffer: (buffer: object | null)
- *   => void, focus: () => void, destroy: () => void}}
+ * @param {(args: { key: string, value: string, buffer: object })
+ *   => { ok: true, metadata: object } | { ok: false, error: string }}
+ *   [options.onSetMetadata] - Called when the user commits an inline
+ *   edit or confirms the plus-pill. Returns success + the updated
+ *   metadata, or failure + a one-line error. Sync — Lisp interpreter
+ *   is sync and the audio metadata host primitives are too.
+ * @param {(args: { key: string, buffer: object })
+ *   => { ok: true, metadata: object } | { ok: false, error: string }}
+ *   [options.onRemoveMetadata] - Called when the user clicks the minus
+ *   button on an editable row.
+ * @param {(message: string) => void} [options.showError] - Called with
+ *   a one-line failure message when an edit / remove / add fails.
+ *   Typically wired to the minibuffer.
+ * @returns {{element: HTMLElement, setBuffer, focus, destroy,
+ *   pauseAndRelease, resumeFrom}}
  */
 export function createAudioView(container, options = {}) {
   const doc = container.ownerDocument;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const closeBuffer =
     typeof options.closeBuffer === 'function' ? options.closeBuffer : null;
+  const onSetMetadata =
+    typeof options.onSetMetadata === 'function' ? options.onSetMetadata : null;
+  const onRemoveMetadata =
+    typeof options.onRemoveMetadata === 'function' ? options.onRemoveMetadata : null;
+  const showError =
+    typeof options.showError === 'function' ? options.showError : null;
 
   const root = doc.createElement('div');
   root.className = 'audio-view';
@@ -115,6 +162,41 @@ export function createAudioView(container, options = {}) {
   metaList.className = 'audio-meta';
   right.append(metaList);
 
+  // Plus-pill — collapsed by default. Clicking the bare pill expands
+  // it into a two-input form (key + value) the user fills to add a new
+  // tag. Confirm calls `onSetMetadata` with the new pair; cancel or
+  // Esc collapses back to the pill.
+  const plusPill = doc.createElement('div');
+  plusPill.className = 'audio-meta-plus';
+  const plusButton = doc.createElement('button');
+  plusButton.type = 'button';
+  plusButton.className = 'audio-meta-plus-button';
+  plusButton.title = 'Add a tag';
+  plusButton.textContent = '+';
+  const plusForm = doc.createElement('div');
+  plusForm.className = 'audio-meta-plus-form';
+  plusForm.hidden = true;
+  const plusKey = doc.createElement('input');
+  plusKey.type = 'text';
+  plusKey.className = 'audio-meta-plus-key';
+  plusKey.placeholder = 'key (e.g. composer)';
+  const plusValue = doc.createElement('input');
+  plusValue.type = 'text';
+  plusValue.className = 'audio-meta-plus-value';
+  plusValue.placeholder = 'value';
+  const plusConfirm = doc.createElement('button');
+  plusConfirm.type = 'button';
+  plusConfirm.className = 'audio-meta-plus-confirm';
+  plusConfirm.textContent = 'Add';
+  const plusCancel = doc.createElement('button');
+  plusCancel.type = 'button';
+  plusCancel.className = 'audio-meta-plus-cancel';
+  plusCancel.title = 'Cancel';
+  plusCancel.textContent = '×';
+  plusForm.append(plusKey, plusValue, plusConfirm, plusCancel);
+  plusPill.append(plusButton, plusForm);
+  right.append(plusPill);
+
   const audioEl = doc.createElement('audio');
   audioEl.className = 'audio-player';
   audioEl.controls = true;
@@ -131,7 +213,7 @@ export function createAudioView(container, options = {}) {
   let buffer = null;
 
   /** Hide the player and show the error block. */
-  function showError() {
+  function showDecodeError() {
     const advice = mediaErrorAdvice(audioEl.error, buffer ? buffer.name : '');
     if (!advice) return;
     audioEl.style.display = 'none';
@@ -144,18 +226,39 @@ export function createAudioView(container, options = {}) {
     errorBlock.hide();
   }
 
-  audioEl.addEventListener('error', showError);
+  audioEl.addEventListener('error', showDecodeError);
 
-  /** Append one (term, value) row to the metadata list. Empty values
-   *  are skipped — a missing field shouldn't waste a row. */
-  function appendMeta(term, value) {
+  /** Append one row to the metadata list. Empty values are skipped — a
+   *  missing field shouldn't waste a row. Editable rows carry a
+   *  `data-key` attribute, a hint cursor on the value, a minus button,
+   *  and a `data-editable="true"` marker; derived rows render muted
+   *  with no affordances. */
+  function appendRow(term, value, { key = null, editable = false } = {}) {
     if (value === null || value === undefined) return;
     const text = String(value).trim();
     if (text === '') return;
     const dt = doc.createElement('dt');
     dt.textContent = term;
+    if (key) dt.dataset.key = key;
+    if (!editable) dt.classList.add('audio-meta-derived');
     const dd = doc.createElement('dd');
-    dd.textContent = text;
+    if (key) dd.dataset.key = key;
+    if (editable) {
+      dd.dataset.editable = 'true';
+      const valueEl = doc.createElement('span');
+      valueEl.className = 'audio-meta-value';
+      valueEl.textContent = text;
+      const minus = doc.createElement('button');
+      minus.type = 'button';
+      minus.className = 'audio-meta-minus';
+      minus.title = `Remove ${term}`;
+      minus.textContent = '−'; // U+2212 minus sign, narrower than hyphen
+      minus.dataset.key = key;
+      dd.append(valueEl, minus);
+    } else {
+      dd.textContent = text;
+      dd.classList.add('audio-meta-derived');
+    }
     metaList.append(dt, dd);
   }
 
@@ -186,19 +289,26 @@ export function createAudioView(container, options = {}) {
     subtitleEl.textContent = subtitle;
 
     if (meta) {
-      appendMeta('Artist', meta.artist);
-      appendMeta('Album', meta.album);
-      appendMeta('Track', meta.track);
-      appendMeta('Year', meta.year);
-      appendMeta('Genre', meta.genre);
+      for (const key of STANDARD_EDITABLE_KEYS) {
+        appendRow(KEY_LABELS[key], meta[key], { key, editable: true });
+      }
+      // Non-standard editable keys (composer, comment, …) render below
+      // the standard ones, in insertion order. The plus-pill writes
+      // them, and the same minus button removes them.
+      for (const [key, value] of Object.entries(meta)) {
+        if (key === 'title' || key === 'duration') continue;
+        if (STANDARD_EDITABLE_KEYS.includes(key)) continue;
+        const label = key.charAt(0).toUpperCase() + key.slice(1);
+        appendRow(label, value, { key, editable: true });
+      }
       if (typeof meta.duration === 'number') {
-        appendMeta('Duration', formatDuration(meta.duration));
+        appendRow('Duration', formatDuration(meta.duration));
       }
     }
-    appendMeta('File', buffer.name);
+    appendRow('File', buffer.name);
     const mime = mimeTypeForAudio(buffer.name);
-    if (mime) appendMeta('Format', mime);
-    if (buffer.filePath) appendMeta('Path', buffer.filePath);
+    if (mime) appendRow('Format', mime);
+    if (buffer.filePath) appendRow('Path', buffer.filePath);
 
     if (typeof buffer.albumArtSrc === 'string' && buffer.albumArtSrc !== '') {
       artImg.src = buffer.albumArtSrc;
@@ -209,6 +319,253 @@ export function createAudioView(container, options = {}) {
       artImg.style.display = 'none';
       artPlaceholder.style.display = '';
     }
+
+    // The plus-pill always renders below the metadata list. Reset its
+    // form state so a switch-buffer doesn't carry a half-typed entry
+    // from the previous file.
+    collapsePlusPill();
+  }
+
+  // -- Inline edit lifecycle --------------------------------------
+  //
+  // One row at a time: starting a new edit while another is in flight
+  // is a no-op (the in-flight one is committed first by the click's
+  // own blur event). Each edit has three exits — commit on Enter or
+  // blur, revert on Escape — all of which repaint from `buffer.metadata`
+  // so the row's DOM structure is reliably rebuilt without our needing
+  // to surgically swap the <input> for the original <span> + minus.
+
+  /** The row currently mid-edit, or `null` when nothing is. */
+  let editingRow = null;
+
+  /** Replace `dd`'s content with an `<input>` pre-populated with the
+   *  current value; wire commit (Enter/blur) and revert (Escape) to
+   *  the host primitive via onSetMetadata. */
+  function startEditingValue(dd, key) {
+    if (editingRow || !buffer) return;
+    const valueEl = dd.querySelector('.audio-meta-value') || dd;
+    const originalText = (valueEl.textContent || '').trim();
+    const input = doc.createElement('input');
+    input.type = 'text';
+    input.className = 'audio-meta-input';
+    input.value = originalText;
+    const row = { settled: false };
+    editingRow = row;
+    dd.replaceChildren(input);
+    input.focus();
+    input.select();
+
+    const commit = () => {
+      if (row.settled) return;
+      row.settled = true;
+      const newValue = input.value.trim();
+      if (editingRow === row) editingRow = null;
+      if (newValue === originalText) {
+        paint();
+        return;
+      }
+      applySetResult(key, newValue, originalText);
+    };
+    const revert = () => {
+      if (row.settled) return;
+      row.settled = true;
+      if (editingRow === row) editingRow = null;
+      paint();
+    };
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commit();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        revert();
+      }
+    });
+    input.addEventListener('blur', () => commit());
+  }
+
+  /** Same lifecycle as `startEditingValue`, but the target is the
+   *  headline (`<h1>`) — a single element, no minus button, no row
+   *  structure to rebuild. The result still routes through paint(). */
+  function startEditingTitle() {
+    if (editingRow || !buffer) return;
+    const originalText = (titleEl.textContent || '').trim();
+    const input = doc.createElement('input');
+    input.type = 'text';
+    input.className = 'audio-meta-input audio-title-input';
+    input.value = originalText;
+    const row = { settled: false };
+    editingRow = row;
+    titleEl.replaceChildren(input);
+    input.focus();
+    input.select();
+
+    const commit = () => {
+      if (row.settled) return;
+      row.settled = true;
+      const newValue = input.value.trim();
+      if (editingRow === row) editingRow = null;
+      if (newValue === originalText || newValue === '') {
+        paint();
+        return;
+      }
+      applySetResult('title', newValue, originalText);
+    };
+    const revert = () => {
+      if (row.settled) return;
+      row.settled = true;
+      if (editingRow === row) editingRow = null;
+      paint();
+    };
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commit();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        revert();
+      }
+    });
+    input.addEventListener('blur', () => commit());
+  }
+
+  /** Apply a `set-audio-metadata!` call. On success the buffer's
+   *  metadata is updated in place and the view repaints; on failure
+   *  the buffer is untouched, the minibuffer gets the error, and the
+   *  repaint restores the row to `originalText`. */
+  function applySetResult(key, newValue, originalText) {
+    if (!onSetMetadata || !buffer) {
+      paint();
+      return;
+    }
+    let result;
+    try {
+      result = onSetMetadata({ key, value: newValue, buffer });
+    } catch (error) {
+      result = { ok: false, error };
+    }
+    if (result && result.ok) {
+      buffer.metadata = result.metadata
+        ? result.metadata
+        : { ...(buffer.metadata ?? {}), [key]: newValue };
+      paint();
+    } else {
+      if (showError) showError(formatEditError(result && result.error));
+      // The repaint reads from buffer.metadata (still the original
+      // value), so the row reverts naturally.
+      paint();
+      // originalText kept as a closure reference so we could surface
+      // it if a future failure-mode wanted to highlight what was lost;
+      // currently no such mode exists.
+      void originalText;
+    }
+  }
+
+  /** Apply a `remove-audio-metadata!` call. Same shape as
+   *  applySetResult but never carries a value. */
+  function applyRemoveResult(key) {
+    if (!onRemoveMetadata || !buffer) {
+      paint();
+      return;
+    }
+    let result;
+    try {
+      result = onRemoveMetadata({ key, buffer });
+    } catch (error) {
+      result = { ok: false, error };
+    }
+    if (result && result.ok) {
+      if (result.metadata) {
+        buffer.metadata = result.metadata;
+      } else if (buffer.metadata) {
+        const next = { ...buffer.metadata };
+        delete next[key];
+        buffer.metadata = next;
+      }
+      paint();
+    } else {
+      if (showError) showError(formatEditError(result && result.error));
+      paint();
+    }
+  }
+
+  // Event delegation on the metadata list — rows are recreated on every
+  // paint, so wiring per-element listeners would be brittle. The
+  // delegation matches by data-key + class.
+  metaList.addEventListener('dblclick', (event) => {
+    const valueEl = event.target.closest('.audio-meta-value');
+    if (!valueEl) return;
+    const dd = valueEl.parentElement;
+    const key = dd?.dataset.key;
+    if (!key) return;
+    startEditingValue(dd, key);
+  });
+  metaList.addEventListener('click', (event) => {
+    const minus = event.target.closest('.audio-meta-minus');
+    if (!minus) return;
+    const key = minus.dataset.key;
+    if (!key) return;
+    applyRemoveResult(key);
+  });
+  titleEl.addEventListener('dblclick', () => startEditingTitle());
+
+  // -- Plus pill --------------------------------------------------
+
+  function expandPlusPill() {
+    plusButton.hidden = true;
+    plusForm.hidden = false;
+    plusKey.focus();
+  }
+
+  function collapsePlusPill() {
+    plusButton.hidden = false;
+    plusForm.hidden = true;
+    plusKey.value = '';
+    plusValue.value = '';
+  }
+
+  function submitPlusPill() {
+    const key = plusKey.value.trim().toLowerCase();
+    const value = plusValue.value.trim();
+    if (!key || !value) return;
+    if (!onSetMetadata || !buffer) {
+      collapsePlusPill();
+      return;
+    }
+    let result;
+    try {
+      result = onSetMetadata({ key, value, buffer });
+    } catch (error) {
+      result = { ok: false, error };
+    }
+    if (result && result.ok) {
+      buffer.metadata = result.metadata
+        ? result.metadata
+        : { ...(buffer.metadata ?? {}), [key]: value };
+      collapsePlusPill();
+      paint();
+    } else {
+      if (showError) showError(formatEditError(result && result.error));
+      // Leave the pill expanded with the typed text — the user can fix
+      // and retry without re-typing.
+    }
+  }
+
+  plusButton.addEventListener('click', () => expandPlusPill());
+  plusConfirm.addEventListener('click', () => submitPlusPill());
+  plusCancel.addEventListener('click', () => collapsePlusPill());
+  for (const el of [plusKey, plusValue]) {
+    el.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submitPlusPill();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        collapsePlusPill();
+      }
+    });
   }
 
   // Key handling mirrors doc-view: `q` closes; bare printables are
@@ -298,10 +655,61 @@ export function createAudioView(container, options = {}) {
     buffer = null;
   }
 
+  /** Pause the `<audio>` element and drop its `src` so the OS file
+   *  handle is released. Returns the play-state snapshot the caller
+   *  passes back to `resumeFrom` once the file has been rewritten —
+   *  this is what lets the host's metadata-write path do an atomic
+   *  temp-file + rename on Windows, where the rename otherwise fails
+   *  with EBUSY against an open handle.
+   *
+   *  @returns {{ wasPlaying: boolean, currentTime: number }}
+   */
+  function pauseAndRelease() {
+    const snapshot = {
+      wasPlaying: !audioEl.paused && !audioEl.ended,
+      currentTime: audioEl.currentTime || 0,
+    };
+    try {
+      audioEl.pause();
+      audioEl.removeAttribute('src');
+      audioEl.load();
+    } catch {
+      /* ignore */
+    }
+    return snapshot;
+  }
+
+  /** Restore the `<audio>` element's `src` (from the current buffer)
+   *  and seek to `time`. If `wasPlaying` is true, resumes playback.
+   *  Pairs with `pauseAndRelease` — the host calls one before a
+   *  metadata write and the other after. */
+  function resumeFrom({ wasPlaying = false, currentTime = 0 } = {}) {
+    if (!buffer || typeof buffer.src !== 'string') return;
+    try {
+      audioEl.src = buffer.src;
+      // Seek once the metadata loads so the playhead lands precisely.
+      const onLoaded = () => {
+        try {
+          audioEl.currentTime = Math.max(0, currentTime);
+        } catch {
+          /* ignore */
+        }
+        if (wasPlaying) audioEl.play().catch(() => {});
+        audioEl.removeEventListener('loadedmetadata', onLoaded);
+      };
+      audioEl.addEventListener('loadedmetadata', onLoaded);
+      audioEl.load();
+    } catch {
+      /* ignore */
+    }
+  }
+
   return {
     element: root,
     setBuffer,
     focus: () => root.focus(),
     destroy,
+    pauseAndRelease,
+    resumeFrom,
   };
 }
