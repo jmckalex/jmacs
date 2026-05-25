@@ -21,6 +21,7 @@ import {
   writeString,
 } from '@editor/lisp';
 import {
+  createAudioView,
   createCustomizeView,
   createDocView,
   createEditorView,
@@ -33,6 +34,7 @@ import {
   createReplView,
   createSplitter,
   createTreeSitterHighlighter,
+  createVideoView,
   findArt,
   formBoundsAtPoint,
   formBoundsBeforePoint,
@@ -196,14 +198,22 @@ function ensureMajorMode() {
 }
 
 /** Show the view for `kind` — the editor view, the customisation view,
- *  the image view, the documentation view, or the jukebox view —
- *  hiding the others. */
+ *  the image view, the documentation view, the jukebox view, the
+ *  audio view or the video view — hiding the others. Pause the
+ *  media views when unmounting them so a hidden tab doesn't keep
+ *  playing.  */
 function mountView(kind) {
   editorView.element.style.display = kind === 'text' ? '' : 'none';
   customizeView.element.style.display = kind === 'customize' ? '' : 'none';
   imageView.element.style.display = kind === 'image' ? '' : 'none';
   docView.element.style.display = kind === 'doc' ? '' : 'none';
   jukeboxView.element.style.display = kind === 'jukebox' ? '' : 'none';
+  audioView.element.style.display = kind === 'audio' ? '' : 'none';
+  videoView.element.style.display = kind === 'video' ? '' : 'none';
+  // Pause the standalone media players on unmount — the jukebox owns
+  // the shared audio controller and looks after itself.
+  if (kind !== 'audio') audioView.setBuffer(null);
+  if (kind !== 'video') videoView.setBuffer(null);
 }
 
 /** Switch to the buffer at `index`: mount the matching view, re-point
@@ -229,6 +239,14 @@ function switchToBuffer(index) {
     mountView('jukebox');
     jukeboxView.setBuffer(buffer);
     jukeboxView.focus();
+  } else if (buffer.kind === 'audio') {
+    mountView('audio');
+    audioView.setBuffer(buffer);
+    audioView.focus();
+  } else if (buffer.kind === 'video') {
+    mountView('video');
+    videoView.setBuffer(buffer);
+    videoView.focus();
   } else {
     currentTextBuffer = buffer;
     mountView('text');
@@ -248,6 +266,14 @@ function switchToBuffer(index) {
 function killBufferAtIndex(target) {
   if (target < 0 || target >= buffers.length) return;
   const wasCurrent = target === currentIndex;
+  const victim = buffers[target];
+  // Pause and unbind a standalone media element when its buffer is
+  // killed while it's still the mounted view — without this the
+  // <audio>/<video> would keep streaming the file in the background.
+  if ((victim.kind === 'audio' || victim.kind === 'video') && wasCurrent) {
+    if (victim.kind === 'audio') audioView.destroy();
+    else videoView.destroy();
+  }
   buffers.splice(target, 1);
   if (buffers.length === 0) {
     buffers.push(createBuffer('', { name: '*scratch*' }));
@@ -498,18 +524,7 @@ async function openFileInteractive() {
   try {
     const result = await window.host.openFile();
     if (result === null) return;
-    // An image file comes back with a ready-to-display `imageSrc`
-    // (a data URL) rather than text — show it through the image view.
-    if (typeof result.imageSrc === 'string') {
-      buffers.push({
-        kind: 'image',
-        name: result.name,
-        filePath: result.path,
-        src: result.imageSrc,
-      });
-      switchToBuffer(buffers.length - 1);
-      return;
-    }
+    if (openAsMediaBufferIfRecognised(result)) return;
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
     // Load the file's sticky notes from its companion metadata file,
@@ -522,6 +537,51 @@ async function openFileInteractive() {
   } catch (error) {
     repl.appendError(`open failed: ${error.message}`);
   }
+}
+
+/** Route an open-file IPC result to its matching non-text view, when
+ *  the shape calls for one. Returns whether a view was mounted — the
+ *  caller falls through to the text path on `false`. */
+function openAsMediaBufferIfRecognised(result) {
+  // An image file comes back with a ready-to-display `imageSrc`
+  // (a data URL) rather than text — show it through the image view.
+  if (typeof result.imageSrc === 'string') {
+    buffers.push({
+      kind: 'image',
+      name: result.name,
+      filePath: result.path,
+      src: result.imageSrc,
+    });
+    switchToBuffer(buffers.length - 1);
+    return true;
+  }
+  // An audio or video file comes back with a `media://` URL the
+  // matching player streams. For audio the host has already extracted
+  // the embedded tag metadata and album art (best-effort) so the view
+  // can render them without another IPC round-trip.
+  if (result.mediaKind === 'audio') {
+    buffers.push({
+      kind: 'audio',
+      name: result.name,
+      filePath: result.path,
+      src: result.src,
+      ...(result.metadata ? { metadata: result.metadata } : {}),
+      ...(result.albumArtSrc ? { albumArtSrc: result.albumArtSrc } : {}),
+    });
+    switchToBuffer(buffers.length - 1);
+    return true;
+  }
+  if (result.mediaKind === 'video') {
+    buffers.push({
+      kind: 'video',
+      name: result.name,
+      filePath: result.path,
+      src: result.src,
+    });
+    switchToBuffer(buffers.length - 1);
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -545,6 +605,31 @@ async function openImageByPath(filePath) {
     switchToBuffer(buffers.length - 1);
   } catch (error) {
     repl.appendError(`open-image failed: ${error.message}`);
+  }
+}
+
+/**
+ * Open a file by an explicit path, dialog-free, routing it through
+ * the same logic the dialog path uses (image / audio / video / text).
+ * Used by the desktop smoke arm and available to Lisp as
+ * `open-file-path!`.
+ */
+async function openFileByPath(filePath) {
+  try {
+    const result = await window.host.openFilePath(filePath);
+    if (result === null) {
+      repl.appendError(`open-file-path: unreadable (${filePath})`);
+      return;
+    }
+    if (openAsMediaBufferIfRecognised(result)) return;
+    const buffer = createBuffer(result.content ?? '', { name: result.name });
+    buffer.filePath = result.path;
+    const metadata = await window.host.readMetadata(result.path);
+    if (metadata) buffer.metadata = metadata;
+    buffers.push(buffer);
+    switchToBuffer(buffers.length - 1);
+  } catch (error) {
+    repl.appendError(`open-file-path failed: ${error.message}`);
   }
 }
 
@@ -907,6 +992,16 @@ const interpreter = createInterpreter({
       const filePath = expandTilde(String(args[0] ?? ''));
       if (filePath === '') return NIL;
       openImageByPath(filePath);
+      return NIL;
+    },
+    // Open any file at PATH through the dialog-free path, routing it
+    // through the same image / audio / video / text logic the dialog
+    // uses. The smoke arm calls this to mount audio/video buffers
+    // without a dialog stub; users can call it from the REPL too.
+    'open-file-path!': (args) => {
+      const filePath = expandTilde(String(args[0] ?? ''));
+      if (filePath === '') return NIL;
+      openFileByPath(filePath);
       return NIL;
     },
     'save-buffer!': () => {
@@ -1953,6 +2048,43 @@ const jukeboxView = createJukeboxView(
   }
 );
 jukeboxView.element.style.display = 'none';
+
+// The audio view — the view a single `audio`-kind buffer is shown
+// through (opening one audio file from the dialog, not a directory).
+// Unlike the jukebox, this view owns its own <audio> element so a
+// file open here doesn't fight the jukebox's playback head.
+const audioView = createAudioView(
+  document.getElementById('editor-host'),
+  {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    closeBuffer: () => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('kill-buffer');
+      } catch (error) {
+        repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+      }
+    },
+  }
+);
+audioView.element.style.display = 'none';
+
+// The video view — the view a `video`-kind buffer is shown through.
+const videoView = createVideoView(
+  document.getElementById('editor-host'),
+  {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    closeBuffer: () => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('kill-buffer');
+      } catch (error) {
+        repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+      }
+    },
+  }
+);
+videoView.element.style.display = 'none';
 
 /** The hover-doc tooltip — appears beside the cursor when the mouse
  *  rests on a documented Lisp symbol. The lookup chain mirrors

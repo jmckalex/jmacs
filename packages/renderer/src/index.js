@@ -24,6 +24,15 @@ export {
   mimeTypeForImage,
 } from './image-view.js';
 export {
+  isAudioFileName,
+  isVideoFileName,
+  mediaUrlForPath,
+  mimeTypeForAudio,
+  mimeTypeForVideo,
+} from './media-view.js';
+export { createAudioView, formatDuration } from './audio-view.js';
+export { createVideoView } from './video-view.js';
+export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,
   createJukeboxView,

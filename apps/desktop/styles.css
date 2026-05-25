@@ -1263,6 +1263,242 @@ textarea.customize-widget {
   line-height: 1.5;
 }
 
+/* --- audio view ------------------------------------------------------- */
+/* An `audio`-kind buffer is shown through this view: cover art on the
+   left (or a placeholder), a title block and a metadata list on the
+   right, with the <audio controls> element pinned to the bottom of the
+   right column. Opening one audio file from the dialog mounts here;
+   the jukebox view is for a whole directory. */
+
+.audio-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.audio-layout {
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 24px;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.audio-art {
+  flex: 0 0 auto;
+  width: 300px;
+  max-width: 40%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #00000022;
+  border: 1px solid #ffffff14;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.audio-art-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.audio-art-placeholder {
+  color: var(--fg-dim);
+  font-size: 12.5px;
+  text-align: center;
+  padding: 16px;
+}
+
+.audio-right {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 12px;
+}
+
+.audio-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--fg);
+  /* Long titles wrap; very long ones get ellipsised on the second line. */
+  overflow-wrap: anywhere;
+}
+
+.audio-subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.audio-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 8px 0 0 0;
+  font-size: 12.5px;
+  flex: 1 1 auto;
+  overflow: auto;
+  align-content: start;
+}
+
+.audio-meta dt {
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 11px;
+  padding-top: 2px;
+}
+
+.audio-meta dd {
+  margin: 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.audio-player {
+  flex: 0 0 auto;
+  width: 100%;
+  margin-top: auto;
+}
+
+/* --- video view ------------------------------------------------------- */
+/* A `video`-kind buffer is shown through this view: a <video controls>
+   element centred and aspect-respected, with the filename + absolute
+   path beneath. */
+
+.video-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.video-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 20px;
+  background: #00000033;
+}
+
+.video-player {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: black;
+}
+
+.video-caption {
+  flex: 0 0 auto;
+  padding: 10px 18px 14px;
+  border-top: 1px solid #ffffff14;
+}
+
+.video-name {
+  font-size: 13px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.video-path {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+/* --- media error block ------------------------------------------------ */
+/* Shown by audio-view / video-view when the <audio>/<video> element
+   fires `error` (almost always SRC_NOT_SUPPORTED — Chromium can't
+   decode the codec or container). Sits where the player would. The
+   message names the format, explains why it doesn't work, and shows
+   a one-liner ffmpeg command the user can copy and run. */
+
+.media-error {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 20px 24px;
+  background: #00000033;
+  border: 1px solid #ffffff14;
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+}
+
+.media-error-headline {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.media-error-detail {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.media-error-suggestion {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-dim);
+}
+
+.media-error-command-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.media-error-command {
+  flex: 1 1 auto;
+  padding: 8px 10px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--fg);
+  background: #00000044;
+  border: 1px solid #ffffff14;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.media-error-copy {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-chrome);
+  border: 1px solid #ffffff22;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.media-error-copy:hover {
+  background: var(--bg-editor);
+}
+
 /* --- colour swatches --------------------------------------------------- */
 /* An inline swatch placed beside every colour literal in code. Clicking
    it opens the modal colour chooser. */
