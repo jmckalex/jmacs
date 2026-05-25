@@ -41,6 +41,7 @@ by `src/treesitter.js`.
 | `tree-sitter-sql.wasm` | `@derekstride/tree-sitter-sql@0.3.11` | the SQL grammar (built locally) |
 | `tree-sitter-dockerfile.wasm` | camdencheek/tree-sitter-dockerfile @ tag `v0.2.0` | the Dockerfile grammar (no maintained npm; cloned & built locally) |
 | `tree-sitter-nix.wasm` | `tree-sitter-nix@0.0.2` | the Nix grammar (built locally) |
+| `tree-sitter-xml.wasm` | `tree-sitter-xml@1.0.0` | the XML grammar (built locally) |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
