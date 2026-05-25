@@ -17,6 +17,7 @@
   "license": "GPL-3.0-or-later",
   "private": true,
   "devDependencies": {
+    "@pfoerster/tree-sitter-latex": "0.6.0",
     "@tree-sitter-grammars/tree-sitter-markdown": "0.3.2",
     "tree-sitter-bash": "0.25.1",
     "tree-sitter-cli": "0.25.5",

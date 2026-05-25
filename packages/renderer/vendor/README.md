@@ -24,19 +24,20 @@ by `src/treesitter.js`.
 | `tree-sitter-php_only.wasm` | `tree-sitter-php@0.24.2` | the pure-PHP grammar (no surrounding HTML) |
 | `tree-sitter-markdown.wasm` | `@tree-sitter-grammars/tree-sitter-markdown@0.3.2` | the Markdown block grammar (built locally — see below) |
 | `tree-sitter-markdown-inline.wasm` | `@tree-sitter-grammars/tree-sitter-markdown@0.3.2` | the Markdown inline grammar (built locally — see below) |
+| `tree-sitter-latex.wasm` | `@pfoerster/tree-sitter-latex@0.6.0` | the LaTeX grammar (built locally — see below) |
 
 The source packages are devDependencies of this package; to refresh
 these files, copy them from `node_modules` after updating those.
 
-Most grammars ship a prebuilt `.wasm` on npm; the two Markdown
-grammars do not — `@tree-sitter-grammars/tree-sitter-markdown@0.3.2`
-ships only C source plus native Node bindings. They are built locally
-from that source by `scripts/build-grammars.sh` at the repo root,
-which shells out to `tree-sitter build --wasm --docker` (the
-`tree-sitter-cli` dev dependency provides the binary; Docker provides
-the Emscripten toolchain). The build is a one-time step run when the
-markdown grammar version changes — the produced `.wasm` is committed
-alongside the others.
+Most grammars ship a prebuilt `.wasm` on npm; a handful do not — the
+two Markdown grammars (`@tree-sitter-grammars/tree-sitter-markdown@0.3.2`)
+and LaTeX (`@pfoerster/tree-sitter-latex@0.6.0`) ship only C source plus
+native Node bindings. They are built locally from that source by
+`scripts/build-grammars.sh` at the repo root, which shells out to
+`tree-sitter build --wasm --docker` (the `tree-sitter-cli` dev dependency
+provides the binary; Docker provides the Emscripten toolchain). The
+build is a one-time step run when a grammar version changes — the
+produced `.wasm` is committed alongside the others.
 
 Tree-sitter is used for JavaScript, HTML and Python. The editor's Lisp
 dialect is custom and still evolving — it has no grammar, and keeps its

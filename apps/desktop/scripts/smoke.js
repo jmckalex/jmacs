@@ -536,6 +536,29 @@ app.whenReady().then(() => {
         await frame();
         const mdHeadings = document.querySelectorAll('.tok-heading').length;
         const mdInjectsJs = document.querySelectorAll('.tok-keyword').length;
+        // LaTeX: a .tex buffer with a generic command, a sectioning
+        // command, inline math, an environment and a tikzpicture
+        // exercises five key faces. \\textbf is a generic_command, the
+        // @function catch-all; environment names (equation, tikzpicture)
+        // are @type; the math delimiters ($) are @string; and the TikZ
+        // specials (\\draw, \\node, ...) are @tag, a face no other
+        // inserted buffer in this smoke arm produces inside its content
+        // — so a non-zero count proves the LaTeX grammar's TikZ rule
+        // fired. Backslash escaping: this string traverses four nested
+        // layers (template literal → executeJavaScript script → JS
+        // string → Lisp string), each interpreting a backslash; a
+        // literal one in the buffer needs eight source backslashes
+        // here, and the newline escape collapses 4→2→1 over the same
+        // chain (the Lisp reader's n-escape, used to step across lines
+        // the REPL's single-line input won't accept verbatim).
+        submit('(new-buffer! "smoke.tex")');
+        submit('(insert! "\\\\\\\\textbf{hi} $x=1$\\\\n\\\\\\\\section{Hi}\\\\n\\\\\\\\begin{equation}x=1\\\\\\\\end{equation}\\\\n\\\\\\\\begin{tikzpicture}\\\\n\\\\\\\\draw (0,0) -- (1,1);\\\\n\\\\\\\\end{tikzpicture}\\\\n")');
+        await frame();
+        await frame();
+        const texFunctions = document.querySelectorAll('.tok-function').length;
+        const texTypes = document.querySelectorAll('.tok-type').length;
+        const texStrings = document.querySelectorAll('.tok-string').length;
+        const texTags = document.querySelectorAll('.tok-tag').length;
         return {
           // The languages whose grammar WASM actually loaded.
           langs: document.body.dataset.treesitter,
@@ -560,6 +583,10 @@ app.whenReady().then(() => {
           shFunctions,
           mdHeadings,
           mdInjectsJs,
+          texFunctions,
+          texTypes,
+          texStrings,
+          texTags,
         };
       })()`);
       console.log('  treesitter:', JSON.stringify(treesitter));
@@ -1917,6 +1944,7 @@ app.whenReady().then(() => {
         treesitter.langs.includes('bash') &&
         treesitter.langs.includes('php') &&
         treesitter.langs.includes('markdown') &&
+        treesitter.langs.includes('latex') &&
         treesitter.keywords > 0 && treesitter.numbers > 0 &&
         treesitter.pyFunctions > 0 && treesitter.htmlTags > 0 &&
         treesitter.htmlInjectsCss > 0 &&
@@ -1927,7 +1955,9 @@ app.whenReady().then(() => {
         treesitter.rsKeywords > 0 && treesitter.rsTypes > 0 &&
         treesitter.goKeywords > 0 && treesitter.goTypes > 0 &&
         treesitter.shKeywords > 0 && treesitter.shFunctions > 0 &&
-        treesitter.mdHeadings > 0 && treesitter.mdInjectsJs > 0;
+        treesitter.mdHeadings > 0 && treesitter.mdInjectsJs > 0 &&
+        treesitter.texFunctions > 0 && treesitter.texTypes > 0 &&
+        treesitter.texStrings > 0 && treesitter.texTags > 0;
       const faceInfoOk =
         faceInfo.modeline.includes('*Doc: Face at point*') &&
         faceInfo.mentionsKeyword &&

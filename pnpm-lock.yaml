@@ -31,6 +31,9 @@ importers:
         specifier: ^18.0.4
         version: 18.0.4
     devDependencies:
+      '@pfoerster/tree-sitter-latex':
+        specifier: 0.6.0
+        version: 0.6.0
       '@tree-sitter-grammars/tree-sitter-markdown':
         specifier: 0.3.2
         version: 0.3.2
@@ -87,6 +90,15 @@ packages:
   '@electron/get@5.0.0':
     resolution: {integrity: sha512-pjoBpru1KdEtcExBnuHAP1cAc/5faoedw0hzJkL3o4/IJp7HNF1+fbrdxT3gMYRX2oJfvnA/WXeCTVQpYYxyJA==}
     engines: {node: '>=22.12.0'}
+
+  '@pfoerster/tree-sitter-latex@0.6.0':
+    resolution: {integrity: sha512-j9V0Zh5bFoEu6ZLqbLAB+2+NWm/gsPkoKgtOf2Gbn6mikuJ5MyxMmKgwQvPIxPYC57tHcIj9oKaT4jBdN86R1Q==}
+    peerDependencies:
+      tree-sitter: ^0.21.0 || ^0.25.0
+      tree_sitter: '*'
+    peerDependenciesMeta:
+      tree_sitter:
+        optional: true
 
   '@tree-sitter-grammars/tree-sitter-markdown@0.3.2':
     resolution: {integrity: sha512-hQXCcDVvg2t4E8cn7zz6jjIBerzk9E9ZlHxJp5IrUOpY4s1YVpXJbMeWZks2/V7lmkPRnnkM8IrTbQ5ltwEOnA==}
@@ -303,6 +315,11 @@ snapshots:
       undici: 7.25.0
     transitivePeerDependencies:
       - supports-color
+
+  '@pfoerster/tree-sitter-latex@0.6.0':
+    dependencies:
+      node-addon-api: 8.7.0
+      node-gyp-build: 4.8.4
 
   '@tree-sitter-grammars/tree-sitter-markdown@0.3.2':
     dependencies:
