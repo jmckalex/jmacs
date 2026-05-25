@@ -1568,6 +1568,23 @@ app.whenReady().then(() => {
         const albumArtSrc = albumArt
           ? (albumArt.getAttribute('src') || '')
           : '';
+        // The inner .audio-layout is content-sized (flex: 0 0 auto),
+        // so the play controls sit right under the metadata instead of
+        // being pushed to the pane's bottom. The REPL splitter still
+        // owns the editor / REPL boundary so the user can drag it as
+        // usual.
+        const audioLayout = audioView
+          ? audioView.querySelector('.audio-layout')
+          : null;
+        const audioLayoutStyle = audioLayout
+          ? getComputedStyle(audioLayout)
+          : null;
+        const audioLayoutIsContentSized = !!(
+          audioLayoutStyle &&
+          audioLayoutStyle.flexGrow === '0' &&
+          audioLayoutStyle.flexShrink === '0' &&
+          audioLayoutStyle.flexBasis === 'auto'
+        );
         // \`q\` on the focused view dismisses the buffer; the audio
         // view should be hidden afterwards and the modeline back on a
         // different buffer.
@@ -1625,6 +1642,7 @@ app.whenReady().then(() => {
         return {
           audioShown, audioName, hasAudioEl, audioSrc,
           titleText, subtitleText, metaText, albumArtSrc,
+          audioLayoutIsContentSized,
           audioStillVisible, afterAudioKill,
           videoShown, videoName, hasVideoEl, videoSrc,
           captionName, captionPath,
@@ -1641,6 +1659,7 @@ app.whenReady().then(() => {
           metaRows: mediaViews.metaText.length,
           albumArtIsDataUrl:
             mediaViews.albumArtSrc.startsWith('data:image/'),
+          layoutIsContentSized: mediaViews.audioLayoutIsContentSized,
           dismissed: !mediaViews.audioStillVisible,
         },
         video: {

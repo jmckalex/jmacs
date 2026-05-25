@@ -1278,13 +1278,20 @@ textarea.customize-widget {
   background: var(--bg-editor);
   color: var(--fg);
   font-family: system-ui, sans-serif;
-  overflow: hidden;
+  /* The inner .audio-layout is content-sized; if a track has so much
+     metadata (or the error block is shown) that the layout exceeds
+     the pane, the whole view scrolls rather than clipping. */
+  overflow: auto;
 }
 
+/* The layout block sizes to its natural content height; anything below
+   it inside the .audio-view is editor background. The REPL splitter
+   still owns the editor/REPL boundary so the user can drag it as
+   usual. */
 .audio-layout {
   display: flex;
   align-items: stretch;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
   gap: 24px;
   padding: 24px;
@@ -1348,8 +1355,7 @@ textarea.customize-widget {
   gap: 4px 16px;
   margin: 8px 0 0 0;
   font-size: 12.5px;
-  flex: 1 1 auto;
-  overflow: auto;
+  flex: 0 0 auto;
   align-content: start;
 }
 
@@ -1370,7 +1376,6 @@ textarea.customize-widget {
 .audio-player {
   flex: 0 0 auto;
   width: 100%;
-  margin-top: auto;
 }
 
 /* --- video view ------------------------------------------------------- */
