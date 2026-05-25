@@ -460,10 +460,16 @@ export function createEditorView(buffer, container, options = {}) {
     offsetFromPoint,
 
     setBuffer(next) {
-      if (next === activeBuffer) return;
-      unsubscribe();
-      activeBuffer = next;
-      unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
+      if (next !== activeBuffer) {
+        unsubscribe();
+        activeBuffer = next;
+        unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
+      }
+      // Always render, even when the buffer is unchanged: switchToBuffer
+      // calls setBuffer when the view is mounted again after a hidden
+      // spell, and any render that fired while the view was hidden
+      // produced a 0-height layout (the gutter and only ~7 lines of
+      // overscan). The reveal pass redraws against the real viewport.
       followCursor = true;
       render();
     },
