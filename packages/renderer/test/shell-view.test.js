@@ -49,15 +49,24 @@ test('feedLiveLine wipes the zsh PROMPT_SP artefact', () => {
   assert.deepEqual(state.runs, []);
 });
 
-test('feedLiveLine handles \\r\\n as a single newline (CRLF normalisation)', () => {
-  // \r empties the partial, then \n flushes the now-empty line as a
-  // completed empty line. That's the right semantic — `\r\n` in
-  // terminal-speak is "go to start of next line" and our model
-  // produces the same visual outcome (a fresh line below).
-  const state = { runs: [{ text: 'abc', style: null }] };
+test('feedLiveLine treats \\r\\n as one line terminator', () => {
+  // The pty's tty driver converts output \n to \r\n. Treating the \r
+  // as a rewind would wipe the line just emitted before the \n flushed
+  // it — exactly what `echo HELLO\n` produces. So \r\n is one
+  // terminator: the line content survives and gets flushed.
+  const state = { runs: [{ text: 'HELLO', style: null }] };
   const { completed } = feedLiveLine(state, [plain('\r\n')]);
   assert.equal(completed.length, 1);
-  assert.deepEqual(completed[0], []);
+  assert.deepEqual(completed[0], [{ text: 'HELLO', style: null }]);
+  assert.deepEqual(state.runs, []);
+});
+
+test('feedLiveLine flushes within a single chunk that ends \\r\\n', () => {
+  // The realistic case: a complete line arrives in one chunk.
+  const state = { runs: [] };
+  const { completed } = feedLiveLine(state, [plain('HELLOWORLD\r\n')]);
+  assert.equal(completed.length, 1);
+  assert.deepEqual(completed[0], [{ text: 'HELLOWORLD', style: null }]);
   assert.deepEqual(state.runs, []);
 });
 

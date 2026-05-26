@@ -158,7 +158,16 @@ export function feedLiveLine(state, incoming) {
         completed.push(state.runs);
         state.runs = [];
       } else if (code === 13) {
-        // \r — rewind to col 0
+        // \r — rewind to col 0, UNLESS immediately followed by \n.
+        // The tty driver converts output \n to \r\n; treating that \r
+        // as a rewind would wipe the line just emitted before the \n
+        // flushes it. So peek ahead: \r\n is one line terminator.
+        if (j + 1 < text.length && text.charCodeAt(j + 1) === 10) {
+          completed.push(state.runs);
+          state.runs = [];
+          i = j + 2;
+          continue;
+        }
         state.runs = [];
       } else if (code === 8) {
         // \b — drop the last char
