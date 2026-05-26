@@ -9,6 +9,14 @@
     <title>editor</title>
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="./vendor/fontawesome/css/all.min.css" />
+    <!-- xterm.js styles — required for the shell view's terminal grid
+         to render (the .xterm-* classes its widget emits all key off
+         this sheet). Loaded by relative path through the renderer's
+         pnpm-installed copy. -->
+    <link
+      rel="stylesheet"
+      href="../../packages/renderer/node_modules/@xterm/xterm/css/xterm.css"
+    />
     <script type="importmap">
       {
         "imports": {
@@ -16,7 +24,9 @@
           "@editor/buffer": "../../packages/buffer/src/index.js",
           "@editor/lisp": "../../packages/lisp/src/index.js",
           "@editor/renderer": "../../packages/renderer/src/index.js",
-          "@editor/stdlib": "../../packages/stdlib/src/index.js"
+          "@editor/stdlib": "../../packages/stdlib/src/index.js",
+          "@xterm/xterm": "../../packages/renderer/node_modules/@xterm/xterm/lib/xterm.mjs",
+          "@xterm/addon-fit": "../../packages/renderer/node_modules/@xterm/addon-fit/lib/addon-fit.mjs"
         }
       }
     </script>
