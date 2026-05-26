@@ -33,6 +33,10 @@ export {
 export { createAudioView, formatDuration } from './audio-view.js';
 export { createVideoView } from './video-view.js';
 export {
+  createDirectoryTreeView,
+  iconClassForFile,
+} from './directory-tree-view.js';
+export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,
   createJukeboxView,
