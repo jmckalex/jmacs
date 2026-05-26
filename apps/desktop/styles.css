@@ -1882,6 +1882,32 @@ textarea.customize-widget {
   border-right: 1px solid #ffffff14;
   overflow: auto;
   padding: 4px 0;
+  /* The resizer handle is positioned absolutely against this
+     column, so the column is the positioning root. */
+  position: relative;
+}
+
+/* Drag handle on the right edge of each column. 6px-wide hit
+   strip, fully transparent until hover; live-resize on drag.
+   `position: absolute` against the column's `position: relative`
+   so it overlays the right border without consuming layout. */
+.directory-columns-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  user-select: none;
+  /* Sit above the column's row content so the hit area works
+     across the entire right edge. */
+  z-index: 2;
+}
+
+.directory-columns-resizer:hover,
+.directory-columns-resizer.is-dragging {
+  background: #ffffff22;
 }
 
 .directory-columns-row {
