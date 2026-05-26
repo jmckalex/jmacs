@@ -10,7 +10,7 @@
  */
 
 import { createBuffer } from '@editor/buffer';
-import { createView, createKindRegistry } from '@editor/view';
+import { createView, createKindRegistry, viewFilePath } from '@editor/view';
 import { createLeafPane, computeRects, leafPanes } from '@editor/pane';
 import {
   arrayToList,
@@ -901,18 +901,10 @@ async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
   }
 }
 
-/** The file-path associated with a view, or `null`. For a text view
- *  the path lives on the buffer; non-text views (image, audio, video)
- *  carry it as a top-level field set at creation. Centralised here so
- *  callers don't have to know which slot it's in. */
-function viewFilePath(view) {
-  if (!view) return null;
-  if (view.buffer && typeof view.buffer.filePath === 'string') {
-    return view.buffer.filePath;
-  }
-  if (typeof view.filePath === 'string') return view.filePath;
-  return null;
-}
+// `viewFilePath` (the file-path derivation helper) moved to
+// `@editor/view` in phase 2 of plans/PANES.md so `tabline.js` and
+// `session.js` can consume it directly, without the legacy
+// buffer-record adapter shims.
 
 async function saveBufferInteractive() {
   const view = session.currentView;
@@ -3558,21 +3550,13 @@ requestAnimationFrame(() => splash.classList.add('is-visible'));
 // One tab per open view, above the workspace. The strip is rebuilt
 // whenever the view list or the current index changes; clicks switch
 // or kill views; drag reorders them.
-
-/** Project a View handle to the shape the tabline reads. The tabline
- *  consumes a `{name, filePath}`-ish record; this adapter derives the
- *  file path from the view's buffer (text view) or its top-level
- *  filePath field (image/audio/video). */
-function viewAsTablineRecord(view) {
-  if (!view) return null;
-  return {
-    name: view.name,
-    filePath: viewFilePath(view),
-  };
-}
+//
+// Phase 2 of plans/PANES.md: the tabline consumes views directly. The
+// old `viewAsTablineRecord` adapter is gone — tabline.js reads
+// `view.name` and `viewFilePath(view)` straight off the View handle.
 
 const tabline = createTabline(document.getElementById('tabline-host'), {
-  getBuffers: () => views.map(viewAsTablineRecord),
+  getViews: () => views,
   getCurrentIndex: () => currentViewIndex,
   onSelect: (index) => switchToViewIndex(index),
   onClose: (index) => {
@@ -3620,26 +3604,15 @@ const tabline = createTabline(document.getElementById('tabline-host'), {
 // restore loop re-opens each file and lands on the previously-current
 // view.
 //
-// The session controller still consumes the legacy `{kind, name,
-// filePath, point, mark}` shape — we project each View into it here.
-// A text view exposes its buffer's filePath/point/mark; non-text views
-// are ephemeral and excluded by `isEphemeral`.
-
-/** Project a View into the buffer-shaped record session.js consumes. */
-function viewAsSessionRecord(view) {
-  if (!view) return null;
-  const buffer = view.buffer;
-  return {
-    kind: view.kind === 'text' ? undefined : view.kind,
-    name: view.name,
-    filePath: viewFilePath(view),
-    point: buffer ? buffer.point : 0,
-    mark: buffer ? buffer.mark : null,
-  };
-}
+// Phase 2 of plans/PANES.md: the session controller consumes views
+// directly. The old `viewAsSessionRecord` adapter is gone —
+// session.js reads view.kind / view.buffer.point / view.buffer.mark
+// straight off the View handle. The on-disk JSON's outer key is still
+// `buffers` for backwards compatibility with session.json files saved
+// before the view/buffer split.
 
 const sessionController = createSession({
-  getBuffers: () => views.map(viewAsSessionRecord),
+  getViews: () => views,
   getCurrentIndex: () => currentViewIndex,
   openByPath: async (path, entry) => {
     const view = await openFileByPath(path, { switch: false });
@@ -3654,7 +3627,7 @@ const sessionController = createSession({
     }
     return entry;
   },
-  switchToBuffer: switchToViewIndex,
+  switchToView: switchToViewIndex,
   host: window.host,
 });
 

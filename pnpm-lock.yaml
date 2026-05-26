@@ -9,6 +9,10 @@ importers:
   .: {}
 
   apps/desktop:
+    dependencies:
+      '@editor/view':
+        specifier: workspace:*
+        version: link:../../packages/view
     devDependencies:
       electron:
         specifier: 42.2.0
