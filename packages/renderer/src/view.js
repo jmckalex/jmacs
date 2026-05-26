@@ -8,8 +8,8 @@
  * events arrived. Geometry is expressed in CSS `ch` (column) and `lh`
  * (line) units, so a monospace font needs no pixel measurement.
  *
- * The view can be re-pointed at a different buffer with `setBuffer`,
- * which is how switching between buffers works.
+ * The view can be re-pointed at a different View with `setView`,
+ * which is how switching between views (and thus buffers) works.
  *
  * This module is only meaningful in a browser/Electron renderer
  * context. The pure projection, keymap and command logic it builds on
@@ -36,8 +36,8 @@ const MODIFIER_KEYS = new Set([
  *   text, in the text's coordinate space; the host fills it.
  * @property {HTMLElement} overlayLayer - An empty layer in front of the
  *   text, in the text's coordinate space; the host fills it.
- * @property {(buffer: object) => void} setBuffer - Re-point the view
- *   at a different buffer.
+ * @property {(view: object) => void} setView - Re-point the view at a
+ *   different (text) View. Read its `.buffer` for the L2 buffer.
  * @property {() => void} focus - Give the editor keyboard focus.
  * @property {() => void} destroy - Unsubscribe and remove the view.
  */
@@ -742,17 +742,35 @@ export function createEditorView(buffer, container, options = {}) {
     /** Number of lines actually visible (collapsed by folds). For tests. */
     visibleLineCount,
 
-    setBuffer(next) {
-      if (next !== activeBuffer) {
+    /**
+     * Re-point this editor view at a new (text-kind) View. Per-pane
+     * edit-view instances: one renderer per leaf pane, swapped to a
+     * different view as the pane's content changes.
+     *
+     * The previous `setBuffer(buffer)` shape is kept as a thin shim
+     * for callers that haven't migrated yet, but `setView(view)` is
+     * the new primary entry point.
+     *
+     * @param {import('@editor/view').View} next - The view to show.
+     *   `next.buffer` is the L2 buffer; the renderer subscribes to it.
+     */
+    setView(next) {
+      const nextBuffer = next && next.buffer ? next.buffer : null;
+      if (nextBuffer === null) {
+        // Defensive: a non-text view should never reach here; the
+        // kind registry routes elsewhere. No-op rather than crash.
+        return;
+      }
+      if (nextBuffer !== activeBuffer) {
         unsubscribe();
-        activeBuffer = next;
+        activeBuffer = nextBuffer;
         unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
       }
-      // Always render, even when the buffer is unchanged: switchToBuffer
-      // calls setBuffer when the view is mounted again after a hidden
-      // spell, and any render that fired while the view was hidden
-      // produced a 0-height layout (the gutter and only ~7 lines of
-      // overscan). The reveal pass redraws against the real viewport.
+      // Always render, even when the buffer is unchanged: switchToView
+      // is called when the view is mounted again after a hidden spell,
+      // and any render that fired while the view was hidden produced a
+      // 0-height layout. The reveal pass redraws against the real
+      // viewport.
       followCursor = true;
       render();
     },

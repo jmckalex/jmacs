@@ -2493,31 +2493,83 @@ function refreshModeMenu() {
   window.host.setModeMenu(menu);
 }
 
-// --- editor view --------------------------------------------------------
+// --- editor view (per-pane instances) -----------------------------------
+//
+// Phase 3a of plans/PANES.md: each leaf pane that holds a text view owns
+// its own `createEditorView` instance, mounted inside that pane's div.
+// With one pane (the only case in this commit) there's one entry in
+// the map and `editorView` is that instance, so behaviour matches phase 2.
+// When commit 4's split commands land, the map grows by one entry per
+// leaf — each renders its own view, with its own cursor (per-view-point).
+//
+// The map is keyed by leaf pane id. The text kind's mount hook creates
+// an instance on first use and reuses it on subsequent mounts. Disposal
+// (commit 4) drops the entry and destroys the instance.
 
-const editorView = createEditorView(
-  currentTextBuffer,
-  editorPaneElement(),
-  {
+/** @type {Map<string, ReturnType<typeof createEditorView>>} */
+const editorViewByPaneId = new Map();
+
+/** The leaf pane whose view is currently focused. Used to resolve
+ *  `editorView` callsites that operate on the "current" instance. */
+function focusedTextLeafId() {
+  // For now, currentPaneId resolves through the pane focus model; with
+  // one pane it's that pane's id. The variable is declared above this
+  // section in the pane block.
+  return currentPaneId;
+}
+
+/** Create (or reuse) the editor-view instance for LEAF, mount it inside
+ *  the leaf's pane element, and point it at LEAF.view. */
+function ensureEditorViewForLeaf(leaf) {
+  const paneEl = paneElements.get(leaf.id);
+  if (!paneEl) return null;
+  let instance = editorViewByPaneId.get(leaf.id);
+  if (instance) {
+    // Re-attach if a re-layout detached the root (defensive).
+    if (instance.element.parentNode !== paneEl) {
+      paneEl.append(instance.element);
+    }
+    instance.setView(leaf.view);
+    return instance;
+  }
+  instance = createEditorView(leaf.view.buffer, paneEl, {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     highlighters,
     foldCaptures,
-    // Per-view-point: the renderer view reads the cursor through the
-    // session's current view rather than from the buffer's own
-    // backing. With one pane (this phase) the focused view is the
-    // current view, so the renderer always sees the right cursor;
-    // with multiple panes (commit 3+) each pane gets its own renderer
-    // instance and these closures will point at *that* pane's view.
+    // Per-view-point: each pane's renderer reads the cursor from
+    // *its* leaf's view, not from the global "current view". When a
+    // background pane re-renders (its buffer's shared text changed in
+    // another pane), it still draws its own cursor.
     getPoint: () => {
-      const view = session.currentView;
-      return view && typeof view.point === 'number' ? view.point : 0;
+      const v = leaf.view;
+      return v && typeof v.point === 'number' ? v.point : 0;
     },
     getMark: () => {
-      const view = session.currentView;
-      return view && view.mark !== undefined ? view.mark : null;
+      const v = leaf.view;
+      return v && v.mark !== undefined ? v.mark : null;
     },
-  }
-);
+  });
+  editorViewByPaneId.set(leaf.id, instance);
+  return instance;
+}
+
+/** Dispose of the editor view bound to LEAF (commit 4 will call this
+ *  on pane deletion). Safe to call when no instance exists. */
+function disposeEditorViewForLeaf(leaf) {
+  const instance = editorViewByPaneId.get(leaf.id);
+  if (!instance) return;
+  instance.destroy();
+  editorViewByPaneId.delete(leaf.id);
+}
+
+// The "current" editor view — the instance bound to the focused leaf
+// pane. Reassigned by switchToViewIndex / focus changes. With one
+// pane this is the single instance; with several panes (commit 4) it
+// follows focus.
+const initialLeaf = leafPanes(rootPane)[0];
+ensureEditorViewForLeaf(initialLeaf);
+/** @type {ReturnType<typeof createEditorView>} */
+let editorView = /** @type {*} */ (editorViewByPaneId.get(initialLeaf.id));
 
 // --- the customisation view's data bridge ------------------------------
 // The view is decoupled from the Lisp; these turn registry data into
@@ -3038,7 +3090,17 @@ kindRegistry.register('text', {
     // view's own fields. Two text views over one buffer can each own
     // their cursor; switching to a view rebinds the buffer to it.
     view.buffer.bindCursor(view);
-    editorView.setBuffer(view.buffer);
+    // Per-pane edit-view instances (commit 3): the leaf that holds
+    // this view gets its own createEditorView, mounted in its pane
+    // div. With one pane this is the same instance every time; with
+    // splits there's one per leaf. `editorView` keeps tracking the
+    // focused leaf's instance for legacy callsites.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const instance = leaf ? ensureEditorViewForLeaf(leaf) : null;
+    if (instance) {
+      editorView = instance;
+      instance.setView(view);
+    }
     stickyNotes.setBuffer(view.buffer);
     watchCurrentBuffer();
     ensureMajorMode();
