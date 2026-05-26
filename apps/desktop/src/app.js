@@ -34,6 +34,7 @@ import {
   createMarkdownPreview,
   createMinibuffer,
   createReplView,
+  createShellView,
   createSplitter,
   createTreeSitterHighlighter,
   createVideoView,
@@ -144,6 +145,15 @@ const session = {
 /** Buffers with unsaved changes. */
 const dirtyBuffers = new Set();
 
+/** Monotonic id source for shell-buffer session ids. Each new shell
+ *  buffer gets a fresh id; the host keys its child-process table off
+ *  this. */
+let shellSessionCounter = 0;
+function nextShellSessionId() {
+  shellSessionCounter += 1;
+  return `shell-${shellSessionCounter}-${Date.now()}`;
+}
+
 /** A change to the buffer list or the current index. Refreshes the
  *  tabline and schedules a debounced session save. Both targets are
  *  wired in later (the tabline and session controller depend on the
@@ -227,10 +237,15 @@ function mountView(kind) {
     kind === 'directory-tree' ? '' : 'none';
   directoryColumnsView.element.style.display =
     kind === 'directory-columns' ? '' : 'none';
+  shellView.element.style.display = kind === 'shell' ? '' : 'none';
   // Pause the standalone media players on unmount — the jukebox owns
   // the shared audio controller and looks after itself.
   if (kind !== 'audio') audioView.setBuffer(null);
   if (kind !== 'video') videoView.setBuffer(null);
+  // The shell view stays subscribed across switches (so background
+  // commands keep streaming into the transcript), but its DOM is
+  // unmounted when another view is shown.
+  if (kind !== 'shell') shellView.setBuffer(null);
 }
 
 /** Switch to the buffer at `index`: mount the matching view, re-point
@@ -272,6 +287,10 @@ function switchToBuffer(index) {
     mountView('directory-columns');
     directoryColumnsView.setBuffer(buffer);
     directoryColumnsView.focus();
+  } else if (buffer.kind === 'shell') {
+    mountView('shell');
+    shellView.setBuffer(buffer);
+    shellView.focus();
   } else {
     currentTextBuffer = buffer;
     mountView('text');
@@ -299,6 +318,19 @@ function killBufferAtIndex(target) {
   if ((victim.kind === 'audio' || victim.kind === 'video') && wasCurrent) {
     if (victim.kind === 'audio') audioView.destroy();
     else videoView.destroy();
+  }
+  // A shell buffer owns a child process — kill it so it doesn't leak.
+  // The host's `shell:exit` event will fire and remove the session
+  // from the main-process table; the view's exit handler is fine to
+  // run on a buffer that may already be unmounted.
+  if (victim.kind === 'shell' && typeof victim.sessionId === 'string') {
+    try {
+      if (window.host && typeof window.host.shellKill === 'function') {
+        window.host.shellKill(victim.sessionId);
+      }
+    } catch {
+      // Failure here means the process is already gone; nothing to do.
+    }
   }
   buffers.splice(target, 1);
   if (buffers.length === 0) {
@@ -1260,6 +1292,28 @@ const interpreter = createInterpreter({
         name: `*Tree: ${tailName}*`,
         rootPath,
         expanded: new Set(),
+      });
+      switchToBuffer(buffers.length - 1);
+      return NIL;
+    },
+    // Open a shell buffer — a child process running the user's default
+    // shell ($SHELL, falling back to /bin/zsh) with a transcript and
+    // an input line. The process is spawned by the host the first time
+    // the buffer is mounted; killing the buffer terminates it. Unlike
+    // the other "open" primitives, each call creates a new buffer (a
+    // user may want several shells); to switch to an existing one,
+    // C-x b by name.
+    'open-shell-buffer!': () => {
+      const sessionId = nextShellSessionId();
+      const sequence = buffers.filter((b) => b.kind === 'shell').length + 1;
+      const name = sequence === 1 ? '*shell*' : `*shell*<${sequence}>`;
+      buffers.push({
+        kind: 'shell',
+        name,
+        sessionId,
+        transcript: [],
+        ended: false,
+        spawned: false,
       });
       switchToBuffer(buffers.length - 1);
       return NIL;
@@ -2681,6 +2735,52 @@ const directoryColumnsView = createDirectoryColumnsView(
   }
 );
 directoryColumnsView.element.style.display = 'none';
+
+// The shell view — a `shell`-kind buffer is shown through this view.
+// It owns a long-lived child process per session id; the host's
+// shellSpawn/shellWrite/shellSignal IPCs run the process and stream
+// its output back. The view stays subscribed across buffer switches
+// so background commands keep filling the transcript.
+const shellView = createShellView(document.getElementById('editor-host'), {
+  ...(keymapReady ? { onKey: dispatchKey } : {}),
+  spawn: (sessionId, opts) =>
+    window.host && typeof window.host.shellSpawn === 'function'
+      ? window.host.shellSpawn(sessionId, opts)
+      : Promise.resolve({ ok: false, error: 'shell IPC unavailable' }),
+  write: (sessionId, data) =>
+    window.host && typeof window.host.shellWrite === 'function'
+      ? window.host.shellWrite(sessionId, data)
+      : Promise.resolve({ ok: false }),
+  signal: (sessionId, signal) =>
+    window.host && typeof window.host.shellSignal === 'function'
+      ? window.host.shellSignal(sessionId, signal)
+      : Promise.resolve({ ok: false }),
+  endInput: (sessionId) =>
+    window.host && typeof window.host.shellEndInput === 'function'
+      ? window.host.shellEndInput(sessionId)
+      : Promise.resolve({ ok: false }),
+  kill: (sessionId) =>
+    window.host && typeof window.host.shellKill === 'function'
+      ? window.host.shellKill(sessionId)
+      : Promise.resolve({ ok: false }),
+  onData: (callback) =>
+    window.host && typeof window.host.onShellData === 'function'
+      ? window.host.onShellData(callback)
+      : () => {},
+  onExit: (callback) =>
+    window.host && typeof window.host.onShellExit === 'function'
+      ? window.host.onShellExit(callback)
+      : () => {},
+  closeBuffer: () => {
+    if (!keymapReady) return;
+    try {
+      interpreter.call('kill-buffer');
+    } catch (error) {
+      repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+    }
+  },
+});
+shellView.element.style.display = 'none';
 
 /** Read a file's preview shape for the columns view. Routes through
  *  the existing openFilePath IPC, so images come back as data: URLs,

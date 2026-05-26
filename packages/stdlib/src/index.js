@@ -54,6 +54,7 @@ export const STDLIB_FILES = Object.freeze([
   'jukebox.lisp',
   'directory-tree.lisp',
   'directory-columns.lisp',
+  'shell.lisp',
   'palette.lisp',
   'docs.lisp',
   'help.lisp',

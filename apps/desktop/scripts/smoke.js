@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { registerFileHandlers } from '../src/files.js';
 import { renderJMarkdown } from '../src/jmarkdown.js';
 import { EDITOR_URL, serveAppFile, serveMediaFile } from '../src/serve.js';
+import { registerShellHandlers } from '../src/shell.js';
 
 const repoRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -199,6 +200,7 @@ app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   protocol.handle('media', serveMediaFile);
   registerFileHandlers();
+  registerShellHandlers();
   // The image-buffer check drives the real `file:open` path; with
   // no way to click a native dialog, stub it to choose the scratch
   // image. The audio/video media-views arms drive `file:open-path`
@@ -2391,6 +2393,74 @@ app.whenReady().then(() => {
       console.log('  cols:', JSON.stringify(cols));
       await rm(colsDir, { recursive: true, force: true });
 
+      // Shell-buffer arm: open a shell buffer, type a command, hit
+      // Enter, wait for the output to arrive in the transcript, then
+      // kill the buffer and confirm cleanup.
+      const shell = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        submit('(shell)');
+        await wait(300);
+        await frame();
+        const view = document.querySelector('.shell-view');
+        const shown = !!(view && getComputedStyle(view).display !== 'none');
+        const shellInput = view ? view.querySelector('.shell-input') : null;
+        if (!shellInput) {
+          return { shown, mounted: false };
+        }
+        // Type a command that echoes a known string; submit by
+        // dispatching an Enter keydown the input listens for. The
+        // marker is intentionally not contained in the command text
+        // itself so a true match requires the shell's stdout (not
+        // just the input echo) to arrive in the transcript.
+        const marker = 'JMACSMARKER42';
+        shellInput.focus();
+        shellInput.value = 'echo ' + marker;
+        shellInput.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        // Wait for the shell to start (the spawn message + first
+        // output chunk arrive asynchronously). Poll the transcript:
+        // the input echo block (.shell-entry-input) is excluded so we
+        // only succeed once the stdout block carries the marker.
+        let stdoutText = '';
+        let transcriptText = '';
+        for (let i = 0; i < 80; i += 1) {
+          await wait(100);
+          const transcript = view.querySelector('.shell-transcript');
+          transcriptText = transcript ? transcript.textContent : '';
+          const stdoutEls = view.querySelectorAll('.shell-entry-stdout');
+          stdoutText = Array.from(stdoutEls).map((e) => e.textContent).join('');
+          if (stdoutText.includes(marker)) break;
+        }
+        const tabsBefore = document.querySelectorAll('.tabline-tab').length;
+        // Kill the shell buffer through the same path the keymap uses.
+        submit('(kill-buffer!)');
+        await wait(400);
+        await frame();
+        const viewAfterKill = document.querySelector('.shell-view');
+        const stillShown = viewAfterKill && getComputedStyle(viewAfterKill).display !== 'none';
+        const tabsAfter = document.querySelectorAll('.tabline-tab').length;
+        return {
+          shown,
+          mounted: true,
+          transcriptText,
+          stdoutText,
+          containsEcho: stdoutText.includes(marker),
+          tabsBefore,
+          tabsAfter,
+          stillShownAfterKill: !!stillShown,
+        };
+      })()`);
+      console.log('  shell:', JSON.stringify(shell));
+
       // Chord-prefix display: pressing C-x mid-sequence echoes "C-x-"
       // in the minibuffer's echo area; a follow-up unbound key clears
       // it. The echo area is the .minibuffer-echo element, visible
@@ -2741,6 +2811,16 @@ app.whenReady().then(() => {
         cols.modelineAfterOpen.includes('inner.txt') &&
         // Double-clicking the same file again de-dups: no extra tab.
         cols.tabsAfterSecondOpen === cols.tabsAfter;
+      // Shell-buffer arm: the view mounts, the echo command's output
+      // arrives in the transcript, and killing the buffer removes the
+      // tab and unmounts the shell view.
+      const shellOk =
+        shell &&
+        shell.shown &&
+        shell.mounted &&
+        shell.containsEcho &&
+        shell.tabsAfter === shell.tabsBefore - 1 &&
+        !shell.stillShownAfterKill;
       const chordOk =
         chord.echo === 'C-x-' && chord.visible && chord.cleared;
       const findFileOk =
@@ -2758,7 +2838,7 @@ app.whenReady().then(() => {
         mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
-        tablineOk && langPackOk && treeOk && colsOk &&
+        tablineOk && langPackOk && treeOk && colsOk && shellOk &&
         chordOk && findFileOk
       ) {
         finish(
@@ -2866,8 +2946,10 @@ app.whenReady().then(() => {
         finish(1, `language pack did not work (${JSON.stringify(langPack)})`);
       } else if (!treeOk) {
         finish(1, `directory tree-view did not work (${JSON.stringify(tree)})`);
-      } else {
+      } else if (!colsOk) {
         finish(1, `directory columns-view did not work (${JSON.stringify(cols)})`);
+      } else {
+        finish(1, `shell buffer did not work (${JSON.stringify(shell)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

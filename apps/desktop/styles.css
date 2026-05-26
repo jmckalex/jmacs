@@ -2364,3 +2364,99 @@ textarea.customize-widget {
 .inline-eval.is-fading {
   opacity: 0;
 }
+
+/* --- shell view -------------------------------------------------------- */
+/* A `shell`-kind buffer is shown through this view: a transcript pane
+   above an input line. The shell runs as a normal child process
+   (no PTY); user input is appended on Enter, output streams from the
+   process and lands in the transcript. */
+
+.shell-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.shell-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.shell-header-label {
+  overflow-wrap: anywhere;
+}
+
+.shell-transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.shell-entry {
+  display: block;
+  white-space: pre-wrap;
+}
+
+.shell-entry-stdout {
+  color: var(--fg);
+}
+
+.shell-entry-stderr {
+  color: var(--error, #f08080);
+}
+
+.shell-entry-input {
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+}
+
+.shell-entry-exit {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.shell-input-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-top: 1px solid #ffffff14;
+  background: color-mix(in srgb, var(--bg-editor) 92%, transparent);
+}
+
+.shell-input-prompt {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+}
+
+.shell-input {
+  flex: 1 1 auto;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0;
+}
+
+.shell-input:disabled {
+  color: var(--fg-dim);
+  cursor: not-allowed;
+}
