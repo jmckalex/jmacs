@@ -10,6 +10,7 @@
  */
 
 import { createBuffer } from '@editor/buffer';
+import { createView, createKindRegistry } from '@editor/view';
 import {
   arrayToList,
   cons,
@@ -48,7 +49,11 @@ import {
   loadLanguageHighlighters,
   renderMarkdown,
 } from '@editor/renderer';
-import { createBufferPrimitives, loadStdlib } from '@editor/stdlib';
+import {
+  createBufferPrimitives,
+  createViewPrimitives,
+  loadStdlib,
+} from '@editor/stdlib';
 import { createAudioController } from './audio.js';
 import {
   emptyOverrides,
@@ -122,23 +127,43 @@ const INIT_TEMPLATE = `;;; init.lisp — your jmacs configuration.
 ;;;   (define (insert-divider) (insert! "\\n---\\n"))
 `;
 
-// --- buffers ------------------------------------------------------------
+// --- views --------------------------------------------------------------
+//
+// Post view/buffer split (plans/PANES.md): the addressable on-screen
+// thing is a View. A text-editing View wraps an L2 buffer; other views
+// (image, jukebox, shell, ...) hold their own state. The variable name
+// `views` replaces the old `buffers`; non-text views still live in the
+// same list because the tabline / *Buffer List* address everything
+// uniformly.
 
-/** Every open buffer; one is current. */
-const buffers = [
-  createBuffer(WELCOME, { name: 'welcome.txt' }),
-  createBuffer(SCRATCH, { name: 'scratch.lisp' }),
+/** Every open view; one is current. */
+const views = [
+  createView({
+    kind: 'text',
+    buffer: createBuffer(WELCOME, { name: 'welcome.txt' }),
+  }),
+  createView({
+    kind: 'text',
+    buffer: createBuffer(SCRATCH, { name: 'scratch.lisp' }),
+  }),
 ];
-let currentIndex = 0;
+let currentViewIndex = 0;
 
-/** The L2 text buffer the editor view shows and the buffer primitives
- *  act on. Showing a customisation buffer does not change it. */
-let currentTextBuffer = buffers[0];
+/** The current text view's buffer, or the last text view's buffer when
+ *  the current view has none. Used by the editor view, sticky notes
+ *  and the buffer primitives — none of which mean anything for a
+ *  non-text view. Switching to a non-text view *does not* change this:
+ *  the editor view stays subscribed to its underlying buffer, so a
+ *  user toggling into a doc view and back lands on the same text. */
+let currentTextBuffer = views[0].buffer;
 
-/** The session object the buffer primitives operate through. */
+/** The session object the buffer primitives and view primitives
+ *  operate through. The view primitives read the live currentView;
+ *  the buffer primitives read currentView.buffer (and raise
+ *  `no-buffer-here` when it's null). */
 const session = {
-  get current() {
-    return currentTextBuffer;
+  get currentView() {
+    return views[currentViewIndex] ?? null;
   },
 };
 
@@ -154,13 +179,13 @@ function nextShellSessionId() {
   return `shell-${shellSessionCounter}-${Date.now()}`;
 }
 
-/** A change to the buffer list or the current index. Refreshes the
+/** A change to the view list or the current index. Refreshes the
  *  tabline and schedules a debounced session save. Both targets are
  *  wired in later (the tabline and session controller depend on the
  *  Lisp interpreter being up); this stays a safe no-op until then. */
-let onBuffersChanged = () => {};
-function notifyBuffersChanged() {
-  onBuffersChanged();
+let onViewsChanged = () => {};
+function notifyViewsChanged() {
+  onViewsChanged();
 }
 
 // --- modeline -----------------------------------------------------------
@@ -169,12 +194,12 @@ const nameEl = document.getElementById('modeline-name');
 const positionEl = document.getElementById('modeline-position');
 
 function updateModeline() {
-  const shown = buffers[currentIndex];
+  const shown = views[currentViewIndex];
   const count =
-    buffers.length > 1 ? `  ${currentIndex + 1}/${buffers.length}` : '';
-  // A special (non-text) buffer — a customisation buffer — has no
-  // point and no mode.
-  if (shown && shown.kind) {
+    views.length > 1 ? `  ${currentViewIndex + 1}/${views.length}` : '';
+  // A non-text view (image, doc, shell, customize, ...) has no point
+  // and no mode — show just the view name.
+  if (shown && shown.kind !== 'text') {
     nameEl.textContent = shown.name + count;
     positionEl.textContent = '';
     document.title = `${shown.name} — editor`;
@@ -189,15 +214,20 @@ function updateModeline() {
   nameEl.textContent = mark + buffer.name + mode + count;
   const { line, column } = buffer.positionAt(buffer.point);
   positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
-  // Reflect the current buffer in the OS window title.
+  // Reflect the current view in the OS window title.
   document.title = `${mark}${buffer.name} — editor`;
 }
 
-// Watch the current buffer for changes; re-subscribed when it switches.
+// Watch the current text view's buffer for changes; re-subscribed
+// when the active text view (and so the underlying buffer) switches.
 let unwatch = () => {};
 function watchCurrentBuffer() {
   unwatch();
-  const buffer = session.current;
+  const buffer = currentTextBuffer;
+  if (buffer === null) {
+    unwatch = () => {};
+    return;
+  }
   unwatch = buffer.onChange((event) => {
     if (event.change !== null) {
       dirtyBuffers.add(buffer);
@@ -209,153 +239,119 @@ function watchCurrentBuffer() {
   });
 }
 
-/** Give the current buffer a major mode if it has none yet. */
+/** Give the current text view's buffer a major mode if it has none
+ *  yet. A no-op when the current view has no buffer (image, shell). */
 function ensureMajorMode() {
-  if (keymapReady && session.current.majorMode === null) {
-    try {
-      interpreter.call('choose-major-mode!');
-    } catch (error) {
-      repl.appendError(`mode selection failed: ${error.message}`);
-    }
+  if (!keymapReady) return;
+  const view = session.currentView;
+  const buffer = view ? view.buffer : null;
+  if (!buffer || buffer.majorMode !== null) return;
+  try {
+    interpreter.call('choose-major-mode!');
+  } catch (error) {
+    repl.appendError(`mode selection failed: ${error.message}`);
   }
 }
 
-/** Show the view for `kind` — the editor view, the customisation view,
- *  the image view, the documentation view, the jukebox view, the
- *  audio view or the video view — hiding the others. Pause the
- *  media views when unmounting them so a hidden tab doesn't keep
- *  playing.  */
-function mountView(kind) {
-  editorView.element.style.display = kind === 'text' ? '' : 'none';
-  customizeView.element.style.display = kind === 'customize' ? '' : 'none';
-  imageView.element.style.display = kind === 'image' ? '' : 'none';
-  docView.element.style.display = kind === 'doc' ? '' : 'none';
-  jukeboxView.element.style.display = kind === 'jukebox' ? '' : 'none';
-  audioView.element.style.display = kind === 'audio' ? '' : 'none';
-  videoView.element.style.display = kind === 'video' ? '' : 'none';
+/** The view-kind registry — every view kind contributes a spec with
+ *  a mount hook (and optional dispose hook). The registry is filled
+ *  below, after each renderer view has been constructed. */
+const kindRegistry = createKindRegistry();
+
+/** Hide every renderer view's DOM, then leave the kind registry to
+ *  re-mount the active one. Pause the standalone media players and
+ *  the shell view when they're being unmounted so a hidden view
+ *  doesn't keep playing / streaming into nothing.
+ *
+ *  This single helper replaces the old per-kind switch statement; the
+ *  kind registry's spec.mount(view) takes over from here.
+ *
+ *  @param {string} activeKind */
+function hideInactiveRendererViews(activeKind) {
+  editorView.element.style.display = activeKind === 'text' ? '' : 'none';
+  customizeView.element.style.display =
+    activeKind === 'customize' ? '' : 'none';
+  imageView.element.style.display = activeKind === 'image' ? '' : 'none';
+  docView.element.style.display = activeKind === 'doc' ? '' : 'none';
+  jukeboxView.element.style.display = activeKind === 'jukebox' ? '' : 'none';
+  audioView.element.style.display = activeKind === 'audio' ? '' : 'none';
+  videoView.element.style.display = activeKind === 'video' ? '' : 'none';
   directoryTreeView.element.style.display =
-    kind === 'directory-tree' ? '' : 'none';
+    activeKind === 'directory-tree' ? '' : 'none';
   directoryColumnsView.element.style.display =
-    kind === 'directory-columns' ? '' : 'none';
-  shellView.element.style.display = kind === 'shell' ? '' : 'none';
-  // Pause the standalone media players on unmount — the jukebox owns
-  // the shared audio controller and looks after itself.
-  if (kind !== 'audio') audioView.setBuffer(null);
-  if (kind !== 'video') videoView.setBuffer(null);
-  // The shell view stays subscribed across switches (so background
-  // commands keep streaming into the transcript), but its DOM is
-  // unmounted when another view is shown.
-  if (kind !== 'shell') shellView.setBuffer(null);
+    activeKind === 'directory-columns' ? '' : 'none';
+  shellView.element.style.display = activeKind === 'shell' ? '' : 'none';
+  if (activeKind !== 'audio') audioView.setBuffer(null);
+  if (activeKind !== 'video') videoView.setBuffer(null);
+  if (activeKind !== 'shell') shellView.setBuffer(null);
 }
 
-/** Switch to the buffer at `index`: mount the matching view, re-point
- *  it, and update the modeline. */
-function switchToBuffer(index) {
-  if (index < 0 || index >= buffers.length) return;
+/** Switch to the view at INDEX: dispatch through the kind registry to
+ *  mount the matching renderer view, and update the modeline. */
+function switchToViewIndex(index) {
+  if (index < 0 || index >= views.length) return null;
   dismissSplash();
-  currentIndex = index;
-  const buffer = buffers[index];
-  if (buffer.kind === 'customize') {
-    mountView('customize');
-    customizeView.setBuffer(buffer);
-    customizeView.focus();
-  } else if (buffer.kind === 'image') {
-    mountView('image');
-    imageView.setBuffer(buffer);
-    imageView.focus();
-  } else if (buffer.kind === 'doc') {
-    mountView('doc');
-    docView.setBuffer(buffer);
-    docView.focus();
-  } else if (buffer.kind === 'jukebox') {
-    mountView('jukebox');
-    jukeboxView.setBuffer(buffer);
-    jukeboxView.focus();
-  } else if (buffer.kind === 'audio') {
-    mountView('audio');
-    audioView.setBuffer(buffer);
-    audioView.focus();
-  } else if (buffer.kind === 'video') {
-    mountView('video');
-    videoView.setBuffer(buffer);
-    videoView.focus();
-  } else if (buffer.kind === 'directory-tree') {
-    mountView('directory-tree');
-    directoryTreeView.setBuffer(buffer);
-    directoryTreeView.focus();
-  } else if (buffer.kind === 'directory-columns') {
-    mountView('directory-columns');
-    directoryColumnsView.setBuffer(buffer);
-    directoryColumnsView.focus();
-  } else if (buffer.kind === 'shell') {
-    mountView('shell');
-    shellView.setBuffer(buffer);
-    shellView.focus();
-  } else {
-    currentTextBuffer = buffer;
-    mountView('text');
-    editorView.setBuffer(buffer);
-    stickyNotes.setBuffer(buffer);
-    watchCurrentBuffer();
-    ensureMajorMode();
-    editorView.focus();
-    refreshModeMenu();
-    syncMarkdownPreviewToBuffer();
-  }
+  currentViewIndex = index;
+  const view = views[index];
+  hideInactiveRendererViews(view.kind);
+  kindRegistry.mount(view);
   updateModeline();
-  notifyBuffersChanged();
+  notifyViewsChanged();
+  return view;
 }
 
-/** Remove the buffer at INDEX from the list, mirroring the semantics
- *  of `kill-buffer!`. Out-of-range indices are a no-op. */
-function killBufferAtIndex(target) {
-  if (target < 0 || target >= buffers.length) return;
-  const wasCurrent = target === currentIndex;
-  const victim = buffers[target];
-  // Pause and unbind a standalone media element when its buffer is
-  // killed while it's still the mounted view — without this the
-  // <audio>/<video> would keep streaming the file in the background.
+/** Switch to a specific view handle (not by index). Returns the view
+ *  switched to, or `null` when the handle isn't in the list. */
+function switchToView(view) {
+  const idx = views.indexOf(view);
+  if (idx < 0) return null;
+  return switchToViewIndex(idx);
+}
+
+/** Remove the view at INDEX from the list, mirroring the semantics of
+ *  the old `kill-buffer!`. Out-of-range indices are a no-op. The kind
+ *  registry's dispose hook releases any kind-specific resources (a
+ *  shell view's child process; an audio/video view's media element). */
+function killViewAtIndex(target) {
+  if (target < 0 || target >= views.length) return;
+  const wasCurrent = target === currentViewIndex;
+  const victim = views[target];
+  // Per-kind cleanup. The dispose hook on the spec runs first (it
+  // doesn't know whether the view was current); the audio/video
+  // current-view destroy() lives here because it depends on the
+  // renderer view that was mounted, not on the View handle.
+  kindRegistry.dispose(victim);
   if ((victim.kind === 'audio' || victim.kind === 'video') && wasCurrent) {
     if (victim.kind === 'audio') audioView.destroy();
     else videoView.destroy();
   }
-  // A shell buffer owns a child process — kill it so it doesn't leak.
-  // The host's `shell:exit` event will fire and remove the session
-  // from the main-process table; the view's exit handler is fine to
-  // run on a buffer that may already be unmounted.
-  if (victim.kind === 'shell' && typeof victim.sessionId === 'string') {
-    try {
-      if (window.host && typeof window.host.shellKill === 'function') {
-        window.host.shellKill(victim.sessionId);
-      }
-    } catch {
-      // Failure here means the process is already gone; nothing to do.
-    }
-  }
-  buffers.splice(target, 1);
-  if (buffers.length === 0) {
-    buffers.push(createBuffer('', { name: '*scratch*' }));
-    currentIndex = -1;
-    switchToBuffer(0);
+  views.splice(target, 1);
+  if (views.length === 0) {
+    views.push(createView({
+      kind: 'text',
+      buffer: createBuffer('', { name: '*scratch*' }),
+    }));
+    currentViewIndex = -1;
+    switchToViewIndex(0);
     return;
   }
   if (wasCurrent) {
-    const next = Math.min(target, buffers.length - 1);
-    currentIndex = -1; // force switchToBuffer to re-mount.
-    switchToBuffer(next);
-  } else if (target < currentIndex) {
-    currentIndex -= 1;
+    const next = Math.min(target, views.length - 1);
+    currentViewIndex = -1; // force switchToViewIndex to re-mount.
+    switchToViewIndex(next);
+  } else if (target < currentViewIndex) {
+    currentViewIndex -= 1;
     updateModeline();
-    notifyBuffersChanged();
+    notifyViewsChanged();
   } else {
     updateModeline();
-    notifyBuffersChanged();
+    notifyViewsChanged();
   }
 }
 
-/** Kill the (first) buffer with NAME, if any. */
-function killBufferByName(name) {
-  killBufferAtIndex(buffers.findIndex((buffer) => buffer.name === name));
+/** Kill the (first) view with NAME, if any. */
+function killViewByName(name) {
+  killViewAtIndex(views.findIndex((v) => v.name === name));
 }
 
 /** Join DIR and NAME with a single slash. Tiny helper used to build
@@ -389,27 +385,27 @@ function basenameOf(path) {
   return slash >= 0 ? path.slice(slash + 1) : path;
 }
 
-/** Refresh the labels of every open jukebox buffer. Called by the
+/** Refresh the labels of every open jukebox view. Called by the
  *  `*jukebox-track-format*` :on-change hook so a user customising the
  *  format string sees the change apply to already-open jukeboxes. */
 function refreshAllJukeboxLabels() {
   let touched = false;
-  for (const buffer of buffers) {
-    if (buffer.kind !== 'jukebox' || !Array.isArray(buffer.tracks)) continue;
-    buffer.labels = buffer.tracks.map((track) =>
-      formatTrackLabel(joinPath(buffer.dir, track))
+  for (const view of views) {
+    if (view.kind !== 'jukebox' || !Array.isArray(view.tracks)) continue;
+    view.labels = view.tracks.map((track) =>
+      formatTrackLabel(joinPath(view.dir, track))
     );
     touched = true;
   }
   // Re-mount the current view so the change is visible immediately
-  // (a buffer's labels are read in setBuffer). switchToBuffer with
-  // currentIndex forces a re-mount; we only do it when the current
-  // buffer is a jukebox so other views aren't disturbed.
-  if (touched && currentIndex >= 0 &&
-      buffers[currentIndex].kind === 'jukebox') {
-    const i = currentIndex;
-    currentIndex = -1;
-    switchToBuffer(i);
+  // (a view's labels are read in setBuffer). switchToViewIndex with
+  // currentViewIndex forces a re-mount; we only do it when the
+  // current view is a jukebox so other views aren't disturbed.
+  if (touched && currentViewIndex >= 0 &&
+      views[currentViewIndex].kind === 'jukebox') {
+    const i = currentViewIndex;
+    currentViewIndex = -1;
+    switchToViewIndex(i);
   }
 }
 
@@ -444,56 +440,59 @@ function openJukeboxForDirectory(dir) {
     formatTrackLabel(joinPath(dir, track))
   );
   const name = `*Jukebox: ${dir}*`;
-  let index = buffers.findIndex(
-    (buffer) => buffer.kind === 'jukebox' && buffer.name === name
+  let index = views.findIndex(
+    (v) => v.kind === 'jukebox' && v.name === name
   );
-  // The jukebox buffer carries two callbacks the view invokes: a
-  // refresh (re-read the dir and rebuild) and a quit (stop, remove
-  // the buffer, restore the previous one).
-  const record = {
-    kind: 'jukebox',
-    name,
+  // The jukebox view carries two callbacks the renderer invokes: a
+  // refresh (re-read the dir and rebuild) and a quit (stop, kill the
+  // view, restore the previous one).
+  const extras = {
     dir,
     tracks,
     labels,
     art,
-  };
-  record.refresh = () => openJukeboxForDirectory(dir);
-  record.quit = () => {
-    audio.stop();
-    killBufferByName(name);
+    refresh: () => openJukeboxForDirectory(dir),
+    quit: () => {
+      audio.stop();
+      killViewByName(name);
+    },
   };
   if (index >= 0) {
-    // Reuse the slot — keep `kind` and `name` stable but refresh
-    // payload. The view's setBuffer rebuilds from the new fields.
-    Object.assign(buffers[index], record);
+    // Reuse the slot — keep the View handle stable but refresh its
+    // kind-specific fields. The renderer's setBuffer rebuilds from
+    // the new fields.
+    Object.assign(views[index], extras);
   } else {
-    buffers.push(record);
-    index = buffers.length - 1;
+    views.push(createView({ kind: 'jukebox', name, extras }));
+    index = views.length - 1;
   }
-  switchToBuffer(index);
+  switchToViewIndex(index);
 }
 
-/** Find or create the customisation buffer named `name`, switch to it. */
+/** Find or create the customisation view named `name`, switch to it. */
 function openCustomize(name, scope) {
-  let index = buffers.findIndex(
-    (buffer) => buffer.kind === 'customize' && buffer.name === name
+  let index = views.findIndex(
+    (v) => v.kind === 'customize' && v.name === name
   );
   if (index < 0) {
-    buffers.push({ kind: 'customize', name, scope });
-    index = buffers.length - 1;
+    views.push(createView({
+      kind: 'customize',
+      name,
+      extras: { scope },
+    }));
+    index = views.length - 1;
   }
-  switchToBuffer(index);
+  switchToViewIndex(index);
 }
 
-/** Find or create the doc buffer for `docName`, fetching the HTML from
+/** Find or create the doc view for `docName`, fetching the HTML from
  *  the host if it isn't already open. */
 async function openDocBuffer(docName) {
-  const existing = buffers.findIndex(
-    (buffer) => buffer.kind === 'doc' && buffer.docName === docName
+  const existing = views.findIndex(
+    (v) => v.kind === 'doc' && v.docName === docName
   );
   if (existing >= 0) {
-    switchToBuffer(existing);
+    switchToViewIndex(existing);
     return;
   }
   let page;
@@ -507,13 +506,12 @@ async function openDocBuffer(docName) {
     repl.appendError(`no doc page for ${docName}`);
     return;
   }
-  buffers.push({
+  views.push(createView({
     kind: 'doc',
     name: `*Doc: ${docName}*`,
-    docName,
-    html: page.html,
-  });
-  switchToBuffer(buffers.length - 1);
+    extras: { docName, html: page.html },
+  }));
+  switchToViewIndex(views.length - 1);
 }
 
 /** Minimal HTML-escape for embedding a user-supplied name into an
@@ -531,11 +529,11 @@ function escapeHtml(text) {
  *  live path — for user-defined procedures whose documentation
  *  isn't in the pre-built manifest. */
 async function openDocstringBuffer(docName, source) {
-  const existing = buffers.findIndex(
-    (buffer) => buffer.kind === 'doc' && buffer.docName === docName
+  const existing = views.findIndex(
+    (v) => v.kind === 'doc' && v.docName === docName
   );
   if (existing >= 0) {
-    switchToBuffer(existing);
+    switchToViewIndex(existing);
     return;
   }
   let body;
@@ -551,13 +549,12 @@ async function openDocstringBuffer(docName, source) {
   const html =
     `<h3 class="doc-name"><code>${escapeHtml(docName)}</code></h3>\n` +
     `<div class="doc-docstring">${body}</div>`;
-  buffers.push({
+  views.push(createView({
     kind: 'doc',
     name: `*Doc: ${docName}*`,
-    docName,
-    html,
-  });
-  switchToBuffer(buffers.length - 1);
+    extras: { docName, html },
+  }));
+  switchToViewIndex(views.length - 1);
 }
 
 // --- audio playback (jukebox mode) --------------------------------------
@@ -584,7 +581,7 @@ async function openFileInteractive() {
   try {
     const result = await window.host.openFile();
     if (result === null) return;
-    if (openAsMediaBufferIfRecognised(result)) return;
+    if (openAsMediaViewIfRecognised(result)) return;
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
     // Load the file's sticky notes from its companion metadata file,
@@ -592,8 +589,8 @@ async function openFileInteractive() {
     // final text.
     const metadata = await window.host.readMetadata(result.path);
     if (metadata) buffer.metadata = metadata;
-    buffers.push(buffer);
-    switchToBuffer(buffers.length - 1);
+    views.push(createView({ kind: 'text', buffer }));
+    switchToViewIndex(views.length - 1);
   } catch (error) {
     repl.appendError(`open failed: ${error.message}`);
   }
@@ -602,20 +599,19 @@ async function openFileInteractive() {
 /** Route an open-file IPC result to its matching non-text view, when
  *  the shape calls for one. Returns whether a view was mounted — the
  *  caller falls through to the text path on `false`. */
-function openAsMediaBufferIfRecognised(result, { switch: shouldSwitch = true } = {}) {
+function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {}) {
   const finalise = () => {
-    if (shouldSwitch) switchToBuffer(buffers.length - 1);
+    if (shouldSwitch) switchToViewIndex(views.length - 1);
     return true;
   };
   // An image file comes back with a ready-to-display `imageSrc`
   // (a data URL) rather than text — show it through the image view.
   if (typeof result.imageSrc === 'string') {
-    buffers.push({
+    views.push(createView({
       kind: 'image',
       name: result.name,
-      filePath: result.path,
-      src: result.imageSrc,
-    });
+      extras: { filePath: result.path, src: result.imageSrc },
+    }));
     return finalise();
   }
   // An audio or video file comes back with a `media://` URL the
@@ -623,23 +619,24 @@ function openAsMediaBufferIfRecognised(result, { switch: shouldSwitch = true } =
   // the embedded tag metadata and album art (best-effort) so the view
   // can render them without another IPC round-trip.
   if (result.mediaKind === 'audio') {
-    buffers.push({
+    views.push(createView({
       kind: 'audio',
       name: result.name,
-      filePath: result.path,
-      src: result.src,
-      ...(result.metadata ? { metadata: result.metadata } : {}),
-      ...(result.albumArtSrc ? { albumArtSrc: result.albumArtSrc } : {}),
-    });
+      extras: {
+        filePath: result.path,
+        src: result.src,
+        ...(result.metadata ? { metadata: result.metadata } : {}),
+        ...(result.albumArtSrc ? { albumArtSrc: result.albumArtSrc } : {}),
+      },
+    }));
     return finalise();
   }
   if (result.mediaKind === 'video') {
-    buffers.push({
+    views.push(createView({
       kind: 'video',
       name: result.name,
-      filePath: result.path,
-      src: result.src,
-    });
+      extras: { filePath: result.path, src: result.src },
+    }));
     return finalise();
   }
   return false;
@@ -657,13 +654,12 @@ async function openImageByPath(filePath) {
       repl.appendError(`open-image: not an image or unreadable (${filePath})`);
       return;
     }
-    buffers.push({
+    views.push(createView({
       kind: 'image',
       name: result.name,
-      filePath: result.path,
-      src: result.imageSrc,
-    });
-    switchToBuffer(buffers.length - 1);
+      extras: { filePath: result.path, src: result.imageSrc },
+    }));
+    switchToViewIndex(views.length - 1);
   } catch (error) {
     repl.appendError(`open-image failed: ${error.message}`);
   }
@@ -694,28 +690,29 @@ async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
       }
       return null;
     }
-    // De-dup by file path: surface the existing buffer rather than
+    // De-dup by file path: surface the existing view rather than
     // stacking a second copy. Without this, double-clicking the same
     // file twice in the columns view (or `open-file-path!` from
     // Lisp) would litter the tabline with identical entries.
-    const existing = buffers.findIndex((b) => b.filePath === result.path);
+    const existing = views.findIndex((v) => viewFilePath(v) === result.path);
     if (existing >= 0) {
-      if (shouldSwitch) switchToBuffer(existing);
-      return buffers[existing];
+      if (shouldSwitch) switchToViewIndex(existing);
+      return views[existing];
     }
-    if (openAsMediaBufferIfRecognised(result, { switch: shouldSwitch })) {
-      notifyBuffersChanged();
-      return buffers[buffers.length - 1];
+    if (openAsMediaViewIfRecognised(result, { switch: shouldSwitch })) {
+      notifyViewsChanged();
+      return views[views.length - 1];
     }
     if (typeof result.content !== 'string') return null;
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
     const metadata = await window.host.readMetadata(result.path);
     if (metadata) buffer.metadata = metadata;
-    buffers.push(buffer);
-    notifyBuffersChanged();
-    if (shouldSwitch) switchToBuffer(buffers.length - 1);
-    return buffer;
+    const view = createView({ kind: 'text', buffer });
+    views.push(view);
+    notifyViewsChanged();
+    if (shouldSwitch) switchToViewIndex(views.length - 1);
+    return view;
   } catch (error) {
     if (shouldSwitch) {
       repl.appendError(`open-file-path failed: ${error.message}`);
@@ -724,15 +721,37 @@ async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
   }
 }
 
+/** The file-path associated with a view, or `null`. For a text view
+ *  the path lives on the buffer; non-text views (image, audio, video)
+ *  carry it as a top-level field set at creation. Centralised here so
+ *  callers don't have to know which slot it's in. */
+function viewFilePath(view) {
+  if (!view) return null;
+  if (view.buffer && typeof view.buffer.filePath === 'string') {
+    return view.buffer.filePath;
+  }
+  if (typeof view.filePath === 'string') return view.filePath;
+  return null;
+}
+
 async function saveBufferInteractive() {
-  const buffer = session.current;
+  const view = session.currentView;
+  const buffer = view ? view.buffer : null;
+  if (buffer === null) {
+    repl.appendError('save: no buffer to save in this view');
+    return;
+  }
   try {
     const result = await window.host.saveFile(buffer.filePath ?? null, buffer.text);
     if (result === null) return;
     buffer.filePath = result.path;
     buffer.name = result.name;
+    // Mirror the rename onto the view (text views derive their
+    // display name from the buffer).
+    view.name = result.name;
     dirtyBuffers.delete(buffer);
     updateModeline();
+    notifyViewsChanged();
     // Persist sticky notes alongside the file — this also covers a
     // first save, when the buffer has only just gained a file path.
     await flushMetadata(buffer);
@@ -797,7 +816,7 @@ const minibuffer = createMinibuffer(document.getElementById('minibuffer-host'));
 
 /** Run an incremental forward search in the minibuffer. */
 function startSearch(initialDirection) {
-  const buffer = session.current;
+  const buffer = currentTextBuffer;
   const origin = buffer.point;
   let direction = initialDirection;
   let lastMatch = -1;
@@ -940,7 +959,7 @@ function regexpBackwardMatch(text, regexp, from) {
 
 /** Run an incremental regexp search in the minibuffer. */
 function startRegexpSearch(initialDirection) {
-  const buffer = session.current;
+  const buffer = currentTextBuffer;
   const origin = buffer.point;
   let direction = initialDirection;
   let lastMatch = null; // { start, end } or null
@@ -1104,19 +1123,19 @@ function startCommandPalette() {
  * switch.
  */
 function startBufferSwitcher() {
-  // The current buffer is excluded from the candidates so the
+  // The current view is excluded from the candidates so the
   // suggestion the minibuffer shows in brackets is always a
-  // different buffer — pressing Enter is then a useful switch.
-  const names = buffers
-    .filter((_, index) => index !== currentIndex)
-    .map((buffer) => buffer.name);
+  // different view — pressing Enter is then a useful switch.
+  const names = views
+    .filter((_, index) => index !== currentViewIndex)
+    .map((v) => v.name);
 
   minibuffer.prompt('Buffer: ', {
     onChange(query) {
       const matches = fuzzyFilter(query, names);
       if (matches.length === 0) {
         const trimmed = query.trim();
-        minibuffer.setStatus(trimmed === '' ? '' : `[new buffer: ${trimmed}]`);
+        minibuffer.setStatus(trimmed === '' ? '' : `[new view: ${trimmed}]`);
         return;
       }
       const shown = matches.slice(0, 6);
@@ -1135,20 +1154,23 @@ function startBufferSwitcher() {
       const exact =
         trimmed === ''
           ? -1
-          : buffers.findIndex((buffer) => buffer.name === trimmed);
+          : views.findIndex((v) => v.name === trimmed);
       if (exact >= 0) {
-        switchToBuffer(exact);
+        switchToViewIndex(exact);
         return;
       }
       const chosen = fuzzyFilter(query, names)[0];
       if (chosen !== undefined) {
-        switchToBuffer(buffers.findIndex((buffer) => buffer.name === chosen));
+        switchToViewIndex(views.findIndex((v) => v.name === chosen));
         return;
       }
       if (trimmed === '') return; // nothing to switch to, nothing to create.
-      // No open buffer matches the typed name — create one.
-      buffers.push(createBuffer('', { name: trimmed }));
-      switchToBuffer(buffers.length - 1);
+      // No open view matches the typed name — create a fresh text view.
+      views.push(createView({
+        kind: 'text',
+        buffer: createBuffer('', { name: trimmed }),
+      }));
+      switchToViewIndex(views.length - 1);
     },
     onCancel() {
       editorView.focus();
@@ -1215,10 +1237,69 @@ let faceOverridesCache = null;
  *  dependency on `@editor/lisp` (the unit tests use stand-ins). */
 const lispFactories = { keyword, sym };
 
+/** The view-host the Lisp view-primitives operate through. Every
+ *  closure reads `views`/`currentViewIndex` live, so the host stays
+ *  truthful as the editor switches and kills views. */
+const viewHost = {
+  currentView: () => views[currentViewIndex] ?? null,
+  viewList: () => views.slice(),
+  switchToView: (target) => switchToView(target),
+  newView: (name) => {
+    const finalName = name ?? `untitled-${views.length + 1}`;
+    const view = createView({
+      kind: 'text',
+      buffer: createBuffer('', { name: finalName }),
+    });
+    views.push(view);
+    switchToViewIndex(views.length - 1);
+    return view;
+  },
+  killView: (target) => {
+    const idx = views.indexOf(target);
+    killViewAtIndex(idx);
+  },
+  nextView: () => {
+    if (views.length === 0) return null;
+    return switchToViewIndex((currentViewIndex + 1) % views.length);
+  },
+  previousView: () => {
+    if (views.length === 0) return null;
+    return switchToViewIndex(
+      (currentViewIndex - 1 + views.length) % views.length
+    );
+  },
+  findViewByName: (name) => views.find((v) => v.name === name) ?? null,
+  // The snapshot the *Buffer List* (view-menu) renders against. One
+  // hash-map per view, with :name, :kind, :mode, :line-count, :file,
+  // :modified. The major mode's display name lives on a text view's
+  // buffer; non-text views don't carry a mode.
+  listViewRecords: () => views.map((view) => {
+    const record = new Map();
+    record.set(keyword('name'), view.name ?? '');
+    record.set(keyword('kind'), view.kind);
+    const buffer = view.buffer;
+    const major = buffer ? buffer.majorMode : null;
+    const modeName =
+      major && typeof major.get === 'function'
+        ? major.get(keyword('name')) ?? NIL
+        : NIL;
+    record.set(keyword('mode'), modeName);
+    record.set(
+      keyword('line-count'),
+      buffer && typeof buffer.lineCount === 'number' ? buffer.lineCount : 0
+    );
+    const filePath = viewFilePath(view);
+    record.set(keyword('file'), filePath ?? NIL);
+    record.set(keyword('modified'), buffer ? dirtyBuffers.has(buffer) : false);
+    return record;
+  }),
+};
+
 const interpreter = createInterpreter({
   write: (text) => repl.appendOutput(text),
   primitives: {
     ...createBufferPrimitives(session),
+    ...createViewPrimitives(viewHost),
 
     // File commands run async work and return at once.
     'open-file!': () => {
@@ -1276,46 +1357,47 @@ const interpreter = createInterpreter({
     'open-directory-tree!': (args) => {
       const rootPath = expandTilde(String(args[0] ?? ''));
       if (rootPath === '') return NIL;
-      // Re-use any existing tree buffer for this path rather than
+      // Re-use any existing tree view for this path rather than
       // stacking a new one — same logic the jukebox uses.
-      const existing = buffers.findIndex(
-        (b) => b.kind === 'directory-tree' && b.rootPath === rootPath
+      const existing = views.findIndex(
+        (v) => v.kind === 'directory-tree' && v.rootPath === rootPath
       );
       if (existing >= 0) {
-        switchToBuffer(existing);
+        switchToViewIndex(existing);
         return NIL;
       }
       const segments = rootPath.split('/');
       const tailName = segments[segments.length - 1] || rootPath;
-      buffers.push({
+      views.push(createView({
         kind: 'directory-tree',
         name: `*Tree: ${tailName}*`,
-        rootPath,
-        expanded: new Set(),
-      });
-      switchToBuffer(buffers.length - 1);
+        extras: { rootPath, expanded: new Set() },
+      }));
+      switchToViewIndex(views.length - 1);
       return NIL;
     },
-    // Open a shell buffer — a child process running the user's default
+    // Open a shell view — a child process running the user's default
     // shell ($SHELL, falling back to /bin/zsh) with a transcript and
     // an input line. The process is spawned by the host the first time
-    // the buffer is mounted; killing the buffer terminates it. Unlike
-    // the other "open" primitives, each call creates a new buffer (a
-    // user may want several shells); to switch to an existing one,
-    // C-x b by name.
+    // the view is mounted; killing the view terminates it. Unlike the
+    // other "open" primitives, each call creates a new view (a user
+    // may want several shells); to switch to an existing one, C-x b
+    // by name.
     'open-shell-buffer!': () => {
       const sessionId = nextShellSessionId();
-      const sequence = buffers.filter((b) => b.kind === 'shell').length + 1;
+      const sequence = views.filter((v) => v.kind === 'shell').length + 1;
       const name = sequence === 1 ? '*shell*' : `*shell*<${sequence}>`;
-      buffers.push({
+      views.push(createView({
         kind: 'shell',
         name,
-        sessionId,
-        transcript: [],
-        ended: false,
-        spawned: false,
-      });
-      switchToBuffer(buffers.length - 1);
+        extras: {
+          sessionId,
+          transcript: [],
+          ended: false,
+          spawned: false,
+        },
+      }));
+      switchToViewIndex(views.length - 1);
       return NIL;
     },
     // Open a Finder-style column-view buffer rooted at `path`. Same
@@ -1323,23 +1405,25 @@ const interpreter = createInterpreter({
     'open-directory-columns!': (args) => {
       const rootPath = expandTilde(String(args[0] ?? ''));
       if (rootPath === '') return NIL;
-      const existing = buffers.findIndex(
-        (b) => b.kind === 'directory-columns' && b.rootPath === rootPath
+      const existing = views.findIndex(
+        (v) => v.kind === 'directory-columns' && v.rootPath === rootPath
       );
       if (existing >= 0) {
-        switchToBuffer(existing);
+        switchToViewIndex(existing);
         return NIL;
       }
       const segments = rootPath.split('/');
       const tailName = segments[segments.length - 1] || rootPath;
-      buffers.push({
+      views.push(createView({
         kind: 'directory-columns',
         name: `*Columns: ${tailName}*`,
-        rootPath,
-        columns: [{ path: rootPath, selected: null }],
-        previewPath: null,
-      });
-      switchToBuffer(buffers.length - 1);
+        extras: {
+          rootPath,
+          columns: [{ path: rootPath, selected: null }],
+          previewPath: null,
+        },
+      }));
+      switchToViewIndex(views.length - 1);
       return NIL;
     },
     'save-buffer!': () => {
@@ -1565,7 +1649,7 @@ const interpreter = createInterpreter({
       const from = Number(args[1] ?? 0);
       const regexp = compileRegexpSource(source);
       if (regexp === null) return NIL;
-      const match = regexpForwardMatch(session.current.text, regexp, from);
+      const match = regexpForwardMatch(currentTextBuffer.text, regexp, from);
       return match === null ? NIL : cons(match.start, match.end);
     },
     'find-regexp-backward': (args) => {
@@ -1573,7 +1657,7 @@ const interpreter = createInterpreter({
       const from = Number(args[1] ?? 0);
       const regexp = compileRegexpSource(source);
       if (regexp === null) return NIL;
-      const match = regexpBackwardMatch(session.current.text, regexp, from);
+      const match = regexpBackwardMatch(currentTextBuffer.text, regexp, from);
       return match === null ? NIL : cons(match.start, match.end);
     },
     // Find a plain (non-regexp) string FROM offset onward; used by the
@@ -1582,7 +1666,7 @@ const interpreter = createInterpreter({
       const needle = String(args[0] ?? '');
       const from = Number(args[1] ?? 0);
       if (needle === '') return NIL;
-      const index = session.current.text.indexOf(needle, Math.max(0, from));
+      const index = currentTextBuffer.text.indexOf(needle, Math.max(0, from));
       return index < 0 ? NIL : cons(index, index + needle.length);
     },
     // Replace every regexp match in the current buffer; REPLACEMENT
@@ -1594,7 +1678,7 @@ const interpreter = createInterpreter({
       const replacement = String(args[1] ?? '');
       const regexp = compileRegexpSource(source);
       if (regexp === null) return -1;
-      const buffer = session.current;
+      const buffer = currentTextBuffer;
       let count = 0;
       const newText = buffer.text.replace(regexp, (...match) => {
         count += 1;
@@ -1615,7 +1699,7 @@ const interpreter = createInterpreter({
       const end = Number(args[1]);
       const text = String(args[2] ?? '');
       if (!Number.isInteger(start) || !Number.isInteger(end)) return NIL;
-      const buffer = session.current;
+      const buffer = currentTextBuffer;
       buffer.moveTo(Math.min(start, end));
       buffer.deleteForward(Math.abs(end - start));
       buffer.insert(text);
@@ -1649,7 +1733,7 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'goto-line!': (args) => {
-      const buffer = session.current;
+      const buffer = currentTextBuffer;
       const n = Number(args[0]);
       if (Number.isInteger(n) && n >= 1) {
         buffer.moveTo(buffer.offsetAt(Math.min(n, buffer.lineCount) - 1, 0));
@@ -1657,7 +1741,7 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'replace-all!': (args) => {
-      const buffer = session.current;
+      const buffer = currentTextBuffer;
       const search = String(args[0]);
       const replacement = String(args[1]);
       if (search !== '') {
@@ -1703,77 +1787,9 @@ const interpreter = createInterpreter({
       return NIL;
     },
 
-    // Buffer-list commands — they re-point the editor view.
-    'next-buffer!': () => {
-      switchToBuffer((currentIndex + 1) % buffers.length);
-      return NIL;
-    },
-    'previous-buffer!': () => {
-      switchToBuffer((currentIndex - 1 + buffers.length) % buffers.length);
-      return NIL;
-    },
-    'new-buffer!': (args) => {
-      const name =
-        args.length > 0 ? String(args[0]) : `untitled-${buffers.length + 1}`;
-      buffers.push(createBuffer('', { name }));
-      switchToBuffer(buffers.length - 1);
-      return NIL;
-    },
-    // Remove a buffer from the list. With no argument, kills the
-    // current buffer; with a name, kills the matching one. Killing
-    // the last buffer is fine — a fresh empty `*scratch*` is created
-    // to keep the list non-empty.
-    'kill-buffer!': (args) => {
-      const target =
-        args.length > 0
-          ? buffers.findIndex((buffer) => buffer.name === String(args[0]))
-          : currentIndex;
-      killBufferAtIndex(target);
-      return NIL;
-    },
-    'buffer-count': () => buffers.length,
-    // Switch to the buffer named NAME, if there is one. No-op (returns
-    // nil) if no buffer carries that name; otherwise switches and
-    // returns #t. The Lisp-side `buffer-menu` uses this to jump to a
-    // buffer by name from the *Buffer List* selection.
-    'switch-to-buffer!': (args) => {
-      const name = String(args[0] ?? '');
-      if (name === '') return NIL;
-      const index = buffers.findIndex((buffer) => buffer.name === name);
-      if (index < 0) return NIL;
-      switchToBuffer(index);
-      return true;
-    },
-    // A snapshot of every open buffer as a list of hash-maps with keys
-    // :name, :kind (a string — "text", "doc", "image", "customize"),
-    // :mode (the major-mode display name, or nil for non-text buffers),
-    // :line-count (an integer, 0 for non-text), :file (the absolute
-    // path, or nil), :modified (#t for buffers with unsaved changes).
-    // The Lisp `buffer-menu` reads this to render *Buffer List*.
-    'list-buffers': () => {
-      const records = buffers.map((buffer) => {
-        const record = new Map();
-        record.set(keyword('name'), buffer.name ?? '');
-        // Text buffers have no `kind` property; everything else does.
-        record.set(keyword('kind'), buffer.kind ?? 'text');
-        // The major mode's display name lives on the L2 buffer for text
-        // buffers; non-text buffers don't carry a mode.
-        const major = buffer.majorMode;
-        const modeName =
-          major && typeof major.get === 'function'
-            ? major.get(keyword('name')) ?? NIL
-            : NIL;
-        record.set(keyword('mode'), modeName);
-        record.set(
-          keyword('line-count'),
-          typeof buffer.lineCount === 'number' ? buffer.lineCount : 0
-        );
-        record.set(keyword('file'), buffer.filePath ?? NIL);
-        record.set(keyword('modified'), dirtyBuffers.has(buffer));
-        return record;
-      });
-      return arrayToList(records);
-    },
+    // View-list primitives now come from createViewPrimitives(viewHost),
+    // spread in below this block. The host shape (viewHost) is defined
+    // alongside the interpreter so the closures see the live views.
 
     // Persist the customisation registry's saved settings to disk.
     'write-custom-file!': (args) => {
@@ -2235,7 +2251,7 @@ function dispatchKey(key) {
     key[2] <= '9'
   ) {
     const target = Number(key[2]) - 1;
-    if (target < buffers.length) switchToBuffer(target);
+    if (target < views.length) switchToViewIndex(target);
     return true;
   }
   try {
@@ -2288,7 +2304,7 @@ function refreshModeMenu() {
 // --- editor view --------------------------------------------------------
 
 const editorView = createEditorView(
-  session.current,
+  currentTextBuffer,
   document.getElementById('editor-host'),
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
@@ -2538,9 +2554,9 @@ const docView = createDocView(document.getElementById('editor-host'), {
   closeBuffer: () => {
     if (!keymapReady) return;
     try {
-      interpreter.call('kill-buffer');
+      interpreter.call('kill-view');
     } catch (error) {
-      repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
     }
   },
   openDoc: (name) => {
@@ -2629,11 +2645,15 @@ function runMetadataEdit(primitiveName, buffer, key, value) {
  *  Throws on any write failure so the Lisp primitive surface mirrors
  *  the established `(file-save) → signal` convention. */
 function applyAudioMetadataEdit(path, mutator) {
-  const buffer = buffers.find(
-    (b) => b.kind === 'audio' && b.filePath === path
+  // Look for an audio view currently holding the file's metadata — it
+  // would carry any user-added custom keys the writer needs to
+  // preserve. A non-text view stores its metadata as a top-level
+  // field, set at creation by `openAsMediaViewIfRecognised`.
+  const view = views.find(
+    (v) => v.kind === 'audio' && v.filePath === path
   );
-  const source = buffer
-    ? buffer.metadata
+  const source = view
+    ? view.metadata
     : window.host.audioMetadataSync(path);
   const fields = stripDerivedFields(source ?? {});
   mutator(fields);
@@ -2641,7 +2661,7 @@ function applyAudioMetadataEdit(path, mutator) {
   if (!result || !result.ok) {
     throw new Error(result?.error ?? 'metadata write failed');
   }
-  if (buffer) buffer.metadata = fields;
+  if (view) view.metadata = fields;
 }
 
 /** Drop the four read-only rows the audio view renders below the tag
@@ -2666,9 +2686,9 @@ const audioView = createAudioView(
     closeBuffer: () => {
       if (!keymapReady) return;
       try {
-        interpreter.call('kill-buffer');
+        interpreter.call('kill-view');
       } catch (error) {
-        repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
       }
     },
     // Inline-edit lifecycle. Wired to the stubbed metadata-write
@@ -2692,9 +2712,9 @@ const videoView = createVideoView(
     closeBuffer: () => {
       if (!keymapReady) return;
       try {
-        interpreter.call('kill-buffer');
+        interpreter.call('kill-view');
       } catch (error) {
-        repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
       }
     },
   }
@@ -2716,9 +2736,9 @@ const directoryTreeView = createDirectoryTreeView(
     closeBuffer: () => {
       if (!keymapReady) return;
       try {
-        interpreter.call('kill-buffer');
+        interpreter.call('kill-view');
       } catch (error) {
-        repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
       }
     },
   }
@@ -2742,9 +2762,9 @@ const directoryColumnsView = createDirectoryColumnsView(
     closeBuffer: () => {
       if (!keymapReady) return;
       try {
-        interpreter.call('kill-buffer');
+        interpreter.call('kill-view');
       } catch (error) {
-        repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
       }
     },
   }
@@ -2787,6 +2807,134 @@ shellView.element.style.display = 'none';
 // xterm.js reads CSS variables once, at terminal construction. Pump
 // any later theme change into it.
 themeListeners.add(() => shellView.applyTheme());
+
+// --- kind registry -----------------------------------------------------
+//
+// Each view kind contributes a `mount` hook (and an optional `dispose`
+// hook). The desktop's `switchToViewIndex` routes through this
+// registry — the old ten-way switch on `buffer.kind` is gone.
+//
+// Renderer view modules (createEditorView, createImageView, ...) still
+// expose `setBuffer(viewOrNull)` for compat. Each kind here passes the
+// View handle to setBuffer; the renderer modules read `view.name`,
+// `view.tracks`, `view.html`, etc. — the same fields they used to
+// read off the old buffer record.
+//
+// `tabline` is registered as a kind so the surface is uniform, but no
+// UI/Lisp commands construct one this phase (Q11 / phase 3).
+
+kindRegistry.register('text', {
+  hasBuffer: true,
+  mount: (view) => {
+    currentTextBuffer = view.buffer;
+    editorView.setBuffer(view.buffer);
+    stickyNotes.setBuffer(view.buffer);
+    watchCurrentBuffer();
+    ensureMajorMode();
+    editorView.focus();
+    refreshModeMenu();
+    syncMarkdownPreviewToBuffer();
+  },
+});
+
+kindRegistry.register('customize', {
+  hasBuffer: false,
+  mount: (view) => {
+    customizeView.setBuffer(view);
+    customizeView.focus();
+  },
+});
+
+kindRegistry.register('image', {
+  hasBuffer: false,
+  mount: (view) => {
+    imageView.setBuffer(view);
+    imageView.focus();
+  },
+});
+
+kindRegistry.register('doc', {
+  hasBuffer: false,
+  mount: (view) => {
+    docView.setBuffer(view);
+    docView.focus();
+  },
+});
+
+kindRegistry.register('jukebox', {
+  hasBuffer: false,
+  mount: (view) => {
+    jukeboxView.setBuffer(view);
+    jukeboxView.focus();
+  },
+});
+
+kindRegistry.register('audio', {
+  hasBuffer: false,
+  mount: (view) => {
+    audioView.setBuffer(view);
+    audioView.focus();
+  },
+});
+
+kindRegistry.register('video', {
+  hasBuffer: false,
+  mount: (view) => {
+    videoView.setBuffer(view);
+    videoView.focus();
+  },
+});
+
+kindRegistry.register('directory-tree', {
+  hasBuffer: false,
+  mount: (view) => {
+    directoryTreeView.setBuffer(view);
+    directoryTreeView.focus();
+  },
+});
+
+kindRegistry.register('directory-columns', {
+  hasBuffer: false,
+  mount: (view) => {
+    directoryColumnsView.setBuffer(view);
+    directoryColumnsView.focus();
+  },
+});
+
+kindRegistry.register('shell', {
+  hasBuffer: false,
+  mount: (view) => {
+    shellView.setBuffer(view);
+    shellView.focus();
+  },
+  // A shell view owns a child process — kill it so it doesn't leak.
+  // The host's `shell:exit` event will fire and remove the session
+  // from the main-process table; the view's exit handler is fine to
+  // run on a view that may already be unmounted.
+  dispose: (view) => {
+    if (typeof view.sessionId !== 'string') return;
+    try {
+      if (window.host && typeof window.host.shellKill === 'function') {
+        window.host.shellKill(view.sessionId);
+      }
+    } catch {
+      // Failure here means the process is already gone; nothing to do.
+    }
+  },
+});
+
+// Tabline as a view kind (PANES.md, Q11). The spec is registered so
+// the system recognises the kind, but no mount/UI is wired this phase
+// — there are no commands to construct a tabline-view yet. The mount
+// hook is a defensive stub: if a tabline view somehow finds its way
+// into the views list, the user sees a clear error rather than the
+// switch silently doing nothing.
+kindRegistry.register('tabline', {
+  hasBuffer: false,
+  mount: () => {
+    repl.appendError('tabline-view: not yet implemented (phase 3)');
+  },
+});
 
 /** Read a file's preview shape for the columns view. Routes through
  *  the existing openFilePath IPC, so images come back as data: URLs,
@@ -2944,7 +3092,7 @@ function evalRegionWithOverlay(start, end) {
   }
 }
 
-/** Open (or reuse) a buffer showing the eval log. */
+/** Open (or reuse) a text view showing the eval log. */
 function openEvalLogBuffer() {
   const name = '*Eval log*';
   const text = evalLog.length === 0
@@ -2953,17 +3101,19 @@ function openEvalLogBuffer() {
         const marker = entry.ok ? '⇒' : '!';
         return `${entry.at}\n  ${entry.source}\n  ${marker} ${entry.label}`;
       }).join('\n\n');
-  let index = buffers.findIndex(
-    (buffer) => buffer.kind !== 'doc' && buffer.kind !== 'image' &&
-      buffer.kind !== 'customize' && buffer.name === name
+  let index = views.findIndex(
+    (v) => v.kind === 'text' && v.name === name
   );
   if (index < 0) {
-    buffers.push(createBuffer(text, { name }));
-    index = buffers.length - 1;
+    views.push(createView({
+      kind: 'text',
+      buffer: createBuffer(text, { name }),
+    }));
+    index = views.length - 1;
   } else {
-    buffers[index].setText(text);
+    views[index].buffer.setText(text);
   }
-  switchToBuffer(index);
+  switchToViewIndex(index);
 }
 
 // The Markdown renderer used for sticky notes and the live-docstring
@@ -3008,11 +3158,11 @@ const renderNoteHtml = renderMarkdownHtml;
 // Sticky notes fill the view's overlay layer; they ride the document.
 const stickyNotes = createStickyNotes({
   overlayLayer: editorView.overlayLayer,
-  getBuffer: () => session.current,
+  getBuffer: () => currentTextBuffer,
   render: renderNoteHtml,
-  onChange: () => scheduleMetadataWrite(session.current),
+  onChange: () => scheduleMetadataWrite(currentTextBuffer),
 });
-stickyNotes.setBuffer(session.current);
+stickyNotes.setBuffer(currentTextBuffer);
 
 // --- Markdown preview pane ---------------------------------------------
 // A toggleable pane (markdown-preview, C-c v) that renders the current
@@ -3063,7 +3213,7 @@ function markdownPreviewVisible() {
  *  edits; a no-op when the pane is hidden. */
 function refreshMarkdownPreview() {
   if (!markdownPreviewVisible()) return;
-  markdownPreview.update(session.current.text);
+  markdownPreview.update(currentTextBuffer.text);
 }
 
 /** Re-point the preview pane after a buffer switch: render the new
@@ -3073,7 +3223,7 @@ function refreshMarkdownPreview() {
 function syncMarkdownPreviewToBuffer() {
   if (!markdownPreviewVisible()) return;
   if (currentBufferIsMarkdown()) {
-    markdownPreview.refreshNow(session.current.text);
+    markdownPreview.refreshNow(currentTextBuffer.text);
   } else {
     document.body.classList.add('markdown-preview-hidden');
     markdownPreview.clear();
@@ -3095,7 +3245,7 @@ function toggleMarkdownPreview() {
     return;
   }
   document.body.classList.remove('markdown-preview-hidden');
-  markdownPreview.refreshNow(session.current.text);
+  markdownPreview.refreshNow(currentTextBuffer.text);
   editorView.focus();
 }
 
@@ -3205,67 +3355,98 @@ editorView.backgroundLayer.append(splash);
 requestAnimationFrame(() => splash.classList.add('is-visible'));
 
 // --- tabline ------------------------------------------------------------
-// One tab per open buffer, above the workspace. The strip is rebuilt
-// whenever the buffer list or the current index changes; clicks switch
-// or kill buffers; drag reorders them.
+// One tab per open view, above the workspace. The strip is rebuilt
+// whenever the view list or the current index changes; clicks switch
+// or kill views; drag reorders them.
+
+/** Project a View handle to the shape the tabline reads. The tabline
+ *  consumes a `{name, filePath}`-ish record; this adapter derives the
+ *  file path from the view's buffer (text view) or its top-level
+ *  filePath field (image/audio/video). */
+function viewAsTablineRecord(view) {
+  if (!view) return null;
+  return {
+    name: view.name,
+    filePath: viewFilePath(view),
+  };
+}
 
 const tabline = createTabline(document.getElementById('tabline-host'), {
-  getBuffers: () => buffers,
-  getCurrentIndex: () => currentIndex,
-  onSelect: (index) => switchToBuffer(index),
+  getBuffers: () => views.map(viewAsTablineRecord),
+  getCurrentIndex: () => currentViewIndex,
+  onSelect: (index) => switchToViewIndex(index),
   onClose: (index) => {
-    // Run kill-buffer! through the interpreter when available so it
+    // Run kill-view! through the interpreter when available so it
     // shares the Lisp side's quit-confirmation / hook behaviour; fall
     // back to the host primitive on early-load (the interpreter isn't
     // ready until after the stdlib loads).
     if (keymapReady) {
       try {
-        const buffer = buffers[index];
-        if (buffer && typeof buffer.name === 'string') {
-          interpreter.call('kill-buffer!', buffer.name);
+        const view = views[index];
+        if (view && typeof view.name === 'string') {
+          interpreter.call('kill-view!', view.name);
           return;
         }
       } catch (error) {
         repl.appendError(error.lispMessage ?? error.message ?? String(error));
       }
     }
-    // Fall back to the host kill-buffer primitive — the primitive
+    // Fall back to the host kill-view primitive — the primitive
     // accepts a name; mirror that path. (Effectively: switch to the
     // target so the no-arg form kills the right one.)
-    switchToBuffer(index);
-    interpreter.evaluate('(kill-buffer!)');
+    switchToViewIndex(index);
+    interpreter.evaluate('(kill-view!)');
   },
   onReorder: (from, to) => {
     if (from === to) return;
-    const moved = buffers.splice(from, 1)[0];
-    buffers.splice(to, 0, moved);
-    // Re-point currentIndex onto its moved buffer.
-    if (from === currentIndex) {
-      currentIndex = to;
-    } else if (from < currentIndex && to >= currentIndex) {
-      currentIndex -= 1;
-    } else if (from > currentIndex && to <= currentIndex) {
-      currentIndex += 1;
+    const moved = views.splice(from, 1)[0];
+    views.splice(to, 0, moved);
+    // Re-point currentViewIndex onto its moved view.
+    if (from === currentViewIndex) {
+      currentViewIndex = to;
+    } else if (from < currentViewIndex && to >= currentViewIndex) {
+      currentViewIndex -= 1;
+    } else if (from > currentViewIndex && to <= currentViewIndex) {
+      currentViewIndex += 1;
     }
-    notifyBuffersChanged();
+    notifyViewsChanged();
     updateModeline();
   },
 });
 
 // --- persistent session -------------------------------------------------
-// On change (debounced 500ms) or pagehide, pickle the open buffers and
+// On change (debounced 500ms) or pagehide, pickle the open views and
 // the current one to <userData>/session.json. On the next startup the
 // restore loop re-opens each file and lands on the previously-current
-// buffer.
+// view.
+//
+// The session controller still consumes the legacy `{kind, name,
+// filePath, point, mark}` shape — we project each View into it here.
+// A text view exposes its buffer's filePath/point/mark; non-text views
+// are ephemeral and excluded by `isEphemeral`.
+
+/** Project a View into the buffer-shaped record session.js consumes. */
+function viewAsSessionRecord(view) {
+  if (!view) return null;
+  const buffer = view.buffer;
+  return {
+    kind: view.kind === 'text' ? undefined : view.kind,
+    name: view.name,
+    filePath: viewFilePath(view),
+    point: buffer ? buffer.point : 0,
+    mark: buffer ? buffer.mark : null,
+  };
+}
 
 const sessionController = createSession({
-  getBuffers: () => buffers,
-  getCurrentIndex: () => currentIndex,
+  getBuffers: () => views.map(viewAsSessionRecord),
+  getCurrentIndex: () => currentViewIndex,
   openByPath: async (path, entry) => {
-    const buffer = await openFileByPath(path, { switch: false });
-    if (buffer === null) return null;
-    // Only text buffers carry point/mark; an image buffer doesn't.
-    if (!buffer.kind && typeof buffer.moveTo === 'function') {
+    const view = await openFileByPath(path, { switch: false });
+    if (view === null) return null;
+    // Only text views carry point/mark; image/audio/video views don't.
+    const buffer = view.buffer;
+    if (buffer && typeof buffer.moveTo === 'function') {
       const point = Number.isFinite(entry.point) ? entry.point : 0;
       const mark = Number.isFinite(entry.mark) ? entry.mark : null;
       buffer.moveTo(point);
@@ -3273,16 +3454,16 @@ const sessionController = createSession({
     }
     return entry;
   },
-  switchToBuffer,
+  switchToBuffer: switchToViewIndex,
   host: window.host,
 });
 
 // Wire the change hook: every list / index change refreshes the
 // tabline and queues a session save. `restoring` is set while the
-// restore loop runs so the inner buffer-add doesn't race the save —
+// restore loop runs so the inner view-add doesn't race the save —
 // the save fires once at the end of restore, with the final list.
 let restoring = false;
-onBuffersChanged = () => {
+onViewsChanged = () => {
   tabline.refresh();
   if (!restoring) sessionController.save();
 };

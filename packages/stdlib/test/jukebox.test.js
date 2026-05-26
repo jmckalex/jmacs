@@ -83,10 +83,10 @@ async function jukeboxEditor(options = {}) {
       'note-next!': () => NIL,
       'note-prev!': () => NIL,
       'notes-toggle!': () => NIL,
-      'next-buffer!': () => NIL,
-      'previous-buffer!': () => NIL,
-      'new-buffer!': () => NIL,
-      'kill-buffer!': () => NIL,
+      'next-view!': () => NIL,
+      'previous-view!': () => NIL,
+      'new-view!': () => NIL,
+      'kill-view!': () => NIL,
 
       // The jukebox primitives.
       'open-jukebox-buffer!': (args) => {

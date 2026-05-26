@@ -266,8 +266,8 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(next-buffer!)');     // a switch dismisses the splash
-        submit('(previous-buffer!)'); // ... and back: the count is intact
+        submit('(next-view!)');     // a switch dismisses the splash
+        submit('(previous-view!)'); // ... and back: the count is intact
         await frame();
         return {
           present,
@@ -336,14 +336,14 @@ app.whenReady().then(() => {
 
         // Multiple buffers + highlighting: two buffers are seeded;
         // switching to scratch.lisp shows syntax-highlighted spans.
-        submit('(buffer-count)');
+        submit('(view-count)');
         const bufferCount = lastResult();
-        submit('(next-buffer!)');
+        submit('(next-view!)');
         await frame();
         const tokenSpans = document.querySelectorAll(
           '.tok-keyword, .tok-comment, .tok-string'
         ).length;
-        submit('(previous-buffer!)');
+        submit('(previous-view!)');
         await frame();
 
         const firstLineBefore = document.querySelector('.editor-line').textContent;
@@ -447,16 +447,16 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-buffer! "smoke.js")');
+        submit('(new-view! "smoke.js")');
         submit('(insert! "const answer = 42;")');
         await frame();
         const keywords = document.querySelectorAll('.tok-keyword').length;
         const numbers = document.querySelectorAll('.tok-number').length;
-        submit('(new-buffer! "smoke.py")');
+        submit('(new-view! "smoke.py")');
         submit('(insert! "def go(): return go()")');
         await frame();
         const pyFunctions = document.querySelectorAll('.tok-function').length;
-        submit('(new-buffer! "smoke.html")');
+        submit('(new-view! "smoke.html")');
         submit('(insert! "<div id=x></div>")');
         await frame();
         const htmlTags = document.querySelectorAll('.tok-tag').length;
@@ -465,7 +465,7 @@ app.whenReady().then(() => {
         // grammar's own highlight query never produces tok-keyword
         // for this snippet (no doctype, no JS) — so a non-zero count
         // here proves the inner CSS highlighter ran on the raw_text.
-        submit('(new-buffer! "smoke-injection.html")');
+        submit('(new-view! "smoke-injection.html")');
         submit('(insert! "<style>p { color: red; }</style>")');
         await frame();
         const htmlInjectsCss = document.querySelectorAll('.tok-keyword').length;
@@ -475,13 +475,13 @@ app.whenReady().then(() => {
         // as HTML, so an HTML tag in the surrounding markup gets a
         // .tok-tag span from the inner HTML highlighter. Both counts
         // non-zero prove PHP loaded and the HTML injection ran.
-        submit('(new-buffer! "smoke.php")');
+        submit('(new-view! "smoke.php")');
         submit('(insert! "<?php echo 1; ?> <b>html</b>")');
         await frame();
         await frame();
         const phpKeywords = document.querySelectorAll('.tok-keyword').length;
         const phpTags = document.querySelectorAll('.tok-tag').length;
-        submit('(new-buffer! "smoke.json")');
+        submit('(new-view! "smoke.json")');
         // No embedded double-quotes here: those would need backslash
         // escapes through both layers (executeJavaScript and repl).
         // A numeric/constant array still proves the grammar loaded:
@@ -491,29 +491,29 @@ app.whenReady().then(() => {
         await frame();
         const jsonNumbers = document.querySelectorAll('.tok-number').length;
         const jsonConstants = document.querySelectorAll('.tok-constant').length;
-        submit('(new-buffer! "smoke.css")');
+        submit('(new-view! "smoke.css")');
         submit('(insert! "p { color: red; }")');
         await frame();
         // CSS has no fallback tokenizer either — tok-keyword (the
         // property name "color") proves the grammar loaded.
         const cssKeywords = document.querySelectorAll('.tok-keyword').length;
         const cssTags = document.querySelectorAll('.tok-tag').length;
-        submit('(new-buffer! "smoke.ts")');
+        submit('(new-view! "smoke.ts")');
         submit('(insert! "const n: number = 1;")');
         await frame();
         const tsKeywords = document.querySelectorAll('.tok-keyword').length;
         const tsTypes = document.querySelectorAll('.tok-type').length;
-        submit('(new-buffer! "smoke.rs")');
+        submit('(new-view! "smoke.rs")');
         submit('(insert! "fn go() -> u32 { 1 }")');
         await frame();
         const rsKeywords = document.querySelectorAll('.tok-keyword').length;
         const rsTypes = document.querySelectorAll('.tok-type').length;
-        submit('(new-buffer! "smoke.go")');
+        submit('(new-view! "smoke.go")');
         submit('(insert! "package p; func F() int32 { return 0 }")');
         await frame();
         const goKeywords = document.querySelectorAll('.tok-keyword').length;
         const goTypes = document.querySelectorAll('.tok-type').length;
-        submit('(new-buffer! "smoke.sh")');
+        submit('(new-view! "smoke.sh")');
         submit('(insert! "if true; then echo hi; fi")');
         await frame();
         const shKeywords = document.querySelectorAll('.tok-keyword').length;
@@ -532,7 +532,7 @@ app.whenReady().then(() => {
         // and the injection pipeline only resolves tree-sitter inner
         // highlighters — so a lisp fence would render as plain
         // tok-code, not as lisp keywords.)
-        submit('(new-buffer! "smoke.md")');
+        submit('(new-view! "smoke.md")');
         // Four backslashes in the template literal → two in the JS
         // string → one backslash-n pair in the Lisp source, which the
         // reader's string-escape table maps to a real newline. (Using
@@ -557,7 +557,7 @@ app.whenReady().then(() => {
         // here, and the newline escape collapses 4→2→1 over the same
         // chain (the Lisp reader's n-escape, used to step across lines
         // the REPL's single-line input won't accept verbatim).
-        submit('(new-buffer! "smoke.tex")');
+        submit('(new-view! "smoke.tex")');
         submit('(insert! "\\\\\\\\textbf{hi} $x=1$\\\\n\\\\\\\\section{Hi}\\\\n\\\\\\\\begin{equation}x=1\\\\\\\\end{equation}\\\\n\\\\\\\\begin{tikzpicture}\\\\n\\\\\\\\draw (0,0) -- (1,1);\\\\n\\\\\\\\end{tikzpicture}\\\\n")');
         await frame();
         await frame();
@@ -610,7 +610,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-buffer! "face-smoke.js")');
+        submit('(new-view! "face-smoke.js")');
         await frame();
         submit('(insert! "function foo() {}")');
         await frame();
@@ -653,7 +653,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        replSubmit('(new-buffer! "replace-test")');
+        replSubmit('(new-view! "replace-test")');
         replSubmit('(insert! "foo foo foo")');
         await frame();
         replSubmit('(run-command (quote replace-string))');
@@ -684,7 +684,7 @@ app.whenReady().then(() => {
           }));
         };
         // 1. replace-regexp: (\\w+)(\\d+) -> $2-$1 on a mixed line.
-        replSubmit('(new-buffer! "regex-replace-test")');
+        replSubmit('(new-view! "regex-replace-test")');
         replSubmit('(insert! "foo123 bar45 baz6")');
         await frame();
         replSubmit('(run-command (quote replace-regexp))');
@@ -705,7 +705,7 @@ app.whenReady().then(() => {
 
         // 2. query-replace: foo -> xxx with a y, then a n, then a q
         //    sequence — exactly one replacement should happen.
-        replSubmit('(new-buffer! "query-replace-test")');
+        replSubmit('(new-view! "query-replace-test")');
         replSubmit('(insert! "foo foo foo")');
         await frame();
         // Move to the start so the walk sees every match.
@@ -741,7 +741,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        replSubmit('(new-buffer! "mouse-test")');
+        replSubmit('(new-view! "mouse-test")');
         await frame();
         const editor = document.querySelector('.editor');
         editor.focus();
@@ -793,7 +793,7 @@ app.whenReady().then(() => {
       const markdown = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
-        replInput.value = '(new-buffer! "notes.md")';
+        replInput.value = '(new-view! "notes.md")';
         replInput.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
@@ -826,7 +826,7 @@ app.whenReady().then(() => {
           }));
         };
         // A fresh markdown buffer; 'cat' echoes the source verbatim.
-        submit('(new-buffer! "preview.md")');
+        submit('(new-view! "preview.md")');
         await frame();
         submit('(set! *markdown-interpreter* "cat")');
         await frame();
@@ -878,7 +878,7 @@ app.whenReady().then(() => {
       const virtual = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
-        replInput.value = '(new-buffer! "big.txt")';
+        replInput.value = '(new-view! "big.txt")';
         replInput.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
@@ -918,10 +918,10 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-buffer! "core.lisp")');
+        submit('(new-view! "core.lisp")');
         await frame();
         const lisp = document.getElementById('modeline-name').textContent;
-        submit('(new-buffer! "notes.txt")');
+        submit('(new-view! "notes.txt")');
         await frame();
         const txt = document.getElementById('modeline-name').textContent;
         submit('(toggle-math-mode)'); // a minor mode — shows in the modeline
@@ -955,7 +955,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-buffer! "notes-sticky.txt")');
+        submit('(new-view! "notes-sticky.txt")');
         await frame();
         const editor = document.querySelector('.editor');
         editor.focus();
@@ -1251,7 +1251,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-buffer! "swatch.css")');
+        submit('(new-view! "swatch.css")');
         await frame();
         const editor = document.querySelector('.editor');
         editor.focus();
@@ -1396,9 +1396,9 @@ app.whenReady().then(() => {
           return all.length ? all[all.length - 1].textContent : '';
         };
         // Seed a couple of throwaway buffers to mark and kill.
-        submit('(new-buffer! "bm-target.txt")');
+        submit('(new-view! "bm-target.txt")');
         await frame();
-        submit('(new-buffer! "bm-keep.txt")');
+        submit('(new-view! "bm-keep.txt")');
         await frame();
         // Open the menu via the bound key.
         const editor = document.querySelector('.editor');
@@ -1411,7 +1411,7 @@ app.whenReady().then(() => {
         }));
         await frame();
         // Read the menu contents from Lisp.
-        submit('(buffer-name)');
+        submit('(view-name)');
         const menuName = lastResult();
         submit('(buffer-text)');
         const text = JSON.parse(lastResult());
@@ -1919,7 +1919,7 @@ app.whenReady().then(() => {
         const cssVar = (name) => getComputedStyle(document.documentElement)
           .getPropertyValue(name).trim();
         // Show the preview pane so its splitter has something to act on.
-        submit('(new-buffer! "splitter.md")');
+        submit('(new-view! "splitter.md")');
         await frame();
         submit('(set! *markdown-interpreter* "cat")');
         await frame();
@@ -2110,7 +2110,7 @@ app.whenReady().then(() => {
         };
         const counts = (cls) => document.querySelectorAll('.' + cls).length;
         const open = async (file, body) => {
-          submit('(new-buffer! "' + file + '")');
+          submit('(new-view! "' + file + '")');
           submit('(insert! "' + body.replace(/"/g, '\\\\"').replace(/\\n/g, '\\\\n') + '")');
           await frame();
         };
@@ -2482,7 +2482,7 @@ app.whenReady().then(() => {
         termHost.style.width = prevWidth;
         const tabsBefore = document.querySelectorAll('.tabline-tab').length;
         // Kill the shell buffer through the same path the keymap uses.
-        submit('(kill-buffer!)');
+        submit('(kill-view!)');
         await wait(400);
         await frame();
         const viewAfterKill = document.querySelector('.shell-view');

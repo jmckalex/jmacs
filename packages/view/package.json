@@ -1,7 +1,7 @@
 {
-  "name": "@editor/stdlib",
+  "name": "@editor/view",
   "version": "0.0.0",
-  "description": "The editor's standard library — commands and keybindings, written in Lisp.",
+  "description": "View — the addressable on-screen thing. Text-editing views wrap an L2 buffer; other views (image, shell, jukebox, tabline, ...) hold their own state.",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -11,9 +11,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@editor/buffer": "workspace:*",
-    "@editor/lisp": "workspace:*",
-    "@editor/view": "workspace:*"
+    "@editor/buffer": "workspace:*"
   },
   "license": "GPL-3.0-or-later",
   "private": true

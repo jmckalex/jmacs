@@ -43,7 +43,7 @@ app.whenReady().then(() => {
       await submit('(begin (import geometry) (area 10))');
       // Switch to the syntax-highlighted scratch.lisp buffer and put
       // the cursor on an opening paren to show the bracket match.
-      await submit('(next-buffer!)');
+      await submit('(next-view!)');
       await submit('(begin (next-line) (next-line) (next-line)'
         + ' (next-line) (next-line))');
     })()`);

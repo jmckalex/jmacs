@@ -3,9 +3,18 @@
  * produces the host procedures the standard library is written against
  * — movement, editing, selection and history.
  *
- * The primitives operate on a *session*'s current buffer rather than a
- * fixed one, so they keep working as the editor switches buffers. The
- * session is any object with a `current` property holding an L2 buffer.
+ * The primitives operate on a *session*'s current view's buffer rather
+ * than a fixed one, so they keep working as the editor switches views.
+ * The session is any object with a `currentView` getter returning a
+ * View; a View's `buffer` slot is the L2 buffer (or `null`, for non-
+ * text views — calling a buffer primitive then raises `'no-buffer-here`).
+ *
+ * The buffer-vs-view split (plans/PANES.md, "View as primary"):
+ * text-editing primitives (`point`, `insert!`, `buffer-text`, …) keep
+ * their names — they operate on the *underlying text*, which is still
+ * a buffer. The primitives that *address* the on-screen thing
+ * (`view-name`, `set-view-name!`) live here too but were renamed away
+ * from `buffer-name` etc. — the addressable thing is now the view.
  *
  * Naming follows the spec: procedures that mutate end in `!`.
  */
@@ -82,14 +91,47 @@ function fillParagraph(words, indent, fillColumn) {
 /**
  * Build the buffer primitives for a session.
  *
- * @param {{ current: import('@editor/buffer').Buffer }} session - An
- *   object whose `current` property is the buffer to operate on.
+ * The session is an object with a `currentView` property (a View, as
+ * `@editor/view`'s `createView` returns). The View's `buffer` slot is
+ * the L2 buffer text primitives operate on; a non-text view (null
+ * buffer) makes those primitives raise `'no-buffer-here`.
+ *
+ * A small backward-compat path is provided: if a caller still passes
+ * the old shape `{ current: Buffer }`, that buffer is wrapped in a
+ * synthetic text view. The desktop app's session uses the new shape;
+ * the buffer-menu test fixtures used the old shape and benefit from
+ * not having to know about `@editor/view`.
+ *
+ * @param {{ currentView?: import('@editor/view').View, current?: import('@editor/buffer').Buffer }} session
  * @returns {Record<string, (args: *[]) => *>} A map of primitive name
  *   to implementation, ready for `createInterpreter({ primitives })`.
  */
 export function createBufferPrimitives(session) {
-  /** The buffer to act on right now. */
-  const buffer = () => session.current;
+  /** The L2 buffer the text primitives act on, or null. */
+  const currentBuffer = () => {
+    // New shape: a session with a `currentView` returning a View.
+    if (typeof session.currentView !== 'undefined') {
+      const view = session.currentView;
+      return view && view.buffer ? view.buffer : null;
+    }
+    // Old shape (test fixtures): a session with `current` returning a
+    // Buffer directly. Treat it as a text view's buffer.
+    if (typeof session.current !== 'undefined') {
+      return session.current ?? null;
+    }
+    return null;
+  };
+
+  /** The buffer to act on right now. Raises when the current view has
+   *  no buffer (e.g. an image view, a shell view) so the call site
+   *  surfaces a clear error rather than reading `null.text`. */
+  const buffer = () => {
+    const buf = currentBuffer();
+    if (buf === null) {
+      throw new LispError('no-buffer-here: current view has no buffer');
+    }
+    return buf;
+  };
 
   // Movement extends the selection when the call asks (a #t argument —
   // shift-style) or when the mark is set: once a region is active, the
@@ -100,10 +142,21 @@ export function createBufferPrimitives(session) {
 
   return {
     // --- reading --------------------------------------------------------
+    // Text-editing primitives keep their names — they operate on the
+    // underlying text data, not the on-screen addressable thing.
     'buffer-text': () => buffer().text,
     'buffer-length': () => buffer().length,
     'buffer-line-count': () => buffer().lineCount,
-    'buffer-name': () => buffer().name,
+    // `view-name` (formerly `buffer-name`): the modeline label of the
+    // current view. For text views this delegates to the buffer's
+    // name (since text views derive their name from the buffer); for
+    // non-text views the view supplies its own name.
+    'view-name': () => {
+      if (typeof session.currentView !== 'undefined') {
+        return session.currentView ? session.currentView.name : '';
+      }
+      return buffer().name;
+    },
     'point': () => buffer().point,
     'mark': () => (buffer().mark === null ? NIL : buffer().mark),
     'buffer-substring': (args) =>
@@ -112,12 +165,24 @@ export function createBufferPrimitives(session) {
     'line-end': () => buffer().lineAt(buffer().point).to,
     'line-indent': () => /^[ \t]*/.exec(buffer().lineAt(buffer().point).text)[0],
     // --- modes — L2 stores the mode; the stdlib gives it meaning -------
-    'buffer-major-mode': () => buffer().majorMode ?? NIL,
+    // The two read primitives tolerate a buffer-less current view —
+    // they return nil rather than raising. The keymap chain (modes.lisp)
+    // calls them every keystroke, including in non-text views; a
+    // non-text view simply has no mode chain, and the global keymap
+    // takes over. The `set-` mutators still raise — they only make
+    // sense in a buffer.
+    'buffer-major-mode': () => {
+      const buf = currentBuffer();
+      return buf && buf.majorMode != null ? buf.majorMode : NIL;
+    },
     'set-major-mode!': (args) => {
       buffer().majorMode = args[0];
       return NIL;
     },
-    'buffer-minor-modes': () => buffer().minorModes ?? NIL,
+    'buffer-minor-modes': () => {
+      const buf = currentBuffer();
+      return buf && buf.minorModes != null ? buf.minorModes : NIL;
+    },
     'set-minor-modes!': (args) => {
       buffer().minorModes = args[0];
       return NIL;
@@ -240,8 +305,22 @@ export function createBufferPrimitives(session) {
       buffer().setText(String(args[0]));
       return NIL;
     },
-    'set-buffer-name!': (args) => {
-      buffer().name = String(args[0]);
+    // `set-view-name!` (formerly `set-buffer-name!`): rename the
+    // current view. For text views the rename is mirrored to the
+    // underlying buffer's name (text views derive their display name
+    // from the buffer); for non-text views the view's own name is
+    // updated.
+    'set-view-name!': (args) => {
+      const newName = String(args[0]);
+      if (typeof session.currentView !== 'undefined') {
+        const view = session.currentView;
+        if (view) {
+          view.name = newName;
+          if (view.buffer) view.buffer.name = newName;
+        }
+      } else {
+        buffer().name = newName;
+      }
       return NIL;
     },
 
