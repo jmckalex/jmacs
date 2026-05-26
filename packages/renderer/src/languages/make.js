@@ -57,7 +57,7 @@ const QUERY = `
   [ "=" ":=" "::=" "?=" "+=" "!=" "@" "-" "+" ] @operator
 
   [ "(" ")" "{" "}" ] @paren
-  [ ":" "&:" "::" "|" ";" "\"" "'" "," ] @paren
+  [ ":" "&:" "::" "|" ";" "\\"" "'" "," ] @paren
 
   ; Variable expansions: \`$\` and the doubled \`$$\` (literal dollar).
   [ "$" "$$" ] @operator
