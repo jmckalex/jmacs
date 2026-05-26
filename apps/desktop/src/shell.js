@@ -89,17 +89,32 @@ export function defaultShell() {
 }
 
 /**
- * The python helper: a tiny inline script that runs `pty.spawn([shell,
- * '-i'])`. The shell is passed as `sys.argv[1]` so we can vary it per
- * session if needed in the future. Stdout/stderr/stdin of this python
- * process is what we wire to the renderer; pty.spawn proxies everything
- * between the pty (the inner shell) and its own stdio.
+ * The python helper: a tiny inline script that runs `pty.spawn`. The
+ * shell is passed as `sys.argv[1]`. Stdout/stderr/stdin of this python
+ * process is what we wire to the renderer; pty.spawn proxies
+ * everything between the pty (the inner shell) and its own stdio.
+ *
+ * `-i` runs the user's rc files (so PATH and aliases match the user's
+ * terminal). For zsh we also append `+Z`, which disables ZLE (the
+ * line editor) — we have our own input field, and ZLE's
+ * character-by-character echo (it emits the partial-line state with
+ * embedded backspaces as the user types) is the wrong model for a
+ * transcript view. The prompt still renders; only the live editing
+ * layer is off. Bash's readline-driven equivalent has the same issue
+ * but rejects `+Z`, so we add the flag only for zsh; bash on its own
+ * `-i` is good enough for now (a similar suppression flag for bash
+ * would be `--noediting`, but it isn't strictly necessary — bash's
+ * echo behaviour through a pty doesn't produce the same partial-line
+ * artefacts).
  *
  * Kept on one line so spawn doesn't need to deal with multi-arg
  * escaping inside `-c`.
  */
 const PYTHON_PTY_SCRIPT =
-  "import sys, pty; pty.spawn([sys.argv[1], '-i'])";
+  "import sys, os, pty; sh = sys.argv[1]; " +
+  "args = [sh, '-i'] + (['+Z'] if os.path.basename(sh) == 'zsh' else " +
+  "(['--noediting'] if os.path.basename(sh) == 'bash' else [])); " +
+  "pty.spawn(args)";
 
 /**
  * Probe whether a usable `python3` with the `pty` module is available.

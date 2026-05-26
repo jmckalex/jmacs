@@ -355,10 +355,13 @@ export function createShellView(container, options = {}) {
       histories.set(buffer.sessionId, history);
       historyIndex = history.length;
     }
-    // Echo to transcript so the user always sees what they typed,
-    // regardless of whether the shell itself echoes (under the pty
-    // backing it does echo; under pipes it doesn't).
-    appendPlain('input', `${value}\n`);
+    // Under a pty the shell echoes the line itself, cleanly — no
+    // local echo, otherwise the command appears twice. Under pipes
+    // there's no echo, so we render the input ourselves so the user
+    // can still see what they typed.
+    if (buffer.pty !== true) {
+      appendPlain('input', `${value}\n`);
+    }
     if (writeFn) {
       try {
         await writeFn(buffer.sessionId, `${value}\n`);
