@@ -134,13 +134,33 @@ export function createDirectoryColumnsView(container, options = {}) {
     buffer.previewPath = null;
   }
 
+  /** Default + min/max widths (in px) for a directory column. The
+   *  user-set widths persist on `buffer.columnWidths[i]`; absence
+   *  falls back to default. */
+  const COLUMN_DEFAULT_WIDTH = 220;
+  const COLUMN_MIN_WIDTH = 120;
+  const COLUMN_MAX_WIDTH = 600;
+
+  /** Apply the persisted (or default) width to a column element by
+   *  setting flex-basis explicitly. The CSS rule's `flex: 0 0 220px`
+   *  is the un-resized baseline; this override wins on inline. */
+  function applyColumnWidth(columnEl, columnIndex) {
+    const width =
+      (buffer.columnWidths && buffer.columnWidths[columnIndex]) ||
+      COLUMN_DEFAULT_WIDTH;
+    columnEl.style.flex = `0 0 ${width}px`;
+    columnEl.style.minWidth = `${width}px`;
+  }
+
   /** Build one column's DOM: a header strip with the directory's
-   *  basename and a scrollable body of row elements. */
+   *  basename and a scrollable body of row elements. A drag handle
+   *  is appended to the right edge for live width-resize. */
   function buildColumn(columnState, columnIndex) {
     const column = doc.createElement('div');
     column.className = 'directory-columns-column';
     column.dataset.index = String(columnIndex);
     column.dataset.path = columnState.path;
+    applyColumnWidth(column, columnIndex);
 
     const entries = listDirectory ? listDirectory(columnState.path) : null;
     if (entries === null) {
@@ -148,6 +168,7 @@ export function createDirectoryColumnsView(container, options = {}) {
       err.className = 'directory-columns-error';
       err.textContent = '(unreadable)';
       column.append(err);
+      attachColumnResizer(column, columnIndex);
       return column;
     }
     for (const entry of entries) {
@@ -186,7 +207,64 @@ export function createDirectoryColumnsView(container, options = {}) {
       }
       column.append(row);
     }
+    attachColumnResizer(column, columnIndex);
     return column;
+  }
+
+  /** Append a thin draggable handle on the column's right edge. The
+   *  pointer drag updates the column's flex-basis live (so the user
+   *  sees the resize as they drag) and writes the final width to
+   *  `buffer.columnWidths[index]` on release, so it survives the
+   *  next paint and a buffer round-trip. */
+  function attachColumnResizer(columnEl, columnIndex) {
+    const handle = doc.createElement('div');
+    handle.className = 'directory-columns-resizer';
+    columnEl.append(handle);
+
+    handle.addEventListener('pointerdown', (event) => {
+      // Ignore right-click / middle-click — only the primary button
+      // initiates a drag.
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = columnEl.getBoundingClientRect().width;
+      // setPointerCapture throws on synthetic pointer events (no
+      // physical pointer to capture) — fine to swallow, the listener
+      // chain below still drives the resize.
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch {
+        /* synthetic pointer; capture unavailable */
+      }
+      handle.classList.add('is-dragging');
+
+      const onMove = (e) => {
+        const delta = e.clientX - startX;
+        const next = Math.max(
+          COLUMN_MIN_WIDTH,
+          Math.min(COLUMN_MAX_WIDTH, startWidth + delta)
+        );
+        columnEl.style.flex = `0 0 ${next}px`;
+        columnEl.style.minWidth = `${next}px`;
+      };
+      const onUp = (e) => {
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onUp);
+        handle.removeEventListener('pointercancel', onUp);
+        handle.classList.remove('is-dragging');
+        try {
+          handle.releasePointerCapture(event.pointerId);
+        } catch {
+          /* the pointer might already be released */
+        }
+        const finalWidth = columnEl.getBoundingClientRect().width;
+        if (!buffer.columnWidths) buffer.columnWidths = [];
+        buffer.columnWidths[columnIndex] = Math.round(finalWidth);
+      };
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp);
+      handle.addEventListener('pointercancel', onUp);
+    });
   }
 
   /** Build the preview pane that sits to the right of the trailing

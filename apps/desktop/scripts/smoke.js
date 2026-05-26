@@ -2296,8 +2296,52 @@ app.whenReady().then(() => {
         const previewText = preview
           ? preview.querySelector('.directory-columns-preview-text')?.textContent ?? ''
           : '';
+        // Column resize: grab the first column's resizer handle and
+        // simulate a pointerdown / pointermove / pointerup drag to
+        // widen it by 80px. The width should persist on the buffer
+        // so a re-paint preserves it.
+        const firstCol = view ? view.querySelector('.directory-columns-column') : null;
+        const widthBefore = firstCol ? firstCol.getBoundingClientRect().width : 0;
+        const resizer = firstCol ? firstCol.querySelector('.directory-columns-resizer') : null;
+        if (resizer) {
+          const handleRect = resizer.getBoundingClientRect();
+          const startX = handleRect.left + handleRect.width / 2;
+          const startY = handleRect.top + handleRect.height / 2;
+          // PointerEvent constructor is available in renderer.
+          resizer.dispatchEvent(new PointerEvent('pointerdown', {
+            clientX: startX, clientY: startY, button: 0, pointerId: 7,
+            bubbles: true, cancelable: true,
+          }));
+          resizer.dispatchEvent(new PointerEvent('pointermove', {
+            clientX: startX + 80, clientY: startY, pointerId: 7,
+            bubbles: true, cancelable: true,
+          }));
+          resizer.dispatchEvent(new PointerEvent('pointerup', {
+            clientX: startX + 80, clientY: startY, pointerId: 7,
+            bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        const widthAfter = firstCol ? firstCol.getBoundingClientRect().width : 0;
+        // Trigger a repaint (drill into the second column again — it's
+        // already-expanded, so this just re-paints) and confirm the
+        // resized width survives.
+        if (subdirRow) {
+          // Re-find it because subdirRow may have been detached.
+          const sub = view ? Array.from(view.querySelectorAll('.directory-columns-row'))
+            .find((r) => r.querySelector('.directory-columns-name').textContent === 'subdir') : null;
+          if (sub) sub.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await frame();
+        const firstColAfterRepaint = view ? view.querySelector('.directory-columns-column') : null;
+        const widthAfterRepaint = firstColAfterRepaint
+          ? firstColAfterRepaint.getBoundingClientRect().width
+          : 0;
         return {
           shown, initialColumns, columnsAfterDrill, previewName, previewText,
+          widthBefore: Math.round(widthBefore),
+          widthAfter: Math.round(widthAfter),
+          widthAfterRepaint: Math.round(widthAfterRepaint),
         };
       })()`);
       console.log('  cols:', JSON.stringify(cols));
@@ -2568,7 +2612,12 @@ app.whenReady().then(() => {
         cols.initialColumns === 1 &&
         cols.columnsAfterDrill === 2 &&
         cols.previewName === 'inner.txt' &&
-        cols.previewText.includes('hello columns');
+        cols.previewText.includes('hello columns') &&
+        // Column resize: drag widened by ~80px, and that width
+        // survives the next repaint. (3px slop for the rounding
+        // wobble at the boundary.)
+        Math.abs(cols.widthAfter - cols.widthBefore - 80) < 3 &&
+        Math.abs(cols.widthAfterRepaint - cols.widthAfter) < 3;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
