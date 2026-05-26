@@ -749,3 +749,66 @@ treesitter: {"langs":"bash,css,go,html,javascript,json,markdown_inline,markdown,
 Not merged. Ready for you to ff-merge or review.
 
 ---
+
+## [2026-05-26 15:20] agent-shell-buffer-v2: BSD `script(1)` won't accept non-tty stdin
+
+**Context**: implementing the v2 brief — give the shell buffer a real pty
+via `script(1)`. On macOS BSD `script` errors immediately when spawned
+from Node:
+
+    script: tcgetattr/ioctl: Operation not supported on socket
+
+BSD `script` calls `tcgetattr(stdin)` on startup to clone the parent's
+termios onto the new pty. With stdin being a Node pipe (a socketpair),
+that call fails and `script` exits 1 before doing anything useful.
+Confirmed at the bare-Node level — not an Electron quirk.
+
+`stdio: 'ignore'` or `stdio: [fd-of-/dev/null, ...]` lets script start
+(it opens an interactive shell on a real pty), but with no writable
+stdin the shell gets EOF immediately and exits. There is no BSD-script
+flag that disables the parent-termios clone, and no `tty(4)` device
+we can hand to it from a sandboxed renderer.
+
+util-linux `script` (Linux) does work — it calls `forkpty` directly
+and doesn't touch the parent's termios.
+
+**Question/blocker**: not asking — making a judgement call below and
+documenting it for review.
+
+**Options considered**:
+
+1. `script(1)` everywhere — fails on macOS as above; would have to
+   ship a Linux-only feature, which defeats the point.
+2. **`python3 -c '<inline pty.spawn>'`** — `/usr/bin/python3` is
+   present on every modern macOS (Apple ships it as a system tool) and
+   on every standard Linux distro. The `pty` module is in stdlib (no
+   extra install). `pty.spawn(['/bin/zsh', '-i'])` forks, allocates a
+   pty, and proxies between the pty and the python process's own
+   stdio — which is exactly what we want. Tested end-to-end from Node:
+   colours, prompt, line editing, signals all work. **This is what
+   I've shipped.** Behaves identically on macOS and Linux.
+3. `expect(1)` is also on macOS — but its scripting language is more
+   verbose than the four-line python and we'd still need it on Linux.
+4. Native addons (`node-pty`) — ruled out by the brief.
+
+**The cost of the python choice**: depending on python is more than
+depending on a tiny BSD utility, but it's a system python (no venv,
+no pip install), and we only invoke it with a short inline script. If
+python isn't present, the spawn fails its existence probe and we fall
+back to v1's plain-pipe shell — the same fallback the original brief
+described for missing `script`. So nothing is lost for users without
+python; they get the v1 experience.
+
+**Files touched relative to the brief**:
+- `apps/desktop/src/shell.js` — `buildPtyInvocation` (was
+  `buildScriptInvocation`) returns the `python3 -c …` command + args
+  instead of the script form. The existence probe is `python3 -c
+  'import pty'` (matches the cache shape from the brief).
+- Everything else is unchanged: TERM=xterm-256color, `pty: true|false`
+  in the spawn reply, SIGINT handling via the `\x03` byte to stdin.
+
+**State of the work**: branch `agent-shell-buffer-v2`, no commit yet —
+this is the first PTY-backing commit I'm about to make. Code in
+working tree.
+
+---

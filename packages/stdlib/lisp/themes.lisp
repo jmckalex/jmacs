@@ -55,7 +55,26 @@
    "--accent"       "#6699cc"
    "--result"       "#99c794"
    "--error"        "#ec5f67"
-   "--selection"    "rgba(102, 153, 204, 0.27)"))
+   "--selection"    "rgba(102, 153, 204, 0.27)"
+   ;; ANSI palette — Mariana-style, slightly muted so a coloured prompt
+   ;; doesn't fight the editor chrome. Repeats :root's defaults so a
+   ;; theme switch back from light/midnight resets cleanly.
+   "--ansi-black"          "#4a5460"
+   "--ansi-red"            "#ec5f67"
+   "--ansi-green"          "#99c794"
+   "--ansi-yellow"         "#fac863"
+   "--ansi-blue"           "#6699cc"
+   "--ansi-magenta"        "#c594c5"
+   "--ansi-cyan"           "#5fb4b4"
+   "--ansi-white"          "#d8dee9"
+   "--ansi-bright-black"   "#6b7785"
+   "--ansi-bright-red"     "#f08080"
+   "--ansi-bright-green"   "#b8d8a8"
+   "--ansi-bright-yellow"  "#fcd49a"
+   "--ansi-bright-blue"    "#8cb4e0"
+   "--ansi-bright-magenta" "#d8a8d8"
+   "--ansi-bright-cyan"    "#9fd0d0"
+   "--ansi-bright-white"   "#ffffff"))
 
 (define-theme 'light
   "Solarized Light — easy on the eyes in daylight."
@@ -69,7 +88,24 @@
    "--accent"       "#268bd2"
    "--result"       "#859900"
    "--error"        "#dc322f"
-   "--selection"    "rgba(38, 139, 210, 0.20)"))
+   "--selection"    "rgba(38, 139, 210, 0.20)"
+   ;; ANSI palette — Solarized's accent colours, tuned for a light bg.
+   "--ansi-black"          "#073642"
+   "--ansi-red"            "#dc322f"
+   "--ansi-green"          "#859900"
+   "--ansi-yellow"         "#b58900"
+   "--ansi-blue"           "#268bd2"
+   "--ansi-magenta"        "#d33682"
+   "--ansi-cyan"           "#2aa198"
+   "--ansi-white"          "#eee8d5"
+   "--ansi-bright-black"   "#586e75"
+   "--ansi-bright-red"     "#cb4b16"
+   "--ansi-bright-green"   "#586e75"
+   "--ansi-bright-yellow"  "#657b83"
+   "--ansi-bright-blue"    "#839496"
+   "--ansi-bright-magenta" "#6c71c4"
+   "--ansi-bright-cyan"    "#93a1a1"
+   "--ansi-bright-white"   "#fdf6e3"))
 
 (define-theme 'midnight
   "A second dark theme — higher-contrast, near-black background."
@@ -83,7 +119,24 @@
    "--accent"       "#58a6ff"
    "--result"       "#7ee787"
    "--error"        "#ff7b72"
-   "--selection"    "rgba(88, 166, 255, 0.22)"))
+   "--selection"    "rgba(88, 166, 255, 0.22)"
+   ;; ANSI palette — GitHub-dim style, brighter to read on near-black.
+   "--ansi-black"          "#484f58"
+   "--ansi-red"            "#ff7b72"
+   "--ansi-green"          "#7ee787"
+   "--ansi-yellow"         "#d29922"
+   "--ansi-blue"           "#58a6ff"
+   "--ansi-magenta"        "#bc8cff"
+   "--ansi-cyan"           "#39c5cf"
+   "--ansi-white"          "#b1bac4"
+   "--ansi-bright-black"   "#6e7681"
+   "--ansi-bright-red"     "#ffa198"
+   "--ansi-bright-green"   "#a5d6a7"
+   "--ansi-bright-yellow"  "#e3b341"
+   "--ansi-bright-blue"    "#79b8ff"
+   "--ansi-bright-magenta" "#d2a8ff"
+   "--ansi-bright-cyan"    "#56d4dd"
+   "--ansi-bright-white"   "#f0f6fc"))
 
 ;; --- face defaults — one defface per token face ------------------------
 ;; The 14 built-in token faces, each with three per-theme defaults.

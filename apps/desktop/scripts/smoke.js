@@ -2395,7 +2395,11 @@ app.whenReady().then(() => {
 
       // Shell-buffer arm: open a shell buffer, type a command, hit
       // Enter, wait for the output to arrive in the transcript, then
-      // kill the buffer and confirm cleanup.
+      // run a coloured printf and verify the ANSI parser turned the
+      // SGR sequences into styled spans (and that the literal escape
+      // bytes do NOT appear in the transcript text), then kill the
+      // buffer and confirm cleanup. v2 also asserts the pty/pipe
+      // backing label in the header.
       const shell = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2440,6 +2444,41 @@ app.whenReady().then(() => {
           stdoutText = Array.from(stdoutEls).map((e) => e.textContent).join('');
           if (stdoutText.includes(marker)) break;
         }
+        // v2: ANSI parsing. Send a printf with red + bold-green SGR
+        // sequences and verify the parser emitted the matching spans.
+        // The literal escape bytes \\033[31m / \\033[1;32m / \\033[0m
+        // must not appear in the transcript text (the parser eats them);
+        // a .shell-fg-red span with text 'red' and a .shell-fg-green
+        // span with text 'bold-green' (with .shell-bold) must be present.
+        // Using single-quoted printf with %s + the marker so the
+        // assertion is precise; the bash printf interpretation of \\033
+        // is the actual escape byte on output.
+        shellInput.focus();
+        shellInput.value =
+          "printf '\\\\033[31mred\\\\033[0m\\\\n\\\\033[1;32mbold-green\\\\033[0m\\\\n'";
+        shellInput.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        let redSpan = null;
+        let greenSpan = null;
+        for (let i = 0; i < 60; i += 1) {
+          await wait(100);
+          redSpan = view.querySelector('.shell-entry-stdout .shell-fg-red');
+          greenSpan =
+            view.querySelector('.shell-entry-stdout .shell-fg-green.shell-bold')
+            ?? view.querySelector(
+              '.shell-entry-stdout .shell-bold.shell-fg-green'
+            );
+          if (redSpan && greenSpan) break;
+        }
+        const ansiTranscript = view.querySelector('.shell-transcript');
+        const ansiTranscriptText = ansiTranscript ? ansiTranscript.textContent : '';
+        // The escape byte itself (\\u001b) must not appear in the text
+        // content — if it does, the parser leaked.
+        const containsEscapeByte = ansiTranscriptText.includes('\\u001b');
+        // The header should carry the [pty] / [pipe] backing tag.
+        const backingEl = view.querySelector('.shell-header-backing');
+        const backing = backingEl ? backingEl.textContent : '';
         const tabsBefore = document.querySelectorAll('.tabline-tab').length;
         // Kill the shell buffer through the same path the keymap uses.
         submit('(kill-buffer!)');
@@ -2454,6 +2493,14 @@ app.whenReady().then(() => {
           transcriptText,
           stdoutText,
           containsEcho: stdoutText.includes(marker),
+          // v2 ANSI assertions:
+          redSpanText: redSpan ? redSpan.textContent : null,
+          greenSpanText: greenSpan ? greenSpan.textContent : null,
+          greenSpanIsBold: greenSpan
+            ? greenSpan.classList.contains('shell-bold')
+            : false,
+          containsEscapeByte,
+          backing,
           tabsBefore,
           tabsAfter,
           stillShownAfterKill: !!stillShown,
@@ -2812,13 +2859,25 @@ app.whenReady().then(() => {
         // Double-clicking the same file again de-dups: no extra tab.
         cols.tabsAfterSecondOpen === cols.tabsAfter;
       // Shell-buffer arm: the view mounts, the echo command's output
-      // arrives in the transcript, and killing the buffer removes the
-      // tab and unmounts the shell view.
+      // arrives in the transcript, the ANSI parser turned a coloured
+      // printf into the expected styled spans (with no leaked escape
+      // bytes), and killing the buffer removes the tab + unmounts the
+      // view. v2 also checks the [pty]/[pipe] backing tag is present.
       const shellOk =
         shell &&
         shell.shown &&
         shell.mounted &&
         shell.containsEcho &&
+        // ANSI parser: the SGR-wrapped runs become real styled spans.
+        shell.redSpanText === 'red' &&
+        shell.greenSpanText === 'bold-green' &&
+        shell.greenSpanIsBold &&
+        // The raw escape bytes never reach the transcript text.
+        !shell.containsEscapeByte &&
+        // Backing tag: [pty] on macOS dev machines where python3 is
+        // available (the smoke runs on dev hardware). [pipe] is the
+        // legitimate fallback if the python probe failed.
+        (shell.backing === '[pty]' || shell.backing === '[pipe]') &&
         shell.tabsAfter === shell.tabsBefore - 1 &&
         !shell.stillShownAfterKill;
       const chordOk =
@@ -2957,5 +3016,9 @@ app.whenReady().then(() => {
   });
 
   win.loadURL(EDITOR_URL);
-  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 20000);
+  // The smoke runs a long sequence of inspections; the timer protects
+  // against a wedge in `did-finish-load`, not against slow checks. Sized
+  // for v2 where the shell arm waits up to 8s for stdout under the pty
+  // backing — the older 20s cap raced the tail of the run.
+  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 60000);
 });
