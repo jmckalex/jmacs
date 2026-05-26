@@ -177,7 +177,7 @@
       "Bash(open *)"
     ],
 
-    "defaultMode": "ask",
+    "defaultMode": "default",
 
     "additionalDirectories": []
   },
