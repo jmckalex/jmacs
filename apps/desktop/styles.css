@@ -1832,6 +1832,158 @@ textarea.customize-widget {
   padding: 2px 14px;
 }
 
+/* --- directory columns-view ------------------------------------------ */
+/* Finder-style horizontal browser. Each column is one directory
+   listing; clicking a folder appends a column to its right (so the
+   strip overflows horizontally and scrolls). Clicking a file replaces
+   the trailing column with a preview pane. */
+
+.directory-columns-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.directory-columns-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.directory-columns-header-label {
+  overflow-wrap: anywhere;
+}
+
+.directory-columns-strip {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.directory-columns-column {
+  flex: 0 0 220px;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #ffffff14;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.directory-columns-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 12px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.directory-columns-row:hover {
+  background: #ffffff0a;
+}
+
+.directory-columns-row.is-selected {
+  background: #ffffff14;
+}
+
+.directory-columns-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  font-size: 13px;
+  text-align: center;
+  color: var(--fg-dim);
+}
+
+.directory-columns-row[data-kind="directory"] .directory-columns-icon {
+  color: var(--fg);
+}
+
+.directory-columns-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.directory-columns-chevron {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--fg-dim);
+}
+
+.directory-columns-preview {
+  flex: 0 0 360px;
+  min-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  overflow: auto;
+}
+
+.directory-columns-preview-name {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.directory-columns-preview-image {
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  background: #00000022;
+  border: 1px solid #ffffff14;
+  border-radius: 4px;
+}
+
+.directory-columns-preview-audio,
+.directory-columns-preview-video {
+  width: 100%;
+  max-height: 50vh;
+}
+
+.directory-columns-preview-text {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 10px;
+  background: #00000033;
+  border: 1px solid #ffffff14;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
+.directory-columns-preview-loading,
+.directory-columns-preview-binary {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.directory-columns-error {
+  font-style: italic;
+  color: var(--fg-dim);
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
 /* --- media error block ------------------------------------------------ */
 /* Shown by audio-view / video-view when the <audio>/<video> element
    fires `error` (almost always SRC_NOT_SUPPORTED — Chromium can't
