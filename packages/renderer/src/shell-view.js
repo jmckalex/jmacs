@@ -96,6 +96,14 @@ function readThemeFromCss(doc) {
     const value = style.getPropertyValue(cssVar).trim();
     if (value !== '') theme[key] = value;
   }
+  // Force the canvas background transparent so the .xterm-viewport's
+  // CSS background-color is the sole painter of --bg-editor. Painting
+  // the same nominal colour through both the canvas and CSS pipelines
+  // produces visually distinct on-screen pixels (different
+  // colour-management paths in Chromium), which shows up as a darker
+  // strip in the sub-cell residue under the last row. Requires the
+  // Terminal to be constructed with `allowTransparency: true`.
+  theme.background = 'rgba(0, 0, 0, 0)';
   return theme;
 }
 
@@ -236,6 +244,11 @@ export function createShellView(container, options = {}) {
       // \a is forwarded by some prompts (zsh's `print -P` etc.).
       // The architect's call: silence it.
       bellStyle: 'none',
+      // Canvas background is transparent (see `readThemeFromCss`);
+      // the .xterm-viewport's CSS background-color paints the editor
+      // background through a single render path so the cell area and
+      // the sub-cell residue at the bottom match exactly.
+      allowTransparency: true,
       // The visual scrollbar isn't necessary — xterm.js exposes it
       // through the .xterm-viewport's overflow. Default 'auto'.
     });
