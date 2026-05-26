@@ -8,19 +8,20 @@ preserved in `git log` against `96ea97b`; this one supersedes it.
 
 ## Where main is
 
-HEAD: `d2a061e` (`merge: agent-shell-buffer-v4 — xterm.js terminal
-grid`). **All test suites green (843/843); the desktop smoke passes
-end-to-end including the v4 shell arm with [pty], resize, and the
-RPROMPT timestamp visible (ZLE is back on under the new model).**
+HEAD: `8248b2a` (`merge: agent-view-buffer-split — phase 1
+view/buffer split`). **All test suites green (858/858 — 15 new in
+the new `@editor/view` workspace); desktop smoke PASS, 16 arms.**
 
-The session's headline: **shell v4 landed.** A real terminal emulator
-(xterm.js) replaced the line-oriented v3 transcript, fixing curses
-apps (vi, htop, less) and full ZLE/RPROMPT prompt fidelity. Resize
-travels through a new fd 3 sidechannel that the python pty helper
-ioctls onto the master. Before v4, the session also: fixed an
-invalid `permissions.defaultMode` in `.claude/settings.json`, and
-authored `plans/PANES.md` as design notes for the next big reshape
-(window/pane/view + multi-window + view-without-buffer).
+The session's headline: **shell v4 landed, and phase 1 of the
+view/buffer split landed on top of it.** xterm.js replaced the
+line-oriented v3 shell transcript (curses + ZLE/RPROMPT now work).
+Then, decoupling the model: view is now the addressable on-screen
+thing, with buffer kept as the L2 substrate for text-editing views
+only. Single window, single pane — no UI change yet; phases 2–4 of
+`plans/PANES.md` come next. Earlier this session: `/doctor`
+settings fix; `plans/PANES.md` authored; branch cleanup that took
+the local branch count from 24 to 5; `plans/PANES-PHASE-1.md` written
+as the sub-agent brief.
 
 ## Landed this session
 
@@ -28,6 +29,12 @@ Merge bubbles + direct-to-main, top of `main`:
 
 | Commit | What | Notes |
 |---|---|---|
+| `8248b2a` | `merge: agent-view-buffer-split — phase 1 view/buffer split` | **Phase 1 of PANES.md.** View becomes the addressable on-screen thing; buffer kept as L2 substrate for text-editing views only. New `packages/view/` workspace (createView + kind registry + 15 tests). `app.js`'s ten-way switch replaced by registry dispatch. Lisp surface flag-day: `buffers.lisp` → `views.lisp`, `buffer-menu.lisp` → `view-menu.lisp`, sweeps through `keymap.lisp`/`modes.lisp`/`occur.lisp`, new `view-primitives.js`. Tabline kind registered with a phase-3 stub. `buffer-major-mode`/`buffer-minor-modes` made read-side null-safe so the keymap chain works in jukebox/shell/image views — agent caught this via smoke failure, fixed, retested. No UI change; Jason confirmed in the running app before merge. |
+| `baf7952` | `docs(panes): refine Q9 — same-view-in-two-panes vs text workflow` | Q9's "no use case" framing was reasoning from the jukebox case (genuinely useless). For text views the side-by-side-same-file workflow is real and used regularly. The rule "no same view reference in two panes" still holds; text workflow is supported via the duplicate-view path (two views over one buffer). Phase 3 should make split-then-open-same-file auto-duplicate. |
+| `e696bc0` | `docs(panes): phase-1 implementation brief` | `plans/PANES-PHASE-1.md`: file-by-file walkthrough for the view/buffer split. Used as the sub-agent brief; agent followed it closely with three substantive judgement calls noted in `architect-notes.md`. |
+| `45c94f6` | `chore: branch cleanup + handover corrections` | Deleted 20 fully-merged branches; removed the v4 worktree. Audit caught the prior handover's stale claim that `agent-regex-search`, `agent-latex`, `agent-folding`, `agent-session` were unmerged — git showed all four already in main, so they got cleaned too. |
+| `c65290d` | `docs(panes): fold Jason's decisions into PANES.md` | Tabline reframed as a view kind (per Jason's direction); new "Focus indication" section; handle-returning constructor convention; resolved-notes for every settled open question. |
+| `76ded37` | `docs: handover update + plans/PANES.md` | PANES.md authored as guide notes for the window/pane/view + multi-window + view-without-buffer reshape. 15 open questions for the detailed plan to settle. Non-goal: non-rect pane shapes. |
 | `d2a061e` | `merge: agent-shell-buffer-v4 — xterm.js terminal grid` | **v4.** Full rewrite of `shell-view.js` on top of `@xterm/xterm@6.0.0` + `@xterm/addon-fit@0.11.0`. `feedLiveLine` and `ansi.js` deleted (424 + 249 lines gone, plus ~660 CSS lines). Resize via fd 3 → `TIOCSWINSZ` on the master. Cmd+C copies the xterm selection, OS-default otherwise. Theme bridge reads `--bg-editor` / `--fg` / `--ansi-*` via `getComputedStyle` and rebuilds on theme switch. Five fix commits on the v4 branch before merge: TDZ on `themeListeners` from hoisting asymmetry; vendor stylesheet load order; xterm-viewport black background; single-render-path via transparent canvas + `allowTransparency`; Hard Reload menu entry. |
 | `27a3051` | `chore(settings): fix invalid permissions.defaultMode value` | `/doctor` flagged `"ask"` as not a valid mode. Changed to `"default"`; the `allow`/`deny`/`ask` rule arrays already encode the prompt behavior. |
 | `0b12776` | `fix(shell-view): treat \r\n as one line terminator` | (v3-era; superseded by v4.) The bug that made `ls`/`pwd` show empty output. Tty driver converts output `\n` → `\r\n`; v3's `feedLiveLine` was treating the `\r` as a rewind and wiping the line before `\n` flushed it. |
@@ -85,26 +92,41 @@ Expected conflict surfaces (still mostly additive, keep-both):
 
 ## In flight / queued
 
-- **Panes / windows / view-as-primary reshape.** `plans/PANES.md` was
-  authored this session as guide notes for a detailed plan later.
-  Three coupled changes: view (not buffer) becomes the addressable
-  top-level thing, with buffer kept as the L2 substrate for
-  text-editing views; replace the single-window pane code with a real
-  pane tree (rectangular box model, flat-leaf DOM, `<div class="pane">`
-  siblings absolute-positioned from a JS-owned tree); allow multiple
-  OS windows. The doc lists 15 open questions Jason needs to settle
-  before implementation begins. Non-goal: non-rectangular pane
-  shapes (he asked; the answer is in the doc).
+- **Panes / windows / view-as-primary reshape.** Four-phase plan in
+  `plans/PANES.md`; 15 open questions all settled (resolutions inline
+  in the doc). **Phase 1 (view/buffer split) merged this session via
+  `8248b2a`.** Phases left:
 
-  Sequencing in the doc: (1) view/buffer split with no UI change,
-  (2) pane tree with a single pane, (3) expose splits, (4) multi-
-  window. Each phase is mergeable. The biggest open call is whether
-  the Lisp VM moves into the main process under multi-window — the
-  doc leans toward yes (cleanest, most work).
+  - **Phase 2: pane tree with a single pane.** Replace the existing
+    rendering with a pane tree that happens to have one leaf. New DOM
+    model (flat `<div class="pane">` siblings absolute-positioned from
+    a JS-owned tree), new layout code, new focus model. Split commands
+    not exposed yet. Should also clean up the
+    `viewAsSessionRecord` / `viewAsTablineRecord` adapter shims that
+    phase 1 left in `app.js` — those are the legacy-record bridge that
+    keeps `session.js` and `tabline.js` working without modification.
+  - **Phase 3: expose splits.** `split-horizontal!` / `split-vertical!`
+    / `delete-pane!` / `other-pane` / `focus-pane-direction!` /
+    `balance-panes!`. Bind `C-x 2 / 3 / 0 / 1 / o`. Tabline view
+    construction commands land here. Per Jason's Q9 refinement,
+    split-then-open-same-file should auto-duplicate the view rather
+    than error.
+  - **Phase 4: multi-window.** Spawn additional `BrowserWindow`s,
+    move the Lisp VM to the main process (Q5(a) resolution), plumb
+    IPC. `make-window!` / `delete-window!` / `other-window` /
+    `focus-window!`.
 
-  Worth coordinating with the queued `agent-session` branch, whose
-  tabline + restore design embeds buffer-as-target assumptions that
-  this reshape would invalidate.
+  Phase 1 deferred follow-ups (per the agent's `architect-notes.md`):
+  `docs/CUSTOM-VIEWS.md` rewrite (still describes the buffer-wrapper
+  model); `docs/MANUAL.jmd` + `docs/reference/commands.md` regen for
+  the renamed defcommands; the internal `occur-buffer-name` helper
+  has "buffer" in its name and could be renamed for consistency.
+
+  Worth coordinating with the queued `agent-session` branch when its
+  turn comes — it embeds buffer-as-target assumptions that the
+  reshape invalidated; it'll need revising on top of phase 1 before
+  merge. `agent-reactive-notebook` is the natural canary for the
+  view-without-buffer model the new abstraction enables.
 
 ## Architecture decisions worth preserving
 
@@ -112,12 +134,16 @@ Carried forward, lightly updated:
 
 1. **Lisp at the seams; JS at the engine.** Unchanged.
 
-2. **Custom views as a documented abstraction.** Now ten kinds
-   (text, customize, image, doc, jukebox, audio, video,
-   directory-tree, directory-columns, shell). The pattern is stable:
-   new buffer kind → new `packages/renderer/src/<name>-view.js` →
-   mount in `app.js`'s `switchToBuffer` kind dispatch → set
-   `buffer.kind = '<name>'` on creation. See `docs/CUSTOM-VIEWS.md`.
+2. **View is the addressable on-screen thing; buffer is L2 substrate.**
+   Post-phase-1 of PANES.md. Eleven view kinds now (text, customize,
+   image, doc, jukebox, audio, video, directory-tree,
+   directory-columns, shell, plus tabline registered with a phase-3
+   stub). Pattern: `createView({ kind, name, buffer?, extras })` →
+   register the kind with the kind-registry → kind spec carries the
+   mount/dispose hooks. The renderer view modules read kind-specific
+   state directly off the view (e.g. `view.tracks`, `view.html`,
+   `view.sessionId`) thanks to `extras` spreading. `docs/CUSTOM-VIEWS.md`
+   still describes the *old* buffer-wrapper pattern — needs rewriting.
 
 3. **Faces as data, not CSS variables.** Unchanged.
 
@@ -174,13 +200,18 @@ In `plans/`:
 - `REACTIVE-NOTEBOOK.md` — phase 1 on `agent-reactive-notebook`.
 - `FACE-CUSTOMISATION.md` — implementation merged.
 - `SHELL-V4-XTERM.md` — implementation merged this session (`d2a061e`).
-- `PANES.md` — **new this session.** Guide notes for window/pane/view
-  reshape + multi-window + view-without-buffer. 15 open questions
-  for a later detailed plan.
+- `PANES.md` — **authored + answered this session.** Guide notes for
+  window/pane/view reshape + multi-window + view-without-buffer.
+  All 15 open questions resolved inline. Phases 2–4 remain.
+- `PANES-PHASE-1.md` — implementation brief for phase 1; merged this
+  session (`8248b2a`).
 
 In `docs/`:
 
 - `CUSTOM-VIEWS.md` — the how-to for wiring a custom view.
+  **Out of date** post-phase-1 of PANES.md: still describes the
+  old buffer-wrapper pattern. Needs rewriting to match
+  `createView({ kind, name, buffer?, extras })` + kind registry.
 
 ## Tree-sitter inventory
 
@@ -253,28 +284,33 @@ stays in place — fires only if `tree-sitter-make.wasm` fails to load.
 
 ## Suggested next steps in priority order
 
-1. **Settle the `plans/PANES.md` open questions.** Reading the doc and
-   making the 15 calls is the gate to starting the reshape. Half a
-   focused hour with the doc and a pen. Particularly load-bearing: VM
-   hosting under multi-window, Lisp-surface migration strategy
-   (flag day vs dual), per-pane vs per-buffer point.
-2. **Start the view/buffer split.** First phase from PANES.md, no UI
-   change — pure rename + Lisp-surface migration. Mergeable on its
-   own. Unblocks the `agent-session` branch by fixing its data
-   model, and unblocks `agent-reactive-notebook` (which is the
-   natural view-without-buffer canary).
-3. **Merge the surviving review queue** (eight branches). Half a
-   day if conflicts behave; the multi-cursor `hash-set` fix is the
-   only known blocker. Worth deciding whether to do this before or
-   after step 2 — if after, fewer rebases; if before, the reshape
-   touches a smaller queue.
+1. **PANES phase 2 — pane tree with a single pane.** Replace the
+   existing layout with the flat-leaves DOM model from PANES.md, a
+   JS-owned pane tree that initially has one leaf, and the focus
+   model. No splits exposed yet; the user-visible behaviour is
+   identical, but the abstraction is now in place. Also a natural
+   moment to clean up the `viewAsSessionRecord` /
+   `viewAsTablineRecord` adapter shims phase 1 left in `app.js`.
+2. **Merge the surviving review queue** (four branches: `agent-multi-
+   cursor`, `agent-lsp`, `agent-file-nav`, `agent-reactive-notebook`).
+   Half a day if conflicts behave; the multi-cursor `hash-set` fix is
+   the only known code blocker. `agent-session` is already merged (the
+   handover-cleanup audit revealed that). `agent-reactive-notebook`
+   should ideally land *after* the reshape so it can use the
+   view-without-buffer model natively. Worth deciding whether to do
+   this before or after PANES phase 2 — if after, fewer rebases; if
+   before, the reshape touches a smaller queue.
+3. **Rewrite `docs/CUSTOM-VIEWS.md`** to describe the post-phase-1
+   pattern (`createView` + kind registry + `extras`). The current doc
+   still describes the buffer-wrapper model; deferred from phase 1.
 4. **Phase 1 interruptibility.** Single highest-leverage
    architectural work. See the prior handover.
 5. **Investigate the muted-palette issue.** Bundle the shell-view
    residual strip into the same investigation — same colour-pipeline
    family.
 6. **Daily-drive for a week, then a real README + 60-second demo.**
-7. **LSP autocomplete** as its own session.
+7. **PANES phases 3–4** (splits + multi-window) and **LSP
+   autocomplete** as their own focused sessions.
 
 ---
 
@@ -287,5 +323,7 @@ directory-tree and Finder-style column browsers, double-click-to-open,
 chord-prefix display in the echo area, find-file with tab-completion,
 and now a `M-x shell` running the user's default shell on a real
 terminal emulator (xterm.js) — curses apps and ZLE-driven prompts
-both render. The next architectural lift (window/pane/view reshape
-+ multi-window) is sketched in `plans/PANES.md` awaiting decisions.
+both render. The first phase of the window/pane/view reshape landed
+this session too: view is now the addressable thing, with buffer kept
+as the L2 substrate for text-editing views only. Phases 2–4 (pane
+tree, splits, multi-window) come next.
