@@ -157,6 +157,12 @@ importers:
 
   packages/storage: {}
 
+  packages/view:
+    dependencies:
+      '@editor/buffer':
+        specifier: workspace:*
+        version: link:../buffer
+
 packages:
 
   '@6cdh/tree-sitter-scheme@0.24.7-1':
