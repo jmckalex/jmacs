@@ -1,341 +1,275 @@
-# Handover — jmacs session 2026-05-25
+# Handover — jmacs session 2026-05-26
 
 A snapshot for resuming work on **jmacs** in a fresh session. Read
 `CLAUDE.md` first — it carries the standing working agreements
 (branching, commits, testing discipline, territory). This file is the
-where-things-stand record. The previous handover (sessions 23/24) is
-preserved in `git log` against `0af6fc0`; this one supersedes it.
+where-things-stand record. The previous handover (2026-05-25) is
+preserved in `git log` against `96ea97b`; this one supersedes it.
 
 ## Where main is
 
-HEAD: `96ea97b` (`feat(faces): describe-face shows tree-sitter node
-when no capture fires`). **All test suites green across every
-package.** Eight branches landed this session, and three small
-direct-to-main commits cleaned up follow-ups (see "Direct-to-main
-commits" below).
+HEAD: `0b12776` (`fix(shell-view): treat \r\n as one line terminator,
+not rewind+flush`). **All test suites green across every package; the
+desktop smoke passes end-to-end including the shell arm.**
 
-Main now carries everything from the prior session's "ready for
-review" list except the nine still-pending branches (see below). The
-session's work made the editor noticeably more cohesive — face
-customisation, contrast-bumped tree-sitter palettes, jukebox metadata
-+ embedded art, resizable panes, the diagnostic `C-h F` with a node-
-type fallback, and more.
+The session's headline: a shell buffer (`M-x shell`) reachable on
+main, plus two new tree-sitter grammars (Make, Perl), plus a small
+chord-prefix / find-file merge from the prior queue. The shell
+landed in three versions on top of each other (v1 line-oriented →
+v2 pty + ANSI → v3 inline-input GitKraken-style), each merged
+in turn after a brief interactive try-out. A planned v4 (xterm.js)
+is documented in `plans/SHELL-V4-XTERM.md` and **not yet built**;
+the user wants to swap to a real terminal emulator rather than
+extend the line-oriented model further.
 
 ## Landed this session
 
-Merge commits, top of `main`:
+Merge bubbles + direct-to-main, top of `main`:
 
-| Commit | Branch | Brought in |
+| Commit | What | Notes |
 |---|---|---|
-| `c77b4fd` | `agent-describe-face` | `describe-face-at-point` (`C-h F`), q-to-kill in doc view, view setBuffer redraw fix |
-| `bde59f6` | `agent-resize-panes` | drag-resizable REPL + markdown-preview panes |
-| `b43f357` | `agent-audio-metadata` | MP3/MP4/OGG metadata parsers + `*jukebox-track-format*` |
-| `fa18e78` | `agent-jukebox-art-keys` | embedded ID3v2 APIC + MP4 covr art; chord-key passthrough |
-| `0e751ea` | `agent-syntax-pass` | Sublime-style queries for Python/TS/Rust/Go/Bash/CSS/HTML + theme contrast bump |
-| `7707a1b` | `agent-face-customisation` | `defface` + override layers + `faces.json` persistence + customize UI |
-| `75e4365` | `agent-face-inheritance` | face inheritance via `from PARENT` syntax |
+| `0b12776` | `fix(shell-view): treat \r\n as one line terminator` | The bug that made `ls`/`pwd` show empty output. Tty driver converts output `\n` → `\r\n`; v3's `feedLiveLine` was treating the `\r` as a rewind and wiping the line before `\n` flushed it. Look ahead one char: `\r\n` is a single terminator. |
+| `8a5fd40` | `feat(shell-view): inline input + CR/BS-aware streaming` | v3: GitKraken-style. Bottom input bar gone; typing in a contenteditable inline at the end of the transcript, alongside whatever partial line the shell last emitted. `feedLiveLine` single-line terminal emulator handles `\r`/`\b`/`\n`. PTY now sets ECHO off on the master in the parent (atomic before any input). |
+| `7882c28` | `fix(make): use \\\" inside template literal` | The makefile highlighter was failing to load at startup with "Bad node name 'paren'". The JS template literal was unescaping `"\""` → `"""` (three literal quotes); tree-sitter parsed that as two empty strings + a stray `"`, then choked on the `@paren` after. Doubled the backslash. |
+| `f8d3679` | `fix(shell-view): disable zsh ZLE under pty + drop duplicate echo` | v2 was double-rendering commands (zsh's per-char ZLE echo + our local echo). Pass `+Z` to zsh (`--noediting` to bash). Suppress local echo when pty is on. |
+| `e3255ab` | `merge: agent-shell-buffer-v2` | v2 — PTY backing via inline `python3 -c 'pty.spawn(...)'` (BSD `script(1)` doesn't work from Node — see `architect-notes.md`), full ANSI parser (`packages/renderer/src/ansi.js`), styled spans for output, `[pty]`/`[pipe]` adornment in the header. |
+| `022ef15` | `merge: agent-shell-buffer` | v1 — line-oriented shell. Pipes + no ANSI. Subsumed by v2/v3 but left in git as a stepping stone. |
+| `9e72d48` | `feat(grammars): tree-sitter Make + Perl` | Direct-to-main. Make's wasm came prebuilt from npm; Perl's was built from upstream because the npm tarball is missing `lib/primitives.js` (a grammar.js dependency). Both auto-discovered like the other 34 languages. |
+| `d79528d` | `merge: agent-chord-find-file` | Chord prefix in echo area (`C-x-` etc.) + minibuffer find-file with TAB completion. Cmd+O still does the native dialog. Reconciled two `show-status!`/`clear-status!` primitive definitions that collided — chord display now writes to the echo area; query-replace's "Replace? y/n/q/!" prompt goes there too. |
 
-Direct-to-main commits, applied on top:
-
-| Commit | What |
-|---|---|
-| `3012405` | `feat(faces): variable face + JS parameter captures` — new `defface 'variable`, parameter captures in JS query |
-| `734dfbb` | `fix(themes): match Sublime Mariana's editor background` — sRGB pre-compensation, `--bg-editor` is `#2e3842` |
-| `96ea97b` | `feat(faces): describe-face shows tree-sitter node when no capture fires` — `C-h F` falls back to node type + ancestor chain + query template |
-
-The bug-fix commits on `agent-describe-face` (before merge) are worth
-noting: a recursive `smallest-covering-capture` was overflowing the
-stack on real buffers (fixed with `reduce`), the doc view was
-swallowing `q` into the hidden text buffer, and `view.setBuffer`
-short-circuited on same-buffer calls so the underlying source didn't
-redraw after killing a doc/customize view.
+The shell-buffer chain spans seven commits between `a01a218` and
+`0b12776` — that's the v1 + v2 work landed as `--no-ff` merges with
+their full sub-commit history preserved. Three subsequent fixes
+were direct-to-main once v3 was already on main (the user prefers
+small polish committed directly rather than branched + merged).
 
 ## Branches still ready for review
 
-Nine left from the prior session's pile. All are on top of `3fa211a`
-(or `3fa211a` plus the agent-custom-views merge). Each is green on
-its own branch but unmerged.
+Eight left from the prior session's queue. All were rebased forward
+through this session's merges only where strictly required; most are
+on top of older commits and will need a small merge.
 
 | Branch | HEAD | What it adds |
 |---|---|---|
 | `agent-regex-search` | `0305696` | `C-M-s` regex isearch, `C-M-%` regex-replace, `M-%` query-replace |
 | `agent-latex` | `5cf4fc9` | LaTeX wasm built via Docker + TikZ-aware query |
 | `agent-folding` | `7e269e2` | Tree-sitter code folding for 8 languages |
-| `agent-multi-cursor` | `484b430` | Selection-set buffer + renderer foundation. **⚠ Lisp file uses `hash-set` which doesn't exist; needs `assoc` fix** |
+| `agent-multi-cursor` | `484b430` | Selection-set buffer + renderer foundation. **⚠ Lisp uses `hash-set` which doesn't exist; needs `assoc` fix** |
 | `agent-lsp` | `3f3a666` | TypeScript LSP, diagnostics + hover |
 | `agent-file-nav` | `074adab` | Fuzzy project find-file + sidebar tree |
 | `agent-session` | `5c9e7eb` | Tabline (drag-reorder) + persistent session restore |
-| `agent-chord-find-file` | `3f0aa1d` | Chord prefix in minibuffer + minibuffer find-file with tab-complete + Cmd+O native dialog |
 | `agent-reactive-notebook` | `d453841` | Reactive Lisp notebook (engine phase) |
+
+`agent-chord-find-file` merged this session; remove from the queue.
+
+The unmerged shell branches (`agent-shell-buffer`,
+`agent-shell-buffer-v2`) — both already merged into main this
+session; the branch refs can be deleted with `git branch -d` when
+convenient (Git's safety-checked delete refuses unless fully merged).
 
 ### Suggested merge order
 
-The Sublime-style query work already landed, so the surviving order is:
+Largely unchanged from the prior handover:
 
 1. `agent-regex-search`
 2. `agent-latex`
 3. `agent-folding` — touches view.js; first non-trivial conflict surface
 4. `agent-multi-cursor` — apply the `hash-set` → `assoc` fix first, then merge
 5. `agent-session` — tabline; touches index.html, app.js, styles.css
-6. `agent-chord-find-file` — rebinds `C-x C-f`
-7. `agent-lsp` — largest standalone surface; touches app.js
-8. `agent-file-nav` — sidebar tree; touches index.html, app.js, styles.css
-9. `agent-reactive-notebook` — last; complete on its own
+6. `agent-lsp` — largest standalone surface
+7. `agent-file-nav` — sidebar tree
+8. `agent-reactive-notebook` — last; complete on its own
 
-Expected conflict surfaces (still all additive in practice — keep both sides):
-
-- `apps/desktop/scripts/smoke.js` (every branch adds an arm)
-- `apps/desktop/src/app.js` (LSP, file-nav, session all add primitives)
-- `packages/stdlib/lisp/keymap.lisp` (chord-find, multi-cursor, folding all add bindings)
-- `packages/stdlib/src/index.js` (everyone adds a `.lisp` file to `STDLIB_FILES`)
-- `apps/desktop/styles.css` (session, folding, file-nav all add rules)
+Expected conflict surfaces (still mostly additive, keep-both):
+`apps/desktop/scripts/smoke.js`, `apps/desktop/src/app.js`,
+`packages/stdlib/lisp/keymap.lisp`, `packages/stdlib/src/index.js`,
+`apps/desktop/styles.css`.
 
 ## In flight / queued
 
-Two new agents in motion as of this writing:
+- **Shell v4 (xterm.js)** — design written, not yet built. See
+  `plans/SHELL-V4-XTERM.md`. The user explicitly chose this path over
+  patching v3 further: "There's no point doing a halfway house." When
+  ready to start: spawn an agent on `agent-shell-buffer-v4`, the
+  brief is the plan doc.
 
-- **`agent-language-pack`** (running, autonomous, background). Building
-  tree-sitter highlighting for 22 new languages in tiers — mainstream
-  (C, C++, Java, C#, Ruby, Lua, YAML, TOML), FP (Haskell, OCaml,
-  Erlang, Elixir, Clojure, Scheme), specialty (SQL, Dockerfile, Nix,
-  XML, GraphQL), JVM/Apple (Kotlin, Swift, Zig). One commit per
-  language, plus an aggregated smoke arm at the end. Extends
-  `scripts/build-grammars.sh` for grammars without prebuilt `.wasm`.
-- **`agent-media-views`** (queued; fires after the language-pack
-  agent completes). Will add buffer/view support for video and audio
-  files — opening a `.mp4`, `.mp3`, etc. should bring up the right
-  HTML5 `<video>` / `<audio>` element through a native view, not be
-  read as text. Builds on `image-view.js` and `jukebox-view.js` as
-  templates, and on the merged `audio-metadata.js` / `audio-art.js`
-  for metadata + cover.
+  Key points the plan settles:
+  - Adds `@xterm/xterm` (~250 kB) + `@xterm/addon-fit`.
+  - Drops `feedLiveLine`, the ANSI parser, the inline contenteditable,
+    `+Z`/`--noediting`, the parent-side ECHO-off termios tweak.
+  - Adds a `shell:resize` IPC channel and a sidechannel pipe (fd 3)
+    the python helper reads `<cols>:<rows>\n` from for `TIOCSWINSZ`
+    via `ioctl`.
+  - Theme bridge: map the existing `--ansi-*` palette into xterm.js's
+    flat theme object.
+  - Open questions in the plan: selection/copy model, reload
+    behaviour, font loading timing, bell style.
+
+  Effort estimate: a focused day's work; big surface but additive
+  (build the new view alongside v3 first, swap the import last).
 
 ## Architecture decisions worth preserving
 
-Carried forward from the prior handover with light updates:
+Carried forward, lightly updated:
 
-1. **Lisp at the seams; JS at the engine.** Lisp for keymaps,
-   commands, hooks, modes, themes, customisation — anything the user
-   might override. JS for buffer storage, rendering, parsing, IO,
-   anything hot. Host primitives are the seam. Rough test: "if it
-   calls itself in a tight loop, or touches every character in a
-   buffer, it's JS."
+1. **Lisp at the seams; JS at the engine.** Unchanged.
 
-2. **Custom views as a documented abstraction.** New buffer kind →
-   new `packages/renderer/src/<name>-view.js` → mount in `app.js`'s
-   `switchToBuffer` kind dispatch → set `buffer.kind = '<name>'` on
-   creation. See `docs/CUSTOM-VIEWS.md`. The jukebox refactor was
-   the forcing function; the queued media-views agent will extend
-   this further for video/audio file kinds.
+2. **Custom views as a documented abstraction.** Now ten kinds
+   (text, customize, image, doc, jukebox, audio, video,
+   directory-tree, directory-columns, shell). The pattern is stable:
+   new buffer kind → new `packages/renderer/src/<name>-view.js` →
+   mount in `app.js`'s `switchToBuffer` kind dispatch → set
+   `buffer.kind = '<name>'` on creation. See `docs/CUSTOM-VIEWS.md`.
 
-3. **Faces are first-class data, not CSS variables.** A face is a
-   typed value (`(face :foreground ... :weight ... ...)`). Inheritance
-   via `from PARENT`. Resolution: parent chain (bottom-up) → user
-   global → user per-theme → CSS rule generated by `face-styles.js`.
-   Now 14 built-ins — `variable` was added this session for parameter
-   declarations (Sublime-style: only declarations get the face,
-   references in the body read as default text).
+3. **Faces as data, not CSS variables.** Unchanged.
 
-4. **The map-update primitive is `assoc`, never `hash-set`.** Three
-   agents tripped on this in the prior session; `agent-multi-cursor`
-   is still broken because of it. Any new `.lisp` file using
-   `hash-set` will not load.
+4. **The map-update primitive is `assoc`, never `hash-set`.** Still
+   the most-repeated mistake. Multi-cursor branch still ships
+   broken because of it.
 
-5. **Sync Lisp is a feature, not a bug.** User code can reason about
-   state because the interpreter is synchronous. Don't make the
-   interpreter async to "improve concurrency" — see Phase 1 / Phase 2
-   below if isolation becomes necessary.
+5. **Sync Lisp is a feature, not a bug.** Unchanged.
 
-6. **`Cmd`/`Meta` maps to `C-` in this editor's key normalisation.**
-   To bind native `Cmd+O`, use the Electron application menu
-   accelerator (`menu.js`'s `CmdOrCtrl+O`), NOT a Lisp keymap binding
-   — the latter collides with `C-o` (`open-line`).
+6. **`Cmd`/`Meta` maps to `C-` in key normalisation.** Unchanged.
 
 7. **Chromium colour-manages CSS; Sublime writes native pixels.**
-   The dark theme's `--bg-editor` is `#2e3842` — looks "wrong" vs
-   Mariana's documented `#303841`, but that's the sRGB
-   pre-compensation needed so jmacs's rendered native pixel lands on
-   Sublime's `(48, 56, 65)`. Same shift probably needs applying to
-   the rest of the dark palette (see "Known issues" — muted colours).
+   Same `--bg-editor` = `#2e3842` story. The token-colour palette
+   may still need the same shift; not investigated this session.
+
+8. **Subprocesses go through Python for PTY needs.** Recorded in
+   `architect-notes.md` (the entry from `agent-shell-buffer-v2`).
+   BSD `script(1)` doesn't work from Node — it `tcgetattr`s stdin at
+   startup and bails when stdin is a pipe. `python3 -c '<pty.spawn>'`
+   is the cross-platform substitute (macOS ships python3; Linux
+   distros do too). Falls back to plain pipes when python is
+   missing.
 
 ## Known issues / paper cuts
 
-- **Binding displacements still pending** for the unmerged branches
-  (taste calls only Jason can make):
-  - `M-d`: was `kill-word`, multi-cursor wants `add-cursor-next`. Displaced to `M-S-d`.
-  - `C-l`: was `recenter`, multi-cursor wants `select-all-matches`. Displaced to `C-M-l`.
-  - `K`: was self-insert for shift-K, LSP wants `lsp-hover`. Vim convention; worth confirming.
-  - `C-x p`: was `toggle-repl`, file-nav wants `find-file-in-project`. `toggle-repl` still reachable via `M-x`.
-- **Multi-cursor branch still ships broken** (`hash-set` typo). Five-minute fix:
+- **Binding displacements still pending** for unmerged branches
+  (taste calls only Jason can make). Same list as the prior handover.
+- **Multi-cursor branch still ships broken** (`hash-set` typo).
+  Five-minute fix:
   - `sed -i.bak 's/hash-set/assoc/g' packages/stdlib/lisp/multi-cursor.lisp`
   - Add `'multi-cursor.lisp'` to `STDLIB_FILES` in `packages/stdlib/src/index.js`.
-- **agent-folding changes `loadLanguageHighlighters` return shape** —
-  `{ highlighters, foldCaptures }` instead of just `highlighters`.
-  Several merged branches now touch the same call site, so the
-  conflict resolution will be slightly more involved than it was at
-  the start of the session.
-- **Token colours feel washed-out vs Sublime.** Jason flagged this
-  during the bg-editor matching work; almost certainly the same
-  sRGB-vs-native colour-management split as the background. Saved in
-  memory; he wants to be involved in the palette decisions.
-- **`docs/MANUAL.html` and `docs/reference/*.html`** are pre-existing
-  untracked build artefacts. Ignore.
+- **Token colours feel washed-out vs Sublime.** Unchanged from prior;
+  same sRGB-vs-native split as the background. Jason wants to be
+  involved in palette decisions.
+- **Shell v3 prompt fidelity.** Under `+Z` (ZLE off) the Oh My Zsh
+  prompt's git branch and right-aligned timestamp don't render —
+  they're emitted via ZLE's cursor-up + clear-to-end + reprint
+  sequence, which a line-oriented transcript can't honour. The
+  static left prompt (`(base) ~/Source/jmacs/main/` + `$ `) renders
+  correctly. v4 with xterm.js will fix this.
+- **Shell v3 curses apps** — `vi`, `htop`, `less +F` won't work.
+  Documented in the file header of `shell-view.js`. Same v4 fix.
 
 ## Plan documents
 
 In `plans/`:
 
-- `LANGUAGE-INJECTION.md` — design for tree-sitter language injection.
-  Implementation merged.
-- `REACTIVE-NOTEBOOK.md` — design for the reactive notebook. Phase 1
-  on `agent-reactive-notebook`. Phase 2 (HTML view) deferred.
-- `FACE-CUSTOMISATION.md` — face customisation design. Implementation
-  merged this session (`agent-face-customisation` + `agent-face-inheritance`).
+- `LANGUAGE-INJECTION.md` — implementation merged.
+- `REACTIVE-NOTEBOOK.md` — phase 1 on `agent-reactive-notebook`.
+- `FACE-CUSTOMISATION.md` — implementation merged.
+- `SHELL-V4-XTERM.md` — **new this session.** xterm.js-based v4.
 
 In `docs/`:
 
-- `CUSTOM-VIEWS.md` — the how-to for wiring a custom HTML view to a
-  buffer. The queued media-views agent will follow this pattern.
+- `CUSTOM-VIEWS.md` — the how-to for wiring a custom view.
+
+## Tree-sitter inventory
+
+After this session: **36 vendored grammars** (34 user-facing, two
+companions: `markdown-inline` and `php_only`). The full list:
+
+- **C-family / systems**: c, cpp, csharp, java, kotlin, swift, rust,
+  go, zig
+- **Scripting / dynamic**: python, ruby, **perl** (new), php, lua,
+  javascript, typescript
+- **Functional**: haskell, ocaml, erlang, elixir, clojure, scheme
+- **Markup / data**: html, xml, json, yaml, toml, css, markdown,
+  latex
+- **Shell / infra**: bash, dockerfile, nix, **make** (new — replaces
+  the hand-tokenized fallback)
+- **Query languages**: sql, graphql
+
+The hand-tokenized makefile fallback in `packages/renderer/src/highlight.js`
+stays in place — fires only if `tree-sitter-make.wasm` fails to load.
+
+## Memory / preferences saved
+
+- **Direct-to-main commits are fine for small polish.** Branch +
+  merge stays the default for feature-sized work. Jason confirmed
+  during this session (the make/perl grammars and the three shell
+  fixes went directly).
+- **"There's no point doing a halfway house."** Settled on xterm.js
+  for v4 rather than extending the line-oriented view further.
 
 ## What's missing — the headlines
 
-Roughly unchanged from the prior handover, in order of impact:
+Unchanged from the prior handover, roughly:
 
-1. **Splits / multiple panes.** L2 buffer abstraction supports this;
-   renderer doesn't yet. Worth a plan doc before code (`plans/PANES.md`).
+1. **Splits / multiple panes.** Worth a `plans/PANES.md` first.
 2. **LSP autocomplete.** Diagnostics + hover without completion feels
-   half-done. Foundation exists in `packages/lsp/`; agent-lsp lands
-   the first half.
-3. **Git integration.** Diff in the gutter, blame, basic conflict UI.
-4. **Performance proven at scale.** Large files, large projects,
-   multi-hour sessions — none tested.
+   half-done; `agent-lsp` lands the first half.
+3. **Git integration.** Diff gutter, blame, basic conflict UI.
+4. **Performance proven at scale.**
 5. **Process isolation for user code.** The real architectural debt.
-   See Phase 1 proposal below.
-6. **A real README + 60-second demo.** The thesis isn't visible
-   without it.
+   See the Phase 1 proposal in the prior handover (`git show 96ea97b
+   -- HANDOVER.md`).
+6. **A real README + 60-second demo.**
 
-## Process isolation — Phase 1 proposal
+## Workflow lessons (this session)
 
-The actual problem is two distinct things:
-
-- (A) A runaway user macro freezes the UI. (Bug case.)
-- (B) Heavy user computation blocks the UI thread. (Workload case.)
-
-**Phase 1 — cooperative scheduling + interruptibility** solves (A) at
-low cost without breaking sync semantics or the Lisp/JS seam:
-
-- Add a step budget to `eval.js`'s eval loop (check every N forms or
-  every M ms).
-- A `C-g` interrupt sets a flag the loop reads; the loop throws a
-  `LispInterrupt` that the top-level handler catches.
-- Top-level commands taking longer than ~500 ms prompt the user in
-  the minibuffer ("still running, kill?").
-
-Implementation: ~200–300 lines in `eval.js` plus a host primitive for
-the interrupt flag. No seam changes; no serialisation; no async
-refactor. Highest-leverage architectural fix available.
-
-**Phase 2 — worker-thread Lisp for explicit-async** is only worth
-doing if (B) becomes a real workload. Don't pre-emptively. If needed:
-an `(in-background EXPR)` primitive that ships work to a worker and
-returns a future. Sync semantics for the 99% case stay intact.
-
-Explicitly do NOT:
-
-- Move the whole Lisp interpreter to a worker by default — the
-  Lisp/JS seam becomes message-passing, tenfold slowdown on the hot
-  path, sync semantics lost.
-- Run Lisp in a hidden BrowserWindow. Way too heavy.
-- Try thread-level isolation in V8. Doesn't exist for user code
-  without workers.
-
-## Workflow lessons
-
-Refined this session:
-
-1. **Sequential single-agent works cleanly.** Each agent commits to
-   its own branch from the same checkout; no leaks because there's no
-   isolation to fail. Parallel worktree agents still fail (`cd`
-   resets between Bash calls; agents drift out of their worktree).
-2. **`--no-ff` merges for every branch landing.** The merge bubble
-   (`merge: agent-X (one-line description)`) is the established
-   pattern; `git log --merges main` reads as a feature changelog.
-3. **Conflict resolution is mostly keep-both.** The 8 merges this
-   session triggered conflicts on the same files (`smoke.js`,
-   `app.js`, `themes.lisp`, `styles.css`, `preload.mjs`,
-   `files.js`); all but `themes.lisp` were trivial keep-both. The
-   exception: `agent-face-customisation` restructured `themes.lisp`
-   to move `--tok-*` out of the theme hash-maps and into `defface`
-   defaults, which had to be reconciled with the contrast bump from
-   `agent-syntax-pass`.
-4. **Direct-to-main is fine for small polish.** Jason prefers it for
-   single-file follow-ups (a face value, a hex tweak, a diagnostic
-   improvement). Branch + merge stays the default for anything
-   feature-sized. Memory note saved.
-5. **Agents make local design calls.** Binding displacements, API
-   shape changes (e.g. `loadLanguageHighlighters` return shape), new
-   primitives. Read the report carefully before merging.
-6. **The `hash-set` mistake repeats.** New agents who haven't seen
-   the codebase invent it. The map-update primitive is `assoc`.
-7. **Smoke arms keep the contract.** Every agent should add one
-   contiguous smoke arm at the bottom of `scripts/smoke.js`. Merging
-   that file is then trivially additive.
-8. **Plan docs first for design-heavy work.** The face customisation
-   system went well because the plan was written and approved before
-   the build. Mechanical work (drop-in language grammars, simple view
-   additions) can skip the plan and go straight to a brief.
-
-## The Lisp/JS principle
-
-When adding a feature, ask:
-
-- Is there a place where the user might want to extend behaviour?
-  → Lisp surface.
-- Is there a tight inner loop?
-  → JS implementation; Lisp calls a primitive.
-- Is there both?
-  → Thin Lisp wrapper over a JS engine. (See `faces.lisp` calling
-  `apply-face-styles!`; `regex-search.lisp` calling
-  `replace-regexp-all!`; `jukebox.lisp` calling `play-audio!`.)
-
-The seam — host primitives — was built in from day one. That makes
-"move it to JS" a small refactor, not a runtime change.
-
-## Branch hygiene
-
-Twenty-one merged-but-still-named branch refs were deleted this
-session via `git branch -d` (Git's safety-checked deletion — refuses
-unless the branch is fully merged into HEAD). Commits stay reachable
-through main's merge history; the refs just stopped cluttering
-`git branch`. Worth doing again after the next merge batch.
+1. **Three iterations on the shell were the right move.** v1 → v2 → v3
+   each shipped with a tested working state before the next attempt
+   built on top. The user took screenshots from the running app
+   between iterations; "shell-bug.png" → "v2 worked but had per-char
+   echo" → "no-output.png" each surfaced a real regression that
+   couldn't have been caught by the smoke alone. Plan, build, try
+   live, iterate.
+2. **JS template-literal escape rules bite.** Two bugs this session
+   were one in each direction: `"\""` in `make.js` produced three
+   literal quotes (tree-sitter choked); a backtick in a smoke
+   comment broke the outer `executeJavaScript(\`...\`)` and crashed
+   Electron on launch. Worth a memory note: when writing
+   non-JS-source inside a JS template literal, audit for `\"`, `\``,
+   and `${`.
+3. **`node --check` is fast triage.** Both crashes above were caught
+   in seconds by running `node --check` over the changed files —
+   faster than re-launching Electron.
+4. **The pty-from-Node trap.** BSD `script(1)` fails because of
+   `tcgetattr(stdin)` on a pipe. Recorded in `architect-notes.md`
+   and now in the architecture-decisions list above.
+5. **Tty ECHO race.** Setting termios in the child after `pty.fork`
+   races against bytes that may already be in the kernel's input
+   buffer; do it on the master in the parent before forwarding any
+   input. Worth remembering if anyone hand-rolls the helper again.
 
 ## Suggested next steps in priority order
 
-1. **Let the agents finish.** `agent-language-pack` is mid-run;
-   `agent-media-views` is queued. Review their final reports, merge
-   their branches as usual.
-2. **Merge the surviving review queue.** The nine branches above. Half
-   a day if conflicts behave; the multi-cursor `hash-set` fix is the
+1. **Build v4 (xterm.js).** The plan is in `plans/SHELL-V4-XTERM.md`.
+   Spawn an agent on `agent-shell-buffer-v4`; the brief is the plan.
+   Once landed, delete `packages/renderer/src/ansi.js` and the
+   `feedLiveLine` machinery (v3 carries a lot of dead-end work that
+   becomes obsolete the day xterm.js lands).
+2. **Merge the surviving review queue** (eight branches). Half a
+   day if conflicts behave; the multi-cursor `hash-set` fix is the
    only known blocker.
 3. **Phase 1 interruptibility.** Single highest-leverage
-   architectural work. Removes the only real "I had to force-quit"
-   failure mode.
-4. **Investigate the muted-palette issue.** Probably the same sRGB
-   pre-compensation as the background; Jason wants involvement in the
-   colour choices. Could be a one-evening pass.
-5. **Daily-drive for a week.** Note paper cuts; don't fix them yet.
-6. **A real README + 60-second demo.** Install instructions; thesis
-   in two sentences.
-7. **Splits** — start with `plans/PANES.md`. A few days of careful
-   work; deserves a design pass first.
-8. **LSP autocomplete** as a separate session, after `agent-lsp` lands.
+   architectural work. See the prior handover.
+4. **Investigate the muted-palette issue.**
+5. **Daily-drive for a week, then a real README + 60-second demo.**
+6. **Splits** (`plans/PANES.md`).
+7. **LSP autocomplete** as its own session.
 
 ---
 
 The story so far: a Lisp-extensible editor with a custom dialect, an
-Electron presentation layer, real tree-sitter highlighting (about to
-become 33 languages), a face system you can customise with `M-x
-customize-faces`, a documentation surface, a working jukebox with
-album art and metadata, drag-resizable panes, a diagnostic for
-syntax highlighting that tells you what to write if a face is
-missing, and a colour scheme pre-compensated to match Sublime
-Mariana. Nine branches still in the queue and two more in flight.
+Electron presentation layer, real tree-sitter highlighting (36
+languages), a face system customisable via `M-x customize-faces`,
+documentation, a working jukebox with album art + metadata,
+drag-resizable panes, a diagnostic `C-h F` for syntax highlighting,
+directory-tree and Finder-style column browsers, double-click-to-open,
+chord-prefix display in the echo area, find-file with tab-completion,
+and now a `M-x shell` running the user's default shell with full
+PTY + ANSI. v4 (xterm.js) is queued.
