@@ -154,6 +154,9 @@ importers:
       '@editor/lisp':
         specifier: workspace:*
         version: link:../lisp
+      '@editor/view':
+        specifier: workspace:*
+        version: link:../view
 
   packages/storage: {}
 

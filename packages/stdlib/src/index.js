@@ -13,6 +13,7 @@
  */
 
 export { createBufferPrimitives } from './buffer-primitives.js';
+export { createViewPrimitives } from './view-primitives.js';
 
 /**
  * The standard-library Lisp files, in load order. The command files
@@ -28,7 +29,7 @@ export const STDLIB_FILES = Object.freeze([
   // their settings with `defcustom`.
   'custom.lisp',
   'files.lisp',
-  'buffers.lisp',
+  'views.lisp',
   'search.lisp',
   'regex-search.lisp',
   'kill.lisp',
@@ -49,7 +50,7 @@ export const STDLIB_FILES = Object.freeze([
   'markdown.lisp',
   'latex.lisp',
   'makefile.lisp',
-  'buffer-menu.lisp',
+  'view-menu.lisp',
   'sticky-notes.lisp',
   'jukebox.lisp',
   'directory-tree.lisp',

@@ -1,10 +1,11 @@
 /**
- * @file Tests for the `*Buffer List*` (`buffer-menu`) feature. The host
- * is mocked: a small in-test buffer registry stands in for the desktop
- * app's list, and `list-buffers`, `switch-to-buffer!`, `new-buffer!`
- * and `kill-buffer!` are wired against it. The L2 buffer the tests
- * pass to `createBufferPrimitives` is repointed at the active buffer
- * through the shared session — exactly how the desktop app does it.
+ * @file Tests for the `*Buffer List*` (`buffer-menu`) feature, post
+ * view/buffer split. The host is mocked: a small in-test view registry
+ * stands in for the desktop app's list, and `list-views`,
+ * `switch-to-view!`, `new-view!` and `kill-view!` are wired against
+ * it. The L2 buffer the tests pass to `createBufferPrimitives` is
+ * repointed at the active view's buffer through the shared session —
+ * exactly how the desktop app does it.
  */
 
 import { test } from 'node:test';
@@ -15,7 +16,12 @@ import { fileURLToPath } from 'node:url';
 
 import { createBuffer } from '@editor/buffer';
 import { arrayToList, createInterpreter, keyword, NIL } from '@editor/lisp';
-import { createBufferPrimitives, loadStdlib } from '../src/index.js';
+import { createView } from '@editor/view';
+import {
+  createBufferPrimitives,
+  createViewPrimitives,
+  loadStdlib,
+} from '../src/index.js';
 
 const lispDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lisp');
 const languagesDir = join(lispDir, 'languages');
@@ -30,20 +36,27 @@ const languagesDir = join(lispDir, 'languages');
  *   The buffers the registry starts with. The first entry is current.
  */
 async function buildEditor(seed = [{ name: 'alpha.txt', text: 'alpha' }]) {
-  const registry = seed.map((entry) => ({
-    name: entry.name,
-    kind: entry.kind ?? 'text',
-    mode: entry.mode ?? null,
-    lineCount: entry.lines ?? 1,
-    file: entry.file ?? null,
-    modified: entry.modified ?? false,
-    // Each entry gets its own L2 buffer so switching is real.
-    buffer: createBuffer(entry.text ?? '', { name: entry.name }),
-  }));
+  // Each registry entry is a small fixture combining the View handle
+  // (so `(current-view)` returns a real one) with the row metadata
+  // the *Buffer List* renders (mode, line count, file path, modified
+  // flag). Killing/switching mutates this single list.
+  const registry = seed.map((entry) => {
+    const kind = entry.kind ?? 'text';
+    const buffer = kind === 'text'
+      ? createBuffer(entry.text ?? '', { name: entry.name })
+      : null;
+    return {
+      view: createView({ kind, name: entry.name, buffer }),
+      mode: entry.mode ?? null,
+      lineCount: entry.lines ?? 1,
+      file: entry.file ?? null,
+      modified: entry.modified ?? false,
+    };
+  });
   let currentIndex = 0;
   const session = {
-    get current() {
-      return registry[currentIndex].buffer;
+    get currentView() {
+      return registry[currentIndex]?.view ?? null;
     },
   };
   const switches = [];
@@ -51,84 +64,95 @@ async function buildEditor(seed = [{ name: 'alpha.txt', text: 'alpha' }]) {
 
   const recordFor = (entry) => {
     const m = new Map();
-    m.set(keyword('name'), entry.name);
-    m.set(keyword('kind'), entry.kind);
+    m.set(keyword('name'), entry.view.name);
+    m.set(keyword('kind'), entry.view.kind);
     m.set(keyword('mode'), entry.mode === null ? NIL : entry.mode);
     m.set(keyword('line-count'), entry.lineCount);
     m.set(keyword('file'), entry.file === null ? NIL : entry.file);
     m.set(keyword('modified'), entry.modified);
     return m;
   };
-  const listFromRecords = (entries) => arrayToList(entries.map(recordFor));
 
-  const interpreter = createInterpreter({
-    primitives: {
-      ...createBufferPrimitives(session),
-      // The buffer-list snapshot.
-      'list-buffers': () => listFromRecords(registry),
-      // Switch to a buffer by name; returns #t when one matched, NIL
-      // otherwise. The registry's current index is updated and the
-      // session's `current` repoints automatically.
-      'switch-to-buffer!': (args) => {
-        const name = String(args[0] ?? '');
-        const idx = registry.findIndex((e) => e.name === name);
-        if (idx < 0) return NIL;
-        currentIndex = idx;
-        switches.push(name);
-        return true;
-      },
-      // Create a fresh empty buffer (text kind) and switch to it.
-      'new-buffer!': (args) => {
-        const name =
-          args.length > 0 ? String(args[0]) : `untitled-${registry.length + 1}`;
+  const findIndexByName = (name) =>
+    registry.findIndex((e) => e.view.name === name);
+  const findIndexByView = (view) =>
+    registry.findIndex((e) => e.view === view);
+
+  const switchToIndex = (idx, label) => {
+    if (idx < 0) return null;
+    currentIndex = idx;
+    switches.push(label ?? registry[idx].view.name);
+    return registry[idx].view;
+  };
+
+  const viewHost = {
+    currentView: () => registry[currentIndex]?.view ?? null,
+    viewList: () => registry.map((e) => e.view),
+    switchToView: (target) => {
+      const idx = typeof target === 'string'
+        ? findIndexByName(target)
+        : findIndexByView(target);
+      if (idx < 0) return null;
+      return switchToIndex(idx);
+    },
+    newView: (name) => {
+      const finalName =
+        name ?? `untitled-${registry.length + 1}`;
+      const view = createView({
+        kind: 'text',
+        name: finalName,
+        buffer: createBuffer('', { name: finalName }),
+      });
+      registry.push({
+        view,
+        mode: null,
+        lineCount: 1,
+        file: null,
+        modified: false,
+      });
+      currentIndex = registry.length - 1;
+      switches.push(finalName);
+      return view;
+    },
+    killView: (target) => {
+      const idx = typeof target === 'string'
+        ? findIndexByName(target)
+        : findIndexByView(target);
+      if (idx < 0) return;
+      kills.push(registry[idx].view.name);
+      const wasCurrent = idx === currentIndex;
+      registry.splice(idx, 1);
+      if (registry.length === 0) {
+        // Empty list: replace with a fresh *scratch* text view.
         registry.push({
-          name,
-          kind: 'text',
+          view: createView({
+            kind: 'text',
+            name: '*scratch*',
+            buffer: createBuffer('', { name: '*scratch*' }),
+          }),
           mode: null,
           lineCount: 1,
           file: null,
           modified: false,
-          buffer: createBuffer('', { name }),
         });
-        currentIndex = registry.length - 1;
-        switches.push(name);
-        return NIL;
-      },
-      // Kill by name (or current). Replicates the app.js semantics
-      // closely enough for the menu tests: removing the current
-      // buffer steps to the next; an empty list creates a *scratch*.
-      'kill-buffer!': (args) => {
-        let target;
-        if (args.length > 0) {
-          target = registry.findIndex((e) => e.name === String(args[0]));
-        } else {
-          target = currentIndex;
-        }
-        if (target < 0) return NIL;
-        kills.push(registry[target].name);
-        const wasCurrent = target === currentIndex;
-        registry.splice(target, 1);
-        if (registry.length === 0) {
-          registry.push({
-            name: '*scratch*',
-            kind: 'text',
-            mode: null,
-            lineCount: 1,
-            file: null,
-            modified: false,
-            buffer: createBuffer('', { name: '*scratch*' }),
-          });
-          currentIndex = 0;
-        } else if (wasCurrent) {
-          currentIndex = Math.min(target, registry.length - 1);
-        } else if (target < currentIndex) {
-          currentIndex -= 1;
-        }
-        return NIL;
-      },
+        currentIndex = 0;
+      } else if (wasCurrent) {
+        currentIndex = Math.min(idx, registry.length - 1);
+      } else if (idx < currentIndex) {
+        currentIndex -= 1;
+      }
+    },
+    nextView: () => null, // unused by the menu tests
+    previousView: () => null,
+    findViewByName: (name) => registry[findIndexByName(name)]?.view ?? null,
+    listViewRecords: () => registry.map(recordFor),
+  };
+
+  const interpreter = createInterpreter({
+    primitives: {
+      ...createBufferPrimitives(session),
+      ...createViewPrimitives(viewHost),
       // Filler primitives so the rest of the standard library can load.
-      'next-buffer!': () => NIL,
-      'previous-buffer!': () => NIL,
       'start-buffer-switcher!': () => NIL,
       'open-file!': () => NIL,
       'save-buffer!': () => NIL,
@@ -188,8 +212,8 @@ async function buildEditor(seed = [{ name: 'alpha.txt', text: 'alpha' }]) {
     registry,
     switches,
     kills,
-    currentName: () => registry[currentIndex].name,
-    currentBuffer: () => registry[currentIndex].buffer,
+    currentName: () => registry[currentIndex].view.name,
+    currentBuffer: () => registry[currentIndex].view.buffer,
   };
 }
 
@@ -324,13 +348,15 @@ test('g refreshes the list', async () => {
   editor.interpreter.evaluate('(buffer-menu)');
   // Mutate the registry directly, then refresh.
   editor.registry.push({
-    name: 'late.txt',
-    kind: 'text',
+    view: createView({
+      kind: 'text',
+      name: 'late.txt',
+      buffer: createBuffer('', { name: 'late.txt' }),
+    }),
     mode: null,
     lineCount: 1,
     file: null,
     modified: false,
-    buffer: createBuffer('', { name: 'late.txt' }),
   });
   press(editor.interpreter, 'g');
   const lines = editor.currentBuffer().text.split('\n');
@@ -343,7 +369,7 @@ test('q returns to the buffer that was current when the menu opened', async () =
     { name: 'beta.txt', text: 'two' },
   ]);
   // Make beta current first; then open the menu from beta.
-  editor.interpreter.evaluate('(switch-to-buffer! "beta.txt")');
+  editor.interpreter.evaluate('(switch-to-view! "beta.txt")');
   assert.equal(editor.currentName(), 'beta.txt');
   editor.interpreter.evaluate('(buffer-menu)');
   assert.equal(editor.currentName(), '*Buffer List*');

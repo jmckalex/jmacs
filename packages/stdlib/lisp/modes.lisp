@@ -115,8 +115,8 @@
   (run-mode-hook mode :on-enable))
 
 (define (choose-major-mode!)
-  "Set the current buffer's major mode from its name."
-  (switch-major-mode (mode-for-name (buffer-name))))
+  "Set the current view's major mode from its (view) name."
+  (switch-major-mode (mode-for-name (view-name))))
 
 (define (major-mode-name)
   "The display name of the current buffer's major mode."

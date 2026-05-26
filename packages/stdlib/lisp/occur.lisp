@@ -1,13 +1,13 @@
-;;; occur.lisp — list the matching lines of the current buffer.
+;;; occur.lisp — list the matching lines of the current view's buffer.
 ;;;
 ;;; `M-s o` (the `occur` command) prompts for a literal substring and
-;;; opens a *Occur: <pattern>* buffer listing every line of the current
-;;; buffer that contains it, prefixed by its source line number. With no
-;;; matches the results buffer says so rather than being empty.
+;;; opens a *Occur: <pattern>* view listing every line of the current
+;;; view's buffer that contains it, prefixed by its source line number.
+;;; With no matches the results view says so rather than being empty.
 ;;;
 ;;; Matching is plain literal substring; no regex. The whole thing is
-;;; pure Lisp on top of `buffer-text`, `new-buffer!` and `insert!` — the
-;;; results buffer is just a freshly-created buffer the command writes
+;;; pure Lisp on top of `buffer-text`, `new-view!` and `insert!` — the
+;;; results view is just a freshly-created text view the command writes
 ;;; into. (A future version could open the results in a side panel or
 ;;; jump to a match on Enter.)
 
@@ -65,18 +65,18 @@
              (-format-matches (cdr matches) width)))))
 
 (define (occur-buffer-name pattern)
-  "The name to give the results buffer for PATTERN."
+  "The name to give the results view for PATTERN."
   (str "*Occur: " pattern "*"))
 
 ;; --- the command -------------------------------------------------------
 
 (defcommand occur (pattern)
-  "List every line of the current buffer containing PATTERN, a literal
-   substring, in a fresh *Occur: PATTERN* buffer."
+  "List every line of the current view's buffer containing PATTERN, a
+   literal substring, in a fresh *Occur: PATTERN* view."
   (interactive (string "Occur: "))
   (let ((result (occur-result-text pattern (buffer-text)))
         (name (occur-buffer-name pattern)))
-    ;; The source text is captured first; only then do we switch buffers
-    ;; and write the result into the freshly-created results buffer.
-    (new-buffer! name)
+    ;; The source text is captured first; only then do we switch views
+    ;; and write the result into the freshly-created results view.
+    (new-view! name)
     (insert! result)))

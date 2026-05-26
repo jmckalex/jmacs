@@ -1,19 +1,22 @@
-;;; buffer-menu.lisp — Emacs-style *Buffer List* buffer.
+;;; view-menu.lisp — Emacs-style *Buffer List* view (renamed; the
+;;; *Buffer List* name is kept for backward muscle-memory; the in-
+;;; editor command is now `buffer-menu` still — the menu still lists
+;;; views, but for users `*Buffer List*` is the canonical label).
 ;;;
-;;; `C-x C-b` opens a *Buffer List* buffer with one row per open
-;;; buffer. From inside the list:
+;;; `C-x C-b` opens a *Buffer List* view with one row per open view.
+;;; From inside the list:
 ;;;
-;;;   RET   switch to the buffer on the current line, closing the menu
-;;;   d / k mark the current line's buffer for delete
+;;;   RET   switch to the view on the current line, closing the menu
+;;;   d / k mark the current line's view for delete
 ;;;   u     unmark the current line
-;;;   x     kill every marked buffer, then refresh
-;;;   g     refresh the list (re-read the buffer list)
-;;;   q     leave the menu, returning to the buffer that was current
+;;;   x     kill every marked view, then refresh
+;;;   g     refresh the list (re-read the view list)
+;;;   q     leave the menu, returning to the view that was current
 ;;;         when the menu opened
 ;;;
-;;; The list is plain text in a buffer with `buffer-menu-mode` set, so
-;;; cursor movement, search and so on use the standard editor commands.
-;;; Loaded after modes.lisp and keymap.lisp; it fills in
+;;; The list is plain text in a text-kind view with `buffer-menu-mode`
+;;; set, so cursor movement, search and so on use the standard editor
+;;; commands. Loaded after modes.lisp and keymap.lisp; it fills in
 ;;; buffer-menu-mode-map.
 ;;;
 ;;; The current-row marker `>` from Emacs is intentionally omitted —
@@ -179,8 +182,8 @@
 ;; --- the menu buffer ---------------------------------------------------
 
 (define (in-buffer-menu?)
-  "True when the current buffer is the *Buffer List* buffer."
-  (equal? (buffer-name) *buffer-menu-buffer-name*))
+  "True when the current view is the *Buffer List* view."
+  (equal? (view-name) *buffer-menu-buffer-name*))
 
 (define (-replace-buffer-text! text)
   "Clear the current buffer and insert TEXT, leaving the cursor at the
@@ -193,27 +196,27 @@
   (cursor-line-start! #f))
 
 (defcommand buffer-menu-refresh ()
-  "Re-read the buffer list and re-render *Buffer List*. Pending marks
+  "Re-read the view list and re-render *Buffer List*. Pending marks
    are not preserved — the snapshot is fresh."
   (when (in-buffer-menu?)
-    (-replace-buffer-text! (buffer-menu-render (list-buffers)))))
+    (-replace-buffer-text! (buffer-menu-render (list-views)))))
 
 (defcommand buffer-menu ()
-  "Open the *Buffer List* — one row per open buffer, with bindings for
+  "Open the *Buffer List* — one row per open view, with bindings for
    selecting (RET), marking for delete (d/k), unmarking (u), executing
    the marks (x), refreshing (g) and quitting (q). Bound to `C-x C-b`."
   ;; Remember where we came from, but don't overwrite if the menu is
   ;; already showing — `q` should jump back further than the menu itself.
   (unless (in-buffer-menu?)
-    (set! *buffer-menu-previous-buffer* (buffer-name)))
-  ;; Switch to (or create) the *Buffer List* buffer, set its mode, and
-  ;; render the rows. The snapshot is taken *after* the menu buffer
+    (set! *buffer-menu-previous-buffer* (view-name)))
+  ;; Switch to (or create) the *Buffer List* view, set its mode, and
+  ;; render the rows. The snapshot is taken *after* the menu view
   ;; exists so the menu lists itself, matching Emacs.
-  (if (nil? (switch-to-buffer! *buffer-menu-buffer-name*))
-      (new-buffer! *buffer-menu-buffer-name*)
+  (if (nil? (switch-to-view! *buffer-menu-buffer-name*))
+      (new-view! *buffer-menu-buffer-name*)
       nil)
   (set-major-mode! buffer-menu-mode)
-  (-replace-buffer-text! (buffer-menu-render (list-buffers))))
+  (-replace-buffer-text! (buffer-menu-render (list-views))))
 
 ;; --- row-level commands ------------------------------------------------
 
@@ -251,26 +254,26 @@
   (-set-mark-on-current-line! "."))
 
 (defcommand buffer-menu-select ()
-  "Switch to the buffer on the current row, closing the menu. Bound to
+  "Switch to the view on the current row, closing the menu. Bound to
    `RET`."
   (when (in-buffer-menu?)
     (let ((name (-current-row-name)))
       (unless (= (string-length name) 0)
         ;; Clear `previous-buffer` so a subsequent `q` from a normal
-        ;; buffer does the right thing if the user then opens the menu
+        ;; view does the right thing if the user then opens the menu
         ;; from there.
-        (switch-to-buffer! name)))))
+        (switch-to-view! name)))))
 
 (defcommand buffer-menu-execute ()
-  "Kill every buffer marked for deletion, then refresh. Bound to `x`."
+  "Kill every view marked for deletion, then refresh. Bound to `x`."
   (when (in-buffer-menu?)
     (let ((targets (-collect-marked-rows)))
-      (for-each (lambda (name) (kill-buffer! name)) targets)
-      ;; Killing buffers may have triggered a switch — restore the menu.
-      (when (nil? (switch-to-buffer! *buffer-menu-buffer-name*))
-        (new-buffer! *buffer-menu-buffer-name*)
+      (for-each (lambda (name) (kill-view! name)) targets)
+      ;; Killing views may have triggered a switch — restore the menu.
+      (when (nil? (switch-to-view! *buffer-menu-buffer-name*))
+        (new-view! *buffer-menu-buffer-name*)
         (set-major-mode! buffer-menu-mode))
-      (-replace-buffer-text! (buffer-menu-render (list-buffers))))))
+      (-replace-buffer-text! (buffer-menu-render (list-views))))))
 
 (define (-collect-marked-rows)
   "Walk the lines of the menu buffer; return the names whose action
@@ -289,13 +292,13 @@
     (else (-collect-marked-walk (cdr lines) acc))))
 
 (defcommand buffer-menu-quit ()
-  "Leave the menu, returning to the buffer that was current when the
+  "Leave the menu, returning to the view that was current when the
    menu opened. Bound to `q`."
   (let ((prev *buffer-menu-previous-buffer*))
     (cond
       ((nil? prev) nil)
       ((equal? prev *buffer-menu-buffer-name*) nil)
-      (else (switch-to-buffer! prev)))))
+      (else (switch-to-view! prev)))))
 
 ;; --- the mode keymap ---------------------------------------------------
 

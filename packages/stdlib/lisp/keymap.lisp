@@ -17,12 +17,12 @@
    "C-s"   'save-buffer
    "C-r"   'reload-stdlib
    "C-c"   'quit-editor
-   "b"     'switch-buffer
+   "b"     'switch-view
    "C-b"   'buffer-menu
-   "right" 'next-buffer
-   "left"  'previous-buffer
-   "n"     'new-buffer
-   "k"     'kill-buffer
+   "right" 'next-view
+   "left"  'previous-view
+   "n"     'new-view
+   "k"     'kill-view
    "p"     'toggle-repl
    "h"     'mark-whole-buffer
    ";"     'comment-line

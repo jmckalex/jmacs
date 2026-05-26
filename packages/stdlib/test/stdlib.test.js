@@ -80,19 +80,19 @@ async function editor(initialText = 'hello world', options = {}) {
         return NIL;
       },
       'reload-stdlib!': () => NIL,
-      'next-buffer!': () => {
+      'next-view!': () => {
         bufferCalls.push('next');
         return NIL;
       },
-      'previous-buffer!': () => {
+      'previous-view!': () => {
         bufferCalls.push('previous');
         return NIL;
       },
-      'new-buffer!': () => {
+      'new-view!': () => {
         bufferCalls.push('new');
         return NIL;
       },
-      'kill-buffer!': () => {
+      'kill-view!': () => {
         bufferCalls.push('kill');
         return NIL;
       },
@@ -1973,7 +1973,7 @@ test('M-s o begins a sequence then prompts the minibuffer for a pattern', async 
 });
 
 test('occur creates a *Occur: PATTERN* buffer and inserts the matches', async () => {
-  // The test mock for new-buffer! does not switch buffers, so insert!
+  // The test mock for new-view! does not switch views, so insert!
   // after it writes into the original buffer — that gives the test a
   // direct view of the inserted text. Real app code switches first.
   const { buffer, interpreter, bufferCalls } = await editor(
@@ -2690,7 +2690,7 @@ test('show-eval-log calls the host primitive', async () => {
     `expected show-log; got ${JSON.stringify(evalCalls)}`);
 });
 
-test('C-x k runs kill-buffer through the host primitive', async () => {
+test('C-x k runs kill-view through the host primitive', async () => {
   const { interpreter, bufferCalls } = await editor();
   press(interpreter, 'C-x');
   press(interpreter, 'k');
