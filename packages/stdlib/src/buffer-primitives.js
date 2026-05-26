@@ -165,12 +165,24 @@ export function createBufferPrimitives(session) {
     'line-end': () => buffer().lineAt(buffer().point).to,
     'line-indent': () => /^[ \t]*/.exec(buffer().lineAt(buffer().point).text)[0],
     // --- modes — L2 stores the mode; the stdlib gives it meaning -------
-    'buffer-major-mode': () => buffer().majorMode ?? NIL,
+    // The two read primitives tolerate a buffer-less current view —
+    // they return nil rather than raising. The keymap chain (modes.lisp)
+    // calls them every keystroke, including in non-text views; a
+    // non-text view simply has no mode chain, and the global keymap
+    // takes over. The `set-` mutators still raise — they only make
+    // sense in a buffer.
+    'buffer-major-mode': () => {
+      const buf = currentBuffer();
+      return buf && buf.majorMode != null ? buf.majorMode : NIL;
+    },
     'set-major-mode!': (args) => {
       buffer().majorMode = args[0];
       return NIL;
     },
-    'buffer-minor-modes': () => buffer().minorModes ?? NIL,
+    'buffer-minor-modes': () => {
+      const buf = currentBuffer();
+      return buf && buf.minorModes != null ? buf.minorModes : NIL;
+    },
     'set-minor-modes!': (args) => {
       buffer().minorModes = args[0];
       return NIL;

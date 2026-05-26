@@ -1,27 +1,26 @@
 /**
  * @file View — the addressable on-screen thing.
  *
- * A view is what a pane shows. It has:
+ * A view is what a pane shows. Every view has:
  *
  *   - kind: a string discriminator ('text', 'image', 'shell', ...).
  *   - name: a human-readable label (the modeline name).
  *   - buffer: an L2 buffer for text-editing views, null otherwise.
- *   - state: a free-form bag of view-kind-specific data (track list,
- *     image src, shell session id, ...). For text views, state is
- *     intentionally empty — the buffer carries everything.
  *
- * The buffer-vs-state split is exhaustive: a text view edits text and
- * uses a buffer; every other kind owns its own state and has no buffer.
+ * Kind-specific state (image src, jukebox track list, shell session
+ * id, ...) lives directly on the view — `createView` accepts an
+ * `extras` object whose fields are spread onto the result. The renderer
+ * view modules read those fields the same way they used to read
+ * `buffer.tracks`, `buffer.sessionId`, etc.
  *
- * `createView` returns an object with a `kind`, a mutable `name` and
- * `state`, and a (possibly-null) `buffer`. The `mode` slot is the
- * view's own mode for non-text views; text views resolve modes through
- * the buffer.
+ * The buffer-vs-extras split is exhaustive: text views edit text and
+ * use a buffer; every other kind owns its own state directly on the
+ * view and has no buffer.
  *
- * The view is intentionally a plain mutable record — it's a small
- * piece of state that the desktop app, the kind registry and the Lisp
- * primitives share. The shape is what matters; behaviour lives in the
- * kind registry.
+ * `createView` returns a plain mutable record — it's a small piece of
+ * state shared by the desktop app, the kind registry and the Lisp
+ * primitives. The shape is what matters; behaviour lives in the kind
+ * registry.
  */
 
 /** A unique-enough id for a freshly-minted view. */
@@ -36,20 +35,21 @@ function freshId(kind) {
  * Create a view.
  *
  * @param {object} options
- * @param {string} options.kind - The view's kind (e.g. 'text', 'image',
- *   'shell', 'tabline'). The kind drives renderer dispatch and the
- *   life-cycle hooks the kind registry provides.
+ * @param {string} options.kind - The view's kind. Drives renderer
+ *   dispatch and the life-cycle hooks the kind registry provides.
  * @param {string} [options.name] - The view's modeline name. Falls
  *   back to the buffer's name for text views, or a kind-derived
  *   placeholder otherwise.
  * @param {import('@editor/buffer').Buffer | null} [options.buffer] -
- *   The L2 buffer for text-editing views. Other views pass `null`.
- * @param {object} [options.state] - The view-kind-specific state bag.
- *   Free-form; the kind registry's spec decides what shape it has.
+ *   The L2 buffer for text-editing views; `null` for everything else.
+ * @param {object} [options.extras] - Kind-specific fields to spread
+ *   onto the view (e.g. `{ src: '...', filePath: '...' }` for an
+ *   image view; `{ sessionId, transcript }` for a shell view). The
+ *   renderer view modules read these the same way they read the old
+ *   buffer-record fields — they are the kind-specific state.
  * @param {*} [options.mode] - The view's own mode (only used by
- *   non-text kinds with their own mode-like behaviour, e.g. an image
- *   view with its image keymap). Text views resolve modes through the
- *   buffer; this slot is left null for them.
+ *   non-text kinds with their own mode-like behaviour). Text views
+ *   resolve modes through the buffer; this slot is left null for them.
  * @returns {View}
  */
 export function createView(options) {
@@ -64,8 +64,8 @@ export function createView(options) {
     kind: options.kind,
     name: options.name ?? null,
     buffer: options.buffer ?? null,
-    state: options.state ?? {},
     mode: options.mode ?? null,
+    ...(options.extras ?? {}),
   };
   // For text views the canonical name comes from the buffer; fall
   // back to it when the caller didn't supply one.
@@ -80,8 +80,8 @@ export function createView(options) {
 }
 
 /**
- * Whether `value` looks like a view (a kind + name + buffer/state
- * shape, as `createView` returns).
+ * Whether `value` looks like a view (a kind + name + buffer shape, as
+ * `createView` returns).
  *
  * @param {*} value
  * @returns {boolean}
@@ -91,8 +91,7 @@ export function isView(value) {
     typeof value === 'object' &&
     value !== null &&
     typeof value.kind === 'string' &&
-    'buffer' in value &&
-    'state' in value
+    'buffer' in value
   );
 }
 
@@ -103,7 +102,10 @@ export function isView(value) {
  * @property {string} name - The view's modeline name.
  * @property {import('@editor/buffer').Buffer | null} buffer - The L2
  *   buffer for text views; null otherwise.
- * @property {object} state - The view-kind-specific state bag.
  * @property {*} mode - The view's own mode (non-text views); null for
  *   text views (their modes live on the buffer).
+ *
+ * Kind-specific state lives as additional top-level fields (e.g.
+ * `src`, `tracks`, `sessionId`) put there by `createView`'s `extras`
+ * option.
  */

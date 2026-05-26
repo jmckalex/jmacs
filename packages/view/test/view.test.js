@@ -19,11 +19,11 @@ test('a text view holds an L2 buffer; name comes from the buffer', () => {
   assert.equal(view.mode, null);
 });
 
-test('a non-text view has no buffer; state defaults to an empty object', () => {
-  const view = createView({ kind: 'image', state: { src: 'data:...' } });
+test('a non-text view has no buffer; extras spread onto the view', () => {
+  const view = createView({ kind: 'image', extras: { src: 'data:...' } });
   assert.equal(view.kind, 'image');
   assert.equal(view.buffer, null);
-  assert.deepEqual(view.state, { src: 'data:...' });
+  assert.equal(view.src, 'data:...');
 });
 
 test('name falls back to *kind* when neither name nor buffer is given', () => {
@@ -42,7 +42,7 @@ test('isView recognises view-shaped objects', () => {
   assert.equal(isView(view), true);
   assert.equal(isView({}), false);
   assert.equal(isView(null), false);
-  assert.equal(isView({ kind: 'text' }), false); // missing buffer/state
+  assert.equal(isView({ kind: 'text' }), false); // missing buffer
 });
 
 test('each view gets a unique id', () => {
