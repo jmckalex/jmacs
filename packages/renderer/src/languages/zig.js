@@ -29,25 +29,29 @@ const QUERY = `
   (undefined_literal) @constant
 
   ; --- keywords --------------------------------------------------------
+  ; The vendored tree-sitter-zig ships a grammar that exposes many
+  ; Zig keywords only as named nodes -- no anonymous token form.
+  ; The list below is the subset that DOES have anonymous tokens
+  ; (verified against the regenerated parser). The rest face via
+  ; their semantic faces (functions, types, etc.).
   [
-    "fn" "const" "var" "struct" "enum" "union" "error" "opaque"
+    "fn" "const" "var" "struct" "enum" "union" "error"
     "comptime" "defer" "errdefer" "return" "break" "continue"
-    "if" "else" "switch" "while" "for" "and" "or" "orelse" "catch"
-    "try" "async" "await" "suspend" "resume" "nosuspend" "noasync"
-    "test" "pub" "extern" "export" "inline" "noinline" "callconv"
-    "anyframe" "anytype" "allowzero" "packed" "linksection" "threadlocal"
-    "usingnamespace" "asm" "volatile" "align" "unreachable"
+    "if" "else" "switch" "while" "for"
+    "try" "await" "suspend" "resume"
+    "test" "pub" "extern" "export" "inline"
+    "allowzero" "usingnamespace" "volatile" "align"
   ] @keyword
 
   ; --- operators -------------------------------------------------------
+  ; Most Zig binary / comparison / bitwise operators are exposed
+  ; through named nodes only -- the regenerated parser folds them
+  ; into binary_expression. The list here is the subset that DOES
+  ; have anonymous tokens.
   (assignment_operator) @operator
   [
-    "=" "+" "-" "*" "/" "%" "++" "**"
-    "==" "!=" "<" ">" "<=" ">="
-    "&" "|" "^" "~" "<<" ">>"
-    "&&" "||" "!"
-    "?" ".." "..."
-    "=>" "->" ".*" ".?"
+    "=" "-" "*" "&" "|" "~" "!" "?"
+    ".." "..." "=>" ".*" ".?"
   ] @operator
 
   ; --- punctuation -----------------------------------------------------

@@ -28,10 +28,13 @@ const QUERY = `
   (EnumValue) @constant
 
   ; --- keywords --------------------------------------------------------
+  ; The vendored tree-sitter-graphql ships an older grammar that
+  ; lacks anonymous tokens for 'repeatable' (added later) and
+  ; 'null' (a value, not a keyword in this version).
   [
     "query" "mutation" "subscription" "fragment" "on" "type" "input"
     "interface" "union" "enum" "schema" "scalar" "extend" "implements"
-    "directive" "repeatable" "true" "false" "null"
+    "directive" "true" "false"
   ] @keyword
 
   ; --- types -----------------------------------------------------------
@@ -40,13 +43,15 @@ const QUERY = `
   (Variable) @type
 
   ; --- functions -------------------------------------------------------
-  ; Field selection — the name of the selected field. Argument names
-  ; also read as functions so a query reads as call-shape.
-  (Field name: (Name) @function)
-  (Field alias: (Alias (Name) @function))
+  ; The vendored tree-sitter-graphql exposes no field names, so we
+  ; can't restrict by 'name:' / 'alias:'. Face every Name inside
+  ; a Field or Argument as @function -- a slightly broader face,
+  ; same visual result for the common case.
+  (Field (Name) @function)
+  (Field (Alias (Name) @function))
   (Argument (Name) @function)
 
-  ; Directives — \`@include\` / \`@skip\` / etc.
+  ; Directives -- @include / @skip / etc.
   (Directive (Name) @function)
 
   ; --- punctuation -----------------------------------------------------

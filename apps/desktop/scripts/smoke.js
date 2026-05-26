@@ -2527,33 +2527,24 @@ app.whenReady().then(() => {
         tabline.restoredContent.includes('tab smoke content') &&
         tabline.restoredPoint === 5 &&
         tabline.switched === 0;
-      // Language pack arm: every language whose grammar wasm + query
-      // pair are mutually compatible registered a highlighter. Nine
-      // grammars in the original pack (cpp, ruby, lua, clojure, sql,
-      // xml, graphql, swift, zig) ship queries that reference node
-      // names the bundled wasm version does not expose — they need
-      // query patches and are tracked in architect-notes.md. The
-      // smoke asserts the 13 that DO load + a non-zero face span
-      // count for each (the DOM holds the last buffer's spans; a
-      // language whose highlighter didn't load lands in fundamental
-      // mode with zero new spans, but the previous buffer's leftover
-      // counts can confuse the check — the grammar-list assertion is
-      // the authoritative one).
+      // Language pack arm: every one of the 22 languages added by
+      // agent-language-pack registers a highlighter, and each one's
+      // sample buffer produces face spans for at least one
+      // expected class. The wasms for clojure, graphql, xml and zig
+      // were rebuilt (regenerated parser.c + emscripten wasm) so
+      // they speak the current runtime ABI; the queries for cpp,
+      // lua, ruby, sql, swift, graphql, xml, zig were patched
+      // against the bundled grammars' actual node sets — see the
+      // per-file comments.
+      const expectedLangs = [
+        'c', 'cpp', 'java', 'csharp', 'ruby', 'lua', 'yaml', 'toml',
+        'haskell', 'ocaml', 'elixir', 'clojure', 'scheme', 'erlang',
+        'sql', 'dockerfile', 'nix', 'xml', 'graphql', 'kotlin',
+        'swift', 'zig',
+      ];
       const langPackOk =
         langPack &&
-        langPack.langs.includes('c') &&
-        langPack.langs.includes('java') &&
-        langPack.langs.includes('csharp') &&
-        langPack.langs.includes('yaml') &&
-        langPack.langs.includes('toml') &&
-        langPack.langs.includes('haskell') &&
-        langPack.langs.includes('ocaml') &&
-        langPack.langs.includes('elixir') &&
-        langPack.langs.includes('scheme') &&
-        langPack.langs.includes('erlang') &&
-        langPack.langs.includes('dockerfile') &&
-        langPack.langs.includes('nix') &&
-        langPack.langs.includes('kotlin');
+        expectedLangs.every((tag) => langPack.langs.includes(tag));
       // Directory tree-view arm: the view mounts, the seeded folder
       // expands on click (showing one more row), and clicking a file
       // routes to the text buffer with the file's name in the modeline.

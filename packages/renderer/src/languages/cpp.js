@@ -29,8 +29,12 @@ const QUERY = `
     "break" "case" "const" "continue" "default" "do" "else" "enum"
     "extern" "for" "goto" "if" "inline" "register" "restrict" "return"
     "sizeof" "static" "struct" "switch" "typedef" "union" "volatile"
-    "while" "auto"
+    "while"
   ] @keyword
+  ; The 'auto' keyword is a named node in this version of
+  ; tree-sitter-cpp (no anonymous "auto" token exists), so query
+  ; via the named form to keep the keyword face on it.
+  (auto) @keyword
 
   ; C++ extensions.
   [
@@ -83,7 +87,6 @@ const QUERY = `
   (type_identifier) @type
   (primitive_type) @type
   (sized_type_specifier) @type
-  (auto) @type
   ((namespace_identifier) @type
    (#match? @type "^[A-Z]"))
 `;

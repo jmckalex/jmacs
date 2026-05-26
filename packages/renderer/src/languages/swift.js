@@ -58,7 +58,9 @@ const QUERY = `
 
   ; --- literal constants -----------------------------------------------
   (boolean_literal) @constant
-  (nil) @constant
+  ; In this version of tree-sitter-swift, 'nil' is an anonymous
+  ; token, not a named node. Capture it as a literal string.
+  "nil" @constant
   (special_literal) @constant
   [ (self_expression) (super_expression) ] @keyword
 
