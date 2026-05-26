@@ -1239,6 +1239,37 @@ async function openFileInteractive() {
     const result = await window.host.openFile();
     if (result === null) return;
     if (openAsMediaViewIfRecognised(result)) return;
+    // Q9 (plans/PANES.md): when the chosen file is already a text view
+    // visible in some *other* pane, take the auto-duplicate path —
+    // fresh View over the same buffer with its own point/mark, switch
+    // the current pane to it. The buffer keeps its content / metadata;
+    // we don't re-read the file from disk.
+    const existing = views.findIndex(
+      (v) => viewFilePath(v) === result.path
+    );
+    if (existing >= 0) {
+      const existingView = views[existing];
+      const focused = currentPane();
+      const showingElsewhere =
+        focused
+          ? leafPanes(rootPane).some(
+              (leaf) => leaf !== focused && leaf.view === existingView
+            )
+          : false;
+      if (
+        showingElsewhere &&
+        existingView.kind === 'text' &&
+        existingView.buffer
+      ) {
+        const dup = createView({ kind: 'text', buffer: existingView.buffer });
+        views.push(dup);
+        notifyViewsChanged();
+        switchToViewIndex(views.length - 1);
+        return;
+      }
+      switchToViewIndex(existing);
+      return;
+    }
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
     // Load the file's sticky notes from its companion metadata file,
@@ -1348,13 +1379,37 @@ async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
       return null;
     }
     // De-dup by file path: surface the existing view rather than
-    // stacking a second copy. Without this, double-clicking the same
-    // file twice in the columns view (or `open-file-path!` from
-    // Lisp) would litter the tabline with identical entries.
+    // stacking a second copy — *unless* the existing view is already
+    // visible in another pane of the current window (Q9 auto-duplicate
+    // path, plans/PANES.md). In that case we create a *fresh* view
+    // over the same buffer with its own per-view-point, append it to
+    // the view list, and switch the current pane to it. The buffer is
+    // shared; the views (and their cursors) are independent.
     const existing = views.findIndex((v) => viewFilePath(v) === result.path);
     if (existing >= 0) {
+      const existingView = views[existing];
+      const focused = currentPane();
+      // Find any other pane already showing this view.
+      const showingElsewhere =
+        focused
+          ? leafPanes(rootPane).some(
+              (leaf) => leaf !== focused && leaf.view === existingView
+            )
+          : false;
+      if (
+        showingElsewhere &&
+        existingView.kind === 'text' &&
+        existingView.buffer
+      ) {
+        // Auto-duplicate: fresh View, fresh point/mark, same buffer.
+        const dup = createView({ kind: 'text', buffer: existingView.buffer });
+        views.push(dup);
+        notifyViewsChanged();
+        if (shouldSwitch) switchToViewIndex(views.length - 1);
+        return dup;
+      }
       if (shouldSwitch) switchToViewIndex(existing);
-      return views[existing];
+      return existingView;
     }
     if (openAsMediaViewIfRecognised(result, { switch: shouldSwitch })) {
       notifyViewsChanged();
