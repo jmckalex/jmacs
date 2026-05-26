@@ -241,9 +241,11 @@ body {
 .pane {
   position: absolute;
   overflow: hidden;
-  /* A 1px transparent border keeps the pane the same size when the
-     focus indicator toggles on/off — no reflow on focus change. */
-  border: 1px solid transparent;
+  /* A subtle 1px border outlines every pane so the user can see where
+     one ends and the next begins. The focused pane swaps it for the
+     accent border + inset shadow below. Box-sizing keeps the content
+     area stable across the focus toggle — no reflow on focus change. */
+  border: 1px solid color-mix(in srgb, var(--fg-dim) 40%, transparent);
   box-sizing: border-box;
 }
 
