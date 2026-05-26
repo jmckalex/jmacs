@@ -2157,6 +2157,15 @@ function installFacePersistence() {
   );
 }
 
+/** Things that want a callback when the editor theme changes. The
+ *  shell view registers itself once it exists so xterm.js can
+ *  rebuild its palette. Must sit above the first top-level
+ *  `applyCurrentTheme()` call below — `applyCurrentTheme` is a
+ *  function declaration (hoisted) but this is a `const` (in TDZ
+ *  until evaluated), so the call would otherwise crash before the
+ *  declaration runs. */
+const themeListeners = new Set();
+
 let keymapReady = false;
 try {
   await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
@@ -2385,13 +2394,6 @@ function getCustomModel(scope) {
     return null;
   }
 }
-
-/** Things that want a callback when the editor theme changes. The
- *  shell view registers itself once it exists so xterm.js can
- *  rebuild its palette. Declared before `applyCurrentTheme` (which
- *  reads it) so the early bootstrap calls at module init don't hit
- *  a const TDZ. */
-const themeListeners = new Set();
 
 /** Apply the current theme: read each (--var . value) pair from Lisp
  *  and write it to the document root's inline style. Settings the
