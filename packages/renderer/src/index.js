@@ -36,6 +36,7 @@ export {
   createDirectoryTreeView,
   iconClassForFile,
 } from './directory-tree-view.js';
+export { createDirectoryColumnsView } from './directory-columns-view.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,

@@ -237,9 +237,11 @@ app.whenReady().then(() => {
     try {
       // Give the module graph a moment to evaluate and the first
       // animation frame to render.
-      // 33 tree-sitter grammars need to load before the editor can
-      // mount its view; on a cold machine this is ~1.5s.
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // 33 tree-sitter grammars + the directory views need to load
+      // before the editor can mount its view; on a cold machine this
+      // is ~3s. Bump generously — a smoke run that flakes here
+      // wastes the full subsequent inspection cycle.
+      await new Promise((resolve) => setTimeout(resolve, 5000));
 
       const render = await win.webContents.executeJavaScript(`(() => ({
         lines: document.querySelectorAll('.editor-line').length,
@@ -2238,6 +2240,69 @@ app.whenReady().then(() => {
       console.log('  tree:', JSON.stringify(tree));
       await rm(treeDir, { recursive: true, force: true });
 
+      // Directory columns-view: drill into a subfolder, preview a
+      // text file, check the preview pane fills with the file body.
+      const colsDir = join(tmpdir(), 'jmacs-smoke-cols');
+      await rm(colsDir, { recursive: true, force: true });
+      await mkdir(join(colsDir, 'subdir'), { recursive: true });
+      await writeFile(join(colsDir, 'subdir', 'inner.txt'), 'hello columns\n', 'utf8');
+      await writeFile(join(colsDir, 'readme.md'), '# readme\n', 'utf8');
+      const cols = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        submit('(directory-columns ${JSON.stringify(colsDir)})');
+        await wait(200);
+        await frame();
+        const view = document.querySelector('.directory-columns-view');
+        const shown = !!(view && getComputedStyle(view).display !== 'none');
+        const initialColumns = view
+          ? view.querySelectorAll('.directory-columns-column').length
+          : 0;
+        const findRow = (name) => view
+          ? Array.from(view.querySelectorAll('.directory-columns-row'))
+              .find((r) => r.querySelector('.directory-columns-name').textContent === name)
+          : null;
+        const subdirRow = findRow('subdir');
+        if (subdirRow) {
+          subdirRow.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        const columnsAfterDrill = view
+          ? view.querySelectorAll('.directory-columns-column').length
+          : 0;
+        const innerRow = findRow('inner.txt');
+        if (innerRow) {
+          innerRow.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        // Preview is async — wait for the cache to fill, then repaint.
+        await wait(400);
+        await frame();
+        const preview = view ? view.querySelector('.directory-columns-preview') : null;
+        const previewName = preview
+          ? preview.querySelector('.directory-columns-preview-name')?.textContent ?? ''
+          : '';
+        const previewText = preview
+          ? preview.querySelector('.directory-columns-preview-text')?.textContent ?? ''
+          : '';
+        return {
+          shown, initialColumns, columnsAfterDrill, previewName, previewText,
+        };
+      })()`);
+      console.log('  cols:', JSON.stringify(cols));
+      await rm(colsDir, { recursive: true, force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -2502,6 +2567,17 @@ app.whenReady().then(() => {
         tree.noteIconClass.includes('fa-file-lines') &&
         tree.beforeOpenBuffer !== tree.afterOpenBuffer &&
         tree.afterOpenBuffer.includes('note.txt');
+      // Directory columns-view arm: the view mounts; the first
+      // column lists the seeded files (1 folder, 1 file); drilling
+      // into the folder spawns a second column; clicking a file in
+      // that column fills the preview pane with its name and body.
+      const colsOk =
+        cols &&
+        cols.shown &&
+        cols.initialColumns === 1 &&
+        cols.columnsAfterDrill === 2 &&
+        cols.previewName === 'inner.txt' &&
+        cols.previewText.includes('hello columns');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -2511,7 +2587,7 @@ app.whenReady().then(() => {
         mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
-        tablineOk && langPackOk && treeOk
+        tablineOk && langPackOk && treeOk && colsOk
       ) {
         finish(
           0,
@@ -2612,8 +2688,10 @@ app.whenReady().then(() => {
         finish(1, `tabline / session did not work (${JSON.stringify(tabline)})`);
       } else if (!langPackOk) {
         finish(1, `language pack did not work (${JSON.stringify(langPack)})`);
-      } else {
+      } else if (!treeOk) {
         finish(1, `directory tree-view did not work (${JSON.stringify(tree)})`);
+      } else {
+        finish(1, `directory columns-view did not work (${JSON.stringify(cols)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

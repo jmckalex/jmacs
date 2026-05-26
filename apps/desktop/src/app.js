@@ -24,8 +24,9 @@ import {
   createAudioView,
   createCustomizeView,
   createDocView,
-  createEditorView,
+  createDirectoryColumnsView,
   createDirectoryTreeView,
+  createEditorView,
   createHoverDoc,
   createInlineEval,
   createImageView,
@@ -224,6 +225,8 @@ function mountView(kind) {
   videoView.element.style.display = kind === 'video' ? '' : 'none';
   directoryTreeView.element.style.display =
     kind === 'directory-tree' ? '' : 'none';
+  directoryColumnsView.element.style.display =
+    kind === 'directory-columns' ? '' : 'none';
   // Pause the standalone media players on unmount — the jukebox owns
   // the shared audio controller and looks after itself.
   if (kind !== 'audio') audioView.setBuffer(null);
@@ -265,6 +268,10 @@ function switchToBuffer(index) {
     mountView('directory-tree');
     directoryTreeView.setBuffer(buffer);
     directoryTreeView.focus();
+  } else if (buffer.kind === 'directory-columns') {
+    mountView('directory-columns');
+    directoryColumnsView.setBuffer(buffer);
+    directoryColumnsView.focus();
   } else {
     currentTextBuffer = buffer;
     mountView('text');
@@ -1220,6 +1227,30 @@ const interpreter = createInterpreter({
         name: `*Tree: ${tailName}*`,
         rootPath,
         expanded: new Set(),
+      });
+      switchToBuffer(buffers.length - 1);
+      return NIL;
+    },
+    // Open a Finder-style column-view buffer rooted at `path`. Same
+    // re-use semantics as `open-directory-tree!`.
+    'open-directory-columns!': (args) => {
+      const rootPath = expandTilde(String(args[0] ?? ''));
+      if (rootPath === '') return NIL;
+      const existing = buffers.findIndex(
+        (b) => b.kind === 'directory-columns' && b.rootPath === rootPath
+      );
+      if (existing >= 0) {
+        switchToBuffer(existing);
+        return NIL;
+      }
+      const segments = rootPath.split('/');
+      const tailName = segments[segments.length - 1] || rootPath;
+      buffers.push({
+        kind: 'directory-columns',
+        name: `*Columns: ${tailName}*`,
+        rootPath,
+        columns: [{ path: rootPath, selected: null }],
+        previewPath: null,
       });
       switchToBuffer(buffers.length - 1);
       return NIL;
@@ -2556,6 +2587,64 @@ const directoryTreeView = createDirectoryTreeView(
   }
 );
 directoryTreeView.element.style.display = 'none';
+
+// The directory columns-view — Finder-style horizontal browser.
+// Click a folder → spawns a column to its right; click a file →
+// trailing column becomes a preview pane for the file. Double-click
+// a file → opens it through the host's open-file-path so it lands
+// in whichever view its suffix maps to.
+const directoryColumnsView = createDirectoryColumnsView(
+  document.getElementById('editor-host'),
+  {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
+    getPreview: (path) => buildColumnPreview(path),
+    openPath: (path) => {
+      openFileByPath(path);
+    },
+    closeBuffer: () => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('kill-buffer');
+      } catch (error) {
+        repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+      }
+    },
+  }
+);
+directoryColumnsView.element.style.display = 'none';
+
+/** Read a file's preview shape for the columns view. Routes through
+ *  the existing openFilePath IPC, so images come back as data: URLs,
+ *  audio/video as media:// URLs, text as the file body, and anything
+ *  else lands in the "binary" branch with a size estimate. */
+async function buildColumnPreview(path) {
+  try {
+    const result = await window.host.openFilePath(path);
+    if (result === null) return null;
+    const name = result.name ?? path.split('/').pop();
+    if (typeof result.imageSrc === 'string') {
+      return { kind: 'image', name, src: result.imageSrc };
+    }
+    if (result.mediaKind === 'audio') {
+      return { kind: 'audio', name, src: result.src };
+    }
+    if (result.mediaKind === 'video') {
+      return { kind: 'video', name, src: result.src };
+    }
+    if (typeof result.content === 'string') {
+      return {
+        kind: 'text',
+        name,
+        content: result.content,
+        size: result.content.length,
+      };
+    }
+    return { kind: 'binary', name };
+  } catch {
+    return null;
+  }
+}
 
 /** The hover-doc tooltip — appears beside the cursor when the mouse
  *  rests on a documented Lisp symbol. The lookup chain mirrors
