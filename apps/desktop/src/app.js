@@ -662,6 +662,15 @@ async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
       }
       return null;
     }
+    // De-dup by file path: surface the existing buffer rather than
+    // stacking a second copy. Without this, double-clicking the same
+    // file twice in the columns view (or `open-file-path!` from
+    // Lisp) would litter the tabline with identical entries.
+    const existing = buffers.findIndex((b) => b.filePath === result.path);
+    if (existing >= 0) {
+      if (shouldSwitch) switchToBuffer(existing);
+      return buffers[existing];
+    }
     if (openAsMediaBufferIfRecognised(result, { switch: shouldSwitch })) {
       notifyBuffersChanged();
       return buffers[buffers.length - 1];

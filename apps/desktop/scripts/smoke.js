@@ -2337,11 +2337,55 @@ app.whenReady().then(() => {
         const widthAfterRepaint = firstColAfterRepaint
           ? firstColAfterRepaint.getBoundingClientRect().width
           : 0;
+        // Double-click a file row -> opens it in a new tab. Two
+        // rapid clicks on inner.txt; the second click should route
+        // through openPath and switch the buffer.
+        const tabsBefore = document.querySelectorAll('.tabline-tab').length;
+        const innerForDouble = view ? Array.from(view.querySelectorAll('.directory-columns-row'))
+          .find((r) => r.querySelector('.directory-columns-name').textContent === 'inner.txt') : null;
+        if (innerForDouble) {
+          innerForDouble.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await frame();
+        // Re-find after first-click repaint.
+        const innerAgain = view ? Array.from(view.querySelectorAll('.directory-columns-row'))
+          .find((r) => r.querySelector('.directory-columns-name').textContent === 'inner.txt') : null;
+        if (innerAgain) {
+          innerAgain.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await wait(300);
+        await frame();
+        const tabsAfter = document.querySelectorAll('.tabline-tab').length;
+        const modelineAfterOpen = document.getElementById('modeline-name')?.textContent ?? '';
+        // Switch back to the columns buffer via the tabline (find its
+        // tab by label).
+        const colsTab = Array.from(document.querySelectorAll('.tabline-tab'))
+          .find((t) => t.querySelector('.tabline-label')?.textContent?.startsWith('*Columns:'));
+        if (colsTab) {
+          colsTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await frame();
+        // Double-click the same file again — should NOT open a new
+        // tab (dedup), and should re-focus the existing one.
+        const innerThird = document.querySelector('.directory-columns-row[data-name="inner.txt"]');
+        if (innerThird) {
+          innerThird.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await frame();
+        const innerFourth = document.querySelector('.directory-columns-row[data-name="inner.txt"]');
+        if (innerFourth) {
+          innerFourth.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await wait(300);
+        await frame();
+        const tabsAfterSecondOpen = document.querySelectorAll('.tabline-tab').length;
         return {
           shown, initialColumns, columnsAfterDrill, previewName, previewText,
           widthBefore: Math.round(widthBefore),
           widthAfter: Math.round(widthAfter),
           widthAfterRepaint: Math.round(widthAfterRepaint),
+          tabsBefore, tabsAfter, tabsAfterSecondOpen,
+          modelineAfterOpen,
         };
       })()`);
       console.log('  cols:', JSON.stringify(cols));
@@ -2617,7 +2661,12 @@ app.whenReady().then(() => {
         // survives the next repaint. (3px slop for the rounding
         // wobble at the boundary.)
         Math.abs(cols.widthAfter - cols.widthBefore - 80) < 3 &&
-        Math.abs(cols.widthAfterRepaint - cols.widthAfter) < 3;
+        Math.abs(cols.widthAfterRepaint - cols.widthAfter) < 3 &&
+        // Double-click adds exactly one tab and switches to it.
+        cols.tabsAfter === cols.tabsBefore + 1 &&
+        cols.modelineAfterOpen.includes('inner.txt') &&
+        // Double-clicking the same file again de-dups: no extra tab.
+        cols.tabsAfterSecondOpen === cols.tabsAfter;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
