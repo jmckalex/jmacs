@@ -32,9 +32,14 @@ export {
   replacePane,
   containsPane,
   leafCount,
+  parentOf,
+  siblingOf,
 } from './tree.js';
 
 export {
   computeRects,
   splitRect,
+  computeSplitterEdges,
 } from './layout.js';
+
+export { paneInDirection } from './navigation.js';

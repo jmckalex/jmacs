@@ -14,8 +14,12 @@ import {
   replacePane,
   containsPane,
   leafCount,
+  parentOf,
+  siblingOf,
   computeRects,
   splitRect,
+  computeSplitterEdges,
+  paneInDirection,
   PANE_KIND_LEAF,
   PANE_KIND_SPLIT,
   SPLIT_HORIZONTAL,
@@ -411,4 +415,238 @@ test('splitRect: same arithmetic as computeRects but stand-alone', () => {
   );
   assert.deepEqual(first, { left: 0, top: 0, width: 40, height: 100 });
   assert.deepEqual(second, { left: 40, top: 0, width: 60, height: 100 });
+});
+
+// --- parentOf / siblingOf ---------------------------------------------------
+
+test('parentOf: root has no parent', () => {
+  const leaf = createLeafPane();
+  assert.equal(parentOf(leaf, leaf), null);
+});
+
+test('parentOf: returns the split node holding the child', () => {
+  const a = createLeafPane({ id: 'p-a' });
+  const b = createLeafPane({ id: 'p-b' });
+  const split = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: a,
+    second: b,
+  });
+  assert.equal(parentOf(split, a), split);
+  assert.equal(parentOf(split, b), split);
+});
+
+test('parentOf: walks through nested splits', () => {
+  const a = createLeafPane({ id: 'p-a' });
+  const b = createLeafPane({ id: 'p-b' });
+  const c = createLeafPane({ id: 'p-c' });
+  const inner = createSplitPane({
+    orientation: SPLIT_VERTICAL,
+    ratio: 0.5,
+    first: b,
+    second: c,
+  });
+  const root = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: a,
+    second: inner,
+  });
+  assert.equal(parentOf(root, a), root);
+  assert.equal(parentOf(root, inner), root);
+  assert.equal(parentOf(root, b), inner);
+  assert.equal(parentOf(root, c), inner);
+});
+
+test('parentOf: returns null when child is not in the tree', () => {
+  const a = createLeafPane();
+  const stranger = createLeafPane();
+  assert.equal(parentOf(a, stranger), null);
+});
+
+test('siblingOf: returns the other child of the parent split', () => {
+  const a = createLeafPane({ id: 'p-a' });
+  const b = createLeafPane({ id: 'p-b' });
+  const split = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: a,
+    second: b,
+  });
+  assert.equal(siblingOf(split, a), b);
+  assert.equal(siblingOf(split, b), a);
+});
+
+test('siblingOf: returns null for the root', () => {
+  const leaf = createLeafPane();
+  assert.equal(siblingOf(leaf, leaf), null);
+});
+
+// --- computeSplitterEdges ---------------------------------------------------
+
+test('computeSplitterEdges: a single leaf has no edges', () => {
+  const leaf = createLeafPane({ id: 'only' });
+  const edges = computeSplitterEdges(leaf, { width: 800, height: 600 });
+  assert.deepEqual(edges, []);
+});
+
+test('computeSplitterEdges: a horizontal split yields one vertical handle', () => {
+  const left = createLeafPane({ id: 'p-left' });
+  const right = createLeafPane({ id: 'p-right' });
+  const split = createSplitPane({
+    id: 'p-split',
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: left,
+    second: right,
+  });
+  const edges = computeSplitterEdges(split, { width: 800, height: 600 });
+  assert.equal(edges.length, 1);
+  const edge = edges[0];
+  assert.equal(edge.splitId, 'p-split');
+  assert.equal(edge.orientation, SPLIT_HORIZONTAL);
+  // 4 px wide handle centred on x=400.
+  assert.equal(edge.left, 398);
+  assert.equal(edge.top, 0);
+  assert.equal(edge.width, 4);
+  assert.equal(edge.height, 600);
+  assert.equal(edge.ratio, 0.5);
+  assert.deepEqual(edge.parentRect, { left: 0, top: 0, width: 800, height: 600 });
+});
+
+test('computeSplitterEdges: a vertical split yields one horizontal handle', () => {
+  const top = createLeafPane({ id: 'p-top' });
+  const bottom = createLeafPane({ id: 'p-bottom' });
+  const split = createSplitPane({
+    id: 'p-split',
+    orientation: SPLIT_VERTICAL,
+    ratio: 0.3,
+    first: top,
+    second: bottom,
+  });
+  const edges = computeSplitterEdges(split, { width: 800, height: 600 });
+  assert.equal(edges.length, 1);
+  const edge = edges[0];
+  assert.equal(edge.orientation, SPLIT_VERTICAL);
+  // 0.3 * 600 = 180; 4 px handle centred on y=180.
+  assert.equal(edge.top, 178);
+  assert.equal(edge.left, 0);
+  assert.equal(edge.height, 4);
+  assert.equal(edge.width, 800);
+});
+
+test('computeSplitterEdges: nested splits emit one edge per split node', () => {
+  // horizontal 0.5 (a | inner) ; inner = vertical 0.5 (b / c)
+  const a = createLeafPane({ id: 'p-a' });
+  const b = createLeafPane({ id: 'p-b' });
+  const c = createLeafPane({ id: 'p-c' });
+  const inner = createSplitPane({
+    id: 'p-inner',
+    orientation: SPLIT_VERTICAL,
+    ratio: 0.5,
+    first: b,
+    second: c,
+  });
+  const root = createSplitPane({
+    id: 'p-root',
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: a,
+    second: inner,
+  });
+  const edges = computeSplitterEdges(root, { width: 800, height: 600 });
+  assert.equal(edges.length, 2);
+  // Root split: vertical handle centred at x=400, full height.
+  const root_edge = edges.find((e) => e.splitId === 'p-root');
+  assert.equal(root_edge.orientation, SPLIT_HORIZONTAL);
+  assert.equal(root_edge.left, 398);
+  assert.equal(root_edge.top, 0);
+  // Inner split: horizontal handle, sits in the right half only.
+  const inner_edge = edges.find((e) => e.splitId === 'p-inner');
+  assert.equal(inner_edge.orientation, SPLIT_VERTICAL);
+  assert.equal(inner_edge.left, 400);
+  assert.equal(inner_edge.width, 400);
+  // 0.5 * 600 = 300 → handle centred on y=300.
+  assert.equal(inner_edge.top, 298);
+  assert.equal(inner_edge.height, 4);
+});
+
+test('computeSplitterEdges: thickness option is honoured', () => {
+  const a = createLeafPane({ id: 'p-a' });
+  const b = createLeafPane({ id: 'p-b' });
+  const split = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: a,
+    second: b,
+  });
+  const edges = computeSplitterEdges(
+    split,
+    { width: 800, height: 600 },
+    { thickness: 8 }
+  );
+  assert.equal(edges[0].width, 8);
+  // 0.5 * 800 = 400; handle centred on it.
+  assert.equal(edges[0].left, 396);
+});
+
+// --- paneInDirection --------------------------------------------------------
+
+test('paneInDirection: left/right across a horizontal split', () => {
+  // p-left at [0..400], p-right at [400..800].
+  const rects = new Map([
+    ['p-left', { left: 0, top: 0, width: 400, height: 600 }],
+    ['p-right', { left: 400, top: 0, width: 400, height: 600 }],
+  ]);
+  assert.equal(paneInDirection(rects, 'p-left', 'right'), 'p-right');
+  assert.equal(paneInDirection(rects, 'p-right', 'left'), 'p-left');
+  assert.equal(paneInDirection(rects, 'p-left', 'left'), null);
+  assert.equal(paneInDirection(rects, 'p-right', 'right'), null);
+});
+
+test('paneInDirection: up/down across a vertical split', () => {
+  const rects = new Map([
+    ['p-top', { left: 0, top: 0, width: 800, height: 300 }],
+    ['p-bottom', { left: 0, top: 300, width: 800, height: 300 }],
+  ]);
+  assert.equal(paneInDirection(rects, 'p-top', 'down'), 'p-bottom');
+  assert.equal(paneInDirection(rects, 'p-bottom', 'up'), 'p-top');
+  assert.equal(paneInDirection(rects, 'p-top', 'up'), null);
+});
+
+test('paneInDirection: picks the candidate whose perpendicular centre is closest', () => {
+  // a tall pane on the left, abutting two stacked panes on the right.
+  // The cursor is on `a`; moving right with the centre near the top
+  // should pick the top-right pane.
+  const rects = new Map([
+    ['p-a', { left: 0, top: 0, width: 400, height: 600 }],
+    ['p-b', { left: 400, top: 0, width: 400, height: 300 }],
+    ['p-c', { left: 400, top: 300, width: 400, height: 300 }],
+  ]);
+  // a's vertical centre is y=300, equidistant; the tiebreak picks the
+  // first matching candidate. Bias the test by making a shorter.
+  const rectsBiased = new Map([
+    ['p-a', { left: 0, top: 0, width: 400, height: 200 }],
+    ['p-b', { left: 400, top: 0, width: 400, height: 300 }],
+    ['p-c', { left: 400, top: 300, width: 400, height: 300 }],
+  ]);
+  assert.equal(paneInDirection(rectsBiased, 'p-a', 'right'), 'p-b');
+  // And the symmetric case: low short pane abutting two stacked.
+  const rectsLow = new Map([
+    ['p-a', { left: 0, top: 400, width: 400, height: 200 }],
+    ['p-b', { left: 400, top: 0, width: 400, height: 300 }],
+    ['p-c', { left: 400, top: 300, width: 400, height: 300 }],
+  ]);
+  assert.equal(paneInDirection(rectsLow, 'p-a', 'right'), 'p-c');
+  // Even unused, suppress the "never read" lint by referencing it.
+  assert.equal(rects.size, 3);
+});
+
+test('paneInDirection: returns null for an unknown current id or direction', () => {
+  const rects = new Map([
+    ['p-a', { left: 0, top: 0, width: 100, height: 100 }],
+  ]);
+  assert.equal(paneInDirection(rects, 'no-such-id', 'right'), null);
+  assert.equal(paneInDirection(rects, 'p-a', 'diagonal'), null);
 });

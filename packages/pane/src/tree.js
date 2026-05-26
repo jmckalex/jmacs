@@ -143,3 +143,35 @@ export function containsPane(pane, target) {
 export function leafCount(pane) {
   return leafPanes(pane).length;
 }
+
+/**
+ * Return the split node in ROOT whose `first` or `second` slot is CHILD,
+ * or `null` when CHILD is the root (or not in the tree).
+ *
+ * @param {import('./pane.js').Pane} root
+ * @param {import('./pane.js').Pane} child
+ * @returns {import('./pane.js').SplitPane | null}
+ */
+export function parentOf(root, child) {
+  if (root === child) return null;
+  if (isSplitPane(root)) {
+    if (root.first === child || root.second === child) return root;
+    return parentOf(root.first, child) ?? parentOf(root.second, child);
+  }
+  return null;
+}
+
+/**
+ * Return the sibling subtree of CHILD within ROOT (the *other* child of
+ * CHILD's parent split node), or `null` when CHILD is the root or not in
+ * the tree.
+ *
+ * @param {import('./pane.js').Pane} root
+ * @param {import('./pane.js').Pane} child
+ * @returns {import('./pane.js').Pane | null}
+ */
+export function siblingOf(root, child) {
+  const parent = parentOf(root, child);
+  if (parent === null) return null;
+  return parent.first === child ? parent.second : parent.first;
+}

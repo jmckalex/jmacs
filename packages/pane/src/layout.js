@@ -11,7 +11,12 @@
  * width`, not the floating-point `left + ratio*width`).
  */
 
-import { isLeafPane, isSplitPane, SPLIT_HORIZONTAL } from './pane.js';
+import {
+  isLeafPane,
+  isSplitPane,
+  SPLIT_HORIZONTAL,
+  SPLIT_VERTICAL,
+} from './pane.js';
 
 /**
  * Compute the rect for every leaf in PANE within HOST_RECT.
@@ -87,4 +92,77 @@ export function splitRect(rect, orientation, ratio) {
       height: secondHeight,
     },
   ];
+}
+
+/**
+ * Compute one edge record per split node, describing where its splitter
+ * handle sits and which split node's ratio it edits. Returns an empty
+ * array for a single-leaf tree.
+ *
+ * Each record's rect is the **handle**'s rect (a thin 4 px-wide rectangle
+ * lying along the shared edge of the split's two children). The handle
+ * straddles the boundary, two pixels into each child, so it's easy to
+ * grab without being a visible barrier.
+ *
+ * @param {import('./pane.js').Pane} pane
+ * @param {{left?: number, top?: number, width: number, height: number}} hostRect
+ * @param {object} [options]
+ * @param {number} [options.thickness=4] - The handle's thickness, in
+ *   pixels. The handle is centred on the boundary.
+ * @returns {Array<{
+ *   splitId: string,
+ *   orientation: 'horizontal' | 'vertical',
+ *   left: number, top: number, width: number, height: number,
+ *   parentRect: { left: number, top: number, width: number, height: number },
+ *   ratio: number,
+ * }>}
+ *   One entry per split node, in depth-first order.
+ */
+export function computeSplitterEdges(pane, hostRect, options = {}) {
+  const edges = [];
+  const thickness = Math.max(1, Math.round(options.thickness ?? 4));
+  const left = Math.round(hostRect.left ?? 0);
+  const top = Math.round(hostRect.top ?? 0);
+  const width = Math.max(0, Math.round(hostRect.width ?? 0));
+  const height = Math.max(0, Math.round(hostRect.height ?? 0));
+  walkEdges(pane, { left, top, width, height }, edges, thickness);
+  return edges;
+}
+
+function walkEdges(pane, rect, edges, thickness) {
+  if (isLeafPane(pane)) return;
+  if (!isSplitPane(pane)) return;
+
+  const [firstRect, secondRect] = splitRect(rect, pane.orientation, pane.ratio);
+  const half = Math.floor(thickness / 2);
+  if (pane.orientation === SPLIT_HORIZONTAL) {
+    // The shared edge is vertical at x = firstRect.left + firstRect.width.
+    const edgeX = firstRect.left + firstRect.width;
+    edges.push({
+      splitId: pane.id,
+      orientation: SPLIT_HORIZONTAL,
+      left: edgeX - half,
+      top: rect.top,
+      width: thickness,
+      height: rect.height,
+      parentRect: rect,
+      ratio: pane.ratio,
+    });
+  } else if (pane.orientation === SPLIT_VERTICAL) {
+    // The shared edge is horizontal at y = firstRect.top + firstRect.height.
+    const edgeY = firstRect.top + firstRect.height;
+    edges.push({
+      splitId: pane.id,
+      orientation: SPLIT_VERTICAL,
+      left: rect.left,
+      top: edgeY - half,
+      width: rect.width,
+      height: thickness,
+      parentRect: rect,
+      ratio: pane.ratio,
+    });
+  }
+
+  walkEdges(pane.first, firstRect, edges, thickness);
+  walkEdges(pane.second, secondRect, edges, thickness);
 }
