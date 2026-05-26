@@ -253,4 +253,96 @@ contextBridge.exposeInMainWorld('host', {
    */
   audioMetadataWriteSync: (path, fields) =>
     ipcRenderer.sendSync('audio:metadata-write-sync', { path, fields }),
+
+  /**
+   * Spawn a child process running the user's default shell ($SHELL,
+   * falling back to /bin/zsh). The session id is renderer-generated;
+   * the host keeps it in its session table so subsequent writes /
+   * signals / kills can find the same process.
+   *
+   * Stdout and stderr stream back through `onShellData` (registered
+   * below). On process exit `onShellExit` fires with the code and
+   * signal. The shell runs with plain pipes (no PTY), so curses
+   * applications (`vi`, `top`, `less`) will misbehave — that's a
+   * documented v1 limit.
+   *
+   * @param {string} sessionId
+   * @param {object} [options]
+   * @param {string} [options.cwd]
+   * @returns {Promise<{ ok: boolean, shell?: string, pid?: number, error?: string }>}
+   */
+  shellSpawn: (sessionId, options = {}) =>
+    ipcRenderer.invoke('shell:spawn', { sessionId, cwd: options.cwd }),
+
+  /**
+   * Write `data` to a shell session's stdin. The caller is responsible
+   * for any trailing newline — the shell only acts on a line when it
+   * sees one. Returns `{ ok: true }` on a successful write,
+   * `{ ok: false }` when the process has already exited.
+   *
+   * @param {string} sessionId
+   * @param {string} data
+   */
+  shellWrite: (sessionId, data) =>
+    ipcRenderer.invoke('shell:write', { sessionId, data }),
+
+  /**
+   * Send a signal (default SIGINT) to a shell session's child — this
+   * is what C-c on a running command does. Returns `{ ok: boolean }`.
+   *
+   * @param {string} sessionId
+   * @param {string} [signal]
+   */
+  shellSignal: (sessionId, signal) =>
+    ipcRenderer.invoke('shell:signal', { sessionId, signal }),
+
+  /**
+   * Close the shell's stdin. The shell sees EOF and exits, which
+   * fires `onShellExit`. This is what C-d at an empty input line
+   * does — the conventional way to end a shell session.
+   *
+   * @param {string} sessionId
+   */
+  shellEndInput: (sessionId) =>
+    ipcRenderer.invoke('shell:end-input', { sessionId }),
+
+  /**
+   * Terminate a shell session — kill the child and forget the entry.
+   * Called from `kill-buffer!` when a shell buffer is removed.
+   *
+   * @param {string} sessionId
+   */
+  shellKill: (sessionId) =>
+    ipcRenderer.invoke('shell:kill', { sessionId }),
+
+  /**
+   * Register a handler for streamed shell output. The handler is
+   * invoked with `{ sessionId, stream: 'stdout' | 'stderr', data }`
+   * for each chunk the child emits.
+   *
+   * Returns an unsubscribe function — the view calls it on destroy.
+   *
+   * @param {(payload: { sessionId: string, stream: string, data: string }) => void} callback
+   * @returns {() => void}
+   */
+  onShellData: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('shell:data', handler);
+    return () => ipcRenderer.removeListener('shell:data', handler);
+  },
+
+  /**
+   * Register a handler for shell-process exits. Fires once per session,
+   * after which writes/signals to that id no-op.
+   *
+   * Returns an unsubscribe function.
+   *
+   * @param {(payload: { sessionId: string, code: number | null, signal: string | null }) => void} callback
+   * @returns {() => void}
+   */
+  onShellExit: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('shell:exit', handler);
+    return () => ipcRenderer.removeListener('shell:exit', handler);
+  },
 });
