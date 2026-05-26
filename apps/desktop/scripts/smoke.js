@@ -1976,6 +1976,114 @@ app.whenReady().then(() => {
       })()`);
       console.log('  splitters:', JSON.stringify(splitters));
 
+      // Tabline + persistent session. Open a real file (the dialog is
+      // stubbed to choose the scratch path written below), type into
+      // it, move the cursor, then drive the round-trip:
+      //   1. force-save the session via the host bridge
+      //   2. read it back through the same bridge
+      //   3. re-run the restore loop in-place against a freshly seeded
+      //      buffer list, asserting the file + content + cursor land.
+      // The tabline checks just inspect the live DOM: one tab per open
+      // buffer, the current tab marked, clicks switch buffers.
+      const tabPath = join(tmpdir(), 'jmacs-smoke-tabline.txt');
+      await writeFile(tabPath, 'tab smoke content\nline two\n', 'utf8');
+      // Stub the dialog to choose this scratch file (the image path
+      // stub was set up much earlier in this run).
+      dialog.showOpenDialog = async () => ({
+        canceled: false,
+        filePaths: [tabPath],
+      });
+      const tabline = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        // Open the scratch file through the real path (the dialog is
+        // stubbed). Wait for the IPC to settle.
+        submit('(open-file!)');
+        await wait(400);
+        // Type a bit and move point to a known position.
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        for (const ch of 'XY') {
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: ch, bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        submit('(goto! 5)');
+        await frame();
+        // Tabline DOM: one tab per buffer, including the freshly
+        // opened one; the current tab is filled.
+        const tabs = document.querySelectorAll('.tabline-tab');
+        const tabCount = tabs.length;
+        const currentTab = document.querySelector('.tabline-tab.is-current');
+        const currentLabel = currentTab
+          ? currentTab.querySelector('.tabline-label').textContent
+          : '';
+        // Force-save the session through the host bridge.
+        const beforeWrite = await window.host.readSession();
+        await window.host.writeSession({
+          buffers: [
+            { path: ${JSON.stringify(tabPath)}, point: 5, mark: null },
+          ],
+          currentPath: ${JSON.stringify(tabPath)},
+        });
+        const written = await window.host.readSession();
+        // Restore loop, in-place: re-instantiating the renderer is
+        // disruptive in a single Electron run, so we drive the same
+        // controller logic by importing the module fresh and exercising
+        // it against a captured handle to the host bridge.
+        const sessionMod = await import('app://editor/apps/desktop/src/session.js');
+        const fakeBuffers = [];
+        let switched = -1;
+        const controller = sessionMod.createSession({
+          getBuffers: () => fakeBuffers,
+          getCurrentIndex: () => 0,
+          openByPath: async (path, entry) => {
+            // Read the file back the same way the real app does.
+            const result = await window.host.openFilePath(path);
+            if (result === null) return null;
+            fakeBuffers.push({
+              name: result.name,
+              filePath: result.path,
+              content: result.content,
+              point: entry.point,
+              mark: entry.mark,
+            });
+            return entry;
+          },
+          switchToBuffer: (index) => { switched = index; },
+          host: window.host,
+        });
+        await controller.restore();
+        return {
+          tabCount,
+          currentLabel,
+          beforeWrite,
+          written,
+          restoredCount: fakeBuffers.length,
+          restoredPath: fakeBuffers[0]?.filePath ?? '',
+          restoredContent: fakeBuffers[0]?.content ?? '',
+          restoredPoint: fakeBuffers[0]?.point ?? -1,
+          switched,
+        };
+      })()`);
+      console.log('  tabline:', JSON.stringify({
+        tabCount: tabline.tabCount,
+        currentLabel: tabline.currentLabel,
+        written: tabline.written?.currentPath,
+        restoredCount: tabline.restoredCount,
+        restoredPoint: tabline.restoredPoint,
+        switched: tabline.switched,
+      }));
+      await rm(tabPath, { force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -2184,6 +2292,22 @@ app.whenReady().then(() => {
         mediaViews.captionName.includes('jmacs-smoke-media-video.mp4') &&
         !mediaViews.videoStillVisible &&
         !mediaViews.afterVideoKill.includes('jmacs-smoke-media-video');
+      // Tabline + session round-trip: the tabline shows the open
+      // buffers including the scratch file, the current tab is the
+      // scratch file's basename, the session write is read back
+      // intact, and the restore loop re-opens the file with the
+      // content + cursor we asked for.
+      const tablineOk =
+        tabline.tabCount >= 3 &&
+        tabline.currentLabel.includes('jmacs-smoke-tabline.txt') &&
+        tabline.written &&
+        tabline.written.currentPath === tabPath &&
+        tabline.written.buffers.length === 1 &&
+        tabline.restoredCount === 1 &&
+        tabline.restoredPath === tabPath &&
+        tabline.restoredContent.includes('tab smoke content') &&
+        tabline.restoredPoint === 5 &&
+        tabline.switched === 0;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -2192,7 +2316,8 @@ app.whenReady().then(() => {
         regexReplaceOk &&
         mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
-        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk
+        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
+        tablineOk
       ) {
         finish(
           0,
@@ -2287,8 +2412,10 @@ app.whenReady().then(() => {
           1,
           `media views did not work (${JSON.stringify(mediaViews)})`
         );
-      } else {
+      } else if (!splittersOk) {
         finish(1, `splitters did not work (${JSON.stringify(splitters)})`);
+      } else {
+        finish(1, `tabline / session did not work (${JSON.stringify(tabline)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

@@ -53,8 +53,10 @@ import {
   lispToJsonOverrides,
 } from './face-overrides.js';
 import { applyFaceStyles } from './face-styles.js';
+import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
+import { createTabline } from './tabline.js';
 
 const WELCOME = `
 
@@ -139,6 +141,15 @@ const session = {
 
 /** Buffers with unsaved changes. */
 const dirtyBuffers = new Set();
+
+/** A change to the buffer list or the current index. Refreshes the
+ *  tabline and schedules a debounced session save. Both targets are
+ *  wired in later (the tabline and session controller depend on the
+ *  Lisp interpreter being up); this stays a safe no-op until then. */
+let onBuffersChanged = () => {};
+function notifyBuffersChanged() {
+  onBuffersChanged();
+}
 
 // --- modeline -----------------------------------------------------------
 
@@ -259,6 +270,7 @@ function switchToBuffer(index) {
     syncMarkdownPreviewToBuffer();
   }
   updateModeline();
+  notifyBuffersChanged();
 }
 
 /** Remove the buffer at INDEX from the list, mirroring the semantics
@@ -288,8 +300,10 @@ function killBufferAtIndex(target) {
   } else if (target < currentIndex) {
     currentIndex -= 1;
     updateModeline();
+    notifyBuffersChanged();
   } else {
     updateModeline();
+    notifyBuffersChanged();
   }
 }
 
@@ -542,7 +556,11 @@ async function openFileInteractive() {
 /** Route an open-file IPC result to its matching non-text view, when
  *  the shape calls for one. Returns whether a view was mounted — the
  *  caller falls through to the text path on `false`. */
-function openAsMediaBufferIfRecognised(result) {
+function openAsMediaBufferIfRecognised(result, { switch: shouldSwitch = true } = {}) {
+  const finalise = () => {
+    if (shouldSwitch) switchToBuffer(buffers.length - 1);
+    return true;
+  };
   // An image file comes back with a ready-to-display `imageSrc`
   // (a data URL) rather than text — show it through the image view.
   if (typeof result.imageSrc === 'string') {
@@ -552,8 +570,7 @@ function openAsMediaBufferIfRecognised(result) {
       filePath: result.path,
       src: result.imageSrc,
     });
-    switchToBuffer(buffers.length - 1);
-    return true;
+    return finalise();
   }
   // An audio or video file comes back with a `media://` URL the
   // matching player streams. For audio the host has already extracted
@@ -568,8 +585,7 @@ function openAsMediaBufferIfRecognised(result) {
       ...(result.metadata ? { metadata: result.metadata } : {}),
       ...(result.albumArtSrc ? { albumArtSrc: result.albumArtSrc } : {}),
     });
-    switchToBuffer(buffers.length - 1);
-    return true;
+    return finalise();
   }
   if (result.mediaKind === 'video') {
     buffers.push({
@@ -578,8 +594,7 @@ function openAsMediaBufferIfRecognised(result) {
       filePath: result.path,
       src: result.src,
     });
-    switchToBuffer(buffers.length - 1);
-    return true;
+    return finalise();
   }
   return false;
 }
@@ -611,25 +626,46 @@ async function openImageByPath(filePath) {
 /**
  * Open a file by an explicit path, dialog-free, routing it through
  * the same logic the dialog path uses (image / audio / video / text).
- * Used by the desktop smoke arm and available to Lisp as
- * `open-file-path!`.
+ * Used by the desktop smoke arm, available to Lisp as
+ * `open-file-path!`, and by the session-restore path on startup.
+ *
+ * Returns the buffer that was added (or null on failure / unreadable
+ * file). When `options.switch` is true (the default) the function
+ * also switches to the new buffer; the restore loop sets it to false
+ * so it can land on the previously-current buffer at the end.
+ *
+ * @param {string} filePath
+ * @param {object} [options]
+ * @param {boolean} [options.switch=true]
+ * @returns {Promise<object | null>}
  */
-async function openFileByPath(filePath) {
+async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
   try {
     const result = await window.host.openFilePath(filePath);
     if (result === null) {
-      repl.appendError(`open-file-path: unreadable (${filePath})`);
-      return;
+      if (shouldSwitch) {
+        repl.appendError(`open-file-path: unreadable (${filePath})`);
+      }
+      return null;
     }
-    if (openAsMediaBufferIfRecognised(result)) return;
-    const buffer = createBuffer(result.content ?? '', { name: result.name });
+    if (openAsMediaBufferIfRecognised(result, { switch: shouldSwitch })) {
+      notifyBuffersChanged();
+      return buffers[buffers.length - 1];
+    }
+    if (typeof result.content !== 'string') return null;
+    const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
     const metadata = await window.host.readMetadata(result.path);
     if (metadata) buffer.metadata = metadata;
     buffers.push(buffer);
-    switchToBuffer(buffers.length - 1);
+    notifyBuffersChanged();
+    if (shouldSwitch) switchToBuffer(buffers.length - 1);
+    return buffer;
   } catch (error) {
-    repl.appendError(`open-file-path failed: ${error.message}`);
+    if (shouldSwitch) {
+      repl.appendError(`open-file-path failed: ${error.message}`);
+    }
+    return null;
   }
 }
 
@@ -1991,6 +2027,20 @@ document.body.dataset.treesitter = Object.keys(highlighters).join(',');
 
 /** Dispatch a keystroke through the Lisp keymap. */
 function dispatchKey(key) {
+  // M-1..M-9 jumps to the Nth buffer (1-indexed). Intercepted here,
+  // before the Lisp keymap, so the tabline shortcut is unaffected by
+  // user keymap edits. Out-of-range indexes are a no-op (handled).
+  if (
+    typeof key === 'string' &&
+    key.length === 3 &&
+    key.startsWith('M-') &&
+    key[2] >= '1' &&
+    key[2] <= '9'
+  ) {
+    const target = Number(key[2]) - 1;
+    if (target < buffers.length) switchToBuffer(target);
+    return true;
+  }
   try {
     const handled = interpreter.call('handle-key', key) === true;
     // A key may have switched mode (e.g. toggle-math-mode) — keep the
@@ -2831,3 +2881,106 @@ function dismissSplash() {
 }
 editorView.backgroundLayer.append(splash);
 requestAnimationFrame(() => splash.classList.add('is-visible'));
+
+// --- tabline ------------------------------------------------------------
+// One tab per open buffer, above the workspace. The strip is rebuilt
+// whenever the buffer list or the current index changes; clicks switch
+// or kill buffers; drag reorders them.
+
+const tabline = createTabline(document.getElementById('tabline-host'), {
+  getBuffers: () => buffers,
+  getCurrentIndex: () => currentIndex,
+  onSelect: (index) => switchToBuffer(index),
+  onClose: (index) => {
+    // Run kill-buffer! through the interpreter when available so it
+    // shares the Lisp side's quit-confirmation / hook behaviour; fall
+    // back to the host primitive on early-load (the interpreter isn't
+    // ready until after the stdlib loads).
+    if (keymapReady) {
+      try {
+        const buffer = buffers[index];
+        if (buffer && typeof buffer.name === 'string') {
+          interpreter.call('kill-buffer!', buffer.name);
+          return;
+        }
+      } catch (error) {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      }
+    }
+    // Fall back to the host kill-buffer primitive — the primitive
+    // accepts a name; mirror that path. (Effectively: switch to the
+    // target so the no-arg form kills the right one.)
+    switchToBuffer(index);
+    interpreter.evaluate('(kill-buffer!)');
+  },
+  onReorder: (from, to) => {
+    if (from === to) return;
+    const moved = buffers.splice(from, 1)[0];
+    buffers.splice(to, 0, moved);
+    // Re-point currentIndex onto its moved buffer.
+    if (from === currentIndex) {
+      currentIndex = to;
+    } else if (from < currentIndex && to >= currentIndex) {
+      currentIndex -= 1;
+    } else if (from > currentIndex && to <= currentIndex) {
+      currentIndex += 1;
+    }
+    notifyBuffersChanged();
+    updateModeline();
+  },
+});
+
+// --- persistent session -------------------------------------------------
+// On change (debounced 500ms) or pagehide, pickle the open buffers and
+// the current one to <userData>/session.json. On the next startup the
+// restore loop re-opens each file and lands on the previously-current
+// buffer.
+
+const sessionController = createSession({
+  getBuffers: () => buffers,
+  getCurrentIndex: () => currentIndex,
+  openByPath: async (path, entry) => {
+    const buffer = await openFileByPath(path, { switch: false });
+    if (buffer === null) return null;
+    // Only text buffers carry point/mark; an image buffer doesn't.
+    if (!buffer.kind && typeof buffer.moveTo === 'function') {
+      const point = Number.isFinite(entry.point) ? entry.point : 0;
+      const mark = Number.isFinite(entry.mark) ? entry.mark : null;
+      buffer.moveTo(point);
+      if (mark !== null) buffer.setMark(mark);
+    }
+    return entry;
+  },
+  switchToBuffer,
+  host: window.host,
+});
+
+// Wire the change hook: every list / index change refreshes the
+// tabline and queues a session save. `restoring` is set while the
+// restore loop runs so the inner buffer-add doesn't race the save —
+// the save fires once at the end of restore, with the final list.
+let restoring = false;
+onBuffersChanged = () => {
+  tabline.refresh();
+  if (!restoring) sessionController.save();
+};
+// Render the strip once now (the editor view is already mounted).
+tabline.refresh();
+
+// Flush the session synchronously-ish on page unload. The pagehide
+// event fires when the renderer is about to be torn down (quit, reload,
+// navigation); ipcRenderer.invoke returns a Promise the host will
+// process even after pagehide returns.
+window.addEventListener('pagehide', () => {
+  sessionController.flush();
+});
+
+// Restore: re-open the files the previous session left open and land
+// on the previously-current buffer. The restore is awaited so the
+// buffers are present before the user starts interacting.
+restoring = true;
+try {
+  await sessionController.restore();
+} finally {
+  restoring = false;
+}
