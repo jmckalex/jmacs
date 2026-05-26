@@ -30,7 +30,20 @@
    "C-j"   'join-line
    "j"     'jukebox
    "C-x"   'exchange-point-and-mark
-   "C-e"   'eval-expression-before-point})
+   "C-e"   'eval-expression-before-point
+   ;; Panes (phase 3a of plans/PANES.md) — Emacs's C-x 2/3/0/1/o.
+   "0"     'delete-pane
+   "1"     'delete-other-panes
+   "2"     'split-vertical
+   "3"     'split-horizontal
+   "o"     'other-pane
+   ;; Spatial pane navigation. C-x <arrow> is already taken
+   ;; (next/previous-view); use C-x C-<arrow>. The exact binding is a
+   ;; placeholder pending Jason's call — see architect-notes.md.
+   "C-left"   'focus-pane-left
+   "C-right"  'focus-pane-right
+   "C-up"     'focus-pane-up
+   "C-down"   'focus-pane-down})
 
 ;; The C-h prefix map — help.
 (define c-h-keymap
