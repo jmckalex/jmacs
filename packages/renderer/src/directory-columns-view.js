@@ -372,6 +372,15 @@ export function createDirectoryColumnsView(container, options = {}) {
 
   // Click delegation — every row click does one of three things,
   // resolved by data-kind on the row + data-index on the column.
+  // We can't rely on the browser's `dblclick` event because the
+  // first click's handler repaints the strip, which detaches the
+  // row that received it; the browser then sees the second click
+  // on a different element and never fires `dblclick`. Detect
+  // double-click ourselves via path + timing instead.
+  const DOUBLE_CLICK_WINDOW_MS = 400;
+  let lastClickPath = null;
+  let lastClickTime = 0;
+
   strip.addEventListener('click', (event) => {
     const row = event.target.closest('.directory-columns-row');
     if (!row) return;
@@ -381,6 +390,24 @@ export function createDirectoryColumnsView(container, options = {}) {
     const name = row.dataset.name;
     const path = row.dataset.path;
     const kind = row.dataset.kind;
+
+    // Double-click on a file row opens it in its home view.
+    // Folders ignore the double-click — drilling-in already happens
+    // on the first click, so a fast second click would just toggle
+    // selection state in the same way as two distinct clicks.
+    const now = Date.now();
+    const isDouble =
+      kind !== 'directory' &&
+      lastClickPath === path &&
+      now - lastClickTime < DOUBLE_CLICK_WINDOW_MS;
+    lastClickPath = path;
+    lastClickTime = now;
+
+    if (isDouble && openPath) {
+      openPath(path);
+      return;
+    }
+
     if (kind === 'directory') {
       // Drill in: select this folder in its column, spawn a new
       // column to its right showing its contents.
@@ -393,16 +420,6 @@ export function createDirectoryColumnsView(container, options = {}) {
       setPreviewAt(columnIndex, name, path);
     }
     paint();
-  });
-
-  // Double-click on a non-folder row opens the file in its
-  // home view (text editor / audio / video / image).
-  strip.addEventListener('dblclick', (event) => {
-    const row = event.target.closest('.directory-columns-row');
-    if (!row) return;
-    const kind = row.dataset.kind;
-    const path = row.dataset.path;
-    if (kind !== 'directory' && openPath) openPath(path);
   });
 
   root.addEventListener('keydown', (event) => {
