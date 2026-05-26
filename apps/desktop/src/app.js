@@ -373,6 +373,61 @@ queueMicrotask(relayoutPanes);
 const editorHostResizeObserver = new ResizeObserver(() => scheduleRelayout());
 editorHostResizeObserver.observe(editorHostEl);
 
+// --- pane focus ---------------------------------------------------------
+//
+// Each pane has a focus state (plans/PANES.md, "Focus indication").
+// Clicking anywhere inside a pane focuses it. With one pane this is a
+// no-op visually, but the data model is exercised: phase 3 will light
+// up the subtle border shading when multiple leaves are on screen.
+//
+// (current-pane) — the Lisp primitive in the next commit — resolves
+// through `currentPaneId`. (current-view) reroutes through that.
+
+/** The id of the leaf pane that holds focus. With one leaf this is
+ *  always that leaf's id; the variable exists for phase 3. */
+let currentPaneId = leafPanes(rootPane)[0]?.id ?? null;
+
+/** Return the pane handle for the currently-focused pane, or null when
+ *  no pane is focused (vanishingly rare in practice). */
+function currentPane() {
+  if (currentPaneId === null) return null;
+  for (const leaf of leafPanes(rootPane)) {
+    if (leaf.id === currentPaneId) return leaf;
+  }
+  return null;
+}
+
+/** Apply the `.pane--focused` CSS class to the focused leaf's div and
+ *  remove it from every other pane. Called whenever `currentPaneId`
+ *  changes. With one pane this toggles the class on the only pane. */
+function refreshPaneFocusIndicators() {
+  for (const [id, el] of paneElements) {
+    el.classList.toggle('pane--focused', id === currentPaneId);
+  }
+}
+
+/** Set the current pane to the leaf whose div was clicked, if any.
+ *
+ *  Runs on the bubble (no capture), doesn't preventDefault, and doesn't
+ *  stop propagation — content inside the pane (the editor's
+ *  cursor-positioning click, xterm.js's selection drag, image-view's
+ *  pan/zoom, every renderer view) has already had its turn by the time
+ *  this runs. */
+editorHostEl.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const paneEl = target.closest('.pane');
+  if (!paneEl) return;
+  const paneId = paneEl.dataset.paneId;
+  if (typeof paneId !== 'string' || paneId === currentPaneId) return;
+  currentPaneId = paneId;
+  refreshPaneFocusIndicators();
+});
+
+// Paint the initial focus indicator. With one pane this just adds the
+// class to the only leaf.
+refreshPaneFocusIndicators();
+
 /** Hide every renderer view's DOM, then leave the kind registry to
  *  re-mount the active one. Pause the standalone media players and
  *  the shell view when they're being unmounted so a hidden view
