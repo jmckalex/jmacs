@@ -2957,5 +2957,9 @@ app.whenReady().then(() => {
   });
 
   win.loadURL(EDITOR_URL);
-  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 20000);
+  // The smoke runs a long sequence of inspections; the timer protects
+  // against a wedge in `did-finish-load`, not against slow checks. Sized
+  // for v2 where the shell arm waits up to 8s for stdout under the pty
+  // backing — the older 20s cap raced the tail of the run.
+  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 60000);
 });

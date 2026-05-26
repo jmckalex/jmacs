@@ -269,7 +269,7 @@ contextBridge.exposeInMainWorld('host', {
    * @param {string} sessionId
    * @param {object} [options]
    * @param {string} [options.cwd]
-   * @returns {Promise<{ ok: boolean, shell?: string, pid?: number, error?: string }>}
+   * @returns {Promise<{ ok: boolean, shell?: string, pid?: number, pty?: boolean, error?: string }>}
    */
   shellSpawn: (sessionId, options = {}) =>
     ipcRenderer.invoke('shell:spawn', { sessionId, cwd: options.cwd }),
