@@ -666,6 +666,22 @@ body.markdown-preview-hidden #preview-splitter {
   user-select: none;
 }
 
+/* The echo area: a single-line note shown along the footer when no
+   minibuffer prompt is open. Used by the keymap to surface a
+   mid-build chord prefix ("C-x-") and other transient messages. */
+.minibuffer-echo {
+  padding: 7px 14px;
+  background: var(--bg-chrome);
+  border-top: 1px solid var(--accent);
+  font-size: 13px;
+  color: var(--fg-dim);
+  user-select: none;
+}
+
+.minibuffer-echo[hidden] {
+  display: none;
+}
+
 /* --- syntax highlighting ------------------------------------------------ */
 /* Colours live in CSS custom properties at :root (see the head of this
    file) so themes can swap the palette wholesale. */

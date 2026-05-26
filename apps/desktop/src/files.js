@@ -362,6 +362,27 @@ export function registerFileHandlers() {
     }
   });
 
+  // The same listing with type info — each entry carries whether it is
+  // a file or a directory. Find-file's tab-completion uses this to add
+  // a trailing "/" to directory completions (and so to descend into
+  // them as the user types). Returns null when the path cannot be read.
+  ipcMain.on('directory:list-with-types-sync', (event, payload) => {
+    try {
+      const entries = readdirSync(expandTilde(payload?.path), {
+        withFileTypes: true,
+      });
+      event.returnValue = entries
+        .filter((entry) => !entry.name.startsWith('.'))
+        .map((entry) => ({
+          name: entry.name,
+          type: entry.isDirectory() ? 'directory' : 'file',
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      event.returnValue = null;
+    }
+  });
+
   // Write a file's companion metadata. With no notes, the companion
   // file is removed rather than left as an empty husk.
   ipcMain.handle('metadata:write', async (_event, payload) => {

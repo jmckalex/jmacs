@@ -45,6 +45,22 @@ import { Menu } from 'electron';
 export function buildAppMenu(modeMenu, onCommand) {
   const template = [
     { role: 'appMenu' },
+    {
+      label: 'File',
+      submenu: [
+        // Open File… runs the same native-dialog flow as the REPL's
+        // (open-file!), via the `open-file-dialog` command in
+        // `files.lisp`. C-x C-f in the editor uses the minibuffer
+        // completion path; this menu entry is the only access to the
+        // native dialog (Cmd+O can't reach the Lisp keymap because the
+        // renderer normalises Cmd to "C-", and "C-o" is open-line).
+        {
+          label: 'Open File…',
+          accelerator: 'CmdOrCtrl+O',
+          click: () => onCommand('open-file-dialog'),
+        },
+      ],
+    },
     { role: 'editMenu' },
     {
       label: 'View',

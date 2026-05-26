@@ -2391,6 +2391,80 @@ app.whenReady().then(() => {
       console.log('  cols:', JSON.stringify(cols));
       await rm(colsDir, { recursive: true, force: true });
 
+      // Chord-prefix display: pressing C-x mid-sequence echoes "C-x-"
+      // in the minibuffer's echo area; a follow-up unbound key clears
+      // it. The echo area is the .minibuffer-echo element, visible
+      // only when no prompt is active.
+      const chord = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        await frame();
+        const echoEl = document.querySelector('.minibuffer-echo');
+        const echo = echoEl ? echoEl.textContent : '';
+        const visible = echoEl ? !echoEl.hidden : false;
+        // Press C-g to abort the prefix; the echo clears.
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'g', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        await frame();
+        const cleared = echoEl ? echoEl.textContent === '' && echoEl.hidden : true;
+        return { echo, visible, cleared };
+      })()`);
+      console.log('  chord:', JSON.stringify(chord));
+
+      // Find-file completing minibuffer: C-x C-f opens a "Find file: "
+      // prompt seeded with $HOME/; typing a leaf name + TAB completes
+      // against the filesystem; Enter opens the chosen file. The
+      // smoke uses a scratch file under /tmp/ — a stable absolute
+      // path on macOS — so the completion result is deterministic
+      // (Node's `os.tmpdir()` returns the per-user T/ folder under
+      // /var/folders/ on macOS, which is unwieldy for a smoke test).
+      const ffPath = '/tmp/jmacs-smoke-find-file.txt';
+      await writeFile(ffPath, 'smoke find-file ok');
+      const findFile = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'f', ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        await frame();
+        const mb = document.querySelector('.minibuffer-input');
+        const panel = document.querySelector('.minibuffer');
+        const opened = !!mb && !panel.hidden;
+        const promptText = document.querySelector('.minibuffer-prompt')
+          ?.textContent ?? '';
+        const seed = mb ? mb.value : '';
+        // Replace the seeded $HOME/ with a known absolute path and
+        // drive TAB; the unique prefix completes to the full filename.
+        mb.value = '/tmp/jmacs-smoke-find-fi';
+        mb.dispatchEvent(new Event('input', { bubbles: true }));
+        mb.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Tab', bubbles: true, cancelable: true,
+        }));
+        await frame();
+        const completed = mb.value;
+        // Enter opens the completed path.
+        mb.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        // The open path is async (IPC + read); give it room.
+        await wait(400);
+        const opened2 = document.getElementById('modeline-name')
+          ?.textContent ?? '';
+        return { opened, promptText, seed, completed, opened2 };
+      })()`);
+      console.log('  findFile:', JSON.stringify(findFile));
+      await rm(ffPath, { force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -2667,6 +2741,14 @@ app.whenReady().then(() => {
         cols.modelineAfterOpen.includes('inner.txt') &&
         // Double-clicking the same file again de-dups: no extra tab.
         cols.tabsAfterSecondOpen === cols.tabsAfter;
+      const chordOk =
+        chord.echo === 'C-x-' && chord.visible && chord.cleared;
+      const findFileOk =
+        findFile.opened &&
+        findFile.promptText === 'Find file: ' &&
+        findFile.seed.endsWith('/') &&
+        findFile.completed === '/tmp/jmacs-smoke-find-file.txt' &&
+        findFile.opened2.includes('jmacs-smoke-find-file.txt');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -2676,7 +2758,8 @@ app.whenReady().then(() => {
         mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
-        tablineOk && langPackOk && treeOk && colsOk
+        tablineOk && langPackOk && treeOk && colsOk &&
+        chordOk && findFileOk
       ) {
         finish(
           0,
@@ -2764,6 +2847,10 @@ app.whenReady().then(() => {
           1,
           `colour swatches did not work (${JSON.stringify(swatches)})`
         );
+      } else if (!chordOk) {
+        finish(1, `chord-prefix display did not work (${JSON.stringify(chord)})`);
+      } else if (!findFileOk) {
+        finish(1, `find-file did not work (${JSON.stringify(findFile)})`);
       } else if (!jukeboxOk) {
         finish(1, `jukebox did not work (${JSON.stringify(jukebox)})`);
       } else if (!mediaViewsOk) {

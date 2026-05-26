@@ -63,6 +63,10 @@ async function editor(initialText = 'hello world', options = {}) {
     return record;
   })();
   const foldCalls = [];
+  const statusCalls = [];
+  const completingPrompts = [];
+  const directoryStub = new Map();
+  let openedPath = null;
   const interpreter = createInterpreter({
     write: (text) => output.push(text),
     primitives: {
@@ -191,14 +195,10 @@ async function editor(initialText = 'hello world', options = {}) {
         buffer.insert(text);
         return NIL;
       },
-      'show-status!': (a) => {
-        searchCalls.push(`status:${String(a[0] ?? '')}`);
-        return NIL;
-      },
-      'clear-status!': () => {
-        searchCalls.push('clear-status');
-        return NIL;
-      },
+      // Routed through the host's show-status! / clear-status! primitives.
+      // searchCalls is what the search/query-replace tests inspect;
+      // statusCalls is what the chord-prefix-display tests inspect — the
+      // single primitive feeds both so callers see consistent behaviour.
       'start-command-palette!': () => {
         paletteCalls.push('palette');
         return NIL;
@@ -318,6 +318,44 @@ async function editor(initialText = 'hello world', options = {}) {
         tsCalls.push(`color:${face}`);
         return faceColors[face] ?? '';
       },
+      // The keymap's chord-prefix display calls these on every
+      // sequence transition; tests assert on `statusCalls` to confirm
+      // the echo area was updated.
+      'show-status!': (args) => {
+        const text = String(args[0] ?? '');
+        searchCalls.push(`status:${text}`);
+        statusCalls.push(text);
+        return NIL;
+      },
+      'clear-status!': () => {
+        statusCalls.push(null);
+        return NIL;
+      },
+      // The find-file completing minibuffer — records the prompt and
+      // its initial value so tests can drive Tab + Enter.
+      'open-completing-minibuffer!': (args) => {
+        completingPrompts.push({
+          prompt: String(args[0] ?? ''),
+          initialValue: args.length > 1 ? String(args[1] ?? '') : '',
+        });
+        return NIL;
+      },
+      // Stubbed filesystem — tests populate `directoryStub` keyed by
+      // the directory path.
+      'list-directory-paths': (args) => {
+        const entries = directoryStub.get(String(args[0] ?? ''));
+        if (entries === undefined) return NIL;
+        return arrayToList(
+          entries.map(([name, type]) => cons(name, keyword(type)))
+        );
+      },
+      'open-file-path!': (args) => {
+        openedPath = String(args[0] ?? '');
+        return NIL;
+      },
+      // The find-file flow seeds its prompt with the home directory;
+      // the test harness pins it so directoryStub keys can match.
+      'home-directory': () => '/home/test',
     },
   });
   await loadStdlib(
@@ -344,6 +382,10 @@ async function editor(initialText = 'hello world', options = {}) {
     evalCalls,
     tsCalls,
     foldCalls,
+    statusCalls,
+    completingPrompts,
+    directoryStub,
+    openedPath: () => openedPath,
   };
 }
 
@@ -509,10 +551,21 @@ test('C-x C-c is bound to quit-editor', async () => {
   assert.equal(press(interpreter, 'C-c'), true);
 });
 
-test('C-x C-f runs find-file', async () => {
-  const { interpreter, fileCalls } = await editor();
+test('C-x C-f opens the find-file completing minibuffer', async () => {
+  const { interpreter, completingPrompts } = await editor();
   press(interpreter, 'C-x');
   press(interpreter, 'C-f');
+  // find-file now drives the minibuffer with TAB completion against
+  // the filesystem rather than the native dialog. The dialog still
+  // exists, behind the `open-file-dialog` command (Cmd+O).
+  assert.equal(completingPrompts.length, 1);
+  assert.equal(completingPrompts[0].prompt, 'Find file: ');
+  assert.equal(completingPrompts[0].initialValue, '/home/test/');
+});
+
+test('open-file-dialog runs the native file open dialog', async () => {
+  const { interpreter, fileCalls } = await editor();
+  interpreter.evaluate('(run-command (quote open-file-dialog))');
   assert.deepEqual(fileCalls, ['open']);
 });
 
@@ -534,6 +587,50 @@ test('plain keys still work after a completed sequence', async () => {
   press(interpreter, 'C-s');
   press(interpreter, 'right');
   assert.equal(buffer.point, 1);
+});
+
+// --- chord-prefix display in the echo area -----------------------------
+
+test('a prefix key echoes the running chord in the status area', async () => {
+  const { interpreter, statusCalls } = await editor();
+  press(interpreter, 'C-x');
+  // The most recent status update is the chord with a trailing dash.
+  assert.equal(statusCalls.at(-1), 'C-x-');
+});
+
+test('a multi-key prefix shows every step', async () => {
+  const { interpreter, statusCalls } = await editor();
+  // M-n is a prefix to the sticky-note keymap; first the prefix is
+  // shown, then a deeper prefix would append (M-n only has leaf
+  // bindings here, but show the first-step echo is enough).
+  press(interpreter, 'M-n');
+  assert.equal(statusCalls.at(-1), 'M-n-');
+});
+
+test('completing a sequence clears the echo area before the command runs', async () => {
+  const { interpreter, statusCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-s');
+  // The last status entry from the dispatch was a clear (null).
+  // A command that itself sets status (none of the save path does)
+  // would be visible after this.
+  assert.equal(statusCalls.at(-1), null);
+});
+
+test('C-g during a prefix sequence clears the chord display', async () => {
+  const { interpreter, statusCalls } = await editor();
+  press(interpreter, 'C-x');
+  assert.equal(statusCalls.at(-1), 'C-x-');
+  press(interpreter, 'C-g');
+  // The C-g aborts mid-sequence; reset-keymap! clears the echo.
+  assert.equal(statusCalls.at(-1), null);
+});
+
+test('an unbound key mid-sequence clears the chord display', async () => {
+  const { interpreter, statusCalls } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'F12'); // not in c-x-keymap
+  assert.equal(statusCalls.at(-1), null);
 });
 
 // --- multiple buffers ---------------------------------------------------
@@ -3097,3 +3194,88 @@ test('find-regexp-forward returns nil for an invalid pattern', async () => {
     true
   );
 });
+
+// --- find-file completion ----------------------------------------------
+
+test('minibuffer-tab-complete extends to the unique match', async () => {
+  const { interpreter, directoryStub, statusCalls } = await editor();
+  // A single file in /tmp/. TAB on "/tmp/h" completes to "/tmp/hello.txt".
+  directoryStub.set('/tmp/', [['hello.txt', 'file']]);
+  const completed = interpreter.evaluate(
+    '(minibuffer-tab-complete "/tmp/h")'
+  );
+  assert.equal(completed, '/tmp/hello.txt');
+  // A unique match clears any prior status.
+  assert.equal(statusCalls.at(-1), null);
+});
+
+test('minibuffer-tab-complete adds a trailing slash to a unique directory', async () => {
+  const { interpreter, directoryStub } = await editor();
+  directoryStub.set('/tmp/', [['projects', 'directory']]);
+  const completed = interpreter.evaluate(
+    '(minibuffer-tab-complete "/tmp/proj")'
+  );
+  assert.equal(completed, '/tmp/projects/');
+});
+
+test('minibuffer-tab-complete completes to the longest common prefix', async () => {
+  const { interpreter, directoryStub } = await editor();
+  directoryStub.set('/tmp/', [
+    ['readme.md', 'file'],
+    ['readonly.txt', 'file'],
+    ['recipe.lisp', 'file'],
+  ]);
+  const completed = interpreter.evaluate(
+    '(minibuffer-tab-complete "/tmp/r")'
+  );
+  // The shared prefix of all three names is "re".
+  assert.equal(completed, '/tmp/re');
+});
+
+test('ambiguous completion with no progress shows the candidates', async () => {
+  const { interpreter, directoryStub, statusCalls } = await editor();
+  directoryStub.set('/tmp/', [
+    ['readme.md', 'file'],
+    ['recipe.lisp', 'file'],
+  ]);
+  // "/tmp/re" is already the longest common prefix — Tab cannot
+  // extend it, so the candidates appear in the status line and the
+  // value is returned unchanged.
+  const result = interpreter.evaluate(
+    '(minibuffer-tab-complete "/tmp/re")'
+  );
+  assert.equal(result, '/tmp/re');
+  const status = statusCalls.at(-1);
+  assert.ok(status.includes('readme.md'),
+    `expected the candidates in the status; got ${status}`);
+  assert.ok(status.includes('recipe.lisp'));
+});
+
+test('completion in an unreadable directory shows (no matches)', async () => {
+  const { interpreter, statusCalls } = await editor();
+  // directoryStub has no entry for "/nope/" — the stub returns nil.
+  const result = interpreter.evaluate(
+    '(minibuffer-tab-complete "/nope/x")'
+  );
+  assert.equal(result, '/nope/x');
+  assert.equal(statusCalls.at(-1), '(no matches)');
+});
+
+test('find-file submission opens the chosen path', async () => {
+  const { interpreter, completingPrompts, openedPath } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-f');
+  assert.equal(completingPrompts.length, 1);
+  // Drive the minibuffer-delivered flow as the host would.
+  interpreter.evaluate('(minibuffer-delivered "/etc/hosts")');
+  assert.equal(openedPath(), '/etc/hosts');
+});
+
+test('find-file cancellation does not open anything', async () => {
+  const { interpreter, openedPath } = await editor();
+  press(interpreter, 'C-x');
+  press(interpreter, 'C-f');
+  interpreter.evaluate('(minibuffer-delivered nil)');
+  assert.equal(openedPath(), null);
+});
+
