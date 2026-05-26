@@ -22,6 +22,8 @@ importers:
 
   packages/lisp: {}
 
+  packages/pane: {}
+
   packages/renderer:
     dependencies:
       '@editor/buffer':
