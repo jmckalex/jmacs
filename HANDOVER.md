@@ -8,19 +8,19 @@ preserved in `git log` against `96ea97b`; this one supersedes it.
 
 ## Where main is
 
-HEAD: `0b12776` (`fix(shell-view): treat \r\n as one line terminator,
-not rewind+flush`). **All test suites green across every package; the
-desktop smoke passes end-to-end including the shell arm.**
+HEAD: `d2a061e` (`merge: agent-shell-buffer-v4 — xterm.js terminal
+grid`). **All test suites green (843/843); the desktop smoke passes
+end-to-end including the v4 shell arm with [pty], resize, and the
+RPROMPT timestamp visible (ZLE is back on under the new model).**
 
-The session's headline: a shell buffer (`M-x shell`) reachable on
-main, plus two new tree-sitter grammars (Make, Perl), plus a small
-chord-prefix / find-file merge from the prior queue. The shell
-landed in three versions on top of each other (v1 line-oriented →
-v2 pty + ANSI → v3 inline-input GitKraken-style), each merged
-in turn after a brief interactive try-out. A planned v4 (xterm.js)
-is documented in `plans/SHELL-V4-XTERM.md` and **not yet built**;
-the user wants to swap to a real terminal emulator rather than
-extend the line-oriented model further.
+The session's headline: **shell v4 landed.** A real terminal emulator
+(xterm.js) replaced the line-oriented v3 transcript, fixing curses
+apps (vi, htop, less) and full ZLE/RPROMPT prompt fidelity. Resize
+travels through a new fd 3 sidechannel that the python pty helper
+ioctls onto the master. Before v4, the session also: fixed an
+invalid `permissions.defaultMode` in `.claude/settings.json`, and
+authored `plans/PANES.md` as design notes for the next big reshape
+(window/pane/view + multi-window + view-without-buffer).
 
 ## Landed this session
 
@@ -28,7 +28,9 @@ Merge bubbles + direct-to-main, top of `main`:
 
 | Commit | What | Notes |
 |---|---|---|
-| `0b12776` | `fix(shell-view): treat \r\n as one line terminator` | The bug that made `ls`/`pwd` show empty output. Tty driver converts output `\n` → `\r\n`; v3's `feedLiveLine` was treating the `\r` as a rewind and wiping the line before `\n` flushed it. Look ahead one char: `\r\n` is a single terminator. |
+| `d2a061e` | `merge: agent-shell-buffer-v4 — xterm.js terminal grid` | **v4.** Full rewrite of `shell-view.js` on top of `@xterm/xterm@6.0.0` + `@xterm/addon-fit@0.11.0`. `feedLiveLine` and `ansi.js` deleted (424 + 249 lines gone, plus ~660 CSS lines). Resize via fd 3 → `TIOCSWINSZ` on the master. Cmd+C copies the xterm selection, OS-default otherwise. Theme bridge reads `--bg-editor` / `--fg` / `--ansi-*` via `getComputedStyle` and rebuilds on theme switch. Five fix commits on the v4 branch before merge: TDZ on `themeListeners` from hoisting asymmetry; vendor stylesheet load order; xterm-viewport black background; single-render-path via transparent canvas + `allowTransparency`; Hard Reload menu entry. |
+| `27a3051` | `chore(settings): fix invalid permissions.defaultMode value` | `/doctor` flagged `"ask"` as not a valid mode. Changed to `"default"`; the `allow`/`deny`/`ask` rule arrays already encode the prompt behavior. |
+| `0b12776` | `fix(shell-view): treat \r\n as one line terminator` | (v3-era; superseded by v4.) The bug that made `ls`/`pwd` show empty output. Tty driver converts output `\n` → `\r\n`; v3's `feedLiveLine` was treating the `\r` as a rewind and wiping the line before `\n` flushed it. |
 | `8a5fd40` | `feat(shell-view): inline input + CR/BS-aware streaming` | v3: GitKraken-style. Bottom input bar gone; typing in a contenteditable inline at the end of the transcript, alongside whatever partial line the shell last emitted. `feedLiveLine` single-line terminal emulator handles `\r`/`\b`/`\n`. PTY now sets ECHO off on the master in the parent (atomic before any input). |
 | `7882c28` | `fix(make): use \\\" inside template literal` | The makefile highlighter was failing to load at startup with "Bad node name 'paren'". The JS template literal was unescaping `"\""` → `"""` (three literal quotes); tree-sitter parsed that as two empty strings + a stray `"`, then choked on the `@paren` after. Doubled the backslash. |
 | `f8d3679` | `fix(shell-view): disable zsh ZLE under pty + drop duplicate echo` | v2 was double-rendering commands (zsh's per-char ZLE echo + our local echo). Pass `+Z` to zsh (`--noediting` to bash). Suppress local echo when pty is on. |
@@ -87,26 +89,26 @@ Expected conflict surfaces (still mostly additive, keep-both):
 
 ## In flight / queued
 
-- **Shell v4 (xterm.js)** — design written, not yet built. See
-  `plans/SHELL-V4-XTERM.md`. The user explicitly chose this path over
-  patching v3 further: "There's no point doing a halfway house." When
-  ready to start: spawn an agent on `agent-shell-buffer-v4`, the
-  brief is the plan doc.
+- **Panes / windows / view-as-primary reshape.** `plans/PANES.md` was
+  authored this session as guide notes for a detailed plan later.
+  Three coupled changes: view (not buffer) becomes the addressable
+  top-level thing, with buffer kept as the L2 substrate for
+  text-editing views; replace the single-window pane code with a real
+  pane tree (rectangular box model, flat-leaf DOM, `<div class="pane">`
+  siblings absolute-positioned from a JS-owned tree); allow multiple
+  OS windows. The doc lists 15 open questions Jason needs to settle
+  before implementation begins. Non-goal: non-rectangular pane
+  shapes (he asked; the answer is in the doc).
 
-  Key points the plan settles:
-  - Adds `@xterm/xterm` (~250 kB) + `@xterm/addon-fit`.
-  - Drops `feedLiveLine`, the ANSI parser, the inline contenteditable,
-    `+Z`/`--noediting`, the parent-side ECHO-off termios tweak.
-  - Adds a `shell:resize` IPC channel and a sidechannel pipe (fd 3)
-    the python helper reads `<cols>:<rows>\n` from for `TIOCSWINSZ`
-    via `ioctl`.
-  - Theme bridge: map the existing `--ansi-*` palette into xterm.js's
-    flat theme object.
-  - Open questions in the plan: selection/copy model, reload
-    behaviour, font loading timing, bell style.
+  Sequencing in the doc: (1) view/buffer split with no UI change,
+  (2) pane tree with a single pane, (3) expose splits, (4) multi-
+  window. Each phase is mergeable. The biggest open call is whether
+  the Lisp VM moves into the main process under multi-window — the
+  doc leans toward yes (cleanest, most work).
 
-  Effort estimate: a focused day's work; big surface but additive
-  (build the new view alongside v3 first, swap the import last).
+  Worth coordinating with the queued `agent-session` branch, whose
+  tabline + restore design embeds buffer-as-target assumptions that
+  this reshape would invalidate.
 
 ## Architecture decisions worth preserving
 
@@ -154,14 +156,19 @@ Carried forward, lightly updated:
 - **Token colours feel washed-out vs Sublime.** Unchanged from prior;
   same sRGB-vs-native split as the background. Jason wants to be
   involved in palette decisions.
-- **Shell v3 prompt fidelity.** Under `+Z` (ZLE off) the Oh My Zsh
-  prompt's git branch and right-aligned timestamp don't render —
-  they're emitted via ZLE's cursor-up + clear-to-end + reprint
-  sequence, which a line-oriented transcript can't honour. The
-  static left prompt (`(base) ~/Source/jmacs/main/` + `$ `) renders
-  correctly. v4 with xterm.js will fix this.
-- **Shell v3 curses apps** — `vi`, `htop`, `less +F` won't work.
-  Documented in the file header of `shell-view.js`. Same v4 fix.
+- **Faint strip at the bottom of the shell view.** Sub-cell residue
+  where the `.xterm-viewport` extends past the cell-aligned canvas.
+  Four fixes were tried during the v4 hand-off (viewport background
+  override; vendor stylesheet load order; transparent canvas + single
+  CSS painter via `allowTransparency`; Hard Reload menu entry to rule
+  out cache). Each made it better but the strip is still visible to
+  Jason. Same colour-management family as the muted-palette and
+  Sublime-bg-precompensation threads — Chromium's canvas vs DOM paint
+  pipelines render the same hex slightly differently, and the residual
+  difference appears to survive even with the canvas transparent
+  (suggesting the residual is somewhere else: possibly compositor /
+  GPU layer boundaries). Jason chose to ship and revisit. Carry this
+  into whatever palette / colour-pipeline work happens next.
 
 ## Plan documents
 
@@ -170,7 +177,10 @@ In `plans/`:
 - `LANGUAGE-INJECTION.md` — implementation merged.
 - `REACTIVE-NOTEBOOK.md` — phase 1 on `agent-reactive-notebook`.
 - `FACE-CUSTOMISATION.md` — implementation merged.
-- `SHELL-V4-XTERM.md` — **new this session.** xterm.js-based v4.
+- `SHELL-V4-XTERM.md` — implementation merged this session (`d2a061e`).
+- `PANES.md` — **new this session.** Guide notes for window/pane/view
+  reshape + multi-window + view-without-buffer. 15 open questions
+  for a later detailed plan.
 
 In `docs/`:
 
@@ -206,16 +216,16 @@ stays in place — fires only if `tree-sitter-make.wasm` fails to load.
 
 ## What's missing — the headlines
 
-Unchanged from the prior handover, roughly:
-
-1. **Splits / multiple panes.** Worth a `plans/PANES.md` first.
+1. **Settle the PANES.md open questions and start the reshape.**
+   `plans/PANES.md` has 15 calls only Jason can make. After that:
+   view/buffer split first (no UI change), then the pane tree.
 2. **LSP autocomplete.** Diagnostics + hover without completion feels
    half-done; `agent-lsp` lands the first half.
 3. **Git integration.** Diff gutter, blame, basic conflict UI.
 4. **Performance proven at scale.**
 5. **Process isolation for user code.** The real architectural debt.
-   See the Phase 1 proposal in the prior handover (`git show 96ea97b
-   -- HANDOVER.md`).
+   See the Phase 1 proposal in the prior-prior handover (`git show
+   96ea97b -- HANDOVER.md`).
 6. **A real README + 60-second demo.**
 
 ## Workflow lessons (this session)
@@ -247,19 +257,27 @@ Unchanged from the prior handover, roughly:
 
 ## Suggested next steps in priority order
 
-1. **Build v4 (xterm.js).** The plan is in `plans/SHELL-V4-XTERM.md`.
-   Spawn an agent on `agent-shell-buffer-v4`; the brief is the plan.
-   Once landed, delete `packages/renderer/src/ansi.js` and the
-   `feedLiveLine` machinery (v3 carries a lot of dead-end work that
-   becomes obsolete the day xterm.js lands).
-2. **Merge the surviving review queue** (eight branches). Half a
+1. **Settle the `plans/PANES.md` open questions.** Reading the doc and
+   making the 15 calls is the gate to starting the reshape. Half a
+   focused hour with the doc and a pen. Particularly load-bearing: VM
+   hosting under multi-window, Lisp-surface migration strategy
+   (flag day vs dual), per-pane vs per-buffer point.
+2. **Start the view/buffer split.** First phase from PANES.md, no UI
+   change — pure rename + Lisp-surface migration. Mergeable on its
+   own. Unblocks the `agent-session` branch by fixing its data
+   model, and unblocks `agent-reactive-notebook` (which is the
+   natural view-without-buffer canary).
+3. **Merge the surviving review queue** (eight branches). Half a
    day if conflicts behave; the multi-cursor `hash-set` fix is the
-   only known blocker.
-3. **Phase 1 interruptibility.** Single highest-leverage
+   only known blocker. Worth deciding whether to do this before or
+   after step 2 — if after, fewer rebases; if before, the reshape
+   touches a smaller queue.
+4. **Phase 1 interruptibility.** Single highest-leverage
    architectural work. See the prior handover.
-4. **Investigate the muted-palette issue.**
-5. **Daily-drive for a week, then a real README + 60-second demo.**
-6. **Splits** (`plans/PANES.md`).
+5. **Investigate the muted-palette issue.** Bundle the shell-view
+   residual strip into the same investigation — same colour-pipeline
+   family.
+6. **Daily-drive for a week, then a real README + 60-second demo.**
 7. **LSP autocomplete** as its own session.
 
 ---
@@ -271,5 +289,7 @@ documentation, a working jukebox with album art + metadata,
 drag-resizable panes, a diagnostic `C-h F` for syntax highlighting,
 directory-tree and Finder-style column browsers, double-click-to-open,
 chord-prefix display in the echo area, find-file with tab-completion,
-and now a `M-x shell` running the user's default shell with full
-PTY + ANSI. v4 (xterm.js) is queued.
+and now a `M-x shell` running the user's default shell on a real
+terminal emulator (xterm.js) — curses apps and ZLE-driven prompts
+both render. The next architectural lift (window/pane/view reshape
++ multi-window) is sketched in `plans/PANES.md` awaiting decisions.
