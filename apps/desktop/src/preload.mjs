@@ -316,6 +316,20 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('shell:kill', { sessionId }),
 
   /**
+   * Tell a shell session its new terminal size. Routes
+   * `<cols>:<rows>\n` to the python helper's fd 3 sidechannel, which
+   * calls `ioctl(master, TIOCSWINSZ, ...)`. The kernel raises
+   * SIGWINCH inside the shell so prompts and TUIs reflow. No-op
+   * under the pipe fallback (no master to resize).
+   *
+   * @param {string} sessionId
+   * @param {number} cols
+   * @param {number} rows
+   */
+  shellResize: (sessionId, cols, rows) =>
+    ipcRenderer.invoke('shell:resize', { sessionId, cols, rows }),
+
+  /**
    * Register a handler for streamed shell output. The handler is
    * invoked with `{ sessionId, stream: 'stdout' | 'stderr', data }`
    * for each chunk the child emits.

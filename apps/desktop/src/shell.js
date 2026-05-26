@@ -8,7 +8,7 @@
  * everything funnels through `ipcMain.handle` (write/spawn/kill) and
  * `webContents.send` (stdout/stderr/exit).
  *
- * ## v2 backing
+ * ## v2/v4 backing
  *
  * The shell is run under a real pty so interactive shells emit their
  * prompt, `ls --color=auto` and friends emit ANSI colour escapes, and
@@ -24,12 +24,11 @@
  * but we want the feature to behave identically across platforms.
  *
  * So instead of `script(1)`, we shell out to a tiny inline Python
- * script that calls `pty.spawn` from stdlib. `/usr/bin/python3` is
+ * script that calls `pty.fork` from stdlib and runs a select loop
+ * proxying between fd 0/1 and the pty master. `/usr/bin/python3` is
  * present on every modern macOS (Apple ships it as a system tool) and
  * standard on every Linux distro; the `pty` module is in stdlib, no
- * extra install needed. `pty.spawn(['/bin/zsh', '-i'])` forks,
- * allocates a pty, and proxies between the pty and the python
- * process's own stdio. Behaves identically on macOS and Linux. See
+ * extra install needed. Behaves identically on macOS and Linux. See
  * `architect-notes.md` for the full reasoning.
  *
  * If `python3` isn't on PATH (or we're on Windows, where the model
@@ -39,15 +38,20 @@
  *
  * No native addons. No `node-pty`. The whole point of this approach.
  *
- * ## What v2 still doesn't handle
+ * ## v4 changes
  *
- *   - cursor-movement codes (CSI cursor positioning, erase-in-line for
- *     repaint) are dropped by the renderer's ANSI parser, not replayed
- *     onto a redrawn transcript. Curses TUIs (`vi`, `htop`, full-screen
- *     `less`) will be unhappy — their output still arrives, but the
- *     transcript model is line-oriented and doesn't redraw.
- *   - SIGWINCH-based resize. The pty is opened at python's default
- *     size (80x24-ish) and never resized.
+ *   - Drop the ECHO-off termios tweak: xterm.js wants normal terminal
+ *     semantics; the kernel echoing bytes back through the pty is
+ *     what every other terminal emulator expects.
+ *   - Drop the zsh `+Z` / bash `--noediting` flags: with a real
+ *     terminal grid we want ZLE / readline back.
+ *   - Add a resize sidechannel. The python helper now reads from a
+ *     fourth fd (fd 3 in the child) a stream of `<cols>:<rows>\n`
+ *     messages and calls `ioctl(master, TIOCSWINSZ, ...)` for each —
+ *     the kernel issues SIGWINCH to the shell, and prompts and TUIs
+ *     reflow. The Node side spawns with `stdio: ['pipe', 'pipe',
+ *     'pipe', 'pipe']` so `child.stdio[3]` is the writable end of
+ *     that pipe.
  *
  * ## Session bookkeeping
  *
@@ -89,45 +93,44 @@ export function defaultShell() {
 }
 
 /**
- * The python helper: a tiny inline script that runs `pty.spawn`. The
- * shell is passed as `sys.argv[1]`. Stdout/stderr/stdin of this python
- * process is what we wire to the renderer; pty.spawn proxies
- * everything between the pty (the inner shell) and its own stdio.
+ * The python helper: a tiny inline script that runs `pty.fork`, execs
+ * the user's shell inside the slave, and proxies between the pty
+ * master and python's own stdio (which is wired to the Node parent).
  *
  * Shell flags:
  *   - `-i` runs the user's rc files (so PATH and aliases match what
- *     they have in iTerm/Terminal.app).
- *   - For zsh: `+Z` disables ZLE (the line editor). We have our own
- *     in-buffer input, and ZLE's character-by-character echo (with
- *     embedded backspaces) is the wrong model for a transcript view.
- *     The prompt still renders; only the live editing layer is off.
- *   - For bash: `--noediting` does the equivalent — disables readline.
+ *     the user has in iTerm/Terminal.app).
  *
- * Terminal flags (set on the slave side before exec):
- *   - ECHO off: the kernel's tty driver will *not* echo bytes written
- *     to the master back to stdout. We render typed input ourselves
- *     in the transcript on Enter, so without this we'd see every
- *     command twice (once from us, once echoed by the tty).
+ * v4 drops the parent-side ECHO-off termios tweak (xterm.js expects
+ * normal kernel echo) and drops zsh `+Z` / bash `--noediting` (we now
+ * want ZLE / readline because the renderer is a real terminal grid).
  *
- * Kept on one logical line so spawn doesn't need to deal with
- * multi-arg escaping inside `-c`.
+ * Resize sidechannel:
+ *   - The parent (Node) spawns us with `stdio: [pipe, pipe, pipe,
+ *     pipe]`, so fd 3 is a pipe the Node side writes to.
+ *   - Each line on fd 3 is `<cols>:<rows>\n`. The helper parses each
+ *     line and calls `ioctl(master, TIOCSWINSZ, ...)` — the kernel
+ *     issues SIGWINCH to the shell's foreground process group, and
+ *     prompts and TUIs reflow.
+ *
+ * Kept on one logical line per statement so spawn doesn't need to
+ * deal with multi-arg escaping inside `-c`.
  */
 const PYTHON_PTY_SCRIPT =
-  "import sys, os, pty, termios; sh = sys.argv[1]; " +
-  "args = [sh, '-i'] + (['+Z'] if os.path.basename(sh) == 'zsh' else " +
-  "(['--noediting'] if os.path.basename(sh) == 'bash' else [])); " +
+  "import sys, os, pty, struct, fcntl, termios, select\n" +
+  "sh = sys.argv[1]\n" +
+  "args = [sh, '-i']\n" +
   "pid, fd = pty.fork()\n" +
   "if pid == 0:\n" +
   "  os.execvp(args[0], args)\n" +
-  // Parent: set ECHO off on the master fd immediately, BEFORE forwarding
-  // any input. The slave shares termios with the master, so this lands
-  // before the shell reads from stdin and the kernel never echoes the
-  // first characters under the default (ECHO=on) settings.
-  "a = termios.tcgetattr(fd); a[3] &= ~termios.ECHO; " +
-  "termios.tcsetattr(fd, termios.TCSANOW, a)\n" +
-  "import select\n" +
+  // Parent: select loop over stdin (0), the pty master (fd), and the
+  // resize sidechannel (fd 3). Any line on fd 3 is `<cols>:<rows>\n`
+  // and triggers TIOCSWINSZ on the master. Sidechannel reads are
+  // line-buffered in a small accumulator so a partial chunk is held
+  // until the next \n.
+  "rbuf = b''\n" +
   "while True:\n" +
-  "  try: r, _, _ = select.select([0, fd], [], [])\n" +
+  "  try: r, _, _ = select.select([0, fd, 3], [], [])\n" +
   "  except (OSError, KeyboardInterrupt): break\n" +
   "  if 0 in r:\n" +
   "    d = os.read(0, 4096)\n" +
@@ -137,7 +140,22 @@ const PYTHON_PTY_SCRIPT =
   "    try: d = os.read(fd, 4096)\n" +
   "    except OSError: break\n" +
   "    if not d: break\n" +
-  "    os.write(1, d)\n";
+  "    os.write(1, d)\n" +
+  "  if 3 in r:\n" +
+  "    try: d = os.read(3, 4096)\n" +
+  "    except OSError: d = b''\n" +
+  "    if d:\n" +
+  "      rbuf += d\n" +
+  "      while b'\\n' in rbuf:\n" +
+  "        line, rbuf = rbuf.split(b'\\n', 1)\n" +
+  "        s = line.decode('ascii', 'ignore').strip()\n" +
+  "        if ':' in s:\n" +
+  "          c, _, rr = s.partition(':')\n" +
+  "          try:\n" +
+  "            cols = int(c); rows = int(rr)\n" +
+  "            if cols > 0 and rows > 0:\n" +
+  "              fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))\n" +
+  "          except ValueError: pass\n";
 
 /**
  * Probe whether a usable `python3` with the `pty` module is available.
@@ -280,10 +298,19 @@ function spawnSession(sessionId, sender, options = {}) {
     args = ['-i'];
   }
 
+  // Under the pty backing we add a fourth pipe so `child.stdio[3]` is
+  // the writable end of the resize sidechannel — the python helper
+  // reads `<cols>:<rows>\n` lines from fd 3 and calls TIOCSWINSZ on
+  // the master. Under the pipe fallback there's no master to resize,
+  // so we use the v1 three-pipe stdio.
+  const stdio = ptyBacking
+    ? ['pipe', 'pipe', 'pipe', 'pipe']
+    : ['pipe', 'pipe', 'pipe'];
+
   const child = spawn(command, args, {
     cwd,
     env,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    stdio,
     // The child outlives no one — the parent (Electron main) is the
     // top-level. Detached would orphan the process on crash, which is
     // worse than the alternative.
@@ -412,6 +439,38 @@ function endSessionInput(sessionId) {
 }
 
 /**
+ * Tell the session's pty its new size. The renderer's xterm.js fits
+ * itself to the host element and emits an `onResize` whenever cols/rows
+ * change; we route that here.
+ *
+ * Under the pty backing this writes `<cols>:<rows>\n` to the python
+ * helper's fd 3 sidechannel. The helper parses each line and calls
+ * `ioctl(master, TIOCSWINSZ, ...)`; the kernel issues SIGWINCH to the
+ * shell's foreground process group.
+ *
+ * Under the pipe fallback there's no master to resize — no-op.
+ *
+ * @param {string} sessionId
+ * @param {number} cols
+ * @param {number} rows
+ * @returns {boolean}
+ */
+function resizeSession(sessionId, cols, rows) {
+  const entry = sessions.get(sessionId);
+  if (!entry) return false;
+  if (!entry.pty) return false;
+  if (!Number.isInteger(cols) || cols <= 0) return false;
+  if (!Number.isInteger(rows) || rows <= 0) return false;
+  const pipe = entry.child.stdio?.[3];
+  if (!pipe || pipe.destroyed) return false;
+  try {
+    return pipe.write(`${cols}:${rows}\n`);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Register the `shell:*` IPC handlers. Call once at app startup.
  */
 export function registerShellHandlers() {
@@ -445,6 +504,13 @@ export function registerShellHandlers() {
   ipcMain.handle('shell:end-input', (_event, payload) => {
     const sessionId = String(payload?.sessionId ?? '');
     return { ok: endSessionInput(sessionId) };
+  });
+
+  ipcMain.handle('shell:resize', (_event, payload) => {
+    const sessionId = String(payload?.sessionId ?? '');
+    const cols = Number(payload?.cols);
+    const rows = Number(payload?.rows);
+    return { ok: resizeSession(sessionId, cols, rows) };
   });
 
   ipcMain.handle('shell:kill', (_event, payload) => {
