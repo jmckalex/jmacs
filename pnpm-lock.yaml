@@ -156,6 +156,9 @@ importers:
       '@editor/lisp':
         specifier: workspace:*
         version: link:../lisp
+      '@editor/pane':
+        specifier: workspace:*
+        version: link:../pane
       '@editor/view':
         specifier: workspace:*
         version: link:../view

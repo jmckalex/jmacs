@@ -52,6 +52,7 @@ import {
 } from '@editor/renderer';
 import {
   createBufferPrimitives,
+  createPanePrimitives,
   createViewPrimitives,
   loadStdlib,
 } from '@editor/stdlib';
@@ -1416,11 +1417,30 @@ let faceOverridesCache = null;
  *  dependency on `@editor/lisp` (the unit tests use stand-ins). */
 const lispFactories = { keyword, sym };
 
+/** The pane-host the Lisp pane-primitives operate through. With one
+ *  leaf this phase the host returns the same leaf every call; phase 3
+ *  exposes the split commands that grow the tree. */
+const paneHost = {
+  currentPane: () => currentPane(),
+};
+
 /** The view-host the Lisp view-primitives operate through. Every
  *  closure reads `views`/`currentViewIndex` live, so the host stays
- *  truthful as the editor switches and kills views. */
+ *  truthful as the editor switches and kills views.
+ *
+ *  Phase 2 of plans/PANES.md: `currentView` now resolves through the
+ *  focused leaf pane (`paneHost.currentPane()?.view`). With one leaf
+ *  this is identical to `views[currentViewIndex]`; the indirection
+ *  matters when phase 3 introduces multiple leaves. */
 const viewHost = {
-  currentView: () => views[currentViewIndex] ?? null,
+  currentView: () => {
+    const pane = paneHost.currentPane();
+    if (pane && pane.kind === 'leaf' && pane.view) return pane.view;
+    // Fallback for the (vanishingly rare) no-pane / no-view case —
+    // keep the legacy index-based lookup so the editor never lands
+    // with a null current view during early startup.
+    return views[currentViewIndex] ?? null;
+  },
   viewList: () => views.slice(),
   switchToView: (target) => switchToView(target),
   newView: (name) => {
@@ -1479,6 +1499,7 @@ const interpreter = createInterpreter({
   primitives: {
     ...createBufferPrimitives(session),
     ...createViewPrimitives(viewHost),
+    ...createPanePrimitives(paneHost),
 
     // File commands run async work and return at once.
     'open-file!': () => {

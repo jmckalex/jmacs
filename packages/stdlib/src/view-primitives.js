@@ -52,6 +52,13 @@ export function createViewPrimitives(viewHost) {
     // `(current-view)` — the focused view handle. `nil` if no view is
     // current (vanishingly rare in practice — there's always a scratch
     // text view — but a defensive nil is cleaner than an exception).
+    //
+    // Phase 2 of plans/PANES.md: "current view" is defined as "the view
+    // in the focused leaf pane." With one leaf this is identical to
+    // today's "the current view"; phase 3's split commands require the
+    // pane-rooted resolution path. The desktop app's `viewHost.currentView`
+    // delegates through the pane tree (paneHost.currentPane()?.view), so
+    // the indirection lives at the host boundary, not in Lisp.
     'current-view': () => {
       const view = viewHost.currentView();
       return view ?? NIL;
