@@ -216,11 +216,11 @@ test('delete-other-panes! defaults to the current pane and returns nil', () => {
   assert.equal(calls[0].target, leaf);
 });
 
-test('other-pane delegates and returns the new current pane', () => {
+test('other-pane! delegates and returns the new current pane', () => {
   const leaf = createLeafPane();
   const { host } = buildRichHost(leaf);
   const prims = createPanePrimitives(host);
-  assert.equal(prims['other-pane']([]), leaf);
+  assert.equal(prims['other-pane!']([]), leaf);
 });
 
 test('focus-pane-direction! accepts a symbol or a string', () => {

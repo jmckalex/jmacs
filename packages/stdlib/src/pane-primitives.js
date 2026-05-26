@@ -149,10 +149,13 @@ export function createPanePrimitives(paneHost) {
       paneHost.deleteOtherPanes(pane);
       return NIL;
     },
-    // `(other-pane)` — cycle focus to the next leaf in display order
+    // `(other-pane!)` — cycle focus to the next leaf in display order
     // (depth-first). Returns the new current pane handle, or nil when
-    // there's only one pane.
-    'other-pane': () => {
+    // there's only one pane. The bang follows the side-effecting
+    // convention used by `next-view!` etc.; the Lisp `(defcommand
+    // other-pane …)` in panes.lisp wraps it as the interactive
+    // command bound to `C-x o`.
+    'other-pane!': () => {
       const pane = paneHost.otherPane();
       return pane ?? NIL;
     },

@@ -37,7 +37,7 @@
 
 (defcommand other-pane ()
   "Cycle focus to the next pane in display order. Bound to `C-x o`."
-  (other-pane))
+  (other-pane!))
 
 (defcommand balance-panes ()
   "Reset every split's ratio to 0.5 so panes share their parent's
