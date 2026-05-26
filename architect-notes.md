@@ -7,6 +7,95 @@ flagged so the standing instructions can be updated if you disagree.
 
 ---
 
+## [2026-05-26 phase-1] View/buffer split — decisions made under the brief
+
+Phase 1 of `plans/PANES.md` landed on `agent-view-buffer-split`. The
+brief listed a handful of calls to make autonomously; below is what I
+chose and why, plus a couple of points worth flagging for review.
+
+### Calls made under "decisions left to you"
+
+- **View module location**: new workspace `packages/view/`. Territory
+  matches the L0–L4 layering; the alternative (a sub-module of
+  `packages/buffer/`) would have blurred the buffer/view distinction
+  exactly when the architectural point is to separate them. Easy to
+  collapse back into the buffer package later if the dependency
+  direction ever inverts.
+
+- **`customize` view audit**: no buffer. The customize view reads
+  only `view.scope` (an `{group|variable|face|...}` selector). It is
+  pure UI; no text editing. Registered with `hasBuffer: false`.
+
+- **`doc` view audit**: no buffer. The doc view reads only
+  `view.html` (a rendered HTML fragment). The "live docstring" path
+  also writes HTML, never source text. Registered with
+  `hasBuffer: false`.
+
+- **`majorMode` / `minorModes` location**: kept on the L2 buffer for
+  text views, with a `view.mode` slot reserved on the View for non-
+  text kinds (currently unused). For text views, the modeline and
+  keymap chain still read through the buffer's mode (via
+  `(buffer-major-mode)` etc.); for non-text views these primitives
+  now return `nil` rather than raising `'no-buffer-here`. That null-
+  safety is what lets the keymap chain work for a focused jukebox /
+  shell / image view: the chain is just `(the-keymap)`, so global
+  bindings like `C-x k` stay live regardless of focus.
+
+  Tradeoff flagged: a non-text view that wants its own mode-like
+  behaviour (an image-view keymap, a jukebox-view keymap) currently
+  hand-rolls its own keydown handler. The `view.mode` slot is
+  reserved for a future phase where a non-text view's mode plugs
+  into the same chain. I didn't wire that up in phase 1 — the
+  existing per-view keydown handlers in `packages/renderer/src/`
+  already work, and changing the keymap-chain semantics to walk a
+  view-level mode is more interesting than the brief asked for.
+
+### Two surprises worth knowing about
+
+- **`buffer-major-mode` / `buffer-minor-modes` are now null-safe.**
+  Previously they raised through `buffer()` (the helper that throws
+  `'no-buffer-here` for buffer-less views). The fix was needed
+  because the keymap chain calls them on every keystroke, in every
+  view. Decision: read primitives are tolerant; write primitives
+  (`set-major-mode!`, `set-minor-modes!`) still raise — that's a
+  programming error to call them in a non-text view. Documented in
+  `buffer-primitives.js`.
+
+- **Tabline registered, not built.** `kind-registry.register('tabline',
+  { mount: ... })` is wired with a defensive `mount` that prints
+  "not yet implemented (phase 3)" to the REPL if the kind is somehow
+  switched to. No commands construct one. Per Q11: the kind is the
+  surface; the UI is phase 3.
+
+### Out-of-scope follow-ups noted but not done
+
+These are listed in PANES.md's "Companion changes" but kept out of
+phase 1:
+
+- **`docs/CUSTOM-VIEWS.md` rewrite**. Still talks about wrapping
+  views with a buffer. Needs an update after this phase.
+- **`docs/MANUAL.jmd`, `docs/reference/commands.md`** — still
+  reference `next-buffer` / `previous-buffer` / `new-buffer` /
+  `kill-buffer`. Should be regenerated when `pnpm run docs` runs
+  against the renamed defcommands (the doc pages are pre-built
+  artefacts, not source).
+- **`occur-buffer-name`** (a Lisp helper in `occur.lisp`) was kept —
+  it returns the menu label string `*Occur: <pattern>*`. The name
+  contains "buffer" but it's an internal helper, not part of the
+  flag-day surface. Could be renamed for consistency in a follow-up.
+
+### Test gate
+
+- `pnpm test` — 858 tests across 7 packages, all green
+  (storage 47 + lisp 68 + buffer 35 + view 15 + renderer 236 +
+  stdlib 311 + desktop 146).
+- `pnpm --filter @editor/desktop smoke` — PASS, 16 arms.
+
+Branch: `agent-view-buffer-split` (worktree
+`.claude/worktrees/agent-a301471842ea3c6d5`).
+
+---
+
 ## [2026-05-25 → 2026-05-26 overnight] Audio metadata edit + two older branches
 
 The full `plans/AUDIO-METADATA-EDIT.md` sequence landed end-to-end:
