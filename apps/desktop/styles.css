@@ -226,6 +226,33 @@ body {
   min-width: 0;
   min-height: 0;
   background: var(--bg-editor);
+  /* Positioning context for the pane tree's leaves (plans/PANES.md
+     phase 2). Each <div class="pane"> is absolute-positioned from the
+     JS-owned pane tree's computed rect. */
+  position: relative;
+  overflow: hidden;
+}
+
+/* --- pane ----------------------------------------------------------- */
+/* A leaf pane in the editor-area pane tree. With one leaf this phase
+   the pane fills #editor-host; phase 3 introduces sibling leaves. Each
+   leaf's inline `left/top/width/height` is written by relayoutPanes()
+   in app.js, based on computeRects() over the JS-owned pane tree. */
+.pane {
+  position: absolute;
+  overflow: hidden;
+  /* A 1px transparent border keeps the pane the same size when the
+     focus indicator toggles on/off — no reflow on focus change. */
+  border: 1px solid transparent;
+  box-sizing: border-box;
+}
+
+/* Subtle border shading for the focused pane (plans/PANES.md, "Focus
+   indication"). With one pane this is invisible; phase 3 lights it up
+   when multiple leaves are on screen. */
+.pane--focused {
+  border-color: var(--accent);
+  opacity: 1;
 }
 
 .editor {

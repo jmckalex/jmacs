@@ -11,6 +11,7 @@
 
 import { createBuffer } from '@editor/buffer';
 import { createView, createKindRegistry } from '@editor/view';
+import { createLeafPane, computeRects, leafPanes } from '@editor/pane';
 import {
   arrayToList,
   cons,
@@ -258,6 +259,120 @@ function ensureMajorMode() {
  *  below, after each renderer view has been constructed. */
 const kindRegistry = createKindRegistry();
 
+// --- pane tree ----------------------------------------------------------
+//
+// Phase 2 of plans/PANES.md: the editor area is a JS-owned pane tree.
+// With one leaf (this phase) it looks and behaves like today; the
+// abstraction is exercised so phase 3's split commands can land on it.
+//
+// The pane *tree* is a JavaScript data structure; the DOM mirrors only
+// its leaves. Each leaf has a `<div class="pane">` under `editor-host`,
+// absolute-positioned from the tree's layout.
+
+/** The host element that contains the pane tree's leaves. */
+const editorHostEl = /** @type {HTMLElement} */ (
+  document.querySelector('#editor-host')
+);
+
+/** The root of the pane tree. With one leaf this phase; phase 3
+ *  introduces splits. The leaf's view is set after the views list and
+ *  the kind registry are wired up — at construction the leaf points to
+ *  the initial current view. */
+let rootPane = createLeafPane({ view: views[currentViewIndex] ?? null });
+
+/** Map from each live leaf-pane id to the `<div class="pane">` element
+ *  that mirrors it. The map is rebuilt whenever the tree changes (phase
+ *  3); for now it stays stable across the editor's lifetime. */
+const paneElements = new Map();
+
+/** Build (or refresh) the DOM children of `editor-host` to match the
+ *  pane tree's leaves. Each leaf gets a `<div class="pane">`; stale
+ *  leaves are removed. Idempotent: safe to call on every layout.
+ *
+ *  This phase the leaf set is constant so the function effectively only
+ *  runs its first-call branch (creating the one leaf div). Phase 3's
+ *  split commands will exercise the remove/add paths. */
+function syncPaneElements() {
+  const leaves = leafPanes(rootPane);
+  const liveIds = new Set(leaves.map((leaf) => leaf.id));
+  // Remove pane divs whose leaves are gone (phase 3 cleanup path).
+  for (const [id, el] of paneElements) {
+    if (!liveIds.has(id)) {
+      el.remove();
+      paneElements.delete(id);
+    }
+  }
+  // Add pane divs for leaves that don't have one yet.
+  for (const leaf of leaves) {
+    if (!paneElements.has(leaf.id)) {
+      const el = document.createElement('div');
+      el.className = 'pane';
+      el.dataset.paneId = leaf.id;
+      editorHostEl.append(el);
+      paneElements.set(leaf.id, el);
+    }
+  }
+}
+
+/** The DOM element for the (single, this phase) leaf pane. Renderer
+ *  view modules mount their root inside this; absolute layout is what
+ *  sizes it. */
+function editorPaneElement() {
+  syncPaneElements();
+  const leaves = leafPanes(rootPane);
+  const leaf = leaves[0];
+  return paneElements.get(leaf.id);
+}
+
+/** Pending requestAnimationFrame id for a coalesced relayout, or 0. */
+let relayoutHandle = 0;
+
+/** Recompute the layout of every leaf pane against the current editor-
+ *  host bounds and write each leaf's rect to its element. Cheap to call
+ *  repeatedly — the rounded rects mean a no-op write when the size
+ *  didn't change. */
+function relayoutPanes() {
+  relayoutHandle = 0;
+  const hostRect = editorHostEl.getBoundingClientRect();
+  // Editor-host is positioned within the workspace; the pane divs use
+  // its own coordinate system, so we pass width/height only.
+  const rects = computeRects(rootPane, {
+    width: hostRect.width,
+    height: hostRect.height,
+  });
+  syncPaneElements();
+  for (const [id, rect] of rects) {
+    const el = paneElements.get(id);
+    if (!el) continue;
+    el.style.left = `${rect.left}px`;
+    el.style.top = `${rect.top}px`;
+    el.style.width = `${rect.width}px`;
+    el.style.height = `${rect.height}px`;
+  }
+}
+
+/** Schedule a relayout for the next animation frame. Coalesces a burst
+ *  of resize callbacks (e.g. the REPL or markdown-preview splitter
+ *  dragging continuously) into one DOM write per frame. */
+function scheduleRelayout() {
+  if (relayoutHandle !== 0) return;
+  relayoutHandle = requestAnimationFrame(relayoutPanes);
+}
+
+// Mount the initial pane div now so the renderer view modules below
+// have something to append into. Layout runs once at startup and on
+// every editor-host resize.
+syncPaneElements();
+// Initial layout runs in a microtask so editor-host has its first
+// computed size (the workspace flex layout settles after first paint).
+queueMicrotask(relayoutPanes);
+
+// Observe editor-host for size changes — splitters dragging, the OS
+// window resizing, anything that reshapes the editor area triggers a
+// coalesced relayout.
+const editorHostResizeObserver = new ResizeObserver(() => scheduleRelayout());
+editorHostResizeObserver.observe(editorHostEl);
+
 /** Hide every renderer view's DOM, then leave the kind registry to
  *  re-mount the active one. Pause the standalone media players and
  *  the shell view when they're being unmounted so a hidden view
@@ -287,12 +402,21 @@ function hideInactiveRendererViews(activeKind) {
 }
 
 /** Switch to the view at INDEX: dispatch through the kind registry to
- *  mount the matching renderer view, and update the modeline. */
+ *  mount the matching renderer view, and update the modeline.
+ *
+ *  Phase 2 of plans/PANES.md: the current leaf pane's `view` is updated
+ *  to point at the freshly-switched-to view. With one leaf this is the
+ *  only place a leaf's view changes; phase 3's split commands will
+ *  open new leaves with their own views. */
 function switchToViewIndex(index) {
   if (index < 0 || index >= views.length) return null;
   dismissSplash();
   currentViewIndex = index;
   const view = views[index];
+  // Update the (single, this phase) leaf pane's view so (current-view)
+  // resolving through (current-pane) finds the right handle.
+  const leaves = leafPanes(rootPane);
+  if (leaves.length > 0) leaves[0].view = view;
   hideInactiveRendererViews(view.kind);
   kindRegistry.mount(view);
   updateModeline();
@@ -2305,7 +2429,7 @@ function refreshModeMenu() {
 
 const editorView = createEditorView(
   currentTextBuffer,
-  document.getElementById('editor-host'),
+  editorPaneElement(),
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     highlighters,
@@ -2505,7 +2629,7 @@ function openCustomScope(scope) {
 // whichever the current buffer's kind calls for. Keys typed in it
 // (outside a form control) go through the same Lisp keymap.
 const customizeView = createCustomizeView(
-  document.getElementById('editor-host'),
+  editorPaneElement(),
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     getModel: getCustomModel,
@@ -2523,7 +2647,7 @@ customizeView.element.style.display = 'none';
 // Like the customisation view it shares #editor-host; switchToBuffer
 // shows whichever the current buffer's kind calls for. Keys typed in
 // it go through the same Lisp keymap.
-const imageView = createImageView(document.getElementById('editor-host'), {
+const imageView = createImageView(editorPaneElement(), {
   ...(keymapReady ? { onKey: dispatchKey } : {}),
 });
 imageView.element.style.display = 'none';
@@ -2549,7 +2673,7 @@ function highlightCodeForDocView(text, language) {
 // through. Cross-links inside the rendered HTML carry
 // `data-jmacs-doc="name"`; clicking one routes through Lisp's
 // `open-doc`, which calls `open-doc!` (host primitive) below.
-const docView = createDocView(document.getElementById('editor-host'), {
+const docView = createDocView(editorPaneElement(), {
   ...(keymapReady ? { onKey: dispatchKey } : {}),
   closeBuffer: () => {
     if (!keymapReady) return;
@@ -2580,7 +2704,7 @@ docView.element.style.display = 'none';
 // stay truthful; `openImage` routes M-RET on the album art through
 // the same image-buffer path the dialog uses.
 const jukeboxView = createJukeboxView(
-  document.getElementById('editor-host'),
+  editorPaneElement(),
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     audio,
@@ -2680,7 +2804,7 @@ function stripDerivedFields(meta) {
 // Unlike the jukebox, this view owns its own <audio> element so a
 // file open here doesn't fight the jukebox's playback head.
 const audioView = createAudioView(
-  document.getElementById('editor-host'),
+  editorPaneElement(),
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     closeBuffer: () => {
@@ -2706,7 +2830,7 @@ audioView.element.style.display = 'none';
 
 // The video view — the view a `video`-kind buffer is shown through.
 const videoView = createVideoView(
-  document.getElementById('editor-host'),
+  editorPaneElement(),
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     closeBuffer: () => {
@@ -2726,7 +2850,7 @@ videoView.element.style.display = 'none';
 // through the host's open-file-path so they land in whichever view
 // their suffix maps to (text editor, image, audio, video).
 const directoryTreeView = createDirectoryTreeView(
-  document.getElementById('editor-host'),
+  editorPaneElement(),
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
@@ -2751,7 +2875,7 @@ directoryTreeView.element.style.display = 'none';
 // a file → opens it through the host's open-file-path so it lands
 // in whichever view its suffix maps to.
 const directoryColumnsView = createDirectoryColumnsView(
-  document.getElementById('editor-host'),
+  editorPaneElement(),
   {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
@@ -2777,7 +2901,7 @@ directoryColumnsView.element.style.display = 'none';
 // resize requests when its fit-to-container addon decides cols/rows
 // changed. The view stays subscribed across buffer switches so
 // background commands keep streaming into the terminal.
-const shellView = createShellView(document.getElementById('editor-host'), {
+const shellView = createShellView(editorPaneElement(), {
   spawn: (sessionId, opts) =>
     window.host && typeof window.host.shellSpawn === 'function'
       ? window.host.shellSpawn(sessionId, opts)
