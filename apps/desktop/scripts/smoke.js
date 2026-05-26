@@ -2393,13 +2393,14 @@ app.whenReady().then(() => {
       console.log('  cols:', JSON.stringify(cols));
       await rm(colsDir, { recursive: true, force: true });
 
-      // Shell-buffer arm: open a shell buffer, type a command, hit
-      // Enter, wait for the output to arrive in the transcript, then
-      // run a coloured printf and verify the ANSI parser turned the
-      // SGR sequences into styled spans (and that the literal escape
-      // bytes do NOT appear in the transcript text), then kill the
-      // buffer and confirm cleanup. v2 also asserts the pty/pipe
-      // backing label in the header.
+      // Shell-buffer arm (v4): open a shell buffer, drive the xterm.js
+      // terminal directly through its `__term` handle (the view exposes
+      // this when `window.__SMOKE__` is set), type a command, wait for
+      // its output to land in the terminal's buffer, then assert the
+      // [pty]/[pipe] backing tag is present. After that run a resize
+      // sanity check — shrink the term host's width and verify
+      // term.cols updates — and finally kill the buffer and confirm
+      // cleanup.
       const shell = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2410,80 +2411,75 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        // Turn on the smoke handle BEFORE the shell view mounts so the
+        // freshly-constructed Terminal attaches itself to view.__term.
+        window.__SMOKE__ = true;
         submit('(shell)');
-        await wait(300);
+        await wait(500);
         await frame();
         const view = document.querySelector('.shell-view');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
-        // v3: the input is a contenteditable span inside the transcript.
-        const shellInput = view ? view.querySelector('.shell-live-input') : null;
-        if (!shellInput) {
+        // The xterm.js host appears once the terminal opens; .xterm
+        // is the wrapping element xterm.js mounts inside it.
+        const termHost = view ? view.querySelector('.shell-term-host') : null;
+        const xtermEl = view ? view.querySelector('.shell-term-host .xterm') : null;
+        const term = view ? view.__term : null;
+        if (!term || !xtermEl) {
           return { shown, mounted: false };
         }
-        // Type a command that echoes a known string; submit by
-        // dispatching an Enter keydown the input listens for. The
-        // marker is intentionally not contained in the command text
-        // itself so a true match requires the shell's stdout (not
-        // just the input echo) to arrive in the transcript.
+        // Helper: read every visible line from the terminal's active
+        // buffer and join it into a single string. We use this to
+        // assert the echo command's output arrived.
+        const readBuffer = () => {
+          const buf = term.buffer.active;
+          const lines = [];
+          // baseY + cursorY covers everything from the top of
+          // scrollback through the cursor row.
+          const end = buf.length;
+          for (let i = 0; i < end; i += 1) {
+            const line = buf.getLine(i);
+            if (line) lines.push(line.translateToString(true));
+          }
+          return lines.join('\\n');
+        };
+        // Type a command directly into the terminal. \`term.input\`
+        // feeds bytes through the onData path — same as a real key.
+        // The marker is intentionally not in the command itself so a
+        // true match requires the shell's stdout, not just the
+        // tty-echoed input line.
         const marker = 'JMACSMARKER42';
-        shellInput.focus();
-        shellInput.textContent = 'echo ' + marker;
-        shellInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        // Wait for the shell to start (the spawn message + first
-        // output chunk arrive asynchronously). Poll the transcript:
-        // the input echo block (.shell-entry-input) is excluded so we
-        // only succeed once the stdout block carries the marker.
-        let stdoutText = '';
-        let transcriptText = '';
+        term.focus();
+        term.input('echo ' + marker + '\\r');
+        let bufferText = '';
         for (let i = 0; i < 80; i += 1) {
           await wait(100);
-          const transcript = view.querySelector('.shell-transcript');
-          transcriptText = transcript ? transcript.textContent : '';
-          const stdoutEls = view.querySelectorAll('.shell-entry-stdout');
-          stdoutText = Array.from(stdoutEls).map((e) => e.textContent).join('');
-          if (stdoutText.includes(marker)) break;
+          bufferText = readBuffer();
+          // A successful match needs the marker to appear OUTSIDE the
+          // typed echo line — i.e. on a different row. Cheap proxy:
+          // count occurrences.
+          const matches = bufferText.split(marker).length - 1;
+          if (matches >= 2) break;
         }
-        // v2: ANSI parsing. Send a printf with red + bold-green SGR
-        // sequences and verify the parser emitted the matching spans.
-        // The literal escape bytes \\033[31m / \\033[1;32m / \\033[0m
-        // must not appear in the transcript text (the parser eats them);
-        // a .shell-fg-red span with text 'red' and a .shell-fg-green
-        // span with text 'bold-green' (with .shell-bold) must be present.
-        // Using single-quoted printf with %s + the marker so the
-        // assertion is precise; the bash printf interpretation of \\033
-        // is the actual escape byte on output.
-        shellInput.focus();
-        shellInput.textContent =
-          "printf '\\\\033[31mred\\\\033[0m\\\\n\\\\033[1;32mbold-green\\\\033[0m\\\\n'";
-        shellInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        let redSpan = null;
-        let greenSpan = null;
-        for (let i = 0; i < 60; i += 1) {
-          await wait(100);
-          // v3: coloured output lands in completed shell-entry-stdout
-          // rows. While the prompt is mid-typing it sits in the live row,
-          // but printf output finishes with a newline and so always
-          // finalises.
-          redSpan = view.querySelector('.shell-entry-stdout .shell-fg-red');
-          greenSpan =
-            view.querySelector('.shell-entry-stdout .shell-fg-green.shell-bold')
-            ?? view.querySelector(
-              '.shell-entry-stdout .shell-bold.shell-fg-green'
-            );
-          if (redSpan && greenSpan) break;
-        }
-        const ansiTranscript = view.querySelector('.shell-transcript');
-        const ansiTranscriptText = ansiTranscript ? ansiTranscript.textContent : '';
-        // The escape byte itself (\\u001b) must not appear in the text
-        // content — if it does, the parser leaked.
-        const containsEscapeByte = ansiTranscriptText.includes('\\u001b');
+        const markerMatches = bufferText.split(marker).length - 1;
         // The header should carry the [pty] / [pipe] backing tag.
         const backingEl = view.querySelector('.shell-header-backing');
         const backing = backingEl ? backingEl.textContent : '';
+        const colsBefore = term.cols;
+        // Resize sanity arm: shrink the host width and re-fit. The
+        // FitAddon attached inside the view listens on the host's
+        // ResizeObserver, which fires from the style mutation; xterm.js
+        // recomputes cols/rows.
+        const prevWidth = termHost.style.width;
+        termHost.style.width = '40ch';
+        // Give the ResizeObserver a tick to fire, then a frame for
+        // requestAnimationFrame-deferred fit() to apply.
+        await wait(200);
+        await frame();
+        await wait(200);
+        const colsAfter = term.cols;
+        // Restore so the kill-buffer arm doesn't see a half-resized
+        // grid (cosmetic — the buffer is about to go).
+        termHost.style.width = prevWidth;
         const tabsBefore = document.querySelectorAll('.tabline-tab').length;
         // Kill the shell buffer through the same path the keymap uses.
         submit('(kill-buffer!)');
@@ -2495,17 +2491,11 @@ app.whenReady().then(() => {
         return {
           shown,
           mounted: true,
-          transcriptText,
-          stdoutText,
-          containsEcho: stdoutText.includes(marker),
-          // v2 ANSI assertions:
-          redSpanText: redSpan ? redSpan.textContent : null,
-          greenSpanText: greenSpan ? greenSpan.textContent : null,
-          greenSpanIsBold: greenSpan
-            ? greenSpan.classList.contains('shell-bold')
-            : false,
-          containsEscapeByte,
+          markerMatches,
+          bufferText,
           backing,
+          colsBefore,
+          colsAfter,
           tabsBefore,
           tabsAfter,
           stillShownAfterKill: !!stillShown,
@@ -2863,26 +2853,27 @@ app.whenReady().then(() => {
         cols.modelineAfterOpen.includes('inner.txt') &&
         // Double-clicking the same file again de-dups: no extra tab.
         cols.tabsAfterSecondOpen === cols.tabsAfter;
-      // Shell-buffer arm: the view mounts, the echo command's output
-      // arrives in the transcript, the ANSI parser turned a coloured
-      // printf into the expected styled spans (with no leaked escape
-      // bytes), and killing the buffer removes the tab + unmounts the
-      // view. v2 also checks the [pty]/[pipe] backing tag is present.
+      // Shell-buffer arm (v4): the view mounts an xterm.js terminal,
+      // the echo command's output reaches the terminal's buffer
+      // (twice: once as the tty echo of the typed command line, once
+      // as the shell's actual stdout — markerMatches >= 2), the
+      // [pty]/[pipe] backing tag is present, the FitAddon recomputes
+      // cols when the host shrinks, and killing the buffer removes
+      // the tab + unmounts the view.
       const shellOk =
         shell &&
         shell.shown &&
         shell.mounted &&
-        shell.containsEcho &&
-        // ANSI parser: the SGR-wrapped runs become real styled spans.
-        shell.redSpanText === 'red' &&
-        shell.greenSpanText === 'bold-green' &&
-        shell.greenSpanIsBold &&
-        // The raw escape bytes never reach the transcript text.
-        !shell.containsEscapeByte &&
+        shell.markerMatches >= 2 &&
         // Backing tag: [pty] on macOS dev machines where python3 is
         // available (the smoke runs on dev hardware). [pipe] is the
         // legitimate fallback if the python probe failed.
         (shell.backing === '[pty]' || shell.backing === '[pipe]') &&
+        // Resize: shrinking the host's width below the original grid
+        // must reduce term.cols. (40ch is much narrower than xterm.js's
+        // default 80 columns.)
+        shell.colsAfter > 0 &&
+        shell.colsAfter < shell.colsBefore &&
         shell.tabsAfter === shell.tabsBefore - 1 &&
         !shell.stillShownAfterKill;
       const chordOk =

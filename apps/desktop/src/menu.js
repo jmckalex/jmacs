@@ -6,10 +6,16 @@
  * buffer and the REPL session — and a grab-bag of other accelerators.
  *
  * This replaces it with a minimal menu: the standard app, edit and
- * window menus, a View menu with no Reload, and — when the current
- * buffer's mode binds any commands — a mode-specific menu listing them.
- * The edit menu is kept because it is what gives the REPL and
- * minibuffer text fields their native copy and paste on macOS.
+ * window menus, a View menu, and — when the current buffer's mode binds
+ * any commands — a mode-specific menu listing them. The edit menu is
+ * kept because it is what gives the REPL and minibuffer text fields
+ * their native copy and paste on macOS.
+ *
+ * The View menu carries a "Hard Reload" entry that discards the
+ * renderer's cached assets and reloads the page. Useful for diagnosing
+ * stale-cache symptoms when iterating on CSS / JS during development.
+ * It drops every open buffer and the REPL session — labelled clearly
+ * and bound to ⌘⇧R (not ⌘R) so accidental presses are unlikely.
  *
  * The mode menu is rebuilt as the buffer's mode changes: the renderer
  * sends the entries (it owns the keymaps), `buildAppMenu` turns them
@@ -74,6 +80,15 @@ export function buildAppMenu(modeMenu, onCommand) {
         { role: 'zoomOut' },
         { type: 'separator' },
         { role: 'toggleDevTools' },
+        // Hard reload — ignores the HTTP cache and resets the
+        // renderer. Drops all open buffers and the REPL session.
+        // Diagnostic tool, not for casual use: bound to Cmd+Shift+R
+        // (not Cmd+R) to avoid accidents.
+        {
+          label: 'Hard Reload (Discards Buffers)',
+          accelerator: 'CmdOrCtrl+Shift+R',
+          role: 'forceReload',
+        },
       ],
     },
   ];

@@ -37,11 +37,7 @@ export {
   iconClassForFile,
 } from './directory-tree-view.js';
 export { createDirectoryColumnsView } from './directory-columns-view.js';
-export {
-  createShellView,
-  feedLiveLine,
-} from './shell-view.js';
-export { createAnsiParser } from './ansi.js';
+export { createShellView } from './shell-view.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,

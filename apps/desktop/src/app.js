@@ -2157,6 +2157,15 @@ function installFacePersistence() {
   );
 }
 
+/** Things that want a callback when the editor theme changes. The
+ *  shell view registers itself once it exists so xterm.js can
+ *  rebuild its palette. Must sit above the first top-level
+ *  `applyCurrentTheme()` call below — `applyCurrentTheme` is a
+ *  function declaration (hoisted) but this is a `const` (in TDZ
+ *  until evaluated), so the call would otherwise crash before the
+ *  declaration runs. */
+const themeListeners = new Set();
+
 let keymapReady = false;
 try {
   await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
@@ -2388,7 +2397,10 @@ function getCustomModel(scope) {
 
 /** Apply the current theme: read each (--var . value) pair from Lisp
  *  and write it to the document root's inline style. Settings the
- *  theme leaves out (font-size, font-mono, …) keep the :root defaults. */
+ *  theme leaves out (font-size, font-mono, …) keep the :root defaults.
+ *  Also pokes any registered theme listeners (e.g. the shell view's
+ *  xterm.js theme; that view reads CSS variables at construction time
+ *  and needs telling explicitly when they change). */
 function applyCurrentTheme() {
   try {
     const pairs = listToArray(interpreter.call('current-theme-css-vars'));
@@ -2398,6 +2410,9 @@ function applyCurrentTheme() {
       if (cssVar.startsWith('--') && value !== '') {
         document.documentElement.style.setProperty(cssVar, value);
       }
+    }
+    for (const listener of themeListeners) {
+      try { listener(); } catch { /* listener bug — keep going */ }
     }
   } catch (error) {
     repl.appendError(`theme: ${error.lispMessage ?? error.message}`);
@@ -2737,12 +2752,12 @@ const directoryColumnsView = createDirectoryColumnsView(
 directoryColumnsView.element.style.display = 'none';
 
 // The shell view — a `shell`-kind buffer is shown through this view.
-// It owns a long-lived child process per session id; the host's
-// shellSpawn/shellWrite/shellSignal IPCs run the process and stream
-// its output back. The view stays subscribed across buffer switches
-// so background commands keep filling the transcript.
+// v4: xterm.js owns the DOM. The host pipes pty bytes in and out;
+// xterm.js parses every escape sequence, draws the grid, and emits
+// resize requests when its fit-to-container addon decides cols/rows
+// changed. The view stays subscribed across buffer switches so
+// background commands keep streaming into the terminal.
 const shellView = createShellView(document.getElementById('editor-host'), {
-  ...(keymapReady ? { onKey: dispatchKey } : {}),
   spawn: (sessionId, opts) =>
     window.host && typeof window.host.shellSpawn === 'function'
       ? window.host.shellSpawn(sessionId, opts)
@@ -2751,13 +2766,9 @@ const shellView = createShellView(document.getElementById('editor-host'), {
     window.host && typeof window.host.shellWrite === 'function'
       ? window.host.shellWrite(sessionId, data)
       : Promise.resolve({ ok: false }),
-  signal: (sessionId, signal) =>
-    window.host && typeof window.host.shellSignal === 'function'
-      ? window.host.shellSignal(sessionId, signal)
-      : Promise.resolve({ ok: false }),
-  endInput: (sessionId) =>
-    window.host && typeof window.host.shellEndInput === 'function'
-      ? window.host.shellEndInput(sessionId)
+  resize: (sessionId, cols, rows) =>
+    window.host && typeof window.host.shellResize === 'function'
+      ? window.host.shellResize(sessionId, cols, rows)
       : Promise.resolve({ ok: false }),
   kill: (sessionId) =>
     window.host && typeof window.host.shellKill === 'function'
@@ -2771,16 +2782,11 @@ const shellView = createShellView(document.getElementById('editor-host'), {
     window.host && typeof window.host.onShellExit === 'function'
       ? window.host.onShellExit(callback)
       : () => {},
-  closeBuffer: () => {
-    if (!keymapReady) return;
-    try {
-      interpreter.call('kill-buffer');
-    } catch (error) {
-      repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
-    }
-  },
 });
 shellView.element.style.display = 'none';
+// xterm.js reads CSS variables once, at terminal construction. Pump
+// any later theme change into it.
+themeListeners.add(() => shellView.applyTheme());
 
 /** Read a file's preview shape for the columns view. Routes through
  *  the existing openFilePath IPC, so images come back as data: URLs,
