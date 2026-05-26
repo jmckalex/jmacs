@@ -522,12 +522,28 @@ the historical record; **Resolved:** lines summarise the call.
    NOT ALLOWED. SINCE A WINDOW IS ALWAYS TOTALLY VISIBLE, THERE'S
    NO WORLD IN WHICH THIS WOULD BE USEFUL.
 
-   **Resolved:** the same *view* in two panes is not allowed.
-   *Probe answered:* two *views of the same buffer* are allowed.
-   `open-file` always creates a fresh view; the same buffer can
-   underlie N text-views, each with its own per-window
-   point/mark/scroll. The side-by-side-same-file workflow works via
-   duplicate views over a shared buffer.
+   **Resolved (refined 2026-05-26):** the original answer was reasoning
+   from the *non-text* case (the "two jukebox views on the same
+   directory" example Jason had in mind), where having the same view
+   duplicated across two panes is genuinely useless. For *text*
+   views the case is different: the side-by-side-same-file workflow
+   — top half scrolled to a function definition, bottom half scrolled
+   to its caller — is real and used regularly.
+
+   The underlying rule is "no *same view reference* in two panes,"
+   and that still holds. The text-view workflow is supported via the
+   duplicate-view path: opening the same file in a fresh pane creates
+   a new view over the same buffer, with its own per-pane state.
+   `(switch-to-view! existing-view)` raises if the target view is
+   already in another pane of the same window; the workflow needs
+   `(open-file file)` or `(make-view-of-buffer buffer)` instead,
+   which produces a fresh view.
+
+   Phase 3 should make this UX natural — e.g., split-and-open-same-
+   file should auto-duplicate rather than error. The view-list grows
+   by one entry per side-by-side instance; that's the cost of the
+   simpler addressing model (and worth re-examining if the list ever
+   feels noisy).
 
 10. **The same view in two windows.** Allowed by symmetry with (9).
     Likely yes; required by the global view-list claim.
