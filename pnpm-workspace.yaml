@@ -43,3 +43,5 @@ allowBuilds:
   tree-sitter-swift: false
   tree-sitter-xml: false
   tree-sitter-zig: false
+  tree-sitter-make: false
+  tree-sitter-perl: false

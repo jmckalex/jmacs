@@ -1,0 +1,12 @@
+Cargo.lock
+node_modules
+build
+*.log
+/target/
+*.a
+*.dylib
+*.so
+*.o
+src/*
+tree-sitter-perl.wasm
+log.html

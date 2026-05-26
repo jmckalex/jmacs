@@ -167,6 +167,24 @@ build_zig() {
     zig source.zig tree-sitter-zig.wasm
 }
 
+# Perl — the npm tarball is missing `lib/primitives.js` (referenced by
+# grammar.js, so `tree-sitter generate` blows up). Source is fetched
+# from the upstream repo at a pinned tag instead, the same way
+# Dockerfile and Erlang are handled.
+PERL_REPO="https://github.com/tree-sitter-perl/tree-sitter-perl.git"
+PERL_TAG="v1.0.0"
+PERL_SRC="${ROOT}/vendor-grammars/tree-sitter-perl"
+
+build_perl() {
+  if [[ ! -d "${PERL_SRC}/src" ]]; then
+    rm -rf "${PERL_SRC}"
+    mkdir -p "$(dirname "${PERL_SRC}")"
+    git clone --depth 1 --branch "${PERL_TAG}" \
+      "${PERL_REPO}" "${PERL_SRC}" >/dev/null 2>&1
+  fi
+  build_grammar "${PERL_SRC}" perl source.perl tree-sitter-perl.wasm
+}
+
 # Dockerfile — no maintained npm package (the canonical
 # `tree-sitter-dockerfile` slot was hijacked to a security placeholder).
 # Source is fetched from the upstream GitHub repo at a pinned tag into
@@ -204,7 +222,7 @@ build_erlang() {
 }
 
 # --- dispatcher -----------------------------------------------------------
-ALL_GRAMMARS=(markdown latex clojure scheme sql nix xml graphql kotlin swift zig dockerfile erlang)
+ALL_GRAMMARS=(markdown latex clojure scheme sql nix xml graphql kotlin swift zig perl dockerfile erlang)
 
 if [[ $# -eq 0 ]]; then
   TO_BUILD=("${ALL_GRAMMARS[@]}")
@@ -225,6 +243,7 @@ for name in "${TO_BUILD[@]}"; do
     kotlin)     build_kotlin ;;
     swift)      build_swift ;;
     zig)        build_zig ;;
+    perl)       build_perl ;;
     dockerfile) build_dockerfile ;;
     erlang)     build_erlang ;;
     *) echo "unknown grammar: ${name}" >&2; exit 1 ;;

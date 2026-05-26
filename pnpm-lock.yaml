@@ -100,12 +100,18 @@ importers:
       tree-sitter-kotlin:
         specifier: 0.3.8
         version: 0.3.8
+      tree-sitter-make:
+        specifier: 1.1.1
+        version: 1.1.1
       tree-sitter-nix:
         specifier: 0.0.2
         version: 0.0.2
       tree-sitter-ocaml:
         specifier: 0.24.2
         version: 0.24.2
+      tree-sitter-perl:
+        specifier: 1.0.0
+        version: 1.0.0
       tree-sitter-php:
         specifier: 0.24.2
         version: 0.24.2
@@ -437,6 +443,14 @@ packages:
       tree_sitter:
         optional: true
 
+  tree-sitter-make@1.1.1:
+    resolution: {integrity: sha512-szHESi1wObt07uM5a5mwkMjbLHOcgiS5G2YQjU8O+Tfv9RylQBA0umV25lf6gSOefwTsPBnTJGn4SFFdHAVwMg==}
+    peerDependencies:
+      tree-sitter: ^0.22.1
+    peerDependenciesMeta:
+      tree-sitter:
+        optional: true
+
   tree-sitter-nix@0.0.2:
     resolution: {integrity: sha512-rPYc7NUi6hPOyFSoVdCVC9feqBk0kJ0Z3ftTWXo1ubyyKzPM5tJP6mD6xYl0gN45oh9GHGzvTbOmmwIk0XOj5A==}
 
@@ -444,6 +458,15 @@ packages:
     resolution: {integrity: sha512-H0RAeCepIyXyTPCQra6yMd7Bn5ZBYkIaddzdLNwVZpM9mCe2e8av+3O6Ojl7Z8YHrV/kYsfHvI2y+Hh7qzcYQQ==}
     peerDependencies:
       tree-sitter: ^0.22.4
+    peerDependenciesMeta:
+      tree-sitter:
+        optional: true
+
+  tree-sitter-perl@1.0.0:
+    resolution: {integrity: sha512-+W6vtaa06srk9yfsbvO3Emnafmon0Ddy9BJKpl5JZC/ge9HOeI955JdS5brwmsdmMWrbyjQRTEl7so3isD7vXA==}
+    engines: {node: '>= 20.0.0'}
+    peerDependencies:
+      tree-sitter: ^0.22.0
     peerDependenciesMeta:
       tree-sitter:
         optional: true
@@ -746,11 +769,21 @@ snapshots:
       node-addon-api: 7.1.1
       node-gyp-build: 4.8.4
 
+  tree-sitter-make@1.1.1:
+    dependencies:
+      node-addon-api: 8.7.0
+      node-gyp-build: 4.8.4
+
   tree-sitter-nix@0.0.2:
     dependencies:
       nan: 2.27.0
 
   tree-sitter-ocaml@0.24.2:
+    dependencies:
+      node-addon-api: 8.7.0
+      node-gyp-build: 4.8.4
+
+  tree-sitter-perl@1.0.0:
     dependencies:
       node-addon-api: 8.7.0
       node-gyp-build: 4.8.4
