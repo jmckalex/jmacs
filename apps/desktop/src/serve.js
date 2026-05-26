@@ -22,6 +22,7 @@ export const EDITOR_URL = 'app://editor/apps/desktop/index.html';
 const MIME = {
   '.html': 'text/html',
   '.js': 'text/javascript',
+  '.mjs': 'text/javascript',
   '.css': 'text/css',
   '.json': 'application/json',
   '.wasm': 'application/wasm',
