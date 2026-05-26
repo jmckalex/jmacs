@@ -2442,6 +2442,16 @@ textarea.customize-widget {
   height: 100%;
 }
 
+/* xterm.css ships a hard-coded `background-color: #000` on the
+   .xterm-viewport (which is absolute-positioned filling the whole
+   .xterm element). The canvas inside only covers cell-aligned rows,
+   so any sub-cell pixel residue at the bottom of the host shows the
+   black viewport instead of our editor background. Override to the
+   same colour the theme object uses, so the bottom strip blends in. */
+.shell-term-host .xterm-viewport {
+  background-color: var(--bg-editor);
+}
+
 /* The [pty] / [pipe] adornment next to the buffer's name in the
    header. A small uppercase tag the user can scan past — there only
    to explain why a session looks the way it does (no prompt = pipe
