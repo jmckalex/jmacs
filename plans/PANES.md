@@ -8,8 +8,11 @@ Pre-design notes for an editor reshape that does three coupled things:
 3. Allow **multiple OS windows**, each hosting its own pane tree over a
    shared editor model.
 
-These are notes, not the plan. The detailed plan comes after Jason
-decides on the open questions at the end of this file.
+**Status:** Jason settled all the open questions on 2026-05-26 (see
+the section at the end). The body of the document is updated inline to
+reflect those decisions; Jason's ALL CAPS answers are preserved as the
+historical record of how each call was made. A detailed implementation
+plan can be drafted from here.
 
 ## Why now
 
@@ -141,6 +144,66 @@ rectangular even if its border art doesn't.
 The Windows precedent Jason named — non-rect windows nobody uses —
 applies here for the same reason. List it as a non-goal and move on.
 
+## Tabline as a container view
+
+A tabline is **not** window chrome. It's a *kind of view* that can sit
+in any pane and contain other views, with the tab strip configurable on
+top, right, bottom, or left of the pane it occupies. The view
+abstraction stays uniform — panes still hold exactly one view — and
+the tabline-view is just a container view that happens to wrap N
+children and render one at a time.
+
+```
+tabline view = {
+  tabs:   View[],
+  active: number,
+  edge:   'top' | 'right' | 'bottom' | 'left'
+}
+```
+
+This lets users build project-style layouts like:
+
+```
+window:
+  split horizontal (ratio 0.25)
+    left:  leaf  → directory-tree
+    right: split vertical (ratio 0.6)
+      top:    leaf → tabline { [editor-a, editor-b], active:0, edge:top }
+      bottom: leaf → tabline { [shell-1, shell-2],   active:0, edge:top }
+```
+
+Three things fall out of this design:
+
+- The directory-tree pane doesn't need tabs — it's a plain leaf with
+  one view. No "1-tab tab-group" weirdness; not every pane is forced
+  to render a tab strip.
+- Tabs can be on any edge per group, so a vertical tab strip on the
+  right of a wide pane is just as natural as a horizontal tab strip on
+  top. Choice of edge is per-tabline-view, not a global setting.
+- The pane *tree* still has only `split` and `leaf` kinds. The
+  recursion that makes tab-groups composable lives inside the view
+  abstraction, where it's cordoned off.
+
+**Focus resolution.** When focus is in a tabline-view, the focus
+indicator (see "Window as OS frame") shades the outer pane border, but
+`(current-view)` returns the **active child**, not the tabline
+wrapper, and keymap dispatch goes into the active child. Otherwise
+users couldn't run text commands inside an editor tab.
+
+**Empty tablines.** Closing the last tab in a tabline-view makes the
+view empty, and the pane containing it collapses into its sibling —
+same rule as Emacs `C-x 0`.
+
+**Recursion.** Nesting a tabline-view inside another tabline-view is
+technically allowed (the type system permits it; commands work). It's
+discouraged — there's no `make-nested-tablines!` command — but
+nothing forbids a user who wants it from building it via Lisp.
+
+The `agent-session` branch's "tabline at the top of the window"
+becomes "root pane = leaf with a tabline-view, edge:top." That
+branch's data model needs reconciling before it merges, but the
+visual result lines up cleanly.
+
 ## View as primary
 
 ### What changes
@@ -153,7 +216,8 @@ applies here for the same reason. List it as a non-goal and move on.
   properties, edit history, point, mark, modes.
 - For non-text views, no buffer exists. The view holds its own state
   (jukebox: cwd + track list; image: path + zoom; shell: session id;
-  reactive notebook: cell list + reactive graph).
+  reactive notebook: cell list + reactive graph; tabline: child views
+  + active index + edge).
 
 ### What stays
 
@@ -258,6 +322,23 @@ the kind of work that pays off compounding-ly for every later feature
 (remote VM, headless evaluation, multi-process safety). Worth doing
 once and well.
 
+### Focus indication
+
+Each window has at most one focused pane; each focused pane has at
+most one focused view (the active child, in a tabline-view; the only
+view, in a leaf). The focused pane shows its focus with a **subtle
+border shading** — distinct enough to spot at a glance, quiet enough
+not to compete with content.
+
+**Click-anywhere-to-focus.** Clicking any control inside a pane
+focuses that pane: clicking a jukebox transport gives the jukebox
+focus; clicking inside a code editor's text area focuses the editor.
+The keymap dispatches to whatever the focused view's mode binds.
+
+Across windows: the OS owns window-level focus, and jmacs respects
+it — the focused pane is "the focused pane *of the focused window*."
+`(current-pane)` and `(current-view)` resolve through that chain.
+
 ### Window-local state — what each window owns
 
 - A pane tree (the splits).
@@ -328,8 +409,9 @@ The intermediate states are all useful.
 
 ## Open questions
 
-The detailed plan should answer these. Listed in roughly the order
-they need to be settled.
+All settled 2026-05-26 except Q8 and Q13, which are deferred to the
+phase where they bite. Jason's original ALL CAPS answers are kept as
+the historical record; **Resolved:** lines summarise the call.
 
 1. **Pane tree topology.** Binary (one split = two children) or n-ary
    (one split = N children with weights)? Binary is simpler and what
@@ -337,11 +419,21 @@ they need to be settled.
    horizontal-row case. Lean: binary, since drag-resize gestures are
    inherently binary anyway.
 
+   LET'S GO WITH BINARY
+
+   **Resolved:** binary.
+
 2. **Point and mark — per-pane or per-buffer?**
    Two views of the same text buffer can have their own cursors
    (Emacs's per-window-point), or share a single cursor that jumps
    when focus switches (the simpler model). Emacs gets this right at
    the cost of complexity.
+
+   GO WITH COMPLEXITY - THE PER-WINDOW-POINT. IT'S THE RIGHT MODEL.
+
+   **Resolved:** per-window-point — a view in a window has its own
+   point/mark/scroll for that window; the same view in a different
+   window has its own.
 
 3. **Pane sizing under resize.** Each split node holds a ratio
    (between 0 and 1) for its first child; window resize scales
@@ -349,11 +441,32 @@ they need to be settled.
    Alternative: pixel-fixed sizes that the user has to maintain
    manually. Ratio is cheaper for the user.
 
+   I DON'T UNDERSTAND WHAT IS AT STAKE HERE.
+
+   **Resolved (after rephrase):** proportional / ratio-based. Each
+   split node stores a ratio between 0 and 1 for its first child;
+   resizing the OS window scales both halves proportionally;
+   drag-resizing a splitter updates the one node's ratio.
+
 4. **Migration strategy for the Lisp surface.** Flag day vs dual
    surface (see "Lisp surface" above). Lean: flag day.
 
+   FLAG DAY, SINCE NO ONE IS USING THIS WE DON'T NEED TO WORRY
+   ABOUT MIGRATION
+
+   **Resolved:** flag day. Rename in one pass; no dual surface, no
+   compatibility aliases. `(current-view)` is primary;
+   `(current-buffer)` either disappears entirely or errors on
+   non-text views (detailed plan to settle).
+
 5. **Multi-window VM hosting.** Options (a), (b), (c) above.
    Lean: (a), the most work, but architecturally clean.
+
+   LET'S GO WITH (A)
+
+   **Resolved:** option (a). Lisp VM lives in the main process;
+   renderers ferry commands through IPC and receive state diffs.
+   Most work, but architecturally clean and matches L0–L4.
 
 6. **Per-window vs global REPL?** Emacs's `*Lisp REPL*` is a global
    buffer that any window can show. The lisp VM is global; the REPL
@@ -361,23 +474,69 @@ they need to be settled.
    in whatever pane the user chose. (This argues for "view list is
    global" by itself.)
 
+   GLOBAL. THE APP STATE IS SHARED ACROSS ALL WINDOWS, SO THIS IS THE
+   ONLY OPTION THAT MAKES SENSE. WINDOWS ARE FOR ORGANISATION AND
+   EASE OF USE, NOT TO CREATE FRAGMENTED MEMORY-SEPARATED WORLDS.
+
+   **Resolved:** global. One REPL view in the view list, displayable
+   in whatever pane the user chooses. Guiding principle from Jason:
+   *"windows are for organisation and ease of use, not to create
+   fragmented memory-separated worlds."* That principle applies more
+   broadly — view list, buffer pool, lisp VM, mode definitions all
+   live globally; windows are just viewports onto the shared model.
+
 7. **Minibuffer placement.** Emacs has a single global minibuffer
    per frame; each window has its own. We follow per-window:
    each window has its own minibuffer, since commands are window-
    scoped (which pane is the focused command applied to?).
+
+   WE'LL NEED A SUBTLE BORDER SHADING TO INDICATE WHICH PANE IN A WINDOW
+   HAS FOCUS. FOR EXAMPLE, CLICKING ON A JUKEBOX CONTROL GIVES FOCUS
+   TO THE JUKEBOX, AND CLICKING IN A CODE EDITOR GIVES FOCUS TO THE EDITOR.
+
+   **Resolved (minibuffer):** per-window. Each window has its own
+   minibuffer at the bottom; commands run in window scope.
+   **Bonus content captured separately:** the focus-indicator
+   requirement is folded into the new "Focus indication" subsection
+   above (subtle border shading + click-anywhere-to-focus semantics).
 
 8. **Modeline composition.** Per-view-kind template? A global format
    that interpolates view-level data? Lean: each view kind declares
    its own modeline payload (a Lisp value); a global format renders
    them uniformly with per-kind extensions.
 
+   I DON'T UNDERSTAND THIS QUESTION.
+
+   **Deferred:** revisit when modeline rework lands. The question is
+   whether each view kind declares its own modeline template (with a
+   global renderer interpolating it), or whether the modeline format
+   is a single global Lisp form that pulls per-view data. Not
+   load-bearing for the view/buffer split or pane work; settle at
+   modeline time.
+
 9. **The same view in two panes.** Allowed? If yes, the per-pane vs
    per-buffer point question above tightens. If no, simpler model
    but loses the legitimately useful "two views of the same file at
    different positions."
 
+   NOT ALLOWED. SINCE A WINDOW IS ALWAYS TOTALLY VISIBLE, THERE'S
+   NO WORLD IN WHICH THIS WOULD BE USEFUL.
+
+   **Resolved:** the same *view* in two panes is not allowed.
+   *Probe answered:* two *views of the same buffer* are allowed.
+   `open-file` always creates a fresh view; the same buffer can
+   underlie N text-views, each with its own per-window
+   point/mark/scroll. The side-by-side-same-file workflow works via
+   duplicate views over a shared buffer.
+
 10. **The same view in two windows.** Allowed by symmetry with (9).
     Likely yes; required by the global view-list claim.
+
+    THIS IS ALLOWED. I CAN IMAGINE USE CASES WHERE THIS IS HELPFUL
+
+    **Resolved:** allowed. A view can appear in panes in two different
+    windows simultaneously. Per-window-point (Q2) means each window
+    keeps its own point/mark/scroll for that view.
 
 11. **Tabline scope.** The `agent-session` branch ships a tabline.
     Per pane, per window, or one global tabline at the top of the
@@ -385,21 +544,64 @@ they need to be settled.
     shown in any pane of that window, plus a global "recent views"
     bucket. Needs the branch's design checked.
 
+    I DON'T UNDERSTAND THIS QUESTION.
+
+    **Resolved (reframed):** the question dissolved. The tabline is
+    not window-level chrome at all — it's a view kind (see "Tabline
+    as a container view" above). A pane that wants tabs holds a
+    tabline-view; the tabline-view contains N child views and renders
+    a tab strip on a configurable edge. There's no per-window or
+    per-pane "tabline" concept to scope; users place tabline-views
+    where they want them.
+
 12. **Window chrome / title bar.** OS title bar above each window?
     Custom chrome? jmacs is currently bare-chrome; staying that way
     is probably right.
 
+    STAY BARE-CHROME.
+
+    **Resolved:** OS title bar above each window; no custom chrome.
+
 13. **Persistence schema versioning.** Cross-version compatibility
     for the session blob, or "best effort, ignore unknown"?
+
+    I DON'T UNDERSTAND THIS QUESTION.
+
+    **Deferred:** revisit when the session-restore work picks up.
+    The question is whether session blobs on disk carry a schema
+    version so a newer app can migrate older saves forward, or whether
+    we just "best-effort, ignore unknown fields, fill in defaults."
+    Pre-1.0; best-effort is the obvious lean but not load-bearing yet.
 
 14. **Focus restoration on launch.** When session restore brings up N
     windows, which one is focused? Persist last-focused-window;
     restore it.
 
+    YES.
+
+    **Resolved:** persist last-focused window; restore that window's
+    focus on launch.
+
 15. **What does "current view" mean across windows?** The view in the
     focused pane of the focused window. `(current-view)` returns
     that. Commands that need a specific window/pane take an explicit
     handle.
+
+    YES, THIS IS THE RIGHT WAY FORWARD. COMMANDS THAT NEED A WINDOW/PANE
+    TAKE A HANDLE, AND WE HAVE LISP FUNCTIONS WHICH GENERATE/RETURN
+    HANDLES.  FOR EXAMPLE, THE LISP COMMAND (split-horizontal 80 20) WHICH
+    SPLITS THE CURRENT PANE WITH A 80% AND 20% WIDTH DISTRIBUTION WILL RETURN
+    A LIST OF THE FORM (handleLeft, handleRight) WHICH CAN BE USED.
+
+    **Resolved:** `(current-view)` is the active view in the focused
+    pane of the focused window (with tabline-view active-child
+    resolution per the section above). Commands that need a specific
+    pane or window take an explicit handle. **Pane-creating
+    commands return handles**, so they compose:
+    `(split-horizontal 80 20)` returns `(handleLeft handleRight)`,
+    and either can be passed to subsequent commands. The same
+    convention applies to `(make-window!)`, `(make-tabline-view ...)`,
+    etc. — every constructor returns the handle(s) it creates.
 
 ## Non-goals
 
@@ -413,42 +615,53 @@ they need to be settled.
 
 ## Sketch of stdlib surface (illustrative, not final)
 
+Constructors return the handle(s) they create (per Q15 resolution); a
+caller can immediately compose, or discard the return value when
+acting on `(current-pane)` is enough.
+
 ```
-;; Pane and split
-(current-pane)
-(other-pane)
-(split-pane-horizontal!)
-(split-pane-vertical!)
-(delete-pane!)
-(delete-other-panes!)
+;; Pane and split — constructors return handles
+(current-pane)                                 ; → pane handle
+(other-pane)                                   ; → pane handle
+(split-horizontal! ratio)                      ; → (left-handle right-handle)
+(split-vertical!   ratio)                      ; → (top-handle  bottom-handle)
+(delete-pane! pane)                            ; collapses into sibling
+(delete-other-panes! [pane])                   ; Emacs `C-x 1`
 (focus-pane-direction! 'left|'right|'up|'down)
 (balance-panes!)
 
+;; Tabline view — also a constructor; returns the tabline-view handle
+(make-tabline-view tabs edge)                  ; edge ∈ 'top|'right|'bottom|'left
+(add-tab! tabline-view view [index])           ; → tab index
+(remove-tab! tabline-view index)
+(activate-tab! tabline-view index)
+(tabline-edge tabline-view)
+(set-tabline-edge! tabline-view edge)
+
 ;; View
-(current-view)
-(view-list)
-(view-buffer view)               ; nil for non-text views
+(current-view)                                 ; → view handle (active child of
+                                               ;   the focused pane if a tabline)
+(view-list)                                    ; → list of view handles
+(view-buffer view)                             ; nil for non-text views
+(view-kind view)
 (switch-to-view! view-or-name)
 (display-view-in-pane! pane view)
 (kill-view! view)
 
 ;; Window
-(current-window)
-(window-list)
-(make-window!)
-(delete-window!)
-(other-window)
+(current-window)                               ; → window handle
+(window-list)                                  ; → list of window handles
+(make-window!)                                 ; → new window handle
+(delete-window! window)
+(other-window)                                 ; → window handle
 (focus-window! window)
-
-;; Compat (decide: keep as shims or drop entirely)
-(current-buffer)                 ; (view-buffer (current-view))
-(switch-to-buffer name)          ; (switch-to-view! ...)
-(buffer-list)                    ; views with buffers, plus the
-                                 ; underlying buffer pool? unclear.
 ```
 
-That last block is exactly where the migration cost shows. The
-detailed plan needs to settle it.
+Flag-day rename (Q4 resolution): `(current-buffer)`,
+`(switch-to-buffer)`, `(buffer-list)`, etc. all go away in one pass.
+Buffer ops (`point`, `insert`, `delete`, etc.) keep their names but
+now operate on `(view-buffer (current-view))`; calling them in a
+non-text view raises a condition.
 
 ## Companion changes worth bundling
 
