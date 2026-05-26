@@ -47,40 +47,36 @@ small polish committed directly rather than branched + merged).
 
 ## Branches still ready for review
 
-Eight left from the prior session's queue. All were rebased forward
-through this session's merges only where strictly required; most are
-on top of older commits and will need a small merge.
+Four left after a branch cleanup on 2026-05-26 that deleted 20
+fully-merged branches and removed the v4 worktree. Audit at cleanup
+time also corrected the prior handover's stale claim that
+`agent-regex-search`, `agent-latex`, `agent-folding`, and
+`agent-session` were unmerged — git confirmed all four were already
+reachable from main, so they got deleted with the rest. The four
+remaining branches have unique work not yet on main:
 
 | Branch | HEAD | What it adds |
 |---|---|---|
-| `agent-regex-search` | `0305696` | `C-M-s` regex isearch, `C-M-%` regex-replace, `M-%` query-replace |
-| `agent-latex` | `5cf4fc9` | LaTeX wasm built via Docker + TikZ-aware query |
-| `agent-folding` | `7e269e2` | Tree-sitter code folding for 8 languages |
 | `agent-multi-cursor` | `484b430` | Selection-set buffer + renderer foundation. **⚠ Lisp uses `hash-set` which doesn't exist; needs `assoc` fix** |
 | `agent-lsp` | `3f3a666` | TypeScript LSP, diagnostics + hover |
 | `agent-file-nav` | `074adab` | Fuzzy project find-file + sidebar tree |
-| `agent-session` | `5c9e7eb` | Tabline (drag-reorder) + persistent session restore |
 | `agent-reactive-notebook` | `d453841` | Reactive Lisp notebook (engine phase) |
 
-`agent-chord-find-file` merged this session; remove from the queue.
-
-The unmerged shell branches (`agent-shell-buffer`,
-`agent-shell-buffer-v2`) — both already merged into main this
-session; the branch refs can be deleted with `git branch -d` when
-convenient (Git's safety-checked delete refuses unless fully merged).
+`agent-shell-buffer-v4` merged this session via `d2a061e` and the
+branch ref was deleted in the cleanup. Same for the v1/v2 shell
+branches and a long list of older work whose branches outlived their
+merges.
 
 ### Suggested merge order
 
-Largely unchanged from the prior handover:
-
-1. `agent-regex-search`
-2. `agent-latex`
-3. `agent-folding` — touches view.js; first non-trivial conflict surface
-4. `agent-multi-cursor` — apply the `hash-set` → `assoc` fix first, then merge
-5. `agent-session` — tabline; touches index.html, app.js, styles.css
-6. `agent-lsp` — largest standalone surface
-7. `agent-file-nav` — sidebar tree
-8. `agent-reactive-notebook` — last; complete on its own
+1. `agent-multi-cursor` — apply the `hash-set` → `assoc` fix first, then merge
+2. `agent-lsp` — largest standalone surface
+3. `agent-file-nav` — sidebar tree
+4. `agent-reactive-notebook` — last; complete on its own. **Natural
+   canary for the PANES.md view-without-buffer model** — its
+   notebook view is exactly the kind of view that shouldn't need a
+   buffer underneath. Worth doing the view/buffer split (PANES phase
+   1) before merging this branch so it lands on the new model.
 
 Expected conflict surfaces (still mostly additive, keep-both):
 `apps/desktop/scripts/smoke.js`, `apps/desktop/src/app.js`,
