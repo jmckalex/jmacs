@@ -14,6 +14,7 @@
 
 export { createBufferPrimitives } from './buffer-primitives.js';
 export { createViewPrimitives } from './view-primitives.js';
+export { createPanePrimitives } from './pane-primitives.js';
 
 /**
  * The standard-library Lisp files, in load order. The command files

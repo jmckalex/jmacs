@@ -1,20 +1,27 @@
 /**
- * @file Tabline — a horizontal bar of buffer tabs above the editor.
+ * @file Tabline — a horizontal bar of view tabs above the editor.
  *
- * One tab per open buffer; the current buffer's tab is filled and
- * carries the accent border. A tab shows the buffer's basename and a
- * small `×` that kills the buffer. Tabs are draggable to reorder.
+ * One tab per open view; the current view's tab is filled and carries
+ * the accent border. A tab shows the view's basename and a small `×`
+ * that kills the view. Tabs are draggable to reorder.
  *
- * The widget is intentionally a thin DOM view: the buffer list and
+ * The widget is intentionally a thin DOM view: the view list and
  * mutation lives in `app.js`; this module renders, dispatches clicks,
  * and reports drag-reorders back through `onReorder`.
+ *
+ * Phase 2 of plans/PANES.md: consumes views directly. The old
+ * `getBuffers: () => Array<{name, filePath}>` adapter in `app.js`
+ * (`viewAsTablineRecord`) is gone; this module reads `view.name` and
+ * resolves the file path through `viewFilePath` from `@editor/view`.
  */
+
+import { viewFilePath } from '@editor/view';
 
 /**
  * @typedef {Object} TablineOptions
- * @property {() => Array<{name?: string, filePath?: string}>}
- *   getBuffers - The live buffer list, in display order.
- * @property {() => number} getCurrentIndex - Index of the current buffer.
+ * @property {() => import('@editor/view').View[]} getViews - The live
+ *   view list, in display order.
+ * @property {() => number} getCurrentIndex - Index of the current view.
  * @property {(index: number) => void} onSelect - Tab-click handler.
  * @property {(index: number) => void} onClose - Close-icon handler.
  * @property {(from: number, to: number) => void} [onReorder] - A
@@ -30,7 +37,7 @@
  * @returns {{element: HTMLElement, refresh: () => void}}
  */
 export function createTabline(host, options) {
-  const { getBuffers, getCurrentIndex, onSelect, onClose, onReorder } = options;
+  const { getViews, getCurrentIndex, onSelect, onClose, onReorder } = options;
 
   const element = document.createElement('div');
   element.className = 'tabline';
@@ -40,29 +47,29 @@ export function createTabline(host, options) {
   let dragFrom = -1;
 
   function refresh() {
-    const buffers = getBuffers();
+    const views = getViews();
     const currentIndex = getCurrentIndex();
-    // Rebuild the strip from scratch — at the buffer counts a real
+    // Rebuild the strip from scratch — at the view counts a real
     // session uses (a handful, occasionally a few dozen), it is the
     // simplest correct thing.
     element.replaceChildren();
-    buffers.forEach((buffer, index) => {
+    views.forEach((view, index) => {
       const tab = document.createElement('div');
       tab.className = 'tabline-tab';
       if (index === currentIndex) tab.classList.add('is-current');
       tab.dataset.index = String(index);
-      tab.title = buffer.filePath ?? buffer.name ?? '';
+      tab.title = viewFilePath(view) ?? view.name ?? '';
       if (onReorder) tab.draggable = true;
 
       const label = document.createElement('span');
       label.className = 'tabline-label';
-      label.textContent = tabLabel(buffer);
+      label.textContent = tabLabel(view);
       tab.append(label);
 
       const close = document.createElement('button');
       close.type = 'button';
       close.className = 'tabline-close';
-      close.title = 'Close buffer';
+      close.title = 'Close view';
       close.textContent = '×';
       tab.append(close);
 
@@ -130,17 +137,18 @@ export function createTabline(host, options) {
 }
 
 /**
- * The label a tab shows for BUFFER: the file's basename when it has a
- * path, the buffer's name otherwise. Truncated at 28 characters with
- * a trailing ellipsis so a long path doesn't dominate the strip.
+ * The label a tab shows for VIEW: the file's basename when the view
+ * has a path, the view's name otherwise. Truncated at 28 characters
+ * with a trailing ellipsis so a long path doesn't dominate the strip.
  */
-function tabLabel(buffer) {
+function tabLabel(view) {
+  const filePath = viewFilePath(view);
   let label;
-  if (typeof buffer.filePath === 'string' && buffer.filePath !== '') {
-    const slash = buffer.filePath.lastIndexOf('/');
-    label = slash >= 0 ? buffer.filePath.slice(slash + 1) : buffer.filePath;
+  if (typeof filePath === 'string' && filePath !== '') {
+    const slash = filePath.lastIndexOf('/');
+    label = slash >= 0 ? filePath.slice(slash + 1) : filePath;
   } else {
-    label = buffer.name ?? '(unnamed)';
+    label = view.name ?? '(unnamed)';
   }
   if (label.length > 28) label = label.slice(0, 27) + '…';
   return label;

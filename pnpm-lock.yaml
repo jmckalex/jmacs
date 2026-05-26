@@ -9,6 +9,10 @@ importers:
   .: {}
 
   apps/desktop:
+    dependencies:
+      '@editor/view':
+        specifier: workspace:*
+        version: link:../../packages/view
     devDependencies:
       electron:
         specifier: 42.2.0
@@ -21,6 +25,8 @@ importers:
         version: link:../storage
 
   packages/lisp: {}
+
+  packages/pane: {}
 
   packages/renderer:
     dependencies:
@@ -154,6 +160,9 @@ importers:
       '@editor/lisp':
         specifier: workspace:*
         version: link:../lisp
+      '@editor/pane':
+        specifier: workspace:*
+        version: link:../pane
       '@editor/view':
         specifier: workspace:*
         version: link:../view

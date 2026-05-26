@@ -13,6 +13,7 @@
   "dependencies": {
     "@editor/buffer": "workspace:*",
     "@editor/lisp": "workspace:*",
+    "@editor/pane": "workspace:*",
     "@editor/view": "workspace:*"
   },
   "license": "GPL-3.0-or-later",

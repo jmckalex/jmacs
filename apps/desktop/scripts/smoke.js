@@ -2046,25 +2046,31 @@ app.whenReady().then(() => {
         // controller logic by importing the module fresh and exercising
         // it against a captured handle to the host bridge.
         const sessionMod = await import('app://editor/apps/desktop/src/session.js');
-        const fakeBuffers = [];
+        // Phase 2 of plans/PANES.md: createSession consumes views
+        // directly. Each restored entry is shaped like a text view —
+        // kind: 'text', name, and a buffer with filePath / point / mark.
+        const fakeViews = [];
         let switched = -1;
         const controller = sessionMod.createSession({
-          getBuffers: () => fakeBuffers,
+          getViews: () => fakeViews,
           getCurrentIndex: () => 0,
           openByPath: async (path, entry) => {
             // Read the file back the same way the real app does.
             const result = await window.host.openFilePath(path);
             if (result === null) return null;
-            fakeBuffers.push({
+            fakeViews.push({
+              kind: 'text',
               name: result.name,
-              filePath: result.path,
               content: result.content,
-              point: entry.point,
-              mark: entry.mark,
+              buffer: {
+                filePath: result.path,
+                point: entry.point,
+                mark: entry.mark,
+              },
             });
             return entry;
           },
-          switchToBuffer: (index) => { switched = index; },
+          switchToView: (index) => { switched = index; },
           host: window.host,
         });
         await controller.restore();
@@ -2073,10 +2079,10 @@ app.whenReady().then(() => {
           currentLabel,
           beforeWrite,
           written,
-          restoredCount: fakeBuffers.length,
-          restoredPath: fakeBuffers[0]?.filePath ?? '',
-          restoredContent: fakeBuffers[0]?.content ?? '',
-          restoredPoint: fakeBuffers[0]?.point ?? -1,
+          restoredCount: fakeViews.length,
+          restoredPath: fakeViews[0]?.buffer?.filePath ?? '',
+          restoredContent: fakeViews[0]?.content ?? '',
+          restoredPoint: fakeViews[0]?.buffer?.point ?? -1,
           switched,
         };
       })()`);

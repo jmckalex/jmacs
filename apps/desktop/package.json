@@ -13,6 +13,9 @@
   },
   "license": "GPL-3.0-or-later",
   "private": true,
+  "dependencies": {
+    "@editor/view": "workspace:*"
+  },
   "devDependencies": {
     "electron": "42.2.0"
   }

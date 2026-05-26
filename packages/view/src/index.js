@@ -21,3 +21,7 @@ export {
 export {
   createKindRegistry,
 } from './kind-registry.js';
+
+export {
+  viewFilePath,
+} from './view-utils.js';
