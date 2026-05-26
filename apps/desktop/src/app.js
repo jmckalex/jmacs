@@ -773,6 +773,155 @@ function startSearch(initialDirection) {
   );
 }
 
+// --- incremental regexp search ----------------------------------------
+
+/**
+ * Compile a JS RegExp from a source string, with the global flag for
+ * forward scanning. Returns `null` for an invalid source — the regex
+ * isearch swallows mid-typing errors silently.
+ */
+function compileRegexpSource(source, flags = 'g') {
+  if (source === '') return null;
+  try {
+    return new RegExp(source, flags);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Expand REPLACEMENT against a regex match, honouring `$N` (capture
+ * group N), `$&` (the whole match), and `$$` (a literal `$`). Anything
+ * else is left alone — so `$x` becomes literal `$x`. This is the
+ * standard JS String.replace replacement-string semantics, isolated so
+ * the regex-replace and query-replace paths share the same expansion.
+ *
+ * `match` is the args object the RegExp.replace callback receives:
+ * `[wholeMatch, group1, group2, ..., offset, fullString, groupsObj?]`.
+ */
+function expandReplacement(replacement, match) {
+  return replacement.replace(/\$([\d&$])/g, (token, ch) => {
+    if (ch === '$') return '$';
+    if (ch === '&') return match[0];
+    const n = Number(ch);
+    const captured = match[n];
+    return captured === undefined ? '' : captured;
+  });
+}
+
+/**
+ * The first regexp match in `text` at or after `from`. Returns
+ * `{ start, end }` or `null`. The supplied RegExp must carry the `g`
+ * flag (we drive `lastIndex` ourselves).
+ */
+function regexpForwardMatch(text, regexp, from) {
+  regexp.lastIndex = Math.max(0, from);
+  const match = regexp.exec(text);
+  if (match === null) return null;
+  // Skip zero-length matches at the same position; they would loop.
+  if (match[0].length === 0) {
+    regexp.lastIndex = match.index + 1;
+    const retry = regexp.exec(text);
+    if (retry === null || retry[0].length === 0) return null;
+    return { start: retry.index, end: retry.index + retry[0].length };
+  }
+  return { start: match.index, end: match.index + match[0].length };
+}
+
+/**
+ * The last regexp match in `text` strictly before `from` (so a backward
+ * search past an existing match advances). Returns `{ start, end }` or
+ * `null`.
+ */
+function regexpBackwardMatch(text, regexp, from) {
+  regexp.lastIndex = 0;
+  const limit = Math.max(0, from);
+  let last = null;
+  let match;
+  while ((match = regexp.exec(text)) !== null) {
+    if (match.index >= limit) break;
+    last = { start: match.index, end: match.index + match[0].length };
+    // Guard against zero-length matches stalling lastIndex.
+    if (match[0].length === 0) regexp.lastIndex += 1;
+  }
+  return last;
+}
+
+/** Run an incremental regexp search in the minibuffer. */
+function startRegexpSearch(initialDirection) {
+  const buffer = session.current;
+  const origin = buffer.point;
+  let direction = initialDirection;
+  let lastMatch = null; // { start, end } or null
+
+  /** Show a match by selecting it (the editor renders that). */
+  function showMatch(match) {
+    buffer.moveTo(match.start);
+    buffer.moveTo(match.end, { extend: true });
+    lastMatch = match;
+  }
+
+  /** Find the next match for `source` from `from` in `dir`. */
+  function find(source, from, dir) {
+    const regexp = compileRegexpSource(source);
+    if (regexp === null) return null;
+    return dir === 'forward'
+      ? regexpForwardMatch(buffer.text, regexp, from)
+      : regexpBackwardMatch(buffer.text, regexp, from);
+  }
+
+  minibuffer.prompt(
+    initialDirection === 'forward'
+      ? 'I-search regexp: '
+      : 'I-search regexp backward: ',
+    {
+      onChange(query) {
+        lastMatch = null;
+        if (query === '') {
+          buffer.moveTo(origin);
+          minibuffer.setStatus('');
+          return;
+        }
+        const from = direction === 'forward' ? origin : Math.max(origin, 0);
+        const match = find(query, from, direction);
+        if (match !== null) {
+          showMatch(match);
+          minibuffer.setStatus('');
+        } else {
+          minibuffer.setStatus('no match');
+        }
+      },
+      onKey(key, query) {
+        // C-M-s / C-M-r advance to the next match in either direction.
+        if ((key === 'C-M-s' || key === 'C-M-r') && query !== '') {
+          direction = key === 'C-M-s' ? 'forward' : 'backward';
+          const base = lastMatch !== null
+            ? (direction === 'forward' ? lastMatch.end : lastMatch.start)
+            : origin;
+          const from = direction === 'forward' ? base : base;
+          const match = find(query, from, direction);
+          if (match !== null) {
+            showMatch(match);
+            minibuffer.setStatus('');
+          } else {
+            minibuffer.setStatus('no more matches');
+          }
+          return true;
+        }
+        return false;
+      },
+      onSubmit() {
+        buffer.clearMark();
+        editorView.focus();
+      },
+      onCancel() {
+        buffer.moveTo(origin);
+        editorView.focus();
+      },
+    }
+  );
+}
+
 // --- command palette (M-x) ---------------------------------------------
 
 /** Run the apropos-doc fuzzy search in the minibuffer. */
@@ -1208,6 +1357,91 @@ const interpreter = createInterpreter({
     },
     'start-search-backward!': () => {
       startSearch('backward');
+      return NIL;
+    },
+    'start-regexp-search!': () => {
+      startRegexpSearch('forward');
+      return NIL;
+    },
+    'start-regexp-search-backward!': () => {
+      startRegexpSearch('backward');
+      return NIL;
+    },
+    // Regexp matching for use by Lisp commands (query-replace,
+    // replace-regexp). Returns `(start . end)` for the first match in
+    // the current buffer's text at or after FROM, or nil for no match
+    // or an invalid pattern.
+    'find-regexp-forward': (args) => {
+      const source = String(args[0] ?? '');
+      const from = Number(args[1] ?? 0);
+      const regexp = compileRegexpSource(source);
+      if (regexp === null) return NIL;
+      const match = regexpForwardMatch(session.current.text, regexp, from);
+      return match === null ? NIL : cons(match.start, match.end);
+    },
+    'find-regexp-backward': (args) => {
+      const source = String(args[0] ?? '');
+      const from = Number(args[1] ?? 0);
+      const regexp = compileRegexpSource(source);
+      if (regexp === null) return NIL;
+      const match = regexpBackwardMatch(session.current.text, regexp, from);
+      return match === null ? NIL : cons(match.start, match.end);
+    },
+    // Find a plain (non-regexp) string FROM offset onward; used by the
+    // `query-replace` walker (plain string match, per spec).
+    'find-string-forward': (args) => {
+      const needle = String(args[0] ?? '');
+      const from = Number(args[1] ?? 0);
+      if (needle === '') return NIL;
+      const index = session.current.text.indexOf(needle, Math.max(0, from));
+      return index < 0 ? NIL : cons(index, index + needle.length);
+    },
+    // Replace every regexp match in the current buffer; REPLACEMENT
+    // supports the standard JS `$N`, `$&`, `$$` back-references.
+    // Returns the count of replacements made, or -1 for an invalid
+    // pattern.
+    'replace-regexp-all!': (args) => {
+      const source = String(args[0] ?? '');
+      const replacement = String(args[1] ?? '');
+      const regexp = compileRegexpSource(source);
+      if (regexp === null) return -1;
+      const buffer = session.current;
+      let count = 0;
+      const newText = buffer.text.replace(regexp, (...match) => {
+        count += 1;
+        return expandReplacement(replacement, match);
+      });
+      if (count > 0) buffer.setText(newText);
+      repl.appendNote(
+        count > 0
+          ? `replaced ${count} occurrence(s) of /${source}/`
+          : `/${source}/ — no match`
+      );
+      return count;
+    },
+    // Replace the buffer range [start, end) with TEXT in a single edit.
+    // Used by `query-replace` to swap one match in.
+    'replace-range!': (args) => {
+      const start = Number(args[0]);
+      const end = Number(args[1]);
+      const text = String(args[2] ?? '');
+      if (!Number.isInteger(start) || !Number.isInteger(end)) return NIL;
+      const buffer = session.current;
+      buffer.moveTo(Math.min(start, end));
+      buffer.deleteForward(Math.abs(end - start));
+      buffer.insert(text);
+      return NIL;
+    },
+    // Show MSG as a transient status line in the minibuffer (no input
+    // field; used by query-replace's "Replace? y/n/q/!" prompt). The
+    // actual keypress is still read through `read-next-key`.
+    'show-status!': (args) => {
+      const message = String(args[0] ?? '');
+      minibuffer.showMessage(message);
+      return NIL;
+    },
+    'clear-status!': () => {
+      minibuffer.clearMessage();
       return NIL;
     },
     'start-command-palette!': () => {

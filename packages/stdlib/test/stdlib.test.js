@@ -104,6 +104,101 @@ async function editor(initialText = 'hello world', options = {}) {
         searchCalls.push('search-backward');
         return NIL;
       },
+      'start-regexp-search!': () => {
+        searchCalls.push('regexp-search');
+        return NIL;
+      },
+      'start-regexp-search-backward!': () => {
+        searchCalls.push('regexp-search-backward');
+        return NIL;
+      },
+      // Regexp matching primitives are exercised through the live
+      // buffer the test created. They mirror the host's RegExp
+      // semantics in the desktop app.
+      'find-regexp-forward': (a) => {
+        const source = String(a[0] ?? '');
+        const from = Number(a[1] ?? 0);
+        if (source === '') return NIL;
+        let regexp;
+        try {
+          regexp = new RegExp(source, 'g');
+        } catch {
+          return NIL;
+        }
+        regexp.lastIndex = Math.max(0, from);
+        const match = regexp.exec(buffer.text);
+        if (match === null) return NIL;
+        return cons(match.index, match.index + match[0].length);
+      },
+      'find-regexp-backward': (a) => {
+        const source = String(a[0] ?? '');
+        const from = Number(a[1] ?? 0);
+        if (source === '') return NIL;
+        let regexp;
+        try {
+          regexp = new RegExp(source, 'g');
+        } catch {
+          return NIL;
+        }
+        const limit = Math.max(0, from);
+        let last = null;
+        let m;
+        regexp.lastIndex = 0;
+        while ((m = regexp.exec(buffer.text)) !== null) {
+          if (m.index >= limit) break;
+          last = { start: m.index, end: m.index + m[0].length };
+          if (m[0].length === 0) regexp.lastIndex += 1;
+        }
+        return last === null ? NIL : cons(last.start, last.end);
+      },
+      'find-string-forward': (a) => {
+        const needle = String(a[0] ?? '');
+        const from = Number(a[1] ?? 0);
+        if (needle === '') return NIL;
+        const i = buffer.text.indexOf(needle, Math.max(0, from));
+        return i < 0 ? NIL : cons(i, i + needle.length);
+      },
+      'replace-regexp-all!': (a) => {
+        const source = String(a[0] ?? '');
+        const replacement = String(a[1] ?? '');
+        let regexp;
+        try {
+          regexp = new RegExp(source, 'g');
+        } catch {
+          return -1;
+        }
+        let count = 0;
+        const newText = buffer.text.replace(regexp, (...match) => {
+          count += 1;
+          return replacement.replace(/\$([\d&$])/g, (token, ch) => {
+            if (ch === '$') return '$';
+            if (ch === '&') return match[0];
+            const n = Number(ch);
+            const captured = match[n];
+            return captured === undefined ? '' : captured;
+          });
+        });
+        if (count > 0) buffer.setText(newText);
+        return count;
+      },
+      'replace-range!': (a) => {
+        const start = Number(a[0]);
+        const end = Number(a[1]);
+        const text = String(a[2] ?? '');
+        if (!Number.isInteger(start) || !Number.isInteger(end)) return NIL;
+        buffer.moveTo(Math.min(start, end));
+        buffer.deleteForward(Math.abs(end - start));
+        buffer.insert(text);
+        return NIL;
+      },
+      'show-status!': (a) => {
+        searchCalls.push(`status:${String(a[0] ?? '')}`);
+        return NIL;
+      },
+      'clear-status!': () => {
+        searchCalls.push('clear-status');
+        return NIL;
+      },
       'start-command-palette!': () => {
         paletteCalls.push('palette');
         return NIL;
@@ -2546,6 +2641,202 @@ test('smallest-covering-capture returns nil when no capture covers point', async
   );
 });
 
+// --- regex search and replace ------------------------------------------
+
+test('C-M-s and C-M-r are bound to the regex isearch commands', async () => {
+  const { interpreter } = await editor();
+  assert.ok(interpreter.evaluate(
+    '(eq? (get the-keymap "C-M-s") (quote isearch-regexp-forward))'));
+  assert.ok(interpreter.evaluate(
+    '(eq? (get the-keymap "C-M-r") (quote isearch-regexp-backward))'));
+});
+
+test('C-M-s starts a regexp isearch through the host primitive', async () => {
+  const { interpreter, searchCalls } = await editor();
+  press(interpreter, 'C-M-s');
+  assert.deepEqual(searchCalls, ['regexp-search']);
+});
+
+test('C-M-r starts a backward regexp isearch', async () => {
+  const { interpreter, searchCalls } = await editor();
+  press(interpreter, 'C-M-r');
+  assert.deepEqual(searchCalls, ['regexp-search-backward']);
+});
+
+test('M-S-5 (M-%) is bound to query-replace', async () => {
+  const { interpreter } = await editor();
+  assert.ok(interpreter.evaluate(
+    '(eq? (get the-keymap "M-S-5") (quote query-replace))'));
+});
+
+test('C-M-S-5 (C-M-%) is bound to replace-regexp', async () => {
+  const { interpreter } = await editor();
+  assert.ok(interpreter.evaluate(
+    '(eq? (get the-keymap "C-M-S-5") (quote replace-regexp))'));
+});
+
+test('replace-regexp rewrites the buffer with $-style back-references', async () => {
+  const { buffer, interpreter } = await editor('foo123 bar45 baz6');
+  interpreter.evaluate('(run-command (quote replace-regexp))');
+  interpreter.evaluate('(minibuffer-delivered "(\\\\w+?)(\\\\d+)")');
+  interpreter.evaluate('(minibuffer-delivered "$2-$1")');
+  assert.equal(buffer.text, '123-foo 45-bar 6-baz');
+});
+
+test('replace-regexp handles alternation and character classes', async () => {
+  // Alternation (foo|bar) and a character class [aeiou] — both standard
+  // RegExp features the host's compileRegexpSource should accept.
+  const { buffer, interpreter } = await editor('foo bar baz');
+  interpreter.evaluate('(run-command (quote replace-regexp))');
+  interpreter.evaluate('(minibuffer-delivered "(foo|bar)")');
+  interpreter.evaluate('(minibuffer-delivered "[$1]")');
+  assert.equal(buffer.text, '[foo] [bar] baz');
+  // And a character class:
+  buffer.setText('hello');
+  interpreter.evaluate('(run-command (quote replace-regexp))');
+  interpreter.evaluate('(minibuffer-delivered "[aeiou]")');
+  interpreter.evaluate('(minibuffer-delivered "*")');
+  assert.equal(buffer.text, 'h*ll*');
+});
+
+test('replace-regexp expands $&, $1 and $$ correctly', async () => {
+  const { buffer, interpreter } = await editor('abc xyz');
+  interpreter.evaluate('(run-command (quote replace-regexp))');
+  interpreter.evaluate('(minibuffer-delivered "([a-z]+)")');
+  // $$ -> literal $, $& -> the whole match, $1 -> the capture
+  interpreter.evaluate('(minibuffer-delivered "$$<$&:$1>")');
+  assert.equal(buffer.text, '$<abc:abc> $<xyz:xyz>');
+});
+
+test('replace-regexp with no match leaves the buffer alone', async () => {
+  const { buffer, interpreter } = await editor('alpha beta');
+  interpreter.evaluate('(run-command (quote replace-regexp))');
+  interpreter.evaluate('(minibuffer-delivered "zzz+")');
+  interpreter.evaluate('(minibuffer-delivered "Q")');
+  assert.equal(buffer.text, 'alpha beta');
+});
+
+test('query-replace y replaces a match and advances', async () => {
+  const { buffer, interpreter, searchCalls } = await editor('foo bar foo');
+  buffer.moveTo(0);
+  interpreter.evaluate('(run-command (quote query-replace))');
+  interpreter.evaluate('(minibuffer-delivered "foo")');
+  interpreter.evaluate('(minibuffer-delivered "xxx")');
+  // A status was shown (the "y/n/q/!" prompt).
+  assert.ok(
+    searchCalls.some((s) => s.startsWith('status:')),
+    `expected a status prompt; got ${JSON.stringify(searchCalls)}`
+  );
+  // y replaces the first match.
+  interpreter.evaluate('(handle-key "y")');
+  // y again replaces the second.
+  interpreter.evaluate('(handle-key "y")');
+  assert.equal(buffer.text, 'xxx bar xxx');
+});
+
+test('query-replace n skips a match without replacing', async () => {
+  const { buffer, interpreter } = await editor('foo foo foo');
+  buffer.moveTo(0);
+  interpreter.evaluate('(run-command (quote query-replace))');
+  interpreter.evaluate('(minibuffer-delivered "foo")');
+  interpreter.evaluate('(minibuffer-delivered "xxx")');
+  interpreter.evaluate('(handle-key "n")'); // skip the first
+  interpreter.evaluate('(handle-key "y")'); // replace the second
+  interpreter.evaluate('(handle-key "n")'); // skip the third
+  assert.equal(buffer.text, 'foo xxx foo');
+});
+
+test('query-replace q quits without replacing the remainder', async () => {
+  const { buffer, interpreter } = await editor('foo foo foo');
+  buffer.moveTo(0);
+  interpreter.evaluate('(run-command (quote query-replace))');
+  interpreter.evaluate('(minibuffer-delivered "foo")');
+  interpreter.evaluate('(minibuffer-delivered "xxx")');
+  interpreter.evaluate('(handle-key "y")'); // replace the first
+  interpreter.evaluate('(handle-key "q")'); // stop here
+  assert.equal(buffer.text, 'xxx foo foo');
+});
+
+test('query-replace escape is a synonym for q', async () => {
+  const { buffer, interpreter } = await editor('foo foo');
+  buffer.moveTo(0);
+  interpreter.evaluate('(run-command (quote query-replace))');
+  interpreter.evaluate('(minibuffer-delivered "foo")');
+  interpreter.evaluate('(minibuffer-delivered "xxx")');
+  interpreter.evaluate('(handle-key "escape")');
+  assert.equal(buffer.text, 'foo foo', 'nothing replaced when quitting first');
+});
+
+test('query-replace ! replaces this and every remaining match', async () => {
+  const { buffer, interpreter } = await editor('foo bar foo baz foo');
+  buffer.moveTo(0);
+  interpreter.evaluate('(run-command (quote query-replace))');
+  interpreter.evaluate('(minibuffer-delivered "foo")');
+  interpreter.evaluate('(minibuffer-delivered "x")');
+  interpreter.evaluate('(handle-key "!")');
+  assert.equal(buffer.text, 'x bar x baz x');
+});
+
+test('query-replace RET and space are y synonyms', async () => {
+  const space = await editor('a a');
+  space.buffer.moveTo(0);
+  space.interpreter.evaluate('(run-command (quote query-replace))');
+  space.interpreter.evaluate('(minibuffer-delivered "a")');
+  space.interpreter.evaluate('(minibuffer-delivered "b")');
+  space.interpreter.evaluate('(handle-key "space")');
+  space.interpreter.evaluate('(handle-key "enter")');
+  assert.equal(space.buffer.text, 'b b');
+});
+
+test('query-replace starts from point, not the buffer start', async () => {
+  const { buffer, interpreter } = await editor('foo foo foo');
+  buffer.moveTo(4); // past the first match
+  interpreter.evaluate('(run-command (quote query-replace))');
+  interpreter.evaluate('(minibuffer-delivered "foo")');
+  interpreter.evaluate('(minibuffer-delivered "X")');
+  interpreter.evaluate('(handle-key "!")');
+  // Only the matches at or after point are touched.
+  assert.equal(buffer.text, 'foo X X');
+});
+
+test('query-replace with no matches makes no edits', async () => {
+  const { buffer, interpreter } = await editor('alpha beta');
+  buffer.moveTo(0);
+  interpreter.evaluate('(run-command (quote query-replace))');
+  interpreter.evaluate('(minibuffer-delivered "missing")');
+  interpreter.evaluate('(minibuffer-delivered "found")');
+  assert.equal(buffer.text, 'alpha beta');
+});
+
+test('query-replace unknown key re-asks without acting', async () => {
+  const { buffer, interpreter } = await editor('foo foo');
+  buffer.moveTo(0);
+  interpreter.evaluate('(run-command (quote query-replace))');
+  interpreter.evaluate('(minibuffer-delivered "foo")');
+  interpreter.evaluate('(minibuffer-delivered "X")');
+  interpreter.evaluate('(handle-key "z")'); // an unmapped key
+  // Nothing has happened yet — the state machine is still on match 1.
+  assert.equal(buffer.text, 'foo foo');
+  interpreter.evaluate('(handle-key "y")'); // now answer y
+  interpreter.evaluate('(handle-key "y")'); // and for the second
+  assert.equal(buffer.text, 'X X');
+});
+
+test('find-regexp-forward exposes capture spans through the primitive', async () => {
+  // Sanity check on the primitive itself — the test stub mirrors the
+  // host's RegExp semantics, so this also exercises the wire shape
+  // (a (start . end) cons or nil).
+  const { interpreter } = await editor('foo123 bar45');
+  const pair = interpreter.evaluate('(find-regexp-forward "\\\\d+" 0)');
+  assert.equal(interpreter.call('car', pair), 3);
+  assert.equal(interpreter.call('cdr', pair), 6);
+  // Beyond the matches: nil.
+  assert.equal(
+    interpreter.evaluate('(nil? (find-regexp-forward "\\\\d+" 99))'),
+    true
+  );
+});
+
 test('smallest-covering-capture treats the end offset as exclusive', async () => {
   const { interpreter } = await editor();
   // [4, 6) covers points 4 and 5 but not 6.
@@ -2796,4 +3087,13 @@ test('C-c C-. runs unfold-all through the host primitive', async () => {
   press(interpreter, 'C-period');
   assert.ok(foldCalls.includes('unfold'),
     `expected unfold; got ${JSON.stringify(foldCalls)}`);
+});
+
+test('find-regexp-forward returns nil for an invalid pattern', async () => {
+  const { interpreter } = await editor('hello');
+  // An unterminated group — JS throws on construction.
+  assert.equal(
+    interpreter.evaluate('(nil? (find-regexp-forward "(unclosed" 0))'),
+    true
+  );
 });

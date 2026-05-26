@@ -665,6 +665,66 @@ app.whenReady().then(() => {
       })()`);
       console.log('  replace:', JSON.stringify(replace));
 
+      // Regex-replace and query-replace: two new commands that share
+      // the chained two-prompt minibuffer flow as replace-string, with
+      // JS RegExp semantics and a per-match prompt respectively.
+      const regexReplace = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const replInput = document.querySelector('.repl-input');
+        const replSubmit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        // 1. replace-regexp: (\\w+)(\\d+) -> $2-$1 on a mixed line.
+        replSubmit('(new-buffer! "regex-replace-test")');
+        replSubmit('(insert! "foo123 bar45 baz6")');
+        await frame();
+        replSubmit('(run-command (quote replace-regexp))');
+        const mb = () => document.querySelector('.minibuffer-input');
+        const fill = async (text) => {
+          const input = mb();
+          input.value = text;
+          input.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+          await frame();
+        };
+        // Four backslashes in the template literal -> two in JS string
+        // -> two in the Lisp-readable text the REPL submits.
+        await fill('(\\\\w+?)(\\\\d+)');
+        await fill('$2-$1');
+        const regexText = document.querySelector('.editor-line').textContent;
+
+        // 2. query-replace: foo -> xxx with a y, then a n, then a q
+        //    sequence — exactly one replacement should happen.
+        replSubmit('(new-buffer! "query-replace-test")');
+        replSubmit('(insert! "foo foo foo")');
+        await frame();
+        // Move to the start so the walk sees every match.
+        replSubmit('(beginning-of-buffer)');
+        await frame();
+        replSubmit('(run-command (quote query-replace))');
+        await fill('foo');
+        await fill('xxx');
+        // Now the editor has focus (query-replace's status message did
+        // not steal it), and read-next-key has installed a callback.
+        // Send the answers as keyboard events on the editor surface.
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        const press = (key) => editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key, bubbles: true, cancelable: true,
+        }));
+        press('y'); // replace the first
+        await frame();
+        press('q'); // quit before the second
+        await frame();
+        const queryText = document.querySelector('.editor-line').textContent;
+        return { regexText, queryText };
+      })()`);
+      console.log('  regexReplace:', JSON.stringify(regexReplace));
+
       // Mouse: click in the buffer to place the cursor on another line.
       const mouse = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -1963,6 +2023,9 @@ app.whenReady().then(() => {
         faceInfo.mentionsKeyword &&
         faceInfo.mentionsTokKeyword;
       const replaceOk = replace.text === 'bar bar bar';
+      const regexReplaceOk =
+        regexReplace.regexText === '123-foo 45-bar 6-baz' &&
+        regexReplace.queryText === 'xxx foo foo';
       const mouseOk =
         mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
         mouse.endOfLine.includes('Ln 2') && mouse.endOfLine.includes('Col 5') &&
@@ -2126,6 +2189,7 @@ app.whenReady().then(() => {
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && faceInfoOk && replaceOk &&
+        regexReplaceOk &&
         mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk
@@ -2170,6 +2234,11 @@ app.whenReady().then(() => {
         );
       } else if (!replaceOk) {
         finish(1, 'replace-string did not work');
+      } else if (!regexReplaceOk) {
+        finish(
+          1,
+          `regex-replace or query-replace did not work (${JSON.stringify(regexReplace)})`
+        );
       } else if (!mouseOk) {
         finish(1, 'mouse click did not move the cursor');
       } else if (!markdownOk) {
