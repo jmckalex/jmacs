@@ -63,6 +63,13 @@ const MODIFIER_KEYS = new Set([
  *   without an entry has no fold support.
  * @param {boolean} [options.colourSwatches=true] - Whether to decorate
  *   colour literals in the text with clickable inline swatches.
+ * @param {() => number} [options.getPoint] - Per-view-point: where to
+ *   read the cursor offset from. Defaults to `() => activeBuffer.point`
+ *   so renderer unit tests that pass a bare buffer keep working. The
+ *   desktop app passes a closure that reads the *view*'s point, so
+ *   two panes over one buffer each render their own cursor.
+ * @param {() => number | null} [options.getMark] - The matching reader
+ *   for the selection anchor.
  * @returns {EditorView}
  */
 export function createEditorView(buffer, container, options = {}) {
@@ -71,6 +78,21 @@ export function createEditorView(buffer, container, options = {}) {
 
   // The buffer currently shown; swapped by setBuffer.
   let activeBuffer = buffer;
+
+  // Per-view-point: where the cursor lives. By default the cursor is
+  // read off the buffer (the buffer in turn delegates to whatever it
+  // is bindCursor'd to — typically the focused view), preserving the
+  // renderer's unit-test contract. The desktop app overrides these to
+  // read from the View bound to this editor instance, so a non-focused
+  // pane's renderer still draws *its* cursor, not the focused pane's.
+  const getPoint =
+    typeof options.getPoint === 'function'
+      ? options.getPoint
+      : () => activeBuffer.point;
+  const getMark =
+    typeof options.getMark === 'function'
+      ? options.getMark
+      : () => activeBuffer.mark;
 
   // The colour-swatch decorator: places a clickable swatch beside every
   // colour literal in a rendered line, and edits the buffer when a
@@ -373,7 +395,7 @@ export function createEditorView(buffer, container, options = {}) {
 
   /** Render the selection highlight, one rectangle per touched line. */
   function renderSelection() {
-    const rects = selectionRects(activeBuffer);
+    const rects = selectionRects(activeBuffer, getPoint(), getMark());
     selectionLayer.replaceChildren(
       ...rects
         .map((rect) => {
@@ -398,7 +420,7 @@ export function createEditorView(buffer, container, options = {}) {
   function renderBrackets() {
     const match = matchingBracket(
       activeBuffer.text,
-      activeBuffer.point,
+      getPoint(),
       languageForName(activeBuffer.name)
     );
     if (match === null) {
@@ -422,7 +444,7 @@ export function createEditorView(buffer, container, options = {}) {
 
   /** Position the cursor, the current-line highlight and the gutter. */
   function renderCursor() {
-    const { line, column } = activeBuffer.positionAt(activeBuffer.point);
+    const { line, column } = activeBuffer.positionAt(getPoint());
     // If the cursor lands inside a folded region, hop it up to the
     // header line — the user shouldn't be able to "see" the cursor
     // sitting on a hidden line. Visually we still draw it at the
@@ -581,7 +603,7 @@ export function createEditorView(buffer, container, options = {}) {
    *  header on point's own line). */
   function toggleFoldAtPoint() {
     refreshFoldIndex();
-    const { line } = activeBuffer.positionAt(activeBuffer.point);
+    const { line } = activeBuffer.positionAt(getPoint());
     // If point is *on* a header line, that wins.
     if (foldCache.headers.has(line)) return toggleFoldAt(line);
     // Otherwise, find the smallest enclosing foldable scope.

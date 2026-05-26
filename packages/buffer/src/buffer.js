@@ -39,6 +39,20 @@ import { createBuffer as createStorageBuffer } from '@editor/storage';
 /**
  * Create a Layer 2 buffer.
  *
+ * The buffer no longer owns its cursor as a *primary* fact: per-view-
+ * point (plans/PANES.md Q2) makes the *view* the canonical owner of
+ * point/mark, so two views over one buffer have independent cursors.
+ * The buffer keeps the cursor API for backward compatibility — the
+ * renderer view's per-pane editing path still calls `buf.insert(...)`,
+ * `buf.moveLeft(...)` etc. — but the *storage* for the cursor lives
+ * in whichever object the buffer is bound to (`buffer.bindCursor(view)`).
+ *
+ * Until a cursor source is bound, the buffer's `point`/`mark` are
+ * backed by a private closure — that's what tests, the renderer's
+ * unit tests, and any non-pane caller get. The desktop app rebinds
+ * the cursor to the focused view on every focus change, so the buffer
+ * reads and writes the view's point/mark directly.
+ *
  * @param {string} [initialText=''] - Text to seed the buffer with.
  * @param {object} [options]
  * @param {string} [options.name='untitled'] - A human-readable name.
@@ -46,9 +60,12 @@ import { createBuffer as createStorageBuffer } from '@editor/storage';
  */
 export function createBuffer(initialText = '', options = {}) {
   const storage = createStorageBuffer(initialText);
-  let point = 0;
-  /** @type {number | null} */
-  let mark = null;
+  // The local cursor backing — used when no view is bound. This is
+  // not the canonical cursor for any view-aware caller; the desktop
+  // app's per-pane editor instances always bind a view here.
+  const localCursor = { point: 0, mark: /** @type {number|null} */ (null) };
+  /** The currently bound cursor source. Defaults to the local backing. */
+  let cursorSource = localCursor;
   let name = options.name ?? 'untitled';
 
   // The buffer's modes. L2 stores them as opaque values — the standard
@@ -78,6 +95,8 @@ export function createBuffer(initialText = '', options = {}) {
 
   /** The current selection, or `null` when nothing is selected. */
   function currentSelection() {
+    const point = cursorSource.point;
+    const mark = cursorSource.mark;
     if (mark === null || mark === point) return null;
     return { start: Math.min(point, mark), end: Math.max(point, mark) };
   }
@@ -87,7 +106,7 @@ export function createBuffer(initialText = '', options = {}) {
    * @param {BufferChange | null} change
    */
   function emit(change) {
-    const event = { change, point, mark };
+    const event = { change, point: cursorSource.point, mark: cursorSource.mark };
     for (const listener of listeners) {
       listener(event);
     }
@@ -185,20 +204,43 @@ export function createBuffer(initialText = '', options = {}) {
     },
 
     // --- cursor ---------------------------------------------------------
+    // Per-view-point: the *storage* for point/mark lives on the bound
+    // cursor source (a view, in production; a local backing in tests).
+    // The buffer's API still exposes them — that's how the renderer
+    // view, the editor commands and the colour-swatch decorator
+    // continue to operate via the buffer.
 
     /** @returns {number} The cursor offset. */
     get point() {
-      return point;
+      return cursorSource.point;
     },
 
     /** @returns {number | null} The selection anchor, or `null`. */
     get mark() {
-      return mark;
+      return cursorSource.mark;
     },
 
     /** @returns {Selection | null} The current selection, or `null`. */
     get selection() {
       return currentSelection();
+    },
+
+    /**
+     * Bind a *view-shaped* cursor source: any object with mutable
+     * `point` (number) and `mark` (number | null) fields. Once bound,
+     * the buffer's cursor reads and writes go to that object, so two
+     * views over one buffer can each own their cursor.
+     *
+     * Passing `null` reverts to the local backing.
+     *
+     * @param {{ point: number, mark: number | null } | null} source
+     */
+    bindCursor(source) {
+      if (source === null) {
+        cursorSource = localCursor;
+      } else {
+        cursorSource = source;
+      }
     },
 
     /**
@@ -211,11 +253,11 @@ export function createBuffer(initialText = '', options = {}) {
      */
     moveTo(offset, opts = {}) {
       if (opts.extend) {
-        if (mark === null) mark = point;
+        if (cursorSource.mark === null) cursorSource.mark = cursorSource.point;
       } else {
-        mark = null;
+        cursorSource.mark = null;
       }
-      point = clamp(offset);
+      cursorSource.point = clamp(offset);
       emit(null);
     },
 
@@ -224,36 +266,36 @@ export function createBuffer(initialText = '', options = {}) {
      * @param {number | null} offset - An offset, or `null` to clear it.
      */
     setMark(offset) {
-      mark = offset === null ? null : clamp(offset);
+      cursorSource.mark = offset === null ? null : clamp(offset);
       emit(null);
     },
 
     /** Clear the selection anchor. */
     clearMark() {
-      mark = null;
+      cursorSource.mark = null;
       emit(null);
     },
 
     /** @param {{ extend?: boolean }} [opts] */
     moveLeft(opts) {
-      this.moveTo(point - 1, opts);
+      this.moveTo(cursorSource.point - 1, opts);
     },
 
     /** @param {{ extend?: boolean }} [opts] */
     moveRight(opts) {
-      this.moveTo(point + 1, opts);
+      this.moveTo(cursorSource.point + 1, opts);
     },
 
     /** @param {{ extend?: boolean }} [opts] */
     moveUp(opts) {
-      const { line, column } = storage.positionAt(point);
+      const { line, column } = storage.positionAt(cursorSource.point);
       const target = line === 0 ? 0 : storage.offsetAt(line - 1, column);
       this.moveTo(target, opts);
     },
 
     /** @param {{ extend?: boolean }} [opts] */
     moveDown(opts) {
-      const { line, column } = storage.positionAt(point);
+      const { line, column } = storage.positionAt(cursorSource.point);
       const target =
         line >= storage.lineCount - 1
           ? storage.length
@@ -263,12 +305,12 @@ export function createBuffer(initialText = '', options = {}) {
 
     /** @param {{ extend?: boolean }} [opts] */
     moveLineStart(opts) {
-      this.moveTo(storage.lineAt(point).from, opts);
+      this.moveTo(storage.lineAt(cursorSource.point).from, opts);
     },
 
     /** @param {{ extend?: boolean }} [opts] */
     moveLineEnd(opts) {
-      this.moveTo(storage.lineAt(point).to, opts);
+      this.moveTo(storage.lineAt(cursorSource.point).to, opts);
     },
 
     /** @param {{ extend?: boolean }} [opts] */
@@ -293,12 +335,12 @@ export function createBuffer(initialText = '', options = {}) {
       const selection = currentSelection();
       if (selection) {
         storage.replace(selection.start, selection.end, text);
-        point = selection.start + text.length;
+        cursorSource.point = selection.start + text.length;
       } else {
-        storage.insert(point, text);
-        point += text.length;
+        storage.insert(cursorSource.point, text);
+        cursorSource.point += text.length;
       }
-      mark = null;
+      cursorSource.mark = null;
       emit(lastChange);
     },
 
@@ -313,14 +355,15 @@ export function createBuffer(initialText = '', options = {}) {
       const selection = currentSelection();
       if (selection) {
         storage.delete(selection.start, selection.end);
-        point = selection.start;
+        cursorSource.point = selection.start;
       } else {
+        const point = cursorSource.point;
         const from = clamp(point - count);
         if (from === point) return false;
         storage.delete(from, point);
-        point = from;
+        cursorSource.point = from;
       }
-      mark = null;
+      cursorSource.mark = null;
       emit(lastChange);
       return true;
     },
@@ -336,13 +379,14 @@ export function createBuffer(initialText = '', options = {}) {
       const selection = currentSelection();
       if (selection) {
         storage.delete(selection.start, selection.end);
-        point = selection.start;
+        cursorSource.point = selection.start;
       } else {
+        const point = cursorSource.point;
         const to = clamp(point + count);
         if (to === point) return false;
         storage.delete(point, to);
       }
-      mark = null;
+      cursorSource.mark = null;
       emit(lastChange);
       return true;
     },
@@ -355,8 +399,8 @@ export function createBuffer(initialText = '', options = {}) {
      */
     setText(text) {
       storage.replace(0, storage.length, String(text));
-      point = 0;
-      mark = null;
+      cursorSource.point = 0;
+      cursorSource.mark = null;
       emit(lastChange);
     },
 
@@ -369,8 +413,8 @@ export function createBuffer(initialText = '', options = {}) {
     undo() {
       if (!storage.canUndo) return false;
       storage.undo();
-      point = clamp(lastChange.start + lastChange.inserted.length);
-      mark = null;
+      cursorSource.point = clamp(lastChange.start + lastChange.inserted.length);
+      cursorSource.mark = null;
       emit(lastChange);
       return true;
     },
@@ -382,8 +426,8 @@ export function createBuffer(initialText = '', options = {}) {
     redo() {
       if (!storage.canRedo) return false;
       storage.redo();
-      point = clamp(lastChange.start + lastChange.inserted.length);
-      mark = null;
+      cursorSource.point = clamp(lastChange.start + lastChange.inserted.length);
+      cursorSource.mark = null;
       emit(lastChange);
       return true;
     },

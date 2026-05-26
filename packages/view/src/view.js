@@ -76,6 +76,14 @@ export function createView(options) {
       view.name = `*${view.kind}*`;
     }
   }
+  // Per-view-point: text views own their own cursor (point) and
+  // selection anchor (mark). Two text views over the same buffer thus
+  // have independent cursors. Non-text views leave these undefined.
+  // The buffer holds only text, markers and edit history.
+  if (view.kind === 'text') {
+    view.point = typeof options.point === 'number' ? options.point : 0;
+    view.mark = typeof options.mark === 'number' ? options.mark : null;
+  }
   return view;
 }
 
@@ -104,6 +112,10 @@ export function isView(value) {
  *   buffer for text views; null otherwise.
  * @property {*} mode - The view's own mode (non-text views); null for
  *   text views (their modes live on the buffer).
+ * @property {number} [point] - The cursor offset, for text views.
+ *   Two views over the same buffer have independent cursors.
+ * @property {number | null} [mark] - The selection anchor, for text
+ *   views. `null` means no selection.
  *
  * Kind-specific state lives as additional top-level fields (e.g.
  * `src`, `tracks`, `sessionId`) put there by `createView`'s `extras`

@@ -107,12 +107,32 @@ function fillParagraph(words, indent, fillColumn) {
  *   to implementation, ready for `createInterpreter({ primitives })`.
  */
 export function createBufferPrimitives(session) {
-  /** The L2 buffer the text primitives act on, or null. */
-  const currentBuffer = () => {
-    // New shape: a session with a `currentView` returning a View.
+  /** The current text view (if any), or null. The view owns point and
+   *  mark — per-view-point (plans/PANES.md Q2). */
+  const currentTextView = () => {
     if (typeof session.currentView !== 'undefined') {
       const view = session.currentView;
-      return view && view.buffer ? view.buffer : null;
+      return view && view.buffer ? view : null;
+    }
+    return null;
+  };
+
+  /** The L2 buffer the text primitives act on, or null. The buffer's
+   *  own `point`/`mark` getters route through `buffer.bindCursor(view)`
+   *  — see `@editor/buffer` — so when a view is bound the cursor reads
+   *  and writes land on the view's own fields. */
+  const currentBuffer = () => {
+    const view = currentTextView();
+    if (view) {
+      // Make sure the buffer's cursor is bound to the live view so
+      // primitives that read `buf.point` / `buf.mark` see (and mutate)
+      // the view's per-view-point state. Idempotent — bindCursor just
+      // swaps the cursor source.
+      if (typeof view.buffer.bindCursor === 'function' &&
+          typeof view.point === 'number') {
+        view.buffer.bindCursor(view);
+      }
+      return view.buffer;
     }
     // Old shape (test fixtures): a session with `current` returning a
     // Buffer directly. Treat it as a text view's buffer.

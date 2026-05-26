@@ -27,15 +27,36 @@ export function toLines(text) {
  * The set of lines a selection touches, with the column span selected
  * on each. Used to paint selection highlights one rectangle per line.
  *
+ * Per-view-point: takes the cursor offset (`point`) and selection
+ * anchor (`mark`) as explicit arguments. When invoked with two
+ * arguments only, the second arg is taken as a `{point, mark}` shape
+ * (the legacy callers passed the whole buffer in that slot — kept
+ * for back-compat with renderer unit tests).
+ *
  * @param {import('@editor/buffer').Buffer} buffer
+ * @param {number | { point: number, mark: number | null }} [pointOrCursor]
+ * @param {number | null} [maybeMark]
  * @returns {{ line: number, fromColumn: number, toColumn: number,
  *   toLineEnd: boolean }[]} One entry per touched line. `toLineEnd` is
  *   true when the selection continues past this line (its newline is
  *   selected), so the highlight should run to the line's end.
  */
-export function selectionRects(buffer) {
-  const selection = buffer.selection;
-  if (selection === null) return [];
+export function selectionRects(buffer, pointOrCursor, maybeMark) {
+  let point;
+  let mark;
+  if (typeof pointOrCursor === 'number') {
+    point = pointOrCursor;
+    mark = maybeMark === undefined ? null : maybeMark;
+  } else if (pointOrCursor && typeof pointOrCursor === 'object') {
+    point = pointOrCursor.point;
+    mark = pointOrCursor.mark ?? null;
+  } else {
+    point = buffer.point;
+    mark = buffer.mark;
+  }
+  if (mark === null || mark === point) return [];
+
+  const selection = { start: Math.min(point, mark), end: Math.max(point, mark) };
 
   const first = buffer.positionAt(selection.start);
   const last = buffer.positionAt(selection.end);

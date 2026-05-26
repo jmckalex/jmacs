@@ -19,6 +19,36 @@ test('a text view holds an L2 buffer; name comes from the buffer', () => {
   assert.equal(view.mode, null);
 });
 
+test('a text view starts with its own point=0 and mark=null', () => {
+  const buffer = createBuffer('hi', { name: 'hello.txt' });
+  const view = createView({ kind: 'text', buffer });
+  assert.equal(view.point, 0);
+  assert.equal(view.mark, null);
+});
+
+test('a non-text view leaves point and mark undefined', () => {
+  const view = createView({ kind: 'image', extras: { src: 'data:...' } });
+  assert.equal(view.point, undefined);
+  assert.equal(view.mark, undefined);
+});
+
+test('createView honours explicit point and mark options', () => {
+  const buffer = createBuffer('hello', { name: 'x.txt' });
+  const view = createView({ kind: 'text', buffer, point: 3, mark: 1 });
+  assert.equal(view.point, 3);
+  assert.equal(view.mark, 1);
+});
+
+test('binding a text view to its buffer routes cursor reads/writes', () => {
+  const buffer = createBuffer('hello', { name: 'x.txt' });
+  const view = createView({ kind: 'text', buffer });
+  buffer.bindCursor(view);
+  buffer.moveTo(3);
+  assert.equal(view.point, 3, 'the view owns the cursor');
+  buffer.insert('!');
+  assert.equal(view.point, 4);
+});
+
 test('a non-text view has no buffer; extras spread onto the view', () => {
   const view = createView({ kind: 'image', extras: { src: 'data:...' } });
   assert.equal(view.kind, 'image');

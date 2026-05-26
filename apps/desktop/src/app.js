@@ -2502,6 +2502,20 @@ const editorView = createEditorView(
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     highlighters,
     foldCaptures,
+    // Per-view-point: the renderer view reads the cursor through the
+    // session's current view rather than from the buffer's own
+    // backing. With one pane (this phase) the focused view is the
+    // current view, so the renderer always sees the right cursor;
+    // with multiple panes (commit 3+) each pane gets its own renderer
+    // instance and these closures will point at *that* pane's view.
+    getPoint: () => {
+      const view = session.currentView;
+      return view && typeof view.point === 'number' ? view.point : 0;
+    },
+    getMark: () => {
+      const view = session.currentView;
+      return view && view.mark !== undefined ? view.mark : null;
+    },
   }
 );
 
@@ -3019,6 +3033,11 @@ kindRegistry.register('text', {
   hasBuffer: true,
   mount: (view) => {
     currentTextBuffer = view.buffer;
+    // Per-view-point (plans/PANES.md Q2): bind the buffer's cursor to
+    // the view so the buffer's `point`/`mark` API reads and writes the
+    // view's own fields. Two text views over one buffer can each own
+    // their cursor; switching to a view rebinds the buffer to it.
+    view.buffer.bindCursor(view);
     editorView.setBuffer(view.buffer);
     stickyNotes.setBuffer(view.buffer);
     watchCurrentBuffer();

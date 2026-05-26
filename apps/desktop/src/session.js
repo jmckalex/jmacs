@@ -88,12 +88,24 @@ export function isEphemeral(view) {
 export function serialise(views, currentIndex) {
   const keep = views.filter((view) => !isEphemeral(view));
   const serialised = keep.map((view) => {
+    // Per-view-point (plans/PANES.md Q2): the cursor lives on the
+    // view, not the buffer. Two views over one buffer have independent
+    // points; the bound-buffer's `point` would return the focused
+    // view's point for everyone, which is wrong on save.
     const buffer = view.buffer;
-    return {
-      path: viewFilePath(view),
-      point: buffer && typeof buffer.point === 'number' ? buffer.point : 0,
-      mark: buffer && typeof buffer.mark === 'number' ? buffer.mark : null,
-    };
+    const point =
+      typeof view.point === 'number'
+        ? view.point
+        : buffer && typeof buffer.point === 'number'
+          ? buffer.point
+          : 0;
+    const mark =
+      typeof view.mark === 'number'
+        ? view.mark
+        : buffer && typeof buffer.mark === 'number'
+          ? buffer.mark
+          : null;
+    return { path: viewFilePath(view), point, mark };
   });
   const current = views[currentIndex];
   const currentPath =
