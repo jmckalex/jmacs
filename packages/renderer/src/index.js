@@ -40,9 +40,8 @@ export { createDirectoryColumnsView } from './directory-columns-view.js';
 export {
   createShellView,
   normaliseCarriageReturns,
-  sanitiseShellOutput,
-  stripAnsi,
 } from './shell-view.js';
+export { createAnsiParser } from './ansi.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,
