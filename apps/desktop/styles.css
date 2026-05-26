@@ -2388,10 +2388,11 @@ textarea.customize-widget {
 }
 
 /* --- shell view -------------------------------------------------------- */
-/* A `shell`-kind buffer is shown through this view: a transcript pane
-   above an input line. The shell runs as a normal child process
-   (no PTY); user input is appended on Enter, output streams from the
-   process and lands in the transcript. */
+/* A `shell`-kind buffer is shown through this view. The transcript
+   fills the pane; the user's typing is a contenteditable span that
+   visually sits inline at the end of the shell's last partial line
+   (the prompt), like the cursor in iTerm/Terminal.app. New output
+   inserts above the live row. */
 
 .shell-view {
   display: flex;
@@ -2428,6 +2429,7 @@ textarea.customize-widget {
   padding: 8px 14px;
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
 }
 
 .shell-entry {
@@ -2435,7 +2437,8 @@ textarea.customize-widget {
   white-space: pre-wrap;
 }
 
-.shell-entry-stdout {
+.shell-entry-stdout,
+.shell-entry-input {
   color: var(--fg);
 }
 
@@ -2443,42 +2446,36 @@ textarea.customize-widget {
   color: var(--error, #f08080);
 }
 
-.shell-entry-input {
-  color: color-mix(in srgb, var(--fg) 70%, transparent);
-}
-
 .shell-entry-exit {
   color: var(--fg-dim);
   font-style: italic;
 }
 
-.shell-input-row {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border-top: 1px solid #ffffff14;
-  background: color-mix(in srgb, var(--bg-editor) 92%, transparent);
+/* The live row sits at the bottom of the transcript. The partial span
+   holds whatever the shell has emitted since its last `\n` (typically
+   the prompt). The contenteditable input flows immediately after, so
+   the caret renders right next to the prompt — the same visual model
+   as a real terminal. */
+.shell-live-row {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 1.2em;
 }
 
-.shell-input-prompt {
-  flex: 0 0 auto;
-  color: var(--fg-dim);
+.shell-live-partial {
+  white-space: pre-wrap;
 }
 
-.shell-input {
-  flex: 1 1 auto;
-  background: transparent;
-  border: none;
+.shell-live-input {
+  display: inline-block;
+  min-width: 1ch;
   outline: none;
-  color: var(--fg);
-  font-family: inherit;
-  font-size: inherit;
-  padding: 0;
+  caret-color: var(--fg);
+  white-space: pre-wrap;
 }
 
-.shell-input:disabled {
+.shell-live-input[contenteditable="false"] {
   color: var(--fg-dim);
   cursor: not-allowed;
 }

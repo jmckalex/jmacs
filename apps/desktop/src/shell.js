@@ -94,27 +94,50 @@ export function defaultShell() {
  * process is what we wire to the renderer; pty.spawn proxies
  * everything between the pty (the inner shell) and its own stdio.
  *
- * `-i` runs the user's rc files (so PATH and aliases match the user's
- * terminal). For zsh we also append `+Z`, which disables ZLE (the
- * line editor) — we have our own input field, and ZLE's
- * character-by-character echo (it emits the partial-line state with
- * embedded backspaces as the user types) is the wrong model for a
- * transcript view. The prompt still renders; only the live editing
- * layer is off. Bash's readline-driven equivalent has the same issue
- * but rejects `+Z`, so we add the flag only for zsh; bash on its own
- * `-i` is good enough for now (a similar suppression flag for bash
- * would be `--noediting`, but it isn't strictly necessary — bash's
- * echo behaviour through a pty doesn't produce the same partial-line
- * artefacts).
+ * Shell flags:
+ *   - `-i` runs the user's rc files (so PATH and aliases match what
+ *     they have in iTerm/Terminal.app).
+ *   - For zsh: `+Z` disables ZLE (the line editor). We have our own
+ *     in-buffer input, and ZLE's character-by-character echo (with
+ *     embedded backspaces) is the wrong model for a transcript view.
+ *     The prompt still renders; only the live editing layer is off.
+ *   - For bash: `--noediting` does the equivalent — disables readline.
  *
- * Kept on one line so spawn doesn't need to deal with multi-arg
- * escaping inside `-c`.
+ * Terminal flags (set on the slave side before exec):
+ *   - ECHO off: the kernel's tty driver will *not* echo bytes written
+ *     to the master back to stdout. We render typed input ourselves
+ *     in the transcript on Enter, so without this we'd see every
+ *     command twice (once from us, once echoed by the tty).
+ *
+ * Kept on one logical line so spawn doesn't need to deal with
+ * multi-arg escaping inside `-c`.
  */
 const PYTHON_PTY_SCRIPT =
-  "import sys, os, pty; sh = sys.argv[1]; " +
+  "import sys, os, pty, termios; sh = sys.argv[1]; " +
   "args = [sh, '-i'] + (['+Z'] if os.path.basename(sh) == 'zsh' else " +
   "(['--noediting'] if os.path.basename(sh) == 'bash' else [])); " +
-  "pty.spawn(args)";
+  "pid, fd = pty.fork()\n" +
+  "if pid == 0:\n" +
+  "  os.execvp(args[0], args)\n" +
+  // Parent: set ECHO off on the master fd immediately, BEFORE forwarding
+  // any input. The slave shares termios with the master, so this lands
+  // before the shell reads from stdin and the kernel never echoes the
+  // first characters under the default (ECHO=on) settings.
+  "a = termios.tcgetattr(fd); a[3] &= ~termios.ECHO; " +
+  "termios.tcsetattr(fd, termios.TCSANOW, a)\n" +
+  "import select\n" +
+  "while True:\n" +
+  "  try: r, _, _ = select.select([0, fd], [], [])\n" +
+  "  except (OSError, KeyboardInterrupt): break\n" +
+  "  if 0 in r:\n" +
+  "    d = os.read(0, 4096)\n" +
+  "    if not d: break\n" +
+  "    os.write(fd, d)\n" +
+  "  if fd in r:\n" +
+  "    try: d = os.read(fd, 4096)\n" +
+  "    except OSError: break\n" +
+  "    if not d: break\n" +
+  "    os.write(1, d)\n";
 
 /**
  * Probe whether a usable `python3` with the `pty` module is available.

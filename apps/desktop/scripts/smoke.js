@@ -2415,7 +2415,8 @@ app.whenReady().then(() => {
         await frame();
         const view = document.querySelector('.shell-view');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
-        const shellInput = view ? view.querySelector('.shell-input') : null;
+        // v3: the input is a contenteditable span inside the transcript.
+        const shellInput = view ? view.querySelector('.shell-live-input') : null;
         if (!shellInput) {
           return { shown, mounted: false };
         }
@@ -2426,7 +2427,7 @@ app.whenReady().then(() => {
         // just the input echo) to arrive in the transcript.
         const marker = 'JMACSMARKER42';
         shellInput.focus();
-        shellInput.value = 'echo ' + marker;
+        shellInput.textContent = 'echo ' + marker;
         shellInput.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
@@ -2454,7 +2455,7 @@ app.whenReady().then(() => {
         // assertion is precise; the bash printf interpretation of \\033
         // is the actual escape byte on output.
         shellInput.focus();
-        shellInput.value =
+        shellInput.textContent =
           "printf '\\\\033[31mred\\\\033[0m\\\\n\\\\033[1;32mbold-green\\\\033[0m\\\\n'";
         shellInput.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
@@ -2463,6 +2464,10 @@ app.whenReady().then(() => {
         let greenSpan = null;
         for (let i = 0; i < 60; i += 1) {
           await wait(100);
+          // v3: coloured output lands in completed shell-entry-stdout
+          // rows. While the prompt is mid-typing it sits in the live row,
+          // but printf output finishes with a newline and so always
+          // finalises.
           redSpan = view.querySelector('.shell-entry-stdout .shell-fg-red');
           greenSpan =
             view.querySelector('.shell-entry-stdout .shell-fg-green.shell-bold')

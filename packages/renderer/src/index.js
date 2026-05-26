@@ -39,7 +39,7 @@ export {
 export { createDirectoryColumnsView } from './directory-columns-view.js';
 export {
   createShellView,
-  normaliseCarriageReturns,
+  feedLiveLine,
 } from './shell-view.js';
 export { createAnsiParser } from './ansi.js';
 export {
