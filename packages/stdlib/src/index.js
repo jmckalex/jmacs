@@ -52,6 +52,7 @@ export const STDLIB_FILES = Object.freeze([
   'buffer-menu.lisp',
   'sticky-notes.lisp',
   'jukebox.lisp',
+  'directory-tree.lisp',
   'palette.lisp',
   'docs.lisp',
   'help.lisp',

@@ -69,6 +69,19 @@ contextBridge.exposeInMainWorld('host', {
   listDirectorySync: (path) => ipcRenderer.sendSync('directory:list-sync', { path }),
 
   /**
+   * A typed sync listing of `path`: each entry is `{ name, kind }`
+   * with `kind` ∈ `'directory' | 'file' | 'other'`. Folders sort
+   * before files. The directory tree-view uses this to render the
+   * right icon and know which rows expand. Returns null on read
+   * failure (unreadable path, missing directory).
+   *
+   * @param {string} path
+   * @returns {Array<{name: string, kind: 'directory' | 'file' | 'other'}> | null}
+   */
+  listDirectoryDetailedSync: (path) =>
+    ipcRenderer.sendSync('directory:list-detailed-sync', { path }),
+
+  /**
    * Render JMarkdown `source` to HTML by running `command` (a shell
    * command) with the source on stdin.
    * @param {string} command

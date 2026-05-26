@@ -331,6 +331,37 @@ export function registerFileHandlers() {
     }
   });
 
+  // A typed sync listing — same dot-filter and alphabetical sort as
+  // the bare listing, but each entry comes back as
+  // `{ name, kind: 'directory' | 'file' | 'other' }`. The directory
+  // tree-view uses this to know which icon (folder vs file) to show
+  // and which entries can be expanded.
+  ipcMain.on('directory:list-detailed-sync', (event, payload) => {
+    try {
+      const entries = readdirSync(expandTilde(payload?.path), {
+        withFileTypes: true,
+      });
+      event.returnValue = entries
+        .filter((entry) => !entry.name.startsWith('.'))
+        .map((entry) => ({
+          name: entry.name,
+          kind: entry.isDirectory()
+            ? 'directory'
+            : entry.isFile() ? 'file' : 'other',
+        }))
+        .sort((a, b) => {
+          // Folders first, then files; within each group alphabetical.
+          if (a.kind !== b.kind) {
+            if (a.kind === 'directory') return -1;
+            if (b.kind === 'directory') return 1;
+          }
+          return a.name.localeCompare(b.name);
+        });
+    } catch {
+      event.returnValue = null;
+    }
+  });
+
   // Write a file's companion metadata. With no notes, the companion
   // file is removed rather than left as an empty husk.
   ipcMain.handle('metadata:write', async (_event, payload) => {

@@ -1728,6 +1728,110 @@ textarea.customize-widget {
   overflow-wrap: anywhere;
 }
 
+/* --- directory tree-view ---------------------------------------------- */
+/* A `directory-tree`-kind buffer is shown through this view: an
+   indented list of rows, one per filesystem entry, with FontAwesome
+   icons. Folders expand on click; files route through the host's
+   `open-file-path!` to land in whichever view their suffix maps to. */
+
+.directory-tree-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.directory-tree-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.directory-tree-header-label {
+  overflow-wrap: anywhere;
+}
+
+.directory-tree-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.directory-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 14px 2px 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.directory-tree-row:hover {
+  background: #ffffff0a;
+}
+
+.directory-tree-row.is-selected {
+  background: #ffffff14;
+}
+
+/* Chevron — 12px slot so the icon column stays aligned for files
+   (whose chevron is hidden). Rotation marks expansion. */
+.directory-tree-chevron {
+  flex: 0 0 auto;
+  width: 12px;
+  font-size: 10px;
+  color: var(--fg-dim);
+  text-align: center;
+  transition: transform 0.1s ease-out;
+}
+
+.directory-tree-chevron.is-hidden {
+  visibility: hidden;
+}
+
+.directory-tree-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.directory-tree-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  font-size: 13px;
+  text-align: center;
+  color: var(--fg-dim);
+}
+
+.directory-tree-row[data-kind="directory"] .directory-tree-icon {
+  /* Folder gets a bit more emphasis — it's clickable to expand. */
+  color: var(--fg);
+}
+
+.directory-tree-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.directory-tree-error {
+  font-style: italic;
+  color: var(--fg-dim);
+  font-size: 12px;
+  padding: 2px 14px;
+}
+
 /* --- media error block ------------------------------------------------ */
 /* Shown by audio-view / video-view when the <audio>/<video> element
    fires `error` (almost always SRC_NOT_SUPPORTED — Chromium can't

@@ -2152,6 +2152,92 @@ app.whenReady().then(() => {
       })()`);
       console.log('  langPack:', JSON.stringify(langPack));
 
+      // Directory tree-view: open a tree rooted at the temp dir we've
+      // been writing scratch files into. Expand a known subfolder (we
+      // seed one), confirm a file row exists with the right icon
+      // class, click it, confirm the right view took over.
+      const treeDir = join(tmpdir(), 'jmacs-smoke-tree');
+      await rm(treeDir, { recursive: true, force: true });
+      await mkdir(join(treeDir, 'subdir'), { recursive: true });
+      await writeFile(join(treeDir, 'note.txt'), 'hello\n', 'utf8');
+      await writeFile(join(treeDir, 'main.js'), 'export default 1\n', 'utf8');
+      await writeFile(join(treeDir, 'subdir', 'inner.md'), '# inner\n', 'utf8');
+      const tree = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        // Open the tree-view at the seeded directory.
+        submit('(directory-tree ${JSON.stringify(treeDir)})');
+        await wait(150);
+        await frame();
+        const view = document.querySelector('.directory-tree-view');
+        const shown = !!(view && getComputedStyle(view).display !== 'none');
+        // Row count: subdir (one folder, collapsed) + main.js + note.txt
+        // = 3 rows at root level. Folders first, then files
+        // alphabetically per the host's sort.
+        const rowsBefore = view ? view.querySelectorAll('.directory-tree-row').length : 0;
+        // Find the subdir row and click its chevron.
+        const subdirRow = view ? Array.from(view.querySelectorAll('.directory-tree-row'))
+          .find((r) => r.querySelector('.directory-tree-name').textContent === 'subdir')
+          : null;
+        if (subdirRow) {
+          subdirRow.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true,
+          }));
+        }
+        await frame();
+        const rowsAfterExpand = view ? view.querySelectorAll('.directory-tree-row').length : 0;
+        // The chevron rotated. (Re-query after paint — the row element
+        // is rebuilt each render, so subdirRow held the old chevron.)
+        const subdirAfter = view ? Array.from(view.querySelectorAll('.directory-tree-row'))
+          .find((r) => r.querySelector('.directory-tree-name').textContent === 'subdir')
+          : null;
+        const chevronOpen = subdirAfter
+          ? subdirAfter.querySelector('.directory-tree-chevron').classList.contains('is-open')
+          : false;
+        // The file rows' icons reflect their suffix.
+        const jsRow = view ? Array.from(view.querySelectorAll('.directory-tree-row'))
+          .find((r) => r.querySelector('.directory-tree-name').textContent === 'main.js')
+          : null;
+        const jsIconClass = jsRow
+          ? jsRow.querySelector('.directory-tree-icon').className
+          : '';
+        const noteRow = view ? Array.from(view.querySelectorAll('.directory-tree-row'))
+          .find((r) => r.querySelector('.directory-tree-name').textContent === 'note.txt')
+          : null;
+        const noteIconClass = noteRow
+          ? noteRow.querySelector('.directory-tree-icon').className
+          : '';
+        // Activate the note.txt row — should open it as a text buffer.
+        const beforeOpenBuffer = document.getElementById('modeline-name')?.textContent ?? '';
+        if (noteRow) {
+          noteRow.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true,
+          }));
+        }
+        await wait(200);
+        await frame();
+        const afterOpenBuffer = document.getElementById('modeline-name')?.textContent ?? '';
+        return {
+          shown,
+          rowsBefore,
+          rowsAfterExpand,
+          chevronOpen,
+          jsIconClass,
+          noteIconClass,
+          beforeOpenBuffer,
+          afterOpenBuffer,
+        };
+      })()`);
+      console.log('  tree:', JSON.stringify(tree));
+      await rm(treeDir, { recursive: true, force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -2403,6 +2489,19 @@ app.whenReady().then(() => {
         langPack.langs.includes('dockerfile') &&
         langPack.langs.includes('nix') &&
         langPack.langs.includes('kotlin');
+      // Directory tree-view arm: the view mounts, the seeded folder
+      // expands on click (showing one more row), and clicking a file
+      // routes to the text buffer with the file's name in the modeline.
+      const treeOk =
+        tree &&
+        tree.shown &&
+        tree.rowsBefore === 3 &&
+        tree.rowsAfterExpand === 4 &&
+        tree.chevronOpen === true &&
+        tree.jsIconClass.includes('fa-file-code') &&
+        tree.noteIconClass.includes('fa-file-lines') &&
+        tree.beforeOpenBuffer !== tree.afterOpenBuffer &&
+        tree.afterOpenBuffer.includes('note.txt');
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -2412,7 +2511,7 @@ app.whenReady().then(() => {
         mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
-        tablineOk && langPackOk
+        tablineOk && langPackOk && treeOk
       ) {
         finish(
           0,
@@ -2511,8 +2610,10 @@ app.whenReady().then(() => {
         finish(1, `splitters did not work (${JSON.stringify(splitters)})`);
       } else if (!tablineOk) {
         finish(1, `tabline / session did not work (${JSON.stringify(tabline)})`);
-      } else {
+      } else if (!langPackOk) {
         finish(1, `language pack did not work (${JSON.stringify(langPack)})`);
+      } else {
+        finish(1, `directory tree-view did not work (${JSON.stringify(tree)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

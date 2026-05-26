@@ -25,6 +25,7 @@ import {
   createCustomizeView,
   createDocView,
   createEditorView,
+  createDirectoryTreeView,
   createHoverDoc,
   createInlineEval,
   createImageView,
@@ -221,6 +222,8 @@ function mountView(kind) {
   jukeboxView.element.style.display = kind === 'jukebox' ? '' : 'none';
   audioView.element.style.display = kind === 'audio' ? '' : 'none';
   videoView.element.style.display = kind === 'video' ? '' : 'none';
+  directoryTreeView.element.style.display =
+    kind === 'directory-tree' ? '' : 'none';
   // Pause the standalone media players on unmount — the jukebox owns
   // the shared audio controller and looks after itself.
   if (kind !== 'audio') audioView.setBuffer(null);
@@ -258,6 +261,10 @@ function switchToBuffer(index) {
     mountView('video');
     videoView.setBuffer(buffer);
     videoView.focus();
+  } else if (buffer.kind === 'directory-tree') {
+    mountView('directory-tree');
+    directoryTreeView.setBuffer(buffer);
+    directoryTreeView.focus();
   } else {
     currentTextBuffer = buffer;
     mountView('text');
@@ -1187,6 +1194,34 @@ const interpreter = createInterpreter({
       const filePath = expandTilde(String(args[0] ?? ''));
       if (filePath === '') return NIL;
       openFileByPath(filePath);
+      return NIL;
+    },
+    // Open a directory-tree buffer rooted at `path`. The view lists
+    // the directory's entries with FontAwesome icons; folders expand
+    // on click; files route through the same open path as the REPL.
+    // The path is resolved to a canonical absolute form via expandTilde
+    // so '~/Source' works as expected.
+    'open-directory-tree!': (args) => {
+      const rootPath = expandTilde(String(args[0] ?? ''));
+      if (rootPath === '') return NIL;
+      // Re-use any existing tree buffer for this path rather than
+      // stacking a new one — same logic the jukebox uses.
+      const existing = buffers.findIndex(
+        (b) => b.kind === 'directory-tree' && b.rootPath === rootPath
+      );
+      if (existing >= 0) {
+        switchToBuffer(existing);
+        return NIL;
+      }
+      const segments = rootPath.split('/');
+      const tailName = segments[segments.length - 1] || rootPath;
+      buffers.push({
+        kind: 'directory-tree',
+        name: `*Tree: ${tailName}*`,
+        rootPath,
+        expanded: new Set(),
+      });
+      switchToBuffer(buffers.length - 1);
       return NIL;
     },
     'save-buffer!': () => {
@@ -2497,6 +2532,30 @@ const videoView = createVideoView(
   }
 );
 videoView.element.style.display = 'none';
+
+// The directory tree-view — a `directory-tree`-kind buffer is shown
+// through this view. Folder rows expand on click; file rows route
+// through the host's open-file-path so they land in whichever view
+// their suffix maps to (text editor, image, audio, video).
+const directoryTreeView = createDirectoryTreeView(
+  document.getElementById('editor-host'),
+  {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
+    openPath: (path) => {
+      openFileByPath(path);
+    },
+    closeBuffer: () => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('kill-buffer');
+      } catch (error) {
+        repl.appendError(`kill-buffer: ${error.lispMessage ?? error.message}`);
+      }
+    },
+  }
+);
+directoryTreeView.element.style.display = 'none';
 
 /** The hover-doc tooltip — appears beside the cursor when the mouse
  *  rests on a documented Lisp symbol. The lookup chain mirrors
