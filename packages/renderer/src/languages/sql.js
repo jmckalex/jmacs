@@ -43,7 +43,7 @@ const QUERY = `
     (keyword_key) (keyword_foreign) (keyword_references) (keyword_default)
     (keyword_unique) (keyword_check) (keyword_constraint) (keyword_if)
     (keyword_replace) (keyword_truncate) (keyword_begin) (keyword_commit)
-    (keyword_rollback) (keyword_transaction) (keyword_grant) (keyword_revoke)
+    (keyword_rollback) (keyword_transaction)
     (keyword_to) (keyword_for) (keyword_function) (keyword_procedure)
     (keyword_returns) (keyword_return) (keyword_declare) (keyword_cast)
     (keyword_asc) (keyword_desc) (keyword_temp) (keyword_temporary)

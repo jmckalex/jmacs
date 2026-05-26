@@ -20,11 +20,16 @@ const QUERY = `
   (number) @number
 
   ; --- keywords --------------------------------------------------------
+  ; 'break', 'false', 'nil', 'true' are named-node-only in this
+  ; version of tree-sitter-lua -- no anonymous token form. The
+  ; literal-constants block below faces true/false/nil as @constant;
+  ; the named (break_statement) below faces break as @keyword.
   [
-    "and" "break" "do" "else" "elseif" "end" "false" "for" "function"
-    "goto" "if" "in" "local" "nil" "not" "or" "repeat" "return" "then"
-    "true" "until" "while"
+    "and" "do" "else" "elseif" "end" "for" "function"
+    "goto" "if" "in" "local" "not" "or" "repeat" "return" "then"
+    "until" "while"
   ] @keyword
+  (break_statement) @keyword
 
   ; --- literal constants -----------------------------------------------
   [ (true) (false) (nil) ] @constant

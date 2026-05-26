@@ -59,6 +59,17 @@ build_grammar() {
   local stage="${WORK}/${out%.wasm}"
   rm -rf "${stage}"
   cp -R "${src}" "${stage}"
+  # Replace any shipped package.json with a minimal one that has
+  # the `tree-sitter` section the modern CLI requires. Without it
+  # the CLI bails with "Failed to locate a package.json that has a
+  # tree-sitter section" before even reading tree-sitter.json.
+  cat >"${stage}/package.json" <<EOF
+{
+  "name": "tree-sitter-${name}-vendored",
+  "version": "0.0.0",
+  "tree-sitter": [{ "scope": "${scope}", "file-types": ["${name}"] }]
+}
+EOF
   cat >"${stage}/tree-sitter.json" <<EOF
 {
   "grammars": [
@@ -72,6 +83,13 @@ build_grammar() {
   "bindings": { "c": true, "node": true }
 }
 EOF
+  # Regenerate parser.c with the current CLI so its embedded ABI
+  # version matches what web-tree-sitter expects (the older shipped
+  # parser.c for some grammars carries ABI 9–10; current runtime
+  # wants 13–15). The generate runs without --docker since the CLI
+  # binary is local; only the wasm build needs emscripten.
+  echo "Regenerating parser.c for ${name} ..."
+  ( cd "${stage}" && "${TREE_SITTER}" generate >/dev/null )
   echo "Building ${out} from ${src} ..."
   "${TREE_SITTER}" build --wasm --docker -o "${VENDOR}/${out}" "${stage}"
 }

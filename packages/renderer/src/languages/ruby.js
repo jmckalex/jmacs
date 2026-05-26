@@ -36,8 +36,13 @@ const QUERY = `
     "alias" "and" "begin" "break" "case" "class" "def" "do" "else"
     "elsif" "end" "ensure" "for" "if" "in" "module" "next" "or"
     "rescue" "retry" "return" "then" "unless" "until" "when" "while"
-    "yield" "not" "BEGIN" "END" "lambda"
+    "yield" "not" "BEGIN" "END"
   ] @keyword
+  ; The 'lambda' keyword is named-node-only in this version of
+  ; tree-sitter-ruby (no anonymous token form). Capture the first
+  ; child of (lambda) so only the literal word "lambda" reads as
+  ; a keyword, not the whole block.
+  (lambda . _ @keyword)
 
   (self) @keyword
   (super) @keyword

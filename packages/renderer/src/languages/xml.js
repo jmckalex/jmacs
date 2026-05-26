@@ -45,7 +45,11 @@ const QUERY = `
 
   ; --- operators (the angle / equals tokens) ---------------------------
   [ "<" ">" "</" "/>" "=" ] @operator
-  [ "<?" "?>" "<!--" "-->" "<![CDATA[" "]]>" ] @operator
+  ; The vendored tree-sitter-xml emits "<![CDATA" (no trailing "[")
+  ; as the open token and pairs it with no anonymous close — the
+  ; (CData) node match above faces the whole section. Drop the
+  ; explicit brackets here so the query parses.
+  [ "<?" "?>" "<!--" "-->" ] @operator
 `;
 
 registerLanguage({
