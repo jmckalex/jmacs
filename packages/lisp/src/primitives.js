@@ -302,6 +302,14 @@ export function installPrimitives(env, { write }) {
   });
   def('string-upcase', (a) => str('string-upcase', a[0]).toUpperCase());
   def('string-downcase', (a) => str('string-downcase', a[0]).toLowerCase());
+  def('string-repeat', (a) => {
+    // (string-repeat s n) — concatenate S to itself N times. N is
+    // clamped to >= 0; non-finite / non-integer N is rejected.
+    arity('string-repeat', a, 2);
+    const s = str('string-repeat', a[0]);
+    const n = num('string-repeat', a[1]);
+    return s.repeat(Math.max(0, n | 0));
+  });
   def('string-split', (a) => {
     arity('string-split', a, 2);
     return arrayToList(str('string-split', a[0]).split(str('string-split', a[1])));

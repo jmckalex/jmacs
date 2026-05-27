@@ -159,8 +159,13 @@
         (begin (goto! indent-end) (insert! prefix)))))
 
 (defcommand insert-tab ()
-  "Insert two spaces at the cursor."
-  (insert! "  "))
+  "Insert a tab at the cursor — either a literal `\\t` or `*tab-width*`
+   spaces, depending on `*indent-tabs-mode*` and the current major
+   mode's `:indent-tabs?` key. Makefile-mode pins indent-tabs on, so
+   Tab in a Makefile always emits a real tab."
+  (if (-indent-tabs-effective)
+      (insert! "\t")
+      (insert! (string-repeat " " (-tab-width-effective)))))
 
 ;; --- history -----------------------------------------------------------
 

@@ -48,7 +48,11 @@
   :name "Makefile"
   :comment-prefix "# "
   :keymap 'makefile-mode-map
-  :highlight :makefile)
+  :highlight :makefile
+  ;; A Makefile recipe needs a literal tab as its leading character;
+  ;; spaces are a hard error from `make`. Pin :indent-tabs? on so the
+  ;; Tab key produces a real `\t` regardless of the global setting.
+  :indent-tabs? #t)
 
 ;; The buffer-menu mode — the *Buffer List* buffer is plain text with a
 ;; keymap that turns RET/d/u/x/g/q into menu actions. No suffix is

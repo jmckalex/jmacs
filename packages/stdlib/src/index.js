@@ -29,6 +29,12 @@ export const STDLIB_FILES = Object.freeze([
   // The customisation registry loads early — later files declare
   // their settings with `defcustom`.
   'custom.lisp',
+  // Indent / tab settings load right after custom — `insert-tab` (in
+  // editing.lisp, loaded earlier) references the variables but only
+  // at command-dispatch time, so order between editing and indent
+  // doesn't matter for that. The mode-aware helpers (`-tab-width-effective`
+  // etc.) need to be in place before any mode-aware indent runs.
+  'indent.lisp',
   'files.lisp',
   'views.lisp',
   'panes.lisp',

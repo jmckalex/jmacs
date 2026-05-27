@@ -491,6 +491,40 @@ test('word movement extends an active region', async () => {
   assert.deepEqual(buffer.selection, { start: 0, end: 5 });
 });
 
+test('Tab key inserts *tab-width* spaces by default', async () => {
+  const { buffer, interpreter } = await editor('');
+  buffer.moveTo(0);
+  press(interpreter, 'tab');
+  // *tab-width* defaults to 4; *indent-tabs-mode* defaults to #f.
+  assert.equal(buffer.text, '    ');
+});
+
+test('Tab key inserts a literal \\t when *indent-tabs-mode* is on', async () => {
+  const { buffer, interpreter } = await editor('');
+  buffer.moveTo(0);
+  interpreter.evaluate('(set! *indent-tabs-mode* #t)');
+  press(interpreter, 'tab');
+  assert.equal(buffer.text, '\t');
+});
+
+test('Tab in Makefile mode inserts a literal \\t regardless of the global', async () => {
+  // Makefile-mode pins :indent-tabs? on so a Makefile recipe gets a
+  // real tab even when *indent-tabs-mode* is its #f default.
+  const { buffer, interpreter } = await editor('');
+  buffer.moveTo(0);
+  interpreter.evaluate('(set-major-mode! makefile-mode)');
+  press(interpreter, 'tab');
+  assert.equal(buffer.text, '\t');
+});
+
+test('changing *tab-width* changes how many spaces Tab emits', async () => {
+  const { buffer, interpreter } = await editor('');
+  buffer.moveTo(0);
+  interpreter.evaluate('(set! *tab-width* 2)');
+  press(interpreter, 'tab');
+  assert.equal(buffer.text, '  ');
+});
+
 test('C-z undoes the last change', async () => {
   const { buffer, interpreter } = await editor('start');
   buffer.moveTo(5);
