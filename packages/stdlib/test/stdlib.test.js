@@ -3406,6 +3406,23 @@ test('select-all-matches adds a cursor for every occurrence', async () => {
   assert.deepEqual(points, [5, 16, 28]);
 });
 
+test('ESC deselects every cursor but keeps the multi-cursor set', async () => {
+  // The user's workflow: C-c D selects every match, then ESC drops the
+  // selections so they can navigate / type a prefix-suffix while the
+  // multi-cursor set is still in place. C-g (tested below) is the
+  // bigger hammer that *also* collapses to the primary.
+  const { buffer, interpreter } = await editor('alpha beta alpha gamma alpha');
+  buffer.moveTo(2);
+  press(interpreter, 'C-c'); press(interpreter, 'D');
+  assert.equal(buffer.cursorCount, 3);
+  for (const s of buffer.selections) assert.notEqual(s.mark, null,
+    'every cursor has a selection before ESC');
+  press(interpreter, 'escape');
+  assert.equal(buffer.cursorCount, 3, 'cursor set preserved');
+  for (const s of buffer.selections) assert.equal(s.mark, null,
+    'every cursor deselected');
+});
+
 test('C-g collapses the cursor set to the primary', async () => {
   const { buffer, interpreter } = await editor('alpha beta alpha gamma alpha');
   buffer.moveTo(2);

@@ -141,6 +141,15 @@
    mark is set, cursor movement extends the region; C-g clears it."
   (set-mark! (point)))
 
+(defcommand deselect ()
+  "Clear the selection on every cursor without collapsing the
+   multi-cursor set (ESC). Lets a multi-cursor word-select (C-c d /
+   C-c D) be dropped to bare carets at every match — ready to navigate
+   away or type a prefix/suffix, with the cursor set intact. For a
+   single cursor this is the same as `clear-mark!` (or `C-g` minus the
+   side-effects of resetting any in-progress key chord)."
+  (clear-mark!))
+
 (defcommand comment-line ()
   "Comment or uncomment the current line."
   (let ((prefix (comment-prefix))

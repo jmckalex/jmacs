@@ -95,6 +95,10 @@
    "C-S-a"        'beginning-of-line-extending
    "C-S-e"        'end-of-line-extending
    "C-space"      'set-mark-command
+   ;; ESC clears the selection on every cursor without collapsing the
+   ;; multi-cursor set — `C-c d` / `C-c D` followed by ESC drops the
+   ;; selections to bare carets, ready to navigate or type a prefix.
+   "escape"       'deselect
    "home"         'move-beginning-of-line
    "end"          'move-end-of-line
    "S-home"       'beginning-of-line-extending
