@@ -4925,10 +4925,14 @@ function buildScratchTextView() {
  *  Returns the live view handle. The caller wires it into a leaf. */
 function materialiseRestoredView(blob, handlesByBlob) {
   if (!blob) return buildScratchTextView();
-  if (blob.kind === 'text') {
+  if (
+    blob.kind === 'text' || blob.kind === 'image' ||
+    blob.kind === 'audio' || blob.kind === 'video'
+  ) {
     const handle = handlesByBlob.get(blob);
     // If the file failed to open, fall back to a fresh scratch so the
-    // owning leaf still has something to render.
+    // owning leaf still has something to render. (Applies to all file-
+    // backed kinds — a missing audio file becomes scratch too.)
     return handle ?? buildScratchTextView();
   }
   if (blob.kind === 'tabline') {
@@ -4941,13 +4945,16 @@ function materialiseRestoredView(blob, handlesByBlob) {
       // leaves but not to tablines (a missing tab shouldn't expand the
       // strip with a scratch). Re-walk:
       .filter((v) => v !== null);
-    // Recompute tabs without the scratch substitution: a missing text
+    // Recompute tabs without the scratch substitution: a missing file
     // tab is silently dropped. (Nested tablines with their own tabs
     // are kept as-is; they recursively materialised already.)
     const tabsClean = [];
     for (const tabBlob of blob.tabs) {
       if (!tabBlob) continue;
-      if (tabBlob.kind === 'text') {
+      if (
+        tabBlob.kind === 'text' || tabBlob.kind === 'image' ||
+        tabBlob.kind === 'audio' || tabBlob.kind === 'video'
+      ) {
         const handle = handlesByBlob.get(tabBlob);
         if (handle) tabsClean.push(handle);
         continue;

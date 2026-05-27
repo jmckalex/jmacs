@@ -67,6 +67,12 @@ function makeTabline(tabs, opts = {}) {
   return view;
 }
 
+/** A file-backed non-text view (image/audio/video). Carries the
+ *  `filePath` that the serialiser reads. */
+function makeMediaView(kind, path) {
+  return { kind, name: path.split('/').pop(), buffer: null, filePath: path };
+}
+
 // --- isEphemeral -------------------------------------------------------
 
 test('isEphemeral: a non-text view is ephemeral', () => {
@@ -226,6 +232,63 @@ test('serialiseTree: non-text leaf views serialise as null', () => {
     kind: 'image', name: 'photo.png',
   });
   const out = serialiseTree(tree, 'pane-leaf-9');
+  assert.equal(out.rootPane.view, null);
+});
+
+test('serialiseTree: file-backed media views (image/audio/video) persist their path', () => {
+  for (const kind of ['image', 'audio', 'video']) {
+    const tree = makeLeaf(`pane-leaf-${kind}`, makeMediaView(kind, `/tmp/x.${kind}`));
+    const out = serialiseTree(tree, `pane-leaf-${kind}`);
+    assert.deepEqual(out.rootPane.view, { kind, path: `/tmp/x.${kind}` });
+  }
+});
+
+test('serialiseTree: a media view with no filePath still serialises as null', () => {
+  const tree = makeLeaf('pane-leaf-floating', {
+    kind: 'image', name: 'in-memory.png', buffer: null,
+  });
+  const out = serialiseTree(tree, 'pane-leaf-floating');
+  assert.equal(out.rootPane.view, null);
+});
+
+test('serialiseTree: media tabs alongside text in a tabline persist together', () => {
+  const tabline = makeTabline(
+    [
+      makeTextView('/tmp/a.txt', { point: 3 }),
+      makeMediaView('video', '/tmp/clip.mp4'),
+      makeMediaView('audio', '/tmp/song.mp3'),
+    ],
+    { active: 1 }
+  );
+  const tree = makeLeaf('pane-leaf-mix', tabline);
+  const out = serialiseTree(tree, 'pane-leaf-mix');
+  assert.equal(out.rootPane.view.tabs.length, 3);
+  assert.equal(out.rootPane.view.tabs[1].kind, 'video');
+  assert.equal(out.rootPane.view.tabs[1].path, '/tmp/clip.mp4');
+  assert.equal(out.rootPane.view.tabs[2].kind, 'audio');
+  assert.equal(out.rootPane.view.active, 1);
+});
+
+test('deserialise: a v2 payload with media views round-trips through serialiseTree', () => {
+  const tree = makeLeaf('pane-leaf-rt', makeTabline([
+    makeTextView('/x.txt'),
+    makeMediaView('video', '/y.mp4'),
+    makeMediaView('image', '/z.png'),
+  ], { active: 1 }));
+  const written = serialiseTree(tree, 'pane-leaf-rt');
+  const back = deserialise(JSON.parse(JSON.stringify(written)));
+  assert.deepEqual(back, written);
+});
+
+test('deserialise: a v2 media view with no path is dropped', () => {
+  const out = deserialise({
+    version: 2,
+    rootPane: {
+      kind: 'leaf', id: 'pane-leaf-bp',
+      view: { kind: 'video' /* no path */ },
+    },
+    currentPaneId: 'pane-leaf-bp',
+  });
   assert.equal(out.rootPane.view, null);
 });
 

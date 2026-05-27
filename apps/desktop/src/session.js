@@ -171,7 +171,17 @@ function serialiseView(view) {
           : null;
     return { kind: 'text', path: viewFilePath(view), point, mark };
   }
-  // Non-text views (image/audio/video/shell/...) are ephemeral.
+  // File-backed media views persist their path; restore opens the path
+  // through the same `openFileByPath` the dialog uses, which re-routes
+  // to the matching kind. Audio/video/image are the file-opened set;
+  // jukebox / shell / customize / doc / directory-* stay ephemeral
+  // (the first is directory-backed; the rest aren't file-opened).
+  if (view.kind === 'image' || view.kind === 'audio' || view.kind === 'video') {
+    const path = typeof view.filePath === 'string' ? view.filePath : null;
+    if (!path) return null;
+    return { kind: view.kind, path };
+  }
+  // Other non-text views (jukebox/shell/customize/doc/directory-*).
   return null;
 }
 
@@ -401,6 +411,10 @@ function parseView(raw) {
       mark: Number.isFinite(raw.mark) ? Number(raw.mark) : null,
     };
   }
+  if (raw.kind === 'image' || raw.kind === 'audio' || raw.kind === 'video') {
+    if (typeof raw.path !== 'string' || raw.path === '') return null;
+    return { kind: raw.kind, path: raw.path };
+  }
   if (raw.kind === 'tabline') {
     const rawTabs = Array.isArray(raw.tabs) ? raw.tabs : [];
     const tabs = rawTabs.map(parseView).filter((t) => t !== null);
@@ -533,12 +547,14 @@ export function createSession({
 }
 
 /**
- * Walk a serialised pane tree and collect every text view-blob in
- * encounter order. Tablines' tabs are included; nested tablines are
- * walked too.
+ * Walk a serialised pane tree and collect every file-backed view-blob
+ * (text/image/audio/video) in encounter order. Tablines' tabs are
+ * included; nested tablines are walked too. The restore loop opens
+ * each path through `openByPath` (which dispatches to the matching
+ * kind in app.js) and maps the resulting handle back via the blob.
  *
  * @param {SerialisedPane | null} pane
- * @returns {SerialisedTextView[]}
+ * @returns {object[]}
  */
 function collectTextViewBlobs(pane) {
   const out = [];
@@ -553,8 +569,12 @@ function collectTextViewBlobs(pane) {
   }
   function visitView(v) {
     if (!v) return;
-    if (v.kind === 'text') out.push(v);
-    else if (v.kind === 'tabline') {
+    if (
+      v.kind === 'text' || v.kind === 'image' ||
+      v.kind === 'audio' || v.kind === 'video'
+    ) {
+      out.push(v);
+    } else if (v.kind === 'tabline') {
       for (const tab of v.tabs) visitView(tab);
     }
   }
