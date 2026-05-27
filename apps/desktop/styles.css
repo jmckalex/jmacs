@@ -443,6 +443,13 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   cursor: text;
+  /* Keep every layer painted inside content (cursor, selection, overlay
+     etc.) beneath the sticky gutter. Without this, horizontal scroll
+     can slide the cursor under the gutter while it still paints on top
+     of it — the gutter and cursor share z-index 3 and the cursor wins
+     by paint order (it's a deeper-in-DOM sibling). Wrapping the layers
+     in a stacking context caps them below the gutter's z-index 3. */
+  isolation: isolate;
 }
 
 /* Layer stack within .editor-content, bottom to top:
