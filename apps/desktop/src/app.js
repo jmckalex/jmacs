@@ -5125,6 +5125,18 @@ function installRootPane(newRoot, savedCurrentPaneId) {
     if (isTablineView(view)) {
       kindRegistry.mount(view, { paneEl: paneElements.get(leaf.id) });
     } else {
+      // Plain-leaf with a non-text singleton view (image / audio /
+      // video / jukebox / directory-tree / directory-columns / ...):
+      // the singleton element was originally parented to the boot leaf,
+      // which the restore loop above just disposed. Re-parent it to
+      // this leaf's pane element so the renderer sees it. Mirrors the
+      // same step `switchToViewIndex`'s plain-leaf path does for the
+      // open-from-Lisp flow.
+      const singleton = singletonElementForKind(view.kind);
+      const paneEl = paneElements.get(leaf.id);
+      if (singleton && paneEl && singleton.parentNode !== paneEl) {
+        paneEl.append(singleton);
+      }
       kindRegistry.mount(view);
     }
   }
