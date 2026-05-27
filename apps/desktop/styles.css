@@ -2183,7 +2183,12 @@ textarea.customize-widget {
 }
 
 .directory-columns-preview {
-  flex: 0 0 360px;
+  /* Fill the remaining horizontal space in the columns strip, but keep
+   * a sensible minimum so the preview is usable even when the columns
+   * stack up. The video / image / text preview is `width: 100%` so it
+   * tracks this pane's width as the user resizes columns or the
+   * containing pane. */
+  flex: 1 1 360px;
   min-width: 360px;
   display: flex;
   flex-direction: column;
