@@ -2372,23 +2372,8 @@ const interpreter = createInterpreter({
     'open-directory-tree!': (args) => {
       const rootPath = expandTilde(String(args[0] ?? ''));
       if (rootPath === '') return NIL;
-      // Re-use any existing tree view for this path rather than
-      // stacking a new one — same logic the jukebox uses.
-      const existing = views.findIndex(
-        (v) => v.kind === 'directory-tree' && v.rootPath === rootPath
-      );
-      if (existing >= 0) {
-        switchToViewIndex(existing);
-        return NIL;
-      }
-      const segments = rootPath.split('/');
-      const tailName = segments[segments.length - 1] || rootPath;
-      views.push(createView({
-        kind: 'directory-tree',
-        name: `*Tree: ${tailName}*`,
-        extras: { rootPath, expanded: new Set() },
-      }));
-      switchToViewIndex(views.length - 1);
+      const view = ensureDirectoryTreeViewForPath(rootPath);
+      switchToViewIndex(views.indexOf(view));
       return NIL;
     },
     // Open a shell view — a child process running the user's default
@@ -2420,25 +2405,8 @@ const interpreter = createInterpreter({
     'open-directory-columns!': (args) => {
       const rootPath = expandTilde(String(args[0] ?? ''));
       if (rootPath === '') return NIL;
-      const existing = views.findIndex(
-        (v) => v.kind === 'directory-columns' && v.rootPath === rootPath
-      );
-      if (existing >= 0) {
-        switchToViewIndex(existing);
-        return NIL;
-      }
-      const segments = rootPath.split('/');
-      const tailName = segments[segments.length - 1] || rootPath;
-      views.push(createView({
-        kind: 'directory-columns',
-        name: `*Columns: ${tailName}*`,
-        extras: {
-          rootPath,
-          columns: [{ path: rootPath, selected: null }],
-          previewPath: null,
-        },
-      }));
-      switchToViewIndex(views.length - 1);
+      const view = ensureDirectoryColumnsViewForPath(rootPath);
+      switchToViewIndex(views.indexOf(view));
       return NIL;
     },
     'save-buffer!': () => {
@@ -4975,6 +4943,49 @@ function buildScratchTextView() {
   return view;
 }
 
+/** Find an existing directory-tree view for ROOTPATH or build a fresh
+ *  one and push it into `views`. Shared between the `open-directory-tree!`
+ *  primitive (which then auto-switches to the view) and the session
+ *  restore path (which places it in a specific leaf without switching). */
+function ensureDirectoryTreeViewForPath(rootPath) {
+  const existing = views.find(
+    (v) => v.kind === 'directory-tree' && v.rootPath === rootPath
+  );
+  if (existing) return existing;
+  const segments = rootPath.split('/');
+  const tailName = segments[segments.length - 1] || rootPath;
+  const view = createView({
+    kind: 'directory-tree',
+    name: `*Tree: ${tailName}*`,
+    extras: { rootPath, expanded: new Set() },
+  });
+  views.push(view);
+  return view;
+}
+
+/** Find an existing directory-columns view for ROOTPATH or build a
+ *  fresh one and push it into `views`. Companion to
+ *  `ensureDirectoryTreeViewForPath`. */
+function ensureDirectoryColumnsViewForPath(rootPath) {
+  const existing = views.find(
+    (v) => v.kind === 'directory-columns' && v.rootPath === rootPath
+  );
+  if (existing) return existing;
+  const segments = rootPath.split('/');
+  const tailName = segments[segments.length - 1] || rootPath;
+  const view = createView({
+    kind: 'directory-columns',
+    name: `*Columns: ${tailName}*`,
+    extras: {
+      rootPath,
+      columns: [{ path: rootPath, selected: null }],
+      previewPath: null,
+    },
+  });
+  views.push(view);
+  return view;
+}
+
 /** Materialise a serialised view-blob (text-view / tabline-view / null)
  *  into a runtime view handle. Text-view blobs are resolved through
  *  `handlesByBlob` (the restore loop opened them already); tabline-view
@@ -4985,7 +4996,8 @@ function materialiseRestoredView(blob, handlesByBlob) {
   if (!blob) return buildScratchTextView();
   if (
     blob.kind === 'text' || blob.kind === 'image' ||
-    blob.kind === 'audio' || blob.kind === 'video'
+    blob.kind === 'audio' || blob.kind === 'video' ||
+    blob.kind === 'directory-tree' || blob.kind === 'directory-columns'
   ) {
     const handle = handlesByBlob.get(blob);
     // If the file failed to open, fall back to a fresh scratch so the
@@ -5011,7 +5023,8 @@ function materialiseRestoredView(blob, handlesByBlob) {
       if (!tabBlob) continue;
       if (
         tabBlob.kind === 'text' || tabBlob.kind === 'image' ||
-        tabBlob.kind === 'audio' || tabBlob.kind === 'video'
+        tabBlob.kind === 'audio' || tabBlob.kind === 'video' ||
+        tabBlob.kind === 'directory-tree' || tabBlob.kind === 'directory-columns'
       ) {
         const handle = handlesByBlob.get(tabBlob);
         if (handle) tabsClean.push(handle);
@@ -5347,6 +5360,16 @@ const sessionController = createSession({
   getRootPane: () => rootPane,
   getCurrentPaneId: () => currentPaneId,
   openByPath: async (path, entry) => {
+    // Directory views aren't file-opened by suffix — they're built
+    // from a directory path. The session restore loop calls openByPath
+    // for every persisted file-backed-or-directory view, so we
+    // dispatch on `entry.kind` here.
+    if (entry && entry.kind === 'directory-tree') {
+      return ensureDirectoryTreeViewForPath(path);
+    }
+    if (entry && entry.kind === 'directory-columns') {
+      return ensureDirectoryColumnsViewForPath(path);
+    }
     const view = await openFileByPath(path, { switch: false });
     if (view === null) return null;
     // Only text views carry point/mark; image/audio/video views don't.

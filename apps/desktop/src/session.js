@@ -174,14 +174,24 @@ function serialiseView(view) {
   // File-backed media views persist their path; restore opens the path
   // through the same `openFileByPath` the dialog uses, which re-routes
   // to the matching kind. Audio/video/image are the file-opened set;
-  // jukebox / shell / customize / doc / directory-* stay ephemeral
-  // (the first is directory-backed; the rest aren't file-opened).
+  // jukebox / shell / customize / doc stay ephemeral.
   if (view.kind === 'image' || view.kind === 'audio' || view.kind === 'video') {
     const path = typeof view.filePath === 'string' ? view.filePath : null;
     if (!path) return null;
     return { kind: view.kind, path };
   }
-  // Other non-text views (jukebox/shell/customize/doc/directory-*).
+  // Directory views persist their rootPath. Restore goes through
+  // `openByPath` (which dispatches on `kind` for directory-* and calls
+  // `ensureDirectoryTreeViewForPath` / `ensureDirectoryColumnsViewForPath`
+  // — same path the open primitive uses). Only the rootPath is
+  // persisted; per-view interaction state (expanded folders, the
+  // active column / preview path) is ephemeral and reset on restore.
+  if (view.kind === 'directory-tree' || view.kind === 'directory-columns') {
+    const path = typeof view.rootPath === 'string' ? view.rootPath : null;
+    if (!path) return null;
+    return { kind: view.kind, path };
+  }
+  // Other non-text views (jukebox/shell/customize/doc).
   return null;
 }
 
@@ -525,10 +535,10 @@ export function createSession({
     const handlesByBlob = new Map();
     for (const blob of viewBlobs) {
       try {
-        const view = await openByPath(blob.path, {
-          point: blob.point,
-          mark: blob.mark,
-        });
+        // Pass the full blob — `openByPath` dispatches on `entry.kind`
+        // to route directory blobs through the directory primitives
+        // rather than `openFileByPath` (which is suffix-keyed).
+        const view = await openByPath(blob.path, blob);
         if (view) handlesByBlob.set(blob, view);
       } catch {
         // Skip a file that fails to open — it may have been deleted.
@@ -571,7 +581,8 @@ function collectTextViewBlobs(pane) {
     if (!v) return;
     if (
       v.kind === 'text' || v.kind === 'image' ||
-      v.kind === 'audio' || v.kind === 'video'
+      v.kind === 'audio' || v.kind === 'video' ||
+      v.kind === 'directory-tree' || v.kind === 'directory-columns'
     ) {
       out.push(v);
     } else if (v.kind === 'tabline') {
