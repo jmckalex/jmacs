@@ -2266,6 +2266,30 @@ test('the *theme* setting defaults to dark and is a :choice', async () => {
   assert.deepEqual(options.sort(), ['bright', 'dark', 'light', 'midnight']);
 });
 
+test('custom-apply! coerces a :choice string to the option symbol', async () => {
+  // A custom.lisp written before the choice-widget fix recorded values
+  // as strings: `(custom-set-saved! '*theme* "midnight")`. The apply
+  // path now coerces the string to the matching symbol so downstream
+  // `(eq? *theme* 'midnight)` checks land.
+  const { interpreter } = await editor();
+  interpreter.evaluate('(custom-apply! (quote *theme*) "midnight")');
+  const value = interpreter.evaluate('*theme*');
+  assert.equal(value && value.name, 'midnight',
+    'value is the symbol, not the string');
+});
+
+test('custom-set-saved! persists the coerced value as :saved', async () => {
+  // Round-trip guard: after a stale string load, the next save writes
+  // the file in canonical symbol form.
+  const { interpreter } = await editor();
+  interpreter.evaluate('(custom-set-saved! (quote *theme*) "midnight")');
+  const saved = interpreter.evaluate(
+    '(get (custom-entry (quote *theme*)) :saved nil)'
+  );
+  assert.equal(saved && saved.name, 'midnight',
+    ':saved holds the symbol so the next save writes (quote midnight)');
+});
+
 test('current-theme-css-vars switches with *theme*', async () => {
   const { interpreter } = await editor();
   const bgFor = (name) => {

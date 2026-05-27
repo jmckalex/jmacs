@@ -83,6 +83,17 @@
   (let ((entry (custom-entry name)))
     (if (nil? entry) nil (get entry :default nil))))
 
+(define (-find-symbol-option rest value)
+  "Find the symbol in REST whose printed name matches the string VALUE.
+   Returns the symbol, or nil if no match. Tail-recursive helper for
+   `-coerce-for-type` — this Lisp dialect doesn't support named let."
+  (cond
+    ((nil? rest) nil)
+    ((and (symbol? (car rest))
+          (string=? (symbol->string (car rest)) value))
+     (car rest))
+    (else (-find-symbol-option (cdr rest) value))))
+
 (define (-coerce-for-type value type options)
   "Coerce VALUE into the canonical shape for a setting of TYPE. Today
    only `:choice` needs this: an older save file (or a hand-edit) may
@@ -94,15 +105,9 @@
     ((not (eq? type :choice)) value)
     ((not (string? value)) value)
     ((nil? options) value)
-    ;; Find a matching symbol option whose name equals VALUE.
     (else
-     (let loop ((rest options))
-       (cond
-         ((nil? rest) value)
-         ((and (symbol? (car rest))
-               (string=? (symbol->string (car rest)) value))
-          (car rest))
-         (else (loop (cdr rest))))))))
+     (let ((found (-find-symbol-option options value)))
+       (if (nil? found) value found)))))
 
 (define (custom-apply! name value)
   "Set setting NAME to VALUE for this session: update the registry,
