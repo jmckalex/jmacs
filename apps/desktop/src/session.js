@@ -425,6 +425,10 @@ function parseView(raw) {
     if (typeof raw.path !== 'string' || raw.path === '') return null;
     return { kind: raw.kind, path: raw.path };
   }
+  if (raw.kind === 'directory-tree' || raw.kind === 'directory-columns') {
+    if (typeof raw.path !== 'string' || raw.path === '') return null;
+    return { kind: raw.kind, path: raw.path };
+  }
   if (raw.kind === 'tabline') {
     const rawTabs = Array.isArray(raw.tabs) ? raw.tabs : [];
     const tabs = rawTabs.map(parseView).filter((t) => t !== null);
