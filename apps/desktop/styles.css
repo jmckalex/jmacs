@@ -2277,6 +2277,87 @@ textarea.customize-widget {
   background: #ffffff14;
 }
 
+/* Modal dialog used by the context menu's Rename / confirm actions.
+ * Electron's renderer disables `window.prompt` and `confirm` is
+ * unreliable, so the view ships its own minimal modal. */
+.directory-columns-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: #00000088;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+}
+
+.directory-columns-modal {
+  min-width: 320px;
+  max-width: 480px;
+  padding: 20px 22px;
+  background: var(--bg-panel, #1c2530);
+  border: 1px solid #ffffff22;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px #000000aa;
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.directory-columns-modal-title {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.directory-columns-modal-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: #00000033;
+  border: 1px solid #ffffff22;
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.directory-columns-modal-input:focus {
+  border-color: var(--accent);
+}
+
+.directory-columns-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.directory-columns-modal-button {
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid #ffffff33;
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.directory-columns-modal-button:hover {
+  border-color: var(--accent);
+}
+
+.directory-columns-modal-button.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.directory-columns-modal-button.is-primary:hover {
+  filter: brightness(1.1);
+}
+
 .directory-columns-error {
   font-style: italic;
   color: var(--fg-dim);

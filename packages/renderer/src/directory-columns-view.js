@@ -471,19 +471,117 @@ export function createDirectoryColumnsView(container, options = {}) {
     }, 0);
   }
 
+  /** A small in-module modal — Electron's renderer disables
+   *  `window.prompt` (silently returns null) and `confirm` /  `alert`
+   *  are unreliable too, so we build our own. Returns a Promise that
+   *  resolves to the user's input string, `true` (confirm), or `null`
+   *  (cancel). The dialog is keyboard-driven (Enter = confirm,
+   *  Escape = cancel) and dismissed by an outside click on the overlay. */
+  function openModal({ title, kind, initialValue, confirmLabel, cancelLabel }) {
+    return new Promise((resolve) => {
+      const overlay = doc.createElement('div');
+      overlay.className = 'directory-columns-modal-overlay';
+
+      const dialog = doc.createElement('div');
+      dialog.className = 'directory-columns-modal';
+
+      const titleEl = doc.createElement('div');
+      titleEl.className = 'directory-columns-modal-title';
+      titleEl.textContent = title;
+      dialog.append(titleEl);
+
+      let input = null;
+      if (kind === 'prompt') {
+        input = doc.createElement('input');
+        input.className = 'directory-columns-modal-input';
+        input.type = 'text';
+        input.value = initialValue ?? '';
+        dialog.append(input);
+      }
+
+      const buttons = doc.createElement('div');
+      buttons.className = 'directory-columns-modal-buttons';
+      const cancelBtn = doc.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'directory-columns-modal-button';
+      cancelBtn.textContent = cancelLabel ?? 'Cancel';
+      const confirmBtn = doc.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'directory-columns-modal-button is-primary';
+      confirmBtn.textContent = confirmLabel ?? 'OK';
+      buttons.append(cancelBtn, confirmBtn);
+      dialog.append(buttons);
+
+      overlay.append(dialog);
+      doc.body.append(overlay);
+
+      let resolved = false;
+      function finish(value) {
+        if (resolved) return;
+        resolved = true;
+        overlay.remove();
+        doc.removeEventListener('keydown', onKeydown, true);
+        resolve(value);
+      }
+      function onKeydown(ev) {
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          finish(null);
+        } else if (ev.key === 'Enter') {
+          ev.preventDefault();
+          finish(kind === 'prompt' ? (input.value ?? '') : true);
+        }
+      }
+      doc.addEventListener('keydown', onKeydown, true);
+      cancelBtn.addEventListener('click', () => finish(null));
+      confirmBtn.addEventListener('click', () =>
+        finish(kind === 'prompt' ? (input.value ?? '') : true)
+      );
+      overlay.addEventListener('mousedown', (ev) => {
+        if (ev.target === overlay) finish(null);
+      });
+
+      if (input) {
+        input.focus();
+        // Select just the basename portion so a quick re-type replaces
+        // the name but keeps the extension if the user wants it.
+        const dotIdx = (input.value ?? '').lastIndexOf('.');
+        const end = dotIdx > 0 ? dotIdx : input.value.length;
+        input.setSelectionRange(0, end);
+      } else {
+        confirmBtn.focus();
+      }
+    });
+  }
+
   async function promptRename(path, name) {
     if (!onRename) return;
-    const next = win.prompt(`Rename "${name}" to:`, name);
+    const next = await openModal({
+      kind: 'prompt',
+      title: `Rename "${name}" to:`,
+      initialValue: name,
+      confirmLabel: 'Rename',
+    });
     if (next === null) return; // cancelled
-    const newName = next.trim();
+    const newName = String(next).trim();
     if (newName === '' || newName === name) return;
     if (newName.includes('/')) {
-      win.alert('Rename: a name may not contain "/".');
+      await openModal({
+        kind: 'confirm',
+        title: 'Rename: a name may not contain "/".',
+        confirmLabel: 'OK',
+        cancelLabel: 'OK',
+      });
       return;
     }
     const result = await onRename(path, newName);
     if (!result || !result.ok) {
-      win.alert(`Rename failed: ${result?.error ?? 'unknown error'}`);
+      await openModal({
+        kind: 'confirm',
+        title: `Rename failed: ${result?.error ?? 'unknown error'}`,
+        confirmLabel: 'OK',
+        cancelLabel: 'OK',
+      });
       return;
     }
     paint();
@@ -491,11 +589,21 @@ export function createDirectoryColumnsView(container, options = {}) {
 
   async function confirmTrash(path, name) {
     if (!onTrash) return;
-    const ok = win.confirm(`Move "${name}" to the Trash?`);
+    const ok = await openModal({
+      kind: 'confirm',
+      title: `Move "${name}" to the Trash?`,
+      confirmLabel: 'Move to Trash',
+      cancelLabel: 'Cancel',
+    });
     if (!ok) return;
     const result = await onTrash(path);
     if (!result || !result.ok) {
-      win.alert(`Move to Trash failed: ${result?.error ?? 'unknown error'}`);
+      await openModal({
+        kind: 'confirm',
+        title: `Move to Trash failed: ${result?.error ?? 'unknown error'}`,
+        confirmLabel: 'OK',
+        cancelLabel: 'OK',
+      });
       return;
     }
     paint();
