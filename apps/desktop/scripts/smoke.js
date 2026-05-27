@@ -2032,7 +2032,9 @@ app.whenReady().then(() => {
         const currentLabel = currentTab
           ? currentTab.querySelector('.tabline-label').textContent
           : '';
-        // Force-save the session through the host bridge.
+        // Force-save the session through the host bridge — we
+        // deliberately write a v1 payload here so the same arm also
+        // exercises the v1 → v2 migration path in createSession.restore.
         const beforeWrite = await window.host.readSession();
         await window.host.writeSession({
           buffers: [
@@ -2044,21 +2046,22 @@ app.whenReady().then(() => {
         // Restore loop, in-place: re-instantiating the renderer is
         // disruptive in a single Electron run, so we drive the same
         // controller logic by importing the module fresh and exercising
-        // it against a captured handle to the host bridge.
+        // it against a captured handle to the host bridge. Phase 3b
+        // commit 6: createSession is pane-tree-shaped — openByPath
+        // returns a view handle and installRootPane is called once
+        // with the assembled tree.
         const sessionMod = await import('app://editor/apps/desktop/src/session.js');
-        // Phase 2 of plans/PANES.md: createSession consumes views
-        // directly. Each restored entry is shaped like a text view —
-        // kind: 'text', name, and a buffer with filePath / point / mark.
         const fakeViews = [];
-        let switched = -1;
+        let installedRoot = null;
+        let installedCurrent = null;
         const controller = sessionMod.createSession({
-          getViews: () => fakeViews,
-          getCurrentIndex: () => 0,
+          getRootPane: () => ({ kind: 'leaf', id: 'pane-leaf-test', view: null }),
+          getCurrentPaneId: () => 'pane-leaf-test',
           openByPath: async (path, entry) => {
             // Read the file back the same way the real app does.
             const result = await window.host.openFilePath(path);
             if (result === null) return null;
-            fakeViews.push({
+            const view = {
               kind: 'text',
               name: result.name,
               content: result.content,
@@ -2067,13 +2070,25 @@ app.whenReady().then(() => {
                 point: entry.point,
                 mark: entry.mark,
               },
-            });
-            return entry;
+              point: entry.point,
+              mark: entry.mark,
+            };
+            fakeViews.push(view);
+            return view;
           },
-          switchToView: (index) => { switched = index; },
+          installRootPane: (root, currentPaneId) => {
+            installedRoot = root;
+            installedCurrent = currentPaneId;
+          },
           host: window.host,
         });
         await controller.restore();
+        // For the v1 migration: the installed root is a single leaf
+        // holding a tabline-view whose tabs were materialised from
+        // openByPath's returned handles.
+        const installedTabs = installedRoot && installedRoot.view
+          && installedRoot.view.kind === 'tabline'
+          ? installedRoot.view.tabs : [];
         return {
           tabCount,
           currentLabel,
@@ -2083,7 +2098,11 @@ app.whenReady().then(() => {
           restoredPath: fakeViews[0]?.buffer?.filePath ?? '',
           restoredContent: fakeViews[0]?.content ?? '',
           restoredPoint: fakeViews[0]?.buffer?.point ?? -1,
-          switched,
+          installedRootKind: installedRoot ? installedRoot.kind : null,
+          installedRootViewKind: installedRoot && installedRoot.view
+            ? installedRoot.view.kind : null,
+          installedTabsCount: installedTabs.length,
+          installedCurrent,
         };
       })()`);
       console.log('  tabline:', JSON.stringify({
@@ -2092,7 +2111,10 @@ app.whenReady().then(() => {
         written: tabline.written?.currentPath,
         restoredCount: tabline.restoredCount,
         restoredPoint: tabline.restoredPoint,
-        switched: tabline.switched,
+        installedRootKind: tabline.installedRootKind,
+        installedRootViewKind: tabline.installedRootViewKind,
+        installedTabsCount: tabline.installedTabsCount,
+        installedCurrent: tabline.installedCurrent,
       }));
       await rm(tabPath, { force: true });
 
@@ -2962,7 +2984,13 @@ app.whenReady().then(() => {
         tabline.restoredPath === tabPath &&
         tabline.restoredContent.includes('tab smoke content') &&
         tabline.restoredPoint === 5 &&
-        tabline.switched === 0;
+        // v1 → v2 migration: a flat buffer list becomes a single root
+        // leaf holding a top-edge tabline-view with one tab (the
+        // restored file). currentPaneId follows the v1-migration leaf id.
+        tabline.installedRootKind === 'leaf' &&
+        tabline.installedRootViewKind === 'tabline' &&
+        tabline.installedTabsCount === 1 &&
+        tabline.installedCurrent === 'pane-leaf-restored';
       // Language pack arm: every one of the 22 languages added by
       // agent-language-pack registers a highlighter, and each one's
       // sample buffer produces face spans for at least one

@@ -27,6 +27,7 @@ import {
   parentOf,
   replacePane,
   siblingOf,
+  bumpIdCounterPast,
   SPLIT_HORIZONTAL,
   SPLIT_VERTICAL,
 } from '@editor/pane';
@@ -4793,6 +4794,179 @@ function inheritExistingEditorIntoTabline(tablineView, leaf) {
   return existingInstance;
 }
 
+/** Build a fresh `*scratch*` text view, push it into the global view
+ *  list (so `(view-list)` finds it) and return the handle. Used by
+ *  `installRootPane` to fill leaves that had nothing to restore. */
+function buildScratchTextView() {
+  const view = createView({
+    kind: 'text',
+    buffer: createBuffer('', { name: '*scratch*' }),
+  });
+  views.push(view);
+  return view;
+}
+
+/** Materialise a serialised view-blob (text-view / tabline-view / null)
+ *  into a runtime view handle. Text-view blobs are resolved through
+ *  `handlesByBlob` (the restore loop opened them already); tabline-view
+ *  blobs recurse; null view-blobs become a fresh `*scratch*` text view.
+ *
+ *  Returns the live view handle. The caller wires it into a leaf. */
+function materialiseRestoredView(blob, handlesByBlob) {
+  if (!blob) return buildScratchTextView();
+  if (blob.kind === 'text') {
+    const handle = handlesByBlob.get(blob);
+    // If the file failed to open, fall back to a fresh scratch so the
+    // owning leaf still has something to render.
+    return handle ?? buildScratchTextView();
+  }
+  if (blob.kind === 'tabline') {
+    const tabs = blob.tabs
+      .map((tabBlob) => materialiseRestoredView(tabBlob, handlesByBlob))
+      // Drop scratch-replacements from failed-to-open files? No — the
+      // brief says a failed tab is dropped; keep the scratch behaviour
+      // for leaves only. Tablines with a missing tab: skip the slot.
+      // We recompute from handlesByBlob: scratch fallback applies to
+      // leaves but not to tablines (a missing tab shouldn't expand the
+      // strip with a scratch). Re-walk:
+      .filter((v) => v !== null);
+    // Recompute tabs without the scratch substitution: a missing text
+    // tab is silently dropped. (Nested tablines with their own tabs
+    // are kept as-is; they recursively materialised already.)
+    const tabsClean = [];
+    for (const tabBlob of blob.tabs) {
+      if (!tabBlob) continue;
+      if (tabBlob.kind === 'text') {
+        const handle = handlesByBlob.get(tabBlob);
+        if (handle) tabsClean.push(handle);
+        continue;
+      }
+      if (tabBlob.kind === 'tabline') {
+        tabsClean.push(materialiseRestoredView(tabBlob, handlesByBlob));
+      }
+    }
+    void tabs; // silence — kept for the comment-block clarity above.
+    const active = tabsClean.length === 0
+      ? 0
+      : Math.max(0, Math.min(blob.active ?? 0, tabsClean.length - 1));
+    return createView({
+      kind: 'tabline',
+      extras: { tabs: tabsClean, active, edge: blob.edge ?? 'top' },
+    });
+  }
+  return buildScratchTextView();
+}
+
+/** Recursively build a runtime pane tree from a serialised pane-blob,
+ *  threading the views from `handlesByBlob` into each leaf. The pane
+ *  ids from the blob are preserved verbatim so `currentPaneId` after
+ *  restore refers to the same leaf the user had focused on quit. */
+function buildRestoredPaneTree(blob, handlesByBlob) {
+  if (!blob) return null;
+  if (blob.kind === 'leaf') {
+    bumpIdCounterPast(blob.id);
+    const view = materialiseRestoredView(blob.view, handlesByBlob);
+    return createLeafPane({ id: blob.id, view });
+  }
+  if (blob.kind === 'split') {
+    const first = buildRestoredPaneTree(blob.first, handlesByBlob);
+    const second = buildRestoredPaneTree(blob.second, handlesByBlob);
+    if (!first || !second) {
+      // A split that lost a child collapses to whatever survived.
+      return first ?? second ?? null;
+    }
+    bumpIdCounterPast(blob.id);
+    return createSplitPane({
+      id: blob.id,
+      orientation: blob.orientation,
+      ratio: blob.ratio,
+      first,
+      second,
+    });
+  }
+  return null;
+}
+
+/** Install a freshly-built pane tree as the editor's root. Disposes
+ *  the existing editor-view instances, swaps `rootPane`, refreshes the
+ *  DOM, mounts each leaf's view through the kind registry, points
+ *  `currentPaneId` at the requested leaf (or the first leaf when the
+ *  saved id no longer exists), and updates the focused-pane state.
+ *
+ *  Called once from `sessionController.restore`. Idempotent in the
+ *  sense that re-installing the same tree yields the same result, but
+ *  every call disposes every existing editor instance — not for hot
+ *  reuse. */
+function installRootPane(newRoot, savedCurrentPaneId) {
+  if (!newRoot) return;
+  // Dispose every existing per-leaf editor instance. The initial
+  // bootstrap leaf had one; restored tablines will build their own.
+  for (const leafId of [...editorViewByPaneId.keys()]) {
+    const instance = editorViewByPaneId.get(leafId);
+    if (instance) {
+      try { instance.destroy(); } catch { /* tolerant */ }
+    }
+    editorViewByPaneId.delete(leafId);
+  }
+  // Drop any tabline-view state too (the welcome/scratch initial root
+  // had none, but a re-install path needs to be honest).
+  for (const view of [...tablineStateByView.keys()]) {
+    try { kindRegistry.dispose(view); } catch { /* tolerant */ }
+  }
+  rootPane = newRoot;
+  // Update the focused pane id, falling back to the first leaf when
+  // the saved id doesn't match any leaf in the new tree.
+  const leaves = leafPanes(rootPane);
+  const matching = leaves.find((l) => l.id === savedCurrentPaneId);
+  currentPaneId = matching
+    ? matching.id
+    : (leaves[0]?.id ?? null);
+  // Rebuild the pane DOM around the new tree, then mount each leaf's
+  // view through the kind registry. Tabline-view leaves cause the
+  // registry to construct fresh per-pane editor instances for each
+  // tabline's active text child.
+  syncPaneElements();
+  for (const leaf of leaves) {
+    const view = leaf.view;
+    if (!view) continue;
+    if (isTablineView(view)) {
+      kindRegistry.mount(view, { paneEl: paneElements.get(leaf.id) });
+    } else {
+      kindRegistry.mount(view);
+    }
+  }
+  // Sync the global view pointers with whatever the focused pane shows.
+  const focusedLeaf = leaves.find((l) => l.id === currentPaneId);
+  const focusedView = focusedLeaf
+    ? (isTablineView(focusedLeaf.view)
+        ? tablineActiveChild(focusedLeaf.view)
+        : focusedLeaf.view)
+    : null;
+  if (focusedView && views.indexOf(focusedView) >= 0) {
+    currentViewIndex = views.indexOf(focusedView);
+  }
+  if (focusedView && focusedView.kind === 'text' && focusedView.buffer) {
+    currentTextBuffer = focusedView.buffer;
+  }
+  // Refresh per-pane focus indicators and splitter handles, schedule a
+  // relayout so the freshly-installed tree sizes itself against the
+  // editor-host bounds.
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+  // Remember the boot tabline-view (if the root was a single leaf
+  // holding one) so the kill-view scratch-fallback (Q6) keeps working.
+  if (rootPane.kind === 'leaf' && isTablineView(rootPane.view)) {
+    rootTablineView = rootPane.view;
+    rootTablineLeafId = rootPane.id;
+  } else {
+    rootTablineView = null;
+    rootTablineLeafId = null;
+  }
+  notifyViewsChanged();
+  updateModeline();
+}
+
 /** Wrap the root leaf's view in a tabline-view whose tabs are every
  *  open view in display order, with `active` pointing at the current
  *  view. Called once at startup after `sessionController.restore()`.
@@ -4989,22 +5163,28 @@ function setTablineEdgeOnTabline(tlv, edge) {
 // before the view/buffer split.
 
 const sessionController = createSession({
-  getViews: () => views,
-  getCurrentIndex: () => currentViewIndex,
+  getRootPane: () => rootPane,
+  getCurrentPaneId: () => currentPaneId,
   openByPath: async (path, entry) => {
     const view = await openFileByPath(path, { switch: false });
     if (view === null) return null;
     // Only text views carry point/mark; image/audio/video views don't.
     const buffer = view.buffer;
-    if (buffer && typeof buffer.moveTo === 'function') {
+    if (view.kind === 'text' && buffer) {
       const point = Number.isFinite(entry.point) ? entry.point : 0;
       const mark = Number.isFinite(entry.mark) ? entry.mark : null;
-      buffer.moveTo(point);
-      if (mark !== null) buffer.setMark(mark);
+      view.point = point;
+      view.mark = mark;
+      if (typeof buffer.moveTo === 'function') buffer.moveTo(point);
+      if (mark !== null && typeof buffer.setMark === 'function') {
+        buffer.setMark(mark);
+      }
     }
-    return entry;
+    return view;
   },
-  switchToView: switchToViewIndex,
+  installRootPane: (newRoot, savedCurrentPaneId) => {
+    installRootPane(newRoot, savedCurrentPaneId);
+  },
   host: window.host,
 });
 
@@ -5028,26 +5208,32 @@ window.addEventListener('pagehide', () => {
   sessionController.flush();
 });
 
-// Restore: re-open the files the previous session left open and land
-// on the previously-current buffer. The restore is awaited so the
-// buffers are present before the user starts interacting.
+// Restore: re-open the files the previous session left open and the
+// pane tree the user left behind, then land on the previously-current
+// pane. The restore is awaited so the buffers + tree are present
+// before the user starts interacting. When a session was restored
+// `installRootPane` already wired the root tabline; otherwise (first
+// launch, missing session.json) fall back to the boot wrap so the
+// editor still comes up with a strip on the welcome/scratch starters.
 restoring = true;
+const rootPaneBeforeRestore = rootPane;
 try {
   await sessionController.restore();
 } finally {
   restoring = false;
 }
+const sessionInstalledTree = rootPane !== rootPaneBeforeRestore;
 
-// Phase 3b commit 3: wrap the root pane's view in a tabline-view that
-// contains every restored view (or the welcome / scratch starters when
-// there was no session). The wrap runs *after* restore so the tabs
-// list is final; the helper is idempotent on subsequent calls only via
-// the caller's discipline (this is the one call site).
-wrapRootInTabline();
+if (!sessionInstalledTree) {
+  // Phase 3b commit 3: wrap the root pane's view in a tabline-view
+  // that contains every restored view (or the welcome / scratch
+  // starters when there was no session). The wrap runs *after*
+  // restore so the tabs list is final; the helper is idempotent only
+  // by caller discipline (this is the one call site).
+  wrapRootInTabline();
+}
 // One trip through the per-pane strip refresh + a session save so the
 // freshly-wrapped tabline renders on first paint and the new pane-tree
-// shape lands in the on-disk session as soon as commit 6 understands
-// schema v2. The current schema (v1) ignores the tabline-view; the
-// save is still safe.
+// shape lands in the on-disk session under schema v2.
 refreshPaneTabStrips();
 sessionController.save();
