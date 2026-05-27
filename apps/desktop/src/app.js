@@ -188,9 +188,22 @@ let currentTextBuffer = views[0].buffer;
 /** The session object the buffer primitives and view primitives
  *  operate through. The view primitives read the live currentView;
  *  the buffer primitives read currentView.buffer (and raise
- *  `no-buffer-here` when it's null). */
+ *  `no-buffer-here` when it's null).
+ *
+ *  `currentView` resolves through the pane tree: the focused leaf's
+ *  view, peeled through any tabline-views to the active child. This
+ *  is the same logic `viewHost.currentView` uses (see below), and the
+ *  two MUST stay aligned — otherwise buffer primitives operate on a
+ *  stale view (the one `currentViewIndex` happens to point at, which
+ *  isn't always the user-visible one once tabline tabs are switched).
+ *  The legacy `views[currentViewIndex]` is a last-resort fallback for
+ *  the no-pane-yet startup window. */
 const session = {
   get currentView() {
+    const pane = currentPane();
+    if (pane && pane.kind === 'leaf' && pane.view) {
+      return peelTabline(pane.view);
+    }
     return views[currentViewIndex] ?? null;
   },
 };
