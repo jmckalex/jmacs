@@ -72,7 +72,11 @@
 (define c-c-keymap
   {"tab"       'toggle-fold-at-point
    "C-comma"   'fold-all
-   "C-period"  'unfold-all})
+   "C-period"  'unfold-all
+   ;; Multi-cursor (see multi-cursor.lisp). C-c d adds the next match;
+   ;; C-c D selects all matches of the current word/region.
+   "d"         'add-cursor-next
+   "D"         'select-all-matches})
 
 ;; The root keymap.
 (define the-keymap
@@ -91,6 +95,10 @@
    "C-S-a"        'beginning-of-line-extending
    "C-S-e"        'end-of-line-extending
    "C-space"      'set-mark-command
+   ;; ESC clears the selection on every cursor without collapsing the
+   ;; multi-cursor set — `C-c d` / `C-c D` followed by ESC drops the
+   ;; selections to bare carets, ready to navigate or type a prefix.
+   "escape"       'deselect
    "home"         'move-beginning-of-line
    "end"          'move-end-of-line
    "S-home"       'beginning-of-line-extending
@@ -160,9 +168,16 @@
    "M-n"          sticky-note-keymap
    "M-s"          m-s-keymap})
 
-;; While a key sequence is in progress this holds the prefix keymap the
-;; next keystroke is looked up in; at rest it is nil, meaning the key is
-;; resolved through the buffer's mode chain (see lookup-key).
+;; While a key sequence is in progress this holds the *list* of prefix
+;; keymaps the next keystroke is looked up in — every map along the mode
+;; chain that bound the chord-leading key to a prefix sub-map. Mid-chord
+;; lookup walks the stack in chain order, so a mode-local prefix doesn't
+;; shadow the global one for keys it doesn't itself bind: pressing C-c d
+;; in markdown-mode (whose markdown-c-c-map has no `d`) falls through to
+;; the global c-c-keymap, finds `'add-cursor-next`, and runs it.
+;;
+;; At rest the value is nil, meaning the next key is resolved through
+;; the buffer's mode chain afresh (see lookup-key).
 (define active-keymap nil)
 
 ;; The keys typed in the current sequence, joined with spaces. When
@@ -214,12 +229,44 @@
             (lookup-in-chain key (cdr maps))
             binding)))))
 
+(define (-prefix-maps-for key maps)
+  "Walk MAPS and collect every *prefix-map* binding of KEY (those whose
+   value is itself a keymap), in chain order. Stops short of any map
+   whose KEY binding is a command — that command would have already
+   run as the chord-leading keystroke, so we never reach the chord."
+  (cond
+    ((nil? maps) (list))
+    ((nil? (car maps)) (-prefix-maps-for key (cdr maps)))
+    (else
+      (let ((b (get (car maps) key nil)))
+        (cond
+          ((nil? b) (-prefix-maps-for key (cdr maps)))
+          ((map? b) (cons b (-prefix-maps-for key (cdr maps))))
+          ;; A command binding at this level — chord fallthrough stops;
+          ;; the command at this level can't be reached mid-chord (the
+          ;; chord was entered by a higher-priority prefix), but neither
+          ;; should it interfere.
+          (else (-prefix-maps-for key (cdr maps))))))))
+
+(define (-lookup-in-stack key maps)
+  "Mid-chord lookup: walk MAPS (the active prefix-map stack) and return
+   the first non-nil binding of KEY across them, or nil. A command in a
+   higher-priority map shadows a same-keyed binding lower down — same
+   precedence as the chain at rest."
+  (cond
+    ((nil? maps) nil)
+    (else
+      (let ((b (get (car maps) key nil)))
+        (if (nil? b)
+            (-lookup-in-stack key (cdr maps))
+            b)))))
+
 (define (lookup-key key)
-  "Resolve KEY: through the active prefix map mid-sequence, otherwise
-   through the buffer's mode chain."
+  "Resolve KEY: through every prefix map in the active stack mid-chord,
+   otherwise through the buffer's mode chain afresh."
   (if (nil? active-keymap)
       (lookup-in-chain key (keymap-chain))
-      (get active-keymap key nil)))
+      (-lookup-in-stack key active-keymap)))
 
 (defcommand keyboard-quit ()
   "Abort a partial key sequence and clear the selection (C-g)."
@@ -255,11 +302,18 @@
       (let ((binding (lookup-key key)))
         (cond
           ;; A nested keymap: KEY is a prefix — wait for the next key
-          ;; and show the running prefix in the echo area.
-          ((map? binding)
-           (set! active-keymap binding)
-           (-extend-chord-prefix! key)
-           #t)
+          ;; and show the running prefix in the echo area. The active
+          ;; stack collects every prefix-map this key resolves to so
+          ;; that mid-chord lookups can fall through past mode-local
+          ;; maps. At rest we walk the full mode chain; mid-chord we
+          ;; descend into the current stack instead.
+           ((map? binding)
+            (set! active-keymap
+                  (if (nil? active-keymap)
+                      (-prefix-maps-for key (keymap-chain))
+                      (-prefix-maps-for key active-keymap)))
+            (-extend-chord-prefix! key)
+            #t)
           ;; A command name: run it, then return to rest. The chord
           ;; display is cleared by reset-keymap! before the command
           ;; runs, so a command's own echo-area message is not

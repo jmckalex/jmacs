@@ -45,6 +45,25 @@ test('createView honours explicit point and mark options', () => {
   assert.equal(view.mark, 1);
 });
 
+test('text views carry a cursors[] array; point/mark alias cursors[0]', () => {
+  const buffer = createBuffer('hello', { name: 'x.txt' });
+  const view = createView({ kind: 'text', buffer, point: 2, mark: 4 });
+  assert.equal(view.cursors.length, 1);
+  assert.equal(view.cursors[0].point, 2);
+  assert.equal(view.cursors[0].mark, 4);
+  // Writing through the alias mutates cursors[0].
+  view.point = 5;
+  assert.equal(view.cursors[0].point, 5);
+  // Writing cursors[0] directly is visible through the alias.
+  view.cursors[0].mark = null;
+  assert.equal(view.mark, null);
+});
+
+test('non-text views have no cursors[] array', () => {
+  const view = createView({ kind: 'image', extras: { src: 'data:...' } });
+  assert.equal(view.cursors, undefined);
+});
+
 test('binding a text view to its buffer routes cursor reads/writes', () => {
   const buffer = createBuffer('hello', { name: 'x.txt' });
   const view = createView({ kind: 'text', buffer });

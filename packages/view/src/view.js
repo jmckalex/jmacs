@@ -91,9 +91,27 @@ export function createView(options) {
   // selection anchor (mark). Two text views over the same buffer thus
   // have independent cursors. Non-text views leave these undefined.
   // The buffer holds only text, markers and edit history.
+  //
+  // Multi-cursor: the *canonical* storage is `view.cursors`, an array
+  // of `{point, mark}` records; index 0 is the primary. `view.point`
+  // and `view.mark` are aliases for `cursors[0].point` / `cursors[0].mark`
+  // so every existing caller that reads or writes the primary still works.
   if (view.kind === 'text') {
-    view.point = typeof options.point === 'number' ? options.point : 0;
-    view.mark = typeof options.mark === 'number' ? options.mark : null;
+    const initialPoint = typeof options.point === 'number' ? options.point : 0;
+    const initialMark = typeof options.mark === 'number' ? options.mark : null;
+    view.cursors = [{ point: initialPoint, mark: initialMark }];
+    Object.defineProperty(view, 'point', {
+      get() { return this.cursors[0].point; },
+      set(v) { this.cursors[0].point = v; },
+      enumerable: true,
+      configurable: true,
+    });
+    Object.defineProperty(view, 'mark', {
+      get() { return this.cursors[0].mark; },
+      set(v) { this.cursors[0].mark = v; },
+      enumerable: true,
+      configurable: true,
+    });
   }
   // Tabline-views default their structural fields when not supplied via
   // `extras`. A bare `createView({ kind: 'tabline' })` thus yields an
@@ -180,10 +198,15 @@ export function tablineActiveChild(view) {
  *   buffer for text views; null otherwise.
  * @property {*} mode - The view's own mode (non-text views); null for
  *   text views (their modes live on the buffer).
- * @property {number} [point] - The cursor offset, for text views.
- *   Two views over the same buffer have independent cursors.
- * @property {number | null} [mark] - The selection anchor, for text
- *   views. `null` means no selection.
+ * @property {number} [point] - The primary cursor's offset, for text
+ *   views. Two views over the same buffer have independent cursors.
+ *   Backed by `cursors[0].point`.
+ * @property {number | null} [mark] - The primary cursor's selection
+ *   anchor, for text views. `null` means no selection. Backed by
+ *   `cursors[0].mark`.
+ * @property {{point: number, mark: number|null}[]} [cursors] - The full
+ *   selection set, for text views. Index 0 is the primary; additional
+ *   entries are secondary cursors. Always non-empty for a text view.
  * @property {View[]} [tabs] - For tabline-views: the child views in
  *   display order. Other kinds leave this undefined.
  * @property {number} [active] - For tabline-views: index into `tabs`

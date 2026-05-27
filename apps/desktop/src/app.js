@@ -188,9 +188,22 @@ let currentTextBuffer = views[0].buffer;
 /** The session object the buffer primitives and view primitives
  *  operate through. The view primitives read the live currentView;
  *  the buffer primitives read currentView.buffer (and raise
- *  `no-buffer-here` when it's null). */
+ *  `no-buffer-here` when it's null).
+ *
+ *  `currentView` resolves through the pane tree: the focused leaf's
+ *  view, peeled through any tabline-views to the active child. This
+ *  is the same logic `viewHost.currentView` uses (see below), and the
+ *  two MUST stay aligned — otherwise buffer primitives operate on a
+ *  stale view (the one `currentViewIndex` happens to point at, which
+ *  isn't always the user-visible one once tabline tabs are switched).
+ *  The legacy `views[currentViewIndex]` is a last-resort fallback for
+ *  the no-pane-yet startup window. */
 const session = {
   get currentView() {
+    const pane = currentPane();
+    if (pane && pane.kind === 'leaf' && pane.view) {
+      return peelTabline(pane.view);
+    }
     return views[currentViewIndex] ?? null;
   },
 };
@@ -458,24 +471,31 @@ function refreshPaneFocusIndicators() {
   }
 }
 
-/** Set the current pane to the leaf whose div was clicked, if any.
+/** Set the current pane to the leaf whose div the user pressed in, if
+ *  any. Both `mousedown` and `click` are wired up: a press on the
+ *  editor content re-renders the line elements (the press target gets
+ *  detached), which suppresses the subsequent `click` event entirely —
+ *  so without the mousedown branch a click inside an editor *placed*
+ *  the cursor in that pane but never moved focus to it.
  *
  *  Runs on the bubble (no capture), doesn't preventDefault, and doesn't
  *  stop propagation — content inside the pane (the editor's
  *  cursor-positioning click, xterm.js's selection drag, image-view's
  *  pan/zoom, every renderer view) has already had its turn by the time
  *  this runs. */
-editorHostEl.addEventListener('click', (event) => {
+function focusPaneFromEvent(event) {
   const target = event.target;
   if (!(target instanceof Element)) return;
-  // Splitter handles aren't panes — clicking one focuses nothing.
+  // Splitter handles aren't panes — pressing one focuses nothing.
   if (target.closest('.pane-splitter')) return;
   const paneEl = target.closest('.pane');
   if (!paneEl) return;
   const paneId = paneEl.dataset.paneId;
   if (typeof paneId !== 'string' || paneId === currentPaneId) return;
   setCurrentPaneId(paneId);
-});
+}
+editorHostEl.addEventListener('mousedown', focusPaneFromEvent);
+editorHostEl.addEventListener('click', focusPaneFromEvent);
 
 /** Set the currently-focused pane id and refresh derived state:
  *  the focus indicator, the cursor binding for the new focused
@@ -1026,11 +1046,29 @@ function switchToViewIndex(index) {
     return view;
   }
   // Plain-leaf path (or no focused pane — defensive): swap the view.
+  let landingLeaf = focused;
   if (focused) {
     focused.view = view;
   } else {
     const leaves = leafPanes(rootPane);
-    if (leaves.length > 0) leaves[0].view = view;
+    if (leaves.length > 0) {
+      leaves[0].view = view;
+      landingLeaf = leaves[0];
+    }
+  }
+  // Non-text singleton views (image / audio / video / jukebox /
+  // customize / doc / shell / directory-*) are module-level instances
+  // whose elements are created once at startup, originally parented
+  // to the FIRST leaf's pane element. After splits and session
+  // restores their original parent may have been destroyed, leaving
+  // the element orphaned (display:'' alone won't bring it back into
+  // the DOM). Re-parent the singleton into the landing leaf's pane
+  // element so it actually appears. The tabline path does the same
+  // thing into `.tabline-content` inside `mountTablineActiveChild`.
+  const singleton = singletonElementForKind(view.kind);
+  const landingEl = landingLeaf ? paneElements.get(landingLeaf.id) : null;
+  if (singleton && landingEl && singleton.parentNode !== landingEl) {
+    landingEl.append(singleton);
   }
   hideInactiveRendererViews(view.kind);
   kindRegistry.mount(view);
@@ -3338,6 +3376,18 @@ function ensureEditorViewForLeaf(leaf) {
       const v = peelTabline(leaf.view);
       return v && !isTablineView(v) && v.mark !== undefined ? v.mark : null;
     },
+    // Multi-cursor: the renderer paints this leaf's view's full cursor
+    // set. Falls back to a single-cursor list synthesised from
+    // getPoint/getMark when the view hasn't been given a cursors[]
+    // (non-text views, defensively).
+    getCursors: () => {
+      const v = peelTabline(leaf.view);
+      if (v && !isTablineView(v) && Array.isArray(v.cursors)) return v.cursors;
+      return [{
+        point: v && typeof v.point === 'number' ? v.point : 0,
+        mark: v && v.mark !== undefined ? v.mark : null,
+      }];
+    },
   });
   editorViewByPaneId.set(leaf.id, instance);
   return instance;
@@ -4248,6 +4298,14 @@ function mountTablineActiveChild(tablineView) {
           return v && !isTablineView(v) && v.mark !== undefined
             ? v.mark
             : null;
+        },
+        getCursors: () => {
+          const v = peelTabline(tablineView);
+          if (v && !isTablineView(v) && Array.isArray(v.cursors)) return v.cursors;
+          return [{
+            point: v && typeof v.point === 'number' ? v.point : 0,
+            mark: v && v.mark !== undefined ? v.mark : null,
+          }];
         },
       });
     }

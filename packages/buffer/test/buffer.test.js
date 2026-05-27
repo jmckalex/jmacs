@@ -300,9 +300,31 @@ test('minorModes stores an opaque value', () => {
 
 // --- bindCursor (per-view-point) ---------------------------------------
 
+/** Build a view-shaped cursor source: a `cursors[]` array with `point`
+ *  and `mark` aliases over `cursors[0]`. Mirrors what @editor/view's
+ *  createView builds for text views — the canonical bindCursor source
+ *  shape. Kept here to avoid a @editor/view dependency in @editor/buffer's
+ *  own tests. */
+function makeCursorSource(point = 0, mark = null) {
+  const source = { cursors: [{ point, mark }] };
+  Object.defineProperty(source, 'point', {
+    get() { return this.cursors[0].point; },
+    set(v) { this.cursors[0].point = v; },
+    enumerable: true,
+    configurable: true,
+  });
+  Object.defineProperty(source, 'mark', {
+    get() { return this.cursors[0].mark; },
+    set(v) { this.cursors[0].mark = v; },
+    enumerable: true,
+    configurable: true,
+  });
+  return source;
+}
+
 test('bindCursor: the bound source becomes the canonical cursor storage', () => {
   const buf = createBuffer('hello');
-  const view = { point: 0, mark: null };
+  const view = makeCursorSource();
   buf.bindCursor(view);
   buf.moveTo(3);
   assert.equal(view.point, 3, 'moveTo writes into the bound source');
@@ -313,8 +335,8 @@ test('bindCursor: the bound source becomes the canonical cursor storage', () => 
 
 test('bindCursor: two views over one buffer keep independent cursors', () => {
   const buf = createBuffer('abcdefgh');
-  const viewA = { point: 0, mark: null };
-  const viewB = { point: 0, mark: null };
+  const viewA = makeCursorSource();
+  const viewB = makeCursorSource();
   buf.bindCursor(viewA);
   buf.moveTo(3);
   // Switch to view B; its cursor is fresh.
@@ -330,7 +352,7 @@ test('bindCursor: two views over one buffer keep independent cursors', () => {
 
 test('bindCursor(null): reverts to the local backing', () => {
   const buf = createBuffer('hello');
-  const view = { point: 2, mark: null };
+  const view = makeCursorSource(2);
   buf.bindCursor(view);
   assert.equal(buf.point, 2);
   buf.bindCursor(null);
@@ -339,7 +361,7 @@ test('bindCursor(null): reverts to the local backing', () => {
 
 test('insert and delete through a bound view land in the view', () => {
   const buf = createBuffer('hello');
-  const view = { point: 0, mark: null };
+  const view = makeCursorSource();
   buf.bindCursor(view);
   buf.moveTo(5);
   buf.insert('!');
@@ -352,7 +374,7 @@ test('insert and delete through a bound view land in the view', () => {
 
 test('undo through a bound view writes the restored cursor into the view', () => {
   const buf = createBuffer('hello');
-  const view = { point: 0, mark: null };
+  const view = makeCursorSource();
   buf.bindCursor(view);
   buf.moveTo(5);
   buf.insert(' world');
@@ -363,4 +385,159 @@ test('undo through a bound view writes the restored cursor into the view', () =>
   // view.
   assert.equal(view.point, 5);
   assert.equal(view.mark, null);
+});
+
+// --- multi-cursor / multi-selection ------------------------------------
+
+test('a fresh buffer reports a single primary cursor', () => {
+  const buf = createBuffer('hello');
+  assert.equal(buf.cursorCount, 1);
+  assert.deepEqual(buf.selections, [{ point: 0, mark: null }]);
+});
+
+test('addSelection adds a secondary cursor', () => {
+  const buf = createBuffer('foo bar foo');
+  buf.addSelection(8);
+  assert.equal(buf.cursorCount, 2);
+  // The primary still reports its own point/mark via the legacy API.
+  assert.equal(buf.point, 0);
+  // The full set is visible through `selections`.
+  assert.deepEqual(buf.selections.map((s) => s.point), [0, 8]);
+});
+
+test('addSelection at an existing offset is deduped', () => {
+  const buf = createBuffer('hello');
+  buf.addSelection(0); // duplicates the primary
+  assert.equal(buf.cursorCount, 1);
+});
+
+test('typing inserts at every cursor', () => {
+  const buf = createBuffer('foo bar foo baz foo');
+  buf.moveTo(0);
+  buf.addSelection(8);  // start of the second "foo"
+  buf.addSelection(16); // start of the third "foo"
+  buf.insert('X');
+  assert.equal(buf.text, 'Xfoo bar Xfoo baz Xfoo');
+  // Every cursor sits just after the inserted text.
+  assert.deepEqual(buf.selections.map((s) => s.point), [1, 10, 19]);
+});
+
+test('deleteBackward deletes at every cursor', () => {
+  const buf = createBuffer('aXbXcX');
+  buf.moveTo(2); // just after the first X
+  buf.addSelection(4); // just after the second X
+  buf.addSelection(6); // just after the third X
+  buf.deleteBackward();
+  assert.equal(buf.text, 'abc');
+});
+
+test('deleteForward deletes at every cursor', () => {
+  const buf = createBuffer('Xa Xb Xc');
+  buf.moveTo(0);
+  buf.addSelection(3);
+  buf.addSelection(6);
+  buf.deleteForward();
+  assert.equal(buf.text, 'a b c');
+});
+
+test('moveRight steps every cursor', () => {
+  const buf = createBuffer('hello world');
+  buf.moveTo(0);
+  buf.addSelection(6);
+  buf.moveRight();
+  assert.deepEqual(buf.selections.map((s) => s.point), [1, 7]);
+});
+
+test('moveTo (an absolute jump) collapses to the primary', () => {
+  const buf = createBuffer('hello world');
+  buf.moveTo(0);
+  buf.addSelection(6);
+  assert.equal(buf.cursorCount, 2);
+  buf.moveTo(3);
+  assert.equal(buf.cursorCount, 1);
+  assert.equal(buf.point, 3);
+});
+
+test('setText collapses to the primary', () => {
+  const buf = createBuffer('a b c');
+  buf.moveTo(0);
+  buf.addSelection(2);
+  buf.addSelection(4);
+  assert.equal(buf.cursorCount, 3);
+  buf.setText('fresh');
+  assert.equal(buf.cursorCount, 1);
+  assert.equal(buf.point, 0);
+});
+
+test('undo collapses to the primary', () => {
+  const buf = createBuffer('hello');
+  buf.moveTo(0);
+  buf.addSelection(3);
+  buf.insert('!');
+  assert.equal(buf.cursorCount, 2);
+  buf.undo();
+  assert.equal(buf.cursorCount, 1);
+});
+
+test('collapseToPrimary leaves only the primary cursor', () => {
+  const buf = createBuffer('abc');
+  buf.moveTo(0);
+  buf.addSelection(1);
+  buf.addSelection(2);
+  buf.collapseToPrimary();
+  assert.equal(buf.cursorCount, 1);
+  assert.equal(buf.point, 0);
+});
+
+test('forEachSelection visits every cursor', () => {
+  const buf = createBuffer('aaa');
+  buf.moveTo(0);
+  buf.addSelection(1);
+  buf.addSelection(2);
+  const visited = [];
+  buf.forEachSelection((cursor, i) => visited.push([i, cursor.point]));
+  assert.deepEqual(visited, [[0, 0], [1, 1], [2, 2]]);
+});
+
+test('cursors that collide after an edit dedupe', () => {
+  // Two cursors at adjacent positions; deleting the character between
+  // them brings them onto the same offset, so they must merge.
+  const buf = createBuffer('aXb');
+  buf.moveTo(1); // just after "a"
+  buf.addSelection(2); // just after "X"
+  // Both delete forward: the first removes "X", the second removes "b".
+  buf.deleteForward();
+  assert.equal(buf.text, 'a');
+  assert.equal(buf.cursorCount, 1, 'colliding cursors merged');
+});
+
+test('the primary selection still reports through the legacy API', () => {
+  const buf = createBuffer('hello world');
+  buf.moveTo(0);
+  buf.setMark(5);
+  buf.addSelection(10); // a caret-only secondary
+  assert.deepEqual(buf.selection, { start: 0, end: 5 });
+});
+
+test('multi-cursor state lives on the bound view', () => {
+  // Two views over one buffer must keep independent cursor *sets*, not
+  // just independent primaries.
+  const buf = createBuffer('hello world');
+  const viewA = makeCursorSource();
+  const viewB = makeCursorSource();
+
+  buf.bindCursor(viewA);
+  buf.moveTo(0);
+  buf.addSelection(6); // A has 2 cursors
+  assert.equal(buf.cursorCount, 2);
+
+  buf.bindCursor(viewB);
+  assert.equal(buf.cursorCount, 1, 'B starts with just the primary');
+  buf.moveTo(3);
+  buf.addSelection(7);
+  buf.addSelection(11); // B has 3 cursors
+
+  buf.bindCursor(viewA);
+  assert.equal(buf.cursorCount, 2, 'A kept its 2-cursor set');
+  assert.deepEqual(buf.selections.map((s) => s.point), [0, 6]);
 });

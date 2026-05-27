@@ -16,7 +16,7 @@
  * lives in sibling modules and is tested without a DOM.
  */
 
-import { toLines, selectionRects } from './projection.js';
+import { toLines, selectionRects, cursorPositions } from './projection.js';
 import { handleKeyEvent } from './commands.js';
 import { keyEventToString } from './keymap.js';
 import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
@@ -70,6 +70,13 @@ const MODIFIER_KEYS = new Set([
  *   two panes over one buffer each render their own cursor.
  * @param {() => number | null} [options.getMark] - The matching reader
  *   for the selection anchor.
+ * @param {() => Array<{point: number, mark: number | null}>}
+ *   [options.getCursors] - Multi-cursor: the full cursor set the
+ *   renderer should paint. Defaults to a single-element list built
+ *   from `getPoint()` / `getMark()` (preserves the single-cursor
+ *   contract for renderer unit tests). The desktop app passes
+ *   `() => view.cursors` so secondary cursors get drawn alongside
+ *   the primary.
  * @returns {EditorView}
  */
 export function createEditorView(buffer, container, options = {}) {
@@ -93,6 +100,14 @@ export function createEditorView(buffer, container, options = {}) {
     typeof options.getMark === 'function'
       ? options.getMark
       : () => activeBuffer.mark;
+  // Multi-cursor: returns this view's full cursor set. When not supplied,
+  // synthesise a single-cursor list from getPoint/getMark so the existing
+  // single-cursor renderer path (renderer unit tests, hosts that haven't
+  // wired multi-cursor yet) keeps working.
+  const getCursors =
+    typeof options.getCursors === 'function'
+      ? options.getCursors
+      : () => [{ point: getPoint(), mark: getMark() }];
 
   // The colour-swatch decorator: places a clickable swatch beside every
   // colour literal in a rendered line, and edits the buffer when a
@@ -393,9 +408,10 @@ export function createEditorView(buffer, container, options = {}) {
     gutter.replaceChildren(...numberEls);
   }
 
-  /** Render the selection highlight, one rectangle per touched line. */
+  /** Render the selection highlight, one rectangle per touched line,
+   *  across every cursor's selection. */
   function renderSelection() {
-    const rects = selectionRects(activeBuffer, getPoint(), getMark());
+    const rects = selectionRects(activeBuffer, getCursors());
     selectionLayer.replaceChildren(
       ...rects
         .map((rect) => {
@@ -442,33 +458,74 @@ export function createEditorView(buffer, container, options = {}) {
     );
   }
 
-  /** Position the cursor, the current-line highlight and the gutter. */
+  // A pool of secondary cursor elements, kept attached to `content` so
+  // they share the text's ch/lh coordinate space with the primary cursor.
+  // Re-used across renders to avoid the cost of recreating them when
+  // several cursors live for a while.
+  /** @type {HTMLElement[]} */
+  const secondaryCursors = [];
+
+  /** Position every cursor (primary + secondaries), the current-line
+   *  highlight and the gutter. */
   function renderCursor() {
-    const { line, column } = activeBuffer.positionAt(getPoint());
-    // If the cursor lands inside a folded region, hop it up to the
+    const cursors = getCursors();
+    const positions = cursorPositions(activeBuffer, cursors);
+    // The primary caret stays in the existing `cursorEl`; secondaries
+    // come from the pool. Always at least one cursor — fall back to
+    // (0,0) if a caller hands back an empty list.
+    const primaryPos = positions[0] ?? { line: 0, column: 0 };
+    // If the primary lands inside a folded region, hop it up to the
     // header line — the user shouldn't be able to "see" the cursor
     // sitting on a hidden line. Visually we still draw it at the
-    // header's row, in the column the cursor would have on its real
-    // line.
-    const row = rowOf(line);
-    const displayRow = row === -1 ? rowOf(findVisibleAncestorLine(line)) : row;
-    cursorEl.style.left = `calc(${column} * 1ch)`;
-    cursorEl.style.top = `calc(${displayRow} * 1lh)`;
-    currentLineEl.style.top = `calc(${displayRow} * 1lh)`;
+    // header's row, in the column the cursor would have on its real line.
+    const primaryRow = rowOf(primaryPos.line);
+    const primaryDisplayRow = primaryRow === -1
+      ? rowOf(findVisibleAncestorLine(primaryPos.line))
+      : primaryRow;
+    cursorEl.style.left = `calc(${primaryPos.column} * 1ch)`;
+    cursorEl.style.top = `calc(${primaryDisplayRow} * 1lh)`;
+    currentLineEl.style.top = `calc(${primaryDisplayRow} * 1lh)`;
 
-    // Brighten the current line's number in the gutter. Only the
+    // Grow or shrink the secondary pool to match (cursor count − 1).
+    const secondaryCount = Math.max(0, positions.length - 1);
+    while (secondaryCursors.length < secondaryCount) {
+      const extra = el('div', 'editor-cursor is-secondary');
+      content.append(extra);
+      secondaryCursors.push(extra);
+    }
+    while (secondaryCursors.length > secondaryCount) {
+      const extra = secondaryCursors.pop();
+      extra.remove();
+    }
+    for (let i = 0; i < secondaryCount; i += 1) {
+      const { line, column } = positions[i + 1];
+      const row = rowOf(line);
+      const displayRow = row === -1 ? rowOf(findVisibleAncestorLine(line)) : row;
+      const extra = secondaryCursors[i];
+      extra.style.left = `calc(${column} * 1ch)`;
+      extra.style.top = `calc(${displayRow} * 1lh)`;
+    }
+
+    // Brighten the primary cursor's line number in the gutter. Only the
     // visible numbers are present, so match on the line each carries.
     for (const numberEl of gutter.children) {
       numberEl.classList.toggle(
         'is-current',
-        Number(numberEl.dataset.line) === line
+        Number(numberEl.dataset.line) === primaryPos.line
       );
     }
 
-    // Restart the blink so the cursor is solid right after it moves.
+    // Restart the blink on every cursor so they all start solid and
+    // stay in phase. CSS animations begin when `is-blinking` is added,
+    // so removing → forcing a reflow → re-adding on every cursor in
+    // one go ensures the primary and secondaries blink in unison
+    // (otherwise each cursor's animation starts at its own t=0 when
+    // its element was first mounted, and they drift visibly).
     cursorEl.classList.remove('is-blinking');
+    for (const extra of secondaryCursors) extra.classList.remove('is-blinking');
     void cursorEl.offsetWidth;
     cursorEl.classList.add('is-blinking');
+    for (const extra of secondaryCursors) extra.classList.add('is-blinking');
   }
 
   let dirty = false;
