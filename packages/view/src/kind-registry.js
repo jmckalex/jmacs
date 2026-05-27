@@ -78,12 +78,19 @@ export function createKindRegistry() {
      * have registered every kind it might switch to before any
      * `switchToView` call.
      *
+     * The optional CONTEXT parameter carries kind-specific extras
+     * the spec's `mount` may consult. Today only the `tabline` kind
+     * uses it (to receive the host element it should render into when
+     * a tabline-view sits inside a pane); other specs ignore it.
+     * Most callers pass it as a plain object like `{ paneEl }`.
+     *
      * @param {import('./view.js').View} view
+     * @param {object} [context]
      */
-    mount(view) {
+    mount(view, context) {
       const spec = specs.get(view.kind);
       if (!spec) throw new Error(`unknown view kind: ${view.kind}`);
-      spec.mount(view);
+      spec.mount(view, context);
     },
 
     /**
@@ -93,10 +100,11 @@ export function createKindRegistry() {
      * shouldn't crash kill-view).
      *
      * @param {import('./view.js').View} view
+     * @param {object} [context]
      */
-    dispose(view) {
+    dispose(view, context) {
       const spec = specs.get(view.kind);
-      if (spec && spec.dispose) spec.dispose(view);
+      if (spec && spec.dispose) spec.dispose(view, context);
     },
   };
 }
@@ -105,12 +113,14 @@ export function createKindRegistry() {
  * @typedef {object} KindSpec
  * @property {boolean} hasBuffer - Whether this kind wraps an L2 buffer.
  *   Text views set this to true; everything else to false.
- * @property {(view: import('./view.js').View) => void} mount - Show
- *   this view in the renderer. Called every time a switch lands on a
- *   view of this kind. The spec is responsible for hiding any other
- *   view's DOM (the kind registry doesn't coordinate that — the
- *   desktop app's mountView still owns the display-toggle dance).
- * @property {((view: import('./view.js').View) => void) | null} [dispose] -
+ * @property {(view: import('./view.js').View, context?: object) => void} mount -
+ *   Show this view in the renderer. Called every time a switch lands
+ *   on a view of this kind. The spec is responsible for hiding any
+ *   other view's DOM (the kind registry doesn't coordinate that — the
+ *   desktop app's mountView still owns the display-toggle dance). The
+ *   optional context carries kind-specific extras (e.g. the host
+ *   element a tabline-view should render its strip + content into).
+ * @property {((view: import('./view.js').View, context?: object) => void) | null} [dispose] -
  *   Release any kind-specific resources when a view is killed. The
  *   buffer (for text views) is freed by the GC; this hook is for
  *   side-effects like terminating a shell child process.
@@ -120,6 +130,6 @@ export function createKindRegistry() {
  * @property {(kind: string) => boolean} has
  * @property {(kind: string) => (KindSpec | null)} get
  * @property {() => string[]} kinds
- * @property {(view: import('./view.js').View) => void} mount
- * @property {(view: import('./view.js').View) => void} dispose
+ * @property {(view: import('./view.js').View, context?: object) => void} mount
+ * @property {(view: import('./view.js').View, context?: object) => void} dispose
  */

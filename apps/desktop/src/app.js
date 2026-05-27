@@ -3741,16 +3741,263 @@ kindRegistry.register('shell', {
   },
 });
 
-// Tabline as a view kind (PANES.md, Q11). The spec is registered so
-// the system recognises the kind, but no mount/UI is wired this phase
-// — there are no commands to construct a tabline-view yet. The mount
-// hook is a defensive stub: if a tabline view somehow finds its way
-// into the views list, the user sees a clear error rather than the
-// switch silently doing nothing.
+// Tabline as a view kind (PANES.md, Q11 / PANES-PHASE-3B.md). A
+// tabline-view is a *structural* view: it contains other views in its
+// `tabs` array, with one active at a time, and renders a thin tab
+// strip on one of the pane's four edges plus a content area where the
+// active child mounts.
+//
+// Per-tabline state — the `.tabline-pane` container, the strip handle,
+// the per-text-child editor instances — lives in `tablineStateByView`,
+// keyed by the tabline-view itself. The mount hook builds it on first
+// call and reuses it on subsequent calls (active-tab change, edge
+// change, refresh after a tabs splice). The dispose hook tears the
+// container down and destroys every editor instance.
+//
+// Recursion into the active child:
+//   * text child  — a dedicated editor-view instance per child view,
+//                   mounted inside the content area; switching tabs
+//                   hides/shows siblings, so per-view-point survives.
+//   * other kinds — for this phase, we recurse through
+//                   `kindRegistry.mount(child)`. The existing non-text
+//                   singletons (image, audio, ...) display-toggle their
+//                   own DOM in `editorPaneElement()` — that pre-tabline
+//                   placement remains until commit 5 rewires open-file
+//                   to route into the active pane's tabline. With the
+//                   commit-3 startup wrap all the restored tabs are
+//                   text, so this gap doesn't bite at boot.
+//
+// Nested tabline-views (Q10): allowed. The recursion handles them
+// naturally — a child can itself be a tabline-view, in which case the
+// child's mount builds its own `.tabline-pane` inside the parent's
+// `.tabline-content`. Disposal walks the same path.
+
+/** Per-tabline-view rendering state. */
+/** @type {Map<import('@editor/view').View, {
+ *   container: HTMLElement,
+ *   stripEl: HTMLElement,
+ *   contentEl: HTMLElement,
+ *   strip: { refresh: () => void, setEdge: (edge: string) => void },
+ *   editorByChildId: Map<string, ReturnType<typeof createEditorView>>,
+ *   mountedChild: import('@editor/view').View | null,
+ * }>} */
+const tablineStateByView = new Map();
+
+/** Build (or fetch) the per-tabline rendering state for VIEW. The
+ *  container is created lazily; once built it survives until the
+ *  tabline-view's dispose hook runs. */
+function ensureTablineState(view) {
+  let state = tablineStateByView.get(view);
+  if (state) return state;
+
+  const container = document.createElement('div');
+  container.className = 'tabline-pane';
+  container.dataset.edge = view.edge ?? 'top';
+  container.dataset.tablineViewId = view.id;
+
+  const stripEl = document.createElement('div');
+  stripEl.className = 'tabline-strip';
+  container.append(stripEl);
+
+  const contentEl = document.createElement('div');
+  contentEl.className = 'tabline-content';
+  container.append(contentEl);
+
+  // The strip is a per-tabline `createTabline`. Its callbacks operate
+  // on the tabline-view's own `tabs` / `active` — they don't touch the
+  // global view list. Commit 5 will harmonise the close path with
+  // `kill-view!` so the tabline ↔ global-views interaction is one
+  // story; for commit 2 we keep it self-contained.
+  const strip = createTabline(stripEl, {
+    getTabs: () => view.tabs,
+    getActiveIndex: () => view.active,
+    edge: view.edge ?? 'top',
+    onSelect: (i) => activateTabInTabline(view, i),
+    onClose: (i) => removeTabInTabline(view, i),
+    onReorder: (from, to) => reorderTabInTabline(view, from, to),
+  });
+
+  state = {
+    container,
+    stripEl,
+    contentEl,
+    strip,
+    editorByChildId: new Map(),
+    mountedChild: null,
+  };
+  tablineStateByView.set(view, state);
+  return state;
+}
+
+/** Re-mount the active child of TABLINEVIEW into its content area,
+ *  hiding any previously-mounted text-child instance. Recurses into
+ *  the kind registry for non-text active children. */
+function mountTablineActiveChild(tablineView) {
+  const state = tablineStateByView.get(tablineView);
+  if (!state) return;
+  const child = (typeof tablineView.active === 'number' &&
+                 tablineView.active >= 0 &&
+                 tablineView.active < tablineView.tabs.length)
+    ? tablineView.tabs[tablineView.active] ?? null
+    : null;
+  // Hide every previously-mounted text child's editor element.
+  for (const [childId, instance] of state.editorByChildId) {
+    const active = child && child.id === childId;
+    instance.element.style.display = active ? '' : 'none';
+  }
+  state.mountedChild = child;
+  if (!child) return;
+
+  if (child.kind === 'text' && child.buffer) {
+    let instance = state.editorByChildId.get(child.id);
+    if (!instance) {
+      instance = createEditorView(child.buffer, state.contentEl, {
+        ...(keymapReady ? { onKey: dispatchKey } : {}),
+        highlighters,
+        foldCaptures,
+        // Per-view-point: the child view owns its cursor; the editor
+        // reads point/mark from the live view handle so they survive
+        // tab-switches and re-mounts.
+        getPoint: () => (typeof child.point === 'number' ? child.point : 0),
+        getMark: () => (child.mark !== undefined ? child.mark : null),
+      });
+      state.editorByChildId.set(child.id, instance);
+    }
+    if (instance.element.parentNode !== state.contentEl) {
+      state.contentEl.append(instance.element);
+    }
+    instance.element.style.display = '';
+    instance.setView(child);
+    return;
+  }
+
+  if (child.kind === 'tabline') {
+    // Nested tabline-views (Q10). Recurse — the child's mount creates
+    // its own `.tabline-pane` inside our `.tabline-content`.
+    kindRegistry.mount(child, { paneEl: state.contentEl });
+    return;
+  }
+
+  // Other kinds (image / audio / video / shell / customize / doc /
+  // jukebox / directory-*) use module-level singletons that today
+  // mount inside the editor host, not inside a content area. Commit 5
+  // revises open-file to route through tabs; until then, defer to the
+  // kind registry's standard mount, which will display-toggle the
+  // singleton in its original location. (This means a non-text active
+  // tab won't visually appear under the strip — the gap the brief
+  // calls out for the commits-3-through-5 window.)
+  try {
+    kindRegistry.mount(child);
+  } catch (error) {
+    // Defensive: an unknown kind shouldn't crash the strip's onSelect.
+    if (typeof repl !== 'undefined' && repl && typeof repl.appendError === 'function') {
+      repl.appendError(
+        `tabline: cannot mount child of kind ${child.kind}: ` +
+        (error && error.message ? error.message : String(error))
+      );
+    }
+  }
+}
+
+/** Activate tab INDEX in TABLINEVIEW, refresh the strip, and re-mount
+ *  the active child. Idempotent on the current active index. */
+function activateTabInTabline(tablineView, index) {
+  if (!Array.isArray(tablineView.tabs)) return;
+  if (index < 0 || index >= tablineView.tabs.length) return;
+  tablineView.active = index;
+  const state = tablineStateByView.get(tablineView);
+  if (state) state.strip.refresh();
+  mountTablineActiveChild(tablineView);
+}
+
+/** Remove tab INDEX from TABLINEVIEW. Adjusts `active` to land on the
+ *  previous tab (or 0); when the last tab is removed `active` becomes
+ *  0 and the content area is left empty (commit 5 layers the auto-
+ *  collapse-pane semantics on top). */
+function removeTabInTabline(tablineView, index) {
+  if (!Array.isArray(tablineView.tabs)) return;
+  if (index < 0 || index >= tablineView.tabs.length) return;
+  const removed = tablineView.tabs[index];
+  tablineView.tabs.splice(index, 1);
+  // Dispose any editor instance built for the removed child.
+  const state = tablineStateByView.get(tablineView);
+  if (state) {
+    const instance = state.editorByChildId.get(removed.id);
+    if (instance) {
+      instance.destroy();
+      state.editorByChildId.delete(removed.id);
+    }
+  }
+  // Re-anchor active: if we removed the active tab (or one before it),
+  // step back so we land on a valid index.
+  if (tablineView.tabs.length === 0) {
+    tablineView.active = 0;
+  } else if (index < tablineView.active) {
+    tablineView.active -= 1;
+  } else if (index === tablineView.active) {
+    tablineView.active = Math.max(0, index - 1);
+  }
+  if (state) state.strip.refresh();
+  mountTablineActiveChild(tablineView);
+}
+
+/** Reorder a tab from FROM to TO inside TABLINEVIEW, updating active
+ *  so it re-points at its (moved) original element. */
+function reorderTabInTabline(tablineView, from, to) {
+  if (from === to) return;
+  if (!Array.isArray(tablineView.tabs)) return;
+  if (from < 0 || from >= tablineView.tabs.length) return;
+  if (to < 0 || to >= tablineView.tabs.length) return;
+  const moved = tablineView.tabs.splice(from, 1)[0];
+  tablineView.tabs.splice(to, 0, moved);
+  // Re-anchor active onto its (possibly moved) view.
+  if (from === tablineView.active) {
+    tablineView.active = to;
+  } else if (from < tablineView.active && to >= tablineView.active) {
+    tablineView.active -= 1;
+  } else if (from > tablineView.active && to <= tablineView.active) {
+    tablineView.active += 1;
+  }
+  const state = tablineStateByView.get(tablineView);
+  if (state) state.strip.refresh();
+}
+
 kindRegistry.register('tabline', {
   hasBuffer: false,
-  mount: () => {
-    repl.appendError('tabline-view: not yet implemented (phase 3)');
+  /** Mount the tabline-view inside the pane element supplied via the
+   *  context. Falls back to the focused leaf's pane element when no
+   *  context is given (defensive — every caller should pass paneEl). */
+  mount: (view, context) => {
+    let paneEl = context && context.paneEl ? context.paneEl : null;
+    if (!paneEl) {
+      const leaf = leafPanes(rootPane).find((l) => l.view === view);
+      paneEl = leaf ? paneElements.get(leaf.id) : null;
+    }
+    if (!paneEl) return; // Nowhere to render — drop quietly.
+    const state = ensureTablineState(view);
+    if (state.container.parentNode !== paneEl) paneEl.append(state.container);
+    state.container.dataset.edge = view.edge ?? 'top';
+    state.strip.setEdge(view.edge ?? 'top');
+    state.strip.refresh();
+    mountTablineActiveChild(view);
+  },
+  /** Dispose the tabline-view: destroy every per-child editor instance
+   *  and detach the container. Does not dispose the child views' own
+   *  state (a non-text singleton's resources belong to the singleton,
+   *  not to the tabline). */
+  dispose: (view) => {
+    const state = tablineStateByView.get(view);
+    if (!state) return;
+    for (const instance of state.editorByChildId.values()) {
+      try {
+        instance.destroy();
+      } catch {
+        /* tolerant — a half-mounted editor shouldn't crash dispose. */
+      }
+    }
+    state.editorByChildId.clear();
+    if (state.container.parentNode) state.container.remove();
+    tablineStateByView.delete(view);
   },
 });
 
@@ -4182,8 +4429,8 @@ requestAnimationFrame(() => splash.classList.add('is-visible'));
 // `view.name` and `viewFilePath(view)` straight off the View handle.
 
 const tabline = createTabline(document.getElementById('tabline-host'), {
-  getViews: () => views,
-  getCurrentIndex: () => currentViewIndex,
+  getTabs: () => views,
+  getActiveIndex: () => currentViewIndex,
   onSelect: (index) => switchToViewIndex(index),
   onClose: (index) => {
     // Run kill-view! through the interpreter when available so it

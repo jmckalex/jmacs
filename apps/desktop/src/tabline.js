@@ -1,54 +1,64 @@
 /**
- * @file Tabline — a horizontal bar of view tabs above the editor.
+ * @file Tabline — a strip of view tabs.
  *
- * One tab per open view; the current view's tab is filled and carries
+ * One tab per child view; the active view's tab is filled and carries
  * the accent border. A tab shows the view's basename and a small `×`
  * that kills the view. Tabs are draggable to reorder.
  *
  * The widget is intentionally a thin DOM view: the view list and
- * mutation lives in `app.js`; this module renders, dispatches clicks,
- * and reports drag-reorders back through `onReorder`.
+ * mutation lives upstream (in `app.js`); this module renders, dispatches
+ * clicks, and reports drag-reorders back through callbacks.
  *
- * Phase 2 of plans/PANES.md: consumes views directly. The old
- * `getBuffers: () => Array<{name, filePath}>` adapter in `app.js`
- * (`viewAsTablineRecord`) is gone; this module reads `view.name` and
- * resolves the file path through `viewFilePath` from `@editor/view`.
+ * Phase 3b of plans/PANES.md: a tabline is mounted *per pane*, driven
+ * by a tabline-view that owns the tabs. The host element is the strip
+ * container provided by the kind registry's tabline mount (or, for
+ * the legacy global chrome path that the same commit keeps temporarily
+ * alive, the `#tabline-host` div). The `edge` option drives whether
+ * the strip stacks tabs row-wise (`top`/`bottom`) or column-wise
+ * (`left`/`right`); CSS does the actual flex direction.
  */
 
 import { viewFilePath } from '@editor/view';
 
 /**
  * @typedef {Object} TablineOptions
- * @property {() => import('@editor/view').View[]} getViews - The live
- *   view list, in display order.
- * @property {() => number} getCurrentIndex - Index of the current view.
+ * @property {() => import('@editor/view').View[]} getTabs - The live
+ *   tab list (the tabline-view's `tabs`), in display order.
+ * @property {() => number} getActiveIndex - Index of the active tab.
  * @property {(index: number) => void} onSelect - Tab-click handler.
  * @property {(index: number) => void} onClose - Close-icon handler.
  * @property {(from: number, to: number) => void} [onReorder] - A
  *   drag-and-drop reorder. Optional; when omitted, drag is disabled.
+ * @property {('top'|'right'|'bottom'|'left')} [edge] - Which edge of
+ *   the pane the strip renders on. Defaults to 'top'. The CSS uses
+ *   this to set the flex direction so vertical edges stack tabs in
+ *   a column; the rendering itself stays the same.
  */
 
 /**
  * Mount a tabline inside HOST.
  *
- * @param {HTMLElement} host - The container element (e.g. the
- *   `#tabline-host` div).
+ * @param {HTMLElement} host - The container element. For the global
+ *   chrome strip this is the `#tabline-host` div; for a per-pane
+ *   tabline-view it's the `.tabline-strip` div inside the pane.
  * @param {TablineOptions} options
- * @returns {{element: HTMLElement, refresh: () => void}}
+ * @returns {{element: HTMLElement, refresh: () => void, setEdge: (edge: string) => void}}
  */
 export function createTabline(host, options) {
-  const { getViews, getCurrentIndex, onSelect, onClose, onReorder } = options;
+  const { getTabs, getActiveIndex, onSelect, onClose, onReorder } = options;
+  let edge = typeof options.edge === 'string' ? options.edge : 'top';
 
   const element = document.createElement('div');
   element.className = 'tabline';
+  element.dataset.edge = edge;
   host.append(element);
 
   /** Tabs being dragged (HTML5 DnD): the index the drag started on. */
   let dragFrom = -1;
 
   function refresh() {
-    const views = getViews();
-    const currentIndex = getCurrentIndex();
+    const views = getTabs();
+    const currentIndex = getActiveIndex();
     // Rebuild the strip from scratch — at the view counts a real
     // session uses (a handful, occasionally a few dozen), it is the
     // simplest correct thing.
@@ -133,7 +143,19 @@ export function createTabline(host, options) {
   }
 
   refresh();
-  return { element, refresh };
+  return {
+    element,
+    refresh,
+    /** Change the rendered edge (top/right/bottom/left). Re-renders
+     *  the strip; the parent's CSS flex direction is driven by the
+     *  `.tabline[data-edge=…]` attribute. */
+    setEdge(nextEdge) {
+      if (typeof nextEdge !== 'string') return;
+      edge = nextEdge;
+      element.dataset.edge = edge;
+      refresh();
+    },
+  };
 }
 
 /**
