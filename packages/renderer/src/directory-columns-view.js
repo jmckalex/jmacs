@@ -319,40 +319,97 @@ export function createDirectoryColumnsView(container, options = {}) {
       perLine = highlightBuffer(text, language);
     }
     const lines = text.split('\n');
-    // Cap the *rendered* line count so a giant file doesn't bloat the
-    // preview DOM; injection still saw the whole source above.
-    const MAX_PREVIEW_LINES = 400;
-    const limit = Math.min(lines.length, MAX_PREVIEW_LINES);
-    for (let i = 0; i < limit; i += 1) {
-      const lineEl = doc.createElement('div');
-      lineEl.className = 'directory-columns-preview-line';
-      const runs = perLine
-        ? (perLine[i] ?? [{ text: lines[i], face: null }])
-        : highlightLine(lines[i], language);
-      if (runs.length === 1 && runs[0].face === null) {
-        lineEl.textContent = runs[0].text;
-      } else {
-        for (const run of runs) {
-          if (run.face === null) {
-            lineEl.append(doc.createTextNode(run.text));
-          } else {
-            const span = doc.createElement('span');
-            span.className = `tok-${run.face}`;
-            span.textContent = run.text;
-            lineEl.append(span);
+
+    // Windowed (virtualised) rendering. The preview can be a 10k-line
+    // source file; rendering every line as DOM at once is wasteful and
+    // sluggish. Instead the spacer fills the full scroll height and
+    // only the visible window (+ overscan) is built into the DOM. The
+    // editor view uses the same pattern.
+    const spacer = doc.createElement('div');
+    spacer.className = 'directory-columns-preview-spacer';
+    pre.append(spacer);
+
+    // Measure the line height once after layout. The class supplies a
+    // monospace font; line-height comes from `1lh` in CSS but we need
+    // it as a number to map scrollTop → first visible row.
+    let lineHeight = 0;
+    function measure() {
+      const probe = doc.createElement('div');
+      probe.className = 'directory-columns-preview-line';
+      probe.textContent = 'M';
+      spacer.append(probe);
+      const rect = probe.getBoundingClientRect();
+      lineHeight = rect.height || 18;
+      probe.remove();
+    }
+    measure();
+    spacer.style.height = `${lines.length * lineHeight}px`;
+
+    // Render only the window of lines in view. Re-run on every scroll.
+    function renderWindow() {
+      const top = pre.scrollTop;
+      const viewport = pre.clientHeight || lineHeight;
+      const overscan = 12;
+      const firstRow = Math.max(0, Math.floor(top / lineHeight) - overscan);
+      const lastRow = Math.min(
+        lines.length,
+        Math.ceil((top + viewport) / lineHeight) + overscan
+      );
+      const out = [];
+      for (let i = firstRow; i < lastRow; i += 1) {
+        const lineEl = doc.createElement('div');
+        lineEl.className = 'directory-columns-preview-line';
+        lineEl.style.top = `${i * lineHeight}px`;
+        const runs = perLine
+          ? (perLine[i] ?? [{ text: lines[i], face: null }])
+          : highlightLine(lines[i], language);
+        if (runs.length === 1 && runs[0].face === null) {
+          lineEl.textContent = runs[0].text;
+        } else {
+          for (const run of runs) {
+            if (run.face === null) {
+              lineEl.append(doc.createTextNode(run.text));
+            } else {
+              const span = doc.createElement('span');
+              span.className = `tok-${run.face}`;
+              span.textContent = run.text;
+              lineEl.append(span);
+            }
           }
         }
+        if (!lineEl.hasChildNodes()) lineEl.append(doc.createTextNode(''));
+        out.push(lineEl);
       }
-      // Empty line still occupies a row.
-      if (!lineEl.hasChildNodes()) lineEl.append(doc.createTextNode(''));
-      pre.append(lineEl);
+      spacer.replaceChildren(...out);
     }
-    if (lines.length > limit) {
-      const ellipsis = doc.createElement('div');
-      ellipsis.className = 'directory-columns-preview-line';
-      ellipsis.textContent = `… (${lines.length - limit} more lines)`;
-      pre.append(ellipsis);
+
+    let scheduled = false;
+    function scheduleRender() {
+      if (scheduled) return;
+      scheduled = true;
+      win.requestAnimationFrame(() => {
+        scheduled = false;
+        renderWindow();
+      });
     }
+    pre.addEventListener('scroll', scheduleRender);
+    // Also re-render when the preview pane resizes (a column-resize
+    // drag changes the viewport height, so the visible window
+    // changes).
+    if (typeof win.ResizeObserver === 'function') {
+      const ro = new win.ResizeObserver(() => scheduleRender());
+      ro.observe(pre);
+    }
+
+    // First paint — defer one frame so the pre has its layout box
+    // (clientHeight is 0 before the preview is in the DOM).
+    win.requestAnimationFrame(() => {
+      if (lineHeight === 0) {
+        measure();
+        spacer.style.height = `${lines.length * lineHeight}px`;
+      }
+      renderWindow();
+    });
   }
 
   /** Build the preview pane that sits to the right of the trailing

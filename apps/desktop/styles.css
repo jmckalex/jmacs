@@ -2228,14 +2228,24 @@ textarea.customize-widget {
   font-family: var(--font-mono, monospace);
   font-size: 12px;
   overflow: auto;
-  /* Per-line rendering: each row is a child <div> built from the
-   * editor's `tok-*` faces. The wrapper preserves whitespace inside
-   * each line; lines themselves stack as block elements. */
+  /* Windowed line rendering: the spacer fills the document's total
+   * height; only visible-window lines (+ overscan) are absolutely
+   * positioned inside it. The wrapper's `pre` semantics still apply
+   * to the contents of each line. */
   white-space: normal;
+  position: relative;
+}
+
+.directory-columns-preview-spacer {
+  position: relative;
+  width: 100%;
 }
 
 .directory-columns-preview-line {
-  white-space: pre-wrap;
+  position: absolute;
+  left: 0;
+  right: 0;
+  white-space: pre;
   min-height: 1lh;
 }
 
