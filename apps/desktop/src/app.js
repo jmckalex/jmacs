@@ -998,21 +998,35 @@ function hideInactiveRendererViews(activeKind) {
     if (paneId === currentPaneId) continue;
     instance.element.style.display = '';
   }
-  customizeView.element.style.display =
-    activeKind === 'customize' ? '' : 'none';
-  imageView.element.style.display = activeKind === 'image' ? '' : 'none';
-  docView.element.style.display = activeKind === 'doc' ? '' : 'none';
-  jukeboxView.element.style.display = activeKind === 'jukebox' ? '' : 'none';
-  audioView.element.style.display = activeKind === 'audio' ? '' : 'none';
-  videoView.element.style.display = activeKind === 'video' ? '' : 'none';
-  directoryTreeView.element.style.display =
-    activeKind === 'directory-tree' ? '' : 'none';
-  directoryColumnsView.element.style.display =
-    activeKind === 'directory-columns' ? '' : 'none';
-  shellView.element.style.display = activeKind === 'shell' ? '' : 'none';
-  if (activeKind !== 'audio') audioView.setBuffer(null);
-  if (activeKind !== 'video') videoView.setBuffer(null);
-  if (activeKind !== 'shell') shellView.setBuffer(null);
+  // For each non-text singleton, visibility is keyed on whether ANY
+  // leaf currently has it as its active view — not on the focused
+  // pane's kind. Otherwise clicking a text tab in one pane hides a
+  // singleton (jukebox / directory-columns / …) that's parented
+  // inside a different pane. `kindsInUse` captures the union across
+  // the whole pane tree.
+  const kindsInUse = new Set();
+  for (const leaf of leafPanes(rootPane)) {
+    const v = isTablineView(leaf.view) ? tablineActiveChild(leaf.view) : leaf.view;
+    if (v && v.kind !== 'text' && v.kind !== 'tabline') kindsInUse.add(v.kind);
+  }
+  const setDisplay = (el, kind) => {
+    el.style.display = kindsInUse.has(kind) ? '' : 'none';
+  };
+  setDisplay(customizeView.element, 'customize');
+  setDisplay(imageView.element, 'image');
+  setDisplay(docView.element, 'doc');
+  setDisplay(jukeboxView.element, 'jukebox');
+  setDisplay(audioView.element, 'audio');
+  setDisplay(videoView.element, 'video');
+  setDisplay(directoryTreeView.element, 'directory-tree');
+  setDisplay(directoryColumnsView.element, 'directory-columns');
+  setDisplay(shellView.element, 'shell');
+  // `setBuffer(null)` resets the singleton — only do it when truly no
+  // leaf shows the kind, so e.g. a background audio pane keeps its
+  // buffer alive when focus moves to a text pane.
+  if (!kindsInUse.has('audio')) audioView.setBuffer(null);
+  if (!kindsInUse.has('video')) videoView.setBuffer(null);
+  if (!kindsInUse.has('shell')) shellView.setBuffer(null);
 }
 
 /** Switch to the view at INDEX: dispatch through the kind registry to
