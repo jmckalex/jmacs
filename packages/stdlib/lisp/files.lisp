@@ -16,6 +16,16 @@
   "Open the native OS file dialog. Used by File > Open File… (Cmd+O)."
   (open-file!))
 
+;; --- find-file settings ------------------------------------------------
+
+(defcustom *find-file-case-sensitive* #f :boolean
+  :group 'jmacs
+  :doc "When #t, find-file's TAB completion matches filenames with
+        case taken into account; when #f (the default), the prefix
+        matches regardless of case. Completion always uses the
+        filename's on-disk case — typing 'rea' and TABbing into a
+        directory with 'README.md' produces 'README.md'.")
+
 ;; --- find-file ------------------------------------------------------
 ;; The minibuffer's TAB calls back into this file's
 ;; `minibuffer-tab-complete`, which splits the path at its last "/",
@@ -43,16 +53,27 @@
         (cons "" text)
         (cons (substring text 0 (+ i 1)) (substring text (+ i 1))))))
 
+(define (-chars-equal? c1 c2)
+  "Compare single-character strings under the active find-file
+   case-sensitivity setting."
+  (if *find-file-case-sensitive*
+      (equal? c1 c2)
+      (equal? (string-downcase c1) (string-downcase c2))))
+
 (define (-common-prefix/loop a b i)
   (if (or (>= i (string-length a))
           (>= i (string-length b))
-          (not (equal? (substring a i (+ i 1))
-                       (substring b i (+ i 1)))))
+          (not (-chars-equal? (substring a i (+ i 1))
+                              (substring b i (+ i 1)))))
       (substring a 0 i)
       (-common-prefix/loop a b (+ i 1))))
 
 (define (-common-prefix a b)
-  "The longest leading run shared by strings A and B."
+  "The longest leading run shared by strings A and B. Compares
+   characters under the active case-sensitivity setting but returns
+   characters from A — when case-insensitive, the result preserves
+   the case of the first input (which, for filenames, is the actual
+   on-disk case)."
   (-common-prefix/loop a b 0))
 
 (define (-fold-common-prefix items)
@@ -70,6 +91,13 @@
          (str (home-directory) (substring path 1 (string-length path))))
         (else path)))
 
+(define (-prefix-match? prefix name)
+  "Whether NAME starts with PREFIX, under the active find-file
+   case-sensitivity setting."
+  (if *find-file-case-sensitive*
+      (string-prefix? prefix name)
+      (string-prefix? (string-downcase prefix) (string-downcase name))))
+
 (define (-matching-entries directory basename)
   "Names in DIRECTORY that begin with BASENAME, as a list of pairs
    (name . type). Returns nil when DIRECTORY can't be read."
@@ -77,7 +105,7 @@
     (if (nil? entries)
         nil
         (filter (lambda (entry)
-                  (string-prefix? basename (car entry)))
+                  (-prefix-match? basename (car entry)))
                 entries))))
 
 (define (-join strings sep)

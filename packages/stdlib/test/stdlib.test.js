@@ -3261,6 +3261,43 @@ test('completion in an unreadable directory shows (no matches)', async () => {
   assert.equal(statusCalls.at(-1), '(no matches)');
 });
 
+test('minibuffer-tab-complete is case-insensitive by default', async () => {
+  const { interpreter, directoryStub } = await editor();
+  // Typing 'rea' (lower) should TAB-complete to a file whose name
+  // starts 'REA' (upper) — the default *find-file-case-sensitive* is #f.
+  directoryStub.set('/tmp/', [['README.md', 'file']]);
+  const completed = interpreter.evaluate(
+    '(minibuffer-tab-complete "/tmp/rea")'
+  );
+  assert.equal(completed, '/tmp/README.md');
+});
+
+test('minibuffer-tab-complete preserves the on-disk case for an LCP', async () => {
+  const { interpreter, directoryStub } = await editor();
+  // Typing 'r' against 'README.md' + 'README2.md' should extend to
+  // '/tmp/README' (case from the filenames, not the user input).
+  directoryStub.set('/tmp/', [
+    ['README.md', 'file'],
+    ['README2.md', 'file'],
+  ]);
+  const completed = interpreter.evaluate(
+    '(minibuffer-tab-complete "/tmp/r")'
+  );
+  assert.equal(completed, '/tmp/README');
+});
+
+test('setting *find-file-case-sensitive* to #t restores case-sensitive matching', async () => {
+  const { interpreter, directoryStub, statusCalls } = await editor();
+  directoryStub.set('/tmp/', [['README.md', 'file']]);
+  // Flip the setting; now 'rea' (lower) doesn't match 'README.md'.
+  interpreter.evaluate('(set! *find-file-case-sensitive* #t)');
+  const result = interpreter.evaluate(
+    '(minibuffer-tab-complete "/tmp/rea")'
+  );
+  assert.equal(result, '/tmp/rea');
+  assert.equal(statusCalls.at(-1), '(no matches)');
+});
+
 test('find-file submission opens the chosen path', async () => {
   const { interpreter, completingPrompts, openedPath } = await editor();
   press(interpreter, 'C-x');
