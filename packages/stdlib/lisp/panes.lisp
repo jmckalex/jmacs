@@ -59,3 +59,78 @@
 (defcommand focus-pane-down ()
   "Focus the pane immediately below the current one, if any."
   (focus-pane-direction! 'down))
+
+;; --- close-vs-kill aliases --------------------------------------------
+;; jmacs's split between `delete-pane!` (collapses a pane; the view stays
+;; in the global list, reachable via `switch-view` / buffer-menu) and
+;; `kill-view!` (removes the view entirely) is the same distinction
+;; Emacs makes between `C-x 0` (delete-window) and `C-x k` (kill-buffer).
+;; These aliases give the everyday name the lighter sense — "close this
+;; but don't throw it away" — for users coming from a non-Emacs editor.
+
+(defcommand close-pane ()
+  "Close the current pane (collapse its parent split into its sibling)
+   while keeping every view alive in the global list. Same as
+   `delete-pane`; the view is reachable via `switch-view` or the
+   buffer-menu afterwards. To remove the view itself, use `kill-view`."
+  (delete-pane!))
+
+(defcommand close-tab ()
+  "Close the active tab in the focused tabline-view. The view leaves
+   the strip but stays alive in the global list (reachable via
+   `switch-view`). To remove the view itself, use `kill-view`."
+  (let ((tlv (current-tabline)))
+    (when (not (nil? tlv))
+      (remove-tab! tlv (tabline-active tlv)))))
+
+;; --- moving views between panes ---------------------------------------
+;; Three workflows the user wanted:
+;;   1. Move the focused view to the OTHER pane.
+;;   2. Move the focused tab to the OTHER pane's tabline.
+;;   3. Swap views between two panes.
+;; The "other pane" is whichever leaf `other-pane!` picks — i.e., the
+;; next leaf in display order. The commands fall through to a no-op when
+;; there's only one pane in the window.
+
+(define (-other-leaf-pane)
+  "The next leaf-pane in display order, or nil when only one leaf
+   exists. Used by send-view-to-other-pane / swap-with-other-pane to
+   find the target pane without changing focus."
+  (let* ((before (current-pane))
+         (next (begin (other-pane!) (current-pane))))
+    ;; Restore focus to the originating pane.
+    (when (and (not (nil? before)) (not (eq? before next)))
+      (other-pane!))
+    (if (or (nil? next) (eq? before next)) nil next)))
+
+(defcommand send-view-to-other-pane ()
+  "Send the focused view to the next pane in display order. Both ends
+   are promoted to tabline-views (idempotent — a pane that's already
+   a tabline is left alone) and the focused tab moves across via
+   `move-tab!`. The view becomes the active tab in the destination.
+   If the source had only this one tab, its strip becomes empty
+   afterwards — `(close-pane)` will collapse it.
+   No-op when there's only one pane in the window."
+  (let* ((src-pane (current-pane))
+         (dst-pane (-other-leaf-pane)))
+    (when (and (not (nil? src-pane)) (not (nil? dst-pane)))
+      (let* ((src-tlv (promote-to-tabline! src-pane))
+             (dst-tlv (promote-to-tabline! dst-pane)))
+        (when (and (not (nil? src-tlv)) (not (nil? dst-tlv)))
+          (move-tab! src-tlv (tabline-active src-tlv) dst-tlv))))))
+
+(defcommand send-tab-to-other-pane ()
+  "Send the focused tab to the next pane's tabline. Alias for
+   `send-view-to-other-pane` — both promote-to-tabline as needed and
+   move the active tab."
+  (send-view-to-other-pane))
+
+(defcommand swap-with-other-pane ()
+  "Swap the views shown in the current pane and the next pane in
+   display order. Both panes keep their identity; only their views
+   exchange. No-op when there's only one pane."
+  (let* ((src-pane (current-pane))
+         (dst-pane (-other-leaf-pane)))
+    (when (and (not (nil? src-pane))
+               (not (nil? dst-pane)))
+      (swap-panes! src-pane dst-pane))))

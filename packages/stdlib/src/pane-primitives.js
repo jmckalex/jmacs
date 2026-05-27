@@ -342,6 +342,57 @@ export function createPanePrimitives(paneHost) {
       paneHost.activateTab(tlv, indexRaw);
       return tlv;
     },
+    // `(move-tab! src-tlv src-idx dst-tlv [dst-idx])` — splice the tab
+    // at SRC-IDX in SRC-TLV out and into DST-TLV at DST-IDX (defaults
+    // to the end). The moved view becomes the destination's active
+    // tab. SRC and DST may be the same tabline (collapses to a
+    // reorder). The view is NOT killed from the global list — it just
+    // changes which strip it belongs to. Returns DST-TLV.
+    'move-tab!': (args) => {
+      const srcTlv = args[0];
+      const srcIdxRaw = args[1];
+      const dstTlv = args[2];
+      const dstIdxRaw = args[3];
+      if (!isTablineView(srcTlv) || !isTablineView(dstTlv)) return NIL;
+      if (typeof srcIdxRaw !== 'number' || !Number.isFinite(srcIdxRaw)) return dstTlv;
+      const dstIdx =
+        typeof dstIdxRaw === 'number' && Number.isFinite(dstIdxRaw)
+          ? dstIdxRaw
+          : undefined;
+      if (typeof paneHost.moveTab !== 'function') return dstTlv;
+      paneHost.moveTab(srcTlv, srcIdxRaw, dstTlv, dstIdx);
+      return dstTlv;
+    },
+    // `(swap-panes! pane-a pane-b)` — exchange the views that PANE-A
+    // and PANE-B show. Both must be leaf-pane handles. A tabline-view
+    // moves as a whole (tabs and all). Returns #t when the swap
+    // happened, #f for a no-op (same pane, missing handle, or a
+    // non-leaf passed in).
+    'swap-panes!': (args) => {
+      const a = args[0];
+      const b = args[1];
+      if (typeof paneHost.swapPanes !== 'function') return false;
+      return paneHost.swapPanes(a, b) === true;
+    },
+    // `(tabline-active tlv)` — the active tab's index, or nil when
+    // TLV isn't a tabline-view (or is empty).
+    'tabline-active': (args) => {
+      const tlv = args[0];
+      if (!isTablineView(tlv)) return NIL;
+      if (!Array.isArray(tlv.tabs) || tlv.tabs.length === 0) return NIL;
+      return typeof tlv.active === 'number' ? tlv.active : 0;
+    },
+    // `(tabline-tabs tlv)` — TLV's tabs as a Lisp list of view
+    // handles, or nil when TLV isn't a tabline-view.
+    'tabline-tabs': (args) => {
+      const tlv = args[0];
+      if (!isTablineView(tlv)) return NIL;
+      const list = Array.isArray(tlv.tabs) ? tlv.tabs : [];
+      // Build a Lisp list from the JS array.
+      let acc = NIL;
+      for (let i = list.length - 1; i >= 0; i -= 1) acc = cons(list[i], acc);
+      return acc;
+    },
     // `(tabline-edge tlv)` — return TLV's edge as a keyword
     // (`:top`/`:bottom`/`:left`/`:right`), or nil when TLV isn't a
     // tabline-view.

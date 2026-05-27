@@ -2195,6 +2195,14 @@ const paneHost = {
     return tlv;
   },
   setTablineEdge: (tlv, edge) => setTablineEdgeOnTabline(tlv, edge),
+  // Cross-tabline tab move + pane-view swap. Cover the workflows the
+  // user spelled out: "move a view from one pane to another" + "close
+  // a pane while keeping the view alive". (The latter is what
+  // `delete-pane!` already does; the move primitives below close the
+  // gap on the former.)
+  moveTab: (srcTlv, srcIdx, dstTlv, dstIdx) =>
+    moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx),
+  swapPanes: (paneA, paneB) => swapPaneViews(paneA, paneB),
 };
 
 /** The view-host the Lisp view-primitives operate through. Every
@@ -5448,6 +5456,87 @@ function addTabToTabline(tlv, view, index) {
   const state = tablineStateByView.get(tlv);
   if (state) state.strip.refresh();
   return tlv;
+}
+
+/** Move the tab at SRC-IDX in SRC-TLV into DST-TLV at DST-IDX (or the
+ *  end when undefined). Idempotent on src === dst with no index
+ *  change. The moved view becomes the active tab in the destination.
+ *  When the destination is the same as the source, this collapses to
+ *  a reorder. Returns the destination tabline-view. */
+function moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx) {
+  if (!isTablineView(srcTlv) || !isTablineView(dstTlv)) return dstTlv;
+  if (
+    typeof srcIdx !== 'number' ||
+    srcIdx < 0 || srcIdx >= srcTlv.tabs.length
+  ) return dstTlv;
+  const view = srcTlv.tabs[srcIdx];
+  if (!view) return dstTlv;
+  // Same-tabline move → reorder. Compute the destination index
+  // accounting for the splice that removed the source tab.
+  if (srcTlv === dstTlv) {
+    let target =
+      typeof dstIdx !== 'number' || dstIdx < 0 || dstIdx > srcTlv.tabs.length
+        ? srcTlv.tabs.length - 1
+        : (dstIdx > srcIdx ? dstIdx - 1 : dstIdx);
+    if (target === srcIdx) return srcTlv;
+    reorderTabInTabline(srcTlv, srcIdx, target);
+    activateTabInTabline(srcTlv, target);
+    return srcTlv;
+  }
+  // Cross-tabline: remove from src (without killing the view), insert
+  // into dst, activate.
+  removeTabInTabline(srcTlv, srcIdx);
+  const target =
+    typeof dstIdx === 'number' && dstIdx >= 0 && dstIdx <= dstTlv.tabs.length
+      ? dstIdx
+      : dstTlv.tabs.length;
+  addTabToTabline(dstTlv, view, target);
+  activateTabInTabline(dstTlv, target);
+  return dstTlv;
+}
+
+/** Swap which view PANE-A and PANE-B show. Plain leaves swap their
+ *  `.view`; the mount machinery then re-runs for each new leaf-view
+ *  pairing so renderer instances + singleton placements catch up.
+ *  Tabline leaves swap-as-a-whole — the tabline-view (with all its
+ *  tabs) moves to the other leaf. Returns true when the swap
+ *  happened, false on a no-op (same leaf, or either handle missing). */
+function swapPaneViews(paneA, paneB) {
+  if (!paneA || !paneB || paneA === paneB) return false;
+  if (paneA.kind !== 'leaf' || paneB.kind !== 'leaf') return false;
+  const va = paneA.view;
+  const vb = paneB.view;
+  paneA.view = vb;
+  paneB.view = va;
+  // Re-mount each via the kind registry. A tabline-view's `mount`
+  // is paneEl-aware and will move its `.tabline-pane` container to
+  // the new pane element; plain-leaf views are routed through
+  // switchToViewIndex's plain-leaf branch via a direct mount here so
+  // the singleton reparent + display:'' logic fires.
+  syncPaneElements();
+  const aEl = paneElements.get(paneA.id);
+  const bEl = paneElements.get(paneB.id);
+  if (paneA.view) {
+    if (isTablineView(paneA.view) && aEl) {
+      kindRegistry.mount(paneA.view, { paneEl: aEl });
+    } else {
+      const sing = singletonElementForKind(paneA.view.kind);
+      if (sing && aEl) { aEl.append(sing); sing.style.display = ''; }
+      kindRegistry.mount(paneA.view);
+    }
+  }
+  if (paneB.view) {
+    if (isTablineView(paneB.view) && bEl) {
+      kindRegistry.mount(paneB.view, { paneEl: bEl });
+    } else {
+      const sing = singletonElementForKind(paneB.view.kind);
+      if (sing && bEl) { bEl.append(sing); sing.style.display = ''; }
+      kindRegistry.mount(paneB.view);
+    }
+  }
+  refreshPaneFocusIndicators();
+  if (typeof updateModeline === 'function') updateModeline();
+  return true;
 }
 
 /** Update TLV.edge to EDGE and refresh the strip's data-edge attribute

@@ -37,6 +37,12 @@
    "2"     'split-vertical
    "3"     'split-horizontal
    "o"     'other-pane
+   ;; Move-views-between-panes commands (jmacs additions; no Emacs
+   ;; analogue). `x` sends the focused view to the next pane;
+   ;; capital-X swaps with it. Same alphabet position as `o` for
+   ;; navigating between panes.
+   "x"     'send-view-to-other-pane
+   "X"     'swap-with-other-pane
    ;; Spatial pane navigation. C-x <arrow> is already taken
    ;; (next/previous-view); use C-x C-<arrow>.
    "C-left"   'focus-pane-left

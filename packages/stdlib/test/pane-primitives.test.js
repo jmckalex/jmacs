@@ -342,6 +342,25 @@ function buildTablineHost(initialPane, initialTabline = null) {
         tlv.edge = edge;
         return tlv;
       },
+      moveTab: (srcTlv, srcIdx, dstTlv, dstIdx) => {
+        calls.push({ name: 'moveTab', srcTlv, srcIdx, dstTlv, dstIdx });
+        const view = srcTlv.tabs[srcIdx];
+        if (!view) return dstTlv;
+        srcTlv.tabs.splice(srcIdx, 1);
+        const target =
+          typeof dstIdx === 'number' && dstIdx >= 0 && dstIdx <= dstTlv.tabs.length
+            ? dstIdx
+            : dstTlv.tabs.length;
+        dstTlv.tabs.splice(target, 0, view);
+        dstTlv.active = target;
+        return dstTlv;
+      },
+      swapPanes: (a, b) => {
+        calls.push({ name: 'swapPanes', a, b });
+        if (!a || !b || a === b) return false;
+        const av = a.view; a.view = b.view; b.view = av;
+        return true;
+      },
     },
     setPane(next) { pane = next; },
     setTabline(next) { tabline = next; },
@@ -560,4 +579,70 @@ test('set-tabline-edge! ignores an unknown edge value', () => {
   const prims = createPanePrimitives(host);
   prims['set-tabline-edge!']([tlv, sym('sideways')]);
   assert.equal(calls.length, 0);
+});
+
+test('move-tab! splices a tab from one tabline into another', () => {
+  const va = createView({ kind: 'text', name: 'a.txt' });
+  const vb = createView({ kind: 'text', name: 'b.txt' });
+  const vc = createView({ kind: 'text', name: 'c.txt' });
+  const src = createView({
+    kind: 'tabline',
+    extras: { tabs: [va, vb], active: 0, edge: 'top' },
+  });
+  const dst = createView({
+    kind: 'tabline',
+    extras: { tabs: [vc], active: 0, edge: 'top' },
+  });
+  const leaf = createLeafPane({ view: src });
+  const { host, calls } = buildTablineHost(leaf, src);
+  const prims = createPanePrimitives(host);
+  // Move src[1] ('b') to dst (end).
+  prims['move-tab!']([src, 1, dst]);
+  assert.equal(calls[0].name, 'moveTab');
+  assert.deepEqual(src.tabs, [va]);
+  assert.deepEqual(dst.tabs, [vc, vb]);
+  assert.equal(dst.active, 1);
+});
+
+test('move-tab! is a no-op for invalid indices or non-tabline args', () => {
+  const va = createView({ kind: 'text', name: 'a.txt' });
+  const src = createView({
+    kind: 'tabline',
+    extras: { tabs: [va], active: 0, edge: 'top' },
+  });
+  const leaf = createLeafPane({ view: src });
+  const { host, calls } = buildTablineHost(leaf, src);
+  const prims = createPanePrimitives(host);
+  // Non-tabline as src → silent no-op.
+  prims['move-tab!']([va, 0, src]);
+  assert.equal(calls.length, 0);
+  // Out-of-range src index → still routed to host but does nothing.
+  prims['move-tab!']([src, 9, src]);
+  // Some hosts may record the call but mutate nothing; the test
+  // tolerates either by asserting the underlying tabs are unchanged.
+  assert.deepEqual(src.tabs, [va]);
+});
+
+test('swap-panes! exchanges the views of two leaf panes', () => {
+  const va = createView({ kind: 'text', name: 'a.txt' });
+  const vb = createView({ kind: 'text', name: 'b.txt' });
+  const paneA = createLeafPane({ view: va });
+  const paneB = createLeafPane({ view: vb });
+  const { host, calls } = buildTablineHost(paneA, null);
+  const prims = createPanePrimitives(host);
+  const result = prims['swap-panes!']([paneA, paneB]);
+  assert.equal(result, true);
+  assert.equal(calls[0].name, 'swapPanes');
+  assert.equal(paneA.view, vb);
+  assert.equal(paneB.view, va);
+});
+
+test('swap-panes! is a no-op for the same pane handle', () => {
+  const va = createView({ kind: 'text', name: 'a.txt' });
+  const paneA = createLeafPane({ view: va });
+  const { host } = buildTablineHost(paneA, null);
+  const prims = createPanePrimitives(host);
+  const result = prims['swap-panes!']([paneA, paneA]);
+  assert.equal(result, false);
+  assert.equal(paneA.view, va);
 });
