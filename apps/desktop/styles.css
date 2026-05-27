@@ -425,21 +425,27 @@ body {
   color: var(--fg);
 }
 
-/* Fold marker: the ▾ / ▸ glyph that sits to the left of the line number
-   on foldable lines. Click to toggle the fold. */
+/* Fold marker: a FontAwesome caret that sits to the left of the line
+   number on foldable lines. Click to toggle the fold. */
 .editor-fold-marker {
   position: absolute;
   right: 100%;
   margin-right: 4px;
   padding: 0 4px;
-  font: inherit;
   background: transparent;
   color: var(--fg-dim);
   border: none;
   cursor: pointer;
-  opacity: 0.45;
+  opacity: 0.5;
   line-height: 1lh;
   height: 1lh;
+  /* FA icon sizing — the small ▸/▾ glyphs in the editor's monospace
+     font were almost invisible. Bumping to ~13px gives a clearly
+     clickable target without dominating the gutter. */
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .editor-line-no:hover .editor-fold-marker,
@@ -453,15 +459,29 @@ body {
   display: inline-block;
 }
 
-/* The `…` glyph appended to a folded header line. */
+/* The `…` glyph appended to a folded header line, signalling
+   collapsed content. Sits between the open line's contents and the
+   closing-token preview. */
 .editor-fold-ellipsis {
   display: inline;
   color: var(--fg-dim);
-  opacity: 0.7;
+  opacity: 0.85;
   margin-left: 0.5ch;
   padding: 0 0.4ch;
   border-radius: 3px;
   background: #ffffff14;
+}
+
+/* The trimmed closing line appended to a folded header so the user
+   sees the structure's terminator alongside the opener — e.g.
+   `<script>…</script>` instead of just `<script> …`. Rendered plain
+   (no syntax highlighting) and slightly dimmed so it reads as a
+   structural hint, not as live source. */
+.editor-fold-close {
+  display: inline;
+  color: var(--fg-dim);
+  opacity: 0.7;
+  margin-left: 0.2ch;
 }
 
 .editor-content {

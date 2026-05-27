@@ -373,12 +373,28 @@ export function createEditorView(buffer, container, options = {}) {
           ? perLine[index] ?? []
           : highlightLine(lines[index].content, language);
         renderRuns(lineEl, runs);
-        // Folded header: tack a `…` glyph on the end of the line so the
-        // user can see at a glance that content is hidden here.
+        // Folded header: tack a `…` glyph plus the closing line's
+        // trimmed text on the end so the user sees both ends of the
+        // collapsed structure at a glance — e.g. `<script>…</script>`
+        // or `function foo() {…}`. Falls back to a bare ` …` when
+        // the fold range doesn't have a useful closing line.
         if (folded.has(index)) {
           const ellipsis = el('span', 'editor-fold-ellipsis');
-          ellipsis.textContent = ' …';
+          ellipsis.textContent = '…';
           lineEl.append(ellipsis);
+          const endLineNum = foldCache.endByStart.get(index);
+          if (
+            typeof endLineNum === 'number' &&
+            endLineNum > index &&
+            endLineNum < lines.length
+          ) {
+            const closeText = lines[endLineNum].content.trim();
+            if (closeText !== '') {
+              const close = el('span', 'editor-fold-close');
+              close.textContent = closeText;
+              lineEl.append(close);
+            }
+          }
         }
         if (colourSwatches) {
           colourSwatches.decorateLine(
@@ -392,13 +408,18 @@ export function createEditorView(buffer, container, options = {}) {
         const numberEl = el('div', 'editor-line-no');
         numberEl.style.top = `calc(${displayRow} * 1lh)`;
         numberEl.dataset.line = String(index);
-        // Fold marker, when this line is foldable.
+        // Fold marker, when this line is foldable. A FontAwesome
+        // caret — sized via CSS so it's clearly clickable, unlike
+        // the small ▸/▾ glyphs in the editor's own monospace font.
         if (foldCache.headers.has(index)) {
           const marker = el('button', 'editor-fold-marker');
           marker.type = 'button';
           marker.dataset.line = String(index);
-          marker.textContent = folded.has(index) ? '▸' : '▾';
           marker.title = folded.has(index) ? 'Unfold' : 'Fold';
+          const icon = doc.createElement('i');
+          icon.className = 'fa-solid ' +
+            (folded.has(index) ? 'fa-caret-right' : 'fa-caret-down');
+          marker.append(icon);
           marker.addEventListener('mousedown', (ev) => {
             // Don't let the click bubble to the editor-area mousedown
             // (which would place the cursor and start a drag).
