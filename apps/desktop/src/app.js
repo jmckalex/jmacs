@@ -177,6 +177,13 @@ const initialSeedViews = [
 const views = [...initialSeedViews];
 let currentViewIndex = 0;
 
+// Current effective `*tab-width*`. Updated by the `set-css-tab-width!`
+// primitive whenever the Lisp setting changes; read by every
+// createEditorView instance through its `getTabWidth` callback so
+// cursor / selection / bracket positioning stays in lock-step with
+// the CSS `--tab-width` variable.
+let currentTabWidth = 4;
+
 /** The current text view's buffer, or the last text view's buffer when
  *  the current view has none. Used by the editor view, sticky notes
  *  and the buffer primitives — none of which mean anything for a
@@ -2338,15 +2345,20 @@ const interpreter = createInterpreter({
       return NIL;
     },
     // Push the *tab-width* setting onto the document root as the
-    // `--tab-width` CSS variable. `.editor-line` and the
-    // directory-columns preview line read it via
-    // `tab-size: var(--tab-width)`. Called once on startup (after
-    // the stdlib finishes loading) and again from indent.lisp's
-    // on-change hook whenever the user changes *tab-width*.
+    // `--tab-width` CSS variable AND cache the value for the
+    // renderer's cursor-positioning math. `.editor-line` and the
+    // directory-columns preview line read the CSS var via
+    // `tab-size: var(--tab-width)`; the cached number is what
+    // `getTabWidth` returns to createEditorView so the cursor /
+    // selection rects line up with the rendered glyph when the line
+    // contains tabs. Called once on startup (after stdlib loads) and
+    // again from the *tab-width* defcustom's on-change hook whenever
+    // the user changes it.
     'set-css-tab-width!': (args) => {
       const value = Number(args[0]);
       const width = Number.isFinite(value) && value > 0 ? value | 0 : 4;
       document.documentElement.style.setProperty('--tab-width', String(width));
+      currentTabWidth = width;
       return NIL;
     },
     'clear-status!': () => {
@@ -3390,6 +3402,7 @@ function ensureEditorViewForLeaf(leaf) {
         mark: v && v.mark !== undefined ? v.mark : null,
       }];
     },
+    getTabWidth: () => currentTabWidth,
   });
   editorViewByPaneId.set(leaf.id, instance);
   return instance;
@@ -4320,6 +4333,7 @@ function mountTablineActiveChild(tablineView) {
             mark: v && v.mark !== undefined ? v.mark : null,
           }];
         },
+        getTabWidth: () => currentTabWidth,
       });
     }
     if (state.activeEditor.element.parentNode !== state.contentEl) {

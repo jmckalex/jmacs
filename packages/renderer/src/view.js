@@ -16,7 +16,10 @@
  * lives in sibling modules and is tested without a DOM.
  */
 
-import { toLines, selectionRects, cursorPositions } from './projection.js';
+import {
+  toLines, selectionRects, cursorPositions,
+  visualColumn, charIndexAtVisualColumn,
+} from './projection.js';
 import { handleKeyEvent } from './commands.js';
 import { keyEventToString } from './keymap.js';
 import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
@@ -77,6 +80,11 @@ const MODIFIER_KEYS = new Set([
  *   contract for renderer unit tests). The desktop app passes
  *   `() => view.cursors` so secondary cursors get drawn alongside
  *   the primary.
+ * @param {() => number} [options.getTabWidth] - The tab-width in
+ *   columns. Read on every render so a live customise edit re-positions
+ *   the cursor / selection rects in lockstep with the CSS tab-size
+ *   variable. Defaults to `() => 4` (matches the CSS fallback and
+ *   the `*tab-width*` defcustom default).
  * @returns {EditorView}
  */
 export function createEditorView(buffer, container, options = {}) {
@@ -108,6 +116,10 @@ export function createEditorView(buffer, container, options = {}) {
     typeof options.getCursors === 'function'
       ? options.getCursors
       : () => [{ point: getPoint(), mark: getMark() }];
+  const getTabWidth =
+    typeof options.getTabWidth === 'function'
+      ? options.getTabWidth
+      : () => 4;
 
   // The colour-swatch decorator: places a clickable swatch beside every
   // colour literal in a rendered line, and edits the buffer when a
@@ -411,7 +423,7 @@ export function createEditorView(buffer, container, options = {}) {
   /** Render the selection highlight, one rectangle per touched line,
    *  across every cursor's selection. */
   function renderSelection() {
-    const rects = selectionRects(activeBuffer, getCursors());
+    const rects = selectionRects(activeBuffer, getCursors(), undefined, getTabWidth());
     selectionLayer.replaceChildren(
       ...rects
         .map((rect) => {
@@ -443,14 +455,24 @@ export function createEditorView(buffer, container, options = {}) {
       bracketLayer.replaceChildren();
       return;
     }
+    const tabW = getTabWidth();
     bracketLayer.replaceChildren(
       ...[match.a, match.b]
         .map((at) => {
           const { line, column } = activeBuffer.positionAt(at);
           const row = rowOf(line);
           if (row === -1) return null;
+          // Map character column → visual column so the bracket box
+          // lines up with the glyph when the line contains tabs.
+          const lineMeta = activeBuffer.lineAt(activeBuffer.offsetAt(line, 0));
+          const lineText = typeof lineMeta.text === 'string'
+            ? lineMeta.text
+            : activeBuffer.slice(lineMeta.from, lineMeta.to);
+          const visCol = tabW > 0
+            ? visualColumn(lineText, column, tabW)
+            : column;
           const box = el('div', 'editor-bracket');
-          box.style.left = `calc(${column} * 1ch)`;
+          box.style.left = `calc(${visCol} * 1ch)`;
           box.style.top = `calc(${row} * 1lh)`;
           return box;
         })
@@ -469,7 +491,7 @@ export function createEditorView(buffer, container, options = {}) {
    *  highlight and the gutter. */
   function renderCursor() {
     const cursors = getCursors();
-    const positions = cursorPositions(activeBuffer, cursors);
+    const positions = cursorPositions(activeBuffer, cursors, getTabWidth());
     // The primary caret stays in the existing `cursorEl`; secondaries
     // come from the pool. Always at least one cursor — fall back to
     // (0,0) if a caller hands back an empty list.
@@ -594,7 +616,20 @@ export function createEditorView(buffer, container, options = {}) {
     const lineHeight = cursorEl.getBoundingClientRect().height || 22;
     const row = Math.max(0, Math.floor((clientY - box.top) / lineHeight));
     const line = lineForDisplayRow(row);
-    const column = Math.max(0, Math.round((clientX - box.left) / charWidth()));
+    // x → visual column, visual column → character index. Tabs span
+    // multiple visual columns, so clicking past a tab needs the
+    // inverse-tab-stop math (charIndexAtVisualColumn) to land on the
+    // right insertion point.
+    const visCol = Math.max(0, Math.round((clientX - box.left) / charWidth()));
+    const tabW = getTabWidth();
+    let column = visCol;
+    if (tabW > 0) {
+      const lineMeta = activeBuffer.lineAt(activeBuffer.offsetAt(line, 0));
+      const lineText = typeof lineMeta.text === 'string'
+        ? lineMeta.text
+        : activeBuffer.slice(lineMeta.from, lineMeta.to);
+      column = charIndexAtVisualColumn(lineText, visCol, tabW);
+    }
     return activeBuffer.offsetAt(line, column);
   }
 

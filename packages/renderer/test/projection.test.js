@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createBuffer } from '@editor/buffer';
-import { toLines, selectionRects, cursorPositions } from '../src/projection.js';
+import {
+  toLines, selectionRects, cursorPositions,
+  visualColumn, charIndexAtVisualColumn,
+} from '../src/projection.js';
 
 test('toLines projects the empty string to one empty line', () => {
   assert.deepEqual(toLines(''), [{ number: 0, content: '' }]);
@@ -88,4 +91,69 @@ test('cursorPositions on a single-cursor buffer returns one entry', () => {
   const buf = createBuffer('hi');
   buf.moveTo(1);
   assert.deepEqual(cursorPositions(buf), [{ line: 0, column: 1 }]);
+});
+
+// --- visual columns (tab-aware positioning) ----------------------------
+
+test('visualColumn: no tabs in the line → column == char index', () => {
+  assert.equal(visualColumn('hello', 0, 4), 0);
+  assert.equal(visualColumn('hello', 3, 4), 3);
+  assert.equal(visualColumn('hello', 5, 4), 5);
+});
+
+test('visualColumn: a tab advances to the next tab-stop', () => {
+  // tabWidth = 4; column-after-tab is 4. Char at index 1 is the tab
+  // itself, visually starting at column 0, so charIndex 1 (just after
+  // the tab) sits at column 4.
+  assert.equal(visualColumn('\ta', 0, 4), 0);
+  assert.equal(visualColumn('\ta', 1, 4), 4);
+  assert.equal(visualColumn('\ta', 2, 4), 5);
+});
+
+test('visualColumn: a tab rounds up to its stop, not by full width', () => {
+  // "ab\t" — chars `a`, `b` consume columns 0, 1; the tab brings us
+  // to the NEXT multiple of 4, which is 4 — not 1 + 4.
+  assert.equal(visualColumn('ab\tc', 2, 4), 2);
+  assert.equal(visualColumn('ab\tc', 3, 4), 4);
+  assert.equal(visualColumn('ab\tc', 4, 4), 5);
+});
+
+test('charIndexAtVisualColumn: inverse of visualColumn', () => {
+  // "\ta" — clicking at column 0 → index 0; column 4 → index 1 (just
+  // past the tab); column 5 → index 2 (past 'a').
+  assert.equal(charIndexAtVisualColumn('\ta', 0, 4), 0);
+  assert.equal(charIndexAtVisualColumn('\ta', 4, 4), 1);
+  assert.equal(charIndexAtVisualColumn('\ta', 5, 4), 2);
+});
+
+test('charIndexAtVisualColumn: click inside a tab snaps to nearest edge', () => {
+  // Click at column 1 in `"\ta"`: tab spans columns 0-4. Closer to 0
+  // than 4 → before the tab.
+  assert.equal(charIndexAtVisualColumn('\ta', 1, 4), 0);
+  // Click at column 3: still closer to 4. After the tab.
+  assert.equal(charIndexAtVisualColumn('\ta', 3, 4), 1);
+});
+
+test('selectionRects: tabWidth shifts column edges to the next tab-stop', () => {
+  // "\thello" — select chars 0..5 ('\thell'). Without tabWidth the
+  // rect is fromCol=0, toCol=5 (the legacy character-indexed result).
+  // With tabWidth=4 the tab takes the start to column 0 and the end
+  // to column 8 (4 for the tab + 4 for "hell").
+  const buf = createBuffer('\thello');
+  buf.moveTo(0); buf.setMark(5);
+  assert.deepEqual(selectionRects(buf), [
+    { line: 0, fromColumn: 0, toColumn: 5, toLineEnd: false },
+  ]);
+  assert.deepEqual(selectionRects(buf, undefined, undefined, 4), [
+    { line: 0, fromColumn: 0, toColumn: 8, toLineEnd: false },
+  ]);
+});
+
+test('cursorPositions: tabWidth shifts the column to the visual position', () => {
+  const buf = createBuffer('\thello');
+  buf.moveTo(3); // past tab + "he"
+  // Without tabWidth: column = char index = 3.
+  assert.deepEqual(cursorPositions(buf), [{ line: 0, column: 3 }]);
+  // With tabWidth=4: tab → column 4, then +2 chars → column 6.
+  assert.deepEqual(cursorPositions(buf, undefined, 4), [{ line: 0, column: 6 }]);
 });
