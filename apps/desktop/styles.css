@@ -544,6 +544,20 @@ body {
   opacity: 0.85;
 }
 
+/* Inactive-pane cursors: a non-focused pane's cursor(s) should make
+ * clear that focus is elsewhere — no blink (the animation is
+ * distracting in a peripheral pane), and a fade to half opacity so
+ * the cursor is visible but obviously dimmed. Tabline-views nest one
+ * `.editor-content` per pane; the rule targets every cursor inside a
+ * pane that isn't currently focused. */
+.pane:not(.pane--focused) .editor-cursor {
+  animation: none !important;
+  opacity: 0.45;
+}
+.pane:not(.pane--focused) .editor-cursor.is-secondary {
+  opacity: 0.38;
+}
+
 @keyframes cursor-blink {
   0%,
   49% {
