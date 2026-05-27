@@ -57,6 +57,14 @@ const FORM_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
  * @param {(path: string) => void} [options.openPath] - Open a file
  *   the user activated (double-click or Enter). Routes through the
  *   host's `open-file-path!`.
+ * @param {(path: string) => void} [options.onRevealInFolder] - Open
+ *   the OS file browser focused on PATH (Finder on macOS).
+ * @param {(path: string) => Promise<{ok: boolean, error?: string}>}
+ *   [options.onTrash] - Move PATH to the OS trash.
+ * @param {(path: string, newName: string) =>
+ *   Promise<{ok: boolean, error?: string}>} [options.onRename] -
+ *   Rename PATH to a sibling named NEWNAME. The view re-lists the
+ *   parent directory on success so the new entry appears.
  * @param {(key: string) => boolean} [options.onKey] - Chord-key
  *   passthrough to the global Lisp keymap.
  * @param {() => void} [options.closeBuffer] - Called when the user
@@ -71,6 +79,12 @@ export function createDirectoryColumnsView(container, options = {}) {
     typeof options.getPreview === 'function' ? options.getPreview : null;
   const openPath =
     typeof options.openPath === 'function' ? options.openPath : null;
+  const onRevealInFolder =
+    typeof options.onRevealInFolder === 'function' ? options.onRevealInFolder : null;
+  const onTrash =
+    typeof options.onTrash === 'function' ? options.onTrash : null;
+  const onRename =
+    typeof options.onRename === 'function' ? options.onRename : null;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const closeBuffer =
     typeof options.closeBuffer === 'function' ? options.closeBuffer : null;
@@ -380,6 +394,142 @@ export function createDirectoryColumnsView(container, options = {}) {
   const DOUBLE_CLICK_WINDOW_MS = 400;
   let lastClickPath = null;
   let lastClickTime = 0;
+
+  // --- context menu -------------------------------------------------
+  //
+  // Right-click on a row pops a Finder-style action menu (Open, Reveal
+  // in Finder, Rename…, Move to Trash). Lives in a free-standing `<div>`
+  // appended to `document.body`, dismissed by an outside mousedown.
+  // Each action is wired by the host through `onRevealInFolder`,
+  // `onRename`, `onTrash` callbacks — the view module itself touches no
+  // filesystem.
+
+  /** @type {HTMLElement | null} */
+  let activeContextMenu = null;
+  /** Listener installed when a menu is open; removed when it closes. */
+  let outsideMousedownListener = null;
+  const win = doc.defaultView ?? globalThis;
+
+  function closeContextMenu() {
+    if (activeContextMenu) {
+      activeContextMenu.remove();
+      activeContextMenu = null;
+    }
+    if (outsideMousedownListener) {
+      doc.removeEventListener('mousedown', outsideMousedownListener, true);
+      outsideMousedownListener = null;
+    }
+  }
+
+  function openContextMenu(clientX, clientY, items) {
+    closeContextMenu();
+    const menu = doc.createElement('div');
+    menu.className = 'directory-columns-context-menu';
+    menu.style.left = `${clientX}px`;
+    menu.style.top = `${clientY}px`;
+    for (const item of items) {
+      if (item.kind === 'separator') {
+        const sep = doc.createElement('div');
+        sep.className = 'directory-columns-context-menu-separator';
+        menu.append(sep);
+        continue;
+      }
+      const el = doc.createElement('div');
+      el.className = 'directory-columns-context-menu-item';
+      if (item.disabled) el.classList.add('is-disabled');
+      el.textContent = item.label;
+      if (!item.disabled) {
+        el.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          closeContextMenu();
+          item.run();
+        });
+      }
+      menu.append(el);
+    }
+    doc.body.append(menu);
+    activeContextMenu = menu;
+
+    // Reposition the menu so it stays inside the viewport (a click
+    // near the right or bottom edge would otherwise spill off).
+    const rect = menu.getBoundingClientRect();
+    const vw = win.innerWidth ?? rect.right;
+    const vh = win.innerHeight ?? rect.bottom;
+    if (rect.right > vw) menu.style.left = `${Math.max(0, vw - rect.width - 4)}px`;
+    if (rect.bottom > vh) menu.style.top = `${Math.max(0, vh - rect.height - 4)}px`;
+
+    // Outside click closes the menu. Capture phase so a click on a row
+    // doesn't both close the menu and re-trigger the row's selection.
+    outsideMousedownListener = (ev) => {
+      if (!menu.contains(ev.target)) closeContextMenu();
+    };
+    // Defer install — the current right-click event is still in flight.
+    setTimeout(() => {
+      if (outsideMousedownListener) {
+        doc.addEventListener('mousedown', outsideMousedownListener, true);
+      }
+    }, 0);
+  }
+
+  async function promptRename(path, name) {
+    if (!onRename) return;
+    const next = win.prompt(`Rename "${name}" to:`, name);
+    if (next === null) return; // cancelled
+    const newName = next.trim();
+    if (newName === '' || newName === name) return;
+    if (newName.includes('/')) {
+      win.alert('Rename: a name may not contain "/".');
+      return;
+    }
+    const result = await onRename(path, newName);
+    if (!result || !result.ok) {
+      win.alert(`Rename failed: ${result?.error ?? 'unknown error'}`);
+      return;
+    }
+    paint();
+  }
+
+  async function confirmTrash(path, name) {
+    if (!onTrash) return;
+    const ok = win.confirm(`Move "${name}" to the Trash?`);
+    if (!ok) return;
+    const result = await onTrash(path);
+    if (!result || !result.ok) {
+      win.alert(`Move to Trash failed: ${result?.error ?? 'unknown error'}`);
+      return;
+    }
+    paint();
+  }
+
+  strip.addEventListener('contextmenu', (event) => {
+    const row = event.target.closest('.directory-columns-row');
+    if (!row) return;
+    event.preventDefault();
+    const path = row.dataset.path;
+    const name = row.dataset.name;
+    if (!path || !name) return;
+    const items = [
+      { label: 'Open', run: () => { if (openPath) openPath(path); } },
+      { kind: 'separator' },
+      {
+        label: 'Reveal in Finder',
+        disabled: !onRevealInFolder,
+        run: () => onRevealInFolder && onRevealInFolder(path),
+      },
+      { kind: 'separator' },
+      {
+        label: 'Rename…',
+        disabled: !onRename,
+        run: () => promptRename(path, name),
+      },
+      {
+        label: 'Move to Trash',
+        disabled: !onTrash,
+        run: () => confirmTrash(path, name),
+      },
+    ];
+    openContextMenu(event.clientX, event.clientY, items);
+  });
 
   strip.addEventListener('click', (event) => {
     const row = event.target.closest('.directory-columns-row');

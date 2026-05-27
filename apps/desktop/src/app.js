@@ -3825,6 +3825,14 @@ const directoryColumnsView = createDirectoryColumnsView(
     openPath: (path) => {
       openFileInTabAdjacent(path);
     },
+    onRevealInFolder: (path) => window.host.revealInFolder(path),
+    onTrash: (path) => window.host.trashFile(path),
+    onRename: (path, newName) => {
+      const slash = path.lastIndexOf('/');
+      const parent = slash >= 0 ? path.slice(0, slash) : '';
+      const to = parent === '' ? newName : `${parent}/${newName}`;
+      return window.host.renameFile(path, to);
+    },
     closeBuffer: () => {
       if (!keymapReady) return;
       try {

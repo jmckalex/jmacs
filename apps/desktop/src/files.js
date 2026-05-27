@@ -4,9 +4,9 @@
  * reached over IPC (see `preload.mjs`).
  */
 
-import { app, dialog, ipcMain } from 'electron';
+import { app, dialog, ipcMain, shell } from 'electron';
 import { readdirSync } from 'node:fs';
-import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -573,5 +573,49 @@ export function registerFileHandlers() {
     } catch {
       return null;
     }
+  });
+
+  // Rename / move a file or directory. Returns `{ ok, path?, error? }`
+  // so the renderer can surface the failure (a name collision is the
+  // common one). Used by the directory-view context menus' Rename
+  // action; the `to` path is computed renderer-side from the user's
+  // input on the old basename.
+  ipcMain.handle('file:rename', async (_event, payload) => {
+    const from = payload?.from;
+    const to = payload?.to;
+    if (typeof from !== 'string' || typeof to !== 'string') {
+      return { ok: false, error: 'invalid arguments' };
+    }
+    try {
+      await rename(from, to);
+      return { ok: true, path: to };
+    } catch (error) {
+      return { ok: false, error: error.message ?? String(error) };
+    }
+  });
+
+  // Move a file or directory to the OS trash (not a hard delete — the
+  // user can recover it from Trash / Recycle Bin). Returns `{ ok }`.
+  ipcMain.handle('file:trash', async (_event, payload) => {
+    const target = payload?.path;
+    if (typeof target !== 'string') {
+      return { ok: false, error: 'invalid path' };
+    }
+    try {
+      await shell.trashItem(target);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message ?? String(error) };
+    }
+  });
+
+  // Open the OS file browser focused on a file (or its parent
+  // directory). On macOS this opens Finder with the item highlighted;
+  // on Windows / Linux the equivalent file manager. Synchronous —
+  // shell.showItemInFolder returns void.
+  ipcMain.on('file:reveal', (_event, payload) => {
+    const target = payload?.path;
+    if (typeof target !== 'string' || target === '') return;
+    shell.showItemInFolder(target);
   });
 }

@@ -2237,6 +2237,46 @@ textarea.customize-widget {
   font-style: italic;
 }
 
+/* Right-click context menu — free-standing element appended to
+ * document.body; positioned via inline left/top from the event coords
+ * by the view code. Sits above everything; closes on outside mousedown. */
+.directory-columns-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 180px;
+  padding: 4px 0;
+  background: var(--bg-panel, #1c2530);
+  border: 1px solid #ffffff22;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px #00000088;
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  user-select: none;
+}
+
+.directory-columns-context-menu-item {
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.directory-columns-context-menu-item:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.directory-columns-context-menu-item.is-disabled {
+  color: var(--fg-dim);
+  cursor: default;
+  pointer-events: none;
+}
+
+.directory-columns-context-menu-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: #ffffff14;
+}
+
 .directory-columns-error {
   font-style: italic;
   color: var(--fg-dim);

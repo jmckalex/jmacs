@@ -43,6 +43,26 @@ contextBridge.exposeInMainWorld('host', {
    */
   saveFile: (path, content) => ipcRenderer.invoke('file:save', { path, content }),
 
+  /**
+   * Rename / move a file. Returns `{ ok, path? error? }` so the caller
+   * can surface failures (name collisions are the common one).
+   * @param {string} from
+   * @param {string} to
+   */
+  renameFile: (from, to) => ipcRenderer.invoke('file:rename', { from, to }),
+
+  /**
+   * Move a file or directory to the OS trash (recoverable).
+   * @param {string} path
+   */
+  trashFile: (path) => ipcRenderer.invoke('file:trash', { path }),
+
+  /**
+   * Reveal a file in the OS file browser (Finder on macOS).
+   * @param {string} path
+   */
+  revealInFolder: (path) => ipcRenderer.send('file:reveal', { path }),
+
   /** Quit the application. */
   quit: () => ipcRenderer.send('app:quit'),
 
