@@ -4271,10 +4271,17 @@ function mountTablineActiveChild(tablineView) {
   }
 
   // Other kinds (image / audio / video / shell / customize / doc /
-  // jukebox / directory-*) use module-level singletons that mount
-  // inside `editor-host`, not inside a content area. Defer to the
-  // kind registry's standard mount, which display-toggles the
-  // singleton in its original location.
+  // jukebox / directory-*) use module-level singletons mounted at
+  // startup into `editorPaneElement()`. The `.tabline-pane` container
+  // (position:absolute, inset:0) sits over the pane div and would
+  // cover those siblings, so we re-parent the active singleton into
+  // our content area before letting the kind registry's mount run.
+  // Move-not-clone — the singleton's event handlers and internal
+  // state survive the re-parenting.
+  const singleton = singletonElementForKind(child.kind);
+  if (singleton && singleton.parentNode !== state.contentEl) {
+    state.contentEl.append(singleton);
+  }
   try {
     kindRegistry.mount(child);
   } catch (error) {
@@ -4285,6 +4292,24 @@ function mountTablineActiveChild(tablineView) {
         (error && error.message ? error.message : String(error))
       );
     }
+  }
+}
+
+/** The renderer-singleton element for a non-text view kind, or null if
+ *  the kind doesn't have a known singleton. Used by the tabline mount
+ *  to re-parent the active singleton into its content area. */
+function singletonElementForKind(kind) {
+  switch (kind) {
+    case 'image':              return imageView.element;
+    case 'doc':                return docView.element;
+    case 'jukebox':            return jukeboxView.element;
+    case 'audio':              return audioView.element;
+    case 'video':              return videoView.element;
+    case 'customize':          return customizeView.element;
+    case 'shell':              return shellView.element;
+    case 'directory-tree':     return directoryTreeView.element;
+    case 'directory-columns':  return directoryColumnsView.element;
+    default:                   return null;
   }
 }
 
