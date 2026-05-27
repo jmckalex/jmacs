@@ -157,8 +157,12 @@ const INIT_TEMPLATE = `;;; init.lisp — your jmacs configuration.
 // same list because the tabline / *Buffer List* address everything
 // uniformly.
 
-/** Every open view; one is current. */
-const views = [
+/** First-launch seed views: shown only when there's no saved session
+ *  to restore. Tracked by identity so we can drop them after a
+ *  successful restore (the saved session is then the authoritative
+ *  list, and these would otherwise accumulate at the head of `views`
+ *  across restarts — discoverable via `C-x b` but not in any tabline). */
+const initialSeedViews = [
   createView({
     kind: 'text',
     buffer: createBuffer(WELCOME, { name: 'welcome.txt' }),
@@ -168,6 +172,9 @@ const views = [
     buffer: createBuffer(SCRATCH, { name: 'scratch.lisp' }),
   }),
 ];
+
+/** Every open view; one is current. */
+const views = [...initialSeedViews];
 let currentViewIndex = 0;
 
 /** The current text view's buffer, or the last text view's buffer when
@@ -5334,12 +5341,23 @@ try {
 }
 const sessionInstalledTree = rootPane !== rootPaneBeforeRestore;
 
-if (!sessionInstalledTree) {
+if (sessionInstalledTree) {
+  // A saved session is now the authoritative view list. Drop the
+  // welcome.txt / scratch.lisp seeds — they were only meant for the
+  // very first launch (no session.json yet) and would otherwise sit
+  // at the head of `views` invisibly, discoverable via `C-x b` but
+  // never appearing in any tabline (the restored tabline doesn't
+  // contain them).
+  for (const seed of initialSeedViews) {
+    const idx = views.indexOf(seed);
+    if (idx >= 0) views.splice(idx, 1);
+  }
+} else {
   // Phase 3b commit 3: wrap the root pane's view in a tabline-view
   // that contains every restored view (or the welcome / scratch
-  // starters when there was no session). The wrap runs *after*
-  // restore so the tabs list is final; the helper is idempotent only
-  // by caller discipline (this is the one call site).
+  // seeds when there was no session). The wrap runs *after* restore
+  // so the tabs list is final; the helper is idempotent only by
+  // caller discipline (this is the one call site).
   wrapRootInTabline();
 }
 // One trip through the per-pane strip refresh + a session save so the
