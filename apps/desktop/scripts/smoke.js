@@ -2761,6 +2761,267 @@ app.whenReady().then(() => {
       await rm(paneA, { force: true });
       await rm(paneB, { force: true });
 
+      // Tabline-view behaviour (phase 3b commit 7 of plans/PANES-PHASE-3B.md):
+      // assert that the root pane's tabline accumulates tabs on
+      // open-file, cycles with C-x ←/→, kills with C-x k, and that
+      // C-x 3 leaves the left pane's tabline intact while the right
+      // pane is a plain leaf. The kill-until-*scratch* path is
+      // exercised at the end: drain every open view and verify the
+      // root tabline's sole surviving tab is *scratch*.
+      const tablineA = join(tmpdir(), 'jmacs-smoke-tabline-A.txt');
+      const tablineB = join(tmpdir(), 'jmacs-smoke-tabline-B.txt');
+      const tablineC = join(tmpdir(), 'jmacs-smoke-tabline-C.txt');
+      const tablineD = join(tmpdir(), 'jmacs-smoke-tabline-D.txt');
+      const tablineE = join(tmpdir(), 'jmacs-smoke-tabline-E.txt');
+      await writeFile(tablineA, 'tabline-A body\n', 'utf8');
+      await writeFile(tablineB, 'tabline-B body\n', 'utf8');
+      await writeFile(tablineC, 'tabline-C body\n', 'utf8');
+      await writeFile(tablineD, 'tabline-D body\n', 'utf8');
+      await writeFile(tablineE, 'tabline-E body\n', 'utf8');
+      // Also seed a v2 session JSON the controller-level migration
+      // arm uses to verify the persisted-active tab is the one the
+      // controller picks. The arm doesn't reload the renderer; it
+      // calls `controller.restore()` against the bridge directly.
+      const tablineSessionFile1 = join(tmpdir(), 'jmacs-smoke-tabline-sess-1.txt');
+      const tablineSessionFile2 = join(tmpdir(), 'jmacs-smoke-tabline-sess-2.txt');
+      const tablineSessionFile3 = join(tmpdir(), 'jmacs-smoke-tabline-sess-3.txt');
+      await writeFile(tablineSessionFile1, 'sess1\n', 'utf8');
+      await writeFile(tablineSessionFile2, 'sess2\n', 'utf8');
+      await writeFile(tablineSessionFile3, 'sess3\n', 'utf8');
+      const tablineArm = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const editorHost = document.getElementById('editor-host');
+        const modelineName = () =>
+          document.getElementById('modeline-name')?.textContent ?? '';
+        const allTabsInPane = (paneEl) =>
+          Array.from(paneEl.querySelectorAll('.tabline-tab .tabline-label'))
+            .map((el) => el.textContent);
+        const activeTabInPane = (paneEl) => {
+          const el = paneEl.querySelector('.tabline-tab.is-current .tabline-label');
+          return el ? el.textContent : '';
+        };
+        const focusedPaneEl = () =>
+          editorHost.querySelector('.pane--focused');
+
+        // --- Phase A: tabs accumulate on open-file inside the root tabline.
+        submit('(open-file-path! "${tablineA}")');
+        await wait(250);
+        submit('(open-file-path! "${tablineB}")');
+        await wait(250);
+        submit('(open-file-path! "${tablineC}")');
+        await wait(250);
+        const pane = focusedPaneEl();
+        const tabsAfterThreeOpens = allTabsInPane(pane);
+        const activeAfterThreeOpens = activeTabInPane(pane);
+        const threeTabsPresent =
+          tabsAfterThreeOpens.includes('${'jmacs-smoke-tabline-A.txt'}') &&
+          tabsAfterThreeOpens.includes('${'jmacs-smoke-tabline-B.txt'}') &&
+          tabsAfterThreeOpens.includes('${'jmacs-smoke-tabline-C.txt'}');
+
+        // --- Open a 4th file → new tab added, activated.
+        submit('(open-file-path! "${tablineD}")');
+        await wait(250);
+        const tabsAfterFourOpens = allTabsInPane(pane);
+        const activeAfterFourOpens = activeTabInPane(pane);
+
+        // --- C-x ← cycles to the previous tab; C-x → returns.
+        const editor = document.querySelector('.editor');
+        editor.focus();
+        const chord = (key) => {
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
+          }));
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key, bubbles: true, cancelable: true,
+          }));
+        };
+        chord('ArrowLeft');
+        await frame();
+        await wait(60);
+        const activeAfterArrowLeft = activeTabInPane(pane);
+        chord('ArrowRight');
+        await frame();
+        await wait(60);
+        const activeAfterArrowRight = activeTabInPane(pane);
+
+        // --- C-x k kills the active tab; previous tab becomes active.
+        chord('k');
+        await wait(120);
+        const tabsAfterKill = allTabsInPane(pane);
+        const activeAfterKill = activeTabInPane(pane);
+
+        // --- Phase B: split horizontally; left keeps tabline, right is plain leaf.
+        submit('(split-horizontal!)');
+        await wait(250);
+        const paneCountAfterSplit = editorHost.querySelectorAll('.pane').length;
+        const leaves = editorHost.querySelectorAll('.pane');
+        // After split, the originating (left) pane is index 0; the
+        // newly-created right pane is index 1. Left keeps its tabline-
+        // pane container; the right pane should NOT carry a tabline-
+        // pane container (the duplicate-of-active is a plain leaf
+        // view, per the brief's commit-5 split-leaves rule).
+        const leftHasTabline = leaves[0].querySelector('.tabline-pane') !== null;
+        const rightHasTabline = leaves[1].querySelector('.tabline-pane') !== null;
+
+        // Focus the right pane (other-pane!) and open a file. The
+        // right pane is a plain leaf; opening a file should swap the
+        // leaf's view to the new file (no new tabline strip).
+        submit('(other-pane!)');
+        await wait(120);
+        submit('(open-file-path! "${tablineE}")');
+        await wait(250);
+        const rightLeafAfterOpen = leaves[1];
+        const rightHasTablineAfterOpen =
+          rightLeafAfterOpen.querySelector('.tabline-pane') !== null;
+        const rightModelineAfterOpen = modelineName();
+
+        // --- Phase C: kill-until-scratch on the root tabline.
+        // First, collapse back to a single pane (the left pane / the
+        // root tabline). Then run a tight kill-view! loop until the
+        // root tabline's only surviving tab is *scratch*.
+        submit('(other-pane!)');           // back to left pane
+        await wait(120);
+        submit('(delete-other-panes!)');   // collapse to root tabline
+        await wait(200);
+        const paneCountAfterCollapse = editorHost.querySelectorAll('.pane').length;
+        // Kill aggressively. The kill-view! command drops the current
+        // tab; the previous tab becomes active. We bound the loop
+        // generously — the smoke has accumulated 60–70 views by now.
+        for (let i = 0; i < 200; i += 1) {
+          // Stop once the only view is *scratch* (the Q6 fallback).
+          const labels = allTabsInPane(focusedPaneEl());
+          if (labels.length === 1 && labels[0].includes('*scratch*')) break;
+          submit('(kill-view!)');
+          // Yielding a microtask is enough — kill-view! is synchronous.
+          if (i % 5 === 0) await wait(20);
+        }
+        await wait(200);
+        const finalTabs = allTabsInPane(focusedPaneEl());
+        const finalActive = activeTabInPane(focusedPaneEl());
+
+        // --- Phase D: controller-level v2-session restore (no reload).
+        // Write a v2 session blob with three files + a specific active
+        // index, then drive controller.restore against the bridge with
+        // captured callbacks. Asserts the migration / restore loop
+        // builds a single-leaf root with a tabline-view whose tabs are
+        // the three persisted paths and whose active-index matches.
+        await window.host.writeSession({
+          version: 2,
+          rootPane: {
+            kind: 'leaf', id: 'pane-leaf-sess',
+            view: {
+              kind: 'tabline', edge: 'top', active: 1,
+              tabs: [
+                { kind: 'text', path: ${JSON.stringify(tablineSessionFile1)}, point: 0, mark: null },
+                { kind: 'text', path: ${JSON.stringify(tablineSessionFile2)}, point: 2, mark: null },
+                { kind: 'text', path: ${JSON.stringify(tablineSessionFile3)}, point: 0, mark: null },
+              ],
+            },
+          },
+          currentPaneId: 'pane-leaf-sess',
+        });
+        const sessionMod = await import('app://editor/apps/desktop/src/session.js');
+        let restoredRoot = null;
+        let restoredCurrent = null;
+        const restoreCalls = [];
+        const ctrl = sessionMod.createSession({
+          getRootPane: () => ({ kind: 'leaf', id: 'pane-leaf-test', view: null }),
+          getCurrentPaneId: () => 'pane-leaf-test',
+          openByPath: async (path, entry) => {
+            const result = await window.host.openFilePath(path);
+            if (result === null) return null;
+            restoreCalls.push(path);
+            return {
+              kind: 'text', name: result.name, content: result.content,
+              point: entry.point, mark: entry.mark,
+              buffer: { filePath: result.path },
+            };
+          },
+          installRootPane: (root, paneId) => {
+            restoredRoot = root;
+            restoredCurrent = paneId;
+          },
+          host: window.host,
+        });
+        await ctrl.restore();
+        // installRootPane receives the serialised root blob (the
+        // controller hands the blob + handlesByBlob to the caller so
+        // it can build the runtime tree). So restoredRoot.view.tabs
+        // here is the array of serialised text-view blobs — each
+        // carrying \`path\` directly, not a buffer wrapper.
+        const restoredTabs = restoredRoot && restoredRoot.view
+          && restoredRoot.view.kind === 'tabline'
+          ? restoredRoot.view.tabs.map((t) => (t.path ?? ''))
+          : [];
+        const restoredActive = restoredRoot && restoredRoot.view
+          ? restoredRoot.view.active : -1;
+        const restoredCurrentBuffer = restoredRoot && restoredRoot.view
+          && restoredRoot.view.kind === 'tabline'
+          ? (restoredRoot.view.tabs[restoredRoot.view.active]?.path ?? '')
+          : '';
+
+        return {
+          tabsAfterThreeOpens,
+          threeTabsPresent,
+          activeAfterThreeOpens,
+          tabsAfterFourOpens,
+          activeAfterFourOpens,
+          activeAfterArrowLeft,
+          activeAfterArrowRight,
+          tabsAfterKill,
+          activeAfterKill,
+          paneCountAfterSplit,
+          leftHasTabline,
+          rightHasTabline,
+          rightHasTablineAfterOpen,
+          rightModelineAfterOpen,
+          paneCountAfterCollapse,
+          finalTabs,
+          finalActive,
+          restoredTabs,
+          restoredActive,
+          restoredCurrent,
+          restoredCurrentBuffer,
+          restoreCalls,
+        };
+      })()`);
+      console.log('  tablineArm:', JSON.stringify({
+        threeTabsPresent: tablineArm.threeTabsPresent,
+        activeAfterThreeOpens: tablineArm.activeAfterThreeOpens,
+        activeAfterFourOpens: tablineArm.activeAfterFourOpens,
+        activeAfterArrowLeft: tablineArm.activeAfterArrowLeft,
+        activeAfterArrowRight: tablineArm.activeAfterArrowRight,
+        activeAfterKill: tablineArm.activeAfterKill,
+        paneCountAfterSplit: tablineArm.paneCountAfterSplit,
+        leftHasTabline: tablineArm.leftHasTabline,
+        rightHasTabline: tablineArm.rightHasTabline,
+        rightHasTablineAfterOpen: tablineArm.rightHasTablineAfterOpen,
+        rightModelineAfterOpen: tablineArm.rightModelineAfterOpen,
+        paneCountAfterCollapse: tablineArm.paneCountAfterCollapse,
+        finalTabs: tablineArm.finalTabs,
+        finalActive: tablineArm.finalActive,
+        restoredTabs: tablineArm.restoredTabs,
+        restoredActive: tablineArm.restoredActive,
+        restoredCurrent: tablineArm.restoredCurrent,
+        restoredCurrentBuffer: tablineArm.restoredCurrentBuffer,
+      }));
+      await rm(tablineA, { force: true });
+      await rm(tablineB, { force: true });
+      await rm(tablineC, { force: true });
+      await rm(tablineD, { force: true });
+      await rm(tablineE, { force: true });
+      await rm(tablineSessionFile1, { force: true });
+      await rm(tablineSessionFile2, { force: true });
+      await rm(tablineSessionFile3, { force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -3101,6 +3362,47 @@ app.whenReady().then(() => {
         Math.abs(panes.widthBefore - panes.widthAfter) > 50 &&
         panes.paneCountFinal === 1;
 
+      // Tabline arm (phase 3b commit 7): opening files appends tabs to
+      // the root tabline; C-x ←/→ cycle; C-x k kills and falls back;
+      // C-x 3 split leaves the left tabline intact and the right pane
+      // plain; an open-file in the right pane swaps its leaf view
+      // (no new strip); the kill-until-*scratch* path lands on a
+      // single-tab tabline whose tab is *scratch*. The controller-
+      // level v2-session restore reproduces the persisted tab list
+      // and `active` index through the openByPath / installRootPane
+      // callbacks.
+      const tablineArmOk =
+        tablineArm.threeTabsPresent &&
+        tablineArm.activeAfterThreeOpens.includes('jmacs-smoke-tabline-C.txt') &&
+        tablineArm.tabsAfterFourOpens.length === tablineArm.tabsAfterThreeOpens.length + 1 &&
+        tablineArm.activeAfterFourOpens.includes('jmacs-smoke-tabline-D.txt') &&
+        // C-x ← moves off D; C-x → returns to it.
+        !tablineArm.activeAfterArrowLeft.includes('jmacs-smoke-tabline-D.txt') &&
+        tablineArm.activeAfterArrowRight.includes('jmacs-smoke-tabline-D.txt') &&
+        // C-x k kills D; another tab becomes active. D is gone from
+        // the tabs list.
+        !tablineArm.tabsAfterKill.includes('jmacs-smoke-tabline-D.txt') &&
+        !tablineArm.activeAfterKill.includes('jmacs-smoke-tabline-D.txt') &&
+        // Split: 2 panes; left keeps its tabline strip, right doesn't.
+        tablineArm.paneCountAfterSplit === 2 &&
+        tablineArm.leftHasTabline === true &&
+        tablineArm.rightHasTabline === false &&
+        // Open in right pane: leaf swaps, still no tabline strip.
+        tablineArm.rightHasTablineAfterOpen === false &&
+        tablineArm.rightModelineAfterOpen.includes('jmacs-smoke-tabline-E.txt') &&
+        // After collapse: single pane. Killing every view leaves a
+        // single *scratch* tab in the tabline (Q6 fallback).
+        tablineArm.paneCountAfterCollapse === 1 &&
+        tablineArm.finalTabs.length === 1 &&
+        tablineArm.finalTabs[0].includes('*scratch*') &&
+        tablineArm.finalActive.includes('*scratch*') &&
+        // Controller-level v2 restore: three tabs, active = 1, the
+        // sole installed leaf matches the persisted id.
+        tablineArm.restoredTabs.length === 3 &&
+        tablineArm.restoredActive === 1 &&
+        tablineArm.restoredCurrent === 'pane-leaf-sess' &&
+        tablineArm.restoredCurrentBuffer.includes('jmacs-smoke-tabline-sess-2.txt');
+
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
@@ -3110,7 +3412,7 @@ app.whenReady().then(() => {
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
         tablineOk && langPackOk && treeOk && colsOk && shellOk &&
-        chordOk && findFileOk && panesOk
+        chordOk && findFileOk && panesOk && tablineArmOk
       ) {
         finish(
           0,
@@ -3221,8 +3523,10 @@ app.whenReady().then(() => {
         finish(1, `directory columns-view did not work (${JSON.stringify(cols)})`);
       } else if (!shellOk) {
         finish(1, `shell buffer did not work (${JSON.stringify(shell)})`);
-      } else {
+      } else if (!panesOk) {
         finish(1, `multi-pane splits did not work (${JSON.stringify(panes)})`);
+      } else {
+        finish(1, `tabline behaviour did not work (${JSON.stringify(tablineArm)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);
