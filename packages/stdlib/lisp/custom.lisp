@@ -83,18 +83,43 @@
   (let ((entry (custom-entry name)))
     (if (nil? entry) nil (get entry :default nil))))
 
+(define (-coerce-for-type value type options)
+  "Coerce VALUE into the canonical shape for a setting of TYPE. Today
+   only `:choice` needs this: an older save file (or a hand-edit) may
+   record the value as a string `\"dark\"`, but the choice options are
+   stored as symbols `'dark`. Without coercion `(eq? *theme* 'dark)`
+   in downstream code fails on the string. For other types VALUE is
+   passed through unchanged."
+  (cond
+    ((not (eq? type :choice)) value)
+    ((not (string? value)) value)
+    ((nil? options) value)
+    ;; Find a matching symbol option whose name equals VALUE.
+    (else
+     (let loop ((rest options))
+       (cond
+         ((nil? rest) value)
+         ((and (symbol? (car rest))
+               (string=? (symbol->string (car rest)) value))
+          (car rest))
+         (else (loop (cdr rest))))))))
+
 (define (custom-apply! name value)
   "Set setting NAME to VALUE for this session: update the registry,
    the live variable, and run its :on-change hook if one is set.
    Does nothing for an unregistered setting."
   (let ((entry (custom-entry name)))
     (when (not (nil? entry))
-      (set! *custom-registry*
-            (assoc *custom-registry* name (assoc entry :value value)))
-      ;; The variable is named by data, so build and evaluate a set!.
-      (eval (list 'set! name (list 'quote value)))
-      (let ((hook (get entry :on-change nil)))
-        (when (procedure? hook) (hook name value))))))
+      (let ((coerced (-coerce-for-type
+                      value
+                      (get entry :type :string)
+                      (get entry :options nil))))
+        (set! *custom-registry*
+              (assoc *custom-registry* name (assoc entry :value coerced)))
+        ;; The variable is named by data, so build and evaluate a set!.
+        (eval (list 'set! name (list 'quote coerced)))
+        (let ((hook (get entry :on-change nil)))
+          (when (procedure? hook) (hook name coerced)))))))
 
 (define (custom-reset! name)
   "Reset setting NAME to its default value."
@@ -119,12 +144,16 @@
 
 (define (custom-set-saved! name value)
   "Apply VALUE to setting NAME and record it as the saved value. This
-   is the form the persisted custom file is built from."
+   is the form the persisted custom file is built from. The saved
+   value tracks the *coerced* value the entry now holds (e.g. a
+   string-quoted `:choice` from a stale custom.lisp gets rewritten as
+   a symbol on next save)."
   (custom-apply! name value)
   (let ((entry (custom-entry name)))
     (when (not (nil? entry))
       (set! *custom-registry*
-            (assoc *custom-registry* name (assoc entry :saved value))))))
+            (assoc *custom-registry* name
+                   (assoc entry :saved (get entry :value nil)))))))
 
 (define (custom-save! name)
   "Mark setting NAME's current value as its saved value."
