@@ -119,17 +119,29 @@ export function createCustomizeView(container, options = {}) {
         widget.rows = 3;
         widget.value = value == null ? '' : String(value);
         return { widget, read: () => widget.value };
-      case 'choice':
+      case 'choice': {
         widget = doc.createElement('select');
+        // Keep a label → original-option lookup so `read()` returns
+        // the *original Lisp value* (typically a Sym) rather than the
+        // dropdown's string-only `value`. Without this the apply path
+        // quotes the string `"dark"`, which evaluates to a string —
+        // and `(eq? *theme* 'dark)` in the theme resolver fails,
+        // leaving every choice rendering as the dark theme.
+        const optionByLabel = new Map();
         for (const option of setting.options) {
           const label = asDisplayString(option);
+          optionByLabel.set(label, option);
           const el = doc.createElement('option');
           el.value = label;
           el.textContent = label;
           if (label === asDisplayString(value)) el.selected = true;
           widget.append(el);
         }
-        return { widget, read: () => widget.value };
+        return {
+          widget,
+          read: () => optionByLabel.get(widget.value) ?? widget.value,
+        };
+      }
       default:
         widget = doc.createElement('input');
         widget.type = 'text';
