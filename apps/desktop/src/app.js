@@ -1999,6 +1999,23 @@ const paneHost = {
   focusPaneDirection: (direction) => focusPaneByDirection(direction),
   balancePanes: () => balancePanesInTree(),
   setSplitRatio: (pane, ratio) => setSplitRatioOnNode(pane, ratio),
+  // Phase 3b tabline-view operations. Implementations sit further
+  // down the file with the rest of the tabline mount machinery —
+  // these closures forward; the host pickle-shape is what
+  // pane-primitives.js depends on.
+  currentTabline: () => currentTablineView(),
+  promoteToTabline: (pane) => promoteToTablineOnPane(pane),
+  demoteTabline: (tlv) => demoteTablineView(tlv),
+  addTab: (tlv, view, index) => addTabToTabline(tlv, view, index),
+  removeTab: (tlv, index) => {
+    removeTabInTabline(tlv, index);
+    return tlv;
+  },
+  activateTab: (tlv, index) => {
+    activateTabInTabline(tlv, index);
+    return tlv;
+  },
+  setTablineEdge: (tlv, edge) => setTablineEdgeOnTabline(tlv, edge),
 };
 
 /** The view-host the Lisp view-primitives operate through. Every
@@ -4548,17 +4565,37 @@ function syncRootTablineWithViews() {
   }
 }
 
+/** Pre-seed TABLINEVIEW's per-child editor map with the existing
+ *  per-pane editor instance bound to LEAF, so the tabline mount
+ *  reuses it for the active child instead of constructing a fresh
+ *  one. This is what keeps sticky-notes / hover-doc / inline-eval
+ *  bindings alive across the boot wrap and the `promote-to-tabline!`
+ *  command — those modules captured DOM references from the editor
+ *  instance at startup; rebuilding would orphan them.
+ *
+ *  Returns the inherited instance, or null when there's nothing to
+ *  inherit (no instance, no leaf, the active child isn't a text view). */
+function inheritExistingEditorIntoTabline(tablineView, leaf) {
+  const existingInstance = editorViewByPaneId.get(leaf.id) ?? null;
+  if (!existingInstance) return null;
+  const active = tablineActiveChild(tablineView);
+  if (!active || active.kind !== 'text') return null;
+  const state = ensureTablineState(tablineView);
+  state.editorByChildId.set(active.id, existingInstance);
+  if (existingInstance.element.parentNode !== state.contentEl) {
+    state.contentEl.append(existingInstance.element);
+  }
+  return existingInstance;
+}
+
 /** Wrap the root leaf's view in a tabline-view whose tabs are every
  *  open view in display order, with `active` pointing at the current
  *  view. Called once at startup after `sessionController.restore()`.
  *
  *  The pre-existing editor instance bound to the root leaf's id is
- *  inherited by the tabline state's `editorByChildId` map, keyed by
- *  the initially-active text child's id, so sticky-notes, hover-doc
- *  and inline-eval (which captured DOM references from that instance
- *  at startup) keep working. The instance's DOM is detached from the
- *  pane element and re-attached inside the tabline's content area by
- *  the tabline mount's `mountTablineActiveChild`. */
+ *  inherited by the tabline state via `inheritExistingEditorIntoTabline`,
+ *  so sticky-notes, hover-doc and inline-eval (which captured DOM
+ *  references from that instance at startup) keep working. */
 function wrapRootInTabline() {
   if (rootPane.kind !== 'leaf') return; // splits-before-wrap shouldn't happen, but bail safely.
   const leaf = rootPane;
@@ -4567,7 +4604,6 @@ function wrapRootInTabline() {
   // the wrap.
   if (views.length === 0) return;
   const activeIdx = Math.max(0, Math.min(currentViewIndex, views.length - 1));
-  const active = views[activeIdx] ?? null;
   const tabline = createView({
     kind: 'tabline',
     extras: {
@@ -4577,25 +4613,163 @@ function wrapRootInTabline() {
     },
   });
   // Inherit the existing editor instance so sticky-notes etc. survive.
-  // We pre-seed the tabline state before its mount runs so the mount
-  // doesn't construct a duplicate instance for the active child.
-  const existingInstance = editorViewByPaneId.get(leaf.id) ?? null;
-  if (existingInstance && active && active.kind === 'text') {
-    const state = ensureTablineState(tabline);
-    state.editorByChildId.set(active.id, existingInstance);
-    // Move the editor's element into the tabline content area; the
-    // tabline mount below will display-toggle it but won't re-parent
-    // when it's already where it belongs.
-    if (existingInstance.element.parentNode !== state.contentEl) {
-      state.contentEl.append(existingInstance.element);
-    }
-  }
+  inheritExistingEditorIntoTabline(tabline, leaf);
   // Install the tabline-view as the leaf's view and dispatch the mount
   // hook so the strip renders. The leaf id is unchanged.
   leaf.view = tabline;
   rootTablineView = tabline;
   rootTablineLeafId = leaf.id;
   kindRegistry.mount(tabline, { paneEl: paneElements.get(leaf.id) });
+}
+
+// --- tabline-view operations (commit 4) --------------------------------
+// Host-side methods backing the Lisp `(promote-to-tabline!)` /
+// `(demote-tabline!)` / `(add-tab! ...)` etc. primitives. The Lisp
+// pane-primitives layer is a thin shape adapter; the structural
+// changes (replacing a leaf's view, splicing tabs, re-mounting) live
+// here where the DOM and the `tablineStateByView` map are visible.
+//
+// A note on the tabs vs `views` invariant: tabline-views are *not*
+// in the global `views[]` list (per the brief's data model — they
+// live only inside pane handles). The tabs of a tabline-view, by
+// contrast, are leaf-kind views that *are* in `views[]`. Adding a
+// view as a tab does not append it to `views`; calling `add-tab!`
+// with a view not already in `views` is supported (some Lisp may
+// construct a tab from a fresh view handle), but the view must still
+// be a leaf-kind view — composing a tabline-view as a tab of itself
+// or another tabline is the Q10 nested case, allowed but ugly.
+
+/** Return the tabline-view in the focused leaf pane, or null when the
+ *  focused pane's view is a plain leaf or there is no focused pane.
+ *  Symmetric with `(current-view)` — peels one level on the focused
+ *  pane and returns the tabline if found. Nested tabline-views: this
+ *  returns the *outer* tabline (the one the focused pane holds); to
+ *  reach an inner one a caller would walk through `tablineActiveChild`
+ *  themselves. */
+function currentTablineView() {
+  const pane = currentPane();
+  if (!pane || pane.kind !== 'leaf') return null;
+  return isTablineView(pane.view) ? pane.view : null;
+}
+
+/** Replace PANE's leaf view with a fresh tabline-view containing that
+ *  view as its sole tab. No-op when PANE is not a leaf or its view is
+ *  already a tabline-view (returns the existing tabline in that case).
+ *  Returns the tabline-view; null when PANE was unusable. */
+function promoteToTablineOnPane(pane) {
+  if (!pane || pane.kind !== 'leaf') return null;
+  if (isTablineView(pane.view)) return pane.view;
+  const original = pane.view;
+  const tabline = createView({
+    kind: 'tabline',
+    extras: {
+      tabs: original ? [original] : [],
+      active: 0,
+      edge: 'top',
+    },
+  });
+  // Inherit the existing editor instance so sticky-notes etc. on the
+  // promoted pane keep their bindings. Symmetric with the boot wrap.
+  inheritExistingEditorIntoTabline(tabline, pane);
+  pane.view = tabline;
+  const paneEl = paneElements.get(pane.id);
+  if (paneEl) kindRegistry.mount(tabline, { paneEl });
+  refreshPaneTabStrips();
+  if (typeof updateModeline === 'function') updateModeline();
+  return tabline;
+}
+
+/** Replace the leaf holding TLV with TLV's active child's view (or
+ *  the first tab when there's no active). The tabline's per-state DOM
+ *  is disposed; the active child takes over. Returns the surviving
+ *  view, or null when TLV isn't actually installed on a leaf in the
+ *  current tree. */
+function demoteTablineView(tlv) {
+  if (!isTablineView(tlv)) return null;
+  // Find the leaf this tabline lives in.
+  let host = null;
+  for (const leaf of leafPanes(rootPane)) {
+    if (leaf.view === tlv) { host = leaf; break; }
+  }
+  if (!host) return null;
+  // Pick the survivor: the active child, or the first tab if none.
+  const survivor = tablineActiveChild(tlv) ?? tlv.tabs[0] ?? null;
+  // The active child's editor instance (if any) was created inside
+  // the tabline's state. We want to keep the editor instance alive
+  // for the surviving view: move its element back into the pane
+  // element and re-register it in `editorViewByPaneId` so post-
+  // demotion code paths (focus changes, switchToView) find it. The
+  // tabline mount's dispose path then *won't* destroy this instance —
+  // we steal it before disposing.
+  const state = tablineStateByView.get(tlv);
+  let inheritedInstance = null;
+  if (state && survivor) {
+    const child = survivor;
+    inheritedInstance = state.editorByChildId.get(child.id) ?? null;
+    if (inheritedInstance) {
+      state.editorByChildId.delete(child.id);
+      const paneEl = paneElements.get(host.id);
+      if (paneEl && inheritedInstance.element.parentNode !== paneEl) {
+        paneEl.append(inheritedInstance.element);
+      }
+      editorViewByPaneId.set(host.id, inheritedInstance);
+    }
+  }
+  // Dispose the tabline-view's remaining state. The kind registry's
+  // dispose for tabline destroys any *remaining* editor instances in
+  // editorByChildId (we removed the inherited one above) and detaches
+  // the container.
+  kindRegistry.dispose(tlv);
+  if (rootTablineView === tlv) {
+    rootTablineView = null;
+    rootTablineLeafId = null;
+  }
+  // Install the survivor on the leaf and re-mount through the kind
+  // registry. For a text survivor with an inherited editor instance
+  // already in place, the text mount's `ensureEditorViewForLeaf`
+  // finds it and just calls `setView(survivor)`.
+  host.view = survivor;
+  if (survivor) {
+    hideInactiveRendererViews(survivor.kind);
+    kindRegistry.mount(survivor);
+  }
+  if (typeof updateModeline === 'function') updateModeline();
+  return survivor;
+}
+
+/** Append VIEW to TLV's tabs at INDEX (or the end when undefined).
+ *  Refreshes the strip; does not activate. Returns the tabline-view. */
+function addTabToTabline(tlv, view, index) {
+  if (!isTablineView(tlv) || !view) return tlv;
+  const tabs = tlv.tabs;
+  const target =
+    typeof index === 'number' && index >= 0 && index <= tabs.length
+      ? index
+      : tabs.length;
+  tabs.splice(target, 0, view);
+  // Adjust active so it still points at the same view as before.
+  if (target <= tlv.active) tlv.active += 1;
+  const state = tablineStateByView.get(tlv);
+  if (state) state.strip.refresh();
+  return tlv;
+}
+
+/** Update TLV.edge to EDGE and refresh the strip's data-edge attribute
+ *  + the CSS flex direction (the kind-registry mount drives both via
+ *  the per-pane state). Returns the tabline-view. */
+function setTablineEdgeOnTabline(tlv, edge) {
+  if (!isTablineView(tlv)) return tlv;
+  if (
+    edge !== 'top' && edge !== 'bottom' &&
+    edge !== 'left' && edge !== 'right'
+  ) return tlv;
+  tlv.edge = edge;
+  const state = tablineStateByView.get(tlv);
+  if (state) {
+    state.container.dataset.edge = edge;
+    state.strip.setEdge(edge);
+  }
+  return tlv;
 }
 
 // --- persistent session -------------------------------------------------

@@ -32,6 +32,7 @@ export const STDLIB_FILES = Object.freeze([
   'files.lisp',
   'views.lisp',
   'panes.lisp',
+  'tabline.lisp',
   'search.lisp',
   'regex-search.lisp',
   'kill.lisp',
