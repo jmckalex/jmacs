@@ -143,12 +143,16 @@ function serialiseView(view) {
     const active = tabs.length === 0
       ? 0
       : Math.max(0, Math.min(rawActive, tabs.length - 1));
-    return {
+    const blob = {
       kind: 'tabline',
       edge: typeof view.edge === 'string' ? view.edge : 'top',
       active,
       tabs,
     };
+    if (typeof view.width === 'number' && Number.isFinite(view.width)) {
+      blob.width = view.width;
+    }
+    return blob;
   }
   if (view.kind === 'text') {
     if (isEphemeral(view)) return null;
@@ -409,7 +413,11 @@ function parseView(raw) {
     const active = tabs.length === 0
       ? 0
       : Math.max(0, Math.min(rawActive, tabs.length - 1));
-    return { kind: 'tabline', edge, active, tabs };
+    const result = { kind: 'tabline', edge, active, tabs };
+    if (typeof raw.width === 'number' && Number.isFinite(raw.width) && raw.width > 0) {
+      result.width = raw.width;
+    }
+    return result;
   }
   return null;
 }

@@ -4061,6 +4061,14 @@ function ensureTablineState(view) {
   stripEl.className = 'tabline-strip';
   container.append(stripEl);
 
+  // Resizer between strip and content. CSS shows it only for vertical
+  // tabline edges (left/right). The drag handler reads/writes view.width
+  // so the chosen width persists across edge changes and session restore.
+  const resizerEl = document.createElement('div');
+  resizerEl.className = 'tabline-resizer';
+  container.append(resizerEl);
+  attachTablineResizerDrag(resizerEl, view);
+
   const contentEl = document.createElement('div');
   contentEl.className = 'tabline-content';
   container.append(contentEl);
@@ -4089,6 +4097,7 @@ function ensureTablineState(view) {
   state = {
     container,
     stripEl,
+    resizerEl,
     contentEl,
     strip,
     activeEditor: null,
@@ -4096,7 +4105,76 @@ function ensureTablineState(view) {
     mountedChild: null,
   };
   tablineStateByView.set(view, state);
+  applyTablineStripWidth(view);
   return state;
+}
+
+/** Default width (px) of a vertical tabline strip when the tabline-view
+ *  has no user-set `width`. The min/max clamp the drag range. */
+const TABLINE_STRIP_DEFAULT_WIDTH = 160;
+const TABLINE_STRIP_MIN_WIDTH = 80;
+const TABLINE_STRIP_MAX_WIDTH = 480;
+
+/** Apply (or clear) the tabline-strip's inline width based on the view's
+ *  edge + width. Vertical edges (left/right) get an explicit pixel width
+ *  (view.width when set, default otherwise); horizontal edges clear it
+ *  so the strip falls back to its 32px height-driven flex sizing. Called
+ *  on mount, on edge changes, and after a resizer drag. */
+function applyTablineStripWidth(view) {
+  const state = tablineStateByView.get(view);
+  if (!state) return;
+  const isVertical = view.edge === 'left' || view.edge === 'right';
+  if (isVertical) {
+    const width = (typeof view.width === 'number' && view.width > 0)
+      ? view.width
+      : TABLINE_STRIP_DEFAULT_WIDTH;
+    state.stripEl.style.width = `${width}px`;
+  } else {
+    state.stripEl.style.width = '';
+  }
+}
+
+/** Pointer drag on the tabline-resizer: change view.width. Only fires
+ *  when the tabline is on a vertical edge (the resizer is display:none
+ *  otherwise; the guard inside makes it a no-op if someone forces an
+ *  event in). On release, the session is asked to save so the chosen
+ *  width survives a relaunch. */
+function attachTablineResizerDrag(resizerEl, view) {
+  resizerEl.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    if (view.edge !== 'left' && view.edge !== 'right') return;
+    const state = tablineStateByView.get(view);
+    if (!state) return;
+    event.preventDefault();
+    try { resizerEl.setPointerCapture(event.pointerId); } catch { /* tests */ }
+    resizerEl.classList.add('is-dragging');
+    const startX = event.clientX;
+    const startWidth = state.stripEl.getBoundingClientRect().width;
+    // For the right-edge tabline, the strip is on the right of the
+    // container (visually) but still first in DOM (the container uses
+    // row-reverse flex). Dragging the resizer rightward should SHRINK
+    // the right strip; leftward should grow it. The opposite for left.
+    const direction = view.edge === 'right' ? -1 : 1;
+    const onMove = (ev) => {
+      const delta = (ev.clientX - startX) * direction;
+      const next = Math.max(
+        TABLINE_STRIP_MIN_WIDTH,
+        Math.min(TABLINE_STRIP_MAX_WIDTH, startWidth + delta)
+      );
+      view.width = next;
+      state.stripEl.style.width = `${next}px`;
+    };
+    const onUp = (ev) => {
+      resizerEl.classList.remove('is-dragging');
+      try { resizerEl.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      // Persist the new width via the debounced session save.
+      sessionController.save();
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  });
 }
 
 /** Re-mount the active child of TABLINEVIEW into its content area.
@@ -4291,6 +4369,7 @@ kindRegistry.register('tabline', {
     if (state.container.parentNode !== paneEl) paneEl.append(state.container);
     state.container.dataset.edge = view.edge ?? 'top';
     state.strip.setEdge(view.edge ?? 'top');
+    applyTablineStripWidth(view);
     state.strip.refresh();
     mountTablineActiveChild(view);
   },
@@ -4849,9 +4928,13 @@ function materialiseRestoredView(blob, handlesByBlob) {
     const active = tabsClean.length === 0
       ? 0
       : Math.max(0, Math.min(blob.active ?? 0, tabsClean.length - 1));
+    const extras = { tabs: tabsClean, active, edge: blob.edge ?? 'top' };
+    if (typeof blob.width === 'number' && Number.isFinite(blob.width) && blob.width > 0) {
+      extras.width = blob.width;
+    }
     return createView({
       kind: 'tabline',
-      extras: { tabs: tabsClean, active, edge: blob.edge ?? 'top' },
+      extras,
     });
   }
   return buildScratchTextView();
@@ -5145,6 +5228,7 @@ function setTablineEdgeOnTabline(tlv, edge) {
   if (state) {
     state.container.dataset.edge = edge;
     state.strip.setEdge(edge);
+    applyTablineStripWidth(tlv);
   }
   return tlv;
 }

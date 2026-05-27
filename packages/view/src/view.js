@@ -104,6 +104,15 @@ export function createView(options) {
     if (!Array.isArray(view.tabs)) view.tabs = [];
     if (typeof view.active !== 'number') view.active = 0;
     if (typeof view.edge !== 'string') view.edge = 'top';
+    // For vertical-edge tablines, the strip's pixel width. `null` means
+    // "use the host's default" (the mount picks the default it wants);
+    // a positive number is the user-set width from a resizer drag, which
+    // also survives across session restore.
+    if (view.width !== undefined && typeof view.width !== 'number') {
+      view.width = null;
+    } else if (view.width === undefined) {
+      view.width = null;
+    }
   }
   return view;
 }
@@ -181,6 +190,9 @@ export function tablineActiveChild(view) {
  *   of the currently visible child.
  * @property {('top'|'right'|'bottom'|'left')} [edge] - For tabline-
  *   views: which edge of the pane the strip renders on.
+ * @property {number | null} [width] - For vertical-edge (left/right)
+ *   tabline-views: the user-chosen strip width in pixels. `null` means
+ *   "use the host's default."
  *
  * Kind-specific state lives as additional top-level fields (e.g.
  * `src`, `tracks`, `sessionId`) put there by `createView`'s `extras`

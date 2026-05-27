@@ -57,12 +57,14 @@ function makeSplit(id, orientation, ratio, first, second) {
 }
 
 function makeTabline(tabs, opts = {}) {
-  return {
+  const view = {
     kind: 'tabline',
     tabs,
     active: opts.active ?? 0,
     edge: opts.edge ?? 'top',
   };
+  if (typeof opts.width === 'number') view.width = opts.width;
+  return view;
 }
 
 // --- isEphemeral -------------------------------------------------------
@@ -189,6 +191,21 @@ test('serialiseTree: a leaf with a tabline-view serialises every tab', () => {
   });
 });
 
+test('serialiseTree: a tabline-view persists a user-set width', () => {
+  const tabline = makeTabline(
+    [makeTextView('/tmp/a.txt')],
+    { edge: 'left', width: 220 }
+  );
+  const out = serialiseTree(makeLeaf('pane-leaf-9', tabline), 'pane-leaf-9');
+  assert.equal(out.rootPane.view.width, 220);
+});
+
+test('serialiseTree: a tabline-view with no width omits the field', () => {
+  const tabline = makeTabline([makeTextView('/tmp/a.txt')], { edge: 'top' });
+  const out = serialiseTree(makeLeaf('pane-leaf-10', tabline), 'pane-leaf-10');
+  assert.equal('width' in out.rootPane.view, false);
+});
+
 test('serialiseTree: a split-pane is serialised recursively', () => {
   const tree = makeSplit(
     'pane-split-3', 'horizontal', 0.4,
@@ -305,6 +322,30 @@ test('deserialise: a v2 payload round-trips through serialiseTree', () => {
   const written = serialiseTree(tree, 'pane-leaf-1');
   const back = deserialise(JSON.parse(JSON.stringify(written)));
   assert.deepEqual(back, written);
+});
+
+test('deserialise: a v2 tabline-view round-trips with its width', () => {
+  const tree = makeLeaf('pane-leaf-w', makeTabline([
+    makeTextView('/x.txt', { point: 0 }),
+  ], { edge: 'left', width: 240 }));
+  const written = serialiseTree(tree, 'pane-leaf-w');
+  const back = deserialise(JSON.parse(JSON.stringify(written)));
+  assert.deepEqual(back, written);
+  assert.equal(back.rootPane.view.width, 240);
+});
+
+test('deserialise: a v2 tabline-view with a malformed width drops it', () => {
+  const out = deserialise({
+    version: 2,
+    rootPane: {
+      kind: 'leaf', id: 'pane-leaf-mw', view: {
+        kind: 'tabline', edge: 'left', active: 0, tabs: [],
+        width: -5,
+      },
+    },
+    currentPaneId: 'pane-leaf-mw',
+  });
+  assert.equal('width' in out.rootPane.view, false);
 });
 
 test('deserialise: a v2 split tree round-trips', () => {

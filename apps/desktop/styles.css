@@ -147,12 +147,14 @@ body {
 /* Vertical edges (left/right) — the strip stacks tabs column-wise.
    Tabs grow wider than tall; labels stay normal-orientation (no
    rotation), matching the brief's "aim for usable, not fancy" call
-   for the less-loved edges. */
+   for the less-loved edges. Width is owned by the `.tabline-strip`
+   parent (set inline from JS, drag-adjustable via the resizer); the
+   `.tabline` itself fills the strip. */
 .tabline[data-edge='left'],
 .tabline[data-edge='right'] {
   flex-direction: column;
   align-items: stretch;
-  width: 160px;
+  width: 100%;
   height: auto;
   overflow-x: hidden;
   overflow-y: auto;
@@ -198,6 +200,30 @@ body {
   min-width: 0;
   min-height: 0;
   position: relative;
+}
+
+/* Resizer handle between strip and content. Hidden for horizontal-edge
+   tablines (which are already height-driven); visible as a 4px gutter
+   with a col-resize cursor for vertical-edge tablines. The drag handler
+   updates the tabline-view's `width` field and the strip's inline
+   width; the change is persisted by the session debouncer. */
+.tabline-resizer {
+  display: none;
+  flex: 0 0 4px;
+  background: transparent;
+  cursor: col-resize;
+  user-select: none;
+  position: relative;
+  z-index: 1;
+}
+.tabline-pane[data-edge='left'] .tabline-resizer,
+.tabline-pane[data-edge='right'] .tabline-resizer {
+  display: block;
+}
+.tabline-resizer:hover,
+.tabline-resizer.is-dragging {
+  background: var(--accent);
+  opacity: 0.5;
 }
 
 .tabline-tab {

@@ -187,6 +187,19 @@ test('a tabline-view accepts initial tabs/active/edge through extras', () => {
   assert.equal(tlv.edge, 'bottom');
 });
 
+test('a tabline-view defaults width to null and accepts width through extras', () => {
+  const bare = createView({ kind: 'tabline' });
+  assert.equal(bare.width, null);
+
+  const sized = createView({ kind: 'tabline', extras: { edge: 'left', width: 220 } });
+  assert.equal(sized.width, 220);
+
+  // Non-numeric width gets normalised away — a callers' bad extras
+  // shouldn't leave the view in an unusable state.
+  const bogus = createView({ kind: 'tabline', extras: { width: 'wide' } });
+  assert.equal(bogus.width, null);
+});
+
 test('isTablineView recognises a tabline-view and rejects other shapes', () => {
   const tlv = createView({ kind: 'tabline' });
   assert.equal(isTablineView(tlv), true);
