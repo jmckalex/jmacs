@@ -504,7 +504,6 @@ export function createEditorView(buffer, container, options = {}) {
       const extra = secondaryCursors[i];
       extra.style.left = `calc(${column} * 1ch)`;
       extra.style.top = `calc(${displayRow} * 1lh)`;
-      extra.classList.add('is-blinking');
     }
 
     // Brighten the primary cursor's line number in the gutter. Only the
@@ -516,10 +515,17 @@ export function createEditorView(buffer, container, options = {}) {
       );
     }
 
-    // Restart the blink so the primary cursor is solid right after it moves.
+    // Restart the blink on every cursor so they all start solid and
+    // stay in phase. CSS animations begin when `is-blinking` is added,
+    // so removing → forcing a reflow → re-adding on every cursor in
+    // one go ensures the primary and secondaries blink in unison
+    // (otherwise each cursor's animation starts at its own t=0 when
+    // its element was first mounted, and they drift visibly).
     cursorEl.classList.remove('is-blinking');
+    for (const extra of secondaryCursors) extra.classList.remove('is-blinking');
     void cursorEl.offsetWidth;
     cursorEl.classList.add('is-blinking');
+    for (const extra of secondaryCursors) extra.classList.add('is-blinking');
   }
 
   let dirty = false;

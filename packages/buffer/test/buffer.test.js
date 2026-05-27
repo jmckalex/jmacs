@@ -519,6 +519,55 @@ test('the primary selection still reports through the legacy API', () => {
   assert.deepEqual(buf.selection, { start: 0, end: 5 });
 });
 
+test('moveRight collapses an active selection to its right edge', () => {
+  // Sublime/VSCode convention: → with a selection deselects to the
+  // right edge so a suffix can be typed immediately after the word.
+  const buf = createBuffer('alpha beta');
+  buf.moveTo(5); // point=5, mark=null
+  buf.setMark(0); // primary now selects "alpha" with point at the end
+  buf.moveRight();
+  assert.equal(buf.point, 5, 'collapsed to right edge, no further advance');
+  assert.equal(buf.mark, null);
+});
+
+test('moveLeft collapses an active selection to its left edge', () => {
+  // Symmetric: ← with a selection deselects to the left edge so a
+  // prefix can be typed immediately before the word.
+  const buf = createBuffer('alpha beta');
+  buf.moveTo(5);
+  buf.setMark(0);
+  buf.moveLeft();
+  assert.equal(buf.point, 0, 'collapsed to left edge, no further retreat');
+  assert.equal(buf.mark, null);
+});
+
+test('moveLeft/moveRight with extend keep building the selection', () => {
+  // The collapse-on-arrow behaviour only kicks in when the move is NOT
+  // extending. Shift+arrow / set-mark-then-arrow must still grow the
+  // region as normal.
+  const buf = createBuffer('hello world');
+  buf.moveTo(3);
+  buf.setMark(0);
+  buf.moveRight({ extend: true });
+  assert.equal(buf.point, 4);
+  assert.equal(buf.mark, 0, 'mark preserved when extending');
+});
+
+test('arrow keys after multi-cursor select-all-matches deselect at every cursor', () => {
+  // The user's deselect workflow: word-select at every match via
+  // addSelection, then → to land at every word's end, ready to type
+  // a suffix at all positions.
+  const buf = createBuffer('alpha beta alpha gamma alpha');
+  buf.moveTo(5); buf.setMark(0); // primary on first "alpha"
+  buf.addSelection(16, 11); // secondary on second "alpha"
+  buf.addSelection(28, 23); // tertiary on third "alpha"
+  buf.moveRight();
+  assert.equal(buf.cursorCount, 3, 'cursor set preserved by the deselect');
+  const points = buf.selections.map((s) => s.point).sort((a, b) => a - b);
+  assert.deepEqual(points, [5, 16, 28], 'each cursor at its match\'s end');
+  for (const s of buf.selections) assert.equal(s.mark, null);
+});
+
 test('multi-cursor state lives on the bound view', () => {
   // Two views over one buffer must keep independent cursor *sets*, not
   // just independent primaries.

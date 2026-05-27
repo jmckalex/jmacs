@@ -485,14 +485,39 @@ export function createBuffer(initialText = '', options = {}) {
 
     /** @param {{ extend?: boolean }} [opts] */
     moveLeft(opts) {
-      for (const c of cursors()) moveCursor(c, c.point - 1, opts);
+      const extending = !!(opts && opts.extend);
+      for (const c of cursors()) {
+        // Sublime/VSCode convention: with a selection and no extend, a
+        // horizontal arrow collapses to the appropriate edge of the
+        // selection — left arrow → left edge — instead of moving one
+        // past `point`. This is what lets a multi-cursor selection be
+        // de-selected without losing the cursor set (e.g. `C-c d` to
+        // select a word at every match, then ← to land at every word's
+        // start so a prefix can be typed).
+        if (!extending && c.mark !== null && c.mark !== c.point) {
+          c.point = Math.min(c.point, c.mark);
+          c.mark = null;
+        } else {
+          moveCursor(c, c.point - 1, opts);
+        }
+      }
       dedupeCursors();
       emit(null);
     },
 
     /** @param {{ extend?: boolean }} [opts] */
     moveRight(opts) {
-      for (const c of cursors()) moveCursor(c, c.point + 1, opts);
+      const extending = !!(opts && opts.extend);
+      for (const c of cursors()) {
+        // See moveLeft: with a selection and no extend, → collapses to
+        // the right edge so a suffix can be typed at every cursor.
+        if (!extending && c.mark !== null && c.mark !== c.point) {
+          c.point = Math.max(c.point, c.mark);
+          c.mark = null;
+        } else {
+          moveCursor(c, c.point + 1, opts);
+        }
+      }
       dedupeCursors();
       emit(null);
     },
