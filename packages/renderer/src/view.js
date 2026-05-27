@@ -8,8 +8,8 @@
  * events arrived. Geometry is expressed in CSS `ch` (column) and `lh`
  * (line) units, so a monospace font needs no pixel measurement.
  *
- * The view can be re-pointed at a different buffer with `setBuffer`,
- * which is how switching between buffers works.
+ * The view can be re-pointed at a different View with `setView`,
+ * which is how switching between views (and thus buffers) works.
  *
  * This module is only meaningful in a browser/Electron renderer
  * context. The pure projection, keymap and command logic it builds on
@@ -36,8 +36,8 @@ const MODIFIER_KEYS = new Set([
  *   text, in the text's coordinate space; the host fills it.
  * @property {HTMLElement} overlayLayer - An empty layer in front of the
  *   text, in the text's coordinate space; the host fills it.
- * @property {(buffer: object) => void} setBuffer - Re-point the view
- *   at a different buffer.
+ * @property {(view: object) => void} setView - Re-point the view at a
+ *   different (text) View. Read its `.buffer` for the L2 buffer.
  * @property {() => void} focus - Give the editor keyboard focus.
  * @property {() => void} destroy - Unsubscribe and remove the view.
  */
@@ -63,6 +63,13 @@ const MODIFIER_KEYS = new Set([
  *   without an entry has no fold support.
  * @param {boolean} [options.colourSwatches=true] - Whether to decorate
  *   colour literals in the text with clickable inline swatches.
+ * @param {() => number} [options.getPoint] - Per-view-point: where to
+ *   read the cursor offset from. Defaults to `() => activeBuffer.point`
+ *   so renderer unit tests that pass a bare buffer keep working. The
+ *   desktop app passes a closure that reads the *view*'s point, so
+ *   two panes over one buffer each render their own cursor.
+ * @param {() => number | null} [options.getMark] - The matching reader
+ *   for the selection anchor.
  * @returns {EditorView}
  */
 export function createEditorView(buffer, container, options = {}) {
@@ -71,6 +78,21 @@ export function createEditorView(buffer, container, options = {}) {
 
   // The buffer currently shown; swapped by setBuffer.
   let activeBuffer = buffer;
+
+  // Per-view-point: where the cursor lives. By default the cursor is
+  // read off the buffer (the buffer in turn delegates to whatever it
+  // is bindCursor'd to — typically the focused view), preserving the
+  // renderer's unit-test contract. The desktop app overrides these to
+  // read from the View bound to this editor instance, so a non-focused
+  // pane's renderer still draws *its* cursor, not the focused pane's.
+  const getPoint =
+    typeof options.getPoint === 'function'
+      ? options.getPoint
+      : () => activeBuffer.point;
+  const getMark =
+    typeof options.getMark === 'function'
+      ? options.getMark
+      : () => activeBuffer.mark;
 
   // The colour-swatch decorator: places a clickable swatch beside every
   // colour literal in a rendered line, and edits the buffer when a
@@ -373,7 +395,7 @@ export function createEditorView(buffer, container, options = {}) {
 
   /** Render the selection highlight, one rectangle per touched line. */
   function renderSelection() {
-    const rects = selectionRects(activeBuffer);
+    const rects = selectionRects(activeBuffer, getPoint(), getMark());
     selectionLayer.replaceChildren(
       ...rects
         .map((rect) => {
@@ -398,7 +420,7 @@ export function createEditorView(buffer, container, options = {}) {
   function renderBrackets() {
     const match = matchingBracket(
       activeBuffer.text,
-      activeBuffer.point,
+      getPoint(),
       languageForName(activeBuffer.name)
     );
     if (match === null) {
@@ -422,7 +444,7 @@ export function createEditorView(buffer, container, options = {}) {
 
   /** Position the cursor, the current-line highlight and the gutter. */
   function renderCursor() {
-    const { line, column } = activeBuffer.positionAt(activeBuffer.point);
+    const { line, column } = activeBuffer.positionAt(getPoint());
     // If the cursor lands inside a folded region, hop it up to the
     // header line — the user shouldn't be able to "see" the cursor
     // sitting on a hidden line. Visually we still draw it at the
@@ -581,7 +603,7 @@ export function createEditorView(buffer, container, options = {}) {
    *  header on point's own line). */
   function toggleFoldAtPoint() {
     refreshFoldIndex();
-    const { line } = activeBuffer.positionAt(activeBuffer.point);
+    const { line } = activeBuffer.positionAt(getPoint());
     // If point is *on* a header line, that wins.
     if (foldCache.headers.has(line)) return toggleFoldAt(line);
     // Otherwise, find the smallest enclosing foldable scope.
@@ -720,17 +742,35 @@ export function createEditorView(buffer, container, options = {}) {
     /** Number of lines actually visible (collapsed by folds). For tests. */
     visibleLineCount,
 
-    setBuffer(next) {
-      if (next !== activeBuffer) {
+    /**
+     * Re-point this editor view at a new (text-kind) View. Per-pane
+     * edit-view instances: one renderer per leaf pane, swapped to a
+     * different view as the pane's content changes.
+     *
+     * The previous `setBuffer(buffer)` shape is kept as a thin shim
+     * for callers that haven't migrated yet, but `setView(view)` is
+     * the new primary entry point.
+     *
+     * @param {import('@editor/view').View} next - The view to show.
+     *   `next.buffer` is the L2 buffer; the renderer subscribes to it.
+     */
+    setView(next) {
+      const nextBuffer = next && next.buffer ? next.buffer : null;
+      if (nextBuffer === null) {
+        // Defensive: a non-text view should never reach here; the
+        // kind registry routes elsewhere. No-op rather than crash.
+        return;
+      }
+      if (nextBuffer !== activeBuffer) {
         unsubscribe();
-        activeBuffer = next;
+        activeBuffer = nextBuffer;
         unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
       }
-      // Always render, even when the buffer is unchanged: switchToBuffer
-      // calls setBuffer when the view is mounted again after a hidden
-      // spell, and any render that fired while the view was hidden
-      // produced a 0-height layout (the gutter and only ~7 lines of
-      // overscan). The reveal pass redraws against the real viewport.
+      // Always render, even when the buffer is unchanged: switchToView
+      // is called when the view is mounted again after a hidden spell,
+      // and any render that fired while the view was hidden produced a
+      // 0-height layout. The reveal pass redraws against the real
+      // viewport.
       followCursor = true;
       render();
     },

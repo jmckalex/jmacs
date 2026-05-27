@@ -297,3 +297,70 @@ test('minorModes stores an opaque value', () => {
   buf.minorModes = modes;
   assert.equal(buf.minorModes, modes);
 });
+
+// --- bindCursor (per-view-point) ---------------------------------------
+
+test('bindCursor: the bound source becomes the canonical cursor storage', () => {
+  const buf = createBuffer('hello');
+  const view = { point: 0, mark: null };
+  buf.bindCursor(view);
+  buf.moveTo(3);
+  assert.equal(view.point, 3, 'moveTo writes into the bound source');
+  assert.equal(buf.point, 3, 'the buffer reads through the bound source');
+  buf.setMark(1);
+  assert.equal(view.mark, 1);
+});
+
+test('bindCursor: two views over one buffer keep independent cursors', () => {
+  const buf = createBuffer('abcdefgh');
+  const viewA = { point: 0, mark: null };
+  const viewB = { point: 0, mark: null };
+  buf.bindCursor(viewA);
+  buf.moveTo(3);
+  // Switch to view B; its cursor is fresh.
+  buf.bindCursor(viewB);
+  assert.equal(buf.point, 0, 'B starts fresh');
+  buf.moveTo(5);
+  assert.equal(viewB.point, 5);
+  // Switch back to A; its 3 is still there.
+  buf.bindCursor(viewA);
+  assert.equal(buf.point, 3, 'A kept its 3');
+  assert.equal(viewA.point, 3);
+});
+
+test('bindCursor(null): reverts to the local backing', () => {
+  const buf = createBuffer('hello');
+  const view = { point: 2, mark: null };
+  buf.bindCursor(view);
+  assert.equal(buf.point, 2);
+  buf.bindCursor(null);
+  assert.equal(buf.point, 0, 'local backing was never moved');
+});
+
+test('insert and delete through a bound view land in the view', () => {
+  const buf = createBuffer('hello');
+  const view = { point: 0, mark: null };
+  buf.bindCursor(view);
+  buf.moveTo(5);
+  buf.insert('!');
+  assert.equal(buf.text, 'hello!');
+  assert.equal(view.point, 6);
+  buf.deleteBackward();
+  assert.equal(buf.text, 'hello');
+  assert.equal(view.point, 5);
+});
+
+test('undo through a bound view writes the restored cursor into the view', () => {
+  const buf = createBuffer('hello');
+  const view = { point: 0, mark: null };
+  buf.bindCursor(view);
+  buf.moveTo(5);
+  buf.insert(' world');
+  assert.equal(view.point, 11);
+  buf.undo();
+  // The buffer keeps its own offset on each history record (storage's
+  // `lastChange`); on undo the consumer writes it back into the bound
+  // view.
+  assert.equal(view.point, 5);
+  assert.equal(view.mark, null);
+});

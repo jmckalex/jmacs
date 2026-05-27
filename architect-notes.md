@@ -7,6 +7,38 @@ flagged so the standing instructions can be updated if you disagree.
 
 ---
 
+## [2026-05-26 phase-3a] Pane-direction keybinding — placeholder pending your call
+
+**Context**: PANES-PHASE-3A.md's keymap brief explicitly defers the
+final choice of pane-direction navigation binding to you. I picked
+something to land 3a green; flagging it so you can swap.
+
+**What I bound**: `c-x-keymap` gained `C-left`/`C-right`/`C-up`/`C-down`
+→ `focus-pane-{left,right,up,down}`. Reasoning: the bare `C-x left/right`
+slots are taken (`previous-view`/`next-view` — view-list navigation,
+which is *not* the same as pane-direction navigation); `C-x C-<arrow>`
+is the obvious next door over.
+
+**Alternatives worth considering**:
+
+- **`M-S-<arrow>` (top-level)**: bypasses the C-x prefix entirely;
+  matches some tiling-WM defaults. Cost: M-S- is currently free in
+  `the-keymap` so there's no collision, but four more top-level
+  bindings is a chunk of the keyboard.
+- **`C-x C-<arrow>` (what I picked)**: stays inside the pane prefix
+  alongside `C-x 2/3/0/1/o`; uses keys that were free; doesn't
+  consume top-level shortcuts. Cost: requires a two-step chord.
+- **A fresh `C-x w` (or similar) submap**: e.g. `C-x w <arrow>`,
+  matching Emacs's `windmove` package's default. Cost: another
+  level of prefix; useful if more pane commands accumulate.
+
+**State of the work**: bindings landed in `keymap.lisp` (commit 4,
+agent-pane-splits). The Lisp commands themselves are stable
+regardless of which keys end up bound to them — re-binding is a
+one-line change in `keymap.lisp`.
+
+---
+
 ## [2026-05-26 phase-1] View/buffer split — decisions made under the brief
 
 Phase 1 of `plans/PANES.md` landed on `agent-view-buffer-split`. The

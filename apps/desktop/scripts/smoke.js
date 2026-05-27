@@ -2583,6 +2583,162 @@ app.whenReady().then(() => {
       console.log('  findFile:', JSON.stringify(findFile));
       await rm(ffPath, { force: true });
 
+      // Multi-pane arm (phase 3a of plans/PANES.md): split the editor
+      // area into two panes, assert focus + per-view-point behaviour,
+      // cycle focus with `other-pane`, then collapse back to one pane
+      // and finally drive a splitter drag programmatically. The arm
+      // composes all of commit 4–5's user-visible behaviour.
+      const paneA = '/tmp/jmacs-smoke-pane-a.txt';
+      const paneB = '/tmp/jmacs-smoke-pane-b.txt';
+      await writeFile(paneA, 'pane a — left side\nsecond line a', 'utf8');
+      await writeFile(paneB, 'pane b — right side\nsecond line b', 'utf8');
+      const panes = await win.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const lastResult = () => {
+          const all = document.querySelectorAll('.repl-result');
+          return all.length ? all[all.length - 1].textContent : '';
+        };
+        const editorHost = document.getElementById('editor-host');
+        const countPanes = () =>
+          editorHost.querySelectorAll('.pane').length;
+        const focusedPaneId = () =>
+          editorHost.querySelector('.pane--focused')?.dataset?.paneId ?? null;
+        // Land on the first pane-a file so the originating pane has
+        // a known, fresh text view.
+        submit('(open-file-path! "${paneA}")');
+        await wait(300);
+        const paneCountBefore = countPanes();
+        const focusBefore = focusedPaneId();
+        const nameBefore = document.getElementById('modeline-name')
+          ?.textContent ?? '';
+
+        // Split horizontally (side-by-side) — bound to C-x 3.
+        submit('(split-horizontal!)');
+        await wait(250);
+        const paneCountAfterSplit = countPanes();
+        const focusAfterSplit = focusedPaneId();
+        const focusStayed = focusAfterSplit === focusBefore;
+
+        // After split, the right pane was given a duplicate view over
+        // the same buffer. Move the *focused* (left) pane's point so
+        // we can verify the two cursors are independent.
+        submit('(goto! 5)');
+        await wait(80);
+        submit('(point)');
+        await wait(80);
+        const leftPointEcho = lastResult();
+
+        // Cycle focus to the other pane (C-x o → other-pane).
+        submit('(other-pane!)');
+        await wait(200);
+        const focusAfterOther = focusedPaneId();
+        const cycled = focusAfterOther && focusAfterOther !== focusBefore;
+        // The right pane holds the duplicate view; its point is the
+        // copied original (0 — we hadn't moved the original cursor
+        // before splitting). Read it.
+        submit('(point)');
+        await wait(80);
+        const rightPointEcho = lastResult();
+
+        // Switch the focused (right) pane to the second test file.
+        // Auto-duplicate doesn't apply (different file); the view list
+        // grows by one and the right pane shows it. The collision rule
+        // doesn't fire because no other pane shows that file.
+        submit('(open-file-path! "${paneB}")');
+        await wait(350);
+        const rightNameAfterOpen = document.getElementById('modeline-name')
+          ?.textContent ?? '';
+
+        // Cycle back to the left pane and verify its name is still A.
+        submit('(other-pane!)');
+        await wait(200);
+        const leftNameAfterCycle = document.getElementById('modeline-name')
+          ?.textContent ?? '';
+
+        // delete-other-panes from the left pane (C-x 1): collapses
+        // back to one pane, with the left pane's view as the survivor.
+        submit('(delete-other-panes!)');
+        await wait(200);
+        const paneCountAfterCollapse = countPanes();
+        const focusAfterCollapse = focusedPaneId();
+        const nameAfterCollapse = document.getElementById('modeline-name')
+          ?.textContent ?? '';
+
+        // Splitter drag: split again, grab the handle, drag it, and
+        // verify the resulting pane-A rect shrank. This validates the
+        // pointer-capture path end-to-end.
+        submit('(split-horizontal!)');
+        await wait(200);
+        const splitter = editorHost.querySelector('.pane-splitter');
+        const splitterShown = !!splitter;
+        let widthBefore = 0;
+        let widthAfter = 0;
+        let splitterClass = '';
+        if (splitter) {
+          const leaves = editorHost.querySelectorAll('.pane');
+          widthBefore = leaves[0].getBoundingClientRect().width;
+          splitterClass = splitter.className;
+          const hostRect = editorHost.getBoundingClientRect();
+          // Drag the splitter ~100px to the left.
+          const startX = splitter.getBoundingClientRect().left + 2;
+          const targetX = startX - 100;
+          splitter.dispatchEvent(new PointerEvent('pointerdown', {
+            pointerId: 7, button: 0, clientX: startX, clientY: 100,
+            bubbles: true, cancelable: true,
+          }));
+          window.dispatchEvent(new PointerEvent('pointermove', {
+            pointerId: 7, clientX: targetX, clientY: 100,
+            bubbles: true, cancelable: true,
+          }));
+          window.dispatchEvent(new PointerEvent('pointerup', {
+            pointerId: 7, clientX: targetX, clientY: 100,
+            bubbles: true, cancelable: true,
+          }));
+          await wait(80);
+          widthAfter = editorHost.querySelectorAll('.pane')[0]
+            .getBoundingClientRect().width;
+        }
+
+        // Tidy: collapse back so subsequent arms (none in this commit,
+        // but good housekeeping) see a single pane.
+        submit('(delete-other-panes!)');
+        await wait(150);
+        const paneCountFinal = countPanes();
+
+        return {
+          paneCountBefore,
+          focusBefore,
+          nameBefore,
+          paneCountAfterSplit,
+          focusAfterSplit,
+          focusStayed,
+          leftPointEcho,
+          rightPointEcho,
+          cycled,
+          rightNameAfterOpen,
+          leftNameAfterCycle,
+          paneCountAfterCollapse,
+          focusAfterCollapse,
+          nameAfterCollapse,
+          splitterShown,
+          splitterClass,
+          widthBefore,
+          widthAfter,
+          paneCountFinal,
+        };
+      })()`);
+      console.log('  panes:', JSON.stringify(panes));
+      await rm(paneA, { force: true });
+      await rm(paneB, { force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -2890,6 +3046,32 @@ app.whenReady().then(() => {
         findFile.seed.endsWith('/') &&
         findFile.completed === '/tmp/jmacs-smoke-find-file.txt' &&
         findFile.opened2.includes('jmacs-smoke-find-file.txt');
+      // Multi-pane arm: splits land, focus stays on the originating
+      // (left) pane, the right pane gets a duplicate view; other-pane
+      // cycles focus; opening a different file in the right pane
+      // moves only that pane; delete-other-panes collapses back to
+      // one pane on the original; the splitter handle drags.
+      const panesOk =
+        panes.paneCountBefore === 1 &&
+        panes.paneCountAfterSplit === 2 &&
+        panes.focusStayed === true &&
+        // Per-view-point: the left pane's point is 5 (we set it); the
+        // right pane (duplicate view over the same buffer) has its own
+        // point that wasn't touched by the set on the left.
+        panes.leftPointEcho === '5' &&
+        panes.rightPointEcho !== panes.leftPointEcho &&
+        panes.cycled === true &&
+        panes.rightNameAfterOpen.includes('jmacs-smoke-pane-b.txt') &&
+        panes.leftNameAfterCycle.includes('jmacs-smoke-pane-a.txt') &&
+        panes.paneCountAfterCollapse === 1 &&
+        panes.focusAfterCollapse === panes.focusBefore &&
+        panes.nameAfterCollapse.includes('jmacs-smoke-pane-a.txt') &&
+        panes.splitterShown === true &&
+        panes.splitterClass.includes('pane-splitter--horizontal') &&
+        panes.widthBefore > 0 &&
+        panes.widthAfter > 0 &&
+        Math.abs(panes.widthBefore - panes.widthAfter) > 50 &&
+        panes.paneCountFinal === 1;
 
       if (
         renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
@@ -2900,7 +3082,7 @@ app.whenReady().then(() => {
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
         tablineOk && langPackOk && treeOk && colsOk && shellOk &&
-        chordOk && findFileOk
+        chordOk && findFileOk && panesOk
       ) {
         finish(
           0,
@@ -3009,8 +3191,10 @@ app.whenReady().then(() => {
         finish(1, `directory tree-view did not work (${JSON.stringify(tree)})`);
       } else if (!colsOk) {
         finish(1, `directory columns-view did not work (${JSON.stringify(cols)})`);
-      } else {
+      } else if (!shellOk) {
         finish(1, `shell buffer did not work (${JSON.stringify(shell)})`);
+      } else {
+        finish(1, `multi-pane splits did not work (${JSON.stringify(panes)})`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);

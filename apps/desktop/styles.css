@@ -241,18 +241,51 @@ body {
 .pane {
   position: absolute;
   overflow: hidden;
-  /* A 1px transparent border keeps the pane the same size when the
-     focus indicator toggles on/off — no reflow on focus change. */
-  border: 1px solid transparent;
+  /* A subtle 1px border outlines every pane so the user can see where
+     one ends and the next begins. The focused pane swaps it for the
+     accent border + inset shadow below. Box-sizing keeps the content
+     area stable across the focus toggle — no reflow on focus change. */
+  border: 1px solid color-mix(in srgb, var(--fg-dim) 40%, transparent);
   box-sizing: border-box;
 }
 
 /* Subtle border shading for the focused pane (plans/PANES.md, "Focus
-   indication"). With one pane this is invisible; phase 3 lights it up
-   when multiple leaves are on screen. */
+   indication"). Phase 3a: visible whenever multiple leaves are on
+   screen. The colour is the accent; opacity is muted so the indicator
+   doesn't compete with content but is unmistakable at a glance. */
 .pane--focused {
   border-color: var(--accent);
   opacity: 1;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+/* --- pane splitter ------------------------------------------------- */
+/* A draggable thin div per split-node interior edge in the pane tree
+   (plans/PANES.md, phase 3a). Absolute-positioned inside #editor-host
+   alongside the leaf panes. Transparent at rest; a thin accent
+   highlight on hover / drag. */
+.pane-splitter {
+  position: absolute;
+  background: transparent;
+  z-index: 2;
+  user-select: none;
+}
+
+.pane-splitter--horizontal {
+  /* A horizontal split divides side-by-side; the handle is a vertical
+     bar between left and right children; resize cursor is col-resize. */
+  cursor: col-resize;
+}
+
+.pane-splitter--vertical {
+  /* A vertical split divides top/bottom; the handle is a horizontal
+     bar; resize cursor is row-resize. */
+  cursor: row-resize;
+}
+
+.pane-splitter:hover,
+.pane-splitter--dragging {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .editor {

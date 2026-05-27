@@ -11,7 +11,19 @@
 
 import { createBuffer } from '@editor/buffer';
 import { createView, createKindRegistry, viewFilePath } from '@editor/view';
-import { createLeafPane, computeRects, leafPanes } from '@editor/pane';
+import {
+  createLeafPane,
+  createSplitPane,
+  computeRects,
+  computeSplitterEdges,
+  leafPanes,
+  paneInDirection,
+  parentOf,
+  replacePane,
+  siblingOf,
+  SPLIT_HORIZONTAL,
+  SPLIT_VERTICAL,
+} from '@editor/pane';
 import {
   arrayToList,
   cons,
@@ -350,6 +362,12 @@ function relayoutPanes() {
     el.style.width = `${rect.width}px`;
     el.style.height = `${rect.height}px`;
   }
+  // Keep the splitter handles aligned with their split-node edges.
+  // Phase 3a — refreshSplitterHandles is a no-op on a one-leaf tree
+  // (computeSplitterEdges returns no entries).
+  if (typeof refreshSplitterHandles === 'function') {
+    refreshSplitterHandles();
+  }
 }
 
 /** Schedule a relayout for the next animation frame. Coalesces a burst
@@ -417,29 +435,465 @@ function refreshPaneFocusIndicators() {
 editorHostEl.addEventListener('click', (event) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
+  // Splitter handles aren't panes — clicking one focuses nothing.
+  if (target.closest('.pane-splitter')) return;
   const paneEl = target.closest('.pane');
   if (!paneEl) return;
   const paneId = paneEl.dataset.paneId;
   if (typeof paneId !== 'string' || paneId === currentPaneId) return;
-  currentPaneId = paneId;
-  refreshPaneFocusIndicators();
+  setCurrentPaneId(paneId);
 });
+
+/** Set the currently-focused pane id and refresh derived state:
+ *  the focus indicator, the cursor binding for the new focused
+ *  text view's buffer, the `editorView` pointer the legacy callsites
+ *  use, the modeline, and `currentViewIndex` (so view-list cycling
+ *  treats the focused pane's view as "current"). With two views over
+ *  one buffer (Q9 auto-duplicate), the bindCursor rebind here is
+ *  what gives the active view its own cursor on focus change. */
+function setCurrentPaneId(nextId) {
+  if (typeof nextId !== 'string' || nextId === currentPaneId) return;
+  currentPaneId = nextId;
+  refreshPaneFocusIndicators();
+  const leaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
+  if (!leaf) return;
+  const view = leaf.view;
+  if (view) {
+    // Sync currentViewIndex so view-list cycling and the modeline
+    // reflect the focused pane's view. This is index-based on `views`
+    // so we look it up rather than mutating from the click handler.
+    const idx = views.indexOf(view);
+    if (idx >= 0) currentViewIndex = idx;
+    if (view.kind === 'text' && view.buffer) {
+      // Rebind the buffer's cursor source to this view, so a buffer
+      // shared between panes serves each view its own point/mark.
+      if (typeof view.buffer.bindCursor === 'function') {
+        view.buffer.bindCursor(view);
+      }
+      currentTextBuffer = view.buffer;
+    }
+    // Re-point the legacy `editorView` pointer at the focused leaf's
+    // instance. Sticky-notes, hover-doc and inline-eval keep their
+    // bindings to the *original* instance — that's an acknowledged
+    // 3a limitation (they were captured at startup and don't follow
+    // focus). Text editing commands routed via the buffer keep working
+    // through the bindCursor path above.
+    const instance = editorViewByPaneId.get(currentPaneId);
+    if (instance) {
+      editorView = instance;
+    }
+  }
+  if (typeof updateModeline === 'function') updateModeline();
+}
 
 // Paint the initial focus indicator. With one pane this just adds the
 // class to the only leaf.
 refreshPaneFocusIndicators();
+
+// --- pane splits + navigation (phase 3a) -------------------------------
+//
+// The host-side implementation of split-horizontal! / split-vertical! /
+// delete-pane! / delete-other-panes! / other-pane / focus-pane-direction!
+// / balance-panes! / set-split-ratio! — invoked from `paneHost` above.
+//
+// Tree mutations go through `replacePane` (structural sharing); the
+// focus pane id, the editor-view instance map, and the splitter handle
+// divs follow.
+
+/** Build the duplicate view a freshly-split text pane gets, or the
+ *  fallback `*scratch*` view for non-text origins. The new view is
+ *  appended to `views` and a fresh editor-view instance is constructed
+ *  for it once its pane element exists. */
+function buildDuplicateViewForSplit(originalView) {
+  if (originalView && originalView.kind === 'text' && originalView.buffer) {
+    // Q9 auto-duplicate path: a new View over the *same* buffer, with
+    // a fresh point copied from the original and mark cleared. The
+    // view list grows by one entry; the buffer is shared.
+    const dup = createView({
+      kind: 'text',
+      buffer: originalView.buffer,
+      point: typeof originalView.point === 'number' ? originalView.point : 0,
+    });
+    views.push(dup);
+    notifyViewsChanged();
+    return dup;
+  }
+  // Non-text origin: drop a fresh empty *scratch* text view in the new
+  // pane (the brief's "predictable default"). The non-text singleton
+  // stays mounted in the originating pane.
+  const scratch = createView({
+    kind: 'text',
+    buffer: createBuffer('', { name: '*scratch*' }),
+  });
+  views.push(scratch);
+  notifyViewsChanged();
+  return scratch;
+}
+
+/** Common implementation of split-horizontal! / split-vertical!.
+ *  Replaces TARGET (a leaf) with a split node; the originating leaf
+ *  becomes the *first* child and keeps focus, a freshly-created leaf
+ *  becomes the *second*. Returns `{ first, second }`. */
+function splitPaneAtLeaf(targetLeaf, orientation, ratio) {
+  if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
+  if (
+    orientation !== SPLIT_HORIZONTAL &&
+    orientation !== SPLIT_VERTICAL
+  ) return null;
+  const dup = buildDuplicateViewForSplit(targetLeaf.view);
+  const newLeaf = createLeafPane({ view: dup });
+  const split = createSplitPane({
+    orientation,
+    ratio,
+    first: targetLeaf,
+    second: newLeaf,
+  });
+  rootPane = replacePane(rootPane, targetLeaf, split);
+  syncPaneElements();
+  // Build the editor-view instance for the new (text) leaf so its pane
+  // renders at once. The focused leaf is unchanged; the editor view
+  // mount for the focused view re-runs as part of the relayout.
+  if (dup && dup.kind === 'text') {
+    // The new pane's div was created by syncPaneElements; ensure its
+    // editor-view exists and is bound to the duplicate view.
+    ensureEditorViewForLeaf(newLeaf);
+  }
+  // currentPaneId stays the same — the originating leaf survived as the
+  // first child with its id intact. Refresh the indicator + splitters,
+  // then relayout. The kindRegistry's text mount already ran for the
+  // focused view earlier; no need to re-mount here.
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+  return { first: targetLeaf, second: newLeaf };
+}
+
+/** Implementation of `delete-pane!`. Collapses TARGET's parent split
+ *  into TARGET's sibling, drops a layer of the tree. No-op when TARGET
+ *  is the root (the only pane in the window). */
+function deletePaneInTree(targetLeaf) {
+  if (!targetLeaf || targetLeaf.kind !== 'leaf') return;
+  const parent = parentOf(rootPane, targetLeaf);
+  if (!parent) {
+    // TARGET is the root — there's no parent split to collapse. The
+    // editor area always has at least one pane; no-op.
+    return;
+  }
+  const sibling = siblingOf(rootPane, targetLeaf);
+  if (!sibling) return;
+  // Dispose the editor-view instance bound to the deleted leaf (text
+  // leaves only). Non-text views' singletons stay alive — they may
+  // outlive the pane they were originally mounted in.
+  disposeEditorViewForLeaf(targetLeaf);
+  rootPane = replacePane(rootPane, parent, sibling);
+  syncPaneElements();
+  // Focus follows: if the deleted leaf held focus, the sibling's first
+  // leaf takes over. Otherwise the existing focus survives.
+  if (currentPaneId === targetLeaf.id) {
+    const leaves = leafPanes(sibling);
+    if (leaves.length > 0) {
+      const next = leaves[0];
+      currentPaneId = next.id;
+      const view = next.view;
+      if (view) {
+        const idx = views.indexOf(view);
+        if (idx >= 0) currentViewIndex = idx;
+        if (view.kind === 'text' && view.buffer) {
+          if (typeof view.buffer.bindCursor === 'function') {
+            view.buffer.bindCursor(view);
+          }
+          currentTextBuffer = view.buffer;
+        }
+        const instance = editorViewByPaneId.get(next.id);
+        if (instance) editorView = instance;
+        // Re-run the mount for the surviving pane's view so its
+        // renderer is correctly displayed.
+        hideInactiveRendererViews(view.kind);
+        kindRegistry.mount(view);
+      }
+    }
+  }
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+  if (typeof updateModeline === 'function') updateModeline();
+}
+
+/** Implementation of `delete-other-panes!`. Makes TARGET fill the
+ *  whole editor area, disposing every other leaf's editor-view
+ *  instance (text leaves only). */
+function deleteOtherPanesInTree(targetLeaf) {
+  if (!targetLeaf || targetLeaf.kind !== 'leaf') return;
+  if (rootPane === targetLeaf) return;
+  // Dispose every editor-view instance for leaves that are about to
+  // disappear (text leaves only — non-text singletons aren't per-pane).
+  for (const leaf of leafPanes(rootPane)) {
+    if (leaf === targetLeaf) continue;
+    disposeEditorViewForLeaf(leaf);
+  }
+  rootPane = targetLeaf;
+  syncPaneElements();
+  if (currentPaneId !== targetLeaf.id) {
+    currentPaneId = targetLeaf.id;
+    const view = targetLeaf.view;
+    if (view) {
+      const idx = views.indexOf(view);
+      if (idx >= 0) currentViewIndex = idx;
+      if (view.kind === 'text' && view.buffer) {
+        if (typeof view.buffer.bindCursor === 'function') {
+          view.buffer.bindCursor(view);
+        }
+        currentTextBuffer = view.buffer;
+      }
+      const instance = editorViewByPaneId.get(targetLeaf.id);
+      if (instance) editorView = instance;
+    }
+  }
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+  if (typeof updateModeline === 'function') updateModeline();
+}
+
+/** Cycle focus to the next leaf in display order (depth-first).
+ *  Returns the new current pane handle. */
+function focusNextPane() {
+  const leaves = leafPanes(rootPane);
+  if (leaves.length <= 1) return currentPane();
+  const i = leaves.findIndex((l) => l.id === currentPaneId);
+  const next = leaves[(i < 0 ? 0 : i + 1) % leaves.length];
+  setCurrentPaneId(next.id);
+  return next;
+}
+
+/** Spatial pane navigation: focus the leaf adjacent to the current one
+ *  in DIRECTION. Returns the new current pane handle, or null when
+ *  there's no neighbour on that side. */
+function focusPaneByDirection(direction) {
+  const hostRect = editorHostEl.getBoundingClientRect();
+  const rects = computeRects(rootPane, {
+    width: hostRect.width,
+    height: hostRect.height,
+  });
+  const targetId = paneInDirection(rects, currentPaneId, direction);
+  if (targetId === null) return null;
+  setCurrentPaneId(targetId);
+  return leafPanes(rootPane).find((l) => l.id === targetId) ?? null;
+}
+
+/** Reset every split node's ratio to 0.5. The tree is structurally
+ *  shared by the splits; the ratios are mutable fields on each node, so
+ *  we walk and write in place. A relayout follows. */
+function balancePanesInTree() {
+  walkAndBalance(rootPane);
+  refreshSplitterHandles();
+  scheduleRelayout();
+}
+
+function walkAndBalance(node) {
+  if (!node || node.kind !== 'split') return;
+  node.ratio = 0.5;
+  walkAndBalance(node.first);
+  walkAndBalance(node.second);
+}
+
+/** Set a split node's ratio in place (the layout reads the live ratio
+ *  each frame). RATIO is assumed already clamped by the caller. */
+function setSplitRatioOnNode(splitNode, ratio) {
+  if (!splitNode || splitNode.kind !== 'split') return;
+  splitNode.ratio = ratio;
+  refreshSplitterHandles();
+  scheduleRelayout();
+}
+
+// --- splitter handle DOM + drag ----------------------------------------
+//
+// One thin div per split-node's interior edge. The handle's pointerdown
+// captures, pointermove updates the split node's ratio, pointerup
+// releases. Coalesced relayouts through scheduleRelayout().
+
+/** Map from split-pane id to the splitter-handle <div>. Rebuilt on
+ *  every tree change so stale ids drop out. */
+const splitterHandlesById = new Map();
+
+const SPLITTER_THICKNESS = 4;
+const SPLITTER_MIN_RATIO = 0.05;
+const SPLITTER_MAX_RATIO = 0.95;
+
+function clampSplitterRatio(r) {
+  if (typeof r !== 'number' || Number.isNaN(r)) return 0.5;
+  if (r < SPLITTER_MIN_RATIO) return SPLITTER_MIN_RATIO;
+  if (r > SPLITTER_MAX_RATIO) return SPLITTER_MAX_RATIO;
+  return r;
+}
+
+/** Rebuild the splitter handles to match the current tree. Existing
+ *  handles whose split id still appears are reused (so any in-flight
+ *  pointer capture survives); stale ones are removed; new ones get a
+ *  pointerdown listener that drives the drag. */
+function refreshSplitterHandles() {
+  const hostRect = editorHostEl.getBoundingClientRect();
+  const edges = computeSplitterEdges(rootPane, {
+    width: hostRect.width,
+    height: hostRect.height,
+  }, { thickness: SPLITTER_THICKNESS });
+  const live = new Set(edges.map((e) => e.splitId));
+  for (const [id, el] of splitterHandlesById) {
+    if (!live.has(id)) {
+      el.remove();
+      splitterHandlesById.delete(id);
+    }
+  }
+  for (const edge of edges) {
+    let el = splitterHandlesById.get(edge.splitId);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = `pane-splitter pane-splitter--${edge.orientation}`;
+      el.dataset.splitId = edge.splitId;
+      attachSplitterDrag(el);
+      editorHostEl.append(el);
+      splitterHandlesById.set(edge.splitId, el);
+    } else {
+      // Orientation is fixed per split (the tree doesn't reshape on
+      // resize) but defensively keep the class in sync.
+      el.className = `pane-splitter pane-splitter--${edge.orientation}`;
+    }
+    el.style.left = `${edge.left}px`;
+    el.style.top = `${edge.top}px`;
+    el.style.width = `${edge.width}px`;
+    el.style.height = `${edge.height}px`;
+  }
+}
+
+/** Find a split node in the tree by id. The walk is O(n) in tree size;
+ *  splits are rare so a Map cache isn't worth it. */
+function findSplitById(node, id) {
+  if (!node) return null;
+  if (node.kind === 'split') {
+    if (node.id === id) return node;
+    return findSplitById(node.first, id) ?? findSplitById(node.second, id);
+  }
+  return null;
+}
+
+/** Wire pointer events on a splitter handle so dragging it updates the
+ *  bordering split node's ratio. */
+function attachSplitterDrag(handle) {
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const splitId = handle.dataset.splitId;
+    if (!splitId) return;
+    const splitNode = findSplitById(rootPane, splitId);
+    if (!splitNode) return;
+    event.preventDefault();
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      /* setPointerCapture can throw mid-test; the drag still works
+         through the document-level listeners below. */
+    }
+    handle.classList.add('pane-splitter--dragging');
+    const hostRect = editorHostEl.getBoundingClientRect();
+    const isHorizontal = splitNode.orientation === SPLIT_HORIZONTAL;
+    // The split node's bounding rect — we compute fresh, since nested
+    // splits don't fill the whole host.
+    const rects = computeRects(rootPane, {
+      width: hostRect.width,
+      height: hostRect.height,
+    });
+    // The split's rect is the union of its leaves' rects in the
+    // appropriate axis. Easier: re-walk the tree and find the parent
+    // rect by tracking which subtree we're inside.
+    const parentRect = computeSplitNodeRect(rootPane, splitId, {
+      left: 0, top: 0,
+      width: hostRect.width, height: hostRect.height,
+    }) ?? rects.values().next().value;
+    const start = isHorizontal ? event.clientX : event.clientY;
+    const startRatio = splitNode.ratio;
+    const onMove = (ev) => {
+      const pos = isHorizontal ? ev.clientX : ev.clientY;
+      const delta = pos - start;
+      const denominator = isHorizontal ? parentRect.width : parentRect.height;
+      const ratio = clampSplitterRatio(
+        denominator > 0 ? startRatio + delta / denominator : startRatio
+      );
+      splitNode.ratio = ratio;
+      scheduleRelayout();
+      refreshSplitterHandles();
+    };
+    const onUp = (ev) => {
+      handle.classList.remove('pane-splitter--dragging');
+      try {
+        handle.releasePointerCapture(ev.pointerId);
+      } catch { /* ignore */ }
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+}
+
+/** Walk the tree to find the rect of a particular split node. */
+function computeSplitNodeRect(node, id, rect) {
+  if (!node) return null;
+  if (node.kind === 'split' && node.id === id) return rect;
+  if (node.kind !== 'split') return null;
+  if (node.orientation === SPLIT_HORIZONTAL) {
+    const firstW = Math.max(0, Math.round(rect.width * node.ratio));
+    const secondW = Math.max(0, rect.width - firstW);
+    const found = computeSplitNodeRect(node.first, id, {
+      left: rect.left, top: rect.top, width: firstW, height: rect.height,
+    });
+    if (found) return found;
+    return computeSplitNodeRect(node.second, id, {
+      left: rect.left + firstW, top: rect.top,
+      width: secondW, height: rect.height,
+    });
+  }
+  const firstH = Math.max(0, Math.round(rect.height * node.ratio));
+  const secondH = Math.max(0, rect.height - firstH);
+  const found = computeSplitNodeRect(node.first, id, {
+    left: rect.left, top: rect.top, width: rect.width, height: firstH,
+  });
+  if (found) return found;
+  return computeSplitNodeRect(node.second, id, {
+    left: rect.left, top: rect.top + firstH,
+    width: rect.width, height: secondH,
+  });
+}
 
 /** Hide every renderer view's DOM, then leave the kind registry to
  *  re-mount the active one. Pause the standalone media players and
  *  the shell view when they're being unmounted so a hidden view
  *  doesn't keep playing / streaming into nothing.
  *
- *  This single helper replaces the old per-kind switch statement; the
- *  kind registry's spec.mount(view) takes over from here.
+ *  Phase 3a: the per-pane editor-view instances each manage their own
+ *  display through their pane element — a text leaf's instance is
+ *  visible whenever the leaf's pane element exists. The focused
+ *  pane's instance is *always* visible when its view kind is text;
+ *  a focused pane showing a non-text view hides the text instance
+ *  attached to that same pane (the non-text singleton overlays it).
+ *  Non-focused text panes are unaffected by the focused pane's kind.
  *
  *  @param {string} activeKind */
 function hideInactiveRendererViews(activeKind) {
-  editorView.element.style.display = activeKind === 'text' ? '' : 'none';
+  // The focused pane's editor-view instance (if any) follows the
+  // active kind — visible iff the focused view is text.
+  const focusedInstance = currentPaneId
+    ? editorViewByPaneId.get(currentPaneId)
+    : null;
+  if (focusedInstance) {
+    focusedInstance.element.style.display = activeKind === 'text' ? '' : 'none';
+  }
+  // Non-focused text-pane editor instances stay visible — they belong
+  // to other panes and aren't affected by what the focused pane shows.
+  for (const [paneId, instance] of editorViewByPaneId) {
+    if (paneId === currentPaneId) continue;
+    instance.element.style.display = '';
+  }
   customizeView.element.style.display =
     activeKind === 'customize' ? '' : 'none';
   imageView.element.style.display = activeKind === 'image' ? '' : 'none';
@@ -460,19 +914,23 @@ function hideInactiveRendererViews(activeKind) {
 /** Switch to the view at INDEX: dispatch through the kind registry to
  *  mount the matching renderer view, and update the modeline.
  *
- *  Phase 2 of plans/PANES.md: the current leaf pane's `view` is updated
- *  to point at the freshly-switched-to view. With one leaf this is the
- *  only place a leaf's view changes; phase 3's split commands will
- *  open new leaves with their own views. */
+ *  Phase 3a of plans/PANES.md: the *currently focused* leaf pane's
+ *  `view` is updated to point at the freshly-switched-to view, so
+ *  `(current-view)` (which resolves through `(current-pane)`) finds
+ *  the right handle. With one leaf this falls back to that leaf;
+ *  with multiple leaves the switch only affects the focused one. */
 function switchToViewIndex(index) {
   if (index < 0 || index >= views.length) return null;
   dismissSplash();
   currentViewIndex = index;
   const view = views[index];
-  // Update the (single, this phase) leaf pane's view so (current-view)
-  // resolving through (current-pane) finds the right handle.
-  const leaves = leafPanes(rootPane);
-  if (leaves.length > 0) leaves[0].view = view;
+  const focused = currentPane();
+  if (focused) {
+    focused.view = view;
+  } else {
+    const leaves = leafPanes(rootPane);
+    if (leaves.length > 0) leaves[0].view = view;
+  }
   hideInactiveRendererViews(view.kind);
   kindRegistry.mount(view);
   updateModeline();
@@ -481,10 +939,29 @@ function switchToViewIndex(index) {
 }
 
 /** Switch to a specific view handle (not by index). Returns the view
- *  switched to, or `null` when the handle isn't in the list. */
+ *  switched to, or `null` when the handle isn't in the list.
+ *
+ *  Phase 3a, Q9 collision rule: when TARGET is already the view in
+ *  some *other* pane of the current window, the switch is refused —
+ *  the workflow for "two views of the same file" is the auto-
+ *  duplicate path on `open-file-path!` (commit 5), not switch-to-view.
+ *  Refused calls log a REPL error and return null. */
 function switchToView(view) {
   const idx = views.indexOf(view);
   if (idx < 0) return null;
+  const focused = currentPane();
+  if (focused) {
+    for (const leaf of leafPanes(rootPane)) {
+      if (leaf === focused) continue;
+      if (leaf.view === view) {
+        repl.appendError(
+          `switch-to-view: view "${view.name ?? '?'}" is already shown ` +
+          `in another pane; use open-file to show it side-by-side`
+        );
+        return null;
+      }
+    }
+  }
   return switchToViewIndex(idx);
 }
 
@@ -762,6 +1239,37 @@ async function openFileInteractive() {
     const result = await window.host.openFile();
     if (result === null) return;
     if (openAsMediaViewIfRecognised(result)) return;
+    // Q9 (plans/PANES.md): when the chosen file is already a text view
+    // visible in some *other* pane, take the auto-duplicate path —
+    // fresh View over the same buffer with its own point/mark, switch
+    // the current pane to it. The buffer keeps its content / metadata;
+    // we don't re-read the file from disk.
+    const existing = views.findIndex(
+      (v) => viewFilePath(v) === result.path
+    );
+    if (existing >= 0) {
+      const existingView = views[existing];
+      const focused = currentPane();
+      const showingElsewhere =
+        focused
+          ? leafPanes(rootPane).some(
+              (leaf) => leaf !== focused && leaf.view === existingView
+            )
+          : false;
+      if (
+        showingElsewhere &&
+        existingView.kind === 'text' &&
+        existingView.buffer
+      ) {
+        const dup = createView({ kind: 'text', buffer: existingView.buffer });
+        views.push(dup);
+        notifyViewsChanged();
+        switchToViewIndex(views.length - 1);
+        return;
+      }
+      switchToViewIndex(existing);
+      return;
+    }
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
     // Load the file's sticky notes from its companion metadata file,
@@ -871,13 +1379,37 @@ async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
       return null;
     }
     // De-dup by file path: surface the existing view rather than
-    // stacking a second copy. Without this, double-clicking the same
-    // file twice in the columns view (or `open-file-path!` from
-    // Lisp) would litter the tabline with identical entries.
+    // stacking a second copy — *unless* the existing view is already
+    // visible in another pane of the current window (Q9 auto-duplicate
+    // path, plans/PANES.md). In that case we create a *fresh* view
+    // over the same buffer with its own per-view-point, append it to
+    // the view list, and switch the current pane to it. The buffer is
+    // shared; the views (and their cursors) are independent.
     const existing = views.findIndex((v) => viewFilePath(v) === result.path);
     if (existing >= 0) {
+      const existingView = views[existing];
+      const focused = currentPane();
+      // Find any other pane already showing this view.
+      const showingElsewhere =
+        focused
+          ? leafPanes(rootPane).some(
+              (leaf) => leaf !== focused && leaf.view === existingView
+            )
+          : false;
+      if (
+        showingElsewhere &&
+        existingView.kind === 'text' &&
+        existingView.buffer
+      ) {
+        // Auto-duplicate: fresh View, fresh point/mark, same buffer.
+        const dup = createView({ kind: 'text', buffer: existingView.buffer });
+        views.push(dup);
+        notifyViewsChanged();
+        if (shouldSwitch) switchToViewIndex(views.length - 1);
+        return dup;
+      }
       if (shouldSwitch) switchToViewIndex(existing);
-      return views[existing];
+      return existingView;
     }
     if (openAsMediaViewIfRecognised(result, { switch: shouldSwitch })) {
       notifyViewsChanged();
@@ -1409,11 +1941,24 @@ let faceOverridesCache = null;
  *  dependency on `@editor/lisp` (the unit tests use stand-ins). */
 const lispFactories = { keyword, sym };
 
-/** The pane-host the Lisp pane-primitives operate through. With one
- *  leaf this phase the host returns the same leaf every call; phase 3
- *  exposes the split commands that grow the tree. */
+/** The pane-host the Lisp pane-primitives operate through. Phase 3a:
+ *  the split / delete / navigate methods land here, backed by the
+ *  immutable-replace tree helpers in `@editor/pane`. The host mutates
+ *  `rootPane` (rebinding the module-level binding when a split or
+ *  delete swaps a subtree) and reschedules a layout pass; the DOM and
+ *  editor-view instances follow. */
 const paneHost = {
   currentPane: () => currentPane(),
+  splitHorizontal: (pane, ratio) =>
+    splitPaneAtLeaf(pane, SPLIT_HORIZONTAL, ratio),
+  splitVertical: (pane, ratio) =>
+    splitPaneAtLeaf(pane, SPLIT_VERTICAL, ratio),
+  deletePane: (pane) => deletePaneInTree(pane),
+  deleteOtherPanes: (pane) => deleteOtherPanesInTree(pane),
+  otherPane: () => focusNextPane(),
+  focusPaneDirection: (direction) => focusPaneByDirection(direction),
+  balancePanes: () => balancePanesInTree(),
+  setSplitRatio: (pane, ratio) => setSplitRatioOnNode(pane, ratio),
 };
 
 /** The view-host the Lisp view-primitives operate through. Every
@@ -2493,17 +3038,83 @@ function refreshModeMenu() {
   window.host.setModeMenu(menu);
 }
 
-// --- editor view --------------------------------------------------------
+// --- editor view (per-pane instances) -----------------------------------
+//
+// Phase 3a of plans/PANES.md: each leaf pane that holds a text view owns
+// its own `createEditorView` instance, mounted inside that pane's div.
+// With one pane (the only case in this commit) there's one entry in
+// the map and `editorView` is that instance, so behaviour matches phase 2.
+// When commit 4's split commands land, the map grows by one entry per
+// leaf — each renders its own view, with its own cursor (per-view-point).
+//
+// The map is keyed by leaf pane id. The text kind's mount hook creates
+// an instance on first use and reuses it on subsequent mounts. Disposal
+// (commit 4) drops the entry and destroys the instance.
 
-const editorView = createEditorView(
-  currentTextBuffer,
-  editorPaneElement(),
-  {
+/** @type {Map<string, ReturnType<typeof createEditorView>>} */
+const editorViewByPaneId = new Map();
+
+/** The leaf pane whose view is currently focused. Used to resolve
+ *  `editorView` callsites that operate on the "current" instance. */
+function focusedTextLeafId() {
+  // For now, currentPaneId resolves through the pane focus model; with
+  // one pane it's that pane's id. The variable is declared above this
+  // section in the pane block.
+  return currentPaneId;
+}
+
+/** Create (or reuse) the editor-view instance for LEAF, mount it inside
+ *  the leaf's pane element, and point it at LEAF.view. */
+function ensureEditorViewForLeaf(leaf) {
+  const paneEl = paneElements.get(leaf.id);
+  if (!paneEl) return null;
+  let instance = editorViewByPaneId.get(leaf.id);
+  if (instance) {
+    // Re-attach if a re-layout detached the root (defensive).
+    if (instance.element.parentNode !== paneEl) {
+      paneEl.append(instance.element);
+    }
+    instance.setView(leaf.view);
+    return instance;
+  }
+  instance = createEditorView(leaf.view.buffer, paneEl, {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     highlighters,
     foldCaptures,
-  }
-);
+    // Per-view-point: each pane's renderer reads the cursor from
+    // *its* leaf's view, not from the global "current view". When a
+    // background pane re-renders (its buffer's shared text changed in
+    // another pane), it still draws its own cursor.
+    getPoint: () => {
+      const v = leaf.view;
+      return v && typeof v.point === 'number' ? v.point : 0;
+    },
+    getMark: () => {
+      const v = leaf.view;
+      return v && v.mark !== undefined ? v.mark : null;
+    },
+  });
+  editorViewByPaneId.set(leaf.id, instance);
+  return instance;
+}
+
+/** Dispose of the editor view bound to LEAF (commit 4 will call this
+ *  on pane deletion). Safe to call when no instance exists. */
+function disposeEditorViewForLeaf(leaf) {
+  const instance = editorViewByPaneId.get(leaf.id);
+  if (!instance) return;
+  instance.destroy();
+  editorViewByPaneId.delete(leaf.id);
+}
+
+// The "current" editor view — the instance bound to the focused leaf
+// pane. Reassigned by switchToViewIndex / focus changes. With one
+// pane this is the single instance; with several panes (commit 4) it
+// follows focus.
+const initialLeaf = leafPanes(rootPane)[0];
+ensureEditorViewForLeaf(initialLeaf);
+/** @type {ReturnType<typeof createEditorView>} */
+let editorView = /** @type {*} */ (editorViewByPaneId.get(initialLeaf.id));
 
 // --- the customisation view's data bridge ------------------------------
 // The view is decoupled from the Lisp; these turn registry data into
@@ -3019,7 +3630,22 @@ kindRegistry.register('text', {
   hasBuffer: true,
   mount: (view) => {
     currentTextBuffer = view.buffer;
-    editorView.setBuffer(view.buffer);
+    // Per-view-point (plans/PANES.md Q2): bind the buffer's cursor to
+    // the view so the buffer's `point`/`mark` API reads and writes the
+    // view's own fields. Two text views over one buffer can each own
+    // their cursor; switching to a view rebinds the buffer to it.
+    view.buffer.bindCursor(view);
+    // Per-pane edit-view instances (commit 3): the leaf that holds
+    // this view gets its own createEditorView, mounted in its pane
+    // div. With one pane this is the same instance every time; with
+    // splits there's one per leaf. `editorView` keeps tracking the
+    // focused leaf's instance for legacy callsites.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const instance = leaf ? ensureEditorViewForLeaf(leaf) : null;
+    if (instance) {
+      editorView = instance;
+      instance.setView(view);
+    }
     stickyNotes.setBuffer(view.buffer);
     watchCurrentBuffer();
     ensureMajorMode();
