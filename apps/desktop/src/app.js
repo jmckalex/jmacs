@@ -471,24 +471,31 @@ function refreshPaneFocusIndicators() {
   }
 }
 
-/** Set the current pane to the leaf whose div was clicked, if any.
+/** Set the current pane to the leaf whose div the user pressed in, if
+ *  any. Both `mousedown` and `click` are wired up: a press on the
+ *  editor content re-renders the line elements (the press target gets
+ *  detached), which suppresses the subsequent `click` event entirely —
+ *  so without the mousedown branch a click inside an editor *placed*
+ *  the cursor in that pane but never moved focus to it.
  *
  *  Runs on the bubble (no capture), doesn't preventDefault, and doesn't
  *  stop propagation — content inside the pane (the editor's
  *  cursor-positioning click, xterm.js's selection drag, image-view's
  *  pan/zoom, every renderer view) has already had its turn by the time
  *  this runs. */
-editorHostEl.addEventListener('click', (event) => {
+function focusPaneFromEvent(event) {
   const target = event.target;
   if (!(target instanceof Element)) return;
-  // Splitter handles aren't panes — clicking one focuses nothing.
+  // Splitter handles aren't panes — pressing one focuses nothing.
   if (target.closest('.pane-splitter')) return;
   const paneEl = target.closest('.pane');
   if (!paneEl) return;
   const paneId = paneEl.dataset.paneId;
   if (typeof paneId !== 'string' || paneId === currentPaneId) return;
   setCurrentPaneId(paneId);
-});
+}
+editorHostEl.addEventListener('mousedown', focusPaneFromEvent);
+editorHostEl.addEventListener('click', focusPaneFromEvent);
 
 /** Set the currently-focused pane id and refresh derived state:
  *  the focus indicator, the cursor binding for the new focused
