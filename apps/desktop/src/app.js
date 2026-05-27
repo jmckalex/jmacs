@@ -3797,7 +3797,7 @@ const directoryTreeView = createDirectoryTreeView(
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     openPath: (path) => {
-      openFileByPath(path);
+      openFileInTabAdjacent(path);
     },
     closeBuffer: () => {
       if (!keymapReady) return;
@@ -3823,7 +3823,7 @@ const directoryColumnsView = createDirectoryColumnsView(
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     getPreview: (path) => buildColumnPreview(path),
     openPath: (path) => {
-      openFileByPath(path);
+      openFileInTabAdjacent(path);
     },
     closeBuffer: () => {
       if (!keymapReady) return;
@@ -4984,6 +4984,43 @@ function ensureDirectoryColumnsViewForPath(rootPath) {
   });
   views.push(view);
   return view;
+}
+
+/** Open a file from a directory-tree / directory-columns row and place
+ *  it as a NEW TAB in the focused pane, promoting the pane to a
+ *  tabline first if it's still a plain leaf. The previous behaviour
+ *  was to call `openFileByPath` directly, which replaced the
+ *  directory view with the opened file's view — losing the user's
+ *  navigation context. Now the column / tree stays put and the file
+ *  appears alongside it. */
+async function openFileInTabAdjacent(filePath) {
+  const pane = currentPane();
+  if (!pane) {
+    // No focused pane (shouldn't happen for a click in the column view,
+    // since the click would have set focus, but be defensive): fall back.
+    openFileByPath(filePath);
+    return;
+  }
+  // Open the file but don't switch — we'll attach it ourselves.
+  const opened = await openFileByPath(filePath, { switch: false });
+  if (!opened) return;
+  // Promote the pane to a tabline if it isn't one yet. A plain leaf
+  // wraps its current view into a fresh tabline as the first tab; an
+  // already-tabline pane is returned as-is.
+  const tlv = isTablineView(pane.view) ? pane.view : promoteToTablineOnPane(pane);
+  if (!tlv) {
+    // Defensive: promotion failed. Fall back to the old behaviour so
+    // the file at least opens.
+    switchToViewIndex(views.indexOf(opened));
+    return;
+  }
+  // Add the opened view as a tab at the end of the strip and activate
+  // it. The column / tree view stays as the previous tab(s).
+  if (!tlv.tabs.includes(opened)) {
+    addTabToTabline(tlv, opened, tlv.tabs.length);
+  }
+  const newIdx = tlv.tabs.indexOf(opened);
+  if (newIdx >= 0) activateTabInTabline(tlv, newIdx);
 }
 
 /** Materialise a serialised view-blob (text-view / tabline-view / null)
