@@ -21,6 +21,19 @@ const FORM_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
 /** A bare modifier press is not a key in its own right. */
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
+/** Render a Lisp value as a label string for a `:choice` select.
+ *  Bare strings pass through; Lisp `Sym` / keyword instances expose a
+ *  `name` property (the Lisp dialect's printed form); everything else
+ *  falls back to `String(v)`. Without this the dropdown showed
+ *  `[object Object]` for every theme option, because `String(sym)`
+ *  produces the default object string. */
+function asDisplayString(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v.name === 'string') return v.name;
+  return String(v);
+}
+
 /** Escape a string for use in a CSS attribute selector. The browser
  *  ships `CSS.escape`; in test environments we may not have it, so
  *  fall back to a conservative manual escape. */
@@ -109,10 +122,11 @@ export function createCustomizeView(container, options = {}) {
       case 'choice':
         widget = doc.createElement('select');
         for (const option of setting.options) {
+          const label = asDisplayString(option);
           const el = doc.createElement('option');
-          el.value = String(option);
-          el.textContent = String(option);
-          if (String(option) === String(value)) el.selected = true;
+          el.value = label;
+          el.textContent = label;
+          if (label === asDisplayString(value)) el.selected = true;
           widget.append(el);
         }
         return { widget, read: () => widget.value };
