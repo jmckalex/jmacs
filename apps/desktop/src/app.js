@@ -10,7 +10,13 @@
  */
 
 import { createBuffer } from '@editor/buffer';
-import { createView, createKindRegistry, viewFilePath } from '@editor/view';
+import {
+  createView,
+  createKindRegistry,
+  viewFilePath,
+  isTablineView,
+  tablineActiveChild,
+} from '@editor/view';
 import {
   createLeafPane,
   createSplitPane,
@@ -200,6 +206,25 @@ function nextShellSessionId() {
 let onViewsChanged = () => {};
 function notifyViewsChanged() {
   onViewsChanged();
+}
+
+/** Peel through any number of tabline-view layers (nested tablines —
+ *  Q10 — peel all the way through, matching the brief's lean: the
+ *  user's intent for nested tabs is "the deepest active child is what
+ *  I'm editing"). Returns the input untouched when it is not a
+ *  tabline-view; returns the tabline itself when its active tab is
+ *  out of range (empty tabline). The depth cap is a defensive guard
+ *  against a degenerate cycle — a tabline-view's tabs shouldn't
+ *  contain itself, but never assume. */
+function peelTabline(view) {
+  let v = view;
+  for (let depth = 0; depth < 16; depth += 1) {
+    if (!isTablineView(v)) return v;
+    const child = tablineActiveChild(v);
+    if (child === null) return v;
+    v = child;
+  }
+  return v;
 }
 
 // --- modeline -----------------------------------------------------------
@@ -457,7 +482,13 @@ function setCurrentPaneId(nextId) {
   refreshPaneFocusIndicators();
   const leaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
   if (!leaf) return;
-  const view = leaf.view;
+  // Phase 3b: a leaf may now hold a tabline-view containing the actual
+  // editable view as its active child. Peel through for cursor binding
+  // / modeline / currentViewIndex sync; the tabline-view itself isn't
+  // in `views`, doesn't carry a buffer, and isn't what `(current-view)`
+  // resolves to.
+  const peeled = peelTabline(leaf.view);
+  const view = isTablineView(peeled) ? null : peeled;
   if (view) {
     // Sync currentViewIndex so view-list cycling and the modeline
     // reflect the focused pane's view. This is index-based on `views`
@@ -503,8 +534,17 @@ refreshPaneFocusIndicators();
 /** Build the duplicate view a freshly-split text pane gets, or the
  *  fallback `*scratch*` view for non-text origins. The new view is
  *  appended to `views` and a fresh editor-view instance is constructed
- *  for it once its pane element exists. */
+ *  for it once its pane element exists.
+ *
+ *  Phase 3b: when the source leaf holds a tabline-view, peel through
+ *  to its active child so the split duplicates the *visible* view
+ *  (typically a text view) rather than the tabline wrapper (which has
+ *  no buffer and would fall through to `*scratch*`). */
 function buildDuplicateViewForSplit(originalView) {
+  const peeled = peelTabline(originalView);
+  if (peeled && !isTablineView(peeled)) {
+    originalView = peeled;
+  }
   if (originalView && originalView.kind === 'text' && originalView.buffer) {
     // Q9 auto-duplicate path: a new View over the *same* buffer, with
     // a fresh point copied from the original and mark cleared. The
@@ -1972,7 +2012,12 @@ const paneHost = {
 const viewHost = {
   currentView: () => {
     const pane = paneHost.currentPane();
-    if (pane && pane.kind === 'leaf' && pane.view) return pane.view;
+    if (pane && pane.kind === 'leaf' && pane.view) {
+      // Phase 3b focus-resolution shift: when the focused pane holds a
+      // tabline-view, the user is editing its active child — peel
+      // through (possibly several layers, Q10 nested tablines).
+      return peelTabline(pane.view);
+    }
     // Fallback for the (vanishingly rare) no-pane / no-view case —
     // keep the legacy index-based lookup so the editor never lands
     // with a null current view during early startup.
@@ -3085,13 +3130,18 @@ function ensureEditorViewForLeaf(leaf) {
     // *its* leaf's view, not from the global "current view". When a
     // background pane re-renders (its buffer's shared text changed in
     // another pane), it still draws its own cursor.
+    //
+    // Phase 3b: when the leaf holds a tabline-view, peel through to
+    // the active child — the tabline wrapper carries no point/mark of
+    // its own; the child (a text view) does. Nested tabline-views
+    // (Q10) peel all the way through.
     getPoint: () => {
-      const v = leaf.view;
-      return v && typeof v.point === 'number' ? v.point : 0;
+      const v = peelTabline(leaf.view);
+      return v && !isTablineView(v) && typeof v.point === 'number' ? v.point : 0;
     },
     getMark: () => {
-      const v = leaf.view;
-      return v && v.mark !== undefined ? v.mark : null;
+      const v = peelTabline(leaf.view);
+      return v && !isTablineView(v) && v.mark !== undefined ? v.mark : null;
     },
   });
   editorViewByPaneId.set(leaf.id, instance);
@@ -4420,56 +4470,133 @@ editorView.backgroundLayer.append(splash);
 requestAnimationFrame(() => splash.classList.add('is-visible'));
 
 // --- tabline ------------------------------------------------------------
-// One tab per open view, above the workspace. The strip is rebuilt
-// whenever the view list or the current index changes; clicks switch
-// or kill views; drag reorders them.
-//
-// Phase 2 of plans/PANES.md: the tabline consumes views directly. The
-// old `viewAsTablineRecord` adapter is gone — tabline.js reads
-// `view.name` and `viewFilePath(view)` straight off the View handle.
+// Phase 3b: the window-chrome `#tabline-host` strip is gone. The root
+// pane now holds a tabline-view (its mount draws the strip inside the
+// pane), and every per-pane tabline-view's strip refreshes through
+// `refreshPaneTabStrips()` whenever the view list / current view
+// changes. The auto-add-tab / leaf-swap routing on open-file lands in
+// commit 5; this commit only wires the boot wrap and the helpers the
+// rest of the app can call into.
 
-const tabline = createTabline(document.getElementById('tabline-host'), {
-  getTabs: () => views,
-  getActiveIndex: () => currentViewIndex,
-  onSelect: (index) => switchToViewIndex(index),
-  onClose: (index) => {
-    // Run kill-view! through the interpreter when available so it
-    // shares the Lisp side's quit-confirmation / hook behaviour; fall
-    // back to the host primitive on early-load (the interpreter isn't
-    // ready until after the stdlib loads).
-    if (keymapReady) {
-      try {
-        const view = views[index];
-        if (view && typeof view.name === 'string') {
-          interpreter.call('kill-view!', view.name);
-          return;
-        }
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
+/** Walk the pane tree and refresh every tabline-view's strip, including
+ *  nested tabline-views (Q10). Replaces the singleton `tabline.refresh()`
+ *  call the chrome strip used to drive. Cheap: a no-op when no pane
+ *  holds a tabline-view; otherwise one `strip.refresh()` per tabline. */
+function refreshPaneTabStrips() {
+  function visit(view) {
+    if (!isTablineView(view)) return;
+    const state = tablineStateByView.get(view);
+    if (state) state.strip.refresh();
+    for (const child of view.tabs) visit(child);
+  }
+  for (const leaf of leafPanes(rootPane)) visit(leaf.view);
+}
+
+/** The tabline-view installed by `wrapRootInTabline()` at boot, kept
+ *  as a module-level handle so the commits-3-through-4 reconciler
+ *  below can re-install it on the focused leaf after a switch
+ *  displaces it. Null before the wrap runs. */
+let rootTablineView = null;
+
+/** The id of the leaf the root tabline was wrapped onto at boot.
+ *  Re-install only ever targets *this* leaf — splitting the pane and
+ *  switching a file in the new sibling-leaf mustn't yank the tabline
+ *  onto the wrong pane. Null until the wrap runs. */
+let rootTablineLeafId = null;
+
+/** Bridge for the commits-3-through-4 window: keep the root tabline-
+ *  view's `tabs` / `active` in step with `views[]` / `currentViewIndex`,
+ *  and re-install it on the focused leaf if the still-pre-commit-5
+ *  `switchToViewIndex` displaced it. Commit 5 replaces this implicit
+ *  reconcile with per-pane auto-add-tab routing inside `switchToViewIndex`;
+ *  until then this is what keeps the editor usable.
+ *
+ *  Only the *focused* pane's leaf is reconciled — splitting a pane and
+ *  opening a file in the new (plain-leaf) sibling pane mustn't yank
+ *  the root tabline onto the wrong pane. */
+function syncRootTablineWithViews() {
+  if (!rootTablineView || rootTablineLeafId === null) return;
+  // The tabs list mirrors the global view list — every leaf-kind
+  // view shows up as a tab even if the user opened it from a
+  // sibling pane. (Commit 5's per-pane routing will refine this.)
+  rootTablineView.tabs = views.slice();
+  // The active tab is whichever view ended up displacing the tabline
+  // on its home leaf — i.e. the user just opened a file *while
+  // focused on the tabline's pane*. Opening a file in a sibling pane
+  // (the right pane after `(split-horizontal!)`) leaves the tabline's
+  // active tab alone, so the left pane keeps showing what it was
+  // showing. The active tab is recovered from the home leaf's
+  // current `view` if it's in the tabs list; otherwise stays put.
+  const focused = currentPane();
+  for (const leaf of leafPanes(rootPane)) {
+    if (leaf.id !== rootTablineLeafId) continue;
+    if (leaf.view === rootTablineView) {
+      // Tabline still in place — nothing to reactivate.
+      break;
     }
-    // Fall back to the host kill-view primitive — the primitive
-    // accepts a name; mirror that path. (Effectively: switch to the
-    // target so the no-arg form kills the right one.)
-    switchToViewIndex(index);
-    interpreter.evaluate('(kill-view!)');
-  },
-  onReorder: (from, to) => {
-    if (from === to) return;
-    const moved = views.splice(from, 1)[0];
-    views.splice(to, 0, moved);
-    // Re-point currentViewIndex onto its moved view.
-    if (from === currentViewIndex) {
-      currentViewIndex = to;
-    } else if (from < currentViewIndex && to >= currentViewIndex) {
-      currentViewIndex -= 1;
-    } else if (from > currentViewIndex && to <= currentViewIndex) {
-      currentViewIndex += 1;
+    // Tabline was displaced by a switch on this leaf. The displacing
+    // view becomes the new active tab; reinstall the tabline.
+    const newActive = leaf.view;
+    const idx = rootTablineView.tabs.indexOf(newActive);
+    if (idx >= 0) rootTablineView.active = idx;
+    leaf.view = rootTablineView;
+    // If the focused pane is *this* leaf, the editor instance was
+    // re-pointed to the displacing view's buffer by the text mount;
+    // leaving the tabline's active in step keeps the strip honest.
+    void focused; // silence linter — kept as a reminder
+    break;
+  }
+}
+
+/** Wrap the root leaf's view in a tabline-view whose tabs are every
+ *  open view in display order, with `active` pointing at the current
+ *  view. Called once at startup after `sessionController.restore()`.
+ *
+ *  The pre-existing editor instance bound to the root leaf's id is
+ *  inherited by the tabline state's `editorByChildId` map, keyed by
+ *  the initially-active text child's id, so sticky-notes, hover-doc
+ *  and inline-eval (which captured DOM references from that instance
+ *  at startup) keep working. The instance's DOM is detached from the
+ *  pane element and re-attached inside the tabline's content area by
+ *  the tabline mount's `mountTablineActiveChild`. */
+function wrapRootInTabline() {
+  if (rootPane.kind !== 'leaf') return; // splits-before-wrap shouldn't happen, but bail safely.
+  const leaf = rootPane;
+  // The list of tabs is `views`. If the list is empty (vanishingly
+  // rare — early startup always has a welcome / scratch pair), skip
+  // the wrap.
+  if (views.length === 0) return;
+  const activeIdx = Math.max(0, Math.min(currentViewIndex, views.length - 1));
+  const active = views[activeIdx] ?? null;
+  const tabline = createView({
+    kind: 'tabline',
+    extras: {
+      tabs: views.slice(),
+      active: activeIdx,
+      edge: 'top',
+    },
+  });
+  // Inherit the existing editor instance so sticky-notes etc. survive.
+  // We pre-seed the tabline state before its mount runs so the mount
+  // doesn't construct a duplicate instance for the active child.
+  const existingInstance = editorViewByPaneId.get(leaf.id) ?? null;
+  if (existingInstance && active && active.kind === 'text') {
+    const state = ensureTablineState(tabline);
+    state.editorByChildId.set(active.id, existingInstance);
+    // Move the editor's element into the tabline content area; the
+    // tabline mount below will display-toggle it but won't re-parent
+    // when it's already where it belongs.
+    if (existingInstance.element.parentNode !== state.contentEl) {
+      state.contentEl.append(existingInstance.element);
     }
-    notifyViewsChanged();
-    updateModeline();
-  },
-});
+  }
+  // Install the tabline-view as the leaf's view and dispatch the mount
+  // hook so the strip renders. The leaf id is unchanged.
+  leaf.view = tabline;
+  rootTablineView = tabline;
+  rootTablineLeafId = leaf.id;
+  kindRegistry.mount(tabline, { paneEl: paneElements.get(leaf.id) });
+}
 
 // --- persistent session -------------------------------------------------
 // On change (debounced 500ms) or pagehide, pickle the open views and
@@ -4504,17 +4631,26 @@ const sessionController = createSession({
   host: window.host,
 });
 
-// Wire the change hook: every list / index change refreshes the
-// tabline and queues a session save. `restoring` is set while the
-// restore loop runs so the inner view-add doesn't race the save —
-// the save fires once at the end of restore, with the final list.
+// Wire the change hook: every list / index change refreshes every
+// per-pane tabline strip and queues a session save. `restoring` is
+// set while the restore loop runs so the inner view-add doesn't race
+// the save — the save fires once at the end of restore, with the
+// final list. No strips exist until `wrapRootInTabline()` runs below;
+// the helper is a no-op until then.
 let restoring = false;
 onViewsChanged = () => {
-  tabline.refresh();
+  // Commits-3-through-4 sync: keep the focused root-tabline's tabs in
+  // step with the global view list so the strip in the DOM mirrors
+  // what the user just opened. Commit 5 replaces this with per-pane
+  // auto-add-tab routing in `switchToViewIndex`. We deliberately do
+  // *not* call `mountTablineActiveChild` here — the focused-leaf
+  // editor instance (managed by `ensureEditorViewForLeaf` via the
+  // text kind's mount hook) is already pointing at the active view,
+  // and a tabline re-mount would orphan it with a fresh duplicate.
+  syncRootTablineWithViews();
+  refreshPaneTabStrips();
   if (!restoring) sessionController.save();
 };
-// Render the strip once now (the editor view is already mounted).
-tabline.refresh();
 
 // Flush the session synchronously-ish on page unload. The pagehide
 // event fires when the renderer is about to be torn down (quit, reload,
@@ -4533,3 +4669,17 @@ try {
 } finally {
   restoring = false;
 }
+
+// Phase 3b commit 3: wrap the root pane's view in a tabline-view that
+// contains every restored view (or the welcome / scratch starters when
+// there was no session). The wrap runs *after* restore so the tabs
+// list is final; the helper is idempotent on subsequent calls only via
+// the caller's discipline (this is the one call site).
+wrapRootInTabline();
+// One trip through the per-pane strip refresh + a session save so the
+// freshly-wrapped tabline renders on first paint and the new pane-tree
+// shape lands in the on-disk session as soon as commit 6 understands
+// schema v2. The current schema (v1) ignores the tabline-view; the
+// save is still safe.
+refreshPaneTabStrips();
+sessionController.save();
