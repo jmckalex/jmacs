@@ -5182,8 +5182,9 @@ const sessionController = createSession({
     }
     return view;
   },
-  installRootPane: (newRoot, savedCurrentPaneId) => {
-    installRootPane(newRoot, savedCurrentPaneId);
+  installRootPane: (rootBlob, savedCurrentPaneId, handlesByBlob) => {
+    const runtimeRoot = buildRestoredPaneTree(rootBlob, handlesByBlob);
+    if (runtimeRoot) installRootPane(runtimeRoot, savedCurrentPaneId);
   },
   host: window.host,
 });
