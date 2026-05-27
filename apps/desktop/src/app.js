@@ -5129,13 +5129,17 @@ function installRootPane(newRoot, savedCurrentPaneId) {
       // video / jukebox / directory-tree / directory-columns / ...):
       // the singleton element was originally parented to the boot leaf,
       // which the restore loop above just disposed. Re-parent it to
-      // this leaf's pane element so the renderer sees it. Mirrors the
+      // this leaf's pane element AND flip its display visible — the
+      // boot setup hides every singleton (`display:none`), so
+      // re-parenting alone leaves the pane empty until some other code
+      // path (hideInactiveRendererViews) makes it visible. Mirrors the
       // same step `switchToViewIndex`'s plain-leaf path does for the
       // open-from-Lisp flow.
       const singleton = singletonElementForKind(view.kind);
       const paneEl = paneElements.get(leaf.id);
-      if (singleton && paneEl && singleton.parentNode !== paneEl) {
-        paneEl.append(singleton);
+      if (singleton && paneEl) {
+        if (singleton.parentNode !== paneEl) paneEl.append(singleton);
+        singleton.style.display = '';
       }
       kindRegistry.mount(view);
     }
