@@ -6,6 +6,10 @@
  * (this file's expanded surface) adds the split / delete / navigate
  * constructors so users can carve the editor area into multiple panes.
  *
+ * Phase 3b adds tabline-view primitives: a tabline-view is a
+ * structural view that wraps several leaf-kind views into a tab
+ * strip + content area inside a pane (see plans/PANES-PHASE-3B.md).
+ *
  * The host (the desktop app) supplies a `paneHost` shape with:
  *
  *   - `currentPane()` — the focused pane handle (a leaf), or null.
@@ -24,16 +28,37 @@
  *   - `balancePanes()` — reset every split node's ratio to 0.5.
  *   - `setSplitRatio(pane, ratio)` — set PANE's ratio (PANE must be a
  *     split node). Clamped to `[0.05, 0.95]`.
+ *   - `currentTabline()` — the tabline-view in the focused pane, or
+ *     null when the pane holds a plain-leaf view.
+ *   - `promoteToTabline(pane)` — wrap PANE's view in a fresh
+ *     tabline-view (no-op when it's already a tabline-view; returns
+ *     the existing tabline in that case). Returns the tabline-view.
+ *   - `demoteTabline(tlv)` — replace TLV (which must be installed on
+ *     a leaf) with its active child's view. Returns the surviving
+ *     view.
+ *   - `addTab(tlv, view, index)` — splice VIEW into TLV's `tabs` at
+ *     INDEX (default: end). Returns the tabline-view.
+ *   - `removeTab(tlv, index)` — remove the tab at INDEX from TLV.
+ *     Adjusts `active`. Returns the tabline-view. Does *not* kill
+ *     the removed view from the global view list — that's
+ *     `kill-view!`'s job.
+ *   - `activateTab(tlv, index)` — make INDEX the active tab. Returns
+ *     the tabline-view.
+ *   - `setTablineEdge(tlv, edge)` — change which pane edge TLV's
+ *     strip renders on (`'top'` / `'bottom'` / `'left'` / `'right'`).
+ *     Returns the tabline-view.
  *
  * `(current-view)`, defined in view-primitives.js, resolves through
- * `(current-pane)` → `pane.view`.
+ * `(current-pane)` → `pane.view`, peeling through any tabline-view
+ * to its active child (the phase-3b focus-resolution shift).
  *
  * Per Q15, pane-creating commands return handles. The split
  * constructors return `(first-handle second-handle)` so a Lisp caller
  * can immediately compose against either leaf.
  */
 
-import { cons, NIL } from '@editor/lisp';
+import { cons, NIL, keyword } from '@editor/lisp';
+import { createView, isTablineView } from '@editor/view';
 
 /** The ratio range a split is clamped to so both children stay visible. */
 const MIN_RATIO = 0.05;
@@ -202,11 +227,171 @@ export function createPanePrimitives(paneHost) {
       paneHost.setSplitRatio(pane, clampRatio(Number(ratio)));
       return NIL;
     },
+
+    // --- tabline-view primitives ----------------------------------------
+    // Phase 3b: see plans/PANES-PHASE-3B.md.
+
+    // `(current-tabline)` — the tabline-view in the focused pane, or
+    // nil when the pane's view is a plain leaf-kind view. Symmetric
+    // with `(current-pane)`.
+    'current-tabline': () => {
+      if (typeof paneHost.currentTabline !== 'function') return NIL;
+      const tlv = paneHost.currentTabline();
+      return tlv ?? NIL;
+    },
+    // `(promote-to-tabline! [pane])` — wrap PANE's view in a fresh
+    // tabline-view (the view becomes the sole tab; the tabline becomes
+    // PANE's new view). When PANE is omitted, defaults to the focused
+    // pane. Returns the tabline-view handle; nil when promotion isn't
+    // possible (no pane, host lacks the method).
+    'promote-to-tabline!': (args) => {
+      if (typeof paneHost.promoteToTabline !== 'function') return NIL;
+      const pane = resolvePaneArg(args, paneHost);
+      if (pane === null) return NIL;
+      const tlv = paneHost.promoteToTabline(pane);
+      return tlv ?? NIL;
+    },
+    // `(demote-tabline! [tlv])` — replace the tabline-view with its
+    // active child's view on whatever leaf it sits in. When TLV is
+    // omitted, defaults to `(current-tabline)`. Returns the surviving
+    // view (the active child), or nil when demotion isn't possible.
+    'demote-tabline!': (args) => {
+      if (typeof paneHost.demoteTabline !== 'function') return NIL;
+      let tlv = args[0];
+      if (tlv === undefined || tlv === null || tlv === NIL) {
+        tlv = typeof paneHost.currentTabline === 'function'
+          ? paneHost.currentTabline()
+          : null;
+      }
+      if (!isTablineView(tlv)) return NIL;
+      const survivor = paneHost.demoteTabline(tlv);
+      return survivor ?? NIL;
+    },
+    // `(make-tabline-view tabs edge)` — construct a fresh tabline-view
+    // *handle* without attaching it to any pane. The caller passes
+    // TABS as a Lisp list of view handles and EDGE as a symbol or
+    // string (`'top`, `'bottom`, `'left`, `'right` — anything else
+    // defaults to `'top`). Active is 0. The result is a view handle
+    // suitable for passing to `(add-tab!)` etc., or for assigning to
+    // a pane via host code.
+    'make-tabline-view': (args) => {
+      const tabsArg = args[0];
+      const edgeArg = args[1];
+      // Accept either a Lisp list (cons-cell chain ending in NIL) or
+      // a JS array — Lisp callers will pass lists; host-side callers
+      // (and tests) may pass arrays for convenience.
+      let tabs;
+      if (Array.isArray(tabsArg)) {
+        tabs = tabsArg.slice();
+      } else if (tabsArg === NIL || tabsArg === null || tabsArg === undefined) {
+        tabs = [];
+      } else if (
+        typeof tabsArg === 'object' && tabsArg !== null && 'head' in tabsArg
+      ) {
+        tabs = [];
+        let node = tabsArg;
+        while (node && node !== NIL && 'head' in node) {
+          tabs.push(node.head);
+          node = node.tail;
+        }
+      } else {
+        tabs = [];
+      }
+      const edge = coerceEdge(edgeArg) ?? 'top';
+      return createView({
+        kind: 'tabline',
+        extras: { tabs, active: 0, edge },
+      });
+    },
+    // `(add-tab! tlv view [index])` — splice VIEW into TLV's tabs at
+    // INDEX (default: end). Returns TLV. Errors silently (returns
+    // nil) when TLV isn't a tabline-view.
+    'add-tab!': (args) => {
+      const tlv = args[0];
+      const view = args[1];
+      const indexRaw = args[2];
+      if (!isTablineView(tlv) || !view) return NIL;
+      const index =
+        typeof indexRaw === 'number' && Number.isFinite(indexRaw)
+          ? indexRaw
+          : undefined;
+      if (typeof paneHost.addTab !== 'function') return NIL;
+      paneHost.addTab(tlv, view, index);
+      return tlv;
+    },
+    // `(remove-tab! tlv index)` — remove the tab at INDEX from TLV.
+    // Adjusts active. Does *not* kill the removed view from the
+    // global view list (that's `kill-view!`). Returns TLV.
+    'remove-tab!': (args) => {
+      const tlv = args[0];
+      const indexRaw = args[1];
+      if (!isTablineView(tlv)) return NIL;
+      if (typeof indexRaw !== 'number' || !Number.isFinite(indexRaw)) return tlv;
+      if (typeof paneHost.removeTab !== 'function') return tlv;
+      paneHost.removeTab(tlv, indexRaw);
+      return tlv;
+    },
+    // `(activate-tab! tlv index)` — make INDEX the active tab.
+    // Returns TLV.
+    'activate-tab!': (args) => {
+      const tlv = args[0];
+      const indexRaw = args[1];
+      if (!isTablineView(tlv)) return NIL;
+      if (typeof indexRaw !== 'number' || !Number.isFinite(indexRaw)) return tlv;
+      if (typeof paneHost.activateTab !== 'function') return tlv;
+      paneHost.activateTab(tlv, indexRaw);
+      return tlv;
+    },
+    // `(tabline-edge tlv)` — return TLV's edge as a keyword
+    // (`:top`/`:bottom`/`:left`/`:right`), or nil when TLV isn't a
+    // tabline-view.
+    'tabline-edge': (args) => {
+      const tlv = args[0];
+      if (!isTablineView(tlv)) return NIL;
+      const edge = typeof tlv.edge === 'string' ? tlv.edge : 'top';
+      return keyword(edge);
+    },
+    // `(set-tabline-edge! tlv edge)` — change TLV's edge.
+    // EDGE is a symbol/string/keyword; anything other than one of the
+    // four valid values is silently ignored (TLV is returned
+    // unchanged). Returns TLV.
+    'set-tabline-edge!': (args) => {
+      const tlv = args[0];
+      const edgeArg = args[1];
+      if (!isTablineView(tlv)) return NIL;
+      const edge = coerceEdge(edgeArg);
+      if (edge === null) return tlv;
+      if (typeof paneHost.setTablineEdge !== 'function') return tlv;
+      paneHost.setTablineEdge(tlv, edge);
+      return tlv;
+    },
   };
+}
+
+/** Coerce EDGEARG (a string, a Sym, a Keyword) to a canonical edge
+ *  string (`'top'` / `'bottom'` / `'left'` / `'right'`), or null when
+ *  EDGEARG isn't recognisable as one of the four valid edges. */
+function coerceEdge(edgeArg) {
+  let raw = null;
+  if (typeof edgeArg === 'string') raw = edgeArg;
+  else if (
+    edgeArg && typeof edgeArg === 'object' &&
+    typeof edgeArg.name === 'string'
+  ) {
+    raw = edgeArg.name; // Sym or Keyword (both carry a .name)
+  }
+  if (raw === null) return null;
+  // Strip a leading colon for keyword-like arguments.
+  if (raw.startsWith(':')) raw = raw.slice(1);
+  if (raw === 'top' || raw === 'bottom' || raw === 'left' || raw === 'right') {
+    return raw;
+  }
+  return null;
 }
 
 /**
  * @typedef {import('@editor/pane').Pane} Pane
+ * @typedef {import('@editor/view').View} View
  *
  * @typedef {object} PaneHost
  * @property {() => (Pane | null)} currentPane - The currently-focused
@@ -219,4 +404,11 @@ export function createPanePrimitives(paneHost) {
  * @property {(direction: 'left'|'right'|'up'|'down') => (Pane | null)} [focusPaneDirection]
  * @property {() => void} [balancePanes]
  * @property {(pane: Pane, ratio: number) => void} [setSplitRatio]
+ * @property {() => (View | null)} [currentTabline]
+ * @property {(pane: Pane) => (View | null)} [promoteToTabline]
+ * @property {(tlv: View) => (View | null)} [demoteTabline]
+ * @property {(tlv: View, view: View, index?: number) => View} [addTab]
+ * @property {(tlv: View, index: number) => View} [removeTab]
+ * @property {(tlv: View, index: number) => View} [activateTab]
+ * @property {(tlv: View, edge: 'top'|'bottom'|'left'|'right') => View} [setTablineEdge]
  */

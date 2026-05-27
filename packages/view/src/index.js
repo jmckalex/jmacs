@@ -16,6 +16,8 @@
 export {
   createView,
   isView,
+  isTablineView,
+  tablineActiveChild,
 } from './view.js';
 
 export {

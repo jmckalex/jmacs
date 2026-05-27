@@ -35,6 +35,24 @@ function freshId(kind) {
 }
 
 /**
+ * Advance the pane-id counter past any value embedded in `seenId`. Used
+ * by the session restore loop so the runtime id source doesn't mint a
+ * collision against an id we just restored verbatim from disk. Ids
+ * follow the `pane-<kind>-<n>` convention; ids that don't parse are
+ * ignored (callers can pass arbitrary persisted ids without checking).
+ *
+ * @param {string} seenId
+ */
+export function bumpIdCounterPast(seenId) {
+  if (typeof seenId !== 'string') return;
+  const match = seenId.match(/-(\d+)$/);
+  if (!match) return;
+  const n = Number(match[1]);
+  if (!Number.isFinite(n)) return;
+  if (n >= nextId) nextId = n + 1;
+}
+
+/**
  * Create a leaf pane.
  *
  * @param {object} [options]

@@ -18,6 +18,7 @@ export {
   isPane,
   isLeafPane,
   isSplitPane,
+  bumpIdCounterPast,
   PANE_KIND_LEAF,
   PANE_KIND_SPLIT,
   SPLIT_HORIZONTAL,

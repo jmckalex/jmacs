@@ -6,13 +6,11 @@ import {
   deserialise,
   isEphemeral,
   serialise,
+  serialiseTree,
 } from '../src/session.js';
 
 /**
- * Build a minimal view-shaped fixture for the session tests. The session
- * controller now consumes views directly (phase 2 of plans/PANES.md);
- * before phase 1 the same tests passed buffer-record shapes — the
- * one-line fields-shape change is the only thing that differs.
+ * Build a minimal view-shaped fixture for the session tests.
  *
  * @param {object} opts
  * @returns {object}
@@ -33,6 +31,38 @@ function makeView(opts = {}) {
     view.filePath = opts.filePath;
   }
   return view;
+}
+
+/** Build a minimal text-view handle with point/mark on the view (not
+ *  the buffer), as the real desktop code does after phase-2's
+ *  per-view-point split. */
+function makeTextView(path, opts = {}) {
+  return {
+    kind: 'text',
+    name: path.split('/').pop(),
+    buffer: { filePath: path, point: 0, mark: null },
+    point: opts.point ?? 0,
+    mark: opts.mark ?? null,
+  };
+}
+
+/** Build a leaf-pane blob the test exercises against the runtime
+ *  shape (handles, not blob records). */
+function makeLeaf(id, view) {
+  return { kind: 'leaf', id, view };
+}
+
+function makeSplit(id, orientation, ratio, first, second) {
+  return { kind: 'split', id, orientation, ratio, first, second };
+}
+
+function makeTabline(tabs, opts = {}) {
+  return {
+    kind: 'tabline',
+    tabs,
+    active: opts.active ?? 0,
+    edge: opts.edge ?? 'top',
+  };
 }
 
 // --- isEphemeral -------------------------------------------------------
@@ -80,7 +110,7 @@ test('isEphemeral: a file-backed text view with a real name is kept', () => {
   );
 });
 
-// --- serialise ---------------------------------------------------------
+// --- serialise (legacy v1 emitter, kept for the flat-view tests) -------
 
 test('serialise: keeps only file-backed text views', () => {
   const views = [
@@ -126,15 +156,96 @@ test('serialise: defaults a missing point to 0 and missing mark to null', () => 
   assert.equal(out.buffers[0].mark, null);
 });
 
-// --- deserialise -------------------------------------------------------
+// --- serialiseTree (v2 writer) -----------------------------------------
 
-test('deserialise: null or missing input yields an empty session', () => {
-  assert.deepEqual(deserialise(null), { buffers: [], currentPath: null });
-  assert.deepEqual(deserialise(undefined), { buffers: [], currentPath: null });
-  assert.deepEqual(deserialise(42), { buffers: [], currentPath: null });
+test('serialiseTree: a single text leaf becomes a v2 root', () => {
+  const tree = makeLeaf('pane-leaf-1', makeTextView('/tmp/a.txt', { point: 4 }));
+  const out = serialiseTree(tree, 'pane-leaf-1');
+  assert.equal(out.version, 2);
+  assert.equal(out.currentPaneId, 'pane-leaf-1');
+  assert.deepEqual(out.rootPane, {
+    kind: 'leaf',
+    id: 'pane-leaf-1',
+    view: { kind: 'text', path: '/tmp/a.txt', point: 4, mark: null },
+  });
 });
 
-test('deserialise: parses a well-shaped payload', () => {
+test('serialiseTree: a leaf with a tabline-view serialises every tab', () => {
+  const tabline = makeTabline(
+    [
+      makeTextView('/tmp/a.txt', { point: 1 }),
+      makeTextView('/tmp/b.txt', { point: 2, mark: 5 }),
+    ],
+    { active: 1, edge: 'right' }
+  );
+  const tree = makeLeaf('pane-leaf-7', tabline);
+  const out = serialiseTree(tree, 'pane-leaf-7');
+  assert.equal(out.rootPane.view.kind, 'tabline');
+  assert.equal(out.rootPane.view.edge, 'right');
+  assert.equal(out.rootPane.view.active, 1);
+  assert.equal(out.rootPane.view.tabs.length, 2);
+  assert.deepEqual(out.rootPane.view.tabs[1], {
+    kind: 'text', path: '/tmp/b.txt', point: 2, mark: 5,
+  });
+});
+
+test('serialiseTree: a split-pane is serialised recursively', () => {
+  const tree = makeSplit(
+    'pane-split-3', 'horizontal', 0.4,
+    makeLeaf('pane-leaf-1', makeTextView('/tmp/a.txt')),
+    makeLeaf('pane-leaf-2', makeTextView('/tmp/b.txt'))
+  );
+  const out = serialiseTree(tree, 'pane-leaf-2');
+  assert.equal(out.rootPane.kind, 'split');
+  assert.equal(out.rootPane.orientation, 'horizontal');
+  assert.equal(out.rootPane.ratio, 0.4);
+  assert.equal(out.rootPane.first.id, 'pane-leaf-1');
+  assert.equal(out.rootPane.second.id, 'pane-leaf-2');
+  assert.equal(out.currentPaneId, 'pane-leaf-2');
+});
+
+test('serialiseTree: non-text leaf views serialise as null', () => {
+  const tree = makeLeaf('pane-leaf-9', {
+    kind: 'image', name: 'photo.png',
+  });
+  const out = serialiseTree(tree, 'pane-leaf-9');
+  assert.equal(out.rootPane.view, null);
+});
+
+test('serialiseTree: non-text tabs inside a tabline are dropped', () => {
+  const tabline = makeTabline(
+    [
+      makeTextView('/tmp/a.txt'),
+      { kind: 'image', name: 'photo.png' },
+      makeTextView('/tmp/b.txt'),
+    ],
+    { active: 2 }
+  );
+  const tree = makeLeaf('pane-leaf-1', tabline);
+  const out = serialiseTree(tree, 'pane-leaf-1');
+  assert.equal(out.rootPane.view.tabs.length, 2);
+  // active was 2 — the third tab — but the second tab dropped out, so
+  // active should clamp to 1 (the surviving last tab).
+  assert.equal(out.rootPane.view.active, 1);
+  assert.equal(out.rootPane.view.tabs[0].path, '/tmp/a.txt');
+  assert.equal(out.rootPane.view.tabs[1].path, '/tmp/b.txt');
+});
+
+// --- deserialise (v1 migration + v2 round-trip) ------------------------
+
+test('deserialise: null or missing input yields an empty v2 session', () => {
+  assert.deepEqual(deserialise(null), {
+    version: 2, rootPane: null, currentPaneId: null,
+  });
+  assert.deepEqual(deserialise(undefined), {
+    version: 2, rootPane: null, currentPaneId: null,
+  });
+  assert.deepEqual(deserialise(42), {
+    version: 2, rootPane: null, currentPaneId: null,
+  });
+});
+
+test('deserialise: a v1 payload migrates into a root tabline-view', () => {
   const out = deserialise({
     buffers: [
       { path: '/a', point: 1, mark: null },
@@ -142,13 +253,34 @@ test('deserialise: parses a well-shaped payload', () => {
     ],
     currentPath: '/b',
   });
-  assert.equal(out.buffers.length, 2);
-  assert.equal(out.buffers[0].path, '/a');
-  assert.equal(out.buffers[1].mark, 4);
-  assert.equal(out.currentPath, '/b');
+  assert.equal(out.version, 2);
+  assert.equal(out.currentPaneId, 'pane-leaf-restored');
+  assert.equal(out.rootPane.kind, 'leaf');
+  assert.equal(out.rootPane.id, 'pane-leaf-restored');
+  assert.equal(out.rootPane.view.kind, 'tabline');
+  assert.equal(out.rootPane.view.edge, 'top');
+  assert.equal(out.rootPane.view.tabs.length, 2);
+  // currentPath /b → active 1.
+  assert.equal(out.rootPane.view.active, 1);
+  assert.equal(out.rootPane.view.tabs[1].path, '/b');
+  assert.equal(out.rootPane.view.tabs[1].mark, 4);
 });
 
-test('deserialise: filters out entries with no path', () => {
+test('deserialise: a v1 payload with an empty buffer list becomes the empty session', () => {
+  const out = deserialise({ buffers: [], currentPath: null });
+  assert.equal(out.rootPane, null);
+  assert.equal(out.currentPaneId, null);
+});
+
+test('deserialise: a v1 currentPath that no longer matches defaults to active 0', () => {
+  const out = deserialise({
+    buffers: [{ path: '/a' }, { path: '/b' }],
+    currentPath: '/gone',
+  });
+  assert.equal(out.rootPane.view.active, 0);
+});
+
+test('deserialise: a v1 payload filters out entries with no path', () => {
   const out = deserialise({
     buffers: [
       { path: '/a' },
@@ -157,162 +289,201 @@ test('deserialise: filters out entries with no path', () => {
       { point: 0 }, // no path at all
       { path: '/c' },
     ],
+    currentPath: '/c',
   });
-  assert.equal(out.buffers.length, 2);
-  assert.equal(out.buffers[0].path, '/a');
-  assert.equal(out.buffers[1].path, '/c');
+  assert.equal(out.rootPane.view.tabs.length, 2);
+  assert.equal(out.rootPane.view.tabs[0].path, '/a');
+  assert.equal(out.rootPane.view.tabs[1].path, '/c');
+  assert.equal(out.rootPane.view.active, 1);
 });
 
-test('deserialise: a serialise → deserialise round-trip is lossless', () => {
-  const views = [
-    makeView({ name: 'foo.txt', filePath: '/tmp/foo.txt', point: 12, mark: null }),
-    makeView({ name: 'bar.lisp', filePath: '/tmp/bar.lisp', point: 0, mark: 5 }),
-  ];
-  const json = serialise(views, 1);
-  const back = deserialise(JSON.parse(JSON.stringify(json)));
-  assert.deepEqual(back, json);
+test('deserialise: a v2 payload round-trips through serialiseTree', () => {
+  const tree = makeLeaf('pane-leaf-1', makeTabline([
+    makeTextView('/x.txt', { point: 7 }),
+    makeTextView('/y.txt', { point: 0, mark: 2 }),
+  ], { active: 1 }));
+  const written = serialiseTree(tree, 'pane-leaf-1');
+  const back = deserialise(JSON.parse(JSON.stringify(written)));
+  assert.deepEqual(back, written);
 });
 
-// --- createSession (restore loop) --------------------------------------
+test('deserialise: a v2 split tree round-trips', () => {
+  const tree = makeSplit(
+    'pane-split-5', 'vertical', 0.5,
+    makeLeaf('pane-leaf-1', makeTabline([
+      makeTextView('/a.txt', { point: 1 }),
+    ])),
+    makeLeaf('pane-leaf-2', makeTextView('/b.txt', { point: 3 }))
+  );
+  const written = serialiseTree(tree, 'pane-leaf-2');
+  const back = deserialise(JSON.parse(JSON.stringify(written)));
+  assert.deepEqual(back, written);
+});
 
-test('createSession.restore: re-opens each file and restores point/mark', async () => {
+test('deserialise: a v2 payload with a malformed split drops it', () => {
+  const out = deserialise({
+    version: 2,
+    rootPane: {
+      kind: 'split', id: 'pane-split-1', orientation: 'horizontal', ratio: 0.5,
+      first: { kind: 'leaf', id: 'pane-leaf-1', view: null },
+      // second missing entirely
+    },
+    currentPaneId: 'pane-leaf-1',
+  });
+  // The split fails parsing (second missing); rootPane becomes null.
+  assert.equal(out.rootPane, null);
+});
+
+test('deserialise: a v2 payload clamps an out-of-range tabline active', () => {
+  const out = deserialise({
+    version: 2,
+    rootPane: {
+      kind: 'leaf', id: 'pane-leaf-1',
+      view: {
+        kind: 'tabline', edge: 'top', active: 99,
+        tabs: [
+          { kind: 'text', path: '/a', point: 0, mark: null },
+          { kind: 'text', path: '/b', point: 0, mark: null },
+        ],
+      },
+    },
+    currentPaneId: 'pane-leaf-1',
+  });
+  assert.equal(out.rootPane.view.active, 1);
+});
+
+// --- createSession (restore loop + writer) -----------------------------
+
+test('createSession.restore: re-opens each file in a v2 tree and installs', async () => {
   const opens = [];
-  let switched = -1;
-
-  // A fake view list the openByPath callback grows.
-  const views = [makeView({ name: '*scratch*' })];
-
+  let installed = null;
   const controller = createSession({
-    getViews: () => views,
-    getCurrentIndex: () => 0,
+    getRootPane: () => makeLeaf('pane-leaf-1', null),
+    getCurrentPaneId: () => 'pane-leaf-1',
     openByPath: async (path, entry) => {
       opens.push({ path, point: entry.point, mark: entry.mark });
-      views.push(
-        makeView({
-          name: path.split('/').pop(),
-          filePath: path,
-          point: entry.point,
-          mark: entry.mark,
-        })
-      );
-      return entry;
+      return makeTextView(path, { point: entry.point, mark: entry.mark });
     },
-    switchToView: (index) => {
-      switched = index;
+    installRootPane: (root, currentPaneId) => {
+      installed = { root, currentPaneId };
     },
     host: {
       readSession: async () => ({
-        buffers: [
-          { path: '/tmp/a.txt', point: 3, mark: null },
-          { path: '/tmp/b.txt', point: 7, mark: 2 },
-        ],
-        currentPath: '/tmp/b.txt',
+        version: 2,
+        rootPane: makeLeaf('pane-leaf-9', makeTabline([
+          { kind: 'text', path: '/tmp/a.txt', point: 3, mark: null },
+          { kind: 'text', path: '/tmp/b.txt', point: 7, mark: 2 },
+        ], { active: 1 })),
+        currentPaneId: 'pane-leaf-9',
       }),
       writeSession: async () => {},
     },
   });
-
   await controller.restore();
   assert.equal(opens.length, 2);
   assert.equal(opens[0].path, '/tmp/a.txt');
   assert.equal(opens[1].path, '/tmp/b.txt');
   assert.equal(opens[1].point, 7);
   assert.equal(opens[1].mark, 2);
-  // Switched onto b — the previously-current view.
-  assert.equal(switched, 2);
+  assert.ok(installed, 'installRootPane should be called');
+  assert.equal(installed.currentPaneId, 'pane-leaf-9');
+  assert.equal(installed.root.id, 'pane-leaf-9');
 });
 
-test('createSession.restore: a file that fails to open is skipped', async () => {
-  const views = [];
-  const opens = [];
+test('createSession.restore: a migrated v1 payload installs a single tabline leaf', async () => {
+  let installed = null;
   const controller = createSession({
-    getViews: () => views,
-    getCurrentIndex: () => 0,
-    openByPath: async (path, entry) => {
-      opens.push(path);
-      if (path === '/missing') return null;
-      views.push(makeView({ name: 'ok', filePath: path }));
-      return entry;
+    getRootPane: () => makeLeaf('pane-leaf-1', null),
+    getCurrentPaneId: () => 'pane-leaf-1',
+    openByPath: async (path, entry) =>
+      makeTextView(path, { point: entry.point, mark: entry.mark }),
+    installRootPane: (root, currentPaneId) => {
+      installed = { root, currentPaneId };
     },
-    switchToView: () => {},
     host: {
       readSession: async () => ({
         buffers: [
-          { path: '/missing', point: 0, mark: null },
-          { path: '/present', point: 0, mark: null },
+          { path: '/tmp/a.txt', point: 0, mark: null },
+          { path: '/tmp/b.txt', point: 4, mark: null },
         ],
-        currentPath: '/present',
+        currentPath: '/tmp/b.txt',
       }),
       writeSession: async () => {},
     },
   });
   await controller.restore();
-  assert.equal(opens.length, 2);
-  assert.equal(views.length, 1);
+  assert.equal(installed.currentPaneId, 'pane-leaf-restored');
+  assert.equal(installed.root.id, 'pane-leaf-restored');
+  assert.equal(installed.root.view.kind, 'tabline');
+  assert.equal(installed.root.view.active, 1);
 });
 
-test('createSession.restore: an absent session.json is a clean no-op', async () => {
-  let switched = false;
+test('createSession.restore: a missing session.json is a clean no-op', async () => {
+  let installed = false;
   const controller = createSession({
-    getViews: () => [],
-    getCurrentIndex: () => 0,
-    openByPath: async () => {
-      throw new Error('should not be called');
-    },
-    switchToView: () => {
-      switched = true;
-    },
+    getRootPane: () => makeLeaf('pane-leaf-1', null),
+    getCurrentPaneId: () => 'pane-leaf-1',
+    openByPath: async () => null,
+    installRootPane: () => { installed = true; },
     host: {
       readSession: async () => null,
       writeSession: async () => {},
     },
   });
   await controller.restore();
-  assert.equal(switched, false);
+  assert.equal(installed, false);
 });
 
-test('createSession.flush writes the session synchronously', async () => {
-  const writes = [];
-  const views = [
-    makeView({ name: 'foo.txt', filePath: '/tmp/foo.txt', point: 5, mark: null }),
-  ];
+test('createSession.restore: an empty v1 buffer list is a clean no-op', async () => {
+  let installed = false;
   const controller = createSession({
-    getViews: () => views,
-    getCurrentIndex: () => 0,
+    getRootPane: () => makeLeaf('pane-leaf-1', null),
+    getCurrentPaneId: () => 'pane-leaf-1',
     openByPath: async () => null,
-    switchToView: () => {},
+    installRootPane: () => { installed = true; },
+    host: {
+      readSession: async () => ({ buffers: [], currentPath: null }),
+      writeSession: async () => {},
+    },
+  });
+  await controller.restore();
+  assert.equal(installed, false);
+});
+
+test('createSession.flush writes a v2 snapshot synchronously', async () => {
+  const writes = [];
+  const tree = makeLeaf('pane-leaf-3', makeTextView('/tmp/foo.txt', { point: 5 }));
+  const controller = createSession({
+    getRootPane: () => tree,
+    getCurrentPaneId: () => 'pane-leaf-3',
+    openByPath: async () => null,
+    installRootPane: () => {},
     host: {
       readSession: async () => null,
-      writeSession: async (data) => {
-        writes.push(data);
-      },
+      writeSession: async (data) => { writes.push(data); },
     },
   });
   await controller.flush();
   assert.equal(writes.length, 1);
-  assert.equal(writes[0].currentPath, '/tmp/foo.txt');
-  assert.equal(writes[0].buffers.length, 1);
+  assert.equal(writes[0].version, 2);
+  assert.equal(writes[0].currentPaneId, 'pane-leaf-3');
+  assert.equal(writes[0].rootPane.view.path, '/tmp/foo.txt');
 });
 
 test('createSession.save debounces writes', async () => {
   const writes = [];
-  const views = [
-    makeView({ name: 'foo.txt', filePath: '/tmp/foo.txt', point: 0, mark: null }),
-  ];
+  const tree = makeLeaf('pane-leaf-1', makeTextView('/tmp/foo.txt'));
   const controller = createSession({
-    getViews: () => views,
-    getCurrentIndex: () => 0,
+    getRootPane: () => tree,
+    getCurrentPaneId: () => 'pane-leaf-1',
     openByPath: async () => null,
-    switchToView: () => {},
+    installRootPane: () => {},
     host: {
       readSession: async () => null,
-      writeSession: async (data) => {
-        writes.push(data);
-      },
+      writeSession: async (data) => { writes.push(data); },
     },
     debounceMs: 20,
   });
-  // Three rapid saves coalesce into one write after the debounce.
   controller.save();
   controller.save();
   controller.save();
