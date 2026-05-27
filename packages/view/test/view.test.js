@@ -2,7 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createBuffer } from '@editor/buffer';
-import { createView, isView, createKindRegistry } from '../src/index.js';
+import {
+  createView,
+  isView,
+  isTablineView,
+  tablineActiveChild,
+  createKindRegistry,
+} from '../src/index.js';
 
 test('createView requires a kind', () => {
   assert.throws(() => createView({}), /kind is required/);
@@ -150,4 +156,75 @@ test('registry: dispose silently ignores an unregistered kind', () => {
   const registry = createKindRegistry();
   const view = createView({ kind: 'mystery' });
   registry.dispose(view); // no throw — defensive.
+});
+
+// --- tabline-view shape -------------------------------------------------
+// A tabline-view is a structural view: it has no buffer and instead
+// carries a `tabs` list, an `active` index, and an `edge`. The shape
+// defaults sensibly so a bare `createView({ kind: 'tabline' })` is
+// usable (empty top-edge strip).
+
+test('a tabline-view has no buffer and defaults tabs/active/edge', () => {
+  const tlv = createView({ kind: 'tabline' });
+  assert.equal(tlv.kind, 'tabline');
+  assert.equal(tlv.buffer, null);
+  assert.deepEqual(tlv.tabs, []);
+  assert.equal(tlv.active, 0);
+  assert.equal(tlv.edge, 'top');
+});
+
+test('a tabline-view accepts initial tabs/active/edge through extras', () => {
+  const a = createView({ kind: 'text', buffer: createBuffer('', { name: 'a' }) });
+  const b = createView({ kind: 'text', buffer: createBuffer('', { name: 'b' }) });
+  const tlv = createView({
+    kind: 'tabline',
+    extras: { tabs: [a, b], active: 1, edge: 'bottom' },
+  });
+  assert.equal(tlv.tabs.length, 2);
+  assert.equal(tlv.tabs[0], a);
+  assert.equal(tlv.tabs[1], b);
+  assert.equal(tlv.active, 1);
+  assert.equal(tlv.edge, 'bottom');
+});
+
+test('isTablineView recognises a tabline-view and rejects other shapes', () => {
+  const tlv = createView({ kind: 'tabline' });
+  assert.equal(isTablineView(tlv), true);
+
+  const text = createView({ kind: 'text', buffer: createBuffer('') });
+  assert.equal(isTablineView(text), false);
+
+  assert.equal(isTablineView(null), false);
+  assert.equal(isTablineView({}), false);
+  // A kind: 'tabline' object missing `tabs` isn't a tabline-view (it
+  // wasn't built through createView).
+  assert.equal(isTablineView({ kind: 'tabline', buffer: null }), false);
+});
+
+test('tablineActiveChild returns the active child', () => {
+  const a = createView({ kind: 'text', buffer: createBuffer('', { name: 'a' }) });
+  const b = createView({ kind: 'text', buffer: createBuffer('', { name: 'b' }) });
+  const tlv = createView({
+    kind: 'tabline',
+    extras: { tabs: [a, b], active: 1 },
+  });
+  assert.equal(tablineActiveChild(tlv), b);
+  tlv.active = 0;
+  assert.equal(tablineActiveChild(tlv), a);
+});
+
+test('tablineActiveChild returns null for empty tabs or out-of-range active', () => {
+  const tlv = createView({ kind: 'tabline' });
+  assert.equal(tablineActiveChild(tlv), null);
+
+  const a = createView({ kind: 'text', buffer: createBuffer('') });
+  const tlv2 = createView({ kind: 'tabline', extras: { tabs: [a], active: 5 } });
+  assert.equal(tablineActiveChild(tlv2), null);
+});
+
+test('tablineActiveChild returns null for non-tabline values', () => {
+  const text = createView({ kind: 'text', buffer: createBuffer('') });
+  assert.equal(tablineActiveChild(text), null);
+  assert.equal(tablineActiveChild(null), null);
+  assert.equal(tablineActiveChild(undefined), null);
 });

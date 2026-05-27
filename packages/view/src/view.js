@@ -17,6 +17,17 @@
  * use a buffer; every other kind owns its own state directly on the
  * view and has no buffer.
  *
+ * One special case: a **tabline-view** (`kind === 'tabline'`) is a
+ * *structural* view that contains other views. Its extra fields are:
+ *
+ *   - `tabs`:   View[]            — the child views in display order.
+ *   - `active`: number            — index into `tabs`.
+ *   - `edge`:   'top' | 'right' | 'bottom' | 'left' — where the strip
+ *               renders inside the pane.
+ *
+ * Tabline-views have no buffer and never appear in the global view list;
+ * they live only inside pane handles. See plans/PANES-PHASE-3B.md.
+ *
  * `createView` returns a plain mutable record — it's a small piece of
  * state shared by the desktop app, the kind registry and the Lisp
  * primitives. The shape is what matters; behaviour lives in the kind
@@ -84,6 +95,16 @@ export function createView(options) {
     view.point = typeof options.point === 'number' ? options.point : 0;
     view.mark = typeof options.mark === 'number' ? options.mark : null;
   }
+  // Tabline-views default their structural fields when not supplied via
+  // `extras`. A bare `createView({ kind: 'tabline' })` thus yields an
+  // empty top-edge tabline with no active child; the per-pane mount
+  // hook tolerates that (it renders an empty strip + empty content
+  // area until tabs are added).
+  if (view.kind === 'tabline') {
+    if (!Array.isArray(view.tabs)) view.tabs = [];
+    if (typeof view.active !== 'number') view.active = 0;
+    if (typeof view.edge !== 'string') view.edge = 'top';
+  }
   return view;
 }
 
@@ -104,6 +125,44 @@ export function isView(value) {
 }
 
 /**
+ * Whether VALUE is a tabline-view — a view whose `kind` is `'tabline'`
+ * and which carries the structural `tabs` / `active` / `edge` fields.
+ *
+ * Callers use this to branch on "is the focused pane holding a tabline-
+ * view or a plain leaf view?" without having to remember the literal
+ * `'tabline'` string.
+ *
+ * @param {*} value
+ * @returns {boolean}
+ */
+export function isTablineView(value) {
+  return (
+    isView(value) &&
+    value.kind === 'tabline' &&
+    Array.isArray(value.tabs)
+  );
+}
+
+/**
+ * The active child of a tabline-view, or `null` when VIEW is not a
+ * tabline-view, the tabs list is empty, or `active` is out of range.
+ *
+ * `(current-view)` resolves through this: when the focused pane's view
+ * is a tabline-view, the active child is what the user is actually
+ * editing.
+ *
+ * @param {import('./view.js').View | null | undefined} view
+ * @returns {import('./view.js').View | null}
+ */
+export function tablineActiveChild(view) {
+  if (!isTablineView(view)) return null;
+  if (view.tabs.length === 0) return null;
+  const i = view.active;
+  if (typeof i !== 'number' || i < 0 || i >= view.tabs.length) return null;
+  return view.tabs[i] ?? null;
+}
+
+/**
  * @typedef {object} View
  * @property {string} id - A unique-enough id; assigned at creation.
  * @property {string} kind - The view's kind discriminator.
@@ -116,6 +175,12 @@ export function isView(value) {
  *   Two views over the same buffer have independent cursors.
  * @property {number | null} [mark] - The selection anchor, for text
  *   views. `null` means no selection.
+ * @property {View[]} [tabs] - For tabline-views: the child views in
+ *   display order. Other kinds leave this undefined.
+ * @property {number} [active] - For tabline-views: index into `tabs`
+ *   of the currently visible child.
+ * @property {('top'|'right'|'bottom'|'left')} [edge] - For tabline-
+ *   views: which edge of the pane the strip renders on.
  *
  * Kind-specific state lives as additional top-level fields (e.g.
  * `src`, `tracks`, `sessionId`) put there by `createView`'s `extras`
