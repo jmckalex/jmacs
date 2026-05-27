@@ -460,12 +460,11 @@ body {
 }
 
 /* The `…` glyph appended to a folded header line, signalling
-   collapsed content. Sits between the open line's contents and the
-   closing-token preview. */
+   collapsed content. Yellow to draw attention — borrows `--tok-type`
+   from the theme palette so it picks up theme overrides. */
 .editor-fold-ellipsis {
   display: inline;
-  color: var(--fg-dim);
-  opacity: 0.85;
+  color: var(--tok-type);
   margin-left: 0.5ch;
   padding: 0 0.4ch;
   border-radius: 3px;
@@ -474,13 +473,10 @@ body {
 
 /* The trimmed closing line appended to a folded header so the user
    sees the structure's terminator alongside the opener — e.g.
-   `<script>…</script>` instead of just `<script> …`. Rendered plain
-   (no syntax highlighting) and slightly dimmed so it reads as a
-   structural hint, not as live source. */
+   `<script>…</script>`. Contents are full syntax-highlighted runs;
+   this wrapper just spaces it after the ellipsis. */
 .editor-fold-close {
   display: inline;
-  color: var(--fg-dim);
-  opacity: 0.7;
   margin-left: 0.2ch;
 }
 

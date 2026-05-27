@@ -224,6 +224,23 @@ export function createEditorView(buffer, container, options = {}) {
     return node;
   }
 
+  /** Drop leading whitespace from a run list, keeping faces intact.
+   *  Used when rendering the closing-line preview for a folded header:
+   *  the line's leading indent isn't useful inline, but we want to
+   *  preserve the highlighting of `</script>`, `}`, `)` etc. */
+  function trimLeadingWhitespaceRuns(runs) {
+    const out = [];
+    let started = false;
+    for (const run of runs) {
+      if (started) { out.push(run); continue; }
+      const trimmed = run.text.replace(/^\s+/, '');
+      if (trimmed === '') continue;
+      out.push({ text: trimmed, face: run.face });
+      started = true;
+    }
+    return out;
+  }
+
   /** Fill a line element with its highlighted runs. */
   function renderRuns(lineEl, runs) {
     if (runs.length === 1 && runs[0].face === null) {
@@ -374,10 +391,11 @@ export function createEditorView(buffer, container, options = {}) {
           : highlightLine(lines[index].content, language);
         renderRuns(lineEl, runs);
         // Folded header: tack a `…` glyph plus the closing line's
-        // trimmed text on the end so the user sees both ends of the
-        // collapsed structure at a glance — e.g. `<script>…</script>`
-        // or `function foo() {…}`. Falls back to a bare ` …` when
-        // the fold range doesn't have a useful closing line.
+        // SYNTAX-HIGHLIGHTED text on the end so the user sees both
+        // ends of the collapsed structure at a glance with proper
+        // colours — e.g. `<script>…</script>` with `</script>`
+        // rendered in tag face. Falls back gracefully when the fold
+        // range doesn't have a useful closing line.
         if (folded.has(index)) {
           const ellipsis = el('span', 'editor-fold-ellipsis');
           ellipsis.textContent = '…';
@@ -388,10 +406,13 @@ export function createEditorView(buffer, container, options = {}) {
             endLineNum > index &&
             endLineNum < lines.length
           ) {
-            const closeText = lines[endLineNum].content.trim();
-            if (closeText !== '') {
+            const closeRuns = perLine
+              ? (perLine[endLineNum] ?? null)
+              : highlightLine(lines[endLineNum].content, language);
+            const trimmed = closeRuns ? trimLeadingWhitespaceRuns(closeRuns) : null;
+            if (trimmed && trimmed.length > 0) {
               const close = el('span', 'editor-fold-close');
-              close.textContent = closeText;
+              renderRuns(close, trimmed);
               lineEl.append(close);
             }
           }
@@ -418,7 +439,7 @@ export function createEditorView(buffer, container, options = {}) {
           marker.title = folded.has(index) ? 'Unfold' : 'Fold';
           const icon = doc.createElement('i');
           icon.className = 'fa-solid ' +
-            (folded.has(index) ? 'fa-caret-right' : 'fa-caret-down');
+            (folded.has(index) ? 'fa-chevron-right' : 'fa-chevron-down');
           marker.append(icon);
           marker.addEventListener('mousedown', (ev) => {
             // Don't let the click bubble to the editor-area mousedown
