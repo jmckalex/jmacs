@@ -19,7 +19,7 @@
  * Naming follows the spec: procedures that mutate end in `!`.
  */
 
-import { LispError, NIL } from '@editor/lisp';
+import { LispError, NIL, arrayToList, cons } from '@editor/lisp';
 
 /** Assert a value is an integer offset. */
 function offset(value) {
@@ -298,6 +298,28 @@ export function createBufferPrimitives(session) {
     'clear-mark!': () => {
       buffer().clearMark();
       return NIL;
+    },
+
+    // --- multi-cursor / multi-selection --------------------------------
+    'add-selection!': (args) => {
+      const b = buffer();
+      const point = offset(args[0]);
+      const mark = args.length > 1 && args[1] !== NIL ? offset(args[1]) : null;
+      b.addSelection(point, mark);
+      return NIL;
+    },
+    'collapse-to-primary!': () => {
+      buffer().collapseToPrimary();
+      return NIL;
+    },
+    'cursor-count': () => buffer().cursorCount,
+    'selections': () => {
+      // Each entry surfaces as a (point . mark-or-nil) pair so Lisp can
+      // walk the list with car/cdr.
+      const b = buffer();
+      return arrayToList(
+        b.selections.map((s) => cons(s.point, s.mark === null ? NIL : s.mark))
+      );
     },
 
     // --- editing --------------------------------------------------------

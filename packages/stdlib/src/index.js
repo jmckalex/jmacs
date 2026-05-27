@@ -47,6 +47,12 @@ export const STDLIB_FILES = Object.freeze([
   'faces.lisp',
   'themes.lisp',
   'keymap.lisp',
+  // multi-cursor.lisp needs `expand-region-word-bounds` (expand-region.lisp)
+  // and rebinds `keyboard-quit` (keymap.lisp), so it loads after both.
+  // The keymap binds C-c d / C-c D to the commands by *symbol*; symbols
+  // resolve at dispatch time, so the order with keymap.lisp doesn't matter
+  // for those bindings.
+  'multi-cursor.lisp',
   // These read the keymap, so they load after it.
   'auto-pair.lisp',
   'menus.lisp',

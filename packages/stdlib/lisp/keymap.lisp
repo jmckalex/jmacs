@@ -72,7 +72,11 @@
 (define c-c-keymap
   {"tab"       'toggle-fold-at-point
    "C-comma"   'fold-all
-   "C-period"  'unfold-all})
+   "C-period"  'unfold-all
+   ;; Multi-cursor (see multi-cursor.lisp). C-c d adds the next match;
+   ;; C-c D selects all matches of the current word/region.
+   "d"         'add-cursor-next
+   "D"         'select-all-matches})
 
 ;; The root keymap.
 (define the-keymap

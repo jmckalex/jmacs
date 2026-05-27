@@ -3316,3 +3316,70 @@ test('find-file cancellation does not open anything', async () => {
   assert.equal(openedPath(), null);
 });
 
+// --- multi-cursor (C-c d / C-c D / C-g) ---------------------------------
+
+test('add-cursor-next selects the word at point on the first press', async () => {
+  const { buffer, interpreter } = await editor('alpha beta alpha');
+  buffer.moveTo(2); // inside "alpha"
+  press(interpreter, 'C-c');
+  press(interpreter, 'd');
+  // First press selects the word the primary cursor is in. Sublime
+  // convention: point lands at the *end* of the selection (the active
+  // end), mark at the start.
+  assert.equal(buffer.cursorCount, 1);
+  assert.equal(buffer.point, 5, 'primary point at word end');
+  assert.equal(buffer.mark, 0, 'primary mark at word start');
+});
+
+test('add-cursor-next on the second press adds a cursor at the next match', async () => {
+  const { buffer, interpreter } = await editor('alpha beta alpha gamma');
+  buffer.moveTo(2);
+  press(interpreter, 'C-c'); press(interpreter, 'd'); // select first "alpha"
+  press(interpreter, 'C-c'); press(interpreter, 'd'); // add the next "alpha"
+  assert.equal(buffer.cursorCount, 2);
+  const points = buffer.selections.map((s) => s.point).sort((a, b) => a - b);
+  assert.deepEqual(points, [5, 16]); // ends of the two "alpha" matches
+});
+
+test('add-cursor-next on three presses adds the third match', async () => {
+  // Regression for the branch's bug where subsequent presses always
+  // searched from the *primary's* end, so only ever one extra cursor
+  // could be added. The fix searches from the largest end across all
+  // current selections.
+  const { buffer, interpreter } = await editor('alpha beta alpha gamma alpha');
+  buffer.moveTo(2);
+  press(interpreter, 'C-c'); press(interpreter, 'd');
+  press(interpreter, 'C-c'); press(interpreter, 'd');
+  press(interpreter, 'C-c'); press(interpreter, 'd');
+  assert.equal(buffer.cursorCount, 3);
+  const points = buffer.selections.map((s) => s.point).sort((a, b) => a - b);
+  assert.deepEqual(points, [5, 16, 28]);
+});
+
+test('select-all-matches adds a cursor for every occurrence', async () => {
+  const { buffer, interpreter } = await editor('alpha beta alpha gamma alpha');
+  buffer.moveTo(2);
+  press(interpreter, 'C-c'); press(interpreter, 'D');
+  assert.equal(buffer.cursorCount, 3, 'three occurrences of "alpha"');
+  const points = buffer.selections.map((s) => s.point).sort((a, b) => a - b);
+  assert.deepEqual(points, [5, 16, 28]);
+});
+
+test('C-g collapses the cursor set to the primary', async () => {
+  const { buffer, interpreter } = await editor('alpha beta alpha gamma alpha');
+  buffer.moveTo(2);
+  press(interpreter, 'C-c'); press(interpreter, 'D');
+  assert.equal(buffer.cursorCount, 3);
+  press(interpreter, 'C-g');
+  assert.equal(buffer.cursorCount, 1);
+});
+
+test('typing inserts at every cursor', async () => {
+  const { buffer, interpreter } = await editor('alpha beta alpha');
+  buffer.moveTo(2);
+  press(interpreter, 'C-c'); press(interpreter, 'D'); // 2 cursors over "alpha"
+  // Each cursor has the word selected; typing 'X' replaces both.
+  press(interpreter, 'X');
+  assert.equal(buffer.text, 'X beta X');
+});
+

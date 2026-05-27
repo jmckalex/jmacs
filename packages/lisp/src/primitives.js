@@ -310,6 +310,15 @@ export function installPrimitives(env, { write }) {
     arity('string-contains?', a, 2);
     return str('string-contains?', a[0]).includes(str('string-contains?', a[1]));
   });
+  def('string-index-of', (a) => {
+    // (string-index-of haystack needle [start]) -> integer, or -1 when
+    // not found. Matches String.prototype.indexOf semantics.
+    arity('string-index-of', a, 2, 3);
+    const haystack = str('string-index-of', a[0]);
+    const needle = str('string-index-of', a[1]);
+    const start = a.length === 3 ? num('string-index-of', a[2]) : 0;
+    return haystack.indexOf(needle, start);
+  });
   def('string-prefix?', (a) => {
     arity('string-prefix?', a, 2);
     return str('string-prefix?', a[1]).startsWith(str('string-prefix?', a[0]));
