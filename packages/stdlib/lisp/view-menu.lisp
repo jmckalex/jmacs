@@ -35,6 +35,7 @@
 (define *buffer-menu-name-width* 28)
 (define *buffer-menu-mode-width* 10)
 (define *buffer-menu-lines-width* 6)
+(define *buffer-menu-pane-width* 14)
 
 (define *buffer-menu-buffer-name* "*Buffer List*")
 
@@ -85,6 +86,12 @@
 (define (record-lines rec)  (get rec :line-count 0))
 (define (record-file rec)   (get rec :file nil))
 (define (record-modified? rec) (get rec :modified #f))
+;; Phase 3b (Q12): a view's :pane is the id of the leaf pane where
+;; the view is currently visible (either as the leaf's direct view
+;; or as the active tab of the leaf's tabline-view). Nil when the
+;; view is in no pane at all (a buried tab, or only in the global
+;; view list).
+(define (record-pane rec)   (get rec :pane nil))
 
 (define (mode-label rec)
   "The display string for REC's mode column."
@@ -102,6 +109,12 @@
   (let ((f (record-file rec)))
     (if (nil? f) "" f)))
 
+(define (pane-label rec)
+  "The display string for REC's pane column (empty when the view is
+   in no pane). Phase 3b (Q12)."
+  (let ((p (record-pane rec)))
+    (if (nil? p) "" p)))
+
 (define (flag-string rec)
   "The single-character flag for REC: `*` modified, `.` otherwise. The
    mark column is rendered separately by `format-menu-row`."
@@ -118,6 +131,8 @@
     (pad-right "Mode" *buffer-menu-mode-width*)
     " "
     (pad-left  "Lines" *buffer-menu-lines-width*)
+    "  "
+    (pad-right "Pane" *buffer-menu-pane-width*)
     "  "
     "File"))
 
@@ -138,6 +153,7 @@
     (pad-right (mode-label rec) *buffer-menu-mode-width*) " "
     (pad-left (number->string (record-lines rec))
               *buffer-menu-lines-width*) "  "
+    (pad-right (pane-label rec) *buffer-menu-pane-width*) "  "
     (file-label rec)))
 
 (define (buffer-menu-render records)
