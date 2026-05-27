@@ -47,7 +47,7 @@ export {
   joinPath,
   shufflePermutation,
 } from './jukebox-view.js';
-export { toLines, selectionRects } from './projection.js';
+export { toLines, selectionRects, cursorPositions } from './projection.js';
 export { resolveKey, keyEventToString } from './keymap.js';
 export { applyIntent, handleKeyEvent } from './commands.js';
 export { fuzzyFilter } from './fuzzy.js';

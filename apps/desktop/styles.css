@@ -537,6 +537,13 @@ body {
   animation: cursor-blink 1.06s steps(1, end) infinite;
 }
 
+/* Secondary cursors (Sublime-style multi-cursor). Same paint as the
+ * primary; a subtler accent variant could be substituted here later. */
+.editor-cursor.is-secondary {
+  background: var(--accent);
+  opacity: 0.85;
+}
+
 @keyframes cursor-blink {
   0%,
   49% {

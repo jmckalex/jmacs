@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createBuffer } from '@editor/buffer';
-import { toLines, selectionRects } from '../src/projection.js';
+import { toLines, selectionRects, cursorPositions } from '../src/projection.js';
 
 test('toLines projects the empty string to one empty line', () => {
   assert.deepEqual(toLines(''), [{ number: 0, content: '' }]);
@@ -46,4 +46,46 @@ test('selectionRects spans multiple lines', () => {
     { line: 1, fromColumn: 0, toColumn: 4, toLineEnd: true },
     { line: 2, fromColumn: 0, toColumn: 2, toLineEnd: false },
   ]);
+});
+
+test('selectionRects covers every selection in a multi-cursor buffer', () => {
+  const buf = createBuffer('hello world');
+  buf.moveTo(0);
+  buf.setMark(5); // primary selects "hello"
+  buf.addSelection(10, 6); // secondary selects "world"
+  const rects = selectionRects(buf);
+  assert.deepEqual(rects, [
+    { line: 0, fromColumn: 0, toColumn: 5, toLineEnd: false },
+    { line: 0, fromColumn: 6, toColumn: 10, toLineEnd: false },
+  ]);
+});
+
+test('selectionRects skips caret-only cursors', () => {
+  const buf = createBuffer('hello world');
+  buf.moveTo(0);
+  buf.setMark(5); // primary selects "hello"
+  buf.addSelection(8); // secondary is a bare caret
+  const rects = selectionRects(buf);
+  assert.equal(rects.length, 1);
+  assert.deepEqual(rects[0], {
+    line: 0, fromColumn: 0, toColumn: 5, toLineEnd: false,
+  });
+});
+
+test('cursorPositions reports one position per cursor in order', () => {
+  const buf = createBuffer('foo bar\nbaz');
+  buf.moveTo(0);
+  buf.addSelection(4); // start of "bar"
+  buf.addSelection(8); // start of "baz" on line 1
+  assert.deepEqual(cursorPositions(buf), [
+    { line: 0, column: 0 },
+    { line: 0, column: 4 },
+    { line: 1, column: 0 },
+  ]);
+});
+
+test('cursorPositions on a single-cursor buffer returns one entry', () => {
+  const buf = createBuffer('hi');
+  buf.moveTo(1);
+  assert.deepEqual(cursorPositions(buf), [{ line: 0, column: 1 }]);
 });

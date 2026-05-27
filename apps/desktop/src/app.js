@@ -3338,6 +3338,18 @@ function ensureEditorViewForLeaf(leaf) {
       const v = peelTabline(leaf.view);
       return v && !isTablineView(v) && v.mark !== undefined ? v.mark : null;
     },
+    // Multi-cursor: the renderer paints this leaf's view's full cursor
+    // set. Falls back to a single-cursor list synthesised from
+    // getPoint/getMark when the view hasn't been given a cursors[]
+    // (non-text views, defensively).
+    getCursors: () => {
+      const v = peelTabline(leaf.view);
+      if (v && !isTablineView(v) && Array.isArray(v.cursors)) return v.cursors;
+      return [{
+        point: v && typeof v.point === 'number' ? v.point : 0,
+        mark: v && v.mark !== undefined ? v.mark : null,
+      }];
+    },
   });
   editorViewByPaneId.set(leaf.id, instance);
   return instance;
@@ -4248,6 +4260,14 @@ function mountTablineActiveChild(tablineView) {
           return v && !isTablineView(v) && v.mark !== undefined
             ? v.mark
             : null;
+        },
+        getCursors: () => {
+          const v = peelTabline(tablineView);
+          if (v && !isTablineView(v) && Array.isArray(v.cursors)) return v.cursors;
+          return [{
+            point: v && typeof v.point === 'number' ? v.point : 0,
+            mark: v && v.mark !== undefined ? v.mark : null,
+          }];
         },
       });
     }
