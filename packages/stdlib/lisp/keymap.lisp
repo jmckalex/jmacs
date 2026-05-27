@@ -38,8 +38,7 @@
    "3"     'split-horizontal
    "o"     'other-pane
    ;; Spatial pane navigation. C-x <arrow> is already taken
-   ;; (next/previous-view); use C-x C-<arrow>. The exact binding is a
-   ;; placeholder pending Jason's call — see architect-notes.md.
+   ;; (next/previous-view); use C-x C-<arrow>.
    "C-left"   'focus-pane-left
    "C-right"  'focus-pane-right
    "C-up"     'focus-pane-up
