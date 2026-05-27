@@ -46,14 +46,18 @@ const INJECTION_QUERY = `
    (#set! injection.language "css"))
 `;
 
-// Foldable scopes: any element with both an open and a close tag —
-// `<div>...</div>`, `<script>...</script>`, `<style>...</style>`. The
-// `element` node covers the whole pair; folding starts on its open-tag
-// line and ends on its close-tag line.
+// Foldable scopes: an element only counts when it has BOTH a start
+// tag and an end tag. HTML void elements like `<meta>`, `<br>`, `<img>`
+// and `<link>` parse as `element` nodes without an end_tag — the
+// pattern below excludes them so the gutter doesn't grow a fold
+// chevron next to every `<meta charset=...>` line. Same logic
+// applies to `script_element` and `style_element` (always paired in
+// practice, but the explicit child match keeps the query
+// self-documenting and robust to grammar updates).
 const FOLD_QUERY = `
-  (element) @fold
-  (script_element) @fold
-  (style_element) @fold
+  (element (start_tag) (end_tag)) @fold
+  (script_element (start_tag) (end_tag)) @fold
+  (style_element (start_tag) (end_tag)) @fold
 `;
 
 registerLanguage({
