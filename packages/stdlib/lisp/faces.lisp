@@ -54,8 +54,8 @@
   "Underlying registration routine. NAME (a symbol), PARENT (nil or a
    symbol naming another face), and OPTIONS (a list of keyword pairs:
    :doc string, :default-light face, :default-dark face,
-   :default-midnight face). On a hot reload the existing overrides
-   survive — only the registry entry is rewritten."
+   :default-bright face, :default-midnight face). On a hot reload the
+   existing overrides survive — only the registry entry is rewritten."
   (let ((opts (apply hash-map options)))
     (set! *face-registry*
           (assoc *face-registry* name
@@ -65,6 +65,7 @@
                   :parent parent
                   :default-light    (get opts :default-light {})
                   :default-dark     (get opts :default-dark {})
+                  :default-bright   (get opts :default-bright {})
                   :default-midnight (get opts :default-midnight {}))))))
 
 ;; defface — register a face with optional `from PARENT` inheritance.
@@ -111,6 +112,7 @@
       ((nil? entry) {})
       ((eq? theme 'light)    (get entry :default-light    {}))
       ((eq? theme 'dark)     (get entry :default-dark     {}))
+      ((eq? theme 'bright)   (get entry :default-bright   {}))
       ((eq? theme 'midnight) (get entry :default-midnight {}))
       (else                  (get entry :default-dark     {})))))
 

@@ -2240,16 +2240,18 @@ test('expand-region keeps growing around the original anchor, not point', async 
 
 // --- themes -----------------------------------------------------------
 
-test('three themes are registered with distinct palettes', async () => {
+test('four themes are registered with distinct palettes', async () => {
   const { interpreter } = await editor();
   const names = listToArray(interpreter.call('registered-themes'))
     .map((s) => s.name).sort();
-  assert.deepEqual(names, ['dark', 'light', 'midnight']);
-  // Each theme defines a --bg value; the three should all differ.
+  assert.deepEqual(names, ['bright', 'dark', 'light', 'midnight']);
+  // Each theme defines a --bg value; all should differ. `bright` and
+  // `dark` deliberately share most chrome but diverge on --bg-editor;
+  // we relax the strict-uniqueness check to "at least three distinct".
   const bgs = names.map(
     (n) => interpreter.evaluate(`(get (theme-vars (quote ${n})) "--bg" "")`)
   );
-  assert.equal(new Set(bgs).size, 3);
+  assert.ok(new Set(bgs).size >= 3);
 });
 
 test('the *theme* setting defaults to dark and is a :choice', async () => {
@@ -2261,7 +2263,7 @@ test('the *theme* setting defaults to dark and is a :choice', async () => {
   // field = (name type value default doc state options)
   assert.equal(String(field[1]), ':choice');
   const options = listToArray(field[6]).map((s) => s.name);
-  assert.deepEqual(options.sort(), ['dark', 'light', 'midnight']);
+  assert.deepEqual(options.sort(), ['bright', 'dark', 'light', 'midnight']);
 });
 
 test('current-theme-css-vars switches with *theme*', async () => {

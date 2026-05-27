@@ -107,6 +107,42 @@
    "--ansi-bright-cyan"    "#93a1a1"
    "--ansi-bright-white"   "#fdf6e3"))
 
+(define-theme 'bright
+  "Dark chrome with a punchier syntax palette — same background as
+   `dark` but the token colours are saturated and luminous so they
+   read as vivid rather than muted. Test bed for the customisation
+   feature and a counterpoint to the calm Mariana default."
+  (hash-map
+   "--bg"           "#2b333b"
+   "--bg-chrome"    "#262d34"
+   "--bg-editor"    "#323e4a"
+   "--bg-repl"      "#2b333b"
+   "--fg"           "#e8eef5"
+   "--fg-dim"       "#8aa0b3"
+   "--accent"       "#82aaff"
+   "--result"       "#a3d977"
+   "--error"        "#ff5370"
+   "--selection"    "rgba(130, 170, 255, 0.28)"
+   ;; Bumped-saturation ANSI palette. Same hues as `dark`, brighter
+   ;; and more chromatic so coloured prompts pop on the slightly
+   ;; lighter background.
+   "--ansi-black"          "#4a5460"
+   "--ansi-red"            "#ff5370"
+   "--ansi-green"          "#a3d977"
+   "--ansi-yellow"         "#ffd866"
+   "--ansi-blue"           "#82aaff"
+   "--ansi-magenta"        "#d56bff"
+   "--ansi-cyan"           "#56e0e0"
+   "--ansi-white"          "#e8eef5"
+   "--ansi-bright-black"   "#7a8696"
+   "--ansi-bright-red"     "#ff7d8f"
+   "--ansi-bright-green"   "#bfe88f"
+   "--ansi-bright-yellow"  "#ffe39a"
+   "--ansi-bright-blue"    "#a5c2ff"
+   "--ansi-bright-magenta" "#e297ff"
+   "--ansi-bright-cyan"    "#88f0f0"
+   "--ansi-bright-white"   "#ffffff"))
+
 (define-theme 'midnight
   "A second dark theme — higher-contrast, near-black background."
   (hash-map
@@ -146,36 +182,42 @@
   :doc "Source comments — slash-slash, hash, percent — italicised."
   :default-light    (face :foreground "#93a1a1" :slant :italic)
   :default-dark     (face :foreground "#7c8f9e" :slant :italic)
+  :default-bright   (face :foreground "#8aa0b3" :slant :italic)
   :default-midnight (face :foreground "#8b949e" :slant :italic))
 
 (defface 'string
   :doc "String literals: double, single, backtick."
   :default-light    (face :foreground "#859900")
   :default-dark     (face :foreground "#99c794")
+  :default-bright   (face :foreground "#a3d977")
   :default-midnight (face :foreground "#a5d6ff"))
 
 (defface 'number
   :doc "Numeric literals — integers, floats, hex, etc."
   :default-light    (face :foreground "#cb4b16")
   :default-dark     (face :foreground "#f9ae58")
+  :default-bright   (face :foreground "#ffb86c")
   :default-midnight (face :foreground "#79c0ff"))
 
 (defface 'keyword
   :doc "Language keywords (if, return, def, let, lambda, …)."
   :default-light    (face :foreground "#859900")
   :default-dark     (face :foreground "#c594c5")
+  :default-bright   (face :foreground "#d56bff")
   :default-midnight (face :foreground "#ff7b72"))
 
 (defface 'constant
   :doc "True, false, nil and other named constants."
   :default-light    (face :foreground "#b58900")
   :default-dark     (face :foreground "#5fb4b4")
+  :default-bright   (face :foreground "#56e0e0")
   :default-midnight (face :foreground "#79c0ff"))
 
 (defface 'function
   :doc "Function names — definitions and calls."
   :default-light    (face :foreground "#268bd2")
   :default-dark     (face :foreground "#6699cc")
+  :default-bright   (face :foreground "#82aaff")
   :default-midnight (face :foreground "#d2a8ff"))
 
 (defface 'variable
@@ -184,18 +226,21 @@
         get a face; references in the body read as default text."
   :default-light    (face :foreground "#b07d3c")
   :default-dark     (face :foreground "#e8a87c")
+  :default-bright   (face :foreground "#f9a872")
   :default-midnight (face :foreground "#ffcb6b"))
 
 (defface 'type
   :doc "Type names, class names, type-position identifiers."
   :default-light    (face :foreground "#b58900")
   :default-dark     (face :foreground "#fac863")
+  :default-bright   (face :foreground "#ffd866")
   :default-midnight (face :foreground "#ffa657"))
 
 (defface 'tag
   :doc "HTML / XML tags and similar markup tags."
   :default-light    (face :foreground "#dc322f")
   :default-dark     (face :foreground "#ec5f67")
+  :default-bright   (face :foreground "#ff5370")
   :default-midnight (face :foreground "#7ee787"))
 
 (defface 'operator
@@ -204,6 +249,7 @@
         operators in tree-sitter-highlit code read as default text."
   :default-light    (face :foreground "#2aa198")
   :default-dark     (face :foreground "#62b3b2")
+  :default-bright   (face :foreground "#82eaff")
   :default-midnight (face :foreground "#56d4dd"))
 
 (defface 'paren
@@ -211,24 +257,28 @@
         dimmer than text so paren-soup reads as structure, not noise."
   :default-light    (face :foreground "#b8c4c4")
   :default-dark     (face :foreground "#6b7785")
+  :default-bright   (face :foreground "#8b9aab")
   :default-midnight (face :foreground "#6e7681"))
 
 (defface 'heading
   :doc "Markup headings (Markdown #, HTML h1, …)."
   :default-light    (face :foreground "#268bd2" :weight :bold)
   :default-dark     (face :foreground "#fac863" :weight :bold)
+  :default-bright   (face :foreground "#ffd866" :weight :bold)
   :default-midnight (face :foreground "#ffa657" :weight :bold))
 
 (defface 'code
   :doc "Inline code spans in prose markup."
   :default-light    (face :foreground "#2aa198")
   :default-dark     (face :foreground "#99c794")
+  :default-bright   (face :foreground "#a3d977")
   :default-midnight (face :foreground "#a5d6ff"))
 
 (defface 'link
   :doc "Hyperlinks in prose markup."
   :default-light    (face :foreground "#268bd2" :underline #t)
   :default-dark     (face :foreground "#6699cc" :underline #t)
+  :default-bright   (face :foreground "#82aaff" :underline #t)
   :default-midnight (face :foreground "#58a6ff" :underline #t))
 
 ;; --- the user-facing setting -------------------------------------------
@@ -237,11 +287,12 @@
 
 (defcustom *theme* 'dark :choice
   :group 'appearance
-  :options '(dark light midnight)
+  :options '(dark bright light midnight)
   :on-change (lambda (name value) (apply-theme!))
   :doc "The colour theme. Applied on Apply or Save in the customisation
-   buffer, and re-applied on startup. Three themes ship: dark (Mariana),
-   light (Solarized Light) and midnight (a near-black dark).")
+   buffer, and re-applied on startup. Four themes ship: dark (Mariana),
+   bright (dark chrome with a punchier syntax palette), light
+   (Solarized Light) and midnight (a near-black dark).")
 
 ;; --- the symbol-string protocol exposed to the host --------------------
 ;; The host reads `(current-theme-css-vars)` and writes each pair onto
