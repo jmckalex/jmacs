@@ -1046,11 +1046,29 @@ function switchToViewIndex(index) {
     return view;
   }
   // Plain-leaf path (or no focused pane — defensive): swap the view.
+  let landingLeaf = focused;
   if (focused) {
     focused.view = view;
   } else {
     const leaves = leafPanes(rootPane);
-    if (leaves.length > 0) leaves[0].view = view;
+    if (leaves.length > 0) {
+      leaves[0].view = view;
+      landingLeaf = leaves[0];
+    }
+  }
+  // Non-text singleton views (image / audio / video / jukebox /
+  // customize / doc / shell / directory-*) are module-level instances
+  // whose elements are created once at startup, originally parented
+  // to the FIRST leaf's pane element. After splits and session
+  // restores their original parent may have been destroyed, leaving
+  // the element orphaned (display:'' alone won't bring it back into
+  // the DOM). Re-parent the singleton into the landing leaf's pane
+  // element so it actually appears. The tabline path does the same
+  // thing into `.tabline-content` inside `mountTablineActiveChild`.
+  const singleton = singletonElementForKind(view.kind);
+  const landingEl = landingLeaf ? paneElements.get(landingLeaf.id) : null;
+  if (singleton && landingEl && singleton.parentNode !== landingEl) {
+    landingEl.append(singleton);
   }
   hideInactiveRendererViews(view.kind);
   kindRegistry.mount(view);
