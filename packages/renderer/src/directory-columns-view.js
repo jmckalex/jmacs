@@ -28,6 +28,7 @@
 
 import { keyEventToString } from './keymap.js';
 import { iconClassForFile, joinPath } from './directory-tree-view.js';
+import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
 
 /** A bare modifier press is not a key in its own right. */
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
@@ -57,6 +58,13 @@ const FORM_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
  * @param {(path: string) => void} [options.openPath] - Open a file
  *   the user activated (double-click or Enter). Routes through the
  *   host's `open-file-path!`.
+ * @param {Record<string, (text: string) =>
+ *   import('./highlight.js').Run[][]>} [options.highlighters] - Whole-
+ *   buffer tree-sitter highlighters, keyed by language. Used to colour
+ *   the text preview pane the same way the editor does. A language
+ *   without an entry falls back to `highlightBuffer` (for whole-buffer
+ *   tokenisers like LaTeX / Makefile) and then to per-line
+ *   `highlightLine`.
  * @param {(path: string) => void} [options.onRevealInFolder] - Open
  *   the OS file browser focused on PATH (Finder on macOS).
  * @param {(path: string) => Promise<{ok: boolean, error?: string}>}
@@ -85,6 +93,10 @@ export function createDirectoryColumnsView(container, options = {}) {
     typeof options.onTrash === 'function' ? options.onTrash : null;
   const onRename =
     typeof options.onRename === 'function' ? options.onRename : null;
+  const highlighters =
+    options.highlighters && typeof options.highlighters === 'object'
+      ? options.highlighters
+      : {};
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const closeBuffer =
     typeof options.closeBuffer === 'function' ? options.closeBuffer : null;
@@ -281,6 +293,53 @@ export function createDirectoryColumnsView(container, options = {}) {
     });
   }
 
+  /** Append highlighted text content to the preview `<pre>` block.
+   *  Picks the best available highlighter for the file name:
+   *    1. Tree-sitter (whole-buffer) when one is registered for the
+   *       language — same path the editor view uses.
+   *    2. Whole-buffer line tokeniser (`highlightBuffer`) for languages
+   *       like LaTeX / Makefile that span multi-line constructs.
+   *    3. Per-line `highlightLine` as the general fallback.
+   *  Runs are rendered as `<span class="tok-{face}">` spans so they
+   *  pick up the editor's face palette unchanged. */
+  function renderHighlightedPreview(pre, text, fileName) {
+    const language = languageForName(fileName);
+    /** @type {import('./highlight.js').Run[][] | null} */
+    let perLine = null;
+    const treeSitter = highlighters[language];
+    if (treeSitter) {
+      try { perLine = treeSitter(text); } catch { perLine = null; }
+    }
+    if (perLine === null) {
+      perLine = highlightBuffer(text, language);
+    }
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i += 1) {
+      const lineEl = doc.createElement('div');
+      lineEl.className = 'directory-columns-preview-line';
+      const runs = perLine
+        ? (perLine[i] ?? [{ text: lines[i], face: null }])
+        : highlightLine(lines[i], language);
+      if (runs.length === 1 && runs[0].face === null) {
+        lineEl.textContent = runs[0].text;
+      } else {
+        for (const run of runs) {
+          if (run.face === null) {
+            lineEl.append(doc.createTextNode(run.text));
+          } else {
+            const span = doc.createElement('span');
+            span.className = `tok-${run.face}`;
+            span.textContent = run.text;
+            lineEl.append(span);
+          }
+        }
+      }
+      // Empty line still occupies a row.
+      if (!lineEl.hasChildNodes()) lineEl.append(doc.createTextNode(''));
+      pre.append(lineEl);
+    }
+  }
+
   /** Build the preview pane that sits to the right of the trailing
    *  directory column. The actual preview content is async — it
    *  arrives from getPreview(path) and is cached by path. While the
@@ -348,10 +407,10 @@ export function createDirectoryColumnsView(container, options = {}) {
       const pre = doc.createElement('pre');
       pre.className = 'directory-columns-preview-text';
       // Cap the preview at ~4KB to keep the column light.
-      pre.textContent =
-        info.content.length > 4096
-          ? `${info.content.slice(0, 4096)}\n…`
-          : info.content;
+      const capped = info.content.length > 4096
+        ? `${info.content.slice(0, 4096)}\n…`
+        : info.content;
+      renderHighlightedPreview(pre, capped, info.name ?? '');
       preview.append(pre);
     } else {
       const note = doc.createElement('div');

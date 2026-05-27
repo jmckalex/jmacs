@@ -2227,8 +2227,16 @@ textarea.customize-widget {
   border-radius: 4px;
   font-family: var(--font-mono, monospace);
   font-size: 12px;
-  white-space: pre-wrap;
   overflow: auto;
+  /* Per-line rendering: each row is a child <div> built from the
+   * editor's `tok-*` faces. The wrapper preserves whitespace inside
+   * each line; lines themselves stack as block elements. */
+  white-space: normal;
+}
+
+.directory-columns-preview-line {
+  white-space: pre-wrap;
+  min-height: 1lh;
 }
 
 .directory-columns-preview-loading,

@@ -3822,6 +3822,9 @@ const directoryColumnsView = createDirectoryColumnsView(
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     getPreview: (path) => buildColumnPreview(path),
+    // Same tree-sitter highlighter registry the editor uses, so the
+    // preview pane colourises the file the same way as if it were open.
+    highlighters,
     openPath: (path) => {
       openFileInTabAdjacent(path);
     },
