@@ -304,6 +304,11 @@ export function createDirectoryColumnsView(container, options = {}) {
    *  pick up the editor's face palette unchanged. */
   function renderHighlightedPreview(pre, text, fileName) {
     const language = languageForName(fileName);
+    // Highlight the FULL text — tree-sitter's parser needs to see
+    // matching open/close tokens to identify injection regions (e.g.
+    // an HTML `<style>` block as `@injection.content` for CSS). A
+    // mid-element truncation would break the injection query even
+    // though the parser is otherwise error-resilient.
     /** @type {import('./highlight.js').Run[][] | null} */
     let perLine = null;
     const treeSitter = highlighters[language];
@@ -314,7 +319,11 @@ export function createDirectoryColumnsView(container, options = {}) {
       perLine = highlightBuffer(text, language);
     }
     const lines = text.split('\n');
-    for (let i = 0; i < lines.length; i += 1) {
+    // Cap the *rendered* line count so a giant file doesn't bloat the
+    // preview DOM; injection still saw the whole source above.
+    const MAX_PREVIEW_LINES = 400;
+    const limit = Math.min(lines.length, MAX_PREVIEW_LINES);
+    for (let i = 0; i < limit; i += 1) {
       const lineEl = doc.createElement('div');
       lineEl.className = 'directory-columns-preview-line';
       const runs = perLine
@@ -337,6 +346,12 @@ export function createDirectoryColumnsView(container, options = {}) {
       // Empty line still occupies a row.
       if (!lineEl.hasChildNodes()) lineEl.append(doc.createTextNode(''));
       pre.append(lineEl);
+    }
+    if (lines.length > limit) {
+      const ellipsis = doc.createElement('div');
+      ellipsis.className = 'directory-columns-preview-line';
+      ellipsis.textContent = `… (${lines.length - limit} more lines)`;
+      pre.append(ellipsis);
     }
   }
 
@@ -406,11 +421,7 @@ export function createDirectoryColumnsView(container, options = {}) {
     } else if (info.kind === 'text' && typeof info.content === 'string') {
       const pre = doc.createElement('pre');
       pre.className = 'directory-columns-preview-text';
-      // Cap the preview at ~4KB to keep the column light.
-      const capped = info.content.length > 4096
-        ? `${info.content.slice(0, 4096)}\n…`
-        : info.content;
-      renderHighlightedPreview(pre, capped, info.name ?? '');
+      renderHighlightedPreview(pre, info.content, info.name ?? '');
       preview.append(pre);
     } else {
       const note = doc.createElement('div');
