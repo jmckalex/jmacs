@@ -23,7 +23,9 @@
   :doc "How many columns wide a tab character should appear, and how
         many spaces `insert-tab` produces when `*indent-tabs-mode*` is
         off. Applies to the editor view and the directory-columns
-        preview pane via the `--tab-width` CSS variable.")
+        preview pane via the `--tab-width` CSS variable — the host
+        synchronises the var after stdlib load and on every
+        customisation change of this setting.")
 
 (defcustom *indent-tabs-mode* #f :boolean
   :group 'editing

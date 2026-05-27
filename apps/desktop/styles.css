@@ -518,6 +518,11 @@ body {
   left: 0;
   white-space: pre;
   min-height: 1lh;
+  /* CSS tab-size controls the visual width of a literal `\t`. Driven by
+   * the *tab-width* defcustom (apps/desktop/src/app.js writes the
+   * --tab-width var on the root element when the setting changes). */
+  tab-size: var(--tab-width, 4);
+  -moz-tab-size: var(--tab-width, 4);
 }
 
 /* --- cursor ------------------------------------------------------------ */
@@ -2247,6 +2252,8 @@ textarea.customize-widget {
   right: 0;
   white-space: pre;
   min-height: 1lh;
+  tab-size: var(--tab-width, 4);
+  -moz-tab-size: var(--tab-width, 4);
 }
 
 .directory-columns-preview-loading,

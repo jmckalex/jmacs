@@ -2337,6 +2337,18 @@ const interpreter = createInterpreter({
       minibuffer.setStatus(String(args[0] ?? ''));
       return NIL;
     },
+    // Push the *tab-width* setting onto the document root as the
+    // `--tab-width` CSS variable. `.editor-line` and the
+    // directory-columns preview line read it via
+    // `tab-size: var(--tab-width)`. Called once on startup (after
+    // the stdlib finishes loading) and again from indent.lisp's
+    // on-change hook whenever the user changes *tab-width*.
+    'set-css-tab-width!': (args) => {
+      const value = Number(args[0]);
+      const width = Number.isFinite(value) && value > 0 ? value | 0 : 4;
+      document.documentElement.style.setProperty('--tab-width', String(width));
+      return NIL;
+    },
     'clear-status!': () => {
       minibuffer.clearStatus();
       return NIL;
@@ -3190,6 +3202,28 @@ if (keymapReady) {
 }
 
 if (keymapReady) await loadUserConfig();
+
+// Sync the `--tab-width` CSS variable with the live *tab-width*
+// setting. Runs after stdlib + user config load so a user-customised
+// value lands here. The `on-change` hook (installed via
+// `custom-on-change!` below) keeps the var in sync afterwards.
+if (keymapReady) {
+  try {
+    const value = interpreter.evaluate('*tab-width*');
+    interpreter.call('set-css-tab-width!', value);
+    // Install an on-change hook so subsequent customise edits update
+    // the CSS var. The Lisp side stores the hook in the *custom-registry*;
+    // we wrap a host-side closure as a Lisp lambda via `eval`.
+    interpreter.evaluate(`
+      (set! *custom-registry*
+        (assoc *custom-registry* '*tab-width*
+          (assoc (get *custom-registry* '*tab-width* {})
+                 :on-change (lambda (_n v) (set-css-tab-width! v)))))
+    `);
+  } catch (error) {
+    repl.appendError(`tab-width sync failed: ${error.lispMessage ?? error.message}`);
+  }
+}
 if (keymapReady) applyCurrentTheme();
 if (keymapReady) applyCurrentFaceStyles();
 
