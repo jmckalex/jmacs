@@ -36,6 +36,7 @@ import {
   cons,
   createInterpreter,
   keyword,
+  LispError,
   listToArray,
   NIL,
   sym,
@@ -68,6 +69,10 @@ import {
   languageForFilename,
   loadLanguageHighlighters,
   renderMarkdown,
+  parseCitations,
+  formatBibliography,
+  formatCitation,
+  citationKeys,
 } from '@editor/renderer';
 import {
   createBufferPrimitives,
@@ -2386,6 +2391,81 @@ const interpreter = createInterpreter({
     'clear-status!': () => {
       minibuffer.clearStatus();
       return NIL;
+    },
+    // --- citation.js bridges -------------------------------------------
+    // The renderer-side wrapper (`packages/renderer/src/citation.js`)
+    // owns the heavy bundle. These primitives are thin string-in /
+    // string-out shells so the Lisp side never sees JS objects — a
+    // *bibliography handle* is just the CSL-JSON serialised as a
+    // string. Errors are caught and surfaced as a Lisp error message.
+
+    // `(read-file-text! PATH)` — synchronously read the file at PATH
+    // (tilde-expanded by the host) and return its UTF-8 contents as a
+    // string. Returns nil on read failure. Used by `cite.lisp`'s
+    // `load-bibliography` and available to any Lisp code that needs
+    // file content inline.
+    'read-file-text!': (args) => {
+      const path = String(args[0] ?? '');
+      if (path === '') return NIL;
+      const text = window.host.readFileTextSync(path);
+      return typeof text === 'string' ? text : NIL;
+    },
+    // `(citation-parse SOURCE)` — parse a bibliographic source (BibTeX,
+    // BibLaTeX, CSL-JSON, RIS-via-csl-json, etc. — Citation.js
+    // auto-detects from content) and return the CSL-JSON serialisation
+    // of its entries. The result is the handle every other citation
+    // primitive expects.
+    'citation-parse': (args) => {
+      const source = String(args[0] ?? '');
+      if (source === '') return '';
+      try { return parseCitations(source); }
+      catch (error) {
+        throw new LispError(`citation-parse: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-format-bibliography HANDLE [STYLE [FORMAT [LANG]]])`
+    // — render every entry in HANDLE as a bibliography. STYLE is a
+    // CSL style id (default `*citation-style*` — the Lisp side
+    // resolves it before calling here, or passes nil for `apa`).
+    // FORMAT is `'text` or `'html`. LANG is a BCP-47 locale.
+    'citation-format-bibliography': (args) => {
+      const handle = String(args[0] ?? '');
+      if (handle === '') return '';
+      const style = args[1] != null && args[1] !== NIL ? String(args[1]) : 'apa';
+      const format = args[2] != null && args[2] !== NIL ? String(args[2]) : 'text';
+      const lang = args[3] != null && args[3] !== NIL ? String(args[3]) : 'en-US';
+      try { return formatBibliography(handle, { style, format, lang }); }
+      catch (error) {
+        throw new LispError(`citation-format-bibliography: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-format HANDLE [STYLE [FORMAT [LANG]]])` — render an
+    // in-text citation for the entries in HANDLE. Same arg shape as
+    // `citation-format-bibliography`.
+    'citation-format': (args) => {
+      const handle = String(args[0] ?? '');
+      if (handle === '') return '';
+      const style = args[1] != null && args[1] !== NIL ? String(args[1]) : 'apa';
+      const format = args[2] != null && args[2] !== NIL ? String(args[2]) : 'text';
+      const lang = args[3] != null && args[3] !== NIL ? String(args[3]) : 'en-US';
+      try { return formatCitation(handle, { style, format, lang }); }
+      catch (error) {
+        throw new LispError(`citation-format: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-keys HANDLE)` — the BibTeX / CSL-JSON keys present in
+    // HANDLE, as a Lisp list of strings. Useful for building a picker.
+    'citation-keys': (args) => {
+      const handle = String(args[0] ?? '');
+      if (handle === '') return NIL;
+      try {
+        const keys = citationKeys(handle);
+        let acc = NIL;
+        for (let i = keys.length - 1; i >= 0; i -= 1) acc = cons(keys[i], acc);
+        return acc;
+      } catch (error) {
+        throw new LispError(`citation-keys: ${error.message ?? error}`);
+      }
     },
     // The current user's home directory — find-file uses it as the
     // starting point for its TAB-completion path. An empty string is

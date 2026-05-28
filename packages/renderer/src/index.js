@@ -19,6 +19,9 @@ export { createHoverDoc } from './hover-doc.js';
 export { createInlineEval } from './inline-eval.js';
 export { renderMarkdown } from './markdown.js';
 export {
+  parseCitations, formatBibliography, formatCitation, citationKeys,
+} from './citation.js';
+export {
   createImageView,
   isImageName,
   mimeTypeForImage,

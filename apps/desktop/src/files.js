@@ -5,7 +5,7 @@
  */
 
 import { app, dialog, ipcMain, shell } from 'electron';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync as nodeReadFileSync } from 'node:fs';
 import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
@@ -336,6 +336,22 @@ export function registerFileHandlers() {
   // `{ name, kind: 'directory' | 'file' | 'other' }`. The directory
   // tree-view uses this to know which icon (folder vs file) to show
   // and which entries can be expanded.
+  // Synchronous text-file read. Lisp primitives are synchronous, so a
+  // command like `(load-bibliography "~/refs.bib")` needs to fetch the
+  // file content in-line. Returns the UTF-8 string contents, or null
+  // when the path is unreadable / missing. The path is tilde-expanded.
+  ipcMain.on('file:read-text-sync', (event, payload) => {
+    try {
+      const target = expandTilde(payload?.path);
+      // readFileSync via the imported promise API isn't sync; use the
+      // synchronous fs counterpart. (We import `readFileSync` lazily
+      // to keep the import block clean.)
+      event.returnValue = nodeReadFileSync(target, 'utf8');
+    } catch {
+      event.returnValue = null;
+    }
+  });
+
   ipcMain.on('directory:list-detailed-sync', (event, payload) => {
     try {
       const entries = readdirSync(expandTilde(payload?.path), {

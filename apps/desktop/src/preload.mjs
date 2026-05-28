@@ -102,6 +102,17 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.sendSync('directory:list-detailed-sync', { path }),
 
   /**
+   * Synchronous text-file read. Returns the file's UTF-8 contents, or
+   * null when the path is unreadable / missing. Used by Lisp
+   * primitives that need file content inline (e.g.
+   * `(load-bibliography path)`).
+   * @param {string} path
+   * @returns {string | null}
+   */
+  readFileTextSync: (path) =>
+    ipcRenderer.sendSync('file:read-text-sync', { path }),
+
+  /**
    * A directory listing with per-entry type info — each result is
    * `{ name, type }` where `type` is `"directory"` or `"file"`.
    * Find-file's tab-completion uses this synchronously.

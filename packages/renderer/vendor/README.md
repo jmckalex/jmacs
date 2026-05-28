@@ -11,6 +11,7 @@ by `src/treesitter.js`.
 | `web-tree-sitter.js` | `web-tree-sitter@0.26.9` | the tree-sitter runtime (ESM) |
 | `web-tree-sitter.wasm` | `web-tree-sitter@0.26.9` | the runtime's WebAssembly |
 | `marked.esm.js` | `marked@18.0.4` | Markdown parser (CommonMark + GFM) |
+| `citation-js.esm.js` | `@citation-js/core` + `@citation-js/plugin-bibtex` + `@citation-js/plugin-csl` (`citation-js@0.7.22`) | BibTeX / BibLaTeX / CSL-JSON parsing + CSL bibliography formatting. Built via `scripts/build-citation-js.js` — see that file for the entry-point stub and esbuild config. |
 | `tree-sitter-javascript.wasm` | `tree-sitter-javascript@0.25.0` | the JavaScript grammar |
 | `tree-sitter-html.wasm` | `tree-sitter-html@0.23.2` | the HTML grammar |
 | `tree-sitter-python.wasm` | `tree-sitter-python@0.25.0` | the Python grammar |

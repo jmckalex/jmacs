@@ -45,3 +45,5 @@ allowBuilds:
   tree-sitter-zig: false
   tree-sitter-make: false
   tree-sitter-perl: false
+  citation-js: set this to true or false
+  esbuild: true

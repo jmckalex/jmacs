@@ -77,6 +77,10 @@ export const STDLIB_FILES = Object.freeze([
   'face-info.lisp',
   'inline-eval.lisp',
   'folding.lisp',
+  // Citation support — depends on the host providing `citation-parse`
+  // etc. (renderer-side citation.js bundle). Defcustoms registered
+  // after `custom.lisp`'s load.
+  'cite.lisp',
 ]);
 
 /**

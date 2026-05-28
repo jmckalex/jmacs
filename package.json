@@ -10,5 +10,12 @@
     "test": "pnpm -r --if-present test",
     "dev": "pnpm --filter @editor/desktop dev",
     "docs": "node scripts/build-docs.js"
+  },
+  "devDependencies": {
+    "@citation-js/core": "^0.7.21",
+    "@citation-js/plugin-bibtex": "^0.7.21",
+    "@citation-js/plugin-csl": "^0.7.22",
+    "citation-js": "^0.7.22",
+    "esbuild": "^0.28.0"
   }
 }
