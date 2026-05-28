@@ -926,6 +926,14 @@ body.markdown-preview-hidden #preview-splitter {
 
 /* --- minibuffer --------------------------------------------------------- */
 
+/* The footer host always reserves one row, even when both the prompt
+   row and the echo row are display:none. Without this the area
+   collapses to 0 and the panes above bounce by ~32px every time a
+   chord prefix appears in the echo and disappears again. */
+#minibuffer-host {
+  min-height: 32px;
+}
+
 .minibuffer {
   display: flex;
   align-items: baseline;
