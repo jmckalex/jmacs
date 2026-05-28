@@ -17,8 +17,9 @@ in progress.
 
 | Feature | Plan | Status |
 |---------|------|--------|
+| **A package management system** — manifest, autoload, install, list view, eventually a registry | [`PACKAGES.md`](PACKAGES.md) | planned — 12 open questions; next build session |
 | The evaluator re-architecture — proper tail calls and a concurrency model (`await`, coroutines) | [`EVALUATOR.md`](EVALUATOR.md) | planned — gated by a performance spike |
-| A reactive Lisp notebook (Observable-style), written in Lisp | [`REACTIVE-NOTEBOOK.md`](REACTIVE-NOTEBOOK.md) | planned — awaiting review |
+| A reactive Lisp notebook (Observable-style), written in Lisp | [`REACTIVE-NOTEBOOK.md`](REACTIVE-NOTEBOOK.md) | planned — awaiting review; on `agent-reactive-notebook` |
 | Pretty-printed markdown shown in place of source comments | [`MARKDOWN-COMMENTS.md`](MARKDOWN-COMMENTS.md) | planned — awaiting review |
 
 The **evaluator re-architecture** is the foundational one — a single

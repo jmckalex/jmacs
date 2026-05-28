@@ -1,331 +1,283 @@
-# Handover — jmacs session 2026-05-27 (multi-cursor merge + stretch)
+# Handover — jmacs session 2026-05-28 (citations + pane moves + package plan)
 
-A snapshot for resuming work on **jmacs** in a fresh session. Read
-`CLAUDE.md` first — it carries the standing working agreements
-(branching, commits, testing discipline, territory). This file is the
-where-things-stand record. The prior 2026-05-27 handover (phase 3b
-polish, pre-multi-cursor) is preserved in `git log` against `0b596f5`;
-this one supersedes it. The phase-3b-landing handover before that is
-at `f09ec46`; the 3a-landing handover is at `bff550a`.
+A snapshot for resuming work on **jmacs** (renaming to **Godot** —
+see "Naming" below) in a fresh session. Read `CLAUDE.md` first — it
+carries the standing working agreements (branching, commits, testing
+discipline, territory). This file is the where-things-stand record.
+
+The prior handover (2026-05-27, multi-cursor merge + stretch) is
+preserved in `git log` against `3455602`; this one supersedes it.
+The chain back: phase-3b polish at `0b596f5`, phase-3b landing at
+`f09ec46`, phase-3a landing at `bff550a`.
+
+This session was lighter than the previous: **two feature commits**
+(citation.js + pane-move surface), **one major plan document**
+(`plans/PACKAGES.md`), an **off-repo marketing site** for Godot, and
+a **rename intent** about to land. The big next step is shipping the
+package system; the plan document is the entry point.
 
 ## Where main is
 
-HEAD: `2d96a44` (`fix(custom): replace named-let in -coerce-for-type
-with a tail-recursive helper`). **All test suites green
-(1024+/1024+ — exact count drifted with each commit; latest snapshot
-1027/1027: 47 storage + 42 pane + 68 lisp + 55 buffer + 34 view + 247
-renderer + 166 desktop + 367 stdlib). Smoke arms unchanged — no new
-ones added this session; the multi-cursor smoke arm is a known
-follow-up.**
+HEAD: `9c06bea` (`feat(citation): vendor citation.js + Lisp surface
+for bibliographies`).
 
-The session's two headlines: **multi-cursor merged** (the salvaged
-`agent-multi-cursor` branch rebased + landed end-to-end), and a
-**stretch session of polish + bug fixes** that surfaced as Jason drove
-the editor with the new feature live: tab handling end-to-end,
-directory-views overhauled, folding visuals, theme work, and a string
-of pre-existing pane/singleton bugs flushed out.
+**All test suites green (1030/1030 — +3 from the prior handover's
+1027: +4 pane-primitives for move-tab! / swap-panes!, −1 net from
+test renumbering during the citation work). Smoke arms unchanged —
+no new ones added this session; the multi-cursor smoke arm is still
+a known follow-up.**
+
+| package | tests |
+|---|---|
+| storage | 47 |
+| pane | 42 |
+| lisp | 68 |
+| buffer | 55 |
+| view | 34 |
+| renderer | 247 |
+| desktop | 166 |
+| stdlib | 371 |
+
+## Naming
+
+Jason is renaming **jmacs** → **Godot** ("the editor we've been
+waiting for" — Beckett). The rename is **intent, not yet executed.**
+Open questions for whoever ships the rename:
+
+- Repo name (`jmacs/main` → `Godot/main`? Stay `jmacs`?).
+- `apps/desktop/package.json` name field (currently `@editor/desktop`)
+  — does it become `@godot/desktop`?
+- The Electron `userData` directory derives from the package name.
+  Today: `~/Library/Application Support/@editor/desktop/`. After
+  rename: `~/Library/Application Support/Godot/` or
+  `~/Library/Application Support/@godot/desktop/`? **A migration
+  path matters** — users have `init.lisp`, `custom.lisp`,
+  `faces.json`, `session.json` in the old location.
+- CSS class prefixes (`.editor-line`, `.editor-cursor`, etc.) —
+  almost certainly don't rename. They're internal.
+- Documentation, comments, READMEs — gradual cleanup as files are
+  touched.
+- The marketing site already lives under the new name (see below).
+
+Suggested approach: leave the rename to a dedicated session. The
+migration logic for `userData` is the only delicate part; everything
+else is mechanical search-and-replace.
 
 ## Landed this session
 
-Top of `main`, in order (newest first). The merge commit `8babe4d`
-brings in the agent-multi-cursor-rebase branch's 11 commits;
-everything above and below is direct-to-main.
-
-### Post-merge polish (newest first)
+Top of `main`, newest first:
 
 | Commit | What |
 |---|---|
-| `2d96a44` | `fix(custom): replace named-let in -coerce-for-type with a tail-recursive helper` — the prior commit used `(let loop ...)` which this dialect doesn't support; same workaround as multi-cursor.lisp. +2 regression-guard stdlib tests. |
-| `c74d717` | `fix(custom): coerce :choice strings to their option symbol on apply` — heals stale string-form custom.lisp (e.g. `(quote "midnight")`) by mapping the string to the matching Sym in the setting's :options. `custom-set-saved!` stores the coerced value so the next save rewrites the file in canonical form. |
-| `f73a70e` | `fix(customize): :choice widget passes back the original Lisp value` — read() returned `widget.value` (string), causing `(quote "dark")` to land downstream where a symbol was expected. Now keeps a label → original-option map and returns the Sym. |
-| `b5af7c3` | `fix(customize): :choice select shows option names, not [object Object]` — `String(sym)` was the default-object string. New `asDisplayString` helper reads the `name` property. |
-| `05fbe45` | `feat(themes): add a 'bright' theme variant` — dark chrome with a punchier syntax palette (string `#a3d977`, keyword `#d56bff`, function `#82aaff`, etc.); `*theme*` :options gains `bright`; `defface` blocks gain `:default-bright`; resolver in faces.lisp learns the new branch. `--bg-editor` lifted ~5% to `#323e4a`. |
-| `71c093f` | `fix(html-fold): skip void elements (meta / br / img / link / ...)` — fold query now `(element (start_tag) (end_tag)) @fold` so void elements (which parse as `element` without an end_tag) don't grow stray chevrons. Same shape for script/style. |
-| `ca8beb2` | `fix(folding): yellow ellipsis, highlighted closing-token, chevron icon` — chevron over caret; `…` rendered in `--tok-type` yellow; closing-line preview goes through the syntax highlighter via the existing per-line runs (new `trimLeadingWhitespaceRuns` helper drops the close-line's indent). |
-| `9fe2e3e` | `feat(folding): FA disclosure triangle + closing-token preview` — initial swap of ▸/▾ for a FA caret + appending the closing line trimmed text so a folded `<script>` reads as `<script>…</script>`. (Both refined in the next commit.) |
-| `32f8b9b` | `fix(desktop): non-text singletons stay visible while another pane shows them` — `hideInactiveRendererViews` had been operating globally. New behaviour: compute the *union* of active singleton kinds across the whole pane tree; a singleton is visible iff at least one leaf shows it. Same rule for the audio/video/shell `setBuffer(null)` cleanups. |
-| `86ae391` | `feat(renderer,desktop): tab-aware cursor / selection positioning (layer 3/3)` — `visualColumn` + `charIndexAtVisualColumn` in projection.js; threaded through `renderCursor` / `renderSelection` / `renderBrackets` / `offsetFromPoint` via a new `getTabWidth` createEditorView option; host caches `currentTabWidth` updated by `set-css-tab-width!`. +7 projection tests. |
-| `8b21fff` | `feat(desktop,stdlib): wire *tab-width* into a --tab-width CSS variable (layer 2/3)` — `.editor-line` and `.directory-columns-preview-line` set `tab-size: var(--tab-width, 4)`; new `set-css-tab-width!` primitive pushes the value; host installs an `:on-change` hook on the *tab-width* defcustom after stdlib load. |
-| `2303769` | `feat(stdlib): tab settings + Makefile-correct insert-tab (layer 1/3)` — new `indent.lisp` with `*tab-width*` (default 4) and `*indent-tabs-mode*` (default `#f`); `insert-tab` honours them plus the current mode's `:indent-tabs?` / `:tab-width` overrides. Makefile-mode pins `:indent-tabs?` on. New `string-repeat` primitive. +4 stdlib tests. |
-| `aa264ad` | `feat(directory-columns): windowed preview rendering for large files` — virtualised line rendering (spacer + absolute positioning) so the user can scroll through any file. Line height measured once via a transient probe. Re-renders on scroll + ResizeObserver. |
-| `cc7c035` | `fix(directory-columns): inject sees full source; preview caps lines not bytes` — the byte-cap was cutting mid-element which broke HTML's CSS injection. Now the whole source goes through the highlighter; only the rendered line count is capped (400 → since superseded by virtualisation). |
-| `d655e52` | `feat(directory-columns): syntax-highlight the text preview pane` — preview text renders through the same `highlighters` registry the editor uses; falls back to `highlightBuffer` then `highlightLine`. |
-| `1a158b6` | `fix(directory-columns): in-module modal instead of window.prompt/confirm` — Electron's renderer silently disables `prompt()`; replaced with a per-module modal (overlay + dialog + input + buttons) that returns a Promise. Used for Rename + Trash confirmation. |
-| `318a7ed` | `feat(directory-columns): right-click context menu (Open / Reveal / Rename / Trash)` — host IPC handlers for `file:rename` / `file:trash` (via `shell.trashItem`) / `file:reveal` (via `shell.showItemInFolder`); renderer-side menu with viewport-clamp + outside-click dismissal. |
-| `c708d20` | `feat(directory-views): open file as a new tab beside the directory view` — double-click no longer replaces the directory view; new `openFileInTabAdjacent` promotes the pane to a tabline (if not already) and adds the opened file as a tab. Wired into both directory-tree and directory-columns. |
-| `55ec03f` | `fix(desktop): show the restored singleton's element on installRootPane` — re-parenting alone wasn't enough; the boot setup hides every singleton via `display:none` and nothing flipped it back during restore. Plain-leaf restore now sets `display:''` too. |
-| `d8a5446` | `fix(desktop): re-parent non-text singletons in installRootPane's plain-leaf path` — restored a directory-tree / directory-columns leaf had its singleton element orphaned to the (just-disposed) boot leaf; reparent now mirrors the switchToViewIndex plain-leaf fix from the merged branch. |
-| `0269c7b` | `fix(session): parseView accepts directory-tree / directory-columns` — the persistence pipeline wrote them but `parseView`'s allow-list dropped them on read. |
-| `9f453a0` | `feat(session): persist directory-tree / directory-columns views by rootPath` — directory views survive a quit; per-view interaction state (expanded set, columns list, previewPath) is intentionally ephemeral. |
-| `fa0ec04` | `fix(directory-columns): preview pane fills remaining horizontal space` — flex `0 0 360px` → `1 1 360px`; the embedded `<video>` now grows with the preview pane as columns shrink. |
+| `9c06bea` | `feat(citation): vendor citation.js + Lisp surface for bibliographies` |
+| `da36cbe` | `feat(panes): move-tab! / swap-panes! + close-pane / send-view commands` |
 
-### The merge `8babe4d` — agent-multi-cursor-rebase
+Below the surface of those two commits:
 
-11 commits, in branch order:
+### `9c06bea` — Citation.js bridge
 
-| Commit | What |
-|---|---|
-| `0d93e2d` | `fix(desktop): re-parent non-text singletons in the plain-leaf open path` (the switchToViewIndex twin to `d8a5446`). |
-| `1e423ec` | `style(pane): inactive-pane cursors fade and stop blinking` — `.pane:not(.pane--focused) .editor-cursor` → opacity 0.45 / no animation. |
-| `5d50088` | `feat(stdlib): ESC deselects every cursor without collapsing the set` — Jason's "I want to keep the cursors but lose the selection" request. C-g still does both. |
-| `f20c786` | `fix(renderer,buffer): blink in unison + arrow keys deselect to the edge` — restart `is-blinking` on every cursor each render so they're in phase. (The collapse-on-arrow part was reverted next; only the blink-sync change stuck.) |
-| `2b66053` | `fix(desktop): editor mousedown focuses the pane it landed in` — the click listener never fires for editor clicks (the renderer's mousedown detaches the press target by re-rendering), so a parallel mousedown listener runs alongside. |
-| `d5c9690` | `fix(desktop): session.currentView resolves through the pane tree` — the buffer-primitives' `session.currentView` was reading `views[currentViewIndex]` which got stale when tabline tabs were switched. Unified with `viewHost.currentView`. |
-| `f9a6329` | `fix(keymap): chord-prefix lookup falls through to the global keymap` — `active-keymap` is now a *stack* of prefix maps from every leaf in the mode chain. A mode-local `C-c` map no longer hides the global one for keys it doesn't bind. +2 stdlib tests. |
-| `743ad62` | `feat(lisp,stdlib): multi-cursor commands bound to C-c d / C-c D` — `add-cursor-next` + `select-all-matches` + `keyboard-quit` extension. Bound under `c-c-keymap` (chosen by Jason; `M-d` and `C-l` were the branch defaults but conflicted with `kill-word` / `recenter`). +6 stdlib tests. |
-| `360ab61` | `feat(renderer): paint every cursor in the set (selections + carets)` — `selectionRects` / `cursorPositions` walk every cursor; renderer pools secondary `.editor-cursor.is-secondary` elements; new `getCursors` createEditorView option. |
-| `89a9b76` | `feat(buffer): multi-cursor edit / move logic via cursorSource.cursors[]` — buffer iterates the cursor set; selections, addSelection, collapseToPrimary, forEachSelection, cursorCount. +18 buffer tests. |
-| `edf1a00` | `feat(view): cursors[] storage on text views; point/mark alias cursors[0]` — selection set lives on the *view*, not the buffer (the salvaged branch had it on the buffer; phase 3a moved point/mark to the view, so the rebase landed it where it belongs). +2 view tests. |
+- **Vendored bundle**: `packages/renderer/vendor/citation-js.esm.js`
+  (~1.2MB ESM, built via `scripts/build-citation-js.js`). Includes
+  `@citation-js/core` + `@citation-js/plugin-bibtex` +
+  `@citation-js/plugin-csl`. esbuild added as a devDep; the build
+  script is committed and re-runnable.
+- **Renderer wrapper** (`packages/renderer/src/citation.js`):
+  `parseCitations` / `formatBibliography` / `formatCitation` /
+  `citationKeys`. Handles are JSON-encoded CSL-JSON strings, so the
+  Lisp side never sees JS objects.
+- **Host primitives** in `app.js`: `citation-parse`,
+  `citation-format-bibliography`, `citation-format`, `citation-keys`.
+- **Sync file-read primitive**: new `file:read-text-sync` IPC,
+  `readFileTextSync` in the preload, `read-file-text!` Lisp
+  primitive. General-purpose; `load-bibliography` is its first
+  caller.
+- **`cite.lisp`**: `*citation-style*` (default `"apa"`) and
+  `*citation-bib-path*` (default `""`) defcustoms, plus
+  `(load-bibliography path)`, `(load-default-bibliography)`,
+  `(format-bibliography handle :style ... :format ... :lang ...)`,
+  `(format-citation handle ...)` wrappers.
+- **No commands ship** — the intent is for users to build pickers /
+  inline-cite expansion / format-on-save in `init.lisp`.
 
-### A note worth recording
+### `da36cbe` — Pane-move surface
 
-The salvage of `agent-multi-cursor` (the original commit `37fd294`) put
-the selection-set abstraction on the **buffer**, which was where point
-and mark lived before phase 3a. Phase 3a moved them onto the view, so
-a straight merge would have produced a multi-cursor implementation in
-the wrong layer — every multi-cursor op mutating buffer-local state
-shared across views.
+- **Host helpers** in `app.js`: `moveTabAcrossTablines` (splice + activate;
+  same-tabline = reorder) and `swapPaneViews` (exchange `.view` between
+  two leaves, re-mount via the kind registry).
+- **paneHost** gains `moveTab` and `swapPanes` closures.
+- **Lisp primitives**:
+  - `(move-tab! src-tlv src-idx dst-tlv [dst-idx])` →
+    destination tabline.
+  - `(swap-panes! pane-a pane-b)` → boolean.
+  - `(tabline-active tlv)` / `(tabline-tabs tlv)` accessors —
+    needed by the commands, useful in general.
+- **Lisp commands** in `panes.lisp`:
+  - `close-pane` — alias for `delete-pane`, emphasises view-stays-alive.
+  - `close-tab` — drop the active tab from the focused tabline;
+    view stays in `views[]`.
+  - `send-view-to-other-pane` — both ends promote to tabline; the
+    active tab moves across.
+  - `send-tab-to-other-pane` — alias.
+  - `swap-with-other-pane`.
+  - `-other-leaf-pane` helper (focus-toggle dance).
+- **Bindings** in `keymap.lisp`: `C-x x` (send-view) and `C-x X`
+  (swap-with-other-pane).
+- **+4 pane-primitives tests**.
 
-The rebase ported the design but landed the selection set on the view:
-`view.cursors[]` is canonical; `view.point`/`view.mark` are accessors
-aliasing `cursors[0]`. Two views over one buffer keep independent
-cursor *sets*, not just primaries.
+## The package plan — `plans/PACKAGES.md` (NEW, uncommitted)
+
+**The most important artifact this session.** A guide-style design
+document for an extension package system, in the style of `PANES.md`
+(open questions + suggested phasing, not a phase brief).
+
+Status: **uncommitted in the working tree** — Jason asked for "plan,
+not implement." Commit it as the first thing in the build session
+once the open questions have answers.
+
+Headlines from the plan:
+
+- **A package is a directory** with a Lisp manifest (`package.lisp`),
+  source files, optional non-Lisp assets. Same dialect as the rest
+  of the editor; the manifest is data.
+- **Namespace via convention** in the MVP (prefix-by-package, à la
+  Emacs); real module system as a follow-up if the ecosystem
+  demands it.
+- **Loading between `custom.lisp` and `init.lisp`** in the boot
+  pipeline. Autoload stubs by default; `:eager t` for theme
+  packages and similar.
+- **Three distribution layers**, each useful on its own: local
+  install (MVP) → git-based install → centralised registry
+  ("GELPA" — naming TBD).
+- **Pure Lisp in the MVP**; native code is a separate two-tier
+  conversation for later.
+- **A `package-list` view-kind** as the user-facing browse surface;
+  install / update / uninstall via `M-x`.
+
+**12 open questions** identified explicitly in the plan, including:
+
+1. Namespace approach (convention / modules / implicit).
+2. Manifest format (Lisp form / TOML / JSON).
+3. Package directory location (`~/.config/Godot/` vs the
+   platform's userData).
+4. Whether the MVP supports any native code at all.
+5. Default-installed packages on a fresh install.
+6. Naming (GELPA? Godot Packages? Vladimir's Chest?).
+7. Themes-as-packages vs themes-as-special-case.
+8. Whether the manifest is evaluated or just parsed.
+9. Dependency resolution scope.
+10. Test packages.
+11. Behaviour when `:godot-version` constraint fails.
+12. Recovery when a Godot bump breaks a package.
+
+Suggested phasing (in the plan):
+
+- **Phase 1 — Local packages, manifest, autoload, list-view, pinning.**
+- **Phase 2 — Git-based install + updates.**
+- **Phase 3 — Centralised registry (GELPA), signing.**
+- **Phase 4 (or never) — Native plugins, two-tier extensibility.**
+
+Phase 1 is the substrate the rest builds on. The open questions
+above need answers (most of them) before Phase 1 is ready to brief.
+
+## Off-repo: the Godot marketing site
+
+Lives at `~/Sites/jmckalex/software/Godot/`:
+
+- `index.html` — ~1,200 lines, Folio-style sidebar-nav layout, warm
+  paper palette, Instrument Serif headings, DM Sans body, JetBrains
+  Mono code. Covers: overview, philosophy, quick start, panes /
+  tablines, multi-cursor, tabs / indentation, syntax highlighting,
+  folding, find-file, directory views, citations, themes, media /
+  jukebox, shell, the Lisp dialect, architecture, full keyboard
+  shortcut reference, status section with shipped / in-flight /
+  planned labels.
+- `screenshot-column-view.png`, `screenshot-injection.png`,
+  `screenshot-multi-pane.png`, `screenshot-video-preview.png` —
+  diagnostic captures from prior sessions, in place as
+  placeholders. They show real working features but weren't shot
+  as marketing screenshots. Replace as time allows.
+
+Page imports Google Fonts + FontAwesome from CDN — same pattern as
+the Folio docs page. Self-contained inline stylesheet; sticky
+sidebar with scroll-spy active-link highlighting.
 
 ## Pending commits
 
-None. Working tree clean apart from pre-existing untracked PNGs
-(several this-session screenshots: `bug-hunt.png`, `bug-hunt-2.png`,
-`column-view.png`, `columns.png`, `directory-tree.png`,
-`need-highlighting.png`, `need-injection.png`, `no-directory.png`,
-`no-joy.png`, `object.png`, `two-tablines.png`, `weird.png`), the
-stray `Makefile`, and a `session.json.pre-3b-backup` in the Electron
-profile.
+The **only** uncommitted artifact in the repo is
+`plans/PACKAGES.md`. Everything else in `git status` is the
+pre-existing screenshot PNG noise (`bug-hunt.png`, etc.) and the
+stray `Makefile` from previous sessions. Leave them alone.
+
+Commit `plans/PACKAGES.md` in the next session — probably as
+`docs(plans): add PACKAGES.md — package-system design notes` —
+after Jason has answered the open questions (or as-is, if Jason
+wants the plan committed first and the questions tracked
+separately).
 
 ## Branches still ready for review
 
-Three remaining. `agent-multi-cursor` is merged; its rebase branch
-`agent-multi-cursor-rebase` is also merged (the tip `0d93e2d` is in
-the merge commit's history).
+Three remaining, unchanged since the prior handover:
 
 | Branch | HEAD | What it adds |
 |---|---|---|
-| `agent-reactive-notebook` | `d453841` | Reactive Lisp notebook (engine phase). **Next in the queue** — the handover before this one flagged it as unblocked by phase 3b. |
+| `agent-reactive-notebook` | `d453841` | Reactive Lisp notebook (engine phase). **Next in the queue** — phase 3b unblocked it. |
 | `agent-lsp` | `3f3a666` | TypeScript LSP, diagnostics + hover. |
 | `agent-file-nav` | `074adab` | Fuzzy project find-file + sidebar tree. |
 
-The merged-but-stale branches `agent-pane-splits`, `agent-tabline-view`,
-`agent-multi-cursor`, `agent-multi-cursor-rebase` all still exist as
-refs (along with the tag `agent-tabline-view-attempt-1`); clean up in
-the next bulk pass.
-
-### Suggested merge order
-
-1. **`agent-reactive-notebook`** — the notebook view sits naturally
-   in a tabline-view alongside text files; phase 3b unblocked it.
-2. **`agent-lsp`** — largest standalone surface.
-3. **`agent-file-nav`** — sidebar tree.
-
-Expected conflict surfaces are larger than before this session
-because:
-- `apps/desktop/src/app.js` got a lot of new code (open-file-in-tab,
-  context-menu wiring, singleton reparent, `hideInactiveRendererViews`
-  union, currentTabWidth cache, `set-css-tab-width!` primitive,
-  directory-view ensure-helpers, `session.currentView` unification,
-  mousedown focus listener).
-- `packages/renderer/src/view.js` (getCursors / getTabWidth / fold
-  rendering / `trimLeadingWhitespaceRuns`).
-- `packages/renderer/src/projection.js` (visualColumn,
-  charIndexAtVisualColumn, selectionRects/tabWidth, cursorPositions/tabWidth).
-- `packages/renderer/src/directory-columns-view.js` (context menu,
-  modal, highlighters, virtualisation).
-- `packages/buffer/src/buffer.js` (cursors[] iteration in every
-  move/edit method).
-- `packages/view/src/view.js` (cursors[] storage + point/mark accessors).
-- `packages/stdlib/lisp/keymap.lisp` (chord-stack lookup).
-- `packages/stdlib/lisp/themes.lisp` + `faces.lisp` (bright theme +
-  `:default-bright` everywhere).
-- `apps/desktop/src/session.js` (directory-view blob handling).
-- `apps/desktop/src/files.js` + `preload.mjs` (file:rename / file:trash
-  / file:reveal).
-- `apps/desktop/styles.css` (tabline visibility, fold visuals, preview
-  styles, context-menu, modal, cursor fade, tab-size).
-
-## In flight / queued
-
-- **Phase 3c (deferred).** Cross-pane drag-and-drop of tabs (move a
-  tab from one pane's tabline to another). Unchanged.
-
-- **Phase 4: multi-window.** Unchanged. Spawn additional
-  `BrowserWindow`s, move the Lisp VM to the main process (Q5(a) of
-  PANES.md), plumb IPC.
-
-Open follow-ups carried across phases (mostly unchanged):
-
-- **`docs/CUSTOM-VIEWS.md` rewrite.** Still describes the old
-  buffer-wrapper model from before phase 1. Now also wants a section
-  on the `directory-columns` view options (highlighters, onRename,
-  onTrash, onRevealInFolder) and the context-menu modal contract.
-- **`docs/MANUAL.jmd` + `docs/reference/commands.md` regen** for the
-  renamed defcommands (post-phase-1), the new tabline / find-file
-  commands, the multi-cursor commands (`add-cursor-next`,
-  `select-all-matches`, `deselect`), and the new defcustoms
-  (`*tab-width*`, `*indent-tabs-mode*`, the `bright` theme).
-- **`occur-buffer-name`** still has "buffer" in its name (internal
-  helper).
-- **Multi-cursor smoke arm** — handover before this one flagged it as
-  missing; not added this session.
-- **Same context-menu treatment for `directory-tree`** — Rename /
-  Trash / Reveal would carry over almost verbatim.
-- **The shell-view bottom strip + the muted-palette colour-pipeline
-  thread** — Jason tried `--force-color-profile=srgb` this session
-  ("not much difference") and the path he picked was to bump the
-  syntax palette instead (the new `bright` theme). The
-  pre-compensation question remains untouched.
-- **`init.lisp` workaround for theme persistence**. If the user's
-  saved theme ever fails to take, `(custom-apply! '*theme* 'midnight)`
-  in init.lisp pins it. Worth surfacing in user docs.
+The merged-but-stale branches `agent-pane-splits`,
+`agent-tabline-view`, `agent-multi-cursor`,
+`agent-multi-cursor-rebase` and tag `agent-tabline-view-attempt-1`
+all still exist as refs.
 
 ## Architecture decisions worth preserving
 
-Carried forward, with new entries from this session:
+Carried forward from the prior handover, with one new entry:
 
-1. **Lisp at the seams; JS at the engine.** Unchanged.
+1. Lisp at the seams; JS at the engine.
+2. View is the addressable on-screen thing; buffer is L2 substrate.
+3. Faces as data, not CSS variables.
+4. `assoc`, never `hash-set`.
+5. Sync Lisp is a feature.
+6. `Cmd`/`Meta` maps to `C-`.
+7. Chromium colour-manages CSS.
+8. Subprocesses go through Python for PTY needs.
+9. Per-view-point: cursors live on the view, including the cursor set.
+10. Pane-creating commands return handles.
+11. Focus stays on the originating pane after split.
+12. Tabline-views are not in `views[]`.
+13. Non-text active tabs re-parented into the tabline content area.
+14. Non-text singletons visible-iff-any-leaf-shows-them.
+15. Chord-prefix lookup falls through to the global keymap.
+16. `session.currentView` resolves through the pane tree.
+17. `*tab-width*` is the only tab-width source of truth.
+18. Mode-local indent-tabs preference wins over the global.
+19. `:choice` settings round-trip as the original Lisp value.
 
-2. **View is the addressable on-screen thing; buffer is L2 substrate.**
-
-3. **Faces as data, not CSS variables.** Unchanged.
-
-4. **The map-update primitive is `assoc`, never `hash-set`.** Still
-   the most-repeated mistake; the multi-cursor branch had it. Now
-   captured in this dialect's idiom.
-
-5. **Sync Lisp is a feature, not a bug.** Unchanged.
-
-6. **`Cmd`/`Meta` maps to `C-` in key normalisation.** Unchanged.
-
-7. **Chromium colour-manages CSS; Sublime writes native pixels.**
-   Same `--bg-editor` story; the new `bright` theme tests bumping the
-   syntax palette instead of touching the pipeline.
-
-8. **Subprocesses go through Python for PTY needs.** Unchanged.
-
-9. **Point/mark live on the view; the buffer's cursor API delegates
-   via `bindCursor`.** Extended this session: the cursor *source*
-   carries a `cursors[]` array, with `point`/`mark` aliasing
-   `cursors[0]`. Two views over one buffer keep independent cursor
-   *sets* — not just independent primaries.
-
-10. **Pane-creating commands return handles.** Per Q15.
-
-11. **Focus stays on the originating pane after split.** Matches
-    Emacs `C-x 2`/`3`.
-
-12. **Tabline-views are *not* in the global `views[]` list.**
-    Unchanged.
-
-13. **Non-text active tabs are re-parented into the tabline content
-    area on activation.** Unchanged in shape but extended in
-    coverage: the same reparent+display-flip now happens for the
-    plain-leaf switchToViewIndex path AND the session-restore
-    installRootPane path, not just the tabline mount. Without those
-    fixes a session with a directory-* view in a non-tabline pane
-    came back empty.
-
-14. **Non-text singletons are visible-iff-any-leaf-shows-them.**
-    *New this session.* `hideInactiveRendererViews` computes the
-    union of active singleton kinds across the whole pane tree —
-    clicking a text tab in one pane no longer hides a singleton
-    parented in another pane. The setBuffer(null) cleanups for
-    audio/video/shell follow the same rule.
-
-15. **Chord-prefix lookup falls through.** *New this session.* When
-    the user enters a chord like `C-c`, `active-keymap` becomes a
-    *list* of every prefix-map the chord-leading key resolved to
-    across the mode chain. Mid-chord lookup walks the stack in chain
-    order; mode-local prefix wins where defined, but doesn't hide
-    the global one for keys it doesn't bind.
-
-16. **`session.currentView` and `viewHost.currentView` are one
-    source of truth.** *New this session.* Both resolve through
-    `currentPane()` + `peelTabline`. The buffer-primitives' previous
-    `views[currentViewIndex]` lookup went stale when tabline tabs
-    were switched without re-focusing the pane; the unified path
-    keeps `(point)` / `(insert!)` operating on what the user sees.
-
-17. **`*tab-width*` is the only tab-width source of truth.** *New
-    this session.* The host's `set-css-tab-width!` primitive writes
-    `--tab-width` AND a `currentTabWidth` JS cache; the renderer
-    reads the cache via `getTabWidth` for cursor / selection
-    positioning math. `tab-size: var(--tab-width)` on
-    `.editor-line` keeps the visual width in step. Live
-    customise-edit re-syncs both.
-
-18. **Mode-local indent-tabs preference wins over the global.**
-    *New this session.* A major mode's `:indent-tabs?` and
-    `:tab-width` keys are read by `-indent-tabs-effective` and
-    `-tab-width-effective` (in indent.lisp). Makefile pins
-    `:indent-tabs? #t` regardless of the user's global preference.
-
-19. **`:choice` settings round-trip as the original Lisp value.**
-    *New this session.* The customize widget keeps a label →
-    original-option map so `read()` returns the Sym, not the
-    dropdown's string label. `custom-apply!` also coerces a stale
-    string back to its option symbol on load, so an older
-    `custom.lisp` heals on next save.
+20. **Citation-handle round-trip is JSON-CSL string.** *New this
+    session.* `citation-parse` returns a JSON-serialised CSL-JSON
+    array as a Lisp string; every other citation primitive accepts
+    that string. The Lisp side never sees JS objects, the marshalling
+    is cheap, and the round-trip is debuggable as text in the REPL.
 
 ## Known issues / paper cuts
 
-- **Binding displacements still pending** for unmerged branches
-  (taste calls only Jason can make).
-- **Token colours feel washed-out vs Sublime.** Bumped via the new
-  `bright` theme this session; the pre-compensation thread is still
-  open. Jason found the bright palette enough to ship as a built-in
-  variant; the colour-pipeline conversation remains.
+- **Binding displacements still pending** for unmerged branches.
+- **Token colours feel washed-out vs Sublime.** Mitigated this
+  session by shipping the `bright` theme; the colour-pipeline
+  pre-compensation thread is still open.
 - **Faint strip at the bottom of the shell view.** Unchanged.
 - **Multi-cursor doesn't have a smoke arm.** Carried over.
 - **`directory-tree` doesn't yet have the same context menu as
-  `directory-columns`** — would carry verbatim.
-
-### Resolved this session
-
-- Multi-cursor branch's design mismatch with phase 3a — fixed by the
-  rebase; selection set lives on the view (`8babe4d`).
-- Chord-prefix lookup no longer hides the global keymap (`f9a6329`).
-- Mousedown on an unfocused pane now focuses it (`2b66053`).
-- `session.currentView` and `viewHost.currentView` unified
-  (`d5c9690`).
-- Cursors blink in unison (`f20c786`).
-- ESC deselects without collapsing the multi-cursor set (`5d50088`).
-- Inactive-pane cursors fade + stop blinking (`1e423ec`).
-- Non-text singletons stay visible while shown in a non-focused pane
-  (`32f8b9b`).
-- Plain-leaf restore reparents + un-hides non-text singletons
-  (`d8a5446`, `55ec03f`).
-- Directory-tree / directory-columns persist across quit (`9f453a0`,
-  `0269c7b`).
-- Column-view preview pane fills available space (`fa0ec04`).
-- Opening a file from a directory view doesn't replace the directory
-  view — promotes the pane to a tabline and adds the file as a new
-  tab (`c708d20`).
-- Right-click context menu in column view (`318a7ed`).
-- In-module modal for Rename / Trash confirmation; `window.prompt`
-  was a no-op in Electron's renderer (`1a158b6`).
-- Column-view preview gets syntax highlighting, with injection
-  (`d655e52`, `cc7c035`).
-- Column-view preview virtualised for big files (`aa264ad`).
-- Tab handling end-to-end (3 layers): settings, CSS, cursor positioning
-  (`2303769`, `8b21fff`, `86ae391`).
-- Fold marker now a FA chevron; folded preview includes the closing
-  token with proper syntax highlighting; ellipsis is yellow
-  (`9fe2e3e`, `ca8beb2`).
-- HTML void elements no longer get fold chevrons (`71c093f`).
-- `bright` theme variant; `defface` resolver carries the new key
-  (`05fbe45`).
-- `:choice` dropdown shows option names (not `[object Object]`)
-  (`b5af7c3`).
-- `:choice` widget round-trips the original Lisp value (`f73a70e`).
-- Stale string-form `:choice` values heal on load (`c74d717`,
-  `2d96a44`).
+  `directory-columns`.** Carried over.
+- **The post-move source pane in `send-view-to-other-pane` can end
+  up showing an empty strip.** *New this session.* When a source
+  tabline had exactly one tab and the user moves it away, the
+  destination is happy but the source's strip is empty. The user
+  can `C-x 0` to close the empty pane. Could be auto-collapsed;
+  consider in a polish pass.
+- **The Godot marketing screenshots are diagnostic captures.**
+  They show working features but weren't shot for marketing.
+  Replace when convenient.
 
 ## Plan documents
 
@@ -340,131 +292,123 @@ In `plans/`:
 - `PANES-PHASE-2.md` — merged.
 - `PANES-PHASE-3A.md` — merged.
 - `PANES-PHASE-3B.md` — merged.
+- **`PACKAGES.md`** — *NEW THIS SESSION, UNCOMMITTED.* Guide
+  notes for a package management system. See the section above for
+  the headlines; see the document itself for the full design.
 
 In `docs/`:
 
-- `CUSTOM-VIEWS.md` — **still out of date.** Now also wants the
-  directory-columns context-menu / modal pattern + the renderer-side
-  highlighters / virtualisation contract.
-
-## Tree-sitter inventory
-
-**36 vendored grammars** (unchanged).
-
-## Memory / preferences saved
-
-- **Direct-to-main commits are fine for small polish.** Branch +
-  merge stays the default for feature-sized work. Reinforced again
-  this session — 23 polish commits direct-to-main, none warranted a
-  branch.
-- **Test before merge.** Sub-agent feature work: live test in the
-  running app before merging; never auto-merge after tests-green.
-- **Halfway between Python and Perl.** Allow unusual configurations,
-  don't encourage them.
-- **Named let isn't supported in this Lisp dialect.** Surfaced THREE
-  times this session: in the multi-cursor.lisp salvage, the
-  `custom-apply!` :choice coercion, and the chord-stack helper.
-  *Application*: use a tail-recursive helper instead of
-  `(let loop ((x ...)) ...)`. Worth a defmacro at some point.
+- `CUSTOM-VIEWS.md` — still out of date. Now also wants:
+  - the directory-columns context-menu / modal pattern;
+  - the renderer-side highlighters / virtualisation contract;
+  - the citation.js bridge (a precedent for "renderer-vendored
+    library + thin host-primitive wrapper").
 
 ## What's missing — the headlines
 
 1. **LSP autocomplete.** `agent-lsp` lands the first half.
 2. **Reactive notebook.** `agent-reactive-notebook` (next merge).
-3. **Git integration.** Diff gutter, blame, basic conflict UI.
-4. **Performance proven at scale.**
-5. **Process isolation for user code.** Phase 1 proposal in the
-   pre-prior handover (`git show 96ea97b -- HANDOVER.md`).
-6. **A real README + 60-second demo.**
-7. **PANES phase 4** (multi-window) and **3c** (cross-pane tab
-   drag).
-
-## Workflow lessons (this session)
-
-1. **A salvaged branch's design can be wrong on arrival, not just
-   incomplete.** The `agent-multi-cursor` salvage had multi-cursor on
-   the buffer; phase 3a had since moved point/mark onto the view.
-   The rebase ported the design *and re-located it*. The first
-   commit on the branch (the view-layer change) was the most
-   important — the rest followed.
-
-2. **Live testing finds the bugs that exercise the integration
-   layer.** Multi-cursor merged with green tests, then Jason drove it
-   and surfaced: chord fallthrough, session.currentView unification,
-   mousedown focus, plain-leaf singleton reparent. Four pre-existing
-   bugs nobody had hit because nobody had reason to.
-
-3. **Electron's renderer disables `window.prompt`.** Plus `confirm()`
-   is unreliable. Don't reach for them; build a per-module modal.
-
-4. **`:choice` defcustoms need round-trip discipline.** The widget's
-   `read()` must return the *original Lisp value*, not the
-   dropdown's string label, or downstream `(eq? value 'name)` checks
-   fail. And a stale custom.lisp can leak old string-form values, so
-   `custom-apply!` needs to coerce.
-
-5. **The same plain-leaf-singleton bug appeared in two places.** It
-   was easy to fix the first occurrence (`switchToViewIndex`'s
-   plain-leaf path) and miss the second (`installRootPane`'s
-   plain-leaf path). The rule "non-text singleton in a plain leaf
-   needs reparent + display:''" applies everywhere a non-text view
-   lands in a plain leaf.
+3. **A package system.** Plan in `plans/PACKAGES.md`; build is the
+   next focused session.
+4. **Git integration.** Diff gutter, blame, basic conflict UI.
+5. **Performance proven at scale.**
+6. **Process isolation for user code.**
+7. **A real README + 60-second demo.**
+8. **PANES phase 4** (multi-window) and **3c** (cross-pane tab drag).
+9. **The rename to Godot.**
 
 ## Suggested next steps in priority order
 
-1. **Merge `agent-reactive-notebook`.** Next in the queue;
-   structurally unblocked by phase 3b.
+1. **Resolve the open questions in `plans/PACKAGES.md`.** Twelve
+   of them are listed at the end of the plan; the package system
+   can't be briefed until at least the structural ones (namespace
+   approach, manifest format, package directory location, native-code
+   policy) have answers.
 
-2. **Cleanup pass on branches + tag.** `agent-pane-splits`,
+2. **Ship Phase 1 of the package system.** Local packages,
+   manifest, autoload, list-view, pinning. The plan describes the
+   surface; the implementation brief writes itself off the back of
+   the resolved open questions.
+
+3. **The jmacs → Godot rename.** Mostly mechanical; the migration
+   logic for `userData` needs a few minutes of care.
+
+4. **Merge `agent-reactive-notebook`.** Was next in the queue
+   before package planning displaced it; remains the next branch to
+   land once packages are in.
+
+5. **Cleanup pass on branches + tag.** `agent-pane-splits`,
    `agent-tabline-view`, `agent-multi-cursor`,
-   `agent-multi-cursor-rebase`, and the tag
+   `agent-multi-cursor-rebase`, and tag
    `agent-tabline-view-attempt-1` are all still around.
 
-3. **Same context menu for `directory-tree`** — Rename / Trash /
-   Reveal would carry verbatim from `directory-columns-view.js`. ~30
-   minutes of work.
+6. **Same context menu for `directory-tree`.** Rename / Trash /
+   Reveal carry verbatim from `directory-columns-view.js`. ~30
+   minutes.
 
-4. **Rewrite `docs/CUSTOM-VIEWS.md`** — kind-registry mount contract
-   + tabline mount context + non-text reparenting + directory-columns
-   context-menu / modal pattern + renderer-side highlighters +
-   virtualisation hooks.
+7. **Multi-cursor smoke arm.**
 
-5. **Multi-cursor smoke arm** — open the file, do C-c d twice, type,
-   verify all three matches changed; ESC deselect + C-g collapse.
+8. **Rewrite `docs/CUSTOM-VIEWS.md`.**
 
-6. **Investigate the muted-palette / shell-view residual strip
-   thread** — bundled. The new `bright` theme covers the syntax
-   palette case; the pre-compensation conversation remains.
+9. **Investigate the muted-palette / shell-view residual strip
+   thread.**
 
-7. **Daily-drive for a week, then a real README + 60-second demo.**
+10. **Daily-drive for a week, then a real README + 60-second demo.**
 
-8. **PANES phase 3c** (cross-pane drag of tabs) and **phase 4**
-   (multi-window) and **LSP autocomplete** as focused follow-up
-   sessions.
+## Workflow lessons (this session)
+
+1. **The "ship plan, not implementation" instruction is load-
+   bearing.** Jason asked for a package plan and explicitly told the
+   agent not to implement. The result is a substantially better
+   plan than would have emerged if it had been mixed with code work
+   — the open questions surfaced cleanly precisely because there
+   was no pressure to resolve them en route to a commit. Worth
+   repeating for any other large design surface.
+
+2. **A 1.2MB vendored bundle is a real cost; admit it.** The
+   citation.js bundle is big enough to mention in the commit
+   message and to leave a note in the README about. Don't hide
+   bundle weight; price it explicitly so future maintainers know
+   what they're paying for. Lazy loading is a follow-up if perf
+   measurement shows it matters.
+
+3. **Named-let still bites.** Third time this session-series the
+   agent reached for `(let loop ((x ...)) ...)` and the dialect
+   threw "expected a proper list" at runtime. Should probably
+   become a `defmacro` at some point. Until then: tail-recursive
+   helper, every time.
+
+4. **Marketing screenshots are not diagnostic screenshots.** The
+   screenshots committed to `~/Sites/jmckalex/software/Godot/` are
+   real working features captured during debugging — they're
+   informative but they don't pop. Worth a focused "marketing
+   capture" session once a binary exists to demo.
 
 ---
 
 The story so far: a Lisp-extensible editor with a custom dialect, an
 Electron presentation layer, real tree-sitter highlighting (36
 languages with cross-language injection), a face system customisable
-via `M-x customize-faces` (and now `M-x customize` → `*theme*` /
-`*tab-width*` / `*indent-tabs-mode*`), documentation, a working
-jukebox with album art + metadata, a **pane tree with user-facing
-splits** (per-view cursors, drag-resizable splitters, focus
-indicator), **per-pane tabline-views** (configurable edge +
-drag-resizable width, session-restorable end-to-end), **Sublime-style
-multi-cursor** (per-view cursor sets, `C-c d` / `C-c D`, ESC deselect
-without collapsing, in-sync blink, faded cursors on inactive panes),
-**directory views with all the trimmings** (persisted across restart,
-context menu with Rename / Trash / Reveal, syntax-highlighted
-virtualised preview pane, open-in-new-tab), find-file with
-case-insensitive completion, drag-resizable preview/REPL splitters, a
-diagnostic `C-h F` for syntax highlighting, double-click-to-open,
-chord-prefix display in the echo area with global-fallthrough,
-`M-x shell` running on xterm.js, **tab-width / indent-tabs settings
-with mode-local overrides** (Makefile gets real tabs), **folding with
-chevron + closing-token preview + yellow ellipsis + void-element
-filter**, and a **four-theme palette** (dark / bright / light /
-midnight) reachable from `M-x customize`. Next big moves are the
-three-branch review queue (notebook / lsp / file-nav) and then phase
-4 (multi-window).
+via `M-x customize-faces` (and `M-x customize` for everything else),
+documentation, a working jukebox with album art + metadata, a **pane
+tree with user-facing splits** (per-view cursors, drag-resizable
+splitters, focus indicator), **per-pane tabline-views** (configurable
+edge + drag-resizable width, session-restorable, **move-views-between-
+panes** primitives + commands), **Sublime-style multi-cursor** (per-
+view cursor sets, `C-c d` / `C-c D`, ESC deselect without collapsing,
+in-sync blink, faded cursors on inactive panes), **directory views
+with all the trimmings** (persisted across restart, context menu with
+Rename / Trash / Reveal, syntax-highlighted virtualised preview pane,
+open-in-new-tab), find-file with case-insensitive completion,
+drag-resizable preview/REPL splitters, a diagnostic `C-h F` for
+syntax highlighting, double-click-to-open, chord-prefix display in
+the echo area with global-fallthrough, `M-x shell` running on
+xterm.js, tab-width / indent-tabs settings with mode-local overrides
+(Makefile gets real tabs), folding with chevron + closing-token
+preview + yellow ellipsis + void-element filter, a **four-theme
+palette** (dark / bright / light / midnight) reachable from `M-x
+customize`, **citation.js for BibTeX / CSL formatting** with a thin
+Lisp wrapper, and a **package management plan** ready to brief once
+the open questions are settled. The renaming to Godot is the
+threshold the next session crosses on its way to building Phase 1 of
+the package system.
