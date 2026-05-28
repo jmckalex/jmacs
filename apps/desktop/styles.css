@@ -929,9 +929,15 @@ body.markdown-preview-hidden #preview-splitter {
 /* The footer host always reserves one row, even when both the prompt
    row and the echo row are display:none. Without this the area
    collapses to 0 and the panes above bounce by ~32px every time a
-   chord prefix appears in the echo and disappears again. */
+   chord prefix appears in the echo and disappears again. The host
+   also owns the background tint and the divider line so the empty
+   row reads as an intentional footer; .minibuffer / .minibuffer-echo
+   sit transparently over it, contributing only their own content. */
 #minibuffer-host {
   min-height: 32px;
+  background: var(--bg-chrome);
+  border-top: 1px solid var(--accent);
+  box-sizing: border-box;
 }
 
 .minibuffer {
@@ -939,8 +945,6 @@ body.markdown-preview-hidden #preview-splitter {
   align-items: baseline;
   gap: 8px;
   padding: 7px 14px;
-  background: var(--bg-chrome);
-  border-top: 1px solid var(--accent);
   font-size: 13px;
 }
 
@@ -969,11 +973,11 @@ body.markdown-preview-hidden #preview-splitter {
 
 /* The echo area: a single-line note shown along the footer when no
    minibuffer prompt is open. Used by the keymap to surface a
-   mid-build chord prefix ("C-x-") and other transient messages. */
+   mid-build chord prefix ("C-x-") and other transient messages. The
+   tint + divider are owned by #minibuffer-host above; the echo only
+   adds its text. */
 .minibuffer-echo {
   padding: 7px 14px;
-  background: var(--bg-chrome);
-  border-top: 1px solid var(--accent);
   font-size: 13px;
   color: var(--fg-dim);
   user-select: none;
