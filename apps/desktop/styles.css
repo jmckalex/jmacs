@@ -926,25 +926,25 @@ body.markdown-preview-hidden #preview-splitter {
 
 /* --- minibuffer --------------------------------------------------------- */
 
-/* The footer host always reserves one row, even when both the prompt
-   row and the echo row are display:none. Without this the area
-   collapses to 0 and the panes above bounce by ~32px every time a
-   chord prefix appears in the echo and disappears again. The host
-   also owns the background tint and the divider line so the empty
-   row reads as an intentional footer; .minibuffer / .minibuffer-echo
-   sit transparently over it, contributing only their own content. */
+/* The footer host always renders at a fixed 32px tall — no bounce as
+   the prompt / echo rows show and hide. The host owns the background
+   tint and a soft grey divider; children sit transparently over it,
+   centred vertically by flex so a small font-metrics drift from the
+   inherited mono line-height can't push the host taller. */
 #minibuffer-host {
-  min-height: 32px;
+  height: 32px;
   background: var(--bg-chrome);
-  border-top: 1px solid var(--accent);
+  border-top: 1px solid color-mix(in srgb, var(--fg-dim) 40%, transparent);
   box-sizing: border-box;
 }
 
 .minibuffer {
+  height: 31px;          /* host content area = 32 total - 1 border */
+  box-sizing: border-box;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  padding: 7px 14px;
+  padding: 0 14px;
   font-size: 13px;
 }
 
@@ -977,7 +977,11 @@ body.markdown-preview-hidden #preview-splitter {
    tint + divider are owned by #minibuffer-host above; the echo only
    adds its text. */
 .minibuffer-echo {
-  padding: 7px 14px;
+  height: 31px;          /* matches .minibuffer; locks the row height */
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
   font-size: 13px;
   color: var(--fg-dim);
   user-select: none;
