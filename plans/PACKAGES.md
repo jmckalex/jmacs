@@ -3,13 +3,14 @@
 Design document for an extension package system. **Plan, not
 implementation.** The intent is to surface the design choices that
 need a decision, identify the implementation phases, and name the
-risks; no code lands until the open questions at the end have answers.
+risks. The twelve structural decisions are settled (see the
+**Decisions** section); Phase 1 is now ready to brief and implement.
 
 ## Motivation
 
 Godot is Lisp-extensible by design. Today that means: users add code
-to `~/.config/Godot/init.lisp`. Two pressures suggest it's time to
-formalise the next layer:
+to `init.lisp` in the editor's user-data directory. Two pressures
+suggest it's time to formalise the next layer:
 
 1. **Shareable extensions.** A user who writes a `magit`-equivalent
    has no good story for distributing it. Pasting into `init.lisp`
@@ -34,7 +35,7 @@ it once, carefully, with explicit phasing.
 
 A package is a **directory** with a manifest at its root. Concretely:
 
-    ~/.config/Godot/packages/
+    <user-data>/packages/
       magit/
         package.lisp           ← the manifest
         magit.lisp             ← the main source
@@ -43,6 +44,12 @@ A package is a **directory** with a manifest at its root. Concretely:
         README.md              ← human-readable docs
         assets/                ← optional non-Lisp resources
           magit-icon.png
+
+`<user-data>` is the editor's user-data directory — the same place
+`init.lisp`, `custom.lisp`, `faces.json`, and `session.json` already
+live. On macOS that's `~/Library/Application Support/Godot/`; on
+Linux, `~/.config/Godot/`; on Windows, `%APPDATA%\Godot\`. The
+Electron userData directory, in other words.
 
 The manifest is a single Lisp form. Same dialect as everywhere else
 in the editor — data, not config syntax:
@@ -145,12 +152,12 @@ than (B); but every Lisp file in the package has to use a different
 internal form of `define`, which breaks `init.lisp`-style direct
 authoring.
 
-**Recommendation: ship (A) in the MVP, design toward (B) as a
-follow-up.** Convention works in the small; the editor's standard
-library is itself an existence proof. Modules become worth their
-implementation cost once the package ecosystem is large enough that
-collisions are routine. We'd rather not block the package system on
-a language change.
+**Decision: ship (A) in the MVP, design toward (B) as a follow-up.**
+Convention works in the small; the editor's standard library is itself
+an existence proof. Modules become worth their implementation cost
+once the package ecosystem is large enough that collisions are
+routine. We'd rather not block the package system on a language
+change. (See Decision 1 below.)
 
 ## Loading and the boot pipeline
 
@@ -235,23 +242,23 @@ horizon.
 
 ### Layer 1 — Local install
 
-Drop a directory into `~/.config/Godot/packages/`. The package
-loader discovers it on next boot (or on `M-x package-rescan`). No
-network, no registry, no signatures.
+Drop a directory into `<user-data>/packages/`. The package loader
+discovers it on next boot (or on `M-x package-rescan`). No network,
+no registry, no signatures.
 
 This is enough to:
 - Develop a package locally (`~/Source/magit/` symlinked into the
   packages dir).
 - Install something a friend zipped you.
-- Distribute via git: `git clone … ~/.config/Godot/packages/magit`.
+- Distribute via git: `git clone … <user-data>/packages/magit`.
 
 ### Layer 2 — Git-based install
 
 `M-x package-install-from-git` prompts for a URL and a ref. The host
-clones into `~/.config/Godot/packages/<name>/`, reads the manifest
-to confirm shape, and registers. Updates: `M-x package-update`
-walks every git-installed package and pulls; failed updates leave
-the package at its last good ref.
+clones into `<user-data>/packages/<name>/`, reads the manifest to
+confirm shape, and registers. Updates: `M-x package-update` walks
+every git-installed package and pulls; failed updates leave the
+package at its last good ref.
 
 This adds:
 - A real install/update UX.
@@ -259,7 +266,7 @@ This adds:
   in the manifest as `:source-url`).
 - No central registry — discovery is "someone tells you the URL".
 
-### Layer 3 — Centralised registry (GELPA — Godot ELPA)
+### Layer 3 — Centralised registry (Vladimir's Chest)
 
 A JSON index hosted somewhere stable (GitHub Pages of a single repo
 is plenty for v1). Each entry: package name, version, manifest,
@@ -270,19 +277,24 @@ by name. Versions resolve through the registry. Trust model: signed
 manifests, signed tarballs, signing-key pinning per package on first
 install.
 
+The name (Vladimir's Chest) parallels the editor's own name: in
+*Waiting for Godot*, Vladimir's chest is the supply of food that
+sustains the waiting. The registry is the supply of packages that
+sustains the editor.
+
 ### Why this staging?
 
 Each layer is a real, useful product on its own. We don't need a
 registry to start; we don't need git auto-update for local
 development. The earlier layers don't go away when later ones
-arrive — they remain the developer workflow even when GELPA is the
-end-user path.
+arrive — they remain the developer workflow even when Vladimir's
+Chest is the end-user path.
 
 ## Installation, updates, uninstall
 
 ### Where packages live
 
-    ~/.config/Godot/packages/
+    <user-data>/packages/
       <name>/               ← directory per package
         package.lisp
         ...
@@ -299,11 +311,15 @@ on package rescan. The user never edits them.
 
 1. Resolve source — local path, git URL, or registry.
 2. Verify the manifest is well-formed.
-3. Resolve dependencies; install transitively.
-4. Move into `packages/<name>/`.
-5. Generate autoload stubs into `.cache/autoloads.lisp`.
-6. Run a `:install-hook` if the manifest declares one.
-7. Update `installed.lisp` (the record of installed packages with
+3. Check the package's `:godot-version` constraint against the
+   running editor. If unsatisfied, abort with a clear error
+   (`magit requires Godot >= 0.5; running 0.4. Upgrade Godot or
+   install an older magit.`). No install-but-warn mode.
+4. Resolve dependencies; install transitively.
+5. Move into `packages/<name>/`.
+6. Generate autoload stubs into `.cache/autoloads.lisp`.
+7. Run a `:install-hook` if the manifest declares one.
+8. Update `installed.lisp` (the record of installed packages with
    their versions and provenance).
 
 ### Updates
@@ -329,6 +345,25 @@ on package rescan. The user never edits them.
 4. Regenerate autoloads.
 5. Warn the user that loaded definitions persist in the current
    session — restart for a clean state.
+
+### Disable / enable
+
+`(disable-package! name)`:
+
+1. Add the package to a `disabled-packages` list in
+   `installed.lisp`.
+2. Do not unload the package from the current session — restart
+   for full effect.
+3. Subsequent boots skip the package's autoload stub generation
+   and any `:eager` loading.
+
+`(enable-package! name)` is the inverse: drop from
+`disabled-packages` and re-register on next rescan.
+
+This is the escape hatch when a Godot version bump breaks a
+package. The user disables, restarts, and is back to a working
+editor; the package author has time to publish a fix. Cheap to
+ship from day one; expensive to need and not have.
 
 ### Pinning
 
@@ -395,6 +430,8 @@ Minimal MVP set, all `M-x`-able:
     M-x install-package-local      ; prompt for a directory
     M-x update-package             ; prompt for name; "all" updates everything
     M-x uninstall-package          ; prompt for name
+    M-x package-disable            ; mark a package as skip-at-load
+    M-x package-enable             ; re-enable a previously disabled package
     M-x package-rescan             ; re-walk packages/, useful in dev
     M-x package-describe           ; show a package's manifest + commands + faces
 
@@ -427,87 +464,187 @@ Two new defcustoms:
 Both default to safe values — no archives until Layer 3 ships;
 auto-update off.
 
-## Open questions
+## Decisions
 
-These are the design choices that need a decision before
-implementation begins. Each is a real fork in the road, not a
-bikeshed.
+The twelve design choices that needed answers, and the answers,
+in the order they surfaced during exploration. Each is a real fork
+in the road that got walked deliberately.
 
-1. **Namespace approach.** Convention (A), real modules (B), or
-   implicit (C)? The plan recommends (A); confirming this commits us
-   for at least Phase 1 and 2.
+### 1. Namespace approach — convention only (option A)
 
-2. **Manifest format.** The Lisp-form proposal above feels right
-   for the editor's character. A TOML / JSON alternative would be
-   more parseable by external tools but breaks the
-   data-as-code-as-data symmetry. Confirm Lisp-form, or pick another.
+Public symbols are prefixed by package name (`magit/status`,
+`magit/blame-line`, `*magit/history-depth*`). The `:provides`
+declaration in the manifest is the source of truth for what's
+public; the installer warns on collisions across packages. A real
+module system stays a follow-up if the ecosystem demands it.
 
-3. **Should the package directory live under `~/.config/` or
-   under the platform's userData directory** (where `init.lisp` and
-   `custom.lisp` already live)? They should agree. Today the editor
-   uses platform userData. Moving to `~/.config/Godot/` for both
-   is a related but separable decision.
+**Why:** Convention works in the small, and the editor's standard
+library is its own existence proof. Modules become worth their
+implementation cost only once collisions are routine — that's a
+future-us problem. We'd rather not block the package system on a
+language change.
 
-4. **The host-primitive escape hatch.** Should the MVP support
-   *any* native code, e.g. a per-package `init.js` that the host
-   loads with restricted IPC access? Or hold the line at zero JS?
-   Holding the line is the recommendation; confirm.
+### 2. Manifest format — single Lisp form
 
-5. **Default-installed packages.** Should a fresh Godot install
-   ship with zero packages, or with a curated baseline (e.g. a
-   `magit` equivalent, a `which-key` equivalent)? Recommendation:
-   ship empty, document a "first packages to consider" list.
+`package.lisp` is one Lisp form (see "What a package is" above).
+Not TOML, not JSON.
 
-6. **Naming.** GELPA is a working title parallel to ELPA. Is that
-   the long-term name? Or "Godot Packages" / "GPM" / "Vladimir's
-   Chest" / something else?
+**Why:** Keeps the data-as-code-as-data symmetry the editor's
+character relies on. External tooling that needs to read manifests
+can do so through the same reader the editor uses (or a small
+purpose-built reader, when one is genuinely needed). Slightly
+less parseable by random third-party tools — acceptable cost for
+the consistency.
 
-7. **Should themes count as packages?** They could be a special
-   case (lightweight: one file, no code) or a generic package. The
-   generic-package answer keeps the system simple; the special-case
-   answer is faster to install for non-coder users.
+### 3. Package directory location — alongside `init.lisp` in userData
 
-8. **The `package.lisp` manifest is evaluated, not just parsed.**
-   That's powerful (a manifest can compute its `:provides` list)
-   but it's also a code-execution surface at install time. Should
-   manifests be plain data (read but not evaluated), or full Lisp
-   forms? Recommendation: full Lisp, document the trust model. But
-   this is a real choice.
+Packages live in `<user-data>/packages/`, where `<user-data>` is
+the editor's existing user-data directory. On macOS that's
+`~/Library/Application Support/Godot/packages/`; on Linux,
+`~/.config/Godot/packages/`; on Windows,
+`%APPDATA%\Godot\packages\`.
 
-9. **Dependency resolution scope.** Topological sort + version
-   pins is enough for v1; do we need richer semantics later (peer
-   dependencies, optional dependencies, dependency groups)?
-   Probably eventually; not for the MVP.
+**Why:** Everything user-modifiable in one place. No new migration
+story; we already know how to point users at this directory. The
+rename to Godot will need a userData migration anyway, and
+packages ride along with that single migration.
 
-10. **Test packages.** Does the registry's metadata include test
-    suites? Is `pnpm test`-style verification part of package CI?
-    Out of scope for MVP, but worth noting.
+### 4. Host-primitive escape hatch — none in MVP
 
-11. **What happens when a package's `:godot-version` constraint
-    fails?** Refuse to install (recommendation)? Install but warn?
-    Install but disable autoloads?
+Packages are pure Lisp. They call existing host primitives only.
+A package cannot ship `init.js`, cannot spawn subprocesses
+directly, cannot register new view kinds.
 
-12. **Updating Godot itself.** If a Godot version bump breaks a
-    package, what's the user's recovery path? `M-x package-disable
-    foo` to skip a single package at boot is probably the right
-    escape hatch — confirm we ship it from day one.
+**Why:** Three reasons. **Security** — native code runs with full
+Electron-renderer privileges (file system, network, IPC into the
+main process). The trust model for that is "a package is a piece
+of software you've decided to run", which is defensible but not
+something to ship without thought. **Compatibility** — a pure-Lisp
+package can run unchanged across Godot versions as long as the
+Lisp surface is stable; a native package binds to host internals
+that are not stable and won't be. **Reach** — a Lisp-only
+ecosystem leaves the JS layer as the maintainer's responsibility,
+which keeps the editor's character coherent. Two-tier
+extensibility (packages + native plugins) is a Phase 4+
+conversation.
+
+### 5. Default-installed packages — curated baseline, list TBD
+
+A fresh Godot install ships with a small curated baseline. The
+actual list is deferred to Phase 1 — the substrate needs to
+stabilise before we commit to which packages get the maintenance
+burden.
+
+**Why:** Demonstrates the system on day one; gives the package
+infrastructure real exercise from boot zero; addresses the "first
+package" risk preemptively. The cost — the baseline becomes a
+maintenance commitment for the editor's author — is real but
+explicit.
+
+### 6. Registry name — Vladimir's Chest
+
+The Layer 3 centralised registry is **Vladimir's Chest**.
+`M-x list-packages` reads "from Vladimir's Chest" in its
+descriptions.
+
+**Why:** Parallel to the Godot name itself, drawing on the same
+play. In *Waiting for Godot*, Vladimir's chest of food is what
+sustains the waiting; in this editor, the registry is what
+sustains the ecosystem. The literary thread that names the editor
+also names the supply line.
+
+### 7. Themes-as-packages — generic packages, no special case
+
+A theme ships as a package whose `:provides` is mostly `:faces`
+and which calls `define-theme`. Same install / update / uninstall
+machinery as any other package.
+
+**Why:** One mechanism, not two. Theme distribution becomes a
+substring of package distribution; we don't pay the maintenance
+cost of two parallel surfaces. The lightweight-file-drop pattern
+can return as a convenience helper later if the friction matters.
+
+### 8. Manifest evaluated, not just parsed — full Lisp
+
+`package.lisp` is evaluated, not merely read. Manifests can
+compute `:provides`, branch on `(godot-version)`, etc.
+
+**Why:** Power and consistency. The editor evaluates Lisp; the
+manifest is Lisp; making the manifest the one exception would be
+surprising. The trust model gets named explicitly: installing a
+package is running its code, starting at install time. The same
+trust model applies to load time, so install time isn't
+materially worse.
+
+### 9. Dependency resolution — topological sort + version constraints only
+
+The resolver supports `:depends` with constraints `>= X`, `> X`,
+`= X`, `*`. Cycles are errors. No peer / optional / group
+dependencies in the MVP.
+
+**Why:** Sufficient for v1. If a real pattern emerges in Phase 1
+or 2 (e.g. "this package integrates with X if X is installed"),
+that's when optional-dependency support gets added — driven by
+real packages, not speculation.
+
+### 10. Test packages — out of scope for MVP
+
+Phase 1 doesn't say anything about package tests. Authors run
+their own tests against their own setup. Worth revisiting when
+Vladimir's Chest's metadata schema is designed in Phase 3.
+
+**Why:** With no registry yet, there's no place to record test
+information that's load-bearing for anyone but the author. A
+convention may emerge organically before we have to standardise.
+
+### 11. `:godot-version` constraint failure — refuse to install
+
+If a package's `:godot-version` constraint isn't satisfied by the
+running editor, the install aborts with a clear error
+(`magit requires Godot >= 0.5; running 0.4. Upgrade Godot or
+install an older magit.`).
+
+**Why:** Predictable behaviour. An install-but-warn mode confuses
+users who don't read warnings; an install-but-disable mode
+confuses users who can't see why a package isn't working. The
+error message makes the user's options explicit and the
+behavioural rule one-line memorable.
+
+### 12. Recovery from a Godot bump — `M-x package-disable` from day one
+
+`M-x package-disable foo` adds `foo` to a `disabled-packages`
+list in `installed.lisp`. A disabled package stays on disk but
+the loader skips it. The inverse is `M-x package-enable`.
+
+**Why:** A user whose editor stopped booting because a package
+broke needs a fast path back to a working editor. This is it.
+Cheap to implement, expensive to need and not have. Phase 1
+surface.
 
 ## Suggested phasing
 
 ### Phase 1 — Local packages, manifest, autoload
 
 - Manifest spec (`package.lisp`).
-- Discovery of `~/.config/Godot/packages/*/package.lisp`.
+- Discovery of `<user-data>/packages/*/package.lisp`.
+- `:godot-version` constraint check (refuse-to-install path).
 - Dependency resolution (topo + version constraint).
 - Autoload stub generation.
 - `require!` mechanism.
+- Disable / enable mechanism (`disabled-packages` persisted to
+  `installed.lisp`).
 - `M-x` commands: `list-packages`, `package-rescan`,
-  `package-describe`, `install-package-local`, `uninstall-package`.
+  `package-describe`, `install-package-local`, `uninstall-package`,
+  `package-disable`, `package-enable`.
 - Package-list view (kind `package-list`).
 - Pinning support.
+- The curated-baseline list lands (Decision 5): which two or three
+  packages ship by default. Each doubles as the first integration
+  test of the system.
 
 Tests: package discovery, dependency cycle detection, autoload stub
-shadowing, version constraint matching, conflict reporting.
+shadowing, version constraint matching, conflict reporting,
+disable-skips-load, host-version refusal, baseline-package boot.
 
 This phase makes packages real but doesn't add networked install.
 Sufficient for early adopters to start authoring and exchanging
@@ -525,7 +662,7 @@ Tests: git-clone integration, update path, hook execution.
 This phase makes Godot a viable host for an actual third-party
 ecosystem without yet needing centralised infrastructure.
 
-### Phase 3 — Registry (GELPA)
+### Phase 3 — Registry (Vladimir's Chest)
 
 - A JSON registry format.
 - A registry server (initial: GitHub Pages of a single repo).
@@ -569,10 +706,12 @@ out so future-us doesn't pretend the limit doesn't exist.
   t`).
 
 - **The "first package" problem.** Until someone writes the first
-  good package, the system has no demonstration of value. Plan
-  recommends the maintainer write one as the system ships — a
-  small, useful, exemplary package that doubles as the integration
-  test (`godot-essentials` or similar).
+  good package, the system has no demonstration of value. The
+  curated-baseline decision (Decision 5) addresses this directly:
+  ship with a small set of useful packages out of the box, each
+  doubling as an integration test for the system. The actual
+  baseline list is deferred to Phase 1, but the commitment to
+  having one is firm.
 
 - **The host-primitive boundary moves.** Pure-Lisp packages are
   great until the first package that *would* exist if it could
@@ -597,13 +736,15 @@ out so future-us doesn't pretend the limit doesn't exist.
 
 The package system is the bridge between "the editor's author
 extends it" and "the editor has an ecosystem." That bridge is worth
-crossing carefully. The MVP — local packages, manifest, autoloads,
-no network — gets a working substrate in place without taking
-positions on the harder questions (centralised distribution, native
-extensibility, trust model). Each subsequent phase makes a deliberate
-choice on those, with the option to stop at any phase if the next
-isn't worth the cost.
+crossing carefully. The twelve decisions above settle the structural
+questions — namespace, manifest, location, native-code stance,
+defaults, naming, themes, evaluation, dependencies, tests, version
+constraints, recovery — so Phase 1 has a concrete spec to brief.
+Each subsequent phase still gets its own deliberate choice on what
+it adds; we keep the option to stop at any phase if the next isn't
+worth the cost.
 
 The waiting, as the play knows, is the point. But the editor is the
 substrate the waiting happens on, and the substrate is now ready to
-ask "what comes next?" in a serious voice.
+ask "what comes next?" in a serious voice — and to answer it with
+Vladimir's chest open and the supply lines drawn.
