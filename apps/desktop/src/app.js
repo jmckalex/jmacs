@@ -1619,6 +1619,25 @@ async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
         existingView.kind === 'text' &&
         existingView.buffer
       ) {
+        // Auto-duplicate path. Before making a *new* dup, check whether
+        // the focused tabline already holds a dup of this file — if so,
+        // surface it. Without this check, repeated opens of the same
+        // file in the same tabline build a fresh dup every call (since
+        // findIndex still finds the original showing-elsewhere view),
+        // accumulating duplicate tabs that all share the buffer. The
+        // user sees N identical tabs and session.json persists the lot.
+        if (focused && isTablineView(focused.view)) {
+          const existingDup = focused.view.tabs.find(
+            (tab) =>
+              tab !== existingView &&
+              tab.kind === 'text' &&
+              viewFilePath(tab) === result.path
+          );
+          if (existingDup) {
+            if (shouldSwitch) switchToViewIndex(views.indexOf(existingDup));
+            return existingDup;
+          }
+        }
         // Auto-duplicate: fresh View, fresh point/mark, same buffer.
         const dup = createView({ kind: 'text', buffer: existingView.buffer });
         views.push(dup);
@@ -5225,7 +5244,13 @@ function materialiseRestoredView(blob, handlesByBlob) {
         tabBlob.kind === 'directory-tree' || tabBlob.kind === 'directory-columns'
       ) {
         const handle = handlesByBlob.get(tabBlob);
-        if (handle) tabsClean.push(handle);
+        // Dedup by handle: multiple blobs in the same tabline that
+        // resolve to the same path (e.g. an existing session.json that
+        // accumulated duplicate tabs before the openFileByPath auto-dup
+        // fix) all map to one handle. Without this, the restored tabline
+        // shows N identical tab slots — visually broken even though the
+        // underlying view is one.
+        if (handle && !tabsClean.includes(handle)) tabsClean.push(handle);
         continue;
       }
       if (tabBlob.kind === 'tabline') {
