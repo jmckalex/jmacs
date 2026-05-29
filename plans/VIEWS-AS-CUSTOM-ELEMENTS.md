@@ -246,11 +246,29 @@ Answer the five questions above. Each shapes every class.
 ### Phase 1 — Infrastructure
 
 - A tiny module — `packages/renderer/src/view-elements.js` —
-  with shared helpers (a base class if useful, the registration
-  bootstrap, attribute coercion helpers).
-- A test harness for custom elements (jsdom supports custom
-  elements; node's test runner already loads it for our existing
-  tests).
+  with shared helpers (the registration bootstrap, attribute
+  coercion helpers). **No base class.** Each view kind extends
+  `HTMLElement` directly; the discipline (a `destroy()` method,
+  the lifecycle conventions) lives in documentation, not in
+  inheritance.
+- A small desktop-side module —
+  `apps/desktop/src/view-warehouse.js` — for the warehouse-
+  lookup and move-to-warehouse helpers.
+- The `<div id="view-warehouse" hidden>` element in
+  `apps/desktop/index.html`.
+- Pure-helper tests for the attribute coercion (`numAttr`,
+  `strAttr`, `boolAttr`, `setBoolAttr`).
+
+**Lifecycle test harness deferred.** The original Phase 1 plan
+mentioned jsdom for a custom-element lifecycle harness; the repo
+deliberately has no jsdom (renderer tests are pure functions over
+mocks; DOM components are exercised by the smoke arm). The
+deferred choice: continue the smoke + pure-function pattern, and
+only introduce jsdom (or happy-dom) if a per-kind unit test for a
+lifecycle subtlety becomes necessary. The lifecycle conventions
+themselves are surfaced in
+`packages/renderer/src/view-elements.js`'s file-level
+documentation.
 
 ### Phase 2 — TextView + TablineView
 

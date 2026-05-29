@@ -88,6 +88,13 @@
 
     <div id="minibuffer-host"></div>
 
+    <!-- The view warehouse — a hidden container for view elements that
+         exist but aren't currently shown in any pane. See
+         plans/VIEWS-AS-CUSTOM-ELEMENTS.md (Decision 3). The `hidden`
+         attribute removes the subtree from layout, accessibility tree,
+         and tab focus; children take zero rendering cost. -->
+    <div id="view-warehouse" hidden></div>
+
     <footer class="modeline">
       <span id="modeline-name" class="modeline-name"></span>
       <span id="modeline-position" class="modeline-position"></span>

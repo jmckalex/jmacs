@@ -13,6 +13,13 @@ export {
   PREVIEW_DEBOUNCE_MS,
 } from './markdown-preview.js';
 export { createMinibuffer } from './minibuffer.js';
+export {
+  boolAttr,
+  defineViewElement,
+  numAttr,
+  setBoolAttr,
+  strAttr,
+} from './view-elements.js';
 export { createCustomizeView } from './customize.js';
 export { createDocView } from './doc-view.js';
 export { createHoverDoc } from './hover-doc.js';
