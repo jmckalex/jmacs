@@ -1585,9 +1585,19 @@ async function openImageByPath(filePath) {
  * @param {string} filePath
  * @param {object} [options]
  * @param {boolean} [options.switch=true]
+ * @param {boolean} [options.forceDuplicate=false] - Bypass the path
+ *   de-dup. Used by session restore: each persisted blob gets its own
+ *   View handle so two tablines holding the same path don't end up
+ *   aliasing one View (which would make a close-X in one tabline kill
+ *   the tab in the other too). The buffer is still shared when one
+ *   already exists for the path — the duplicate is at the View layer,
+ *   the buffer/file content is one.
  * @returns {Promise<object | null>}
  */
-async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
+async function openFileByPath(filePath, {
+  switch: shouldSwitch = true,
+  forceDuplicate = false,
+} = {}) {
   try {
     const result = await window.host.openFilePath(filePath);
     if (result === null) {
@@ -1606,6 +1616,20 @@ async function openFileByPath(filePath, { switch: shouldSwitch = true } = {}) {
     const existing = views.findIndex((v) => viewFilePath(v) === result.path);
     if (existing >= 0) {
       const existingView = views[existing];
+      // Restore path: always create a fresh View over the shared
+      // buffer. Skip the showing-elsewhere check; we want one View per
+      // persisted blob, period.
+      if (
+        forceDuplicate &&
+        existingView.kind === 'text' &&
+        existingView.buffer
+      ) {
+        const dup = createView({ kind: 'text', buffer: existingView.buffer });
+        views.push(dup);
+        notifyViewsChanged();
+        if (shouldSwitch) switchToViewIndex(views.length - 1);
+        return dup;
+      }
       const focused = currentPane();
       // Find any other pane already showing this view.
       const showingElsewhere =
@@ -5690,7 +5714,12 @@ const sessionController = createSession({
     if (entry && entry.kind === 'directory-columns') {
       return ensureDirectoryColumnsViewForPath(path);
     }
-    const view = await openFileByPath(path, { switch: false });
+    // forceDuplicate: true so each blob in session.json gets its own
+    // View handle. If two tablines stored the same path, restoring
+    // them as one shared View handle meant close-X on either tabline
+    // killed the View globally and yanked it out of *both* tablines —
+    // the bug in before.png/after.png.
+    const view = await openFileByPath(path, { switch: false, forceDuplicate: true });
     if (view === null) return null;
     // Only text views carry point/mark; image/audio/video views don't.
     const buffer = view.buffer;
