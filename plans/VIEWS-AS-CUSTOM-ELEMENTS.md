@@ -378,25 +378,180 @@ rendering.
   classes are enough; the editor is small and the abstraction
   cost of a framework outweighs the convenience.
 
-## Open questions to settle in Phase 0
+## Phase 0 decisions — SETTLED 2026-05-29
 
-These are repeated from above, listed together for the
-phase-0 conversation:
+The five open questions, resolved in conversation.
 
-1. Cursor state location: (1a) instance fields, (1b) private
-   fields with accessors, or (1c) attributes? **Recommendation:
-   (1a) for high-frequency, (1c) for identity.**
-2. Buffer reference: (2a) direct `this.buffer` or (2b)
-   `buffer-id` + registry? **Recommendation: (2a).**
-3. Hidden semantics: (3a) `display: none` + lifecycle only on
-   real mount, or (3b) detach on hide? **Recommendation: (3a).**
-4. Tabline tab management: (4a) all tabs always in DOM, attribute-
-   toggled, or (4b) only active is attached? **Recommendation:
-   (4a).**
-5. The kind classes' constructor surface: pure no-arg + setters,
-   or accept options via a static factory? **Recommendation:
-   no-arg + `setX` methods, with a small `createTextView(buffer)`
-   helper if ergonomics push for it.**
+### 1. Cursor state location — instance fields + identity attributes
+
+High-frequency state (`point`, `mark`, `cursors[]`, scroll position)
+lives as plain instance fields on the element class. Identity-like
+state (name, kind via tagName, buffer-derived file path) lives as
+attributes, with a `data-file-path` mirror used so the Elements
+panel reveals which file each `<text-view>` shows.
+
+**Why**: cursor moves happen tens of times per second; attribute
+writes fire `attributeChangedCallback` on every change and incur
+string-parse overhead. Instance fields are the same performance as
+today's plain-object access. Attributes carry their weight only
+where the Elements-panel visibility is worth the cost.
+
+### 2. Buffer reference — direct, with `data-file-path` mirror
+
+`this.buffer` is a direct JS reference to the buffer object,
+written by `setBuffer(buffer)`. The buffer pool stays a JS-side
+`Map<filePath, Buffer>` — buffers are L2 storage, not a DOM
+concern. The `data-file-path` attribute mirrors `this.buffer.filePath`
+read-only so DevTools shows what each view points at.
+
+**Why**: there is no benefit to indirection through a
+`buffer-id` registry. The view-buffer relationship is a runtime
+JS reference, and the supposed serialisation win of an attribute-
+based reference is hypothetical (session restore goes through JS,
+not HTML).
+
+### 3. Hide / mount / destroy — three-state lifecycle via a warehouse
+
+A view's lifecycle is a state machine, not a binary attached /
+detached:
+
+```
+[constructed]
+     │  warehouse.appendChild(view)
+     ▼
+[warehoused] ←──────────────┐
+     │                       │
+     │  pane.appendChild(…)  │  warehouse.appendChild(…)
+     ▼                       │  (e.g. owning pane is being torn down)
+[live in pane]──────────────┘
+     │  view.destroy() + view.remove()
+     ▼
+[destroyed]
+```
+
+The **warehouse** is a single hidden DOM element appended to
+`<body>` at boot:
+
+```html
+<div id="view-warehouse" hidden></div>
+```
+
+`hidden` does the right thing: `display: none`, removed from the
+accessibility tree, skipped by tab focus, zero layout cost. The
+warehouse is where every view lives between "just created" and
+"attached to a pane," and where surviving views go when their
+pane is closed.
+
+**Lifecycle rules:**
+- `connectedCallback` fires every time the element joins a parent
+  in the document. Used for "wire up DOM-relative state, start any
+  cheap observers." Idempotent — called every move.
+- `disconnectedCallback` fires every time the element leaves a
+  parent. **It is allowed to be empty.** No load-bearing logic
+  here. Movement (pane → warehouse, pane → another pane) is
+  indistinguishable from teardown inside the callback.
+- `destroy()` is the only place external handles are released —
+  pty kill, audio/video tear-down, file handle close, timer
+  cancellation. It is invoked explicitly by the editor (Lisp's
+  `kill-view!`), never by the platform.
+
+A view kind that releases a pty inside `disconnectedCallback`
+breaks the moment the user moves the view from pane A to pane B.
+Documentation for view-kind authors must make that mistake
+trivially detectable.
+
+**The save-on-quit prompt for unsaved file-backed buffers is
+unchanged** — it lives at the buffer layer, not the view layer.
+A view being warehoused doesn't bypass the save prompt; closing
+the app does.
+
+### 4. Tabline tab management — all-attached, `[active]` marks visible
+
+A `<tabline-view>` element's children *are* its tabs, in display
+order. The active tab carries `[active]`; CSS hides the rest:
+
+```css
+tabline-view > :not([active]) { display: none; }
+```
+
+Tab operations are DOM operations:
+- Add tab: `tablineEl.appendChild(viewEl)`.
+- Remove tab: `viewEl.remove()` (goes to GC unless something else
+  grabbed it; the close-X path typically moves it to the warehouse
+  instead — see Decision 3).
+- Reorder: `tablineEl.insertBefore(viewEl, otherEl)`.
+- Switch active: clear `[active]` from the current; set on the
+  target.
+
+**Why**: matches Decision 3 — visibility is a CSS concern,
+lifecycle fires only for real mount / unmount. Tab switches are
+cheap (no lifecycle, instance state untouched). The "two views
+over one file" case is structural — two distinct elements
+somewhere in the tree.
+
+### 5. Constructor surface — no-arg + setters, optional helpers
+
+Custom-element constructors must take no arguments. State is
+configured after construction via setter methods:
+
+```js
+const el = document.createElement('text-view');
+el.setBuffer(buffer);
+warehouse.appendChild(el);  // or: pane.appendChild(el);
+```
+
+For the common case per kind, a one-line helper is friendlier:
+
+```js
+function createTextView(buffer) {
+  const el = document.createElement('text-view');
+  el.setBuffer(buffer);
+  return el;
+}
+```
+
+The discipline: every view class must be robust to "configuration
+not yet set." `connectedCallback` cannot assume `this.buffer`
+exists. Most kinds defer rendering until `setBuffer` /
+`setEntries` / `setPath` is called.
+
+### 3.1 — Warehouse persistence policy
+
+The warehouse holds views the user has open but is not currently
+viewing — the union of "every view minus what's in some pane."
+The question is whether to persist it across a quit-relaunch.
+
+**Decision: discard the warehouse by default; expose
+`*persist-warehouse*` defcustom for users who want it sticky.**
+
+```lisp
+(defcustom *persist-warehouse* #f :boolean
+  :group 'session
+  :doc "When #t, the contents of the view warehouse — open views
+   not currently in any pane — are saved to session.json on quit
+   and restored on next launch. Default #f: only the pane tree is
+   persisted; warehoused views are discarded on quit. Recommended
+   only for users who treat the warehouse as 'tabs I haven't
+   closed yet' rather than 'views I've forgotten about'.")
+```
+
+**Why**: most warehoused views will be non-text kinds (jukebox,
+audio, video, shell, directory-*) whose state is genuinely
+transient. Across many sessions, persisting them would
+accumulate the Raiders warehouse — forgotten jukeboxes from
+weeks ago, defunct directory views from deleted folders, shell
+sessions whose ptys are long gone. The discard default keeps
+relaunches lean.
+
+**Safety**: text views with file paths and unsaved changes get
+caught by the save-on-quit prompt at the buffer layer, regardless
+of whether their view is currently warehoused. Discarding a
+warehoused view that has been saved loses nothing — the file
+opens again via find-file / recents.
+
+Ephemeral text views (`*scratch*`, `*Customize: foo*`, names
+matching `*…*`) are already filtered out of session persistence
+today via `isEphemeral` and stay filtered out.
 
 ## Acceptance for the refactor
 
