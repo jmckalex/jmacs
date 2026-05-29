@@ -90,7 +90,7 @@ import { applyFaceStyles } from './face-styles.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
-import { createTabline } from './tabline.js';
+import { createTabline } from '@editor/renderer';
 
 const WELCOME = `
 

@@ -21,6 +21,8 @@ export {
   strAttr,
 } from './view-elements.js';
 export { TextView } from './text-view.js';
+export { TablineView } from './tabline-view.js';
+export { createTabline } from './tabline.js';
 export { createCustomizeView } from './customize.js';
 export { createDocView } from './doc-view.js';
 export { createHoverDoc } from './hover-doc.js';

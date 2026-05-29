@@ -142,6 +142,27 @@ export class TextView extends HTMLElement {
     return this._pendingView;
   }
 
+  // --- view-shape getters --------------------------------------------
+  // The minimum surface the editor's existing helpers (viewFilePath,
+  // the tabline strip widget, the modeline) read off a view. By
+  // exposing these as getters on the element, all those helpers work
+  // with TextView elements unchanged.
+
+  /** Every text-view is kind 'text'. */
+  get kind() { return 'text'; }
+
+  /** Buffer's name, or a placeholder. Used for the tab label. */
+  get name() {
+    const buf = this._pendingBuffer;
+    return (buf && typeof buf.name === 'string') ? buf.name : '*text*';
+  }
+
+  /** Buffer's file path, or null. Used by `viewFilePath`. */
+  get filePath() {
+    const buf = this._pendingBuffer;
+    return (buf && typeof buf.filePath === 'string') ? buf.filePath : null;
+  }
+
   // --- Custom-element lifecycle ---------------------------------------
 
   /**
