@@ -20,6 +20,7 @@ export {
   setBoolAttr,
   strAttr,
 } from './view-elements.js';
+export { TextView } from './text-view.js';
 export { createCustomizeView } from './customize.js';
 export { createDocView } from './doc-view.js';
 export { createHoverDoc } from './hover-doc.js';
