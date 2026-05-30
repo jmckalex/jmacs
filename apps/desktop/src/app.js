@@ -43,6 +43,7 @@ import {
 } from '@editor/lisp';
 import {
   AudioView,
+  BrowserView,
   CustomizeView,
   DocView,
   DirectoryColumnsView,
@@ -2631,6 +2632,22 @@ const interpreter = createInterpreter({
       openDocBuffer(name);
       return NIL;
     },
+    // Open URL in a browser-kind view. Creates the view, pushes it onto
+    // the global list, switches to it, returns nil. The page title
+    // overwrites `view.name` once the webview reports it.
+    'open-url!': (args) => {
+      const url = String(args[0] ?? '').trim();
+      if (url === '') return NIL;
+      const view = createView({
+        kind: 'browser',
+        name: url,
+        extras: { url },
+      });
+      views.push(view);
+      notifyViewsChanged();
+      switchToViewIndex(views.length - 1);
+      return NIL;
+    },
     // Documentation: open the fuzzy-search minibuffer with the
     // manifest's names as candidates; submit opens the matching
     // doc page.
@@ -4068,6 +4085,29 @@ pdfView.configure(configurePdfView());
 editorPaneElement().append(pdfView);
 pdfView.style.display = 'none';
 
+// The browser view — the view a `browser`-kind buffer is shown through.
+// v1 is an Electron <webview> in a `persist:browser-views` partition;
+// the wrapper adds a back/forward/reload/URL/stop toolbar and forwards
+// chord keystrokes through the Lisp keymap so SPC etc. don't compete
+// with the editor when the wrapper has focus. Each browser tab gets
+// its own `<browser-view>` from `perKindConfigureFactory` so navigation
+// state (history, scroll, URL) survives a tab switch — Chromium's
+// per-webview state is the only thing keeping that intact.
+function configureBrowserView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    defaultUrl: 'about:blank',
+    partition: 'persist:browser-views',
+    // Page title updates flow through here so the modeline + tabline
+    // pick up the page's <title> as the view's label.
+    onTitleChanged: () => notifyViewsChanged(),
+  };
+}
+const browserView = /** @type {*} */ (document.createElement('browser-view'));
+browserView.configure(configureBrowserView());
+editorPaneElement().append(browserView);
+browserView.style.display = 'none';
+
 // The directory tree-view — a `directory-tree`-kind buffer is shown
 // through this view. Folder rows expand on click; file rows route
 // through the host's open-file-path so they land in whichever view
@@ -4213,6 +4253,7 @@ const SINGLETON_VIEWS = [
   { kind: 'audio',             el: audioView,             releasesBuffer: true  },
   { kind: 'video',             el: videoView,             releasesBuffer: true  },
   { kind: 'pdf',               el: pdfView,               releasesBuffer: false },
+  { kind: 'browser',           el: browserView,           releasesBuffer: false },
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
@@ -4517,6 +4558,7 @@ function perKindConfigureFactory(kind) {
     case 'audio':             return configureAudioView;
     case 'video':             return configureVideoView;
     case 'pdf':               return configurePdfView;
+    case 'browser':           return configureBrowserView;
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'shell':             return configureShellView;
