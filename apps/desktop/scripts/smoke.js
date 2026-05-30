@@ -1064,10 +1064,13 @@ app.whenReady().then(() => {
         }));
         await new Promise((r) => requestAnimationFrame(() => r()));
         const customizeEl = document.querySelector('.customize');
+        // Phase 2c: the per-pane editor is a <text-view> wrapping the
+        // .editor div; visibility now toggles on the wrapper, not the
+        // inner .editor.
         const customizeShown = !!(
           customizeEl &&
           getComputedStyle(customizeEl).display !== 'none' &&
-          getComputedStyle(document.querySelector('.editor')).display ===
+          getComputedStyle(document.querySelector('text-view')).display ===
             'none'
         );
         // The sticky-notes group renders its setting as a form widget.
@@ -1216,7 +1219,7 @@ app.whenReady().then(() => {
         const shown = !!(
           view &&
           getComputedStyle(view).display !== 'none' &&
-          getComputedStyle(document.querySelector('.editor')).display ===
+          getComputedStyle(document.querySelector('text-view')).display ===
             'none'
         );
         // The image carries a data URL and starts fit-to-window.
@@ -1635,7 +1638,7 @@ app.whenReady().then(() => {
         const audioShown = !!(
           audioView &&
           getComputedStyle(audioView).display !== 'none' &&
-          getComputedStyle(document.querySelector('.editor')).display ===
+          getComputedStyle(document.querySelector('text-view')).display ===
             'none'
         );
         const audioName =
@@ -1815,7 +1818,7 @@ app.whenReady().then(() => {
         const videoShown = !!(
           videoView &&
           getComputedStyle(videoView).display !== 'none' &&
-          getComputedStyle(document.querySelector('.editor')).display ===
+          getComputedStyle(document.querySelector('text-view')).display ===
             'none'
         );
         const videoName =
