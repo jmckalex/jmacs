@@ -227,6 +227,39 @@ export function createPanePrimitives(paneHost) {
       paneHost.setSplitRatio(pane, clampRatio(Number(ratio)));
       return NIL;
     },
+    // `(add-pane-at-splitter! split-id)` — insert a fresh leaf "in the
+    // gap" of the split node with id SPLIT-ID. The new leaf becomes a
+    // sibling along the split's axis (three equal panes from the
+    // original two). The new pane is focused. Returns the new leaf
+    // handle, or nil when SPLIT-ID isn't a split node in the tree.
+    'add-pane-at-splitter!': (args) => {
+      const splitIdRaw = args[0];
+      let splitId;
+      if (typeof splitIdRaw === 'string') splitId = splitIdRaw;
+      else if (
+        splitIdRaw && typeof splitIdRaw === 'object' &&
+        typeof splitIdRaw.id === 'string' && splitIdRaw.kind === 'split'
+      ) {
+        splitId = splitIdRaw.id;
+      } else splitId = null;
+      if (splitId === null) return NIL;
+      if (typeof paneHost.addPaneAtSplitter !== 'function') return NIL;
+      const newLeaf = paneHost.addPaneAtSplitter(splitId);
+      return newLeaf ?? NIL;
+    },
+    // `(add-pane-at-border! side)` — insert a fresh leaf at the named
+    // border of the editor area. SIDE is a symbol/string/keyword: 'top,
+    // 'bottom, 'left, or 'right. Wraps the existing tree in an outer
+    // split so the new pane occupies its own row/column at the chosen
+    // edge. The new pane is focused. Returns the new leaf, or nil for
+    // an unrecognised SIDE.
+    'add-pane-at-border!': (args) => {
+      const side = coerceEdge(args[0]);
+      if (side === null) return NIL;
+      if (typeof paneHost.addPaneAtBorder !== 'function') return NIL;
+      const newLeaf = paneHost.addPaneAtBorder(side);
+      return newLeaf ?? NIL;
+    },
 
     // --- tabline-view primitives ----------------------------------------
     // Phase 3b: see plans/PANES-PHASE-3B.md.
@@ -449,6 +482,8 @@ function coerceEdge(edgeArg) {
  *   pane handle (a leaf), or null.
  * @property {(pane: Pane, ratio: number) => ({first: Pane, second: Pane} | null)} [splitHorizontal]
  * @property {(pane: Pane, ratio: number) => ({first: Pane, second: Pane} | null)} [splitVertical]
+ * @property {(splitId: string) => (Pane | null)} [addPaneAtSplitter]
+ * @property {(side: 'top'|'bottom'|'left'|'right') => (Pane | null)} [addPaneAtBorder]
  * @property {(pane: Pane) => void} [deletePane]
  * @property {(pane: Pane) => void} [deleteOtherPanes]
  * @property {() => (Pane | null)} [otherPane]

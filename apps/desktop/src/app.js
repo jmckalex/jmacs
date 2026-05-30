@@ -21,6 +21,9 @@ import {
   createSplitPane,
   computeRects,
   computeSplitterEdges,
+  findPaneById,
+  insertAtRootBorder,
+  insertAtSplit,
   leafPanes,
   paneInDirection,
   parentOf,
@@ -642,6 +645,58 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio) {
   refreshSplitterHandles();
   scheduleRelayout();
   return { first: targetLeaf, second: newLeaf };
+}
+
+/** Insert a fresh leaf "in the gap" of the split node with id SPLIT_ID.
+ *  The new leaf gets a duplicate of the focused view (text → buffer-
+ *  shared; non-text → fresh *scratch*) and becomes the focused pane.
+ *  Returns the inserted leaf, or `null` when the split id isn't in the
+ *  tree. */
+function addPaneAtSplitterId(splitId) {
+  if (typeof splitId !== 'string') return null;
+  const splitNode = findPaneById(rootPane, splitId);
+  if (!splitNode || splitNode.kind !== 'split') return null;
+  const sourceView =
+    (currentPane()?.view) ?? views[currentViewIndex] ?? null;
+  const dup = buildDuplicateViewForSplit(sourceView);
+  const newLeaf = createLeafPane({ view: dup });
+  rootPane = insertAtSplit(rootPane, splitNode, newLeaf);
+  syncPaneElements();
+  if (dup && dup.kind === 'text') {
+    ensureEditorViewForLeaf(newLeaf);
+  }
+  setCurrentPaneId(newLeaf.id);
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+  return newLeaf;
+}
+
+/** Insert a fresh leaf at SIDE of the root pane (`'top'`/`'bottom'`/
+ *  `'left'`/`'right'`). Wraps the whole existing tree in a new outer
+ *  split, with the fresh leaf on that side. Returns the inserted leaf
+ *  or `null` for an unrecognised side. */
+function addPaneAtRootBorder(side) {
+  if (
+    side !== 'top' && side !== 'bottom' &&
+    side !== 'left' && side !== 'right'
+  ) {
+    return null;
+  }
+  const sourceView =
+    (currentPane()?.view) ?? views[currentViewIndex] ?? null;
+  const dup = buildDuplicateViewForSplit(sourceView);
+  const newLeaf = createLeafPane({ view: dup });
+  rootPane = insertAtRootBorder(rootPane, side, newLeaf);
+  syncPaneElements();
+  if (dup && dup.kind === 'text') {
+    ensureEditorViewForLeaf(newLeaf);
+  }
+  setCurrentPaneId(newLeaf.id);
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+  return newLeaf;
 }
 
 /** Implementation of `delete-pane!`. Collapses TARGET's parent split
@@ -2242,6 +2297,8 @@ const paneHost = {
     splitPaneAtLeaf(pane, SPLIT_HORIZONTAL, ratio),
   splitVertical: (pane, ratio) =>
     splitPaneAtLeaf(pane, SPLIT_VERTICAL, ratio),
+  addPaneAtSplitter: (splitId) => addPaneAtSplitterId(splitId),
+  addPaneAtBorder: (side) => addPaneAtRootBorder(side),
   deletePane: (pane) => deletePaneInTree(pane),
   deleteOtherPanes: (pane) => deleteOtherPanesInTree(pane),
   otherPane: () => focusNextPane(),
