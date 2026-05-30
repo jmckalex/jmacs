@@ -1008,24 +1008,16 @@ function hideInactiveRendererViews(activeKind) {
     const v = isTablineView(leaf.view) ? tablineActiveChild(leaf.view) : leaf.view;
     if (v && v.kind !== 'text' && v.kind !== 'tabline') kindsInUse.add(v.kind);
   }
-  const setDisplay = (el, kind) => {
-    el.style.display = kindsInUse.has(kind) ? '' : 'none';
-  };
-  setDisplay(customizeView, 'customize');
-  setDisplay(imageView, 'image');
-  setDisplay(docView, 'doc');
-  setDisplay(jukeboxView, 'jukebox');
-  setDisplay(audioView, 'audio');
-  setDisplay(videoView, 'video');
-  setDisplay(directoryTreeView, 'directory-tree');
-  setDisplay(directoryColumnsView, 'directory-columns');
-  setDisplay(shellView, 'shell');
-  // `setBuffer(null)` resets the singleton — only do it when truly no
-  // leaf shows the kind, so e.g. a background audio pane keeps its
-  // buffer alive when focus moves to a text pane.
-  if (!kindsInUse.has('audio')) audioView.setBuffer(null);
-  if (!kindsInUse.has('video')) videoView.setBuffer(null);
-  if (!kindsInUse.has('shell')) shellView.setBuffer(null);
+  // Iterate the single source of truth — SINGLETON_VIEWS, declared
+  // after all the singletons themselves exist. Audio/video/shell flag
+  // themselves as media-bearing: when their kind isn't in use anywhere,
+  // they release the buffer too (an idle audio pane keeps the buffer
+  // alive — only the truly-unused case resets).
+  for (const { kind, el, releasesBuffer } of SINGLETON_VIEWS) {
+    const inUse = kindsInUse.has(kind);
+    el.style.display = inUse ? '' : 'none';
+    if (!inUse && releasesBuffer) el.setBuffer(null);
+  }
 }
 
 /** Switch to the view at INDEX: dispatch through the kind registry to
@@ -4112,6 +4104,26 @@ themeListeners.add(() => shellView.applyTheme());
 // — the modules read `view.name`, `view.tracks`, `view.html`, etc., the
 // same fields they used to read off the old buffer record.
 
+/** The non-text singletons, in one place. `hideInactiveRendererViews`
+ *  iterates this list to toggle display; `singletonElementForKind`
+ *  looks up by kind. `releasesBuffer` flags the media-bearing singletons
+ *  (audio / video / shell) — when their kind isn't in use anywhere,
+ *  `hideInactiveRendererViews` also clears their buffer so a stale
+ *  source doesn't keep playing / consuming memory. The other kinds
+ *  (image / doc / customize / jukebox / directory-*) hang on to their
+ *  last buffer, so reactivating them shows what was last there. */
+const SINGLETON_VIEWS = [
+  { kind: 'customize',         el: customizeView,         releasesBuffer: false },
+  { kind: 'image',             el: imageView,             releasesBuffer: false },
+  { kind: 'doc',               el: docView,               releasesBuffer: false },
+  { kind: 'jukebox',           el: jukeboxView,           releasesBuffer: false },
+  { kind: 'audio',             el: audioView,             releasesBuffer: true  },
+  { kind: 'video',             el: videoView,             releasesBuffer: true  },
+  { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
+  { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
+  { kind: 'shell',             el: shellView,             releasesBuffer: true  },
+];
+
 /** Side-effect bundle for mounting a text view: rebind the cursor,
  *  pin the editor as `currentTextBuffer`, re-subscribe sticky notes /
  *  buffer-watch / mode menu / Markdown preview, and ensure the major
@@ -4521,18 +4533,8 @@ function mountTablineActiveChild(tablineView) {
  *  the kind doesn't have a known singleton. Used by the tabline mount
  *  to re-parent the active singleton into its content area. */
 function singletonElementForKind(kind) {
-  switch (kind) {
-    case 'image':              return imageView;
-    case 'doc':                return docView;
-    case 'jukebox':            return jukeboxView;
-    case 'audio':              return audioView;
-    case 'video':              return videoView;
-    case 'customize':          return customizeView;
-    case 'shell':              return shellView;
-    case 'directory-tree':     return directoryTreeView;
-    case 'directory-columns':  return directoryColumnsView;
-    default:                   return null;
-  }
+  const entry = SINGLETON_VIEWS.find((s) => s.kind === kind);
+  return entry ? entry.el : null;
 }
 
 /** Activate tab INDEX in TABLINEVIEW, refresh the strip, and re-mount
