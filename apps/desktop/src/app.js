@@ -12,7 +12,6 @@
 import { createBuffer } from '@editor/buffer';
 import {
   createView,
-  createKindRegistry,
   viewFilePath,
   isTablineView,
   tablineActiveChild,
@@ -327,11 +326,6 @@ function ensureMajorMode() {
   }
 }
 
-/** The view-kind registry — every view kind contributes a spec with
- *  a mount hook (and optional dispose hook). The registry is filled
- *  below, after each renderer view has been constructed. */
-const kindRegistry = createKindRegistry();
-
 // --- pane tree ----------------------------------------------------------
 //
 // Phase 2 of plans/PANES.md: the editor area is a JS-owned pane tree.
@@ -642,8 +636,8 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio) {
   }
   // currentPaneId stays the same — the originating leaf survived as the
   // first child with its id intact. Refresh the indicator + splitters,
-  // then relayout. The kindRegistry's text mount already ran for the
-  // focused view earlier; no need to re-mount here.
+  // then relayout. The text-kind mount already ran for the focused view
+  // earlier; no need to re-mount here.
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
@@ -691,7 +685,7 @@ function deletePaneInTree(targetLeaf) {
         // Re-run the mount for the surviving pane's view so its
         // renderer is correctly displayed.
         hideInactiveRendererViews(view.kind);
-        kindRegistry.mount(view);
+        mountKindView(view);
       }
     }
   }
@@ -1099,7 +1093,7 @@ function switchToViewIndex(index) {
     landingEl.append(singleton);
   }
   hideInactiveRendererViews(view.kind);
-  kindRegistry.mount(view);
+  mountKindView(view);
   updateModeline();
   notifyViewsChanged();
   return view;
@@ -1176,7 +1170,7 @@ function killViewAtIndex(target) {
   // doesn't know whether the view was current); the audio/video
   // current-view destroy() lives here because it depends on the
   // renderer view that was mounted, not on the View handle.
-  kindRegistry.dispose(victim);
+  disposeKindView(victim);
   if ((victim.kind === 'audio' || victim.kind === 'video') && wasCurrent) {
     if (victim.kind === 'audio') audioView.destroy();
     else videoView.destroy();
@@ -4107,20 +4101,18 @@ shellView.style.display = 'none';
 // any later theme change into it.
 themeListeners.add(() => shellView.applyTheme());
 
-// --- kind registry -----------------------------------------------------
+// --- kind dispatch -----------------------------------------------------
 //
-// Each view kind contributes a `mount` hook (and an optional `dispose`
-// hook). The desktop's `switchToViewIndex` routes through this
-// registry — the old ten-way switch on `buffer.kind` is gone.
+// Phase 4a: the `kindRegistry` abstraction is gone. Every view kind is
+// a custom element; mounting just means "tell the right singleton to
+// `setBuffer(view)` and `focus()`", and disposing is mostly a no-op
+// (the singleton's state is GC'd; only shell needs to reap a pty).
+// The two helpers below replace the `kindRegistry.register` calls plus
+// the `kindRegistry.mount` / `kindRegistry.dispose` dispatch.
 //
-// Renderer view modules (createEditorView, createImageView, ...) still
-// expose `setBuffer(viewOrNull)` for compat. Each kind here passes the
-// View handle to setBuffer; the renderer modules read `view.name`,
-// `view.tracks`, `view.html`, etc. — the same fields they used to
-// read off the old buffer record.
-//
-// `tabline` is registered as a kind so the surface is uniform, but no
-// UI/Lisp commands construct one this phase (Q11 / phase 3).
+// Renderer view modules still expose `setBuffer(viewOrNull)` for compat
+// — the modules read `view.name`, `view.tracks`, `view.html`, etc., the
+// same fields they used to read off the old buffer record.
 
 /** Side-effect bundle for mounting a text view: rebind the cursor,
  *  pin the editor as `currentTextBuffer`, re-subscribe sticky notes /
@@ -4153,107 +4145,63 @@ function applyTextMountSideEffects(view, instance) {
   syncMarkdownPreviewToBuffer();
 }
 
-kindRegistry.register('text', {
-  hasBuffer: true,
-  mount: (view) => {
-    // Per-pane edit-view instances (commit 3): the leaf that holds
-    // this view gets its own createEditorView, mounted in its pane
-    // div. With one pane this is the same instance every time; with
-    // splits there's one per leaf. When the view is the active child
-    // of a tabline-view, the tabline owns the editor instance instead
-    // (per-tab, in `tablineStateByView`) and calls
-    // `applyTextMountSideEffects` itself.
+/** Mount VIEW into the renderer. Dispatches by kind:
+ *
+ *   - text: ensure a per-leaf editor instance exists, then apply
+ *     the text-mount side effects (modeline, sticky notes, …).
+ *   - tabline: see `mountTablineKind` below — it manages its own
+ *     state map and the active-child mount.
+ *   - any other kind: tell the kind's singleton custom element to
+ *     `setBuffer(view)` and `focus()`. Returns silently for an
+ *     unknown kind (defensive; the strip's onSelect routes through
+ *     here and must not crash if a malformed view sneaks in).
+ *
+ * The CONTEXT parameter is only consulted by the tabline branch
+ * (it carries the host pane element when the caller can supply one).
+ */
+function mountKindView(view, context) {
+  if (!view || typeof view.kind !== 'string') return;
+  if (view.kind === 'text') {
     const leaf = leafPanes(rootPane).find((l) => l.view === view);
     const instance = leaf ? ensureEditorViewForLeaf(leaf) : null;
     applyTextMountSideEffects(view, instance);
-  },
-});
+    return;
+  }
+  if (view.kind === 'tabline') {
+    mountTablineKind(view, context);
+    return;
+  }
+  const el = singletonElementForKind(view.kind);
+  if (el) {
+    el.setBuffer(view);
+    el.focus();
+  }
+}
 
-kindRegistry.register('customize', {
-  hasBuffer: false,
-  mount: (view) => {
-    customizeView.setBuffer(view);
-    customizeView.focus();
-  },
-});
-
-kindRegistry.register('image', {
-  hasBuffer: false,
-  mount: (view) => {
-    imageView.setBuffer(view);
-    imageView.focus();
-  },
-});
-
-kindRegistry.register('doc', {
-  hasBuffer: false,
-  mount: (view) => {
-    docView.setBuffer(view);
-    docView.focus();
-  },
-});
-
-kindRegistry.register('jukebox', {
-  hasBuffer: false,
-  mount: (view) => {
-    jukeboxView.setBuffer(view);
-    jukeboxView.focus();
-  },
-});
-
-kindRegistry.register('audio', {
-  hasBuffer: false,
-  mount: (view) => {
-    audioView.setBuffer(view);
-    audioView.focus();
-  },
-});
-
-kindRegistry.register('video', {
-  hasBuffer: false,
-  mount: (view) => {
-    videoView.setBuffer(view);
-    videoView.focus();
-  },
-});
-
-kindRegistry.register('directory-tree', {
-  hasBuffer: false,
-  mount: (view) => {
-    directoryTreeView.setBuffer(view);
-    directoryTreeView.focus();
-  },
-});
-
-kindRegistry.register('directory-columns', {
-  hasBuffer: false,
-  mount: (view) => {
-    directoryColumnsView.setBuffer(view);
-    directoryColumnsView.focus();
-  },
-});
-
-kindRegistry.register('shell', {
-  hasBuffer: false,
-  mount: (view) => {
-    shellView.setBuffer(view);
-    shellView.focus();
-  },
-  // A shell view owns a child process — kill it so it doesn't leak.
-  // The host's `shell:exit` event will fire and remove the session
-  // from the main-process table; the view's exit handler is fine to
-  // run on a view that may already be unmounted.
-  dispose: (view) => {
+/** Dispose any kind-specific resources held by VIEW. Most kinds have
+ *  none (the singleton's state is GC'd). Two exceptions:
+ *
+ *   - shell: kill the child process so it doesn't leak.
+ *   - tabline: detach the container and release the per-tabline state.
+ */
+function disposeKindView(view, context) {
+  if (!view || typeof view.kind !== 'string') return;
+  if (view.kind === 'shell') {
     if (typeof view.sessionId !== 'string') return;
     try {
       if (window.host && typeof window.host.shellKill === 'function') {
         window.host.shellKill(view.sessionId);
       }
     } catch {
-      // Failure here means the process is already gone; nothing to do.
+      // Process is already gone — nothing to do.
     }
-  },
-});
+    return;
+  }
+  if (view.kind === 'tabline') {
+    disposeTablineKind(view, context);
+    return;
+  }
+}
 
 // Tabline as a view kind (PANES.md, Q11 / PANES-PHASE-3B.md). A
 // tabline-view is a *structural* view: it contains other views in its
@@ -4273,7 +4221,7 @@ kindRegistry.register('shell', {
 //                   mounted inside the content area; switching tabs
 //                   hides/shows siblings, so per-view-point survives.
 //   * other kinds — for this phase, we recurse through
-//                   `kindRegistry.mount(child)`. The existing non-text
+//                   `mountKindView(child)`. The existing non-text
 //                   singletons (image, audio, ...) display-toggle their
 //                   own DOM in `editorPaneElement()` — that pre-tabline
 //                   placement remains until commit 5 rewires open-file
@@ -4546,7 +4494,7 @@ function mountTablineActiveChild(tablineView) {
   if (child.kind === 'tabline') {
     // Nested tabline-views (Q10). Recurse — the child's mount creates
     // its own `.tabline-pane` inside our `.tabline-content`.
-    kindRegistry.mount(child, { paneEl: state.contentEl });
+    mountKindView(child, { paneEl: state.contentEl });
     return;
   }
 
@@ -4563,7 +4511,7 @@ function mountTablineActiveChild(tablineView) {
     state.contentEl.append(singleton);
   }
   try {
-    kindRegistry.mount(child);
+    mountKindView(child);
   } catch (error) {
     // Defensive: an unknown kind shouldn't crash the strip's onSelect.
     if (typeof repl !== 'undefined' && repl && typeof repl.appendError === 'function') {
@@ -4658,46 +4606,44 @@ function reorderTabInTabline(tablineView, from, to) {
   if (state) state.strip.refresh();
 }
 
-kindRegistry.register('tabline', {
-  hasBuffer: false,
-  /** Mount the tabline-view inside the pane element supplied via the
-   *  context. Falls back to the focused leaf's pane element when no
-   *  context is given (defensive — every caller should pass paneEl). */
-  mount: (view, context) => {
-    let paneEl = context && context.paneEl ? context.paneEl : null;
-    if (!paneEl) {
-      const leaf = leafPanes(rootPane).find((l) => l.view === view);
-      paneEl = leaf ? paneElements.get(leaf.id) : null;
+/** Mount the tabline-view inside the pane element supplied via the
+ *  context. Falls back to the focused leaf's pane element when no
+ *  context is given (defensive — every caller should pass paneEl). */
+function mountTablineKind(view, context) {
+  let paneEl = context && context.paneEl ? context.paneEl : null;
+  if (!paneEl) {
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    paneEl = leaf ? paneElements.get(leaf.id) : null;
+  }
+  if (!paneEl) return; // Nowhere to render — drop quietly.
+  const state = ensureTablineState(view);
+  if (state.container.parentNode !== paneEl) paneEl.append(state.container);
+  state.container.dataset.edge = view.edge ?? 'top';
+  state.strip.setEdge(view.edge ?? 'top');
+  applyTablineStripWidth(view);
+  state.strip.refresh();
+  mountTablineActiveChild(view);
+}
+
+/** Dispose the tabline-view: destroy the active editor (if any) and
+ *  detach the container. Does not dispose the child views' own state
+ *  (a non-text singleton's resources belong to the singleton, not to
+ *  the tabline). */
+function disposeTablineKind(view) {
+  const state = tablineStateByView.get(view);
+  if (!state) return;
+  if (state.activeEditor) {
+    try {
+      state.activeEditor.destroy();
+    } catch {
+      /* tolerant — a half-mounted editor shouldn't crash dispose. */
     }
-    if (!paneEl) return; // Nowhere to render — drop quietly.
-    const state = ensureTablineState(view);
-    if (state.container.parentNode !== paneEl) paneEl.append(state.container);
-    state.container.dataset.edge = view.edge ?? 'top';
-    state.strip.setEdge(view.edge ?? 'top');
-    applyTablineStripWidth(view);
-    state.strip.refresh();
-    mountTablineActiveChild(view);
-  },
-  /** Dispose the tabline-view: destroy the active editor (if any) and
-   *  detach the container. Does not dispose the child views' own
-   *  state (a non-text singleton's resources belong to the singleton,
-   *  not to the tabline). */
-  dispose: (view) => {
-    const state = tablineStateByView.get(view);
-    if (!state) return;
-    if (state.activeEditor) {
-      try {
-        state.activeEditor.destroy();
-      } catch {
-        /* tolerant — a half-mounted editor shouldn't crash dispose. */
-      }
-      state.activeEditor = null;
-      state.activeEditorChild = null;
-    }
-    if (state.container.parentNode) state.container.remove();
-    tablineStateByView.delete(view);
-  },
-});
+    state.activeEditor = null;
+    state.activeEditorChild = null;
+  }
+  if (state.container.parentNode) state.container.remove();
+  tablineStateByView.delete(view);
+}
 
 /** Read a file's preview shape for the columns view. Routes through
  *  the existing openFilePath IPC, so images come back as data: URLs,
@@ -5394,7 +5340,7 @@ function installRootPane(newRoot, savedCurrentPaneId) {
   // Drop any tabline-view state too (the welcome/scratch initial root
   // had none, but a re-install path needs to be honest).
   for (const view of [...tablineStateByView.keys()]) {
-    try { kindRegistry.dispose(view); } catch { /* tolerant */ }
+    try { disposeKindView(view); } catch { /* tolerant */ }
   }
   rootPane = newRoot;
   // Update the focused pane id, falling back to the first leaf when
@@ -5413,7 +5359,7 @@ function installRootPane(newRoot, savedCurrentPaneId) {
     const view = leaf.view;
     if (!view) continue;
     if (isTablineView(view)) {
-      kindRegistry.mount(view, { paneEl: paneElements.get(leaf.id) });
+      mountKindView(view, { paneEl: paneElements.get(leaf.id) });
     } else {
       // Plain-leaf with a non-text singleton view (image / audio /
       // video / jukebox / directory-tree / directory-columns / ...):
@@ -5431,7 +5377,7 @@ function installRootPane(newRoot, savedCurrentPaneId) {
         if (singleton.parentNode !== paneEl) paneEl.append(singleton);
         singleton.style.display = '';
       }
-      kindRegistry.mount(view);
+      mountKindView(view);
     }
   }
   // Sync the global view pointers with whatever the focused pane shows.
@@ -5497,7 +5443,7 @@ function wrapRootInTabline() {
   leaf.view = tabline;
   rootTablineView = tabline;
   rootTablineLeafId = leaf.id;
-  kindRegistry.mount(tabline, { paneEl: paneElements.get(leaf.id) });
+  mountKindView(tabline, { paneEl: paneElements.get(leaf.id) });
 }
 
 // --- tabline-view operations (commit 4) --------------------------------
@@ -5551,7 +5497,7 @@ function promoteToTablineOnPane(pane) {
   inheritExistingEditorIntoTabline(tabline, pane);
   pane.view = tabline;
   const paneEl = paneElements.get(pane.id);
-  if (paneEl) kindRegistry.mount(tabline, { paneEl });
+  if (paneEl) mountKindView(tabline, { paneEl });
   refreshPaneTabStrips();
   if (typeof updateModeline === 'function') updateModeline();
   return tabline;
@@ -5595,7 +5541,7 @@ function demoteTablineView(tlv) {
   // dispose for tabline destroys any *remaining* editor instances in
   // editorByChildId (we removed the inherited one above) and detaches
   // the container.
-  kindRegistry.dispose(tlv);
+  disposeKindView(tlv);
   if (rootTablineView === tlv) {
     rootTablineView = null;
     rootTablineLeafId = null;
@@ -5607,7 +5553,7 @@ function demoteTablineView(tlv) {
   host.view = survivor;
   if (survivor) {
     hideInactiveRendererViews(survivor.kind);
-    kindRegistry.mount(survivor);
+    mountKindView(survivor);
   }
   if (typeof updateModeline === 'function') updateModeline();
   return survivor;
@@ -5690,20 +5636,20 @@ function swapPaneViews(paneA, paneB) {
   const bEl = paneElements.get(paneB.id);
   if (paneA.view) {
     if (isTablineView(paneA.view) && aEl) {
-      kindRegistry.mount(paneA.view, { paneEl: aEl });
+      mountKindView(paneA.view, { paneEl: aEl });
     } else {
       const sing = singletonElementForKind(paneA.view.kind);
       if (sing && aEl) { aEl.append(sing); sing.style.display = ''; }
-      kindRegistry.mount(paneA.view);
+      mountKindView(paneA.view);
     }
   }
   if (paneB.view) {
     if (isTablineView(paneB.view) && bEl) {
-      kindRegistry.mount(paneB.view, { paneEl: bEl });
+      mountKindView(paneB.view, { paneEl: bEl });
     } else {
       const sing = singletonElementForKind(paneB.view.kind);
       if (sing && bEl) { bEl.append(sing); sing.style.display = ''; }
-      kindRegistry.mount(paneB.view);
+      mountKindView(paneB.view);
     }
   }
   refreshPaneFocusIndicators();
