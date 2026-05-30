@@ -4219,7 +4219,7 @@ function disposeKindView(view, context) {
 // strip on one of the pane's four edges plus a content area where the
 // active child mounts.
 //
-// Per-tabline state — the `.tabline-pane` container, the strip handle,
+// Per-tabline state — the `<tabline-view>` container, the strip handle,
 // the per-text-child editor instances — lives in `tablineStateByView`,
 // keyed by the tabline-view itself. The mount hook builds it on first
 // call and reuses it on subsequent calls (active-tab change, edge
@@ -4241,7 +4241,7 @@ function disposeKindView(view, context) {
 //
 // Nested tabline-views (Q10): allowed. The recursion handles them
 // naturally — a child can itself be a tabline-view, in which case the
-// child's mount builds its own `.tabline-pane` inside the parent's
+// child's mount builds its own `<tabline-view>` inside the parent's
 // `.tabline-content`. Disposal walks the same path.
 
 /** Per-tabline-view rendering state. One editor instance per tabline
@@ -4279,7 +4279,6 @@ function ensureTablineState(view) {
   // `<tabline-view>.children`).
   const container = /** @type {*} */ (document.createElement('tabline-view'));
   container.setAttribute('data-host-managed', '');
-  container.classList.add('tabline-pane');
   container.dataset.edge = view.edge ?? 'top';
   container.dataset.tablineViewId = view.id;
 
@@ -4499,14 +4498,14 @@ function mountTablineActiveChild(tablineView) {
 
   if (child.kind === 'tabline') {
     // Nested tabline-views (Q10). Recurse — the child's mount creates
-    // its own `.tabline-pane` inside our `.tabline-content`.
+    // its own `<tabline-view>` inside our `.tabline-content`.
     mountKindView(child, { paneEl: state.contentEl });
     return;
   }
 
   // Other kinds (image / audio / video / shell / customize / doc /
   // jukebox / directory-*) use module-level singletons mounted at
-  // startup into `editorPaneElement()`. The `.tabline-pane` container
+  // startup into `editorPaneElement()`. The `<tabline-view>` container
   // (position:absolute, inset:0) sits over the pane div and would
   // cover those siblings, so we re-parent the active singleton into
   // our content area before letting the kind registry's mount run.
@@ -5623,7 +5622,7 @@ function swapPaneViews(paneA, paneB) {
   paneA.view = vb;
   paneB.view = va;
   // Re-mount each via the kind registry. A tabline-view's `mount`
-  // is paneEl-aware and will move its `.tabline-pane` container to
+  // is paneEl-aware and will move its `<tabline-view>` container to
   // the new pane element; plain-leaf views are routed through
   // switchToViewIndex's plain-leaf branch via a direct mount here so
   // the singleton reparent + display:'' logic fires.

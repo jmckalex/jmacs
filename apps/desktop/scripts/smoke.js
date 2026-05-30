@@ -2888,8 +2888,8 @@ app.whenReady().then(() => {
         // pane container; the right pane should NOT carry a tabline-
         // pane container (the duplicate-of-active is a plain leaf
         // view, per the brief's commit-5 split-leaves rule).
-        const leftHasTabline = leaves[0].querySelector('.tabline-pane') !== null;
-        const rightHasTabline = leaves[1].querySelector('.tabline-pane') !== null;
+        const leftHasTabline = leaves[0].querySelector('tabline-view') !== null;
+        const rightHasTabline = leaves[1].querySelector('tabline-view') !== null;
 
         // Focus the right pane (other-pane!) and open a file. The
         // right pane is a plain leaf; opening a file should swap the
@@ -2900,7 +2900,7 @@ app.whenReady().then(() => {
         await wait(250);
         const rightLeafAfterOpen = leaves[1];
         const rightHasTablineAfterOpen =
-          rightLeafAfterOpen.querySelector('.tabline-pane') !== null;
+          rightLeafAfterOpen.querySelector('tabline-view') !== null;
         const rightModelineAfterOpen = modelineName();
 
         // --- Phase C: kill-until-scratch on the root tabline.
