@@ -43,7 +43,7 @@ export {
   mimeTypeForAudio,
   mimeTypeForVideo,
 } from './media-view.js';
-export { createAudioView, formatDuration } from './audio-view.js';
+export { AudioView, createAudioView, formatDuration } from './audio-view.js';
 export { createVideoView } from './video-view.js';
 export {
   createDirectoryTreeView,

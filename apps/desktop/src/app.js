@@ -43,7 +43,7 @@ import {
   writeString,
 } from '@editor/lisp';
 import {
-  createAudioView,
+  AudioView,
   createCustomizeView,
   createDocView,
   createDirectoryColumnsView,
@@ -1023,7 +1023,7 @@ function hideInactiveRendererViews(activeKind) {
   setDisplay(imageView, 'image');
   setDisplay(docView.element, 'doc');
   setDisplay(jukeboxView.element, 'jukebox');
-  setDisplay(audioView.element, 'audio');
+  setDisplay(audioView, 'audio');
   setDisplay(videoView.element, 'video');
   setDisplay(directoryTreeView.element, 'directory-tree');
   setDisplay(directoryColumnsView.element, 'directory-columns');
@@ -3957,30 +3957,31 @@ function stripDerivedFields(meta) {
 // through (opening one audio file from the dialog, not a directory).
 // Unlike the jukebox, this view owns its own <audio> element so a
 // file open here doesn't fight the jukebox's playback head.
-const audioView = createAudioView(
-  editorPaneElement(),
-  {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
-    // Inline-edit lifecycle. Wired to the stubbed metadata-write
-    // primitives — see `set-audio-metadata!` / `remove-audio-metadata!`
-    // below. The real writers (agent-audio-edit-id3v2 onwards) replace
-    // the stubs without touching the view.
-    onSetMetadata: ({ key, value, buffer }) =>
-      runMetadataEdit('set-audio-metadata!', buffer, key, value),
-    onRemoveMetadata: ({ key, buffer }) =>
-      runMetadataEdit('remove-audio-metadata!', buffer, key, undefined),
-    showError: (message) => repl.appendError(message),
-  }
-);
-audioView.element.style.display = 'none';
+// Phase 3b: audio-view is a custom element now. The instance IS the
+// element; what was `audioView.element` is just `audioView`.
+const audioView = /** @type {*} */ (document.createElement('audio-view'));
+audioView.configure({
+  ...(keymapReady ? { onKey: dispatchKey } : {}),
+  closeBuffer: () => {
+    if (!keymapReady) return;
+    try {
+      interpreter.call('kill-view');
+    } catch (error) {
+      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
+    }
+  },
+  // Inline-edit lifecycle. Wired to the stubbed metadata-write
+  // primitives — see `set-audio-metadata!` / `remove-audio-metadata!`
+  // below. The real writers (agent-audio-edit-id3v2 onwards) replace
+  // the stubs without touching the view.
+  onSetMetadata: ({ key, value, buffer }) =>
+    runMetadataEdit('set-audio-metadata!', buffer, key, value),
+  onRemoveMetadata: ({ key, buffer }) =>
+    runMetadataEdit('remove-audio-metadata!', buffer, key, undefined),
+  showError: (message) => repl.appendError(message),
+});
+editorPaneElement().append(audioView);
+audioView.style.display = 'none';
 
 // The video view — the view a `video`-kind buffer is shown through.
 const videoView = createVideoView(
@@ -4573,7 +4574,7 @@ function singletonElementForKind(kind) {
     case 'image':              return imageView;
     case 'doc':                return docView.element;
     case 'jukebox':            return jukeboxView.element;
-    case 'audio':              return audioView.element;
+    case 'audio':              return audioView;
     case 'video':              return videoView.element;
     case 'customize':          return customizeView.element;
     case 'shell':              return shellView.element;

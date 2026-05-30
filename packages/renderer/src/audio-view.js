@@ -713,3 +713,126 @@ export function createAudioView(container, options = {}) {
     resumeFrom,
   };
 }
+
+// -----------------------------------------------------------------------
+// `<audio-view>` — the custom-element wrapper around the factory above.
+//
+// Phase 3b of `plans/VIEWS-AS-CUSTOM-ELEMENTS.md`. The wrapper is the
+// `TextView` pattern: rather than rewrite the 715-line factory into a
+// class (it's mostly closures for the metadata-editing UI, which earn
+// no clarity from being moved into instance methods), the class
+// provides the custom-element shell — single-parent enforcement, the
+// lifecycle hooks, the warehouse-friendly identity — and forwards the
+// API the host already uses to the factory's return.
+//
+// The factory still does the heavy lifting; the element is what the
+// outside world holds onto and what the DOM single-parent invariant
+// applies to. `setBuffer` / `focus` / `destroy` / `pauseAndRelease` /
+// `resumeFrom` are the surface the host (`apps/desktop/src/app.js`)
+// touches; they pass through to the inner instance once it's been
+// mounted via `connectedCallback`.
+
+import { defineViewElement, ViewElement } from './view-elements.js';
+
+/**
+ * @typedef {object} AudioViewOptions
+ * Same options bag the factory accepts — see `createAudioView`'s JSDoc.
+ * Documented separately on `configure()` because the wrapper enforces
+ * "configure before mount" rather than passing options on construction.
+ */
+
+export class AudioView extends ViewElement {
+  constructor() {
+    super();
+    /** @type {ReturnType<typeof createAudioView> | null} */
+    this._inner = null;
+    /** @type {AudioViewOptions | null} */
+    this._options = null;
+    /** A buffer set before `connectedCallback` fired — applied on mount. */
+    this._pendingBuffer = null;
+  }
+
+  /**
+   * Supply the construction-time options the inner view needs (key
+   * dispatcher, metadata edit/remove handlers, …). Must be called
+   * before the first `connectedCallback` mounts the inner view.
+   *
+   * @param {AudioViewOptions} options
+   */
+  configure(options) {
+    if (this._inner !== null) {
+      throw new Error(
+        'AudioView.configure: cannot reconfigure after the inner view is ' +
+        'mounted; destroy() and replace if the host wants new options'
+      );
+    }
+    this._options = options ?? null;
+  }
+
+  /** @returns {string} */
+  get kind() { return 'audio'; }
+
+  /**
+   * Bind to an audio buffer (or null to clear). Safe to call before
+   * connection — the pending value applies on first mount.
+   *
+   * @param {object | null} buffer
+   */
+  setBuffer(buffer) {
+    this._pendingBuffer = buffer;
+    if (this._inner !== null) this._inner.setBuffer(buffer);
+  }
+
+  /** Focus the inner view's keyboard target. */
+  focus() {
+    if (this._inner !== null) this._inner.focus();
+    else super.focus();
+  }
+
+  /**
+   * Pause playback and release the underlying media source so it can be
+   * GC'd. Returns a snapshot the host can hand back to `resumeFrom` to
+   * restore playback at the same position.
+   *
+   * @returns {*}
+   */
+  pauseAndRelease() {
+    return this._inner === null ? null : this._inner.pauseAndRelease();
+  }
+
+  /**
+   * Restore playback from a snapshot previously returned by
+   * `pauseAndRelease`.
+   *
+   * @param {*} snapshot
+   */
+  resumeFrom(snapshot) {
+    if (this._inner !== null) this._inner.resumeFrom(snapshot);
+  }
+
+  // --- Custom-element lifecycle -----------------------------------------
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createAudioView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) {
+      this._inner.setBuffer(this._pendingBuffer);
+    }
+  }
+
+  disconnectedCallback() {
+    /* intentionally empty — moves and destroys are indistinguishable here */
+  }
+
+  /** Explicit teardown. Releases the inner view (which pauses the audio
+   *  element, unsubscribes from buffer events, and detaches its DOM). */
+  destroy() {
+    if (this._inner !== null) {
+      this._inner.destroy();
+      this._inner = null;
+    }
+    this._pendingBuffer = null;
+  }
+}
+
+defineViewElement('audio-view', AudioView);

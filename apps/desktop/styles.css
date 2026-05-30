@@ -1674,6 +1674,11 @@ image-view,
    right column. Opening one audio file from the dialog mounts here;
    the jukebox view is for a whole directory. */
 
+/* Phase 3b: `<audio-view>` is the custom element; the factory still
+   creates an inner `.audio-view` div inside it for now. Both selectors
+   apply: the tag's layout matches the inner div's so the wrapper
+   doesn't add a second layout layer. */
+audio-view,
 .audio-view {
   display: flex;
   flex-direction: column;

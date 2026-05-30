@@ -1805,8 +1805,12 @@ app.whenReady().then(() => {
         }));
         await wait(150);
         await frame();
-        const audioStillVisible =
-          !!audioView && audioView.style.display !== 'none';
+        // Phase 3b: the display:none toggle moved from the inner
+        // .audio-view div to the <audio-view> wrapper element.
+        const audioWrapperEl = document.querySelector('audio-view');
+        const audioStillVisible = !!(
+          audioWrapperEl && audioWrapperEl.style.display !== 'none'
+        );
         const afterAudioKill =
           document.getElementById('modeline-name')?.textContent ?? '';
 
