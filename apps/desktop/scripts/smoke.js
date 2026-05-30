@@ -2532,7 +2532,8 @@ app.whenReady().then(() => {
         submit('(kill-view!)');
         await wait(400);
         await frame();
-        const viewAfterKill = document.querySelector('.shell-view');
+        // Phase 3h: visibility lives on the <shell-view> wrapper.
+        const viewAfterKill = document.querySelector('shell-view');
         const stillShown = viewAfterKill && getComputedStyle(viewAfterKill).display !== 'none';
         const tabsAfter = document.querySelectorAll('.tabline-tab').length;
         return {

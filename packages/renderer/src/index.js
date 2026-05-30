@@ -54,7 +54,7 @@ export {
   DirectoryColumnsView,
   createDirectoryColumnsView,
 } from './directory-columns-view.js';
-export { createShellView } from './shell-view.js';
+export { ShellView, createShellView } from './shell-view.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,

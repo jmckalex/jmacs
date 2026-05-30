@@ -422,3 +422,78 @@ export function createShellView(container, options = {}) {
     },
   };
 }
+
+// -----------------------------------------------------------------------
+// `<shell-view>` — Phase 3h custom-element wrapper.
+//
+// Per the plan doc's hide-not-kill semantics: `disconnectedCallback`
+// must NOT tear down the xterm.js terminal or the pty subscriptions.
+// A pane → warehouse move fires `disconnectedCallback`, and the user
+// expects to come back to a still-running shell. Only `destroy()`
+// reaps the resources — it's called by the explicit kill-view path.
+
+import { defineViewElement, ViewElement } from './view-elements.js';
+
+/** @typedef {object} ShellViewOptions */
+
+export class ShellView extends ViewElement {
+  constructor() {
+    super();
+    /** @type {ReturnType<typeof createShellView> | null} */
+    this._inner = null;
+    /** @type {ShellViewOptions | null} */
+    this._options = null;
+    this._pendingBuffer = null;
+  }
+
+  configure(options) {
+    if (this._inner !== null) {
+      throw new Error('ShellView.configure: cannot reconfigure after mount');
+    }
+    this._options = options ?? null;
+  }
+
+  get kind() { return 'shell'; }
+
+  setBuffer(buffer) {
+    this._pendingBuffer = buffer;
+    if (this._inner !== null) this._inner.setBuffer(buffer);
+  }
+
+  focus() {
+    if (this._inner !== null) this._inner.focus();
+    else super.focus();
+  }
+
+  /** Re-read theme CSS variables (called when the user switches themes). */
+  applyTheme() {
+    if (this._inner !== null) this._inner.applyTheme();
+  }
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createShellView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) this._inner.setBuffer(this._pendingBuffer);
+  }
+
+  /** Hide-not-kill. The pty stays alive; xterm.js stays mounted; only
+   *  the DOM-tree position changed. A subsequent `connectedCallback`
+   *  finds `_inner` already set and is a no-op. */
+  disconnectedCallback() {
+    /* intentionally empty */
+  }
+
+  /** Explicit teardown: kills the xterm.js terminal, drops the pty
+   *  subscriptions, disconnects the resize observer. The host's
+   *  kill-view path also tears down the pty itself; that's separate
+   *  from the renderer-side cleanup we do here. */
+  destroy() {
+    if (this._inner !== null) {
+      this._inner.destroy();
+      this._inner = null;
+    }
+    this._pendingBuffer = null;
+  }
+}
+
+defineViewElement('shell-view', ShellView);

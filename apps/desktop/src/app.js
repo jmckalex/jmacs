@@ -56,7 +56,7 @@ import {
   createMarkdownPreview,
   createMinibuffer,
   createReplView,
-  createShellView,
+  ShellView,
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
@@ -1027,7 +1027,7 @@ function hideInactiveRendererViews(activeKind) {
   setDisplay(videoView, 'video');
   setDisplay(directoryTreeView, 'directory-tree');
   setDisplay(directoryColumnsView, 'directory-columns');
-  setDisplay(shellView.element, 'shell');
+  setDisplay(shellView, 'shell');
   // `setBuffer(null)` resets the singleton — only do it when truly no
   // leaf shows the kind, so e.g. a background audio pane keeps its
   // buffer alive when focus moves to a text pane.
@@ -4071,7 +4071,11 @@ directoryColumnsView.style.display = 'none';
 // resize requests when its fit-to-container addon decides cols/rows
 // changed. The view stays subscribed across buffer switches so
 // background commands keep streaming into the terminal.
-const shellView = createShellView(editorPaneElement(), {
+// Phase 3h: shell-view is a custom element now. hide-not-kill: a pane
+// → warehouse move fires disconnectedCallback, but the pty stays
+// alive; only destroy() reaps it.
+const shellView = /** @type {*} */ (document.createElement('shell-view'));
+shellView.configure({
   spawn: (sessionId, opts) =>
     window.host && typeof window.host.shellSpawn === 'function'
       ? window.host.shellSpawn(sessionId, opts)
@@ -4097,7 +4101,8 @@ const shellView = createShellView(editorPaneElement(), {
       ? window.host.onShellExit(callback)
       : () => {},
 });
-shellView.element.style.display = 'none';
+editorPaneElement().append(shellView);
+shellView.style.display = 'none';
 // xterm.js reads CSS variables once, at terminal construction. Pump
 // any later theme change into it.
 themeListeners.add(() => shellView.applyTheme());
@@ -4581,7 +4586,7 @@ function singletonElementForKind(kind) {
     case 'audio':              return audioView;
     case 'video':              return videoView;
     case 'customize':          return customizeView;
-    case 'shell':              return shellView.element;
+    case 'shell':              return shellView;
     case 'directory-tree':     return directoryTreeView;
     case 'directory-columns':  return directoryColumnsView;
     default:                   return null;
