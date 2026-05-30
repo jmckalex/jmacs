@@ -37,6 +37,9 @@
    "2"     'split-vertical
    "3"     'split-horizontal
    "o"     'other-pane
+   ;; Visual add-pane macro: highlights every splitter + the four
+   ;; outer borders of the editor area; click one to insert there.
+   "+"     'add-pane
    ;; Move-views-between-panes commands (jmacs additions; no Emacs
    ;; analogue). `x` sends the focused view to the next pane;
    ;; capital-X swaps with it. Same alphabet position as `o` for

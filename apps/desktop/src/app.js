@@ -96,6 +96,7 @@ import { applyFaceStyles } from './face-styles.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
+import { enterAddPaneMode } from './add-pane-mode.js';
 import { createTabline } from '@editor/renderer';
 
 const WELCOME = `
@@ -398,6 +399,12 @@ function editorPaneElement() {
 
 /** Pending requestAnimationFrame id for a coalesced relayout, or 0. */
 let relayoutHandle = 0;
+
+/** Live handle for an active add-pane overlay (the visual macro that
+ *  highlights splitters + outer borders). `null` when the mode is off.
+ *  Re-entering the chord toggles it; a successful click or Escape
+ *  clears it via the `exit` shim installed at entry. */
+let addPaneHandle = null;
 
 /** Recompute the layout of every leaf pane against the current editor-
  *  host bounds and write each leaf's rect to its element. Cheap to call
@@ -2491,6 +2498,38 @@ const interpreter = createInterpreter({
     // surface a mid-build chord prefix ("C-x-"), among other things.
     'show-status!': (args) => {
       minibuffer.setStatus(String(args[0] ?? ''));
+      return NIL;
+    },
+    // `(enter-add-pane-mode!)` — toggle the visual add-pane macro: an
+    // overlay over #editor-host that lights up every splitter and the
+    // four outer borders; click one to insert a fresh pane there. A
+    // second call (or Escape, or a click on overlay empty space)
+    // cancels without inserting. Returns nil.
+    'enter-add-pane-mode!': () => {
+      if (addPaneHandle && addPaneHandle.active) {
+        addPaneHandle.exit();
+        addPaneHandle = null;
+        return NIL;
+      }
+      addPaneHandle = enterAddPaneMode({
+        host: editorHostEl,
+        getRootPane: () => rootPane,
+        onPickSplitter: (splitId) => {
+          addPaneAtSplitterId(splitId);
+          addPaneHandle = null;
+        },
+        onPickBorder: (side) => {
+          addPaneAtRootBorder(side);
+          addPaneHandle = null;
+        },
+      });
+      // The user might dismiss via Escape — clear our handle so the
+      // next entry doesn't try to exit() a dead overlay.
+      const original = addPaneHandle.exit;
+      addPaneHandle.exit = () => {
+        original();
+        addPaneHandle = null;
+      };
       return NIL;
     },
     // Push the *tab-width* setting onto the document root as the

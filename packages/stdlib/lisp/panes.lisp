@@ -11,6 +11,20 @@
 ;;; the Emacs-style C-x 2 / 3 / 0 / 1 / o bindings, and on
 ;;; C-x C-{left,right,up,down} for spatial pane navigation).
 
+(defcommand add-pane ()
+  "Enter the visual add-pane macro. An overlay over the editor area
+   highlights every splitter and the four outer borders; click one to
+   insert a fresh pane at that location. The new pane gets a duplicate
+   of the focused view (text → shared buffer, fresh point; non-text →
+   `*scratch*`) and takes focus.
+
+   A click on a splitter inserts a new sibling along that split's axis
+   (three equal panes from the original two). A click on a border wraps
+   the existing layout in a new outer split and the fresh pane occupies
+   that side. Escape — or re-pressing the entry chord — cancels
+   without inserting. Bound to `C-x +`."
+  (enter-add-pane-mode!))
+
 (defcommand split-horizontal ()
   "Split the current pane side-by-side. The originating pane becomes
    the left child and keeps focus; the right child gets a duplicate

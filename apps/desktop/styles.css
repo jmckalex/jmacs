@@ -390,6 +390,46 @@ tabline-view[data-edge='right'] .tabline-resizer {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
+/* --- add-pane mode ------------------------------------------------- */
+/* While the user is in "add-pane mode" (C-x + or M-x add-pane) every
+   possible insertion point lights up: the four outer borders of the
+   editor area (insert at root level) and every splitter (insert "in
+   the gap" of that split). Click a target to insert; Escape cancels.
+   The overlay sits above the panes inside #editor-host, captures the
+   cursor, and removes itself on click/escape. */
+.add-pane-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  cursor: crosshair;
+  /* The overlay itself is transparent — the highlights are children. */
+  background: transparent;
+}
+
+/* A single highlight target (border or splitter). All targets are
+   absolute-positioned children of the overlay; their inline left/top/
+   width/height come from layout math. */
+.add-pane-target {
+  position: absolute;
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  /* The whole target is the hit area; we never want partial hits on a
+     skinny line, so make a 12px-wide handle visually thick. */
+  pointer-events: auto;
+  transition: background 80ms ease-out;
+}
+
+.add-pane-target:hover {
+  background: color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-color: var(--accent);
+}
+
+/* While the overlay is active, the underlying splitters' hover effects
+   would otherwise compete; pin them transparent. */
+.editor-host[data-add-pane="1"] .pane-splitter:hover {
+  background: transparent;
+}
+
 /* The <text-view> custom element is the per-pane / per-tab editor
    instance. It wraps the .editor div (the createEditorView root). The
    wrapper must be a layout-bearing block that fills its container so
