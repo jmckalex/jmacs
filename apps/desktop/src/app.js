@@ -91,6 +91,7 @@ import { applyFaceStyles } from './face-styles.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
+import { warehouse } from './view-warehouse.js';
 import { createTabline } from '@editor/renderer';
 
 const WELCOME = `
@@ -983,19 +984,28 @@ function computeSplitNodeRect(node, id, rect) {
  *
  *  @param {string} activeKind */
 function hideInactiveRendererViews(activeKind) {
-  // The focused pane's editor-view instance (if any) follows the
-  // active kind — visible iff the focused view is text.
-  const focusedInstance = currentPaneId
-    ? editorViewByPaneId.get(currentPaneId)
+  // The focused pane's currently-mounted text editor follows the active
+  // kind — visible iff the focused view is text. A pane's mounted
+  // text-view is whatever `<text-view>` is currently inside its pane
+  // element (per-leaf direct child, or per-tab inside a `<tabline-view>`'s
+  // content). Warehoused text-views aren't reachable through paneElements,
+  // so they're naturally skipped.
+  const focusedPaneEl = currentPaneId
+    ? paneElements.get(currentPaneId)
     : null;
-  if (focusedInstance) {
-    focusedInstance.style.display = activeKind === 'text' ? '' : 'none';
+  const focusedTextView = focusedPaneEl
+    ? focusedPaneEl.querySelector('text-view')
+    : null;
+  if (focusedTextView) {
+    focusedTextView.style.display = activeKind === 'text' ? '' : 'none';
   }
-  // Non-focused text-pane editor instances stay visible — they belong
-  // to other panes and aren't affected by what the focused pane shows.
-  for (const [paneId, instance] of editorViewByPaneId) {
+  // Non-focused panes' text editors stay visible — they belong to
+  // other panes and aren't affected by what the focused pane shows.
+  for (const [paneId, paneEl] of paneElements) {
     if (paneId === currentPaneId) continue;
-    instance.style.display = '';
+    for (const tv of paneEl.querySelectorAll('text-view')) {
+      tv.style.display = '';
+    }
   }
   // For each non-text singleton, visibility is keyed on whether ANY
   // leaf currently has it as its active view — not on the focused
@@ -4146,6 +4156,13 @@ function applyTextMountSideEffects(view, instance) {
   if (instance) {
     editorView = instance;
     instance.setView(view);
+    // Per-tab text-views each have their own overlay layer. Re-point
+    // sticky-notes at the now-active editor's overlay so notes render
+    // on top of the right text-view, not whichever overlay was active
+    // at boot.
+    if (instance.overlayLayer) {
+      stickyNotes.setOverlayLayer(instance.overlayLayer);
+    }
   }
   stickyNotes.setBuffer(view.buffer);
   watchCurrentBuffer();
@@ -4244,12 +4261,13 @@ function disposeKindView(view, context) {
 // child's mount builds its own `<tabline-view>` inside the parent's
 // `.tabline-content`. Disposal walks the same path.
 
-/** Per-tabline-view rendering state. One editor instance per tabline
- *  (`activeEditor`) — switching tabs swaps it via `setView(child)`
- *  rather than building a fresh instance for each tab. The previous
- *  per-child-id map left multiple `.editor` elements in the DOM (the
- *  inactive ones with `display:none`), which broke external probes
- *  via `document.querySelector('.editor-line')`. */
+/** Per-tabline-view rendering state. Each text tab has its own
+ *  `<text-view>` element, tracked in `editorByChild` keyed by the tab's
+ *  view. At any moment at most ONE of them is in `state.contentEl` —
+ *  the others are parked in the warehouse so external probes (e.g.
+ *  `document.querySelector('.editor-line')` in the smoke arm) only see
+ *  the active editor's DOM. `activeEditor` / `activeEditorChild` are
+ *  windows onto the map — pointers to "what's currently mounted." */
 /** @type {Map<import('@editor/view').View, {
  *   container: HTMLElement,
  *   stripEl: HTMLElement,
@@ -4258,6 +4276,7 @@ function disposeKindView(view, context) {
  *   activeEditor: ReturnType<typeof createEditorView> | null,
  *   activeEditorChild: import('@editor/view').View | null,
  *   mountedChild: import('@editor/view').View | null,
+ *   editorByChild: Map<import('@editor/view').View, *>,
  * }>} */
 const tablineStateByView = new Map();
 
@@ -4328,6 +4347,7 @@ function ensureTablineState(view) {
     activeEditor: null,
     activeEditorChild: null,
     mountedChild: null,
+    editorByChild: new Map(),
   };
   tablineStateByView.set(view, state);
   applyTablineStripWidth(view);
@@ -4429,11 +4449,19 @@ function mountTablineActiveChild(tablineView) {
     : null;
   state.mountedChild = child;
   if (!child) {
-    // Empty tabline: hide the active editor (if any) and clear the
-    // content area's pointer to it. The instance survives so the
-    // dispose path can clean up; auto-collapse handles the pane
-    // itself for the kill-view case.
-    if (state.activeEditor) state.activeEditor.style.display = 'none';
+    // Empty tabline: park every per-child text-view in the warehouse,
+    // clear the active pointers. The instances survive so the dispose
+    // path can clean them up; auto-collapse handles the pane itself
+    // for the kill-view case. Parked editors also get `display: none`
+    // on themselves so external probes (`document.querySelector(
+    // 'text-view')`) see them as hidden — the warehouse's `hidden`
+    // attribute hides the parent but doesn't affect each child's own
+    // computed style.
+    for (const tv of state.editorByChild.values()) {
+      tv.style.display = 'none';
+      warehouse(tv);
+    }
+    state.activeEditor = null;
     state.activeEditorChild = null;
     return;
   }
@@ -4442,58 +4470,63 @@ function mountTablineActiveChild(tablineView) {
     // Sweep non-text singletons so they don't overlay the strip when
     // switching from a non-text tab to a text tab.
     hideInactiveRendererViews('text');
-    if (state.activeEditor === null) {
-      // No inherited editor (i.e. the tabline was constructed fresh
-      // via Lisp's `(make-tabline-view ...)`, not handed over by
-      // `wrapRootInTabline` / `promoteToTablineOnPane`). Build one
-      // here. The closures read through the live tablineView so they
-      // automatically follow the active tab — symmetric with the
-      // per-leaf `ensureEditorViewForLeaf` instance's peelTabline.
-      const tv = /** @type {*} */ (document.createElement('text-view'));
+    let tv = state.editorByChild.get(child);
+    if (tv === undefined) {
+      // Build a per-tab text-view. The closures bind to THIS child
+      // directly — each tab has its own cursor / mark / cursors, and
+      // each text-view's closures read its own tab's state. No
+      // peelTabline needed.
+      tv = /** @type {*} */ (document.createElement('text-view'));
       tv.configure({
         ...(keymapReady ? { onKey: dispatchKey } : {}),
         highlighters,
         foldCaptures,
-        getPoint: () => {
-          const v = peelTabline(tablineView);
-          return v && !isTablineView(v) && typeof v.point === 'number'
-            ? v.point
-            : 0;
-        },
-        getMark: () => {
-          const v = peelTabline(tablineView);
-          return v && !isTablineView(v) && v.mark !== undefined
-            ? v.mark
-            : null;
-        },
+        getPoint: () => typeof child.point === 'number' ? child.point : 0,
+        getMark: () => child.mark !== undefined ? child.mark : null,
         getCursors: () => {
-          const v = peelTabline(tablineView);
-          if (v && !isTablineView(v) && Array.isArray(v.cursors)) return v.cursors;
+          if (Array.isArray(child.cursors)) return child.cursors;
           return [{
-            point: v && typeof v.point === 'number' ? v.point : 0,
-            mark: v && v.mark !== undefined ? v.mark : null,
+            point: typeof child.point === 'number' ? child.point : 0,
+            mark: child.mark !== undefined ? child.mark : null,
           }];
         },
         getTabWidth: () => currentTabWidth,
       });
       tv.setView(child);
-      state.activeEditor = tv;
+      state.editorByChild.set(child, tv);
     }
-    if (state.activeEditor.parentNode !== state.contentEl) {
-      state.contentEl.append(state.activeEditor);
+    // Park every OTHER text-view for this tabline in the warehouse.
+    // Single-parent DOM enforcement means querying `.editor-line`
+    // from outside finds only the active editor's content — the
+    // historical reason the singleton pattern was kept here.
+    for (const [otherChild, otherTv] of state.editorByChild) {
+      if (otherChild !== child) {
+        otherTv.style.display = 'none';
+        warehouse(otherTv);
+      }
     }
-    state.activeEditor.style.display = '';
+    if (tv.parentNode !== state.contentEl) {
+      state.contentEl.append(tv);
+    }
+    tv.style.display = '';
+    state.activeEditor = tv;
     state.activeEditorChild = child;
-    applyTextMountSideEffects(child, state.activeEditor);
+    applyTextMountSideEffects(child, tv);
     return;
   }
 
-  // Non-text active child: hide the kept-alive editor (so it doesn't
-  // visually overlay the singleton) but leave it in the DOM. Route
-  // through `hideInactiveRendererViews` so the right singleton wakes
-  // up and the others go quiet — same as `switchToViewIndex`'s pre-
-  // tabline path.
-  if (state.activeEditor) state.activeEditor.style.display = 'none';
+  // Non-text active child: park every text-view for this tabline (no
+  // text editor should visually overlay the singleton). Route through
+  // `hideInactiveRendererViews` so the right singleton wakes up and
+  // the others go quiet — same as `switchToViewIndex`'s pre-tabline
+  // path. Set `display: none` on each parked editor so external
+  // visibility probes see them as hidden.
+  for (const tv of state.editorByChild.values()) {
+    tv.style.display = 'none';
+    warehouse(tv);
+  }
+  state.activeEditor = null;
+  state.activeEditorChild = null;
   hideInactiveRendererViews(child.kind);
 
   if (child.kind === 'tabline') {
@@ -4558,14 +4591,21 @@ function removeTabInTabline(tablineView, index) {
   if (index < 0 || index >= tablineView.tabs.length) return;
   const removed = tablineView.tabs[index];
   tablineView.tabs.splice(index, 1);
-  // If the removed view was the currently-mounted child, the active
-  // editor is no longer wired to a real tab — the next
-  // `mountTablineActiveChild` will re-point it (or hide it when the
-  // tabline is empty). We don't destroy the editor instance here:
-  // the dispose path on the tabline-view itself owns that.
   const state = tablineStateByView.get(tablineView);
   if (state && state.activeEditorChild === removed) {
     state.activeEditorChild = null;
+    state.activeEditor = null;
+  }
+  // Drop the per-child text-view for the removed tab. The tab is gone
+  // from the tabs[] list; its dedicated `<text-view>` has no more
+  // purpose. Destroying releases the inner editor's buffer subscription
+  // and detaches the DOM.
+  if (state) {
+    const removedTv = state.editorByChild.get(removed);
+    if (removedTv !== undefined) {
+      try { removedTv.destroy(); } catch { /* tolerant */ }
+      state.editorByChild.delete(removed);
+    }
   }
   // Re-anchor active: if we removed the active tab (or one before it),
   // step back so we land on a valid index.
@@ -4620,22 +4660,22 @@ function mountTablineKind(view, context) {
   mountTablineActiveChild(view);
 }
 
-/** Dispose the tabline-view: destroy the active editor (if any) and
- *  detach the container. Does not dispose the child views' own state
- *  (a non-text singleton's resources belong to the singleton, not to
- *  the tabline). */
+/** Dispose the tabline-view: destroy every per-tab editor and detach
+ *  the container. Does not dispose the child views' own state (a
+ *  non-text singleton's resources belong to the singleton, not to the
+ *  tabline). */
 function disposeTablineKind(view) {
   const state = tablineStateByView.get(view);
   if (!state) return;
-  if (state.activeEditor) {
-    try {
-      state.activeEditor.destroy();
-    } catch {
-      /* tolerant — a half-mounted editor shouldn't crash dispose. */
-    }
-    state.activeEditor = null;
-    state.activeEditorChild = null;
+  // Destroy every per-tab text-view. `editorByChild` is the source of
+  // truth; `activeEditor` is just a window onto the active entry and
+  // gets cleared with the rest.
+  for (const tv of state.editorByChild.values()) {
+    try { tv.destroy(); } catch { /* tolerant — half-mounted is fine */ }
   }
+  state.editorByChild.clear();
+  state.activeEditor = null;
+  state.activeEditorChild = null;
   if (state.container.parentNode) state.container.remove();
   tablineStateByView.delete(view);
 }
@@ -5113,6 +5153,11 @@ function inheritExistingEditorIntoTabline(tablineView, leaf) {
   const state = ensureTablineState(tablineView);
   state.activeEditor = existingInstance;
   state.activeEditorChild = active;
+  // Seed editorByChild so subsequent tab switches treat this inherited
+  // instance as the per-child element for `active`. Other tabs' editors
+  // are constructed lazily in `mountTablineActiveChild` when they first
+  // become the active child.
+  state.editorByChild.set(active, existingInstance);
   if (existingInstance.parentNode !== state.contentEl) {
     state.contentEl.append(existingInstance);
   }
@@ -5526,6 +5571,10 @@ function demoteTablineView(tlv) {
     inheritedInstance = state.activeEditor;
     state.activeEditor = null;
     state.activeEditorChild = null;
+    // Drop the stolen instance from editorByChild so the upcoming
+    // disposeKindView call doesn't destroy what we just rescued. The
+    // map key is the survivor (which was the active child).
+    state.editorByChild.delete(survivor);
     const paneEl = paneElements.get(host.id);
     if (paneEl && inheritedInstance.parentNode !== paneEl) {
       paneEl.append(inheritedInstance);

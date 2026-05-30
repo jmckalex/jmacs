@@ -2988,6 +2988,22 @@ app.whenReady().then(() => {
           ? (restoredRoot.view.tabs[restoredRoot.view.active]?.path ?? '')
           : '';
 
+        // Per-tab text-views (phase-4 tabline bugfix): after opening
+        // four files into one tabline, each text tab should have its
+        // own <text-view> element with its own data-file-path. They
+        // live either in the tabline's content area (the active one)
+        // or in #view-warehouse (the inactive ones). Count distinct
+        // file paths across all text-views in the document — a single
+        // shared/repointed element would produce just one.
+        const distinctTextViewPaths = (() => {
+          const paths = new Set();
+          for (const tv of document.querySelectorAll('text-view')) {
+            const p = tv.getAttribute('data-file-path');
+            if (p) paths.add(p);
+          }
+          return paths.size;
+        })();
+
         return {
           tabsAfterThreeOpens,
           threeTabsPresent,
@@ -3006,6 +3022,7 @@ app.whenReady().then(() => {
           paneCountAfterCollapse,
           finalTabs,
           finalActive,
+          distinctTextViewPaths,
           restoredTabs,
           restoredActive,
           restoredCurrent,
@@ -3028,6 +3045,7 @@ app.whenReady().then(() => {
         paneCountAfterCollapse: tablineArm.paneCountAfterCollapse,
         finalTabs: tablineArm.finalTabs,
         finalActive: tablineArm.finalActive,
+        distinctTextViewPaths: tablineArm.distinctTextViewPaths,
         restoredTabs: tablineArm.restoredTabs,
         restoredActive: tablineArm.restoredActive,
         restoredCurrent: tablineArm.restoredCurrent,
@@ -3403,6 +3421,12 @@ app.whenReady().then(() => {
         // the tabs list.
         !tablineArm.tabsAfterKill.includes('jmacs-smoke-tabline-D.txt') &&
         !tablineArm.activeAfterKill.includes('jmacs-smoke-tabline-D.txt') &&
+        // Per-tab text-views: after opening four text files, each tab
+        // has its own <text-view> with its own data-file-path. A single
+        // shared/repointed element would collapse this to one path.
+        // (Includes the scratch tab's text-view too, which has no
+        // data-file-path and isn't counted.)
+        tablineArm.distinctTextViewPaths >= 4 &&
         // Split: 2 panes; left keeps its tabline strip, right doesn't.
         tablineArm.paneCountAfterSplit === 2 &&
         tablineArm.leftHasTabline === true &&

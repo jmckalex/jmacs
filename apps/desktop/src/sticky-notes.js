@@ -111,7 +111,14 @@ export function parseIconSize(raw) {
  *   changes; the host uses it to persist.
  */
 export function createStickyNotes({ overlayLayer, getBuffer, render, onChange }) {
-  const doc = overlayLayer.ownerDocument;
+  // The overlay layer can be swapped at runtime via `setOverlayLayer`
+  // (see below). Each per-tab text-view in a tabline has its own
+  // overlay layer; on tab switch the host re-points us at the active
+  // one so notes render in the right place. `doc` / `win` are
+  // intentionally captured once — they're document-level objects, not
+  // per-layer.
+  let overlay = overlayLayer;
+  const doc = overlay.ownerDocument;
   const win = doc.defaultView ?? globalThis;
 
   /** Default renderer: the raw source, escaped, or an empty-note hint. */
@@ -152,7 +159,7 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     if (lineHeightPx) return lineHeightPx;
     const probe = doc.createElement('div');
     probe.style.cssText = 'position:absolute;visibility:hidden;height:1lh';
-    overlayLayer.append(probe);
+    overlay.append(probe);
     lineHeightPx = probe.getBoundingClientRect().height || 23;
     probe.remove();
     return lineHeightPx;
@@ -356,7 +363,7 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
   function addElement(note) {
     const entry = build(note);
     elements.set(note.id, entry);
-    overlayLayer.append(entry.root);
+    overlay.append(entry.root);
     place(note, entry.root);
     renderBody(note.id);
   }
@@ -633,7 +640,7 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
 
   /** Show or hide every note in the buffer. */
   function toggle() {
-    overlayLayer.classList.toggle('notes-hidden');
+    overlay.classList.toggle('notes-hidden');
   }
 
   /** Tear down all listeners and DOM. */
@@ -642,8 +649,27 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     clearElements();
   }
 
+  /** Re-point the overlay layer the notes render into. Used when the
+   *  host swaps which text-view (and thus which overlay layer) is
+   *  active — per-tab text-views in a tabline each have their own
+   *  overlay. Moves every existing note's DOM into the new layer and
+   *  preserves the notes-hidden toggle state. */
+  function setOverlayLayer(nextLayer) {
+    if (!nextLayer || nextLayer === overlay) return;
+    const wasHidden = overlay.classList.contains('notes-hidden');
+    for (const entry of elements.values()) {
+      nextLayer.append(entry.root);
+    }
+    if (wasHidden) nextLayer.classList.add('notes-hidden');
+    overlay = nextLayer;
+    // Force a re-measure of the line height against the new layer's
+    // computed style — the old measurement was tied to the old layer.
+    lineHeightPx = 0;
+  }
+
   return {
     setBuffer,
+    setOverlayLayer,
     create,
     remove,
     setSource,
