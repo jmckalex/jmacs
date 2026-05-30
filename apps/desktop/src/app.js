@@ -52,6 +52,7 @@ import {
   createInlineEval,
   ImageView,
   JukeboxView,
+  PdfView,
   createMarkdownPreview,
   createMinibuffer,
   createReplView,
@@ -1535,6 +1536,17 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
   if (result.mediaKind === 'video') {
     views.push(createView({
       kind: 'video',
+      name: result.name,
+      extras: { filePath: result.path, src: result.src },
+    }));
+    return finalise();
+  }
+  // A PDF file is served over the media:// protocol (Chromium streams
+  // it with Range support, same as audio/video). The webview inside
+  // <pdf-view> takes the URL and the built-in PDF plugin renders.
+  if (result.pdfKind === true) {
+    views.push(createView({
+      kind: 'pdf',
       name: result.name,
       extras: { filePath: result.path, src: result.src },
     }));
@@ -4037,6 +4049,25 @@ videoView.configure(configureVideoView());
 editorPaneElement().append(videoView);
 videoView.style.display = 'none';
 
+// The pdf view — the view a `pdf`-kind buffer is shown through. v1 is
+// an Electron <webview> in a `persist:pdf-views` partition; Chromium's
+// built-in PDF plugin does the rendering (zoom / find / fit / print /
+// download all come for free via its own toolbar). The factory is
+// reused by `perKindConfigureFactory` so each pdf tab gets its own
+// `<pdf-view>` element — Chromium keeps scroll position / zoom per
+// webview, so per-instance is the only way tabbed PDFs survive a tab
+// switch with their state intact.
+function configurePdfView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    partition: 'persist:pdf-views',
+  };
+}
+const pdfView = /** @type {*} */ (document.createElement('pdf-view'));
+pdfView.configure(configurePdfView());
+editorPaneElement().append(pdfView);
+pdfView.style.display = 'none';
+
 // The directory tree-view — a `directory-tree`-kind buffer is shown
 // through this view. Folder rows expand on click; file rows route
 // through the host's open-file-path so they land in whichever view
@@ -4181,6 +4212,7 @@ const SINGLETON_VIEWS = [
   { kind: 'jukebox',           el: jukeboxView,           releasesBuffer: false },
   { kind: 'audio',             el: audioView,             releasesBuffer: true  },
   { kind: 'video',             el: videoView,             releasesBuffer: true  },
+  { kind: 'pdf',               el: pdfView,               releasesBuffer: false },
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
@@ -4484,6 +4516,7 @@ function perKindConfigureFactory(kind) {
     case 'jukebox':           return configureJukeboxView;
     case 'audio':             return configureAudioView;
     case 'video':             return configureVideoView;
+    case 'pdf':               return configurePdfView;
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'shell':             return configureShellView;
