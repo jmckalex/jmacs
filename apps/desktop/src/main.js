@@ -42,6 +42,12 @@ function createWindow() {
       // An ESM preload requires the sandbox off; the renderer stays
       // isolated and reaches the host only through the context bridge.
       sandbox: false,
+      // <webview> is disabled by default in Electron. The <pdf-view>
+      // mounts one to stream PDFs through Chromium's built-in PDF
+      // plugin; other view kinds may follow the same pattern (a
+      // browser-view, an embedded preview). The webview itself
+      // remains sandboxed — this flag just allows the tag to mount.
+      webviewTag: true,
     },
   });
   mainWindow = win;
