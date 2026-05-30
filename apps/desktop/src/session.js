@@ -469,7 +469,7 @@ function parseView(raw) {
  * @param {(rootPane: *, currentPaneId: string | null) => void}
  *   options.installRootPane - Atomically install the restored pane tree
  *   onto the running editor. Called once after every text view has been
- *   opened. The handler is responsible for re-mounting the kindRegistry
+ *   opened. The handler is responsible for re-mounting each view
  *   and refreshing layout.
  * @param {Object} options.host - Bridge with `readSession`/
  *   `writeSession` methods. Usually `window.host`.

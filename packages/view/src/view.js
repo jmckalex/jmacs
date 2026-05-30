@@ -29,9 +29,10 @@
  * they live only inside pane handles. See plans/PANES-PHASE-3B.md.
  *
  * `createView` returns a plain mutable record — it's a small piece of
- * state shared by the desktop app, the kind registry and the Lisp
- * primitives. The shape is what matters; behaviour lives in the kind
- * registry.
+ * state shared by the desktop app and the Lisp primitives. The shape
+ * is what matters; behaviour lives in each kind's renderer element
+ * (`<text-view>`, `<image-view>`, …) and the desktop's mount-dispatch
+ * helpers.
  */
 
 /** A unique-enough id for a freshly-minted view. */
@@ -47,7 +48,8 @@ function freshId(kind) {
  *
  * @param {object} options
  * @param {string} options.kind - The view's kind. Drives renderer
- *   dispatch and the life-cycle hooks the kind registry provides.
+ *   dispatch — the desktop app's `mountKindView` looks at this to
+ *   route the view to the right custom element.
  * @param {string} [options.name] - The view's modeline name. Falls
  *   back to the buffer's name for text views, or a kind-derived
  *   placeholder otherwise.

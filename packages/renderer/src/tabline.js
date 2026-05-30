@@ -11,7 +11,7 @@
  *
  * Phase 3b of plans/PANES.md: a tabline is mounted *per pane*, driven
  * by a tabline-view that owns the tabs. The host element is the strip
- * container provided by the kind registry's tabline mount (or, for
+ * container provided by the host's tabline mount (or, for
  * the legacy global chrome path that the same commit keeps temporarily
  * alive, the `#tabline-host` div). The `edge` option drives whether
  * the strip stacks tabs row-wise (`top`/`bottom`) or column-wise

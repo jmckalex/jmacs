@@ -343,7 +343,7 @@ const editorHostEl = /** @type {HTMLElement} */ (
 
 /** The root of the pane tree. With one leaf this phase; phase 3
  *  introduces splits. The leaf's view is set after the views list and
- *  the kind registry are wired up — at construction the leaf points to
+ *  mountKindView are wired up — at construction the leaf points to
  *  the initial current view. */
 let rootPane = createLeafPane({ view: views[currentViewIndex] ?? null });
 
@@ -968,8 +968,8 @@ function computeSplitNodeRect(node, id, rect) {
   });
 }
 
-/** Hide every renderer view's DOM, then leave the kind registry to
- *  re-mount the active one. Pause the standalone media players and
+/** Hide every renderer view's DOM, then let mountKindView re-mount
+ *  the active one. Pause the standalone media players and
  *  the shell view when they're being unmounted so a hidden view
  *  doesn't keep playing / streaming into nothing.
  *
@@ -1020,7 +1020,7 @@ function hideInactiveRendererViews(activeKind) {
   }
 }
 
-/** Switch to the view at INDEX: dispatch through the kind registry to
+/** Switch to the view at INDEX: dispatch through mountKindView to
  *  mount the matching renderer view, and update the modeline.
  *
  *  Phase 3a of plans/PANES.md: the *currently focused* leaf pane's
@@ -4508,7 +4508,7 @@ function mountTablineActiveChild(tablineView) {
   // startup into `editorPaneElement()`. The `<tabline-view>` container
   // (position:absolute, inset:0) sits over the pane div and would
   // cover those siblings, so we re-parent the active singleton into
-  // our content area before letting the kind registry's mount run.
+  // our content area before letting mountKindView run.
   // Move-not-clone — the singleton's event handlers and internal
   // state survive the re-parenting.
   const singleton = singletonElementForKind(child.kind);
@@ -5313,7 +5313,7 @@ function buildRestoredPaneTree(blob, handlesByBlob) {
 
 /** Install a freshly-built pane tree as the editor's root. Disposes
  *  the existing editor-view instances, swaps `rootPane`, refreshes the
- *  DOM, mounts each leaf's view through the kind registry, points
+ *  DOM, mounts each leaf's view through mountKindView, points
  *  `currentPaneId` at the requested leaf (or the first leaf when the
  *  saved id no longer exists), and updates the focused-pane state.
  *
@@ -5346,7 +5346,7 @@ function installRootPane(newRoot, savedCurrentPaneId) {
     ? matching.id
     : (leaves[0]?.id ?? null);
   // Rebuild the pane DOM around the new tree, then mount each leaf's
-  // view through the kind registry. Tabline-view leaves cause the
+  // view through mountKindView. Tabline-view leaves cause the
   // registry to construct fresh per-pane editor instances for each
   // tabline's active text child.
   syncPaneElements();
@@ -5532,8 +5532,8 @@ function demoteTablineView(tlv) {
     }
     editorViewByPaneId.set(host.id, inheritedInstance);
   }
-  // Dispose the tabline-view's remaining state. The kind registry's
-  // dispose for tabline destroys any *remaining* editor instances in
+  // Dispose the tabline-view's remaining state. disposeKindView for
+  // tabline destroys any *remaining* editor instances in
   // editorByChildId (we removed the inherited one above) and detaches
   // the container.
   disposeKindView(tlv);
@@ -5621,7 +5621,7 @@ function swapPaneViews(paneA, paneB) {
   const vb = paneB.view;
   paneA.view = vb;
   paneB.view = va;
-  // Re-mount each via the kind registry. A tabline-view's `mount`
+  // Re-mount each via mountKindView. A tabline-view's `mount`
   // is paneEl-aware and will move its `<tabline-view>` container to
   // the new pane element; plain-leaf views are routed through
   // switchToViewIndex's plain-leaf branch via a direct mount here so

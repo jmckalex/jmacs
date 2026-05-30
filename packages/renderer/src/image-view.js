@@ -10,7 +10,7 @@
  * Q9 ("no same View in two panes") — the same element can't sit in
  * two parents — and lets the standard `connectedCallback` /
  * `disconnectedCallback` lifecycle replace the bespoke mount/dispose
- * machinery the kind registry used to drive.
+ * machinery the host's mount dispatch used to drive.
  *
  * The renderer remains sandboxed: this element never touches the
  * filesystem. The host reads the image and hands us a ready-to-display

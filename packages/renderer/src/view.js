@@ -892,7 +892,7 @@ export function createEditorView(buffer, container, options = {}) {
       const nextBuffer = next && next.buffer ? next.buffer : null;
       if (nextBuffer === null) {
         // Defensive: a non-text view should never reach here; the
-        // kind registry routes elsewhere. No-op rather than crash.
+        // host's mount dispatch routes elsewhere. No-op rather than crash.
         return;
       }
       if (nextBuffer !== activeBuffer) {
