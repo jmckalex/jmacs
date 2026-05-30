@@ -7,9 +7,9 @@
  * holds exactly one view.
  *
  * Pane handles are plain objects — small mutable records the desktop
- * app, the kind registry and the Lisp primitives all read directly. The
- * shape is what matters; behaviour lives in `tree.js` (walking) and
- * `layout.js` (the rect math).
+ * app and the Lisp primitives read directly. The shape is what
+ * matters; behaviour lives in `tree.js` (walking) and `layout.js` (the
+ * rect math).
  *
  * Phase 2 only ever needs the leaf case (the editor area is a single
  * leaf containing the current view); the split kind exists in the data
