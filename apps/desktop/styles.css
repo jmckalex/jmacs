@@ -401,6 +401,16 @@ text-view {
   height: 100%;
 }
 
+/* The <tabline-view> custom element is the per-pane tabline. In Phase
+   2d's transitional `data-host-managed` mode it carries the
+   `.tabline-pane` class and gets its layout from the `.tabline-pane`
+   rules above; this default rule covers the future case (post-Phase
+   3) when tabs are direct DOM children of the element and the host-
+   managed class is gone. */
+tabline-view {
+  display: block;
+}
+
 .editor {
   height: 100%;
   overflow: auto;

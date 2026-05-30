@@ -62,7 +62,23 @@ export class TablineView extends HTMLElement {
 
   // --- lifecycle ------------------------------------------------------
 
+  /**
+   * Custom-element connection. Auto-mounts the strip + content + strip
+   * widget on first connect (so `document.createElement('tabline-view')`
+   * + `parent.append(el)` is a complete setup).
+   *
+   * Host-managed mode (Phase 2d transition): when the element carries
+   * `data-host-managed`, the host (`apps/desktop/src/app.js`) is
+   * responsible for building the inner DOM (strip + resizer + content)
+   * and driving its own strip widget on top of the Lisp-side
+   * `view.tabs[]` array. The element still gets DOM identity, Q9-by-
+   * construction at the container level, and the lifecycle hooks; it
+   * simply doesn't claim the structural children. Once Phase 3 has
+   * converted every kind to a custom element, this mode is removed and
+   * tabs become the element's DOM children directly.
+   */
   connectedCallback() {
+    if (this.hasAttribute('data-host-managed')) return;
     this._ensureMounted();
     this._refreshStrip();
   }

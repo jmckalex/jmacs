@@ -74,6 +74,7 @@ import {
   formatCitation,
   citationKeys,
   TextView,
+  TablineView,
 } from '@editor/renderer';
 import {
   createBufferPrimitives,
@@ -4295,8 +4296,18 @@ function ensureTablineState(view) {
   let state = tablineStateByView.get(view);
   if (state) return state;
 
-  const container = document.createElement('div');
-  container.className = 'tabline-pane';
+  // Phase 2d: the per-tabline container is now a `<tabline-view>`
+  // custom element. In `data-host-managed` mode it skips its own auto-
+  // mount so we can keep building the bespoke strip + resizer + content
+  // structure inside it during the transition. The win for now is
+  // structural: the element gives the tabline DOM identity, Q9-by-
+  // construction at the container level, and lifecycle hooks. The full
+  // tabs-as-children migration happens once Phase 3 has converted the
+  // non-text kinds to custom elements (so they can actually live as
+  // `<tabline-view>.children`).
+  const container = /** @type {*} */ (document.createElement('tabline-view'));
+  container.setAttribute('data-host-managed', '');
+  container.classList.add('tabline-pane');
   container.dataset.edge = view.edge ?? 'top';
   container.dataset.tablineViewId = view.id;
 
