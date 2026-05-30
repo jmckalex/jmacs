@@ -1006,16 +1006,16 @@ function hideInactiveRendererViews(activeKind) {
       tv.style.display = '';
     }
   }
-  // For each non-text singleton, visibility is keyed on whether ANY
-  // leaf currently has it as its active view — not on the focused
-  // pane's kind. Otherwise clicking a text tab in one pane hides a
-  // singleton (jukebox / directory-columns / …) that's parented
-  // inside a different pane. `kindsInUse` captures the union across
-  // the whole pane tree.
+  // For each non-text singleton, visibility is keyed on whether some
+  // leaf shows it as its *direct* view (no tabline). Tabline tabs use
+  // their own per-tab elements — for them the singleton stays hidden.
+  // `kindsInUse` therefore only counts leaf-direct-view cases.
   const kindsInUse = new Set();
   for (const leaf of leafPanes(rootPane)) {
-    const v = isTablineView(leaf.view) ? tablineActiveChild(leaf.view) : leaf.view;
-    if (v && v.kind !== 'text' && v.kind !== 'tabline') kindsInUse.add(v.kind);
+    if (isTablineView(leaf.view)) continue; // tabline tabs handle themselves
+    if (leaf.view && leaf.view.kind !== 'text' && leaf.view.kind !== 'tabline') {
+      kindsInUse.add(leaf.view.kind);
+    }
   }
   // Iterate the single source of truth — SINGLETON_VIEWS, declared
   // after all the singletons themselves exist. Audio/video/shell flag
@@ -3771,18 +3771,24 @@ function openCustomScope(scope) {
 // It shares #editor-host with the editor view; switchToBuffer shows
 // whichever the current buffer's kind calls for. Keys typed in it
 // (outside a form control) go through the same Lisp keymap.
-// Phase 3d: customize-view is a custom element now.
+// Phase 3d: customize-view is a custom element now. The configure
+// options factory is also used by the tabline mount path to build
+// per-tab `<customize-view>` instances (one per customize view in the
+// tabline).
+function configureCustomizeView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    getModel: getCustomModel,
+    applySetting: applyCustomSetting,
+    saveSetting: saveCustomSetting,
+    resetSetting: resetCustomSetting,
+    openScope: openCustomScope,
+    setFaceAttribute: setFaceFromView,
+    resetFace: resetFaceFromView,
+  };
+}
 const customizeView = /** @type {*} */ (document.createElement('customize-view'));
-customizeView.configure({
-  ...(keymapReady ? { onKey: dispatchKey } : {}),
-  getModel: getCustomModel,
-  applySetting: applyCustomSetting,
-  saveSetting: saveCustomSetting,
-  resetSetting: resetCustomSetting,
-  openScope: openCustomScope,
-  setFaceAttribute: setFaceFromView,
-  resetFace: resetFaceFromView,
-});
+customizeView.configure(configureCustomizeView());
 editorPaneElement().append(customizeView);
 customizeView.style.display = 'none';
 
@@ -3791,11 +3797,14 @@ customizeView.style.display = 'none';
 // shows whichever the current buffer's kind calls for. Keys typed in
 // it go through the same Lisp keymap.
 // Phase 3a: image-view is a custom element now. The instance IS the
-// element; what was `imageView.element` is just `imageView`.
+// element; what was `imageView.element` is just `imageView`. The
+// configure factory is reused by the tabline mount path so each
+// image tab gets its own `<image-view>` (one per view, not shared).
+function configureImageView() {
+  return { ...(keymapReady ? { onKey: dispatchKey } : {}) };
+}
 const imageView = /** @type {*} */ (document.createElement('image-view'));
-imageView.configure({
-  ...(keymapReady ? { onKey: dispatchKey } : {}),
-});
+imageView.configure(configureImageView());
 editorPaneElement().append(imageView);
 imageView.style.display = 'none';
 
@@ -3820,31 +3829,35 @@ function highlightCodeForDocView(text, language) {
 // through. Cross-links inside the rendered HTML carry
 // `data-jmacs-doc="name"`; clicking one routes through Lisp's
 // `open-doc`, which calls `open-doc!` (host primitive) below.
-// Phase 3e: doc-view is a custom element now.
-const docView = /** @type {*} */ (document.createElement('doc-view'));
-docView.configure({
-  ...(keymapReady ? { onKey: dispatchKey } : {}),
-  closeBuffer: () => {
-    if (!keymapReady) return;
-    try {
-      interpreter.call('kill-view');
-    } catch (error) {
-      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-    }
-  },
-  openDoc: (name) => {
-    if (keymapReady) {
+// Phase 3e: doc-view is a custom element now. Factory is reused by
+// the tabline mount path for per-tab `<doc-view>` instances.
+function configureDocView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    closeBuffer: () => {
+      if (!keymapReady) return;
       try {
-        interpreter.call('open-doc', name);
+        interpreter.call('kill-view');
       } catch (error) {
-        repl.appendError(`open-doc: ${error.lispMessage ?? error.message}`);
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
       }
-    } else {
-      openDocBuffer(name);
-    }
-  },
-  highlightCode: highlightCodeForDocView,
-});
+    },
+    openDoc: (name) => {
+      if (keymapReady) {
+        try {
+          interpreter.call('open-doc', name);
+        } catch (error) {
+          repl.appendError(`open-doc: ${error.lispMessage ?? error.message}`);
+        }
+      } else {
+        openDocBuffer(name);
+      }
+    },
+    highlightCode: highlightCodeForDocView,
+  };
+}
+const docView = /** @type {*} */ (document.createElement('doc-view'));
+docView.configure(configureDocView());
 editorPaneElement().append(docView);
 docView.style.display = 'none';
 
@@ -3853,20 +3866,24 @@ docView.style.display = 'none';
 // audio controller is passed in so `audio-playing?` and friends
 // stay truthful; `openImage` routes M-RET on the album art through
 // the same image-buffer path the dialog uses.
-// Phase 3f: jukebox-view is a custom element now.
+// Phase 3f: jukebox-view is a custom element now. Factory reused by
+// the tabline mount for per-tab `<jukebox-view>` instances.
+function configureJukeboxView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    audio,
+    openImage: (path) => openImageByPath(expandTilde(path)),
+    report: (message) => repl.appendNote(message),
+    // Embedded album-art lookup: the host IPC reads the file's tag
+    // and returns `{ mime, dataUrl }` or null. The view shows the
+    // dataUrl when present, falls back to the directory's sidecar
+    // cover otherwise.
+    getEmbeddedArt: (path) =>
+      window.host.audioAlbumArt(expandTilde(path)),
+  };
+}
 const jukeboxView = /** @type {*} */ (document.createElement('jukebox-view'));
-jukeboxView.configure({
-  ...(keymapReady ? { onKey: dispatchKey } : {}),
-  audio,
-  openImage: (path) => openImageByPath(expandTilde(path)),
-  report: (message) => repl.appendNote(message),
-  // Embedded album-art lookup: the host IPC reads the file's tag
-  // and returns `{ mime, dataUrl }` or null. The view shows the
-  // dataUrl when present, falls back to the directory's sidecar
-  // cover otherwise.
-  getEmbeddedArt: (path) =>
-    window.host.audioAlbumArt(expandTilde(path)),
-});
+jukeboxView.configure(configureJukeboxView());
 editorPaneElement().append(jukeboxView);
 jukeboxView.style.display = 'none';
 
@@ -3954,46 +3971,55 @@ function stripDerivedFields(meta) {
 // Unlike the jukebox, this view owns its own <audio> element so a
 // file open here doesn't fight the jukebox's playback head.
 // Phase 3b: audio-view is a custom element now. The instance IS the
-// element; what was `audioView.element` is just `audioView`.
+// element; what was `audioView.element` is just `audioView`. Factory
+// reused by the tabline mount path for per-tab `<audio-view>`
+// instances (one per audio view, not a shared singleton).
+function configureAudioView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    closeBuffer: () => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('kill-view');
+      } catch (error) {
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
+      }
+    },
+    // Inline-edit lifecycle. Wired to the stubbed metadata-write
+    // primitives — see `set-audio-metadata!` / `remove-audio-metadata!`
+    // below. The real writers (agent-audio-edit-id3v2 onwards) replace
+    // the stubs without touching the view.
+    onSetMetadata: ({ key, value, buffer }) =>
+      runMetadataEdit('set-audio-metadata!', buffer, key, value),
+    onRemoveMetadata: ({ key, buffer }) =>
+      runMetadataEdit('remove-audio-metadata!', buffer, key, undefined),
+    showError: (message) => repl.appendError(message),
+  };
+}
 const audioView = /** @type {*} */ (document.createElement('audio-view'));
-audioView.configure({
-  ...(keymapReady ? { onKey: dispatchKey } : {}),
-  closeBuffer: () => {
-    if (!keymapReady) return;
-    try {
-      interpreter.call('kill-view');
-    } catch (error) {
-      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-    }
-  },
-  // Inline-edit lifecycle. Wired to the stubbed metadata-write
-  // primitives — see `set-audio-metadata!` / `remove-audio-metadata!`
-  // below. The real writers (agent-audio-edit-id3v2 onwards) replace
-  // the stubs without touching the view.
-  onSetMetadata: ({ key, value, buffer }) =>
-    runMetadataEdit('set-audio-metadata!', buffer, key, value),
-  onRemoveMetadata: ({ key, buffer }) =>
-    runMetadataEdit('remove-audio-metadata!', buffer, key, undefined),
-  showError: (message) => repl.appendError(message),
-});
+audioView.configure(configureAudioView());
 editorPaneElement().append(audioView);
 audioView.style.display = 'none';
 
 // The video view — the view a `video`-kind buffer is shown through.
 // Phase 3c: video-view is a custom element now. The instance IS the
-// element; what was `videoView.element` is just `videoView`.
+// element; what was `videoView.element` is just `videoView`. Factory
+// reused by the tabline mount path.
+function configureVideoView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    closeBuffer: () => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('kill-view');
+      } catch (error) {
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
+      }
+    },
+  };
+}
 const videoView = /** @type {*} */ (document.createElement('video-view'));
-videoView.configure({
-  ...(keymapReady ? { onKey: dispatchKey } : {}),
-  closeBuffer: () => {
-    if (!keymapReady) return;
-    try {
-      interpreter.call('kill-view');
-    } catch (error) {
-      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-    }
-  },
-});
+videoView.configure(configureVideoView());
 editorPaneElement().append(videoView);
 videoView.style.display = 'none';
 
@@ -4001,23 +4027,27 @@ videoView.style.display = 'none';
 // through this view. Folder rows expand on click; file rows route
 // through the host's open-file-path so they land in whichever view
 // their suffix maps to (text editor, image, audio, video).
-// Phase 3g: directory-tree is a custom element now.
+// Phase 3g: directory-tree is a custom element now. Factory reused by
+// the tabline mount path for per-tab `<directory-tree-view>` instances.
+function configureDirectoryTreeView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
+    openPath: (path) => {
+      openFileInTabAdjacent(path);
+    },
+    closeBuffer: () => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('kill-view');
+      } catch (error) {
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
+      }
+    },
+  };
+}
 const directoryTreeView = /** @type {*} */ (document.createElement('directory-tree-view'));
-directoryTreeView.configure({
-  ...(keymapReady ? { onKey: dispatchKey } : {}),
-  listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
-  openPath: (path) => {
-    openFileInTabAdjacent(path);
-  },
-  closeBuffer: () => {
-    if (!keymapReady) return;
-    try {
-      interpreter.call('kill-view');
-    } catch (error) {
-      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-    }
-  },
-});
+directoryTreeView.configure(configureDirectoryTreeView());
 editorPaneElement().append(directoryTreeView);
 directoryTreeView.style.display = 'none';
 
@@ -4026,35 +4056,39 @@ directoryTreeView.style.display = 'none';
 // trailing column becomes a preview pane for the file. Double-click
 // a file → opens it through the host's open-file-path so it lands
 // in whichever view its suffix maps to.
-// Phase 3g: directory-columns is a custom element now.
+// Phase 3g: directory-columns is a custom element now. Factory reused
+// by the tabline mount path for per-tab `<directory-columns-view>` instances.
+function configureDirectoryColumnsView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
+    getPreview: (path) => buildColumnPreview(path),
+    // Same tree-sitter highlighter registry the editor uses, so the
+    // preview pane colourises the file the same way as if it were open.
+    highlighters,
+    openPath: (path) => {
+      openFileInTabAdjacent(path);
+    },
+    onRevealInFolder: (path) => window.host.revealInFolder(path),
+    onTrash: (path) => window.host.trashFile(path),
+    onRename: (path, newName) => {
+      const slash = path.lastIndexOf('/');
+      const parent = slash >= 0 ? path.slice(0, slash) : '';
+      const to = parent === '' ? newName : `${parent}/${newName}`;
+      return window.host.renameFile(path, to);
+    },
+    closeBuffer: () => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('kill-view');
+      } catch (error) {
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
+      }
+    },
+  };
+}
 const directoryColumnsView = /** @type {*} */ (document.createElement('directory-columns-view'));
-directoryColumnsView.configure({
-  ...(keymapReady ? { onKey: dispatchKey } : {}),
-  listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
-  getPreview: (path) => buildColumnPreview(path),
-  // Same tree-sitter highlighter registry the editor uses, so the
-  // preview pane colourises the file the same way as if it were open.
-  highlighters,
-  openPath: (path) => {
-    openFileInTabAdjacent(path);
-  },
-  onRevealInFolder: (path) => window.host.revealInFolder(path),
-  onTrash: (path) => window.host.trashFile(path),
-  onRename: (path, newName) => {
-    const slash = path.lastIndexOf('/');
-    const parent = slash >= 0 ? path.slice(0, slash) : '';
-    const to = parent === '' ? newName : `${parent}/${newName}`;
-    return window.host.renameFile(path, to);
-  },
-  closeBuffer: () => {
-    if (!keymapReady) return;
-    try {
-      interpreter.call('kill-view');
-    } catch (error) {
-      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-    }
-  },
-});
+directoryColumnsView.configure(configureDirectoryColumnsView());
 editorPaneElement().append(directoryColumnsView);
 directoryColumnsView.style.display = 'none';
 
@@ -4065,35 +4099,40 @@ directoryColumnsView.style.display = 'none';
 // changed. The view stays subscribed across buffer switches so
 // background commands keep streaming into the terminal.
 // Phase 3h: shell-view is a custom element now. hide-not-kill: a pane
-// → warehouse move fires disconnectedCallback, but the pty stays
-// alive; only destroy() reaps it.
+// disconnect fires disconnectedCallback, but the pty stays alive;
+// only destroy() reaps it. Factory reused by the tabline mount path
+// for per-tab `<shell-view>` instances — each shell view has its own
+// pty session and its own xterm.
+function configureShellView() {
+  return {
+    spawn: (sessionId, opts) =>
+      window.host && typeof window.host.shellSpawn === 'function'
+        ? window.host.shellSpawn(sessionId, opts)
+        : Promise.resolve({ ok: false, error: 'shell IPC unavailable' }),
+    write: (sessionId, data) =>
+      window.host && typeof window.host.shellWrite === 'function'
+        ? window.host.shellWrite(sessionId, data)
+        : Promise.resolve({ ok: false }),
+    resize: (sessionId, cols, rows) =>
+      window.host && typeof window.host.shellResize === 'function'
+        ? window.host.shellResize(sessionId, cols, rows)
+        : Promise.resolve({ ok: false }),
+    kill: (sessionId) =>
+      window.host && typeof window.host.shellKill === 'function'
+        ? window.host.shellKill(sessionId)
+        : Promise.resolve({ ok: false }),
+    onData: (callback) =>
+      window.host && typeof window.host.onShellData === 'function'
+        ? window.host.onShellData(callback)
+        : () => {},
+    onExit: (callback) =>
+      window.host && typeof window.host.onShellExit === 'function'
+        ? window.host.onShellExit(callback)
+        : () => {},
+  };
+}
 const shellView = /** @type {*} */ (document.createElement('shell-view'));
-shellView.configure({
-  spawn: (sessionId, opts) =>
-    window.host && typeof window.host.shellSpawn === 'function'
-      ? window.host.shellSpawn(sessionId, opts)
-      : Promise.resolve({ ok: false, error: 'shell IPC unavailable' }),
-  write: (sessionId, data) =>
-    window.host && typeof window.host.shellWrite === 'function'
-      ? window.host.shellWrite(sessionId, data)
-      : Promise.resolve({ ok: false }),
-  resize: (sessionId, cols, rows) =>
-    window.host && typeof window.host.shellResize === 'function'
-      ? window.host.shellResize(sessionId, cols, rows)
-      : Promise.resolve({ ok: false }),
-  kill: (sessionId) =>
-    window.host && typeof window.host.shellKill === 'function'
-      ? window.host.shellKill(sessionId)
-      : Promise.resolve({ ok: false }),
-  onData: (callback) =>
-    window.host && typeof window.host.onShellData === 'function'
-      ? window.host.onShellData(callback)
-      : () => {},
-  onExit: (callback) =>
-    window.host && typeof window.host.onShellExit === 'function'
-      ? window.host.onShellExit(callback)
-      : () => {},
-});
+shellView.configure(configureShellView());
 editorPaneElement().append(shellView);
 shellView.style.display = 'none';
 // xterm.js reads CSS variables once, at terminal construction. Pump
@@ -4420,135 +4459,181 @@ function attachTablineResizerDrag(resizerEl, view) {
   });
 }
 
+/** The per-kind configure factory, or null when the kind isn't a
+ *  non-text view managed by the tabline mount (text and tabline have
+ *  their own paths). */
+function perKindConfigureFactory(kind) {
+  switch (kind) {
+    case 'customize':         return configureCustomizeView;
+    case 'image':             return configureImageView;
+    case 'doc':               return configureDocView;
+    case 'jukebox':           return configureJukeboxView;
+    case 'audio':             return configureAudioView;
+    case 'video':             return configureVideoView;
+    case 'directory-tree':    return configureDirectoryTreeView;
+    case 'directory-columns': return configureDirectoryColumnsView;
+    case 'shell':             return configureShellView;
+    default:                  return null;
+  }
+}
+
+/** Ensure CHILD has its DOM element in STATE.editorByChild and parented
+ *  in STATE.contentEl with `display: none`. Returns the element. Lazy,
+ *  idempotent: a child that already has an element keeps it.
+ *
+ *  Each kind gets its own custom element instance:
+ *  - text: `<text-view>` with closures bound to THIS child.
+ *  - image / audio / video / customize / doc / jukebox / shell /
+ *    directory-tree / directory-columns: the matching `<X-view>` via
+ *    its per-kind configure factory.
+ *  - tabline: the nested tabline's container (from `ensureTablineState`).
+ *    Its content is mounted recursively when it becomes the active tab.
+ *
+ *  The map is the single source of truth for "what DOM elements does
+ *  this tabline own." Removal goes through `removeTabInTabline`;
+ *  dispose iterates the whole map. */
+function ensureTabElement(state, child) {
+  let el = state.editorByChild.get(child);
+  if (el !== undefined) return el;
+
+  if (child.kind === 'text' && child.buffer) {
+    el = /** @type {*} */ (document.createElement('text-view'));
+    el.configure({
+      ...(keymapReady ? { onKey: dispatchKey } : {}),
+      highlighters,
+      foldCaptures,
+      getPoint: () => typeof child.point === 'number' ? child.point : 0,
+      getMark: () => child.mark !== undefined ? child.mark : null,
+      getCursors: () => {
+        if (Array.isArray(child.cursors)) return child.cursors;
+        return [{
+          point: typeof child.point === 'number' ? child.point : 0,
+          mark: child.mark !== undefined ? child.mark : null,
+        }];
+      },
+      getTabWidth: () => currentTabWidth,
+    });
+    el.setView(child);
+  } else if (child.kind === 'tabline') {
+    // Nested tabline: the per-tabline state owns the container element.
+    const nestedState = ensureTablineState(child);
+    el = nestedState.container;
+  } else {
+    const factory = perKindConfigureFactory(child.kind);
+    if (!factory) return null;
+    el = /** @type {*} */ (document.createElement(child.kind + '-view'));
+    el.configure(factory());
+    el.setBuffer(child);
+  }
+
+  state.editorByChild.set(child, el);
+  if (el.parentNode !== state.contentEl) {
+    state.contentEl.append(el);
+  }
+  // Don't pre-set display here. The element inherits its CSS default
+  // (block/flex per the per-kind rule), which lets `connectedCallback`
+  // initialise the inner DOM with proper layout dimensions. The caller
+  // is responsible for setting `display: 'none'` on inactive tabs and
+  // `display: ''` on the active one (the display loop in
+  // `mountTablineActiveChild`, or `addTabToTabline` for new tabs).
+  return el;
+}
+
 /** Re-mount the active child of TABLINEVIEW into its content area.
  *
- *  The tabline keeps a single persistent text-editor instance
- *  (`activeEditor`) and re-points it via `setView(child)` when the
- *  active tab is text and changes. A fresh `createEditorView` per
- *  switch would orphan the overlay/background layers that things
- *  like sticky-notes captured by reference at startup, AND would
- *  leave hidden `.editor` siblings in the DOM that confuse external
- *  probes (e.g., the smoke test's `document.querySelector('.editor-line')`).
- *
- *  For a non-text active child the editor element gets `display:none`
- *  but stays parented in the content area; the non-text singleton
- *  (image / audio / customize / ...) sits where it always has, in
- *  `editor-host`, and `hideInactiveRendererViews` sweeps the others.
- *  Routing non-text views into the content area is a follow-up; the
- *  current arrangement preserves today's UX for those kinds while
- *  the tabline mount learns the rest. */
+ *  Each tab has its own DOM element (per-view-instance, not a shared
+ *  singleton-per-kind). Every tab — text, non-text, nested tabline —
+ *  gets its element eagerly created and parented inside `contentEl`,
+ *  with `display: none`. The active tab gets `display: ''`. Switching
+ *  tabs is a CSS toggle, never element re-creation. Session-restored
+ *  tablines come up with every tab already "live" in the DOM. */
 function mountTablineActiveChild(tablineView) {
   const state = tablineStateByView.get(tablineView);
   if (!state) return;
+
+  // Eager creation for non-text tabs: each one gets its element built
+  // up-front so a session restore with N tabs comes up with N elements
+  // in contentEl, not lazy-on-click. Text tabs stay lazy here — the
+  // inner editor's line-height / scroll measurement reads the container
+  // bounding box, which is zero under `display: none`, so we let the
+  // active text-view be created the moment it's activated (with the
+  // correct dimensions). Non-text tabs don't measure font metrics, so
+  // they're safe to create hidden.
+  for (const tab of tablineView.tabs) {
+    if (tab.kind !== 'text') ensureTabElement(state, tab);
+  }
+
   const child = (typeof tablineView.active === 'number' &&
                  tablineView.active >= 0 &&
                  tablineView.active < tablineView.tabs.length)
     ? tablineView.tabs[tablineView.active] ?? null
     : null;
   state.mountedChild = child;
+
   if (!child) {
-    // Empty tabline: hide every per-child text-view in place. They
-    // stay parented inside contentEl — the warehouse is for views
-    // not in any pane/tabline, and these views still belong to this
-    // tabline. The instances survive so the dispose path can clean
-    // them up; auto-collapse handles the pane itself for the
-    // kill-view case.
-    for (const tv of state.editorByChild.values()) {
-      tv.style.display = 'none';
+    // Empty tabline: hide every element. They stay parented in
+    // contentEl so the DOM reflects the tabline's actual membership.
+    for (const el of state.editorByChild.values()) {
+      el.style.display = 'none';
     }
     state.activeEditor = null;
     state.activeEditorChild = null;
     return;
   }
 
+  // Orphan sweep: any view-element in contentEl that isn't in
+  // editorByChild is leftover from a path that removed the map entry
+  // without removing the DOM (or appended without registering).
+  // Remove them; the tabline-view-element bookkeeping is authoritative.
+  const knownEls = new Set(state.editorByChild.values());
+  for (const childEl of [...state.contentEl.children]) {
+    const tag = childEl.tagName.toLowerCase();
+    if (tag.endsWith('-view') && !knownEls.has(childEl)) {
+      try { childEl.destroy?.(); } catch { /* tolerant */ }
+      childEl.remove();
+    }
+  }
+  // Show only the active element; hide all others.
+  for (const [otherChild, otherEl] of state.editorByChild) {
+    otherEl.style.display = otherChild === child ? '' : 'none';
+  }
+
+  if (child.kind === 'tabline') {
+    // Nested tabline-views (Q10). Recurse — the child's mount manages
+    // its own tabs inside its container (already in our contentEl via
+    // ensureTabElement). Hide the singletons we don't need.
+    state.activeEditor = null;
+    state.activeEditorChild = null;
+    hideInactiveRendererViews('tabline');
+    mountKindView(child, { paneEl: state.contentEl });
+    return;
+  }
+
   if (child.kind === 'text' && child.buffer) {
-    // Sweep non-text singletons so they don't overlay the strip when
-    // switching from a non-text tab to a text tab.
+    // Sweep singletons (the leaf-direct-view path uses them; the
+    // tabline path uses per-tab elements, so the singletons go quiet
+    // when a tabline's active tab is text).
     hideInactiveRendererViews('text');
-    let tv = state.editorByChild.get(child);
-    if (tv === undefined) {
-      // Build a per-tab text-view. The closures bind to THIS child
-      // directly — each tab has its own cursor / mark / cursors, and
-      // each text-view's closures read its own tab's state. No
-      // peelTabline needed.
-      tv = /** @type {*} */ (document.createElement('text-view'));
-      tv.configure({
-        ...(keymapReady ? { onKey: dispatchKey } : {}),
-        highlighters,
-        foldCaptures,
-        getPoint: () => typeof child.point === 'number' ? child.point : 0,
-        getMark: () => child.mark !== undefined ? child.mark : null,
-        getCursors: () => {
-          if (Array.isArray(child.cursors)) return child.cursors;
-          return [{
-            point: typeof child.point === 'number' ? child.point : 0,
-            mark: child.mark !== undefined ? child.mark : null,
-          }];
-        },
-        getTabWidth: () => currentTabWidth,
-      });
-      tv.setView(child);
-      state.editorByChild.set(child, tv);
-    }
-    // Hide every OTHER text-view for this tabline; they stay parented
-    // here so they're reachable from `state.contentEl` and so the DOM
-    // tree reflects the tabline's actual membership. `display: none`
-    // is enough — they don't render, don't take layout space, but
-    // hold their inner editor state for instant tab-switch.
-    for (const [otherChild, otherTv] of state.editorByChild) {
-      if (otherChild !== child) otherTv.style.display = 'none';
-    }
-    if (tv.parentNode !== state.contentEl) {
-      state.contentEl.append(tv);
-    }
-    tv.style.display = '';
+    // Lazy creation for text — see the eager-loop comment above for
+    // why text tabs need to be created at the moment they're activated,
+    // not pre-built hidden.
+    const tv = ensureTabElement(state, child);
+    if (tv !== null) tv.style.display = '';
     state.activeEditor = tv;
     state.activeEditorChild = child;
     applyTextMountSideEffects(child, tv);
     return;
   }
 
-  // Non-text active child: hide every text-view in this tabline so it
-  // doesn't visually overlay the singleton, but keep them parented in
-  // contentEl. Route through `hideInactiveRendererViews` so the right
-  // singleton wakes up and the others go quiet — same as
-  // `switchToViewIndex`'s pre-tabline path.
-  for (const tv of state.editorByChild.values()) {
-    tv.style.display = 'none';
-  }
+  // Non-text active child: focus the per-tab element. Sweep singletons
+  // for visibility-cascade reasons (leaf-direct-view cases in OTHER
+  // panes still use them).
+  const activeEl = state.editorByChild.get(child);
   state.activeEditor = null;
   state.activeEditorChild = null;
   hideInactiveRendererViews(child.kind);
-
-  if (child.kind === 'tabline') {
-    // Nested tabline-views (Q10). Recurse — the child's mount creates
-    // its own `<tabline-view>` inside our `.tabline-content`.
-    mountKindView(child, { paneEl: state.contentEl });
-    return;
-  }
-
-  // Other kinds (image / audio / video / shell / customize / doc /
-  // jukebox / directory-*) use module-level singletons mounted at
-  // startup into `editorPaneElement()`. The `<tabline-view>` container
-  // (position:absolute, inset:0) sits over the pane div and would
-  // cover those siblings, so we re-parent the active singleton into
-  // our content area before letting mountKindView run.
-  // Move-not-clone — the singleton's event handlers and internal
-  // state survive the re-parenting.
-  const singleton = singletonElementForKind(child.kind);
-  if (singleton && singleton.parentNode !== state.contentEl) {
-    state.contentEl.append(singleton);
-  }
-  try {
-    mountKindView(child);
-  } catch (error) {
-    // Defensive: an unknown kind shouldn't crash the strip's onSelect.
-    if (typeof repl !== 'undefined' && repl && typeof repl.appendError === 'function') {
-      repl.appendError(
-        `tabline: cannot mount child of kind ${child.kind}: ` +
-        (error && error.message ? error.message : String(error))
-      );
-    }
+  if (activeEl && typeof activeEl.focus === 'function') {
+    activeEl.focus();
   }
 }
 
@@ -4587,14 +4672,15 @@ function removeTabInTabline(tablineView, index) {
     state.activeEditorChild = null;
     state.activeEditor = null;
   }
-  // Drop the per-child text-view for the removed tab. The tab is gone
-  // from the tabs[] list; its dedicated `<text-view>` has no more
-  // purpose. Destroying releases the inner editor's buffer subscription
-  // and detaches the DOM.
+  // Drop the per-child element for the removed tab. Destroy releases
+  // any inner-view state (buffer subscriptions, pty handles, media
+  // sources); `remove()` detaches the wrapper from contentEl so it
+  // doesn't accumulate as an orphan after the tab is gone.
   if (state) {
-    const removedTv = state.editorByChild.get(removed);
-    if (removedTv !== undefined) {
-      try { removedTv.destroy(); } catch { /* tolerant */ }
+    const removedEl = state.editorByChild.get(removed);
+    if (removedEl !== undefined) {
+      try { removedEl.destroy?.(); } catch { /* tolerant */ }
+      try { removedEl.remove(); } catch { /* already detached */ }
       state.editorByChild.delete(removed);
     }
   }
@@ -4658,11 +4744,13 @@ function mountTablineKind(view, context) {
 function disposeTablineKind(view) {
   const state = tablineStateByView.get(view);
   if (!state) return;
-  // Destroy every per-tab text-view. `editorByChild` is the source of
+  // Destroy every per-tab element. `editorByChild` is the source of
   // truth; `activeEditor` is just a window onto the active entry and
-  // gets cleared with the rest.
-  for (const tv of state.editorByChild.values()) {
-    try { tv.destroy(); } catch { /* tolerant — half-mounted is fine */ }
+  // gets cleared with the rest. Detach each element from the DOM so
+  // no orphan wrappers survive in the (about-to-be-removed) contentEl.
+  for (const el of state.editorByChild.values()) {
+    try { el.destroy?.(); } catch { /* half-mounted is fine */ }
+    try { el.remove(); } catch { /* already detached */ }
   }
   state.editorByChild.clear();
   state.activeEditor = null;
@@ -5607,7 +5695,21 @@ function addTabToTabline(tlv, view, index) {
   // Adjust active so it still points at the same view as before.
   if (target <= tlv.active) tlv.active += 1;
   const state = tablineStateByView.get(tlv);
-  if (state) state.strip.refresh();
+  if (state) {
+    // Eager creation for non-text tabs: build the new tab's element so
+    // it's live in contentEl before the next mount. Hide it
+    // immediately — addTabToTabline doesn't activate; that's a
+    // separate call (activateTabInTabline → mountTablineActiveChild).
+    // Text tabs stay lazy: the inner editor's line-height /
+    // scroll measurement reads the container bounding box, so the
+    // first mount has to happen while the wrapper is actually
+    // visible.
+    if (view.kind !== 'text') {
+      const el = ensureTabElement(state, view);
+      if (el) el.style.display = 'none';
+    }
+    state.strip.refresh();
+  }
   return tlv;
 }
 

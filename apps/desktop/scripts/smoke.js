@@ -618,7 +618,7 @@ app.whenReady().then(() => {
         submit('(describe-face-at-point)');
         for (let i = 0; i < 8; i += 1) await frame();
         const modeline = document.getElementById('modeline-name')?.textContent ?? '';
-        const docPage = document.querySelector('.doc-view .doc-page');
+        const docPage = document.querySelector('doc-view:not([style*="display: none"]) .doc-page');
         const text = docPage ? docPage.textContent : '';
         return {
           modeline,
@@ -1069,12 +1069,11 @@ app.whenReady().then(() => {
         // Phase 2c + 3d: the per-pane editor is a <text-view> wrapping
         // the .editor div, and customize is a <customize-view> wrapping
         // the .customize div. Visibility now lives on the wrappers.
-        const customizeEl = document.querySelector('customize-view');
+        const customizeEl = document.querySelector('customize-view:not([style*="display: none"])');
         const customizeShown = !!(
           customizeEl &&
           getComputedStyle(customizeEl).display !== 'none' &&
-          getComputedStyle(document.querySelector('text-view')).display ===
-            'none'
+          !document.querySelector('text-view:not([style*="display: none"])')
         );
         // The sticky-notes group renders its setting as a form widget.
         replInput.value = '(customize-group (quote sticky-notes))';
@@ -1152,7 +1151,7 @@ app.whenReady().then(() => {
         // Phase 3d: query the wrapper element for visibility — its
         // inline display:none toggle is what hides the customize UI;
         // the inner .customize div's computed style stays 'block'.
-        const cv = document.querySelector('customize-view');
+        const cv = document.querySelector('customize-view:not([style*="display: none"])');
         const customizeShown = !!(cv && getComputedStyle(cv).display !== 'none');
         const faceRows = cv ? cv.querySelectorAll('.customize-face-row').length : 0;
         const swatchFor = (face) => {
@@ -1219,14 +1218,13 @@ app.whenReady().then(() => {
         // The open path is async (IPC + a data-URL read); give it room.
         await new Promise((r) => setTimeout(r, 400));
         await frame();
-        const view = document.querySelector('.image-view');
-        const img = document.querySelector('.image-content');
-        const toggle = document.querySelector('.image-zoom-toggle');
+        const view = document.querySelector('image-view:not([style*="display: none"])');
+        const img = view ? view.querySelector('.image-content') : null;
+        const toggle = view ? view.querySelector('.image-zoom-toggle') : null;
         const shown = !!(
           view &&
           getComputedStyle(view).display !== 'none' &&
-          getComputedStyle(document.querySelector('text-view')).display ===
-            'none'
+          !document.querySelector('text-view:not([style*="display: none"])')
         );
         // The image carries a data URL and starts fit-to-window.
         const hasDataUrl = !!(img && img.src.startsWith('data:image/png'));
@@ -1314,7 +1312,7 @@ app.whenReady().then(() => {
         // dispatches an async fetch through host.readDocPage, then a
         // buffer switch. A handful of frames is enough for both.
         for (let i = 0; i < 6; i += 1) await frame();
-        const view = document.querySelector('.doc-view');
+        const view = document.querySelector('doc-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         const page = view ? view.querySelector('.doc-page') : null;
         const pageText = page ? page.textContent : '';
@@ -1326,7 +1324,7 @@ app.whenReady().then(() => {
           xref.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
           for (let i = 0; i < 6; i += 1) await frame();
         }
-        const secondPage = document.querySelector('.doc-view .doc-page');
+        const secondPage = document.querySelector('doc-view:not([style*="display: none"]) .doc-page');
         const secondText = secondPage ? secondPage.textContent : '';
         return {
           shown,
@@ -1368,7 +1366,7 @@ app.whenReady().then(() => {
         await frame();
         submit('(open-doc "smoke-doc-fn")');
         for (let i = 0; i < 8; i += 1) await frame();
-        const view = document.querySelector('.doc-view');
+        const view = document.querySelector('doc-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         const page = view ? view.querySelector('.doc-page') : null;
         const html = page ? page.innerHTML : '';
@@ -1528,7 +1526,7 @@ app.whenReady().then(() => {
           }
           return predicate();
         };
-        const view = document.querySelector('.jukebox-view');
+        const view = document.querySelector('jukebox-view:not([style*="display: none"])');
         const visible = view && view.style.display !== 'none';
         const name = document.getElementById('modeline-name').textContent;
         const tracks = view
@@ -1644,12 +1642,11 @@ app.whenReady().then(() => {
         submit('(open-file-path! ${JSON.stringify(mediaAudioPath)})');
         await wait(400);
         await frame();
-        const audioView = document.querySelector('.audio-view');
+        const audioView = document.querySelector('audio-view:not([style*="display: none"])');
         const audioShown = !!(
           audioView &&
           getComputedStyle(audioView).display !== 'none' &&
-          getComputedStyle(document.querySelector('text-view')).display ===
-            'none'
+          !document.querySelector('text-view:not([style*="display: none"])')
         );
         const audioName =
           document.getElementById('modeline-name')?.textContent ?? '';
@@ -1828,12 +1825,11 @@ app.whenReady().then(() => {
         submit('(open-file-path! ${JSON.stringify(mediaVideoPath)})');
         await wait(400);
         await frame();
-        const videoView = document.querySelector('.video-view');
+        const videoView = document.querySelector('video-view:not([style*="display: none"])');
         const videoShown = !!(
           videoView &&
           getComputedStyle(videoView).display !== 'none' &&
-          getComputedStyle(document.querySelector('text-view')).display ===
-            'none'
+          !document.querySelector('text-view:not([style*="display: none"])')
         );
         const videoName =
           document.getElementById('modeline-name')?.textContent ?? '';
@@ -2230,7 +2226,7 @@ app.whenReady().then(() => {
         submit('(directory-tree ${JSON.stringify(treeDir)})');
         await wait(150);
         await frame();
-        const view = document.querySelector('.directory-tree-view');
+        const view = document.querySelector('directory-tree-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         // Row count: subdir (one folder, collapsed) + main.js + note.txt
         // = 3 rows at root level. Folders first, then files
@@ -2312,7 +2308,7 @@ app.whenReady().then(() => {
         submit('(directory-columns ${JSON.stringify(colsDir)})');
         await wait(200);
         await frame();
-        const view = document.querySelector('.directory-columns-view');
+        const view = document.querySelector('directory-columns-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         const initialColumns = view
           ? view.querySelectorAll('.directory-columns-column').length
@@ -2467,13 +2463,16 @@ app.whenReady().then(() => {
         submit('(shell)');
         await wait(500);
         await frame();
-        const view = document.querySelector('.shell-view');
+        const view = document.querySelector('shell-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         // The xterm.js host appears once the terminal opens; .xterm
         // is the wrapping element xterm.js mounts inside it.
         const termHost = view ? view.querySelector('.shell-term-host') : null;
         const xtermEl = view ? view.querySelector('.shell-term-host .xterm') : null;
-        const term = view ? view.__term : null;
+        // shell-view-wrapper holds an inner .shell-view div from the
+        // factory; the smoke hook attaches __term to that inner div.
+        const innerRoot = view ? view.querySelector('.shell-view') : null;
+        const term = innerRoot ? innerRoot.__term : null;
         if (!term || !xtermEl) {
           return { shown, mounted: false };
         }
