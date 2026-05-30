@@ -7,7 +7,6 @@ import {
   isView,
   isTablineView,
   tablineActiveChild,
-  createKindRegistry,
 } from '../src/index.js';
 
 test('createView requires a kind', () => {
@@ -104,77 +103,6 @@ test('each view gets a unique id', () => {
   const v1 = createView({ kind: 'text', buffer: createBuffer('') });
   const v2 = createView({ kind: 'text', buffer: createBuffer('') });
   assert.notEqual(v1.id, v2.id);
-});
-
-test('registry: register + lookup', () => {
-  const registry = createKindRegistry();
-  const mounted = [];
-  registry.register('text', { hasBuffer: true, mount: (v) => mounted.push(v) });
-  assert.equal(registry.has('text'), true);
-  assert.equal(registry.has('image'), false);
-  assert.deepEqual(registry.kinds(), ['text']);
-  const spec = registry.get('text');
-  assert.equal(spec.hasBuffer, true);
-});
-
-test('registry: mount dispatches to the spec', () => {
-  const registry = createKindRegistry();
-  const mounted = [];
-  registry.register('image', { hasBuffer: false, mount: (v) => mounted.push(v) });
-  const view = createView({ kind: 'image' });
-  registry.mount(view);
-  assert.equal(mounted.length, 1);
-  assert.equal(mounted[0], view);
-});
-
-test('registry: mount throws for an unknown kind', () => {
-  const registry = createKindRegistry();
-  const view = createView({ kind: 'mystery' });
-  assert.throws(() => registry.mount(view), /unknown view kind: mystery/);
-});
-
-test('registry: dispose runs the spec hook when present', () => {
-  const registry = createKindRegistry();
-  const disposed = [];
-  registry.register('shell', {
-    hasBuffer: false,
-    mount: () => {},
-    dispose: (v) => disposed.push(v),
-  });
-  const view = createView({ kind: 'shell' });
-  registry.dispose(view);
-  assert.deepEqual(disposed, [view]);
-});
-
-test('registry: dispose is a no-op for a spec without a dispose hook', () => {
-  const registry = createKindRegistry();
-  registry.register('image', { hasBuffer: false, mount: () => {} });
-  const view = createView({ kind: 'image' });
-  // Should not throw.
-  registry.dispose(view);
-});
-
-test('registry: register rejects duplicate kinds', () => {
-  const registry = createKindRegistry();
-  registry.register('text', { hasBuffer: true, mount: () => {} });
-  assert.throws(
-    () => registry.register('text', { hasBuffer: true, mount: () => {} }),
-    /already registered: text/
-  );
-});
-
-test('registry: register rejects a spec without a mount function', () => {
-  const registry = createKindRegistry();
-  assert.throws(
-    () => registry.register('bad', { hasBuffer: false }),
-    /spec\.mount is required/
-  );
-});
-
-test('registry: dispose silently ignores an unregistered kind', () => {
-  const registry = createKindRegistry();
-  const view = createView({ kind: 'mystery' });
-  registry.dispose(view); // no throw — defensive.
 });
 
 // --- tabline-view shape -------------------------------------------------

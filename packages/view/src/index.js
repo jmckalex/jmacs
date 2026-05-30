@@ -6,11 +6,9 @@
  *
  * Text-editing views wrap an L2 buffer; non-text views (image, jukebox,
  * audio, video, shell, directory-tree, directory-columns, customize,
- * doc, tabline) hold their own state and have no buffer.
- *
- * The kind registry is the dispatch surface: each view kind contributes
- * a spec saying whether it wraps a buffer, how it mounts in the
- * renderer, etc.
+ * doc, tabline) hold their own state and have no buffer. Each kind has
+ * its own custom HTMLElement (`<text-view>`, `<image-view>`, …) in the
+ * renderer package; this package only owns the buffer-less view model.
  */
 
 export {
@@ -19,10 +17,6 @@ export {
   isTablineView,
   tablineActiveChild,
 } from './view.js';
-
-export {
-  createKindRegistry,
-} from './kind-registry.js';
 
 export {
   viewFilePath,
