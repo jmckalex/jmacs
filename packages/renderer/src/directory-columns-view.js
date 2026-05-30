@@ -854,3 +854,62 @@ export function createDirectoryColumnsView(container, options = {}) {
     _selectIn: selectIn,
   };
 }
+
+// -----------------------------------------------------------------------
+// `<directory-columns-view>` — Phase 3g custom-element wrapper.
+
+import { defineViewElement, ViewElement } from './view-elements.js';
+
+/** @typedef {object} DirectoryColumnsViewOptions */
+
+export class DirectoryColumnsView extends ViewElement {
+  constructor() {
+    super();
+    /** @type {ReturnType<typeof createDirectoryColumnsView> | null} */
+    this._inner = null;
+    /** @type {DirectoryColumnsViewOptions | null} */
+    this._options = null;
+    this._pendingBuffer = null;
+  }
+
+  configure(options) {
+    if (this._inner !== null) {
+      throw new Error('DirectoryColumnsView.configure: cannot reconfigure after mount');
+    }
+    this._options = options ?? null;
+  }
+
+  get kind() { return 'directory-columns'; }
+
+  setBuffer(buffer) {
+    this._pendingBuffer = buffer;
+    if (this._inner !== null) this._inner.setBuffer(buffer);
+  }
+
+  focus() {
+    if (this._inner !== null) this._inner.focus();
+    else super.focus();
+  }
+
+  /** Smoke-only: forward to the inner _selectIn helper. */
+  _selectIn(...args) {
+    return this._inner === null ? undefined : this._inner._selectIn(...args);
+  }
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createDirectoryColumnsView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) this._inner.setBuffer(this._pendingBuffer);
+  }
+
+  disconnectedCallback() {
+    /* intentionally empty */
+  }
+
+  destroy() {
+    this._inner = null;
+    this._pendingBuffer = null;
+  }
+}
+
+defineViewElement('directory-columns-view', DirectoryColumnsView);

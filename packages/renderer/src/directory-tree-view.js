@@ -412,3 +412,57 @@ export function createDirectoryTreeView(container, options = {}) {
     focus: () => root.focus(),
   };
 }
+
+// -----------------------------------------------------------------------
+// `<directory-tree-view>` — Phase 3g custom-element wrapper.
+
+import { defineViewElement, ViewElement } from './view-elements.js';
+
+/** @typedef {object} DirectoryTreeViewOptions */
+
+export class DirectoryTreeView extends ViewElement {
+  constructor() {
+    super();
+    /** @type {ReturnType<typeof createDirectoryTreeView> | null} */
+    this._inner = null;
+    /** @type {DirectoryTreeViewOptions | null} */
+    this._options = null;
+    this._pendingBuffer = null;
+  }
+
+  configure(options) {
+    if (this._inner !== null) {
+      throw new Error('DirectoryTreeView.configure: cannot reconfigure after mount');
+    }
+    this._options = options ?? null;
+  }
+
+  get kind() { return 'directory-tree'; }
+
+  setBuffer(buffer) {
+    this._pendingBuffer = buffer;
+    if (this._inner !== null) this._inner.setBuffer(buffer);
+  }
+
+  focus() {
+    if (this._inner !== null) this._inner.focus();
+    else super.focus();
+  }
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createDirectoryTreeView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) this._inner.setBuffer(this._pendingBuffer);
+  }
+
+  disconnectedCallback() {
+    /* intentionally empty */
+  }
+
+  destroy() {
+    this._inner = null;
+    this._pendingBuffer = null;
+  }
+}
+
+defineViewElement('directory-tree-view', DirectoryTreeView);

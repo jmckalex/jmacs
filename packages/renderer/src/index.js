@@ -46,10 +46,14 @@ export {
 export { AudioView, createAudioView, formatDuration } from './audio-view.js';
 export { VideoView, createVideoView } from './video-view.js';
 export {
+  DirectoryTreeView,
   createDirectoryTreeView,
   iconClassForFile,
 } from './directory-tree-view.js';
-export { createDirectoryColumnsView } from './directory-columns-view.js';
+export {
+  DirectoryColumnsView,
+  createDirectoryColumnsView,
+} from './directory-columns-view.js';
 export { createShellView } from './shell-view.js';
 export {
   AUDIO_SUFFIXES,

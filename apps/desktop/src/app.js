@@ -46,8 +46,8 @@ import {
   AudioView,
   CustomizeView,
   DocView,
-  createDirectoryColumnsView,
-  createDirectoryTreeView,
+  DirectoryColumnsView,
+  DirectoryTreeView,
   createEditorView,
   createHoverDoc,
   createInlineEval,
@@ -1025,8 +1025,8 @@ function hideInactiveRendererViews(activeKind) {
   setDisplay(jukeboxView, 'jukebox');
   setDisplay(audioView, 'audio');
   setDisplay(videoView, 'video');
-  setDisplay(directoryTreeView.element, 'directory-tree');
-  setDisplay(directoryColumnsView.element, 'directory-columns');
+  setDisplay(directoryTreeView, 'directory-tree');
+  setDisplay(directoryColumnsView, 'directory-columns');
   setDisplay(shellView.element, 'shell');
   // `setBuffer(null)` resets the singleton — only do it when truly no
   // leaf shows the kind, so e.g. a background audio pane keeps its
@@ -4008,62 +4008,62 @@ videoView.style.display = 'none';
 // through this view. Folder rows expand on click; file rows route
 // through the host's open-file-path so they land in whichever view
 // their suffix maps to (text editor, image, audio, video).
-const directoryTreeView = createDirectoryTreeView(
-  editorPaneElement(),
-  {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
-    openPath: (path) => {
-      openFileInTabAdjacent(path);
-    },
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
-  }
-);
-directoryTreeView.element.style.display = 'none';
+// Phase 3g: directory-tree is a custom element now.
+const directoryTreeView = /** @type {*} */ (document.createElement('directory-tree-view'));
+directoryTreeView.configure({
+  ...(keymapReady ? { onKey: dispatchKey } : {}),
+  listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
+  openPath: (path) => {
+    openFileInTabAdjacent(path);
+  },
+  closeBuffer: () => {
+    if (!keymapReady) return;
+    try {
+      interpreter.call('kill-view');
+    } catch (error) {
+      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
+    }
+  },
+});
+editorPaneElement().append(directoryTreeView);
+directoryTreeView.style.display = 'none';
 
 // The directory columns-view — Finder-style horizontal browser.
 // Click a folder → spawns a column to its right; click a file →
 // trailing column becomes a preview pane for the file. Double-click
 // a file → opens it through the host's open-file-path so it lands
 // in whichever view its suffix maps to.
-const directoryColumnsView = createDirectoryColumnsView(
-  editorPaneElement(),
-  {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
-    getPreview: (path) => buildColumnPreview(path),
-    // Same tree-sitter highlighter registry the editor uses, so the
-    // preview pane colourises the file the same way as if it were open.
-    highlighters,
-    openPath: (path) => {
-      openFileInTabAdjacent(path);
-    },
-    onRevealInFolder: (path) => window.host.revealInFolder(path),
-    onTrash: (path) => window.host.trashFile(path),
-    onRename: (path, newName) => {
-      const slash = path.lastIndexOf('/');
-      const parent = slash >= 0 ? path.slice(0, slash) : '';
-      const to = parent === '' ? newName : `${parent}/${newName}`;
-      return window.host.renameFile(path, to);
-    },
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
-  }
-);
-directoryColumnsView.element.style.display = 'none';
+// Phase 3g: directory-columns is a custom element now.
+const directoryColumnsView = /** @type {*} */ (document.createElement('directory-columns-view'));
+directoryColumnsView.configure({
+  ...(keymapReady ? { onKey: dispatchKey } : {}),
+  listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
+  getPreview: (path) => buildColumnPreview(path),
+  // Same tree-sitter highlighter registry the editor uses, so the
+  // preview pane colourises the file the same way as if it were open.
+  highlighters,
+  openPath: (path) => {
+    openFileInTabAdjacent(path);
+  },
+  onRevealInFolder: (path) => window.host.revealInFolder(path),
+  onTrash: (path) => window.host.trashFile(path),
+  onRename: (path, newName) => {
+    const slash = path.lastIndexOf('/');
+    const parent = slash >= 0 ? path.slice(0, slash) : '';
+    const to = parent === '' ? newName : `${parent}/${newName}`;
+    return window.host.renameFile(path, to);
+  },
+  closeBuffer: () => {
+    if (!keymapReady) return;
+    try {
+      interpreter.call('kill-view');
+    } catch (error) {
+      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
+    }
+  },
+});
+editorPaneElement().append(directoryColumnsView);
+directoryColumnsView.style.display = 'none';
 
 // The shell view — a `shell`-kind buffer is shown through this view.
 // v4: xterm.js owns the DOM. The host pipes pty bytes in and out;
@@ -4582,8 +4582,8 @@ function singletonElementForKind(kind) {
     case 'video':              return videoView;
     case 'customize':          return customizeView;
     case 'shell':              return shellView.element;
-    case 'directory-tree':     return directoryTreeView.element;
-    case 'directory-columns':  return directoryColumnsView.element;
+    case 'directory-tree':     return directoryTreeView;
+    case 'directory-columns':  return directoryColumnsView;
     default:                   return null;
   }
 }
