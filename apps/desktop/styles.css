@@ -1518,6 +1518,8 @@ image-view,
    editor: the left column carries the cover art, the audio controls and
    the playback toolbar; the right column carries the track list. */
 
+/* Phase 3f: `<jukebox-view>` is the custom element. */
+jukebox-view,
 .jukebox-view {
   height: 100%;
   outline: none;

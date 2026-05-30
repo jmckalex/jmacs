@@ -52,7 +52,7 @@ import {
   createHoverDoc,
   createInlineEval,
   ImageView,
-  createJukeboxView,
+  JukeboxView,
   createMarkdownPreview,
   createMinibuffer,
   createReplView,
@@ -1022,7 +1022,7 @@ function hideInactiveRendererViews(activeKind) {
   setDisplay(customizeView, 'customize');
   setDisplay(imageView, 'image');
   setDisplay(docView, 'doc');
-  setDisplay(jukeboxView.element, 'jukebox');
+  setDisplay(jukeboxView, 'jukebox');
   setDisplay(audioView, 'audio');
   setDisplay(videoView, 'video');
   setDisplay(directoryTreeView.element, 'directory-tree');
@@ -3860,22 +3860,22 @@ docView.style.display = 'none';
 // audio controller is passed in so `audio-playing?` and friends
 // stay truthful; `openImage` routes M-RET on the album art through
 // the same image-buffer path the dialog uses.
-const jukeboxView = createJukeboxView(
-  editorPaneElement(),
-  {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    audio,
-    openImage: (path) => openImageByPath(expandTilde(path)),
-    report: (message) => repl.appendNote(message),
-    // Embedded album-art lookup: the host IPC reads the file's tag
-    // and returns `{ mime, dataUrl }` or null. The view shows the
-    // dataUrl when present, falls back to the directory's sidecar
-    // cover otherwise.
-    getEmbeddedArt: (path) =>
-      window.host.audioAlbumArt(expandTilde(path)),
-  }
-);
-jukeboxView.element.style.display = 'none';
+// Phase 3f: jukebox-view is a custom element now.
+const jukeboxView = /** @type {*} */ (document.createElement('jukebox-view'));
+jukeboxView.configure({
+  ...(keymapReady ? { onKey: dispatchKey } : {}),
+  audio,
+  openImage: (path) => openImageByPath(expandTilde(path)),
+  report: (message) => repl.appendNote(message),
+  // Embedded album-art lookup: the host IPC reads the file's tag
+  // and returns `{ mime, dataUrl }` or null. The view shows the
+  // dataUrl when present, falls back to the directory's sidecar
+  // cover otherwise.
+  getEmbeddedArt: (path) =>
+    window.host.audioAlbumArt(expandTilde(path)),
+});
+editorPaneElement().append(jukeboxView);
+jukeboxView.style.display = 'none';
 
 /** Dispatch a metadata-edit Lisp primitive (`set-audio-metadata!` /
  *  `remove-audio-metadata!`) on behalf of the audio view's inline-edit
@@ -4577,7 +4577,7 @@ function singletonElementForKind(kind) {
   switch (kind) {
     case 'image':              return imageView;
     case 'doc':                return docView;
-    case 'jukebox':            return jukeboxView.element;
+    case 'jukebox':            return jukeboxView;
     case 'audio':              return audioView;
     case 'video':              return videoView;
     case 'customize':          return customizeView;

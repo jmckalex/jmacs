@@ -54,6 +54,7 @@ export { createShellView } from './shell-view.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,
+  JukeboxView,
   createJukeboxView,
   findArt,
   isAudioFile,

@@ -1581,8 +1581,12 @@ app.whenReady().then(() => {
         await frame();
         // The jukebox view's container is hidden once the jukebox
         // buffer is gone (the next buffer's view is mounted instead).
-        const jukeboxStillVisible =
-          !!view && view.style.display !== 'none';
+        // Phase 3f: visibility is on the <jukebox-view> wrapper, not
+        // on the inner .jukebox-view div.
+        const jukeboxWrapperEl = document.querySelector('jukebox-view');
+        const jukeboxStillVisible = !!(
+          jukeboxWrapperEl && jukeboxWrapperEl.style.display !== 'none'
+        );
         const modelineName =
           document.getElementById('modeline-name').textContent;
 

@@ -621,6 +621,76 @@ export function createJukeboxView(container, options = {}) {
   };
 }
 
+// -----------------------------------------------------------------------
+// `<jukebox-view>` — Phase 3f custom-element wrapper.
+
+import { defineViewElement, ViewElement } from './view-elements.js';
+
+/** @typedef {object} JukeboxViewOptions
+ *  Same options bag the factory accepts. */
+
+export class JukeboxView extends ViewElement {
+  constructor() {
+    super();
+    /** @type {ReturnType<typeof createJukeboxView> | null} */
+    this._inner = null;
+    /** @type {JukeboxViewOptions | null} */
+    this._options = null;
+    this._pendingBuffer = null;
+  }
+
+  configure(options) {
+    if (this._inner !== null) {
+      throw new Error('JukeboxView.configure: cannot reconfigure after mount');
+    }
+    this._options = options ?? null;
+  }
+
+  get kind() { return 'jukebox'; }
+
+  setBuffer(buffer) {
+    this._pendingBuffer = buffer;
+    if (this._inner !== null) this._inner.setBuffer(buffer);
+  }
+
+  focus() {
+    if (this._inner !== null) this._inner.focus();
+    else super.focus();
+  }
+
+  /** Number of tracks the jukebox is showing. */
+  trackCount() {
+    return this._inner === null ? 0 : this._inner.trackCount();
+  }
+
+  /** Index of the currently-playing track, or -1. */
+  currentIndex() {
+    return this._inner === null ? -1 : this._inner.currentIndex();
+  }
+
+  /** Whether shuffle is enabled. */
+  isShuffleOn() {
+    return this._inner === null ? false : this._inner.isShuffleOn();
+  }
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createJukeboxView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) this._inner.setBuffer(this._pendingBuffer);
+  }
+
+  disconnectedCallback() {
+    /* intentionally empty */
+  }
+
+  destroy() {
+    this._inner = null;
+    this._pendingBuffer = null;
+  }
+}
+
+defineViewElement('jukebox-view', JukeboxView);
+
 /** A thin shim around a private `HTMLAudioElement` for when the view
  *  is used outside the editor — tests, primarily. */
 function createPrivateAudioShim(doc) {
