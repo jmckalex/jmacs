@@ -451,3 +451,64 @@ export function createCustomizeView(container, options = {}) {
     focus: () => root.focus(),
   };
 }
+
+// -----------------------------------------------------------------------
+// `<customize-view>` — the custom-element wrapper around the factory
+// above. Phase 3d of `plans/VIEWS-AS-CUSTOM-ELEMENTS.md`. Same pattern
+// as AudioView / VideoView.
+
+import { defineViewElement, ViewElement } from './view-elements.js';
+
+/** @typedef {object} CustomizeViewOptions
+ *  Same options bag the factory accepts — see `createCustomizeView`. */
+
+export class CustomizeView extends ViewElement {
+  constructor() {
+    super();
+    /** @type {ReturnType<typeof createCustomizeView> | null} */
+    this._inner = null;
+    /** @type {CustomizeViewOptions | null} */
+    this._options = null;
+    this._pendingBuffer = null;
+  }
+
+  configure(options) {
+    if (this._inner !== null) {
+      throw new Error(
+        'CustomizeView.configure: cannot reconfigure after mount'
+      );
+    }
+    this._options = options ?? null;
+  }
+
+  get kind() { return 'customize'; }
+
+  setBuffer(buffer) {
+    this._pendingBuffer = buffer;
+    if (this._inner !== null) this._inner.setBuffer(buffer);
+  }
+
+  focus() {
+    if (this._inner !== null) this._inner.focus();
+    else super.focus();
+  }
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createCustomizeView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) this._inner.setBuffer(this._pendingBuffer);
+  }
+
+  disconnectedCallback() {
+    /* intentionally empty */
+  }
+
+  destroy() {
+    this._inner = null;
+    this._pendingBuffer = null;
+    // The inner factory doesn't expose its own destroy(); the inner DOM
+    // disappears when the wrapper is detached + garbage-collected.
+  }
+}
+
+defineViewElement('customize-view', CustomizeView);

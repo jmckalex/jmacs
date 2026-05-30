@@ -1063,10 +1063,10 @@ app.whenReady().then(() => {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
         await new Promise((r) => requestAnimationFrame(() => r()));
-        const customizeEl = document.querySelector('.customize');
-        // Phase 2c: the per-pane editor is a <text-view> wrapping the
-        // .editor div; visibility now toggles on the wrapper, not the
-        // inner .editor.
+        // Phase 2c + 3d: the per-pane editor is a <text-view> wrapping
+        // the .editor div, and customize is a <customize-view> wrapping
+        // the .customize div. Visibility now lives on the wrappers.
+        const customizeEl = document.querySelector('customize-view');
         const customizeShown = !!(
           customizeEl &&
           getComputedStyle(customizeEl).display !== 'none' &&
@@ -1146,7 +1146,10 @@ app.whenReady().then(() => {
         submit('(customize-faces)');
         await new Promise((r) => setTimeout(r, 250));
         await frame();
-        const cv = document.querySelector('.customize');
+        // Phase 3d: query the wrapper element for visibility — its
+        // inline display:none toggle is what hides the customize UI;
+        // the inner .customize div's computed style stays 'block'.
+        const cv = document.querySelector('customize-view');
         const customizeShown = !!(cv && getComputedStyle(cv).display !== 'none');
         const faceRows = cv ? cv.querySelectorAll('.customize-face-row').length : 0;
         const swatchFor = (face) => {

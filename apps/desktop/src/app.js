@@ -44,7 +44,7 @@ import {
 } from '@editor/lisp';
 import {
   AudioView,
-  createCustomizeView,
+  CustomizeView,
   createDocView,
   createDirectoryColumnsView,
   createDirectoryTreeView,
@@ -1019,7 +1019,7 @@ function hideInactiveRendererViews(activeKind) {
   const setDisplay = (el, kind) => {
     el.style.display = kindsInUse.has(kind) ? '' : 'none';
   };
-  setDisplay(customizeView.element, 'customize');
+  setDisplay(customizeView, 'customize');
   setDisplay(imageView, 'image');
   setDisplay(docView.element, 'doc');
   setDisplay(jukeboxView.element, 'jukebox');
@@ -3778,20 +3778,20 @@ function openCustomScope(scope) {
 // It shares #editor-host with the editor view; switchToBuffer shows
 // whichever the current buffer's kind calls for. Keys typed in it
 // (outside a form control) go through the same Lisp keymap.
-const customizeView = createCustomizeView(
-  editorPaneElement(),
-  {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    getModel: getCustomModel,
-    applySetting: applyCustomSetting,
-    saveSetting: saveCustomSetting,
-    resetSetting: resetCustomSetting,
-    openScope: openCustomScope,
-    setFaceAttribute: setFaceFromView,
-    resetFace: resetFaceFromView,
-  }
-);
-customizeView.element.style.display = 'none';
+// Phase 3d: customize-view is a custom element now.
+const customizeView = /** @type {*} */ (document.createElement('customize-view'));
+customizeView.configure({
+  ...(keymapReady ? { onKey: dispatchKey } : {}),
+  getModel: getCustomModel,
+  applySetting: applyCustomSetting,
+  saveSetting: saveCustomSetting,
+  resetSetting: resetCustomSetting,
+  openScope: openCustomScope,
+  setFaceAttribute: setFaceFromView,
+  resetFace: resetFaceFromView,
+});
+editorPaneElement().append(customizeView);
+customizeView.style.display = 'none';
 
 // The image view — the view an `image`-kind buffer is shown through.
 // Like the customisation view it shares #editor-host; switchToBuffer
@@ -4577,7 +4577,7 @@ function singletonElementForKind(kind) {
     case 'jukebox':            return jukeboxView.element;
     case 'audio':              return audioView;
     case 'video':              return videoView;
-    case 'customize':          return customizeView.element;
+    case 'customize':          return customizeView;
     case 'shell':              return shellView.element;
     case 'directory-tree':     return directoryTreeView.element;
     case 'directory-columns':  return directoryColumnsView.element;

@@ -23,7 +23,7 @@ export {
 export { TextView } from './text-view.js';
 export { TablineView } from './tabline-view.js';
 export { createTabline } from './tabline.js';
-export { createCustomizeView } from './customize.js';
+export { CustomizeView, createCustomizeView } from './customize.js';
 export { createDocView } from './doc-view.js';
 export { createHoverDoc } from './hover-doc.js';
 export { createInlineEval } from './inline-eval.js';

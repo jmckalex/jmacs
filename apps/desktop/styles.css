@@ -1181,6 +1181,9 @@ body.markdown-preview-hidden #preview-splitter {
 /* A customisation buffer is shown through this view instead of the text
    editor — the editor's first non-text buffer kind. */
 
+/* Phase 3d: `<customize-view>` is the custom element; the factory
+   still creates an inner `.customize` div. */
+customize-view,
 .customize {
   height: 100%;
   overflow: auto;
