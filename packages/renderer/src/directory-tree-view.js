@@ -166,7 +166,7 @@ export function joinPath(parent, child) {
  * @returns {{element: HTMLElement, setBuffer: (buffer: object | null)
  *   => void, focus: () => void}}
  */
-export function createDirectoryTreeView(container, options = {}) {
+function createDirectoryTreeView(container, options = {}) {
   const doc = container.ownerDocument;
   const listDirectory =
     typeof options.listDirectory === 'function' ? options.listDirectory : null;

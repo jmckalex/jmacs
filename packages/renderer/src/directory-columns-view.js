@@ -79,7 +79,7 @@ const FORM_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
  *   presses `q` to dismiss the buffer.
  * @returns {{element: HTMLElement, setBuffer, focus}}
  */
-export function createDirectoryColumnsView(container, options = {}) {
+function createDirectoryColumnsView(container, options = {}) {
   const doc = container.ownerDocument;
   const listDirectory =
     typeof options.listDirectory === 'function' ? options.listDirectory : null;

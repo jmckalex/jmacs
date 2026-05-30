@@ -44,7 +44,7 @@ const FORM_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
  * @returns {{element: HTMLElement, setBuffer: (buffer: object | null)
  *   => void, focus: () => void, destroy: () => void}}
  */
-export function createVideoView(container, options = {}) {
+function createVideoView(container, options = {}) {
   const doc = container.ownerDocument;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const closeBuffer =

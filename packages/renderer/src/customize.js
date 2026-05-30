@@ -65,7 +65,7 @@ function cssEscape(value) {
  * @param {(face: string) => void} [options.resetFace] - Drop the
  *   global override of a face.
  */
-export function createCustomizeView(container, options = {}) {
+function createCustomizeView(container, options = {}) {
   const doc = container.ownerDocument;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const getModel = options.getModel ?? (() => null);

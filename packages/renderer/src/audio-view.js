@@ -111,7 +111,7 @@ export function formatEditError(error) {
  * @returns {{element: HTMLElement, setBuffer, focus, destroy,
  *   pauseAndRelease, resumeFrom}}
  */
-export function createAudioView(container, options = {}) {
+function createAudioView(container, options = {}) {
   const doc = container.ownerDocument;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const closeBuffer =

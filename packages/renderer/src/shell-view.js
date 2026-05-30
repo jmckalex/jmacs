@@ -135,7 +135,7 @@ function readThemeFromCss(doc) {
  *   applyTheme: () => void,
  * }}
  */
-export function createShellView(container, options = {}) {
+function createShellView(container, options = {}) {
   const doc = container.ownerDocument;
   const win = doc.defaultView;
   const spawnFn = typeof options.spawn === 'function' ? options.spawn : null;

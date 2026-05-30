@@ -144,7 +144,7 @@ export function joinPath(dir, name) {
  *   isShuffleOn(): boolean,
  * }}
  */
-export function createJukeboxView(container, options = {}) {
+function createJukeboxView(container, options = {}) {
   const doc = container.ownerDocument;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const openImage =

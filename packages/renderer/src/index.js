@@ -23,8 +23,8 @@ export {
 export { TextView } from './text-view.js';
 export { TablineView } from './tabline-view.js';
 export { createTabline } from './tabline.js';
-export { CustomizeView, createCustomizeView } from './customize.js';
-export { DocView, createDocView } from './doc-view.js';
+export { CustomizeView } from './customize.js';
+export { DocView } from './doc-view.js';
 export { createHoverDoc } from './hover-doc.js';
 export { createInlineEval } from './inline-eval.js';
 export { renderMarkdown } from './markdown.js';
@@ -43,23 +43,20 @@ export {
   mimeTypeForAudio,
   mimeTypeForVideo,
 } from './media-view.js';
-export { AudioView, createAudioView, formatDuration } from './audio-view.js';
-export { VideoView, createVideoView } from './video-view.js';
+export { AudioView, formatDuration } from './audio-view.js';
+export { VideoView } from './video-view.js';
 export {
   DirectoryTreeView,
-  createDirectoryTreeView,
   iconClassForFile,
 } from './directory-tree-view.js';
 export {
   DirectoryColumnsView,
-  createDirectoryColumnsView,
 } from './directory-columns-view.js';
-export { ShellView, createShellView } from './shell-view.js';
+export { ShellView } from './shell-view.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,
   JukeboxView,
-  createJukeboxView,
   findArt,
   isAudioFile,
   joinPath,

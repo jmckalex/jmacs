@@ -56,7 +56,7 @@ export function docLinkName(target) {
  * @returns {{element: HTMLElement, setBuffer: (buffer: object | null)
  *   => void, focus: () => void}}
  */
-export function createDocView(container, options = {}) {
+function createDocView(container, options = {}) {
   const doc = container.ownerDocument;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const closeBuffer =
