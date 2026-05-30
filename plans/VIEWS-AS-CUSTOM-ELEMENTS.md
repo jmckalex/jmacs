@@ -239,11 +239,12 @@ element; `document.createElement('text-view')` constructs one.
 
 Each phase ends with the app running.
 
-### Phase 0 — Decisions
+### Phase 0 — Decisions ✅ DONE
 
-Answer the five questions above. Each shapes every class.
+See the "Phase 0 decisions — SETTLED 2026-05-29" section at the
+bottom of this file. The five questions are answered.
 
-### Phase 1 — Infrastructure
+### Phase 1 — Infrastructure ✅ DONE (tag `views-phase-1`)
 
 - A tiny module — `packages/renderer/src/view-elements.js` —
   with shared helpers (the registration bootstrap, attribute
@@ -270,7 +271,17 @@ themselves are surfaced in
 `packages/renderer/src/view-elements.js`'s file-level
 documentation.
 
-### Phase 2 — TextView + TablineView
+### Phase 2 — TextView + TablineView ✅ MOSTLY DONE
+
+Phase 2a (TextView wrapper), 2b (TablineView class), 2c (TextView
+wired into the live mount path) and 2d-1 (the bespoke
+`state.container` swapped for a `<tabline-view>` element in
+`data-host-managed` mode) are landed. The deeper Phase 2d-2 —
+migrating from `view.tabs[]` as a JS array to tabs-as-
+`<tabline-view>.children` — is deferred until Phase 3 has
+converted the non-text kinds (which is what lets non-text tabs
+exist as DOM children at all).
+
 
 The two highest-traffic kinds. Done together because tabline
 contains text views, and the contract between them is the most
@@ -294,7 +305,7 @@ tests cover the lifecycle: `connectedCallback` runs on
 re-`appendChild`, the `<tabline-view>` active-attribute toggle
 shows the right child.
 
-### Phase 3 — Sweep the remaining kinds
+### Phase 3 — Sweep the remaining kinds ✅ DONE (tag `views-phase-3-complete`)
 
 In order of independence (least-coupled first):
 - image, audio, video — file-backed, simple.
@@ -309,17 +320,39 @@ In order of independence (least-coupled first):
 
 Each conversion deletes one `kindRegistry.register(...)` entry.
 
-### Phase 4 — Delete the parallel infrastructure
+### Phase 4 — Delete the parallel infrastructure ⚠️ PARTIALLY DONE
 
-After every kind is a custom element, the following are dead:
-- `kindRegistry` (the module + the register calls).
-- `singletonElementForKind`.
-- `hideInactiveRendererViews`.
-- `inheritExistingEditorIntoTabline`.
-- The "directory tree singleton parented in the first leaf" block
-  at boot.
-- Most of `editorViewByPaneId` (replaced by
-  `pane.querySelector('text-view')`).
+Done (through tag `views-phase-4f`):
+- ✅ `kindRegistry` (`createKindRegistry`, the register calls,
+  the mount/dispose dispatch) — replaced by `mountKindView` /
+  `disposeKindView` in app.js and deleted from `@editor/view`.
+- ✅ `singletonElementForKind` is still a function but is now a
+  one-line `find` over `SINGLETON_VIEWS` — the single source of
+  truth that also drives `hideInactiveRendererViews`.
+- ✅ The `tabline-pane` class — CSS targets the `<tabline-view>`
+  tag directly.
+- ✅ The legacy `createXView` factories — un-exported from the
+  renderer's public surface; the wrapper classes still see them
+  intra-package.
+
+Outstanding — load-bearing under the current architecture and
+needing the per-view-instance-non-text shift to delete cleanly:
+- ❌ `hideInactiveRendererViews` (still coordinates singleton
+  visibility across the pane tree).
+- ❌ `inheritExistingEditorIntoTabline` (still bootstraps the
+  tabline state when promoting a leaf).
+- ❌ `removeViewFromAllTablines` (still needed for the
+  `view.tabs[]` array model).
+- ❌ The "directory tree singleton parented in the first leaf"
+  boot block — the singleton model still applies.
+- ❌ Most of `editorViewByPaneId` — still the source of truth
+  for the per-leaf text editor instance.
+
+The remaining deletions all depend on the same architectural
+shift: each non-text view kind gets its own per-view-instance
+element (rather than one shared singleton per kind), and tabline
+tabs become DOM children of the `<tabline-view>` element. Once
+both hold, the helpers above become genuinely redundant.
 
 Each deletion is its own commit. Tests stay green throughout.
 
