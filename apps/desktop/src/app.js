@@ -419,9 +419,7 @@ function relayoutPanes() {
   // Keep the splitter handles aligned with their split-node edges.
   // Phase 3a — refreshSplitterHandles is a no-op on a one-leaf tree
   // (computeSplitterEdges returns no entries).
-  if (typeof refreshSplitterHandles === 'function') {
-    refreshSplitterHandles();
-  }
+  refreshSplitterHandles();
 }
 
 /** Schedule a relayout for the next animation frame. Coalesces a burst
@@ -550,7 +548,7 @@ function setCurrentPaneId(nextId) {
       editorView = instance;
     }
   }
-  if (typeof updateModeline === 'function') updateModeline();
+  updateModeline();
 }
 
 // Paint the initial focus indicator. With one pane this just adds the
@@ -692,7 +690,7 @@ function deletePaneInTree(targetLeaf) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  if (typeof updateModeline === 'function') updateModeline();
+  updateModeline();
 }
 
 /** Implementation of `delete-other-panes!`. Makes TARGET fill the
@@ -728,7 +726,7 @@ function deleteOtherPanesInTree(targetLeaf) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  if (typeof updateModeline === 'function') updateModeline();
+  updateModeline();
 }
 
 /** Set of every leaf-kind view that is currently *visible* in some
@@ -4432,9 +4430,7 @@ function mountTablineActiveChild(tablineView) {
   if (child.kind === 'text' && child.buffer) {
     // Sweep non-text singletons so they don't overlay the strip when
     // switching from a non-text tab to a text tab.
-    if (typeof hideInactiveRendererViews === 'function') {
-      hideInactiveRendererViews('text');
-    }
+    hideInactiveRendererViews('text');
     if (state.activeEditor === null) {
       // No inherited editor (i.e. the tabline was constructed fresh
       // via Lisp's `(make-tabline-view ...)`, not handed over by
@@ -4487,9 +4483,7 @@ function mountTablineActiveChild(tablineView) {
   // up and the others go quiet — same as `switchToViewIndex`'s pre-
   // tabline path.
   if (state.activeEditor) state.activeEditor.style.display = 'none';
-  if (typeof hideInactiveRendererViews === 'function') {
-    hideInactiveRendererViews(child.kind);
-  }
+  hideInactiveRendererViews(child.kind);
 
   if (child.kind === 'tabline') {
     // Nested tabline-views (Q10). Recurse — the child's mount creates
@@ -5499,7 +5493,7 @@ function promoteToTablineOnPane(pane) {
   const paneEl = paneElements.get(pane.id);
   if (paneEl) mountKindView(tabline, { paneEl });
   refreshPaneTabStrips();
-  if (typeof updateModeline === 'function') updateModeline();
+  updateModeline();
   return tabline;
 }
 
@@ -5555,7 +5549,7 @@ function demoteTablineView(tlv) {
     hideInactiveRendererViews(survivor.kind);
     mountKindView(survivor);
   }
-  if (typeof updateModeline === 'function') updateModeline();
+  updateModeline();
   return survivor;
 }
 
@@ -5653,7 +5647,7 @@ function swapPaneViews(paneA, paneB) {
     }
   }
   refreshPaneFocusIndicators();
-  if (typeof updateModeline === 'function') updateModeline();
+  updateModeline();
   return true;
 }
 
