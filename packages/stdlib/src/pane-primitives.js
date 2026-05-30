@@ -133,26 +133,31 @@ export function createPanePrimitives(paneHost) {
     // --- split / delete / navigate -------------------------------------
     // Phase 3a: the user-facing pane surface.
 
-    // `(split-horizontal! [ratio])` — replace the current leaf with a
-    // horizontal split node (side-by-side). The originating leaf stays
-    // focused as the *first* child (left), the new leaf becomes the
-    // *second* (right). Returns `(left-handle . right-handle)` as a
-    // proper list `(left right)` per Q15.
+    // `(split-horizontal! [ratio [side]])` — replace the current leaf
+    // with a horizontal split node (side-by-side). The originating leaf
+    // stays focused. With SIDE = `'after` (default) the new leaf is the
+    // *second* (right) child; with SIDE = `'before` the new leaf is
+    // the *first* (left) child. Returns `(first second)` per Q15 —
+    // first is whichever child sits at the lower index in the resulting
+    // tree.
     'split-horizontal!': (args) => {
       const pane = paneHost.currentPane();
       if (pane === null) return NIL;
       const ratio = ratioFromArgs(args);
-      const result = paneHost.splitHorizontal(pane, ratio);
+      const side = sideFromArg(args[1]);
+      const result = paneHost.splitHorizontal(pane, ratio, side);
       if (!result) return NIL;
       return cons(result.first, cons(result.second, NIL));
     },
-    // `(split-vertical! [ratio])` — likewise, vertical orientation
-    // (top-and-bottom). Originating leaf is the *first* (top) child.
+    // `(split-vertical! [ratio [side]])` — likewise, vertical orientation
+    // (top-and-bottom). `'after` puts the new leaf below; `'before`
+    // above. Default `'after`.
     'split-vertical!': (args) => {
       const pane = paneHost.currentPane();
       if (pane === null) return NIL;
       const ratio = ratioFromArgs(args);
-      const result = paneHost.splitVertical(pane, ratio);
+      const side = sideFromArg(args[1]);
+      const result = paneHost.splitVertical(pane, ratio, side);
       if (!result) return NIL;
       return cons(result.first, cons(result.second, NIL));
     },
@@ -450,6 +455,23 @@ export function createPanePrimitives(paneHost) {
       return tlv;
     },
   };
+}
+
+/** Coerce a split-side argument (symbol/string/keyword) to one of
+ *  `'after'` / `'before'`. Anything unrecognisable, including a
+ *  missing argument, defaults to `'after'` so callers that don't care
+ *  about side get the original behaviour. */
+function sideFromArg(raw) {
+  if (raw === undefined || raw === null || raw === NIL) return 'after';
+  let name = null;
+  if (typeof raw === 'string') name = raw;
+  else if (
+    raw && typeof raw === 'object' && typeof raw.name === 'string'
+  ) name = raw.name;
+  if (name === null) return 'after';
+  if (name.startsWith(':')) name = name.slice(1);
+  if (name === 'before' || name === 'after') return name;
+  return 'after';
 }
 
 /** Coerce EDGEARG (a string, a Sym, a Keyword) to a canonical edge

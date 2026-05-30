@@ -135,6 +135,11 @@
    "C-g"          'keyboard-quit
    "C-z"          'undo
    "C-S-z"        'redo
+   ;; Universal-argument prefix. Pressing C-u sets `*prefix-arg*` so
+   ;; the next command can alter its behaviour (e.g. flip a split's
+   ;; direction). Numeric multi-press isn't supported yet — a single
+   ;; C-u is treated as a boolean "argument present".
+   "C-u"          'universal-argument
    "C-s"          'isearch-forward
    "C-r"          'isearch-backward
    "C-M-s"        'isearch-regexp-forward
@@ -194,6 +199,17 @@
 ;; is clear; mid-sequence it shows what's been typed so far, with a
 ;; trailing dash signalling that more keys are coming.
 (define *chord-prefix* "")
+
+;; The pending universal-argument, consumed by the next command. Nil
+;; when no C-u has been pressed; #t after a single C-u. Commands that
+;; care (e.g. split-horizontal / split-vertical) consult this variable
+;; to alter their behaviour. `handle-key` clears it as soon as a
+;; non-universal-argument command runs.
+(define *prefix-arg* nil)
+
+(define (reset-prefix-arg!)
+  "Clear the pending universal-argument."
+  (set! *prefix-arg* nil))
 
 ;; show-status! / clear-status! are host primitives that route to the
 ;; minibuffer's echo area. Tests register no-op versions; the real app
@@ -280,7 +296,17 @@
 (defcommand keyboard-quit ()
   "Abort a partial key sequence and clear the selection (C-g)."
   (reset-keymap!)
+  (reset-prefix-arg!)
   (clear-mark!))
+
+(defcommand universal-argument ()
+  "Set the pending prefix-argument (so the next command sees a non-nil
+   `*prefix-arg*`). Bound to `C-u`. Commands that consult the prefix
+   alter their behaviour — e.g. `C-u C-x 2` splits the pane above
+   instead of below, `C-u C-x 3` to the left instead of right."
+  (set! *prefix-arg* #t)
+  ;; Echo the chord so the user sees the prefix was registered.
+  (show-status! "C-u-"))
 
 (define (self-insert-key? key)
   "True when KEY is a single character to be inserted as text."
@@ -326,10 +352,16 @@
           ;; A command name: run it, then return to rest. The chord
           ;; display is cleared by reset-keymap! before the command
           ;; runs, so a command's own echo-area message is not
-          ;; overwritten by the cleanup.
+          ;; overwritten by the cleanup. The pending prefix-arg is
+          ;; cleared *after* the command runs (so it sees the value),
+          ;; but only when the command isn't `universal-argument` —
+          ;; that command exists to *set* the prefix and clearing it
+          ;; right after would defeat the purpose.
           ((symbol? binding)
            (reset-keymap!)
            (run-command binding)
+           (when (not (eq? binding 'universal-argument))
+             (reset-prefix-arg!))
            #t)
           ;; Mid-sequence with nothing bound: the sequence is
           ;; undefined; reset and clear the chord display.

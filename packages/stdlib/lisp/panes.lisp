@@ -26,17 +26,25 @@
   (enter-add-pane-mode!))
 
 (defcommand split-horizontal ()
-  "Split the current pane side-by-side. The originating pane becomes
-   the left child and keeps focus; the right child gets a duplicate
-   view over the same buffer (text views) or the `*scratch*` view
-   (non-text views). Bound to `C-x 3`."
-  (split-horizontal!))
+  "Split the current pane side-by-side. The originating pane keeps
+   focus; the new pane gets a duplicate view over the same buffer
+   (text views) or the `*scratch*` view (non-text views).
+
+   With no prefix-arg (the default) the new pane appears to the
+   *right*. With `C-u` prefix it appears to the *left*. Bound to
+   `C-x 3`."
+  (let ((side (if (nil? *prefix-arg*) 'after 'before)))
+    (split-horizontal! 0.5 side)))
 
 (defcommand split-vertical ()
-  "Split the current pane top-and-bottom. The originating pane becomes
-   the top child and keeps focus; the bottom child gets a duplicate
-   view (text) or `*scratch*` (non-text). Bound to `C-x 2`."
-  (split-vertical!))
+  "Split the current pane top-and-bottom. The originating pane keeps
+   focus; the new pane gets a duplicate view (text) or `*scratch*`
+   (non-text).
+
+   With no prefix-arg (the default) the new pane appears *below*.
+   With `C-u` prefix it appears *above*. Bound to `C-x 2`."
+  (let ((side (if (nil? *prefix-arg*) 'after 'before)))
+    (split-vertical! 0.5 side)))
 
 (defcommand delete-pane ()
   "Delete the current pane — collapse its parent split into its

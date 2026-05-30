@@ -618,21 +618,32 @@ function buildDuplicateViewForSplit(originalView) {
 
 /** Common implementation of split-horizontal! / split-vertical!.
  *  Replaces TARGET (a leaf) with a split node; the originating leaf
- *  becomes the *first* child and keeps focus, a freshly-created leaf
- *  becomes the *second*. Returns `{ first, second }`. */
-function splitPaneAtLeaf(targetLeaf, orientation, ratio) {
+ *  keeps focus, a freshly-created leaf is its sibling. With SIDE =
+ *  `'after'` (default) the new leaf is the *second* child (right of /
+ *  below the original); with SIDE = `'before'` it is the *first* child
+ *  (left of / above the original). The originating leaf's id is
+ *  preserved across the replacement so focus + editor-view bindings
+ *  don't churn. Returns `{ first, second }`. */
+function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
   if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
   if (
     orientation !== SPLIT_HORIZONTAL &&
     orientation !== SPLIT_VERTICAL
   ) return null;
+  if (side !== 'after' && side !== 'before') return null;
   const dup = buildDuplicateViewForSplit(targetLeaf.view);
   const newLeaf = createLeafPane({ view: dup });
+  // Ratio interpretation: it always describes the *first* child's
+  // share. With SIDE='before' the new leaf is first, so the supplied
+  // ratio applies to it directly. With SIDE='after' the originating
+  // leaf is first; same interpretation. No flip needed at this layer.
+  const first = side === 'before' ? newLeaf : targetLeaf;
+  const second = side === 'before' ? targetLeaf : newLeaf;
   const split = createSplitPane({
     orientation,
     ratio,
-    first: targetLeaf,
-    second: newLeaf,
+    first,
+    second,
   });
   rootPane = replacePane(rootPane, targetLeaf, split);
   syncPaneElements();
@@ -644,14 +655,13 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio) {
     // editor-view exists and is bound to the duplicate view.
     ensureEditorViewForLeaf(newLeaf);
   }
-  // currentPaneId stays the same — the originating leaf survived as the
-  // first child with its id intact. Refresh the indicator + splitters,
-  // then relayout. The text-kind mount already ran for the focused view
-  // earlier; no need to re-mount here.
+  // currentPaneId stays the same — the originating leaf survived (just
+  // possibly as `second` instead of `first`) with its id intact.
+  // Refresh the indicator + splitters, then relayout.
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  return { first: targetLeaf, second: newLeaf };
+  return { first, second };
 }
 
 /** Insert a fresh leaf "in the gap" of the split node with id SPLIT_ID.
@@ -2300,10 +2310,10 @@ const lispFactories = { keyword, sym };
  *  editor-view instances follow. */
 const paneHost = {
   currentPane: () => currentPane(),
-  splitHorizontal: (pane, ratio) =>
-    splitPaneAtLeaf(pane, SPLIT_HORIZONTAL, ratio),
-  splitVertical: (pane, ratio) =>
-    splitPaneAtLeaf(pane, SPLIT_VERTICAL, ratio),
+  splitHorizontal: (pane, ratio, side) =>
+    splitPaneAtLeaf(pane, SPLIT_HORIZONTAL, ratio, side),
+  splitVertical: (pane, ratio, side) =>
+    splitPaneAtLeaf(pane, SPLIT_VERTICAL, ratio, side),
   addPaneAtSplitter: (splitId) => addPaneAtSplitterId(splitId),
   addPaneAtBorder: (side) => addPaneAtRootBorder(side),
   deletePane: (pane) => deletePaneInTree(pane),
