@@ -35,6 +35,8 @@ export {
   leafCount,
   parentOf,
   siblingOf,
+  insertAtSplit,
+  insertAtRootBorder,
 } from './tree.js';
 
 export {

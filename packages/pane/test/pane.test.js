@@ -20,6 +20,8 @@ import {
   splitRect,
   computeSplitterEdges,
   paneInDirection,
+  insertAtSplit,
+  insertAtRootBorder,
   PANE_KIND_LEAF,
   PANE_KIND_SPLIT,
   SPLIT_HORIZONTAL,
@@ -649,4 +651,158 @@ test('paneInDirection: returns null for an unknown current id or direction', () 
   ]);
   assert.equal(paneInDirection(rects, 'no-such-id', 'right'), null);
   assert.equal(paneInDirection(rects, 'p-a', 'diagonal'), null);
+});
+
+// --- insertAtSplit / insertAtRootBorder ---------------------------------
+
+test('insertAtSplit: replaces split with outer Split(first, inner Split(NEW, second))', () => {
+  const a = createLeafPane({ view: { name: 'a' } });
+  const b = createLeafPane({ view: { name: 'b' } });
+  const c = createLeafPane({ view: { name: 'c' } });
+  const split = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: a,
+    second: b,
+  });
+  const newTree = insertAtSplit(split, split, c);
+  assert.equal(isSplitPane(newTree), true);
+  assert.equal(newTree.orientation, SPLIT_HORIZONTAL);
+  assert.equal(newTree.first, a);
+  assert.equal(isSplitPane(newTree.second), true);
+  assert.equal(newTree.second.orientation, SPLIT_HORIZONTAL);
+  assert.equal(newTree.second.first, c);
+  assert.equal(newTree.second.second, b);
+  // Default ratios produce three equal siblings: outer=1/3, inner=0.5.
+  assert.ok(Math.abs(newTree.ratio - 1 / 3) < 1e-9);
+  assert.equal(newTree.second.ratio, 0.5);
+});
+
+test('insertAtSplit: works on a non-root split deep in the tree', () => {
+  const a = createLeafPane();
+  const b = createLeafPane();
+  const c = createLeafPane();
+  const inner = createSplitPane({
+    orientation: SPLIT_VERTICAL,
+    ratio: 0.5,
+    first: a,
+    second: b,
+  });
+  const root = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: createLeafPane(),
+    second: inner,
+  });
+  const newRoot = insertAtSplit(root, inner, c);
+  // Root structure is preserved; inner is replaced by the wrapped pair.
+  assert.equal(newRoot.kind, 'split');
+  assert.equal(newRoot.orientation, SPLIT_HORIZONTAL);
+  assert.equal(newRoot.first, root.first);
+  const outer = newRoot.second;
+  assert.equal(outer.orientation, SPLIT_VERTICAL);
+  assert.equal(outer.first, a);
+  assert.equal(outer.second.first, c);
+  assert.equal(outer.second.second, b);
+});
+
+test('insertAtSplit: throws when split is not in the tree', () => {
+  const orphan = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: createLeafPane(),
+    second: createLeafPane(),
+  });
+  const root = createLeafPane();
+  assert.throws(() => insertAtSplit(root, orphan, createLeafPane()), /not in tree/);
+});
+
+test('insertAtSplit: rejects non-split node and non-leaf new pane', () => {
+  const leaf = createLeafPane();
+  const otherLeaf = createLeafPane();
+  assert.throws(() => insertAtSplit(leaf, leaf, otherLeaf), /split/);
+  const sp = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: createLeafPane(),
+    second: createLeafPane(),
+  });
+  assert.throws(() => insertAtSplit(sp, sp, sp), /leaf/);
+});
+
+test('insertAtRootBorder: bottom wraps root in vertical split with new pane at second', () => {
+  const a = createLeafPane({ view: { name: 'a' } });
+  const newPane = createLeafPane({ view: { name: 'new' } });
+  const tree = insertAtRootBorder(a, 'bottom', newPane);
+  assert.equal(tree.kind, 'split');
+  assert.equal(tree.orientation, SPLIT_VERTICAL);
+  assert.equal(tree.first, a);
+  assert.equal(tree.second, newPane);
+  assert.ok(Math.abs(tree.ratio - 0.7) < 1e-9);
+});
+
+test('insertAtRootBorder: top puts new pane at first with the keep-ratio flipped', () => {
+  const a = createLeafPane();
+  const newPane = createLeafPane();
+  const tree = insertAtRootBorder(a, 'top', newPane);
+  assert.equal(tree.orientation, SPLIT_VERTICAL);
+  assert.equal(tree.first, newPane);
+  assert.equal(tree.second, a);
+  assert.ok(Math.abs(tree.ratio - 0.3) < 1e-9);
+});
+
+test('insertAtRootBorder: right wraps in horizontal split with new pane at second', () => {
+  const a = createLeafPane();
+  const newPane = createLeafPane();
+  const tree = insertAtRootBorder(a, 'right', newPane);
+  assert.equal(tree.orientation, SPLIT_HORIZONTAL);
+  assert.equal(tree.first, a);
+  assert.equal(tree.second, newPane);
+});
+
+test('insertAtRootBorder: left puts new pane at first', () => {
+  const a = createLeafPane();
+  const newPane = createLeafPane();
+  const tree = insertAtRootBorder(a, 'left', newPane);
+  assert.equal(tree.orientation, SPLIT_HORIZONTAL);
+  assert.equal(tree.first, newPane);
+  assert.equal(tree.second, a);
+});
+
+test('insertAtRootBorder: works on a non-leaf root (wraps the whole tree)', () => {
+  const a = createLeafPane();
+  const b = createLeafPane();
+  const root = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: a,
+    second: b,
+  });
+  const newPane = createLeafPane();
+  const tree = insertAtRootBorder(root, 'bottom', newPane);
+  assert.equal(tree.orientation, SPLIT_VERTICAL);
+  assert.equal(tree.first, root);
+  assert.equal(tree.second, newPane);
+  // The inner split is unchanged.
+  assert.equal(tree.first.first, a);
+  assert.equal(tree.first.second, b);
+});
+
+test('insertAtRootBorder: throws on unrecognised side', () => {
+  const a = createLeafPane();
+  assert.throws(
+    () => insertAtRootBorder(a, 'diagonal', createLeafPane()),
+    /side must be/
+  );
+});
+
+test('insertAtRootBorder: rejects non-leaf new pane', () => {
+  const a = createLeafPane();
+  const sp = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: createLeafPane(),
+    second: createLeafPane(),
+  });
+  assert.throws(() => insertAtRootBorder(a, 'right', sp), /leaf/);
 });

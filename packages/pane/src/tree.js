@@ -175,3 +175,120 @@ export function siblingOf(root, child) {
   if (parent === null) return null;
   return parent.first === child ? parent.second : parent.first;
 }
+
+/**
+ * Insert NEW_LEAF "in the gap" between SPLIT's two children. Replaces
+ * the split node with an outer split whose first child is the original
+ * `first` and whose second child is a new inner split that nests
+ * NEW_LEAF next to the original `second`. The outer ratio defaults to
+ * `1/3` (the original `first` takes a third); the inner ratio defaults
+ * to `0.5` (NEW_LEAF and the original `second` share the remaining
+ * two-thirds evenly). End effect: three equal-sized siblings along the
+ * split's axis.
+ *
+ * Both new split nodes keep the orientation of the original — the new
+ * leaf sits at the same boundary, just one node deeper.
+ *
+ * Throws when SPLIT is not in ROOT or isn't a split node.
+ *
+ * @param {import('./pane.js').Pane} root
+ * @param {import('./pane.js').SplitPane} split
+ * @param {import('./pane.js').LeafPane} newLeaf
+ * @param {object} [options]
+ * @param {number} [options.outerRatio=1/3]
+ * @param {number} [options.innerRatio=0.5]
+ * @returns {import('./pane.js').Pane}
+ */
+export function insertAtSplit(root, split, newLeaf, options = {}) {
+  if (!isSplitPane(split)) {
+    throw new TypeError('insertAtSplit: split must be a split pane');
+  }
+  if (!isLeafPane(newLeaf)) {
+    throw new TypeError('insertAtSplit: newLeaf must be a leaf pane');
+  }
+  const outerRatio = clampInsertRatio(options.outerRatio, 1 / 3);
+  const innerRatio = clampInsertRatio(options.innerRatio, 0.5);
+  const inner = createSplitPane({
+    orientation: split.orientation,
+    ratio: innerRatio,
+    first: newLeaf,
+    second: split.second,
+  });
+  const outer = createSplitPane({
+    orientation: split.orientation,
+    ratio: outerRatio,
+    first: split.first,
+    second: inner,
+  });
+  return replacePane(root, split, outer);
+}
+
+/**
+ * Insert NEW_LEAF on the given SIDE of ROOT — wrap ROOT in a fresh
+ * outer split node, with NEW_LEAF as the sibling on that side. The
+ * new pane occupies `1 - keepRatio` of the area (default 30%) so the
+ * existing layout stays mostly intact.
+ *
+ * @param {import('./pane.js').Pane} root
+ * @param {'top'|'bottom'|'left'|'right'} side
+ * @param {import('./pane.js').LeafPane} newLeaf
+ * @param {object} [options]
+ * @param {number} [options.keepRatio=0.7] - Fraction of the wrapped
+ *   area the existing root takes. The new leaf gets `1 - keepRatio`.
+ * @returns {import('./pane.js').Pane}
+ */
+export function insertAtRootBorder(root, side, newLeaf, options = {}) {
+  if (!isLeafPane(newLeaf)) {
+    throw new TypeError('insertAtRootBorder: newLeaf must be a leaf pane');
+  }
+  const keepRatio = clampInsertRatio(options.keepRatio, 0.7);
+  const newRatio = clampInsertRatio(1 - keepRatio, 0.3);
+  // Horizontal: side-by-side; vertical: top-and-bottom.
+  switch (side) {
+    case 'right':
+      return createSplitPane({
+        orientation: 'horizontal',
+        ratio: keepRatio,
+        first: root,
+        second: newLeaf,
+      });
+    case 'left':
+      return createSplitPane({
+        orientation: 'horizontal',
+        ratio: newRatio,
+        first: newLeaf,
+        second: root,
+      });
+    case 'bottom':
+      return createSplitPane({
+        orientation: 'vertical',
+        ratio: keepRatio,
+        first: root,
+        second: newLeaf,
+      });
+    case 'top':
+      return createSplitPane({
+        orientation: 'vertical',
+        ratio: newRatio,
+        first: newLeaf,
+        second: root,
+      });
+    default:
+      throw new TypeError(
+        `insertAtRootBorder: side must be top/bottom/left/right (got ${side})`
+      );
+  }
+}
+
+/** Clamp an insertion ratio to a sensible band; fall back to FALLBACK
+ *  for non-numeric / out-of-band input. */
+function clampInsertRatio(value, fallback) {
+  const fb =
+    typeof fallback === 'number' && fallback > 0 && fallback < 1
+      ? fallback
+      : 0.5;
+  if (typeof value !== 'number' || Number.isNaN(value)) return fb;
+  if (value <= 0.05) return 0.05;
+  if (value >= 0.95) return 0.95;
+  return value;
+}
