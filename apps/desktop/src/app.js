@@ -45,7 +45,7 @@ import {
 import {
   AudioView,
   CustomizeView,
-  createDocView,
+  DocView,
   createDirectoryColumnsView,
   createDirectoryTreeView,
   createEditorView,
@@ -1021,7 +1021,7 @@ function hideInactiveRendererViews(activeKind) {
   };
   setDisplay(customizeView, 'customize');
   setDisplay(imageView, 'image');
-  setDisplay(docView.element, 'doc');
+  setDisplay(docView, 'doc');
   setDisplay(jukeboxView.element, 'jukebox');
   setDisplay(audioView, 'audio');
   setDisplay(videoView, 'video');
@@ -3827,7 +3827,9 @@ function highlightCodeForDocView(text, language) {
 // through. Cross-links inside the rendered HTML carry
 // `data-jmacs-doc="name"`; clicking one routes through Lisp's
 // `open-doc`, which calls `open-doc!` (host primitive) below.
-const docView = createDocView(editorPaneElement(), {
+// Phase 3e: doc-view is a custom element now.
+const docView = /** @type {*} */ (document.createElement('doc-view'));
+docView.configure({
   ...(keymapReady ? { onKey: dispatchKey } : {}),
   closeBuffer: () => {
     if (!keymapReady) return;
@@ -3850,7 +3852,8 @@ const docView = createDocView(editorPaneElement(), {
   },
   highlightCode: highlightCodeForDocView,
 });
-docView.element.style.display = 'none';
+editorPaneElement().append(docView);
+docView.style.display = 'none';
 
 // The jukebox view — the view a `jukebox`-kind buffer is shown
 // through. Replaces the old text-buffer jukebox mode. The shared
@@ -4573,7 +4576,7 @@ function mountTablineActiveChild(tablineView) {
 function singletonElementForKind(kind) {
   switch (kind) {
     case 'image':              return imageView;
-    case 'doc':                return docView.element;
+    case 'doc':                return docView;
     case 'jukebox':            return jukeboxView.element;
     case 'audio':              return audioView;
     case 'video':              return videoView;

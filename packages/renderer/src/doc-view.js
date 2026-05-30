@@ -185,3 +185,59 @@ export function createDocView(container, options = {}) {
     focus: () => root.focus(),
   };
 }
+
+// -----------------------------------------------------------------------
+// `<doc-view>` — Phase 3e custom-element wrapper. Same pattern as
+// AudioView / VideoView / CustomizeView.
+
+import { defineViewElement, ViewElement } from './view-elements.js';
+
+/** @typedef {object} DocViewOptions
+ *  Same options bag the factory accepts — see `createDocView`. */
+
+export class DocView extends ViewElement {
+  constructor() {
+    super();
+    /** @type {ReturnType<typeof createDocView> | null} */
+    this._inner = null;
+    /** @type {DocViewOptions | null} */
+    this._options = null;
+    this._pendingBuffer = null;
+  }
+
+  configure(options) {
+    if (this._inner !== null) {
+      throw new Error('DocView.configure: cannot reconfigure after mount');
+    }
+    this._options = options ?? null;
+  }
+
+  get kind() { return 'doc'; }
+
+  setBuffer(buffer) {
+    this._pendingBuffer = buffer;
+    if (this._inner !== null) this._inner.setBuffer(buffer);
+  }
+
+  focus() {
+    if (this._inner !== null) this._inner.focus();
+    else super.focus();
+  }
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createDocView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) this._inner.setBuffer(this._pendingBuffer);
+  }
+
+  disconnectedCallback() {
+    /* intentionally empty */
+  }
+
+  destroy() {
+    this._inner = null;
+    this._pendingBuffer = null;
+  }
+}
+
+defineViewElement('doc-view', DocView);

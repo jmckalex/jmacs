@@ -2628,6 +2628,8 @@ video-view,
    through. Pre-rendered HTML from `docs/build/`; the typography
    itself lives in docs/assets/docs.css (loaded over app://docs/). */
 
+/* Phase 3e: `<doc-view>` is the custom element. */
+doc-view,
 .doc-view {
   display: block;
   height: 100%;
