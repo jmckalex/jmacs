@@ -1994,6 +1994,80 @@ pdf-view,
   border: 0;
 }
 
+/* The browser view — a thin chrome (back / forward / reload / URL
+   bar / stop) wrapping Electron's `<webview>`. The toolbar is a
+   fixed-height row at the top; the webview fills the rest of the
+   pane. */
+browser-view,
+.browser-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.browser-toolbar {
+  flex: 0 0 36px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-status, #2a2f3a);
+  border-bottom: 1px solid var(--border, #1b1e25);
+}
+
+.browser-toolbar button {
+  flex: 0 0 auto;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.browser-toolbar button:hover:not(:disabled) {
+  background: var(--bg-editor);
+}
+
+.browser-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.browser-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border, #1b1e25);
+  border-radius: 4px;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.browser-url:focus {
+  outline: none;
+  border-color: var(--accent, #6da4ff);
+}
+
+.browser-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+}
+
 .video-stage {
   display: flex;
   align-items: center;
