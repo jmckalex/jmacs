@@ -91,7 +91,6 @@ import { applyFaceStyles } from './face-styles.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
-import { warehouse } from './view-warehouse.js';
 import { createTabline } from '@editor/renderer';
 
 const WELCOME = `
@@ -4263,11 +4262,10 @@ function disposeKindView(view, context) {
 
 /** Per-tabline-view rendering state. Each text tab has its own
  *  `<text-view>` element, tracked in `editorByChild` keyed by the tab's
- *  view. At any moment at most ONE of them is in `state.contentEl` —
- *  the others are parked in the warehouse so external probes (e.g.
- *  `document.querySelector('.editor-line')` in the smoke arm) only see
- *  the active editor's DOM. `activeEditor` / `activeEditorChild` are
- *  windows onto the map — pointers to "what's currently mounted." */
+ *  view. All of them live inside `state.contentEl` — that's where the
+ *  tabline's tabs belong — and only the active one has `display: ''`;
+ *  the rest have `display: none`. `activeEditor` / `activeEditorChild`
+ *  are windows onto the map — pointers to "what's currently mounted." */
 /** @type {Map<import('@editor/view').View, {
  *   container: HTMLElement,
  *   stripEl: HTMLElement,
@@ -4449,17 +4447,14 @@ function mountTablineActiveChild(tablineView) {
     : null;
   state.mountedChild = child;
   if (!child) {
-    // Empty tabline: park every per-child text-view in the warehouse,
-    // clear the active pointers. The instances survive so the dispose
-    // path can clean them up; auto-collapse handles the pane itself
-    // for the kill-view case. Parked editors also get `display: none`
-    // on themselves so external probes (`document.querySelector(
-    // 'text-view')`) see them as hidden — the warehouse's `hidden`
-    // attribute hides the parent but doesn't affect each child's own
-    // computed style.
+    // Empty tabline: hide every per-child text-view in place. They
+    // stay parented inside contentEl — the warehouse is for views
+    // not in any pane/tabline, and these views still belong to this
+    // tabline. The instances survive so the dispose path can clean
+    // them up; auto-collapse handles the pane itself for the
+    // kill-view case.
     for (const tv of state.editorByChild.values()) {
       tv.style.display = 'none';
-      warehouse(tv);
     }
     state.activeEditor = null;
     state.activeEditorChild = null;
@@ -4495,15 +4490,13 @@ function mountTablineActiveChild(tablineView) {
       tv.setView(child);
       state.editorByChild.set(child, tv);
     }
-    // Park every OTHER text-view for this tabline in the warehouse.
-    // Single-parent DOM enforcement means querying `.editor-line`
-    // from outside finds only the active editor's content — the
-    // historical reason the singleton pattern was kept here.
+    // Hide every OTHER text-view for this tabline; they stay parented
+    // here so they're reachable from `state.contentEl` and so the DOM
+    // tree reflects the tabline's actual membership. `display: none`
+    // is enough — they don't render, don't take layout space, but
+    // hold their inner editor state for instant tab-switch.
     for (const [otherChild, otherTv] of state.editorByChild) {
-      if (otherChild !== child) {
-        otherTv.style.display = 'none';
-        warehouse(otherTv);
-      }
+      if (otherChild !== child) otherTv.style.display = 'none';
     }
     if (tv.parentNode !== state.contentEl) {
       state.contentEl.append(tv);
@@ -4515,15 +4508,13 @@ function mountTablineActiveChild(tablineView) {
     return;
   }
 
-  // Non-text active child: park every text-view for this tabline (no
-  // text editor should visually overlay the singleton). Route through
-  // `hideInactiveRendererViews` so the right singleton wakes up and
-  // the others go quiet — same as `switchToViewIndex`'s pre-tabline
-  // path. Set `display: none` on each parked editor so external
-  // visibility probes see them as hidden.
+  // Non-text active child: hide every text-view in this tabline so it
+  // doesn't visually overlay the singleton, but keep them parented in
+  // contentEl. Route through `hideInactiveRendererViews` so the right
+  // singleton wakes up and the others go quiet — same as
+  // `switchToViewIndex`'s pre-tabline path.
   for (const tv of state.editorByChild.values()) {
     tv.style.display = 'none';
-    warehouse(tv);
   }
   state.activeEditor = null;
   state.activeEditorChild = null;

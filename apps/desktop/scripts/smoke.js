@@ -246,8 +246,8 @@ app.whenReady().then(() => {
       await new Promise((resolve) => setTimeout(resolve, 5000));
 
       const render = await win.webContents.executeJavaScript(`(() => ({
-        lines: document.querySelectorAll('.editor-line').length,
-        hasCursor: !!document.querySelector('.editor-cursor'),
+        lines: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line').length,
+        hasCursor: !!document.querySelector('text-view:not([style*="display: none"]) .editor-cursor'),
         modeline: document.getElementById('modeline-position')?.textContent ?? '',
       }))()`);
       console.log('  rendered:', JSON.stringify(render));
@@ -257,7 +257,7 @@ app.whenReady().then(() => {
       const splash = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const present =
-          document.querySelector('.editor-background .splash.is-visible')
+          document.querySelector('text-view:not([style*="display: none"]) .editor-background .splash.is-visible')
             !== null;
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -279,14 +279,14 @@ app.whenReady().then(() => {
       // Drive the real input path: dispatch key events at the editor
       // and confirm the projected DOM changes.
       const input = await win.webContents.executeJavaScript(`(async () => {
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         const press = (key, opts = {}) =>
           editor.dispatchEvent(new KeyboardEvent('keydown', {
             key, bubbles: true, cancelable: true, ...opts,
           }));
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const firstLine = () => document.querySelector('.editor-line').textContent;
+        const firstLine = () => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
 
         const before = firstLine();
         for (const ch of 'Zz!') press(ch);
@@ -346,11 +346,11 @@ app.whenReady().then(() => {
         submit('(previous-view!)');
         await frame();
 
-        const firstLineBefore = document.querySelector('.editor-line').textContent;
+        const firstLineBefore = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
         submit('(goto! 0)');
         submit('(insert! "[lisp] ")');
         await frame();
-        const firstLineAfter = document.querySelector('.editor-line').textContent;
+        const firstLineAfter = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
 
         return {
           arithmetic, stdlib, sequence, modules,
@@ -383,7 +383,7 @@ app.whenReady().then(() => {
       // selects a match (rendered as selection rectangles).
       const search = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 's', ctrlKey: true, bubbles: true, cancelable: true,
@@ -396,7 +396,7 @@ app.whenReady().then(() => {
           mb.value = 'Lisp';
           mb.dispatchEvent(new Event('input', { bubbles: true }));
           await frame();
-          matched = document.querySelectorAll('.editor-selection-rect').length > 0;
+          matched = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-selection-rect').length > 0;
           mb.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Escape', bubbles: true, cancelable: true,
           }));
@@ -408,7 +408,7 @@ app.whenReady().then(() => {
       // Command palette: M-x opens it, a query filters commands, Enter
       // runs the top match and closes the minibuffer.
       const palette = await win.webContents.executeJavaScript(`(async () => {
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         // The real macOS event: Option composes a character into key,
         // and code carries the physical key.
@@ -629,6 +629,9 @@ app.whenReady().then(() => {
       console.log('  faceInfo:', JSON.stringify(faceInfo));
 
       // The background and overlay layers exist and are stacked right.
+      // Structural test of the editor's CSS layers — works on any
+      // text-view, visible or not, so the unfiltered selectors are
+      // correct here.
       const layers = await win.webContents.executeJavaScript(`(() => {
         const z = (sel) =>
           Number(getComputedStyle(document.querySelector(sel)).zIndex);
@@ -667,7 +670,7 @@ app.whenReady().then(() => {
         };
         await fill('foo');
         await fill('bar');
-        return { text: document.querySelector('.editor-line').textContent };
+        return { text: document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent };
       })()`);
       console.log('  replace:', JSON.stringify(replace));
 
@@ -701,7 +704,7 @@ app.whenReady().then(() => {
         // -> two in the Lisp-readable text the REPL submits.
         await fill('(\\\\w+?)(\\\\d+)');
         await fill('$2-$1');
-        const regexText = document.querySelector('.editor-line').textContent;
+        const regexText = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
 
         // 2. query-replace: foo -> xxx with a y, then a n, then a q
         //    sequence — exactly one replacement should happen.
@@ -717,7 +720,7 @@ app.whenReady().then(() => {
         // Now the editor has focus (query-replace's status message did
         // not steal it), and read-next-key has installed a callback.
         // Send the answers as keyboard events on the editor surface.
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         const press = (key) => editor.dispatchEvent(new KeyboardEvent('keydown', {
           key, bubbles: true, cancelable: true,
@@ -726,7 +729,7 @@ app.whenReady().then(() => {
         await frame();
         press('q'); // quit before the second
         await frame();
-        const queryText = document.querySelector('.editor-line').textContent;
+        const queryText = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
         return { regexText, queryText };
       })()`);
       console.log('  regexReplace:', JSON.stringify(regexReplace));
@@ -743,7 +746,7 @@ app.whenReady().then(() => {
         };
         replSubmit('(new-view! "mouse-test")');
         await frame();
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         const press = (key) => editor.dispatchEvent(new KeyboardEvent('keydown', {
           key, bubbles: true, cancelable: true,
@@ -761,19 +764,19 @@ app.whenReady().then(() => {
           }));
         };
         // The cursor is on line 3; click line 1 and check it moved.
-        const line0 = document.querySelectorAll('.editor-line')[0].getBoundingClientRect();
+        const line0 = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line')[0].getBoundingClientRect();
         click(line0.left + 16, line0.top + 4);
         await frame();
         const after = document.getElementById('modeline-position').textContent;
         // Click well past the end of line 2 ("beta") — the cursor should
         // land at that line's end, not stay put.
-        const line1 = document.querySelectorAll('.editor-line')[1].getBoundingClientRect();
+        const line1 = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line')[1].getBoundingClientRect();
         click(line1.right + 90, line1.top + 4);
         await frame();
         const endOfLine = document.getElementById('modeline-position').textContent;
         // Double-click selects the word — a mousedown with detail 2,
         // which is how the editor detects a double-click.
-        const line0b = document.querySelectorAll('.editor-line')[0].getBoundingClientRect();
+        const line0b = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line')[0].getBoundingClientRect();
         editor.dispatchEvent(new MouseEvent('mousedown', {
           detail: 2, button: 0,
           clientX: line0b.left + 12, clientY: line0b.top + 4,
@@ -784,7 +787,7 @@ app.whenReady().then(() => {
           before,
           after,
           endOfLine,
-          wordSelected: document.querySelectorAll('.editor-selection-rect').length > 0,
+          wordSelected: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-selection-rect').length > 0,
         };
       })()`);
       console.log('  mouse:', JSON.stringify(mouse));
@@ -798,7 +801,7 @@ app.whenReady().then(() => {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
         await frame();
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         for (const ch of '# Title') {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
@@ -830,7 +833,7 @@ app.whenReady().then(() => {
         await frame();
         submit('(set! *markdown-interpreter* "cat")');
         await frame();
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         for (const ch of '# Heading') {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
@@ -883,7 +886,7 @@ app.whenReady().then(() => {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
         await frame();
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         for (let i = 0; i < 400; i += 1) {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
@@ -899,8 +902,8 @@ app.whenReady().then(() => {
         await frame();
         await frame();
         return {
-          lineDivs: document.querySelectorAll('.editor-line').length,
-          firstNumber: (document.querySelector('.editor-line-no') || {}).textContent,
+          lineDivs: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line').length,
+          firstNumber: (document.querySelector('text-view:not([style*="display: none"]) .editor-line-no') || {}).textContent,
           scrollTop: editor.scrollTop,
           scrollHeight: editor.scrollHeight,
         };
@@ -929,7 +932,7 @@ app.whenReady().then(() => {
         const math = document.getElementById('modeline-name').textContent;
         // With math mode on, \` then Shift then G must insert \\Gamma —
         // the bare Shift press must not reach the key reader.
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         const key = (k, shift) => editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: k, shiftKey: shift === true, bubbles: true, cancelable: true,
@@ -938,7 +941,7 @@ app.whenReady().then(() => {
         key('Shift', true);
         key('G', true);
         await frame();
-        const mathText = document.querySelector('.editor-line').textContent;
+        const mathText = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
         return { lisp, txt, math, mathText };
       })()`);
       console.log('  modes:', JSON.stringify(modes));
@@ -957,7 +960,7 @@ app.whenReady().then(() => {
         };
         submit('(new-view! "notes-sticky.txt")');
         await frame();
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         for (let i = 0; i < 200; i += 1) {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
@@ -1259,7 +1262,7 @@ app.whenReady().then(() => {
         };
         submit('(new-view! "swatch.css")');
         await frame();
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         for (const ch of 'a #ff8800 b rgb(0,0,0)') {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
@@ -1269,7 +1272,7 @@ app.whenReady().then(() => {
         await frame();
         // One swatch per literal — the #ff8800 hash and the rgb() form.
         const count = document.querySelectorAll('.colour-swatch').length;
-        const firstBefore = document.querySelector('.editor-line').textContent;
+        const firstBefore = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
         // Click the first swatch: the modal opens with OK / Cancel.
         const swatch = document.querySelector('.colour-swatch');
         swatch.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
@@ -1286,7 +1289,7 @@ app.whenReady().then(() => {
           document.querySelector('.colour-picker-ok')
             .dispatchEvent(new MouseEvent('click', { bubbles: true }));
           await frame();
-          edited = document.querySelector('.editor-line').textContent;
+          edited = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
         }
         const modalClosed = document.querySelector('.colour-picker') === null;
         return { count, firstBefore, modalShown, edited, modalClosed };
@@ -1407,7 +1410,7 @@ app.whenReady().then(() => {
         submit('(new-view! "bm-keep.txt")');
         await frame();
         // Open the menu via the bound key.
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
@@ -1942,7 +1945,7 @@ app.whenReady().then(() => {
         await frame();
         submit('(set! *markdown-interpreter* "cat")');
         await frame();
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
@@ -2033,7 +2036,7 @@ app.whenReady().then(() => {
         submit('(open-file!)');
         await wait(400);
         // Type a bit and move point to a known position.
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         for (const ch of 'XY') {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
@@ -2557,7 +2560,7 @@ app.whenReady().then(() => {
       // only when no prompt is active.
       const chord = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
@@ -2588,7 +2591,7 @@ app.whenReady().then(() => {
       const findFile = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
@@ -2853,7 +2856,7 @@ app.whenReady().then(() => {
         const activeAfterFourOpens = activeTabInPane(pane);
 
         // --- C-x ← cycles to the previous tab; C-x → returns.
-        const editor = document.querySelector('.editor');
+        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         const chord = (key) => {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
