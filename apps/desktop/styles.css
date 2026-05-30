@@ -1971,6 +1971,29 @@ video-view,
   overflow: hidden;
 }
 
+/* The pdf view — an Electron `<webview>` pointed at a PDF file
+   served over the media:// protocol. Chromium's built-in PDF plugin
+   renders the document with its own toolbar (zoom, find, print);
+   `<pdf-view>` just lays the webview out to fill the pane. */
+pdf-view,
+.pdf-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.pdf-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+}
+
 .video-stage {
   display: flex;
   align-items: center;
