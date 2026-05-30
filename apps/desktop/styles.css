@@ -390,6 +390,17 @@ body {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
+/* The <text-view> custom element is the per-pane / per-tab editor
+   instance. It wraps the .editor div (the createEditorView root). The
+   wrapper must be a layout-bearing block that fills its container so
+   the inner .editor can take height: 100%. Custom elements default to
+   `display: inline`, which would collapse the wrapper. */
+text-view {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .editor {
   height: 100%;
   overflow: auto;

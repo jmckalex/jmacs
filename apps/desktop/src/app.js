@@ -73,6 +73,7 @@ import {
   formatBibliography,
   formatCitation,
   citationKeys,
+  TextView,
 } from '@editor/renderer';
 import {
   createBufferPrimitives,
@@ -995,13 +996,13 @@ function hideInactiveRendererViews(activeKind) {
     ? editorViewByPaneId.get(currentPaneId)
     : null;
   if (focusedInstance) {
-    focusedInstance.element.style.display = activeKind === 'text' ? '' : 'none';
+    focusedInstance.style.display = activeKind === 'text' ? '' : 'none';
   }
   // Non-focused text-pane editor instances stay visible — they belong
   // to other panes and aren't affected by what the focused pane shows.
   for (const [paneId, instance] of editorViewByPaneId) {
     if (paneId === currentPaneId) continue;
-    instance.element.style.display = '';
+    instance.style.display = '';
   }
   // For each non-text singleton, visibility is keyed on whether ANY
   // leaf currently has it as its active view — not on the focused
@@ -3500,21 +3501,33 @@ function focusedTextLeafId() {
   return currentPaneId;
 }
 
-/** Create (or reuse) the editor-view instance for LEAF, mount it inside
- *  the leaf's pane element, and point it at LEAF.view. */
+/** Create (or reuse) the <text-view> custom element for LEAF, mount it
+ *  inside the leaf's pane element, and point it at LEAF.view.
+ *
+ *  Phase 2c of plans/VIEWS-AS-CUSTOM-ELEMENTS.md: the per-pane editor
+ *  *instance* is now a TextView element. It exposes the same setView /
+ *  focus / destroy / recenter / etc. API the createEditorView return
+ *  used to, so the call sites that used `instance.setView(...)` etc.
+ *  are unchanged. What changes is `instance.element` — that used to
+ *  be the editor's `.editor` div; under the new model the instance IS
+ *  the element, and consumers use it directly. */
 function ensureEditorViewForLeaf(leaf) {
   const paneEl = paneElements.get(leaf.id);
   if (!paneEl) return null;
   let instance = editorViewByPaneId.get(leaf.id);
   if (instance) {
-    // Re-attach if a re-layout detached the root (defensive).
-    if (instance.element.parentNode !== paneEl) {
-      paneEl.append(instance.element);
+    // Re-attach if a re-layout detached the element (defensive).
+    if (instance.parentNode !== paneEl) {
+      paneEl.append(instance);
     }
     instance.setView(leaf.view);
     return instance;
   }
-  instance = createEditorView(leaf.view.buffer, paneEl, {
+  // Build a fresh <text-view> element. configure() must run *before*
+  // the element is appended — connectedCallback reads the options to
+  // mount the inner editor.
+  instance = /** @type {*} */ (document.createElement('text-view'));
+  instance.configure({
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     highlighters,
     foldCaptures,
@@ -3549,6 +3562,8 @@ function ensureEditorViewForLeaf(leaf) {
     },
     getTabWidth: () => currentTabWidth,
   });
+  instance.setView(leaf.view);     // populates pending buffer/view
+  paneEl.append(instance);          // triggers connectedCallback → mount
   editorViewByPaneId.set(leaf.id, instance);
   return instance;
 }
@@ -4436,7 +4451,7 @@ function mountTablineActiveChild(tablineView) {
     // content area's pointer to it. The instance survives so the
     // dispose path can clean up; auto-collapse handles the pane
     // itself for the kill-view case.
-    if (state.activeEditor) state.activeEditor.element.style.display = 'none';
+    if (state.activeEditor) state.activeEditor.style.display = 'none';
     state.activeEditorChild = null;
     return;
   }
@@ -4454,7 +4469,8 @@ function mountTablineActiveChild(tablineView) {
       // here. The closures read through the live tablineView so they
       // automatically follow the active tab — symmetric with the
       // per-leaf `ensureEditorViewForLeaf` instance's peelTabline.
-      state.activeEditor = createEditorView(child.buffer, state.contentEl, {
+      const tv = /** @type {*} */ (document.createElement('text-view'));
+      tv.configure({
         ...(keymapReady ? { onKey: dispatchKey } : {}),
         highlighters,
         foldCaptures,
@@ -4480,11 +4496,13 @@ function mountTablineActiveChild(tablineView) {
         },
         getTabWidth: () => currentTabWidth,
       });
+      tv.setView(child);
+      state.activeEditor = tv;
     }
-    if (state.activeEditor.element.parentNode !== state.contentEl) {
-      state.contentEl.append(state.activeEditor.element);
+    if (state.activeEditor.parentNode !== state.contentEl) {
+      state.contentEl.append(state.activeEditor);
     }
-    state.activeEditor.element.style.display = '';
+    state.activeEditor.style.display = '';
     state.activeEditorChild = child;
     applyTextMountSideEffects(child, state.activeEditor);
     return;
@@ -4495,7 +4513,7 @@ function mountTablineActiveChild(tablineView) {
   // through `hideInactiveRendererViews` so the right singleton wakes
   // up and the others go quiet — same as `switchToViewIndex`'s pre-
   // tabline path.
-  if (state.activeEditor) state.activeEditor.element.style.display = 'none';
+  if (state.activeEditor) state.activeEditor.style.display = 'none';
   if (typeof hideInactiveRendererViews === 'function') {
     hideInactiveRendererViews(child.kind);
   }
@@ -4691,7 +4709,7 @@ async function buildColumnPreview(path) {
 /** The hover-doc tooltip — appears beside the cursor when the mouse
  *  rests on a documented Lisp symbol. The lookup chain mirrors
  *  `open-doc`: pre-built manifest first, then the live docstring. */
-const hoverDoc = createHoverDoc(editorView.element, {
+const hoverDoc = createHoverDoc(editorView, {
   offsetFromPoint: (x, y) => editorView.offsetFromPoint(x, y),
   symbolAtOffset: (offset) => {
     if (!keymapReady) return null;
@@ -5129,8 +5147,8 @@ function inheritExistingEditorIntoTabline(tablineView, leaf) {
   const state = ensureTablineState(tablineView);
   state.activeEditor = existingInstance;
   state.activeEditorChild = active;
-  if (existingInstance.element.parentNode !== state.contentEl) {
-    state.contentEl.append(existingInstance.element);
+  if (existingInstance.parentNode !== state.contentEl) {
+    state.contentEl.append(existingInstance);
   }
   return existingInstance;
 }
@@ -5543,8 +5561,8 @@ function demoteTablineView(tlv) {
     state.activeEditor = null;
     state.activeEditorChild = null;
     const paneEl = paneElements.get(host.id);
-    if (paneEl && inheritedInstance.element.parentNode !== paneEl) {
-      paneEl.append(inheritedInstance.element);
+    if (paneEl && inheritedInstance.parentNode !== paneEl) {
+      paneEl.append(inheritedInstance);
     }
     editorViewByPaneId.set(host.id, inheritedInstance);
   }
