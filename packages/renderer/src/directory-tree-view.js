@@ -329,14 +329,39 @@ function createDirectoryTreeView(container, options = {}) {
     }
   }
 
-  // Click — single click on a row activates it.
+  // Click — single click selects the row. Folders still toggle on
+  // single click (matches Finder / VS Code Explorer convention).
+  // Files open on double-click (see dblclick handler below), bringing
+  // them in line with the directory-columns view's open-on-double-
+  // click semantics.
   body.addEventListener('click', (event) => {
     const row = event.target.closest('.directory-tree-row');
     if (!row) return;
     const idx = Array.from(body.children).indexOf(row);
-    if (idx >= 0) {
-      selectedIndex = idx;
+    if (idx < 0) return;
+    selectedIndex = idx;
+    const rowData = rows[idx];
+    if (rowData && rowData.kind === 'directory' && event.detail <= 1) {
+      // Folder + first click of the sequence: toggle expansion. Skip
+      // on event.detail >= 2 so a quick double-click doesn't toggle
+      // twice. (event.detail is 0 for programmatic clicks from the
+      // smoke harness; treat those as a normal single click.)
       activateRow(idx);
+    } else {
+      highlightSelected();
+    }
+  });
+
+  // Double-click — opens files (folders are handled by single click).
+  body.addEventListener('dblclick', (event) => {
+    const row = event.target.closest('.directory-tree-row');
+    if (!row) return;
+    const idx = Array.from(body.children).indexOf(row);
+    if (idx < 0) return;
+    selectedIndex = idx;
+    const rowData = rows[idx];
+    if (rowData && rowData.kind !== 'directory' && openPath) {
+      openPath(rowData.path);
     }
   });
 

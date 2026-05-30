@@ -2264,10 +2264,19 @@ app.whenReady().then(() => {
         const noteIconClass = noteRow
           ? noteRow.querySelector('.directory-tree-icon').className
           : '';
-        // Activate the note.txt row — should open it as a text buffer.
+        // Activate the note.txt row — files open on double-click now
+        // (matches directory-columns). A single click would just
+        // select the row.
         const beforeOpenBuffer = document.getElementById('modeline-name')?.textContent ?? '';
         if (noteRow) {
+          // First click selects; dblclick opens.
           noteRow.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true,
+          }));
+          noteRow.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true, detail: 2,
+          }));
+          noteRow.dispatchEvent(new MouseEvent('dblclick', {
             bubbles: true, cancelable: true,
           }));
         }
