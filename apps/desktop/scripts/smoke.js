@@ -3071,6 +3071,175 @@ app.whenReady().then(() => {
       await rm(tablineSessionFile2, { force: true });
       await rm(tablineSessionFile3, { force: true });
 
+      // Add-pane arm: covers two related features.
+      //
+      // 1. C-u direction flip on C-x 2 / C-x 3. Calling
+      //    `(split-horizontal! 0.5 'before)` should put the *new* pane
+      //    on the left (rect.left === 0) and leave focus on the
+      //    originating pane, now on the right.
+      // 2. The add-pane overlay (C-x +). Entering the mode mounts
+      //    `.add-pane-overlay` with one target per outer border (4)
+      //    plus one per splitter. Clicking the bottom-border target
+      //    inserts a new pane spanning full width at the bottom; it
+      //    becomes focused. Clicking a splitter target after a split
+      //    inserts a third pane in the gap.
+      //
+      // Runs last because it leaves the editor with a non-pristine
+      // view list (each split spawns a duplicate text view, the cleanup
+      // collapses panes but doesn't reclaim the views).
+      const addPaneArm = await win.webContents.executeJavaScript(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const editorHost = document.getElementById('editor-host');
+        const countPanes = () =>
+          editorHost.querySelectorAll('.pane').length;
+        const focusedPaneId = () =>
+          editorHost.querySelector('.pane--focused')?.dataset?.paneId ?? null;
+        const focusedRect = () => {
+          const el = editorHost.querySelector('.pane--focused');
+          return el ? el.getBoundingClientRect() : null;
+        };
+
+        // Make sure we start from a single pane.
+        submit('(delete-other-panes!)');
+        await wait(150);
+
+        // --- (1) C-u flip on split-horizontal -----------------------
+        const focusStart = focusedPaneId();
+        submit("(split-horizontal! 0.5 'before)");
+        await wait(200);
+        const flipHCount = countPanes();
+        const flipHFocus = focusedPaneId();
+        const flipHFocusedRect = focusedRect();
+        // The originating leaf kept focus; with side='before the new
+        // leaf is *first* (left), so the focused (originating) pane
+        // sits at rect.left > 0.
+        const flipHFocusOnRight = !!(flipHFocusedRect && flipHFocusedRect.left > 0);
+        submit('(delete-other-panes!)');
+        await wait(150);
+
+        // --- (1b) C-u flip on split-vertical ------------------------
+        submit("(split-vertical! 0.5 'before)");
+        await wait(200);
+        const flipVCount = countPanes();
+        const flipVFocusedRect = focusedRect();
+        // side='before puts the new leaf on top; focused (originating)
+        // pane sits at rect.top > 0.
+        const flipVFocusOnBottom = !!(flipVFocusedRect && flipVFocusedRect.top > 0);
+        submit('(delete-other-panes!)');
+        await wait(150);
+
+        // --- (2) Add-pane mode: open overlay ------------------------
+        submit('(enter-add-pane-mode!)');
+        await wait(120);
+        const overlay = editorHost.querySelector('.add-pane-overlay');
+        const overlayShown = !!overlay;
+        const borderTargets = overlay
+          ? overlay.querySelectorAll('.add-pane-target--border').length
+          : 0;
+        const splitterTargetsInitial = overlay
+          ? overlay.querySelectorAll('.add-pane-target--splitter').length
+          : 0;
+
+        // Click the bottom-border target.
+        let afterBorderClickCount = 0;
+        let bottomPaneSpansFullWidth = false;
+        let bottomPaneIsFocused = false;
+        if (overlay) {
+          const bottom = overlay.querySelector('.add-pane-target--bottom');
+          if (bottom) {
+            const r = bottom.getBoundingClientRect();
+            const cx = r.left + r.width / 2;
+            const cy = r.top + r.height / 2;
+            bottom.dispatchEvent(new MouseEvent('click', {
+              clientX: cx, clientY: cy, bubbles: true, cancelable: true,
+            }));
+          }
+        }
+        await wait(200);
+        afterBorderClickCount = countPanes();
+        // After insertAtRootBorder('bottom', ...) the new leaf is the
+        // second child of a vertical split — it sits at the bottom and
+        // takes the full editor-host width.
+        const focusedAfter = editorHost.querySelector('.pane--focused');
+        if (focusedAfter) {
+          const fr = focusedAfter.getBoundingClientRect();
+          const hostRect = editorHost.getBoundingClientRect();
+          bottomPaneSpansFullWidth = Math.abs(fr.width - hostRect.width) < 4;
+          bottomPaneIsFocused = fr.top > hostRect.top + hostRect.height / 2;
+        }
+
+        // --- (3) Add-pane mode: click a splitter target -------------
+        // We now have a vertical split (top region + bottom new pane).
+        // Re-enter add-pane mode; the one splitter should appear as a
+        // target. Clicking it should insert a third pane "in the gap".
+        submit('(enter-add-pane-mode!)');
+        await wait(120);
+        const overlay2 = editorHost.querySelector('.add-pane-overlay');
+        const splitterTargetsWithSplit = overlay2
+          ? overlay2.querySelectorAll('.add-pane-target--splitter').length
+          : 0;
+        if (overlay2) {
+          const sp = overlay2.querySelector('.add-pane-target--splitter');
+          if (sp) {
+            const r = sp.getBoundingClientRect();
+            sp.dispatchEvent(new MouseEvent('click', {
+              clientX: r.left + r.width / 2,
+              clientY: r.top + r.height / 2,
+              bubbles: true, cancelable: true,
+            }));
+          }
+        }
+        await wait(200);
+        const afterSplitterClickCount = countPanes();
+
+        // --- (4) Escape cancels --------------------------------------
+        submit('(enter-add-pane-mode!)');
+        await wait(120);
+        const overlay3 = editorHost.querySelector('.add-pane-overlay');
+        const overlay3Shown = !!overlay3;
+        window.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', bubbles: true, cancelable: true,
+        }));
+        await wait(120);
+        const overlay3GoneAfterEscape =
+          !editorHost.querySelector('.add-pane-overlay');
+        const countAfterEscape = countPanes();
+
+        // Tidy.
+        submit('(delete-other-panes!)');
+        await wait(150);
+        const finalPaneCount = countPanes();
+
+        return {
+          focusStart,
+          flipHCount,
+          flipHFocus,
+          flipHFocusOnRight,
+          flipVCount,
+          flipVFocusOnBottom,
+          overlayShown,
+          borderTargets,
+          splitterTargetsInitial,
+          afterBorderClickCount,
+          bottomPaneSpansFullWidth,
+          bottomPaneIsFocused,
+          splitterTargetsWithSplit,
+          afterSplitterClickCount,
+          overlay3Shown,
+          overlay3GoneAfterEscape,
+          countAfterEscape,
+          finalPaneCount,
+        };
+      })()`);
+      console.log('  addPaneArm:', JSON.stringify(addPaneArm));
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -3411,6 +3580,37 @@ app.whenReady().then(() => {
         Math.abs(panes.widthBefore - panes.widthAfter) > 50 &&
         panes.paneCountFinal === 1;
 
+      // Add-pane arm: C-u flip + the visual add-pane overlay.
+      // - `(split-horizontal! 0.5 'before)` puts the new pane on the
+      //   left; the originating (focused) pane sits at x > 0.
+      // - `(split-vertical! 0.5 'before)` puts it above; focused sits
+      //   at y > 0.
+      // - `(enter-add-pane-mode!)` shows .add-pane-overlay with
+      //   exactly four border targets and zero splitter targets in
+      //   the single-pane case.
+      // - Clicking the bottom-border target inserts a pane spanning
+      //   full width at the bottom; it becomes focused.
+      // - After that split, re-entering the mode shows one splitter
+      //   target; clicking it grows the count from 2 to 3.
+      // - Escape closes the overlay without inserting.
+      const addPaneOk =
+        addPaneArm.flipHCount === 2 &&
+        addPaneArm.flipHFocusOnRight === true &&
+        addPaneArm.flipVCount === 2 &&
+        addPaneArm.flipVFocusOnBottom === true &&
+        addPaneArm.overlayShown === true &&
+        addPaneArm.borderTargets === 4 &&
+        addPaneArm.splitterTargetsInitial === 0 &&
+        addPaneArm.afterBorderClickCount === 2 &&
+        addPaneArm.bottomPaneSpansFullWidth === true &&
+        addPaneArm.bottomPaneIsFocused === true &&
+        addPaneArm.splitterTargetsWithSplit === 1 &&
+        addPaneArm.afterSplitterClickCount === 3 &&
+        addPaneArm.overlay3Shown === true &&
+        addPaneArm.overlay3GoneAfterEscape === true &&
+        addPaneArm.countAfterEscape === addPaneArm.afterSplitterClickCount &&
+        addPaneArm.finalPaneCount === 1;
+
       // Tabline arm (phase 3b commit 7): opening files appends tabs to
       // the root tabline; C-x ←/→ cycle; C-x k kills and falls back;
       // C-x 3 split leaves the left tabline intact and the right pane
@@ -3467,7 +3667,7 @@ app.whenReady().then(() => {
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
         tablineOk && langPackOk && treeOk && colsOk && shellOk &&
-        chordOk && findFileOk && panesOk && tablineArmOk
+        chordOk && findFileOk && panesOk && addPaneOk && tablineArmOk
       ) {
         finish(
           0,
@@ -3580,6 +3780,8 @@ app.whenReady().then(() => {
         finish(1, `shell buffer did not work (${JSON.stringify(shell)})`);
       } else if (!panesOk) {
         finish(1, `multi-pane splits did not work (${JSON.stringify(panes)})`);
+      } else if (!addPaneOk) {
+        finish(1, `add-pane mode / C-u flip did not work (${JSON.stringify(addPaneArm)})`);
       } else {
         finish(1, `tabline behaviour did not work (${JSON.stringify(tablineArm)})`);
       }
