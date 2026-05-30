@@ -37,6 +37,11 @@ export {
   mimeTypeForImage,
 } from './image-view.js';
 export {
+  PdfView,
+  isPdfName,
+  mimeTypeForPdf,
+} from './pdf-view.js';
+export {
   isAudioFileName,
   isVideoFileName,
   mediaUrlForPath,
