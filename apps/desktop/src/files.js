@@ -96,6 +96,11 @@ const VIDEO_SUFFIXES = new Set([
   '.mp4', '.m4v', '.webm', '.mov', '.mkv',
 ]);
 
+/** PDF suffix the open path should route to the pdf view. A Set for
+ *  symmetry with the audio / video sets; the renderer's `isPdfName`
+ *  twin lives in `packages/renderer/src/pdf-view.js`. */
+const PDF_SUFFIXES = new Set(['.pdf']);
+
 /** The image MIME type for a path, by its suffix, or `null` when the
  *  path is not a recognised image. The renderer's `mimeTypeForImage`
  *  (in `@editor/renderer`) is the unit-tested twin of this logic; this
@@ -115,6 +120,14 @@ function mediaKindFor(filePath) {
   if (AUDIO_SUFFIXES.has(suffix)) return 'audio';
   if (VIDEO_SUFFIXES.has(suffix)) return 'video';
   return null;
+}
+
+/** Whether PATH names a PDF the open path should route to the pdf
+ *  view. Mirrors `isPdfName` in `@editor/renderer`; the main process
+ *  keeps its own copy because it cannot import the renderer package. */
+function isPdfPath(filePath) {
+  if (typeof filePath !== 'string') return false;
+  return PDF_SUFFIXES.has(extname(filePath).toLowerCase());
 }
 
 /** Build a `media://localhost/...` URL the renderer can fetch through
@@ -171,10 +184,12 @@ function sessionPath() {
  *   for an audio suffix — `metadata` and `albumArtSrc` are best-effort;
  *   either may be absent if the file carries no recognised tag block.
  * - `{ path, name, mediaKind: 'video', src }` for a video suffix.
+ * - `{ path, name, pdfKind: true, src }` for a `.pdf` suffix.
  * - `{ path, name, content }` for anything else.
  *
  * The renderer's `openFileInteractive` switches on `imageSrc` /
- * `mediaKind` to pick the right view; the text path is the fallback.
+ * `mediaKind` / `pdfKind` to pick the right view; the text path is
+ * the fallback.
  *
  * @param {string} path - An absolute filesystem path.
  * @returns {Promise<object>}
@@ -221,6 +236,18 @@ async function readPathAsBuffer(path) {
       path,
       name: basename(path),
       mediaKind,
+      src: mediaUrl(path),
+    };
+  }
+  if (isPdfPath(path)) {
+    // PDFs ride the same `media://` protocol audio / video do —
+    // Chromium's PDF plugin (inside the renderer's <webview>) fetches
+    // the bytes through the protocol handler. No buffer round-trip
+    // through IPC for a file that may be hundreds of MB.
+    return {
+      path,
+      name: basename(path),
+      pdfKind: true,
       src: mediaUrl(path),
     };
   }
