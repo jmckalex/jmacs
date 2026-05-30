@@ -44,7 +44,7 @@ export {
   mimeTypeForVideo,
 } from './media-view.js';
 export { AudioView, createAudioView, formatDuration } from './audio-view.js';
-export { createVideoView } from './video-view.js';
+export { VideoView, createVideoView } from './video-view.js';
 export {
   createDirectoryTreeView,
   iconClassForFile,

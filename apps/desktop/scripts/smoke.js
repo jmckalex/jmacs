@@ -1847,8 +1847,13 @@ app.whenReady().then(() => {
         }));
         await wait(150);
         await frame();
-        const videoStillVisible =
-          !!videoView && videoView.style.display !== 'none';
+        // Phase 3c: same wrapper-vs-inner change as audio above —
+        // display:none lives on the video-view element, not on the
+        // inner .video-view div.
+        const videoWrapperEl = document.querySelector('video-view');
+        const videoStillVisible = !!(
+          videoWrapperEl && videoWrapperEl.style.display !== 'none'
+        );
         const afterVideoKill =
           document.getElementById('modeline-name')?.textContent ?? '';
 

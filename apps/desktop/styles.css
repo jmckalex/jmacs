@@ -1962,6 +1962,9 @@ audio-view,
    element centred and aspect-respected, with the filename + absolute
    path beneath. */
 
+/* Phase 3c: `<video-view>` is the custom element; the factory still
+   creates an inner `.video-view` div for now. Both selectors apply. */
+video-view,
 .video-view {
   display: flex;
   flex-direction: column;

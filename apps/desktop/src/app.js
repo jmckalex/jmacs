@@ -59,7 +59,7 @@ import {
   createShellView,
   createSplitter,
   createTreeSitterHighlighter,
-  createVideoView,
+  VideoView,
   findArt,
   formBoundsAtPoint,
   formBoundsBeforePoint,
@@ -1024,7 +1024,7 @@ function hideInactiveRendererViews(activeKind) {
   setDisplay(docView.element, 'doc');
   setDisplay(jukeboxView.element, 'jukebox');
   setDisplay(audioView, 'audio');
-  setDisplay(videoView.element, 'video');
+  setDisplay(videoView, 'video');
   setDisplay(directoryTreeView.element, 'directory-tree');
   setDisplay(directoryColumnsView.element, 'directory-columns');
   setDisplay(shellView.element, 'shell');
@@ -3984,21 +3984,22 @@ editorPaneElement().append(audioView);
 audioView.style.display = 'none';
 
 // The video view — the view a `video`-kind buffer is shown through.
-const videoView = createVideoView(
-  editorPaneElement(),
-  {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
-  }
-);
-videoView.element.style.display = 'none';
+// Phase 3c: video-view is a custom element now. The instance IS the
+// element; what was `videoView.element` is just `videoView`.
+const videoView = /** @type {*} */ (document.createElement('video-view'));
+videoView.configure({
+  ...(keymapReady ? { onKey: dispatchKey } : {}),
+  closeBuffer: () => {
+    if (!keymapReady) return;
+    try {
+      interpreter.call('kill-view');
+    } catch (error) {
+      repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
+    }
+  },
+});
+editorPaneElement().append(videoView);
+videoView.style.display = 'none';
 
 // The directory tree-view — a `directory-tree`-kind buffer is shown
 // through this view. Folder rows expand on click; file rows route
@@ -4575,7 +4576,7 @@ function singletonElementForKind(kind) {
     case 'doc':                return docView.element;
     case 'jukebox':            return jukeboxView.element;
     case 'audio':              return audioView;
-    case 'video':              return videoView.element;
+    case 'video':              return videoView;
     case 'customize':          return customizeView.element;
     case 'shell':              return shellView.element;
     case 'directory-tree':     return directoryTreeView.element;

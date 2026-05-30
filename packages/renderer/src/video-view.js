@@ -197,6 +197,94 @@ export function createVideoView(container, options = {}) {
   };
 }
 
+// -----------------------------------------------------------------------
+// `<video-view>` — the custom-element wrapper around the factory above.
+// Phase 3c of `plans/VIEWS-AS-CUSTOM-ELEMENTS.md`. Same wrapper pattern
+// as TextView and AudioView: the factory still creates the inner DOM;
+// the class provides the custom-element shell and forwards the host-
+// facing API.
+
+import { defineViewElement, ViewElement } from './view-elements.js';
+
+/**
+ * @typedef {object} VideoViewOptions
+ * Same options bag the factory accepts — see `createVideoView`'s JSDoc.
+ */
+
+export class VideoView extends ViewElement {
+  constructor() {
+    super();
+    /** @type {ReturnType<typeof createVideoView> | null} */
+    this._inner = null;
+    /** @type {VideoViewOptions | null} */
+    this._options = null;
+    /** A buffer set before `connectedCallback` fired — applied on mount. */
+    this._pendingBuffer = null;
+  }
+
+  /**
+   * Supply construction-time options. Must be called before the first
+   * `connectedCallback`; reconfiguring after mount throws.
+   *
+   * @param {VideoViewOptions} options
+   */
+  configure(options) {
+    if (this._inner !== null) {
+      throw new Error(
+        'VideoView.configure: cannot reconfigure after the inner view is ' +
+        'mounted; destroy() and replace if the host wants new options'
+      );
+    }
+    this._options = options ?? null;
+  }
+
+  /** @returns {string} */
+  get kind() { return 'video'; }
+
+  /**
+   * Bind to a video buffer (or null to clear). Safe to call before
+   * connection — the pending value applies on first mount.
+   *
+   * @param {object | null} buffer
+   */
+  setBuffer(buffer) {
+    this._pendingBuffer = buffer;
+    if (this._inner !== null) this._inner.setBuffer(buffer);
+  }
+
+  /** Focus the inner view's keyboard target. */
+  focus() {
+    if (this._inner !== null) this._inner.focus();
+    else super.focus();
+  }
+
+  // --- Custom-element lifecycle -----------------------------------------
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createVideoView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) {
+      this._inner.setBuffer(this._pendingBuffer);
+    }
+  }
+
+  disconnectedCallback() {
+    /* intentionally empty — moves and destroys are indistinguishable here */
+  }
+
+  /** Explicit teardown. Pauses the video, drops the source, clears
+   *  state. Safe to call when the element was never mounted. */
+  destroy() {
+    if (this._inner !== null) {
+      this._inner.destroy();
+      this._inner = null;
+    }
+    this._pendingBuffer = null;
+  }
+}
+
+defineViewElement('video-view', VideoView);
+
 /**
  * Build the error-block element shown when the `<video>`/`<audio>`
  * element's `error` event fires. Exposed via factory so both views
