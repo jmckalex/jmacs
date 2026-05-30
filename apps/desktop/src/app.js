@@ -1626,12 +1626,26 @@ async function openFileByPath(filePath, {
         return dup;
       }
       const focused = currentPane();
-      // Find any other pane already showing this view.
+      // Find any other pane already showing this view. A pane "shows"
+      // the view either as its direct view (leaf-direct) or as a tab
+      // inside its tabline-view. The latter case was previously
+      // missed, which let the same View object end up referenced by
+      // two tab positions — Q9 violation, and its cursor state ended
+      // up shared across the two displays.
       const showingElsewhere =
         focused
-          ? leafPanes(rootPane).some(
-              (leaf) => leaf !== focused && leaf.view === existingView
-            )
+          ? leafPanes(rootPane).some((leaf) => {
+              if (leaf === focused) return false;
+              if (leaf.view === existingView) return true;
+              if (
+                isTablineView(leaf.view) &&
+                Array.isArray(leaf.view.tabs) &&
+                leaf.view.tabs.includes(existingView)
+              ) {
+                return true;
+              }
+              return false;
+            })
           : false;
       if (
         showingElsewhere &&
