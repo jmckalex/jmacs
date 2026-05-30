@@ -1429,6 +1429,11 @@ textarea.customize-widget {
 /* The image view — the view an `image`-kind buffer is shown through.
    Fit-to-window by default; the toolbar toggles to actual size. */
 
+/* Phase 3a: `.image-view` is now the `<image-view>` element. Targeting
+   the tag (rather than only the class) means a freshly-constructed
+   element gets the right layout even before `connectedCallback` has
+   added the class. */
+image-view,
 .image-view {
   display: flex;
   flex-direction: column;

@@ -37,7 +37,7 @@
  */
 
 import { createEditorView } from './view.js';
-import { defineViewElement } from './view-elements.js';
+import { defineViewElement, ViewElement } from './view-elements.js';
 
 /**
  * @typedef {object} TextViewOptions
@@ -52,7 +52,7 @@ import { defineViewElement } from './view-elements.js';
  * @property {() => number} [getTabWidth] - The tab-width reader.
  */
 
-export class TextView extends HTMLElement {
+export class TextView extends ViewElement {
   constructor() {
     super();
     /** @type {*} */

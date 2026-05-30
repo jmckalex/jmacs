@@ -32,10 +32,10 @@
  * decision).
  */
 
-import { defineViewElement, strAttr } from './view-elements.js';
+import { defineViewElement, strAttr, ViewElement } from './view-elements.js';
 import { createTabline } from './tabline.js';
 
-export class TablineView extends HTMLElement {
+export class TablineView extends ViewElement {
   constructor() {
     super();
     /** @type {HTMLElement | null} */

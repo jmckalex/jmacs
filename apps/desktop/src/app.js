@@ -51,7 +51,7 @@ import {
   createEditorView,
   createHoverDoc,
   createInlineEval,
-  createImageView,
+  ImageView,
   createJukeboxView,
   createMarkdownPreview,
   createMinibuffer,
@@ -1020,7 +1020,7 @@ function hideInactiveRendererViews(activeKind) {
     el.style.display = kindsInUse.has(kind) ? '' : 'none';
   };
   setDisplay(customizeView.element, 'customize');
-  setDisplay(imageView.element, 'image');
+  setDisplay(imageView, 'image');
   setDisplay(docView.element, 'doc');
   setDisplay(jukeboxView.element, 'jukebox');
   setDisplay(audioView.element, 'audio');
@@ -3797,10 +3797,14 @@ customizeView.element.style.display = 'none';
 // Like the customisation view it shares #editor-host; switchToBuffer
 // shows whichever the current buffer's kind calls for. Keys typed in
 // it go through the same Lisp keymap.
-const imageView = createImageView(editorPaneElement(), {
+// Phase 3a: image-view is a custom element now. The instance IS the
+// element; what was `imageView.element` is just `imageView`.
+const imageView = /** @type {*} */ (document.createElement('image-view'));
+imageView.configure({
   ...(keymapReady ? { onKey: dispatchKey } : {}),
 });
-imageView.element.style.display = 'none';
+editorPaneElement().append(imageView);
+imageView.style.display = 'none';
 
 /** Highlight a code block's body with the same pipeline the editor
  *  view uses: tree-sitter where we have a grammar (Track B languages),
@@ -4566,7 +4570,7 @@ function mountTablineActiveChild(tablineView) {
  *  to re-parent the active singleton into its content area. */
 function singletonElementForKind(kind) {
   switch (kind) {
-    case 'image':              return imageView.element;
+    case 'image':              return imageView;
     case 'doc':                return docView.element;
     case 'jukebox':            return jukeboxView.element;
     case 'audio':              return audioView.element;

@@ -27,12 +27,36 @@
  */
 
 /**
+ * The base class every view-element extends. In a browser this is the
+ * platform `HTMLElement`; under Node (where the renderer's pure-helper
+ * unit tests load these modules without a DOM), it's a no-op stub so
+ * `class FooView extends ViewElement` can evaluate. The class's DOM-
+ * touching methods can't run in Node, but the pure helpers exported
+ * alongside the class — `isImageName`, `formatDuration`, etc. — can.
+ *
+ * The compromise is honest: we don't pretend the class is testable in
+ * Node, we just keep the module loadable so its pure helpers are
+ * reachable. The smoke arm exercises the class for real, in Electron.
+ *
+ * @type {typeof HTMLElement}
+ */
+export const ViewElement = /** @type {*} */ (
+  typeof HTMLElement === 'undefined' ? class {} : HTMLElement
+);
+
+/**
  * Idempotent wrapper around `customElements.define`. The native call
  * throws if the tag name is already registered — fine in production,
  * fatal under hot-reload / repeated module evaluation in tests.
  *
+ * Also defensive against environments that don't have a `customElements`
+ * registry at all — the renderer's test suite runs under Node without a
+ * DOM and imports view modules to exercise their pure helpers. In that
+ * setting the registration is a no-op; the class still exists and the
+ * pure helpers work normally.
+ *
  * Returns the class actually associated with TAGNAME (the existing one
- * if already registered, otherwise KLASS).
+ * if already registered), or KLASS otherwise.
  *
  * @template {typeof HTMLElement} K
  * @param {string} tagName
@@ -40,6 +64,7 @@
  * @returns {K | CustomElementConstructor}
  */
 export function defineViewElement(tagName, klass) {
+  if (typeof customElements === 'undefined') return klass;
   const existing = customElements.get(tagName);
   if (existing !== undefined) return existing;
   customElements.define(tagName, klass);

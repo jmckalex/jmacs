@@ -32,7 +32,7 @@ export {
   parseCitations, formatBibliography, formatCitation, citationKeys,
 } from './citation.js';
 export {
-  createImageView,
+  ImageView,
   isImageName,
   mimeTypeForImage,
 } from './image-view.js';
