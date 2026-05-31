@@ -2196,6 +2196,21 @@ pdf-view,
   background: rgba(109, 164, 255, 0.35);
 }
 
+/* Find highlights: a translucent paint behind the canvas-rendered
+   glyphs of a match. Text stays transparent (the canvas underneath
+   is what the user reads); only the background tints. The current
+   match gets a hotter colour so the user's eye lands on it first. */
+.pdf-find-match {
+  background: rgba(255, 235, 70, 0.55);
+  color: transparent;
+  border-radius: 1px;
+  padding: 0;
+}
+
+.pdf-find-match.is-current {
+  background: rgba(255, 150, 0, 0.75);
+}
+
 .pdf-status {
   flex: 0 0 auto;
   padding: 4px 10px;

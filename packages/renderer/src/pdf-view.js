@@ -165,6 +165,19 @@ export class PdfView extends ViewElement {
     this._resizeObserver = null;
     /** Debounce token for find input. */
     this._findDebounce = 0;
+    /** `<mark>` elements currently highlighting find matches on the
+     *  page in view. Cleared on every new search. */
+    /** @type {HTMLElement[]} */
+    this._findMatches = [];
+    /** Index into `_findMatches` of the "current" highlight, or -1 if
+     *  no search is active. Enter / Shift+Enter cycle this within the
+     *  current page; exhausting the page jumps to the next/previous
+     *  page that has matches. */
+    this._findMatchIndex = -1;
+    /** The needle the current `_findMatches` were derived from. Lets
+     *  the Enter handler distinguish "same search, advance" from "new
+     *  search, restart" without round-tripping through _runFind. */
+    this._findQuery = '';
   }
 
   /**
@@ -380,11 +393,27 @@ export class PdfView extends ViewElement {
       if (event.key === 'Enter') {
         event.preventDefault();
         event.stopPropagation();
-        this._runFind(findInput.value, { advance: true });
+        clearTimeout(this._findDebounce);
+        const direction = event.shiftKey ? 'backward' : 'forward';
+        const trimmed = findInput.value.trim();
+        // Same search → cycle within the current page first; only fall
+        // through to a page-level jump when the page is exhausted.
+        // Different search → start fresh from the current page.
+        if (trimmed === this._findQuery
+            && this._advanceFindMatch(direction)) {
+          return;
+        }
+        this._runFind(findInput.value, {
+          direction,
+          advance: trimmed === this._findQuery,
+        });
       } else if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
         findInput.value = '';
+        this._clearHighlights();
+        this._findQuery = '';
+        this._setStatus('');
         this.focus();
       }
     });
@@ -798,30 +827,228 @@ export class PdfView extends ViewElement {
   async _runFind(query, options) {
     const pdfDoc = this._pdfDoc;
     if (pdfDoc === null) return;
-    const needle = query.trim().toLowerCase();
-    if (needle === '') {
+    this._clearHighlights();
+    const trimmed = query.trim();
+    if (trimmed === '') {
+      this._findQuery = '';
       this._setStatus('');
       return;
     }
-    const startPage = options && options.advance
-      ? this._currentPage + 1
+    const needleLower = trimmed.toLowerCase();
+    const direction = options && options.direction === 'backward'
+      ? 'backward' : 'forward';
+    const dirStep = direction === 'backward' ? -1 : 1;
+    const advance = options && options.advance === true;
+    const startPage = advance
+      ? this._currentPage + dirStep
       : this._currentPage;
-    // Sweep forward from startPage, wrap to the beginning. We only
-    // resolve text on pages we actually examine, so big PDFs aren't
-    // eagerly scanned just because the user typed a letter.
     const numPages = pdfDoc.numPages;
     for (let offset = 0; offset < numPages; offset += 1) {
-      let n = ((startPage - 1 + offset) % numPages) + 1;
+      // Modular sweep — startPage -> ±1 -> ±2 -> ... wrapping at the
+      // ends. The `+ numPages * numPages` term keeps the dividend
+      // non-negative for backward sweeps.
+      const n = ((startPage - 1 + dirStep * offset + numPages * numPages)
+                  % numPages) + 1;
       const entry = this._pages.find((p) => p.pageNum === n);
       if (entry === undefined) continue;
       const text = await this._pageTextLower(entry);
-      if (text.includes(needle)) {
-        this._setStatus(`Found "${query}" on page ${n}.`);
-        this._gotoPage(n);
-        return;
+      if (!text.includes(needleLower)) continue;
+      // Render the page if it hasn't painted yet — highlighting walks
+      // the text-layer DOM, which doesn't exist until then.
+      await this._renderPage(entry);
+      const count = this._highlightInPage(entry, trimmed);
+      // Update current-page bookkeeping *without* re-triggering a
+      // smooth scroll; we want the scroll target to be the highlight,
+      // not the top of the page.
+      this._currentPage = n;
+      /** @type {HTMLInputElement} */ (this._pageInput).value = String(n);
+      this._persistBufferState();
+      this._findQuery = trimmed;
+      if (count > 0) {
+        // Forward arrival starts at the topmost match; backward
+        // arrival starts at the bottommost so cycling continues to
+        // feel "previous" instead of jumping to the top.
+        const idx = direction === 'backward' ? count - 1 : 0;
+        if (idx !== 0) {
+          this._findMatches[0].classList.remove('is-current');
+          this._findMatches[idx].classList.add('is-current');
+        }
+        this._findMatchIndex = idx;
+        this._findMatches[idx].scrollIntoView({
+          block: 'center',
+          behavior: 'smooth',
+        });
+        this._setStatus(
+          `Match ${idx + 1} of ${count} on page ${n}.`
+        );
+      } else {
+        // The flat page text matched but the text layer didn't yield a
+        // contiguous run (a line break splits the needle in the layer,
+        // for example). Still useful to navigate to the page.
+        entry.container.scrollIntoView({
+          block: 'start',
+          behavior: 'smooth',
+        });
+        this._findMatchIndex = -1;
+        this._setStatus(
+          `Found "${trimmed}" on page ${n} ` +
+          `(no highlight — match likely spans a line break).`
+        );
       }
+      return;
     }
-    this._setStatus(`No matches for "${query}".`);
+    this._findQuery = trimmed;
+    this._setStatus(`No matches for "${trimmed}".`);
+  }
+
+  /** Move the "current" highlight forward / backward within the
+   *  page that's already highlighted. Returns true on a successful
+   *  move; false when the page is exhausted in the requested
+   *  direction (the caller then falls through to a page-level jump). */
+  _advanceFindMatch(direction) {
+    const matches = this._findMatches;
+    if (matches.length === 0 || this._findMatchIndex < 0) return false;
+    const next = direction === 'backward'
+      ? this._findMatchIndex - 1
+      : this._findMatchIndex + 1;
+    if (next < 0 || next >= matches.length) return false;
+    matches[this._findMatchIndex].classList.remove('is-current');
+    matches[next].classList.add('is-current');
+    this._findMatchIndex = next;
+    matches[next].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    this._setStatus(
+      `Match ${next + 1} of ${matches.length} on page ${this._currentPage}.`
+    );
+    return true;
+  }
+
+  /** Unwrap every active `<mark>` highlight, restoring the original
+   *  text nodes inside the affected text-layer spans. Safe to call
+   *  when nothing is highlighted. */
+  _clearHighlights() {
+    for (const mark of this._findMatches) {
+      const parent = mark.parentNode;
+      if (parent === null) continue;
+      parent.replaceChild(this.ownerDocument.createTextNode(mark.textContent), mark);
+      parent.normalize();
+    }
+    this._findMatches = [];
+    this._findMatchIndex = -1;
+  }
+
+  /** Highlight every occurrence of `needle` inside ENTRY's text layer
+   *  by wrapping the matched characters in `<mark class="pdf-find-match">`
+   *  elements. The first occurrence (in document order) gets the
+   *  `.is-current` class for prominent styling.
+   *
+   *  Returns the number of matches found. Zero usually means the text
+   *  layer couldn't reconstruct a contiguous string for the needle —
+   *  often a line break splitting the match — in which case the
+   *  caller falls back to a no-highlight jump.
+   */
+  _highlightInPage(entry, needle) {
+    const textLayer = entry.textLayer;
+    if (textLayer === null) return 0;
+    // The text layer renders top-level `<span>` elements (one per
+    // PDF.js text run) interspersed with `<br>` for hasEOL markers.
+    // We walk only the spans; the `<br>`s contribute nothing to the
+    // text content and so are invisible to the offset map.
+    const spans = Array.from(textLayer.querySelectorAll(':scope > span'));
+    if (spans.length === 0) return 0;
+    const ranges = [];
+    let acc = '';
+    for (const span of spans) {
+      const start = acc.length;
+      acc += span.textContent;
+      ranges.push({ start, end: acc.length });
+    }
+    const lowerAcc = acc.toLowerCase();
+    const lowerNeedle = needle.toLowerCase();
+    if (lowerNeedle === '') return 0;
+    const matches = [];
+    let from = 0;
+    while (from <= lowerAcc.length) {
+      const idx = lowerAcc.indexOf(lowerNeedle, from);
+      if (idx === -1) break;
+      matches.push({ start: idx, end: idx + lowerNeedle.length });
+      from = idx + lowerNeedle.length;
+    }
+    // Wrap matches in reverse so the textContent rewrites we do for a
+    // later match don't shift earlier matches' offsets — they're
+    // independent per-span rewrites, but reverse order is the safer
+    // invariant against subtle adjacency bugs.
+    for (let i = matches.length - 1; i >= 0; i -= 1) {
+      this._wrapMatch(spans, ranges, matches[i]);
+    }
+    if (this._findMatches.length > 0) {
+      // _findMatches collected in reverse-wrap-order; sort by
+      // document position so [0] is the first occurrence and
+      // scrollIntoView lands on the topmost match.
+      this._findMatches.sort((a, b) => {
+        const rel = a.compareDocumentPosition(b);
+        if (rel & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (rel & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+        return 0;
+      });
+      this._findMatches[0].classList.add('is-current');
+    }
+    return this._findMatches.length;
+  }
+
+  /** Wrap the part of MATCH that lies within each crossed span. */
+  _wrapMatch(spans, ranges, match) {
+    let startIdx = -1;
+    let endIdx = -1;
+    for (let i = 0; i < ranges.length; i += 1) {
+      if (startIdx === -1 && match.start < ranges[i].end) startIdx = i;
+      if (match.end <= ranges[i].end) { endIdx = i; break; }
+    }
+    if (startIdx === -1) return;
+    if (endIdx === -1) endIdx = ranges.length - 1;
+    if (startIdx === endIdx) {
+      this._wrapInSpan(
+        spans[startIdx],
+        match.start - ranges[startIdx].start,
+        match.end - ranges[startIdx].start,
+      );
+      return;
+    }
+    // Multi-span: wrap last → middle → first so the spans we still
+    // need to read (start offsets are slices into the original text)
+    // aren't mutated until their turn.
+    this._wrapInSpan(
+      spans[endIdx],
+      0,
+      match.end - ranges[endIdx].start,
+    );
+    for (let i = endIdx - 1; i > startIdx; i -= 1) {
+      this._wrapInSpan(spans[i], 0, spans[i].textContent.length);
+    }
+    this._wrapInSpan(
+      spans[startIdx],
+      match.start - ranges[startIdx].start,
+      spans[startIdx].textContent.length,
+    );
+  }
+
+  /** Wrap characters `[startInSpan, endInSpan)` of SPAN in a
+   *  `<mark class="pdf-find-match">`. Rebuilds the span's inner DOM as
+   *  text-mark-text. */
+  _wrapInSpan(span, startInSpan, endInSpan) {
+    if (startInSpan >= endInSpan) return;
+    const text = span.textContent;
+    const before = text.slice(0, startInSpan);
+    const matchText = text.slice(startInSpan, endInSpan);
+    const after = text.slice(endInSpan);
+    const doc = this.ownerDocument;
+    span.textContent = '';
+    if (before !== '') span.appendChild(doc.createTextNode(before));
+    const mark = doc.createElement('mark');
+    mark.className = 'pdf-find-match';
+    mark.textContent = matchText;
+    span.appendChild(mark);
+    if (after !== '') span.appendChild(doc.createTextNode(after));
+    this._findMatches.push(mark);
   }
 
   async _pageTextLower(entry) {
