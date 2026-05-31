@@ -3453,6 +3453,113 @@ app.whenReady().then(() => {
       await rm(bug3TextA, { force: true });
       await rm(bug3VideoPath, { force: true });
 
+      // Bug-4 arm: the tabline ring-fence. Two panes, each with its own
+      // multi-tab tabline. Killing a tab in the right tabline must
+      // remove the tab from the right tabline only — the kill-pick-next
+      // step must not reach into the global `views[]` and pull a view
+      // from the left tabline in as a new right-side tab. Pre-fix, the
+      // `wasCurrent` branch of `killViewAtIndex` did exactly that
+      // through `switchToViewIndex`'s tabline-push behaviour, and a
+      // session-restored tree (where global view order doesn't mirror
+      // tabline membership) hit the leak on the very first kill.
+      const bug4FileA = join(tmpdir(), 'jmacs-bug4-A.txt');
+      const bug4FileB = join(tmpdir(), 'jmacs-bug4-B.txt');
+      const bug4FileC = join(tmpdir(), 'jmacs-bug4-C.txt');
+      const bug4FileD = join(tmpdir(), 'jmacs-bug4-D.txt');
+      await writeFile(bug4FileA, 'aa\\n', 'utf8');
+      await writeFile(bug4FileB, 'bb\\n', 'utf8');
+      await writeFile(bug4FileC, 'cc\\n', 'utf8');
+      await writeFile(bug4FileD, 'dd\\n', 'utf8');
+      const bug4 = await win.webContents.executeJavaScript(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const editorHost = document.getElementById('editor-host');
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const tabsInPane = (paneEl) =>
+          Array.from(paneEl.querySelectorAll(
+            '.tabline-strip .tabline-tab .tabline-label'
+          )).map((el) => el.textContent);
+
+        // Clean slate: collapse to one pane, ensure it's a tabline.
+        submit('(delete-other-panes!)');
+        await wait(150);
+        submit('(promote-to-tabline!)');
+        await wait(150);
+
+        // File A goes into the (soon-to-be) left tabline.
+        submit('(open-file-path! "${bug4FileA}")');
+        await wait(250);
+
+        // Split horizontally → right pane is a leaf-direct copy of A;
+        // promote it to its own tabline.
+        submit('(split-horizontal!)');
+        await wait(250);
+        submit('(other-pane!)');
+        await wait(150);
+        submit('(promote-to-tabline!)');
+        await wait(150);
+
+        // Open B in right. Right tabline = [dup-A, B].
+        submit('(open-file-path! "${bug4FileB}")');
+        await wait(250);
+
+        // Cross over to left, open D so it lands AFTER B in the
+        // global views list. Without this step, the kill in right
+        // would pick the previous view (= B, already in right's
+        // tabs) and the leak wouldn't even fire — the bug only
+        // manifests when the global-next pick is a view from some
+        // other container.
+        submit('(other-pane!)');
+        await wait(150);
+        submit('(open-file-path! "${bug4FileD}")');
+        await wait(250);
+
+        // Back to right; open C as its new active tab. Now the
+        // global views list ends with [..., A, dup-A, B, D, C] and
+        // right tabline is [dup-A, B, C].
+        submit('(other-pane!)');
+        await wait(150);
+        submit('(open-file-path! "${bug4FileC}")');
+        await wait(250);
+
+        const panes = editorHost.querySelectorAll('.pane');
+        const leftBeforeKill = tabsInPane(panes[0]);
+        const rightBeforeKill = tabsInPane(panes[1]);
+
+        // Kill C in right. Pre-fix, the kill picked the global next
+        // view (= D, the view immediately before C in the post-splice
+        // list) and pushed it into right — D leaks from left to
+        // right. Post-fix: ring-fence holds; right's active falls
+        // back to B, no global pick happens.
+        submit('(kill-view!)');
+        await wait(300);
+
+        const panes2 = editorHost.querySelectorAll('.pane');
+        const leftAfterKill = panes2[0] ? tabsInPane(panes2[0]) : [];
+        const rightAfterKill = panes2[1] ? tabsInPane(panes2[1]) : [];
+
+        // Tidy: collapse back to one pane.
+        submit('(delete-other-panes!)');
+        await wait(200);
+
+        return {
+          leftBeforeKill,
+          rightBeforeKill,
+          leftAfterKill,
+          rightAfterKill,
+        };
+      })()`);
+      console.log('  bug4:', JSON.stringify(bug4));
+      await rm(bug4FileA, { force: true });
+      await rm(bug4FileB, { force: true });
+      await rm(bug4FileC, { force: true });
+      await rm(bug4FileD, { force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -3843,6 +3950,26 @@ app.whenReady().then(() => {
         bug3.after[0].directTextViewVisible === true &&
         bug3.after[0].directTextViewInlineDisplay === '';
 
+      // bug4: the tabline ring-fence. After killing C in the right
+      // tabline, (1) left's tab list is byte-identical to before,
+      // (2) right lost C, (3) right's post-kill tabs are a subset
+      // of its pre-kill tabs — i.e. nothing entered right that
+      // wasn't already there. (3) is the strongest assertion; the
+      // specific leak pre-fix was D from the left tabline being
+      // pushed in via the `wasCurrent` switchToViewIndex path.
+      const bug4Ok =
+        bug4.leftBeforeKill.some((l) => l.includes('jmacs-bug4-A')) &&
+        bug4.leftBeforeKill.some((l) => l.includes('jmacs-bug4-D')) &&
+        bug4.leftAfterKill.length === bug4.leftBeforeKill.length &&
+        bug4.leftAfterKill.every((l, i) => l === bug4.leftBeforeKill[i]) &&
+        bug4.rightBeforeKill.some((l) => l.includes('jmacs-bug4-B')) &&
+        bug4.rightBeforeKill.some((l) => l.includes('jmacs-bug4-C')) &&
+        bug4.rightAfterKill.some((l) => l.includes('jmacs-bug4-B')) &&
+        !bug4.rightAfterKill.some((l) => l.includes('jmacs-bug4-C')) &&
+        !bug4.rightAfterKill.some((l) => l.includes('jmacs-bug4-D')) &&
+        bug4.rightAfterKill.length === bug4.rightBeforeKill.length - 1 &&
+        bug4.rightAfterKill.every((l) => bug4.rightBeforeKill.includes(l));
+
       // Tabline arm (phase 3b commit 7): opening files appends tabs to
       // the root tabline; C-x ←/→ cycle; C-x k kills and falls back;
       // C-x 3 split leaves the left tabline intact and the right pane
@@ -3900,7 +4027,7 @@ app.whenReady().then(() => {
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
         tablineOk && langPackOk && treeOk && colsOk && shellOk &&
         chordOk && findFileOk && panesOk && addPaneOk && bug2Ok && bug3Ok &&
-        tablineArmOk
+        bug4Ok && tablineArmOk
       ) {
         finish(
           0,
@@ -4019,6 +4146,8 @@ app.whenReady().then(() => {
         finish(1, `close-one-closes-both regression (${JSON.stringify(bug2)})`);
       } else if (!bug3Ok) {
         finish(1, `cross-pane tab click regression (${JSON.stringify(bug3)})`);
+      } else if (!bug4Ok) {
+        finish(1, `tabline ring-fence regression (${JSON.stringify(bug4)})`);
       } else {
         finish(1, `tabline behaviour did not work (${JSON.stringify(tablineArm)})`);
       }

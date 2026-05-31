@@ -198,9 +198,24 @@ Two branches based on what the focused leaf holds:
 2. `views.splice(target, 1)`.
 3. `removeViewFromAllTablines(victim)` — strips the View from every
    tabline that contained it (uses reference equality).
+   `removeTabInTabline` re-anchors each affected tabline's `active`
+   to a surviving sibling and re-runs `mountTablineActiveChild`, so
+   by the time this step returns the focused tabline (if any) is
+   already showing the right sibling.
 4. Auto-collapse panes whose tabline went empty; the root pane
    substitutes `*scratch*` (Q6).
-5. If `wasCurrent`, `switchToViewIndex(next)`.
+5. If `wasCurrent`, **the tabline ring-fence applies**:
+   - Focused leaf still holds a tabline-view with remaining tabs →
+     sync `currentViewIndex` to its active child and exit. Do *not*
+     reach into `views[]` for a "next" pick — that would pull a view
+     from elsewhere in the tree into this tabline.
+   - Focused leaf is now a different leaf (auto-collapse fired,
+     focus followed to the sibling inside `deletePaneInTree`) →
+     `currentViewIndex` is already correct; refresh the modeline.
+   - Focused leaf is leaf-direct and still references the dead
+     victim → `switchToViewIndex(next)` where `next` is the global
+     fallback. No container to consult, so the legacy global pick
+     stands.
 
 ### Focus changes
 
@@ -346,6 +361,7 @@ one faster to fix.
 | Cross-pane tab click hides focused leaf's text-view | `hideInactiveRendererViews` called from `mountTablineActiveChild` toggled the *focused* leaf's text-view based on a *non-focused* tab's kind | Visibility ownership (leaf-direct) |
 | Cross-pane tab click doesn't move focus | Strip refresh detaches the tab mid-event; bubble-phase `focusPaneFromEvent` finds an orphaned target | DOM detachment hazard |
 | Jukebox / audio / video kill via synthetic C-x k doesn't fire | Smoke arm dispatched on the wrapper element, but the keydown listener is on an inner root div | (smoke arm bug, not production) |
+| Killing a tab in a restored tabline pulls a foreign view in as a new tab | `killViewAtIndex`'s `wasCurrent` branch reached `views[]` for a "next" pick; `switchToViewIndex`'s tabline branch pushed it in | Tabline ring-fence |
 
 ---
 

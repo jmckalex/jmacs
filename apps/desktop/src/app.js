@@ -1278,39 +1278,87 @@ function killViewAtIndex(target) {
   }
   views.splice(target, 1);
   // Strip VICTIM from any tabline-view that contains it. Record the
-  // ones that went empty so we can auto-collapse their panes.
+  // ones that went empty so we can auto-collapse their panes (Q6).
   const emptied = removeViewFromAllTablines(victim);
-  // Auto-collapse emptied panes. Skip the root-pane case (we patch
-  // it below with a scratch view rather than collapsing — the editor
-  // always has at least one pane).
-  for (const { leaf } of emptied) {
+  // For each emptied tabline: if it's not the root pane, collapse its
+  // pane out of the tree. If it IS the root pane, the editor always
+  // has at least one pane and that pane needs at least one tab — so
+  // substitute a fresh `*scratch*` directly into the tabline (Q6).
+  // (Pre-ring-fence, the kill loop relied on `switchToViewIndex`
+  // pulling foreign views in from `views[]` to repopulate an emptied
+  // tabline. With the ring-fence, no foreign views can enter; the
+  // scratch substitution has to be explicit on this path.)
+  for (const { tlv, leaf } of emptied) {
     if (leaf !== rootPane) {
       deletePaneInTree(leaf);
+      continue;
     }
-  }
-  if (views.length === 0) {
     const scratch = createView({
       kind: 'text',
       buffer: createBuffer('', { name: '*scratch*' }),
     });
     views.push(scratch);
-    // If the root pane's tabline went empty, install scratch as its
-    // sole tab so the strip still shows something.
-    if (
-      rootTablineView &&
-      rootTablineView.tabs.length === 0
-    ) {
-      rootTablineView.tabs.push(scratch);
-      rootTablineView.active = 0;
-    }
+    tlv.tabs.push(scratch);
+    tlv.active = 0;
+    // Re-mount the active child: removeTabInTabline ran with an empty
+    // tabs list and was a no-op for the mount, so the scratch needs an
+    // explicit mount pass to become the visible tab.
+    mountTablineActiveChild(tlv);
+  }
+  if (views.length === 0) {
+    // No tabline emptied (or the leaf-direct case) and the global
+    // view list ran out. Add a scratch so `currentViewIndex` has
+    // something to land on. (The tabline-substitution above already
+    // handled the empty-root-tabline case.)
+    const scratch = createView({
+      kind: 'text',
+      buffer: createBuffer('', { name: '*scratch*' }),
+    });
+    views.push(scratch);
     currentViewIndex = -1;
     switchToViewIndex(0);
     return;
   }
   if (wasCurrent) {
-    const next = Math.min(target, views.length - 1);
-    currentViewIndex = -1; // force switchToViewIndex to re-mount.
-    switchToViewIndex(next);
+    // Ring-fence the tabline: if the focused leaf still holds a
+    // tabline-view with remaining tabs, `removeTabInTabline` (called
+    // from `removeViewFromAllTablines` above) already re-anchored the
+    // tabline's active index to a surviving sibling and mounted that
+    // tab. Reaching into the global `views[]` for a "next" pick would
+    // pull a view that belongs to some other pane into this tabline
+    // — exactly the leak this guard prevents.
+    //
+    // For an auto-collapsed pane (tabline emptied → deletePaneInTree
+    // fired), focus has already followed to the sibling and the
+    // sibling's view was mounted; we only need a modeline sync.
+    //
+    // The only case that still goes through the global-next pick is a
+    // leaf-direct kill — the focused leaf's view IS the dead victim,
+    // and there's no per-container list to consult, so the legacy
+    // global-pick behaviour stands.
+    const focused = currentPane();
+    if (focused
+        && focused.kind === 'leaf'
+        && isTablineView(focused.view)
+        && focused.view.tabs.length > 0) {
+      const activeChild = tablineActiveChild(focused.view);
+      currentViewIndex = activeChild !== null
+        ? views.indexOf(activeChild)
+        : -1;
+      updateModeline();
+      notifyViewsChanged();
+    } else if (focused
+               && focused.kind === 'leaf'
+               && focused.view !== victim) {
+      // Auto-collapsed: deletePaneInTree pointed focus at a sibling
+      // and set currentViewIndex inside its branch. Just refresh.
+      updateModeline();
+      notifyViewsChanged();
+    } else {
+      const next = Math.min(target, views.length - 1);
+      currentViewIndex = -1; // force switchToViewIndex to re-mount.
+      switchToViewIndex(next);
+    }
   } else if (target < currentViewIndex) {
     currentViewIndex -= 1;
     updateModeline();
