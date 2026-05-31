@@ -1569,7 +1569,14 @@ app.whenReady().then(() => {
         // jukebox buffer. Without the keymap fix the keys are eaten
         // by the view and the buffer survives.
         if (view) view.focus();
-        const target = view || document.body;
+        // Dispatch on the inner .jukebox-view root div (or fall back
+        // to body). The custom element wrapper doesn't carry the
+        // keydown listener — the inner root is a descendant — so a
+        // synthetic dispatch on the wrapper bubbles up and never
+        // reaches the handler. Hitting root directly is what real
+        // focus + key events do.
+        const target =
+          (view && view.querySelector('.jukebox-view')) || view || document.body;
         target.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', code: 'KeyX', ctrlKey: true,
           bubbles: true, cancelable: true,
@@ -1805,7 +1812,11 @@ app.whenReady().then(() => {
         // view should be hidden afterwards and the modeline back on a
         // different buffer.
         if (audioView) audioView.focus();
-        const target = audioView || document.body;
+        // Dispatch on the inner .audio-view root, not the wrapper —
+        // see the jukebox arm above for the same reason.
+        const target =
+          (audioView && audioView.querySelector('.audio-view')) ||
+          audioView || document.body;
         target.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'q', code: 'KeyQ',
           bubbles: true, cancelable: true,
@@ -1846,7 +1857,10 @@ app.whenReady().then(() => {
           : '';
         // \`q\` dismisses.
         if (videoView) videoView.focus();
-        const videoTarget = videoView || document.body;
+        // Inner-root dispatch — same reason as the audio/jukebox arms.
+        const videoTarget =
+          (videoView && videoView.querySelector('.video-view')) ||
+          videoView || document.body;
         videoTarget.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'q', code: 'KeyQ',
           bubbles: true, cancelable: true,
@@ -2863,6 +2877,20 @@ app.whenReady().then(() => {
         const tabsAfterFourOpens = allTabsInPane(pane);
         const activeAfterFourOpens = activeTabInPane(pane);
 
+        // Per-tab text-views: with four text tabs now open, each one's
+        // <text-view> wrapper should carry its own data-file-path (the
+        // per-view-instance architecture). A single shared/repointed
+        // element would collapse this to one. We capture this now,
+        // before the subsequent kill/split steps tear most tabs down.
+        const distinctTextViewPathsAfterFour = (() => {
+          const paths = new Set();
+          for (const tv of document.querySelectorAll('text-view')) {
+            const p = tv.getAttribute('data-file-path');
+            if (p) paths.add(p);
+          }
+          return paths.size;
+        })();
+
         // --- C-x ← cycles to the previous tab; C-x → returns.
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
@@ -2999,21 +3027,8 @@ app.whenReady().then(() => {
           ? (restoredRoot.view.tabs[restoredRoot.view.active]?.path ?? '')
           : '';
 
-        // Per-tab text-views (phase-4 tabline bugfix): after opening
-        // four files into one tabline, each text tab should have its
-        // own <text-view> element with its own data-file-path. They
-        // live either in the tabline's content area (the active one)
-        // or in #view-warehouse (the inactive ones). Count distinct
-        // file paths across all text-views in the document — a single
-        // shared/repointed element would produce just one.
-        const distinctTextViewPaths = (() => {
-          const paths = new Set();
-          for (const tv of document.querySelectorAll('text-view')) {
-            const p = tv.getAttribute('data-file-path');
-            if (p) paths.add(p);
-          }
-          return paths.size;
-        })();
+        // Carried forward from the earlier four-files snapshot.
+        const distinctTextViewPaths = distinctTextViewPathsAfterFour;
 
         return {
           tabsAfterThreeOpens,
@@ -3239,6 +3254,86 @@ app.whenReady().then(() => {
         };
       })()`);
       console.log('  addPaneArm:', JSON.stringify(addPaneArm));
+
+      // Bug-2 arm: a file opened in two separate tablines should land
+      // as two independent View objects sharing the same buffer; closing
+      // one tab should leave the other alive — Q9 auto-duplicate's job.
+      const bug2File = join(tmpdir(), 'jmacs-bug2-shared.txt');
+      await writeFile(bug2File, 'shared content\\n', 'utf8');
+      const bug2 = await win.webContents.executeJavaScript(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const editorHost = document.getElementById('editor-host');
+        const tabsForFile = () => {
+          // Count tabline-tab elements whose label matches the file's
+          // basename, across every visible tabline strip in the panes.
+          const basename = '${bug2File}'.split('/').pop();
+          const labels = editorHost.querySelectorAll(
+            '.tabline-strip .tabline-tab .tabline-label'
+          );
+          return Array.from(labels).filter((el) => el.textContent === basename).length;
+        };
+        const panesWithFile = () => {
+          const basename = '${bug2File}'.split('/').pop();
+          return Array.from(editorHost.querySelectorAll('.pane'))
+            .map((paneEl) =>
+              Array.from(paneEl.querySelectorAll(
+                '.tabline-strip .tabline-tab .tabline-label'
+              )).some((el) => el.textContent === basename)
+            );
+        };
+
+        submit('(delete-other-panes!)');
+        await wait(150);
+        submit('(promote-to-tabline!)');
+        await wait(120);
+
+        // Open shared file in pane A.
+        submit('(open-file-path! "${bug2File}")');
+        await wait(300);
+
+        // Split horizontally; right pane becomes B.
+        submit('(split-horizontal!)');
+        await wait(250);
+        submit('(other-pane!)');
+        await wait(150);
+        submit('(promote-to-tabline!)');
+        await wait(150);
+
+        // Open the same file in pane B — auto-dup should fire.
+        submit('(open-file-path! "${bug2File}")');
+        await wait(400);
+
+        const tabsBeforeKill = tabsForFile();
+        const panesBeforeKill = panesWithFile();
+
+        // The focused pane is B. The × button on a tab triggers
+        // killViewAtIndex (not just remove-tab), so use kill-view! to
+        // mirror that behaviour for the active view in pane B.
+        submit('(kill-view!)');
+        await wait(400);
+
+        const tabsAfterKill = tabsForFile();
+        const panesAfterKill = panesWithFile();
+
+        // Tidy.
+        submit('(delete-other-panes!)');
+        await wait(150);
+        return {
+          tabsBeforeKill,
+          panesBeforeKill,
+          tabsAfterKill,
+          panesAfterKill,
+        };
+      })()`);
+      console.log('  bug2:', JSON.stringify(bug2));
+      await rm(bug2File, { force: true });
 
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;

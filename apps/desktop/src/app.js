@@ -1058,25 +1058,29 @@ function computeSplitNodeRect(node, id, rect) {
  *  @param {string} activeKind */
 function hideInactiveRendererViews(activeKind) {
   // The focused pane's currently-mounted text editor follows the active
-  // kind — visible iff the focused view is text. A pane's mounted
-  // text-view is whatever `<text-view>` is currently inside its pane
-  // element (per-leaf direct child, or per-tab inside a `<tabline-view>`'s
-  // content). Warehoused text-views aren't reachable through paneElements,
-  // so they're naturally skipped.
+  // kind — visible iff the focused view is text. This only applies to
+  // the *leaf-direct* text-view: a `<text-view>` that's a direct child
+  // of the pane element, used when the pane's view is text (no tabline
+  // wrapper). For tabline panes, per-tab text-view visibility is
+  // managed by `mountTablineActiveChild`'s display loop. Reaching into
+  // a tabline's `.tabline-content` here would re-show whichever tab
+  // happens to be first in document order, stacking it over the active
+  // one inside the content area.
   const focusedPaneEl = currentPaneId
     ? paneElements.get(currentPaneId)
     : null;
   const focusedTextView = focusedPaneEl
-    ? focusedPaneEl.querySelector('text-view')
+    ? focusedPaneEl.querySelector(':scope > text-view')
     : null;
   if (focusedTextView) {
     focusedTextView.style.display = activeKind === 'text' ? '' : 'none';
   }
   // Non-focused panes' text editors stay visible — they belong to
   // other panes and aren't affected by what the focused pane shows.
+  // Same direct-child-only constraint.
   for (const [paneId, paneEl] of paneElements) {
     if (paneId === currentPaneId) continue;
-    for (const tv of paneEl.querySelectorAll('text-view')) {
+    for (const tv of paneEl.querySelectorAll(':scope > text-view')) {
       tv.style.display = '';
     }
   }
@@ -4841,7 +4845,15 @@ function singletonElementForKind(kind) {
 }
 
 /** Activate tab INDEX in TABLINEVIEW, refresh the strip, and re-mount
- *  the active child. Idempotent on the current active index. */
+ *  the active child. Idempotent on the current active index.
+ *
+ *  When the activated tabline belongs to the focused leaf, this also
+ *  syncs `currentViewIndex` to the new active tab's position in the
+ *  global `views` list and refreshes the modeline. Without that step
+ *  the modeline would still show whichever tab was active before —
+ *  visible in particular on directory-tree double-click and other
+ *  tab-activating paths that bypass `switchToViewIndex` (its own
+ *  tabline branch already does this synchronisation). */
 function activateTabInTabline(tablineView, index) {
   if (!Array.isArray(tablineView.tabs)) return;
   if (index < 0 || index >= tablineView.tabs.length) return;
@@ -4849,6 +4861,17 @@ function activateTabInTabline(tablineView, index) {
   const state = tablineStateByView.get(tablineView);
   if (state) state.strip.refresh();
   mountTablineActiveChild(tablineView);
+  // If this tabline lives in the focused leaf, the user just changed
+  // what they see — keep the global pointers in step.
+  const focused = currentPane();
+  if (focused && focused.view === tablineView) {
+    const child = tablineActiveChild(tablineView);
+    if (child) {
+      const viewIdx = views.indexOf(child);
+      if (viewIdx >= 0) currentViewIndex = viewIdx;
+      updateModeline();
+    }
+  }
 }
 
 /** Remove tab INDEX from TABLINEVIEW. Adjusts `active` to land on the
