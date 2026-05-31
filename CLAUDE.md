@@ -102,6 +102,12 @@ For any non-trivial task:
 4. The existing code in your package and its tests
 5. Current state of `architect-notes.md`
 
+**If the task touches views or panes**, read `docs/VIEWS.md` *first*.
+It is the condensed playbook of which display-state is owned by
+which path, what stays invariant under view/tab operations, and the
+specific bug families that keep recurring. Skipping it almost
+guarantees a one-line fix that breaks three other arms.
+
 ### Communication style
 
 When responding to the architect (in commits, notes, or interactive sessions):
