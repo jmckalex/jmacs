@@ -34,6 +34,7 @@ import {
   SPLIT_VERTICAL,
 } from '@editor/pane';
 import {
+  applyProcedure,
   arrayToList,
   cons,
   createInterpreter,
@@ -42,6 +43,7 @@ import {
   listToArray,
   NIL,
   sym,
+  Sym,
   writeString,
 } from '@editor/lisp';
 import {
@@ -2780,6 +2782,98 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.length - 1);
       return NIL;
     },
+    // `(pdf-extract-text [callback])` — extract the text of the
+    // currently-visible page of the PDF view in the focused pane.
+    //
+    // PDF.js's text-content API is async, so the primitive returns nil
+    // immediately. CALLBACK is invoked with `(text page-num)` once the
+    // text is ready; without a callback the text is appended to the
+    // REPL. CALLBACK can be a symbol naming a global procedure or a
+    // procedure value (a lambda).
+    //
+    // Errors land in the REPL — the asynchrony means we can't raise
+    // them through the original primitive call. Synchronous validation
+    // (no PDF in focus, document still loading) does throw.
+    'pdf-extract-text': (args) => {
+      const view = session.currentView;
+      if (!view || view.kind !== 'pdf') {
+        throw new LispError(
+          'pdf-extract-text: no PDF view in the focused pane'
+        );
+      }
+      const el = elementForViewInstance(view);
+      if (el === null || typeof el.extractPageText !== 'function') {
+        throw new LispError('pdf-extract-text: PDF view not mounted');
+      }
+      const pageNum = el.currentPageNumber;
+      if (pageNum < 1) {
+        throw new LispError('pdf-extract-text: document still loading');
+      }
+      const cb = args[0];
+      el.extractPageText(pageNum).then((text) => {
+        if (cb !== undefined && cb !== NIL) {
+          deliverLispCallback(cb, [text, pageNum], 'pdf-extract-text');
+          return;
+        }
+        repl.appendOutput(text);
+        if (text.length > 0 && !text.endsWith('\n')) repl.appendOutput('\n');
+      }).catch((error) => {
+        repl.appendError(
+          `pdf-extract-text: ${error.message ?? error}`
+        );
+      });
+      return NIL;
+    },
+    // `(pdf-extract-page-range M N [callback])` — extract pages M
+    // through N (inclusive, 1-based) of the focused-pane PDF view.
+    // CALLBACK is invoked with `(texts m last)` once every page is
+    // resolved, where `texts` is a list of strings; without a callback,
+    // the pages are appended to the REPL with `--- page N ---`
+    // separators. Range bounds are clamped to the document; an
+    // inverted range raises.
+    'pdf-extract-page-range': (args) => {
+      const m = Math.floor(Number(args[0]));
+      const n = Math.floor(Number(args[1]));
+      if (!Number.isFinite(m) || !Number.isFinite(n) || m < 1 || n < m) {
+        throw new LispError(
+          `pdf-extract-page-range: invalid range (${args[0]} .. ${args[1]})`
+        );
+      }
+      const view = session.currentView;
+      if (!view || view.kind !== 'pdf') {
+        throw new LispError(
+          'pdf-extract-page-range: no PDF view in the focused pane'
+        );
+      }
+      const el = elementForViewInstance(view);
+      if (el === null || typeof el.extractPageRangeText !== 'function') {
+        throw new LispError('pdf-extract-page-range: PDF view not mounted');
+      }
+      const pageCount = el.pageCount;
+      if (pageCount < 1) {
+        throw new LispError(
+          'pdf-extract-page-range: document still loading'
+        );
+      }
+      const last = Math.min(n, pageCount);
+      const cb = args[2];
+      el.extractPageRangeText(m, last).then((texts) => {
+        if (cb !== undefined && cb !== NIL) {
+          deliverLispCallback(
+            cb, [arrayToList(texts), m, last], 'pdf-extract-page-range'
+          );
+          return;
+        }
+        for (let i = 0; i < texts.length; i += 1) {
+          repl.appendOutput(`--- page ${m + i} ---\n${texts[i]}\n`);
+        }
+      }).catch((error) => {
+        repl.appendError(
+          `pdf-extract-page-range: ${error.message ?? error}`
+        );
+      });
+      return NIL;
+    },
     // Documentation: open the fuzzy-search minibuffer with the
     // manifest's names as candidates; submit opens the matching
     // doc page.
@@ -4870,6 +4964,39 @@ function mountTablineActiveChild(tablineView) {
 function singletonElementForKind(kind) {
   const entry = SINGLETON_VIEWS.find((s) => s.kind === kind);
   return entry ? entry.el : null;
+}
+
+/** The per-view-instance DOM element backing a view object. A View in a
+ *  tabline owns its element via `editorByChild`; a leaf-direct
+ *  non-text view falls back to the per-kind singleton. Returns null
+ *  when neither is mounted yet. Used by the Lisp surface to reach the
+ *  current view's element-side API (e.g. pdf-extract-text). */
+function elementForViewInstance(view) {
+  if (!view || typeof view.kind !== 'string') return null;
+  for (const state of tablineStateByView.values()) {
+    const el = state.editorByChild.get(view);
+    if (el !== undefined) return el;
+  }
+  return singletonElementForKind(view.kind);
+}
+
+/** Invoke a Lisp callback with the given JS-side arguments. The
+ *  callback may be either a symbol (looked up as a global procedure
+ *  name) or a procedure value (lambda / primitive); errors raised
+ *  during the call land in the REPL under PRIMNAME so an async result
+ *  delivery can't crash the surrounding event. */
+function deliverLispCallback(callback, callArgs, primName) {
+  try {
+    if (callback instanceof Sym) {
+      interpreter.call(callback.name, ...callArgs);
+    } else {
+      applyProcedure(callback, callArgs);
+    }
+  } catch (error) {
+    repl.appendError(
+      `${primName} callback: ${error.lispMessage ?? error.message ?? error}`
+    );
+  }
 }
 
 /** Activate tab INDEX in TABLINEVIEW, refresh the strip, and re-mount

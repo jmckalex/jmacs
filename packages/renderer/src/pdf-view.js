@@ -788,16 +788,103 @@ export class PdfView extends ViewElement {
 
   async _pageTextLower(entry) {
     if (entry.textLower !== undefined) return entry.textLower;
+    await this._extractPageTextRaw(entry);
+    return entry.textLower ?? '';
+  }
+
+  /** Extract the raw (case-preserving) text for one page entry and
+   *  cache it. Newlines are inserted on PDF.js's `hasEOL` markers so
+   *  the result reads more like the visible document than a flat
+   *  space-joined run would. Errors leave the entry's cache as an
+   *  empty string so subsequent callers don't keep retrying. */
+  async _extractPageTextRaw(entry) {
+    if (entry.textRaw !== undefined) return entry.textRaw;
     try {
-      if (entry.page === null) entry.page = await this._pdfDoc.getPage(entry.pageNum);
+      if (entry.page === null) {
+        entry.page = await this._pdfDoc.getPage(entry.pageNum);
+      }
       const textContent = await entry.page.getTextContent();
-      const text = textContent.items.map((it) => it.str ?? '').join(' ').toLowerCase();
-      entry.textLower = text;
-      return text;
+      let acc = '';
+      for (const item of textContent.items) {
+        if (typeof item.str === 'string') acc += item.str;
+        if (item.hasEOL) acc += '\n';
+      }
+      entry.textRaw = acc;
+      entry.textLower = acc.toLowerCase();
+      return acc;
     } catch {
+      entry.textRaw = '';
       entry.textLower = '';
       return '';
     }
+  }
+
+  // --- public: Lisp surface -------------------------------------------
+
+  /** The 1-based current page (most-visible page in the viewport).
+   *  Zero when no document is loaded. */
+  get currentPageNumber() {
+    return this._pdfDoc === null ? 0 : this._currentPage;
+  }
+
+  /** Total page count of the loaded document, or zero when nothing is
+   *  loaded. */
+  get pageCount() {
+    return this._pdfDoc === null ? 0 : this._pdfDoc.numPages;
+  }
+
+  /**
+   * The text of one page as a string. The first call for a page
+   * triggers PDF.js's text-content extraction; subsequent calls return
+   * the cached result. Throws when no document is loaded or the page
+   * number is out of range.
+   *
+   * @param {number} pageNum - 1-based page number.
+   * @returns {Promise<string>}
+   */
+  async extractPageText(pageNum) {
+    if (this._pdfDoc === null) {
+      throw new Error('PdfView.extractPageText: no PDF loaded');
+    }
+    const entry = this._pages.find((p) => p.pageNum === pageNum);
+    if (entry === undefined) {
+      throw new Error(
+        `PdfView.extractPageText: page ${pageNum} out of range ` +
+        `(1..${this._pdfDoc.numPages})`
+      );
+    }
+    return this._extractPageTextRaw(entry);
+  }
+
+  /**
+   * The text of every page in `[m, n]` (inclusive), as an array of
+   * strings of length `n - m + 1`. `m` is clamped to 1 and `n` to the
+   * document's page count; an inverted range throws. Each page's text
+   * is cached, so a subsequent overlapping range is incremental.
+   *
+   * @param {number} m - 1-based first page.
+   * @param {number} n - 1-based last page (inclusive).
+   * @returns {Promise<string[]>}
+   */
+  async extractPageRangeText(m, n) {
+    if (this._pdfDoc === null) {
+      throw new Error('PdfView.extractPageRangeText: no PDF loaded');
+    }
+    if (!Number.isFinite(m) || !Number.isFinite(n) || n < m) {
+      throw new Error(
+        `PdfView.extractPageRangeText: invalid range ${m}..${n}`
+      );
+    }
+    const first = Math.max(1, Math.floor(m));
+    const last = Math.min(this._pdfDoc.numPages, Math.floor(n));
+    const out = [];
+    for (let i = first; i <= last; i += 1) {
+      // Sequential await keeps the worker from being deluged by a
+      // hundred concurrent getTextContent calls on a long range.
+      // eslint-disable-next-line no-await-in-loop
+      out.push(await this.extractPageText(i));
+    }
+    return out;
   }
 
   // --- internal: state + teardown ------------------------------------
