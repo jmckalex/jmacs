@@ -200,6 +200,14 @@ tabline-view .tabline-content {
   min-width: 0;
   min-height: 0;
   position: relative;
+  /* Hard-clip every tab to the content rectangle. Defence in depth:
+     if a freshly-mounted view (text/browser/etc.) momentarily reports
+     a size larger than its container — which has bitten the strip on
+     a browser→text-tab switch — the overflow stops here instead of
+     painting over the strip. The same policy applies to .pane and
+     .editor-host; the tabline content area is the third container
+     that needs it. */
+  overflow: hidden;
 }
 
 /* Resizer handle between strip and content. Hidden for horizontal-edge
