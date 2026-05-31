@@ -29,9 +29,12 @@ const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
 /** Base URL under `app://editor/` where pdfjs-dist's worker, cmaps, and
  *  standard-font assets are served from. The `app://` protocol resolves
- *  to the repository root, so `node_modules/pdfjs-dist/*` is reachable
- *  the same way every other vendored asset is. */
-const PDFJS_BASE = 'app://editor/node_modules/pdfjs-dist';
+ *  to the repository root and `readFile` follows symlinks, so this URL
+ *  reaches the pnpm symlink the renderer's local node_modules points at.
+ *  (pnpm's isolated layout doesn't install pdfjs-dist at the repo root —
+ *  same as `@xterm/xterm` etc., the import-map pattern points at the
+ *  renderer's copy.) */
+const PDFJS_BASE = 'app://editor/packages/renderer/node_modules/pdfjs-dist';
 
 /** The numeric zoom levels offered in the toolbar's percentage select.
  *  `'fit'` and `'width'` are the two named modes. */
