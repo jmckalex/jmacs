@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
+import { hostFileUrl } from './serve.js';
 
 /**
  * Expand a leading `~` (or `~/…`) to the current user's home directory.
@@ -240,15 +241,17 @@ async function readPathAsBuffer(path) {
     };
   }
   if (isPdfPath(path)) {
-    // PDFs ride the same `media://` protocol audio / video do —
-    // Chromium's PDF plugin (inside the renderer's <webview>) fetches
-    // the bytes through the protocol handler. No buffer round-trip
-    // through IPC for a file that may be hundreds of MB.
+    // PDFs ride the `app://editor/__host__/...` same-origin route
+    // (see serve.js): PDF.js uses fetch() and Chromium refuses
+    // cross-origin fetches for non-allowlisted schemes (custom schemes
+    // like media:// can't be CORS targets, regardless of any flag).
+    // Audio / video / images keep using media:// because they go
+    // through their HTML elements' loaders, which aren't fetch.
     return {
       path,
       name: basename(path),
       pdfKind: true,
-      src: mediaUrl(path),
+      src: hostFileUrl(path),
     };
   }
   const content = await readFile(path, 'utf8');

@@ -27,7 +27,19 @@ const MIME = {
   '.json': 'application/json',
   '.wasm': 'application/wasm',
   '.woff2': 'font/woff2',
+  '.pdf': 'application/pdf',
 };
+
+/** Path prefix on `app://editor/` under which arbitrary file paths
+ *  outside the repo are served. Used by views that need fetch-friendly
+ *  URLs for files anywhere on disk — the pdf-view is the current one,
+ *  since PDF.js needs a same-origin URL (custom schemes can't be
+ *  cross-origin fetch targets per Chromium's scheme allowlist, and
+ *  `media://` is a different origin from the `app://editor` renderer).
+ *
+ *  The prefix is intentionally unusual so it can't collide with a real
+ *  repo path. */
+const HOST_FILE_PREFIX = '/__host__/';
 
 // Must run before the app is ready; importing this module is enough.
 //
@@ -62,6 +74,15 @@ protocol.registerSchemesAsPrivileged([
  *     `docs/build/<path>`. Returns 404 when the docs haven't been
  *     built yet (no `docs/build/`).
  *
+ * Plus a special same-host route:
+ *
+ *   - `app://editor/__host__/<encoded absolute path>` — serves a file
+ *     anywhere on disk. Used by views that need a fetch-friendly URL
+ *     for arbitrary files (the pdf-view's PDF.js loader). Stays on the
+ *     `app://editor` origin so renderer fetches are same-origin —
+ *     `media://` would be a different origin and Chromium refuses
+ *     cross-origin fetches for non-allowlisted schemes.
+ *
  * Register with `protocol.handle('app', ...)` once the app is ready.
  *
  * A URL ending with a slash and the query string `?list` returns a
@@ -74,8 +95,24 @@ protocol.registerSchemesAsPrivileged([
  */
 export async function serveAppFile(request) {
   const url = new URL(request.url);
+  const pathname = decodeURIComponent(url.pathname);
+
+  // Same-host arbitrary-file route. `__host__` is treated as opaque —
+  // the remainder is the absolute path to read. Returns 404 on unread.
+  if (url.host === 'editor' && pathname.startsWith(HOST_FILE_PREFIX)) {
+    const filePath = pathname.slice(HOST_FILE_PREFIX.length - 1); // keep '/'
+    try {
+      const data = await readFile(filePath);
+      const type = MIME[extname(filePath).toLowerCase()]
+        ?? 'application/octet-stream';
+      return new Response(data, { headers: { 'content-type': type } });
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
+  }
+
   const base = url.host === 'docs' ? join(repoRoot, 'docs', 'build') : repoRoot;
-  const filePath = join(base, decodeURIComponent(url.pathname));
+  const filePath = join(base, pathname);
   // Refuse to serve anything outside the host's base.
   if (filePath !== base && !filePath.startsWith(base + '/')) {
     return new Response('Forbidden', { status: 403 });
@@ -98,6 +135,21 @@ export async function serveAppFile(request) {
   } catch {
     return new Response('Not found', { status: 404 });
   }
+}
+
+/**
+ * Build an `app://editor/__host__/<encoded path>` URL that the
+ * arbitrary-file route above serves. Per-segment encoding so spaces /
+ * unicode / parentheses in a path survive the URL round-trip.
+ *
+ * @param {string} filePath - An absolute filesystem path.
+ * @returns {string}
+ */
+export function hostFileUrl(filePath) {
+  return (
+    'app://editor' + HOST_FILE_PREFIX.slice(0, -1)
+    + filePath.split('/').map(encodeURIComponent).join('/')
+  );
 }
 
 /**

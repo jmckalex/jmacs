@@ -468,6 +468,11 @@ export class PdfView extends ViewElement {
       cMapUrl: `${PDFJS_BASE}/cmaps/`,
       cMapPacked: true,
       standardFontDataUrl: `${PDFJS_BASE}/standard_fonts/`,
+      // OCR-scanned PDFs encode pages as JBIG2 / JPEG2000 images;
+      // PDF.js decodes those through WASM modules bundled in
+      // pdfjs-dist/wasm/. Without wasmUrl, getDocument loads but
+      // every image page comes back as "JbigZ failed to initialize".
+      wasmUrl: `${PDFJS_BASE}/wasm/`,
     });
     this._loadingTask = task;
 
