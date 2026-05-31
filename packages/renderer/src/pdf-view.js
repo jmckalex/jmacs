@@ -182,17 +182,30 @@ export class PdfView extends ViewElement {
   }
 
   /**
-   * Show a PDF buffer. The view object carries `extras.src` (a
-   * `media://localhost/<path>` URL the host built) and `extras.filePath`
-   * (the local path). `extras.page` and `extras.zoom`, if present,
-   * restore the saved scroll / zoom state. Passing `null` clears the
-   * viewport. Safe to call before connection — the next mount picks up
-   * the pending buffer.
+   * Show a PDF buffer. The view object carries top-level `src` (a
+   * `media://localhost/<path>` URL the host built) and `filePath` (the
+   * local path); `page` and `zoom` round-trip the saved scroll / zoom
+   * state if present. `createView` spreads its `extras` argument onto
+   * the view, so these are top-level fields, not nested under `extras`.
+   * Passing `null` clears the viewport. Safe to call before connection
+   * — the next mount picks up the pending buffer.
    *
    * @param {object | null} next
    */
   setBuffer(next) {
     if (next === this._buffer) return;
+    if (typeof console !== 'undefined') {
+      console.debug('[pdf-view] setBuffer', {
+        sameAsPrev: false,
+        prev: this._buffer ? this._buffer.name : null,
+        next: next ? {
+          name: next.name,
+          kind: next.kind,
+          hasSrc: typeof next.src === 'string',
+          hasFilePath: typeof next.filePath === 'string',
+        } : null,
+      });
+    }
     this._buffer = next;
     if (this._mounted) this._loadFromBuffer();
   }
@@ -408,14 +421,25 @@ export class PdfView extends ViewElement {
       this._setStatus('');
       return;
     }
-    const src = view.extras && typeof view.extras.src === 'string'
-      ? view.extras.src
-      : null;
-    const filePath = view.extras && typeof view.extras.filePath === 'string'
-      ? view.extras.filePath
-      : null;
+    const src = typeof view.src === 'string' ? view.src : null;
+    const filePath = typeof view.filePath === 'string' ? view.filePath : null;
+    if (typeof console !== 'undefined') {
+      console.debug('[pdf-view] _loadFromBuffer', {
+        viewName: view.name,
+        viewKind: view.kind,
+        src,
+        filePath,
+        savedPage: view.page,
+        savedZoom: view.zoom,
+        alreadyLoaded: this._pdfDoc !== null
+          && this._loadedFilePath === filePath,
+      });
+    }
     if (src === null) {
-      this._setStatus('No PDF source.');
+      this._setStatus(
+        `No PDF source. (view.src is ${typeof view.src}; ` +
+        `expected media:// URL. Check the createView call in app.js.)`
+      );
       return;
     }
 
@@ -431,6 +455,7 @@ export class PdfView extends ViewElement {
       pdfjs = await loadPdfjs();
     } catch (error) {
       if (generation !== this._loadGeneration) return;
+      console.error('[pdf-view] pdfjs-dist failed to load', error);
       this._setStatus(`Failed to load PDF engine: ${error.message}`);
       return;
     }
@@ -448,6 +473,7 @@ export class PdfView extends ViewElement {
       pdfDoc = await task.promise;
     } catch (error) {
       if (generation !== this._loadGeneration) return;
+      console.error('[pdf-view] getDocument rejected', { url: src, error });
       this._setStatus(`Failed to open PDF: ${error.message}`);
       this._loadingTask = null;
       return;
@@ -459,9 +485,13 @@ export class PdfView extends ViewElement {
     this._pdfDoc = pdfDoc;
     this._loadedFilePath = filePath;
     this._loadingTask = null;
+    console.debug('[pdf-view] doc loaded', {
+      numPages: pdfDoc.numPages,
+      filePath,
+    });
 
     // Restore saved zoom + page if the view carries them.
-    const savedZoom = view.extras && view.extras.zoom;
+    const savedZoom = view.zoom;
     if (savedZoom === 'fit' || savedZoom === 'width') {
       this._fitMode = savedZoom;
     } else if (typeof savedZoom === 'number' && Number.isFinite(savedZoom)) {
@@ -470,7 +500,7 @@ export class PdfView extends ViewElement {
       this._fitMode = 'fit';
     }
     this._syncZoomSelect();
-    const savedPage = view.extras && view.extras.page;
+    const savedPage = view.page;
     this._currentPage = (typeof savedPage === 'number' && savedPage >= 1)
       ? Math.min(savedPage, pdfDoc.numPages)
       : 1;
@@ -889,13 +919,14 @@ export class PdfView extends ViewElement {
 
   // --- internal: state + teardown ------------------------------------
 
-  /** Write the current page + zoom back to the view's extras so they
-   *  round-trip a tab switch or a session save. */
+  /** Write the current page + zoom back to the view's top-level fields
+   *  so they round-trip a tab switch. (The view object is the spread
+   *  of `createView({ extras })`, so page / zoom live alongside src /
+   *  filePath, not nested under an `extras` key.) */
   _persistBufferState() {
     if (!this._buffer) return;
-    if (!this._buffer.extras) this._buffer.extras = {};
-    this._buffer.extras.page = this._currentPage;
-    this._buffer.extras.zoom = this._fitMode;
+    this._buffer.page = this._currentPage;
+    this._buffer.zoom = this._fitMode;
   }
 
   _setStatus(text) {
