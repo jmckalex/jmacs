@@ -6106,9 +6106,30 @@ if (sessionInstalledTree) {
   // at the head of `views` invisibly, discoverable via `C-x b` but
   // never appearing in any tabline (the restored tabline doesn't
   // contain them).
+  //
+  // Each splice shifts every higher index down by one. `currentViewIndex`
+  // was set by `installRootPane` against the pre-splice list, so any
+  // seed at a lower index leaves the active pointer one past where it
+  // belongs. Without the shift the modeline ends up showing a count
+  // like "9/7" — buffer name still resolves through `currentTextBuffer`
+  // (separately cached), but `views[currentViewIndex]` is now out of
+  // range. Browser-views amplify this because they're ephemeral: the
+  // focused view at save time is often a browser-view, the next-best
+  // text view picks up focus on restore, `installRootPane` sets a
+  // valid index against it, and the seed-removal here then drops the
+  // index past the end.
   for (const seed of initialSeedViews) {
     const idx = views.indexOf(seed);
-    if (idx >= 0) views.splice(idx, 1);
+    if (idx >= 0) {
+      views.splice(idx, 1);
+      if (currentViewIndex > idx) currentViewIndex -= 1;
+    }
+  }
+  // Defensive clamp in case currentViewIndex was already past the end
+  // before the splice (e.g. the focused view wasn't in `views` at all,
+  // installRootPane left it at the previous initial value).
+  if (currentViewIndex >= views.length) {
+    currentViewIndex = Math.max(0, views.length - 1);
   }
 } else {
   // Phase 3b commit 3: wrap the root pane's view in a tabline-view
