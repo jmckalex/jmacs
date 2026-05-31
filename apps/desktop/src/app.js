@@ -1641,8 +1641,8 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
     return finalise();
   }
   // A PDF file is served over the media:// protocol (Chromium streams
-  // it with Range support, same as audio/video). The webview inside
-  // <pdf-view> takes the URL and the built-in PDF plugin renders.
+  // it with Range support, same as audio/video). PDF.js inside
+  // <pdf-view> fetches the URL and renders each page to a canvas.
   if (result.pdfKind === true) {
     views.push(createView({
       kind: 'pdf',
@@ -4198,18 +4198,17 @@ videoView.configure(configureVideoView());
 editorPaneElement().append(videoView);
 videoView.style.display = 'none';
 
-// The pdf view — the view a `pdf`-kind buffer is shown through. v1 is
-// an Electron <webview> in a `persist:pdf-views` partition; Chromium's
-// built-in PDF plugin does the rendering (zoom / find / fit / print /
-// download all come for free via its own toolbar). The factory is
-// reused by `perKindConfigureFactory` so each pdf tab gets its own
-// `<pdf-view>` element — Chromium keeps scroll position / zoom per
-// webview, so per-instance is the only way tabbed PDFs survive a tab
-// switch with their state intact.
+// The pdf view — the view a `pdf`-kind buffer is shown through.
+// PDF.js renders each page to a canvas with an overlapping text layer;
+// the chrome (page nav, zoom, find) is custom so it theme-matches
+// and the keymap can stay live (chord keys forward through onKey).
+// The factory is reused by `perKindConfigureFactory` so each pdf tab
+// gets its own `<pdf-view>` element — the per-instance `PDFDocumentProxy`,
+// scroll position, and zoom are how tabbed PDFs survive a tab switch
+// with their state intact.
 function configurePdfView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    partition: 'persist:pdf-views',
   };
 }
 const pdfView = /** @type {*} */ (document.createElement('pdf-view'));
