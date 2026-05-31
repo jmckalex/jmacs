@@ -1,384 +1,201 @@
-# Handover — jmacs session 2026-05-29 → 30 (views-as-custom-elements refactor in flight)
+# Handover: PDF-view Option B (PDF.js with custom chrome)
 
-A snapshot for resuming work on **jmacs** (renaming to **Godot** —
-the prior handover's intent is still queued; see "What's parked"
-below). Read `CLAUDE.md` first — it carries the standing working
-agreements. This file supersedes the 2026-05-28 handover (preserved
-in `git log` against `030a2ac`).
+## What just merged into main
 
-The prior handover predates the entire package-system arc plus the
-priority-1 architectural refactor that now governs the queue. The
-chain back: that 2026-05-28 file ↔ phase-3b polish at `0b596f5`.
+The previous session landed a long fix-and-feature chain. As of `e2f2d1a`
+on `main`:
 
-This is **the most architecturally significant session** in the
-chain. The branch shape is unusual:
+- **Views-as-custom-elements refactor** (Phase 1 through Phase 4 deep
+  cleanup): every view kind now has its own custom element
+  (`<text-view>`, `<browser-view>`, …) and per-tab instances.
+- **Browser-view feature**: `(open-url! "...")` opens a URL in a
+  `<browser-view>` with a back/forward/reload/URL/stop toolbar
+  wrapping Electron's `<webview>`.
+- **PDF-view v1**: routes `.pdf` files to a `<pdf-view>` that wraps
+  an Electron `<webview>` pointed at Chromium's built-in PDF plugin.
+  **This is broken** — see "Why we're here" below.
+- **Add-pane mode** (`C-x +`): a visual macro that highlights every
+  splitter and the four outer borders; click one to insert a pane
+  there. Plus `C-u C-x 2` / `C-u C-x 3` to flip the side of regular
+  splits.
+- **Bug-fix sequence**: clip on `.tabline-content`, seed-splice
+  `currentViewIndex` shift, `:scope > text-view` for the leaf-direct
+  query, `activateTabInTabline` modeline sync, cross-pane tab-click
+  fixes (capture-phase focus + `hideInactiveSingletons`).
+- **`docs/VIEWS.md`** — the architectural playbook for view/pane
+  invariants. **Read this first** if your work touches views.
 
-- **`main`** carries two new tabline-session fixes cherry-picked
-  from the work branches, but otherwise stays at the pre-
-  refactor / pre-packages baseline.
-- **`agent-package-system-phase-1`** — paused. Holds Phase 1 + 2 of
-  the package system, the modal palette, a substantial pile of
-  smaller fixes and decisions. **Will not merge to main until
-  the views refactor lands**, and may need re-applying on top.
-- **`agent-views-as-custom-elements`** — active. Phases 0, 1, 2a,
-  2b, 2c of the refactor described in
-  `plans/VIEWS-AS-CUSTOM-ELEMENTS.md`. Phase 2c was committed
-  unverified at runtime — see "Phase 2c runtime status."
+`main` is ahead of `origin/main`; nothing has been pushed yet.
 
-## Where main is
+## Why we're here
 
-HEAD: `01e8646`. Two cherry-picked tabline-session fixes since the
-prior handover's `9c06bea` baseline:
+The user reports the PDF view shows a blank pane. Two things:
 
-| Commit | What |
-|---|---|
-| `01e8646` | `fix(session): restore each tab as its own View handle so close-X is tab-local` |
-| `0e9c4af` | `fix(session): stop the auto-duplicate path from accumulating tabs` |
-| `381a6d1` | `docs(plans): add SNIPPETS.md — yasnippet-equivalent design notes` (predates the views branch; shared with all branches) |
+1. **The v1 doesn't actually render PDFs.** Electron's `<webview>`
+   defaults plugins to off, and Chromium's built-in PDF viewer is
+   implemented as a plugin. Without `webpreferences="plugins=true"` on
+   the `<webview>`, the webview loads the URL, has no plugin to render
+   it, and shows blank.
 
-**All test suites green on main (1030 / 1030, unchanged from the
-prior handover's tally).** Per-package counts are identical to the
-2026-05-28 handover. Phase 2c on the views branch adds the
-attribute-helper tests (+15 to the renderer package); the active
-branch sits at 1045.
+2. **`plans/PDF-VIEW.md` recommended PDF.js (Option B), not the
+   Chromium plugin (Option A).** The sub-agent who built v1 went with
+   Option A — explicitly called out by the plan as "a fine v0" if you
+   want the half-day version, but not the recommended path. The
+   reasons B beats A are spelled out in the plan and they are exactly
+   the things we'd want from a Lisp-extensible editor:
 
-## Priority-1: views-as-custom-elements refactor
+   - Theme matching with Godot's chrome (Option A is fixed Chromium UI).
+   - Keymap integration — `j`/`k` page nav, `/` find, etc.
+   - **Programmatic text access** so Lisp can extract citations, do
+     `M-x cite-pdf`, search across PDFs from `M-x occur`, etc.
 
-**This is the only thing the next session should be doing**
-(unless it finds something safety-critical). Everything else
-parks behind it.
+So the right move is to skip patching v1 and implement Option B per
+the plan.
 
-The refactor: replace the plain-JS `View` object + parallel
-renderer modules + `kindRegistry` mapping with a custom HTML
-element class per view kind (`<text-view>`, `<tabline-view>`,
-`<image-view>`, …). The DOM's single-parent invariant enforces Q9
-("no same View in two panes") at the platform level. The
-`disconnectedCallback` / `connectedCallback` cycle replaces the
-bespoke mount/dispose machinery. Explicit `destroy()` becomes the
-real teardown path; lifecycle callbacks become honestly
-indistinguishable between moves and teardowns.
+## The task
 
-Full design + the five resolved Phase 0 decisions plus the
-warehouse-persistence policy: **`plans/VIEWS-AS-CUSTOM-ELEMENTS.md`**.
+Implement **Option B** from `plans/PDF-VIEW.md`:
 
-Where we are on the refactor branch:
+- Rip out the `<webview>` from `packages/renderer/src/pdf-view.js`.
+- Add `pdfjs-dist` (Apache 2.0, ~2 MB) as a renderer dependency.
+- Render each page to a `<canvas>` + overlapping text layer inside
+  `<pdf-view>`.
+- Build the chrome: page indicator (`n / m`), zoom in/out, fit-width
+  / fit-page, find bar (`/`), download.
+- Wire `setBuffer(view)` to load `view.filePath` via PDF.js,
+  jumping to `view.page` and applying `view.zoom`.
+- Per-tab state preservation: each `<pdf-view>` keeps its own
+  `_pdfDoc`, current page, and zoom across tab switches.
+- Optional but low-cost while you're in there: lay the groundwork
+  for a `pdf-extract-text` Lisp primitive (the spec is in the plan).
 
-| Tag / Commit | Phase | What landed |
-|---|---|---|
-| `views-phase-1` (`678afd6`) | 1 | `view-elements.js` (defineViewElement + attribute helpers), `view-warehouse.js` (warehouse API), `<div id="view-warehouse" hidden>` in index.html, 15 helper tests. |
-| `b72ae8f` | 2a | `TextView` custom-element wrapper. Thin wrapper around the existing `createEditorView`; lifecycle hooks + `data-file-path` mirror + the `kind` / `name` / `filePath` getters that the strip widget and `viewFilePath` need. Not wired yet. |
-| `views-phase-2b` (`cff0cd6`) | 2b | `TablineView` custom element (full mutation API: `addTab` / `removeTab` / `reorderTab` / `activateTab`, `[active]`-attribute semantics, `tab-close` bubbling event). `tabline.js` moved from `apps/desktop/src/` to `packages/renderer/src/` by symmetry. Not wired yet. |
-| `7a9a7bf` | 2c | **TextView wired into the live mount path.** `ensureEditorViewForLeaf`, the kindRegistry-text mount's editor build, `inheritExistingEditorIntoTabline`, `demoteTablineView`, and the `mountTablineActiveChild` text-branch all now operate on `<text-view>` elements. `.element` accesses on editor instances are deleted (the instance IS the element). CSS rule for `text-view { display: block; width: 100%; height: 100%; }` added. |
+The plan estimates **1–2 focused days** for v1 of Option B.
 
-### Phase 2c runtime status — **UNVERIFIED**
+## What's already in place (don't redo)
 
-Unit tests pass (1045 green) but they don't render anything. The
-mechanical translations are correct in principle, but the editor
-hasn't been launched against the new mount path. **Recommended next
-action: run the app, eyeball the editor for one minute, confirm
-nothing's catastrophically broken before going further.**
+- The view kind, dispatch, and file-open detection — `.pdf` suffix
+  routes through `openFileByPath` → `result.pdfKind: true` →
+  `createView({kind: 'pdf', name, extras: {filePath, src}})`. The
+  `src` is a `media://localhost/<path>` URL.
+- `<pdf-view>` custom-element shell (constructor + `configure` +
+  `setBuffer` + `connectedCallback` + `destroy`). Replace the
+  `_ensureMounted` / `_paint` internals; keep the outer shape so
+  the host's `perKindConfigureFactory` integration doesn't need to
+  change.
+- `SINGLETON_VIEWS` entry, `configurePdfView`, and the per-kind
+  configure factory dispatch — all live in `apps/desktop/src/app.js`.
+- Session-restore plumbing for ephemeral kinds (PDF is ephemeral —
+  not persisted across restart, like browser-view).
+- The media protocol already supports Range requests; PDF.js
+  handles those fine.
 
-Things to look at first:
+## Required reading (in this order)
 
-1. The initial editor renders normally — text visible, cursor
-   visible, font right, scrolling works.
-2. The DevTools Elements panel shows `<text-view data-file-path="…">`
-   wrapping the existing `.editor` div.
-3. Opening a file via `M-x find-file` works.
-4. Splitting (`C-x 3`) works and the new pane renders.
-5. Switching tabs within a tabline works.
-6. Closing a tab works.
+1. **`docs/VIEWS.md`** — invariants and ownership boundaries. The
+   pdf-view follows the per-view-instance pattern; understand it
+   before touching the mount path. Specifically the visibility
+   ownership table.
+2. **`plans/PDF-VIEW.md`** — the architecture for Option B. Includes
+   the layout, the state fields on `_pdfDoc`, the API surface, the
+   Lisp text-extraction plan, the cost estimate, and the known
+   limitations (encrypted PDFs, malformed input, hi-DPI, etc.).
+3. **`packages/renderer/src/pdf-view.js`** — the current v1 shell
+   you'll be replacing. The outer custom-element interface stays;
+   the inside changes.
+4. **`packages/renderer/src/browser-view.js`** — useful reference
+   for how a custom view-element with chrome (toolbar + main
+   content area) is structured here. Style of buttons, event
+   wiring, etc.
+5. **`packages/renderer/src/image-view.js`** — useful reference
+   for how a *non-webview* view kind handles `setBuffer` + paint
+   inside a custom element.
 
-If any of those fail: **`git reset --hard views-phase-2b`** rolls
-back to the last commit before the wiring. The TextView /
-TablineView classes still exist; they're just inert again.
+## Known caveats / pitfalls
 
-Likeliest failure modes:
+- **Don't break the per-view-instance shape.** Each pdf tab gets
+  its own `<pdf-view>` with its own `_pdfDoc` — that's how tabbed
+  PDFs survive a tab switch with their scroll/zoom state.
+- **Don't reach into `.tabline-content` from outside.** Per
+  `docs/VIEWS.md`: per-tab visibility is owned by
+  `mountTablineActiveChild`. The pdf-view should just respond to
+  `setBuffer` and rely on the standard display loop for show/hide.
+- **The `media://` protocol gives a URL, not a file path.** PDF.js's
+  `getDocument` accepts either a URL or a `Uint8Array`. Use the
+  URL form — Chromium streams with Range support and PDF.js
+  handles Range responses natively. No new IPC needed.
+- **Hi-DPI**: PDF.js's `viewport.scale` needs to multiply by
+  `window.devicePixelRatio` so canvases stay crisp on retina. See
+  the plan's pitfalls section.
+- **Don't try to use Chromium's PDF plugin as a fallback.** The
+  webview-with-plugins-on approach is a rabbit hole (plugin gating
+  varies by Electron version; sandbox interaction is fiddly).
+  Commit to PDF.js.
 
-- **Layout collapse** — `text-view` not sizing correctly inside
-  the pane (the `.editor` div has `height: 100%` and needs a
-  sized parent; the CSS rule should handle it but a runtime
-  cascade conflict could bite).
-- **Focus timing** — `createEditorView` ends with `root.focus()`;
-  if `<text-view>`'s `connectedCallback` runs while the element
-  isn't quite in a focusable state, focus may not land. Same
-  call as the pre-refactor code, just slightly deferred.
-- **Singleton overlap** — non-text singletons (image / audio /
-  directory views) are still on the old singleton-element pattern.
-  An interaction between them and the new `<text-view>` mount could
-  produce overlay artefacts. Should not, but flag if it appears.
+## After the rewrite
 
-### Phase 2d (next on the refactor)
+- The user's smoke test for it is just `C-x C-f` to a `.pdf` file.
+  No automated arm yet — drive it in the live app. Try:
+  - A small text-only PDF (page nav, find).
+  - A multi-page PDF with images (rendering, zoom).
+  - A large PDF (Range streaming, scroll perf).
+  - Open two PDFs in the same tabline, switch between them
+    (per-tab `_pdfDoc` should survive).
+  - Open one in pane A, open the same one in pane B — Q9
+    auto-duplicate should give two independent `_pdfDoc` instances.
+- Add a regression smoke arm only if you can find a small reliable
+  test PDF; PDF.js loading from a URL inside an Electron smoke is
+  achievable but more involved than text/audio arms.
 
-Wire `<tabline-view>` the same way TextView was wired in 2c:
+## The three worktree branches under `.claude/worktrees/`
 
-- Replace the bespoke `state.container` div + `state.stripEl` +
-  `state.contentEl` triple inside `mountTablineActiveChild` with a
-  single `<tabline-view>` element.
-- Migrate the tabs-as-`tablineView.tabs[]`-array model to the
-  tabs-as-`<tabline-view>.children` model. This is the big
-  semantic shift — both representations exist in parallel during
-  the transition.
-- After Phase 2d: delete `inheritExistingEditorIntoTabline` and
-  `removeViewFromAllTablines` (Q9 enforced means the move-not-
-  clone-then-clean-up pattern those exist to manage just works).
-- Delete `kindRegistry`'s `text` and `tabline` entries.
+These are leftover artefacts from parallel sub-agent runs earlier in
+the session. They're locked because `git worktree` won't remove a
+locked worktree without `--force`. Their commits are all in main now.
 
-Effort: ~1 focused session. The semantic translation is the
-delicate part; the mechanical edits are similar in shape to Phase
-2c.
+| Branch | Path | What it was for | What to do |
+|---|---|---|---|
+| `worktree-agent-a5c166ffa5919ceb1` | `.claude/worktrees/agent-a5c166ffa5919ceb1` | PDF-view sub-agent's worktree (`feat(pdf-view): …` commits, now in main). | Worktree can be removed with `git worktree remove --force .claude/worktrees/agent-a5c166ffa5919ceb1`, then `git branch -D worktree-agent-a5c166ffa5919ceb1`. |
+| `worktree-agent-ae003d3c98574ae31` | `.claude/worktrees/agent-ae003d3c98574ae31` | Browser-view sub-agent's worktree (`feat(browser-view): …` commits, now in main). | Same cleanup pattern. |
+| `worktree-agent-ae6e40fc9c135284f` | `.claude/worktrees/agent-ae6e40fc9c135284f` | The **first** browser-view sub-agent attempt. It stopped on entry because its worktree was forked from `main` rather than the views-phase-4-deep base, wrote a note, and never committed any browser work. Its HEAD is back at the base commit. | Same cleanup pattern — there's nothing in it. |
 
-## What's parked: `agent-package-system-phase-1`
+If you're starting fresh on PDF-view Option B, none of these
+worktrees are relevant to your work; they can be removed at any
+time. They're not on the critical path.
 
-A substantial branch — a whole session's worth of work that won't
-merge to main until the views refactor lands. Highlights of what's
-there (not exhaustive — `git log main..agent-package-system-phase-1`
-is the authoritative list):
+## Branch / commit hygiene for the next session
 
-- **Phase 1 of the package system** (9 commits, sub-agent 1):
-  local install, manifest reader, dependency resolution, autoload
-  stubs, `require!`, boot pipeline split into
-  `loadCustomLisp / loadPackages / loadInitLisp`, disable / enable
-  / pin commands, three baseline packages
-  (`which-key-lite`, `project-switcher`, `godot-essentials`),
-  smoke arm for install + autoload + disable round-trip.
-- **Phase 2 of the package system** (10 commits, sub-agent 2):
-  `install-package-from-git`, `update-package` (ff-only with
-  prefix-arg force-update), `update-package all`,
-  `uninstall-package` with real teardown, lifecycle hooks
-  (`:install-hook` / `:pre-update-hook` / `:post-update-hook` /
-  `:uninstall-hook`), `:source-url` / `:source-ref` manifest
-  fields, `:git` provenance in `installed.lisp`, palette `i` /
-  `u` / `x` wired, smoke arm covering the full lifecycle.
-- **Modal package palette**: replaces the package-list view kind
-  (which hijacked the active pane) with a centred overlay in the
-  find-file lineage. Reachable via `M-x list-packages`.
-- **Three appearance defcustoms**: `*editor-background*`,
-  `*editor-foreground*`, `*editor-font-size*`. All in the
-  appearance group; all routed through `current-theme-css-vars`
-  so they survive theme switches.
-- **Minibuffer footer polish**: locked 32px row, grey divider,
-  no more bounce as chord prefixes show / hide.
-- **C-g cancels minibuffer** (mirrors Esc).
-- **M-x lists only registered defcommands** (the
-  keymap-fallback that let host primitives like `open-file-path!`
-  be invoked silently is gone).
-- **Session-restore correctness**: `forceDuplicate` so each
-  persisted tab restores to its own View; close-X is tab-local
-  again. (These two commits are the ones cherry-picked to main.)
-- **`setCurrentPaneId` triggers a session save**.
-- **No-auto-scroll on mount/view-swap** so opening a file from a
-  saved point doesn't horizontally yank the viewport sideways.
-- **`plans/SNIPPETS.md`**: design doc for a yasnippet-equivalent.
-  671 lines, fourteen open questions, five-phase build path.
-  Implementation deferred.
+- Make a new branch from `main`, e.g. `pdf-view-pdfjs`. **Do not
+  work directly on main.**
+- Commit frequently (per `CLAUDE.md`). Each logical unit — "add
+  pdfjs-dist dependency", "replace pdf-view internals with PDF.js
+  load + render", "add chrome toolbar", "wire keymap j/k/find", —
+  is its own commit.
+- Run smoke + unit tests before each commit; never leave the suite
+  broken.
+- When done, hand off to the user for live testing in the running
+  app before merging.
 
-When the views refactor lands, this branch's commits will need a
-once-over: the kind-registry entries the package palette and other
-new bits depend on may have changed shape. Most of the package
-work is in the Lisp layer and shouldn't be affected; the renderer-
-side changes (the modal palette element) will want adapting to
-the new `<package-palette>` element if we go that route. Cherry-
-picking commit-by-commit after the refactor is the expected
-approach.
+## Quick context for what state main is in
 
-## Tags
+```
+e2f2d1a docs(views): capture the per-view-instance invariants and bug catalogue
+10d345e fix(panes): cross-pane tab click respects focus + neighbour text-views
+18290fa fix(tabline): hide-inactive only addresses leaf-direct text-views
+ddb9eb4 fix(session): shift currentViewIndex when the post-restore seed-splice fires
+8a06585 fix(tabline): clip tabline-content so tabs can't overspill into the strip
+c584c0a test(smoke): add-pane mode + C-u flip arm
+2d4d3bf feat(panes): C-u flips the side of C-x 2 / C-x 3
+7ed5714 feat(panes): add-pane mode — visual macro for inserting a pane
+d8ef890 feat(panes): host + Lisp surface for add-pane-at-splitter/border
+761e43a feat(pane): insertAtSplit / insertAtRootBorder primitives
+f983fcc feat(browser-view): CSS for <browser-view> — toolbar + content
+a8b9082 feat(browser-view): app.js integration + open-url! primitive
+804a3ed feat(browser-view): BrowserView custom element + renderer export
+6f75dda feat(pdf-view): CSS for <pdf-view> — flex column, full pane height
+9da4cfc feat(pdf-view): enable Electron's <webview> tag
+2cca5a6 feat(pdf-view): route .pdf files through the pdf view on open
+```
 
-| Tag | Commit | What it marks |
-|---|---|---|
-| `views-phase-1` | `678afd6` | End of Phase 1 of the views refactor (infrastructure + warehouse). |
-| `views-phase-2b` | `cff0cd6` | End of Phase 2b (TextView + TablineView classes; not yet wired). The recovery point if Phase 2c misbehaves at runtime. |
-
-The earlier session also tagged nothing on `main` — main's tip is
-just `01e8646` from the cherry-pick.
-
-## Architecture decisions worth preserving
-
-Carry forward from the prior handover, plus two new entries from
-this session:
-
-1. Lisp at the seams; JS at the engine.
-2. View is the addressable on-screen thing; buffer is L2 substrate.
-3. Faces as data, not CSS variables.
-4. `assoc`, never `hash-set`.
-5. Sync Lisp is a feature.
-6. `Cmd`/`Meta` maps to `C-`.
-7. Chromium colour-manages CSS.
-8. Subprocesses go through Python for PTY needs.
-9. Per-view-point: cursors live on the view, including the cursor set.
-10. Pane-creating commands return handles.
-11. Focus stays on the originating pane after split.
-12. Tabline-views are not in `views[]`.
-13. Non-text active tabs re-parented into the tabline content area.
-14. Non-text singletons visible-iff-any-leaf-shows-them.
-15. Chord-prefix lookup falls through to the global keymap.
-16. `session.currentView` resolves through the pane tree.
-17. `*tab-width*` is the only tab-width source of truth.
-18. Mode-local indent-tabs preference wins over the global.
-19. `:choice` settings round-trip as the original Lisp value.
-20. Citation-handle round-trip is JSON-CSL string.
-
-21. **Q9 is structural under custom elements.** *New this
-    session.* The DOM single-parent invariant means an element
-    can be in at most one parent at a time. Under the views-as-
-    custom-elements model, "no same View in two panes" is enforced
-    by the browser; we don't need a bookkeeping pass to keep it
-    true.
-
-22. **Disconnect ≠ destroy.** *New this session.* A view's
-    `disconnectedCallback` fires whether the element is being
-    moved (pane → warehouse, pane → pane) or being torn down.
-    Code can't distinguish inside the callback. Real teardown is
-    an explicit `destroy()` method on every view class; the
-    callback may be empty. The "warehouse" pattern — a hidden DOM
-    container at `<div id="view-warehouse" hidden>` — is where
-    views live between "constructed" and "in a pane" and where
-    they go when a pane is closed but the view should survive.
-    `*persist-warehouse*` defcustom (default `#f`) controls
-    whether the warehouse contents survive a quit-relaunch.
-
-## Plan documents
-
-In `plans/`:
-
-- `PANES.md`, `PANES-PHASE-1.md` → `PANES-PHASE-3B.md` — merged.
-- `LANGUAGE-INJECTION.md`, `FACE-CUSTOMISATION.md`,
-  `SHELL-V4-XTERM.md` — merged.
-- `REACTIVE-NOTEBOOK.md` — Phase 1 on `agent-reactive-notebook`
-  (still parked, not yet ready against current main).
-- `PACKAGES.md` + `PACKAGES-PHASE-1.md` + `PACKAGES-PHASE-2.md`
-  — only on `agent-package-system-phase-1`. Re-merged when the
-  package branch re-applies post-refactor.
-- `SNIPPETS.md` — design doc, only on the package branch. Same
-  fate.
-- **`VIEWS-AS-CUSTOM-ELEMENTS.md`** — *the active plan doc.*
-  On `main`? No — only on the views and package branches. Worth
-  cherry-picking to main if we want it visible from there too.
-
-In `docs/`:
-
-- `CUSTOM-VIEWS.md` — still out of date. Will need a substantial
-  rewrite once the custom-element refactor lands; "creating a
-  view kind" becomes "extend HTMLElement, document your
-  destroy()" rather than the current "createX factory + register
-  with kindRegistry" pattern.
-
-## Branches still ready for review
-
-Unchanged from prior handovers (those branches haven't moved):
-
-| Branch | HEAD | What it adds |
-|---|---|---|
-| `agent-reactive-notebook` | `d453841` | Reactive Lisp notebook. |
-| `agent-lsp` | `3f3a666` | TypeScript LSP, diagnostics + hover. |
-| `agent-file-nav` | `074adab` | Fuzzy project find-file + sidebar tree. |
-
-Stale refs to clean up someday: `agent-pane-splits`,
-`agent-tabline-view`, `agent-multi-cursor`,
-`agent-multi-cursor-rebase`, tag `agent-tabline-view-attempt-1`.
-
-## Known issues / paper cuts
-
-Carry-forward from the prior handover, with this session's
-additions:
-
-- **Phase 2c is unverified at runtime.** *New, top priority for
-  the next session.* See "Phase 2c runtime status" above.
-- **Token colours feel washed-out vs Sublime.** Unchanged. The
-  package branch experimented with `--force-color-profile=srgb` +
-  per-face pre-compensation; both reverted. Worth re-visiting
-  after the refactor.
-- **Faint strip at the bottom of the shell view.** Unchanged.
-- **Multi-cursor doesn't have a smoke arm.** Unchanged.
-- **`directory-tree` doesn't yet have the same context menu as
-  `directory-columns`.** Unchanged.
-- **The post-move source pane in `send-view-to-other-pane` can end
-  up showing an empty strip.** Unchanged.
-- **The Godot marketing screenshots are diagnostic captures.**
-  Unchanged.
-- **Tree-view smoke regression**. *From the package branch's
-  Phase 1 work.* Pre-existing failure in
-  `apps/desktop/scripts/smoke.js`'s tree-view arm; verified
-  independent of the package work via a `loadPackages` short-
-  circuit test. Likely related to `currentViewIndex` not updating
-  after `openFileInTabAdjacent` → `activateTabInTabline`.
-
-## Suggested next steps in priority order
-
-1. **Launch the app on `agent-views-as-custom-elements` and
-   verify Phase 2c.** If it works → move on. If it doesn't →
-   `git reset --hard views-phase-2b`, diagnose, fix, re-commit.
-   This is the single highest-priority unblock for the project's
-   roadmap.
-
-2. **Phase 2d — wire TablineView into the live tabline mount
-   path.** Reads from `mountTablineActiveChild` and replaces the
-   bespoke `state.container` / `state.stripEl` / `state.contentEl`
-   trio with `<tabline-view>`. The tabs-as-Lisp-array →
-   tabs-as-DOM-children semantic translation is the delicate
-   part.
-
-3. **Phases 2e/3/4/5/6** per the plan doc — sweep the remaining
-   kinds (image, audio, video, shell, jukebox, directory-tree,
-   directory-columns, customize, doc, package palette), delete
-   the parallel infrastructure (`kindRegistry`,
-   `hideInactiveRendererViews`, `inheritExistingEditorIntoTabline`,
-   `removeViewFromAllTablines`, `singletonElementForKind`).
-
-4. **Merge the views branch to main.** Once Phases 2–4 are
-   solid; the smoke arm is the integration check.
-
-5. **Re-apply `agent-package-system-phase-1` on top.** Cherry-
-   pick commit-by-commit, adapt anything that touched the old
-   view model. Most of it is Lisp and won't move.
-
-6. **Then** the jmacs → Godot rename (still queued from the
-   prior handover); merge `agent-reactive-notebook`; the
-   cleanup-pass items; etc.
-
-## Workflow lessons (this session)
-
-1. **An invariant the platform can enforce beats one the code
-   needs to remember.** Every bug we chased pre-refactor came
-   from a single shape: "two places think they own the same
-   View." The custom-element refactor doesn't *fix* those bugs
-   in code — it makes them unrepresentable. That's a different
-   kind of safety.
-
-2. **Heisenbugs are sometimes environment, not code.** Twice
-   this session we chased something — first the scrollbar
-   appearance, then the directory-* file-open overlay — that
-   vanished after a clean restart. Diagnostic time spent before
-   confirming "is this still happening?" would have been saved.
-
-3. **A wrapper is a valid first step in a class refactor.**
-   `TextView` doesn't rewrite the 900-line `createEditorView`
-   — it puts a custom-element shell around it. Lifecycle gains
-   land immediately; the deeper closures→methods refactor can
-   happen later if it earns its weight. Most architectural
-   wins come from the *shell*, not the internals.
-
-4. **Tag the recovery points.** When making a deep refactor in
-   the live path (Phase 2c was that), tagging the last-known-
-   good state (Phase 2b) gives a one-command rollback. Cheap
-   insurance.
-
----
-
-The story so far: a Lisp-extensible editor with a custom dialect,
-an Electron presentation layer, real tree-sitter highlighting (36
-languages with cross-language injection), a face system
-customisable via `M-x customize-faces`, a working jukebox, a pane
-tree with user-facing splits, per-pane tabline-views, Sublime-
-style multi-cursor, directory views with all the trimmings,
-find-file, drag-resizable preview/REPL splitters, `M-x shell` on
-xterm.js, tab-width / indent-tabs settings with mode-local
-overrides, folding, a four-theme palette, citation.js for BibTeX
-/ CSL formatting. The parked `agent-package-system-phase-1`
-branch holds a working package system (Phases 1 + 2), a modal
-palette, appearance defcustoms, and a long tail of polish. The
-views-as-custom-elements refactor is the gate this all queues
-behind — once the DOM enforces the addressing invariant the
-documentation has been claiming, every future feature lands on a
-substrate where the parallel-browser pattern that has been the
-source of recurring bugs simply doesn't exist.
+Smoke passes cleanly. The replace-string failure that masked many
+other arms is gone. `bug2` and `bug3` arms (close-tab independence,
+cross-pane tab click) both pass.
