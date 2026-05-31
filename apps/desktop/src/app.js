@@ -512,8 +512,14 @@ function focusPaneFromEvent(event) {
   if (typeof paneId !== 'string' || paneId === currentPaneId) return;
   setCurrentPaneId(paneId);
 }
-editorHostEl.addEventListener('mousedown', focusPaneFromEvent);
-editorHostEl.addEventListener('click', focusPaneFromEvent);
+// Capture-phase listeners: run *before* the click target's own handlers
+// fire. A tabline-tab's mousedown handler rebuilds the strip (replaces
+// its children to update is-current), which detaches the tab element
+// from the DOM mid-event. Bubble-phase focus would then see
+// `target.closest('.pane') === null` and never run setCurrentPaneId,
+// leaving the wrong pane focused.
+editorHostEl.addEventListener('mousedown', focusPaneFromEvent, true);
+editorHostEl.addEventListener('click', focusPaneFromEvent, true);
 
 /** Set the currently-focused pane id and refresh derived state:
  *  the focus indicator, the cursor binding for the new focused
@@ -1066,6 +1072,14 @@ function hideInactiveRendererViews(activeKind) {
   // a tabline's `.tabline-content` here would re-show whichever tab
   // happens to be first in document order, stacking it over the active
   // one inside the content area.
+  //
+  // This function should only be called from paths where the *focused
+  // leaf itself* is changing what it shows — i.e. switchToViewIndex's
+  // non-tabline branch. The cross-pane tabline-mount path uses
+  // `hideInactiveSingletons` instead, because hiding the focused leaf's
+  // text-view on the strength of *another* pane's active tab kind is
+  // exactly the bug behind "click a video tab in pane B, pane A's
+  // leaf text-view goes blank".
   const focusedPaneEl = currentPaneId
     ? paneElements.get(currentPaneId)
     : null;
@@ -1084,6 +1098,14 @@ function hideInactiveRendererViews(activeKind) {
       tv.style.display = '';
     }
   }
+  hideInactiveSingletons();
+}
+
+/** Hide every singleton view-element whose kind isn't currently shown
+ *  as a leaf-direct view by some pane. Per-tab elements inside a
+ *  tabline's `.tabline-content` are managed by `mountTablineActiveChild`
+ *  and are independent of the singleton-display state. */
+function hideInactiveSingletons() {
   // For each non-text singleton, visibility is keyed on whether some
   // leaf shows it as its *direct* view (no tabline). Tabline tabs use
   // their own per-tab elements — for them the singleton stays hidden.
@@ -4800,10 +4822,13 @@ function mountTablineActiveChild(tablineView) {
   if (child.kind === 'tabline') {
     // Nested tabline-views (Q10). Recurse — the child's mount manages
     // its own tabs inside its container (already in our contentEl via
-    // ensureTabElement). Hide the singletons we don't need.
+    // ensureTabElement). Sweep singletons only; never touch the
+    // focused leaf's text-view from this branch (the activated
+    // tabline may live in a *non-focused* pane, in which case the
+    // focused leaf's display state has nothing to do with us).
     state.activeEditor = null;
     state.activeEditorChild = null;
-    hideInactiveRendererViews('tabline');
+    hideInactiveSingletons();
     mountKindView(child, { paneEl: state.contentEl });
     return;
   }
@@ -4811,8 +4836,9 @@ function mountTablineActiveChild(tablineView) {
   if (child.kind === 'text' && child.buffer) {
     // Sweep singletons (the leaf-direct-view path uses them; the
     // tabline path uses per-tab elements, so the singletons go quiet
-    // when a tabline's active tab is text).
-    hideInactiveRendererViews('text');
+    // when a tabline's active tab is text). Same as the tabline
+    // branch above: never touch the focused leaf's text-view here.
+    hideInactiveSingletons();
     // Lazy creation for text — see the eager-loop comment above for
     // why text tabs need to be created at the moment they're activated,
     // not pre-built hidden.
@@ -4824,13 +4850,16 @@ function mountTablineActiveChild(tablineView) {
     return;
   }
 
-  // Non-text active child: focus the per-tab element. Sweep singletons
-  // for visibility-cascade reasons (leaf-direct-view cases in OTHER
-  // panes still use them).
+  // Non-text active child: focus the per-tab element. Singletons get
+  // swept for visibility-cascade reasons; per-tab text-views in any
+  // other pane's tabline are owned by their own mount. The focused
+  // leaf's leaf-direct text-view (when there is one) is only
+  // toggled by the path that *changed* the focused leaf's view —
+  // not as a side effect of a click in another tabline.
   const activeEl = state.editorByChild.get(child);
   state.activeEditor = null;
   state.activeEditorChild = null;
-  hideInactiveRendererViews(child.kind);
+  hideInactiveSingletons();
   if (activeEl && typeof activeEl.focus === 'function') {
     activeEl.focus();
   }

@@ -3335,6 +3335,124 @@ app.whenReady().then(() => {
       console.log('  bug2:', JSON.stringify(bug2));
       await rm(bug2File, { force: true });
 
+      // Bug-3 arm: when the user clicks a non-text tab (e.g. video) in
+      // a non-focused pane's tabline, the focused leaf-pane's text-view
+      // should stay visible. Hypothesis: the legacy
+      // `hideInactiveRendererViews(child.kind)` call in
+      // mountTablineActiveChild's non-text branch is misbehaving for
+      // cross-pane activations.
+      const bug3TextA = join(tmpdir(), 'jmacs-bug3-A.txt');
+      const bug3VideoPath = join(tmpdir(), 'jmacs-bug3.mp4');
+      await writeFile(bug3TextA, 'pane A text content\\n', 'utf8');
+      // Reuse the media-arm's video file shape — minimal MP4 isn't
+      // really needed since the test only checks visibility, not playback.
+      await writeFile(bug3VideoPath, 'placeholder\\n', 'utf8');
+      const bug3 = await win.webContents.executeJavaScript(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        const editorHost = document.getElementById('editor-host');
+        const focusedPaneId = () =>
+          editorHost.querySelector('.pane--focused')?.dataset?.paneId ?? null;
+        const paneSummary = () =>
+          Array.from(editorHost.querySelectorAll('.pane')).map((paneEl) => {
+            const directTextView = paneEl.querySelector(':scope > text-view');
+            const tabline = paneEl.querySelector(':scope > tabline-view');
+            return {
+              id: paneEl.dataset.paneId,
+              focused: paneEl.classList.contains('pane--focused'),
+              hasDirectTextView: !!directTextView,
+              directTextViewVisible: directTextView
+                ? getComputedStyle(directTextView).display !== 'none'
+                : null,
+              directTextViewInlineDisplay: directTextView
+                ? directTextView.style.display
+                : null,
+              hasTabline: !!tabline,
+              activeTabName: tabline?.querySelector('.tabline-strip .tabline-tab.is-current .tabline-label')?.textContent ?? null,
+            };
+          });
+
+        submit('(delete-other-panes!)');
+        await wait(150);
+        submit('(promote-to-tabline!)');
+        await wait(120);
+
+        // Open the markdown in the root tabline — this becomes pane A.
+        submit('(open-file-path! "${bug3TextA}")');
+        await wait(300);
+        // Demote so pane A is a leaf-direct text view (matches user's
+        // scenario where the middle pane is a leaf, not a tabline).
+        submit('(demote-tabline!)');
+        await wait(200);
+
+        // Split horizontally to make pane B on the right.
+        submit('(split-horizontal!)');
+        await wait(250);
+        submit('(other-pane!)');
+        await wait(150);
+        submit('(promote-to-tabline!)');
+        await wait(150);
+
+        // Open the video file in pane B's tabline.
+        submit('(open-file-path! "${bug3VideoPath}")');
+        await wait(400);
+
+        // Snapshot before clicking.
+        const before = paneSummary();
+        const focusedBefore = focusedPaneId();
+
+        // Cycle focus back to pane A (the leaf with text-view).
+        submit('(other-pane!)');
+        await wait(200);
+        const focusedAfterCycle = focusedPaneId();
+
+        // Now simulate clicking the video tab in pane B's tabline.
+        // Real clicks fire mousedown → click; tabline's onSelect is on
+        // mousedown, so we need to dispatch that explicitly.
+        const paneB = editorHost.querySelector('.pane[data-pane-id="' +
+          (focusedAfterCycle === before[0].id ? before[1]?.id : before[0]?.id) + '"]');
+        const videoTab = Array.from(paneB?.querySelectorAll('.tabline-strip .tabline-tab') ?? [])
+          .find((t) => {
+            const name = t.querySelector('.tabline-label')?.textContent ?? '';
+            return name.endsWith('.mp4');
+          });
+        if (videoTab) {
+          const r = videoTab.getBoundingClientRect();
+          videoTab.dispatchEvent(new MouseEvent('mousedown', {
+            button: 0,
+            clientX: r.left + r.width / 2,
+            clientY: r.top + r.height / 2,
+            bubbles: true, cancelable: true,
+          }));
+        }
+        await wait(300);
+
+        const after = paneSummary();
+        const focusedAfterClick = focusedPaneId();
+
+        // Tidy.
+        submit('(delete-other-panes!)');
+        await wait(150);
+
+        return {
+          before,
+          focusedBefore,
+          focusedAfterCycle,
+          videoTabFound: !!videoTab,
+          after,
+          focusedAfterClick,
+        };
+      })()`);
+      console.log('  bug3:', JSON.stringify(bug3));
+      await rm(bug3TextA, { force: true });
+      await rm(bug3VideoPath, { force: true });
+
       const renderOk =
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
@@ -3706,6 +3824,25 @@ app.whenReady().then(() => {
         addPaneArm.countAfterEscape === addPaneArm.afterSplitterClickCount &&
         addPaneArm.finalPaneCount === 1;
 
+      // Bug-2: closing a tab in pane B (the duplicate) does NOT remove
+      // the original from pane A. Q9 auto-duplicate has done its job.
+      const bug2Ok =
+        bug2.tabsBeforeKill === 2 &&
+        bug2.panesBeforeKill.length === 2 &&
+        bug2.panesBeforeKill[0] === true && bug2.panesBeforeKill[1] === true &&
+        bug2.tabsAfterKill === 1 &&
+        bug2.panesAfterKill.length === 1 &&
+        bug2.panesAfterKill[0] === true;
+
+      // Bug-3: clicking a non-text tab in a non-focused pane's tabline
+      // should (a) move focus to that pane and (b) leave the previously
+      // focused pane's leaf-direct text-view visible.
+      const bug3Ok =
+        bug3.videoTabFound === true &&
+        bug3.focusedAfterCycle !== bug3.focusedAfterClick &&
+        bug3.after[0].directTextViewVisible === true &&
+        bug3.after[0].directTextViewInlineDisplay === '';
+
       // Tabline arm (phase 3b commit 7): opening files appends tabs to
       // the root tabline; C-x ←/→ cycle; C-x k kills and falls back;
       // C-x 3 split leaves the left tabline intact and the right pane
@@ -3762,7 +3899,8 @@ app.whenReady().then(() => {
         splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
         docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
         tablineOk && langPackOk && treeOk && colsOk && shellOk &&
-        chordOk && findFileOk && panesOk && addPaneOk && tablineArmOk
+        chordOk && findFileOk && panesOk && addPaneOk && bug2Ok && bug3Ok &&
+        tablineArmOk
       ) {
         finish(
           0,
@@ -3877,6 +4015,10 @@ app.whenReady().then(() => {
         finish(1, `multi-pane splits did not work (${JSON.stringify(panes)})`);
       } else if (!addPaneOk) {
         finish(1, `add-pane mode / C-u flip did not work (${JSON.stringify(addPaneArm)})`);
+      } else if (!bug2Ok) {
+        finish(1, `close-one-closes-both regression (${JSON.stringify(bug2)})`);
+      } else if (!bug3Ok) {
+        finish(1, `cross-pane tab click regression (${JSON.stringify(bug3)})`);
       } else {
         finish(1, `tabline behaviour did not work (${JSON.stringify(tablineArm)})`);
       }
