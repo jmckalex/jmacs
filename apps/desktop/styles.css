@@ -2019,10 +2019,11 @@ video-view,
   overflow: hidden;
 }
 
-/* The pdf view — an Electron `<webview>` pointed at a PDF file
-   served over the media:// protocol. Chromium's built-in PDF plugin
-   renders the document with its own toolbar (zoom, find, print);
-   `<pdf-view>` just lays the webview out to fill the pane. */
+/* The pdf view — a PDF.js-rendered document inside a scrollable
+   viewport, framed by a custom toolbar (page nav, zoom, find). Each
+   page paints to a canvas with an overlapping text layer so selection
+   and the find-input both work, and so a Lisp primitive can extract
+   the text later. */
 pdf-view,
 .pdf-view {
   display: flex;
@@ -2035,11 +2036,177 @@ pdf-view,
   overflow: hidden;
 }
 
-.pdf-content {
+.pdf-toolbar {
+  flex: 0 0 36px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-status, #2a2f3a);
+  border-bottom: 1px solid var(--border, #1b1e25);
+}
+
+.pdf-toolbar button {
+  flex: 0 0 auto;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.pdf-toolbar button:hover:not(:disabled) {
+  background: var(--bg-editor);
+}
+
+.pdf-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pdf-page {
+  /* The toolbar's page number input. The .pdf-page CSS class is also
+     applied to per-page placeholder divs in the viewport — the
+     `.pdf-toolbar` selector here is what disambiguates. */
+  flex: 0 0 auto;
+}
+
+.pdf-toolbar .pdf-page {
+  width: 52px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border, #1b1e25);
+  border-radius: 4px;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  text-align: center;
+}
+
+.pdf-toolbar .pdf-page:focus {
+  outline: none;
+  border-color: var(--accent, #6da4ff);
+}
+
+.pdf-page-count {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+
+.pdf-zoom {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border, #1b1e25);
+  border-radius: 4px;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.pdf-zoom:focus {
+  outline: none;
+  border-color: var(--accent, #6da4ff);
+}
+
+.pdf-toolbar-sep {
+  flex: 0 0 1px;
+  align-self: stretch;
+  margin: 4px 4px;
+  background: var(--border, #1b1e25);
+}
+
+.pdf-find {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border, #1b1e25);
+  border-radius: 4px;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.pdf-find:focus {
+  outline: none;
+  border-color: var(--accent, #6da4ff);
+}
+
+.pdf-viewport {
   flex: 1 1 auto;
   min-height: 0;
-  width: 100%;
-  border: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: #1a1d24;
+}
+
+/* A page placeholder. The container's pixel size is set inline by the
+   element so layout is correct even before the canvas paints; the
+   canvas + text layer absolute-position over the placeholder so the
+   container's size always matches the rendered page. */
+.pdf-viewport .pdf-page {
+  position: relative;
+  flex: 0 0 auto;
+  background: #ffffff;
+  box-shadow: 0 1px 2px #00000055, 0 4px 12px #00000033;
+}
+
+.pdf-canvas {
+  display: block;
+}
+
+/* The text layer overlaps the canvas. Spans are absolute-positioned by
+   PDF.js with the right baseline / scale so selection visibly matches
+   the rendered glyphs. We keep the glyphs invisible — the canvas is
+   what the user reads — but selection highlights still paint. */
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 1;
+  line-height: 1;
+  text-align: initial;
+  user-select: text;
+}
+
+.pdf-text-layer > span,
+.pdf-text-layer > br {
+  position: absolute;
+  white-space: pre;
+  color: transparent;
+  cursor: text;
+  transform-origin: 0 0;
+}
+
+.pdf-text-layer ::selection {
+  background: rgba(109, 164, 255, 0.35);
+}
+
+.pdf-status {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  background: var(--bg-status, #2a2f3a);
+  border-top: 1px solid var(--border, #1b1e25);
+}
+
+.pdf-status[hidden] {
+  display: none;
 }
 
 /* The browser view — a thin chrome (back / forward / reload / URL
