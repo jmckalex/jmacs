@@ -27,7 +27,11 @@
  */
 
 import { keyEventToString } from './keymap.js';
-import { iconClassForFile, joinPath } from './directory-tree-view.js';
+import {
+  createSymlinkBadge,
+  iconClassForFile,
+  joinPath,
+} from './directory-tree-view.js';
 import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
 
 /** A bare modifier press is not a key in its own right. */
@@ -221,10 +225,7 @@ function createDirectoryColumnsView(container, options = {}) {
         const base = doc.createElement('i');
         base.className = `directory-columns-icon fa-solid ${baseIconClass}`;
         stack.append(base);
-        const badge = doc.createElement('i');
-        badge.className = 'directory-columns-symlink fa-solid fa-arrow-up-right';
-        badge.setAttribute('aria-hidden', 'true');
-        stack.append(badge);
+        stack.append(createSymlinkBadge(doc, 'directory-columns-symlink'));
         row.append(stack);
       } else {
         const icon = doc.createElement('i');

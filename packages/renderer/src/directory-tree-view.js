@@ -28,6 +28,61 @@ import { keyEventToString } from './keymap.js';
 /** A bare modifier press is not a key in its own right. */
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * The symlink badge — a circle with a right-pointing arrow inside.
+ * Inlined as a Font Awesome Pro path (Commercial License, Fonticons
+ * Inc.) rather than fetched as a separate asset so it ships with the
+ * renderer module. Rendered at ~11px at the bottom-right corner of the
+ * icon stack, with a dark stroke halo so the white fill reads against
+ * both dark folder icons and light file icons.
+ */
+const SYMLINK_BADGE_VIEWBOX = '0 0 640 640';
+const SYMLINK_BADGE_PATH =
+  'M320 96C443.7 96 544 196.3 544 320C544 443.7 443.7 544 320 544' +
+  'C196.3 544 96 443.7 96 320C96 196.3 196.3 96 320 96zM320 576' +
+  'C461.4 576 576 461.4 576 320C576 178.6 461.4 64 320 64C178.6 64 ' +
+  '64 178.6 64 320C64 461.4 178.6 576 320 576zM411.3 331.3' +
+  'C417.5 325.1 417.5 314.9 411.3 308.7L339.3 236.7' +
+  'C333.1 230.5 322.9 230.5 316.7 236.7C310.5 242.9 310.5 253.1 316.7 259.3' +
+  'L361.4 304L240 304C231.2 304 224 311.2 224 320' +
+  'C224 328.8 231.2 336 240 336L361.4 336L316.7 380.7' +
+  'C310.5 386.9 310.5 397.1 316.7 403.3C322.9 409.5 333.1 409.5 339.3 403.3' +
+  'L411.3 331.3z';
+
+/**
+ * Build the symlink overlay badge — an SVG element ready to mount as
+ * the absolutely-positioned corner stamp on an icon stack. Two paths:
+ * a thick black halo first (for contrast against light icons), then
+ * the white-filled badge on top.
+ *
+ * @param {Document} doc
+ * @param {string} className - CSS class on the root SVG.
+ * @returns {SVGElement}
+ */
+export function createSymlinkBadge(doc, className) {
+  const svg = doc.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', SYMLINK_BADGE_VIEWBOX);
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', className);
+  // Halo: a fat dark stroke under the white fill, so the badge reads
+  // against any base icon colour. Stroke is in viewBox units (640).
+  const halo = doc.createElementNS(SVG_NS, 'path');
+  halo.setAttribute('d', SYMLINK_BADGE_PATH);
+  halo.setAttribute('fill', 'none');
+  halo.setAttribute('stroke', '#000');
+  halo.setAttribute('stroke-width', '90');
+  halo.setAttribute('stroke-linejoin', 'round');
+  halo.setAttribute('stroke-linecap', 'round');
+  svg.append(halo);
+  const fill = doc.createElementNS(SVG_NS, 'path');
+  fill.setAttribute('d', SYMLINK_BADGE_PATH);
+  fill.setAttribute('fill', 'currentColor');
+  svg.append(fill);
+  return svg;
+}
+
 /** Tags whose own keyboard handling must not be hijacked. */
 const FORM_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
 
@@ -288,19 +343,16 @@ function createDirectoryTreeView(container, options = {}) {
         : iconClassForFile(entry.name);
 
     if (entry.isSymlink) {
-      // Stack: the target's icon as the base, a small arrow badge
-      // positioned in the bottom-left corner. The wrapper takes the
-      // same horizontal slot as the standalone .directory-tree-icon,
+      // Stack: the target's icon as the base, an SVG circle-arrow
+      // badge stamped in the bottom-right corner. The wrapper takes
+      // the same horizontal slot as the standalone .directory-tree-icon,
       // so symlink rows align with non-symlink rows.
       const stack = doc.createElement('span');
       stack.className = 'directory-tree-icon-stack';
       const base = doc.createElement('i');
       base.className = `directory-tree-icon fa-solid ${baseIconClass}`;
       stack.append(base);
-      const badge = doc.createElement('i');
-      badge.className = 'directory-tree-symlink fa-solid fa-arrow-up-right';
-      badge.setAttribute('aria-hidden', 'true');
-      stack.append(badge);
+      stack.append(createSymlinkBadge(doc, 'directory-tree-symlink'));
       row.append(stack);
     } else {
       const icon = doc.createElement('i');
