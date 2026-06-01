@@ -429,6 +429,18 @@ export function registerFileHandlers() {
     }
   });
 
+  // The per-user data directory, synchronously — preload resolves it
+  // once at startup and exposes it as `host.userDataDirectory`. The
+  // snippet engine reads `<userData>/snippets`. `app.getPath('userData')`
+  // is only available in the main process, hence this bridge.
+  ipcMain.on('userdata:dir-sync', (event) => {
+    try {
+      event.returnValue = app.getPath('userData');
+    } catch {
+      event.returnValue = '';
+    }
+  });
+
   ipcMain.on('directory:list-detailed-sync', (event, payload) => {
     try {
       const dirPath = expandTilde(payload?.path);

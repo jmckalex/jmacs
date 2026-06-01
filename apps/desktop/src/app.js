@@ -292,7 +292,13 @@ function updateModeline() {
     ? `   ${interpreter.call('major-mode-name')}` +
       interpreter.call('minor-mode-line')
     : '';
-  nameEl.textContent = mark + buffer.name + mode + count;
+  // The snippet indicator (e.g. "[snippet: 2/4]") appears while a snippet
+  // is being navigated; the Lisp getter returns "" when none is active.
+  const snippet = keymapReady
+    ? interpreter.call('snippet-modeline-indicator')
+    : '';
+  const snippetTag = snippet ? `   ${snippet}` : '';
+  nameEl.textContent = mark + buffer.name + mode + snippetTag + count;
   const { line, column } = buffer.positionAt(buffer.point);
   positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
   // Reflect the current view in the OS window title.
@@ -315,6 +321,17 @@ function watchCurrentBuffer() {
       dismissSplash();
       // Keep the Markdown preview pane in step with the buffer.
       refreshMarkdownPreview();
+      // While a snippet is active, reflow the active field's extent and
+      // the trailing offsets after each edit. A no-op when no snippet is
+      // active (guarded in Lisp).
+      if (keymapReady) {
+        try {
+          interpreter.call('snippet-after-edit!');
+        } catch {
+          // A reflow error must not break editing; the snippet simply
+          // stops tracking. Surfaced lazily on the next command.
+        }
+      }
     }
     updateModeline();
   });
@@ -1588,6 +1605,10 @@ const audio = createAudioController();
  *  and dispatch directly from the renderer, so they need the same
  *  expansion at their own entry. */
 const HOME = window.host?.homeDirectory ?? '';
+/** The editor's per-user data directory (where init.lisp, custom.lisp,
+ *  faces.json live). Used by the snippet engine to find
+ *  `<userData>/snippets`. Empty when the host can't resolve it. */
+const USER_DATA_DIR = window.host?.userDataDirectory ?? '';
 function expandTilde(path) {
   if (typeof path !== 'string' || HOME === '') return path;
   if (path === '~') return HOME;
@@ -2718,6 +2739,31 @@ const interpreter = createInterpreter({
     // starting point for its TAB-completion path. An empty string is
     // returned when the host does not know the home (unlikely).
     'home-directory': () => HOME,
+    // --- snippet support (packages/stdlib/lisp/snippets.lisp) ----------
+    // The user's snippet root directory — `<userData>/snippets`. The
+    // snippet engine searches `<root>/<mode>/` for trigger files and
+    // reads `.yas-parents` from each mode directory. Returns "" when the
+    // host can't resolve userData (then only the built-in starter set is
+    // available). The directory is not created here — a missing directory
+    // simply yields no user snippets.
+    'snippet-user-directory': () =>
+      USER_DATA_DIR === '' ? '' : `${USER_DATA_DIR}/snippets`,
+    // Format a date/time string for the built-in date snippets. KIND is
+    // "date" (YYYY-MM-DD), "datetime" (YYYY-MM-DD HH:MM) or "year"
+    // (YYYY). Snippet bodies use the backtick forms `date` / `datetime` /
+    // `year`, which the engine resolves through this primitive.
+    'snippet-date-string': (args) => {
+      const kind = String(args[0] ?? 'date');
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const ymd =
+        `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      if (kind === 'year') return String(now.getFullYear());
+      if (kind === 'datetime') {
+        return `${ymd} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      }
+      return ymd;
+    },
     // Open an image file at PATH (a string) as an image-kind buffer.
     // Mirrors `open-file!` for an explicit path; jukebox-mode uses this
     // for M-RET on the album-art file.
@@ -3745,6 +3791,16 @@ function dispatchKey(key) {
     // A key may have switched mode (e.g. toggle-math-mode) — keep the
     // mode menu in step.
     refreshModeMenu();
+    // If point has wandered out of an active snippet's body (an arrow
+    // key, a click-driven move), soft-commit it — the text stays, the
+    // active record is dropped. Field navigation (TAB/S-TAB) keeps point
+    // inside the body, so it does not trip this. A no-op when no snippet
+    // is active (guarded in Lisp).
+    try {
+      interpreter.call('snippet-soft-commit-if-outside');
+    } catch {
+      // Ignore — never let the soft-commit check break key dispatch.
+    }
     return handled;
   } catch (error) {
     repl.appendError(error.lispMessage ?? error.message ?? String(error));

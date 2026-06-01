@@ -14,6 +14,19 @@ contextBridge.exposeInMainWorld('host', {
    *  filesystem and `file://` URL scheme will accept. */
   homeDirectory: homedir(),
 
+  /** The editor's per-user data directory (`app.getPath('userData')`),
+   *  resolved once at preload time over a synchronous IPC call. The
+   *  snippet engine reads `<userDataDirectory>/snippets`. Empty string
+   *  when the main process can't resolve it. */
+  userDataDirectory: (() => {
+    try {
+      const dir = ipcRenderer.sendSync('userdata:dir-sync');
+      return typeof dir === 'string' ? dir : '';
+    } catch {
+      return '';
+    }
+  })(),
+
   /**
    * Show an open dialog and read the chosen file. The shape of the
    * result depends on the file's suffix:
