@@ -523,3 +523,89 @@ test('moving point outside the snippet soft-commits it', async () => {
   interp.evaluate('(snippet-soft-commit-if-outside)');
   assert.equal(interp.evaluate('(snippet-active?)'), false);
 });
+
+// --- engine: mirrors (Phase 3, Policy A — mirrors are multi-cursors) ----
+
+/** A user-supplied snippet whose $1 repeats (a canonical field plus two
+ *  mirrors), for the mirror tests. */
+function mirrorFixture(extra = {}) {
+  const root = '/u/snippets';
+  return engine({
+    name: 'main.js',
+    text: '',
+    userRoot: root,
+    dirs: { [`${root}/js-mode`]: [['forof', 'file']] },
+    files: {
+      [`${root}/js-mode/forof`]:
+        '# --\nfor (const ${1:x} of ${2:xs}) { use($1); log($1); }$0',
+    },
+    ...extra,
+  });
+}
+
+test('a field with mirrors installs a cursor per occurrence on arrival', async () => {
+  const { buffer, interp } = await mirrorFixture();
+  buffer.insert('forof');
+  press(interp, 'tab'); // arrive at field 1 ($1, two mirrors)
+  // canonical + 2 mirrors = 3 cursors.
+  assert.equal(interp.evaluate('(cursor-count)'), 3);
+});
+
+test('typing in a mirrored field updates every occurrence live', async () => {
+  const { buffer, interp } = await mirrorFixture();
+  buffer.insert('forof');
+  press(interp, 'tab');
+  type(interp, 'item');
+  assert.equal(
+    buffer.text,
+    'for (const item of xs) { use(item); log(item); }'
+  );
+});
+
+test('advancing past a mirrored field collapses the cursor set', async () => {
+  const { buffer, interp } = await mirrorFixture();
+  buffer.insert('forof');
+  press(interp, 'tab'); // field 1, mirrors active (3 cursors)
+  type(interp, 'item');
+  press(interp, 'tab'); // field 2 — mirrors dropped
+  assert.equal(interp.evaluate('(cursor-count)'), 1);
+  const sel = buffer.selection;
+  assert.equal(buffer.text.slice(sel.start, sel.end), 'xs');
+});
+
+test('editing later fields after a mirror edit keeps offsets correct', async () => {
+  const { buffer, interp } = await mirrorFixture();
+  buffer.insert('forof');
+  press(interp, 'tab');
+  type(interp, 'item');
+  press(interp, 'tab'); // field 2 (xs)
+  type(interp, 'items');
+  press(interp, 'tab'); // commit
+  assert.equal(
+    buffer.text,
+    'for (const item of items) { use(item); log(item); }'
+  );
+  assert.equal(interp.evaluate('(snippet-active?)'), false);
+  assert.equal(interp.evaluate('(cursor-count)'), 1);
+});
+
+test('snippet-mirror-regions reports the mirror ranges for the host', async () => {
+  const { buffer, interp } = await mirrorFixture();
+  buffer.insert('forof');
+  press(interp, 'tab');
+  const regions = listToArray(interp.evaluate('(snippet-mirror-regions)'));
+  // $1 has two mirrors (the use($1) and log($1) occurrences).
+  assert.equal(regions.length, 2);
+});
+
+test('*snippet-mirror-multi-cursor* nil leaves a single cursor', async () => {
+  const { buffer, interp } = await mirrorFixture();
+  interp.evaluate('(set! *snippet-mirror-multi-cursor* #f)');
+  buffer.insert('forof');
+  press(interp, 'tab');
+  // With multi-cursor mirrors disabled, only the canonical field is
+  // selected — one cursor.
+  assert.equal(interp.evaluate('(cursor-count)'), 1);
+  const sel = buffer.selection;
+  assert.equal(buffer.text.slice(sel.start, sel.end), 'x');
+});

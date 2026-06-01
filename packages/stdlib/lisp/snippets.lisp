@@ -53,6 +53,15 @@
         TAB trigger entirely (snippets are still reachable via
         `M-x snippet-expand` / `snippet-insert`).")
 
+(defcustom *snippet-mirror-multi-cursor* #t :boolean
+  :group 'snippets
+  :doc "When #t (the default), arriving at a field that has mirrors
+        (a `$N` that appears more than once) installs a multi-cursor set
+        over the field and its mirrors, so typing updates every
+        occurrence live (Policy A — mirrors are multi-cursors). When #f,
+        mirrors render the field's default at expansion but do not update
+        as the field is edited.")
+
 (defcustom *snippet-mode-aliases*
   (list (cons "javascript-mode" "js-mode")
         (cons "typescript-mode" "js-mode")
@@ -611,14 +620,37 @@
 
 (define (-select-field! field)
   "Move point to FIELD and select its current text, so typing replaces
-   it. The field's default occupies [:start, :end) relative to :origin."
+   it. The field's default occupies [:start, :end) relative to :origin.
+   When the field has mirrors and `*snippet-mirror-multi-cursor*` is on,
+   install a secondary cursor over each mirror too (Policy A), so typing
+   updates every occurrence live."
   (let ((start (-abs (get field :start 0)))
         (end (-abs (get field :end 0))))
+    ;; Drop any prior multi-cursor set before re-selecting.
+    (collapse-to-primary!)
     (goto! start)
     (if (> end start)
-        (begin (goto! end) (set-mark! start) (goto! end))
-        ;; Empty field — no selection, just place point.
-        (begin (clear-mark!) (goto! start)))))
+        (begin (set-mark! start) (goto! end))
+        (begin (clear-mark!) (goto! start)))
+    (when *snippet-mirror-multi-cursor*
+      (-install-mirror-cursors (get field :index -1)))))
+
+(define (-install-mirror-cursors index)
+  "Add a secondary cursor selecting each mirror of field INDEX, so a
+   multi-cursor edit propagates the typed text to every occurrence."
+  (for-each
+   (lambda (m)
+     (let ((ms (-abs (get m :start 0)))
+           (me (-abs (get m :end 0))))
+       (if (> me ms)
+           (add-selection! me ms)
+           (add-selection! ms))))
+   (-mirrors-of-index index)))
+
+(define (-mirrors-of-index index)
+  "The active snippet's mirror records whose :index is INDEX."
+  (filter (lambda (m) (= (get m :index -1) index))
+          (-as-get :mirrors (list))))
 
 (defcommand snippet-next-field ()
   "Advance to the next snippet field, selecting its text. On the last
@@ -642,10 +674,12 @@
         (-select-field! (-field-at (-as-get :fields (list)) prev))))))
 
 (define (snippet-commit)
-  "Finish the active snippet: drop the selection, place point at the
-   exit, and clear the active record. The inserted text stays."
+  "Finish the active snippet: drop any multi-cursor set and selection,
+   place point at the exit, and clear the active record. The inserted
+   text stays."
   (when (snippet-active?)
     (let ((exit (-abs (-as-get :exit 0))))
+      (collapse-to-primary!)
       (clear-mark!)
       (goto! exit)
       (set! *active-snippet* nil))))
@@ -657,6 +691,7 @@
    single undo removes the inserted body.)"
   (when (snippet-active?)
     (let ((exit (-abs (-as-get :exit 0))))
+      (collapse-to-primary!)
       (clear-mark!)
       (goto! exit)
       (set! *active-snippet* nil))))
@@ -669,57 +704,94 @@
 ;; called by the host on every buffer change while a snippet is active.
 
 (define (snippet-after-edit!)
-  "Re-derive the active field's extent from point and reflow the trailing
-   offsets. Called by the host after a buffer edit while a snippet is
-   active. The active field runs from its :start to the current point;
-   later offsets shift by the delta against the field's previous :end."
+  "Re-derive the active field's length from the primary cursor and reflow
+   every stored offset. Called by the host after a buffer edit while a
+   snippet is active. The active field runs from its :start to the
+   current primary point; the same length is applied to each of the
+   field's mirror occurrences (they were edited in lockstep by the
+   multi-cursor `insert`), and every offset after each occurrence shifts
+   by the per-occurrence delta."
   (when (snippet-active?)
     (let* ((fields (-as-get :fields (list)))
            (cur (-as-get :current -1)))
       (when (and (>= cur 0) (< cur (length fields)))
         (let* ((field (-field-at fields cur))
-               (old-end (get field :end 0))
-               (new-end (- (point) (-as-get :origin 0)))
-               (delta (- new-end old-end)))
+               (old-len (- (get field :end 0) (get field :start 0)))
+               (new-len (- (-primary-point) (-as-get :origin 0)
+                           (get field :start 0)))
+               (delta (- new-len old-len)))
           (unless (= delta 0)
-            (-reflow! cur new-end delta)))))))
+            (-reflow-occurrences! (get field :index -1) old-len delta)))))))
 
-(define (-reflow! cur new-end delta)
-  "Set the active field's :end to NEW-END and shift every offset after
-   the old end by DELTA: trailing fields, mirrors, the exit, and the
-   total length."
-  (let ((fields (-as-get :fields (list)))
-        (old-end (get (-field-at (-as-get :fields (list)) cur) :end 0)))
-    (-as-set! :fields (-reflow-fields fields cur new-end old-end delta))
-    (-as-set! :mirrors (-reflow-ranges (-as-get :mirrors (list)) old-end delta))
-    (-as-set! :exit (-shift-after (-as-get :exit 0) old-end delta))
-    (-as-set! :length (+ (-as-get :length 0) delta))))
+(define (-primary-point)
+  "The primary cursor's absolute offset. With a multi-cursor set the
+   primary is the first selection; `point` already reports it, but this
+   name documents the intent at the reflow call site."
+  (point))
+
+;; The reflow walks every occurrence of the edited field's index (the
+;; canonical field plus its mirrors) in document order. Each occurrence
+;; grew by DELTA; offsets at or after an occurrence's old end shift by
+;; DELTA, and the cumulative shift carries forward so a later occurrence's
+;; own start is already shifted by the earlier occurrences.
+
+(define (-occurrence-starts index)
+  "Every occurrence start (relative) of INDEX — the canonical field plus
+   its mirrors — sorted ascending."
+  (-sort-numbers
+   (append
+    (map (lambda (f) (get f :start 0))
+         (filter (lambda (f) (= (get f :index -1) index))
+                 (-as-get :fields (list))))
+    (map (lambda (m) (get m :start 0)) (-mirrors-of-index index)))))
+
+(define (-reflow-occurrences! index old-len delta)
+  "Apply DELTA at each occurrence of INDEX. OLD-LEN is each occurrence's
+   length before the edit. Processes occurrences left-to-right so the
+   cumulative shift is consistent."
+  (-reflow-occurrences-loop (-occurrence-starts index) old-len delta 0))
+
+(define (-reflow-occurrences-loop starts old-len delta shift)
+  "STARTS are the original (pre-edit) occurrence starts ascending. SHIFT
+   is the accumulated shift from occurrences already processed. For each
+   occurrence at original START, its old end was (START + OLD-LEN); after
+   accounting for the running SHIFT that boundary is at
+   (START + OLD-LEN + SHIFT). Every stored offset at or after that
+   boundary moves by DELTA."
+  (cond
+    ((nil? starts) nil)
+    (else
+     (let ((boundary (+ (car starts) old-len shift)))
+       (-shift-all-after! boundary delta)
+       (-reflow-occurrences-loop (cdr starts) old-len delta
+                                 (+ shift delta))))))
+
+(define (-shift-all-after! boundary delta)
+  "Shift every stored offset (field starts/ends, mirror starts/ends, the
+   exit, and the total length) that sits at or after BOUNDARY by DELTA.
+   An offset exactly at BOUNDARY is the end of the just-grown occurrence
+   text, so it moves with the text."
+  (-as-set! :fields (-reflow-ranges (-as-get :fields (list)) boundary delta))
+  (-as-set! :mirrors (-reflow-ranges (-as-get :mirrors (list)) boundary delta))
+  (-as-set! :exit (-shift-after (-as-get :exit 0) boundary delta))
+  (-as-set! :length (+ (-as-get :length 0) delta)))
 
 (define (-shift-after offset boundary delta)
   "Shift OFFSET by DELTA when it sits at or after BOUNDARY."
   (if (>= offset boundary) (+ offset delta) offset))
 
-(define (-reflow-fields fields cur new-end old-end delta)
-  "Rebuild the field list: the CUR-th field gets NEW-END; fields after it
-   shift their :start/:end by DELTA."
-  (-reflow-fields-loop fields 0 cur new-end old-end delta))
-
-(define (-reflow-fields-loop fields i cur new-end old-end delta)
-  (cond
-    ((nil? fields) (list))
-    ((= i cur)
-     (cons (assoc (car fields) :end new-end)
-           (-reflow-fields-loop (cdr fields) (+ i 1) cur new-end old-end delta)))
-    (else
-     (cons (-shift-range (car fields) old-end delta)
-           (-reflow-fields-loop (cdr fields) (+ i 1) cur new-end old-end delta)))))
-
 (define (-reflow-ranges ranges boundary delta)
   (map (lambda (r) (-shift-range r boundary delta)) ranges))
 
 (define (-shift-range range boundary delta)
-  "Shift a {:start :end …} range past BOUNDARY by DELTA."
-  (assoc (assoc range :start (-shift-after (get range :start 0) boundary delta))
+  "Shift a {:start :end …} range past BOUNDARY by DELTA. The range's
+   :start moves only when strictly after BOUNDARY (an occurrence whose
+   text grew keeps its start but extends its end); its :end moves when at
+   or after BOUNDARY."
+  (assoc (assoc range :start
+                (if (> (get range :start 0) boundary)
+                    (+ (get range :start 0) delta)
+                    (get range :start 0)))
          :end (-shift-after (get range :end 0) boundary delta)))
 
 ;; --- soft commit on point leaving the snippet --------------------------
