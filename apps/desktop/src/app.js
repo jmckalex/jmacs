@@ -72,6 +72,7 @@ import {
   fuzzyFilter,
   highlightLine,
   isAudioFile,
+  keyEventToString,
   languageForFilename,
   loadLanguageHighlighters,
   renderMarkdown,
@@ -3751,6 +3752,67 @@ function dispatchKey(key) {
     return true; // consume the key; the error is visible in the REPL
   }
 }
+
+/** Keys that are modifiers in their own right — a bare press of one is
+ *  not a keystroke to dispatch (waiting for the real key). */
+const BARE_MODIFIER_KEYS = new Set([
+  'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'OS', 'AltGraph', 'Fn',
+]);
+
+/** True when EL (a keydown target) is a native text-entry control that
+ *  owns its own keys — a minibuffer / REPL / customize / pdf input, or a
+ *  browser-view's URL bar. The editor's own `.editor` surface is a
+ *  focusable div, not an input/contenteditable, so it is excluded here
+ *  on purpose (we *do* want to route for it). */
+function targetOwnsKeys(el) {
+  return (
+    el instanceof Element &&
+    el.closest(
+      'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
+    ) !== null
+  );
+}
+
+// --- the global key router ---------------------------------------------
+//
+// Key dispatch must not depend on which DOM element happens to hold
+// focus. Each view's keydown listener (the text `.editor`, image-view,
+// audio-view, …) only fires when its own element is focused, so a key
+// pressed while DOM focus has drifted to <body> — after the window
+// regains focus, after a DOM rebuild detached the focused element, after
+// a programmatic pane switch — is lost, and prefix chords like C-x C-f go
+// unrecognised in non-text views. `handle-key` already resolves against
+// the *logical* current view (not `document.activeElement`), so a single
+// window-level listener can route every otherwise-unhandled key.
+//
+// Bubble phase + a `defaultPrevented` guard is what makes this safe: any
+// deeper listener (a focused view, a modal overlay, a native input) runs
+// first, and if it claimed the key it has already called preventDefault —
+// so we stand down and never double-dispatch. Only keys that reach <body>
+// unclaimed are routed here. browser-view is exempt by nature: a focused
+// <webview> delivers keydown to the guest page, which never reaches us.
+window.addEventListener('keydown', (event) => {
+  if (!keymapReady) return;
+  // A deeper listener already claimed it (focused view, modal, input).
+  if (event.defaultPrevented) return;
+  // A bare modifier press is not a keystroke in its own right.
+  if (BARE_MODIFIER_KEYS.has(event.key)) return;
+  // Native inputs keep every key — including editor chords — so a user
+  // typing in the minibuffer/REPL/url-bar is never interrupted.
+  if (targetOwnsKeys(event.target)) return;
+  // Add-pane mode runs its own transient key handling over the host.
+  if (editorHostEl.dataset.addPane) return;
+
+  const key = keyEventToString(event);
+  // A bare printable character self-inserts; only route that to a text
+  // view. Command keys and chords route regardless of the view kind, so
+  // C-x C-f (etc.) work from an image, pdf or audio view too.
+  if (key.length === 1) {
+    const current = views[currentViewIndex];
+    if (!current || current.kind !== 'text') return;
+  }
+  if (dispatchKey(key)) event.preventDefault();
+});
 
 // --- mode menu ----------------------------------------------------------
 // The native menu shows the current buffer's mode commands. The
