@@ -54,18 +54,19 @@
         `M-x snippet-expand` / `snippet-insert`).")
 
 (defcustom *snippet-mode-aliases*
-  (list (cons "js-mode" "js-mode")
-        (cons "javascript-mode" "js-mode")
-        (cons "python-mode" "python-mode")
+  (list (cons "javascript-mode" "js-mode")
+        (cons "typescript-mode" "js-mode")
         (cons "emacs-lisp-mode" "lisp-mode")
-        (cons "lisp-mode" "lisp-mode")
         (cons "text-mode" "fundamental-mode"))
   :list
   :group 'snippets
-  :doc "Maps yasnippet mode-directory names to Godot mode symbols, so an
-        existing yasnippet collection's `js-mode/` directory resolves to
-        Godot's js-mode. The car is the on-disk directory name; the cdr
-        is the Godot mode name.")
+  :doc "Normalises mode-directory names to a canonical snippet-store
+        name, so both a Godot mode whose name maps to `javascript-mode`
+        and an existing yasnippet collection's `js-mode/` directory
+        resolve to the same `js-mode` snippet set. The car is the name as
+        derived from the buffer's major mode (or a yasnippet dir name);
+        the cdr is the canonical name used to key the store. Names not in
+        the table are used unchanged.")
 
 (defface 'snippet-active-face
   :doc "The snippet field the cursor is currently on."
@@ -349,21 +350,30 @@
 ;; ----------------------------------------------------------------------
 
 (define (-current-mode-name)
-  "The current buffer's major-mode directory name (a string). Falls back
+  "The current buffer's canonical snippet-store mode name (a string).
+   Derived from the major mode's display name (`Lisp` -> `lisp-mode`,
+   `JavaScript` -> `javascript-mode`) and then normalised through
+   `*snippet-mode-aliases*` (`javascript-mode` -> `js-mode`). Falls back
    to fundamental-mode for a buffer with no major mode."
   (let ((m (buffer-major-mode)))
     (if (nil? m)
         "fundamental-mode"
-        (-mode-symbol->dir-name (get m :name "Fundamental") m))))
+        (-apply-mode-alias
+         (str (string-downcase (get m :name "Fundamental")) "-mode")))))
 
-(define (-mode-symbol->dir-name display-name mode)
-  "Map a mode to its snippet-directory name. The convention is the
-   lowercased display name with `-mode` — `Lisp` -> `lisp-mode`,
-   `Fundamental` -> `fundamental-mode`, `JavaScript` -> via the alias
-   table. We first consult `*snippet-mode-aliases*` reversed (Godot mode
-   -> dir) implicitly by trying the canonical name."
-  (let ((canonical (str (string-downcase display-name) "-mode")))
-    canonical))
+(define (-apply-mode-alias name)
+  "Normalise mode NAME through `*snippet-mode-aliases*`, returning the
+   canonical store name (NAME unchanged when no alias matches)."
+  (-assoc-string *snippet-mode-aliases* name name))
+
+(define (-assoc-string alist key default)
+  "The cdr of the first (key-string . value) pair in ALIST whose car
+   string=? KEY, or DEFAULT."
+  (cond
+    ((nil? alist) default)
+    ((and (pair? (car alist)) (string=? (car (car alist)) key))
+     (cdr (car alist)))
+    (else (-assoc-string (cdr alist) key default))))
 
 (define (snippet-lookup key)
   "The snippet record for trigger KEY in the current buffer's mode (with
