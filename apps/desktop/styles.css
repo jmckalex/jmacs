@@ -2444,17 +2444,17 @@ directory-tree-view,
   /* The base icon inside the stack shouldn't claim its own slot. */
   width: auto;
 }
-/* The badge is an inline SVG (circle-arrow-right) absolutely positioned
-   at the bottom-right of the icon stack. The SVG itself carries a dark
-   stroke "halo" path beneath a white fill, so the badge stays legible
-   against both dark folder icons and light file icons. */
+/* The badge is an inline SVG (a filled disc with a white arrow inside)
+   absolutely positioned at the bottom-right of the icon stack. CSS
+   sets `color` because the disc fill is `currentColor`; the halo ring
+   and arrow are pure white inside the SVG. */
 .directory-tree-symlink {
   position: absolute;
-  bottom: -3px;
+  bottom: -4px;
   right: -4px;
-  width: 11px;
-  height: 11px;
-  color: #fff;
+  width: 13px;
+  height: 13px;
+  color: #0a1a2e;
   pointer-events: none;
   overflow: visible;
 }
@@ -2468,7 +2468,7 @@ directory-tree-view,
   cursor: not-allowed;
 }
 .directory-tree-row[data-symlink="broken"] .directory-tree-symlink {
-  color: #ff9b9b;
+  color: #6b1212;
 }
 
 .directory-tree-name {
@@ -2611,11 +2611,11 @@ directory-columns-view,
 }
 .directory-columns-symlink {
   position: absolute;
-  bottom: -3px;
+  bottom: -4px;
   right: -4px;
-  width: 11px;
-  height: 11px;
-  color: #fff;
+  width: 13px;
+  height: 13px;
+  color: #0a1a2e;
   pointer-events: none;
   overflow: visible;
 }
@@ -2628,7 +2628,7 @@ directory-columns-view,
   cursor: not-allowed;
 }
 .directory-columns-row[data-symlink="broken"] .directory-columns-symlink {
-  color: #ff9b9b;
+  color: #6b1212;
 }
 
 .directory-columns-name {

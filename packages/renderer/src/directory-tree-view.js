@@ -31,31 +31,22 @@ const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /**
- * The symlink badge — a circle with a right-pointing arrow inside.
- * Inlined as a Font Awesome Pro path (Commercial License, Fonticons
- * Inc.) rather than fetched as a separate asset so it ships with the
- * renderer module. Rendered at ~11px at the bottom-right corner of the
- * icon stack, with a dark stroke halo so the white fill reads against
- * both dark folder icons and light file icons.
+ * A simple right-pointing arrow polygon, sized for viewBox 0 0 640 640.
+ * Hand-drawn from straight edges (rectangle shaft + triangle head) —
+ * no third-party authorship, safe under GPL distribution.
  */
-const SYMLINK_BADGE_VIEWBOX = '0 0 640 640';
-const SYMLINK_BADGE_PATH =
-  'M320 96C443.7 96 544 196.3 544 320C544 443.7 443.7 544 320 544' +
-  'C196.3 544 96 443.7 96 320C96 196.3 196.3 96 320 96zM320 576' +
-  'C461.4 576 576 461.4 576 320C576 178.6 461.4 64 320 64C178.6 64 ' +
-  '64 178.6 64 320C64 461.4 178.6 576 320 576zM411.3 331.3' +
-  'C417.5 325.1 417.5 314.9 411.3 308.7L339.3 236.7' +
-  'C333.1 230.5 322.9 230.5 316.7 236.7C310.5 242.9 310.5 253.1 316.7 259.3' +
-  'L361.4 304L240 304C231.2 304 224 311.2 224 320' +
-  'C224 328.8 231.2 336 240 336L361.4 336L316.7 380.7' +
-  'C310.5 386.9 310.5 397.1 316.7 403.3C322.9 409.5 333.1 409.5 339.3 403.3' +
-  'L411.3 331.3z';
+const SYMLINK_ARROW_PATH =
+  'M180 280 L390 280 L390 220 L500 320 L390 420 L390 360 L180 360 Z';
 
 /**
- * Build the symlink overlay badge — an SVG element ready to mount as
- * the absolutely-positioned corner stamp on an icon stack. Two paths:
- * a thick black halo first (for contrast against light icons), then
- * the white-filled badge on top.
+ * Build the symlink overlay badge — a filled dark disc with a thin
+ * white halo around it and a white right-pointing arrow inside.
+ * Mounted as the absolutely-positioned corner stamp on an icon stack,
+ * the disc gives the badge a solid opaque core so the arrow is clearly
+ * readable; the halo separates it from whatever base icon it overlays.
+ *
+ * The disc fill is `currentColor`, so consumers can theme it via CSS
+ * (defaults to a dark navy below). The halo and arrow are pure white.
  *
  * @param {Document} doc
  * @param {string} className - CSS class on the root SVG.
@@ -63,23 +54,27 @@ const SYMLINK_BADGE_PATH =
  */
 export function createSymlinkBadge(doc, className) {
   const svg = doc.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('viewBox', SYMLINK_BADGE_VIEWBOX);
+  svg.setAttribute('viewBox', '0 0 640 640');
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('class', className);
-  // Halo: a fat dark stroke under the white fill, so the badge reads
-  // against any base icon colour. Stroke is in viewBox units (640).
-  const halo = doc.createElementNS(SVG_NS, 'path');
-  halo.setAttribute('d', SYMLINK_BADGE_PATH);
-  halo.setAttribute('fill', 'none');
-  halo.setAttribute('stroke', '#000');
-  halo.setAttribute('stroke-width', '90');
-  halo.setAttribute('stroke-linejoin', 'round');
-  halo.setAttribute('stroke-linecap', 'round');
-  svg.append(halo);
-  const fill = doc.createElementNS(SVG_NS, 'path');
-  fill.setAttribute('d', SYMLINK_BADGE_PATH);
-  fill.setAttribute('fill', 'currentColor');
-  svg.append(fill);
+
+  // Filled background disc + white stroke halo. Stroke is centred on
+  // r=240, so the visible outer edge sits at r=260 — a thin bright ring.
+  const disc = doc.createElementNS(SVG_NS, 'circle');
+  disc.setAttribute('cx', '320');
+  disc.setAttribute('cy', '320');
+  disc.setAttribute('r', '240');
+  disc.setAttribute('fill', 'currentColor');
+  disc.setAttribute('stroke', '#fff');
+  disc.setAttribute('stroke-width', '40');
+  svg.append(disc);
+
+  // White arrow centred inside the disc.
+  const arrow = doc.createElementNS(SVG_NS, 'path');
+  arrow.setAttribute('d', SYMLINK_ARROW_PATH);
+  arrow.setAttribute('fill', '#fff');
+  svg.append(arrow);
+
   return svg;
 }
 
