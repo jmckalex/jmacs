@@ -245,7 +245,7 @@ function createDirectoryTreeView(container, options = {}) {
       const entryPath = joinPath(path, entry.name);
       const row = buildRow(entry, entryPath, depth);
       body.append(row);
-      rows.push({ path: entryPath, kind: entry.kind });
+      rows.push({ path: entryPath, kind: entry.kind, broken: entry.broken === true });
       if (
         entry.kind === 'directory' &&
         buffer.expanded instanceof Set &&
@@ -263,6 +263,12 @@ function createDirectoryTreeView(container, options = {}) {
     row.className = 'directory-tree-row';
     row.dataset.path = entryPath;
     row.dataset.kind = entry.kind;
+    if (entry.isSymlink) {
+      row.dataset.symlink = entry.broken ? 'broken' : 'true';
+      // Hover reveals where the link points. Broken links keep the
+      // target text so the user can see what's missing.
+      row.title = entry.target ? `→ ${entry.target}` : '→ (unreadable)';
+    }
     row.style.paddingLeft = `${depth * 18}px`;
 
     const chevron = doc.createElement('i');
@@ -286,6 +292,16 @@ function createDirectoryTreeView(container, options = {}) {
     }
     row.append(icon);
 
+    if (entry.isSymlink) {
+      // Small overlay arrow next to the file/folder icon — matches the
+      // Finder / VS Code convention. CSS styles it as a badge.
+      const link = doc.createElement('i');
+      link.className =
+        'directory-tree-symlink fa-solid fa-arrow-up-right-from-square';
+      link.setAttribute('aria-hidden', 'true');
+      row.append(link);
+    }
+
     const label = doc.createElement('span');
     label.className = 'directory-tree-name';
     label.textContent = entry.name;
@@ -295,10 +311,11 @@ function createDirectoryTreeView(container, options = {}) {
   }
 
   /** Activate a row — toggle the chevron for a folder, route to the
-   *  host's openPath for anything else. Used by both click and Enter. */
+   *  host's openPath for anything else. Used by both click and Enter.
+   *  Broken symlinks are inert: there's nothing on the other end. */
   function activateRow(idx) {
     const row = rows[idx];
-    if (!row) return;
+    if (!row || row.broken) return;
     if (row.kind === 'directory') {
       toggleExpansion(row.path);
     } else if (openPath) {
@@ -360,7 +377,7 @@ function createDirectoryTreeView(container, options = {}) {
     if (idx < 0) return;
     selectedIndex = idx;
     const rowData = rows[idx];
-    if (rowData && rowData.kind !== 'directory' && openPath) {
+    if (rowData && !rowData.broken && rowData.kind !== 'directory' && openPath) {
       openPath(rowData.path);
     }
   });

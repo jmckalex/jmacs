@@ -2426,6 +2426,31 @@ directory-tree-view,
   color: var(--fg);
 }
 
+/* Symlink badge — small arrow next to the file/folder icon. Sits in a
+   fixed-width slot so the name column stays aligned across symlink
+   and non-symlink rows. */
+.directory-tree-symlink {
+  flex: 0 0 auto;
+  width: 10px;
+  font-size: 9px;
+  color: var(--fg-dim);
+  opacity: 0.75;
+  margin-left: -4px;
+  margin-right: 2px;
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+
+/* Broken link — italicise the name and dim the row so the user can
+   tell at a glance that activating it will go nowhere. */
+.directory-tree-row[data-symlink="broken"] .directory-tree-name {
+  font-style: italic;
+  color: var(--fg-dim);
+}
+.directory-tree-row[data-symlink="broken"] {
+  cursor: not-allowed;
+}
+
 .directory-tree-name {
   flex: 1 1 auto;
   min-width: 0;
