@@ -2418,11 +2418,6 @@ directory-tree-view,
   width: 16px;
   font-size: 13px;
   text-align: center;
-  color: var(--fg-dim);
-}
-
-.directory-tree-row[data-kind="directory"] .directory-tree-icon {
-  /* Folder gets a bit more emphasis — it's clickable to expand. */
   color: var(--fg);
 }
 
@@ -2588,10 +2583,6 @@ directory-columns-view,
   width: 16px;
   font-size: 13px;
   text-align: center;
-  color: var(--fg-dim);
-}
-
-.directory-columns-row[data-kind="directory"] .directory-columns-icon {
   color: var(--fg);
 }
 
