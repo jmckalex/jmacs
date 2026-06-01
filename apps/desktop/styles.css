@@ -2418,12 +2418,52 @@ directory-tree-view,
   width: 16px;
   font-size: 13px;
   text-align: center;
-  color: var(--fg-dim);
+  color: var(--fg);
 }
 
-.directory-tree-row[data-kind="directory"] .directory-tree-icon {
-  /* Folder gets a bit more emphasis — it's clickable to expand. */
-  color: var(--fg);
+/* Symlink stack — the target's icon as the base, a tiny arrow badge
+   in the bottom-left corner (the macOS alias / Nova convention). The
+   wrapper takes the same 16px horizontal slot as a standalone
+   .directory-tree-icon so symlink and non-symlink rows align. */
+.directory-tree-icon-stack {
+  flex: 0 0 auto;
+  position: relative;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+.directory-tree-icon-stack .directory-tree-icon {
+  /* The base icon inside the stack shouldn't claim its own slot. */
+  width: auto;
+}
+/* The badge is an inline SVG (a filled disc with a white arrow inside)
+   absolutely positioned at the bottom-right of the icon stack. CSS
+   sets `color` because the disc fill is `currentColor`; the halo ring
+   and arrow are pure white inside the SVG. */
+.directory-tree-symlink {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 13px;
+  height: 13px;
+  color: #0a1a2e;
+  pointer-events: none;
+  overflow: visible;
+}
+
+/* Broken link — italicise the name and make the row inert-looking. */
+.directory-tree-row[data-symlink="broken"] .directory-tree-name {
+  font-style: italic;
+  color: var(--fg-dim);
+}
+.directory-tree-row[data-symlink="broken"] {
+  cursor: not-allowed;
+}
+.directory-tree-row[data-symlink="broken"] .directory-tree-symlink {
+  color: #6b1212;
 }
 
 .directory-tree-name {
@@ -2543,11 +2583,43 @@ directory-columns-view,
   width: 16px;
   font-size: 13px;
   text-align: center;
-  color: var(--fg-dim);
+  color: var(--fg);
 }
 
-.directory-columns-row[data-kind="directory"] .directory-columns-icon {
-  color: var(--fg);
+/* Symlink stack — same treatment as the tree-view. */
+.directory-columns-icon-stack {
+  flex: 0 0 auto;
+  position: relative;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+.directory-columns-icon-stack .directory-columns-icon {
+  width: auto;
+}
+.directory-columns-symlink {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 13px;
+  height: 13px;
+  color: #0a1a2e;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.directory-columns-row[data-symlink="broken"] .directory-columns-name {
+  font-style: italic;
+  color: var(--fg-dim);
+}
+.directory-columns-row[data-symlink="broken"] {
+  cursor: not-allowed;
+}
+.directory-columns-row[data-symlink="broken"] .directory-columns-symlink {
+  color: #6b1212;
 }
 
 .directory-columns-name {

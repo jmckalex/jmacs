@@ -5,7 +5,12 @@
  */
 
 import { app, dialog, ipcMain, shell } from 'electron';
-import { readdirSync, readFileSync as nodeReadFileSync } from 'node:fs';
+import {
+  readdirSync,
+  readFileSync as nodeReadFileSync,
+  readlinkSync,
+  statSync,
+} from 'node:fs';
 import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
@@ -258,6 +263,48 @@ async function readPathAsBuffer(path) {
   return { path, name: basename(path), content };
 }
 
+/**
+ * Describe one directory entry for the typed listings the directory
+ * views consume. For a plain entry, returns `{name, kind}`. For a
+ * symlink, follows the link with `statSync` to learn the target's
+ * kind and reads the link target with `readlinkSync`, so the view can
+ * render the row with the right icon plus an overlay arrow and show
+ * the target on hover. A dangling link comes back as
+ * `{kind: 'other', isSymlink: true, target, broken: true}`.
+ *
+ * @param {string} parentPath - Absolute directory the entry lives in.
+ * @param {import('node:fs').Dirent} entry - From `readdirSync(... withFileTypes: true)`.
+ */
+function describeEntry(parentPath, entry) {
+  if (!entry.isSymbolicLink()) {
+    return {
+      name: entry.name,
+      kind: entry.isDirectory()
+        ? 'directory'
+        : entry.isFile() ? 'file' : 'other',
+    };
+  }
+  const fullPath = join(parentPath, entry.name);
+  let target = '';
+  try { target = readlinkSync(fullPath); } catch { /* ignore */ }
+  // `statSync` follows the link; `throwIfNoEntry: false` returns
+  // undefined for a dangling link instead of throwing. A different
+  // error (EACCES on a protected target, ELOOP on a cycle) is treated
+  // as "broken enough not to render" — same outcome from the user's
+  // perspective.
+  let targetStat;
+  try {
+    targetStat = statSync(fullPath, { throwIfNoEntry: false });
+  } catch { /* fall through to broken */ }
+  if (!targetStat) {
+    return { name: entry.name, kind: 'other', isSymlink: true, target, broken: true };
+  }
+  const kind = targetStat.isDirectory()
+    ? 'directory'
+    : targetStat.isFile() ? 'file' : 'other';
+  return { name: entry.name, kind, isSymlink: true, target };
+}
+
 /** Register the `file:*` IPC handlers. Call once, after the app is ready. */
 export function registerFileHandlers() {
   // Show an open dialog and read the chosen file. An image file is
@@ -384,19 +431,16 @@ export function registerFileHandlers() {
 
   ipcMain.on('directory:list-detailed-sync', (event, payload) => {
     try {
-      const entries = readdirSync(expandTilde(payload?.path), {
-        withFileTypes: true,
-      });
+      const dirPath = expandTilde(payload?.path);
+      const entries = readdirSync(dirPath, { withFileTypes: true });
       event.returnValue = entries
         .filter((entry) => !entry.name.startsWith('.'))
-        .map((entry) => ({
-          name: entry.name,
-          kind: entry.isDirectory()
-            ? 'directory'
-            : entry.isFile() ? 'file' : 'other',
-        }))
+        .map((entry) => describeEntry(dirPath, entry))
         .sort((a, b) => {
           // Folders first, then files; within each group alphabetical.
+          // A symlink's sort group follows its target's kind — a link
+          // to a folder sorts with folders, matching what the user sees
+          // when they click it.
           if (a.kind !== b.kind) {
             if (a.kind === 'directory') return -1;
             if (b.kind === 'directory') return 1;

@@ -28,6 +28,56 @@ import { keyEventToString } from './keymap.js';
 /** A bare modifier press is not a key in its own right. */
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * A simple right-pointing arrow polygon, sized for viewBox 0 0 640 640.
+ * Hand-drawn from straight edges (rectangle shaft + triangle head) —
+ * no third-party authorship, safe under GPL distribution.
+ */
+const SYMLINK_ARROW_PATH =
+  'M180 280 L390 280 L390 220 L500 320 L390 420 L390 360 L180 360 Z';
+
+/**
+ * Build the symlink overlay badge — a filled dark disc with a thin
+ * white halo around it and a white right-pointing arrow inside.
+ * Mounted as the absolutely-positioned corner stamp on an icon stack,
+ * the disc gives the badge a solid opaque core so the arrow is clearly
+ * readable; the halo separates it from whatever base icon it overlays.
+ *
+ * The disc fill is `currentColor`, so consumers can theme it via CSS
+ * (defaults to a dark navy below). The halo and arrow are pure white.
+ *
+ * @param {Document} doc
+ * @param {string} className - CSS class on the root SVG.
+ * @returns {SVGElement}
+ */
+export function createSymlinkBadge(doc, className) {
+  const svg = doc.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 640 640');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', className);
+
+  // Filled background disc + white stroke halo. Stroke is centred on
+  // r=240, so the visible outer edge sits at r=260 — a thin bright ring.
+  const disc = doc.createElementNS(SVG_NS, 'circle');
+  disc.setAttribute('cx', '320');
+  disc.setAttribute('cy', '320');
+  disc.setAttribute('r', '240');
+  disc.setAttribute('fill', 'currentColor');
+  disc.setAttribute('stroke', '#fff');
+  disc.setAttribute('stroke-width', '40');
+  svg.append(disc);
+
+  // White arrow centred inside the disc.
+  const arrow = doc.createElementNS(SVG_NS, 'path');
+  arrow.setAttribute('d', SYMLINK_ARROW_PATH);
+  arrow.setAttribute('fill', '#fff');
+  svg.append(arrow);
+
+  return svg;
+}
+
 /** Tags whose own keyboard handling must not be hijacked. */
 const FORM_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
 
@@ -245,7 +295,7 @@ function createDirectoryTreeView(container, options = {}) {
       const entryPath = joinPath(path, entry.name);
       const row = buildRow(entry, entryPath, depth);
       body.append(row);
-      rows.push({ path: entryPath, kind: entry.kind });
+      rows.push({ path: entryPath, kind: entry.kind, broken: entry.broken === true });
       if (
         entry.kind === 'directory' &&
         buffer.expanded instanceof Set &&
@@ -263,6 +313,12 @@ function createDirectoryTreeView(container, options = {}) {
     row.className = 'directory-tree-row';
     row.dataset.path = entryPath;
     row.dataset.kind = entry.kind;
+    if (entry.isSymlink) {
+      row.dataset.symlink = entry.broken ? 'broken' : 'true';
+      // Hover reveals where the link points. Broken links keep the
+      // target text so the user can see what's missing.
+      row.title = entry.target ? `→ ${entry.target}` : '→ (unreadable)';
+    }
     row.style.paddingLeft = `${depth * 18}px`;
 
     const chevron = doc.createElement('i');
@@ -275,16 +331,29 @@ function createDirectoryTreeView(container, options = {}) {
     if (isOpen) chevron.classList.add('is-open');
     row.append(chevron);
 
-    const icon = doc.createElement('i');
-    icon.className = 'directory-tree-icon fa-solid';
-    if (entry.kind === 'directory') {
-      icon.classList.add(isOpen ? 'fa-folder-open' : 'fa-folder');
-    } else if (entry.kind === 'other') {
-      icon.classList.add('fa-file-circle-question');
+    const baseIconClass = entry.kind === 'directory'
+      ? (isOpen ? 'fa-folder-open' : 'fa-folder')
+      : entry.kind === 'other'
+        ? 'fa-file-circle-question'
+        : iconClassForFile(entry.name);
+
+    if (entry.isSymlink) {
+      // Stack: the target's icon as the base, an SVG circle-arrow
+      // badge stamped in the bottom-right corner. The wrapper takes
+      // the same horizontal slot as the standalone .directory-tree-icon,
+      // so symlink rows align with non-symlink rows.
+      const stack = doc.createElement('span');
+      stack.className = 'directory-tree-icon-stack';
+      const base = doc.createElement('i');
+      base.className = `directory-tree-icon fa-solid ${baseIconClass}`;
+      stack.append(base);
+      stack.append(createSymlinkBadge(doc, 'directory-tree-symlink'));
+      row.append(stack);
     } else {
-      icon.classList.add(iconClassForFile(entry.name));
+      const icon = doc.createElement('i');
+      icon.className = `directory-tree-icon fa-solid ${baseIconClass}`;
+      row.append(icon);
     }
-    row.append(icon);
 
     const label = doc.createElement('span');
     label.className = 'directory-tree-name';
@@ -295,10 +364,11 @@ function createDirectoryTreeView(container, options = {}) {
   }
 
   /** Activate a row — toggle the chevron for a folder, route to the
-   *  host's openPath for anything else. Used by both click and Enter. */
+   *  host's openPath for anything else. Used by both click and Enter.
+   *  Broken symlinks are inert: there's nothing on the other end. */
   function activateRow(idx) {
     const row = rows[idx];
-    if (!row) return;
+    if (!row || row.broken) return;
     if (row.kind === 'directory') {
       toggleExpansion(row.path);
     } else if (openPath) {
@@ -360,7 +430,7 @@ function createDirectoryTreeView(container, options = {}) {
     if (idx < 0) return;
     selectedIndex = idx;
     const rowData = rows[idx];
-    if (rowData && rowData.kind !== 'directory' && openPath) {
+    if (rowData && !rowData.broken && rowData.kind !== 'directory' && openPath) {
       openPath(rowData.path);
     }
   });

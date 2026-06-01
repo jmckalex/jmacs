@@ -27,7 +27,11 @@
  */
 
 import { keyEventToString } from './keymap.js';
-import { iconClassForFile, joinPath } from './directory-tree-view.js';
+import {
+  createSymlinkBadge,
+  iconClassForFile,
+  joinPath,
+} from './directory-tree-view.js';
 import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
 
 /** A bare modifier press is not a key in its own right. */
@@ -204,17 +208,30 @@ function createDirectoryColumnsView(container, options = {}) {
       row.dataset.name = entry.name;
       row.dataset.path = entryPath;
       row.dataset.kind = entry.kind;
-
-      const icon = doc.createElement('i');
-      icon.className = 'directory-columns-icon fa-solid';
-      if (entry.kind === 'directory') {
-        icon.classList.add('fa-folder');
-      } else if (entry.kind === 'other') {
-        icon.classList.add('fa-file-circle-question');
-      } else {
-        icon.classList.add(iconClassForFile(entry.name));
+      if (entry.isSymlink) {
+        row.dataset.symlink = entry.broken ? 'broken' : 'true';
+        row.title = entry.target ? `→ ${entry.target}` : '→ (unreadable)';
       }
-      row.append(icon);
+
+      const baseIconClass = entry.kind === 'directory'
+        ? 'fa-folder'
+        : entry.kind === 'other'
+          ? 'fa-file-circle-question'
+          : iconClassForFile(entry.name);
+
+      if (entry.isSymlink) {
+        const stack = doc.createElement('span');
+        stack.className = 'directory-columns-icon-stack';
+        const base = doc.createElement('i');
+        base.className = `directory-columns-icon fa-solid ${baseIconClass}`;
+        stack.append(base);
+        stack.append(createSymlinkBadge(doc, 'directory-columns-symlink'));
+        row.append(stack);
+      } else {
+        const icon = doc.createElement('i');
+        icon.className = `directory-columns-icon fa-solid ${baseIconClass}`;
+        row.append(icon);
+      }
 
       const label = doc.createElement('span');
       label.className = 'directory-columns-name';
@@ -775,6 +792,10 @@ function createDirectoryColumnsView(container, options = {}) {
     const name = row.dataset.name;
     const path = row.dataset.path;
     const kind = row.dataset.kind;
+    const broken = row.dataset.symlink === 'broken';
+
+    // Broken symlinks are inert — there is nothing on the other end.
+    if (broken) return;
 
     // Double-click on a file row opens it in its home view.
     // Folders ignore the double-click — drilling-in already happens
