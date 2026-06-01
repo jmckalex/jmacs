@@ -2575,6 +2575,28 @@ directory-columns-view,
   color: var(--fg);
 }
 
+/* Symlink badge — same treatment as the tree-view: a small arrow
+   tucked next to the file/folder icon. */
+.directory-columns-symlink {
+  flex: 0 0 auto;
+  width: 10px;
+  font-size: 9px;
+  color: var(--fg-dim);
+  opacity: 0.75;
+  margin-left: -4px;
+  margin-right: 2px;
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+
+.directory-columns-row[data-symlink="broken"] .directory-columns-name {
+  font-style: italic;
+  color: var(--fg-dim);
+}
+.directory-columns-row[data-symlink="broken"] {
+  cursor: not-allowed;
+}
+
 .directory-columns-name {
   flex: 1 1 auto;
   min-width: 0;
