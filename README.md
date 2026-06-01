@@ -59,27 +59,38 @@ worth reaching). Both bind to the same buffer API.
 
 - **Editing** — insert/delete, undo/redo, character/word/line motion,
   selection, a kill ring (cut/copy/paste), transpose, comment toggling,
-  auto-indent.
+  auto-indent, multi-cursor.
 - **Search & replace** — incremental search forward (`C-s`) and
   backward (`C-r`) with live match highlighting; `goto-line`;
-  whole-buffer replace.
-- **Multiple buffers** — a buffer list, a fuzzy-completing switcher,
-  file open/save through native dialogs, an unsaved-changes indicator.
+  whole-buffer replace; `query-replace`.
+- **Multiple buffers** — a buffer list (`buffer-menu`), a
+  fuzzy-completing switcher, file open/save through native dialogs,
+  an unsaved-changes indicator.
+- **Panes and tabs** — split panes (`C-x 2`, `C-x 3`) arranged in a
+  binary tree, tabline strips per leaf, and `C-x +` *add-pane mode*
+  for visual insertion at any splitter or border.
+- **Multiple view kinds** — beyond text: `<browser-view>` for HTTP
+  URLs, `<pdf-view>` (PDF.js with custom chrome — page nav, zoom,
+  find), `<image-view>`, and `<shell-view>` (xterm.js terminal with
+  a real pty backing).
 - **A custom Lisp runtime** — a reader, a tree-walking evaluator,
   lexical scope, closures, macros, first-class modules with hot reload,
   `try`/`catch`, ~90 primitives, and self-documentation.
 - **An embedded REPL** — evaluate Lisp against the editor's live
   buffers; `(insert! "x")` edits the visible document.
-- **Syntax highlighting** — tree-sitter for JavaScript, a tokenizer for
-  the Lisp dialect; run-based rendering.
+- **Syntax highlighting** — tree-sitter for JavaScript and a growing
+  set of grammars; a tokenizer for the Lisp dialect; run-based
+  rendering with face customisation.
 - **A real editor surface** — a line-number gutter, current-line
-  highlight, matching-bracket outline, a blinking cursor, a modeline.
+  highlight, matching-bracket outline, a blinking cursor, a modeline,
+  folding.
 - **Discoverability** — an `M-x` command palette with fuzzy matching;
-  `C-h k` / `C-h f` ask the editor what a key or command does.
+  `C-h k` / `C-h f` / `C-h F` ask the editor what a key, command, or
+  syntax face does.
 - **Hot reload** — change the editor's own Lisp and reload it live.
 
-Around 259 tests across the five packages, plus an Electron smoke test
-that drives the whole stack in a real window.
+Over a thousand unit tests across the workspace, plus an Electron
+smoke test that drives the whole stack in a real window.
 
 ## Quick start
 
@@ -201,12 +212,17 @@ buffer changes propagate to the renderer. Full detail is in
 | **L2** Buffer | `packages/buffer` | cursor, selection, editing, change events |
 | **L3** Lisp | `packages/lisp` | the Lisp runtime |
 | **L4** Renderer | `packages/renderer` | DOM projection and input |
+| — | `packages/view` | the View abstraction — a per-tab on-screen surface (wraps an L2 buffer or holds its own state) |
+| — | `packages/pane` | the Pane tree — a binary split tree; each leaf holds a view |
 | — | `packages/stdlib` | the editor's commands and keymap, in Lisp |
 
 The three layers L1 → L2 → L4 are the dataflow *spine*; L0 is the
 platform beneath, and L3 is the extension runtime that hangs off the L2
 API. The renderer never mutates the buffer — input is dispatched as
 commands, the buffer emits events, and those events drive rendering.
+Views and panes sit alongside the renderer: views are the addressable
+on-screen things (text, browser, PDF, image, shell), and panes are the
+layout tree that holds them.
 
 ## Project layout
 
@@ -219,10 +235,13 @@ jmacs/
     buffer/             L2 — the buffer / semantic model
     lisp/               L3 — the Lisp runtime
     renderer/           L4 — the DOM editor surface
+    view/               the View abstraction (text, browser, pdf, image, shell)
+    pane/               the Pane tree (binary split layout)
     stdlib/             commands and keymap, written in Lisp
   docs/
     VISION.md           why the editor exists
     ARCHITECTURE.md     how it is built
+    VIEWS.md            view / pane invariants and bug catalogue
     spec/lisp.md        the Lisp specification
     api/layer2.md       the L2 buffer API and event protocol
   plans/                the original planning documents
@@ -257,8 +276,10 @@ messages follow Conventional Commits. See
 
 **Working today.** The editor opens, edits, searches, replaces, manages
 multiple buffers, opens and saves files, highlights syntax, runs an
-embedded Lisp REPL, and hot-reloads its own standard library. It is
-usable for editing real text, including its own source.
+embedded Lisp REPL, and hot-reloads its own standard library. It splits
+into panes and tabs, and opens non-text content in dedicated view kinds
+(web pages, PDFs, images, a real shell). It is usable for editing real
+text, including its own source.
 
 **Known limitations.**
 

@@ -29,6 +29,8 @@ Each package belongs to one role. Stay inside it:
 - `packages/buffer/` — Layer 2 work
 - `packages/lisp/` — Layer 3 work
 - `packages/renderer/` — Layer 4 work
+- `packages/view/` — the View abstraction (per-tab on-screen surface)
+- `packages/pane/` — the Pane tree (binary split tree; leaves hold a view)
 - `packages/stdlib/` — Lisp standard library
 - `packages/lsp/` — LSP integration (week 4+)
 - `apps/desktop/` — Electron integration
