@@ -99,6 +99,7 @@ import { applyFaceStyles } from './face-styles.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
+import { createBookmarks } from './bookmarks.js';
 import { enterAddPaneMode } from './add-pane-mode.js';
 import { createTabline } from '@editor/renderer';
 
@@ -3337,6 +3338,22 @@ const interpreter = createInterpreter({
       return NIL;
     },
 
+    // Bookmarks — see bookmarks.js and bookmarks.lisp.
+    'bookmark-set!': (args) => {
+      const name = bookmarks.set(String(args[0]));
+      return name === null ? NIL : name;
+    },
+    'bookmark-jump!': (args) => {
+      bookmarks.jump(String(args[0]));
+      return NIL;
+    },
+    'bookmark-delete!': (args) => {
+      bookmarks.remove(String(args[0]));
+      return NIL;
+    },
+    'bookmark-names': () => arrayToList(bookmarks.names()),
+    'bookmark-count': () => bookmarks.count(),
+
     // Jukebox audio — see audio.js and jukebox-view.js. Each primitive
     // is a thin wrapper over the shared HTMLAudioElement; the panel
     // layout and playlist logic live in the jukebox view (Layer 4).
@@ -4625,6 +4642,7 @@ function applyTextMountSideEffects(view, instance) {
     }
   }
   stickyNotes.setBuffer(view.buffer);
+  bookmarks.setBuffer(view.buffer);
   watchCurrentBuffer();
   ensureMajorMode();
   if (editorView && typeof editorView.focus === 'function') editorView.focus();
@@ -5469,6 +5487,14 @@ const stickyNotes = createStickyNotes({
   onChange: () => scheduleMetadataWrite(currentTextBuffer),
 });
 stickyNotes.setBuffer(currentTextBuffer);
+
+// Bookmarks fill no overlay — they're invisible named positions backed by
+// buffer markers (see bookmarks.js), persisted through the same companion-
+// metadata pipeline the notes use.
+const bookmarks = createBookmarks({
+  onChange: () => scheduleMetadataWrite(currentTextBuffer),
+});
+bookmarks.setBuffer(currentTextBuffer);
 
 // --- Markdown preview pane ---------------------------------------------
 // A toggleable pane (markdown-preview, C-c v) that renders the current

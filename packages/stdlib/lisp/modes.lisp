@@ -119,8 +119,10 @@
   (run-mode-hook mode :on-enable))
 
 (define (choose-major-mode!)
-  "Set the current view's major mode from its (view) name."
-  (switch-major-mode (mode-for-name (view-name))))
+  "Set the current view's major mode from its (view) name, then turn on
+   the default text minor modes."
+  (switch-major-mode (mode-for-name (view-name)))
+  (activate-default-minor-modes!))
 
 (define (major-mode-name)
   "The display name of the current buffer's major mode."
@@ -199,3 +201,21 @@
 (define (minor-mode-line)
   "The active minor mode names, for the modeline."
   (join-minor-names (minor-modes)))
+
+;; --- default text minor modes ------------------------------------------
+;; Minor modes enabled automatically in every text buffer. A feature
+;; registers itself here at load time (e.g. bookmark-minor-mode); the
+;; modes are turned on when a text buffer first gets its major mode and
+;; on every session-restore re-mount, via choose-major-mode!. Non-text
+;; views never reach here (ensureMajorMode only runs for buffers).
+(define *default-text-minor-modes* (list))
+
+(define (register-default-text-minor-mode mode)
+  "Enable MODE automatically in text buffers."
+  (unless (member mode *default-text-minor-modes*)
+    (set! *default-text-minor-modes*
+          (cons mode *default-text-minor-modes*))))
+
+(define (activate-default-minor-modes!)
+  "Enable each default text minor mode in the current buffer (idempotent)."
+  (for-each enable-minor-mode *default-text-minor-modes*))
