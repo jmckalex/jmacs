@@ -31,3 +31,9 @@
    delete-rectangle; delete via M-x or the bookmark list.)"
   (interactive (string "Delete bookmark: "))
   (bookmark-delete! name))
+
+(defcommand list-bookmarks ()
+  "Open the bookmark outline for the current buffer. Bound to C-x r l.
+   Navigate with arrows, Enter to jump, Tab / Shift-Tab to indent /
+   outdent, Space to fold, r to rename, d to delete, q to close."
+  (open-bookmark-view!))

@@ -51,6 +51,7 @@ import {
   BrowserView,
   CustomizeView,
   DocView,
+  BookmarkView,
   DirectoryColumnsView,
   DirectoryTreeView,
   createEditorView,
@@ -2751,6 +2752,15 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.indexOf(view));
       return NIL;
     },
+    // Open the bookmark outline for the current text buffer (C-x r l).
+    // Edits in the view write back to that buffer's metadata sidecar.
+    'open-bookmark-view!': () => {
+      const buf = currentTextBuffer;
+      if (!buf) return NIL;
+      const view = ensureBookmarkViewForBuffer(buf);
+      switchToViewIndex(views.indexOf(view));
+      return NIL;
+    },
     // Open a shell view — a child process running the user's default
     // shell ($SHELL, falling back to /bin/zsh) with a transcript and
     // an input line. The process is spawned by the host the first time
@@ -4529,6 +4539,38 @@ directoryColumnsView.configure(configureDirectoryColumnsView());
 editorPaneElement().append(directoryColumnsView);
 directoryColumnsView.style.display = 'none';
 
+// The bookmark view — a `bookmark`-kind buffer (extras.sourceBuffer is the
+// text buffer it annotates) is shown through this outliner. Outline edits
+// write back to the source buffer's metadata.bookmarks via `persist`.
+function configureBookmarkView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    closeBuffer: () => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('kill-view');
+      } catch (error) {
+        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
+      }
+    },
+    persist: (buf) => {
+      if (buf) scheduleMetadataWrite(buf);
+    },
+    jump: (buf, name) => {
+      const idx = views.findIndex((v) => v.kind === 'text' && v.buffer === buf);
+      if (idx < 0) return;
+      switchToViewIndex(idx);
+      // The engine now tracks `buf` (markers recreated on mount), so a
+      // jump-by-name lands on the live marker, post-relocation.
+      bookmarks.jump(name);
+    },
+  };
+}
+const bookmarkView = /** @type {*} */ (document.createElement('bookmark-view'));
+bookmarkView.configure(configureBookmarkView());
+editorPaneElement().append(bookmarkView);
+bookmarkView.style.display = 'none';
+
 // The shell view — a `shell`-kind buffer is shown through this view.
 // v4: xterm.js owns the DOM. The host pipes pty bytes in and out;
 // xterm.js parses every escape sequence, draws the grid, and emits
@@ -4608,6 +4650,7 @@ const SINGLETON_VIEWS = [
   { kind: 'browser',           el: browserView,           releasesBuffer: false },
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
+  { kind: 'bookmark',          el: bookmarkView,          releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
 ];
 
@@ -4914,6 +4957,7 @@ function perKindConfigureFactory(kind) {
     case 'browser':           return configureBrowserView;
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
+    case 'bookmark':          return configureBookmarkView;
     case 'shell':             return configureShellView;
     default:                  return null;
   }
@@ -5802,6 +5846,27 @@ function ensureDirectoryColumnsViewForPath(rootPath) {
       columns: [{ path: rootPath, selected: null }],
       previewPath: null,
     },
+  });
+  views.push(view);
+  return view;
+}
+
+/** Find an existing bookmark view for SOURCEBUFFER or build a fresh one
+ *  and push it into `views`. The view edits the source buffer's
+ *  metadata.bookmarks directly; jump / persist are host callbacks. */
+function ensureBookmarkViewForBuffer(sourceBuffer) {
+  const existing = views.find(
+    (v) =>
+      v.kind === 'bookmark' &&
+      v.extras &&
+      v.extras.sourceBuffer === sourceBuffer
+  );
+  if (existing) return existing;
+  const name = sourceBuffer && sourceBuffer.name ? sourceBuffer.name : 'buffer';
+  const view = createView({
+    kind: 'bookmark',
+    name: `*Bookmarks: ${name}*`,
+    extras: { sourceBuffer },
   });
   views.push(view);
   return view;

@@ -127,7 +127,13 @@ export function createBookmarks({ onChange } = {}) {
       const old = markers.get(record.id);
       if (old) old.remove();
     } else {
-      record = { id: globalThis.crypto.randomUUID(), name, anchor, created: Date.now() };
+      record = {
+        id: globalThis.crypto.randomUUID(),
+        name,
+        anchor,
+        depth: 0,
+        created: Date.now(),
+      };
       records().push(record);
     }
     record.anchor = anchor;

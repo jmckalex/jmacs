@@ -17,7 +17,8 @@
 ;; a bookmark via M-x bookmark-delete or the bookmark list.
 (define bookmark-keymap
   {"m" 'bookmark-set
-   "b" 'bookmark-jump})
+   "b" 'bookmark-jump
+   "l" 'list-bookmarks})
 
 ;; The C-x prefix map — keys reached by first pressing C-x.
 (define c-x-keymap

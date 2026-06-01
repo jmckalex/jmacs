@@ -2358,6 +2358,148 @@ browser-view,
 
 /* Phase 3g: `<directory-tree-view>` is the custom element. */
 directory-tree-view,
+/* --- bookmark view ------------------------------------------------------ */
+
+.bookmark-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.bookmark-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+}
+
+.bookmark-title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.bookmark-subtitle {
+  color: var(--fg-dim);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.bookmark-empty {
+  padding: 24px 16px;
+  color: var(--fg-dim);
+  text-align: center;
+  font-style: italic;
+}
+
+.bookmark-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 14px 3px 8px;
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+  border-left: 2px solid transparent;
+}
+
+.bookmark-row:hover {
+  background: #ffffff0a;
+}
+
+.bookmark-row.is-selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-left-color: var(--accent);
+}
+
+/* Disclosure triangle — fixed slot so names stay aligned; rotates open.
+   Leaf rows reserve the same slot but hide the glyph. */
+.bookmark-twist {
+  flex: 0 0 auto;
+  width: 14px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  text-align: center;
+  transition: transform 0.1s ease-out;
+  cursor: pointer;
+}
+
+.bookmark-twist.is-leaf {
+  visibility: hidden;
+  cursor: default;
+}
+
+.bookmark-twist.is-open {
+  transform: rotate(90deg);
+}
+
+.bookmark-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bookmark-pos {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bookmark-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0 4px;
+  font: inherit;
+  outline: none;
+}
+
+/* Right-click context menu (rename / delete). */
+.bookmark-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 140px;
+  padding: 4px;
+  background: var(--bg-chrome, #2a2f3a);
+  border: 1px solid #ffffff1f;
+  border-radius: 6px;
+  box-shadow: 0 6px 24px #00000066;
+  font-size: 13px;
+}
+
+.bookmark-menu-item {
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bookmark-menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
 .directory-tree-view {
   display: flex;
   flex-direction: column;
