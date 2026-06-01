@@ -209,23 +209,27 @@ function createDirectoryColumnsView(container, options = {}) {
         row.title = entry.target ? `→ ${entry.target}` : '→ (unreadable)';
       }
 
-      const icon = doc.createElement('i');
-      icon.className = 'directory-columns-icon fa-solid';
-      if (entry.kind === 'directory') {
-        icon.classList.add('fa-folder');
-      } else if (entry.kind === 'other') {
-        icon.classList.add('fa-file-circle-question');
-      } else {
-        icon.classList.add(iconClassForFile(entry.name));
-      }
-      row.append(icon);
+      const baseIconClass = entry.kind === 'directory'
+        ? 'fa-folder'
+        : entry.kind === 'other'
+          ? 'fa-file-circle-question'
+          : iconClassForFile(entry.name);
 
       if (entry.isSymlink) {
-        const link = doc.createElement('i');
-        link.className =
-          'directory-columns-symlink fa-solid fa-arrow-up-right-from-square';
-        link.setAttribute('aria-hidden', 'true');
-        row.append(link);
+        const stack = doc.createElement('span');
+        stack.className = 'directory-columns-icon-stack';
+        const base = doc.createElement('i');
+        base.className = `directory-columns-icon fa-solid ${baseIconClass}`;
+        stack.append(base);
+        const badge = doc.createElement('i');
+        badge.className = 'directory-columns-symlink fa-solid fa-arrow-up-right';
+        badge.setAttribute('aria-hidden', 'true');
+        stack.append(badge);
+        row.append(stack);
+      } else {
+        const icon = doc.createElement('i');
+        icon.className = `directory-columns-icon fa-solid ${baseIconClass}`;
+        row.append(icon);
       }
 
       const label = doc.createElement('span');

@@ -281,25 +281,31 @@ function createDirectoryTreeView(container, options = {}) {
     if (isOpen) chevron.classList.add('is-open');
     row.append(chevron);
 
-    const icon = doc.createElement('i');
-    icon.className = 'directory-tree-icon fa-solid';
-    if (entry.kind === 'directory') {
-      icon.classList.add(isOpen ? 'fa-folder-open' : 'fa-folder');
-    } else if (entry.kind === 'other') {
-      icon.classList.add('fa-file-circle-question');
-    } else {
-      icon.classList.add(iconClassForFile(entry.name));
-    }
-    row.append(icon);
+    const baseIconClass = entry.kind === 'directory'
+      ? (isOpen ? 'fa-folder-open' : 'fa-folder')
+      : entry.kind === 'other'
+        ? 'fa-file-circle-question'
+        : iconClassForFile(entry.name);
 
     if (entry.isSymlink) {
-      // Small overlay arrow next to the file/folder icon — matches the
-      // Finder / VS Code convention. CSS styles it as a badge.
-      const link = doc.createElement('i');
-      link.className =
-        'directory-tree-symlink fa-solid fa-arrow-up-right-from-square';
-      link.setAttribute('aria-hidden', 'true');
-      row.append(link);
+      // Stack: the target's icon as the base, a small arrow badge
+      // positioned in the bottom-left corner. The wrapper takes the
+      // same horizontal slot as the standalone .directory-tree-icon,
+      // so symlink rows align with non-symlink rows.
+      const stack = doc.createElement('span');
+      stack.className = 'directory-tree-icon-stack';
+      const base = doc.createElement('i');
+      base.className = `directory-tree-icon fa-solid ${baseIconClass}`;
+      stack.append(base);
+      const badge = doc.createElement('i');
+      badge.className = 'directory-tree-symlink fa-solid fa-arrow-up-right';
+      badge.setAttribute('aria-hidden', 'true');
+      stack.append(badge);
+      row.append(stack);
+    } else {
+      const icon = doc.createElement('i');
+      icon.className = `directory-tree-icon fa-solid ${baseIconClass}`;
+      row.append(icon);
     }
 
     const label = doc.createElement('span');
