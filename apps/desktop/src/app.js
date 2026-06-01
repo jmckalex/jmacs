@@ -63,6 +63,7 @@ import {
   createMinibuffer,
   createReplView,
   ShellView,
+  GnuplotView,
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
@@ -240,6 +241,15 @@ let shellSessionCounter = 0;
 function nextShellSessionId() {
   shellSessionCounter += 1;
   return `shell-${shellSessionCounter}-${Date.now()}`;
+}
+
+/** Monotonic id source for gnuplot-buffer session ids. Each new gnuplot
+ *  buffer gets a fresh id; the host keys its child-process table off
+ *  this. */
+let gnuplotSessionCounter = 0;
+function nextGnuplotSessionId() {
+  gnuplotSessionCounter += 1;
+  return `gnuplot-${gnuplotSessionCounter}-${Date.now()}`;
 }
 
 /** A change to the view list or the current index. Refreshes the
@@ -2774,6 +2784,27 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.length - 1);
       return NIL;
     },
+    // Open a gnuplot buffer: a long-lived gnuplot child shown through
+    // the L4 gnuplot view (a notebook REPL — per-command cells over an
+    // input line). The process is spawned by the host on first mount and
+    // killed when the view is killed. Like `open-shell-buffer!`, each
+    // call creates a new view; switch to an existing one with C-x b.
+    'open-gnuplot-buffer!': () => {
+      const sessionId = nextGnuplotSessionId();
+      const sequence = views.filter((v) => v.kind === 'gnuplot').length + 1;
+      const name = sequence === 1 ? '*gnuplot*' : `*gnuplot*<${sequence}>`;
+      views.push(createView({
+        kind: 'gnuplot',
+        name,
+        extras: {
+          sessionId,
+          ended: false,
+          spawned: false,
+        },
+      }));
+      switchToViewIndex(views.length - 1);
+      return NIL;
+    },
     // Open a Finder-style column-view buffer rooted at `path`. Same
     // re-use semantics as `open-directory-tree!`.
     'open-directory-columns!': (args) => {
@@ -4559,6 +4590,48 @@ shellView.style.display = 'none';
 // any later theme change into it.
 themeListeners.add(() => shellView.applyTheme());
 
+// The gnuplot view — a notebook REPL over a long-lived gnuplot child.
+// Like shell-view it's a hide-not-kill custom element; the factory is
+// reused by the tabline mount path for per-tab `<gnuplot-view>`
+// instances, each with its own gnuplot session. There's no resize
+// channel (gnuplot is a plain pipe, no pty), but there is a `signal`
+// member (C-c interrupts a running plot) and chord-key forwarding via
+// `onKey` so the host keymap fires while the input is focused.
+function configureGnuplotView() {
+  return {
+    spawn: (sessionId, opts) =>
+      window.host && typeof window.host.gnuplotSpawn === 'function'
+        ? window.host.gnuplotSpawn(sessionId, opts)
+        : Promise.resolve({ ok: false, error: 'gnuplot IPC unavailable' }),
+    write: (sessionId, data) =>
+      window.host && typeof window.host.gnuplotWrite === 'function'
+        ? window.host.gnuplotWrite(sessionId, data)
+        : Promise.resolve({ ok: false }),
+    signal: (sessionId) =>
+      window.host && typeof window.host.gnuplotSignal === 'function'
+        ? window.host.gnuplotSignal(sessionId)
+        : Promise.resolve({ ok: false }),
+    kill: (sessionId) =>
+      window.host && typeof window.host.gnuplotKill === 'function'
+        ? window.host.gnuplotKill(sessionId)
+        : Promise.resolve({ ok: false }),
+    onResult: (callback) =>
+      window.host && typeof window.host.onGnuplotResult === 'function'
+        ? window.host.onGnuplotResult(callback)
+        : () => {},
+    onExit: (callback) =>
+      window.host && typeof window.host.onGnuplotExit === 'function'
+        ? window.host.onGnuplotExit(callback)
+        : () => {},
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+  };
+}
+const gnuplotView = /** @type {*} */ (document.createElement('gnuplot-view'));
+gnuplotView.configure(configureGnuplotView());
+editorPaneElement().append(gnuplotView);
+gnuplotView.style.display = 'none';
+themeListeners.add(() => gnuplotView.applyTheme());
+
 // --- kind dispatch -----------------------------------------------------
 //
 // Phase 4a: the `kindRegistry` abstraction is gone. Every view kind is
@@ -4592,6 +4665,7 @@ const SINGLETON_VIEWS = [
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
+  { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
 ];
 
 /** Side-effect bundle for mounting a text view: rebind the cursor,
@@ -4666,9 +4740,10 @@ function mountKindView(view, context) {
 }
 
 /** Dispose any kind-specific resources held by VIEW. Most kinds have
- *  none (the singleton's state is GC'd). Two exceptions:
+ *  none (the singleton's state is GC'd). Three exceptions:
  *
  *   - shell: kill the child process so it doesn't leak.
+ *   - gnuplot: kill the gnuplot child so it doesn't leak.
  *   - tabline: detach the container and release the per-tabline state.
  */
 function disposeKindView(view, context) {
@@ -4678,6 +4753,17 @@ function disposeKindView(view, context) {
     try {
       if (window.host && typeof window.host.shellKill === 'function') {
         window.host.shellKill(view.sessionId);
+      }
+    } catch {
+      // Process is already gone — nothing to do.
+    }
+    return;
+  }
+  if (view.kind === 'gnuplot') {
+    if (typeof view.sessionId !== 'string') return;
+    try {
+      if (window.host && typeof window.host.gnuplotKill === 'function') {
+        window.host.gnuplotKill(view.sessionId);
       }
     } catch {
       // Process is already gone — nothing to do.
@@ -4897,6 +4983,7 @@ function perKindConfigureFactory(kind) {
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'shell':             return configureShellView;
+    case 'gnuplot':           return configureGnuplotView;
     default:                  return null;
   }
 }
