@@ -356,6 +356,20 @@ async function editor(initialText = 'hello world', options = {}) {
       // The find-file flow seeds its prompt with the home directory;
       // the test harness pins it so directoryStub keys can match.
       'home-directory': () => '/home/test',
+      // Snippet host primitives. With no user snippet directory and no
+      // configured `*snippet-directories*`, the engine uses only its
+      // built-in starter set — exactly what most of these tests want.
+      'snippet-user-directory': () => '',
+      'read-file-text!': (args) => {
+        const text = directoryStub.files?.get(String(args[0] ?? ''));
+        return text === undefined ? NIL : text;
+      },
+      'snippet-date-string': (args) => {
+        const kind = String(args[0] ?? '');
+        if (kind === 'year') return '2026';
+        if (kind === 'datetime') return '2026-06-01 12:00';
+        return '2026-06-01';
+      },
     },
   });
   await loadStdlib(
@@ -2312,16 +2326,20 @@ test('current-theme-css-vars switches with *theme*', async () => {
 
 test('the 14 built-in token faces are registered', async () => {
   const { interpreter } = await editor();
-  const names = listToArray(interpreter.call('registered-faces'))
-    .map((s) => s.name).sort();
-  assert.deepEqual(
-    names,
-    [
-      'code', 'comment', 'constant', 'function', 'heading', 'keyword',
-      'link', 'number', 'operator', 'paren', 'string', 'tag', 'type',
-      'variable',
-    ]
+  const names = new Set(
+    listToArray(interpreter.call('registered-faces')).map((s) => s.name)
   );
+  // The 14 token faces must all be present. Other faces (e.g. the
+  // snippet decoration faces) may also be registered; this test pins the
+  // token set, not the full registry.
+  const tokenFaces = [
+    'code', 'comment', 'constant', 'function', 'heading', 'keyword',
+    'link', 'number', 'operator', 'paren', 'string', 'tag', 'type',
+    'variable',
+  ];
+  for (const face of tokenFaces) {
+    assert.ok(names.has(face), `expected token face '${face}' registered`);
+  }
 });
 
 test('defface stores per-theme defaults that face-default returns', async () => {
