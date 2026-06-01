@@ -390,4 +390,91 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.on('shell:exit', handler);
     return () => ipcRenderer.removeListener('shell:exit', handler);
   },
+
+  // --- gnuplot ---------------------------------------------------------
+  //
+  // A gnuplot view is a notebook REPL over one long-lived `gnuplot`
+  // child. The renderer generates the session id; the host frames each
+  // submitted command, routes the plot to a temp SVG, and sends one
+  // `gnuplot:result` per submission. A missing gnuplot binary surfaces
+  // via `onGnuplotExit` with `notInstalled: true`.
+
+  /**
+   * Spawn a long-lived gnuplot process for `sessionId`. Returns
+   * `{ ok }` immediately; a missing gnuplot binary surfaces later
+   * through `onGnuplotExit` with `notInstalled: true` rather than as a
+   * spawn error (spawn doesn't throw for ENOENT).
+   *
+   * @param {string} sessionId
+   * @param {object} [options]
+   * @param {string} [options.cwd]
+   * @returns {Promise<{ ok: boolean, pid?: number, error?: string }>}
+   */
+  gnuplotSpawn: (sessionId, options = {}) =>
+    ipcRenderer.invoke('gnuplot:spawn', { sessionId, cwd: options.cwd }),
+
+  /**
+   * Submit a gnuplot command. The host appends the protocol epilogue
+   * and the newline; the caller passes just the command line(s). The
+   * result arrives asynchronously via `onGnuplotResult`.
+   *
+   * @param {string} sessionId
+   * @param {string} data
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  gnuplotWrite: (sessionId, data) =>
+    ipcRenderer.invoke('gnuplot:write', { sessionId, data }),
+
+  /**
+   * Send SIGINT to a gnuplot session — interrupts a long-running plot.
+   *
+   * @param {string} sessionId
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  gnuplotSignal: (sessionId) =>
+    ipcRenderer.invoke('gnuplot:signal', { sessionId }),
+
+  /**
+   * Terminate a gnuplot session — kill the child and forget the entry.
+   * Called from the kill-view path when a gnuplot buffer is removed.
+   *
+   * @param {string} sessionId
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  gnuplotKill: (sessionId) =>
+    ipcRenderer.invoke('gnuplot:kill', { sessionId }),
+
+  /**
+   * Register a handler for per-submission gnuplot results. Fires once
+   * per submitted command with
+   * `{ sessionId, id, svg, text, error }` — `svg` is the plot markup
+   * (or null if the command produced no plot), `text` is stdout output,
+   * `error` is stderr output.
+   *
+   * Returns an unsubscribe function.
+   *
+   * @param {(payload: { sessionId: string, id: number, svg: string|null, text: string, error: string }) => void} callback
+   * @returns {() => void}
+   */
+  onGnuplotResult: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('gnuplot:result', handler);
+    return () => ipcRenderer.removeListener('gnuplot:result', handler);
+  },
+
+  /**
+   * Register a handler for gnuplot process exits and not-installed
+   * events. Payload carries `{ sessionId, code, signal }` and, when
+   * gnuplot isn't installed, `{ notInstalled: true, message }`.
+   *
+   * Returns an unsubscribe function.
+   *
+   * @param {(payload: { sessionId: string, code: number|null, signal: string|null, notInstalled?: boolean, message?: string }) => void} callback
+   * @returns {() => void}
+   */
+  onGnuplotExit: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('gnuplot:exit', handler);
+    return () => ipcRenderer.removeListener('gnuplot:exit', handler);
+  },
 });
