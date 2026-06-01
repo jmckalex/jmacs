@@ -585,6 +585,17 @@ test('C-x C-c is bound to quit-editor', async () => {
   assert.equal(press(interpreter, 'C-c'), true);
 });
 
+test('gnuplot.lisp defines the gnuplot command bound to C-c g', async () => {
+  const { interpreter } = await editor();
+  // The command exists (gnuplot.lisp loaded and parsed).
+  assert.equal(interpreter.evaluate('(procedure? gnuplot)'), true);
+  assert.equal(typeof interpreter.evaluate('(doc gnuplot)'), 'string');
+  // C-c g resolves to the gnuplot command symbol in the c-c prefix map.
+  assert.ok(
+    interpreter.evaluate('(eq? (get c-c-keymap "g") (quote gnuplot))')
+  );
+});
+
 test('C-x C-f opens the find-file completing minibuffer', async () => {
   const { interpreter, completingPrompts } = await editor();
   press(interpreter, 'C-x');

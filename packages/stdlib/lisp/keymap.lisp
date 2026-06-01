@@ -85,7 +85,10 @@
    ;; Multi-cursor (see multi-cursor.lisp). C-c d adds the next match;
    ;; C-c D selects all matches of the current word/region.
    "d"         'add-cursor-next
-   "D"         'select-all-matches})
+   "D"         'select-all-matches
+   ;; C-c g opens a gnuplot buffer (see gnuplot.lisp). Bound by symbol;
+   ;; the command resolves at dispatch time, so load order doesn't matter.
+   "g"         'gnuplot})
 
 ;; The root keymap.
 (define the-keymap
