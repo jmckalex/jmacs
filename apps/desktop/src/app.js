@@ -34,6 +34,7 @@ import {
   SPLIT_VERTICAL,
 } from '@editor/pane';
 import {
+  applyProcedure,
   arrayToList,
   cons,
   createInterpreter,
@@ -42,6 +43,7 @@ import {
   listToArray,
   NIL,
   sym,
+  Sym,
   writeString,
 } from '@editor/lisp';
 import {
@@ -1276,39 +1278,87 @@ function killViewAtIndex(target) {
   }
   views.splice(target, 1);
   // Strip VICTIM from any tabline-view that contains it. Record the
-  // ones that went empty so we can auto-collapse their panes.
+  // ones that went empty so we can auto-collapse their panes (Q6).
   const emptied = removeViewFromAllTablines(victim);
-  // Auto-collapse emptied panes. Skip the root-pane case (we patch
-  // it below with a scratch view rather than collapsing — the editor
-  // always has at least one pane).
-  for (const { leaf } of emptied) {
+  // For each emptied tabline: if it's not the root pane, collapse its
+  // pane out of the tree. If it IS the root pane, the editor always
+  // has at least one pane and that pane needs at least one tab — so
+  // substitute a fresh `*scratch*` directly into the tabline (Q6).
+  // (Pre-ring-fence, the kill loop relied on `switchToViewIndex`
+  // pulling foreign views in from `views[]` to repopulate an emptied
+  // tabline. With the ring-fence, no foreign views can enter; the
+  // scratch substitution has to be explicit on this path.)
+  for (const { tlv, leaf } of emptied) {
     if (leaf !== rootPane) {
       deletePaneInTree(leaf);
+      continue;
     }
-  }
-  if (views.length === 0) {
     const scratch = createView({
       kind: 'text',
       buffer: createBuffer('', { name: '*scratch*' }),
     });
     views.push(scratch);
-    // If the root pane's tabline went empty, install scratch as its
-    // sole tab so the strip still shows something.
-    if (
-      rootTablineView &&
-      rootTablineView.tabs.length === 0
-    ) {
-      rootTablineView.tabs.push(scratch);
-      rootTablineView.active = 0;
-    }
+    tlv.tabs.push(scratch);
+    tlv.active = 0;
+    // Re-mount the active child: removeTabInTabline ran with an empty
+    // tabs list and was a no-op for the mount, so the scratch needs an
+    // explicit mount pass to become the visible tab.
+    mountTablineActiveChild(tlv);
+  }
+  if (views.length === 0) {
+    // No tabline emptied (or the leaf-direct case) and the global
+    // view list ran out. Add a scratch so `currentViewIndex` has
+    // something to land on. (The tabline-substitution above already
+    // handled the empty-root-tabline case.)
+    const scratch = createView({
+      kind: 'text',
+      buffer: createBuffer('', { name: '*scratch*' }),
+    });
+    views.push(scratch);
     currentViewIndex = -1;
     switchToViewIndex(0);
     return;
   }
   if (wasCurrent) {
-    const next = Math.min(target, views.length - 1);
-    currentViewIndex = -1; // force switchToViewIndex to re-mount.
-    switchToViewIndex(next);
+    // Ring-fence the tabline: if the focused leaf still holds a
+    // tabline-view with remaining tabs, `removeTabInTabline` (called
+    // from `removeViewFromAllTablines` above) already re-anchored the
+    // tabline's active index to a surviving sibling and mounted that
+    // tab. Reaching into the global `views[]` for a "next" pick would
+    // pull a view that belongs to some other pane into this tabline
+    // — exactly the leak this guard prevents.
+    //
+    // For an auto-collapsed pane (tabline emptied → deletePaneInTree
+    // fired), focus has already followed to the sibling and the
+    // sibling's view was mounted; we only need a modeline sync.
+    //
+    // The only case that still goes through the global-next pick is a
+    // leaf-direct kill — the focused leaf's view IS the dead victim,
+    // and there's no per-container list to consult, so the legacy
+    // global-pick behaviour stands.
+    const focused = currentPane();
+    if (focused
+        && focused.kind === 'leaf'
+        && isTablineView(focused.view)
+        && focused.view.tabs.length > 0) {
+      const activeChild = tablineActiveChild(focused.view);
+      currentViewIndex = activeChild !== null
+        ? views.indexOf(activeChild)
+        : -1;
+      updateModeline();
+      notifyViewsChanged();
+    } else if (focused
+               && focused.kind === 'leaf'
+               && focused.view !== victim) {
+      // Auto-collapsed: deletePaneInTree pointed focus at a sibling
+      // and set currentViewIndex inside its branch. Just refresh.
+      updateModeline();
+      notifyViewsChanged();
+    } else {
+      const next = Math.min(target, views.length - 1);
+      currentViewIndex = -1; // force switchToViewIndex to re-mount.
+      switchToViewIndex(next);
+    }
   } else if (target < currentViewIndex) {
     currentViewIndex -= 1;
     updateModeline();
@@ -1641,8 +1691,8 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
     return finalise();
   }
   // A PDF file is served over the media:// protocol (Chromium streams
-  // it with Range support, same as audio/video). The webview inside
-  // <pdf-view> takes the URL and the built-in PDF plugin renders.
+  // it with Range support, same as audio/video). PDF.js inside
+  // <pdf-view> fetches the URL and renders each page to a canvas.
   if (result.pdfKind === true) {
     views.push(createView({
       kind: 'pdf',
@@ -2778,6 +2828,98 @@ const interpreter = createInterpreter({
       views.push(view);
       notifyViewsChanged();
       switchToViewIndex(views.length - 1);
+      return NIL;
+    },
+    // `(pdf-extract-text [callback])` — extract the text of the
+    // currently-visible page of the PDF view in the focused pane.
+    //
+    // PDF.js's text-content API is async, so the primitive returns nil
+    // immediately. CALLBACK is invoked with `(text page-num)` once the
+    // text is ready; without a callback the text is appended to the
+    // REPL. CALLBACK can be a symbol naming a global procedure or a
+    // procedure value (a lambda).
+    //
+    // Errors land in the REPL — the asynchrony means we can't raise
+    // them through the original primitive call. Synchronous validation
+    // (no PDF in focus, document still loading) does throw.
+    'pdf-extract-text': (args) => {
+      const view = session.currentView;
+      if (!view || view.kind !== 'pdf') {
+        throw new LispError(
+          'pdf-extract-text: no PDF view in the focused pane'
+        );
+      }
+      const el = elementForViewInstance(view);
+      if (el === null || typeof el.extractPageText !== 'function') {
+        throw new LispError('pdf-extract-text: PDF view not mounted');
+      }
+      const pageNum = el.currentPageNumber;
+      if (pageNum < 1) {
+        throw new LispError('pdf-extract-text: document still loading');
+      }
+      const cb = args[0];
+      el.extractPageText(pageNum).then((text) => {
+        if (cb !== undefined && cb !== NIL) {
+          deliverLispCallback(cb, [text, pageNum], 'pdf-extract-text');
+          return;
+        }
+        repl.appendOutput(text);
+        if (text.length > 0 && !text.endsWith('\n')) repl.appendOutput('\n');
+      }).catch((error) => {
+        repl.appendError(
+          `pdf-extract-text: ${error.message ?? error}`
+        );
+      });
+      return NIL;
+    },
+    // `(pdf-extract-page-range M N [callback])` — extract pages M
+    // through N (inclusive, 1-based) of the focused-pane PDF view.
+    // CALLBACK is invoked with `(texts m last)` once every page is
+    // resolved, where `texts` is a list of strings; without a callback,
+    // the pages are appended to the REPL with `--- page N ---`
+    // separators. Range bounds are clamped to the document; an
+    // inverted range raises.
+    'pdf-extract-page-range': (args) => {
+      const m = Math.floor(Number(args[0]));
+      const n = Math.floor(Number(args[1]));
+      if (!Number.isFinite(m) || !Number.isFinite(n) || m < 1 || n < m) {
+        throw new LispError(
+          `pdf-extract-page-range: invalid range (${args[0]} .. ${args[1]})`
+        );
+      }
+      const view = session.currentView;
+      if (!view || view.kind !== 'pdf') {
+        throw new LispError(
+          'pdf-extract-page-range: no PDF view in the focused pane'
+        );
+      }
+      const el = elementForViewInstance(view);
+      if (el === null || typeof el.extractPageRangeText !== 'function') {
+        throw new LispError('pdf-extract-page-range: PDF view not mounted');
+      }
+      const pageCount = el.pageCount;
+      if (pageCount < 1) {
+        throw new LispError(
+          'pdf-extract-page-range: document still loading'
+        );
+      }
+      const last = Math.min(n, pageCount);
+      const cb = args[2];
+      el.extractPageRangeText(m, last).then((texts) => {
+        if (cb !== undefined && cb !== NIL) {
+          deliverLispCallback(
+            cb, [arrayToList(texts), m, last], 'pdf-extract-page-range'
+          );
+          return;
+        }
+        for (let i = 0; i < texts.length; i += 1) {
+          repl.appendOutput(`--- page ${m + i} ---\n${texts[i]}\n`);
+        }
+      }).catch((error) => {
+        repl.appendError(
+          `pdf-extract-page-range: ${error.message ?? error}`
+        );
+      });
       return NIL;
     },
     // Documentation: open the fuzzy-search minibuffer with the
@@ -4198,18 +4340,17 @@ videoView.configure(configureVideoView());
 editorPaneElement().append(videoView);
 videoView.style.display = 'none';
 
-// The pdf view — the view a `pdf`-kind buffer is shown through. v1 is
-// an Electron <webview> in a `persist:pdf-views` partition; Chromium's
-// built-in PDF plugin does the rendering (zoom / find / fit / print /
-// download all come for free via its own toolbar). The factory is
-// reused by `perKindConfigureFactory` so each pdf tab gets its own
-// `<pdf-view>` element — Chromium keeps scroll position / zoom per
-// webview, so per-instance is the only way tabbed PDFs survive a tab
-// switch with their state intact.
+// The pdf view — the view a `pdf`-kind buffer is shown through.
+// PDF.js renders each page to a canvas with an overlapping text layer;
+// the chrome (page nav, zoom, find) is custom so it theme-matches
+// and the keymap can stay live (chord keys forward through onKey).
+// The factory is reused by `perKindConfigureFactory` so each pdf tab
+// gets its own `<pdf-view>` element — the per-instance `PDFDocumentProxy`,
+// scroll position, and zoom are how tabbed PDFs survive a tab switch
+// with their state intact.
 function configurePdfView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    partition: 'persist:pdf-views',
   };
 }
 const pdfView = /** @type {*} */ (document.createElement('pdf-view'));
@@ -4871,6 +5012,39 @@ function mountTablineActiveChild(tablineView) {
 function singletonElementForKind(kind) {
   const entry = SINGLETON_VIEWS.find((s) => s.kind === kind);
   return entry ? entry.el : null;
+}
+
+/** The per-view-instance DOM element backing a view object. A View in a
+ *  tabline owns its element via `editorByChild`; a leaf-direct
+ *  non-text view falls back to the per-kind singleton. Returns null
+ *  when neither is mounted yet. Used by the Lisp surface to reach the
+ *  current view's element-side API (e.g. pdf-extract-text). */
+function elementForViewInstance(view) {
+  if (!view || typeof view.kind !== 'string') return null;
+  for (const state of tablineStateByView.values()) {
+    const el = state.editorByChild.get(view);
+    if (el !== undefined) return el;
+  }
+  return singletonElementForKind(view.kind);
+}
+
+/** Invoke a Lisp callback with the given JS-side arguments. The
+ *  callback may be either a symbol (looked up as a global procedure
+ *  name) or a procedure value (lambda / primitive); errors raised
+ *  during the call land in the REPL under PRIMNAME so an async result
+ *  delivery can't crash the surrounding event. */
+function deliverLispCallback(callback, callArgs, primName) {
+  try {
+    if (callback instanceof Sym) {
+      interpreter.call(callback.name, ...callArgs);
+    } else {
+      applyProcedure(callback, callArgs);
+    }
+  } catch (error) {
+    repl.appendError(
+      `${primName} callback: ${error.lispMessage ?? error.message ?? error}`
+    );
+  }
 }
 
 /** Activate tab INDEX in TABLINEVIEW, refresh the strip, and re-mount
