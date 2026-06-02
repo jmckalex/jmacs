@@ -17,6 +17,7 @@ import {
   SPLIT_HORIZONTAL,
   SPLIT_VERTICAL,
 } from './pane.js';
+import { leafPanes } from './tree.js';
 
 /**
  * Compute the rect for every leaf in PANE within HOST_RECT.
@@ -165,4 +166,67 @@ function walkEdges(pane, rect, edges, thickness) {
 
   walkEdges(pane.first, firstRect, edges, thickness);
   walkEdges(pane.second, secondRect, edges, thickness);
+}
+
+/**
+ * Order PANE's leaves by the clockwise-spiral numbering used for the
+ * `swap-views` / `permute-views` pane badges (see
+ * `plans/PANES-SWAP-PERMUTE.md`):
+ *
+ *   A ray from the window centre starts pointing at the window's
+ *   top-left corner and sweeps clockwise. Each leaf is numbered as the
+ *   ray crosses its **top-left corner**. When several collinear corners
+ *   are crossed at once, the **furthest-out** is numbered first (so the
+ *   numbering spirals inward). Ties on both angle and radius break on
+ *   `leaf.id`, so the order is total and deterministic.
+ *
+ * The top-left leaf's corner is `(left, top)` — exactly on the start
+ * ray — so it normalises to angle 0 and is always slot 0 (badge #1).
+ *
+ * Angles use screen coordinates (y points down), so `atan2(dy, dx)`
+ * increases clockwise on screen, matching the sweep direction.
+ *
+ * @param {import('./pane.js').Pane} pane
+ * @param {{left?: number, top?: number, width: number, height: number}} hostRect
+ *   Same shape `computeRects` takes; `left`/`top` default to 0.
+ * @returns {{
+ *   ordered: import('./pane.js').LeafPane[],
+ *   indexByLeaf: Map<import('./pane.js').LeafPane, number>
+ * }}
+ *   `ordered[i]` is the leaf at 0-based slot `i` (on-screen badge
+ *   `i + 1`); `indexByLeaf` is the inverse lookup.
+ */
+export function spiralOrder(pane, hostRect) {
+  const left = Math.round(hostRect.left ?? 0);
+  const top = Math.round(hostRect.top ?? 0);
+  const width = Math.max(0, Math.round(hostRect.width ?? 0));
+  const height = Math.max(0, Math.round(hostRect.height ?? 0));
+  const rects = computeRects(pane, { left, top, width, height });
+
+  const cx = left + width / 2;
+  const cy = top + height / 2;
+  // Ray from the centre toward the window's top-left corner.
+  const startAngle = Math.atan2(top - cy, left - cx);
+  const TWO_PI = Math.PI * 2;
+
+  const items = leafPanes(pane).map((leaf) => {
+    const rect = rects.get(leaf.id) ?? { left: cx, top: cy };
+    const dx = rect.left - cx;
+    const dy = rect.top - cy;
+    let angle = Math.atan2(dy, dx) - startAngle; // clockwise from start
+    angle = ((angle % TWO_PI) + TWO_PI) % TWO_PI; // normalise → [0, 2π)
+    const radius = Math.hypot(dx, dy);
+    return { leaf, angle, radius };
+  });
+
+  items.sort((a, b) => {
+    if (a.angle !== b.angle) return a.angle - b.angle; // sweep clockwise
+    if (a.radius !== b.radius) return b.radius - a.radius; // furthest-out first
+    // Total-order nano-tiebreak for two identical corner points.
+    return a.leaf.id < b.leaf.id ? -1 : a.leaf.id > b.leaf.id ? 1 : 0;
+  });
+
+  const ordered = items.map((it) => it.leaf);
+  const indexByLeaf = new Map(ordered.map((leaf, i) => [leaf, i]));
+  return { ordered, indexByLeaf };
 }

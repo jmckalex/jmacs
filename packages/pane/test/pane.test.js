@@ -22,6 +22,9 @@ import {
   paneInDirection,
   insertAtSplit,
   insertAtRootBorder,
+  swapLeaves,
+  permuteLeaves,
+  spiralOrder,
   PANE_KIND_LEAF,
   PANE_KIND_SPLIT,
   SPLIT_HORIZONTAL,
@@ -805,4 +808,188 @@ test('insertAtRootBorder: rejects non-leaf new pane', () => {
     second: createLeafPane(),
   });
   assert.throws(() => insertAtRootBorder(a, 'right', sp), /leaf/);
+});
+
+// --- swapLeaves / permuteLeaves / spiralOrder -------------------------------
+//
+// The "move the frames, not the contents" operations for swap-views /
+// permute-views (plans/PANES-SWAP-PERMUTE.md). They relocate leaf nodes
+// between tree positions while leaving the split structure (ids, ratios,
+// orientations) untouched and reusing the leaf objects by identity.
+
+/** A 2x2 grid with stable ids: columns are vertical splits, joined by an
+ *  outer horizontal split. Corners (in a square host): TL(0,0) TR(W/2,0)
+ *  BL(0,H/2) BR(W/2,H/2). */
+function grid2x2() {
+  const tl = createLeafPane({ id: 'TL', view: { kind: 'text', name: 'tl' } });
+  const tr = createLeafPane({ id: 'TR', view: { kind: 'text', name: 'tr' } });
+  const bl = createLeafPane({ id: 'BL', view: { kind: 'text', name: 'bl' } });
+  const br = createLeafPane({ id: 'BR', view: { kind: 'text', name: 'br' } });
+  const leftCol = createSplitPane({
+    orientation: SPLIT_VERTICAL, ratio: 0.5, first: tl, second: bl,
+  });
+  const rightCol = createSplitPane({
+    orientation: SPLIT_VERTICAL, ratio: 0.5, first: tr, second: br,
+  });
+  const root = createSplitPane({
+    orientation: SPLIT_HORIZONTAL, ratio: 0.5, first: leftCol, second: rightCol,
+  });
+  return { root, tl, tr, bl, br, leftCol, rightCol };
+}
+
+/** Every split node's {id, orientation, ratio}, in DFS order. */
+function collectSplits(pane, out = []) {
+  if (isSplitPane(pane)) {
+    out.push({ id: pane.id, orientation: pane.orientation, ratio: pane.ratio });
+    collectSplits(pane.first, out);
+    collectSplits(pane.second, out);
+  }
+  return out;
+}
+
+const HOST = { width: 100, height: 100 };
+
+test('spiralOrder: single leaf is slot 0', () => {
+  const leaf = createLeafPane({ id: 'only', view: {} });
+  const { ordered, indexByLeaf } = spiralOrder(leaf, { width: 80, height: 60 });
+  assert.deepEqual(ordered.map((l) => l.id), ['only']);
+  assert.equal(indexByLeaf.get(leaf), 0);
+});
+
+test('spiralOrder: horizontal split numbers left then right', () => {
+  const l = createLeafPane({ id: 'L', view: {} });
+  const r = createLeafPane({ id: 'R', view: {} });
+  const root = createSplitPane({
+    orientation: SPLIT_HORIZONTAL, ratio: 0.5, first: l, second: r,
+  });
+  assert.deepEqual(spiralOrder(root, HOST).ordered.map((x) => x.id), ['L', 'R']);
+});
+
+test('spiralOrder: vertical split numbers top then bottom', () => {
+  const t = createLeafPane({ id: 'T', view: {} });
+  const b = createLeafPane({ id: 'B', view: {} });
+  const root = createSplitPane({
+    orientation: SPLIT_VERTICAL, ratio: 0.5, first: t, second: b,
+  });
+  assert.deepEqual(spiralOrder(root, HOST).ordered.map((x) => x.id), ['T', 'B']);
+});
+
+test('spiralOrder: 2x2 grid numbers clockwise TL→TR→BR→BL', () => {
+  const { root } = grid2x2();
+  assert.deepEqual(
+    spiralOrder(root, HOST).ordered.map((l) => l.id),
+    ['TL', 'TR', 'BR', 'BL']
+  );
+});
+
+test('spiralOrder: tall-left + stacked-right numbers L, TR, BR', () => {
+  const left = createLeafPane({ id: 'L', view: {} });
+  const tr = createLeafPane({ id: 'TR', view: {} });
+  const br = createLeafPane({ id: 'BR', view: {} });
+  const rightCol = createSplitPane({
+    orientation: SPLIT_VERTICAL, ratio: 0.5, first: tr, second: br,
+  });
+  const root = createSplitPane({
+    orientation: SPLIT_HORIZONTAL, ratio: 0.5, first: left, second: rightCol,
+  });
+  assert.deepEqual(
+    spiralOrder(root, HOST).ordered.map((x) => x.id),
+    ['L', 'TR', 'BR']
+  );
+});
+
+test('swapLeaves: the two leaves exchange rects; structure + identity kept', () => {
+  const { root, tl, br } = grid2x2();
+  const before = computeRects(root, HOST);
+  const swapped = swapLeaves(root, tl, br);
+  const after = computeRects(swapped, HOST);
+  // TL now occupies BR's old rect and vice versa…
+  assert.deepEqual(after.get('TL'), before.get('BR'));
+  assert.deepEqual(after.get('BR'), before.get('TL'));
+  // …untouched leaves keep their rects.
+  assert.deepEqual(after.get('TR'), before.get('TR'));
+  assert.deepEqual(after.get('BL'), before.get('BL'));
+  // Leaf node objects are reused by identity.
+  assert.equal(findPaneById(swapped, 'TL'), tl);
+  assert.equal(findPaneById(swapped, 'BR'), br);
+  assert.equal(leafCount(swapped), 4);
+});
+
+test('swapLeaves: split structure (ids, ratios, orientations) is preserved', () => {
+  const { root, tl, tr } = grid2x2();
+  const swapped = swapLeaves(root, tl, tr);
+  assert.deepEqual(collectSplits(swapped), collectSplits(root));
+});
+
+test('swapLeaves: swapping a leaf with itself returns the tree unchanged', () => {
+  const { root, tl } = grid2x2();
+  assert.equal(swapLeaves(root, tl, tl), root);
+});
+
+test('swapLeaves: throws when a leaf is not in the tree', () => {
+  const { root, tl } = grid2x2();
+  const alien = createLeafPane({ id: 'alien', view: {} });
+  assert.throws(() => swapLeaves(root, tl, alien), /not in tree/);
+});
+
+test('swapLeaves: throws when a target is not a leaf', () => {
+  const { root, tl, leftCol } = grid2x2();
+  assert.throws(() => swapLeaves(root, tl, leftCol), /leaf/);
+});
+
+test('permuteLeaves: identity permutation preserves leaf positions', () => {
+  const { root } = grid2x2();
+  const leaves = leafPanes(root);
+  const slotByLeaf = new Map(leaves.map((l, i) => [l, i]));
+  const result = permuteLeaves(root, slotByLeaf, leaves.slice());
+  assert.deepEqual(
+    leafPanes(result).map((l) => l.id),
+    leaves.map((l) => l.id)
+  );
+});
+
+test('permuteLeaves: a transposition equals swapLeaves', () => {
+  const a = grid2x2();
+  const b = grid2x2();
+  const leaves = leafPanes(a.root);
+  const slotByLeaf = new Map(leaves.map((l, i) => [l, i]));
+  const occ = leaves.slice();
+  occ[slotByLeaf.get(a.tl)] = a.br;
+  occ[slotByLeaf.get(a.br)] = a.tl;
+  const viaPermute = computeRects(permuteLeaves(a.root, slotByLeaf, occ), HOST);
+  const viaSwap = computeRects(swapLeaves(b.root, b.tl, b.br), HOST);
+  for (const id of ['TL', 'TR', 'BL', 'BR']) {
+    assert.deepEqual(viaPermute.get(id), viaSwap.get(id));
+  }
+});
+
+test('permuteLeaves: applying a permutation then its inverse restores it', () => {
+  const { root } = grid2x2();
+  const host = { width: 120, height: 90 };
+  const before = computeRects(root, host);
+  const leaves = leafPanes(root);
+  const slotByLeaf = new Map(leaves.map((l, i) => [l, i]));
+  // Rotate: position p receives the next leaf.
+  const occ = leaves.map((_, i) => leaves[(i + 1) % leaves.length]);
+  const rotated = permuteLeaves(root, slotByLeaf, occ);
+  // Invert against the rotated tree's own positions.
+  const slotByLeaf2 = new Map(leafPanes(rotated).map((l, i) => [l, i]));
+  const restored = permuteLeaves(rotated, slotByLeaf2, leaves.slice());
+  const after = computeRects(restored, host);
+  for (const id of ['TL', 'TR', 'BL', 'BR']) {
+    assert.deepEqual(after.get(id), before.get(id));
+  }
+});
+
+test('permuteLeaves: throws when occupant table is not a bijection', () => {
+  const { root } = grid2x2();
+  const leaves = leafPanes(root);
+  const slotByLeaf = new Map(leaves.map((l, i) => [l, i]));
+  const dup = leaves.slice();
+  dup[1] = dup[0]; // duplicate one leaf, drop another
+  assert.throws(() => permuteLeaves(root, slotByLeaf, dup), /bijection/);
+  assert.throws(
+    () => permuteLeaves(root, slotByLeaf, leaves.slice(0, 3)),
+    /exactly once/
+  );
 });
