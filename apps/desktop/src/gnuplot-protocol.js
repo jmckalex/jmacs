@@ -28,7 +28,9 @@
  *  defining the border / tics / labels / grid colours and the line
  *  palette. `dark` reads well on the dark editor view; `light` is
  *  print-friendly (white page, saturated lines) for dropping a plot into
- *  an article or PDF. Add a theme by extending this map. Line colours use
+ *  an article or PDF; `mono` is greyscale + dash patterns for black-and-
+ *  white print, where colour can't be relied on to separate the lines.
+ *  Add a theme by extending this map. Line colours use
  *  `set linetype` redefinitions (not the deprecated `set style increment`)
  *  so a bare `plot sin(x), cos(x)` picks up the palette. */
 export const THEMES = {
@@ -72,6 +74,33 @@ export const THEMES = {
       "set linetype 4 lc rgb '#d62728' lw 2 pt 7",
       "set linetype 5 lc rgb '#9467bd' lw 2 pt 7",
       "set linetype 6 lc rgb '#8c564b' lw 2 pt 7",
+    ].join('\n'),
+  },
+  mono: {
+    label: 'Mono (B&W)',
+    background: '#ffffff',
+    block: [
+      "set border lc rgb '#000000'",
+      "set xtics textcolor rgb '#000000'",
+      "set ytics textcolor rgb '#000000'",
+      "set ztics textcolor rgb '#000000'",
+      "set title  textcolor rgb '#000000'",
+      "set xlabel textcolor rgb '#000000'",
+      "set ylabel textcolor rgb '#000000'",
+      "set key textcolor rgb '#000000'",
+      "set grid lc rgb '#cccccc' lw 1",
+      // For black-and-white print, colour alone won't separate the lines, so
+      // each linetype is a distinct (greyscale shade + dash pattern + point
+      // type) triple. The dash pattern is what actually survives a B&W print;
+      // the shade and point type help on screen and at low ink. Explicit
+      // dashtype tuples (not numeric ids) keep the pattern stable across
+      // gnuplot versions and terminals.
+      "set linetype 1 lc rgb '#000000' dt 1              lw 2 pt 7",
+      "set linetype 2 lc rgb '#000000' dt (16,8)         lw 2 pt 5",
+      "set linetype 3 lc rgb '#444444' dt (3,6)          lw 2 pt 9",
+      "set linetype 4 lc rgb '#444444' dt (16,6,3,6)     lw 2 pt 11",
+      "set linetype 5 lc rgb '#888888' dt (26,8)         lw 2 pt 13",
+      "set linetype 6 lc rgb '#888888' dt (16,6,3,6,3,6) lw 2.5 pt 2",
     ].join('\n'),
   },
 };

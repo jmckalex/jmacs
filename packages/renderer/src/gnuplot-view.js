@@ -110,11 +110,16 @@ function createGnuplotView(container, options = {}) {
   headerLabel.className = 'gnuplot-header-label';
   headerLabel.textContent = 'gnuplot';
   // Theme selector — changes the colours of *subsequent* plots only (the
-  // SVG output, not the view chrome). 'Light' is for print/PDF export.
+  // SVG output, not the view chrome). 'Light' is for print/PDF export;
+  // 'Mono' is greyscale + dashed lines for black-and-white print.
   const themeSelect = doc.createElement('select');
   themeSelect.className = 'gnuplot-theme-select';
   themeSelect.title = 'Plot theme — applies to new plots (re-run to refresh)';
-  for (const [value, label] of [['dark', 'Dark'], ['light', 'Light (print)']]) {
+  for (const [value, label] of [
+    ['dark', 'Dark'],
+    ['light', 'Light (print)'],
+    ['mono', 'Mono (B&W)'],
+  ]) {
     const opt = doc.createElement('option');
     opt.value = value;
     opt.textContent = label;

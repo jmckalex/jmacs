@@ -72,6 +72,24 @@ test('buildSubmission honours a theme — light uses the light palette + white b
   assert.ok(!prog.includes('#1e2228')); // not the dark background
 });
 
+test('buildSubmission honours a theme — mono is greyscale + dashed for B&W print', () => {
+  const prog = buildSubmission({
+    userText: 'plot sin(x)',
+    tmpFile: '/tmp/cell.svg',
+    sentinelOut: 'OUT_TOKEN',
+    sentinelErr: 'ERR_TOKEN',
+    theme: 'mono',
+  });
+  assert.match(prog, /background rgb '#ffffff'/); // white page
+  // Lines separate by dash pattern, not colour — every linetype is greyscale
+  // (r=g=b) and the non-first ones carry an explicit dashtype tuple.
+  assert.match(prog, /set linetype 1 lc rgb '#000000' dt 1/);
+  assert.match(prog, /set linetype 2 lc rgb '#000000' dt \(16,8\)/);
+  assert.match(prog, /set linetype 3 lc rgb '#444444' dt \(3,6\)/);
+  // No saturated palette colours leak in from the other themes.
+  assert.ok(!prog.includes('#1f77b4') && !prog.includes('#5aa9e6'));
+});
+
 test('buildSubmission honours custom width/height', () => {
   const prog = buildSubmission({
     userText: 'plot x',
