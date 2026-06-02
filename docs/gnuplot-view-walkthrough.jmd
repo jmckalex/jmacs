@@ -1,0 +1,1773 @@
+Title: Building a gnuplot-view for jmacs
+Author: J. McKenzie Alexander
+Date: 2026-06-02
+Lang: en
+Highlight theme: atom-one-dark
+Body classes: gpwt
+---
+
+:::HTML
+<header class="masthead">
+<p class="eyebrow">jmacs · view-kind walkthrough</p>
+:::
+
+# Building a gnuplot-view for jmacs
+
+:::HTML
+<p class="subtitle">An interactive gnuplot notebook, embedded in the editor: one long-lived child process per view, a framed SVG submission protocol, and a custom element that turns each command into a themed, inline cell.</p>
+<div class="meta"><span>L4 renderer view kind</span><span>main-process host + IPC bridge</span><span>pure protocol &amp; history modules</span></div>
+</header>
+:::
+
+<!--TOC-->
+
+## Motivation: an interactive gnuplot notebook inside jmacs
+
+gnuplot is one of those tools you reach for in bursts. You want to see
+`sin(x)`, then `sin(x), cos(x)`, then the same thing with a title and a tighter
+`yrange` — each command a small refinement of the last. The natural shape of
+that work is a /conversation/: a running session you talk to, where earlier
+commands stay on screen and the next one builds on them. A one-shot
+`gnuplot script.gp` invocation throws that context away every time. An
+interactive terminal session keeps the process alive, but on most platforms
+gnuplot's interactive plot lands in a separate OS window that floats outside
+the editor, has its own dark/light assumptions, and disappears the moment you
+plot again.
+
+What we build in this walkthrough is the middle path: a *gnuplot view* that
+lives /inside/ jmacs as a notebook REPL. One long-lived `gnuplot` child process
+per view; an input line at the bottom; and a scrolling transcript above it where
+every command you submit becomes a *cell* holding its result — an inline SVG
+plot, text output from `print`/`show`, or a red error. The plot renders /in the
+document/, themed to match the editor, and it stays put. Your previous five
+plots scroll up; you can read your whole exploratory session at a glance.
+
+This is what a real, themed plot looks like rendered inline — a bare
+`plot sin(x), cos(x)` picking up the two leading palette colours:
+
+:::HTML
+<figure class="plot" data-plot="sincos"></figure>
+<figcaption>A genuine gnuplot 6 plot at <code>set samples 2000</code>, dark background baked into the SVG, lines drawn in the project's <code>set linetype</code> palette (blue <code>#5aa9e6</code>, orange <code>#f78c6b</code>).</figcaption>
+:::
+
+The Lisp command that opens one is the entire user-facing surface:
+
+```lisp
+(defcommand gnuplot ()
+  "Open a fresh gnuplot buffer.
+
+   The buffer that appears is shown through the L4 gnuplot view (not the
+   text editor view) — a notebook REPL. Type a gnuplot command at the
+   input line and press Enter to run it; the plot (or text / error
+   output) appears as a cell above. Use Up and Down to recall previous
+   commands; press C-c to interrupt a long-running plot.
+
+   Each call to `gnuplot` creates a new buffer — switch back to an open
+   one by name with `C-x b`. If gnuplot is not installed, the view shows
+   install instructions (`brew install gnuplot`)."
+  (open-gnuplot-buffer!))
+```
+
+You invoke it with `M-x gnuplot` or the chord `C-c g`, bound by /symbol/ in the
+`c-c-keymap` so the command resolves at dispatch time and load order never
+matters:
+
+```lisp
+(define c-c-keymap
+  {"tab"       'toggle-fold-at-point
+   ;; ...
+   ;; C-c g opens a gnuplot buffer (see gnuplot.lisp). Bound by symbol;
+   ;; the command resolves at dispatch time, so load order doesn't matter.
+   "g"         'gnuplot})
+```
+
+### Why a notebook, and why these specific design choices
+
+The view deliberately mirrors jmacs's existing *shell view* — same
+factory-plus-custom-element shape, same hide-not-kill lifecycle — but the
+/interaction model/ is different, and that difference drives every decision in
+the rest of this walkthrough. A shell streams raw pty bytes into an xterm grid;
+there's no notion of "one command, one result." gnuplot in pipe mode /does/ have
+that notion: you feed it a command, it draws a plot and maybe prints some text.
+So instead of a terminal grid, the view is built from three parts:
+
+```js
+// instead of an xterm grid the view holds:
+//   - a header (chart icon + buffer name),
+//   - a scrollable transcript of per-command cells, and
+//   - a bottom input line with its own command history (Up/Down).
+```
+
+Three consequences fall out of choosing a notebook over a terminal, and each is
+a section of this walkthrough:
+
+- *The host must frame each submission, not just forward bytes.* A terminal can
+  pipe stdout through verbatim; a notebook needs to know when one command's
+  output ends and the next begins. The host wraps every user command in a
+  preamble/epilogue that routes the plot to a temp SVG file and emits two
+  sentinel tokens, and a submission only /completes/ when both sentinels arrive.
+- *The view needs its own command history.* The shell view keeps no history —
+  the child shell's readline owns Up/Down. A bare `<input>` has no readline, so
+  we implement a small history ring ourselves (and unit-test it without a DOM).
+- *The plot must be themed by us, not by gnuplot's defaults.* gnuplot's stock
+  SVG is white-on-white. To sit in a dark editor it has to be re-themed at render
+  time — a dark background baked into the SVG, axis and grid colours, and a
+  redefined line-type palette so a bare `plot sin(x), cos(x)` picks up two
+  distinct, legible colours.
+
+### A tour of the finished view
+
+:::HTML
+<figure>
+<svg viewBox="0 0 640 420" role="img" aria-label="Anatomy of the gnuplot view: header, transcript of cells, and input line">
+  <rect x="8" y="8" width="624" height="404" rx="8" fill="#252b33" stroke="#3a434d"/>
+  <rect x="8" y="8" width="624" height="34" rx="8" fill="#2e3842"/>
+  <circle cx="30" cy="25" r="6" fill="#5aa9e6"/>
+  <text x="46" y="30" fill="#e6e9ed" font-family="sans-serif" font-size="13">*gnuplot*</text>
+  <text x="560" y="30" fill="#7f8c98" font-family="sans-serif" font-size="11">header</text>
+  <text x="556" y="62" fill="#7f8c98" font-family="sans-serif" font-size="11">transcript</text>
+  <rect x="24" y="56" width="592" height="150" rx="6" fill="#1f242b" stroke="#3a434d"/>
+  <text x="40" y="78" fill="#5aa9e6" font-family="monospace" font-size="12">gnuplot&gt;</text>
+  <text x="108" y="78" fill="#cfd6de" font-family="monospace" font-size="12">plot sin(x), cos(x)</text>
+  <rect x="40" y="90" width="560" height="104" rx="4" fill="#1e2228"/>
+  <path d="M56,142 C140,90 180,90 248,142 C320,194 360,194 440,142 C520,90 540,90 600,128" fill="none" stroke="#5aa9e6" stroke-width="2"/>
+  <path d="M56,128 C120,90 160,90 232,142 C312,194 352,194 424,142 C504,90 544,90 600,150" fill="none" stroke="#f78c6b" stroke-width="2"/>
+  <rect x="24" y="218" width="592" height="48" rx="6" fill="#1f242b" stroke="#5a2a32"/>
+  <text x="40" y="240" fill="#5aa9e6" font-family="monospace" font-size="12">gnuplot&gt;</text>
+  <text x="108" y="240" fill="#cfd6de" font-family="monospace" font-size="12">plto sin(x)</text>
+  <text x="40" y="258" fill="#ff6b8a" font-family="monospace" font-size="11">undefined command: "plto"</text>
+  <rect x="24" y="278" width="592" height="48" rx="6" fill="#1f242b" stroke="#3a434d"/>
+  <text x="40" y="300" fill="#5aa9e6" font-family="monospace" font-size="12">gnuplot&gt;</text>
+  <text x="108" y="300" fill="#cfd6de" font-family="monospace" font-size="12">print "hi"</text>
+  <text x="40" y="318" fill="#e6e9ed" font-family="monospace" font-size="11">hi</text>
+  <text x="540" y="356" fill="#7f8c98" font-family="sans-serif" font-size="11">input line</text>
+  <rect x="24" y="362" width="592" height="36" rx="6" fill="#1e2228" stroke="#3a434d"/>
+  <text x="40" y="385" fill="#5aa9e6" font-family="monospace" font-size="13">gnuplot&gt;</text>
+  <rect x="110" y="372" width="2" height="16" fill="#cfd6de"/>
+</svg>
+<figcaption>The three regions, top to bottom: a header with a chart icon and the buffer name, the scrolling transcript of result cells, and the persistent input line. The first cell is a plot; the second an error (red); the third text-only output.</figcaption>
+</figure>
+:::
+
+A *cell* is created the moment you press Enter — echoed with its command and
+marked /pending/ — and keyed by the submission id the host will later echo back.
+When the result arrives, it's matched to that cell and filled in. This
+echo-then-fill pattern is what makes the session feel responsive even though the
+plot render is asynchronous:
+
+```js
+function runCommand(cmd) {
+  if (!buffer || buffer.ended) return;
+
+  const cell = doc.createElement('div');
+  cell.className = 'gnuplot-cell gnuplot-cell-pending';
+  // ...echo the command into the cell...
+  transcriptEl.append(cell);
+  scrollToEnd();
+
+  // We track our own parallel counter so we can key the cell before the
+  // result returns.
+  buffer.submitCounter = (buffer.submitCounter ?? 0) + 1;
+  const id = buffer.submitCounter;
+  cellsById.set(id, cell);
+
+  if (writeFn) {
+    writeFn(buffer.sessionId, cmd).catch(() => {
+      markCellError(cell, '[gnuplot write failed]');
+    });
+  }
+}
+```
+
+A cell can end up as any one of four shapes — a plot, text, an error, or a dim
+`(no output)` acknowledgement for a bare `set` — and the same result handler
+decides which, based purely on what the host sent back in the
+`{ svg, text, error }` payload. The plot SVG is inlined (not wrapped in an
+`<img>` data-URL) so it /scales with the cell/; it's trusted-local markup with
+`<script>` already stripped main-side:
+
+```js
+// The SVG is trusted-local (generated by the host's own gnuplot,
+// scripts already stripped main-side); inline it so it scales with the cell.
+if (typeof payload.svg === 'string' && payload.svg !== '') {
+  const plot = doc.createElement('div');
+  plot.className = 'gnuplot-cell-plot';
+  plot.innerHTML = payload.svg;
+  cell.append(plot);
+}
+```
+
+### When gnuplot isn't installed
+
+A view that hard-crashes when its backing tool is missing is a bad citizen in an
+editor people open every day. gnuplot is frequently /not/ installed, and
+`spawn('gnuplot', …)` doesn't even throw synchronously for a missing binary — it
+emits an async `error` event with `code === 'ENOENT'` a tick later. The host
+turns that into a distinct exit signal, and the view replaces its transcript with
+a friendly install card and disables the input rather than showing a stack trace:
+
+```js
+if (payload.notInstalled) {
+  transcriptEl.replaceChildren();
+  cellsById.clear();
+  const card = doc.createElement('div');
+  card.className = 'gnuplot-not-installed';
+  // ...chart icon + message...
+  msg.textContent = payload.message ?? DEFAULT_NOT_INSTALLED;
+  card.append(icon, msg);
+  transcriptEl.append(card);
+  input.disabled = true;
+  input.placeholder = 'gnuplot unavailable';
+  return;
+}
+```
+
+> *Note.* The plot-rendering paths are unit-tested as pure logic (26 cases
+> covering quoting, submission framing, the SVG-has-plot heuristic, the stream
+> demux, and the history ring), and the protocol has been smoke-tested against a
+> real gnuplot 6 — which is also what produced the genuine plots embedded
+> throughout this page.
+
+## Architecture: what a "view kind" actually is in jmacs
+
+Before any gnuplot code, you have to understand the shape of the hole you are
+filling. In jmacs, the editor does not have one canvas that everything draws
+into. It has a family of /view kinds/ — text, image, pdf, browser, jukebox,
+directory-tree, shell — and a new kind is not a special case bolted onto the
+editor core. It is an assembly of four small, independently-replaceable parts
+that already have well-defined seams. The discipline of the build was to add
+/nothing new/ to the framework: every part of gnuplot slots into a socket that
+the shell view defined first.
+
+A view kind, concretely, is these four things:
+
+1. *A renderer custom element* (L4) — a `<gnuplot-view>` DOM element that owns
+   the on-screen surface and the user interaction. It knows nothing about
+   subprocesses or IPC channel names; it is handed a bag of callbacks.
+2. *A host configure-factory* — a plain function in `app.js`
+   (`configureGnuplotView()`) that fills that bag of callbacks with the real IPC
+   bindings, so the element can be tested with fakes and run with the real bridge.
+3. *A main-process host* — the privileged side (`gnuplot.js`) that owns the
+   actual `gnuplot` child process, the filesystem, and the dangerous powers the
+   renderer is not allowed to touch.
+4. *A Lisp surface* — the `(gnuplot)` command, a mode label, and a keybinding,
+   which is how the kind becomes reachable to the user without hard-coding it
+   into the host.
+
+### The big picture
+
+:::HTML
+<figure>
+<svg viewBox="0 0 760 430" role="img" aria-label="Architecture diagram: Lisp command, renderer custom element, configure factory, context bridge, and main-process host.">
+  <defs>
+    <marker id="ar1" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#7f8c98"/>
+    </marker>
+  </defs>
+  <rect x="20" y="20" width="430" height="390" rx="10" fill="none" stroke="#3a434d" stroke-dasharray="6 4"/>
+  <text x="34" y="44" fill="#aeb6c0" font-size="13" font-family="sans-serif">Renderer process (sandboxed)</text>
+  <rect x="44" y="62" width="180" height="56" rx="8" fill="#262c34" stroke="#5aa9e6"/>
+  <text x="134" y="86" text-anchor="middle" fill="#e6e9ed" font-size="13" font-family="sans-serif">(gnuplot) command</text>
+  <text x="134" y="104" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">C-c g · stdlib Lisp</text>
+  <rect x="44" y="146" width="180" height="50" rx="8" fill="#262c34" stroke="#3a434d"/>
+  <text x="134" y="167" text-anchor="middle" fill="#e6e9ed" font-size="12" font-family="sans-serif">open-gnuplot-buffer!</text>
+  <text x="134" y="184" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">mints sessionId, view record</text>
+  <rect x="44" y="224" width="180" height="64" rx="8" fill="#262c34" stroke="#7ed491"/>
+  <text x="134" y="248" text-anchor="middle" fill="#e6e9ed" font-size="13" font-family="sans-serif">&lt;gnuplot-view&gt;</text>
+  <text x="134" y="266" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">transcript · cells · input</text>
+  <text x="134" y="281" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">L4 renderer</text>
+  <rect x="256" y="224" width="172" height="64" rx="8" fill="#262c34" stroke="#c792ea"/>
+  <text x="342" y="248" text-anchor="middle" fill="#e6e9ed" font-size="12" font-family="sans-serif">configureGnuplotView()</text>
+  <text x="342" y="266" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">binds callbacks →</text>
+  <text x="342" y="281" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">window.host.gnuplot*</text>
+  <rect x="44" y="320" width="384" height="64" rx="8" fill="#1e2228" stroke="#f78c6b"/>
+  <text x="236" y="346" text-anchor="middle" fill="#e6e9ed" font-size="13" font-family="sans-serif">preload.mjs — context bridge</text>
+  <text x="236" y="365" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">gnuplotSpawn/Write/Signal/Kill · onGnuplotResult/Exit</text>
+  <rect x="480" y="20" width="260" height="390" rx="10" fill="none" stroke="#3a434d" stroke-dasharray="6 4"/>
+  <text x="494" y="44" fill="#aeb6c0" font-size="13" font-family="sans-serif">Main process (Node)</text>
+  <rect x="504" y="146" width="210" height="100" rx="8" fill="#262c34" stroke="#ffcb6b"/>
+  <text x="609" y="170" text-anchor="middle" fill="#e6e9ed" font-size="13" font-family="sans-serif">gnuplot.js host</text>
+  <text x="609" y="190" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">sessions Map · framing</text>
+  <text x="609" y="206" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">temp-SVG capture</text>
+  <text x="609" y="222" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">ENOENT degradation</text>
+  <rect x="504" y="290" width="210" height="60" rx="8" fill="#1e2228" stroke="#ff6b8a"/>
+  <text x="609" y="316" text-anchor="middle" fill="#e6e9ed" font-size="13" font-family="sans-serif">gnuplot child</text>
+  <text x="609" y="334" text-anchor="middle" fill="#8b95a1" font-size="11" font-family="sans-serif">one per session · pipe mode</text>
+  <line x1="134" y1="118" x2="134" y2="144" stroke="#7f8c98" marker-end="url(#ar1)"/>
+  <line x1="134" y1="196" x2="134" y2="222" stroke="#7f8c98" marker-end="url(#ar1)"/>
+  <line x1="256" y1="256" x2="226" y2="256" stroke="#7f8c98" marker-end="url(#ar1)"/>
+  <line x1="236" y1="288" x2="236" y2="318" stroke="#7f8c98" marker-end="url(#ar1)"/>
+  <line x1="428" y1="352" x2="502" y2="280" stroke="#7f8c98" marker-end="url(#ar1)"/>
+  <line x1="609" y1="246" x2="609" y2="288" stroke="#7f8c98" marker-end="url(#ar1)"/>
+</svg>
+<figcaption>The data path: a Lisp command mints a session and a view record; the custom element renders it; the configure-factory supplies IPC bindings; the context bridge is the only door to the main process; the host owns the child. Each box is replaceable without touching its neighbours.</figcaption>
+</figure>
+:::
+
+### The renderer custom element — and why it owns no powers
+
+The view is an HTML custom element, `<gnuplot-view>`, that extends a shared
+`ViewElement` base. The element is deliberately ignorant: it never imports
+`electron`, never names an IPC channel, never spawns anything. It is handed a
+plain options object of callbacks at `configure()` time and it calls those. That
+is the whole contract.
+
+```js
+export class GnuplotView extends ViewElement {
+  configure(options) {
+    if (this._inner !== null) {
+      throw new Error('GnuplotView.configure: cannot reconfigure after mount');
+    }
+    this._options = options ?? null;
+  }
+
+  get kind() {
+    return 'gnuplot';
+  }
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createGnuplotView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) this._inner.setBuffer(this._pendingBuffer);
+  }
+}
+```
+
+Why split `configure()` (set the callbacks) from `connectedCallback()` (build
+the DOM)? Because a jmacs view is created once and /mounted many times/. The
+element is constructed and configured eagerly at startup; the actual inner DOM
+and history are not built until the element is first connected to the document.
+`<shell-view>` has the identical configure-then-build split, for the same reason.
+
+> *The load-bearing rule.* The renderer is sandboxed and untrusted. It cannot
+> read files, cannot spawn processes, cannot run the SVG terminal. Everything
+> dangerous lives behind the context bridge in the host. The view's only
+> privilege is "ask the host to do something, and render what comes back." This
+> is the Electron security model, and every view kind obeys it.
+
+### The configure-factory — the IPC seam made explicit
+
+The element wants callbacks; the host exposes IPC. The /configure-factory/ is
+the one place those two are married. It is a plain function in `app.js` that
+returns the options bag, wiring each renderer callback to the corresponding
+`window.host.*` bridge method, with a graceful fallback when the bridge is absent:
+
+```js
+function configureGnuplotView() {
+  return {
+    spawn: (sessionId, opts) =>
+      window.host && typeof window.host.gnuplotSpawn === 'function'
+        ? window.host.gnuplotSpawn(sessionId, opts)
+        : Promise.resolve({ ok: false, error: 'gnuplot IPC unavailable' }),
+    write: (sessionId, data) =>
+      window.host && typeof window.host.gnuplotWrite === 'function'
+        ? window.host.gnuplotWrite(sessionId, data)
+        : Promise.resolve({ ok: false }),
+    signal: (sessionId) => /* … gnuplotSignal … */,
+    kill:   (sessionId) => /* … gnuplotKill … */,
+    onResult: (callback) => /* … onGnuplotResult … */,
+    onExit:   (callback) => /* … onGnuplotExit … */,
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+  };
+}
+```
+
+Put this next to `configureShellView()` and the shapes are almost identical —
+both return `spawn / write / kill / onExit` plus a stream callback. Two
+differences carry the whole design distinction between a terminal and a notebook:
+
+- The shell returns `onData` — a /raw byte stream/; the gnuplot view returns
+  `onResult` — a /structured, one-per-submission/ payload
+  `{ id, svg, text, error }`. That single rename is the difference between
+  "stream a pty into an xterm grid" and "submit a command, get back one cell."
+- The shell carries `resize` (cols/rows for the pty); gnuplot has no pty, so
+  there is no resize. Instead it carries `signal` (C-c → SIGINT to interrupt a
+  running plot) and `onKey`, a chord-forwarding callback so the host keymap
+  (C-x b to switch buffers) still fires while a plain `<input>` has focus.
+
+### The IPC split and the context bridge
+
+The renderer and the main process never share memory; they speak only over
+Electron IPC, and the renderer can only reach IPC through the /context bridge/
+set up in `preload.mjs`. The bridge exposes a small, named, audited surface — not
+`ipcRenderer` itself. The gnuplot surface is six methods, split into two
+directions:
+
+```js
+// renderer → host (invoke/return):
+gnuplotSpawn:  (sessionId, options = {}) =>
+  ipcRenderer.invoke('gnuplot:spawn', { sessionId, cwd: options.cwd }),
+gnuplotWrite:  (sessionId, data) =>
+  ipcRenderer.invoke('gnuplot:write', { sessionId, data }),
+gnuplotSignal: (sessionId) =>
+  ipcRenderer.invoke('gnuplot:signal', { sessionId }),
+gnuplotKill:   (sessionId) =>
+  ipcRenderer.invoke('gnuplot:kill', { sessionId }),
+
+// host → renderer (subscribe, returns an unsubscribe fn):
+onGnuplotResult: (callback) => {
+  const handler = (_event, payload) => callback(payload);
+  ipcRenderer.on('gnuplot:result', handler);
+  return () => ipcRenderer.removeListener('gnuplot:result', handler);
+},
+onGnuplotExit:   (callback) => { /* same shape on 'gnuplot:exit' */ },
+```
+
+The asymmetry is deliberate and is the core of the IPC model. /Renderer → host
+calls are request/response/ (`invoke` ⇒ `ipcMain.handle`): "spawn this," "submit
+this command," "kill this" — each a one-shot with an acknowledgement. /Host →
+renderer calls are an event stream/ (`webContents.send` ⇒ `ipcRenderer.on`):
+results and exits arrive whenever the host has them. The `on*` subscriptions
+return an /unsubscribe/ function — the view calls it on `destroy()`, which is how
+the IPC listeners do not leak across the view's many mount/unmount cycles.
+
+Each `write` is fire-and-forget at the IPC layer: it returns `{ ok }`
+immediately, and the actual plot comes back asynchronously on `gnuplot:result`,
+matched to its cell by the submission `id` the host echoes. This is why the view
+keeps a `cellsById` Map. The shell uses the identical invoke/send split
+(`shell:spawn/write/kill` inbound, `shell:data/exit` outbound); gnuplot did not
+invent a new IPC discipline, only new channel names and a richer payload.
+
+### Lifecycle: spawn, mount, kill — and "hide, don't kill"
+
+A gnuplot view has three distinct lifecycles that are easy to conflate and must
+be kept separate. Getting this wrong is the bug family that `docs/VIEWS.md` exists
+to prevent.
+
+*Spawn is lazy and tied to the first mount, not to creation.* The Lisp command
+only creates a /buffer record/ with a fresh session id and `spawned: false`; no
+process exists yet. The child is spawned the first time the view actually shows
+the buffer:
+
+```js
+function setBuffer(next) {
+  buffer = next;
+  // …
+  if (!buffer.spawned && !buffer.ended && spawnFn) {
+    buffer.spawned = true;            // latch so we spawn exactly once
+    spawnFn(buffer.sessionId, { cwd: buffer.cwd })
+      .then((result) => { /* on !ok, mark ended + disable input */ })
+      .catch(() => { /* host's onExit surfaces not-installed/error */ });
+  }
+}
+```
+
+The `spawned` flag lives on the buffer record, not the element, precisely because
+the element is re-mounted as the user moves the tab around. If the latch lived on
+the element it would re-fire and spawn a second process.
+
+*Mount-moves hide, they do not kill.* When a tab is dragged out of view, jmacs
+moves the element to an off-screen "warehouse," firing `disconnectedCallback`.
+For a gnuplot view that callback is /intentionally empty/:
+
+```js
+/** Hide-not-kill — the gnuplot process stays alive; only the DOM-tree
+ *  position changed. A later `connectedCallback` finds `_inner` set
+ *  and is a no-op. */
+disconnectedCallback() {
+  /* intentionally empty */
+}
+```
+
+This is the single most important invariant the shell view established and the
+gnuplot view inherits: /a view's process and transcript outlive its on-screen
+position/. If you reaped the process on `disconnectedCallback` you would get a
+one-line "fix" that silently kills the user's session every time they look at
+another tab.
+
+*Only an explicit kill reaps the child.* The process dies when the /buffer/ is
+killed (C-x k), which routes through one central place, `disposeKindView` in
+`app.js`:
+
+```js
+function disposeKindView(view, context) {
+  if (!view || typeof view.kind !== 'string') return;
+  if (view.kind === 'shell')   { /* … window.host.shellKill(view.sessionId) … */ }
+  if (view.kind === 'gnuplot') {
+    if (typeof view.sessionId !== 'string') return;
+    try {
+      if (window.host && typeof window.host.gnuplotKill === 'function') {
+        window.host.gnuplotKill(view.sessionId);
+      }
+    } catch { /* Process is already gone — nothing to do. */ }
+    return;
+  }
+  // …
+}
+```
+
+Keeping "free renderer memory" and "reap the OS process" as two different actions
+is what lets hide-not-kill work at all: unmounting must be cheap and reversible,
+while killing is final and explicit.
+
+### The Lisp surface: how the kind becomes reachable
+
+A view kind that the host can build is useless until a user can summon it, and in
+jmacs that last mile is Lisp, not host code. A `gnuplot-mode` with the label
+`"Gnuplot"` exists only to give the modeline something to show — its own comment
+notes the buffer "is shown through the L4 gnuplot view … not the editor view, so
+no text-buffer keymap applies." That a whole view kind is reachable, and
+rebindable, entirely from the stdlib Lisp — without recompiling the host — is the
+editor's extension story working as designed.
+
+## Driving gnuplot: the long-lived pipe and the SVG protocol
+
+By this point we have a `gnuplot`-kind buffer and a custom element to display it.
+What we do /not/ yet have is the hard part: a reliable conversation with an
+external program that was never designed to be embedded. gnuplot in pipe mode is
+a line-oriented REPL. It reads commands from stdin, writes `print` output to
+stdout and diagnostics to stderr, and — crucially — gives you /no framing/. There
+is no "command N finished" marker, no exit code per command, no length prefix on
+its output. It just talks until it has nothing more to say, and "nothing more to
+say" looks exactly like "still thinking."
+
+The job of this layer is to impose a request/response discipline on a stream that
+has none, and to do it in a way that is testable without gnuplot even being
+installed. That last constraint shaped the whole design, so it is worth stating
+the split up front:
+
+- *`apps/desktop/src/gnuplot-protocol.js`* — pure, DOM-free, Electron-free logic:
+  how to /frame/ a submission, how to decide an SVG is real, and the stream
+  demultiplexer that recognises when a submission is done. This is what the unit
+  tests exercise.
+- *`apps/desktop/src/gnuplot.js`* — the host glue: one long-lived child per
+  session, temp-file capture, IPC, and the not-installed degradation path. It
+  /uses/ the protocol module but contains none of its logic.
+
+### One process per session, strictly serialized
+
+Each gnuplot buffer owns exactly one gnuplot child, spawned lazily on first mount
+and kept alive for the life of the buffer. We do /not/ spawn a fresh gnuplot per
+command. That matters: gnuplot is stateful — `set`s, variables, and ranges
+accumulate across commands — and a notebook REPL is only useful if
+`set xrange [0:10]` still applies to the next `plot`.
+
+```js
+const child = spawn('gnuplot', [], {
+  cwd,
+  env,
+  stdio: ['pipe', 'pipe', 'pipe'],
+  detached: false,
+});
+```
+
+Two details in the spawn are load-bearing. First, `stdio` is three plain pipes —
+no pseudo-terminal. gnuplot's pipe mode wants stdin/stdout/stderr, not a tty, so
+unlike the shell view there is no PTY, no resize channel, and no native addon to
+build. Second, the environment:
+
+```js
+// GNUTERM=unknown stops gnuplot trying to auto-select an interactive
+// terminal (qt/x11/wxt) at startup. We set the real `svg` terminal per
+// submission anyway.
+const env = { ...process.env, GNUTERM: 'unknown' };
+```
+
+Submissions are strictly serialized. A user command is not written to stdin
+directly; it is pushed onto a per-session queue and a `pump` only starts the next
+job when the demultiplexer is idle:
+
+```js
+function pump(sessionId) {
+  const entry = sessions.get(sessionId);
+  if (!entry || entry.dead) return;
+  if (entry.demux.busy || entry.queue.length === 0) return;
+  // ... shift the job, build sentinels, set demux.begin({ onComplete }),
+  //     write the framed program to gnuplot's stdin ...
+}
+```
+
+Serialization is what makes the framing tractable. Because gnuplot processes its
+stdin in order and we never have two submissions in flight, every byte that
+arrives on stdout/stderr unambiguously belongs to the one active submission.
+
+### The submission frame: preamble, user text, sentinel epilogue
+
+Here is the heart of the protocol. Each user command is wrapped by
+`buildSubmission` into a small gnuplot program. The user's text goes in /verbatim
+and unmodified/ in the middle; everything around it is framing we control.
+
+```js
+export function buildSubmission(params) {
+  const {
+    userText, tmpFile, sentinelOut, sentinelErr,
+    width = 720, height = 480, theme = DEFAULT_THEME,
+  } = params;
+  const t = themeFor(theme);
+  const term =
+    `set terminal svg size ${width},${height} dynamic enhanced ` +
+    `background rgb '${t.background}' font 'sans,11'`;
+  return [
+    term,
+    `set output ${quoteGnuplot(tmpFile)}`,
+    t.block,                          // dark theme palette / axis colours
+    userText,                         // verbatim, unmodified
+    'unset output',                   // flush + close the SVG (mandatory)
+    "set print '-'",
+    `print ${quoteGnuplot(sentinelOut)}`,        // "submission complete" -> stdout
+    "set print '/dev/stderr'",
+    `print ${quoteGnuplot(sentinelErr)}`,        // "stderr flushed"       -> stderr
+    "set print '-'",
+    '',                               // trailing newline
+  ].join('\n');
+}
+```
+
+Reading the sequence top to bottom, each line earns its place. `set terminal svg`
+re-declares the SVG generator on every submission — we don't trust the terminal
+to persist across commands. `set output <tmpFile>` redirects the /plot bytes/ to
+a temp file rather than to stdout — the single most important design choice in
+the protocol, because routing the binary-ish plot to a file leaves stdout/stderr
+carrying /only/ textual output and our sentinels. `unset output` is mandatory and
+a classic gnuplot footgun: gnuplot buffers the SVG, and the file is not complete
+(no closing `</svg>`) until the output is closed.
+
+### Sentinel framing: completion gated on BOTH streams
+
+Since gnuplot won't tell us when a command is done, we make it tell us — by
+appending two `print` statements whose output we recognise. The tokens are
+deliberately long and unguessable so they can't collide with real user output:
+
+```js
+export function sentinelsFor(id, nonce) {
+  return {
+    stdout: `__JMACS_GP_DONE__${id}__${nonce}__`,
+    stderr: `__JMACS_GP_ERR__${id}__${nonce}__`,
+  };
+}
+```
+
+A private prefix, the submission id, and a fresh 6-byte random nonce per
+submission. The subtle part is /why there are two sentinels, one per stream/.
+gnuplot writes errors to stderr, which is a /separate/ pipe from stdout, and the
+two are not synchronised — when the stdout sentinel arrives, there may still be
+error bytes in flight on stderr. So the epilogue prints a sentinel down /each/
+stream, and a submission is considered complete only when *both* sentinels have
+been observed.
+
+> *One trap, verified against gnuplot 6.* `set print '-2'` does /not/ mean
+> "fd 2" — gnuplot opens a /file literally named "-2"/, so the stderr sentinel
+> vanishes into that file and the submission hangs forever. The code uses
+> `set print '/dev/stderr'` instead.
+
+### The demultiplexer: a pure reducer over byte chunks
+
+Pipes deliver bytes in arbitrary chunks. A sentinel can be split across two
+`data` events; a single chunk can contain several lines. The `SubmissionDemux`
+absorbs all of that. It is a small line-buffered state machine with no DOM and no
+subprocess handle — which is exactly why it can be unit-tested against synthetic
+chunk sequences.
+
+```js
+pushStdout(chunk) {
+  this._outBuf += chunk;
+  let nl;
+  while ((nl = this._outBuf.indexOf('\n')) !== -1) {
+    const line = this._outBuf.slice(0, nl);
+    this._outBuf = this._outBuf.slice(nl + 1);
+    const a = this._active;
+    if (a && line === a.sentinelOut) {
+      a.gotOut = true;
+      this._maybeFinish();
+    } else if (a) {
+      a.stdoutLines.push(line);          // real user output
+    }
+  }
+}
+```
+
+It only acts on /complete/ lines (terminated by `\n`); a trailing partial line
+stays in `_outBuf` until the rest arrives. That is what makes a split sentinel
+safe. Completion is gated on both flags:
+
+```js
+_maybeFinish() {
+  const a = this._active;
+  if (!a || !a.gotOut || !a.gotErr) return;   // need BOTH sentinels
+  this._active = null;
+  a.onComplete({
+    stdout: a.stdoutLines.join('\n'),
+    stderr: a.stderrLines.join('\n'),
+  });
+}
+```
+
+### Capturing the SVG temp file vs. text and errors
+
+When both sentinels land, the demux fires its `onComplete`, which the host wired
+to `finishSubmission`. Now the host turns three independent channels — the temp
+file, stdout text, stderr text — into one result payload. Note that the SVG never
+travelled over a pipe; it was written to disk, and we read it back here:
+
+```js
+function finishSubmission(sessionId, id, tmpFile, stdout, stderr) {
+  const entry = sessions.get(sessionId);
+
+  let svg = null;
+  try {
+    const st = statSync(tmpFile);
+    const text = readFileSync(tmpFile, 'utf8');
+    if (svgHasPlot(st, text)) {
+      // Strip any <script> gnuplot's svg terminal might emit, as
+      // defence-in-depth before the renderer inlines the markup.
+      svg = stripScripts(text);
+    }
+  } catch {
+    // No file -> no plot. Leave svg null.
+  }
+  // Read-and-delete: the SVG bytes now live in the result payload.
+  unlink(tmpFile, () => {});
+
+  if (entry) entry.active = null;
+  if (entry && !entry.sender.isDestroyed()) {
+    entry.sender.send('gnuplot:result', {
+      sessionId, id, svg, text: stdout, error: stderr,
+    });
+  }
+  pump(sessionId);   // start the next queued submission
+}
+```
+
+A command need not produce a plot. `print "hi"` writes to stdout and never opens
+an output file; `set xrange [0:10]` produces nothing at all. So `svg` is `null`
+unless a real plot file exists. "Real plot" is a heuristic, not a guess —
+`svgHasPlot` rejects a file that's too small, that lacks a closing tag
+(truncated), or that has no drawn element:
+
+```js
+export function svgHasPlot(stat, text) {
+  if (!stat || typeof stat.size !== 'number') return false;
+  if (stat.size <= EMPTY_SVG_THRESHOLD) return false;            // 512 bytes
+  if (typeof text !== 'string') return false;
+  if (!text.includes('</svg>')) return false;                    // not truncated
+  return /<(path|rect|polyline|circle|image|use|text)\b/.test(text);  // drawn
+}
+```
+
+Measured against gnuplot 6, `plot sin(x)/x` at `set samples 2000` emits an SVG of
+tens of KB built from dozens of `<path>` elements — far above the 512-byte
+threshold — while a `set`-only submission stays a few hundred bytes. Here is one
+such real result:
+
+:::HTML
+<figure class="plot" data-plot="sinc"></figure>
+<figcaption><code>plot sin(x)/x</code> over <code>[-20:20]</code>. The smooth ripples are real samples, not a hand-drawn polyline — the SVG is dozens of <code>&lt;path&gt;</code> segments produced by gnuplot itself.</figcaption>
+:::
+
+### Dark-theme SVG settings
+
+A plot has to read on a dark editor page, and it has to do so without depending
+on the host page's CSS — because the SVG is also a standalone artifact a user
+might save. So the theme is baked into the image itself, in two parts. First, the
+page background is set on the terminal line so the SVG carries its own dark
+canvas:
+
+```js
+/** The page background baked into the SVG itself, so the plot is a
+ *  self-contained dark image that doesn't depend on the host page's CSS. */
+export const SVG_BACKGROUND = THEMES.dark.background;   // '#1e2228'
+```
+
+Second, a block of `set` directives recolours every chrome element — border,
+tics, title, axis labels, key, grid — and then redefines the first six line types:
+
+```js
+dark: {
+  label: 'Dark',
+  background: '#1e2228',
+  block: [
+    "set border lc rgb '#7f8c98'",
+    "set xtics textcolor rgb '#aeb6c0'",
+    "set ytics textcolor rgb '#aeb6c0'",
+    "set ztics textcolor rgb '#aeb6c0'",
+    "set title  textcolor rgb '#e6e9ed'",
+    "set xlabel textcolor rgb '#cfd6de'",
+    "set ylabel textcolor rgb '#cfd6de'",
+    "set key textcolor rgb '#cfd6de'",
+    "set grid lc rgb '#3a434d' lw 1",
+    "set linetype 1 lc rgb '#5aa9e6' lw 2 pt 7",
+    "set linetype 2 lc rgb '#f78c6b' lw 2 pt 7",
+    "set linetype 3 lc rgb '#7ed491' lw 2 pt 7",
+    "set linetype 4 lc rgb '#c792ea' lw 2 pt 7",
+    "set linetype 5 lc rgb '#ffcb6b' lw 2 pt 7",
+    "set linetype 6 lc rgb '#ff6b8a' lw 2 pt 7",
+  ].join('\n'),
+},
+```
+
+The choice of `set linetype` (rather than the deprecated `set style increment
+user`) is deliberate: redefining the line types means a /bare/ `plot sin(x),
+cos(x)` — with no explicit `ls` on either curve — automatically picks up the
+first two palette colours. Verified on gnuplot 6: the first line emits as
+`stroke='rgb( 90, 169, 230)'` — i.e. `#5aa9e6`, linetype 1 from the theme block.
+The whole six-colour palette, exercised by `plot sin(x)+k` for k = 0..5:
+
+:::HTML
+<figure class="plot" data-plot="palette"></figure>
+<figcaption>Six stacked sine curves, each picking up the next <code>set linetype</code> colour in order: <code>#5aa9e6</code>, <code>#f78c6b</code>, <code>#7ed491</code>, <code>#c792ea</code>, <code>#ffcb6b</code>, <code>#ff6b8a</code> — exactly the editor's accent palette, baked into the plot.</figcaption>
+:::
+
+Because the colours are inside the SVG, the renderer's `applyTheme` is a
+deliberate no-op — there is nothing on the page to recompute when the editor
+theme changes, and the CSS only has to make the embedded SVG scale:
+
+```css
+.gnuplot-cell-plot svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+```
+
+### Interrupting a running plot
+
+A heavy plot (a fine `samples` count over a slow function) can take real time.
+Pressing `C-c` in the input line sends `SIGINT` to the child:
+
+```js
+function signalSession(sessionId) {
+  const entry = sessions.get(sessionId);
+  if (!entry || entry.dead) return false;
+  try {
+    return entry.child.kill('SIGINT');   // already-queued epilogue then runs
+  } catch {
+    return false;
+  }
+}
+```
+
+Because the epilogue (`unset output` plus the two sentinel `print`s) is
+/already/ queued in gnuplot's stdin, an interrupted plot still drives both
+sentinels and the cell completes cleanly — usually as an error or empty cell
+rather than a plot — instead of leaving a pending cell stuck forever. The
+interrupt cooperates with the framing rather than bypassing it.
+
+## The session and history data model
+
+Everything the gnuplot view shows on screen is reconstructed from three small,
+deliberately boring data structures: the *cell* (one submitted command and its
+eventual result), the *command-history ring* (the Up/Down recall buffer behind
+the input line), and the per-session *submission queue* that lives in the host.
+None of these is a framework abstraction. They are plain objects, a `Map`, and an
+array, and that plainness is the point.
+
+### A cell is the unit of the transcript
+
+The shell view streams raw pty bytes into an xterm grid; there is no notion of a
+"result" there, just an ever-scrolling character buffer. gnuplot is different:
+each command you submit produces /one/ result — a plot, or some text, or an error.
+So the gnuplot view's transcript is not a character stream but a column of
+discrete *cells*, each created the instant you press Enter and filled in later
+when the host answers.
+
+A cell is a tiny state machine. It is created `pending`, then `onResult` resolves
+it into exactly one terminal shape based on which of `svg` / `text` / `error` the
+payload carries — and a cell may carry several of these at once (a plot /and/ a
+warning). The CSS classes name the states directly:
+
+| State (CSS class) | Set when | What the cell shows |
+| --- | --- | --- |
+| `gnuplot-cell-pending` | Cell created, awaiting the result | Just the echoed command, dimmed (`opacity: 0.7`) |
+| `gnuplot-cell-plot` | `payload.svg` is a non-empty string | The dark-themed SVG, inlined and scaled to the cell |
+| `gnuplot-cell-stdout` | `payload.text` is non-blank | `print` / `show` output, foreground colour |
+| `gnuplot-cell-error` / `-stderr` | `payload.error` is non-blank | Red text, red cell border (a typo, a warning) |
+| `gnuplot-cell-empty` | None of the above produced output | A dim italic `(no output)` placeholder |
+
+The resolution logic in `onResult` reads almost like the table — it inspects the
+payload field by field, appends a region for each, and falls back to an explicit
+empty acknowledgement so a bare `set` command never leaves a blank cell:
+
+```js
+function onResult(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  if (!buffer || payload.sessionId !== buffer.sessionId) return;
+  const cell = cellsById.get(payload.id);
+  if (!cell) return;
+  cellsById.delete(payload.id);
+  cell.classList.remove('gnuplot-cell-pending');
+
+  let rendered = false;
+  // The plot, if any. The SVG is trusted-local (generated by the
+  // host's own gnuplot, scripts already stripped main-side); inline it
+  // so it scales with the cell.
+  if (typeof payload.svg === 'string' && payload.svg !== '') {
+    const plot = doc.createElement('div');
+    plot.className = 'gnuplot-cell-plot';
+    plot.innerHTML = payload.svg;
+    cell.append(plot);
+    rendered = true;
+  }
+  // Text output (print, show, ...).
+  if (typeof payload.text === 'string' && payload.text.trim() !== '') {
+    appendRegion(cell, 'gnuplot-cell-stdout', payload.text);
+    rendered = true;
+  }
+  // Errors / warnings.
+  if (typeof payload.error === 'string' && payload.error.trim() !== '') {
+    cell.classList.add('gnuplot-cell-error');
+    appendRegion(cell, 'gnuplot-cell-stderr', payload.error);
+    rendered = true;
+  }
+  // A bare `set` with no output: show a dim acknowledgement.
+  if (!rendered) {
+    appendRegion(cell, 'gnuplot-cell-empty', '(no output)');
+  }
+  scrollToEnd();
+}
+```
+
+Notice that the three result fields are checked independently, not as a `switch`.
+A submission like `plot sin(x)` that also emits a deprecation warning will produce
+a cell that is /both/ a plot and an error. The `cellsById.delete(payload.id)` at
+the top is what makes a cell single-shot: once resolved, its id is gone, and a
+duplicate result for the same id is silently dropped.
+
+> *Why key by id at all, if submissions are serialized?* The host runs one
+> gnuplot child per session and processes submissions strictly in order, so
+> results /do/ arrive in order. Keying by id is belt-and-suspenders: it makes the
+> renderer correct regardless of arrival order, and a stray or duplicate result
+> simply finds no cell (`if (!cell) return;`) instead of corrupting the
+> transcript. Robustness for the cost of one `Map`.
+
+### The command-history ring
+
+The input line is a plain `<input>`. It has no readline, no ZLE, nothing that
+gives a shell its Up/Down recall. The shell view doesn't need to care — xterm.js
+hands raw bytes to the child shell, whose own readline owns the arrow keys. The
+gnuplot view has no such luxury, so it implements history itself, as a small
+DOM-free module that can be unit-tested without a browser. The model is the
+standard REPL triple — a list of entries, a cursor, and a stashed draft:
+
+```js
+export function createHistory() {
+  /** @type {string[]} */
+  const entries = [];
+  let index = 0;
+  let draft = '';
+
+  return {
+    push(command) {
+      if (typeof command === 'string' && command.trim() !== '') {
+        entries.push(command);
+      }
+      index = entries.length;
+      draft = '';
+    },
+
+    up(current) {
+      if (entries.length === 0) return current;
+      if (index === entries.length) draft = current;
+      if (index > 0) index -= 1;
+      return entries[index];
+    },
+
+    down(current) {
+      if (index >= entries.length) return draft;
+      index += 1;
+      if (index === entries.length) return draft;
+      return entries[index];
+    },
+
+    reset() { index = entries.length; draft = ''; },
+    entries() { return entries.slice(); },
+    index() { return index; },
+  };
+}
+```
+
+The cursor invariant is the whole trick: `index === entries.length` means "you
+are on the live, not-yet-submitted line." Stepping `up` from the live line first
+stashes whatever you had half-typed into `draft`, then walks the cursor toward
+older entries, clamping at the oldest. Stepping `down` walks back toward newer
+entries, and when it passes the newest it restores the stashed draft rather than
+blanking the input.
+
+> *The draft is what separates this from a naive history.* Without it, arrowing
+> up mid-type and then back down would silently destroy the line you were writing.
+> The `up` guard `if (index === entries.length) draft = current` captures it on
+> the /first/ step only. The full ring has nine unit tests covering push/up/down,
+> draft excursions, blank-skip, cursor reset, and that `entries()` hands back a
+> copy that can't mutate internal state.
+
+### How a submission flows through
+
+With the cell and the ring in place, a single Enter keypress threads a whole
+round trip. On the host side, a `write` does not run gnuplot directly — it
+appends to a per-session queue and pumps it. This is where serialization is
+enforced:
+
+```js
+function writeToSession(sessionId, data) {
+  const entry = sessions.get(sessionId);
+  if (!entry || entry.dead) return false;
+  entry.counter += 1;
+  entry.queue.push({ id: entry.counter, userText: String(data) });
+  pump(sessionId);
+  return true;
+}
+```
+
+The host's `counter` is the source of truth for the id; the renderer's
+`buffer.submitCounter` shadows it so the two agree without a round trip. That
+message — `{ sessionId, id, svg, text, error }` — is the seam between the two
+halves of the model. The host built it by demultiplexing a byte stream; the
+renderer consumes it in `onResult`, matches `id` back to the pending cell, and
+resolves the cell into its final state. Small enough to reason about in one line,
+rich enough to express every cell state.
+
+> *Sessions, not a global.* Each `gnuplot` command opens a fresh buffer with its
+> own `sessionId` (minted by `nextGnuplotSessionId()` as
+> `gnuplot-<n>-<timestamp>`), and the host keys its `sessions` `Map` by that id.
+> The view's `onResult`/`onExit` handlers both guard on
+> `payload.sessionId !== buffer.sessionId`, so two open gnuplot buffers never
+> cross-talk even though they share the same IPC channel.
+
+## The view element: a notebook over a long-lived gnuplot child
+
+Everything up to here has been plumbing: the host spawns one `gnuplot` per
+session, frames each submission, and sends back a single `gnuplot:result`
+carrying `{ id, svg, text, error }`. The /view element/ is where that becomes
+something a person looks at. Its whole job is to turn a stream of those results
+into a scrolling *notebook transcript*: you type a command at the bottom, press
+Enter, and a *cell* appears above holding the rendered plot, any text output, or a
+red error.
+
+The file is `packages/renderer/src/gnuplot-view.js`. It follows the same
+two-layer shape every L4 singleton view in jmacs uses — a plain
+`createGnuplotView(container, options)` factory that builds the DOM and wires the
+behaviour, wrapped by a `GnuplotView extends ViewElement` custom element that
+gives it the hide-not-kill lifecycle.
+
+### The DOM skeleton
+
+The factory builds the three regions once, at construction time. Note the
+deliberate ordering in the flex column — header, transcript, input row — and that
+the transcript is the only one allowed to grow and scroll:
+
+```js
+const root = doc.createElement('div');
+root.className = 'gnuplot-view';
+root.tabIndex = -1;
+container.append(root);
+
+// Header: a chart icon + the buffer name.
+const header = doc.createElement('div');
+header.className = 'gnuplot-header';
+const headerIcon = doc.createElement('i');
+headerIcon.className = 'fa-solid fa-chart-line';
+const headerLabel = doc.createElement('span');
+headerLabel.className = 'gnuplot-header-label';
+headerLabel.textContent = 'gnuplot';
+header.append(headerIcon, headerLabel);
+root.append(header);
+
+// Transcript: a scrolling column of per-command cells.
+const transcriptEl = doc.createElement('div');
+transcriptEl.className = 'gnuplot-transcript';
+root.append(transcriptEl);
+
+// Input line: a prompt + a plain text input.
+const inputRow = doc.createElement('div');
+inputRow.className = 'gnuplot-input-row';
+const prompt = doc.createElement('span');
+prompt.className = 'gnuplot-prompt';
+prompt.textContent = 'gnuplot>';
+const input = doc.createElement('input');
+input.type = 'text';
+input.className = 'gnuplot-input';
+input.spellcheck = false;
+inputRow.append(prompt, input);
+root.append(inputRow);
+```
+
+The input is a bare `<input type="text">`: no contenteditable, no fake cursor, no
+terminal emulation. That bareness is the whole reason the view has to provide its
+own history. Note `doc` and `win` are taken from `container.ownerDocument` rather
+than the global `document` — a small discipline that keeps the factory testable
+and correct if the view is ever mounted into another window.
+
+### Filling the cell: text and errors
+
+Text and error regions go through a tiny shared helper, which is the only place a
+`<pre>` is created. Using `textContent` (never `innerHTML`) for text and errors
+means gnuplot's output can never inject markup — only the trusted SVG path uses
+`innerHTML`:
+
+```js
+/** Append a text region to a cell, returning the created element. */
+function appendRegion(cell, className, text) {
+  const pre = doc.createElement('pre');
+  pre.className = className;
+  pre.textContent = text;
+  cell.append(pre);
+  return pre;
+}
+```
+
+A notebook REPL wants the newest cell visible. The view does not track scroll
+position — it simply calls `scrollToEnd` after every mutation that adds height:
+
+```js
+/** Scroll the transcript to the bottom. */
+function scrollToEnd() {
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+```
+
+This works because the CSS makes the transcript the /only/ scrollable region. The
+flex column gives the transcript `flex: 1 1 auto` and the crucial
+`min-height: 0`, so it shrinks to fit and scrolls internally while the header and
+input row stay pinned.
+
+### The input line, history, and chord forwarding
+
+The view wires the history ring to the input's `keydown` handler, which is also
+where the chord-forwarding and the C-c interrupt live. Enter and the arrows are
+handled locally; everything else that looks like a chord is forwarded to the host
+keymap:
+
+```js
+input.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    const cmd = input.value;
+    if (cmd.trim() !== '') {
+      history.push(cmd);
+      runCommand(cmd);
+    }
+    input.value = '';
+    history.reset();
+    return;
+  }
+  if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    input.value = history.up(input.value);
+    win.requestAnimationFrame(() => {
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    return;
+  }
+  if (event.key === 'ArrowDown') { /* …mirror of ArrowUp… */ }
+
+  // C-c interrupts a running plot (the shell-view analog of SIGINT).
+  if (event.key === 'c' && event.ctrlKey && !event.metaKey && !event.altKey) {
+    if (buffer && signalFn && !buffer.ended) {
+      event.preventDefault();
+      signalFn(buffer.sessionId);
+      return;
+    }
+  }
+  // Forward chords (C-x b, M-x, …) to the host keymap. Plain typing
+  // and the modifier keys themselves fall through to the input.
+  if (onKey) {
+    const key = keyEventToString(event);
+    if (key && onKey(key)) event.preventDefault();
+  }
+});
+```
+
+The last branch is the bridge back to the editor: because the input is a real
+focusable `<input>`, the host keymap would otherwise go dark while you're typing
+in it. Forwarding non-printing chords through `onKey` keeps `C-x b`, `M-x`, and
+friends alive — exactly the trick the browser view uses for its URL bar. Enter,
+the arrows, and `C-c` are handled locally and deliberately /not/ forwarded.
+
+### Theming is a deliberate no-op
+
+jmacs's other singleton views recompute colours when the theme changes — the
+shell view re-reads CSS variables and pushes them into xterm. The gnuplot view is
+the interesting exception: its `applyTheme` is a deliberate no-op.
+
+```js
+/** Re-theme. The plot SVGs bake their own dark background at render
+ *  time, so there's nothing to recompute here; kept for parity with
+ *  the singleton view interface. */
+function applyTheme() {
+  /* no-op — SVGs are self-themed at render time */
+}
+```
+
+The dark theme of a plot is not applied by the renderer at all — it is baked into
+the SVG by the /host/ at render time. The method still exists, empty, so the view
+satisfies the same `{ setBuffer, focus, applyTheme, destroy }` interface as every
+other singleton view and can be registered uniformly. One consequence worth
+flagging: a live theme switch will /not/ re-colour plots already in the
+transcript; only newly rendered cells pick up the new palette.
+
+### The custom-element wrapper and lifecycle
+
+The factory knows nothing about being mounted, hidden, or moved between panes.
+That is the custom element's job. `GnuplotView extends ViewElement` is a thin
+adapter: `configure(options)` stashes the IPC wiring before mount,
+`connectedCallback` lazily builds the inner factory on first attach, and — the
+important bit — `disconnectedCallback` is intentionally empty:
+
+```js
+export class GnuplotView extends ViewElement {
+  get kind() { return 'gnuplot'; }
+
+  connectedCallback() {
+    if (this._inner !== null) return;
+    this._inner = createGnuplotView(this, this._options ?? {});
+    if (this._pendingBuffer !== null) this._inner.setBuffer(this._pendingBuffer);
+  }
+
+  /** Hide-not-kill — the gnuplot process stays alive; only the DOM-tree
+   *  position changed. A later `connectedCallback` finds `_inner` set
+   *  and is a no-op. */
+  disconnectedCallback() {
+    /* intentionally empty */
+  }
+
+  /** Explicit teardown: drop the IPC subscriptions. The host's
+   *  kill-view path reaps the gnuplot process separately. */
+  destroy() {
+    if (this._inner !== null) { this._inner.destroy(); this._inner = null; }
+    this._pendingBuffer = null;
+  }
+}
+```
+
+> *Hide-not-kill is the whole point of the empty `disconnectedCallback`.* Moving
+> a pane to the warehouse, or splitting and rearranging panes, fires
+> `disconnectedCallback` on the element. If that tore down the view, the user
+> would come back to an empty transcript and a fresh gnuplot process — their plots
+> gone. So disconnect does nothing, and a later `connectedCallback` finds `_inner`
+> already set and short-circuits. The gnuplot /process/ is only reaped on explicit
+> `destroy()` plus the host-side kill path. This split is the rule documented in
+> `docs/VIEWS.md`: the DOM position is owned by the pane tree, the process
+> lifetime is owned by the host, and the two are deliberately decoupled.
+
+## Command history and recall
+
+Every REPL needs a way to bring back what you just typed. You run `plot sin(x)`,
+eyeball the curve, then want `plot sin(x), cos(x)` — and you do not want to retype
+the whole line. The fix is the same one every shell and language REPL has shipped
+for decades: /Up/ walks backward through the commands you submitted, /Down/ walks
+forward again, and whatever the arrows land on is dropped into the input where you
+can edit it and re-run it.
+
+The interesting question for the gnuplot view is not /whether/ to have history —
+it is /who owns it/.
+
+### Why this view has to implement history itself
+
+jmacs already has a terminal view (shell v4), and it has full command history —
+Up/Down, reverse-search, the lot. But none of that history code lives in jmacs.
+The shell view is an `xterm.js` grid that forwards raw keystrokes straight to a
+child shell; the shell's own `readline`/`ZLE` line editor owns the history ring.
+jmacs is just a dumb pipe in both directions. It never sees a "command" — only
+bytes.
+
+The gnuplot view is the opposite shape. Its input line is a plain `<input>`
+element, and gnuplot's own command line does not run inside it. There is no
+`readline` in the loop to remember anything. So if this view is going to have
+Up/Down recall, the view has to keep the ring itself. The file header states
+exactly this:
+
+```js
+/**
+ * @file A small, DOM-free command-history ring for the gnuplot notebook
+ * view's input line. The shell v4 view keeps no history of its own —
+ * xterm.js hands raw bytes to the child shell, whose readline/ZLE owns
+ * Up/Down. The gnuplot view has a bare `<input>` with no readline, so it
+ * must implement history itself. Extracting it as pure logic keeps it
+ * unit-testable without a DOM (per CLAUDE.md's "unit-test pure logic").
+ */
+```
+
+> *The jmacs pattern.* Where a child process owns the line editor, forward bytes
+> and keep no state. Where jmacs owns the input element, jmacs owns the history.
+> The browser view's URL bar follows the same rule. This file is the gnuplot view
+> paying the price of owning its input — but it pays it in twelve lines of pure
+> logic, not a re-implemented line editor.
+
+### The cursor model
+
+The live line is a real position one past the newest entry; that is where `draft`
+lives.
+
+:::HTML
+<figure>
+<svg viewBox="0 0 600 200" role="img" aria-label="History cursor model: entries array with the live-line slot one past the end">
+  <text x="10" y="24" class="d-label">entries[]</text>
+  <rect x="10"  y="36" width="120" height="44" rx="4" fill="#232a31" stroke="#3a434d"/>
+  <rect x="130" y="36" width="120" height="44" rx="4" fill="#232a31" stroke="#3a434d"/>
+  <rect x="250" y="36" width="120" height="44" rx="4" fill="#232a31" stroke="#3a434d"/>
+  <rect x="370" y="36" width="160" height="44" rx="4" fill="#232a31" stroke="#5aa9e6"/>
+  <text x="70"  y="63" class="d-text" text-anchor="middle">"plot sin(x)"</text>
+  <text x="190" y="63" class="d-text" text-anchor="middle">"plot cos(x)"</text>
+  <text x="310" y="63" class="d-text" text-anchor="middle">"replot"</text>
+  <text x="450" y="58" class="d-text" text-anchor="middle">live line</text>
+  <text x="450" y="73" class="d-dim" text-anchor="middle">(the draft)</text>
+  <text x="70"  y="100" class="d-dim" text-anchor="middle">index 0</text>
+  <text x="190" y="100" class="d-dim" text-anchor="middle">1</text>
+  <text x="310" y="100" class="d-dim" text-anchor="middle">2</text>
+  <text x="450" y="100" class="d-dim" text-anchor="middle">3 = entries.length</text>
+  <text x="300" y="160" class="d-text" text-anchor="middle">Up moves the cursor left (older) · Down moves it right (newer)</text>
+  <text x="300" y="184" class="d-dim" text-anchor="middle">Down off the right-hand end returns to the live line and restores the stashed draft</text>
+</svg>
+<figcaption>The history ring's three pieces of state: an <code>entries</code> array, a cursor <code>index</code> that may legally point one slot past the end, and the <code>draft</code> that lives at that live-line slot.</figcaption>
+</figure>
+:::
+
+### up and down: the recall logic
+
+The two arrow methods take the input's /current/ text as an argument. That is
+deliberate — it is how the draft gets captured at the exact moment you leave the
+live line, without the history needing any reference to the DOM.
+
+```js
+up(current) {
+  if (entries.length === 0) return current;
+  if (index === entries.length) draft = current;
+  if (index > 0) index -= 1;
+  return entries[index];
+},
+
+down(current) {
+  if (index >= entries.length) return draft;
+  index += 1;
+  if (index === entries.length) return draft;
+  return entries[index];
+},
+```
+
+Reading `up` line by line: `if (entries.length === 0) return current` — Up on an
+empty history is a no-op. `if (index === entries.length) draft = current` — this
+fires /only/ on the first Up from the live line; step Up again from inside history
+and this is false, so an earlier-stashed draft is never clobbered.
+`if (index > 0) index -= 1` — walk one step older, but clamp at the oldest entry.
+`down` is the mirror image; its subtlety is the live line — stepping forward past
+the newest entry lands you back on the live line and hands back the `draft` you
+stashed.
+
+### Why a separate, DOM-free module
+
+The ring could have lived as three closure variables inside `createGnuplotView`.
+Pulling it out into `gnuplot-history.js` buys one concrete thing: it is testable
+with no browser, no `jsdom`, no custom element. The whole behaviour — including
+the fiddly bits people get wrong — is nailed down by nine `node:test` cases that
+import the function directly:
+
+```js
+test('down walks back toward the live line and restores the stashed draft', () => {
+  const h = createHistory();
+  h.push('first');
+  h.push('second');
+  // Start typing a new line, then arrow up — the draft is stashed.
+  assert.equal(h.up('half-typed'), 'second');
+  assert.equal(h.up('half-typed'), 'first');
+  // Walk back down: second, then the live line (the draft).
+  assert.equal(h.down('first'), 'second');
+  assert.equal(h.down('second'), 'half-typed');
+});
+
+test('entries returns a copy that cannot mutate internal state', () => {
+  const h = createHistory();
+  h.push('a');
+  const snapshot = h.entries();
+  snapshot.push('hacked');
+  assert.deepEqual(h.entries(), ['a']);
+});
+```
+
+> *Design takeaway for jmacs.* When a view owns its own input element, the
+> line-editing logic is yours to write — but keep it DOM-free and pure. The
+> element stays a thin adapter (read `input.value`, write `input.value`, park the
+> caret); the behaviour lives where it can be tested in milliseconds without a
+> render. The same split is why the protocol framing and the `svgHasPlot` check
+> are their own pure modules too.
+
+## Wiring the view kind into jmacs
+
+By this point the two halves exist in isolation: a main-process host
+(`apps/desktop/src/gnuplot.js`) that spawns and drives a `gnuplot` child, and a
+renderer custom element (`packages/renderer/src/gnuplot-view.js`) that draws the
+notebook. Neither knows about the other, and neither is reachable from inside the
+editor. /Wiring/ is the seam that joins them: it makes `gnuplot` a first-class
+*view kind* alongside `text`, `image`, `shell`, and the rest.
+
+There is no plugin manifest and no registry to append to. In jmacs a view kind is
+wired by touching a fixed set of seams, each of which answers one question the
+shell asks at a different moment.
+
+:::HTML
+<figure>
+<svg viewBox="0 0 760 300" role="img" aria-label="Wiring data flow from keymap through Lisp, app shell, IPC, to the gnuplot host">
+  <defs>
+    <marker id="ar2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#5a6472"/>
+    </marker>
+  </defs>
+  <g class="d-text">
+    <rect x="14" y="18" width="150" height="46" rx="6" fill="#232a31" stroke="#3a434d"/>
+    <text x="89" y="38" text-anchor="middle">keymap.lisp</text>
+    <text x="89" y="54" text-anchor="middle" font-size="11">C-c g → 'gnuplot</text>
+    <rect x="14" y="120" width="150" height="46" rx="6" fill="#232a31" stroke="#3a434d"/>
+    <text x="89" y="140" text-anchor="middle">gnuplot.lisp</text>
+    <text x="89" y="156" text-anchor="middle" font-size="11">(defcommand gnuplot)</text>
+    <rect x="14" y="222" width="150" height="46" rx="6" fill="#232a31" stroke="#3a434d"/>
+    <text x="89" y="242" text-anchor="middle">app.js primitive</text>
+    <text x="89" y="258" text-anchor="middle" font-size="11">open-gnuplot-buffer!</text>
+    <rect x="300" y="222" width="160" height="46" rx="6" fill="#232a31" stroke="#3a434d"/>
+    <text x="380" y="242" text-anchor="middle">switchToViewIndex</text>
+    <text x="380" y="258" text-anchor="middle" font-size="11">mountKindView</text>
+    <rect x="300" y="120" width="160" height="46" rx="6" fill="#232a31" stroke="#3a434d"/>
+    <text x="380" y="140" text-anchor="middle">&lt;gnuplot-view&gt;</text>
+    <text x="380" y="156" text-anchor="middle" font-size="11">setBuffer → spawn()</text>
+    <rect x="300" y="18" width="160" height="46" rx="6" fill="#232a31" stroke="#3a434d"/>
+    <text x="380" y="38" text-anchor="middle">preload.mjs</text>
+    <text x="380" y="54" text-anchor="middle" font-size="11">gnuplotSpawn / Write</text>
+    <rect x="592" y="18" width="154" height="46" rx="6" fill="#232a31" stroke="#3a434d"/>
+    <text x="669" y="38" text-anchor="middle">gnuplot.js (host)</text>
+    <text x="669" y="54" text-anchor="middle" font-size="11">spawn('gnuplot')</text>
+    <line x1="89" y1="64" x2="89" y2="118" stroke="#5a6472" stroke-width="1.4" marker-end="url(#ar2)"/>
+    <line x1="89" y1="166" x2="89" y2="220" stroke="#5a6472" stroke-width="1.4" marker-end="url(#ar2)"/>
+    <line x1="164" y1="245" x2="298" y2="245" stroke="#5a6472" stroke-width="1.4" marker-end="url(#ar2)"/>
+    <line x1="380" y1="220" x2="380" y2="168" stroke="#5a6472" stroke-width="1.4" marker-end="url(#ar2)"/>
+    <line x1="380" y1="118" x2="380" y2="66" stroke="#5a6472" stroke-width="1.4" marker-end="url(#ar2)"/>
+    <line x1="460" y1="41" x2="590" y2="41" stroke="#5a6472" stroke-width="1.4" marker-end="url(#ar2)"/>
+  </g>
+</svg>
+<figcaption>From keystroke to running child: a key binds to a Lisp symbol, the command calls a host primitive that mints a session and switches to the view, the view spawns on mount through the preload bridge, and the host owns the child.</figcaption>
+</figure>
+:::
+
+### The Lisp surface: command, keymap, mode
+
+The user-facing entry point is a Lisp command. It is deliberately thin — it
+documents the feature and delegates to a single primitive.
+
+```lisp
+(defcommand gnuplot ()
+  "Open a fresh gnuplot buffer.
+   ...
+   Each call to `gnuplot` creates a new buffer — switch back to an open
+   one by name with `C-x b`. If gnuplot is not installed, the view shows
+   install instructions (`brew install gnuplot`)."
+  (open-gnuplot-buffer!))
+```
+
+The keybinding lives under the `C-c` prefix map. Note the binding is to the
+/symbol/ `'gnuplot`, not to the procedure value — so load order between the keymap
+and the command definition doesn't matter; the symbol resolves at dispatch time.
+A `gnuplot-mode` gives the buffer a modeline label (the view has no text buffer,
+so this is cosmetic), and `gnuplot.lisp` is added to `STDLIB_FILES` so it loads at
+startup:
+
+```lisp
+;; A `gnuplot`-kind buffer is shown through the L4 gnuplot view (a
+;; notebook REPL), not the editor view, so no text-buffer keymap applies.
+(define-mode gnuplot-mode
+  :name "Gnuplot")
+```
+
+> A regression test in `packages/stdlib/test/stdlib.test.js` pins all three facts
+> at once — the command loads, it is documented, and `C-c g` resolves to it:
+> `(procedure? gnuplot)` is true, `(doc gnuplot)` is a string, and
+> `(eq? (get c-c-keymap "g") (quote gnuplot))` holds.
+
+### The primitive: open-gnuplot-buffer!
+
+The Lisp command calls one host primitive, defined in `app.js`. Its job is to
+mint a session id, build a `View` of kind `'gnuplot'`, push it onto the global
+`views` list, and switch the focused pane to it. Crucially, it does /not/ spawn
+the process — that happens on mount.
+
+```js
+'open-gnuplot-buffer!': () => {
+  const sessionId = nextGnuplotSessionId();
+  const sequence = views.filter((v) => v.kind === 'gnuplot').length + 1;
+  const name = sequence === 1 ? '*gnuplot*' : `*gnuplot*<${sequence}>`;
+  views.push(createView({
+    kind: 'gnuplot',
+    name,
+    extras: {
+      sessionId,
+      ended: false,
+      spawned: false,
+    },
+  }));
+  switchToViewIndex(views.length - 1);
+  return NIL;
+},
+```
+
+The session id generator is a monotonic counter combined with a timestamp,
+mirroring the shell view's scheme:
+
+```js
+let gnuplotSessionCounter = 0;
+function nextGnuplotSessionId() {
+  gnuplotSessionCounter += 1;
+  return `gnuplot-${gnuplotSessionCounter}-${Date.now()}`;
+}
+```
+
+### The singleton and SINGLETON_VIEWS
+
+jmacs mounts each non-text view kind as a *single* custom-element instance — a
+singleton — created once at startup and moved between panes by show/hide rather
+than rebuilt:
+
+```js
+const gnuplotView = /** @type {*} */ (document.createElement('gnuplot-view'));
+gnuplotView.configure(configureGnuplotView());
+editorPaneElement().append(gnuplotView);
+gnuplotView.style.display = 'none';
+themeListeners.add(() => gnuplotView.applyTheme());
+```
+
+It is then registered in `SINGLETON_VIEWS`, the single source of truth the shell
+iterates to toggle display and release resources. The `releasesBuffer: true` flag
+marks gnuplot as media-bearing alongside `audio`, `video`, and `shell`:
+
+```js
+const SINGLETON_VIEWS = [
+  { kind: 'customize',         el: customizeView,         releasesBuffer: false },
+  { kind: 'image',             el: imageView,             releasesBuffer: false },
+  // ...
+  { kind: 'shell',             el: shellView,             releasesBuffer: true  },
+  { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
+];
+```
+
+A tabline that needs a /fresh/ per-tab instance asks `perKindConfigureFactory`
+for the recipe — the same `configureGnuplotView` factory, reused so each per-tab
+`<gnuplot-view>` gets its own freshly-bound callbacks and its own session:
+
+```js
+function perKindConfigureFactory(kind) {
+  switch (kind) {
+    // ...
+    case 'shell':             return configureShellView;
+    case 'gnuplot':           return configureGnuplotView;
+    default:                  return null;
+  }
+}
+```
+
+### Kill on close
+
+Killing a buffer routes through `disposeKindView`, the mirror of the mount path.
+Most kinds have nothing to clean up, but a gnuplot view owns an OS process, so its
+branch sends a `gnuplotKill` over the bridge to reap the child and drop its temp
+directory:
+
+```js
+if (view.kind === 'gnuplot') {
+  if (typeof view.sessionId !== 'string') return;
+  try {
+    if (window.host && typeof window.host.gnuplotKill === 'function') {
+      window.host.gnuplotKill(view.sessionId);
+    }
+  } catch {
+    // Process is already gone — nothing to do.
+  }
+  return;
+}
+```
+
+On the host side `gnuplot:kill` lands in `terminateSession`, which `SIGTERM`s the
+child, `rm -rf`s the per-session temp dir, and forgets the entry. The contract is
+closed in both directions: every `spawn` on mount has a matching `kill` on close,
+keyed by the session id that the primitive minted and that travelled untouched
+through the View's `sessionId` the whole way.
+
+### The seams, in one list
+
+For a future view kind, this is the checklist the gnuplot wiring instantiates —
+each item answers a question the shell asks at a specific moment:
+
+- *preload bridge* — how does the renderer reach the host?
+  (`gnuplotSpawn/Write/Signal/Kill`, `onGnuplotResult/Exit`)
+- *configure factory* — how is a view instance handed its host callbacks?
+  (`configureGnuplotView`)
+- *singleton + `SINGLETON_VIEWS`* — what instance shows this kind, and does it
+  release resources when hidden?
+- *`perKindConfigureFactory`* — how does a tabline build a fresh per-tab instance?
+- *open primitive* — how does Lisp create a view of this kind?
+  (`open-gnuplot-buffer!`, plus `nextGnuplotSessionId`)
+- *command + keymap + mode* — what does the user type?
+  (`gnuplot`, `C-c g`, `gnuplot-mode`)
+- *spawn on mount* — flag-gated in `setBuffer`, dispatched by `mountKindView`.
+- *kill on close* — the `disposeKindView` branch.
+
+Miss any one and the failure is specific and visible: skip the `SINGLETON_VIEWS`
+row and the view never hides; skip the `disposeKindView` branch and processes
+leak; skip the `perKindConfigureFactory` case and it works as a leaf but breaks
+the moment it lands in a tabline tab.
+
+## Testing, graceful degradation, and where to take it next
+
+A subprocess-driven view is mostly /untestable in a unit test/ if you write it
+naively: spawning a real `gnuplot`, waiting on async IPC, diffing rendered SVG
+bytes — none of that runs under a plain `node --test`. So the design question that
+governs this whole feature is: *how much of it can be made pure?* The more logic
+that lives in DOM-free, Electron-free, subprocess-free functions, the more of it a
+fast test suite pins down, and the smaller the residue that genuinely needs a
+human at a running app.
+
+### The pure/live split, by design
+
+Everything that can be reasoned about without a live subprocess was pulled out of
+the host module (`gnuplot.js`, which holds Electron and `child_process` and is
+/not/ unit-tested) into a sibling that imports nothing but JavaScript:
+`apps/desktop/src/gnuplot-protocol.js`. The same move happens on the renderer
+side: the command-history ring is lifted into
+`packages/renderer/src/gnuplot-history.js` as a `createHistory()` factory with no
+DOM dependency at all.
+
+:::HTML
+<figure>
+<svg viewBox="0 0 760 300" role="img" aria-label="Diagram: pure vs live boundary across the gnuplot feature">
+  <rect x="8" y="8" width="744" height="284" rx="10" fill="none" stroke="#3a434d"/>
+  <text x="24" y="34" fill="#aeb6c0" font-family="sans-serif" font-size="13" font-weight="bold">PURE — unit-tested under node --test (no Electron, no DOM, no gnuplot)</text>
+  <rect x="28" y="48" width="330" height="96" rx="8" fill="#1e2228" stroke="#5aa9e6"/>
+  <text x="44" y="70" fill="#e6e9ed" font-family="monospace" font-size="12">gnuplot-protocol.js</text>
+  <text x="44" y="90" fill="#aeb6c0" font-family="sans-serif" font-size="11">quoteGnuplot · sentinelsFor</text>
+  <text x="44" y="108" fill="#aeb6c0" font-family="sans-serif" font-size="11">buildSubmission · svgHasPlot</text>
+  <text x="44" y="126" fill="#aeb6c0" font-family="sans-serif" font-size="11">SubmissionDemux — 17 tests</text>
+  <rect x="378" y="48" width="346" height="96" rx="8" fill="#1e2228" stroke="#7ed491"/>
+  <text x="394" y="70" fill="#e6e9ed" font-family="monospace" font-size="12">gnuplot-history.js</text>
+  <text x="394" y="90" fill="#aeb6c0" font-family="sans-serif" font-size="11">createHistory(): push / up / down</text>
+  <text x="394" y="108" fill="#aeb6c0" font-family="sans-serif" font-size="11">draft stash · cursor reset</text>
+  <text x="394" y="126" fill="#aeb6c0" font-family="sans-serif" font-size="11">copy safety — 9 tests</text>
+  <text x="24" y="180" fill="#f78c6b" font-family="sans-serif" font-size="13" font-weight="bold">LIVE — needs a running app + installed gnuplot</text>
+  <rect x="28" y="194" width="330" height="80" rx="8" fill="#1e2228" stroke="#f78c6b"/>
+  <text x="44" y="216" fill="#e6e9ed" font-family="monospace" font-size="12">gnuplot.js (host)</text>
+  <text x="44" y="236" fill="#aeb6c0" font-family="sans-serif" font-size="11">spawn · temp SVG · IPC · ENOENT</text>
+  <text x="44" y="254" fill="#aeb6c0" font-family="sans-serif" font-size="11">imports the pure module</text>
+  <rect x="378" y="194" width="346" height="80" rx="8" fill="#1e2228" stroke="#f78c6b"/>
+  <text x="394" y="216" fill="#e6e9ed" font-family="monospace" font-size="12">gnuplot-view.js (renderer)</text>
+  <text x="394" y="236" fill="#aeb6c0" font-family="sans-serif" font-size="11">DOM cells · inline SVG · chords</text>
+  <text x="394" y="254" fill="#aeb6c0" font-family="sans-serif" font-size="11">imports createHistory</text>
+</svg>
+<figcaption>The boundary, drawn once: pure modules are <code>gnuplot-protocol.js</code> and <code>gnuplot-history.js</code>; the impure residue is <code>gnuplot.js</code> and <code>gnuplot-view.js</code>. The split is exactly the line between "26 fast assertions" and "a few things to check in the running app."</figcaption>
+</figure>
+:::
+
+### What the pure assertions pin down
+
+The protocol suite (17 cases) and the history suite (9 cases) cover the parts
+that are easy to get subtly wrong. Quoting is one: the temp-file path is
+interpolated into `set output '…'`, and gnuplot's single-quoted strings do /not/
+interpret backslashes, so the safe escape is to double embedded single quotes and
+otherwise pass bytes through verbatim — which means a Windows-style path with
+backslashes must survive untouched:
+
+```js
+test('quoteGnuplot single-quotes and doubles embedded quotes', () => {
+  assert.equal(quoteGnuplot('/tmp/a.svg'), "'/tmp/a.svg'");
+  assert.equal(quoteGnuplot("o'brien"), "'o''brien'");
+  assert.equal(quoteGnuplot(''), "''");
+});
+
+test('quoteGnuplot does not interpret backslashes (gnuplot single-quote semantics)', () => {
+  // A Windows-ish path with backslashes survives verbatim.
+  assert.equal(quoteGnuplot('C:\\tmp\\a.svg'), "'C:\\tmp\\a.svg'");
+});
+```
+
+The both-sentinels gate is the heart of the framing protocol: a submission is
+"done" only when /both/ the stdout and the stderr sentinel have arrived. The test
+asserts the demux waits, and that a sentinel cut across a chunk boundary still
+reassembles:
+
+```js
+demux.pushStdout('hello\nworld\n');
+demux.pushStdout('OUT\n'); // stdout sentinel — but stderr not yet in
+assert.equal(result, null, 'must wait for BOTH sentinels');
+demux.pushStderr('ERR\n');
+assert.deepEqual(result, { stdout: 'hello\nworld', stderr: '' });
+assert.equal(demux.busy, false);
+```
+
+### The gnuplot-not-installed path
+
+gnuplot is genuinely often missing, and the design choice is to make that a
+/first-class outcome/, not an error in the transcript. The tricky part is that
+`spawn('gnuplot', …)` does *not* throw synchronously for a missing binary — it
+resolves, then emits an async `error` event a tick later with
+`code === 'ENOENT'`. So the spawn IPC handler returns `{ ok: true }` immediately
+and the not-installed signal arrives separately:
+
+```js
+child.on('error', (error) => {
+  entry.dead = true;
+  sessions.delete(sessionId);
+  rm(tmpDir, { recursive: true, force: true }, () => {});
+  if (sender.isDestroyed()) return;
+  if (error.code === 'ENOENT') {
+    sender.send('gnuplot:exit', {
+      sessionId, code: null, signal: null,
+      notInstalled: true,
+      message: NOT_INSTALLED_MESSAGE,
+    });
+    return;
+  }
+  sender.send('gnuplot:exit', {
+    sessionId, code: null, signal: null,
+    error: error.message,
+    message: `gnuplot failed to start: ${error.message}`,
+  });
+});
+```
+
+The renderer's exit handler keys on the `notInstalled` flag, /replaces/ the
+transcript with a centred install card, and disables the input — there is no point
+letting the user type at a process that will never answer. The host owns the
+canonical message (with `brew install gnuplot` and the Debian/Ubuntu line), and
+the renderer carries an identical `DEFAULT_NOT_INSTALLED` fallback.
+
+> *Defence in depth on the SVG.* Adjacent to degradation is a second safety
+> property: gnuplot's svg terminal can emit a `<script>` (its interactive mousing
+> layer). The host strips it before the renderer inlines the markup —
+> `svg.replace(/<script\b[\s\S]*?<\/script>/gi, '')` — so even though the SVG is
+> trusted-local it never reaches the DOM with executable content. The same strip
+> is applied to every plot embedded in this very page.
+
+### A damped oscillation, end to end
+
+A last real plot — a multi-curve `plot` with an explicit `key`, exactly the kind
+of exploratory command the notebook is built for:
+
+:::HTML
+<figure class="plot" data-plot="damped"></figure>
+<figcaption><code>plot exp(-x/6)*cos(x), exp(-x/6), -exp(-x/6)</code>. Three curves, two named in the key, picking up linetypes 1–3 of the dark palette — a genuine gnuplot 6 render at 2000 samples, themed and embedded statically.</figcaption>
+:::
+
+### Where to take it next
+
+The architecture leaves several natural extensions cheap to add, because the hard
+parts (one persistent process, serialized submissions, the framing protocol) are
+already in place. In rough order of value:
+
+- *Data files.* A gnuplot session's `cwd` already threads through:
+  `spawnSession` honours `options.cwd` (defaulting to `homedir()`), and the view
+  passes `buffer.cwd` on spawn. Plotting a local `data.dat` should work once `cwd`
+  is wired to the active project directory rather than home — a one-line change at
+  the call site, no protocol change.
+- *Export.* The result payload already carries the raw SVG string back to the
+  renderer (`payload.svg`). A "save plot as…" affordance is a renderer-only
+  addition: write that string to disk, or re-run the last submission with
+  `set terminal pngcairo` / `pdfcairo` for a non-dark export.
+- *Multiple sessions.* This already works: every `(gnuplot)` call mints a fresh
+  `sessionId` and a fresh `*gnuplot*` buffer, each owning its own child process.
+  What is /not/ yet built is a session picker; today you navigate them by buffer
+  name.
+- *Replot on resize.* This is the one genuinely missing capability. The SVG is
+  rendered once at a fixed `720×480` and then CSS-scaled to the cell width. A true
+  replot-on-resize would mean re-issuing the /last/ submission for that cell at the
+  new pixel width — but stateful sessions make "re-run the last line" subtly wrong,
+  and a debounce would be needed to avoid a replot storm while dragging a divider.
+  This is a design decision, not a typo-fix, and it should be flagged to the
+  architect rather than guessed.
+
+> *The through-line.* Every extension above is cheap precisely because of the
+> pure/impure split this section opened with. New behaviour lands in
+> `buildSubmission` (a pure function with tests) or in the renderer view (DOM,
+> observable in the running app), and the messy middle — spawn, framing, temp
+> files, reaping — does not have to change. That is what "tested where it can be,
+> honest where it can't" buys you.
