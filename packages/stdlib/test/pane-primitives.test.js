@@ -646,3 +646,69 @@ test('swap-panes! is a no-op for the same pane handle', () => {
   assert.equal(result, false);
   assert.equal(paneA.view, va);
 });
+
+// --- panes-in-spiral-order / permute-panes! ---------------------------------
+// The scripting surface for swap-views / permute-views
+// (plans/PANES-SWAP-PERMUTE.md). The interactive overlay drives the host
+// methods directly; these primitives expose the same mechanism to Lisp.
+
+test('panes-in-spiral-order returns the host panes as a Lisp list', () => {
+  const p1 = createLeafPane({ view: createView({ kind: 'text', name: '1' }) });
+  const p2 = createLeafPane({ view: createView({ kind: 'text', name: '2' }) });
+  const p3 = createLeafPane({ view: createView({ kind: 'text', name: '3' }) });
+  const order = [p1, p2, p3];
+  const prims = createPanePrimitives({
+    currentPane: () => p1,
+    panesInSpiralOrder: () => order,
+  });
+  assert.deepEqual(listToArray(prims['panes-in-spiral-order']()), order);
+});
+
+test('panes-in-spiral-order is nil when the host lacks the method', () => {
+  const prims = createPanePrimitives({ currentPane: () => createLeafPane() });
+  assert.equal(prims['panes-in-spiral-order'](), NIL);
+});
+
+test('permute-panes! forwards a 1-based destination list to the host', () => {
+  let received = null;
+  const prims = createPanePrimitives({
+    currentPane: () => null,
+    permutePanes: (dests) => { received = dests; return true; },
+  });
+  const result = prims['permute-panes!']([cons(3, cons(1, cons(2, NIL)))]);
+  assert.equal(result, true);
+  assert.deepEqual(received, [3, 1, 2]);
+});
+
+test('permute-panes! accepts a JS array of destinations', () => {
+  let received = null;
+  const prims = createPanePrimitives({
+    currentPane: () => null,
+    permutePanes: (dests) => { received = dests; return true; },
+  });
+  assert.equal(prims['permute-panes!']([[2, 1]]), true);
+  assert.deepEqual(received, [2, 1]);
+});
+
+test('permute-panes! is #f when the host lacks the method', () => {
+  const prims = createPanePrimitives({ currentPane: () => null });
+  assert.equal(prims['permute-panes!']([cons(1, cons(2, NIL))]), false);
+});
+
+test('permute-panes! is #f for a non-list argument (host not called)', () => {
+  let called = false;
+  const prims = createPanePrimitives({
+    currentPane: () => null,
+    permutePanes: () => { called = true; return true; },
+  });
+  assert.equal(prims['permute-panes!']([sym('nonsense')]), false);
+  assert.equal(called, false);
+});
+
+test('permute-panes! reflects a host no-op (#f) result', () => {
+  const prims = createPanePrimitives({
+    currentPane: () => null,
+    permutePanes: () => false,
+  });
+  assert.equal(prims['permute-panes!']([cons(1, NIL)]), false);
+});
