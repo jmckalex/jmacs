@@ -51,7 +51,7 @@ const outPath = join(repoRoot, 'docs', 'gnuplot-view-walkthrough.html');
  */
 const PAGE_CSS = `<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-/* Building a gnuplot-view for jmacs — dark developer-docs theme.
+/* Building a gnuplot-view for Godot — dark developer-docs theme.
    Self-contained: page theme + inlined highlight.js atom-one-dark. */
 :root{
   --bg:#161a1f; --bg-page:#1b2026; --bg-panel:#1e2228; --bg-panel-2:#232a31;

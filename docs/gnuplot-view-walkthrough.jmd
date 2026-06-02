@@ -1,4 +1,4 @@
-Title: Building a gnuplot-view for jmacs
+Title: Building a gnuplot-view for Godot
 Author: J. McKenzie Alexander
 Date: 2026-06-02
 Lang: en
@@ -8,10 +8,10 @@ Body classes: gpwt
 
 :::HTML
 <header class="masthead">
-<p class="eyebrow">jmacs · view-kind walkthrough</p>
+<p class="eyebrow">Godot · view-kind walkthrough</p>
 :::
 
-# Building a gnuplot-view for jmacs
+# Building a gnuplot-view for Godot
 
 :::HTML
 <p class="subtitle">An interactive gnuplot notebook, embedded in the editor: one long-lived child process per view, a framed SVG submission protocol, and a custom element that turns each command into a themed, inline cell.</p>
@@ -21,7 +21,7 @@ Body classes: gpwt
 
 <!--TOC-->
 
-## Motivation: an interactive gnuplot notebook inside jmacs
+## Motivation: an interactive gnuplot notebook inside Godot
 
 gnuplot is one of those tools you reach for in bursts. You want to see
 `sin(x)`, then `sin(x), cos(x)`, then the same thing with a title and a tighter
@@ -35,7 +35,7 @@ the editor, has its own dark/light assumptions, and disappears the moment you
 plot again.
 
 What we build in this walkthrough is the middle path: a *gnuplot view* that
-lives /inside/ jmacs as a notebook REPL. One long-lived `gnuplot` child process
+lives /inside/ Godot as a notebook REPL. One long-lived `gnuplot` child process
 per view; an input line at the bottom; and a scrolling transcript above it where
 every command you submit becomes a *cell* holding its result — an inline SVG
 plot, text output from `print`/`show`, or a red error. The plot renders /in the
@@ -83,7 +83,7 @@ matters:
 
 ### Why a notebook, and why these specific design choices
 
-The view deliberately mirrors jmacs's existing *shell view* — same
+The view deliberately mirrors Godot's existing *shell view* — same
 factory-plus-custom-element shape, same hide-not-kill lifecycle — but the
 /interaction model/ is different, and that difference drives every decision in
 the rest of this walkthrough. A shell streams raw pty bytes into an xterm grid;
@@ -228,10 +228,10 @@ if (payload.notInstalled) {
 > real gnuplot 6 — which is also what produced the genuine plots embedded
 > throughout this page.
 
-## Architecture: what a "view kind" actually is in jmacs
+## Architecture: what a "view kind" actually is in Godot
 
 Before any gnuplot code, you have to understand the shape of the hole you are
-filling. In jmacs, the editor does not have one canvas that everything draws
+filling. In Godot, the editor does not have one canvas that everything draws
 into. It has a family of /view kinds/ — text, image, pdf, browser, jukebox,
 directory-tree, shell — and a new kind is not a special case bolted onto the
 editor core. It is an assembly of four small, independently-replaceable parts
@@ -334,7 +334,7 @@ export class GnuplotView extends ViewElement {
 ```
 
 Why split `configure()` (set the callbacks) from `connectedCallback()` (build
-the DOM)? Because a jmacs view is created once and /mounted many times/. The
+the DOM)? Because a Godot view is created once and /mounted many times/. The
 element is constructed and configured eagerly at startup; the actual inner DOM
 and history are not built until the element is first connected to the document.
 `<shell-view>` has the identical configure-then-build split, for the same reason.
@@ -456,7 +456,7 @@ The `spawned` flag lives on the buffer record, not the element, precisely becaus
 the element is re-mounted as the user moves the tab around. If the latch lived on
 the element it would re-fire and spawn a second process.
 
-*Mount-moves hide, they do not kill.* When a tab is dragged out of view, jmacs
+*Mount-moves hide, they do not kill.* When a tab is dragged out of view, Godot
 moves the element to an off-screen "warehouse," firing `disconnectedCallback`.
 For a gnuplot view that callback is /intentionally empty/:
 
@@ -503,7 +503,7 @@ while killing is final and explicit.
 ### The Lisp surface: how the kind becomes reachable
 
 A view kind that the host can build is useless until a user can summon it, and in
-jmacs that last mile is Lisp, not host code. A `gnuplot-mode` with the label
+Godot that last mile is Lisp, not host code. A `gnuplot-mode` with the label
 `"Gnuplot"` exists only to give the modeline something to show — its own comment
 notes the buffer "is shown through the L4 gnuplot view … not the editor view, so
 no text-buffer keymap applies." That a whole view kind is reachable, and
@@ -1033,7 +1033,7 @@ Enter, and a *cell* appears above holding the rendered plot, any text output, or
 red error.
 
 The file is `packages/renderer/src/gnuplot-view.js`. It follows the same
-two-layer shape every L4 singleton view in jmacs uses — a plain
+two-layer shape every L4 singleton view in Godot uses — a plain
 `createGnuplotView(container, options)` factory that builds the DOM and wires the
 behaviour, wrapped by a `GnuplotView extends ViewElement` custom element that
 gives it the hide-not-kill lifecycle.
@@ -1174,7 +1174,7 @@ the arrows, and `C-c` are handled locally and deliberately /not/ forwarded.
 
 ### Theming is a deliberate no-op
 
-jmacs's other singleton views recompute colours when the theme changes — the
+Godot's other singleton views recompute colours when the theme changes — the
 shell view re-reads CSS variables and pushes them into xterm. The gnuplot view is
 the interesting exception: its `applyTheme` is a deliberate no-op.
 
@@ -1252,11 +1252,11 @@ it is /who owns it/.
 
 ### Why this view has to implement history itself
 
-jmacs already has a terminal view (shell v4), and it has full command history —
-Up/Down, reverse-search, the lot. But none of that history code lives in jmacs.
+Godot already has a terminal view (shell v4), and it has full command history —
+Up/Down, reverse-search, the lot. But none of that history code lives in Godot.
 The shell view is an `xterm.js` grid that forwards raw keystrokes straight to a
 child shell; the shell's own `readline`/`ZLE` line editor owns the history ring.
-jmacs is just a dumb pipe in both directions. It never sees a "command" — only
+Godot is just a dumb pipe in both directions. It never sees a "command" — only
 bytes.
 
 The gnuplot view is the opposite shape. Its input line is a plain `<input>`
@@ -1276,8 +1276,8 @@ exactly this:
  */
 ```
 
-> *The jmacs pattern.* Where a child process owns the line editor, forward bytes
-> and keep no state. Where jmacs owns the input element, jmacs owns the history.
+> *The Godot pattern.* Where a child process owns the line editor, forward bytes
+> and keep no state. Where Godot owns the input element, Godot owns the history.
 > The browser view's URL bar follows the same rule. This file is the gnuplot view
 > paying the price of owning its input — but it pays it in twelve lines of pure
 > logic, not a re-implemented line editor.
@@ -1372,14 +1372,14 @@ test('entries returns a copy that cannot mutate internal state', () => {
 });
 ```
 
-> *Design takeaway for jmacs.* When a view owns its own input element, the
+> *Design takeaway for Godot.* When a view owns its own input element, the
 > line-editing logic is yours to write — but keep it DOM-free and pure. The
 > element stays a thin adapter (read `input.value`, write `input.value`, park the
 > caret); the behaviour lives where it can be tested in milliseconds without a
 > render. The same split is why the protocol framing and the `svgHasPlot` check
 > are their own pure modules too.
 
-## Wiring the view kind into jmacs
+## Wiring the view kind into Godot
 
 By this point the two halves exist in isolation: a main-process host
 (`apps/desktop/src/gnuplot.js`) that spawns and drives a `gnuplot` child, and a
@@ -1388,7 +1388,7 @@ notebook. Neither knows about the other, and neither is reachable from inside th
 editor. /Wiring/ is the seam that joins them: it makes `gnuplot` a first-class
 *view kind* alongside `text`, `image`, `shell`, and the rest.
 
-There is no plugin manifest and no registry to append to. In jmacs a view kind is
+There is no plugin manifest and no registry to append to. In Godot a view kind is
 wired by touching a fixed set of seams, each of which answers one question the
 shell asks at a different moment.
 
@@ -1507,7 +1507,7 @@ function nextGnuplotSessionId() {
 
 ### The singleton and SINGLETON_VIEWS
 
-jmacs mounts each non-text view kind as a *single* custom-element instance — a
+Godot mounts each non-text view kind as a *single* custom-element instance — a
 singleton — created once at startup and moved between panes by show/hide rather
 than rebuilt:
 

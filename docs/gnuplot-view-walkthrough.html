@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>Building a gnuplot-view for jmacs</title>
+    <title>Building a gnuplot-view for Godot</title>
 <style>
       pre code.hljs {
         tab-size: 2;
@@ -206,7 +206,7 @@
     </style>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-/* Building a gnuplot-view for jmacs — dark developer-docs theme.
+/* Building a gnuplot-view for Godot — dark developer-docs theme.
    Self-contained: page theme + inlined highlight.js atom-one-dark. */
 :root{
   --bg:#161a1f; --bg-page:#1b2026; --bg-panel:#1e2228; --bg-panel-2:#232a31;
@@ -338,25 +338,25 @@ pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5p
 </head>
   <body class="gpwt">
     <header class="masthead">
-      <p class="eyebrow">jmacs · view-kind walkthrough</p>
-      <h1 data-source-line="14" id="building-a-gnuplot-view-for-jmacs">Building a gnuplot-view for jmacs</h1>
+      <p class="eyebrow">Godot · view-kind walkthrough</p>
+      <h1 data-source-line="14" id="building-a-gnuplot-view-for-godot">Building a gnuplot-view for Godot</h1>
       <p class="subtitle">An interactive gnuplot notebook, embedded in the editor: one long-lived child process per view, a framed SVG submission protocol, and a custom element that turns each command into a themed, inline cell.</p>
       <div class="meta"><span>L4 renderer view kind</span><span>main-process host + IPC bridge</span><span>pure protocol &amp; history modules</span></div>
     </header><nav class="toc" aria-label="Table of contents">
   <h2 class="toc-heading">Contents</h2>
   <ol>
-      <li><a href="#motivation-an-interactive-gnuplot-notebook-inside-jmacs">Motivation: an interactive gnuplot notebook inside jmacs</a></li>
-      <li><a href="#architecture-what-a-view-kind-actually-is-in-jmacs">Architecture: what a "view kind" actually is in jmacs</a></li>
+      <li><a href="#motivation-an-interactive-gnuplot-notebook-inside-godot">Motivation: an interactive gnuplot notebook inside Godot</a></li>
+      <li><a href="#architecture-what-a-view-kind-actually-is-in-godot">Architecture: what a "view kind" actually is in Godot</a></li>
       <li><a href="#driving-gnuplot-the-long-lived-pipe-and-the-svg-protocol">Driving gnuplot: the long-lived pipe and the SVG protocol</a></li>
       <li><a href="#the-session-and-history-data-model">The session and history data model</a></li>
       <li><a href="#the-view-element-a-notebook-over-a-long-lived-gnuplot-child">The view element: a notebook over a long-lived gnuplot child</a></li>
       <li><a href="#command-history-and-recall">Command history and recall</a></li>
-      <li><a href="#wiring-the-view-kind-into-jmacs">Wiring the view kind into jmacs</a></li>
+      <li><a href="#wiring-the-view-kind-into-godot">Wiring the view kind into Godot</a></li>
       <li><a href="#testing-graceful-degradation-and-where-to-take-it-next">Testing, graceful degradation, and where to take it next</a></li>
   </ol>
 </nav>
 
-    <h2 data-source-line="24" id="motivation-an-interactive-gnuplot-notebook-inside-jmacs">Motivation: an interactive gnuplot notebook inside jmacs</h2>
+    <h2 data-source-line="24" id="motivation-an-interactive-gnuplot-notebook-inside-godot">Motivation: an interactive gnuplot notebook inside Godot</h2>
     <p data-source-line="26">gnuplot is one of those tools you reach for in bursts. You want to see
       <code>sin(x)</code>, then <code>sin(x), cos(x)</code>, then the same thing with a title and a tighter
       <code>yrange</code> — each command a small refinement of the last. The natural shape of
@@ -369,7 +369,7 @@ pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5p
       plot again.
     </p>
     <p data-source-line="37">What we build in this walkthrough is the middle path: a <strong data-source-line="37">gnuplot view</strong> that
-      lives <em data-source-line="38">inside</em> jmacs as a notebook REPL. One long-lived <code>gnuplot</code> child process
+      lives <em data-source-line="38">inside</em> Godot as a notebook REPL. One long-lived <code>gnuplot</code> child process
       per view; an input line at the bottom; and a scrolling transcript above it where
       every command you submit becomes a <strong data-source-line="40">cell</strong> holding its result — an inline SVG
       plot, text output from <code>print</code>/<code>show</code>, or a red error. The plot renders <em data-source-line="41">in the
@@ -1097,7 +1097,7 @@ pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5p
    <span class="hljs-string">"g"</span>         'gnuplot})
 </code></pre>
     <h3 data-source-line="84">Why a notebook, and why these specific design choices</h3>
-    <p data-source-line="86">The view deliberately mirrors jmacs's existing <strong data-source-line="86">shell view</strong> — same
+    <p data-source-line="86">The view deliberately mirrors Godot's existing <strong data-source-line="86">shell view</strong> — same
       factory-plus-custom-element shape, same hide-not-kill lifecycle — but the
       <em data-source-line="88">interaction model</em> is different, and that difference drives every decision in
       the rest of this walkthrough. A shell streams raw pty bytes into an xterm grid;
@@ -1229,9 +1229,9 @@ pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5p
         real gnuplot 6 — which is also what produced the genuine plots embedded
         throughout this page.</p>
     </blockquote>
-    <h2 data-source-line="231" id="architecture-what-a-view-kind-actually-is-in-jmacs">Architecture: what a "view kind" actually is in jmacs</h2>
+    <h2 data-source-line="231" id="architecture-what-a-view-kind-actually-is-in-godot">Architecture: what a "view kind" actually is in Godot</h2>
     <p data-source-line="233">Before any gnuplot code, you have to understand the shape of the hole you are
-      filling. In jmacs, the editor does not have one canvas that everything draws
+      filling. In Godot, the editor does not have one canvas that everything draws
       into. It has a family of <em data-source-line="235">view kinds</em> — text, image, pdf, browser, jukebox,
       directory-tree, shell — and a new kind is not a special case bolted onto the
       editor core. It is an assembly of four small, independently-replaceable parts
@@ -1327,7 +1327,7 @@ pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5p
 }
 </code></pre>
     <p data-source-line="336">Why split <code>configure()</code> (set the callbacks) from <code>connectedCallback()</code> (build
-      the DOM)? Because a jmacs view is created once and <em data-source-line="337">mounted many times</em>. The
+      the DOM)? Because a Godot view is created once and <em data-source-line="337">mounted many times</em>. The
       element is constructed and configured eagerly at startup; the actual inner DOM
       and history are not built until the element is first connected to the document.
       <code>&lt;shell-view&gt;</code> has the identical configure-then-build split, for the same reason.
@@ -1437,7 +1437,7 @@ pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5p
     <p data-source-line="455">The <code>spawned</code> flag lives on the buffer record, not the element, precisely because
       the element is re-mounted as the user moves the tab around. If the latch lived on
       the element it would re-fire and spawn a second process.</p>
-    <p data-source-line="459"><strong data-source-line="459">Mount-moves hide, they do not kill.</strong> When a tab is dragged out of view, jmacs
+    <p data-source-line="459"><strong data-source-line="459">Mount-moves hide, they do not kill.</strong> When a tab is dragged out of view, Godot
       moves the element to an off-screen "warehouse," firing <code>disconnectedCallback</code>.
       For a gnuplot view that callback is <em data-source-line="461">intentionally empty</em>:</p>
     <pre data-source-line="463"><code class="language-js"><span class="hljs-comment">/** Hide-not-kill — the gnuplot process stays alive; only the DOM-tree
@@ -1476,7 +1476,7 @@ pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5p
       while killing is final and explicit.</p>
     <h3 data-source-line="503">The Lisp surface: how the kind becomes reachable</h3>
     <p data-source-line="505">A view kind that the host can build is useless until a user can summon it, and in
-      jmacs that last mile is Lisp, not host code. A <code>gnuplot-mode</code> with the label
+      Godot that last mile is Lisp, not host code. A <code>gnuplot-mode</code> with the label
       <code>"Gnuplot"</code> exists only to give the modeline something to show — its own comment
       notes the buffer "is shown through the L4 gnuplot view … not the editor view, so
       no text-buffer keymap applies." That a whole view kind is reachable, and
@@ -4159,7 +4159,7 @@ pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5p
       Enter, and a <strong data-source-line="1032">cell</strong> appears above holding the rendered plot, any text output, or a
       red error.</p>
     <p data-source-line="1035">The file is <code>packages/renderer/src/gnuplot-view.js</code>. It follows the same
-      two-layer shape every L4 singleton view in jmacs uses — a plain
+      two-layer shape every L4 singleton view in Godot uses — a plain
       <code>createGnuplotView(container, options)</code> factory that builds the DOM and wires the
       behaviour, wrapped by a <code>GnuplotView extends ViewElement</code> custom element that
       gives it the hide-not-kill lifecycle.
@@ -4283,7 +4283,7 @@ root.<span class="hljs-title function_">append</span>(inputRow);
       friends alive — exactly the trick the browser view uses for its URL bar. Enter,
       the arrows, and <code>C-c</code> are handled locally and deliberately <em data-source-line="1173">not</em> forwarded.</p>
     <h3 data-source-line="1175">Theming is a deliberate no-op</h3>
-    <p data-source-line="1177">jmacs's other singleton views recompute colours when the theme changes — the
+    <p data-source-line="1177">Godot's other singleton views recompute colours when the theme changes — the
       shell view re-reads CSS variables and pushes them into xterm. The gnuplot view is
       the interesting exception: its <code>applyTheme</code> is a deliberate no-op.</p>
     <pre data-source-line="1181"><code class="language-js"><span class="hljs-comment">/** Re-theme. The plot SVGs bake their own dark background at render
@@ -4352,11 +4352,11 @@ root.<span class="hljs-title function_">append</span>(inputRow);
     <p data-source-line="1250">The interesting question for the gnuplot view is not <em data-source-line="1250">whether</em> to have history —
       it is <em data-source-line="1251">who owns it</em>.</p>
     <h3 data-source-line="1253">Why this view has to implement history itself</h3>
-    <p data-source-line="1255">jmacs already has a terminal view (shell v4), and it has full command history —
-      Up/Down, reverse-search, the lot. But none of that history code lives in jmacs.
+    <p data-source-line="1255">Godot already has a terminal view (shell v4), and it has full command history —
+      Up/Down, reverse-search, the lot. But none of that history code lives in Godot.
       The shell view is an <code>xterm.js</code> grid that forwards raw keystrokes straight to a
       child shell; the shell's own <code>readline</code>/<code>ZLE</code> line editor owns the history ring.
-      jmacs is just a dumb pipe in both directions. It never sees a "command" — only
+      Godot is just a dumb pipe in both directions. It never sees a "command" — only
       bytes.</p>
     <p data-source-line="1262">The gnuplot view is the opposite shape. Its input line is a plain <code>&lt;input&gt;</code>
       element, and gnuplot's own command line does not run inside it. There is no
@@ -4374,8 +4374,8 @@ root.<span class="hljs-title function_">append</span>(inputRow);
  */</span>
 </code></pre>
     <blockquote data-source-line="1279">
-      <p data-source-line="1279"><strong data-source-line="1279">The jmacs pattern.</strong> Where a child process owns the line editor, forward bytes
-        and keep no state. Where jmacs owns the input element, jmacs owns the history.
+      <p data-source-line="1279"><strong data-source-line="1279">The Godot pattern.</strong> Where a child process owns the line editor, forward bytes
+        and keep no state. Where Godot owns the input element, Godot owns the history.
         The browser view's URL bar follows the same rule. This file is the gnuplot view
         paying the price of owning its input — but it pays it in twelve lines of pure
         logic, not a re-implemented line editor.</p>
@@ -4458,14 +4458,14 @@ root.<span class="hljs-title function_">append</span>(inputRow);
 });
 </code></pre>
     <blockquote data-source-line="1375">
-      <p data-source-line="1375"><strong data-source-line="1375">Design takeaway for jmacs.</strong> When a view owns its own input element, the
+      <p data-source-line="1375"><strong data-source-line="1375">Design takeaway for Godot.</strong> When a view owns its own input element, the
         line-editing logic is yours to write — but keep it DOM-free and pure. The
         element stays a thin adapter (read <code>input.value</code>, write <code>input.value</code>, park the
         caret); the behaviour lives where it can be tested in milliseconds without a
         render. The same split is why the protocol framing and the <code>svgHasPlot</code> check
         are their own pure modules too.</p>
     </blockquote>
-    <h2 data-source-line="1382" id="wiring-the-view-kind-into-jmacs">Wiring the view kind into jmacs</h2>
+    <h2 data-source-line="1382" id="wiring-the-view-kind-into-godot">Wiring the view kind into Godot</h2>
     <p data-source-line="1384">By this point the two halves exist in isolation: a main-process host
       (<code>apps/desktop/src/gnuplot.js</code>) that spawns and drives a <code>gnuplot</code> child, and a
       renderer custom element (<code>packages/renderer/src/gnuplot-view.js</code>) that draws the
@@ -4473,7 +4473,7 @@ root.<span class="hljs-title function_">append</span>(inputRow);
       editor. <em data-source-line="1388">Wiring</em> is the seam that joins them: it makes <code>gnuplot</code> a first-class
       <strong data-source-line="1389">view kind</strong> alongside <code>text</code>, <code>image</code>, <code>shell</code>, and the rest.
     </p>
-    <p data-source-line="1391">There is no plugin manifest and no registry to append to. In jmacs a view kind is
+    <p data-source-line="1391">There is no plugin manifest and no registry to append to. In Godot a view kind is
       wired by touching a fixed set of seams, each of which answers one question the
       shell asks at a different moment.</p>
     <figure>
@@ -4577,7 +4577,7 @@ root.<span class="hljs-title function_">append</span>(inputRow);
 }
 </code></pre>
     <h3 data-source-line="1508">The singleton and SINGLETON<sub data-source-line="1508">V</sub>IEWS</h3>
-    <p data-source-line="1510">jmacs mounts each non-text view kind as a <strong data-source-line="1510">single</strong> custom-element instance — a
+    <p data-source-line="1510">Godot mounts each non-text view kind as a <strong data-source-line="1510">single</strong> custom-element instance — a
       singleton — created once at startup and moved between panes by show/hide rather
       than rebuilt:</p>
     <pre data-source-line="1514"><code class="language-js"><span class="hljs-keyword">const</span> gnuplotView = <span class="hljs-comment">/** <span class="hljs-doctag">@type</span> {<span class="hljs-type">*</span>} */</span> (<span class="hljs-variable language_">document</span>.<span class="hljs-title function_">createElement</span>(<span class="hljs-string">'gnuplot-view'</span>));
