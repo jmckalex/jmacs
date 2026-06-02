@@ -72,6 +72,7 @@ export const STDLIB_FILES = Object.freeze([
   'directory-columns.lisp',
   'shell.lisp',
   'gnuplot.lisp',
+  'notebook.lisp',
   'palette.lisp',
   'docs.lisp',
   'help.lisp',

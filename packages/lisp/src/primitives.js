@@ -10,6 +10,7 @@
  */
 
 import { applyProcedure, parametersToList } from './eval.js';
+import { read } from './reader.js';
 import {
   arrayToList,
   cons,
@@ -334,6 +335,13 @@ export function installPrimitives(env, { write }) {
   def('string-suffix?', (a) => {
     arity('string-suffix?', a, 2);
     return str('string-suffix?', a[1]).endsWith(str('string-suffix?', a[0]));
+  });
+  // Parse a string of source into a list of forms — the reader, exposed
+  // to Lisp. Used by the notebook engine to read `(cell …)` forms out of
+  // a buffer's text. The forms are unevaluated; pair with `eval`.
+  def('read-string', (a) => {
+    arity('read-string', a, 1);
+    return arrayToList(read(str('read-string', a[0])));
   });
   def('string=?', (a) => {
     arity('string=?', a, 2);
