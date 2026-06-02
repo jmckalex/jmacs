@@ -136,12 +136,19 @@ export function enterMoveViewsMode(options) {
   }
 
   function onKeyDown(event) {
-    // Modal: swallow every key in capture phase so nothing leaks to the
-    // focused editor / global router. Only the mapped keys do anything.
+    const mapped = mapKey(event);
+    if (!mapped) {
+      // Let modified keys through (Cmd/Ctrl/Alt system shortcuts still
+      // work) but swallow plain keys so stray typing can't reach the
+      // focused editor or the global key router. C-g is already mapped.
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    // Modal: a mapped key is fully consumed.
     event.preventDefault();
     event.stopPropagation();
-    const mapped = mapKey(event);
-    if (!mapped) return;
     const result = reduce(state, mapped);
     state = result.state;
     const { effect } = result;
