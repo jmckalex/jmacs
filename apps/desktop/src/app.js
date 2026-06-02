@@ -2968,6 +2968,26 @@ const interpreter = createInterpreter({
     'open-url!': (args) => {
       const url = String(args[0] ?? '').trim();
       if (url === '') return NIL;
+      const current = session.currentView;
+      // If the active pane already shows a browser, navigate THAT one in
+      // place — don't spawn a duplicate browser view (and don't yank a
+      // browser element over from another pane). Find the live element
+      // showing this view (the leaf-direct singleton or a per-tab
+      // instance) and repaint it at the new URL.
+      if (current && current.kind === 'browser') {
+        current.url = url;
+        current.name = url;
+        for (const el of document.querySelectorAll('browser-view')) {
+          if (/** @type {*} */ (el).buffer === current) {
+            /** @type {*} */ (el).setBuffer(current);
+            break;
+          }
+        }
+        updateModeline();
+        notifyViewsChanged();
+        return NIL;
+      }
+      // The active pane isn't a browser — open a fresh browser there.
       const view = createView({
         kind: 'browser',
         name: url,
