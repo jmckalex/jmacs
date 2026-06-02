@@ -156,3 +156,30 @@
     (when (and (not (nil? src-pane))
                (not (nil? dst-pane)))
       (swap-panes! src-pane dst-pane))))
+
+;; --- numbered swap / permute (plans/PANES-SWAP-PERMUTE.md) -------------
+;; These number every pane with a badge (clockwise spiral from the
+;; top-left pane) and read pane numbers from the keyboard. The move is a
+;; frame-move — panes keep their sizes, contents trade places, and a
+;; browser/pdf/shell pane survives. Reachable from the View menu too,
+;; since a focused <webview> swallows C-x chords.
+
+(defcommand swap-views ()
+  "Swap which view two panes show. Numbers every pane with a badge in its
+   top-left corner; type the two pane numbers, then Enter to swap them.
+   Space confirms an ambiguous number, Delete undoes, Escape cancels.
+   The panes keep their sizes — only their contents trade places. No-op
+   with fewer than two panes."
+  (if (< (length (panes-in-spiral-order)) 2)
+      (show-status! "swap-views: need at least two panes")
+      (enter-move-views-mode! 'swap)))
+
+(defcommand permute-views ()
+  "Rearrange which view every pane shows. Numbers every pane, then reads
+   a destination for pane 1, pane 2, … in turn (the last is filled in
+   automatically). Enter applies the whole rearrangement at once; Delete
+   steps back; Escape cancels. Panes keep their sizes; contents move.
+   No-op with fewer than two panes."
+  (if (< (length (panes-in-spiral-order)) 2)
+      (show-status! "permute-views: need at least two panes")
+      (enter-move-views-mode! 'permute)))

@@ -29,6 +29,9 @@ import {
   parentOf,
   replacePane,
   siblingOf,
+  swapLeaves,
+  permuteLeaves,
+  spiralOrder,
   bumpIdCounterPast,
   SPLIT_HORIZONTAL,
   SPLIT_VERTICAL,
@@ -103,6 +106,7 @@ import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 import { enterAddPaneMode } from './add-pane-mode.js';
+import { enterMoveViewsMode } from './move-view-mode.js';
 import { createTabline } from '@editor/renderer';
 
 const WELCOME = `
@@ -465,6 +469,11 @@ let relayoutHandle = 0;
  *  Re-entering the chord toggles it; a successful click or Escape
  *  clears it via the `exit` shim installed at entry. */
 let addPaneHandle = null;
+
+/** Live handle for an active move-views overlay (swap-views /
+ *  permute-views), or `null` when off. Same toggle/clear lifecycle as
+ *  `addPaneHandle`. */
+let moveViewHandle = null;
 
 /** Recompute the layout of every leaf pane against the current editor-
  *  host bounds and write each leaf's rect to its element. Cheap to call
@@ -2508,7 +2517,12 @@ const paneHost = {
   // gap on the former.)
   moveTab: (srcTlv, srcIdx, dstTlv, dstIdx) =>
     moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx),
-  swapPanes: (paneA, paneB) => swapPaneViews(paneA, paneB),
+  // swap-views / permute-views move the *frames* (swap leaf positions in
+  // the tree, relayout repositions the divs) so view DOM never moves and
+  // webview/pdf/shell panes survive. See plans/PANES-SWAP-PERMUTE.md.
+  swapPanes: (paneA, paneB) => swapPaneFrames(paneA, paneB),
+  permutePanes: (dests) => permutePaneFrames(dests),
+  panesInSpiralOrder: () => spiralOrderedLeaves(),
 };
 
 /** The view-host the Lisp view-primitives operate through. Every
@@ -2702,6 +2716,52 @@ const interpreter = createInterpreter({
         original();
         addPaneHandle = null;
       };
+      return NIL;
+    },
+    // `(enter-move-views-mode! kind)` — enter the swap-views /
+    // permute-views overlay (KIND is 'swap or 'permute). Numbers every
+    // pane and reads digit input over the whole window (so it works with
+    // a browser pane focused); on Enter it moves the frames. Re-entering
+    // toggles the overlay off. See plans/PANES-SWAP-PERMUTE.md.
+    'enter-move-views-mode!': (args) => {
+      if (moveViewHandle && moveViewHandle.active) {
+        moveViewHandle.exit();
+        moveViewHandle = null;
+        return NIL;
+      }
+      const raw = args[0];
+      const name =
+        typeof raw === 'string'
+          ? raw
+          : raw && typeof raw === 'object' && typeof raw.name === 'string'
+            ? raw.name
+            : 'swap';
+      const mode = name === 'permute' ? 'permute' : 'swap';
+      moveViewHandle = enterMoveViewsMode({
+        mode,
+        host: editorHostEl,
+        getRootPane: () => rootPane,
+        onCommit: (assignments) => {
+          moveViewHandle = null;
+          if (mode === 'swap') {
+            const panes = spiralOrderedLeaves();
+            const a = panes[assignments[0] - 1];
+            const b = panes[assignments[1] - 1];
+            if (a && b) swapPaneFrames(a, b);
+          } else {
+            permutePaneFrames(assignments);
+          }
+        },
+      });
+      // Clear the handle on any exit (Escape / click / commit), so the
+      // next entry doesn't try to exit() a dead overlay.
+      if (moveViewHandle) {
+        const original = moveViewHandle.exit;
+        moveViewHandle.exit = () => {
+          original();
+          moveViewHandle = null;
+        };
+      }
       return NIL;
     },
     // Push the *tab-width* setting onto the document root as the
@@ -6704,46 +6764,64 @@ function moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx) {
   return dstTlv;
 }
 
-/** Swap which view PANE-A and PANE-B show. Plain leaves swap their
- *  `.view`; the mount machinery then re-runs for each new leaf-view
- *  pairing so renderer instances + singleton placements catch up.
- *  Tabline leaves swap-as-a-whole — the tabline-view (with all its
- *  tabs) moves to the other leaf. Returns true when the swap
- *  happened, false on a no-op (same leaf, or either handle missing). */
-function swapPaneViews(paneA, paneB) {
+/** Every leaf pane handle in clockwise-spiral badge order (the numbering
+ *  swap-views / permute-views show). Slot 0 is the top-left pane. */
+function spiralOrderedLeaves() {
+  const hostRect = editorHostEl.getBoundingClientRect();
+  const { ordered } = spiralOrder(rootPane, {
+    width: hostRect.width,
+    height: hostRect.height,
+  });
+  return ordered;
+}
+
+/** Swap which view PANE-A and PANE-B show by *moving the frames*: exchange
+ *  the two leaves' positions in the tree and relayout. No view DOM moves —
+ *  relayout only repositions the existing `.pane` divs by id — so a
+ *  browser/pdf/shell guest is never recreated, and the per-leaf maps stay
+ *  valid (the leaf nodes keep their ids + contents, just land in new
+ *  slots; focus follows the view). Returns true on success, false on a
+ *  no-op (same leaf, missing handle, or a non-leaf). */
+function swapPaneFrames(paneA, paneB) {
   if (!paneA || !paneB || paneA === paneB) return false;
   if (paneA.kind !== 'leaf' || paneB.kind !== 'leaf') return false;
-  const va = paneA.view;
-  const vb = paneB.view;
-  paneA.view = vb;
-  paneB.view = va;
-  // Re-mount each via mountKindView. A tabline-view's `mount`
-  // is paneEl-aware and will move its `<tabline-view>` container to
-  // the new pane element; plain-leaf views are routed through
-  // switchToViewIndex's plain-leaf branch via a direct mount here so
-  // the singleton reparent + display:'' logic fires.
+  rootPane = swapLeaves(rootPane, paneA, paneB);
   syncPaneElements();
-  const aEl = paneElements.get(paneA.id);
-  const bEl = paneElements.get(paneB.id);
-  if (paneA.view) {
-    if (isTablineView(paneA.view) && aEl) {
-      mountKindView(paneA.view, { paneEl: aEl });
-    } else {
-      const sing = singletonElementForKind(paneA.view.kind);
-      if (sing && aEl) { aEl.append(sing); sing.style.display = ''; }
-      mountKindView(paneA.view);
-    }
-  }
-  if (paneB.view) {
-    if (isTablineView(paneB.view) && bEl) {
-      mountKindView(paneB.view, { paneEl: bEl });
-    } else {
-      const sing = singletonElementForKind(paneB.view.kind);
-      if (sing && bEl) { bEl.append(sing); sing.style.display = ''; }
-      mountKindView(paneB.view);
-    }
-  }
   refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+  updateModeline();
+  return true;
+}
+
+/** Rearrange every pane's view by moving the frames. DESTS is a 1-based
+ *  destination slot per pane in spiral order: the content of pane K
+ *  (1-based) moves to slot DESTS[K]. DESTS must be a permutation of 1..N.
+ *  Returns true on success, false on a malformed / non-bijective DESTS or
+ *  a mismatched length. Same frame-move guarantees as swapPaneFrames. */
+function permutePaneFrames(dests) {
+  const hostRect = editorHostEl.getBoundingClientRect();
+  const dims = { width: hostRect.width, height: hostRect.height };
+  const { ordered, indexByLeaf } = spiralOrder(rootPane, dims);
+  const n = ordered.length;
+  if (!Array.isArray(dests) || dests.length !== n) return false;
+  // occupantBySlot[slot] = the leaf whose content should land at that
+  // slot. Pane k (ordered[k]) goes to slot dests[k] - 1.
+  const occupantBySlot = new Array(n);
+  const seen = new Set();
+  for (let k = 0; k < n; k += 1) {
+    const dest = dests[k] - 1;
+    if (!Number.isInteger(dest) || dest < 0 || dest >= n || seen.has(dest)) {
+      return false;
+    }
+    seen.add(dest);
+    occupantBySlot[dest] = ordered[k];
+  }
+  rootPane = permuteLeaves(rootPane, indexByLeaf, occupantBySlot);
+  syncPaneElements();
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
   updateModeline();
   return true;
 }
