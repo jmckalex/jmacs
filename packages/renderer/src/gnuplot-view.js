@@ -399,8 +399,17 @@ function createGnuplotView(container, options = {}) {
       });
       return;
     }
-    // C-c interrupts a running plot (the shell-view analog of SIGINT).
-    if (event.key === 'c' && event.ctrlKey && !event.metaKey && !event.altKey) {
+    // C-c interrupts a running plot (the shell-view analog of SIGINT) —
+    // but only at rest. Mid-chord, this C-c is the continuation of a
+    // sequence (e.g. C-x C-c = quit), so it must fall through to the
+    // forwarding block below rather than be swallowed as an interrupt.
+    if (
+      !chordPending() &&
+      event.key === 'c' &&
+      event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
       if (buffer && signalFn && !buffer.ended) {
         event.preventDefault();
         signalFn(buffer.sessionId);
