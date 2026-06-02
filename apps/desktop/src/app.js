@@ -1721,6 +1721,22 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
     }));
     return finalise();
   }
+  // A `.rxlisp` file is a reactive Lisp notebook: open it through the
+  // notebook view, its `(cell …)` source backing `buffer.text` so the
+  // generic save path round-trips it.
+  if (result.notebookKind === true) {
+    views.push(createView({
+      kind: 'notebook',
+      name: result.name,
+      buffer: {
+        text: result.content ?? '',
+        filePath: result.path,
+        name: result.name,
+      },
+      extras: { notebookId: nextNotebookId() },
+    }));
+    return finalise();
+  }
   return false;
 }
 
@@ -2827,10 +2843,10 @@ const interpreter = createInterpreter({
       views.push(createView({
         kind: 'notebook',
         name,
-        extras: {
-          notebookId,
-          text: '',
-        },
+        // The canonical `(cell …)` source lives in buffer.text so the
+        // generic save path works once the user gives it a file.
+        buffer: { text: '', filePath: null, name },
+        extras: { notebookId },
       }));
       switchToViewIndex(views.length - 1);
       return NIL;
@@ -4712,6 +4728,15 @@ function configureNotebookView() {
     },
     chordPending: () =>
       keymapReady && interpreter.call('chord-in-progress?') === true,
+    // A cell edit changed the canonical source (the view already wrote it
+    // into buffer.text). Mark the buffer dirty so C-x C-s saves it and the
+    // modeline shows the unsaved indicator.
+    onSourceChange: (buffer) => {
+      if (buffer) {
+        dirtyBuffers.add(buffer);
+        updateModeline();
+      }
+    },
     ...(keymapReady ? { onKey: dispatchKey } : {}),
   };
 }

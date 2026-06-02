@@ -1,0 +1,7 @@
+(cell radius 5)
+
+(cell area (* 3.14159 (* (ref 'radius) (ref 'radius))))
+
+(cell circumference (* 2 (* 3.14159 (ref 'radius))))
+
+(cell summary (str "r=" (ref 'radius) ", area=" (ref 'area)))

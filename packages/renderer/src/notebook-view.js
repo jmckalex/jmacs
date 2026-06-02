@@ -19,14 +19,18 @@
  *   - `evaluate(id, source)` — run the reactive engine for notebook `id`
  *     on `source`; returns a plain array of
  *     `{ name, output, state, error, deps }` (one per cell, source order).
- *   - `onSourceChange(text)` — the canonical source changed (mirror into
- *     `buffer.text`, mark the buffer dirty). Not called on initial load.
+ *   - `onSourceChange(buffer)` — the canonical source changed; the host
+ *     marks `buffer` dirty (the view already wrote the new text into
+ *     `buffer.text`). Not called on initial load.
  *   - `onKey(key)` / `chordPending()` — chord passthrough so the host
  *     keymap (C-x b, M-x, prefix chords) fires while a cell editor is
  *     focused, exactly like the gnuplot input.
  *
- * Buffer shape:
- *   { kind: 'notebook', name, notebookId, text, filePath? }
+ * View shape (the object passed to `setBuffer`):
+ *   { kind: 'notebook', name, notebookId, buffer: { text, filePath? } }
+ * The canonical `(cell …)` source lives in `view.buffer.text` so the
+ * generic save path (`view.buffer.text` → `view.buffer.filePath`) just
+ * works; results live only in the DOM.
  */
 
 import { keyEventToString } from './keymap.js';
@@ -228,8 +232,9 @@ function createNotebookView(container, options = {}) {
   cellsEl.className = 'notebook-cells';
   root.append(cellsEl);
 
-  /** The buffer currently shown, or null. */
-  let buffer = null;
+  /** The view currently shown, or null. Its `buffer.text` is the
+   *  canonical source; `notebookId` keys the engine. */
+  let view = null;
   /** Cell records: { root, nameInput, exprInput, resultEl, badgeEl }. */
   const cells = [];
 
@@ -263,11 +268,18 @@ function createNotebookView(container, options = {}) {
    */
   function recompute(markDirty) {
     const source = serializeCells(readModel());
-    if (markDirty && onSourceChange) onSourceChange(source);
-    if (!evaluateFn || !buffer) return;
+    // Always mirror the canonical source into the backing buffer so a
+    // save captures exactly what's shown (including the seeded starter
+    // cells of a brand-new notebook). Only mark the buffer *dirty* on a
+    // real edit — never on the initial load.
+    if (view && view.buffer) view.buffer.text = source;
+    if (markDirty && onSourceChange && view && view.buffer) {
+      onSourceChange(view.buffer);
+    }
+    if (!evaluateFn || !view) return;
     let results = null;
     try {
-      results = evaluateFn(buffer.notebookId, source);
+      results = evaluateFn(view.notebookId, source);
     } catch {
       results = null;
     }
@@ -405,17 +417,19 @@ function createNotebookView(container, options = {}) {
     return cell;
   }
 
-  /** Show a notebook buffer: rebuild the cells from its source. */
+  /** Show a notebook view: rebuild the cells from its source. */
   function setBuffer(next) {
-    buffer = next;
+    view = next;
     cells.length = 0;
     cellsEl.replaceChildren();
-    if (!buffer) {
+    if (!view) {
       headerLabel.textContent = 'notebook';
       return;
     }
-    headerLabel.textContent = buffer.name ?? 'notebook';
-    const parsed = cellsFromSource(buffer.text ?? '');
+    headerLabel.textContent = view.name ?? 'notebook';
+    const source =
+      view.buffer && typeof view.buffer.text === 'string' ? view.buffer.text : '';
+    const parsed = cellsFromSource(source);
     const seed = parsed.length
       ? parsed
       : [
