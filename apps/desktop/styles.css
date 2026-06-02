@@ -3399,6 +3399,7 @@ gnuplot-view,
 
 .gnuplot-cell-stdout,
 .gnuplot-cell-stderr,
+.gnuplot-cell-warn,
 .gnuplot-cell-empty {
   margin: 0;
   font-family: var(--font-mono, ui-monospace, Menlo, monospace);
@@ -3413,6 +3414,11 @@ gnuplot-view,
 
 .gnuplot-cell-stderr {
   color: var(--ansi-red, #ff6b8a);
+}
+
+/* A non-fatal gnuplot notice shown beneath a successful plot. */
+.gnuplot-cell-warn {
+  color: var(--ansi-yellow, #e2b340);
 }
 
 .gnuplot-cell-empty {
