@@ -15,9 +15,11 @@
   ;; time the entered name is delivered.
   (let ((id (current-notebook-id)))
     (when (not (nil? id))
+      ;; `name` is the entered string, or nil if cancelled. An empty name
+      ;; is a harmless no-op in the primitive, so we only guard cancel.
       (minibuffer-read "Rename notebook to: "
         (lambda (name)
-          (when (and (not (nil? name)) (not (= name "")))
+          (when (not (nil? name))
             (rename-notebook-by-id! id name)))))))
 
 (defcommand next-notebook ()
