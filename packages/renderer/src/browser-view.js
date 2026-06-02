@@ -317,10 +317,18 @@ export class BrowserView extends ViewElement {
     });
 
     // Outer-element keydown: forward chord keys through onKey so Godot's
-    // keymap fires while the browser has focus. Non-handled keys fall
-    // through so typing into the URL input works normally.
+    // keymap fires while the browser chrome has focus. Two guards keep it
+    // from eating ordinary input:
+    //  - the URL bar is a native text field, so it keeps ALL its keys
+    //    (forwarding plain typing both swallows the keystroke and spams
+    //    "no-buffer-here", since a browser view has no buffer to
+    //    self-insert into — handle-key throws and dispatchKey consumes);
+    //  - elsewhere in the chrome, only genuine chords (Ctrl/Alt/Meta held)
+    //    forward; bare keys fall through.
     this.addEventListener('keydown', (event) => {
       if (MODIFIERS.has(event.key)) return;
+      if (event.target === urlInput) return;
+      if (!event.ctrlKey && !event.altKey && !event.metaKey) return;
       const onKey = this._options && this._options.onKey;
       if (typeof onKey === 'function' && onKey(keyEventToString(event))) {
         event.preventDefault();
