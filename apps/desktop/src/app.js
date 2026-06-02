@@ -64,6 +64,7 @@ import {
   createReplView,
   ShellView,
   GnuplotView,
+  NotebookView,
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
@@ -250,6 +251,51 @@ let gnuplotSessionCounter = 0;
 function nextGnuplotSessionId() {
   gnuplotSessionCounter += 1;
   return `gnuplot-${gnuplotSessionCounter}-${Date.now()}`;
+}
+
+/** Monotonic id source for notebook views. The reactive engine keys its
+ *  per-notebook record (cell values, dep graph) off this id. */
+let notebookCounter = 0;
+function nextNotebookId() {
+  notebookCounter += 1;
+  return `notebook-${notebookCounter}-${Date.now()}`;
+}
+
+/** Rename the notebook with NOTEBOOK-ID to NAME (its display + buffer
+ *  name; the file on disk is unchanged). Keyed by id, not by "current
+ *  view", so it's robust to focus moving during a minibuffer prompt. */
+function renameNotebookById(id, name) {
+  const n = String(name ?? '').trim();
+  if (n === '') return;
+  const view = views.find((v) => v.kind === 'notebook' && v.notebookId === id);
+  if (!view) return;
+  view.name = n;
+  if (view.buffer) view.buffer.name = n;
+  updateModeline();
+  notifyViewsChanged();
+  // Refresh every notebook view's header picker so the new name shows in
+  // the dropdown — the inline ✎ button refreshes its own, but the M-x
+  // command path (rename-notebook-by-id!) has no view handle, so do it for
+  // all notebook elements here.
+  for (const el of document.querySelectorAll('notebook-view')) {
+    if (typeof el.refreshHeader === 'function') el.refreshHeader();
+  }
+}
+
+/** Switch to the next (DELTA +1) or previous (-1) open notebook, wrapping
+ *  around. If the current view isn't a notebook, jump to the first/last. */
+function cycleNotebook(delta) {
+  const notebooks = views.filter((v) => v.kind === 'notebook');
+  if (notebooks.length === 0) return;
+  const current = views[currentViewIndex];
+  const here = current && current.kind === 'notebook' ? notebooks.indexOf(current) : -1;
+  const next =
+    here === -1
+      ? delta > 0
+        ? 0
+        : notebooks.length - 1
+      : (here + delta + notebooks.length) % notebooks.length;
+  switchToViewIndex(views.indexOf(notebooks[next]));
 }
 
 /** A change to the view list or the current index. Refreshes the
@@ -1712,6 +1758,22 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
     }));
     return finalise();
   }
+  // A `.rxlisp` file is a reactive Lisp notebook: open it through the
+  // notebook view, its `(cell …)` source backing `buffer.text` so the
+  // generic save path round-trips it.
+  if (result.notebookKind === true) {
+    views.push(createView({
+      kind: 'notebook',
+      name: result.name,
+      buffer: {
+        text: result.content ?? '',
+        filePath: result.path,
+        name: result.name,
+      },
+      extras: { notebookId: nextNotebookId() },
+    }));
+    return finalise();
+  }
   return false;
 }
 
@@ -2803,6 +2865,51 @@ const interpreter = createInterpreter({
         },
       }));
       switchToViewIndex(views.length - 1);
+      return NIL;
+    },
+    // Open a reactive Lisp notebook: a sheet of `(cell NAME EXPR)` cells
+    // shown through the L4 notebook view, where editing one cell
+    // recomputes everything downstream. Like `open-gnuplot-buffer!`,
+    // each call creates a fresh view; switch to an existing one with
+    // C-x b. In-memory for now (M2); a `.rxlisp` file backing comes with
+    // persistence (M3).
+    'open-notebook-buffer!': () => {
+      const notebookId = nextNotebookId();
+      const sequence = views.filter((v) => v.kind === 'notebook').length + 1;
+      const name = sequence === 1 ? '*notebook*' : `*notebook*<${sequence}>`;
+      views.push(createView({
+        kind: 'notebook',
+        name,
+        // The canonical `(cell …)` source lives in buffer.text so the
+        // generic save path works once the user gives it a file.
+        buffer: { text: '', filePath: null, name },
+        extras: { notebookId },
+      }));
+      switchToViewIndex(views.length - 1);
+      return NIL;
+    },
+    // The current notebook's id, or nil. Captured by the rename command
+    // *before* it prompts, so the rename targets the right notebook even
+    // after the minibuffer moves focus.
+    'current-notebook-id': () => {
+      const view = session.currentView;
+      return view && view.kind === 'notebook' && typeof view.notebookId === 'string'
+        ? view.notebookId
+        : NIL;
+    },
+    // Rename the notebook with this id (display + buffer name; the file on
+    // disk is unchanged — use save-as to rename that).
+    'rename-notebook-by-id!': (args) => {
+      renameNotebookById(String(args[0] ?? ''), String(args[1] ?? ''));
+      return NIL;
+    },
+    // Cycle among open notebooks (also reachable via the header picker).
+    'next-notebook!': () => {
+      cycleNotebook(1);
+      return NIL;
+    },
+    'previous-notebook!': () => {
+      cycleNotebook(-1);
       return NIL;
     },
     // Open a Finder-style column-view buffer rooted at `path`. Same
@@ -4642,6 +4749,80 @@ editorPaneElement().append(gnuplotView);
 gnuplotView.style.display = 'none';
 themeListeners.add(() => gnuplotView.applyTheme());
 
+// The notebook view — a reactive Lisp notebook (a sheet of `(cell …)`
+// cells). Per-view-instance like gnuplot: this singleton is the
+// leaf-direct element and the factory is reused by the tabline mount
+// path for per-tab `<notebook-view>` instances. Evaluation is in-process
+// through the shared interpreter's reactive engine, so the only
+// callbacks are `evaluate` (run the engine for this notebook id, marshal
+// the per-cell records to plain JS) and chord-key forwarding so the host
+// keymap fires while a cell editor is focused. `onSourceChange` (mirror
+// the canonical source into a backing buffer) is wired with persistence.
+const NOTEBOOK_KEYS = {
+  name: keyword('name'),
+  output: keyword('output'),
+  state: keyword('state'),
+  error: keyword('error'),
+  graphic: keyword('graphic'),
+  deps: keyword('deps'),
+};
+/** Marshal one Lisp cell-record map into a plain JS object. */
+function marshalNotebookCell(m) {
+  return {
+    name: String(m.get(NOTEBOOK_KEYS.name) ?? ''),
+    output: String(m.get(NOTEBOOK_KEYS.output) ?? ''),
+    state: String(m.get(NOTEBOOK_KEYS.state) ?? 'ok'),
+    error: String(m.get(NOTEBOOK_KEYS.error) ?? ''),
+    graphic: String(m.get(NOTEBOOK_KEYS.graphic) ?? ''),
+    deps: listToArray(m.get(NOTEBOOK_KEYS.deps) ?? NIL).map(String),
+  };
+}
+function configureNotebookView() {
+  return {
+    evaluate: (id, source) => {
+      try {
+        const cells = listToArray(
+          interpreter.call('notebook-eval!', id, source)
+        );
+        return cells.map(marshalNotebookCell);
+      } catch {
+        return [];
+      }
+    },
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // A cell edit changed the canonical source (the view already wrote it
+    // into buffer.text). Mark the buffer dirty so C-x C-s saves it and the
+    // modeline shows the unsaved indicator.
+    onSourceChange: (buffer) => {
+      if (buffer) {
+        dirtyBuffers.add(buffer);
+        updateModeline();
+      }
+    },
+    // The notebook picker: list the open notebooks and switch to one.
+    listNotebooks: () =>
+      views
+        .filter((v) => v.kind === 'notebook')
+        .map((v) => ({ id: v.notebookId, name: v.name ?? '*notebook*' })),
+    selectNotebook: (id) => {
+      const idx = views.findIndex(
+        (v) => v.kind === 'notebook' && v.notebookId === id
+      );
+      if (idx !== -1) switchToViewIndex(idx);
+    },
+    renameNotebook: (id, name) => renameNotebookById(id, name),
+    // Forward editor chords (C-x b, M-x, …) to the host keymap. Always
+    // present and guarded at call time, so it works regardless of whether
+    // the keymap had finished loading when this factory ran.
+    onKey: (key) => keymapReady && dispatchKey(key),
+  };
+}
+const notebookView = /** @type {*} */ (document.createElement('notebook-view'));
+notebookView.configure(configureNotebookView());
+editorPaneElement().append(notebookView);
+notebookView.style.display = 'none';
+
 // --- kind dispatch -----------------------------------------------------
 //
 // Phase 4a: the `kindRegistry` abstraction is gone. Every view kind is
@@ -4676,6 +4857,7 @@ const SINGLETON_VIEWS = [
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
   { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
+  { kind: 'notebook',          el: notebookView,          releasesBuffer: false },
 ];
 
 /** Side-effect bundle for mounting a text view: rebind the cursor,
@@ -4777,6 +4959,18 @@ function disposeKindView(view, context) {
       }
     } catch {
       // Process is already gone — nothing to do.
+    }
+    return;
+  }
+  if (view.kind === 'notebook') {
+    // No subprocess; just drop the engine's stored notebook record so a
+    // closed notebook's cell values don't linger.
+    if (typeof view.notebookId === 'string') {
+      try {
+        if (keymapReady) interpreter.call('notebook-forget!', view.notebookId);
+      } catch {
+        // Engine not ready / already gone — nothing to do.
+      }
     }
     return;
   }
@@ -4994,6 +5188,7 @@ function perKindConfigureFactory(kind) {
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
+    case 'notebook':          return configureNotebookView;
     default:                  return null;
   }
 }

@@ -62,6 +62,15 @@ export { ShellView } from './shell-view.js';
 export { GnuplotView } from './gnuplot-view.js';
 export { createHistory } from './gnuplot-history.js';
 export {
+  NotebookView,
+  serializeCells,
+  cellsFromSource,
+  topLevelForms,
+  shouldForwardChord,
+  badgeForState,
+  moveItem,
+} from './notebook-view.js';
+export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,
   JukeboxView,
