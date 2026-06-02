@@ -1,10 +1,16 @@
-(cell radius 5)
+(cell size 60)
 
-(cell area (* 3.14159 radius radius))
+(cell angle 20)
 
-(cell circumference (* 2 3.14159 radius))
+(cell hue 210)
 
-(cell summary (str "r=" radius ", area=" area))
+(cell area (* size size))
 
-(cell dot (str "<svg width='90' height='90'><circle cx='45' cy='45' r='"
-               (* radius 5) "' fill='#5aa9e6'/></svg>"))
+(cell summary (str "size=" size ", angle=" angle ", hue=" hue))
+
+(cell square
+  (str "<svg width='140' height='140' viewBox='0 0 140 140'>"
+       "<rect x='" (- 70 (/ size 2)) "' y='" (- 70 (/ size 2)) "'"
+       " width='" size "' height='" size "' rx='6'"
+       " fill='hsl(" hue ", 70%, 55%)'"
+       " transform='rotate(" angle " 70 70)'/></svg>"))
