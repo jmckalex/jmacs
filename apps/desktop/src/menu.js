@@ -73,6 +73,50 @@ export function buildAppMenu(modeMenu, onCommand) {
       submenu: [
         { label: 'Toggle REPL', click: () => onCommand('toggle-repl') },
         { type: 'separator' },
+        // Pane + view operations. These are also on the C-x … keys, but a
+        // focused browser view (an Electron <webview>) swallows every
+        // keystroke, so the menu is the only way to drive them from a
+        // browser pane. The menu dispatch (onMenuCommand) focuses the
+        // editor first — releasing the webview's key grab — then runs the
+        // command against the current pane.
+        {
+          label: 'Split Pane Horizontally  (C-x 3)',
+          click: () => onCommand('split-horizontal'),
+        },
+        {
+          label: 'Split Pane Vertically  (C-x 2)',
+          click: () => onCommand('split-vertical'),
+        },
+        {
+          label: 'Close Pane  (C-x 0)',
+          click: () => onCommand('delete-pane'),
+        },
+        {
+          label: 'Make Pane Fill Window  (C-x 1)',
+          click: () => onCommand('delete-other-panes'),
+        },
+        {
+          label: 'Cycle to Next Pane  (C-x o)',
+          click: () => onCommand('other-pane'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Next View  (C-x →)',
+          click: () => onCommand('next-view'),
+        },
+        {
+          label: 'Previous View  (C-x ←)',
+          click: () => onCommand('previous-view'),
+        },
+        {
+          label: 'Switch View…  (C-x b)',
+          click: () => onCommand('switch-view'),
+        },
+        {
+          label: 'Kill Current View  (C-x k)',
+          click: () => onCommand('kill-view'),
+        },
+        { type: 'separator' },
         { role: 'togglefullscreen' },
         { type: 'separator' },
         { role: 'resetZoom' },
