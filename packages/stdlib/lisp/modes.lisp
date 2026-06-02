@@ -17,7 +17,6 @@
 (define markdown-mode-map {})
 (define latex-mode-map {})
 (define makefile-mode-map {})
-(define buffer-menu-mode-map {})
 
 ;; --- the modes ---------------------------------------------------------
 (define-mode fundamental-mode
@@ -53,14 +52,6 @@
   ;; spaces are a hard error from `make`. Pin :indent-tabs? on so the
   ;; Tab key produces a real `\t` regardless of the global setting.
   :indent-tabs? #t)
-
-;; The buffer-menu mode — the *Buffer List* buffer is plain text with a
-;; keymap that turns RET/d/u/x/g/q into menu actions. No suffix is
-;; registered; the mode is set explicitly when `buffer-menu` opens the
-;; list. See `buffer-menu.lisp`.
-(define-mode buffer-menu-mode
-  :name "BufMenu"
-  :keymap 'buffer-menu-mode-map)
 
 ;; The shell mode — a `shell`-kind buffer is shown through the L4 shell
 ;; view, not the editor view, so no text-buffer keymap applies. The
