@@ -1506,9 +1506,9 @@ const env = { ...process.env, GNUTERM: 'unknown' };</code></pre>
     userText,                         // verbatim, unmodified
     'unset output',                   // flush + close the SVG (mandatory)
     "set print '-'",
-    `print ${quoteGnuplot(sentinelOut)}`,   // "submission complete" -> stdout
-    "set print '-2'",
-    `print ${quoteGnuplot(sentinelErr)}`,   // "stderr flushed"       -> stderr
+    `print ${quoteGnuplot(sentinelOut)}`,        // "submission complete" -> stdout
+    "set print '/dev/stderr'",
+    `print ${quoteGnuplot(sentinelErr)}`,        // "stderr flushed"       -> stderr
     "set print '-'",
     '',                               // trailing newline
   ].join('\n');
@@ -1584,20 +1584,24 @@ const env = { ...process.env, GNUTERM: 'unknown' };</code></pre>
     So the epilogue prints a sentinel down <em>each</em> stream:
   </p>
 
-  <pre><code class="language-lisp">set print '-'      ; route print to stdout (fd 1)
-print 'OUT_TOKEN'  ; "submission complete" lands on stdout
-set print '-2'     ; route print to stderr (fd 2)
-print 'ERR_TOKEN'  ; "all stderr for this submission has been flushed"
-set print '-'      ; restore stdout for the next submission</code></pre>
+  <pre><code class="language-lisp">set print '-'            ; route print to stdout (fd 1)
+print 'OUT_TOKEN'        ; "submission complete" lands on stdout
+set print '/dev/stderr'  ; route print to stderr (fd 2)
+print 'ERR_TOKEN'        ; "all stderr for this submission has been flushed"
+set print '-'            ; restore stdout for the next submission</code></pre>
 
   <p>
-    The <code>'-2'</code> argument to <code>set print</code> is gnuplot's
-    spelling of "fd 2 / stderr." Because the error sentinel is printed
-    <em>after</em> any diagnostics gnuplot emitted for the command, seeing it
-    guarantees the stderr stream has been fully drained for this submission. A
-    submission is therefore considered complete only when <strong>both</strong>
-    sentinels have been observed — which is exactly what the demultiplexer
-    enforces.
+    gnuplot sends <code>print</code> output wherever <code>set print</code> last
+    pointed: <code>'-'</code> is stdout, and the <code>/dev/stderr</code> device
+    is fd 2. (One trap, verified against gnuplot&nbsp;6: <code>set print '-2'</code>
+    does <em>not</em> mean "fd 2" — gnuplot opens a <em>file literally named
+    "-2"</em>, so the stderr sentinel vanishes into that file and the submission
+    hangs forever. The code uses <code>/dev/stderr</code>.) Because the error
+    sentinel is printed <em>after</em> any diagnostics gnuplot emitted for the
+    command, seeing it guarantees the stderr stream has been fully drained for
+    this submission. A submission is therefore considered complete only when
+    <strong>both</strong> sentinels have been observed — which is exactly what
+    the demultiplexer enforces.
   </p>
 
   <h3>The demultiplexer: a pure reducer over byte chunks</h3>
@@ -4255,23 +4259,27 @@ assert.deepEqual(result, { stdout: 'partial-output line', stderr: '' });</code><
     <li>
       <strong>The 512-byte threshold.</strong>
       <code>EMPTY_SVG_THRESHOLD = 512</code> assumes a real plot clears it and a
-      <code>set</code>-only header-only SVG does not. The exact byte sizes a live
-      gnuplot emits are unmeasured here; the constant is a reasoned guess, not a
-      calibrated one.
+      <code>set</code>-only header-only SVG does not. Measured against gnuplot&nbsp;6:
+      <code>plot sin(x)</code> emits ~19.6&nbsp;KB while a <code>set</code>-only
+      submission stays a few hundred bytes, so the 512-byte threshold separates
+      them cleanly.
     </li>
     <li>
-      <strong>Stream mapping of <code>set print '-2'</code>.</strong> The framing
-      relies on <code>set print '-2'</code> routing the stderr sentinel to fd 2 on
-      the installed build. That is documented gnuplot behaviour, but it has not
-      been observed end-to-end on this machine.
+      <strong>Stream mapping of the stderr sentinel.</strong> Verified against
+      gnuplot&nbsp;6 — and the original <code>set print '-2'</code> turned out to be a
+      bug (gnuplot opened a file named "-2" instead of routing to fd 2, hanging
+      every submission). The code now uses <code>set print '/dev/stderr'</code>,
+      and a real-binary smoke test confirms both sentinels arrive and submissions
+      complete.
     </li>
     <li>
       <strong>The dark palette.</strong> The theme block uses
       <code>set linetype</code> redefinitions (rather than the deprecated
       <code>set style increment</code>) so that a bare <code>plot sin(x),
       cos(x)</code> picks up two distinct colours without explicit
-      <code>ls</code>. Whether that actually applies on the user's gnuplot version
-      is a live check.
+      <code>ls</code>. Verified on gnuplot&nbsp;6: the first line emits as
+      <code>stroke='rgb( 90, 169, 230)'</code> — i.e. <code>#5aa9e6</code>,
+      linetype&nbsp;1 from the theme block.
     </li>
     <li>
       <strong><code>dynamic</code> scaling and the absence of a
@@ -4283,15 +4291,15 @@ assert.deepEqual(result, { stdout: 'partial-output line', stderr: '' });</code><
   </ul>
 
   <p>
-    Concretely, the morning checklist is: (1) the not-installed card —
-    <em>checkable right now</em> with <kbd>C-c g</kbd>, no install needed, and
-    this is the live state on the build machine; (2) install gnuplot, run
+    The protocol has since been smoke-tested against gnuplot&nbsp;6 (the
+    <code>-2</code> hang found and fixed; plot rendering, completion framing,
+    text and error cells, and the colour palette all confirmed). What remains is
+    the in-<em>app</em> checklist: open the view with <kbd>C-c g</kbd>, run
     <code>plot sin(x)</code> then <code>plot sin(x), cos(x)</code> and confirm a
-    dark SVG renders inline with two distinct line colours; (3) run a few
+    dark SVG renders inline with two distinct line colours; then run a few
     commands and confirm Up/Down recall, that <code>print "hi"</code> yields a
-    text-only cell, that a typo like <code>plto sin(x)</code> yields a red error
-    cell, and that killing the buffer reaps the process via
-    <code>disposeKindView</code>.
+    text-only cell, that <code>plto sin(x)</code> yields a red error cell, and
+    that killing the buffer reaps the process via <code>disposeKindView</code>.
   </p>
 
   <h3>Where to take it next</h3>

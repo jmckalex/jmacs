@@ -97,7 +97,7 @@ export function sentinelsFor(id, nonce) {
  *   unset output                — flush + close the SVG (mandatory)
  *   set print '-'               — force `print` to stdout
  *   print '<stdout sentinel>'   — "submission complete"
- *   set print '-2'              — force `print` to stderr
+ *   set print '/dev/stderr'     — route `print` to stderr (fd 2)
  *   print '<stderr sentinel>'   — "all stderr for this submission flushed"
  *   set print '-'               — restore stdout for the next submission
  *
@@ -130,7 +130,12 @@ export function buildSubmission(params) {
     'unset output',
     "set print '-'",
     `print ${quoteGnuplot(sentinelOut)}`,
-    "set print '-2'",
+    // gnuplot routes `print` to stderr via the /dev/stderr device. NOT
+    // `set print '-2'` — that opens a FILE literally named "-2" (verified
+    // against gnuplot 6), so the stderr sentinel would never reach the
+    // host and the submission would hang. `'-'` is stdout; `/dev/stderr`
+    // is fd 2 on macOS/Linux.
+    "set print '/dev/stderr'",
     `print ${quoteGnuplot(sentinelErr)}`,
     "set print '-'",
     '', // trailing newline

@@ -52,9 +52,9 @@ test('buildSubmission frames the user text with output redirect and both sentine
   const themeIdx = prog.indexOf(DARK_THEME_BLOCK.split('\n')[0]);
   const userIdx = prog.indexOf('plot sin(x)');
   assert.ok(themeIdx !== -1 && themeIdx < userIdx);
-  // stdout sentinel goes to '-', stderr sentinel to '-2', then restore.
+  // stdout sentinel goes to '-' (stdout); stderr sentinel to /dev/stderr.
   assert.match(prog, /set print '-'\nprint 'OUT_TOKEN'/);
-  assert.match(prog, /set print '-2'\nprint 'ERR_TOKEN'/);
+  assert.match(prog, /set print '\/dev\/stderr'\nprint 'ERR_TOKEN'/);
   // Trailing newline so the last print actually runs.
   assert.ok(prog.endsWith('\n'));
 });
