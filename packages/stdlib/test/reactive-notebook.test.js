@@ -177,6 +177,25 @@ test('an erroring cell is caught, its state goes :error', async () => {
   );
 });
 
+// --- a worked example (the shape of sample-documents/demo.rxlisp) -------
+
+test('a numeric chain computes and reflows on an upstream edit', async () => {
+  const i = await engine();
+  const src =
+    '(cell radius 5) ' +
+    "(cell area (* 3.14159 (* (ref 'radius) (ref 'radius)))) " +
+    "(cell circumference (* 2 (* 3.14159 (ref 'radius))))";
+  i.evaluate('(define nb (notebook-from-source "' + src + '"))');
+  assert.equal(i.evaluate("(get (get nb :values {}) 'radius nil)"), 5);
+  assert.equal(i.evaluate("(get (get nb :values {}) 'area nil)"), 78.53975);
+  assert.equal(i.evaluate("(get (get nb :values {}) 'circumference nil)"), 31.4159);
+  // Edit radius → 10; area and circumference reflow.
+  const edited = src.replace('(cell radius 5)', '(cell radius 10)');
+  i.evaluate('(set! nb (notebook-update-source nb "' + edited + '"))');
+  assert.equal(i.evaluate("(get (get nb :values {}) 'area nil)"), 314.159);
+  assert.equal(i.evaluate("(get (get nb :values {}) 'circumference nil)"), 62.8318);
+});
+
 // --- host bridge: notebook-eval! marshalling ----------------------------
 
 test('notebook-eval! returns marshalled per-cell records', async () => {
