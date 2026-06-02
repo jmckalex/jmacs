@@ -65,6 +65,7 @@ import {
   ShellView,
   GnuplotView,
   NotebookView,
+  ViewListView,
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
@@ -2834,6 +2835,16 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.indexOf(view));
       return NIL;
     },
+    // Open the *View List* — a clickable HTML table of every open view
+    // (the replacement for the old text *Buffer List*). There is one
+    // such view; this finds or creates it, switches the current pane to
+    // it, and refreshes its rows so they reflect the live view list.
+    'open-view-list!': () => {
+      const view = ensureViewListView();
+      switchToViewIndex(views.indexOf(view));
+      viewListView.refresh();
+      return NIL;
+    },
     // Open a shell view — a child process running the user's default
     // shell ($SHELL, falling back to /bin/zsh) with a transcript and
     // an input line. The process is spawned by the host the first time
@@ -4685,6 +4696,67 @@ directoryTreeView.configure(configureDirectoryTreeView());
 editorPaneElement().append(directoryTreeView);
 directoryTreeView.style.display = 'none';
 
+// The view-list view — a clickable HTML table of every open view (the
+// *View List*, replacing the old text *Buffer List*). The element pulls
+// its rows from getViews() on every render, so the host keeps it live by
+// calling refresh() on notifyViewsChanged.
+
+/** Plain-JS records for the view-list — one per open view, with a stable
+ *  id so selection isn't ambiguous when two views share a name. Mirrors
+ *  viewHost.listViewRecords (the Lisp `list-views`) but returns JS. */
+function viewListRecords() {
+  const paneByView = new Map();
+  for (const leaf of leafPanes(rootPane)) {
+    let v = leaf.view;
+    while (v && isTablineView(v)) {
+      const child = tablineActiveChild(v);
+      if (!child) break;
+      if (!paneByView.has(child)) paneByView.set(child, leaf.id);
+      v = child;
+    }
+    if (v && !isTablineView(v) && !paneByView.has(v)) paneByView.set(v, leaf.id);
+  }
+  const current = session.currentView;
+  return views.map((view) => {
+    const buffer = view.buffer;
+    const major = buffer ? buffer.majorMode : null;
+    const mode =
+      major && typeof major.get === 'function' ? major.get(keyword('name')) : null;
+    return {
+      id: view.id,
+      name: view.name ?? '',
+      kind: view.kind,
+      mode: typeof mode === 'string' ? mode : null,
+      lines: buffer && typeof buffer.lineCount === 'number' ? buffer.lineCount : 0,
+      pane: paneByView.get(view) ?? null,
+      file: viewFilePath(view) ?? null,
+      modified: buffer ? dirtyBuffers.has(buffer) : false,
+      current: view === current,
+    };
+  });
+}
+
+function configureViewListView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    getViews: viewListRecords,
+    selectView: (id) => {
+      const view = views.find((v) => v.id === id);
+      if (view) switchToView(view);
+    },
+    killView: (id) => {
+      const idx = views.findIndex((v) => v.id === id);
+      if (idx !== -1) killViewAtIndex(idx);
+    },
+  };
+}
+const viewListView = /** @type {*} */ (document.createElement('view-list-view'));
+viewListView.configure(configureViewListView());
+editorPaneElement().append(viewListView);
+viewListView.style.display = 'none';
+
 // The directory columns-view — Finder-style horizontal browser.
 // Click a folder → spawns a column to its right; click a file →
 // trailing column becomes a preview pane for the file. Double-click
@@ -4930,6 +5002,7 @@ const SINGLETON_VIEWS = [
   { kind: 'pdf',               el: pdfView,               releasesBuffer: false },
   // browser is per-instance (browserElementByView) — not a singleton.
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
+  { kind: 'view-list',         el: viewListView,          releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
   { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
@@ -5276,6 +5349,7 @@ function perKindConfigureFactory(kind) {
     case 'browser':           return configureBrowserView;
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
+    case 'view-list':         return configureViewListView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
     case 'notebook':          return configureNotebookView;
@@ -6144,6 +6218,17 @@ function ensureDirectoryTreeViewForPath(rootPath) {
   return view;
 }
 
+/** Find the single *View List* view, or build it and push it into
+ *  `views`. There is only ever one (it lists all the others), so this is
+ *  a find-or-create by kind rather than by name. */
+function ensureViewListView() {
+  const existing = views.find((v) => v.kind === 'view-list');
+  if (existing) return existing;
+  const view = createView({ kind: 'view-list', name: '*View List*' });
+  views.push(view);
+  return view;
+}
+
 /** Find an existing directory-columns view for ROOTPATH or build a
  *  fresh one and push it into `views`. Companion to
  *  `ensureDirectoryTreeViewForPath`. */
@@ -6746,6 +6831,9 @@ const sessionController = createSession({
 let restoring = false;
 onViewsChanged = () => {
   refreshPaneTabStrips();
+  // Keep the *View List* table live: opening, killing, renaming or
+  // switching a view changes what the list should show.
+  viewListView.refresh();
   if (!restoring) sessionController.save();
 };
 

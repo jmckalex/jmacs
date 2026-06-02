@@ -70,6 +70,7 @@ export {
   badgeForState,
   moveItem,
 } from './notebook-view.js';
+export { ViewListView, kindLabel, fileLabel } from './view-list-view.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,

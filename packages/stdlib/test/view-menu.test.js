@@ -1,11 +1,13 @@
 /**
- * @file Tests for the `*Buffer List*` (`buffer-menu`) feature, post
- * view/buffer split. The host is mocked: a small in-test view registry
- * stands in for the desktop app's list, and `list-views`,
- * `switch-to-view!`, `new-view!` and `kill-view!` are wired against
- * it. The L2 buffer the tests pass to `createBufferPrimitives` is
- * repointed at the active view's buffer through the shared session —
- * exactly how the desktop app does it.
+ * @file Tests for the *View List* (`view-list` / `buffer-menu`). The list
+ * is now a host-rendered clickable HTML table (a `view-list`-kind view —
+ * see packages/renderer/src/view-list-view.js), not a text buffer, so the
+ * Lisp side is thin: the `view-list` command and its `buffer-menu` alias
+ * both call the host primitive `open-view-list!`, and `C-x C-b` is bound
+ * to `buffer-menu`. These tests stub `open-view-list!` against a counter
+ * and assert the commands and keybinding reach it. (The table's rendering
+ * and its kind/file labelling are unit-tested in the renderer:
+ * packages/renderer/test/view-list-view.test.js.)
  */
 
 import { test } from 'node:test';
@@ -61,6 +63,9 @@ async function buildEditor(seed = [{ name: 'alpha.txt', text: 'alpha' }]) {
   };
   const switches = [];
   const kills = [];
+  // The host primitive the *View List* commands call. The real one
+  // creates/switches to the `view-list` view; here we just count calls.
+  let openViewListCalls = 0;
 
   const recordFor = (entry) => {
     const m = new Map();
@@ -152,6 +157,11 @@ async function buildEditor(seed = [{ name: 'alpha.txt', text: 'alpha' }]) {
     primitives: {
       ...createBufferPrimitives(session),
       ...createViewPrimitives(viewHost),
+      // The *View List* host primitive, stubbed to count calls.
+      'open-view-list!': () => {
+        openViewListCalls += 1;
+        return NIL;
+      },
       // Filler primitives so the rest of the standard library can load.
       'start-buffer-switcher!': () => NIL,
       'open-file!': () => NIL,
@@ -212,6 +222,7 @@ async function buildEditor(seed = [{ name: 'alpha.txt', text: 'alpha' }]) {
     registry,
     switches,
     kills,
+    openViewListCalls: () => openViewListCalls,
     currentName: () => registry[currentIndex].view.name,
     currentBuffer: () => registry[currentIndex].view.buffer,
   };
@@ -219,47 +230,23 @@ async function buildEditor(seed = [{ name: 'alpha.txt', text: 'alpha' }]) {
 
 const press = (interpreter, key) => interpreter.call('handle-key', key);
 
-test('buffer-menu opens a *Buffer List* buffer', async () => {
+test('view-list opens the *View List* via open-view-list!', async () => {
   const editor = await buildEditor([
     { name: 'alpha.txt', text: 'one' },
     { name: 'beta.txt', text: 'two' },
   ]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  assert.equal(editor.currentName(), '*Buffer List*');
+  assert.equal(editor.openViewListCalls(), 0);
+  editor.interpreter.evaluate('(view-list)');
+  assert.equal(editor.openViewListCalls(), 1);
 });
 
-test('buffer-menu renders one row per open buffer', async () => {
-  const editor = await buildEditor([
-    { name: 'alpha.txt', text: 'a' },
-    { name: 'beta.txt', text: 'b' },
-    { name: 'gamma.txt', text: 'c' },
-  ]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  const text = editor.currentBuffer().text;
-  const lines = text.split('\n').filter((l) => l.length > 0);
-  // One header line + one row per buffer in the registry. After
-  // buffer-menu runs the registry includes *Buffer List* itself.
-  const header = lines[0];
-  assert.ok(header.includes('Name'), `header was: ${header}`);
-  const rows = lines.slice(1);
-  // Four buffers: alpha, beta, gamma, *Buffer List*.
-  assert.equal(rows.length, 4);
-  assert.ok(rows.some((r) => r.includes('alpha.txt')));
-  assert.ok(rows.some((r) => r.includes('beta.txt')));
-  assert.ok(rows.some((r) => r.includes('*Buffer List*')));
-});
-
-test('buffer-menu sets buffer-menu-mode on *Buffer List*', async () => {
+test('buffer-menu is an alias that opens the *View List*', async () => {
   const editor = await buildEditor();
   editor.interpreter.evaluate('(buffer-menu)');
-  assert.ok(
-    editor.interpreter.evaluate(
-      '(eq? (buffer-major-mode) buffer-menu-mode)'
-    )
-  );
+  assert.equal(editor.openViewListCalls(), 1);
 });
 
-test('C-x C-b is bound to buffer-menu', async () => {
+test('C-x C-b is bound to buffer-menu and opens the *View List*', async () => {
   const editor = await buildEditor();
   assert.ok(
     editor.interpreter.evaluate(
@@ -268,156 +255,16 @@ test('C-x C-b is bound to buffer-menu', async () => {
   );
   press(editor.interpreter, 'C-x');
   press(editor.interpreter, 'C-b');
-  assert.equal(editor.currentName(), '*Buffer List*');
+  assert.equal(editor.openViewListCalls(), 1);
 });
 
-test('buffer-menu cursor lands on the first row, not the header', async () => {
-  const editor = await buildEditor([{ name: 'alpha.txt', text: 'x' }]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  // The current line text should be a buffer row, not the column header.
-  const line = editor.interpreter.evaluate('(current-line-text)');
-  assert.ok(typeof line === 'string');
-  assert.ok(!line.includes('Name'), `header line: ${line}`);
-  assert.ok(line.length > 0);
-});
-
-test('RET selects the buffer on the current row', async () => {
-  const editor = await buildEditor([
-    { name: 'alpha.txt', text: 'one' },
-    { name: 'beta.txt', text: 'two' },
-  ]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  // First row is the first buffer in registry order — alpha.
-  press(editor.interpreter, 'enter');
-  assert.equal(editor.currentName(), 'alpha.txt');
-});
-
-test('d marks the current row for delete', async () => {
-  const editor = await buildEditor([
-    { name: 'alpha.txt', text: 'one' },
-    { name: 'beta.txt', text: 'two' },
-  ]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  press(editor.interpreter, 'd');
-  const lines = editor.currentBuffer().text.split('\n');
-  // The first row (alpha.txt) should now start with 'D'.
-  const alphaLine = lines.find((l) => l.includes('alpha.txt'));
-  assert.ok(alphaLine, 'alpha row exists');
-  assert.equal(alphaLine[0], 'D');
-});
-
-test('u unmarks a row', async () => {
-  const editor = await buildEditor([
-    { name: 'alpha.txt', text: 'one' },
-    { name: 'beta.txt', text: 'two' },
-  ]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  press(editor.interpreter, 'd'); // mark alpha
-  // d also advanced to the next line; go back up to the marked line.
-  press(editor.interpreter, 'up');
-  press(editor.interpreter, 'u'); // unmark
-  const lines = editor.currentBuffer().text.split('\n');
-  const alphaLine = lines.find((l) => l.includes('alpha.txt'));
-  assert.equal(alphaLine[0], '.');
-});
-
-test('x kills every marked buffer and refreshes', async () => {
-  const editor = await buildEditor([
-    { name: 'alpha.txt', text: 'one' },
-    { name: 'beta.txt', text: 'two' },
-    { name: 'gamma.txt', text: 'three' },
-  ]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  press(editor.interpreter, 'd'); // mark alpha (and step to beta)
-  press(editor.interpreter, 'd'); // mark beta (and step to gamma)
-  press(editor.interpreter, 'x'); // execute
-  assert.deepEqual(editor.kills, ['alpha.txt', 'beta.txt']);
-  // After refresh, the menu is still current and only gamma + the
-  // menu remain.
-  assert.equal(editor.currentName(), '*Buffer List*');
-  const lines = editor.currentBuffer().text.split('\n');
-  assert.ok(!lines.some((l) => l.includes('alpha.txt')));
-  assert.ok(!lines.some((l) => l.includes('beta.txt')));
-  assert.ok(lines.some((l) => l.includes('gamma.txt')));
-});
-
-test('g refreshes the list', async () => {
-  const editor = await buildEditor([
-    { name: 'alpha.txt', text: 'one' },
-  ]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  // Mutate the registry directly, then refresh.
-  editor.registry.push({
-    view: createView({
-      kind: 'text',
-      name: 'late.txt',
-      buffer: createBuffer('', { name: 'late.txt' }),
-    }),
-    mode: null,
-    lineCount: 1,
-    file: null,
-    modified: false,
-  });
-  press(editor.interpreter, 'g');
-  const lines = editor.currentBuffer().text.split('\n');
-  assert.ok(lines.some((l) => l.includes('late.txt')));
-});
-
-test('q returns to the buffer that was current when the menu opened', async () => {
-  const editor = await buildEditor([
-    { name: 'alpha.txt', text: 'one' },
-    { name: 'beta.txt', text: 'two' },
-  ]);
-  // Make beta current first; then open the menu from beta.
-  editor.interpreter.evaluate('(switch-to-view! "beta.txt")');
-  assert.equal(editor.currentName(), 'beta.txt');
-  editor.interpreter.evaluate('(buffer-menu)');
-  assert.equal(editor.currentName(), '*Buffer List*');
-  press(editor.interpreter, 'q');
-  assert.equal(editor.currentName(), 'beta.txt');
-});
-
-test('the menu buffer name and mode-map binding match the spec', async () => {
+test('view-list and buffer-menu are registered commands', async () => {
   const editor = await buildEditor();
-  // The mode-map binds the documented keys.
-  for (const [key, sym] of [
-    ['enter', 'buffer-menu-select'],
-    ['d', 'buffer-menu-mark-delete'],
-    ['k', 'buffer-menu-mark-delete'],
-    ['u', 'buffer-menu-unmark'],
-    ['x', 'buffer-menu-execute'],
-    ['g', 'buffer-menu-refresh'],
-    ['q', 'buffer-menu-quit'],
-  ]) {
+  for (const name of ['view-list', 'buffer-menu']) {
     assert.ok(
-      editor.interpreter.evaluate(
-        `(eq? (get buffer-menu-mode-map ${JSON.stringify(key)}) (quote ${sym}))`
-      ),
-      `expected ${key} -> ${sym}`
+      editor.interpreter.evaluate(`(command-registered? (quote ${name}))`),
+      `expected ${name} to be a command`
     );
   }
 });
 
-test('a row shows the modified flag for a dirty buffer', async () => {
-  const editor = await buildEditor([
-    { name: 'alpha.txt', text: 'one', modified: true },
-    { name: 'clean.txt', text: 'two', modified: false },
-  ]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  const lines = editor.currentBuffer().text.split('\n');
-  const alphaLine = lines.find((l) => l.includes('alpha.txt'));
-  const cleanLine = lines.find((l) => l.includes('clean.txt'));
-  // Column 0 is the action mark, column 3 is the modified flag (after
-  // the action mark and a two-space gap).
-  assert.equal(alphaLine[3], '*');
-  assert.equal(cleanLine[3], '.');
-});
-
-test('the file column shows the buffer file path', async () => {
-  const editor = await buildEditor([
-    { name: 'main.js', text: 'x', file: '/path/to/main.js' },
-  ]);
-  editor.interpreter.evaluate('(buffer-menu)');
-  const text = editor.currentBuffer().text;
-  assert.ok(text.includes('/path/to/main.js'), `text: ${text}`);
-});

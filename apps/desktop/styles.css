@@ -2496,6 +2496,173 @@ directory-tree-view,
   padding: 2px 14px;
 }
 
+/* --- view-list-view -------------------------------------------------- */
+/* The *View List*: a clickable HTML table of every open view, replacing
+   the old fixed-width text *Buffer List*. Click a row to switch to that
+   view; the trailing ✕ kills it. Mirrors the directory-tree-view shell
+   (header + scrolling body) and uses the project tokens. */
+
+view-list-view,
+.view-list-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.view-list-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.view-list-header-label {
+  flex: 1 1 auto;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.view-list-refresh {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.view-list-refresh:hover {
+  color: var(--fg);
+  background: #ffffff0a;
+}
+
+.view-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.view-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.view-list-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  background: var(--bg-editor);
+  padding: 8px 12px;
+  border-bottom: 1px solid #ffffff14;
+  white-space: nowrap;
+}
+
+.view-list-row {
+  cursor: pointer;
+  user-select: none;
+}
+
+.view-list-row > td {
+  padding: 5px 12px;
+  border-bottom: 1px solid #ffffff0a;
+  white-space: nowrap;
+}
+
+.view-list-row:hover {
+  background: #ffffff0a;
+}
+
+.view-list-row.is-current {
+  background: #ffffff14;
+}
+
+.view-list-row.is-current .view-list-name {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* Modified dot — a tight fixed column. */
+.view-list-modified {
+  width: 1em;
+  text-align: center;
+  color: var(--accent);
+}
+
+.view-list-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22ch;
+}
+
+.view-list-kind {
+  color: var(--fg-dim);
+}
+
+.view-list-lines {
+  text-align: right;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.view-list-pane {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.view-list-file {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 36ch;
+  direction: rtl;        /* keep the tail (the filename) visible when clipped */
+  text-align: left;
+}
+
+.view-list-kill {
+  width: 1.5em;
+  text-align: center;
+}
+
+.view-list-kill-btn {
+  border: none;
+  background: transparent;
+  color: transparent;    /* revealed on row hover */
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.view-list-row:hover .view-list-kill-btn {
+  color: var(--fg-dim);
+}
+
+.view-list-kill-btn:hover {
+  color: #ff6b6b;
+  background: #ffffff0a;
+}
+
 /* --- directory columns-view ------------------------------------------ */
 /* Finder-style horizontal browser. Each column is one directory
    listing; clicking a folder appends a column to its right (so the
