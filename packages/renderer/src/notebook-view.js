@@ -220,20 +220,49 @@ function createNotebookView(container, options = {}) {
     typeof options.chordPending === 'function' ? options.chordPending : () => false;
   const onSourceChange =
     typeof options.onSourceChange === 'function' ? options.onSourceChange : null;
+  const listNotebooks =
+    typeof options.listNotebooks === 'function' ? options.listNotebooks : null;
+  const selectNotebook =
+    typeof options.selectNotebook === 'function' ? options.selectNotebook : null;
 
   const root = doc.createElement('div');
   root.className = 'notebook-view';
   root.tabIndex = -1;
   container.append(root);
 
-  // Header: an icon + the notebook name + an "add cell" button.
+  // Header: an icon + a notebook picker (upper-left, switches which
+  // notebook is shown) + an "add cell" button.
   const header = doc.createElement('div');
   header.className = 'notebook-header';
   const headerIcon = doc.createElement('i');
   headerIcon.className = 'fa-solid fa-table-cells';
-  const headerLabel = doc.createElement('span');
-  headerLabel.className = 'notebook-header-label';
-  headerLabel.textContent = 'notebook';
+  const notebookSelect = doc.createElement('select');
+  notebookSelect.className = 'notebook-select';
+  notebookSelect.title = 'Switch notebook';
+  // Refresh the option list from the host's open notebooks, selecting the
+  // one this view is showing. Rebuilt on open and whenever the picker is
+  // about to drop down, so it's always current.
+  function refreshNotebookOptions() {
+    const list = listNotebooks ? listNotebooks() : [];
+    notebookSelect.replaceChildren();
+    const entries =
+      list.length > 0
+        ? list
+        : view
+          ? [{ id: view.notebookId, name: view.name ?? 'notebook' }]
+          : [];
+    for (const nb of entries) {
+      const opt = doc.createElement('option');
+      opt.value = nb.id;
+      opt.textContent = nb.name;
+      notebookSelect.append(opt);
+    }
+    if (view && view.notebookId) notebookSelect.value = view.notebookId;
+  }
+  notebookSelect.addEventListener('mousedown', refreshNotebookOptions);
+  notebookSelect.addEventListener('change', () => {
+    if (selectNotebook && notebookSelect.value) selectNotebook(notebookSelect.value);
+  });
   const addBtn = doc.createElement('button');
   addBtn.className = 'notebook-add-cell';
   addBtn.type = 'button';
@@ -243,7 +272,7 @@ function createNotebookView(container, options = {}) {
     const cell = addCell({ name: '', expr: '' }, true);
     cell.nameInput.focus();
   });
-  header.append(headerIcon, headerLabel, addBtn);
+  header.append(headerIcon, notebookSelect, addBtn);
   root.append(header);
 
   // The column of cells.
@@ -415,6 +444,8 @@ function createNotebookView(container, options = {}) {
     nameInput.setAttribute('autocomplete', 'off');
     nameInput.placeholder = 'name';
     nameInput.value = init.name ?? '';
+    // Auto-size to the name so long names ("circumference") aren't clipped.
+    nameInput.size = Math.max(4, nameInput.value.length);
 
     const exprInput = doc.createElement('textarea');
     exprInput.className = 'notebook-cell-expr';
@@ -441,6 +472,7 @@ function createNotebookView(container, options = {}) {
 
     const onInput = () => {
       autosize(exprInput);
+      nameInput.size = Math.max(4, nameInput.value.length);
       cell.root.dataset.state = 'stale';
       badgeEl.textContent = '◌';
       badgeEl.className = 'notebook-badge notebook-badge-stale';
@@ -462,11 +494,8 @@ function createNotebookView(container, options = {}) {
     view = next;
     cells.length = 0;
     cellsEl.replaceChildren();
-    if (!view) {
-      headerLabel.textContent = 'notebook';
-      return;
-    }
-    headerLabel.textContent = view.name ?? 'notebook';
+    refreshNotebookOptions();
+    if (!view) return;
     const source =
       view.buffer && typeof view.buffer.text === 'string' ? view.buffer.text : '';
     const parsed = cellsFromSource(source);

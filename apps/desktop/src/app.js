@@ -4737,7 +4737,21 @@ function configureNotebookView() {
         updateModeline();
       }
     },
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // The notebook picker: list the open notebooks and switch to one.
+    listNotebooks: () =>
+      views
+        .filter((v) => v.kind === 'notebook')
+        .map((v) => ({ id: v.notebookId, name: v.name ?? '*notebook*' })),
+    selectNotebook: (id) => {
+      const idx = views.findIndex(
+        (v) => v.kind === 'notebook' && v.notebookId === id
+      );
+      if (idx !== -1) switchToViewIndex(idx);
+    },
+    // Forward editor chords (C-x b, M-x, …) to the host keymap. Always
+    // present and guarded at call time, so it works regardless of whether
+    // the keymap had finished loading when this factory ran.
+    onKey: (key) => keymapReady && dispatchKey(key),
   };
 }
 const notebookView = /** @type {*} */ (document.createElement('notebook-view'));

@@ -3556,6 +3556,22 @@ notebook-view,
   overflow-wrap: anywhere;
 }
 
+/* The notebook picker — switches which open notebook is shown. */
+.notebook-select {
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid #ffffff1f;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12px;
+  max-width: 40ch;
+  cursor: pointer;
+}
+.notebook-select:hover {
+  border-color: var(--accent);
+}
+
 .notebook-add-cell {
   margin-left: auto;
   background: var(--bg-chrome, #2a2f3a);
@@ -3634,7 +3650,9 @@ notebook-view,
   font-weight: 600;
   padding: 0 0 1px;
   outline: none;
-  width: 12ch;
+  /* Width follows the `size` attribute the view keeps in sync with the
+     name, so long names ("circumference") aren't clipped. */
+  min-width: 4ch;
 }
 .notebook-cell-name:focus {
   border-bottom-color: color-mix(in srgb, var(--accent) 60%, transparent);
