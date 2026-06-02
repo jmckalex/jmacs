@@ -311,9 +311,16 @@ function createGnuplotView(container, options = {}) {
         return;
       }
     }
-    // Forward chords (C-x b, M-x, …) to the host keymap. Plain typing
-    // and the modifier keys themselves fall through to the input.
-    if (onKey) {
+    // Forward editor chords (C-x b, M-x, …) to the host keymap — but ONLY
+    // keys held with Ctrl or Alt, the Emacs chord modifiers. Plain typing,
+    // Backspace, the arrows, Shift, and Cmd-based edits (⌘A/⌘C/⌘V) stay in
+    // the input as native text editing. Forwarding a plain key would route
+    // it to handle-key, which self-inserts into a buffer this non-text view
+    // doesn't have — the "no-buffer-here" error.
+    const bareModifier =
+      event.key === 'Shift' || event.key === 'Control' ||
+      event.key === 'Alt' || event.key === 'Meta';
+    if (onKey && !bareModifier && (event.ctrlKey || event.altKey)) {
       const key = keyEventToString(event);
       if (key && onKey(key)) {
         event.preventDefault();
