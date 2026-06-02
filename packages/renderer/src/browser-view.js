@@ -269,13 +269,17 @@ export class BrowserView extends ViewElement {
       try { webview.loadURL(target); } catch { /* not ready */ }
     });
 
-    // Webview: did-navigate → update URL input + nav buttons.
+    // Webview: did-navigate → update URL input + nav buttons, and record
+    // the live URL on the buffer so a later repaint (e.g. when the element
+    // is moved between panes and the guest is re-created) restores the
+    // page the user is actually on, not the URL it was first opened at.
     webview.addEventListener('did-navigate', (event) => {
       const next =
         (event && /** @type {*} */ (event).url) ||
         (typeof webview.getURL === 'function' ? webview.getURL() : '');
       if (typeof next === 'string' && next !== '') {
         urlInput.value = next;
+        if (this._buffer) this._buffer.url = next;
       }
       this._refreshNavButtons();
     });
@@ -285,7 +289,10 @@ export class BrowserView extends ViewElement {
         const next = typeof webview.getURL === 'function'
           ? webview.getURL()
           : '';
-        if (typeof next === 'string' && next !== '') urlInput.value = next;
+        if (typeof next === 'string' && next !== '') {
+          urlInput.value = next;
+          if (this._buffer) this._buffer.url = next;
+        }
       } catch { /* ignore */ }
       this._refreshNavButtons();
     });
@@ -363,17 +370,25 @@ export class BrowserView extends ViewElement {
     if (this._webview === null || this._urlInput === null) return;
     const url = this._urlForBuffer();
     this._urlInput.value = url;
+    // Drive navigation through the `src` ATTRIBUTE rather than loadURL.
+    // The attribute lives on the element, so when the webview's guest is
+    // re-created — which Chromium does whenever the <webview> element is
+    // moved in the DOM, e.g. the singleton being re-parented into a pane
+    // by switchToViewIndex — the new guest reloads THIS url. A transient
+    // loadURL would be lost across that recreation, which is exactly why
+    // open-url! used to leave the view stuck at about:blank. Compare with
+    // what the webview is actually showing (getURL) so we only navigate
+    // when it's stale — no spurious reload on a plain tab/pane switch.
+    let showing = '';
     try {
-      // Prefer loadURL when the webview is attached; falls back to the
-      // `src` attribute (which Chromium picks up the same way).
-      if (typeof /** @type {*} */ (this._webview).loadURL === 'function') {
-        /** @type {*} */ (this._webview).loadURL(url);
-      } else {
-        this._webview.setAttribute('src', url);
-      }
+      showing =
+        typeof /** @type {*} */ (this._webview).getURL === 'function'
+          ? /** @type {*} */ (this._webview).getURL()
+          : '';
     } catch {
-      // Webview not ready yet — fall back to the attribute so Chromium
-      // picks it up on attach.
+      showing = '';
+    }
+    if (showing !== url) {
       this._webview.setAttribute('src', url);
     }
     this._refreshNavButtons();
