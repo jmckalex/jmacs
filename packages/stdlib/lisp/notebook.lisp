@@ -187,6 +187,68 @@
     ((eq? (cdr (car edges)) name) (-remove-edges-to name (cdr edges)))
     (else (cons (car edges) (-remove-edges-to name (cdr edges))))))
 
+;; --- bare-name resolution --------------------------------------------
+;;
+;; Cells reference each other by bare name — `(* pi radius radius)` rather
+;; than `(* pi (ref 'radius) (ref 'radius))`. Before a cell's form is
+;; evaluated, every symbol that names another cell is rewritten to
+;; `(ref 'name)`, so dependency tracking and cell isolation are unchanged:
+;; `ref` still does the lookup and records the read. The rewrite respects
+;; `quote`/`quasiquote` and the lambda/let/let* binders, so a locally-bound
+;; variable that happens to share a cell's name is left alone. Writing
+;; `(ref 'name)` explicitly still works.
+
+(define (-rewrite-refs form names bound)
+  "Rewrite bare cell-name symbols in FORM to (ref 'name). NAMES are the
+   notebook's cell names; BOUND are locally-bound symbols to leave alone."
+  (cond
+    ((symbol? form)
+     (if (and (-member-eq? form names) (not (-member-eq? form bound)))
+         (list 'ref (list 'quote form))
+         form))
+    ((not (pair? form)) form)
+    ((or (eq? (car form) 'quote) (eq? (car form) 'quasiquote)) form)
+    ((eq? (car form) 'lambda)
+     (let ((params (-param-names (cadr form))))
+       (cons 'lambda
+             (cons (cadr form)
+                   (-rewrite-each (cddr form) names (append params bound))))))
+    ((or (eq? (car form) 'let) (eq? (car form) 'let*))
+     (-rewrite-let form names bound))
+    (else (-rewrite-each form names bound))))
+
+(define (-rewrite-each forms names bound)
+  "Rewrite every element of the list FORMS in turn."
+  (cond
+    ((nil? forms) (list))
+    ((pair? forms)
+     (cons (-rewrite-refs (car forms) names bound)
+           (-rewrite-each (cdr forms) names bound)))
+    (else (-rewrite-refs forms names bound))))
+
+(define (-rewrite-let form names bound)
+  "Rewrite a (let ((n v) …) body…) or let* form — the binding names are
+   locally bound in the body (and, for let*, conservatively in the values
+   too via the outer BOUND)."
+  (let* ((bindings (cadr form))
+         (binding-names (map (lambda (b) (car b)) bindings))
+         (new-bindings (map (lambda (b)
+                              (list (car b)
+                                    (-rewrite-refs (cadr b) names bound)))
+                            bindings))
+         (inner (append binding-names bound)))
+    (cons (car form)
+          (cons new-bindings
+                (-rewrite-each (cddr form) names inner)))))
+
+(define (-param-names params)
+  "The symbols bound by a lambda parameter list (handles a rest arg)."
+  (cond
+    ((nil? params) (list))
+    ((symbol? params) (list params))
+    ((pair? params) (cons (car params) (-param-names (cdr params))))
+    (else (list))))
+
 ;; --- engine: evaluating a cell ---------------------------------------
 
 (define (eval-cell-form cell)
@@ -195,11 +257,14 @@
    errors and reports them as :state :error."
   (let* ((name (get cell :name nil))
          (form (get cell :form nil))
+         ;; Resolve bare cell-names to (ref 'name) before evaluating.
+         (names (-names (get *engine-notebook* :cells (list))))
+         (rewritten (-rewrite-refs form names (list)))
          (previous-trace *ref-trace*)
          (previous-cell *current-cell*))
     (set! *ref-trace* (list))
     (try
-      (let* ((value (with-current-cell name (lambda () (eval form))))
+      (let* ((value (with-current-cell name (lambda () (eval rewritten))))
              (deps (-extract-deps name *ref-trace*)))
         (set! *ref-trace* previous-trace)
         (set! *current-cell* previous-cell)

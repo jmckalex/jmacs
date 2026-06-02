@@ -1,8 +1,8 @@
 # The reactive Lisp notebook
 
 A **notebook** is a sheet of named cells, each holding a Lisp expression.
-A cell can read another cell's value with `(ref 'name)`, and editing one
-cell recomputes everything downstream — spreadsheet / Observable style.
+A cell reads another cell's value **by bare name**, and editing one cell
+recomputes everything downstream — spreadsheet / Observable style.
 
 ## Opening one
 
@@ -11,13 +11,19 @@ cell recomputes everything downstream — spreadsheet / Observable style.
 
 ## Cells
 
-The canonical source is a sequence of `(cell NAME EXPR)` forms:
+The canonical source is a sequence of `(cell NAME EXPR)` forms. A cell
+refers to another just by writing its name:
 
 ```lisp
 (cell radius 5)
-(cell area (* 3.14159 (* (ref 'radius) (ref 'radius))))
-(cell summary (str "r=" (ref 'radius) ", area=" (ref 'area)))
+(cell area (* 3.14159 radius radius))
+(cell summary (str "r=" radius ", area=" area))
 ```
+
+Bare names are rewritten to `(ref 'name)` before evaluation, so the
+explicit `(ref 'name)` form still works too. The rewrite respects local
+bindings — a `lambda` / `let` variable that happens to share a cell's
+name shadows it as usual.
 
 Each cell in the view is a **name field**, a **multi-line expression
 editor**, a **result panel** (`→ value`), and a **state badge**:
@@ -30,8 +36,8 @@ editor**, a **result panel** (`→ value`), and a **state badge**:
 | ⟳ | `cycle` — part of a dependency loop |
 
 Dependencies are discovered **at run time**: whatever a cell actually
-reads via `(ref 'name)` becomes its dependency (so a `(ref …)` inside a
-branch only counts when that branch runs). The engine topologically
+reads becomes its dependency (so a name read only inside a branch counts
+only when that branch runs). The engine topologically
 sorts the graph (Kahn's algorithm), recomputes in order, and flags any
 dependency cycle instead of looping forever. A cell's body is evaluated
 in the global interpreter but its name is **not** defined globally —

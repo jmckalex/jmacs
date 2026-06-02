@@ -177,14 +177,56 @@ test('an erroring cell is caught, its state goes :error', async () => {
   );
 });
 
+// --- bare-name resolution -----------------------------------------------
+
+test('cells can read each other by bare name (no explicit ref)', async () => {
+  const i = await engine();
+  i.evaluate('(define nb (notebook-from-source "(cell x 3) (cell y (* x 4))"))');
+  assert.equal(i.evaluate("(get (get nb :values {}) 'y nil)"), 12);
+  // and the dependency is still recorded
+  assert.equal(
+    i.evaluate(
+      "(symbol->string (car (get (-cell-by-name (get nb :cells) 'y) :deps (list))))"
+    ),
+    'x'
+  );
+  // editing the upstream cell reflows the dependent
+  i.evaluate('(set! nb (notebook-update-source nb "(cell x 10) (cell y (* x 4))"))');
+  assert.equal(i.evaluate("(get (get nb :values {}) 'y nil)"), 40);
+});
+
+test('a lambda parameter shadows a cell of the same name', async () => {
+  const i = await engine();
+  // cell x is 100, but the lambda param x (=5) wins inside its body.
+  i.evaluate(
+    '(define nb (notebook-from-source ' +
+      '"(cell x 100) (cell f ((lambda (x) (+ x 1)) 5))"))'
+  );
+  assert.equal(i.evaluate("(get (get nb :values {}) 'f nil)"), 6);
+  // f read no cell, so it has no dependency on x.
+  assert.equal(
+    i.evaluate("(length (get (-cell-by-name (get nb :cells) 'f) :deps (list)))"),
+    0
+  );
+});
+
+test('a let binding shadows a cell of the same name', async () => {
+  const i = await engine();
+  i.evaluate(
+    '(define nb (notebook-from-source ' +
+      '"(cell x 100) (cell g (let ((x 5)) (+ x 1)))"))'
+  );
+  assert.equal(i.evaluate("(get (get nb :values {}) 'g nil)"), 6);
+});
+
 // --- a worked example (the shape of sample-documents/demo.rxlisp) -------
 
 test('a numeric chain computes and reflows on an upstream edit', async () => {
   const i = await engine();
   const src =
     '(cell radius 5) ' +
-    "(cell area (* 3.14159 (* (ref 'radius) (ref 'radius)))) " +
-    "(cell circumference (* 2 (* 3.14159 (ref 'radius))))";
+    '(cell area (* 3.14159 radius radius)) ' +
+    '(cell circumference (* 2 3.14159 radius))';
   i.evaluate('(define nb (notebook-from-source "' + src + '"))');
   assert.equal(i.evaluate("(get (get nb :values {}) 'radius nil)"), 5);
   assert.equal(i.evaluate("(get (get nb :values {}) 'area nil)"), 78.53975);
