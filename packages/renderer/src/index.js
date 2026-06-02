@@ -59,6 +59,8 @@ export {
   DirectoryColumnsView,
 } from './directory-columns-view.js';
 export { ShellView } from './shell-view.js';
+export { GnuplotView } from './gnuplot-view.js';
+export { createHistory } from './gnuplot-history.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,

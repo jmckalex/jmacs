@@ -3272,3 +3272,251 @@ shell-view,
   letter-spacing: 0.04em;
   opacity: 0.75;
 }
+
+/* --- gnuplot view ------------------------------------------------------ */
+/* A `gnuplot`-kind buffer is shown through this view as an interactive
+   notebook REPL: a scrolling column of per-command cells (echoed
+   command + inline SVG plot / text / error) above a bottom input line.
+   Each gnuplot view owns one long-lived gnuplot child (managed by the
+   host). The plot SVGs bake their own dark page background, so the cells
+   only need to frame them. */
+
+gnuplot-view,
+.gnuplot-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.gnuplot-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.gnuplot-header-label {
+  overflow-wrap: anywhere;
+}
+
+/* Theme selector — pushed to the right edge of the header. Changes the
+   colours of subsequent plots (the SVG output), not the view chrome. */
+.gnuplot-theme-select {
+  margin-left: auto;
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid #ffffff1f;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gnuplot-theme-select:hover {
+  border-color: var(--accent);
+}
+
+/* The scrolling transcript of cells. `min-height: 0` lets it shrink
+   inside the flex column so the input row stays pinned at the bottom. */
+.gnuplot-transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* One cell per submitted command. */
+.gnuplot-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #ffffff10;
+  border-radius: 8px;
+  background: #ffffff06;
+}
+
+.gnuplot-cell-pending {
+  opacity: 0.7;
+}
+
+.gnuplot-cell-error {
+  border-color: var(--ansi-red, #ff6b8a)44;
+}
+
+.gnuplot-cell-command {
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gnuplot-cell-prompt {
+  color: var(--ansi-green, #7ed491);
+  user-select: none;
+}
+
+.gnuplot-cell-text {
+  color: var(--fg);
+}
+
+/* The inline plot. The SVG scales to the cell width (the host renders it
+   with the `dynamic` svg terminal option). */
+.gnuplot-cell-plot {
+  width: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.gnuplot-cell-plot svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Right-click menu on a plot (Save plot as… / Copy SVG). */
+.gnuplot-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--bg-chrome, #2a2f3a);
+  border: 1px solid #ffffff1f;
+  border-radius: 6px;
+  box-shadow: 0 6px 24px #00000066;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.gnuplot-menu-item {
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.gnuplot-menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.gnuplot-cell-stdout,
+.gnuplot-cell-stderr,
+.gnuplot-cell-warn,
+.gnuplot-cell-empty {
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gnuplot-cell-stdout {
+  color: var(--fg);
+}
+
+.gnuplot-cell-stderr {
+  color: var(--ansi-red, #ff6b8a);
+}
+
+/* A non-fatal gnuplot notice shown beneath a successful plot. */
+.gnuplot-cell-warn {
+  color: var(--ansi-yellow, #e2b340);
+}
+
+.gnuplot-cell-empty {
+  color: var(--fg-dim);
+  font-style: italic;
+  opacity: 0.7;
+}
+
+/* A dim note when the gnuplot process exits. */
+.gnuplot-exit-note {
+  color: var(--fg-dim);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* The bottom input line: a prompt glyph + a text input. */
+.gnuplot-input-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid #ffffff14;
+  background: var(--bg-editor);
+}
+
+.gnuplot-prompt {
+  color: var(--ansi-green, #7ed491);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  user-select: none;
+}
+
+.gnuplot-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  caret-color: var(--fg);
+}
+
+.gnuplot-input::placeholder {
+  color: var(--fg-dim);
+  opacity: 0.6;
+}
+
+.gnuplot-input:disabled {
+  opacity: 0.5;
+}
+
+/* The graceful-degradation card shown when gnuplot isn't installed.
+   `white-space: pre-line` so the \n-separated install hints render as
+   real line breaks. */
+.gnuplot-not-installed {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: 460px;
+  padding: 28px 32px;
+  text-align: center;
+  color: var(--fg-dim);
+}
+
+.gnuplot-not-installed-icon {
+  font-size: 40px;
+  opacity: 0.35;
+}
+
+.gnuplot-not-installed-text {
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-line;
+  text-align: left;
+  color: var(--fg);
+}

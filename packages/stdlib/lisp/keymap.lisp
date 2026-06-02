@@ -85,7 +85,10 @@
    ;; Multi-cursor (see multi-cursor.lisp). C-c d adds the next match;
    ;; C-c D selects all matches of the current word/region.
    "d"         'add-cursor-next
-   "D"         'select-all-matches})
+   "D"         'select-all-matches
+   ;; C-c g opens a gnuplot buffer (see gnuplot.lisp). Bound by symbol;
+   ;; the command resolves at dispatch time, so load order doesn't matter.
+   "g"         'gnuplot})
 
 ;; The root keymap.
 (define the-keymap
@@ -319,6 +322,15 @@
 (define (read-next-key callback)
   "Route the next keystroke to CALLBACK rather than the keymap."
   (set! *key-reader* callback))
+
+(define (chord-in-progress?)
+  "True when a multi-key sequence is mid-flight (a prefix chord has
+   started) or a key-reader is pending — i.e. the next keystroke, even a
+   plain character, should be routed to the keymap rather than typed. A
+   non-text input view (e.g. the gnuplot prompt) consults this so the
+   continuation of C-x 3 etc. completes even though `3` carries no
+   modifier."
+  (or (not (nil? active-keymap)) (not (nil? *key-reader*))))
 
 (define (handle-key key)
   "Dispatch KEY. If a key-reader is pending it receives the key;

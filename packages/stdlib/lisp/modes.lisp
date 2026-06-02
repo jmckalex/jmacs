@@ -69,6 +69,13 @@
 (define-mode shell-mode
   :name "Shell")
 
+;; The gnuplot mode — a `gnuplot`-kind buffer is shown through the L4
+;; gnuplot view (a notebook REPL), not the editor view, so no text-buffer
+;; keymap applies. The mode exists for the modeline label only. See
+;; `gnuplot.lisp` and `packages/renderer/src/gnuplot-view.js`.
+(define-mode gnuplot-mode
+  :name "Gnuplot")
+
 ;; Note: a jukebox buffer is *not* a text buffer — it is shown through
 ;; the L4 jukebox view, not the editor view, so no major mode applies.
 ;; See `jukebox.lisp` and `packages/renderer/src/jukebox-view.js`.

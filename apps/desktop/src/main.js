@@ -16,6 +16,7 @@ import { renderJMarkdown } from './jmarkdown.js';
 import { buildAppMenu } from './menu.js';
 import { EDITOR_URL, serveAppFile, serveMediaFile } from './serve.js';
 import { registerShellHandlers } from './shell.js';
+import { registerGnuplotHandlers } from './gnuplot.js';
 
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
 
@@ -58,6 +59,7 @@ app.whenReady().then(() => {
   protocol.handle('media', serveMediaFile);
   registerFileHandlers();
   registerShellHandlers();
+  registerGnuplotHandlers();
   buildAppMenu(null, dispatchMenuCommand);
   ipcMain.on('app:quit', () => app.quit());
   // Render a sticky note's JMarkdown via the user-configured command.
