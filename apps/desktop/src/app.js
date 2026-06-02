@@ -261,6 +261,20 @@ function nextNotebookId() {
   return `notebook-${notebookCounter}-${Date.now()}`;
 }
 
+/** Rename the notebook with NOTEBOOK-ID to NAME (its display + buffer
+ *  name; the file on disk is unchanged). Keyed by id, not by "current
+ *  view", so it's robust to focus moving during a minibuffer prompt. */
+function renameNotebookById(id, name) {
+  const n = String(name ?? '').trim();
+  if (n === '') return;
+  const view = views.find((v) => v.kind === 'notebook' && v.notebookId === id);
+  if (!view) return;
+  view.name = n;
+  if (view.buffer) view.buffer.name = n;
+  updateModeline();
+  notifyViewsChanged();
+}
+
 /** Switch to the next (DELTA +1) or previous (-1) open notebook, wrapping
  *  around. If the current view isn't a notebook, jump to the first/last. */
 function cycleNotebook(delta) {
@@ -2867,20 +2881,19 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.length - 1);
       return NIL;
     },
-    // Rename the current notebook (its display name / buffer name). The
-    // file on disk is unchanged — use save-as to rename that.
-    'rename-notebook!': (args) => {
-      const name = String(args[0] ?? '').trim();
-      if (name === '') return NIL;
+    // The current notebook's id, or nil. Captured by the rename command
+    // *before* it prompts, so the rename targets the right notebook even
+    // after the minibuffer moves focus.
+    'current-notebook-id': () => {
       const view = session.currentView;
-      if (!view || view.kind !== 'notebook') return NIL;
-      view.name = name;
-      if (view.buffer) view.buffer.name = name;
-      updateModeline();
-      notifyViewsChanged();
-      if (notebookView && typeof notebookView.refreshHeader === 'function') {
-        notebookView.refreshHeader();
-      }
+      return view && view.kind === 'notebook' && typeof view.notebookId === 'string'
+        ? view.notebookId
+        : NIL;
+    },
+    // Rename the notebook with this id (display + buffer name; the file on
+    // disk is unchanged — use save-as to rename that).
+    'rename-notebook-by-id!': (args) => {
+      renameNotebookById(String(args[0] ?? ''), String(args[1] ?? ''));
       return NIL;
     },
     // Cycle among open notebooks (also reachable via the header picker).
@@ -4791,6 +4804,7 @@ function configureNotebookView() {
       );
       if (idx !== -1) switchToViewIndex(idx);
     },
+    renameNotebook: (id, name) => renameNotebookById(id, name),
     // Forward editor chords (C-x b, M-x, …) to the host keymap. Always
     // present and guarded at call time, so it works regardless of whether
     // the keymap had finished loading when this factory ran.

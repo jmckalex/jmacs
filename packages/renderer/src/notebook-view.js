@@ -239,6 +239,8 @@ function createNotebookView(container, options = {}) {
     typeof options.listNotebooks === 'function' ? options.listNotebooks : null;
   const selectNotebook =
     typeof options.selectNotebook === 'function' ? options.selectNotebook : null;
+  const renameNotebook =
+    typeof options.renameNotebook === 'function' ? options.renameNotebook : null;
 
   const root = doc.createElement('div');
   root.className = 'notebook-view';
@@ -278,6 +280,54 @@ function createNotebookView(container, options = {}) {
   notebookSelect.addEventListener('change', () => {
     if (selectNotebook && notebookSelect.value) selectNotebook(notebookSelect.value);
   });
+
+  // Inline rename: the ✎ button swaps the picker for a text field.
+  const renameField = doc.createElement('input');
+  renameField.type = 'text';
+  renameField.className = 'notebook-rename-field';
+  renameField.spellcheck = false;
+  renameField.setAttribute('autocomplete', 'off');
+  renameField.style.display = 'none';
+  const renameBtn = doc.createElement('button');
+  renameBtn.className = 'notebook-rename-btn';
+  renameBtn.type = 'button';
+  renameBtn.title = 'Rename notebook';
+  renameBtn.textContent = '✎'; // ✎
+  function endRename() {
+    renameField.style.display = 'none';
+    notebookSelect.style.display = '';
+    renameBtn.style.display = '';
+  }
+  function startRename() {
+    if (!view) return;
+    renameField.value = view.name ?? '';
+    notebookSelect.style.display = 'none';
+    renameBtn.style.display = 'none';
+    renameField.style.display = '';
+    renameField.focus();
+    renameField.select();
+  }
+  function commitRename() {
+    const name = renameField.value.trim();
+    endRename();
+    if (name !== '' && renameNotebook && view) {
+      renameNotebook(view.notebookId, name);
+      refreshNotebookOptions();
+    }
+  }
+  renameBtn.addEventListener('click', startRename);
+  renameField.addEventListener('keydown', (event) => {
+    event.stopPropagation();
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitRename();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      endRename();
+    }
+  });
+  renameField.addEventListener('blur', endRename);
+
   const addBtn = doc.createElement('button');
   addBtn.className = 'notebook-add-cell';
   addBtn.type = 'button';
@@ -287,7 +337,7 @@ function createNotebookView(container, options = {}) {
     const cell = addCell({ name: '', expr: '' }, true);
     cell.nameInput.focus();
   });
-  header.append(headerIcon, notebookSelect, addBtn);
+  header.append(headerIcon, notebookSelect, renameField, renameBtn, addBtn);
   root.append(header);
 
   // The column of cells.

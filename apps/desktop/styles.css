@@ -3572,6 +3572,31 @@ notebook-view,
   border-color: var(--accent);
 }
 
+/* Rename: a ✎ button that swaps the picker for a text field. */
+.notebook-rename-btn {
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.notebook-rename-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.notebook-rename-field {
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12px;
+  max-width: 32ch;
+}
+
 .notebook-add-cell {
   margin-left: auto;
   background: var(--bg-chrome, #2a2f3a);

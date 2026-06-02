@@ -9,6 +9,11 @@ recomputes everything downstream — spreadsheet / Observable style.
 - `C-c n` (or `M-x notebook`) — a fresh in-memory `*notebook*`.
 - Open a `.rxlisp` file — it mounts as a notebook, not a text editor.
 
+Switch between open notebooks with the header dropdown or `C-c C-n` /
+`C-c C-p`. Rename the current notebook with the header **✎** button (or
+`M-x rename-notebook`) — that's the display name; the file on disk is
+unchanged.
+
 ## Cells
 
 The canonical source is a sequence of `(cell NAME EXPR)` forms. A cell

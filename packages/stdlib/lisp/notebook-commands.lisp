@@ -8,11 +8,17 @@
    cells where editing one recomputes everything downstream."
   (open-notebook-buffer!))
 
-(defcommand rename-notebook (name)
+(defcommand rename-notebook ()
   "Rename the current notebook (its display name, not the file on disk)."
-  (interactive (string "Rename notebook to: "))
-  (when (not (= name ""))
-    (rename-notebook! name)))
+  ;; Capture the notebook id NOW — before the prompt moves focus, which
+  ;; would otherwise leave `current view` pointing somewhere else by the
+  ;; time the entered name is delivered.
+  (let ((id (current-notebook-id)))
+    (when (not (nil? id))
+      (minibuffer-read "Rename notebook to: "
+        (lambda (name)
+          (when (and (not (nil? name)) (not (= name "")))
+            (rename-notebook-by-id! id name)))))))
 
 (defcommand next-notebook ()
   "Switch to the next open notebook."
