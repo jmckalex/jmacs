@@ -273,6 +273,13 @@ function renameNotebookById(id, name) {
   if (view.buffer) view.buffer.name = n;
   updateModeline();
   notifyViewsChanged();
+  // Refresh every notebook view's header picker so the new name shows in
+  // the dropdown — the inline ✎ button refreshes its own, but the M-x
+  // command path (rename-notebook-by-id!) has no view handle, so do it for
+  // all notebook elements here.
+  for (const el of document.querySelectorAll('notebook-view')) {
+    if (typeof el.refreshHeader === 'function') el.refreshHeader();
+  }
 }
 
 /** Switch to the next (DELTA +1) or previous (-1) open notebook, wrapping
