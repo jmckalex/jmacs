@@ -1148,13 +1148,22 @@ function hideInactiveRendererViews(activeKind) {
   if (focusedTextView) {
     focusedTextView.style.display = activeKind === 'text' ? '' : 'none';
   }
-  // Non-focused panes' text editors stay visible — they belong to
-  // other panes and aren't affected by what the focused pane shows.
-  // Same direct-child-only constraint.
+  // Non-focused panes' leaf-direct text editors follow THEIR OWN view
+  // kind: visible only when that pane is showing a leaf-direct *text*
+  // view. A non-focused pane showing a non-text leaf view (a PDF, image,
+  // gnuplot, …) must keep its text-view hidden so the singleton overlay
+  // stays visible. Showing it unconditionally was the bug behind "open a
+  // gnuplot view in pane A and pane B's PDF is replaced by an empty
+  // text buffer". Same direct-child-only constraint.
+  const leafById = new Map();
+  for (const leaf of leafPanes(rootPane)) leafById.set(leaf.id, leaf);
   for (const [paneId, paneEl] of paneElements) {
     if (paneId === currentPaneId) continue;
+    const leaf = leafById.get(paneId);
+    const showsLeafText =
+      !!leaf && !isTablineView(leaf.view) && !!leaf.view && leaf.view.kind === 'text';
     for (const tv of paneEl.querySelectorAll(':scope > text-view')) {
-      tv.style.display = '';
+      tv.style.display = showsLeafText ? '' : 'none';
     }
   }
   hideInactiveSingletons();
