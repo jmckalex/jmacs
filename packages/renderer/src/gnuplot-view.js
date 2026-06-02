@@ -88,6 +88,10 @@ function createGnuplotView(container, options = {}) {
   const writeFn = typeof options.write === 'function' ? options.write : null;
   const signalFn = typeof options.signal === 'function' ? options.signal : null;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
+  const chordPending =
+    typeof options.chordPending === 'function' ? options.chordPending : () => false;
+  const exportSvg =
+    typeof options.exportSvg === 'function' ? options.exportSvg : null;
 
   const root = doc.createElement('div');
   root.className = 'gnuplot-view';
@@ -197,6 +201,68 @@ function createGnuplotView(container, options = {}) {
     scrollToEnd();
   }
 
+  // --- per-plot right-click menu ----------------------------------------
+
+  /** The open context menu element, or null. */
+  let menuEl = null;
+  function closeMenu() {
+    if (menuEl) {
+      menuEl.remove();
+      menuEl = null;
+      doc.removeEventListener('mousedown', onDocMouseDown, true);
+    }
+  }
+  function onDocMouseDown(event) {
+    if (menuEl && !menuEl.contains(event.target)) closeMenu();
+  }
+  function openMenu(clientX, clientY, items) {
+    closeMenu();
+    const menu = doc.createElement('div');
+    menu.className = 'gnuplot-menu';
+    for (const item of items) {
+      const el = doc.createElement('div');
+      el.className = 'gnuplot-menu-item';
+      el.textContent = item.label;
+      el.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeMenu();
+        item.run();
+      });
+      menu.append(el);
+    }
+    doc.body.append(menu);
+    const rect = menu.getBoundingClientRect();
+    const vw = (win && win.innerWidth) || 1024;
+    const vh = (win && win.innerHeight) || 768;
+    menu.style.left = `${Math.max(4, Math.min(clientX, vw - rect.width - 4))}px`;
+    menu.style.top = `${Math.max(4, Math.min(clientY, vh - rect.height - 4))}px`;
+    menuEl = menu;
+    doc.addEventListener('mousedown', onDocMouseDown, true);
+  }
+
+  /** Right-click a plot for a menu: save the SVG to a file, or copy it. */
+  function attachPlotMenu(plot, svg, id) {
+    plot.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      openMenu(event.clientX, event.clientY, [
+        {
+          label: 'Save plot as…',
+          run: () => {
+            if (exportSvg) exportSvg(svg, `plot-${id}.svg`);
+          },
+        },
+        {
+          label: 'Copy SVG',
+          run: () => {
+            const clip = win && win.navigator && win.navigator.clipboard;
+            if (clip) clip.writeText(svg).catch(() => {});
+          },
+        },
+      ]);
+    });
+  }
+
   /** Result callback — fill in the cell its submission created with the
    *  plot / text / error the host produced. */
   function onResult(payload) {
@@ -215,6 +281,7 @@ function createGnuplotView(container, options = {}) {
       const plot = doc.createElement('div');
       plot.className = 'gnuplot-cell-plot';
       plot.innerHTML = payload.svg;
+      attachPlotMenu(plot, payload.svg, payload.id);
       cell.append(plot);
       rendered = true;
     }
@@ -320,7 +387,14 @@ function createGnuplotView(container, options = {}) {
     const bareModifier =
       event.key === 'Shift' || event.key === 'Control' ||
       event.key === 'Alt' || event.key === 'Meta';
-    if (onKey && !bareModifier && (event.ctrlKey || event.altKey)) {
+    // Forward a key to the editor keymap when it's a chord (Ctrl/Alt held)
+    // OR when a chord is already mid-flight — so the continuation of a
+    // prefix like C-x 3 completes even though `3` carries no modifier.
+    if (
+      onKey &&
+      !bareModifier &&
+      (chordPending() || event.ctrlKey || event.altKey)
+    ) {
       const key = keyEventToString(event);
       if (key && onKey(key)) {
         event.preventDefault();

@@ -445,6 +445,15 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('gnuplot:kill', { sessionId }),
 
   /**
+   * Save a plot's SVG via a native Save dialog (suggests a .svg name).
+   * @param {string} svg
+   * @param {string} name
+   * @returns {Promise<{ path: string } | null>}
+   */
+  gnuplotSaveSvg: (svg, name) =>
+    ipcRenderer.invoke('gnuplot:save-svg', { svg, name }),
+
+  /**
    * Register a handler for per-submission gnuplot results. Fires once
    * per submitted command with
    * `{ sessionId, id, svg, text, error }` — `svg` is the plot markup

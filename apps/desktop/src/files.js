@@ -362,6 +362,17 @@ export function registerFileHandlers() {
     return { path: target, name: basename(target) };
   });
 
+  // Save a gnuplot plot's SVG via a Save dialog (suggests a .svg name).
+  ipcMain.handle('gnuplot:save-svg', async (_event, payload) => {
+    const result = await dialog.showSaveDialog({
+      defaultPath: payload?.name || 'plot.svg',
+      filters: [{ name: 'SVG image', extensions: ['svg'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    await writeFile(result.filePath, payload?.svg ?? '', 'utf8');
+    return { path: result.filePath };
+  });
+
   // Read a file's companion metadata (sticky notes). Returns the parsed
   // JSON, or null when the companion file is absent or unreadable.
   ipcMain.handle('metadata:read', async (_event, payload) => {

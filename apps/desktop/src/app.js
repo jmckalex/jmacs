@@ -4623,6 +4623,12 @@ function configureGnuplotView() {
       window.host && typeof window.host.onGnuplotExit === 'function'
         ? window.host.onGnuplotExit(callback)
         : () => {},
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    exportSvg: (svg, name) =>
+      window.host && typeof window.host.gnuplotSaveSvg === 'function'
+        ? window.host.gnuplotSaveSvg(svg, name)
+        : Promise.resolve(null),
     ...(keymapReady ? { onKey: dispatchKey } : {}),
   };
 }
