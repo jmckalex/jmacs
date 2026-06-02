@@ -3310,6 +3310,24 @@ gnuplot-view,
   overflow-wrap: anywhere;
 }
 
+/* Theme selector — pushed to the right edge of the header. Changes the
+   colours of subsequent plots (the SVG output), not the view chrome. */
+.gnuplot-theme-select {
+  margin-left: auto;
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid #ffffff1f;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gnuplot-theme-select:hover {
+  border-color: var(--accent);
+}
+
 /* The scrolling transcript of cells. `min-height: 0` lets it shrink
    inside the flex column so the input row stays pinned at the bottom. */
 .gnuplot-transcript {

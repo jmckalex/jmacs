@@ -454,6 +454,16 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('gnuplot:save-svg', { svg, name }),
 
   /**
+   * Set a gnuplot session's plot theme (e.g. 'dark' | 'light'). Affects
+   * subsequent plots in that session.
+   * @param {string} sessionId
+   * @param {string} theme
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  gnuplotSetTheme: (sessionId, theme) =>
+    ipcRenderer.invoke('gnuplot:set-theme', { sessionId, theme }),
+
+  /**
    * Register a handler for per-submission gnuplot results. Fires once
    * per submitted command with
    * `{ sessionId, id, svg, text, error }` — `svg` is the plot markup

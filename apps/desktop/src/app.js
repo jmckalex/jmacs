@@ -4629,6 +4629,10 @@ function configureGnuplotView() {
       window.host && typeof window.host.gnuplotSaveSvg === 'function'
         ? window.host.gnuplotSaveSvg(svg, name)
         : Promise.resolve(null),
+    setTheme: (sessionId, theme) =>
+      window.host && typeof window.host.gnuplotSetTheme === 'function'
+        ? window.host.gnuplotSetTheme(sessionId, theme)
+        : Promise.resolve({ ok: false }),
     ...(keymapReady ? { onKey: dispatchKey } : {}),
   };
 }

@@ -23,32 +23,71 @@
  * sentinels.
  */
 
-/** The dark-theme `set` block, applied per submission after `set output`
- *  and before the user's command. Colours chosen to read on a dark page;
- *  `set linetype` redefinitions (rather than the deprecated `set style
- *  increment`) so a bare `plot sin(x), cos(x)` picks up the palette. */
-export const DARK_THEME_BLOCK = [
-  "set border lc rgb '#7f8c98'",
-  "set xtics textcolor rgb '#aeb6c0'",
-  "set ytics textcolor rgb '#aeb6c0'",
-  "set ztics textcolor rgb '#aeb6c0'",
-  "set title  textcolor rgb '#e6e9ed'",
-  "set xlabel textcolor rgb '#cfd6de'",
-  "set ylabel textcolor rgb '#cfd6de'",
-  "set key textcolor rgb '#cfd6de'",
-  "set grid lc rgb '#3a434d' lw 1",
-  "set linetype 1 lc rgb '#5aa9e6' lw 2 pt 7",
-  "set linetype 2 lc rgb '#f78c6b' lw 2 pt 7",
-  "set linetype 3 lc rgb '#7ed491' lw 2 pt 7",
-  "set linetype 4 lc rgb '#c792ea' lw 2 pt 7",
-  "set linetype 5 lc rgb '#ffcb6b' lw 2 pt 7",
-  "set linetype 6 lc rgb '#ff6b8a' lw 2 pt 7",
-].join('\n');
+/** Built-in plot themes. Each carries an SVG page `background` (baked into
+ *  the SVG so it's self-contained) and a block of gnuplot `set` commands
+ *  defining the border / tics / labels / grid colours and the line
+ *  palette. `dark` reads well on the dark editor view; `light` is
+ *  print-friendly (white page, saturated lines) for dropping a plot into
+ *  an article or PDF. Add a theme by extending this map. Line colours use
+ *  `set linetype` redefinitions (not the deprecated `set style increment`)
+ *  so a bare `plot sin(x), cos(x)` picks up the palette. */
+export const THEMES = {
+  dark: {
+    label: 'Dark',
+    background: '#1e2228',
+    block: [
+      "set border lc rgb '#7f8c98'",
+      "set xtics textcolor rgb '#aeb6c0'",
+      "set ytics textcolor rgb '#aeb6c0'",
+      "set ztics textcolor rgb '#aeb6c0'",
+      "set title  textcolor rgb '#e6e9ed'",
+      "set xlabel textcolor rgb '#cfd6de'",
+      "set ylabel textcolor rgb '#cfd6de'",
+      "set key textcolor rgb '#cfd6de'",
+      "set grid lc rgb '#3a434d' lw 1",
+      "set linetype 1 lc rgb '#5aa9e6' lw 2 pt 7",
+      "set linetype 2 lc rgb '#f78c6b' lw 2 pt 7",
+      "set linetype 3 lc rgb '#7ed491' lw 2 pt 7",
+      "set linetype 4 lc rgb '#c792ea' lw 2 pt 7",
+      "set linetype 5 lc rgb '#ffcb6b' lw 2 pt 7",
+      "set linetype 6 lc rgb '#ff6b8a' lw 2 pt 7",
+    ].join('\n'),
+  },
+  light: {
+    label: 'Light (print)',
+    background: '#ffffff',
+    block: [
+      "set border lc rgb '#333333'",
+      "set xtics textcolor rgb '#333333'",
+      "set ytics textcolor rgb '#333333'",
+      "set ztics textcolor rgb '#333333'",
+      "set title  textcolor rgb '#222222'",
+      "set xlabel textcolor rgb '#333333'",
+      "set ylabel textcolor rgb '#333333'",
+      "set key textcolor rgb '#333333'",
+      "set grid lc rgb '#dddddd' lw 1",
+      "set linetype 1 lc rgb '#1f77b4' lw 2 pt 7",
+      "set linetype 2 lc rgb '#ff7f0e' lw 2 pt 7",
+      "set linetype 3 lc rgb '#2ca02c' lw 2 pt 7",
+      "set linetype 4 lc rgb '#d62728' lw 2 pt 7",
+      "set linetype 5 lc rgb '#9467bd' lw 2 pt 7",
+      "set linetype 6 lc rgb '#8c564b' lw 2 pt 7",
+    ].join('\n'),
+  },
+};
 
-/** The page background baked into the SVG itself, so the plot is a
- *  self-contained dark image that doesn't depend on the host page's CSS.
- *  Slightly darker than `--bg-editor` (#2e3842) for contrast. */
-export const SVG_BACKGROUND = '#1e2228';
+/** The theme used when a submission doesn't name one. */
+export const DEFAULT_THEME = 'dark';
+
+/** Resolve a theme by name, falling back to the default. */
+export function themeFor(name) {
+  return THEMES[name] || THEMES[DEFAULT_THEME];
+}
+
+/** The dark theme's `set` block / SVG background — kept as named exports
+ *  for callers and tests that predate multiple themes. */
+export const DARK_THEME_BLOCK = THEMES.dark.block;
+export const SVG_BACKGROUND = THEMES.dark.background;
 
 /** A real gnuplot SVG with at least one drawn element runs to several KB;
  *  a header-only file from a `set`-only submission is a few hundred bytes
@@ -118,14 +157,16 @@ export function buildSubmission(params) {
     sentinelErr,
     width = 720,
     height = 480,
+    theme = DEFAULT_THEME,
   } = params;
+  const t = themeFor(theme);
   const term =
     `set terminal svg size ${width},${height} dynamic enhanced ` +
-    `background rgb '${SVG_BACKGROUND}' font 'sans,11'`;
+    `background rgb '${t.background}' font 'sans,11'`;
   return [
     term,
     `set output ${quoteGnuplot(tmpFile)}`,
-    DARK_THEME_BLOCK,
+    t.block,
     userText,
     'unset output',
     "set print '-'",

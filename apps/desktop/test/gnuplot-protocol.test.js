@@ -59,6 +59,19 @@ test('buildSubmission frames the user text with output redirect and both sentine
   assert.ok(prog.endsWith('\n'));
 });
 
+test('buildSubmission honours a theme — light uses the light palette + white background', () => {
+  const prog = buildSubmission({
+    userText: 'plot sin(x)',
+    tmpFile: '/tmp/cell.svg',
+    sentinelOut: 'OUT_TOKEN',
+    sentinelErr: 'ERR_TOKEN',
+    theme: 'light',
+  });
+  assert.match(prog, /background rgb '#ffffff'/);
+  assert.match(prog, /set linetype 1 lc rgb '#1f77b4'/);
+  assert.ok(!prog.includes('#1e2228')); // not the dark background
+});
+
 test('buildSubmission honours custom width/height', () => {
   const prog = buildSubmission({
     userText: 'plot x',

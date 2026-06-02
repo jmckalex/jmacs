@@ -44,6 +44,7 @@ import {
   sentinelsFor,
   svgHasPlot,
   SubmissionDemux,
+  DEFAULT_THEME,
 } from './gnuplot-protocol.js';
 
 /**
@@ -135,6 +136,7 @@ function pump(sessionId) {
     tmpFile,
     sentinelOut,
     sentinelErr,
+    theme: entry.theme,
   });
 
   try {
@@ -247,6 +249,7 @@ function spawnSession(sessionId, sender, options = {}) {
     counter: 0,
     active: null,
     tmpDir,
+    theme: DEFAULT_THEME,
     dead: false,
   };
   sessions.set(sessionId, entry);
@@ -363,6 +366,14 @@ export function registerGnuplotHandlers() {
     const sessionId = String(payload?.sessionId ?? '');
     terminateSession(sessionId);
     return { ok: true };
+  });
+
+  // Set a session's plot theme (e.g. 'dark' | 'light'); subsequent
+  // submissions render with it.
+  ipcMain.handle('gnuplot:set-theme', (_event, payload) => {
+    const entry = sessions.get(String(payload?.sessionId ?? ''));
+    if (entry) entry.theme = String(payload?.theme ?? DEFAULT_THEME);
+    return { ok: !!entry };
   });
 }
 

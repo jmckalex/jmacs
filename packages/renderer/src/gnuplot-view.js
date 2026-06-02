@@ -93,6 +93,8 @@ function createGnuplotView(container, options = {}) {
     typeof options.chordPending === 'function' ? options.chordPending : () => false;
   const exportSvg =
     typeof options.exportSvg === 'function' ? options.exportSvg : null;
+  const setTheme =
+    typeof options.setTheme === 'function' ? options.setTheme : null;
 
   const root = doc.createElement('div');
   root.className = 'gnuplot-view';
@@ -107,7 +109,23 @@ function createGnuplotView(container, options = {}) {
   const headerLabel = doc.createElement('span');
   headerLabel.className = 'gnuplot-header-label';
   headerLabel.textContent = 'gnuplot';
-  header.append(headerIcon, headerLabel);
+  // Theme selector — changes the colours of *subsequent* plots only (the
+  // SVG output, not the view chrome). 'Light' is for print/PDF export.
+  const themeSelect = doc.createElement('select');
+  themeSelect.className = 'gnuplot-theme-select';
+  themeSelect.title = 'Plot theme — applies to new plots (re-run to refresh)';
+  for (const [value, label] of [['dark', 'Dark'], ['light', 'Light (print)']]) {
+    const opt = doc.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    themeSelect.append(opt);
+  }
+  themeSelect.addEventListener('change', () => {
+    if (setTheme && buffer && buffer.sessionId) {
+      setTheme(buffer.sessionId, themeSelect.value);
+    }
+  });
+  header.append(headerIcon, headerLabel, themeSelect);
   root.append(header);
 
   // Transcript: a scrolling column of per-command cells.
