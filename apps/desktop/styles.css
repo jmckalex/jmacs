@@ -3520,3 +3520,164 @@ gnuplot-view,
   text-align: left;
   color: var(--fg);
 }
+
+/* --- notebook view ----------------------------------------------------- */
+/* A `notebook`-kind buffer is shown as a reactive Lisp notebook: a column
+   of cells, each a name field + a multi-line expression editor + a live
+   result panel + a state badge. Editing any cell recomputes everything
+   downstream. */
+
+notebook-view,
+.notebook-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.notebook-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.notebook-header-label {
+  overflow-wrap: anywhere;
+}
+
+.notebook-add-cell {
+  margin-left: auto;
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid #ffffff1f;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.notebook-add-cell:hover {
+  border-color: var(--accent);
+}
+
+/* The scrolling column of cells. `min-height: 0` lets it shrink inside
+   the flex column. */
+.notebook-cells {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* One cell: [ gutter badge ] [ body: name + expr + result ] [ × ]. */
+.notebook-cell {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid #ffffff14;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+
+.notebook-cell[data-state='error'] {
+  border-color: color-mix(in srgb, var(--error, #e06c75) 55%, transparent);
+}
+
+.notebook-cell-gutter {
+  display: flex;
+  justify-content: center;
+  padding-top: 3px;
+}
+
+.notebook-badge {
+  font-size: 12px;
+  line-height: 1;
+  user-select: none;
+}
+.notebook-badge-ok { color: var(--ok, #7ed491); }
+.notebook-badge-stale { color: var(--fg-dim); opacity: 0.6; }
+.notebook-badge-error { color: var(--error, #e06c75); }
+.notebook-badge-cycle { color: var(--ansi-yellow, #e2b340); }
+
+.notebook-cell-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.notebook-cell-name {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  padding: 0 0 1px;
+  outline: none;
+  width: 12ch;
+}
+.notebook-cell-name:focus {
+  border-bottom-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.notebook-cell-expr {
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  resize: none;
+  outline: none;
+  padding: 0;
+  width: 100%;
+  overflow: hidden;
+  white-space: pre;
+}
+
+.notebook-cell-result {
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-height: 1em;
+}
+.notebook-cell[data-state='error'] .notebook-cell-result {
+  color: var(--error, #e06c75);
+}
+
+.notebook-cell-delete {
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.notebook-cell:hover .notebook-cell-delete {
+  opacity: 0.7;
+}
+.notebook-cell-delete:hover {
+  color: var(--error, #e06c75);
+  opacity: 1;
+}

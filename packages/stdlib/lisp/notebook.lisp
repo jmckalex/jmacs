@@ -404,11 +404,20 @@
 (define (-marshal-cells nb)
   "Project NB's cells into plain records the host can read without
    touching Lisp values: {:name <string> :output <string>
-   :state <keyword> :error <string> :deps <list of strings>}."
+   :state <string> :error <string> :deps <list of strings>}. The state
+   keyword is rendered to a string so the renderer needn't unwrap Lisp
+   keywords."
   (map (lambda (c)
          {:name   (symbol->string (get c :name nil))
           :output (get c :output "")
-          :state  (get c :state :ok)
+          :state  (-state-string (get c :state :ok))
           :error  (get c :error "")
           :deps   (map symbol->string (get c :deps (list)))})
        (get nb :cells (list))))
+
+(define (-state-string state)
+  "A plain-string name for a cell :state keyword."
+  (cond
+    ((eq? state :error) "error")
+    ((eq? state :stale) "stale")
+    (else "ok")))

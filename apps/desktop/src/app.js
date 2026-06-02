@@ -64,6 +64,7 @@ import {
   createReplView,
   ShellView,
   GnuplotView,
+  NotebookView,
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
@@ -250,6 +251,14 @@ let gnuplotSessionCounter = 0;
 function nextGnuplotSessionId() {
   gnuplotSessionCounter += 1;
   return `gnuplot-${gnuplotSessionCounter}-${Date.now()}`;
+}
+
+/** Monotonic id source for notebook views. The reactive engine keys its
+ *  per-notebook record (cell values, dep graph) off this id. */
+let notebookCounter = 0;
+function nextNotebookId() {
+  notebookCounter += 1;
+  return `notebook-${notebookCounter}-${Date.now()}`;
 }
 
 /** A change to the view list or the current index. Refreshes the
@@ -2805,6 +2814,27 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.length - 1);
       return NIL;
     },
+    // Open a reactive Lisp notebook: a sheet of `(cell NAME EXPR)` cells
+    // shown through the L4 notebook view, where editing one cell
+    // recomputes everything downstream. Like `open-gnuplot-buffer!`,
+    // each call creates a fresh view; switch to an existing one with
+    // C-x b. In-memory for now (M2); a `.rxlisp` file backing comes with
+    // persistence (M3).
+    'open-notebook-buffer!': () => {
+      const notebookId = nextNotebookId();
+      const sequence = views.filter((v) => v.kind === 'notebook').length + 1;
+      const name = sequence === 1 ? '*notebook*' : `*notebook*<${sequence}>`;
+      views.push(createView({
+        kind: 'notebook',
+        name,
+        extras: {
+          notebookId,
+          text: '',
+        },
+      }));
+      switchToViewIndex(views.length - 1);
+      return NIL;
+    },
     // Open a Finder-style column-view buffer rooted at `path`. Same
     // re-use semantics as `open-directory-tree!`.
     'open-directory-columns!': (args) => {
@@ -4642,6 +4672,54 @@ editorPaneElement().append(gnuplotView);
 gnuplotView.style.display = 'none';
 themeListeners.add(() => gnuplotView.applyTheme());
 
+// The notebook view — a reactive Lisp notebook (a sheet of `(cell …)`
+// cells). Per-view-instance like gnuplot: this singleton is the
+// leaf-direct element and the factory is reused by the tabline mount
+// path for per-tab `<notebook-view>` instances. Evaluation is in-process
+// through the shared interpreter's reactive engine, so the only
+// callbacks are `evaluate` (run the engine for this notebook id, marshal
+// the per-cell records to plain JS) and chord-key forwarding so the host
+// keymap fires while a cell editor is focused. `onSourceChange` (mirror
+// the canonical source into a backing buffer) is wired with persistence.
+const NOTEBOOK_KEYS = {
+  name: keyword('name'),
+  output: keyword('output'),
+  state: keyword('state'),
+  error: keyword('error'),
+  deps: keyword('deps'),
+};
+/** Marshal one Lisp cell-record map into a plain JS object. */
+function marshalNotebookCell(m) {
+  return {
+    name: String(m.get(NOTEBOOK_KEYS.name) ?? ''),
+    output: String(m.get(NOTEBOOK_KEYS.output) ?? ''),
+    state: String(m.get(NOTEBOOK_KEYS.state) ?? 'ok'),
+    error: String(m.get(NOTEBOOK_KEYS.error) ?? ''),
+    deps: listToArray(m.get(NOTEBOOK_KEYS.deps) ?? NIL).map(String),
+  };
+}
+function configureNotebookView() {
+  return {
+    evaluate: (id, source) => {
+      try {
+        const cells = listToArray(
+          interpreter.call('notebook-eval!', id, source)
+        );
+        return cells.map(marshalNotebookCell);
+      } catch {
+        return [];
+      }
+    },
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+  };
+}
+const notebookView = /** @type {*} */ (document.createElement('notebook-view'));
+notebookView.configure(configureNotebookView());
+editorPaneElement().append(notebookView);
+notebookView.style.display = 'none';
+
 // --- kind dispatch -----------------------------------------------------
 //
 // Phase 4a: the `kindRegistry` abstraction is gone. Every view kind is
@@ -4676,6 +4754,7 @@ const SINGLETON_VIEWS = [
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
   { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
+  { kind: 'notebook',          el: notebookView,          releasesBuffer: false },
 ];
 
 /** Side-effect bundle for mounting a text view: rebind the cursor,
@@ -4777,6 +4856,18 @@ function disposeKindView(view, context) {
       }
     } catch {
       // Process is already gone — nothing to do.
+    }
+    return;
+  }
+  if (view.kind === 'notebook') {
+    // No subprocess; just drop the engine's stored notebook record so a
+    // closed notebook's cell values don't linger.
+    if (typeof view.notebookId === 'string') {
+      try {
+        if (keymapReady) interpreter.call('notebook-forget!', view.notebookId);
+      } catch {
+        // Engine not ready / already gone — nothing to do.
+      }
     }
     return;
   }
@@ -4994,6 +5085,7 @@ function perKindConfigureFactory(kind) {
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
+    case 'notebook':          return configureNotebookView;
     default:                  return null;
   }
 }

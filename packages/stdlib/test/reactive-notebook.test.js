@@ -13,7 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInterpreter } from '@editor/lisp';
+import { createInterpreter, keyword, listToArray, NIL } from '@editor/lisp';
 
 const lispDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lisp');
 
@@ -189,10 +189,45 @@ test('notebook-eval! returns marshalled per-cell records', async () => {
   // name + output are plain strings; state is a keyword.
   assert.equal(i.evaluate('(get (car cells) :name "")'), 'x');
   assert.equal(i.evaluate('(get (car cells) :output "")'), '3');
-  assert.equal(i.evaluate('(eq? :ok (get (car cells) :state :error))'), true);
+  // state is marshalled as a plain string for the renderer.
+  assert.equal(i.evaluate('(get (car cells) :state "")'), 'ok');
   assert.equal(i.evaluate('(get (cadr cells) :output "")'), '12');
   // y read x — its deps are marshalled as strings.
   assert.equal(i.evaluate('(car (get (cadr cells) :deps (list)))'), 'x');
+});
+
+test('the host can marshal notebook-eval! records to plain JS', async () => {
+  // Mirrors apps/desktop/src/app.js `marshalNotebookCell`: read the Lisp
+  // cell-record maps via interned keywords + listToArray. This guards the
+  // renderer's evaluate() contract, which can't run headless.
+  const i = await engine();
+  const lispCells = listToArray(
+    i.call('notebook-eval!', 'nb-host', "(cell x 3) (cell bad (/ 1 0))")
+  );
+  const k = {
+    name: keyword('name'),
+    output: keyword('output'),
+    state: keyword('state'),
+    error: keyword('error'),
+    deps: keyword('deps'),
+  };
+  const cells = lispCells.map((m) => ({
+    name: String(m.get(k.name) ?? ''),
+    output: String(m.get(k.output) ?? ''),
+    state: String(m.get(k.state) ?? 'ok'),
+    error: String(m.get(k.error) ?? ''),
+    deps: listToArray(m.get(k.deps) ?? NIL).map(String),
+  }));
+  assert.deepEqual(cells[0], {
+    name: 'x',
+    output: '3',
+    state: 'ok',
+    error: '',
+    deps: [],
+  });
+  assert.equal(cells[1].name, 'bad');
+  assert.equal(cells[1].state, 'error');
+  assert.ok(cells[1].error.length > 0);
 });
 
 test('notebook-eval! preserves the notebook and reflows on edit', async () => {
