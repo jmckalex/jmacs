@@ -261,6 +261,22 @@ function nextNotebookId() {
   return `notebook-${notebookCounter}-${Date.now()}`;
 }
 
+/** Switch to the next (DELTA +1) or previous (-1) open notebook, wrapping
+ *  around. If the current view isn't a notebook, jump to the first/last. */
+function cycleNotebook(delta) {
+  const notebooks = views.filter((v) => v.kind === 'notebook');
+  if (notebooks.length === 0) return;
+  const current = views[currentViewIndex];
+  const here = current && current.kind === 'notebook' ? notebooks.indexOf(current) : -1;
+  const next =
+    here === -1
+      ? delta > 0
+        ? 0
+        : notebooks.length - 1
+      : (here + delta + notebooks.length) % notebooks.length;
+  switchToViewIndex(views.indexOf(notebooks[next]));
+}
+
 /** A change to the view list or the current index. Refreshes the
  *  tabline and schedules a debounced session save. Both targets are
  *  wired in later (the tabline and session controller depend on the
@@ -2849,6 +2865,31 @@ const interpreter = createInterpreter({
         extras: { notebookId },
       }));
       switchToViewIndex(views.length - 1);
+      return NIL;
+    },
+    // Rename the current notebook (its display name / buffer name). The
+    // file on disk is unchanged — use save-as to rename that.
+    'rename-notebook!': (args) => {
+      const name = String(args[0] ?? '').trim();
+      if (name === '') return NIL;
+      const view = session.currentView;
+      if (!view || view.kind !== 'notebook') return NIL;
+      view.name = name;
+      if (view.buffer) view.buffer.name = name;
+      updateModeline();
+      notifyViewsChanged();
+      if (notebookView && typeof notebookView.refreshHeader === 'function') {
+        notebookView.refreshHeader();
+      }
+      return NIL;
+    },
+    // Cycle among open notebooks (also reachable via the header picker).
+    'next-notebook!': () => {
+      cycleNotebook(1);
+      return NIL;
+    },
+    'previous-notebook!': () => {
+      cycleNotebook(-1);
       return NIL;
     },
     // Open a Finder-style column-view buffer rooted at `path`. Same

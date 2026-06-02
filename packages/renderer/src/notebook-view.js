@@ -136,10 +136,16 @@ export function serializeCells(cells) {
 
 /**
  * Decide whether a keydown in a cell editor should be forwarded to the
- * host keymap rather than handled as text input. Forward only chord keys
- * (Ctrl/Alt held) and any key while a prefix chord is mid-flight; never a
- * bare modifier. Mirrors the gnuplot input's rule so plain typing,
- * Backspace and the arrows stay local.
+ * host keymap rather than left to the cell's native text editing.
+ *
+ * A continuation of an in-flight prefix always forwards (so `C-x b`,
+ * `C-c C-n`, … complete). Otherwise only genuine *editor* commands
+ * forward — the prefix maps (`C-x`, `C-c`), cancel (`C-g`), the command
+ * palette (`M-x`), and buffer-jump (`M-1`…`M-9`). Everything else stays
+ * in the cell: plain typing, ⌘-shortcuts, and crucially the Emacs-style
+ * editing chords (`C-a`, `C-e`, `C-k`, `M-f`, …) which the platform's
+ * native text control already implements — so the notebook gets full
+ * caret motion and editing without reimplementing the text view.
  *
  * @param {KeyboardEvent} event
  * @param {() => boolean} chordPending
@@ -153,7 +159,16 @@ export function shouldForwardChord(event, chordPending) {
     event.key === 'Meta';
   if (bareModifier) return false;
   const pending = typeof chordPending === 'function' ? chordPending() : false;
-  return pending || event.ctrlKey || event.altKey;
+  if (pending) return true;
+  if (!(event.ctrlKey || event.altKey)) return false;
+  const key = keyEventToString(event);
+  return (
+    key === 'C-x' ||
+    key === 'C-c' ||
+    key === 'C-g' ||
+    key === 'M-x' ||
+    /^M-[1-9]$/.test(key)
+  );
 }
 
 /**
@@ -527,6 +542,7 @@ function createNotebookView(container, options = {}) {
     setBuffer,
     focus: focusInput,
     applyTheme,
+    refreshHeader: refreshNotebookOptions,
     destroy: () => {
       if (recomputeTimer) {
         win.clearTimeout(recomputeTimer);
@@ -577,6 +593,12 @@ export class NotebookView extends ViewElement {
 
   applyTheme() {
     if (this._inner !== null) this._inner.applyTheme();
+  }
+
+  /** Re-read the open-notebook list + current name into the header
+   *  picker — called by the host after a rename. */
+  refreshHeader() {
+    if (this._inner !== null) this._inner.refreshHeader();
   }
 
   connectedCallback() {
