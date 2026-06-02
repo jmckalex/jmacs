@@ -1195,6 +1195,9 @@ function hideInactiveSingletons() {
     el.style.display = inUse ? '' : 'none';
     if (!inUse && releasesBuffer) el.setBuffer(null);
   }
+  // Browsers are per-instance, not in SINGLETON_VIEWS — toggle their
+  // own elements here too.
+  hideInactiveBrowsers();
 }
 
 /** Switch to the view at INDEX: dispatch through mountKindView to
@@ -2977,12 +2980,8 @@ const interpreter = createInterpreter({
       if (current && current.kind === 'browser') {
         current.url = url;
         current.name = url;
-        for (const el of document.querySelectorAll('browser-view')) {
-          if (/** @type {*} */ (el).buffer === current) {
-            /** @type {*} */ (el).setBuffer(current);
-            break;
-          }
-        }
+        const el = browserElementByView.get(current);
+        if (el) el.setBuffer(current);
         updateModeline();
         notifyViewsChanged();
         return NIL;
@@ -4605,10 +4604,58 @@ function configureBrowserView() {
     onTitleChanged: () => notifyViewsChanged(),
   };
 }
-const browserView = /** @type {*} */ (document.createElement('browser-view'));
-browserView.configure(configureBrowserView());
-editorPaneElement().append(browserView);
-browserView.style.display = 'none';
+// Browsers are PER-INSTANCE, not a shared singleton: each browser VIEW
+// owns its own <browser-view> element (and Chromium <webview> guest),
+// created directly in its pane and never moved. Moving a <webview>
+// re-creates its guest, which used to drop open-url!'s navigation and
+// "jump" the one shared browser between panes. This mirrors how the
+// tabline already gives each browser tab its own element (editorByChild),
+// but for leaf-direct browser panes — so two browsers can sit in two
+// panes at once, each with its own history/URL.
+const browserElementByView = new Map();
+
+/** The <browser-view> element for browser VIEW — created (configured +
+ *  mounted in PANE-EL) on first use, then reused. Pointing it at the view
+ *  navigates the webview to the view's URL. The element is born in its
+ *  pane and re-attached only if a re-layout detached it (defensive). */
+function ensureBrowserElementForView(view, paneEl) {
+  let el = browserElementByView.get(view);
+  if (el) {
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    el.setBuffer(view);
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('browser-view'));
+  el.configure(configureBrowserView());
+  el.setBuffer(view); // pending buffer; painted on connectedCallback
+  if (paneEl) paneEl.append(el); // triggers mount → navigate to view.url
+  browserElementByView.set(view, el);
+  return el;
+}
+
+/** Show every browser element whose view is a leaf-direct active view;
+ *  hide the rest. Called from `hideInactiveSingletons` so it runs
+ *  wherever non-text view visibility is recomputed. */
+function hideInactiveBrowsers() {
+  const active = new Set();
+  for (const leaf of leafPanes(rootPane)) {
+    if (!isTablineView(leaf.view) && leaf.view && leaf.view.kind === 'browser') {
+      active.add(leaf.view);
+    }
+  }
+  for (const [view, el] of browserElementByView) {
+    el.style.display = active.has(view) ? '' : 'none';
+  }
+}
+
+/** Tear down the browser element bound to VIEW (on kill). */
+function disposeBrowserElementForView(view) {
+  const el = browserElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ }
+  el.remove();
+  browserElementByView.delete(view);
+}
 
 // The directory tree-view — a `directory-tree`-kind buffer is shown
 // through this view. Folder rows expand on click; file rows route
@@ -4881,7 +4928,7 @@ const SINGLETON_VIEWS = [
   { kind: 'audio',             el: audioView,             releasesBuffer: true  },
   { kind: 'video',             el: videoView,             releasesBuffer: true  },
   { kind: 'pdf',               el: pdfView,               releasesBuffer: false },
-  { kind: 'browser',           el: browserView,           releasesBuffer: false },
+  // browser is per-instance (browserElementByView) — not a singleton.
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
@@ -4953,6 +5000,15 @@ function mountKindView(view, context) {
     mountTablineKind(view, context);
     return;
   }
+  if (view.kind === 'browser') {
+    // Per-instance: mount THIS view's own browser element in its pane.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = leaf ? paneElements.get(leaf.id) : null;
+    const el = ensureBrowserElementForView(view, paneEl);
+    el.style.display = '';
+    el.focus();
+    return;
+  }
   const el = singletonElementForKind(view.kind);
   if (el) {
     el.setBuffer(view);
@@ -4969,6 +5025,11 @@ function mountKindView(view, context) {
  */
 function disposeKindView(view, context) {
   if (!view || typeof view.kind !== 'string') return;
+  if (view.kind === 'browser') {
+    // Per-instance: reap this view's own browser element + webview.
+    disposeBrowserElementForView(view);
+    return;
+  }
   if (view.kind === 'shell') {
     if (typeof view.sessionId !== 'string') return;
     try {
@@ -5407,6 +5468,10 @@ function elementForViewInstance(view) {
   for (const state of tablineStateByView.values()) {
     const el = state.editorByChild.get(view);
     if (el !== undefined) return el;
+  }
+  // Browsers are per-instance, keyed by view rather than a singleton.
+  if (view.kind === 'browser' && browserElementByView.has(view)) {
+    return browserElementByView.get(view);
   }
   return singletonElementForKind(view.kind);
 }
