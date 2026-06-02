@@ -88,7 +88,9 @@
    "D"         'select-all-matches
    ;; C-c g opens a gnuplot buffer (see gnuplot.lisp). Bound by symbol;
    ;; the command resolves at dispatch time, so load order doesn't matter.
-   "g"         'gnuplot})
+   "g"         'gnuplot
+   ;; C-c n opens a reactive Lisp notebook (see notebook-commands.lisp).
+   "n"         'notebook})
 
 ;; The root keymap.
 (define the-keymap

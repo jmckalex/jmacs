@@ -15,6 +15,7 @@ import {
   serializeCells,
   shouldForwardChord,
   badgeForState,
+  moveItem,
 } from '../src/notebook-view.js';
 
 // --- topLevelForms ------------------------------------------------------
@@ -108,6 +109,20 @@ test('shouldForwardChord forwards any key mid-chord (prefix continuation)', () =
   assert.equal(shouldForwardChord(ev({ key: '3' }), chordPending), true);
   // …still never a bare modifier.
   assert.equal(shouldForwardChord(ev({ key: 'Shift', shiftKey: true }), chordPending), false);
+});
+
+// --- moveItem -----------------------------------------------------------
+
+test('moveItem reorders within bounds and is a no-op at the edges', () => {
+  assert.deepEqual(moveItem(['a', 'b', 'c'], 0, 1), ['b', 'a', 'c']);
+  assert.deepEqual(moveItem(['a', 'b', 'c'], 2, -1), ['a', 'c', 'b']);
+  // off the top / bottom → unchanged copy
+  assert.deepEqual(moveItem(['a', 'b', 'c'], 0, -1), ['a', 'b', 'c']);
+  assert.deepEqual(moveItem(['a', 'b', 'c'], 2, 1), ['a', 'b', 'c']);
+  // returns a fresh array (no mutation)
+  const src = ['a', 'b'];
+  assert.notEqual(moveItem(src, 0, 1), src);
+  assert.deepEqual(src, ['a', 'b']);
 });
 
 // --- badgeForState ------------------------------------------------------

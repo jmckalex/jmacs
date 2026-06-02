@@ -157,6 +157,25 @@ export function shouldForwardChord(event, chordPending) {
 }
 
 /**
+ * Move the item at INDEX by DELTA positions, returning a new array. A
+ * move that would fall off either end returns an unchanged copy.
+ *
+ * @template T
+ * @param {T[]} arr
+ * @param {number} index
+ * @param {number} delta
+ * @returns {T[]}
+ */
+export function moveItem(arr, index, delta) {
+  const next = arr.slice();
+  const j = index + delta;
+  if (index < 0 || index >= arr.length || j < 0 || j >= arr.length) return next;
+  const [item] = next.splice(index, 1);
+  next.splice(j, 0, item);
+  return next;
+}
+
+/**
  * The badge glyph + class for a cell state. A cycle is an error whose
  * message starts with "cycle" — it gets its own glyph so the user can
  * tell a dependency loop from an ordinary runtime error.
@@ -312,7 +331,7 @@ function createNotebookView(container, options = {}) {
   }
 
   /** Handle a keydown in a cell's name/expr editor. */
-  function onEditorKeydown(event) {
+  function onEditorKeydown(event, cell) {
     // Enter commits (forces an immediate recompute); Shift-Enter is a
     // newline in the textarea (left to the platform).
     if (
@@ -330,6 +349,12 @@ function createNotebookView(container, options = {}) {
       recompute(true);
       return;
     }
+    // M-↑ / M-↓ reorder the cell among its siblings.
+    if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      event.preventDefault();
+      moveCell(cell, event.key === 'ArrowUp' ? -1 : 1);
+      return;
+    }
     // Forward editor chords (C-x b, M-x, prefix continuations) to the
     // host keymap; keep plain typing / arrows / Backspace local.
     if (onKey && shouldForwardChord(event, chordPending)) {
@@ -344,6 +369,21 @@ function createNotebookView(container, options = {}) {
     if (idx === -1) return;
     cells.splice(idx, 1);
     cell.root.remove();
+    recompute(true);
+  }
+
+  /** Move a cell up (-1) or down (+1) in source order, reflecting the new
+   *  order in the DOM, and recompute. */
+  function moveCell(cell, delta) {
+    const i = cells.indexOf(cell);
+    const j = i + delta;
+    if (i === -1 || j < 0 || j >= cells.length) return;
+    const reordered = moveItem(cells, i, delta);
+    cells.length = 0;
+    cells.push(...reordered);
+    // Re-appending each root in the new order moves them in the DOM.
+    for (const c of cells) cellsEl.append(c.root);
+    cell.exprInput.focus();
     recompute(true);
   }
 
@@ -408,8 +448,8 @@ function createNotebookView(container, options = {}) {
     };
     nameInput.addEventListener('input', onInput);
     exprInput.addEventListener('input', onInput);
-    nameInput.addEventListener('keydown', onEditorKeydown);
-    exprInput.addEventListener('keydown', onEditorKeydown);
+    nameInput.addEventListener('keydown', (e) => onEditorKeydown(e, cell));
+    exprInput.addEventListener('keydown', (e) => onEditorKeydown(e, cell));
     del.addEventListener('click', () => removeCell(cell));
 
     cells.push(cell);

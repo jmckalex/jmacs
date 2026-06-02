@@ -68,6 +68,7 @@ export {
   topLevelForms,
   shouldForwardChord,
   badgeForState,
+  moveItem,
 } from './notebook-view.js';
 export {
   AUDIO_SUFFIXES,
