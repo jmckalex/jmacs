@@ -43,6 +43,21 @@ dependency cycle instead of looping forever. A cell's body is evaluated
 in the global interpreter but its name is **not** defined globally —
 values live in the notebook, reachable only through `ref`.
 
+## Graphics
+
+A cell whose value is an **SVG string** is drawn inline instead of being
+shown as text — so a cell can produce a picture, not just a number:
+
+```lisp
+(cell dot (str "<svg width='90' height='90'>"
+               "<circle cx='45' cy='45' r='" (* radius 5) "' fill='#5aa9e6'/></svg>"))
+```
+
+The SVG is just a value, so it's reactive like everything else — editing
+`radius` redraws the circle. Any `<svg …>…</svg>` string works (built by
+hand or from a helper). The markup is your own notebook output, rendered
+with the same trust model as a REPL eval.
+
 ## Editing
 
 | Key | Action |

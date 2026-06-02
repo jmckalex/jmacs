@@ -4743,6 +4743,7 @@ const NOTEBOOK_KEYS = {
   output: keyword('output'),
   state: keyword('state'),
   error: keyword('error'),
+  graphic: keyword('graphic'),
   deps: keyword('deps'),
 };
 /** Marshal one Lisp cell-record map into a plain JS object. */
@@ -4752,6 +4753,7 @@ function marshalNotebookCell(m) {
     output: String(m.get(NOTEBOOK_KEYS.output) ?? ''),
     state: String(m.get(NOTEBOOK_KEYS.state) ?? 'ok'),
     error: String(m.get(NOTEBOOK_KEYS.error) ?? ''),
+    graphic: String(m.get(NOTEBOOK_KEYS.graphic) ?? ''),
     deps: listToArray(m.get(NOTEBOOK_KEYS.deps) ?? NIL).map(String),
   };
 }

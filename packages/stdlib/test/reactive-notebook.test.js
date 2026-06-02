@@ -291,6 +291,21 @@ test('the host can marshal notebook-eval! records to plain JS', async () => {
   assert.ok(cells[1].error.length > 0);
 });
 
+test('a cell whose value is an SVG string is marshalled as a graphic', async () => {
+  const i = await engine();
+  const cells = listToArray(
+    i.call(
+      'notebook-eval!',
+      'nb-svg',
+      "(cell c (str \"<svg width='10' height='10'></svg>\"))"
+    )
+  );
+  assert.ok(String(cells[0].get(keyword('graphic'))).includes('<svg'));
+  // a plain value carries no graphic.
+  const plain = listToArray(i.call('notebook-eval!', 'nb-svg2', '(cell n 42)'));
+  assert.equal(String(plain[0].get(keyword('graphic'))), '');
+});
+
 test('notebook-eval! preserves the notebook and reflows on edit', async () => {
   const i = await engine();
   i.evaluate('(notebook-eval! "nb-2" "(cell x 3) (cell y (* (ref \'x) 4))")');

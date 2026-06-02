@@ -3681,6 +3681,15 @@ notebook-view,
   color: var(--error, #e06c75);
 }
 
+/* A cell that returned an inline graphic (SVG) draws it here. */
+.notebook-cell-result.notebook-cell-graphic {
+  margin-top: 4px;
+}
+.notebook-cell-graphic svg {
+  max-width: 100%;
+  height: auto;
+}
+
 .notebook-cell-delete {
   background: transparent;
   border: none;

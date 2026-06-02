@@ -357,21 +357,31 @@ function createNotebookView(container, options = {}) {
       const name = cell.nameInput.value.trim();
       const r = name === '' ? null : byName.get(name);
       if (!r) {
-        setCellState(cell, 'stale', '', '');
+        setCellState(cell, 'stale', '', '', '');
       } else {
-        setCellState(cell, r.state, r.output, r.error);
+        setCellState(cell, r.state, r.output, r.error, r.graphic);
       }
     }
   }
 
-  /** Paint a cell's badge + result panel for a state. */
-  function setCellState(cell, state, output, error) {
+  /** Paint a cell's badge + result panel for a state. A non-empty
+   *  `graphic` (an inline-SVG string) is rendered instead of the text. */
+  function setCellState(cell, state, output, error, graphic) {
     const badge = badgeForState(state, error);
     cell.badgeEl.textContent = badge.glyph;
     cell.badgeEl.className = `notebook-badge ${badge.cls}`;
     cell.badgeEl.title = badge.title;
     cell.root.dataset.state = state;
-    cell.resultEl.textContent = output ? `→ ${output}` : '';
+    if (graphic) {
+      // The cell returned a graphic — draw it inline. The SVG is the
+      // user's own notebook output (same trust model as a REPL eval).
+      cell.resultEl.classList.add('notebook-cell-graphic');
+      cell.resultEl.innerHTML = graphic;
+    } else {
+      cell.resultEl.classList.remove('notebook-cell-graphic');
+      cell.resultEl.innerHTML = '';
+      cell.resultEl.textContent = output ? `→ ${output}` : '';
+    }
   }
 
   /** Handle a keydown in a cell's name/expr editor. */

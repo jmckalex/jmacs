@@ -473,12 +473,20 @@
    keyword is rendered to a string so the renderer needn't unwrap Lisp
    keywords."
   (map (lambda (c)
-         {:name   (symbol->string (get c :name nil))
-          :output (get c :output "")
-          :state  (-state-string (get c :state :ok))
-          :error  (get c :error "")
-          :deps   (map symbol->string (get c :deps (list)))})
+         {:name    (symbol->string (get c :name nil))
+          :output  (get c :output "")
+          :state   (-state-string (get c :state :ok))
+          :error   (get c :error "")
+          :graphic (-graphic-of (get c :value nil))
+          :deps    (map symbol->string (get c :deps (list)))})
        (get nb :cells (list))))
+
+(define (-graphic-of v)
+  "If a cell's value is an inline-SVG string, return it for inline
+   rendering in the notebook; otherwise the empty string. This is how a
+   cell shows a *graphic* rather than text — return any `<svg …>…</svg>`
+   string (built by hand, or by a plotting helper) and the view draws it."
+  (if (and (string? v) (string-contains? v "<svg")) v ""))
 
 (define (-state-string state)
   "A plain-string name for a cell :state keyword."
