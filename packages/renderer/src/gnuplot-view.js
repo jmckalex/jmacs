@@ -42,6 +42,7 @@
 
 import { keyEventToString } from './keymap.js';
 import { createHistory } from './gnuplot-history.js';
+import { svgWithIntrinsicSize } from './gnuplot-svg.js';
 
 /** The default install card text, used when the host doesn't supply a
  *  message with the not-installed exit. */
@@ -249,14 +250,14 @@ function createGnuplotView(container, options = {}) {
         {
           label: 'Save plot as…',
           run: () => {
-            if (exportSvg) exportSvg(svg, `plot-${id}.svg`);
+            if (exportSvg) exportSvg(svgWithIntrinsicSize(svg), `plot-${id}.svg`);
           },
         },
         {
           label: 'Copy SVG',
           run: () => {
             const clip = win && win.navigator && win.navigator.clipboard;
-            if (clip) clip.writeText(svg).catch(() => {});
+            if (clip) clip.writeText(svgWithIntrinsicSize(svg)).catch(() => {});
           },
         },
       ]);
