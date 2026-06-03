@@ -1,26 +1,36 @@
 /**
- * @file The LaTeX math-preview controller — the Phase 3 minor-mode
- * brain on the renderer side.
+ * @file The math-preview controller — the minor-mode brain on the
+ * renderer side.
  *
- * It ties the Phase 1 pieces together: scan the buffer for math
- * segments, decide which to typeset / reveal / mark invalid, typeset
- * (through a cache, lazily), and hand the view a list of replaced
- * ranges. The view's reveal rule (cursor strictly inside → source) does
- * the edit cycle; this controller only has to *not* build a widget for a
- * revealed segment (so it isn't typeset while being edited) and to
- * re-typeset a segment's new body once point leaves it.
+ * It ties the scan/typeset/layout pieces together: scan the buffer for
+ * math segments (via a mode-supplied `scan` — see
+ * `math-preview-providers.js`), decide which to typeset / reveal / mark
+ * invalid, typeset (through a cache, lazily), and hand the view a list of
+ * replaced ranges. The view's reveal rule (cursor strictly inside →
+ * source) does the edit cycle; this controller only has to *not* build a
+ * widget for a revealed segment (so it isn't typeset while being edited)
+ * and to re-typeset a segment's new body once point leaves it.
+ *
+ * The controller is mode-agnostic: the only mode-specific input is the
+ * `scan` function (which constructs to recognise). `latex-mode` passes
+ * the LaTeX scanner, `markdown-mode` a no-environments scanner, etc.
+ * When `scan` is omitted it defaults to the LaTeX delimiter scanner, so
+ * the historical LaTeX wiring keeps working unchanged.
  *
  * Two layers, split for testing:
  *
  *   - `planSegments(text, points, { scan })` — PURE. Scans and classifies
  *     every segment as `'widget' | 'invalid' | 'revealed'`, given the
  *     cursor offsets. No MathJax, no DOM. Unit-tested directly.
- *   - `createLatexMathPreview(...)` — the stateful controller: holds the
+ *   - `createMathPreview(...)` — the stateful controller: holds the
  *     typeset cache, tracks the segment containing point (enter/leave),
  *     and turns the plan into `{ start, end, kind, el }` ranges with lazy
  *     `el()` factories. MathJax + DOM are injected so the cache and
  *     enter/leave logic are unit-testable behind stubs; the actual SVG
  *     mount needs live smoke.
+ *
+ * `createLatexMathPreview` is kept as a back-compatible alias of
+ * `createMathPreview`.
  */
 
 import {
@@ -132,7 +142,7 @@ export function detectLeave(previousSegment, points) {
  *   invalidateAll: () => void,
  * }}
  */
-export function createLatexMathPreview(options) {
+export function createMathPreview(options) {
   const getText = options.getText;
   const getPoints = options.getPoints;
   const doc = options.doc;
@@ -286,3 +296,12 @@ export function createLatexMathPreview(options) {
     invalidateAll,
   };
 }
+
+/**
+ * Back-compatible alias for {@link createMathPreview}. Retained for the
+ * original LaTeX-only import name; new code should use `createMathPreview`
+ * and pass a mode-specific `scan`.
+ *
+ * @type {typeof createMathPreview}
+ */
+export const createLatexMathPreview = createMathPreview;

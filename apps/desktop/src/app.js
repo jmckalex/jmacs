@@ -90,7 +90,8 @@ import {
   formatBibliography,
   formatCitation,
   citationKeys,
-  createLatexMathPreview,
+  createMathPreview,
+  mathPreviewProviderForMode,
   TextView,
   TablineView,
 } from '@editor/renderer';
@@ -107,7 +108,10 @@ import {
   lispToJsonOverrides,
 } from './face-overrides.js';
 import { applyFaceStyles } from './face-styles.js';
-import { isLatexMathPreviewActive } from './latex-math-preview-host.js';
+import {
+  isMathPreviewActive,
+  bufferMajorModeName,
+} from './math-preview-host.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
@@ -4344,10 +4348,10 @@ function refreshModeMenu() {
 /** @type {Map<string, ReturnType<typeof createEditorView>>} */
 const editorViewByPaneId = new Map();
 
-// --- LaTeX math preview (latex-math-preview-mode) -----------------------
+// --- math preview (math-preview-mode) -----------------------------------
 //
-// The renderer owns the typesetting controller (createLatexMathPreview);
-// the host owns its lifecycle, one per leaf pane (keyed by leaf id, like
+// The renderer owns the typesetting controller (createMathPreview); the
+// host owns its lifecycle, one per leaf pane (keyed by leaf id, like
 // editorViewByPaneId). A controller is created lazily the first time a
 // leaf's buffer is seen with the mode on, reused while the mode stays on
 // (its body/typeset cache persists across renders), and disposed when the
@@ -4356,35 +4360,50 @@ const editorViewByPaneId = new Map();
 // which emits an onChange the renderer is already subscribed to, so the
 // view re-renders and re-reads getMathReplacedRanges below — which now
 // sees the mode on (ranges) or off (empty).
+//
+// The mode is *general*: any major mode can enable `math-preview-mode`.
+// What math each buffer recognises is chosen by its major mode via the
+// renderer's provider registry (mathPreviewProviderForMode), selected by
+// the major mode's display name (LaTeX recognises \begin…\end
+// environments; Markdown / the common config does not). A major mode with
+// no provider gets no preview even with the minor mode on. The original
+// LaTeX UX is preserved: `latex-math-preview-mode` is an alias of this
+// general mode (see math-preview.lisp / latex.lisp), so a `.tex` buffer
+// toggled with C-c C-p still enables this very mode and the LaTeX provider
+// scans it exactly as before.
 
-/** @type {Map<string, ReturnType<typeof createLatexMathPreview>>} */
+/** @type {Map<string, ReturnType<typeof createMathPreview>>} */
 const mathPreviewByPaneId = new Map();
 
-/** The stdlib's `latex-math-preview-mode` map, resolved once the keymap
+/** The stdlib's general `math-preview-mode` map, resolved once the keymap
  *  (and so the stdlib) is loaded. Compared by identity against a
- *  buffer's minor-mode list. Null until resolved / if resolution fails. */
-let latexMathPreviewMode = null;
-/** Whether we've attempted to resolve `latexMathPreviewMode` yet. */
-let latexMathPreviewModeResolved = false;
+ *  buffer's minor-mode list. Null until resolved / if resolution fails.
+ *  `latex-math-preview-mode` is an alias of this same map, so a LaTeX
+ *  buffer toggled the old way is still recognised here. */
+let mathPreviewMode = null;
+/** Whether we've attempted to resolve `mathPreviewMode` yet. */
+let mathPreviewModeResolved = false;
 
-/** Resolve (once) the `latex-math-preview-mode` map from the stdlib. */
-function resolveLatexMathPreviewMode() {
-  if (latexMathPreviewModeResolved || !keymapReady) return latexMathPreviewMode;
-  latexMathPreviewModeResolved = true;
+/** Resolve (once) the general `math-preview-mode` map from the stdlib. */
+function resolveMathPreviewMode() {
+  if (mathPreviewModeResolved || !keymapReady) return mathPreviewMode;
+  mathPreviewModeResolved = true;
   try {
-    latexMathPreviewMode = interpreter.evaluate('latex-math-preview-mode');
+    mathPreviewMode = interpreter.evaluate('math-preview-mode');
   } catch {
-    // The mode is defined in latex.lisp; if it isn't loaded the feature
-    // is simply unavailable and we leave the reference null (→ inactive).
-    latexMathPreviewMode = null;
+    // The mode is defined in math-preview.lisp; if it isn't loaded the
+    // feature is simply unavailable and we leave the reference null
+    // (→ inactive).
+    mathPreviewMode = null;
   }
-  return latexMathPreviewMode;
+  return mathPreviewMode;
 }
 
 /** The math-preview replaced ranges for LEAF's view this render, or an
- *  empty list when the leaf's buffer does not have latex-math-preview-mode
- *  on (or the feature isn't available). Called by the leaf's renderer on
- *  every render via its `getReplacedRanges` option.
+ *  empty list when the leaf's buffer does not have math-preview-mode on,
+ *  its major mode has no math provider, or the feature isn't available.
+ *  Called by the leaf's renderer on every render via its
+ *  `getReplacedRanges` option.
  *
  *  When the mode is on, this lazily creates / reuses the leaf's controller,
  *  runs its per-render `update()` (point tracking + the MathJax-startup
@@ -4396,14 +4415,21 @@ function resolveLatexMathPreviewMode() {
  *  @returns {Array<{start:number,end:number,kind:'inline'|'block',el?:() => Node}>}
  */
 function getMathReplacedRanges(leaf) {
-  const mode = resolveLatexMathPreviewMode();
+  const mode = resolveMathPreviewMode();
   // Peel a tabline wrapper to the active text child; the buffer/point
   // live on the text view, exactly as the getPoint/getCursors closures do.
   const view = peelTabline(leaf.view);
   const isText = view && !isTablineView(view) && view.kind === 'text';
   const buffer = isText ? view.buffer : null;
-  if (!buffer || !isLatexMathPreviewActive(buffer, mode)) {
+  if (!buffer || !isMathPreviewActive(buffer, mode)) {
     // Mode off (or no buffer): drop any idle controller and show source.
+    disposeMathPreviewForLeaf(leaf);
+    return [];
+  }
+  // Pick the scanner provider by the buffer's major mode. No provider
+  // (a mode without math support) → show source, no controller.
+  const provider = mathPreviewProviderForMode(bufferMajorModeName(buffer, keyword));
+  if (!provider) {
     disposeMathPreviewForLeaf(leaf);
     return [];
   }
@@ -4420,7 +4446,7 @@ function getMathReplacedRanges(leaf) {
       const v = peelTabline(leaf.view);
       return v && !isTablineView(v) && v.kind === 'text' ? v : null;
     };
-    controller = createLatexMathPreview({
+    controller = createMathPreview({
       getText: () => {
         const v = peeledTextView();
         return v && v.buffer ? v.buffer.text : '';
@@ -4435,6 +4461,17 @@ function getMathReplacedRanges(leaf) {
         return [typeof v.point === 'number' ? v.point : 0];
       },
       doc: document,
+      // The scanner is mode-specific. Resolve the provider fresh on each
+      // scan so a major-mode change on this leaf's buffer (e.g. a buffer
+      // swap or M-x change-mode) is reflected without rebuilding the
+      // controller; falls back to the LaTeX scanner if the provider has
+      // gone (defensive — getMathReplacedRanges already gated on one).
+      scan: (text) => {
+        const v = peeledTextView();
+        const buf = v ? v.buffer : null;
+        const p = mathPreviewProviderForMode(bufferMajorModeName(buf, keyword));
+        return p ? p.scan(text) : provider.scan(text);
+      },
       // The startup one-shot: once MathJax finishes loading, ask the
       // leaf's renderer to redraw so segments left as source during
       // startup flip to typeset widgets.
@@ -4528,7 +4565,8 @@ function ensureEditorViewForLeaf(leaf) {
     getTabWidth: () => currentTabWidth,
     // Per-view math preview: the renderer reads this fresh each render
     // and merges the ranges into its replaced-range / fold layout. It
-    // returns [] unless this leaf's buffer has latex-math-preview-mode on.
+    // returns [] unless this leaf's buffer has math-preview-mode on and
+    // its major mode has a math provider.
     getReplacedRanges: () => getMathReplacedRanges(leaf),
   });
   instance.setView(leaf.view);     // populates pending buffer/view

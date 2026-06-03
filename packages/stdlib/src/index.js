@@ -62,6 +62,9 @@ export const STDLIB_FILES = Object.freeze([
   // These read the keymap, so they load after it.
   'auto-pair.lisp',
   'menus.lisp',
+  // The general math-preview minor mode loads before the mode files that
+  // build their toggles on it (markdown.lisp, latex.lisp).
+  'math-preview.lisp',
   'markdown.lisp',
   'latex.lisp',
   'makefile.lisp',

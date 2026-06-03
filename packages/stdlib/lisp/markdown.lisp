@@ -76,6 +76,26 @@
    refreshes as the buffer is edited."
   (markdown-preview!))
 
+;; --- live inline math preview -----------------------------------------
+;; Markdown gets the same live MathJax typesetting LaTeX does, built on
+;; the general `math-preview-mode` (math-preview.lisp). The host scans a
+;; markdown buffer with the *common* config: $…$, $$…$$, \(…\), \[…\] —
+;; but NOT \begin…\end environments (those aren't display math in prose).
+;; OFF by default — opt in per buffer with `toggle-markdown-math-preview`
+;; (C-c C-p), or globally via the defcustom below.
+
+(defcustom *markdown-math-preview-default* #f :boolean
+  :group 'jmacs
+  :doc "When #t, typeset math inline automatically for Markdown buffers.
+   Off by default — opt in per-buffer with `toggle-markdown-math-preview`,
+   or set this in your init / customisation to default it on.")
+
+(defcommand toggle-markdown-math-preview ()
+  "Toggle live inline MathJax typesetting for the current Markdown buffer.
+   With it on, math segments render typeset in place of their source and
+   flip back to source for editing when point enters them."
+  (toggle-math-preview))
+
 ;; --- math symbol minor mode -------------------------------------------
 ;; AUCTeX-style: with math mode on, ` then a key inserts a LaTeX symbol.
 ;; ` followed by an unmapped key inserts that key (so ` ` gives a `).
@@ -133,7 +153,8 @@
    "5" 'markdown-heading-5
    "6" 'markdown-heading-6
    "m" 'toggle-math-mode
-   "v" 'markdown-preview})
+   "v" 'markdown-preview
+   "C-p" 'toggle-markdown-math-preview})
 
 ;; markdown-mode-map is declared empty in modes.lisp; fill it in here.
 (set! markdown-mode-map {"C-c" markdown-c-c-map})

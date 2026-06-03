@@ -126,7 +126,15 @@ export {
   pointInsideSegment,
   segmentContainingPoint,
   isEmptyBody,
+  LATEX_MATH_CONFIG,
+  MARKDOWN_MATH_CONFIG,
+  MATH_ENVIRONMENT_NAMES,
 } from './math-segments.js';
+export {
+  MATH_PREVIEW_CONFIGS,
+  providerForConfig,
+  mathPreviewProviderForMode,
+} from './math-preview-providers.js';
 export {
   typesetMath,
   isMathJaxReady,
@@ -141,7 +149,8 @@ export {
   spliceInlineWidgets,
 } from './math-layout.js';
 export {
+  createMathPreview,
   createLatexMathPreview,
   planSegments,
   detectLeave,
-} from './latex-math-preview.js';
+} from './math-preview.js';

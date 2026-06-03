@@ -1,5 +1,5 @@
 /**
- * @file Math-segment scanning — the pure core of the LaTeX math preview.
+ * @file Math-segment scanning — the pure core of the math preview.
  *
  * A *math segment* is a stretch of buffer text that is either delimited
  * by one of the four LaTeX math delimiter pairs or a display-math
@@ -10,6 +10,15 @@
  *   - `\begin{align}…\end{align}` and friends (equation, gather, multline,
  *     alignat, flalign, eqnarray, displaymath; starred or not) → display
  *     math (`kind: 'block'`, usually spanning lines)
+ *
+ * Which of those constructs the scanner recognises is controlled by a
+ * `config` argument (see `MathConfig`), so the same scanner serves every
+ * major mode: `LATEX_MATH_CONFIG` recognises all of them (the LaTeX
+ * default), while `MARKDOWN_MATH_CONFIG` recognises the four delimiter
+ * pairs but **not** `\begin…\end` environments (the "common" config used
+ * by markdown and, later, html/php). `scanMathSegments(text)` with no
+ * config defaults to `LATEX_MATH_CONFIG`, so existing LaTeX callers are
+ * unchanged.
  *
  * The scanner walks the text once and returns the segments it finds as
  * `{ start, end, kind, body }`:
@@ -42,6 +51,72 @@
  *   (`$$…$$`, `\[…\]`).
  * @property {string} body - The source between the delimiters.
  */
+
+/**
+ * Which math constructs `scanMathSegments` recognises. Every flag
+ * defaults to *on* when the field is absent, so an empty/partial config
+ * still scans everything — pass `false` to turn a construct off.
+ *
+ * @typedef {object} MathConfig
+ * @property {boolean} [inlineDollar] - Recognise `$…$` inline math.
+ * @property {boolean} [displayDollar] - Recognise `$$…$$` display math.
+ * @property {boolean} [parens] - Recognise `\(…\)` inline math.
+ * @property {boolean} [brackets] - Recognise `\[…\]` display math.
+ * @property {boolean|string[]} [environments] - Recognise display-math
+ *   `\begin{…}…\end{…}` environments. `true`/absent → the built-in set
+ *   (equation, align, …); `false` → none; an array → only those base
+ *   environment names (the starred form is matched too).
+ */
+
+/**
+ * The display-math `\begin{…}…\end{…}` environments MathJax typesets at
+ * the top level (base names; the starred form is stripped before lookup).
+ * Inner environments used *inside* math (matrix, cases, …) are not here —
+ * they appear within another segment, not standalone.
+ *
+ * @type {readonly string[]}
+ */
+export const MATH_ENVIRONMENT_NAMES = Object.freeze([
+  'equation',
+  'align',
+  'alignat',
+  'gather',
+  'multline',
+  'flalign',
+  'eqnarray',
+  'displaymath',
+]);
+
+/**
+ * The full LaTeX config: every delimiter pair plus `\begin…\end` math
+ * environments. This is the historical (and default) behaviour, used by
+ * `latex-mode`.
+ *
+ * @type {Readonly<MathConfig>}
+ */
+export const LATEX_MATH_CONFIG = Object.freeze({
+  inlineDollar: true,
+  displayDollar: true,
+  parens: true,
+  brackets: true,
+  environments: true,
+});
+
+/**
+ * The "common" config: the four delimiter pairs but **no** `\begin…\end`
+ * environments. Used by `markdown-mode` (and, when they land, html/php)
+ * — prose modes where `\begin{equation}` is not display math the way it
+ * is in a `.tex` file.
+ *
+ * @type {Readonly<MathConfig>}
+ */
+export const MARKDOWN_MATH_CONFIG = Object.freeze({
+  inlineDollar: true,
+  displayDollar: true,
+  parens: true,
+  brackets: true,
+  environments: false,
+});
 
 /**
  * True when the character at `index` in `text` is escaped — preceded by
@@ -83,10 +158,22 @@ function isEscaped(text, index) {
  *   4. `$ … $`    (inline)
  *
  * @param {string} text - The buffer text.
+ * @param {MathConfig} [config] - Which constructs to recognise. Defaults
+ *   to `LATEX_MATH_CONFIG` (everything), so existing LaTeX callers that
+ *   pass only `text` are unchanged.
  * @returns {MathSegment[]}
  */
-export function scanMathSegments(text) {
+export function scanMathSegments(text, config = LATEX_MATH_CONFIG) {
   if (typeof text !== 'string' || text.length === 0) return [];
+  // Resolve the config flags once. An absent flag defaults to *on*, so a
+  // bare `{}` (or no config) scans everything.
+  const inlineDollar = config.inlineDollar !== false;
+  const displayDollar = config.displayDollar !== false;
+  const parens = config.parens !== false;
+  const brackets = config.brackets !== false;
+  const environments = config.environments ?? true;
+  /** @type {Set<string> | null} */
+  const envNames = resolveEnvNames(environments);
   /** @type {MathSegment[]} */
   const segments = [];
   let i = 0;
@@ -111,8 +198,8 @@ export function scanMathSegments(text) {
       // their starred forms). MathJax typesets the whole environment, so
       // the segment body is the *full* `\begin…\end` source (delimiters
       // are part of the math, not stripped). Always display (`block`).
-      if (text.startsWith('\\begin{', i)) {
-        const env = scanEnvironment(text, i);
+      if (envNames && text.startsWith('\\begin{', i)) {
+        const env = scanEnvironment(text, i, envNames);
         if (env) {
           segments.push(env);
           i = env.end;
@@ -122,7 +209,7 @@ export function scanMathSegments(text) {
         // and treat the backslash as an ordinary command.
       }
       const next = text.charCodeAt(i + 1);
-      if (next === 40 /* '(' */) {
+      if (parens && next === 40 /* '(' */) {
         const found = scanTo(text, i + 2, '\\)');
         if (found !== -1) {
           segments.push({
@@ -138,7 +225,7 @@ export function scanMathSegments(text) {
         i += 2;
         continue;
       }
-      if (next === 91 /* '[' */) {
+      if (brackets && next === 91 /* '[' */) {
         const found = scanTo(text, i + 2, '\\]');
         if (found !== -1) {
           segments.push({
@@ -162,30 +249,34 @@ export function scanMathSegments(text) {
     if (ch === 36 /* '$' */) {
       const isDouble = text.charCodeAt(i + 1) === 36;
       if (isDouble) {
-        const found = scanToDollar(text, i + 2, true);
-        if (found !== -1) {
-          segments.push({
-            start: i,
-            end: found + 2,
-            kind: 'block',
-            body: text.slice(i + 2, found),
-          });
-          i = found + 2;
-          continue;
+        if (displayDollar) {
+          const found = scanToDollar(text, i + 2, true);
+          if (found !== -1) {
+            segments.push({
+              start: i,
+              end: found + 2,
+              kind: 'block',
+              body: text.slice(i + 2, found),
+            });
+            i = found + 2;
+            continue;
+          }
         }
         i += 2;
         continue;
       }
-      const found = scanToDollar(text, i + 1, false);
-      if (found !== -1) {
-        segments.push({
-          start: i,
-          end: found + 1,
-          kind: 'inline',
-          body: text.slice(i + 1, found),
-        });
-        i = found + 1;
-        continue;
+      if (inlineDollar) {
+        const found = scanToDollar(text, i + 1, false);
+        if (found !== -1) {
+          segments.push({
+            start: i,
+            end: found + 1,
+            kind: 'inline',
+            body: text.slice(i + 1, found),
+          });
+          i = found + 1;
+          continue;
+        }
       }
       i += 1;
       continue;
@@ -197,22 +288,21 @@ export function scanMathSegments(text) {
   return segments;
 }
 
+/** The built-in math-environment names as a Set (lazy singleton). */
+const MATH_ENVIRONMENTS = new Set(MATH_ENVIRONMENT_NAMES);
+
 /**
- * The display-math `\begin{…}…\end{…}` environments MathJax typesets at
- * the top level (base names; the starred form is stripped before lookup).
- * Inner environments used *inside* math (matrix, cases, …) are not here —
- * they appear within another segment, not standalone.
+ * Resolve the `environments` config flag to the set of base names to
+ * recognise, or null when environments are off.
+ *
+ * @param {boolean|string[]} environments
+ * @returns {Set<string> | null}
  */
-const MATH_ENVIRONMENTS = new Set([
-  'equation',
-  'align',
-  'alignat',
-  'gather',
-  'multline',
-  'flalign',
-  'eqnarray',
-  'displaymath',
-]);
+function resolveEnvNames(environments) {
+  if (environments === false) return null;
+  if (Array.isArray(environments)) return new Set(environments);
+  return MATH_ENVIRONMENTS;
+}
 
 /**
  * Parse a `\begin{ENV}…\end{ENV}` math environment whose `\begin` is at
@@ -223,15 +313,16 @@ const MATH_ENVIRONMENTS = new Set([
  *
  * @param {string} text
  * @param {number} start - Offset of the `\` in `\begin{`.
+ * @param {Set<string>} envNames - The recognised base environment names.
  * @returns {MathSegment | null}
  */
-function scanEnvironment(text, start) {
+function scanEnvironment(text, start, envNames) {
   const nameStart = start + '\\begin{'.length;
   const nameEnd = text.indexOf('}', nameStart);
   if (nameEnd === -1) return null;
   const name = text.slice(nameStart, nameEnd);
   const base = name.endsWith('*') ? name.slice(0, -1) : name;
-  if (!MATH_ENVIRONMENTS.has(base)) return null;
+  if (!envNames.has(base)) return null;
   // The matching close. These top-level environments don't nest the same
   // name, so the first `\end{NAME}` after the opener is the right one.
   const closer = `\\end{${name}}`;

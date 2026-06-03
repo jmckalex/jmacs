@@ -1,7 +1,12 @@
 /**
- * @file Unit tests for the LaTeX math-preview controller — the pure
- * segment plan, the point enter/leave detection, the cache reuse, and
- * the range production behind MathJax / DOM stubs.
+ * @file Unit tests for the math-preview controller — the pure segment
+ * plan, the point enter/leave detection, the cache reuse, and the range
+ * production behind MathJax / DOM stubs.
+ *
+ * The controller's behaviour is mode-agnostic and unchanged by the
+ * generalisation; these tests drive it through `createMathPreview` (the
+ * LaTeX scanner is its default `scan`). The back-compat alias
+ * `createLatexMathPreview` is checked in one extra assertion below.
  */
 
 import { test } from 'node:test';
@@ -10,8 +15,9 @@ import assert from 'node:assert/strict';
 import {
   planSegments,
   detectLeave,
+  createMathPreview,
   createLatexMathPreview,
-} from '../src/latex-math-preview.js';
+} from '../src/math-preview.js';
 
 /** A MathJax stub returning a clonable marker node per call. */
 function stubMathJax(throwOn) {
@@ -99,10 +105,14 @@ test('detectLeave with no previous segment is null', () => {
 
 // --- the controller: cache + ranges ------------------------------------
 
+test('createLatexMathPreview is a back-compat alias of createMathPreview', () => {
+  assert.equal(createLatexMathPreview, createMathPreview);
+});
+
 test('ranges() produces a widget range per valid non-revealed segment', () => {
   const mj = stubMathJax();
   let text = '$a$ x $$b$$';
-  const ctrl = createLatexMathPreview({
+  const ctrl = createMathPreview({
     getText: () => text,
     getPoints: () => [],
     doc: stubDoc(),
@@ -121,7 +131,7 @@ test('ranges() produces a widget range per valid non-revealed segment', () => {
 test('ranges() omits a revealed segment (cursor inside)', () => {
   const mj = stubMathJax();
   const text = 'a $x+1$ b';
-  const ctrl = createLatexMathPreview({
+  const ctrl = createMathPreview({
     getText: () => text,
     getPoints: () => [4], // inside
     doc: stubDoc(),
@@ -133,7 +143,7 @@ test('ranges() omits a revealed segment (cursor inside)', () => {
 test('ranges() emits an invalid (source) range for an empty body', () => {
   const mj = stubMathJax();
   const text = 'a $ $ b';
-  const ctrl = createLatexMathPreview({
+  const ctrl = createMathPreview({
     getText: () => text,
     getPoints: () => [],
     doc: stubDoc(),
@@ -151,7 +161,7 @@ test('ranges() emits an invalid (source) range for an empty body', () => {
 test('ranges() falls back to source span when MathJax throws', () => {
   const mj = stubMathJax((s) => s === 'oops');
   const text = 'a $oops$ b';
-  const ctrl = createLatexMathPreview({
+  const ctrl = createMathPreview({
     getText: () => text,
     getPoints: () => [],
     doc: stubDoc(),
@@ -166,7 +176,7 @@ test('ranges() falls back to source span when MathJax throws', () => {
 test('the cache typesets a repeated body once across el() calls', () => {
   const mj = stubMathJax();
   const text = '$a$ $a$'; // same body twice
-  const ctrl = createLatexMathPreview({
+  const ctrl = createMathPreview({
     getText: () => text,
     getPoints: () => [],
     doc: stubDoc(),
@@ -182,7 +192,7 @@ test('the cache typesets a repeated body once across el() calls', () => {
 test('a changed body re-typesets (cache miss on new key)', () => {
   const mj = stubMathJax();
   let text = '$a$';
-  const ctrl = createLatexMathPreview({
+  const ctrl = createMathPreview({
     getText: () => text,
     getPoints: () => [],
     doc: stubDoc(),
@@ -207,7 +217,7 @@ test('ranges() leaves valid segments as source until MathJax is ready', () => {
   };
   let renders = 0;
   const text = '$a$';
-  const ctrl = createLatexMathPreview({
+  const ctrl = createMathPreview({
     getText: () => text,
     getPoints: () => [],
     doc: stubDoc(),
@@ -226,7 +236,7 @@ test('currentSegment tracks the segment under point after update()', () => {
   const mj = stubMathJax();
   let points = [4];
   const text = 'a $x+1$ b';
-  const ctrl = createLatexMathPreview({
+  const ctrl = createMathPreview({
     getText: () => text,
     getPoints: () => points,
     doc: stubDoc(),
@@ -243,7 +253,7 @@ test('currentSegment tracks the segment under point after update()', () => {
 test('invalidateAll clears the typeset cache', () => {
   const mj = stubMathJax();
   const text = '$a$';
-  const ctrl = createLatexMathPreview({
+  const ctrl = createMathPreview({
     getText: () => text,
     getPoints: () => [],
     doc: stubDoc(),

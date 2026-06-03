@@ -2627,6 +2627,99 @@ test('makefile-mode has a C-c keymap with makefile-target under "t"', async () =
   assert.equal(String(km && km.name), 'makefile-target');
 });
 
+// --- general math preview --------------------------------------------
+
+test('the general math-preview-mode and toggle-math-preview are defined', async () => {
+  const { interpreter } = await editor();
+  // The mode is a map with the MathPreview name.
+  assert.equal(
+    String(interpreter.evaluate('(get math-preview-mode :name "?")')),
+    'MathPreview'
+  );
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote toggle-math-preview))'),
+    true
+  );
+});
+
+test('toggle-math-preview toggles the general minor mode on and off', async () => {
+  const { interpreter } = await editor('');
+  interpreter.evaluate('(toggle-math-preview)');
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 1);
+  // The enabled mode is the general math-preview-mode.
+  assert.equal(
+    interpreter.evaluate('(if (member math-preview-mode (minor-modes)) #t #f)'),
+    true
+  );
+  interpreter.evaluate('(toggle-math-preview)');
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 0);
+});
+
+test('latex-math-preview-mode is an alias of the general mode', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(eq? latex-math-preview-mode math-preview-mode)'),
+    true
+  );
+});
+
+test('toggle-latex-math-preview enables the general math-preview-mode', async () => {
+  const { interpreter } = await editor('');
+  interpreter.evaluate('(toggle-latex-math-preview)');
+  assert.equal(
+    interpreter.evaluate('(if (member math-preview-mode (minor-modes)) #t #f)'),
+    true
+  );
+  interpreter.evaluate('(toggle-latex-math-preview)');
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 0);
+});
+
+test('latex C-c C-p stays bound to toggle-latex-math-preview', async () => {
+  const { interpreter } = await editor();
+  const km = interpreter.evaluate(
+    "(get (get (resolve-keymap 'latex-mode-map) \"C-c\" {}) \"C-p\" nil)"
+  );
+  assert.equal(String(km && km.name), 'toggle-latex-math-preview');
+});
+
+test('*latex-math-preview-default* is a #f boolean defcustom', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(custom-value (quote *latex-math-preview-default*))'),
+    false
+  );
+});
+
+test('markdown wires a math-preview toggle and defcustom', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote toggle-markdown-math-preview))'),
+    true
+  );
+  // The markdown defcustom mirrors the latex one (off by default).
+  assert.equal(
+    interpreter.evaluate('(custom-value (quote *markdown-math-preview-default*))'),
+    false
+  );
+});
+
+test('markdown C-c C-p toggles math preview', async () => {
+  const { interpreter } = await editor();
+  const km = interpreter.evaluate(
+    "(get (get (resolve-keymap 'markdown-mode-map) \"C-c\" {}) \"C-p\" nil)"
+  );
+  assert.equal(String(km && km.name), 'toggle-markdown-math-preview');
+});
+
+test('toggle-markdown-math-preview enables the general math-preview-mode', async () => {
+  const { interpreter } = await editor('');
+  interpreter.evaluate('(toggle-markdown-math-preview)');
+  assert.equal(
+    interpreter.evaluate('(if (member math-preview-mode (minor-modes)) #t #f)'),
+    true
+  );
+});
+
 test('html-bold wraps the selection in <strong>...</strong>', async () => {
   const { interpreter, buffer } = await editor('hello world');
   buffer.moveTo(0);

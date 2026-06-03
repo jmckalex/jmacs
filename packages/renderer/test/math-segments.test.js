@@ -13,6 +13,8 @@ import {
   pointInsideSegment,
   segmentContainingPoint,
   isEmptyBody,
+  LATEX_MATH_CONFIG,
+  MARKDOWN_MATH_CONFIG,
 } from '../src/math-segments.js';
 
 test('scans a single inline $…$ segment', () => {
@@ -275,4 +277,87 @@ test('isEmptyBody treats empty and whitespace-only as invalid', () => {
   assert.equal(isEmptyBody('x'), false);
   assert.equal(isEmptyBody(' x '), false);
   assert.equal(isEmptyBody(undefined), true);
+});
+
+// --- config-driven scanning --------------------------------------------
+
+test('default (no config) is the full LaTeX behaviour', () => {
+  // Back-compat: an existing caller passing only text scans everything,
+  // including \begin…\end environments.
+  const text = 'a $x$ \\begin{align}y=1\\end{align}';
+  const segs = scanMathSegments(text);
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0].body, 'x');
+  assert.equal(segs[1].kind, 'block');
+  assert.equal(segs[1].body, '\\begin{align}y=1\\end{align}');
+});
+
+test('LATEX_MATH_CONFIG recognises all four delimiters and environments', () => {
+  const text = '$a$ $$b$$ \\(c\\) \\[d\\] \\begin{equation}e\\end{equation}';
+  const segs = scanMathSegments(text, LATEX_MATH_CONFIG);
+  assert.deepEqual(
+    segs.map((s) => [s.kind, s.body]),
+    [
+      ['inline', 'a'],
+      ['block', 'b'],
+      ['inline', 'c'],
+      ['block', 'd'],
+      ['block', '\\begin{equation}e\\end{equation}'],
+    ]
+  );
+});
+
+test('MARKDOWN_MATH_CONFIG recognises all four delimiter pairs', () => {
+  const text = '$a$ $$b$$ \\(c\\) \\[d\\]';
+  const segs = scanMathSegments(text, MARKDOWN_MATH_CONFIG);
+  assert.deepEqual(
+    segs.map((s) => [s.kind, s.body]),
+    [
+      ['inline', 'a'],
+      ['block', 'b'],
+      ['inline', 'c'],
+      ['block', 'd'],
+    ]
+  );
+});
+
+test('MARKDOWN_MATH_CONFIG does NOT treat \\begin{equation} as math', () => {
+  const text = '\\begin{equation}E=mc^2\\end{equation}';
+  assert.deepEqual(scanMathSegments(text, MARKDOWN_MATH_CONFIG), []);
+});
+
+test('MARKDOWN_MATH_CONFIG: a \\begin near real $…$ leaves the $…$ intact', () => {
+  // The \begin is not math under the common config; the $…$ after it is.
+  const text = '\\begin{equation}q\\end{equation} and $z$';
+  const segs = scanMathSegments(text, MARKDOWN_MATH_CONFIG);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].body, 'z');
+  assert.equal(segs[0].kind, 'inline');
+});
+
+test('config flags can disable individual delimiters', () => {
+  // Inline dollar off: $a$ is not scanned, but \(b\) still is.
+  const text = '$a$ \\(b\\)';
+  const segs = scanMathSegments(text, { inlineDollar: false });
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].body, 'b');
+});
+
+test('environments can be restricted to a name list', () => {
+  const config = { environments: ['equation'] };
+  // equation is recognised…
+  assert.equal(
+    scanMathSegments('\\begin{equation}x\\end{equation}', config).length,
+    1
+  );
+  // …align is not (not in the list).
+  assert.equal(
+    scanMathSegments('\\begin{align}x\\end{align}', config).length,
+    0
+  );
+});
+
+test('an empty config still scans everything (flags default on)', () => {
+  const text = '$a$ \\begin{align}b\\end{align}';
+  assert.equal(scanMathSegments(text, {}).length, 2);
 });
