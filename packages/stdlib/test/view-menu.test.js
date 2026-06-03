@@ -230,14 +230,27 @@ async function buildEditor(seed = [{ name: 'alpha.txt', text: 'alpha' }]) {
 
 const press = (interpreter, key) => interpreter.call('handle-key', key);
 
-test('view-list opens the *View List* via open-view-list!', async () => {
+test('view-list! opens the *View List* via open-view-list!', async () => {
   const editor = await buildEditor([
     { name: 'alpha.txt', text: 'one' },
     { name: 'beta.txt', text: 'two' },
   ]);
   assert.equal(editor.openViewListCalls(), 0);
-  editor.interpreter.evaluate('(view-list)');
+  editor.interpreter.evaluate('(view-list!)');
   assert.equal(editor.openViewListCalls(), 1);
+});
+
+test('(view-list) returns data and does NOT open the GUI (no shadowing)', async () => {
+  // Regression: the `view-list!` command must not be named `view-list`,
+  // or it shadows the host `view-list` PRIMITIVE and Lisp callers that
+  // enumerate views (latex/reftex `-find-view-by-file`) open the *View
+  // List* instead of getting the array — which broke C-c C-c / C-c C-v.
+  const editor = await buildEditor([
+    { name: 'alpha.txt', text: 'one' },
+    { name: 'beta.txt', text: 'two' },
+  ]);
+  editor.interpreter.evaluate('(view-list)');
+  assert.equal(editor.openViewListCalls(), 0);
 });
 
 test('buffer-menu is an alias that opens the *View List*', async () => {
@@ -260,7 +273,7 @@ test('C-x C-b is bound to buffer-menu and opens the *View List*', async () => {
 
 test('view-list and buffer-menu are registered commands', async () => {
   const editor = await buildEditor();
-  for (const name of ['view-list', 'buffer-menu']) {
+  for (const name of ['view-list!', 'buffer-menu']) {
     assert.ok(
       editor.interpreter.evaluate(`(command-registered? (quote ${name}))`),
       `expected ${name} to be a command`

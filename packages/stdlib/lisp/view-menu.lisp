@@ -13,15 +13,23 @@
 ;;; labelled every non-text view "Fund". That logic lives in `kindLabel`
 ;;; in the renderer.
 ;;;
-;;; `view-list` is the command; `buffer-menu` is kept as an alias for
-;;; muscle memory, and `C-x C-b` (keymap.lisp) still points at it.
+;;; `view-list!` is the command that OPENS the list — it has a side
+;;; effect, so it takes the `!` suffix; `buffer-menu` is kept as an alias
+;;; for muscle memory, and `C-x C-b` (keymap.lisp) points at `buffer-menu`.
+;;; IMPORTANT: the bare `view-list` name belongs to the host PRIMITIVE
+;;; that returns the array of open view handles. The command must NOT be
+;;; called `view-list`, or it shadows that primitive and Lisp callers that
+;;; enumerate views (latex/reftex) open the GUI instead of getting the
+;;; data. Hence the `!`.
 
-(defcommand view-list ()
+(defcommand view-list! ()
   "Open the *View List* — a clickable table of every open view. Click a
    row to switch to that view; the row's ✕ kills it. The list refreshes
-   live as views open and close. Bound to `C-x C-b`."
+   live as views open and close. Also reachable as `buffer-menu` / `C-x
+   C-b`. (The `!` marks the side effect and keeps the name clear of the
+   `(view-list)` primitive that returns the view-handle array.)"
   (open-view-list!))
 
 (defcommand buffer-menu ()
-  "Alias for `view-list`, kept for Emacs muscle memory (`C-x C-b`)."
+  "Alias for `view-list!`, kept for Emacs muscle memory (`C-x C-b`)."
   (open-view-list!))
