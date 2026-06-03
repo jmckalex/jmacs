@@ -275,8 +275,11 @@
            (else
             ;; Not open: split the source pane to the right and open the
             ;; PDF in the new pane, so source and PDF sit side by side.
-            ;; split-horizontal! moves focus into the new (right) pane.
+            ;; split-horizontal! leaves focus on the *originating* (left)
+            ;; leaf, so move focus into the new right pane before opening,
+            ;; or the PDF would replace the source in place.
             (split-horizontal! 0.5 'after)
+            (focus-pane-direction! 'right)
             (open-file-path! pdf)
             (show-status! (str "Opened " (path-basename pdf))))))))))
 
