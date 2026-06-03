@@ -107,6 +107,12 @@ export const STDLIB_FILES = Object.freeze([
   // dispatcher, then find-file), and softly reuses RefTeX's
   // `*reftex-label-prefixes*` for figure/table/section label keys.
   'latex-insert.lisp',
+  // AUCTeX Phase 3 — LaTeX-math-mode (math symbol abbreviations). Loads
+  // after latex-insert.lisp: it reuses that file's shared completion
+  // dispatch (`*latex-insert-candidates*` / `*latex-insert-tab-complete*`)
+  // for the unknown-key completion fallback and extends `latex-c-c-map`
+  // with the C-c ~ toggle slot.
+  'latex-math.lisp',
 ]);
 
 /**
