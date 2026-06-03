@@ -63,6 +63,19 @@
    external viewers (Skim, evince) later — those would spawn via
    run-process! rather than open the in-app pdf-view.")
 
+;; Whether the PDF `latex-view` opens should survive a relaunch. The
+;; latexed output of a document is usually worth restoring (reopen the
+;; editor, the source|PDF split is back); set this to #f to make even the
+;; latex-output PDF transient (matching the global *pdf-restore-default*).
+;; When on, `latex-view` passes the persist flag through
+;; `open-file-in-split!` so the host marks the new pdf view persistent.
+(defcustom *latex-pdf-restore* #t :boolean
+  :group 'latex
+  :doc "Whether the PDF `latex-view` opens persists across a relaunch.
+   #t (the default) restores the latexed-output PDF beside its source on
+   relaunch; #f makes it transient like a generic PDF. Independent of the
+   global *pdf-restore-default* (which governs all OTHER PDFs).")
+
 ;; Auxiliary file extensions a `latex-clean` removes. These are the
 ;; siblings latexmk / pdflatex leave beside the .tex.
 (defcustom *latex-clean*
@@ -293,7 +306,11 @@
             ;; fills the new pane with the PDF straight away, leaving no
             ;; placeholder chooser and no stray pane (the user-facing
             ;; `split-horizontal!` shows a chooser, which is wrong here).
-            (open-file-in-split! pdf 'horizontal 'after)
+            ;; The 4th arg flags the PDF session-persistent when
+            ;; *latex-pdf-restore* is on, so the latexed output is back
+            ;; beside its source after a relaunch (threaded through the
+            ;; open so we don't race the async open for the handle).
+            (open-file-in-split! pdf 'horizontal 'after *latex-pdf-restore*)
             (show-status! (str "Opened " (path-basename pdf))))))))))
 
 ;; --- error navigation -------------------------------------------------

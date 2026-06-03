@@ -73,6 +73,13 @@ function makeMediaView(kind, path) {
   return { kind, name: path.split('/').pop(), buffer: null, filePath: path };
 }
 
+/** A pdf-view handle. PERSIST controls whether the session should
+ *  restore it across a relaunch (false by default, matching a fresh
+ *  generic / texdoc PDF; latex-view's output sets it true). */
+function makePdfView(path, persist = false) {
+  return { kind: 'pdf', name: path.split('/').pop(), buffer: null, filePath: path, persist };
+}
+
 // --- isEphemeral -------------------------------------------------------
 
 test('isEphemeral: a non-text view is ephemeral', () => {
@@ -290,6 +297,55 @@ test('deserialise: a v2 payload with media views round-trips through serialiseTr
     makeMediaView('video', '/y.mp4'),
     makeMediaView('image', '/z.png'),
   ], { active: 1 }));
+  const written = serialiseTree(tree, 'pane-leaf-rt');
+  const back = deserialise(JSON.parse(JSON.stringify(written)));
+  assert.deepEqual(back, written);
+});
+
+// --- pdf persistence ---------------------------------------------------
+
+test('serialiseTree: a pdf view flagged persist serialises its path', () => {
+  const tree = makeLeaf('pane-leaf-pdf', makePdfView('/tmp/doc.pdf', true));
+  const out = serialiseTree(tree, 'pane-leaf-pdf');
+  assert.deepEqual(out.rootPane.view, { kind: 'pdf', path: '/tmp/doc.pdf' });
+});
+
+test('serialiseTree: a pdf view NOT flagged persist serialises as null', () => {
+  const tree = makeLeaf('pane-leaf-pdf', makePdfView('/tmp/texdoc.pdf', false));
+  const out = serialiseTree(tree, 'pane-leaf-pdf');
+  assert.equal(out.rootPane.view, null);
+});
+
+test('serialiseTree: a persist-flagged pdf with no filePath still serialises as null', () => {
+  const tree = makeLeaf('pane-leaf-pdf', {
+    kind: 'pdf', name: 'in-memory.pdf', buffer: null, persist: true,
+  });
+  const out = serialiseTree(tree, 'pane-leaf-pdf');
+  assert.equal(out.rootPane.view, null);
+});
+
+test('serialiseTree: a persistent pdf tab alongside a transient one keeps only the persistent', () => {
+  const tabline = makeTabline(
+    [
+      makeTextView('/tmp/main.tex', { point: 0 }),
+      makePdfView('/tmp/main.pdf', true),
+      makePdfView('/tmp/texdoc.pdf', false),
+    ],
+    { active: 1 }
+  );
+  const tree = makeLeaf('pane-leaf-mix', tabline);
+  const out = serialiseTree(tree, 'pane-leaf-mix');
+  // The transient pdf drops out; the text + persistent pdf survive.
+  assert.equal(out.rootPane.view.tabs.length, 2);
+  assert.equal(out.rootPane.view.tabs[1].kind, 'pdf');
+  assert.equal(out.rootPane.view.tabs[1].path, '/tmp/main.pdf');
+});
+
+test('deserialise: a v2 persistent-pdf payload round-trips through serialiseTree', () => {
+  const tree = makeLeaf('pane-leaf-rt', makeTabline([
+    makeTextView('/main.tex'),
+    makePdfView('/main.pdf', true),
+  ], { active: 0 }));
   const written = serialiseTree(tree, 'pane-leaf-rt');
   const back = deserialise(JSON.parse(JSON.stringify(written)));
   assert.deepEqual(back, written);

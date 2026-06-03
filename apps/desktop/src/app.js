@@ -1031,14 +1031,17 @@ function symbolNameOf(arg) {
 /** Programmatically split the focused pane and open FILEPATH directly in
  *  the new sibling pane — no placeholder, no chooser. The split runs at
  *  an even 0.5 ratio; ORIENTATION is `SPLIT_HORIZONTAL` / `SPLIT_VERTICAL`
- *  and SIDE is `'after'` (default) / `'before'`. Focus moves to the new
- *  pane (consistent with `splitPaneAtLeaf`). Returns the opened view, or
- *  null on failure (unreadable path, no focused leaf, unrecognised
+ *  and SIDE is `'after'` (default) / `'before'`. When PERSIST is true the
+ *  opened view is flagged session-persistent (the latex-output PDF case);
+ *  this is applied atomically with the open so a Lisp caller needn't race
+ *  the async open to find the handle. Focus moves to the new pane
+ *  (consistent with `splitPaneAtLeaf`). Returns the opened view, or null
+ *  on failure (unreadable path, no focused leaf, unrecognised
  *  orientation). This is the programmatic counterpart to the user-facing
  *  `split-*!` primitives — callers that want a pane filled straight away
  *  (latex-view's source|PDF) use this instead of split-then-open, which
  *  would strand a placeholder. */
-async function splitAndOpenFile(filePath, orientation, side = 'after') {
+async function splitAndOpenFile(filePath, orientation, side = 'after', persist = false) {
   const currentLeaf = currentPane();
   if (!currentLeaf || currentLeaf.kind !== 'leaf') return null;
   // forceDuplicate: true so the new pane always gets a FRESH view object
@@ -1049,6 +1052,10 @@ async function splitAndOpenFile(filePath, orientation, side = 'after') {
     forceDuplicate: true,
   });
   if (!view) return null;
+  if (persist === true) {
+    view.persist = true;
+    sessionController.save();
+  }
   splitPaneAtLeafWith(currentLeaf, orientation, 0.5, side, view);
   return view;
 }
@@ -2061,6 +2068,19 @@ async function openFileInteractive() {
   }
 }
 
+/** Whether a freshly-opened PDF should be session-persistent by default,
+ *  read from the `*pdf-restore-default*` defcustom. Defaults to false
+ *  (generic / texdoc PDFs are transient) when the var is unset or the
+ *  read fails — so a missing/broken setting never makes a transient doc
+ *  sticky. */
+function pdfRestoreDefault() {
+  try {
+    return interpreter.evaluate('*pdf-restore-default*') === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Route an open-file IPC result to its matching non-text view, when
  *  the shape calls for one. Returns whether a view was mounted — the
  *  caller falls through to the text path on `false`. */
@@ -2108,10 +2128,14 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
   // it with Range support, same as audio/video). PDF.js inside
   // <pdf-view> fetches the URL and renders each page to a canvas.
   if (result.pdfKind === true) {
+    // A freshly-opened PDF is ephemeral by default (a transient
+    // texdoc/consult doc); `*pdf-restore-default*` lets the user make
+    // every PDF persist instead. latex-view marks its own output PDF
+    // persistent regardless (via `*latex-pdf-restore*`).
     views.push(createView({
       kind: 'pdf',
       name: result.name,
-      extras: { filePath: result.path, src: result.src },
+      extras: { filePath: result.path, src: result.src, persist: pdfRestoreDefault() },
     }));
     return finalise();
   }
@@ -3248,6 +3272,26 @@ const interpreter = createInterpreter({
       return typeof path === 'string' ? path : NIL;
     },
 
+    // `(set-view-persistent! VIEW BOOL)` — set whether the session
+    // restores VIEW across a relaunch. Most non-text views are ephemeral;
+    // this opts a specific one (e.g. a latexed-output PDF) back in. BOOL
+    // is Lisp-truthy (anything but #f turns it on). Returns BOOL.
+    'set-view-persistent!': (args) => {
+      const view = args[0];
+      const on = args[1] !== false;
+      if (view && typeof view === 'object' && 'kind' in view) {
+        view.persist = on;
+        sessionController.save();
+      }
+      return on;
+    },
+    // `(view-persistent? VIEW)` — #t when VIEW is flagged to survive a
+    // relaunch, #f otherwise (the default for most non-text views).
+    'view-persistent?': (args) => {
+      const view = args[0];
+      return !!(view && typeof view === 'object' && view.persist === true);
+    },
+
     // `(view-directory VIEW)` — the directory containing VIEW's file,
     // or nil when VIEW has no path. The compile/view loop runs the
     // LaTeX toolchain in this directory.
@@ -3319,23 +3363,25 @@ const interpreter = createInterpreter({
       openFileByPath(filePath);
       return NIL;
     },
-    // `(open-file-in-split! PATH [ORIENTATION [SIDE]])` — the
+    // `(open-file-in-split! PATH [ORIENTATION [SIDE [PERSIST]]])` — the
     // programmatic counterpart to the placeholder-showing `split-*!`
     // primitives: split the focused pane and open PATH directly in the
     // new sibling pane, with no chooser/placeholder and no orphaned-view
     // residue (the source|PDF layout latex-view wants). ORIENTATION is a
     // symbol/keyword `horizontal` (default) / `vertical`; SIDE is `after`
-    // (default) / `before`. Fires the async open like `open-file-path!`
-    // and returns nil (the split lands once the file resolves). The
-    // resulting view handle is reachable from Lisp via the view list
-    // (e.g. `-latex-find-view-by-file`).
+    // (default) / `before`. PERSIST (Lisp-truthy, default #f) flags the
+    // opened view session-persistent — threaded here so latex-view can
+    // mark its output PDF without racing the async open for the handle.
+    // Fires the async open like `open-file-path!` and returns nil (the
+    // split lands once the file resolves).
     'open-file-in-split!': (args) => {
       const filePath = expandTilde(String(args[0] ?? ''));
       if (filePath === '') return NIL;
       const orientation =
         symbolNameOf(args[1]) === 'vertical' ? SPLIT_VERTICAL : SPLIT_HORIZONTAL;
       const side = symbolNameOf(args[2]) === 'before' ? 'before' : 'after';
-      splitAndOpenFile(filePath, orientation, side);
+      const persist = args.length > 3 && args[3] !== false && args[3] !== NIL;
+      splitAndOpenFile(filePath, orientation, side, persist);
       return NIL;
     },
     // Open a directory-tree buffer rooted at `path`. The view lists
@@ -7835,7 +7881,15 @@ const sessionController = createSession({
     // the bug in before.png/after.png.
     const view = await openFileByPath(path, { switch: false, forceDuplicate: true });
     if (view === null) return null;
-    // Only text views carry point/mark; image/audio/video views don't.
+    // A pdf blob is only persisted when its view was flagged `persist`
+    // (the latexed-output case). Re-mark the restored view so it persists
+    // again next session — `openFileByPath` minted it with the default
+    // (which is *pdf-restore-default*, transient unless the user opted in
+    // globally), but this one was explicitly saved as persistent.
+    if (view.kind === 'pdf' && entry && entry.kind === 'pdf') {
+      view.persist = true;
+    }
+    // Only text views carry point/mark; image/audio/video/pdf views don't.
     const buffer = view.buffer;
     if (view.kind === 'text' && buffer) {
       const point = Number.isFinite(entry.point) ? entry.point : 0;
