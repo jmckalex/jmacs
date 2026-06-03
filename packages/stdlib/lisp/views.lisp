@@ -16,13 +16,13 @@
 ;; view marks its own output PDF persistent regardless, via
 ;; *latex-pdf-restore*; this is the global default for all other PDFs.)
 ;; The host's pdf-view creation path reads this when minting the view.
-(defcustom *pdf-restore-default* #f :boolean
+(defcustom *pdf-restore-default* #t :boolean
   :group 'views
   :doc "Whether a freshly-opened PDF view persists across a relaunch by
-   default. #f (the default) keeps generic / texdoc PDFs transient; #t
-   makes every PDF sticky. latex-view's output PDF persists regardless
-   (see *latex-pdf-restore*); use `toggle-pdf-persistent` to flip any one
-   PDF's setting by hand.")
+   default. #t (the default) restores every PDF on startup; set #f to keep
+   generic / texdoc PDFs transient. latex-view's output PDF persists
+   regardless (see *latex-pdf-restore*); use `toggle-pdf-persistent` to flip
+   any one PDF's setting by hand.")
 
 (defcommand next-view ()
   "Switch to the next view in the list."

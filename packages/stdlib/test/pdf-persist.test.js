@@ -6,7 +6,7 @@
  * The host exposes `set-view-persistent!` / `view-persistent?` over a
  * View handle; this file exercises the Lisp that sits on top of them —
  * the `toggle-pdf-persistent` command and the two defcustom defaults
- * (`*pdf-restore-default*` #f, `*latex-pdf-restore*` #t).
+ * (`*pdf-restore-default*` #t, `*latex-pdf-restore*` #t).
  *
  * The two persist primitives live in app.js (they need the live view
  * list + the session controller), so here they are stubbed against the
@@ -81,9 +81,9 @@ async function persistEditor(view) {
 
 // --- defcustom defaults -------------------------------------------------
 
-test('*pdf-restore-default* defaults to #f (generic PDFs are transient)', async () => {
+test('*pdf-restore-default* defaults to #t (PDFs are restored on startup)', async () => {
   const { ev } = await persistEditor(createView({ kind: 'pdf', name: 'x.pdf' }));
-  assert.equal(ev('*pdf-restore-default*'), false);
+  assert.equal(ev('*pdf-restore-default*'), true);
 });
 
 test('*latex-pdf-restore* defaults to #t (latex output is restored)', async () => {
