@@ -288,13 +288,12 @@
             (show-status! (str "Reloaded " (path-basename pdf))))
            (else
             ;; Not open: split the source pane to the right and open the
-            ;; PDF in the new pane, so source and PDF sit side by side.
-            ;; split-horizontal! leaves focus on the *originating* (left)
-            ;; leaf, so move focus into the new right pane before opening,
-            ;; or the PDF would replace the source in place.
-            (split-horizontal! 0.5 'after)
-            (focus-pane-direction! 'right)
-            (open-file-path! pdf)
+            ;; PDF in the new pane directly, so source and PDF sit side by
+            ;; side. `open-file-in-split!` is the programmatic split — it
+            ;; fills the new pane with the PDF straight away, leaving no
+            ;; placeholder chooser and no stray pane (the user-facing
+            ;; `split-horizontal!` shows a chooser, which is wrong here).
+            (open-file-in-split! pdf 'horizontal 'after)
             (show-status! (str "Opened " (path-basename pdf))))))))))
 
 ;; --- error navigation -------------------------------------------------

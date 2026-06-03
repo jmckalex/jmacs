@@ -929,28 +929,32 @@ function fillPlaceholderViaCommand(leaf, text) {
   if (leaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
 }
 
-/** Common implementation of split-horizontal! / split-vertical!.
- *  Replaces TARGET (a leaf) with a split node; a freshly-created leaf
- *  is its sibling, holding a *placeholder* chooser. With SIDE =
- *  `'after'` (default) the new leaf is the *second* child (right of /
- *  below the original); with SIDE = `'before'` it is the *first* child
- *  (left of / above the original). The originating leaf's id is
- *  preserved across the replacement so its editor-view bindings don't
- *  churn.
+/** Split TARGET (a leaf) and put a GIVEN view into the new sibling
+ *  leaf — the programmatic counterpart to the placeholder-showing
+ *  `splitPaneAtLeaf`. TARGET is replaced with a split node; a freshly-
+ *  created leaf holding VIEW is its sibling. With SIDE = `'after'`
+ *  (default) the new leaf is the *second* child (right of / below the
+ *  original); with SIDE = `'before'` it is the *first* child (left of /
+ *  above the original). The originating leaf's id is preserved across
+ *  the replacement so its editor-view bindings don't churn.
  *
- *  Focus MOVES to the new placeholder pane (a deliberate change from
- *  the old "originating pane keeps focus" contract — the user is now
- *  asked what the new pane should hold, so the keyboard belongs there).
- *  Returns `{ first, second }`. */
-function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
+ *  VIEW must already be a real view (in `views`); this function does NOT
+ *  push it — the caller (e.g. `splitAndOpenFile`, or `splitPaneAtLeaf`
+ *  with a freshly-built placeholder) owns that. There is no placeholder
+ *  and no chooser: the new pane is filled directly, leaving no orphaned-
+ *  view residue.
+ *
+ *  Focus MOVES to the new pane and its element is mounted + focused so
+ *  its accelerator keys are live. Returns `{ first, second }`. */
+function splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, view) {
   if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
   if (
     orientation !== SPLIT_HORIZONTAL &&
     orientation !== SPLIT_VERTICAL
   ) return null;
   if (side !== 'after' && side !== 'before') return null;
-  const placeholder = buildPlaceholderForSplit(targetLeaf.view);
-  const newLeaf = createLeafPane({ view: placeholder });
+  if (!view) return null;
+  const newLeaf = createLeafPane({ view });
   // Ratio interpretation: it always describes the *first* child's
   // share. With SIDE='before' the new leaf is first, so the supplied
   // ratio applies to it directly. With SIDE='after' the originating
@@ -965,16 +969,88 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
   });
   rootPane = replacePane(rootPane, targetLeaf, split);
   syncPaneElements();
-  // Focus moves to the new placeholder pane and its element is mounted +
-  // focused so its accelerator keys are live. setCurrentPaneId syncs
-  // currentViewIndex to the placeholder; mountKindView builds the element.
+  // For a leaf-direct text view, ensure its editor instance exists
+  // before mounting (the placeholder path skips this — placeholders are
+  // never text).
+  if (view.kind === 'text') ensureEditorViewForLeaf(newLeaf);
+  // Focus moves to the new pane and its element is mounted + focused so
+  // its accelerator keys are live. setCurrentPaneId syncs
+  // currentViewIndex to VIEW; mountKindView builds the element.
   setCurrentPaneId(newLeaf.id);
-  hideInactiveRendererViews(placeholder.kind);
-  mountKindView(placeholder);
+  hideInactiveRendererViews(view.kind);
+  mountKindView(view);
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
   return { first, second };
+}
+
+/** Common implementation of split-horizontal! / split-vertical!.
+ *  Replaces TARGET (a leaf) with a split node; a freshly-created leaf
+ *  is its sibling, holding a *placeholder* chooser. With SIDE =
+ *  `'after'` (default) the new leaf is the *second* child (right of /
+ *  below the original); with SIDE = `'before'` it is the *first* child
+ *  (left of / above the original). The originating leaf's id is
+ *  preserved across the replacement so its editor-view bindings don't
+ *  churn.
+ *
+ *  Focus MOVES to the new placeholder pane (a deliberate change from
+ *  the old "originating pane keeps focus" contract — the user is now
+ *  asked what the new pane should hold, so the keyboard belongs there).
+ *  Returns `{ first, second }`.
+ *
+ *  This is the user-facing split (the keyboard `split-*!` primitives and
+ *  the paneHost split methods route through it). The programmatic
+ *  fill-a-pane-directly variant is `splitPaneAtLeafWith`. */
+function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
+  if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
+  if (
+    orientation !== SPLIT_HORIZONTAL &&
+    orientation !== SPLIT_VERTICAL
+  ) return null;
+  if (side !== 'after' && side !== 'before') return null;
+  const placeholder = buildPlaceholderForSplit(targetLeaf.view);
+  return splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, placeholder);
+}
+
+/** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
+ *  Keyword both carry a `.name`), with any leading `:` stripped, or null
+ *  when ARG isn't symbol-like. Mirrors pane-primitives' `sideFromArg` /
+ *  `coerceEdge` coercion so `open-file-in-split!` reads its
+ *  orientation/side args the same way the split primitives read theirs. */
+function symbolNameOf(arg) {
+  let name = null;
+  if (typeof arg === 'string') name = arg;
+  else if (arg && typeof arg === 'object' && typeof arg.name === 'string') {
+    name = arg.name;
+  }
+  if (name === null) return null;
+  return name.startsWith(':') ? name.slice(1) : name;
+}
+
+/** Programmatically split the focused pane and open FILEPATH directly in
+ *  the new sibling pane — no placeholder, no chooser. The split runs at
+ *  an even 0.5 ratio; ORIENTATION is `SPLIT_HORIZONTAL` / `SPLIT_VERTICAL`
+ *  and SIDE is `'after'` (default) / `'before'`. Focus moves to the new
+ *  pane (consistent with `splitPaneAtLeaf`). Returns the opened view, or
+ *  null on failure (unreadable path, no focused leaf, unrecognised
+ *  orientation). This is the programmatic counterpart to the user-facing
+ *  `split-*!` primitives — callers that want a pane filled straight away
+ *  (latex-view's source|PDF) use this instead of split-then-open, which
+ *  would strand a placeholder. */
+async function splitAndOpenFile(filePath, orientation, side = 'after') {
+  const currentLeaf = currentPane();
+  if (!currentLeaf || currentLeaf.kind !== 'leaf') return null;
+  // forceDuplicate: true so the new pane always gets a FRESH view object
+  // — never the same View as an existing pane (Q9). { switch: false } so
+  // the focused pane isn't disturbed before we split.
+  const view = await openFileByPath(filePath, {
+    switch: false,
+    forceDuplicate: true,
+  });
+  if (!view) return null;
+  splitPaneAtLeafWith(currentLeaf, orientation, 0.5, side, view);
+  return view;
 }
 
 /** Insert a fresh leaf "in the gap" of the split node with id SPLIT_ID.
@@ -3241,6 +3317,25 @@ const interpreter = createInterpreter({
       const filePath = expandTilde(String(args[0] ?? ''));
       if (filePath === '') return NIL;
       openFileByPath(filePath);
+      return NIL;
+    },
+    // `(open-file-in-split! PATH [ORIENTATION [SIDE]])` — the
+    // programmatic counterpart to the placeholder-showing `split-*!`
+    // primitives: split the focused pane and open PATH directly in the
+    // new sibling pane, with no chooser/placeholder and no orphaned-view
+    // residue (the source|PDF layout latex-view wants). ORIENTATION is a
+    // symbol/keyword `horizontal` (default) / `vertical`; SIDE is `after`
+    // (default) / `before`. Fires the async open like `open-file-path!`
+    // and returns nil (the split lands once the file resolves). The
+    // resulting view handle is reachable from Lisp via the view list
+    // (e.g. `-latex-find-view-by-file`).
+    'open-file-in-split!': (args) => {
+      const filePath = expandTilde(String(args[0] ?? ''));
+      if (filePath === '') return NIL;
+      const orientation =
+        symbolNameOf(args[1]) === 'vertical' ? SPLIT_VERTICAL : SPLIT_HORIZONTAL;
+      const side = symbolNameOf(args[2]) === 'before' ? 'before' : 'after';
+      splitAndOpenFile(filePath, orientation, side);
       return NIL;
     },
     // Open a directory-tree buffer rooted at `path`. The view lists
