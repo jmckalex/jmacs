@@ -54,6 +54,38 @@
     (insert! "\n\\end{enumerate}\n")
     (goto! p)))
 
+;; --- live inline math preview (latex-math-preview) --------------------
+;; A per-buffer minor mode: when on, each math segment ($…$, \(…\),
+;; $$…$$, \[…\]) is shown typeset in place of its source, flipping back
+;; to editable source when point enters it. The scan/typeset/cache and
+;; the replaced-range rendering live in the renderer
+;; (packages/renderer/src/latex-math-preview.js); this mode is the
+;; per-buffer on/off switch the host reads to decide whether to feed the
+;; renderer the math segments. OFF by default — opt in per buffer with
+;; `toggle-latex-math-preview`, or globally via the defcustom below.
+
+(defcustom *latex-math-preview-default* #f :boolean
+  :group 'jmacs
+  :doc "When #t, typeset math inline automatically for LaTeX buffers.
+   Off by default — opt in per-buffer with `toggle-latex-math-preview`,
+   or set this in your init / customisation to default it on.")
+
+;; The mode carries no keymap of its own; it is a pure display toggle.
+;; The host watches its membership in the buffer's minor modes (it is
+;; checked on the renderer's update path) and supplies / withholds the
+;; math replaced-ranges accordingly.
+(define-mode latex-math-preview-mode
+  :name "MathPreview"
+  :priority 5)
+
+(defcommand toggle-latex-math-preview ()
+  "Toggle live inline MathJax typesetting for the current LaTeX buffer.
+   With it on, math segments render typeset in place of their source and
+   flip back to source for editing when point enters them."
+  (if (member latex-math-preview-mode (minor-modes))
+      (disable-minor-mode latex-math-preview-mode)
+      (enable-minor-mode latex-math-preview-mode)))
+
 ;; The C-c prefix mirrors markdown-mode-map's pattern.
 (define latex-c-c-map
   {"b" 'latex-textbf
@@ -64,6 +96,7 @@
    "s" 'latex-section
    "S" 'latex-subsection
    "l" 'latex-itemize
-   "n" 'latex-enumerate})
+   "n" 'latex-enumerate
+   "C-p" 'toggle-latex-math-preview})
 
 (set! latex-mode-map {"C-c" latex-c-c-map})

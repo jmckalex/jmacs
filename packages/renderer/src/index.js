@@ -132,3 +132,8 @@ export {
   rangeRevealedByAnyCursor,
   spliceInlineWidgets,
 } from './math-layout.js';
+export {
+  createLatexMathPreview,
+  planSegments,
+  detectLeave,
+} from './latex-math-preview.js';
