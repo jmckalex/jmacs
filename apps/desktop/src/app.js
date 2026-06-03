@@ -2617,23 +2617,11 @@ const viewHost = {
   // :modified. The major mode's display name lives on a text view's
   // buffer; non-text views don't carry a mode.
   listViewRecords: () => {
-    // Phase 3b (Q12): build a view → pane-id map for the :pane column.
-    // A view's pane is the leaf showing it (directly, or as the
-    // active tab of a tabline-view); buried tabs and views in no
-    // pane at all show as nil.
-    const paneByView = new Map();
-    for (const leaf of leafPanes(rootPane)) {
-      let v = leaf.view;
-      while (v && isTablineView(v)) {
-        const child = tablineActiveChild(v);
-        if (!child) break;
-        if (!paneByView.has(child)) paneByView.set(child, leaf.id);
-        v = child;
-      }
-      if (v && !isTablineView(v) && !paneByView.has(v)) {
-        paneByView.set(v, leaf.id);
-      }
-    }
+    // Phase 3b (Q12): the :pane column is the 1-based spiral position of
+    // the pane showing each view (the swap-views / permute-views badge
+    // numbering — so it tracks on-screen position, not an internal leaf
+    // id). Views in no pane (incl. buried tabs) are nil.
+    const paneByView = panePositionByView();
     return views.map((view) => {
       const record = new Map();
       record.set(keyword('name'), view.name ?? '');
@@ -4761,21 +4749,40 @@ directoryTreeView.style.display = 'none';
 // its rows from getViews() on every render, so the host keeps it live by
 // calling refresh() on notifyViewsChanged.
 
-/** Plain-JS records for the view-list — one per open view, with a stable
- *  id so selection isn't ambiguous when two views share a name. Mirrors
- *  viewHost.listViewRecords (the Lisp `list-views`) but returns JS. */
-function viewListRecords() {
-  const paneByView = new Map();
+/** Map each on-screen view to the 1-based clockwise-spiral position of the
+ *  pane showing it — the same numbering the swap-views / permute-views
+ *  badges use, so the *View List*'s Pane column tracks where a view sits
+ *  on screen (which shifts as panes are rearranged) rather than an internal
+ *  leaf id (which doesn't). Tabline active children inherit their leaf's
+ *  position; views in no pane are absent. */
+function panePositionByView() {
+  const hostRect = editorHostEl.getBoundingClientRect();
+  const { indexByLeaf } = spiralOrder(rootPane, {
+    width: hostRect.width,
+    height: hostRect.height,
+  });
+  const byView = new Map();
   for (const leaf of leafPanes(rootPane)) {
+    const slot = indexByLeaf.get(leaf);
+    if (typeof slot !== 'number') continue;
+    const position = slot + 1;
     let v = leaf.view;
     while (v && isTablineView(v)) {
       const child = tablineActiveChild(v);
       if (!child) break;
-      if (!paneByView.has(child)) paneByView.set(child, leaf.id);
+      if (!byView.has(child)) byView.set(child, position);
       v = child;
     }
-    if (v && !isTablineView(v) && !paneByView.has(v)) paneByView.set(v, leaf.id);
+    if (v && !isTablineView(v) && !byView.has(v)) byView.set(v, position);
   }
+  return byView;
+}
+
+/** Plain-JS records for the view-list — one per open view, with a stable
+ *  id so selection isn't ambiguous when two views share a name. Mirrors
+ *  viewHost.listViewRecords (the Lisp `list-views`) but returns JS. */
+function viewListRecords() {
+  const paneByView = panePositionByView();
   const current = session.currentView;
   return views.map((view) => {
     const buffer = view.buffer;
@@ -6791,6 +6798,9 @@ function swapPaneFrames(paneA, paneB) {
   refreshSplitterHandles();
   scheduleRelayout();
   updateModeline();
+  // Pane positions changed (not the view set) — refresh the View List so
+  // its spiral Pane column tracks the move, and re-pickle the session.
+  notifyViewsChanged();
   return true;
 }
 
@@ -6823,6 +6833,9 @@ function permutePaneFrames(dests) {
   refreshSplitterHandles();
   scheduleRelayout();
   updateModeline();
+  // Pane positions changed (not the view set) — refresh the View List so
+  // its spiral Pane column tracks the move, and re-pickle the session.
+  notifyViewsChanged();
   return true;
 }
 
