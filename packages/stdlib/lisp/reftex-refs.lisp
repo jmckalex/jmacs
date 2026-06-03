@@ -637,12 +637,16 @@
 ;; --- Part B: the *RefTeX Select* view flow ----------------------------
 ;; The selection-first picker. `reftex-reference` remembers the origin,
 ;; builds a candidate model with a derived context line per label, stashes
-;; it in `*reftex-select-candidates*`, and opens the singleton
-;; `reftex-select` view. The view pulls the candidates back through
-;; `reftex-select-candidates` (a flat list of (name type macro context)
-;; rows), and its keys call back into `reftex-select-on-select` /
-;; `-on-peek` / `-on-cancel`. The origin view+point are the same globals
-;; the minibuffer fast-path uses, so selection inserts at the right place.
+;; it in `*reftex-select-candidates*`, and opens the `*RefTeX Select*`
+;; picker — a drawer overlaid on the right edge of the editor (the host's
+;; `open-reftex-select!`), so the document stays visible underneath. The
+;; panel pulls the candidates back through `reftex-select-candidates` (a
+;; flat list of (name type macro context) rows), and its keys call back
+;; into `reftex-select-on-select` / `-on-peek` / `-on-cancel`. The origin
+;; view+point are the same globals the minibuffer fast-path uses, so
+;; selection inserts at the right place; peek navigates the editor pane
+;; under the overlay (`open-file-path!`+`goto-line!`) without dismissing
+;; the panel.
 
 ;; The prepared candidate rows for the open picker: a list of
 ;; (name type-string macro context) lists. Empty until a picker opens.

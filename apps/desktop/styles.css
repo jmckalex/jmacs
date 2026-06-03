@@ -2822,11 +2822,37 @@ view-list-view,
   background: #ffffff0a;
 }
 
-/* --- reftex-select-view ---------------------------------------------- */
+/* --- reftex-select picker (right-edge drawer) ------------------------ */
 /* The *RefTeX Select* picker: the document's reference candidates grouped
-   by type, each row a name + macro hint + a one-line context. Mirrors the
-   view-list shell (header + scrolling body + hint footer) and uses the
-   project tokens. Keyboard-driven; the highlighted row is `.is-current`. */
+   by type, each row a name + macro hint + a one-line context. It is NOT a
+   pane view — the host mounts `.reftex-select-view` inside a
+   `.reftex-select-overlay` drawer that slides in from the right edge over
+   `#editor-host`, so the document stays visible to the left and SPC-peek
+   can drive the editor pane underneath. Mirrors the view-list shell
+   (header + scrolling body + hint footer) and uses the project tokens.
+   Keyboard-driven; the highlighted row is `.is-current`. */
+
+/* The drawer: an absolutely-positioned panel anchored to the right edge,
+   starting off-screen (translateX(100%)) and sliding to translateX(0)
+   when `.is-open` is added (one frame after mount). z-index sits above
+   the panes and below the move-view overlay. */
+.reftex-select-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  max-width: 80%;
+  z-index: 55;
+  transform: translateX(100%);
+  transition: transform 160ms ease;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+  outline: none;
+}
+
+.reftex-select-overlay.is-open {
+  transform: translateX(0);
+}
 
 reftex-select-view,
 .reftex-select-view {
@@ -2839,6 +2865,7 @@ reftex-select-view,
   font-family: system-ui, sans-serif;
   font-size: 13px;
   overflow: hidden;
+  border-left: 1px solid #ffffff1a;
 }
 
 .reftex-select-header {

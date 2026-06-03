@@ -73,13 +73,14 @@ export {
 } from './notebook-view.js';
 export { ViewListView, kindLabel, fileLabel } from './view-list-view.js';
 export {
-  ReftexSelectView,
+  createReftexSelectPanel,
+  mapReftexKey,
   groupHeading,
   filterCandidates,
   distinctTypes,
   groupByType,
   nextTypeFilter,
-} from './reftex-select-view.js';
+} from './reftex-select-panel.js';
 export { PlaceholderView } from './placeholder-view.js';
 export {
   PLACEHOLDER_ACTIONS,

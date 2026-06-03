@@ -1,12 +1,17 @@
 /**
- * @file The `*RefTeX Select*` view — RefTeX's signature label / cite
+ * @file The `*RefTeX Select*` panel — RefTeX's signature label / cite
  * picker, the selection-first half of plans/RefTeX.md's "dual picker".
  *
- * A `reftex-select`-kind singleton view shows the document's reference
- * candidates grouped by type, each row a `name` plus a one-line
- * **context** (the source line carrying the label, or its enclosing
- * section title). The user navigates with the keyboard — the keys mirror
- * Emacs RefTeX:
+ * This is the **floating-panel** form of the picker: it renders the
+ * document's reference candidates grouped by type (each row a `name` plus
+ * a one-line **context**), but it is NOT a pane view. The host mounts the
+ * panel element in a right-edge drawer overlaid on the editor (see
+ * `openReftexSelectOverlay` in apps/desktop/src/app.js, modelled on
+ * `move-view-mode.js`) so the document stays visible underneath and
+ * **SPC peek can drive the editor pane below the panel** — the bug the
+ * old pane-takeover form couldn't fix.
+ *
+ * The keys mirror Emacs RefTeX:
  *
  *   n / p, ↓ / ↑   move the highlight
  *   RET            select — insert the reference at the origin
@@ -17,26 +22,17 @@
  *   q / Escape     cancel — return to the origin
  *
  * The data is pulled from the host on every render via
- * `options.getCandidates()` (one record per candidate), so the element
+ * `options.getCandidates()` (one record per candidate), so the panel
  * needs no buffer of its own; the host keeps it live by calling
  * `refresh()`. Selection / peek / cancel act on the **originating** view
  * through the host closures (`onSelect(name)`, `onPeek(name)`,
  * `onCancel()`), which call back into Lisp.
  *
- * Element-level keydown lifecycle follows placeholder-view /
- * view-list-view: single keys are captured natively on the element and
- * removed on destroy; genuine editor chords (Ctrl/Alt/Meta held, or a
- * chord in progress) are forwarded to the host keymap via `onKey`.
- *
- * See docs/VIEWS.md for the view-kind invariants; this is a leaf-direct
- * singleton, hidden by `hideInactiveSingletons` when not the active leaf.
+ * The overlay feeds keys in via `handleKey(keyString)` (the modal
+ * window-capture handler reads keystrokes even when a focused `<webview>`
+ * would eat them); `handleKey` returns whether it consumed the key. The
+ * pure key→action mapping (`mapReftexKey`) is exported and unit-tested.
  */
-
-import { keyEventToString } from './keymap.js';
-import { defineViewElement, ViewElement } from './view-elements.js';
-
-/** A bare modifier press is not a key in its own right. */
-const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
 // -----------------------------------------------------------------------
 // Pure helpers (no DOM) — unit-tested in Node.
@@ -142,32 +138,88 @@ export function nextTypeFilter(current, types) {
   return types[idx + 1];
 }
 
+/**
+ * Map a key string (as produced by `keyEventToString`, e.g. "n", "RET",
+ * "SPC", "Backspace", "a") to the picker action it triggers — PURE, so
+ * the overlay's key routing is unit-testable without a DOM.
+ *
+ * Returns one of:
+ *   { type: 'move', delta: ±1 }     n/p/down/up
+ *   { type: 'select' }              RET / Enter
+ *   { type: 'peek' }                SPC / Space
+ *   { type: 'cycle-type' }          t
+ *   { type: 'cancel' }              q / Escape
+ *   { type: 'backspace' }           Backspace / Delete
+ *   { type: 'filter', char }        a single printable character
+ *   null                            not a picker key (ignore)
+ *
+ * Modifier-bearing chords (C-x, M-…) are NOT mapped here — the caller
+ * decides whether to swallow or forward them; this mapping is for the
+ * picker's own single-key vocabulary.
+ *
+ * @param {string} key
+ * @returns {{type: string, delta?: number, char?: string}|null}
+ */
+export function mapReftexKey(key) {
+  switch (key) {
+    case 'n':
+    case 'Down':
+    case 'ArrowDown':
+      return { type: 'move', delta: 1 };
+    case 'p':
+    case 'Up':
+    case 'ArrowUp':
+      return { type: 'move', delta: -1 };
+    case 'RET':
+    case 'Enter':
+      return { type: 'select' };
+    case 'SPC':
+    case ' ':
+    case 'Space':
+      return { type: 'peek' };
+    case 't':
+      return { type: 'cycle-type' };
+    case 'q':
+    case 'Escape':
+    case 'Esc':
+      return { type: 'cancel' };
+    case 'Backspace':
+    case 'Delete':
+    case 'DEL':
+      return { type: 'backspace' };
+    default:
+      // A single printable character extends the substring filter.
+      // (`t`, `n`, `p`, `q` are reserved above — RefTeX's own trade-off;
+      // the substring filter is still reachable for other letters, and
+      // Backspace edits it.)
+      if (key.length === 1) return { type: 'filter', char: key };
+      return null;
+  }
+}
+
 // -----------------------------------------------------------------------
 // The DOM factory.
 
 /**
- * Create a RefTeX-select view.
+ * Create a RefTeX-select panel. The host mounts `element` in the
+ * right-edge overlay and feeds keys via `handleKey`.
  *
- * @param {HTMLElement} container
  * @param {object} [options]
+ * @param {Document} [options.document] - The document to build nodes in
+ *   (defaults to the global `document`).
  * @param {() => ReftexCandidate[]} [options.getCandidates]
  * @param {(name: string) => void} [options.onSelect]
  * @param {(name: string) => void} [options.onPeek]
  * @param {() => void} [options.onCancel]
- * @param {(key: string) => boolean} [options.onKey]
- * @param {() => boolean} [options.chordPending]
- * @returns {{ element: HTMLElement, setBuffer: Function, refresh: Function, focus: Function, destroy: Function, applyTheme: Function }}
+ * @returns {{ element: HTMLElement, refresh: Function, focus: Function, destroy: Function, handleKey: (key: string) => boolean }}
  */
-function createReftexSelectView(container, options = {}) {
-  const doc = container.ownerDocument;
+export function createReftexSelectPanel(options = {}) {
+  const doc = options.document ?? globalThis.document;
   const getCandidates =
     typeof options.getCandidates === 'function' ? options.getCandidates : () => [];
   const onSelect = typeof options.onSelect === 'function' ? options.onSelect : null;
   const onPeek = typeof options.onPeek === 'function' ? options.onPeek : null;
   const onCancel = typeof options.onCancel === 'function' ? options.onCancel : null;
-  const onKey = typeof options.onKey === 'function' ? options.onKey : null;
-  const chordPending =
-    typeof options.chordPending === 'function' ? options.chordPending : () => false;
 
   /** @type {ReftexCandidate[]} - The current filtered+ordered flat list,
    *  index-aligned with the rendered rows, for highlight movement. */
@@ -182,7 +234,6 @@ function createReftexSelectView(container, options = {}) {
   const root = doc.createElement('div');
   root.className = 'reftex-select-view';
   root.tabIndex = -1;
-  container.append(root);
 
   // Header: icon + title + the live filter line.
   const header = doc.createElement('div');
@@ -306,6 +357,20 @@ function createReftexSelectView(container, options = {}) {
     render();
   }
 
+  function backspaceFilter() {
+    if (filter.length > 0) {
+      filter = filter.slice(0, -1);
+      highlight = 0;
+      render();
+    }
+  }
+
+  function extendFilter(char) {
+    filter += char;
+    highlight = 0;
+    render();
+  }
+
   // Click a row to highlight + select it; the rows render fresh each
   // paint, so delegate from the scroll container.
   scroll.addEventListener('click', (event) => {
@@ -318,153 +383,62 @@ function createReftexSelectView(container, options = {}) {
     selectCurrent();
   });
 
-  // Element-level keydown: single keys are the picker's; genuine chords
-  // forward to the host keymap. Captured on the focusable root and
-  // removed on destroy.
-  function onKeyDown(event) {
-    if (MODIFIERS.has(event.key)) return;
-    const key = keyEventToString(event);
-
-    // Forward genuine editor chords (or a chord in progress) so C-x etc.
-    // still fire while the picker has focus.
-    if (chordPending() || event.ctrlKey || event.altKey || event.metaKey) {
-      if (onKey && onKey(key)) event.preventDefault();
-      return;
-    }
-
-    switch (event.key) {
-      case 'n':
-      case 'ArrowDown':
-        event.preventDefault();
-        move(1);
-        return;
-      case 'p':
-      case 'ArrowUp':
-        event.preventDefault();
-        move(-1);
-        return;
-      case 'Enter':
-        event.preventDefault();
+  /**
+   * Process a single key string fed by the overlay's window-capture
+   * handler. Returns whether the key was consumed (so the caller can
+   * `preventDefault`/`stopPropagation`).
+   *
+   * @param {string} key
+   * @returns {boolean}
+   */
+  function handleKey(key) {
+    const action = mapReftexKey(key);
+    if (!action) return false;
+    switch (action.type) {
+      case 'move':
+        move(action.delta);
+        return true;
+      case 'select':
         selectCurrent();
-        return;
-      case ' ':
-        event.preventDefault();
+        return true;
+      case 'peek':
         peekCurrent();
-        return;
-      case 't':
-        event.preventDefault();
+        return true;
+      case 'cycle-type':
         cycleType();
-        return;
-      case 'q':
-      case 'Escape':
-        event.preventDefault();
+        return true;
+      case 'cancel':
         cancel();
-        return;
-      case 'Backspace':
-        event.preventDefault();
-        if (filter.length > 0) {
-          filter = filter.slice(0, -1);
-          highlight = 0;
-          render();
-        }
-        return;
+        return true;
+      case 'backspace':
+        backspaceFilter();
+        return true;
+      case 'filter':
+        extendFilter(action.char);
+        return true;
       default:
-        break;
-    }
-
-    // Printable single characters extend the substring filter. (`t`, `n`,
-    // `p`, `q` are reserved above — RefTeX's own trade-off; the substring
-    // filter is still reachable for other letters, and Backspace edits.)
-    if (event.key.length === 1) {
-      event.preventDefault();
-      filter += event.key;
-      highlight = 0;
-      render();
+        return false;
     }
   }
-  root.addEventListener('keydown', onKeyDown);
 
-  function setBuffer() {
-    // A fresh activation resets the transient filter state so the picker
-    // always opens showing everything.
+  // A fresh activation resets the transient filter state so the picker
+  // always opens showing everything.
+  function reset() {
     filter = '';
     typeFilter = null;
     highlight = 0;
     render();
   }
 
-  render();
+  reset();
   return {
     element: root,
-    setBuffer,
     refresh: render,
+    reset,
     focus: () => root.focus(),
-    applyTheme: () => {},
+    handleKey,
     destroy: () => {
-      root.removeEventListener('keydown', onKeyDown);
+      root.remove();
     },
   };
 }
-
-// -----------------------------------------------------------------------
-// `<reftex-select-view>` — custom-element wrapper.
-
-export class ReftexSelectView extends ViewElement {
-  constructor() {
-    super();
-    this._inner = null;
-    this._options = null;
-    this._pendingBuffer = null;
-  }
-
-  configure(options) {
-    if (this._inner !== null) {
-      throw new Error('ReftexSelectView.configure: cannot reconfigure after mount');
-    }
-    this._options = options ?? null;
-  }
-
-  get kind() {
-    return 'reftex-select';
-  }
-
-  setBuffer(buffer) {
-    this._pendingBuffer = buffer;
-    if (this._inner !== null) this._inner.setBuffer(buffer);
-  }
-
-  /** Re-read the candidates and repaint — called when the document or
-   *  the candidate set changes so the list stays live. */
-  refresh() {
-    if (this._inner !== null) this._inner.refresh();
-  }
-
-  focus() {
-    if (this._inner !== null) this._inner.focus();
-    else super.focus();
-  }
-
-  applyTheme() {
-    if (this._inner !== null) this._inner.applyTheme();
-  }
-
-  connectedCallback() {
-    if (this._inner !== null) return;
-    this._inner = createReftexSelectView(this, this._options ?? {});
-    if (this._pendingBuffer !== null) this._inner.setBuffer(this._pendingBuffer);
-  }
-
-  disconnectedCallback() {
-    /* hide-not-kill: a DOM move keeps the element alive */
-  }
-
-  destroy() {
-    if (this._inner !== null) {
-      this._inner.destroy();
-      this._inner = null;
-    }
-    this._pendingBuffer = null;
-  }
-}
-
-defineViewElement('reftex-select-view', ReftexSelectView);

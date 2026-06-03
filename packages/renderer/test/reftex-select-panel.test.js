@@ -1,10 +1,11 @@
 /**
- * @file Unit tests for the pure helpers of the *RefTeX Select* view
- * (`packages/renderer/src/reftex-select-view.js`). These run under Node
- * with no DOM — `defineViewElement` is a no-op there, so importing the
- * module just exercises the grouping / filtering / type-cycle helpers.
- * The element's keyboard behaviour (n/p movement, RET/SPC, the live
- * filter) is covered by the live hand-off, not here.
+ * @file Unit tests for the pure helpers of the *RefTeX Select* panel
+ * (`packages/renderer/src/reftex-select-panel.js`). These run under Node
+ * with no DOM — importing the module just exercises the grouping /
+ * filtering / type-cycle helpers and the pure key→action mapping
+ * (`mapReftexKey`). The panel's DOM behaviour (rendering, highlight
+ * movement, the right-edge overlay slide-in and the SPC peek that drives
+ * the editor underneath) is covered by the live hand-off, not here.
  */
 
 import { test } from 'node:test';
@@ -16,7 +17,8 @@ import {
   distinctTypes,
   groupByType,
   nextTypeFilter,
-} from '../src/reftex-select-view.js';
+  mapReftexKey,
+} from '../src/reftex-select-panel.js';
 
 const CANDIDATES = [
   { name: 'eq:euler', type: 'equation', macro: '\\eqref', context: 'e = mc^2' },
@@ -97,4 +99,50 @@ test('nextTypeFilter with no types stays null', () => {
 
 test('nextTypeFilter resets to null for an unknown current type', () => {
   assert.equal(nextTypeFilter('mystery', ['equation', 'figure']), null);
+});
+
+// --- mapReftexKey: the pure key→action mapping the overlay routes through.
+
+test('mapReftexKey: n/down move forward, p/up move back', () => {
+  assert.deepEqual(mapReftexKey('n'), { type: 'move', delta: 1 });
+  assert.deepEqual(mapReftexKey('Down'), { type: 'move', delta: 1 });
+  assert.deepEqual(mapReftexKey('ArrowDown'), { type: 'move', delta: 1 });
+  assert.deepEqual(mapReftexKey('p'), { type: 'move', delta: -1 });
+  assert.deepEqual(mapReftexKey('Up'), { type: 'move', delta: -1 });
+  assert.deepEqual(mapReftexKey('ArrowUp'), { type: 'move', delta: -1 });
+});
+
+test('mapReftexKey: RET/Enter select; SPC/Space peek', () => {
+  assert.deepEqual(mapReftexKey('RET'), { type: 'select' });
+  assert.deepEqual(mapReftexKey('Enter'), { type: 'select' });
+  assert.deepEqual(mapReftexKey('SPC'), { type: 'peek' });
+  assert.deepEqual(mapReftexKey(' '), { type: 'peek' });
+  assert.deepEqual(mapReftexKey('Space'), { type: 'peek' });
+});
+
+test('mapReftexKey: t cycles type; q/Escape cancel', () => {
+  assert.deepEqual(mapReftexKey('t'), { type: 'cycle-type' });
+  assert.deepEqual(mapReftexKey('q'), { type: 'cancel' });
+  assert.deepEqual(mapReftexKey('Escape'), { type: 'cancel' });
+  assert.deepEqual(mapReftexKey('Esc'), { type: 'cancel' });
+});
+
+test('mapReftexKey: Backspace/Delete edit the filter', () => {
+  assert.deepEqual(mapReftexKey('Backspace'), { type: 'backspace' });
+  assert.deepEqual(mapReftexKey('Delete'), { type: 'backspace' });
+  assert.deepEqual(mapReftexKey('DEL'), { type: 'backspace' });
+});
+
+test('mapReftexKey: a printable single char extends the substring filter', () => {
+  assert.deepEqual(mapReftexKey('a'), { type: 'filter', char: 'a' });
+  assert.deepEqual(mapReftexKey('Z'), { type: 'filter', char: 'Z' });
+  assert.deepEqual(mapReftexKey(':'), { type: 'filter', char: ':' });
+  // The single space is peek, not a filter char (matches RefTeX SPC).
+  assert.deepEqual(mapReftexKey(' '), { type: 'peek' });
+});
+
+test('mapReftexKey: a multi-char non-action key is not a picker key', () => {
+  assert.equal(mapReftexKey('Tab'), null);
+  assert.equal(mapReftexKey('Home'), null);
+  assert.equal(mapReftexKey('PageDown'), null);
 });

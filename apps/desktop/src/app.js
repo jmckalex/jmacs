@@ -69,7 +69,7 @@ import {
   GnuplotView,
   NotebookView,
   ViewListView,
-  ReftexSelectView,
+  createReftexSelectPanel,
   PlaceholderView,
   cloneTargetForKind,
   isPlaceholderView,
@@ -517,6 +517,13 @@ let addPaneHandle = null;
  *  permute-views), or `null` when off. Same toggle/clear lifecycle as
  *  `addPaneHandle`. */
 let moveViewHandle = null;
+
+/** Live handle for the *RefTeX Select* right-edge overlay, or `null` when
+ *  closed. Modelled on `move-view-mode.js`: a drawer over `#editor-host`
+ *  with a window-capture key handler, so SPC-peek can drive the editor
+ *  pane *underneath* while the panel keeps control. See
+ *  `openReftexSelectOverlay`. */
+let reftexSelectHandle = null;
 
 /** Recompute the layout of every leaf pane against the current editor-
  *  host bounds and write each leaf's rect to its element. Cheap to call
@@ -3258,18 +3265,15 @@ const interpreter = createInterpreter({
       viewListView.refresh();
       return NIL;
     },
-    // Open (find-or-create) the *RefTeX Select* picker, switch the
-    // current pane to it, reset its transient filter state via
-    // setBuffer(), and repaint from the candidate model the Lisp side
-    // prepared. RefTeX's reftex-reference uses this as the selection-
-    // first path; the picker reads its rows back through
-    // configureReftexSelectView.getCandidates → reftex-select-candidates.
+    // Open the *RefTeX Select* picker as a right-edge drawer overlaid on
+    // the editor (the document stays visible underneath). RefTeX's
+    // reftex-reference uses this as the selection-first path; the panel
+    // reads its rows through reftex-select-candidates and its keys call
+    // back into reftex-select-on-{select,peek,cancel}. SPC-peek navigates
+    // the editor pane UNDER the overlay (the bug the old pane-takeover
+    // form couldn't fix). See `openReftexSelectOverlay`.
     'open-reftex-select!': () => {
-      const view = ensureReftexSelectView();
-      switchToViewIndex(views.indexOf(view));
-      reftexSelectView.setBuffer(view);
-      reftexSelectView.refresh();
-      reftexSelectView.focus();
+      openReftexSelectOverlay();
       return NIL;
     },
     // Open a shell view — a child process running the user's default
@@ -5349,46 +5353,34 @@ viewListView.configure(configureViewListView());
 editorPaneElement().append(viewListView);
 viewListView.style.display = 'none';
 
-// The *RefTeX Select* view — RefTeX's label / cite picker. A singleton
-// (there is only ever one live picker), populated and driven entirely
-// from Lisp (reftex-refs.lisp): the candidate model, the origin
-// view+point, and the select / peek / cancel actions all live there. The
-// host closures are thin bridges that marshal Lisp records into the
-// renderer's plain-JS candidate objects and forward the user's choices
-// back. See plans/RefTeX.md "The interactive views".
+// The *RefTeX Select* picker — RefTeX's label / cite picker, mounted as a
+// right-edge drawer overlaid on the editor (NOT a pane view). The panel
+// is populated and driven entirely from Lisp (reftex-refs.lisp): the
+// candidate model, the origin view+point, and the select / peek / cancel
+// actions all live there. The host closures are thin bridges that marshal
+// Lisp records into the renderer's plain-JS candidate objects and forward
+// the user's choices back. See plans/RefTeX.md "The interactive views".
 //
-// getCandidates reads a flat list the Lisp side prepared when the picker
-// opened; each Lisp candidate is a list (name type macro context), which
-// we map positionally into the renderer's {name,type,macro,context}.
-function configureReftexSelectView() {
-  return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
-    getCandidates: () => {
-      if (!keymapReady) return [];
-      try {
-        const rows = listToArray(interpreter.call('reftex-select-candidates'));
-        return rows.map((row) => {
-          const fields = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-          return {
-            name: fields[0] ?? '',
-            type: fields[1] ?? '',
-            macro: fields[2] ?? '',
-            context: fields[3] ?? '',
-          };
-        });
-      } catch (error) {
-        repl.appendError(
-          `reftex-select: ${error.lispMessage ?? error.message}`
-        );
-        return [];
-      }
-    },
-    onSelect: (name) => reftexSelectCallback('reftex-select-on-select', name),
-    onPeek: (name) => reftexSelectCallback('reftex-select-on-peek', name),
-    onCancel: () => reftexSelectCallback('reftex-select-on-cancel'),
-  };
+// reftexSelectCandidates reads a flat list the Lisp side prepared when
+// the picker opened; each Lisp candidate is a list (name type macro
+// context), which we map positionally into {name,type,macro,context}.
+function reftexSelectCandidates() {
+  if (!keymapReady) return [];
+  try {
+    const rows = listToArray(interpreter.call('reftex-select-candidates'));
+    return rows.map((row) => {
+      const fields = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return {
+        name: fields[0] ?? '',
+        type: fields[1] ?? '',
+        macro: fields[2] ?? '',
+        context: fields[3] ?? '',
+      };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-select: ${error.lispMessage ?? error.message}`);
+    return [];
+  }
 }
 
 /** Invoke a RefTeX-select Lisp callback (select / peek / cancel),
@@ -5403,12 +5395,123 @@ function reftexSelectCallback(name, arg) {
     repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
   }
 }
-const reftexSelectView = /** @type {*} */ (
-  document.createElement('reftex-select-view')
-);
-reftexSelectView.configure(configureReftexSelectView());
-editorPaneElement().append(reftexSelectView);
-reftexSelectView.style.display = 'none';
+
+/**
+ * Open the *RefTeX Select* picker as a modal drawer that slides in from
+ * the right edge of `#editor-host`, over the editor — the document stays
+ * visible to the left. Modelled on `enterMoveViewsMode`: the overlay
+ * grabs focus and installs a **window capture-phase** keydown handler so
+ * keystrokes reach the panel even when a focused `<webview>` would eat
+ * them, and stay modal while it's up.
+ *
+ * The crucial difference from a pane view: SPC-peek calls
+ * `reftex-select-on-peek`, which navigates the editor pane *underneath*
+ * the overlay (`open-file-path!` + `goto-line!`). Because the panel keeps
+ * its window-capture handler, that navigation (which may move pane focus)
+ * does NOT steal keystrokes — the next key still reaches the panel, so
+ * peek keeps the picker alive. Select / cancel `close()` it.
+ *
+ * Re-opening while one is up is a no-op (reftex-reference is the only
+ * caller and only runs once at a time).
+ */
+function openReftexSelectOverlay() {
+  if (reftexSelectHandle && reftexSelectHandle.active) return;
+
+  const panel = createReftexSelectPanel({
+    getCandidates: reftexSelectCandidates,
+    onSelect: (name) => {
+      // Insert at the origin, then close (the Lisp side returns focus to
+      // the origin view; close() also restores editor focus).
+      reftexSelectCallback('reftex-select-on-select', name);
+      close();
+    },
+    onPeek: (name) => {
+      // Drive the editor pane underneath; the overlay stays mounted.
+      reftexSelectCallback('reftex-select-on-peek', name);
+      // The panel and its capture handler survive the navigation, but a
+      // peek may have re-pointed `editorView`; keep focus on the overlay
+      // so the next key still feeds the panel.
+      container.focus();
+    },
+    onCancel: () => {
+      reftexSelectCallback('reftex-select-on-cancel');
+      close();
+    },
+  });
+
+  const container = document.createElement('div');
+  container.className = 'reftex-select-overlay';
+  container.dataset.role = 'reftex-select-overlay';
+  container.tabIndex = -1; // focusable, so it can pull focus off a webview
+  container.append(panel.element);
+
+  editorHostEl.dataset.reftexSelect = '1';
+  editorHostEl.append(container);
+  // Force a reflow so the off-screen start state is committed before the
+  // .is-open class flips the transform — otherwise the browser collapses
+  // both into one frame and there's no slide.
+  void container.offsetWidth;
+  container.classList.add('is-open');
+  container.focus();
+
+  let alive = true;
+
+  function close() {
+    if (!alive) return;
+    alive = false;
+    window.removeEventListener('keydown', onKeyDown, true);
+    container.classList.remove('is-open'); // slide out
+    const remove = () => {
+      container.removeEventListener('transitionend', remove);
+      panel.destroy();
+      container.remove();
+    };
+    container.addEventListener('transitionend', remove);
+    // Fallback in case transitionend doesn't fire (display quirks).
+    setTimeout(remove, 320);
+    delete editorHostEl.dataset.reftexSelect;
+    reftexSelectHandle = null;
+    // Restore focus to the editor pane (the origin pane the Lisp side
+    // switched back to). `editorView` tracks the active leaf's text view.
+    if (editorView && typeof editorView.focus === 'function') editorView.focus();
+  }
+
+  function onKeyDown(event) {
+    if (REFTEX_MODIFIERS.has(event.key)) return;
+    // Stay modal: swallow every plain key so it can't reach the editor or
+    // the global key router while the panel is up. Genuine system chords
+    // (Cmd/Ctrl/Alt held) pass through untouched.
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const key = keyEventToString(event);
+    panel.handleKey(key);
+  }
+
+  // A click on the panel keeps focus on the overlay so key capture
+  // survives (a click that lands on a pane underneath would steal it).
+  container.addEventListener('mousedown', (event) => {
+    // Let clicks on the rows through (the panel selects on row click), but
+    // re-grab focus afterwards.
+    if (!event.target.closest('.reftex-select-row')) {
+      event.preventDefault();
+    }
+    container.focus();
+  });
+
+  window.addEventListener('keydown', onKeyDown, true);
+
+  reftexSelectHandle = {
+    get active() {
+      return alive;
+    },
+    close,
+    refresh: panel.refresh,
+  };
+}
+
+/** A bare modifier press is not a key the picker acts on. */
+const REFTEX_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
 // The placeholder view — the chooser a freshly-split pane shows until
 // the user decides what it should hold (replacing split's old silent
@@ -5772,7 +5875,6 @@ const SINGLETON_VIEWS = [
   // browser is per-instance (browserElementByView) — not a singleton.
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'view-list',         el: viewListView,          releasesBuffer: false },
-  { kind: 'reftex-select',     el: reftexSelectView,      releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
   { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
@@ -6141,7 +6243,6 @@ function perKindConfigureFactory(kind) {
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'view-list':         return configureViewListView;
-    case 'reftex-select':     return configureReftexSelectView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
     case 'notebook':          return configureNotebookView;
@@ -7039,17 +7140,6 @@ function ensureViewListView() {
   const existing = views.find((v) => v.kind === 'view-list');
   if (existing) return existing;
   const view = createView({ kind: 'view-list', name: '*View List*' });
-  views.push(view);
-  return view;
-}
-
-/** Find the single *RefTeX Select* view, or build it and push it into
- *  `views`. There is only ever one live picker (find-or-create by kind),
- *  driven from Lisp via the configureReftexSelectView closures. */
-function ensureReftexSelectView() {
-  const existing = views.find((v) => v.kind === 'reftex-select');
-  if (existing) return existing;
-  const view = createView({ kind: 'reftex-select', name: '*RefTeX Select*' });
   views.push(view);
   return view;
 }
