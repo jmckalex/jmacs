@@ -1568,6 +1568,20 @@ function killViewAtIndex(target) {
   if (target < 0 || target >= views.length) return;
   const wasCurrent = target === currentViewIndex;
   const victim = views[target];
+  // Killing a placeholder chooser is "discard this empty pane": close
+  // the pane (which splices the placeholder out, leaving no residue)
+  // rather than pull a foreign view into it. The split path only ever
+  // creates a placeholder as a leaf-direct view, so find that leaf.
+  if (isPlaceholderView(victim)) {
+    const leaf = leafPanes(rootPane).find((l) => l.view === victim);
+    if (leaf) {
+      deletePaneInTree(leaf);
+      return;
+    }
+    // No pane shows it (shouldn't happen) — just splice it out.
+    splicePlaceholderFromViews(victim);
+    return;
+  }
   // Per-kind cleanup. The dispose hook on the spec runs first (it
   // doesn't know whether the view was current); the audio/video
   // current-view destroy() lives here because it depends on the
@@ -4142,6 +4156,8 @@ function dispatchKey(key) {
   // M-1..M-9 jumps to the Nth buffer (1-indexed). Intercepted here,
   // before the Lisp keymap, so the tabline shortcut is unaffected by
   // user keymap edits. Out-of-range indexes are a no-op (handled).
+  // Placeholders are excluded so the count matches the user-visible
+  // View List (the Nth *real* view, not the Nth `views[]` slot).
   if (
     typeof key === 'string' &&
     key.length === 3 &&
@@ -4149,8 +4165,10 @@ function dispatchKey(key) {
     key[2] >= '1' &&
     key[2] <= '9'
   ) {
-    const target = Number(key[2]) - 1;
-    if (target < views.length) switchToViewIndex(target);
+    const nth = Number(key[2]) - 1;
+    const realViews = views.filter((v) => !isPlaceholderView(v));
+    const target = views.indexOf(realViews[nth]);
+    if (target >= 0) switchToViewIndex(target);
     return true;
   }
   try {
