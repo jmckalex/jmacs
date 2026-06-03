@@ -10,15 +10,17 @@
 ;;;     `synctex view -i LINE:COL:srcfile -o master.pdf` and the pdf-view
 ;;;     scrolls to the reported page and flashes a transient highlight.
 ;;;
-;;; (Inverse search — Option-click in the pdf-view -> source line — lands
-;;; in the next commit, on top of this file's shared `*synctex-command*`
-;;; and helpers.)
+;;;   Inverse (PDF -> source)  — Option-click in the pdf-view fires
+;;;     `latex-synctex-inverse`, which runs
+;;;     `synctex edit -o PAGE:X:Y:master.pdf`, parses `Input:`/`Line:`,
+;;;     and jumps the editor there (`open-file-path!` + `goto-line!`).
 ;;;
 ;;; Loaded AFTER latex-compile.lisp (it redefines that file's `latex-view`
 ;;; command) and after reftex.lisp (so `latex-master-file` is the
 ;;; master-detecting R1 version). All Lisp on top of the host primitives
-;;; `run-process!`, `parse-synctex-view`, `point-line-col`,
-;;; `pdf-synctex-show!`, plus latex-compile.lisp's helpers.
+;;; `run-process!`, `parse-synctex-view`, `parse-synctex-edit`,
+;;; `point-line-col`, `pdf-synctex-show!`, `pdf-current-path`,
+;;; `open-file-path!`, `goto-line!`, plus latex-compile.lisp's helpers.
 
 ;; --- user-facing settings ---------------------------------------------
 
@@ -107,6 +109,41 @@
 ;; Register `latex-forward-search` as a command too (so M-x can run it
 ;; without going through the whole `latex-view` open-and-jump).
 (register-command! 'latex-forward-search nil)
+
+;; --- inverse search (PDF -> source) -----------------------------------
+
+(define (latex-synctex-inverse page x y)
+  "Inverse SyncTeX: given a PDF PAGE (1-based) and a PDF-point (X, Y) the
+   user Option-clicked, run `synctex edit -o PAGE:X:Y:PDF` (PDF = the
+   on-screen PDF's own path) and jump the editor to the resulting source
+   `Input:`/`Line:`. `synctex edit` resolves the source file itself, so no
+   master detection is needed here. A no-op with a status message when no
+   PDF is open or SyncTeX reports no match."
+  (let ((pdf (pdf-current-path)))
+    (if (nil? pdf)
+        (show-status! "SyncTeX: no PDF open")
+        (let* ((spec (str (number->string page) ":"
+                          (number->string x) ":"
+                          (number->string y) ":" pdf))
+               (dir (path-dirname pdf)))
+          (-synctex-run
+           (list "edit" "-o" spec)
+           dir
+           (lambda (result)
+             (if (-latex-spawn-failed? result)
+                 (-synctex-not-found result)
+                 (let ((hit (parse-synctex-edit (get result :stdout ""))))
+                   (if (nil? hit)
+                       (show-status! "SyncTeX: no source for this spot")
+                       (let ((file (get hit :file nil))
+                             (line (get hit :line nil)))
+                         (when (and (not (nil? file)) (file-exists? file))
+                           (open-file-path! file)
+                           (when (not (nil? line))
+                             (goto-line! line))
+                           (show-status!
+                            (str "SyncTeX: " (path-basename file)
+                                 ":" (number->string line))))))))))))))
 
 ;; --- extend latex-view with forward search ----------------------------
 ;; Redefine latex-compile.lisp's `latex-view` so C-c C-v ALSO forward-

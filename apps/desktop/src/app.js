@@ -3351,6 +3351,18 @@ const interpreter = createInterpreter({
       return NIL;
     },
 
+    // `(pdf-current-path)` — the filesystem path of the PDF the singleton
+    // pdf-view is currently showing, or nil when no PDF is open. Inverse
+    // SyncTeX resolves the master/output PDF from this — the clicked PDF
+    // is the one on screen, and `synctex edit -o <that.pdf>` resolves the
+    // source `Input:` file itself, so no master detection is needed.
+    'pdf-current-path': () => {
+      const current = pdfView.buffer;
+      if (!current) return NIL;
+      const path = viewFilePath(current);
+      return typeof path === 'string' ? path : NIL;
+    },
+
     // `(pdf-synctex-show! PATH PAGE X Y [W H])` — forward SyncTeX: scroll
     // the singleton PDF (when it is showing PATH) to PAGE and flash a
     // transient highlight at the SyncTeX-reported source spot. X/Y are the
@@ -5421,6 +5433,19 @@ videoView.style.display = 'none';
 function configurePdfView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // Inverse SyncTeX: an Option-click in the PDF jumps the editor to the
+    // source. The pdf-view hands us the 1-based page and the clicked PDF
+    // point (SyncTeX convention); `latex-synctex-inverse` runs
+    // `synctex edit` and opens the resulting file:line. Guarded by the
+    // keymap-ready latch and wrapped so a Lisp error can't break the click.
+    onSyncTexClick: (page, x, y) => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('latex-synctex-inverse', page, x, y);
+      } catch (error) {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      }
+    },
   };
 }
 const pdfView = /** @type {*} */ (document.createElement('pdf-view'));

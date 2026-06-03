@@ -26,7 +26,7 @@ import { arrayToList, keyword, NIL } from '@editor/lisp';
 
 import { scanLatex } from './latex-scan.js';
 import { parseLatexLog } from './latex-log-parse.js';
-import { parseSynctexView } from './synctex-parse.js';
+import { parseSynctexView, parseSynctexEdit } from './synctex-parse.js';
 import { pathDirname, pathBasename, pathResolve } from './path-resolve.js';
 
 /**
@@ -147,6 +147,16 @@ export function createLatexPrimitives() {
         h: box.h, v: box.v,
         W: box.W, H: box.H,
       });
+    },
+
+    // `(parse-synctex-edit STDOUT)` — parse `synctex edit` output into a
+    // hash-map `{:file :line :column}` (:line 1-based; :column -1 when
+    // unknown), or nil when STDOUT has no parsable record. Drives inverse
+    // search: open :file and jump to :line.
+    'parse-synctex-edit': (args) => {
+      const hit = parseSynctexEdit(typeof args[0] === 'string' ? args[0] : '');
+      if (hit === null) return NIL;
+      return record({ file: hit.file, line: hit.line, column: hit.column });
     },
 
     // `(path-dirname PATH)` — the directory portion of PATH (no

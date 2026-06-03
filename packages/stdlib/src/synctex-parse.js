@@ -1,7 +1,6 @@
 /**
- * @file synctex-parse.js — pure parser for the `synctex` CLI's forward
- * (`view`) output. The inverse (`edit`) parser lands alongside it in the
- * inverse-search commit.
+ * @file synctex-parse.js — pure parsers for the `synctex` CLI's
+ * forward (`view`) and inverse (`edit`) output.
  *
  * SyncTeX (Jérôme Laurens' synchronisation technology, shipped with TeX
  * Live as the `synctex` CLI) maps between a `.tex` source position and a
@@ -9,7 +8,7 @@
  * plain-text stdout here, away from any host dependency, so the parsing
  * is unit-testable.
  *
- * The subcommand prints a small set of `Key:Value` lines, optionally
+ * Both subcommands print a small set of `Key:Value` lines, optionally
  * wrapped in `SyncTeX result begin` / `SyncTeX result end` framing and
  * interleaved with informational lines we ignore. `view` can emit
  * several records (one per box that matches the source position); we
@@ -120,4 +119,62 @@ export function parseSynctexView(stdout) {
     }
   }
   return finalize(current);
+}
+
+/**
+ * The source position from a `synctex edit -o P:x:y:out.pdf` run.
+ *
+ * @typedef {object} SynctexEditResult
+ * @property {string} file - Absolute path of the source file (`Input:`).
+ * @property {number} line - 1-based source line (`Line:`).
+ * @property {number} column - Source column (`Column:`); -1 when unknown.
+ */
+
+/**
+ * Parse `synctex edit` stdout into the source position, or `null`.
+ *
+ * `synctex edit` prints:
+ *
+ *     SyncTeX result begin
+ *     Output:out.pdf
+ *     Input:/abs/path/main.tex
+ *     Line:42
+ *     Column:-1
+ *     ...
+ *     SyncTeX result end
+ *
+ * We return the FIRST `Input:`/`Line:` pair. A record needs at least an
+ * `Input` and a finite `Line` to be usable; absent either, the result
+ * is `null`. `Column` defaults to -1 (SyncTeX's "unknown") when missing.
+ *
+ * @param {string} stdout - The raw stdout of the `synctex edit` run.
+ * @returns {SynctexEditResult | null}
+ */
+export function parseSynctexEdit(stdout) {
+  if (typeof stdout !== 'string' || stdout === '') return null;
+  const lines = stdout.split(/\r?\n/);
+
+  /** @type {string | null} */
+  let file = null;
+  /** @type {number | null} */
+  let line = null;
+  let column = -1;
+
+  for (const raw of lines) {
+    const kv = splitKeyValue(raw);
+    if (kv === null) continue;
+    const [key, value] = kv;
+    if (key === 'Input' && file === null) {
+      file = value;
+    } else if (key === 'Line' && line === null) {
+      const n = Number.parseInt(value, 10);
+      if (Number.isFinite(n)) line = n;
+    } else if (key === 'Column' && column === -1) {
+      const n = Number.parseInt(value, 10);
+      if (Number.isFinite(n)) column = n;
+    }
+  }
+
+  if (file === null || line === null) return null;
+  return { file, line, column };
 }

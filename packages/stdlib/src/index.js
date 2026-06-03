@@ -17,7 +17,7 @@ export { createViewPrimitives } from './view-primitives.js';
 export { createPanePrimitives } from './pane-primitives.js';
 export { createLatexPrimitives } from './latex-primitives.js';
 export { scanLatex } from './latex-scan.js';
-export { parseSynctexView } from './synctex-parse.js';
+export { parseSynctexView, parseSynctexEdit } from './synctex-parse.js';
 export { pathDirname, pathBasename, pathResolve, normalizePath } from './path-resolve.js';
 
 /**

@@ -126,3 +126,24 @@ test('parse-synctex-view yields NIL on no record / non-string', () => {
   assert.equal(prims['parse-synctex-view'](['no records here']), NIL);
   assert.equal(prims['parse-synctex-view']([42]), NIL);
 });
+
+test('parse-synctex-edit returns a keyword-keyed source record', () => {
+  const stdout = [
+    'SyncTeX result begin',
+    'Output:paper.pdf',
+    'Input:/abs/main.tex',
+    'Line:42',
+    'Column:-1',
+    'SyncTeX result end',
+  ].join('\n');
+  const hit = prims['parse-synctex-edit']([stdout]);
+  assert.ok(hit instanceof Map);
+  assert.equal(slot(hit, 'file'), '/abs/main.tex');
+  assert.equal(slot(hit, 'line'), 42);
+  assert.equal(slot(hit, 'column'), -1);
+});
+
+test('parse-synctex-edit yields NIL on no record / non-string', () => {
+  assert.equal(prims['parse-synctex-edit'](['Line:3']), NIL);
+  assert.equal(prims['parse-synctex-edit']([42]), NIL);
+});

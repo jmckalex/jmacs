@@ -77,6 +77,11 @@ export function mimeTypeForPdf(name) {
  *   and didn't originate inside the find input. Returns whether the key
  *   was handled (truthy → preventDefault). Lets chord keys like `C-x b`
  *   reach Godot's keymap while the PDF view has focus.
+ * @property {(page: number, x: number, y: number) => void} [onSyncTexClick]
+ *   - Inverse-SyncTeX click hook. Called when the user Option-clicks a
+ *   page, with the 1-based `page` and the clicked PDF point `(x, y)` in
+ *   SyncTeX's convention (points, origin at the page's top-left). The
+ *   host runs `synctex edit` and jumps the editor to the source line.
  */
 
 /**
@@ -636,6 +641,15 @@ export class PdfView extends ViewElement {
       };
       this._pages.push(entry);
       observer.observe(container);
+
+      // Inverse SyncTeX: an Option-click (Alt) on a page asks the editor
+      // to jump to the source that produced the clicked spot. We use
+      // `mousedown` (not `click`) so we can `preventDefault` before the
+      // browser begins a text selection on the overlapping text layer.
+      container.addEventListener('mousedown', (event) => {
+        if (!event.altKey) return;
+        this._onPageOptionClick(entry, event);
+      });
     }
 
     /** @type {HTMLSpanElement} */ (this._pageCountEl).textContent = `/ ${numPages}`;
@@ -1275,6 +1289,44 @@ export class PdfView extends ViewElement {
     setTimeout(() => {
       if (hl.parentNode !== null) hl.parentNode.removeChild(hl);
     }, 1400);
+  }
+
+  /**
+   * Inverse SyncTeX click handler: translate an Option-click on a page
+   * into a PDF point (SyncTeX convention: origin top-left, points) and
+   * hand it to the host's `onSyncTexClick(page, x, y)`.
+   *
+   * The page container is CSS-px sized (DPR scales only the canvas
+   * backing store, never layout), so the click's offset relative to the
+   * container's bounding box IS in CSS px and converts directly through
+   * the page viewport's `convertToPdfPoint` — no DPR factor. That yields
+   * PDF-native coordinates (origin bottom-left, y up); SyncTeX's `edit`
+   * wants y measured from the page TOP, so we flip with `pageHeight - y`.
+   *
+   * @param {*} entry - The page entry that was clicked.
+   * @param {MouseEvent} event
+   */
+  _onPageOptionClick(entry, event) {
+    const onClick = this._options && this._options.onSyncTexClick;
+    if (typeof onClick !== 'function') return;
+    if (entry.page === null) return;
+    // Don't let the Option-click also start a text selection.
+    event.preventDefault();
+
+    const rect = entry.container.getBoundingClientRect();
+    const cssX = event.clientX - rect.left;
+    const cssY = event.clientY - rect.top;
+
+    const scale = entry.scale || this._scale;
+    const pageViewport = entry.page.getViewport({ scale });
+    const [pdfX, pdfYFromBottom] = pageViewport.convertToPdfPoint(cssX, cssY);
+
+    // Flip to SyncTeX's top-origin convention.
+    const baseViewBox = entry.page.getViewport({ scale: 1 }).viewBox;
+    const pageHeightPts = baseViewBox[3] - baseViewBox[1];
+    const pdfY = pageHeightPts - pdfYFromBottom;
+
+    onClick(entry.pageNum, pdfX, pdfY);
   }
 
   // --- internal: state + teardown ------------------------------------
