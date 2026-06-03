@@ -438,6 +438,88 @@ tabline-view[data-edge='right'] .tabline-resizer {
   background: transparent;
 }
 
+/* --- move-views overlay (swap-views / permute-views) ------------------
+   A transient layer above the panes that numbers each pane with a shaded
+   badge and shows a prompt strip. Sits above the panes (and, with luck,
+   a focused <webview>) so the badges are visible. See
+   plans/PANES-SWAP-PERMUTE.md. */
+.move-view-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--bg-editor) 22%, transparent);
+  outline: none;
+}
+
+.move-view-overlay.move-view-beep {
+  animation: move-view-shake 160ms ease-in-out;
+}
+
+@keyframes move-view-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+
+/* One numbered badge per pane, nudged a little in from the pane's
+   top-left corner (its inline left/top are the corner). */
+.move-view-badge {
+  position: absolute;
+  transform: translate(10px, 10px);
+  min-width: 1.4em;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-editor) 78%, #000 22%);
+  color: #fff;
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  font: 600 15px/1.2 ui-monospace, monospace;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+/* A pane whose number matches the digits typed so far. */
+.move-view-badge.is-candidate {
+  background: color-mix(in srgb, var(--accent) 65%, #000 35%);
+  outline-color: var(--accent);
+}
+
+/* (permute) the pane currently being assigned a destination. */
+.move-view-badge.is-current-source {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* (permute) a pane whose destination is set — shows "k→d". */
+.move-view-badge.is-assigned {
+  background: color-mix(in srgb, var(--accent) 30%, #000 50%);
+}
+
+/* (permute) the forced last destination — auto-filled once N-1 panes are
+   assigned. Dashed outline marks it as derived rather than typed. */
+.move-view-badge.is-derived {
+  outline-style: dashed;
+}
+
+/* The instruction strip along the bottom edge. */
+.move-view-prompt {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--bg-editor) 92%, #000 8%);
+  color: color-mix(in srgb, #fff 82%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  font: 13px/1.4 ui-monospace, monospace;
+  pointer-events: none;
+}
+
+.move-view-overlay.is-ready .move-view-prompt {
+  border-top-color: var(--accent);
+  color: #fff;
+}
+
 /* The <text-view> custom element is the per-pane / per-tab editor
    instance. It wraps the .editor div (the createEditorView root). The
    wrapper must be a layout-bearing block that fills its container so

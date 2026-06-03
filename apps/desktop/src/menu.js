@@ -99,6 +99,19 @@ export function buildAppMenu(modeMenu, onCommand) {
           label: 'Cycle to Next Pane  (C-x o)',
           click: () => onCommand('other-pane'),
         },
+        // Numbered swap / permute (plans/PANES-SWAP-PERMUTE.md). Numbers
+        // every pane and reads the move from the keyboard. In the menu
+        // because they're most useful when a browser pane is focused —
+        // and onMenuCommand focuses the editor first, releasing the
+        // webview's key grab so the digit capture can run.
+        {
+          label: 'Swap Views…',
+          click: () => onCommand('swap-views'),
+        },
+        {
+          label: 'Permute Views…',
+          click: () => onCommand('permute-views'),
+        },
         { type: 'separator' },
         {
           label: 'Next View  (C-x →)',

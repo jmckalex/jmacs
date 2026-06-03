@@ -280,6 +280,102 @@ export function insertAtRootBorder(root, side, newLeaf, options = {}) {
   }
 }
 
+/**
+ * Return a new tree with the two leaf nodes LEAF_A and LEAF_B exchanging
+ * their positions in the tree. The split structure (ids, orientations,
+ * ratios) is untouched — only *which leaf sits where* changes. The leaf
+ * node objects themselves are reused by reference, so their ids, views,
+ * and any external maps keyed on them stay valid; this is the "move the
+ * frames, not the contents" operation (see `plans/PANES-SWAP-PERMUTE.md`).
+ *
+ * A no-op (returns ROOT unchanged) when LEAF_A === LEAF_B. Throws when
+ * either is not a leaf, or not present in ROOT.
+ *
+ * Implemented as the two-element special case of `permuteLeaves`.
+ *
+ * @param {import('./pane.js').Pane} root
+ * @param {import('./pane.js').LeafPane} leafA
+ * @param {import('./pane.js').LeafPane} leafB
+ * @returns {import('./pane.js').Pane}
+ */
+export function swapLeaves(root, leafA, leafB) {
+  if (!isLeafPane(leafA) || !isLeafPane(leafB)) {
+    throw new TypeError('swapLeaves: both targets must be leaf panes');
+  }
+  if (leafA === leafB) return root;
+  const leaves = leafPanes(root);
+  const slotByLeaf = new Map(leaves.map((leaf, i) => [leaf, i]));
+  const ia = slotByLeaf.get(leafA);
+  const ib = slotByLeaf.get(leafB);
+  if (ia === undefined) throw new Error(`swapLeaves: leaf ${leafA.id} not in tree`);
+  if (ib === undefined) throw new Error(`swapLeaves: leaf ${leafB.id} not in tree`);
+  const occupantBySlot = leaves.slice();
+  occupantBySlot[ia] = leafB;
+  occupantBySlot[ib] = leafA;
+  return permuteLeaves(root, slotByLeaf, occupantBySlot);
+}
+
+/**
+ * Return a new tree where every leaf is relocated to a (possibly) new
+ * position, per a slot-indexed occupant table. The split structure is
+ * untouched — only which leaf occupies which position changes. Leaf node
+ * objects are reused by reference (ids/views/external maps stay valid).
+ *
+ * Each current leaf X sits at slot `slotByLeaf.get(X)`; after the
+ * permutation, that *position* is occupied by `occupantBySlot[slot]`.
+ * `occupantBySlot` must be a bijection over ROOT's current leaves (every
+ * leaf appears exactly once), so no leaf is duplicated or dropped.
+ *
+ * The slot indexing is arbitrary but must be consistent between
+ * `slotByLeaf` and `occupantBySlot`. The desktop UI passes the
+ * clockwise-spiral numbering from `spiralOrder` (`layout.js`) so a user
+ * can address panes by their on-screen badge number; `swapLeaves` passes
+ * display order. The function itself doesn't care what the order *means*.
+ *
+ * @param {import('./pane.js').Pane} root
+ * @param {Map<import('./pane.js').LeafPane, number>} slotByLeaf - Maps
+ *   each current leaf to its slot index.
+ * @param {import('./pane.js').LeafPane[]} occupantBySlot - `[slot] =` the
+ *   leaf node that should occupy that slot's position afterwards. A
+ *   bijection over ROOT's leaves.
+ * @returns {import('./pane.js').Pane}
+ */
+export function permuteLeaves(root, slotByLeaf, occupantBySlot) {
+  const leaves = leafPanes(root);
+  if (!Array.isArray(occupantBySlot) || occupantBySlot.length !== leaves.length) {
+    throw new TypeError(
+      'permuteLeaves: occupantBySlot must list every leaf exactly once'
+    );
+  }
+  const occSet = new Set(occupantBySlot);
+  if (occSet.size !== leaves.length || !leaves.every((leaf) => occSet.has(leaf))) {
+    throw new TypeError(
+      'permuteLeaves: occupantBySlot must be a bijection over the tree leaves'
+    );
+  }
+  return rebuild(root);
+
+  function rebuild(node) {
+    if (isLeafPane(node)) {
+      const slot = slotByLeaf.get(node);
+      if (slot === undefined) {
+        throw new Error(`permuteLeaves: leaf ${node.id} has no slot index`);
+      }
+      return occupantBySlot[slot];
+    }
+    if (isSplitPane(node)) {
+      return createSplitPane({
+        id: node.id,
+        orientation: node.orientation,
+        ratio: node.ratio,
+        first: rebuild(node.first),
+        second: rebuild(node.second),
+      });
+    }
+    return node;
+  }
+}
+
 /** Clamp an insertion ratio to a sensible band; fall back to FALLBACK
  *  for non-numeric / out-of-band input. */
 function clampInsertRatio(value, fallback) {
