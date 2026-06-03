@@ -90,6 +90,11 @@ export const STDLIB_FILES = Object.freeze([
   // etc. (renderer-side citation.js bundle). Defcustoms registered
   // after `custom.lisp`'s load.
   'cite.lisp',
+  // RefTeX R1 — the multi-file document model + label/section/cite DB.
+  // Loads after latex-compile.lisp (it redefines that file's
+  // `latex-master-file` seam) and after cite.lisp (it reads
+  // `*citation-bib-path*` and uses the citation bridge for cite keys).
+  'reftex.lisp',
 ]);
 
 /**
