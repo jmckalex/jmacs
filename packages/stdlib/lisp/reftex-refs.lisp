@@ -634,18 +634,179 @@
         ((nil? (cdr names)) (car names))
         (else (str (car names) "  " (-reftex-join-labels (cdr names))))))
 
+;; --- Part B: the *RefTeX Select* view flow ----------------------------
+;; The selection-first picker. `reftex-reference` remembers the origin,
+;; builds a candidate model with a derived context line per label, stashes
+;; it in `*reftex-select-candidates*`, and opens the singleton
+;; `reftex-select` view. The view pulls the candidates back through
+;; `reftex-select-candidates` (a flat list of (name type macro context)
+;; rows), and its keys call back into `reftex-select-on-select` /
+;; `-on-peek` / `-on-cancel`. The origin view+point are the same globals
+;; the minibuffer fast-path uses, so selection inserts at the right place.
+
+;; The prepared candidate rows for the open picker: a list of
+;; (name type-string macro context) lists. Empty until a picker opens.
+(define *reftex-select-candidates* (list))
+
+(define (-reftex-type-string type)
+  "A lowercase display string for a label :type keyword, or \"\" for a
+   typeless label. Drives the view's group headings."
+  (if (nil? type) "" (keyword->string type)))
+
+(define (reftex-candidate-context label)
+  "Derive a one-line context for LABEL (a DB label record): the trimmed
+   source line carrying the label (read live from the current buffer when
+   the label is in the current file, else from disk), falling back to the
+   enclosing section title, else the empty string. PURE-ISH — the only
+   effects are the buffer/file reads; the line selection + trimming are
+   pure. Tested via the line-trimming helper `-reftex-context-from-text`."
+  (let* ((file (get label :file nil))
+         (line (get label :line nil))
+         (text (-reftex-label-file-text file)))
+    (let ((from-line (-reftex-context-from-text text line)))
+      (if (and (not (nil? from-line)) (not (string=? from-line "")))
+          from-line
+          (-reftex-context-from-section label)))))
+
+(define (-reftex-label-file-text file)
+  "Text for FILE: the live current buffer when FILE is the current file,
+   else `read-file-text!`. nil when unreadable."
+  (let ((current (-reftex-current-file)))
+    (cond
+      ((nil? file) nil)
+      ((and (not (nil? current)) (equal? file current)) (buffer-text))
+      (else (read-file-text! file)))))
+
+(define (-reftex-context-from-text text line)
+  "The trimmed 1-based LINE of TEXT, or nil when TEXT/LINE is nil or the
+   line is out of range. PURE — split + index + trim."
+  (if (or (nil? text) (nil? line))
+      nil
+      (let ((lines (string-split text "\n")))
+        (if (or (< line 1) (> line (length lines)))
+            nil
+            (-reftex-trim (nth lines (- line 1)))))))
+
+(define (-reftex-context-from-section label)
+  "The enclosing section title for LABEL, derived from the document's
+   section records: the last section whose :line is <= the label's :line
+   in the SAME file. Empty string when none."
+  (let ((title (-reftex-section-title-for-label label)))
+    (if (nil? title) "" (str "§ " title))))
+
+(define (-reftex-section-title-for-label label)
+  "The title of the last section preceding LABEL in the same file, or
+   nil. Walks `reftex-sections` (document order)."
+  (-reftex-section-walk (reftex-sections)
+                        (get label :file nil)
+                        (get label :line 0)
+                        nil))
+
+(define (-reftex-section-walk sections file line best)
+  (cond
+    ((nil? sections) (if (nil? best) nil (get best :title nil)))
+    (else
+     (let ((s (car sections)))
+       (if (and (equal? (get s :file nil) file)
+                (<= (get s :line 0) line))
+           (-reftex-section-walk (cdr sections) file line s)
+           (-reftex-section-walk (cdr sections) file line best))))))
+
+(define (-reftex-build-select-candidates)
+  "Build the candidate rows for the picker: one (name type macro context)
+   list per label in the document, document order. nil/empty when no
+   labels."
+  (let ((labels (reftex-labels)))
+    (if (nil? labels)
+        (list)
+        (map (lambda (l)
+               (list (get l :name "")
+                     (-reftex-type-string (get l :type nil))
+                     (-reftex-macro-for-type (get l :type nil))
+                     (reftex-candidate-context l)))
+             labels))))
+
+(define (reftex-select-candidates)
+  "The prepared candidate rows for the open `*RefTeX Select*` picker — a
+   list of (name type macro context) lists. The host's getCandidates
+   closure reads this on every repaint."
+  *reftex-select-candidates*)
+
+(define (reftex-select-on-select name)
+  "The picker's RET handler: insert a reference to label NAME at the
+   remembered origin (view + point), then return focus to the origin view
+   (the picker is left in place but the user is back where they were)."
+  (-reftex-insert-ref-at-origin name)
+  (-reftex-return-to-origin))
+
+(define (reftex-select-on-peek name)
+  "The picker's SPC handler: jump to label NAME's source (open its file
+   and go to its line) WITHOUT dismissing the picker. Echoes when the
+   label can't be located."
+  (let ((rec (reftex-find-label name)))
+    (if (nil? rec)
+        (show-status! (str "RefTeX: no label " name))
+        (-reftex-peek-label rec))))
+
+(define (-reftex-peek-label rec)
+  "Open REC's file and go to its line."
+  (let ((file (get rec :file nil))
+        (line (get rec :line nil)))
+    (cond
+      ((nil? file) (show-status! "RefTeX: label has no file"))
+      (else
+       (open-file-path! file)
+       (when (not (nil? line)) (goto-line! line))
+       (show-status! (str "Peek: " (get rec :name "") " (" (path-basename file)
+                          (if (nil? line) "" (str ":" (number->string line)))
+                          ")"))))))
+
+(define (reftex-select-on-cancel)
+  "The picker's q/ESC handler: return to the origin view without
+   inserting anything."
+  (-reftex-return-to-origin)
+  (show-status! "RefTeX: cancelled"))
+
+(define (-reftex-return-to-origin)
+  "Switch back to the remembered origin view, when one was recorded and
+   isn't already current."
+  (let ((view *reftex-ref-origin-view*))
+    (when (and (not (nil? view)) (not (eq? view (current-view))))
+      (switch-to-view! view))))
+
+(defcommand reftex-reference ()
+  "Insert a reference to a label chosen in the `*RefTeX Select*` view —
+   RefTeX's signature selection-first picker. Rows are grouped by type and
+   show a context line (the label's source line or enclosing section);
+   `n`/`p` move, `RET` inserts `<macro>{name}` at the originating point,
+   `SPC` peeks at the source, `t` cycles the type filter, typing filters,
+   `q` cancels. The macro is chosen by the label's type (`\\eqref` for
+   equations, else `\\ref`). Bound to C-c ). For the know-the-key
+   minibuffer fast-path, see `reftex-reference-minibuffer`."
+  (let ((labels (reftex-labels)))
+    (cond
+      ((nil? labels)
+       (show-status! "RefTeX: no labels in this document"))
+      (else
+       (-reftex-remember-origin)
+       (set! *reftex-select-candidates* (-reftex-build-select-candidates))
+       (open-reftex-select!)))))
+
 ;; --- keybindings ------------------------------------------------------
 ;; Extend the C-c prefix map further (latex.lisp built it, latex-compile
 ;; and reftex added to it). The `(` and `)` punctuation slots are the
 ;; RefTeX label/reference bindings (plans/RefTeX.md keybinding table).
 ;; `assoc` returns a new map; we re-install it under "C-c".
 ;;
-;; reftex-reference is wired in Part B (the select-view command); until
-;; then `)` is bound to the minibuffer fast-path so both pickers reach an
-;; insertion. Part B rebinds `)` to the select-first `reftex-reference`.
+;;   C-c (   reftex-label                 — insert a smart \label
+;;   C-c )   reftex-reference             — the *RefTeX Select* picker
+;;
+;; The know-the-key minibuffer fast-path (`reftex-reference-minibuffer`)
+;; stays reachable by name (M-x); the select-first command is the default
+;; binding (plans/RefTeX.md's "dual picker, selection-first").
 
 (set! latex-c-c-map
   (assoc (assoc latex-c-c-map "(" 'reftex-label)
-         ")" 'reftex-reference-minibuffer))
+         ")" 'reftex-reference))
 
 (set! latex-mode-map {"C-c" latex-c-c-map})

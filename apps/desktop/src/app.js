@@ -69,6 +69,7 @@ import {
   GnuplotView,
   NotebookView,
   ViewListView,
+  ReftexSelectView,
   PlaceholderView,
   cloneTargetForKind,
   isPlaceholderView,
@@ -3256,6 +3257,20 @@ const interpreter = createInterpreter({
       viewListView.refresh();
       return NIL;
     },
+    // Open (find-or-create) the *RefTeX Select* picker, switch the
+    // current pane to it, reset its transient filter state via
+    // setBuffer(), and repaint from the candidate model the Lisp side
+    // prepared. RefTeX's reftex-reference uses this as the selection-
+    // first path; the picker reads its rows back through
+    // configureReftexSelectView.getCandidates → reftex-select-candidates.
+    'open-reftex-select!': () => {
+      const view = ensureReftexSelectView();
+      switchToViewIndex(views.indexOf(view));
+      reftexSelectView.setBuffer(view);
+      reftexSelectView.refresh();
+      reftexSelectView.focus();
+      return NIL;
+    },
     // Open a shell view — a child process running the user's default
     // shell ($SHELL, falling back to /bin/zsh) with a transcript and
     // an input line. The process is spawned by the host the first time
@@ -5313,6 +5328,67 @@ viewListView.configure(configureViewListView());
 editorPaneElement().append(viewListView);
 viewListView.style.display = 'none';
 
+// The *RefTeX Select* view — RefTeX's label / cite picker. A singleton
+// (there is only ever one live picker), populated and driven entirely
+// from Lisp (reftex-refs.lisp): the candidate model, the origin
+// view+point, and the select / peek / cancel actions all live there. The
+// host closures are thin bridges that marshal Lisp records into the
+// renderer's plain-JS candidate objects and forward the user's choices
+// back. See plans/RefTeX.md "The interactive views".
+//
+// getCandidates reads a flat list the Lisp side prepared when the picker
+// opened; each Lisp candidate is a list (name type macro context), which
+// we map positionally into the renderer's {name,type,macro,context}.
+function configureReftexSelectView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    getCandidates: () => {
+      if (!keymapReady) return [];
+      try {
+        const rows = listToArray(interpreter.call('reftex-select-candidates'));
+        return rows.map((row) => {
+          const fields = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+          return {
+            name: fields[0] ?? '',
+            type: fields[1] ?? '',
+            macro: fields[2] ?? '',
+            context: fields[3] ?? '',
+          };
+        });
+      } catch (error) {
+        repl.appendError(
+          `reftex-select: ${error.lispMessage ?? error.message}`
+        );
+        return [];
+      }
+    },
+    onSelect: (name) => reftexSelectCallback('reftex-select-on-select', name),
+    onPeek: (name) => reftexSelectCallback('reftex-select-on-peek', name),
+    onCancel: () => reftexSelectCallback('reftex-select-on-cancel'),
+  };
+}
+
+/** Invoke a RefTeX-select Lisp callback (select / peek / cancel),
+ *  swallowing and reporting any Lisp error so the picker never crashes
+ *  the renderer. */
+function reftexSelectCallback(name, arg) {
+  if (!keymapReady) return;
+  try {
+    if (arg === undefined) interpreter.call(name);
+    else interpreter.call(name, arg);
+  } catch (error) {
+    repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
+  }
+}
+const reftexSelectView = /** @type {*} */ (
+  document.createElement('reftex-select-view')
+);
+reftexSelectView.configure(configureReftexSelectView());
+editorPaneElement().append(reftexSelectView);
+reftexSelectView.style.display = 'none';
+
 // The placeholder view — the chooser a freshly-split pane shows until
 // the user decides what it should hold (replacing split's old silent
 // auto-clone). Like browsers, placeholders are PER-INSTANCE, not a shared
@@ -5675,6 +5751,7 @@ const SINGLETON_VIEWS = [
   // browser is per-instance (browserElementByView) — not a singleton.
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'view-list',         el: viewListView,          releasesBuffer: false },
+  { kind: 'reftex-select',     el: reftexSelectView,      releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
   { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
@@ -6043,6 +6120,7 @@ function perKindConfigureFactory(kind) {
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'view-list':         return configureViewListView;
+    case 'reftex-select':     return configureReftexSelectView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
     case 'notebook':          return configureNotebookView;
@@ -6940,6 +7018,17 @@ function ensureViewListView() {
   const existing = views.find((v) => v.kind === 'view-list');
   if (existing) return existing;
   const view = createView({ kind: 'view-list', name: '*View List*' });
+  views.push(view);
+  return view;
+}
+
+/** Find the single *RefTeX Select* view, or build it and push it into
+ *  `views`. There is only ever one live picker (find-or-create by kind),
+ *  driven from Lisp via the configureReftexSelectView closures. */
+function ensureReftexSelectView() {
+  const existing = views.find((v) => v.kind === 'reftex-select');
+  if (existing) return existing;
+  const view = createView({ kind: 'reftex-select', name: '*RefTeX Select*' });
   views.push(view);
   return view;
 }

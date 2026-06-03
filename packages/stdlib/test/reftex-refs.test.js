@@ -333,3 +333,76 @@ test('label tab-complete extends to the common prefix of label names', async () 
   // A unique prefix completes fully.
   assert.equal(ev('(-reftex-label-tab-complete "eq:alph")'), 'eq:alpha');
 });
+
+// --- Part B: context derivation + select-candidate model ---------------
+
+test('context-from-text returns the trimmed 1-based line', async () => {
+  const { ev } = await refsEditor();
+  const text = 'line one\n  spaced line two  \nline three\n';
+  assert.equal(ev(`(-reftex-context-from-text ${lispString(text)} 1)`), 'line one');
+  assert.equal(
+    ev(`(-reftex-context-from-text ${lispString(text)} 2)`),
+    'spaced line two'
+  );
+  assert.equal(ev(`(-reftex-context-from-text ${lispString(text)} 3)`), 'line three');
+});
+
+test('context-from-text is nil for nil text/line or out-of-range', async () => {
+  const { ev } = await refsEditor();
+  const text = 'only line\n';
+  assert.equal(ev(`(nil? (-reftex-context-from-text ${lispString(text)} nil))`), true);
+  assert.equal(ev('(nil? (-reftex-context-from-text nil 1))'), true);
+  assert.equal(ev(`(nil? (-reftex-context-from-text ${lispString(text)} 99))`), true);
+  assert.equal(ev(`(nil? (-reftex-context-from-text ${lispString(text)} 0))`), true);
+});
+
+test('reftex-candidate-context: the source line carrying the label', async () => {
+  const { ev } = await refsEditor({
+    files: {
+      '/d/main.tex':
+        '\\documentclass{article}\n' +
+        '\\begin{equation}\\label{eq:a} x=1 \\end{equation}\n',
+    },
+    currentFile: '/d/main.tex',
+  });
+  // The label is on line 2; its context is that trimmed source line.
+  assert.equal(
+    ev('(reftex-candidate-context (reftex-find-label "eq:a"))'),
+    '\\begin{equation}\\label{eq:a} x=1 \\end{equation}'
+  );
+});
+
+test('reftex-select-candidates: flat (name type macro context) rows', async () => {
+  const { ev, arr } = await refsEditor({
+    files: {
+      '/d/main.tex':
+        '\\documentclass{article}\n' +
+        '\\begin{equation}\\label{eq:a}\\end{equation}\n' +
+        '\\section{Intro}\\label{sec:b}\n',
+    },
+    currentFile: '/d/main.tex',
+  });
+  // Build the candidates the way reftex-reference does.
+  ev('(set! *reftex-select-candidates* (-reftex-build-select-candidates))');
+  // Names in document order.
+  assert.deepEqual(
+    arr('(map (lambda (r) (nth r 0)) (reftex-select-candidates))'),
+    ['eq:a', 'sec:b']
+  );
+  // Type strings (lowercased keyword names).
+  assert.deepEqual(
+    arr('(map (lambda (r) (nth r 1)) (reftex-select-candidates))'),
+    ['equation', 'section']
+  );
+  // Macros by type.
+  assert.deepEqual(
+    arr('(map (lambda (r) (nth r 2)) (reftex-select-candidates))'),
+    ['\\eqref', '\\ref']
+  );
+});
+
+test('reftex-select-candidates is empty when there is no document', async () => {
+  const { ev, arr } = await refsEditor();
+  assert.deepEqual(arr('(reftex-select-candidates)'), []);
+  assert.deepEqual(arr('(-reftex-build-select-candidates)'), []);
+});
