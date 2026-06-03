@@ -2663,6 +2663,127 @@ view-list-view,
   background: #ffffff0a;
 }
 
+/* --- placeholder-view ------------------------------------------------- */
+/* The chooser a freshly-split pane shows until the user decides what it
+   should hold. A centred prompt with o/c/s/r accelerator chips, an Enter
+   default, and a command-mode bare input. Themed with the project tokens
+   to match the editor surface. */
+
+placeholder-view,
+.placeholder-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  user-select: none;
+}
+
+.placeholder-chooser {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 24px 28px;
+  max-width: 90%;
+  text-align: center;
+}
+
+.placeholder-prompt {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--fg);
+}
+
+.placeholder-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.placeholder-chip {
+  border: 1px solid color-mix(in srgb, var(--fg-dim) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.placeholder-chip:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.placeholder-chip:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+.placeholder-chip.is-disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* The underlined accelerator letter inside a chip. */
+.placeholder-accel {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.placeholder-hint {
+  font-size: 11px;
+  color: var(--fg-dim);
+  letter-spacing: 0.02em;
+}
+
+/* Command mode: a short label above a bare centred input. */
+.placeholder-command {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 28px;
+}
+
+.placeholder-command-label {
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+
+.placeholder-command-input {
+  width: 320px;
+  max-width: 70vw;
+  border: 1px solid color-mix(in srgb, var(--fg-dim) 50%, transparent);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.placeholder-command-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
 /* --- directory columns-view ------------------------------------------ */
 /* Finder-style horizontal browser. Each column is one directory
    listing; clicking a folder appends a column to its right (so the

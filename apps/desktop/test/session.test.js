@@ -235,6 +235,21 @@ test('serialiseTree: non-text leaf views serialise as null', () => {
   assert.equal(out.rootPane.view, null);
 });
 
+test('isEphemeral: a placeholder chooser view is ephemeral', () => {
+  assert.equal(
+    isEphemeral({ kind: 'placeholder', name: '(choose a view)' }),
+    true
+  );
+});
+
+test('serialiseTree: a placeholder leaf serialises as null (no residue)', () => {
+  const tree = makeLeaf('pane-leaf-ph', {
+    kind: 'placeholder', name: '(choose a view)',
+  });
+  const out = serialiseTree(tree, 'pane-leaf-ph');
+  assert.equal(out.rootPane.view, null);
+});
+
 test('serialiseTree: file-backed media views (image/audio/video) persist their path', () => {
   for (const kind of ['image', 'audio', 'video']) {
     const tree = makeLeaf(`pane-leaf-${kind}`, makeMediaView(kind, `/tmp/x.${kind}`));

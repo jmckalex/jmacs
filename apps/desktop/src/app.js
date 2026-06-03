@@ -66,6 +66,10 @@ import {
   GnuplotView,
   NotebookView,
   ViewListView,
+  PlaceholderView,
+  cloneTargetForKind,
+  isPlaceholderView,
+  resolvePlaceholderAction,
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
@@ -327,6 +331,21 @@ function peelTabline(view) {
   return v;
 }
 
+/** The next index in `views` from FROM, stepping by DELTA (+1 / -1) and
+ *  skipping transient placeholder entries. Wraps around. Returns -1 when
+ *  there is no non-placeholder view to land on. Used by the
+ *  next/previous-view cycling fallback so the cycle never lands on a
+ *  placeholder. */
+function nextNonPlaceholderIndex(from, delta) {
+  const n = views.length;
+  if (n === 0) return -1;
+  for (let step = 1; step <= n; step += 1) {
+    const i = ((from + delta * step) % n + n) % n;
+    if (!isPlaceholderView(views[i])) return i;
+  }
+  return -1;
+}
+
 // --- modeline -----------------------------------------------------------
 
 const nameEl = document.getElementById('modeline-name');
@@ -334,8 +353,25 @@ const positionEl = document.getElementById('modeline-position');
 
 function updateModeline() {
   const shown = views[currentViewIndex];
+  // A placeholder chooser pane shows its label and no count — never a
+  // `9/7`-style index (it isn't part of the user-visible view list).
+  if (isPlaceholderView(shown)) {
+    const label = shown.name || '(choose a view)';
+    nameEl.textContent = label;
+    positionEl.textContent = '';
+    document.title = `${label} — editor`;
+    return;
+  }
+  // The user-visible count excludes placeholders, and the index is the
+  // current view's position among the *real* views (so a split that
+  // dropped a placeholder doesn't push the count past the list — the
+  // `9/7` hazard). Falls back to no count when only one real view.
+  const realViews = views.filter((v) => !isPlaceholderView(v));
+  const realIndex = shown ? realViews.indexOf(shown) : -1;
   const count =
-    views.length > 1 ? `  ${currentViewIndex + 1}/${views.length}` : '';
+    realViews.length > 1 && realIndex >= 0
+      ? `  ${realIndex + 1}/${realViews.length}`
+      : '';
   // A non-text view (image, doc, shell, customize, ...) has no point
   // and no mode — show just the view name.
   if (shown && shown.kind !== 'text') {
@@ -643,53 +679,246 @@ refreshPaneFocusIndicators();
 // focus pane id, the editor-view instance map, and the splitter handle
 // divs follow.
 
-/** Build the duplicate view a freshly-split text pane gets, or the
- *  fallback `*scratch*` view for non-text origins. The new view is
- *  appended to `views` and a fresh editor-view instance is constructed
- *  for it once its pane element exists.
+/** Build the placeholder view a freshly-split pane gets. The split no
+ *  longer silently auto-clones the originating view (the old
+ *  `buildDuplicateViewForSplit` — the root of the "four copies in the
+ *  View List" bug); instead the new pane shows a chooser that asks the
+ *  user what it should hold. The originating view is remembered on
+ *  `previousView` so the chooser's *clone* action can reproduce it.
  *
- *  Phase 3b: when the source leaf holds a tabline-view, peel through
- *  to its active child so the split duplicates the *visible* view
- *  (typically a text view) rather than the tabline wrapper (which has
- *  no buffer and would fall through to `*scratch*`). */
-function buildDuplicateViewForSplit(originalView) {
+ *  The placeholder is pushed to `views` (transient — it keeps
+ *  currentViewIndex / the modeline valid) but is excluded from the View
+ *  List and the cycling ring, and is spliced out the instant it is
+ *  filled (`replacePlaceholder`) or its pane is closed.
+ *
+ *  Phase 3b: when the source leaf holds a tabline-view, peel through to
+ *  its active child so *clone* reproduces the visible view rather than
+ *  the tabline wrapper. */
+function buildPlaceholderForSplit(originalView) {
   const peeled = peelTabline(originalView);
-  if (peeled && !isTablineView(peeled)) {
-    originalView = peeled;
-  }
-  if (originalView && originalView.kind === 'text' && originalView.buffer) {
-    // Q9 auto-duplicate path: a new View over the *same* buffer, with
-    // a fresh point copied from the original and mark cleared. The
-    // view list grows by one entry; the buffer is shared.
-    const dup = createView({
-      kind: 'text',
-      buffer: originalView.buffer,
-      point: typeof originalView.point === 'number' ? originalView.point : 0,
-    });
-    views.push(dup);
-    notifyViewsChanged();
-    return dup;
-  }
-  // Non-text origin: drop a fresh empty *scratch* text view in the new
-  // pane (the brief's "predictable default"). The non-text singleton
-  // stays mounted in the originating pane.
-  const scratch = createView({
+  const origin = peeled && !isTablineView(peeled) ? peeled : originalView;
+  const placeholder = createView({
+    kind: 'placeholder',
+    name: '(choose a view)',
+    extras: { previousView: origin ?? null },
+  });
+  views.push(placeholder);
+  notifyViewsChanged();
+  return placeholder;
+}
+
+/** A fresh `*scratch*` text view — the clone fallback and the `s` action. */
+function freshScratchView() {
+  return createView({
     kind: 'text',
     buffer: createBuffer('', { name: '*scratch*' }),
   });
-  views.push(scratch);
+}
+
+/** Clone the originating view ORIGINVIEW as a *new instance at the same
+ *  target* (plans/PANES-PLACEHOLDER.md's clone table). Returns a fresh
+ *  view object NOT yet in `views` — `replacePlaceholder` pushes it. The
+ *  per-kind decision is the pure `cloneTargetForKind`; the host turns
+ *  the tag into a concrete `createView`. */
+function cloneViewForPlaceholder(originView) {
+  if (!originView) return freshScratchView();
+  switch (cloneTargetForKind(originView.kind)) {
+    case 'same-buffer':
+      // Text: a new view over the same buffer, fresh point, mark cleared
+      // (Q2/Q9 — independent cursor; today's text duplicate semantics).
+      if (originView.buffer) {
+        return createView({
+          kind: 'text',
+          buffer: originView.buffer,
+          point: typeof originView.point === 'number' ? originView.point : 0,
+        });
+      }
+      return freshScratchView();
+    case 'same-url':
+      // Browser: a new browser at the same URL.
+      return createView({
+        kind: 'browser',
+        name: originView.name ?? originView.url ?? 'about:blank',
+        extras: {
+          url:
+            typeof originView.url === 'string' && originView.url !== ''
+              ? originView.url
+              : 'about:blank',
+        },
+      });
+    case 'same-file': {
+      // pdf / image / audio / video: a new view of the same file. The
+      // origin already carries `filePath` / `src` (and audio's metadata /
+      // art) on its own fields — reproduce them on a fresh instance.
+      const extras = { filePath: originView.filePath, src: originView.src };
+      if (originView.metadata) extras.metadata = originView.metadata;
+      if (originView.albumArtSrc) extras.albumArtSrc = originView.albumArtSrc;
+      return createView({
+        kind: originView.kind,
+        name: originView.name ?? null,
+        extras,
+      });
+    }
+    case 'fresh':
+      // Session-bearing kinds: a fresh instance (a pty's scrollback etc.
+      // can't be cloned — "same target" means a new session/root).
+      if (originView.kind === 'shell') {
+        const sessionId = nextShellSessionId();
+        const seq = views.filter((v) => v.kind === 'shell').length + 1;
+        return createView({
+          kind: 'shell',
+          name: seq === 1 ? '*shell*' : `*shell*<${seq}>`,
+          extras: { sessionId, transcript: [], ended: false, spawned: false },
+        });
+      }
+      if (originView.kind === 'gnuplot') {
+        const sessionId = nextGnuplotSessionId();
+        const seq = views.filter((v) => v.kind === 'gnuplot').length + 1;
+        return createView({
+          kind: 'gnuplot',
+          name: seq === 1 ? '*gnuplot*' : `*gnuplot*<${seq}>`,
+          extras: { sessionId, ended: false, spawned: false },
+        });
+      }
+      if (originView.kind === 'notebook') {
+        const notebookId = nextNotebookId();
+        const seq = views.filter((v) => v.kind === 'notebook').length + 1;
+        const name = seq === 1 ? '*notebook*' : `*notebook*<${seq}>`;
+        return createView({
+          kind: 'notebook',
+          name,
+          buffer: { text: '', filePath: null, name },
+          extras: { notebookId },
+        });
+      }
+      // directory-tree / directory-columns: a fresh view at the same
+      // root. Build a NEW instance directly (not the ensure-helpers,
+      // which reuse an existing view for a path — that would put one
+      // View object in two panes, the Q9 violation the placeholder
+      // exists to avoid). A blank root falls through to scratch.
+      if (originView.kind === 'directory-tree' && typeof originView.rootPath === 'string' && originView.rootPath !== '') {
+        const segments = originView.rootPath.split('/');
+        const tail = segments[segments.length - 1] || originView.rootPath;
+        return createView({
+          kind: 'directory-tree',
+          name: `*Tree: ${tail}*`,
+          extras: { rootPath: originView.rootPath, expanded: new Set() },
+        });
+      }
+      if (originView.kind === 'directory-columns' && typeof originView.rootPath === 'string' && originView.rootPath !== '') {
+        const segments = originView.rootPath.split('/');
+        const tail = segments[segments.length - 1] || originView.rootPath;
+        return createView({
+          kind: 'directory-columns',
+          name: `*Columns: ${tail}*`,
+          extras: {
+            rootPath: originView.rootPath,
+            columns: [{ path: originView.rootPath, selected: null }],
+            previewPath: null,
+          },
+        });
+      }
+      return freshScratchView();
+    case 'scratch':
+    default:
+      return freshScratchView();
+  }
+}
+
+/** Replace the placeholder in LEAF with NEWVIEW, leaving no residue:
+ *  the placeholder is spliced out of `views`, its element disposed, and
+ *  currentViewIndex re-pointed at NEWVIEW. The leaf becomes leaf-direct
+ *  on NEWVIEW and the new view is mounted + focused. */
+function replacePlaceholder(leaf, newView) {
+  if (!leaf || leaf.kind !== 'leaf' || !newView) return;
+  const placeholder = leaf.view;
+  // Put the new view in the leaf and the global list before tearing the
+  // placeholder down, so the splice + index fix-up below see a coherent
+  // state.
+  leaf.view = newView;
+  if (!views.includes(newView)) views.push(newView);
+  // Splice the placeholder out of `views` (no residue). Its element is
+  // disposed via disposeKindView.
+  splicePlaceholderFromViews(placeholder);
+  // Build the new view's renderer + focus it. For a leaf-direct text
+  // view, ensure its editor instance exists first.
+  if (newView.kind === 'text') ensureEditorViewForLeaf(leaf);
+  // currentPaneId is already this leaf (the placeholder pane was
+  // focused); re-sync currentViewIndex to the new view and mount it.
+  setCurrentPaneId(leaf.id);
+  currentViewIndex = views.indexOf(newView);
+  hideInactiveRendererViews(newView.kind);
+  mountKindView(newView);
+  refreshPaneFocusIndicators();
+  scheduleRelayout();
+  updateModeline();
   notifyViewsChanged();
-  return scratch;
+}
+
+/** Remove PLACEHOLDER from `views` and dispose its element, fixing
+ *  currentViewIndex so it never outlives the splice (the 9/7 hazard).
+ *  No-op when PLACEHOLDER isn't a placeholder or isn't in `views`. */
+function splicePlaceholderFromViews(placeholder) {
+  if (!isPlaceholderView(placeholder)) return;
+  const idx = views.indexOf(placeholder);
+  if (idx < 0) {
+    disposePlaceholderElementForView(placeholder);
+    return;
+  }
+  views.splice(idx, 1);
+  disposePlaceholderElementForView(placeholder);
+  // Keep currentViewIndex valid relative to the splice.
+  if (currentViewIndex > idx) {
+    currentViewIndex -= 1;
+  } else if (currentViewIndex === idx) {
+    currentViewIndex = Math.min(currentViewIndex, views.length - 1);
+  }
+}
+
+/** The `o` action: find-file into the placeholder's pane. The chosen
+ *  file opens in the focused pane (this one); afterwards the placeholder
+ *  is spliced out. */
+function fillPlaceholderViaOpen(leaf) {
+  const placeholder = leaf.view;
+  // openFileInteractive is async and lands the file in the focused pane
+  // (which is this placeholder leaf). It replaces `leaf.view` through
+  // switchToViewIndex's plain-leaf branch, orphaning the placeholder in
+  // `views`. Splice it out once the open settles — whether or not a file
+  // was actually chosen, if the leaf no longer shows the placeholder.
+  const after = () => {
+    if (leaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
+  };
+  openFileInteractive().then(after, after);
+}
+
+/** The `r` action: run the typed command in the placeholder's pane. The
+ *  focused pane is this one, so a view-opening command (e.g. `gnuplot`)
+ *  lands here. Afterwards the placeholder is spliced out. */
+function fillPlaceholderViaCommand(leaf, text) {
+  const placeholder = leaf.view;
+  try {
+    interpreter.evaluate(`(run-command (quote ${text}))`);
+  } catch (error) {
+    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+  }
+  // A view-opening command replaced `leaf.view` via switchToViewIndex;
+  // a non-view command (or a failure) leaves the placeholder in place.
+  if (leaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
 }
 
 /** Common implementation of split-horizontal! / split-vertical!.
- *  Replaces TARGET (a leaf) with a split node; the originating leaf
- *  keeps focus, a freshly-created leaf is its sibling. With SIDE =
+ *  Replaces TARGET (a leaf) with a split node; a freshly-created leaf
+ *  is its sibling, holding a *placeholder* chooser. With SIDE =
  *  `'after'` (default) the new leaf is the *second* child (right of /
  *  below the original); with SIDE = `'before'` it is the *first* child
  *  (left of / above the original). The originating leaf's id is
- *  preserved across the replacement so focus + editor-view bindings
- *  don't churn. Returns `{ first, second }`. */
+ *  preserved across the replacement so its editor-view bindings don't
+ *  churn.
+ *
+ *  Focus MOVES to the new placeholder pane (a deliberate change from
+ *  the old "originating pane keeps focus" contract — the user is now
+ *  asked what the new pane should hold, so the keyboard belongs there).
+ *  Returns `{ first, second }`. */
 function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
   if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
   if (
@@ -697,8 +926,8 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
     orientation !== SPLIT_VERTICAL
   ) return null;
   if (side !== 'after' && side !== 'before') return null;
-  const dup = buildDuplicateViewForSplit(targetLeaf.view);
-  const newLeaf = createLeafPane({ view: dup });
+  const placeholder = buildPlaceholderForSplit(targetLeaf.view);
+  const newLeaf = createLeafPane({ view: placeholder });
   // Ratio interpretation: it always describes the *first* child's
   // share. With SIDE='before' the new leaf is first, so the supplied
   // ratio applies to it directly. With SIDE='after' the originating
@@ -713,17 +942,12 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
   });
   rootPane = replacePane(rootPane, targetLeaf, split);
   syncPaneElements();
-  // Build the editor-view instance for the new (text) leaf so its pane
-  // renders at once. The focused leaf is unchanged; the editor view
-  // mount for the focused view re-runs as part of the relayout.
-  if (dup && dup.kind === 'text') {
-    // The new pane's div was created by syncPaneElements; ensure its
-    // editor-view exists and is bound to the duplicate view.
-    ensureEditorViewForLeaf(newLeaf);
-  }
-  // currentPaneId stays the same — the originating leaf survived (just
-  // possibly as `second` instead of `first`) with its id intact.
-  // Refresh the indicator + splitters, then relayout.
+  // Focus moves to the new placeholder pane and its element is mounted +
+  // focused so its accelerator keys are live. setCurrentPaneId syncs
+  // currentViewIndex to the placeholder; mountKindView builds the element.
+  setCurrentPaneId(newLeaf.id);
+  hideInactiveRendererViews(placeholder.kind);
+  mountKindView(placeholder);
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
@@ -731,24 +955,22 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
 }
 
 /** Insert a fresh leaf "in the gap" of the split node with id SPLIT_ID.
- *  The new leaf gets a duplicate of the focused view (text → buffer-
- *  shared; non-text → fresh *scratch*) and becomes the focused pane.
- *  Returns the inserted leaf, or `null` when the split id isn't in the
- *  tree. */
+ *  The new leaf gets a *placeholder* chooser (remembering the focused
+ *  view as the clone origin) and becomes the focused pane. Returns the
+ *  inserted leaf, or `null` when the split id isn't in the tree. */
 function addPaneAtSplitterId(splitId) {
   if (typeof splitId !== 'string') return null;
   const splitNode = findPaneById(rootPane, splitId);
   if (!splitNode || splitNode.kind !== 'split') return null;
   const sourceView =
     (currentPane()?.view) ?? views[currentViewIndex] ?? null;
-  const dup = buildDuplicateViewForSplit(sourceView);
-  const newLeaf = createLeafPane({ view: dup });
+  const placeholder = buildPlaceholderForSplit(sourceView);
+  const newLeaf = createLeafPane({ view: placeholder });
   rootPane = insertAtSplit(rootPane, splitNode, newLeaf);
   syncPaneElements();
-  if (dup && dup.kind === 'text') {
-    ensureEditorViewForLeaf(newLeaf);
-  }
   setCurrentPaneId(newLeaf.id);
+  hideInactiveRendererViews(placeholder.kind);
+  mountKindView(placeholder);
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
@@ -768,14 +990,13 @@ function addPaneAtRootBorder(side) {
   }
   const sourceView =
     (currentPane()?.view) ?? views[currentViewIndex] ?? null;
-  const dup = buildDuplicateViewForSplit(sourceView);
-  const newLeaf = createLeafPane({ view: dup });
+  const placeholder = buildPlaceholderForSplit(sourceView);
+  const newLeaf = createLeafPane({ view: placeholder });
   rootPane = insertAtRootBorder(rootPane, side, newLeaf);
   syncPaneElements();
-  if (dup && dup.kind === 'text') {
-    ensureEditorViewForLeaf(newLeaf);
-  }
   setCurrentPaneId(newLeaf.id);
+  hideInactiveRendererViews(placeholder.kind);
+  mountKindView(placeholder);
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
@@ -799,6 +1020,13 @@ function deletePaneInTree(targetLeaf) {
   // leaves only). Non-text views' singletons stay alive — they may
   // outlive the pane they were originally mounted in.
   disposeEditorViewForLeaf(targetLeaf);
+  // A placeholder pane closed without being filled leaves no residue:
+  // splice its transient view out of `views` (and dispose its element).
+  // Do this before the tree mutation so the index fix-up sees the
+  // current `currentViewIndex`.
+  if (isPlaceholderView(targetLeaf.view)) {
+    splicePlaceholderFromViews(targetLeaf.view);
+  }
   rootPane = replacePane(rootPane, parent, sibling);
   syncPaneElements();
   // Focus follows: if the deleted leaf held focus, the sibling's first
@@ -841,9 +1069,11 @@ function deleteOtherPanesInTree(targetLeaf) {
   if (rootPane === targetLeaf) return;
   // Dispose every editor-view instance for leaves that are about to
   // disappear (text leaves only — non-text singletons aren't per-pane).
+  // A placeholder pane among them leaves no residue: splice it out.
   for (const leaf of leafPanes(rootPane)) {
     if (leaf === targetLeaf) continue;
     disposeEditorViewForLeaf(leaf);
+    if (isPlaceholderView(leaf.view)) splicePlaceholderFromViews(leaf.view);
   }
   rootPane = targetLeaf;
   syncPaneElements();
@@ -1196,9 +1426,10 @@ function hideInactiveSingletons() {
     el.style.display = inUse ? '' : 'none';
     if (!inUse && releasesBuffer) el.setBuffer(null);
   }
-  // Browsers are per-instance, not in SINGLETON_VIEWS — toggle their
-  // own elements here too.
+  // Browsers and placeholders are per-instance, not in SINGLETON_VIEWS —
+  // toggle their own elements here too.
   hideInactiveBrowsers();
+  hideInactivePlaceholders();
 }
 
 /** Switch to the view at INDEX: dispatch through mountKindView to
@@ -2573,7 +2804,10 @@ const viewHost = {
     // Plain-leaf pane: one view per pane, nothing to cycle.
     if (focused && focused.view) return focused.view;
     if (views.length === 0) return null;
-    return switchToViewIndex((currentViewIndex + 1) % views.length);
+    // Defensive fallback (no focused pane): step to the next index,
+    // skipping any transient placeholder entries.
+    const next = nextNonPlaceholderIndex(currentViewIndex, 1);
+    return next < 0 ? null : switchToViewIndex(next);
   },
   previousView: () => {
     dismissSplash();
@@ -2593,9 +2827,8 @@ const viewHost = {
     }
     if (focused && focused.view) return focused.view;
     if (views.length === 0) return null;
-    return switchToViewIndex(
-      (currentViewIndex - 1 + views.length) % views.length
-    );
+    const prev = nextNonPlaceholderIndex(currentViewIndex, -1);
+    return prev < 0 ? null : switchToViewIndex(prev);
   },
   findViewByName: (name) => views.find((v) => v.name === name) ?? null,
   // The snapshot the *Buffer List* (view-menu) renders against. One
@@ -2620,7 +2853,9 @@ const viewHost = {
         paneByView.set(v, leaf.id);
       }
     }
-    return views.map((view) => {
+    // Placeholders are transient chooser panes — never shown in the
+    // *View List* / `list-views` (decision 2).
+    return views.filter((view) => !isPlaceholderView(view)).map((view) => {
       const record = new Map();
       record.set(keyword('name'), view.name ?? '');
       record.set(keyword('kind'), view.kind);
@@ -4717,7 +4952,10 @@ function viewListRecords() {
     if (v && !isTablineView(v) && !paneByView.has(v)) paneByView.set(v, leaf.id);
   }
   const current = session.currentView;
-  return views.map((view) => {
+  // Placeholders are transient chooser panes — excluded from the *View
+  // List* table (decision 2). They keep no buffer and would only show
+  // as noise rows the user can't meaningfully act on.
+  return views.filter((view) => !isPlaceholderView(view)).map((view) => {
     const buffer = view.buffer;
     const major = buffer ? buffer.majorMode : null;
     const mode =
@@ -4756,6 +4994,122 @@ const viewListView = /** @type {*} */ (document.createElement('view-list-view'))
 viewListView.configure(configureViewListView());
 editorPaneElement().append(viewListView);
 viewListView.style.display = 'none';
+
+// The placeholder view — the chooser a freshly-split pane shows until
+// the user decides what it should hold (replacing split's old silent
+// auto-clone). Like browsers, placeholders are PER-INSTANCE, not a shared
+// singleton: each split mints its own placeholder VIEW, and that view owns
+// its own <placeholder-view> element, created in its pane and never moved.
+// A placeholder is a transient `views` entry (so currentViewIndex / the
+// modeline stay valid) but is excluded from the View List, skipped by
+// next/previous-view, never persisted, and spliced out of `views` the
+// instant it is filled or its pane is closed. See plans/PANES-PLACEHOLDER.md.
+const placeholderElementByView = new Map();
+
+/** A human label naming the origin view for the clone chip. */
+function placeholderCloneLabel(originView) {
+  const peeled = originView ? peelTabline(originView) : null;
+  const v = peeled && !isTablineView(peeled) ? peeled : originView;
+  if (!v) return 'the previous view';
+  if (v.kind === 'text') return 'this buffer';
+  const pretty =
+    typeof v.kind === 'string' && v.kind.length > 0
+      ? v.kind.charAt(0).toUpperCase() + v.kind.slice(1)
+      : 'the previous view';
+  return `the ${pretty.toLowerCase()} view`;
+}
+
+/** The configure options for a placeholder element bound to the
+ *  placeholder VIEW shown in LEAF. Each closure resolves the leaf
+ *  lazily by id (the tree is copy-on-write, so the leaf object can be
+ *  re-created across a relayout — the id is stable). The actions all
+ *  route through `replacePlaceholder` / the open + run-command paths,
+ *  which splice the placeholder out of `views`. */
+function configurePlaceholderView(view) {
+  const findLeaf = () =>
+    leafPanes(rootPane).find((l) => l.view === view) ?? null;
+  const origin = () => (view && view.previousView) || null;
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    cloneEnabled: !!origin(),
+    cloneLabel: placeholderCloneLabel(origin()),
+    defaultAction: () => {
+      let raw = null;
+      try {
+        if (keymapReady) raw = interpreter.evaluate('*placeholder-default-action*');
+      } catch {
+        raw = null;
+      }
+      return resolvePlaceholderAction(raw);
+    },
+    onOpen: () => {
+      const leaf = findLeaf();
+      if (leaf) fillPlaceholderViaOpen(leaf);
+    },
+    onClone: () => {
+      const leaf = findLeaf();
+      if (!leaf) return;
+      const cloned = cloneViewForPlaceholder(origin());
+      replacePlaceholder(leaf, cloned);
+    },
+    onNewFile: () => {
+      const leaf = findLeaf();
+      if (!leaf) return;
+      const scratch = createView({
+        kind: 'text',
+        buffer: createBuffer('', { name: '*scratch*' }),
+      });
+      replacePlaceholder(leaf, scratch);
+    },
+    onRunCommand: (text) => {
+      const leaf = findLeaf();
+      if (leaf) fillPlaceholderViaCommand(leaf, text);
+    },
+  };
+}
+
+/** The <placeholder-view> element for placeholder VIEW — created
+ *  (configured + mounted in PANE-EL) on first use, then reused. The
+ *  element is born in its pane and re-attached only if a relayout
+ *  detached it (defensive), mirroring `ensureBrowserElementForView`. */
+function ensurePlaceholderElementForView(view, paneEl) {
+  let el = placeholderElementByView.get(view);
+  if (el) {
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('placeholder-view'));
+  el.configure(configurePlaceholderView(view));
+  el.setBuffer(view);
+  if (paneEl) paneEl.append(el);
+  placeholderElementByView.set(view, el);
+  return el;
+}
+
+/** Show every placeholder element whose view is a leaf-direct active
+ *  view; hide the rest. Called from `hideInactiveSingletons`. */
+function hideInactivePlaceholders() {
+  const active = new Set();
+  for (const leaf of leafPanes(rootPane)) {
+    if (!isTablineView(leaf.view) && leaf.view && leaf.view.kind === 'placeholder') {
+      active.add(leaf.view);
+    }
+  }
+  for (const [view, el] of placeholderElementByView) {
+    el.style.display = active.has(view) ? '' : 'none';
+  }
+}
+
+/** Tear down the placeholder element bound to VIEW and drop it from the
+ *  element map. Called when the placeholder is replaced or its pane is
+ *  closed. */
+function disposePlaceholderElementForView(view) {
+  const el = placeholderElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ }
+  el.remove();
+  placeholderElementByView.delete(view);
+}
 
 // The directory columns-view — Finder-style horizontal browser.
 // Click a folder → spawns a column to its right; click a file →
@@ -5082,6 +5436,16 @@ function mountKindView(view, context) {
     el.focus();
     return;
   }
+  if (view.kind === 'placeholder') {
+    // Per-instance, like browser: mount THIS placeholder's own element
+    // in its pane and focus it so its accelerator keys are live.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = leaf ? paneElements.get(leaf.id) : null;
+    const el = ensurePlaceholderElementForView(view, paneEl);
+    el.style.display = '';
+    el.focus();
+    return;
+  }
   const el = singletonElementForKind(view.kind);
   if (el) {
     el.setBuffer(view);
@@ -5101,6 +5465,11 @@ function disposeKindView(view, context) {
   if (view.kind === 'browser') {
     // Per-instance: reap this view's own browser element + webview.
     disposeBrowserElementForView(view);
+    return;
+  }
+  if (view.kind === 'placeholder') {
+    // Per-instance: reap this placeholder's own element.
+    disposePlaceholderElementForView(view);
     return;
   }
   if (view.kind === 'shell') {
@@ -5347,6 +5716,12 @@ function perKindConfigureFactory(kind) {
     case 'video':             return configureVideoView;
     case 'pdf':               return configurePdfView;
     case 'browser':           return configureBrowserView;
+    // Placeholders are leaf-direct only (a split's new pane); the
+    // leaf-direct mount path (`ensurePlaceholderElementForView`) binds
+    // the per-view closures. A placeholder should never become a tabline
+    // tab, but if one ever does, give the strip a benign config whose
+    // actions resolve the leaf by the active view — no crash, no orphan.
+    case 'placeholder':       return () => configurePlaceholderView(null);
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'view-list':         return configureViewListView;

@@ -26,10 +26,13 @@
  *     "active": <int>, "tabs": [<view-blob>, ...] }
  *
  * Non-text leaf views (image, audio, video, shell, customize, doc,
- * directory-*) are ephemeral — they don't survive a relaunch. The
- * serialiser emits `null` for them; on restore the owning pane falls
- * back to `*scratch*` per the brief's "Non-text views stay ephemeral"
- * rule.
+ * directory-*, placeholder) are ephemeral — they don't survive a
+ * relaunch. The serialiser emits `null` for them; on restore the owning
+ * pane falls back to `*scratch*` per the brief's "Non-text views stay
+ * ephemeral" rule. (A `placeholder` is doubly transient — it is also
+ * spliced out of `views` the instant it is filled or its pane closes —
+ * so it never reaches a save in normal use; the explicit guard below
+ * keeps it out even if one is somehow live at save time.)
  *
  * Backwards compatibility. The reader recognises the older v1 shape
  *
@@ -135,6 +138,9 @@ export function isEphemeral(view) {
  */
 function serialiseView(view) {
   if (!view || typeof view !== 'object') return null;
+  // A placeholder is a transient chooser pane — never persisted (the
+  // owning leaf restores to `*scratch*`, matching the no-residue rule).
+  if (view.kind === 'placeholder') return null;
   if (view.kind === 'tabline' && Array.isArray(view.tabs)) {
     const tabs = view.tabs.map(serialiseView).filter((t) => t !== null);
     const rawActive = typeof view.active === 'number' ? view.active : 0;
