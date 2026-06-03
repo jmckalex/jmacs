@@ -25,6 +25,7 @@
 import { arrayToList, keyword, NIL } from '@editor/lisp';
 
 import { scanLatex } from './latex-scan.js';
+import { parseLatexLog } from './latex-log-parse.js';
 import { pathDirname, pathBasename, pathResolve } from './path-resolve.js';
 
 /**
@@ -110,6 +111,26 @@ export function createLatexPrimitives() {
     'latex-scan': (args) => {
       const text = typeof args[0] === 'string' ? args[0] : '';
       return scanToLisp(scanLatex(text));
+    },
+
+    // `(parse-latex-log TEXT)` — parse a pdflatex / latexmk log into a
+    // Lisp list of diagnostic hash-maps `{:file :line :message :kind}`
+    // (:kind is the keyword :error or :warning; :file and :line are nil
+    // when unknown). The compile/view loop walks this list to populate
+    // *TeX errors* and to jump on `C-c \``. The heavy lifting is in
+    // `latex-log-parse.js`; this marshals the plain-JS result into Lisp.
+    'parse-latex-log': (args) => {
+      const text = typeof args[0] === 'string' ? args[0] : '';
+      const diags = parseLatexLog(text);
+      const records = diags.map((d) =>
+        record({
+          file: orNil(d.file),
+          line: orNil(d.line),
+          message: d.message,
+          kind: keyword(d.kind),
+        })
+      );
+      return arrayToList(records);
     },
 
     // `(path-dirname PATH)` — the directory portion of PATH (no

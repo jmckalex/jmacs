@@ -76,3 +76,32 @@ test('path helpers return plain strings', () => {
   assert.equal(prims['path-basename'](['/a/b/c.tex']), 'c.tex');
   assert.equal(prims['path-resolve'](['/a/b', '../c.tex']), '/a/c.tex');
 });
+
+test('parse-latex-log returns keyword-keyed diagnostic records', () => {
+  const log = [
+    '(./paper.tex',
+    '! Undefined control sequence.',
+    'l.42 \\foo',
+    'LaTeX Warning: Citation `x\' undefined.',
+    ')',
+  ].join('\n');
+  const diags = listToArray(prims['parse-latex-log']([log]));
+  assert.equal(diags.length, 2);
+
+  const err = diags[0];
+  assert.ok(err instanceof Map);
+  assert.equal(slot(err, 'kind'), keyword('error'));
+  assert.equal(slot(err, 'line'), 42);
+  assert.equal(slot(err, 'file'), './paper.tex');
+  assert.equal(slot(err, 'message'), 'Undefined control sequence');
+
+  const warn = diags[1];
+  assert.equal(slot(warn, 'kind'), keyword('warning'));
+  assert.equal(slot(warn, 'line'), NIL); // no input-line tail
+  assert.match(slot(warn, 'message'), /Citation `x'/);
+});
+
+test('parse-latex-log on a clean log yields NIL (empty list)', () => {
+  assert.equal(prims['parse-latex-log'](['Output written on x.pdf.']), NIL);
+  assert.equal(prims['parse-latex-log']([42]), NIL);
+});
