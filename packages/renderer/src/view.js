@@ -26,6 +26,7 @@ import { highlightBuffer, highlightLine, languageForName } from './highlight.js'
 import { matchingBracket } from './brackets.js';
 import { createColourSwatches } from './colour-swatches.js';
 import { foldRanges, indexFoldRanges, hiddenLines } from './folding.js';
+import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
 
 /** Keys that are only modifiers — never a keystroke on their own. */
 const MODIFIER_KEYS = new Set([
@@ -120,6 +121,17 @@ export function createEditorView(buffer, container, options = {}) {
     typeof options.getTabWidth === 'function'
       ? options.getTabWidth
       : () => 4;
+
+  // Replaced-range widgets (math preview is the first consumer). A
+  // function returning the current list of `{ start, end, kind, el }`
+  // ranges, where `el()` returns the widget Node to mount. Read fresh
+  // on every render so the controller can swap widgets (re-typeset on
+  // edit) without rewiring. Defaults to none, so the existing
+  // text-only render path is untouched.
+  const getReplacedRanges =
+    typeof options.getReplacedRanges === 'function'
+      ? options.getReplacedRanges
+      : () => [];
 
   // The colour-swatch decorator: places a clickable swatch beside every
   // colour literal in a rendered line, and edits the buffer when a
@@ -241,14 +253,24 @@ export function createEditorView(buffer, container, options = {}) {
     return out;
   }
 
-  /** Fill a line element with its highlighted runs. */
+  /** Fill a line element with its highlighted runs. An item may be an
+   *  ordinary `{ text, face }` run or a `{ widget }` marker (an inline
+   *  replaced-range widget — a math SVG span); the widget's Node is
+   *  appended in place of the source characters it covers. */
   function renderRuns(lineEl, runs) {
-    if (runs.length === 1 && runs[0].face === null) {
+    if (runs.length === 1 && !runs[0].widget && runs[0].face === null) {
       lineEl.textContent = runs[0].text;
       return;
     }
     for (const run of runs) {
-      if (run.face === null) {
+      if (run.widget) {
+        // `run.widget` is the originating replaced-range (it carries
+        // both the widget `el` factory and the segment offsets). Mount
+        // an inline widget span; a falsy widget node degrades to
+        // nothing (the reveal path avoids that case).
+        const span = mountWidget(run.widget, false);
+        if (span) lineEl.append(span);
+      } else if (run.face === null) {
         lineEl.append(doc.createTextNode(run.text));
       } else {
         const span = el('span', `tok-${run.face}`);
@@ -256,6 +278,42 @@ export function createEditorView(buffer, container, options = {}) {
         lineEl.append(span);
       }
     }
+  }
+
+  /**
+   * Build the DOM element for a replaced-range widget (a typeset math
+   * span/row). Calls the range's `el()` factory for the widget Node,
+   * wraps it in a positioned span, and wires a click that reveals the
+   * segment by placing point just inside the opening delimiter — the
+   * click-to-segment mapping the spec asks for. Returns null when the
+   * factory yields no node (an invalid/empty segment renders as source
+   * instead, so it should never reach here, but degrade gracefully).
+   *
+   * @param {{ start: number, end: number, el?: () => Node }} range
+   * @param {boolean} block - Block (own row) vs inline.
+   * @returns {HTMLElement | null}
+   */
+  function mountWidget(range, block) {
+    const node = typeof range.el === 'function' ? range.el() : range.el;
+    if (!node) return null;
+    const span = el(
+      'span',
+      block ? 'math-widget math-block' : 'math-widget math-inline'
+    );
+    span.append(node);
+    // A mousedown on the widget reveals it: place point just inside the
+    // opening delimiter (start + 1, strictly inside per the exclusive
+    // rule) so the next render shows the source for editing. Stop the
+    // event so the editor's own mousedown (grid-based offset) doesn't
+    // also fire and land somewhere else.
+    span.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      root.focus();
+      const target = Math.min(range.start + 1, range.end - 1);
+      activeBuffer.moveTo(target);
+    });
+    return span;
   }
 
   // The whole-buffer tree-sitter highlight is cached, so a scroll-only
@@ -310,6 +368,36 @@ export function createEditorView(buffer, container, options = {}) {
       if (!foldCache.endByStart.has(start)) folded.delete(start);
     }
     const hidden = hiddenLines(folded, foldCache.endByStart);
+
+    // Replaced-range widget layout (math preview). Build the line-offset
+    // model the layout needs, gather the cursor offsets that drive the
+    // exclusive reveal rule, and compute which inline runs are replaced,
+    // which lines a block widget hides, and where each block widget sits.
+    // The block-hidden lines are *merged into the fold-hidden set below*
+    // so the single display-row / cursor / scroll accounting stays the
+    // one source of truth — no parallel line-hiding bookkeeping.
+    const lineStarts = new Array(lineCount);
+    const lineLengths = new Array(lineCount);
+    {
+      let off = 0;
+      for (let i = 0; i < lineCount; i += 1) {
+        lineStarts[i] = off;
+        lineLengths[i] = lines[i].content.length;
+        off += lines[i].content.length + 1;
+      }
+    }
+    const replacedRanges = getReplacedRanges() || [];
+    const cursorPoints = getCursors().map((c) => c.point);
+    const mathLayout = computeMathLayout({
+      ranges: replacedRanges,
+      lineStarts,
+      lineLengths,
+      points: cursorPoints,
+    });
+    // Merge the block-widget-hidden lines into the fold-hidden set
+    // before display rows are assigned.
+    for (const line of mathLayout.hiddenByBlock) hidden.add(line);
+
     displayRowForLine = new Int32Array(lineCount);
     let row = 0;
     for (let i = 0; i < lineCount; i += 1) {
@@ -386,10 +474,41 @@ export function createEditorView(buffer, container, options = {}) {
       if (displayRow !== -1 && displayRow >= firstRow && displayRow < lastRow) {
         const lineEl = el('div', 'editor-line');
         lineEl.style.top = `calc(${displayRow} * 1lh)`;
-        const runs = perLine
+        let runs = perLine
           ? perLine[index] ?? []
           : highlightLine(lines[index].content, language);
-        renderRuns(lineEl, runs);
+        // Splice in any inline math widgets that fall on this line,
+        // replacing the source characters they cover. Block widgets are
+        // emitted as a separate row below (the source lines they span
+        // are already hidden).
+        const inlinePlacements = mathLayout.inlineByLine.get(index);
+        if (inlinePlacements && inlinePlacements.length > 0) {
+          runs = spliceInlineWidgets(runs, inlinePlacements);
+        }
+        const blockPlacement = mathLayout.blockByStartLine.get(index);
+        if (blockPlacement) {
+          // The start line holds the block's opening delimiter. Show only
+          // the source *before* the delimiter (any prefix text on that
+          // line), then the widget — so the raw `$$` / `\[` isn't drawn.
+          // The body lines below are already hidden (`hiddenByBlock`).
+          if (blockPlacement.startColumn > 0) {
+            runs = spliceInlineWidgets(runs, [
+              {
+                fromColumn: blockPlacement.startColumn,
+                toColumn: Number.MAX_SAFE_INTEGER,
+                range: { el: null, start: 0, end: 0 },
+              },
+            ]).filter((r) => !r.widget); // drop the placeholder marker
+          } else {
+            runs = [];
+          }
+          renderRuns(lineEl, runs);
+          const widget = mountWidget(blockPlacement.range, true);
+          if (widget) lineEl.append(widget);
+          lineEl.classList.add('has-block-math');
+        } else {
+          renderRuns(lineEl, runs);
+        }
         // Folded header: tack a `…` glyph plus the closing line's
         // SYNTAX-HIGHLIGHTED text on the end so the user sees both
         // ends of the collapsed structure at a glance with proper

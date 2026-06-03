@@ -539,6 +539,41 @@ text-view {
   margin-left: 0.2ch;
 }
 
+/* --- LaTeX math preview widgets ---------------------------------------
+   A replaced-range widget: typeset MathJax SVG shown in place of the
+   source. Inline widgets sit in the text line; block widgets are their
+   own row at the equation's start line (the body source lines are
+   hidden, folding-style). Clicking either reveals the source for
+   editing (point lands just inside the opening delimiter). */
+.math-widget {
+  cursor: pointer;
+}
+.math-widget.math-inline {
+  display: inline-block;
+  vertical-align: middle;
+  /* The SVG carries its own height; keep it from inflating the line. */
+  line-height: 0;
+}
+.math-widget.math-block {
+  display: block;
+  /* Centre display math, like a typeset \[ … \]. */
+  text-align: center;
+  margin: 0.2lh 0;
+}
+.math-widget mjx-container {
+  /* MathJax sizes the SVG itself; never let it spill the editor width. */
+  max-width: 100%;
+}
+
+/* Empty or invalid math (empty body, or MathJax parse error): the
+   source is rendered (not a broken widget) with a spell-check-style red
+   wavy underline so the user can see and fix it. */
+.tok-math-invalid,
+.math-invalid {
+  text-decoration: underline wavy var(--tok-error, #e06c75);
+  text-decoration-skip-ink: none;
+}
+
 .editor-content {
   position: relative;
   flex: 1 1 auto;
