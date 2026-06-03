@@ -102,47 +102,44 @@ test('nextTypeFilter resets to null for an unknown current type', () => {
 });
 
 // --- mapReftexKey: the pure key→action mapping the overlay routes through.
+// IMPORTANT: the keys here are exactly what the editor's `keyEventToString`
+// emits — named keys NORMALISED to lowercase (enter/up/down/space/escape/
+// backspace), not the raw browser names. (Asserting 'Enter'/'ArrowUp' was a
+// bug that let the tests pass while Enter and the arrows did nothing live.)
 
 test('mapReftexKey: n/down move forward, p/up move back', () => {
   assert.deepEqual(mapReftexKey('n'), { type: 'move', delta: 1 });
-  assert.deepEqual(mapReftexKey('Down'), { type: 'move', delta: 1 });
-  assert.deepEqual(mapReftexKey('ArrowDown'), { type: 'move', delta: 1 });
+  assert.deepEqual(mapReftexKey('down'), { type: 'move', delta: 1 });
   assert.deepEqual(mapReftexKey('p'), { type: 'move', delta: -1 });
-  assert.deepEqual(mapReftexKey('Up'), { type: 'move', delta: -1 });
-  assert.deepEqual(mapReftexKey('ArrowUp'), { type: 'move', delta: -1 });
+  assert.deepEqual(mapReftexKey('up'), { type: 'move', delta: -1 });
 });
 
-test('mapReftexKey: RET/Enter select; SPC/Space peek', () => {
-  assert.deepEqual(mapReftexKey('RET'), { type: 'select' });
-  assert.deepEqual(mapReftexKey('Enter'), { type: 'select' });
-  assert.deepEqual(mapReftexKey('SPC'), { type: 'peek' });
-  assert.deepEqual(mapReftexKey(' '), { type: 'peek' });
-  assert.deepEqual(mapReftexKey('Space'), { type: 'peek' });
+test('mapReftexKey: enter selects; space peeks', () => {
+  assert.deepEqual(mapReftexKey('enter'), { type: 'select' });
+  assert.deepEqual(mapReftexKey('space'), { type: 'peek' });
 });
 
-test('mapReftexKey: t cycles type; q/Escape cancel', () => {
+test('mapReftexKey: t cycles type; q/escape cancel', () => {
   assert.deepEqual(mapReftexKey('t'), { type: 'cycle-type' });
   assert.deepEqual(mapReftexKey('q'), { type: 'cancel' });
-  assert.deepEqual(mapReftexKey('Escape'), { type: 'cancel' });
-  assert.deepEqual(mapReftexKey('Esc'), { type: 'cancel' });
+  assert.deepEqual(mapReftexKey('escape'), { type: 'cancel' });
 });
 
-test('mapReftexKey: Backspace/Delete edit the filter', () => {
-  assert.deepEqual(mapReftexKey('Backspace'), { type: 'backspace' });
-  assert.deepEqual(mapReftexKey('Delete'), { type: 'backspace' });
-  assert.deepEqual(mapReftexKey('DEL'), { type: 'backspace' });
+test('mapReftexKey: backspace/delete edit the filter', () => {
+  assert.deepEqual(mapReftexKey('backspace'), { type: 'backspace' });
+  assert.deepEqual(mapReftexKey('delete'), { type: 'backspace' });
 });
 
 test('mapReftexKey: a printable single char extends the substring filter', () => {
   assert.deepEqual(mapReftexKey('a'), { type: 'filter', char: 'a' });
   assert.deepEqual(mapReftexKey('Z'), { type: 'filter', char: 'Z' });
   assert.deepEqual(mapReftexKey(':'), { type: 'filter', char: ':' });
-  // The single space is peek, not a filter char (matches RefTeX SPC).
-  assert.deepEqual(mapReftexKey(' '), { type: 'peek' });
+  // 'space' is peek, not a filter char (named keys never fall through).
+  assert.deepEqual(mapReftexKey('space'), { type: 'peek' });
 });
 
-test('mapReftexKey: a multi-char non-action key is not a picker key', () => {
-  assert.equal(mapReftexKey('Tab'), null);
-  assert.equal(mapReftexKey('Home'), null);
-  assert.equal(mapReftexKey('PageDown'), null);
+test('mapReftexKey: a multi-char non-action key is ignored', () => {
+  assert.equal(mapReftexKey('tab'), null);
+  assert.equal(mapReftexKey('home'), null);
+  assert.equal(mapReftexKey('left'), null);
 });

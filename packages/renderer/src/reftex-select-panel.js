@@ -139,23 +139,28 @@ export function nextTypeFilter(current, types) {
 }
 
 /**
- * Map a key string (as produced by `keyEventToString`, e.g. "n", "RET",
- * "SPC", "Backspace", "a") to the picker action it triggers — PURE, so
- * the overlay's key routing is unit-testable without a DOM.
+ * Map a key string to the picker action it triggers — PURE, so the
+ * overlay's key routing is unit-testable without a DOM.
+ *
+ * The key string MUST be exactly what the editor's `keyEventToString`
+ * (packages/renderer/src/keymap.js) produces: named keys are NORMALISED to
+ * lowercase — Enter→`enter`, ArrowUp→`up`, ArrowDown→`down`, space→`space`,
+ * Escape→`escape`, Backspace→`backspace`, Delete→`delete` — and a printable
+ * is its character. (Matching the raw browser names `Enter`/`ArrowUp`/`' '`
+ * was the bug: those never arrive, so only n/p/t/q worked.)
  *
  * Returns one of:
- *   { type: 'move', delta: ±1 }     n/p/down/up
- *   { type: 'select' }              RET / Enter
- *   { type: 'peek' }                SPC / Space
+ *   { type: 'move', delta: ±1 }     n / down,  p / up
+ *   { type: 'select' }              enter
+ *   { type: 'peek' }                space
  *   { type: 'cycle-type' }          t
- *   { type: 'cancel' }              q / Escape
- *   { type: 'backspace' }           Backspace / Delete
+ *   { type: 'cancel' }              q / escape
+ *   { type: 'backspace' }           backspace / delete
  *   { type: 'filter', char }        a single printable character
  *   null                            not a picker key (ignore)
  *
  * Modifier-bearing chords (C-x, M-…) are NOT mapped here — the caller
- * decides whether to swallow or forward them; this mapping is for the
- * picker's own single-key vocabulary.
+ * decides whether to swallow or forward them.
  *
  * @param {string} key
  * @returns {{type: string, delta?: number, char?: string}|null}
@@ -163,29 +168,22 @@ export function nextTypeFilter(current, types) {
 export function mapReftexKey(key) {
   switch (key) {
     case 'n':
-    case 'Down':
-    case 'ArrowDown':
+    case 'down':
       return { type: 'move', delta: 1 };
     case 'p':
-    case 'Up':
-    case 'ArrowUp':
+    case 'up':
       return { type: 'move', delta: -1 };
-    case 'RET':
-    case 'Enter':
+    case 'enter':
       return { type: 'select' };
-    case 'SPC':
-    case ' ':
-    case 'Space':
+    case 'space':
       return { type: 'peek' };
     case 't':
       return { type: 'cycle-type' };
     case 'q':
-    case 'Escape':
-    case 'Esc':
+    case 'escape':
       return { type: 'cancel' };
-    case 'Backspace':
-    case 'Delete':
-    case 'DEL':
+    case 'backspace':
+    case 'delete':
       return { type: 'backspace' };
     default:
       // A single printable character extends the substring filter.
@@ -255,7 +253,7 @@ export function createReftexSelectPanel(options = {}) {
   const hint = doc.createElement('div');
   hint.className = 'reftex-select-hint';
   hint.textContent =
-    'n/p move · RET insert · SPC peek · t type · type to filter · q quit';
+    'n/p or ↑↓ move · Enter select · Space peek · t type · q quit';
   root.append(hint);
 
   /** Re-read candidates, apply the filters, and repaint the grouped
