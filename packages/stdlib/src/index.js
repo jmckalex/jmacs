@@ -15,6 +15,9 @@
 export { createBufferPrimitives } from './buffer-primitives.js';
 export { createViewPrimitives } from './view-primitives.js';
 export { createPanePrimitives } from './pane-primitives.js';
+export { createLatexPrimitives } from './latex-primitives.js';
+export { scanLatex } from './latex-scan.js';
+export { pathDirname, pathBasename, pathResolve, normalizePath } from './path-resolve.js';
 
 /**
  * The standard-library Lisp files, in load order. The command files
@@ -67,6 +70,9 @@ export const STDLIB_FILES = Object.freeze([
   'math-preview.lisp',
   'markdown.lisp',
   'latex.lisp',
+  // latex-compile.lisp extends latex.lisp's `latex-c-c-map`, so it must
+  // load after it (the AUCTeX Phase-1 compile/view loop).
+  'latex-compile.lisp',
   'makefile.lisp',
   'view-menu.lisp',
   'sticky-notes.lisp',
@@ -87,6 +93,41 @@ export const STDLIB_FILES = Object.freeze([
   // etc. (renderer-side citation.js bundle). Defcustoms registered
   // after `custom.lisp`'s load.
   'cite.lisp',
+  // RefTeX R1 — the multi-file document model + label/section/cite DB.
+  // Loads after latex-compile.lisp (it redefines that file's
+  // `latex-master-file` seam) and after cite.lisp (it reads
+  // `*citation-bib-path*` and uses the citation bridge for cite keys).
+  'reftex.lisp',
+  // RefTeX R2 — labels & references (reftex-label, reftex-reference).
+  // Loads after reftex.lisp (it queries the R1 DB and reuses its
+  // `*reftex-env-types*` / type-inference helpers) and extends the
+  // `latex-c-c-map` further with the `(` and `)` slots.
+  'reftex-refs.lisp',
+  // AUCTeX Phase 2 — smart insertion (environment / macro / section /
+  // font). Loads after reftex-refs.lisp: it extends `latex-c-c-map`
+  // further (C-c C-e/]/C-m/C-s/C-f), redefines `minibuffer-tab-complete`
+  // once more to add a third completion source (delegating to RefTeX's
+  // dispatcher, then find-file), and softly reuses RefTeX's
+  // `*reftex-label-prefixes*` for figure/table/section label keys.
+  'latex-insert.lisp',
+  // AUCTeX Phase 3 — LaTeX-math-mode (math symbol abbreviations). Loads
+  // after latex-insert.lisp: it reuses that file's shared completion
+  // dispatch (`*latex-insert-candidates*` / `*latex-insert-tab-complete*`)
+  // for the unknown-key completion fallback and extends `latex-c-c-map`
+  // with the C-c ~ toggle slot.
+  'latex-math.lisp',
+  // AUCTeX Phase 5 — navigation & niceties (section next/prev, \begin <->
+  // \end matching jump, M-RET insert-\item, smart quotes). Loads after
+  // latex-math.lisp: it reuses latex-insert.lisp's `-latex-innermost-open-env`
+  // for list detection, extends `latex-c-c-map` (C-c C-n/C-r/%), and adds
+  // two top-level keys (M-RET, ") to latex-mode-map.
+  'latex-nav.lisp',
+  // The structured (grouped) LaTeX mode menu. Loads LAST among the
+  // LaTeX/RefTeX files: it names every latex-* / reftex-* command in its
+  // sections, so all those symbols must already exist. Uses the generic
+  // `register-mode-menu!` from menus.lisp; purely additive (the flat
+  // `mode-menu-entries` and every other mode's menu are unaffected).
+  'latex-menu.lisp',
 ]);
 
 /**

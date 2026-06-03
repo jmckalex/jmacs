@@ -52,3 +52,62 @@
                        (append entries (-flatten-keymap keymap ""))))
                  (list)
                  keymaps))))
+
+;; --- structured (nested) mode menus -----------------------------------
+;;
+;; `mode-menu-entries` above is the flat auto-menu: every bound command,
+;; in keymap order. It is unchanged and remains what every mode gets by
+;; default. A mode may *additionally* register a structured menu — a list
+;; of named sections — so the host can show grouped submenus instead of
+;; one long list. This is purely additive: a mode with no registration
+;; has empty `mode-menu-sections` and the host keeps the flat path.
+;;
+;; A registration is keyed by the mode's display name (the same string
+;; `major-mode-name` returns, e.g. "LaTeX"). Each section is
+;;   (section-label (friendly-label . command-symbol) …)
+;; The host resolves keys / docstrings per command from the flat
+;; `mode-menu-entries` data, so a section need only name commands.
+
+;; Registry: display-name → list of sections. A plain map so a later
+;; registration for a mode overrides an earlier one.
+(define *mode-menu-sections* {})
+
+(define (register-mode-menu! mode-name sections)
+  "Register SECTIONS as the structured menu for the major mode whose
+   display name is MODE-NAME (the string `major-mode-name` returns).
+   SECTIONS is a list of sections, each
+     (section-label (friendly-label . command-symbol) …)
+   This is additive: it does not affect `mode-menu-entries`, only the
+   grouped menu the host builds when a registration is present. A later
+   call for the same MODE-NAME replaces the earlier registration."
+  (set! *mode-menu-sections*
+        (assoc *mode-menu-sections* mode-name sections))
+  sections)
+
+(define (mode-menu-sections)
+  "The registered structured menu (list of sections) for the current
+   buffer's major mode, or nil when none is registered. Each section is
+   (section-label (friendly-label . command-symbol) …). The host uses
+   this — when non-nil — to build grouped submenus; otherwise it falls
+   back to the flat `mode-menu-entries`."
+  (get *mode-menu-sections* (major-mode-name) nil))
+
+(define (mode-menu-sections-resolved)
+  "The current mode's structured menu in a host-friendly, all-strings
+   shape: a list of sections, each
+     (section-label (friendly-label command-name) …)
+   where command-name is the command symbol rendered as a string. This
+   is `mode-menu-sections` with the dotted (friendly . symbol) leaves
+   normalised to proper two-element lists, so the host can consume it
+   with `listToArray` alone (no dotted-pair handling). Empty list — not
+   nil — when the mode has no registration, so the host can test length."
+  (let ((sections (mode-menu-sections)))
+    (if (nil? sections)
+        (list)
+        (map (lambda (section)
+               (cons (car section)
+                     (map (lambda (leaf)
+                            (list (car leaf)
+                                  (symbol->string (cdr leaf))))
+                          (cdr section))))
+             sections))))

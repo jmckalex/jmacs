@@ -69,6 +69,7 @@ import {
   GnuplotView,
   NotebookView,
   ViewListView,
+  createReftexSelectPanel,
   PlaceholderView,
   cloneTargetForKind,
   isPlaceholderView,
@@ -90,6 +91,7 @@ import {
   formatBibliography,
   formatCitation,
   citationKeys,
+  citationEntries,
   createMathPreview,
   mathPreviewProviderForMode,
   TextView,
@@ -97,9 +99,11 @@ import {
 } from '@editor/renderer';
 import {
   createBufferPrimitives,
+  createLatexPrimitives,
   createPanePrimitives,
   createViewPrimitives,
   loadStdlib,
+  pathDirname,
 } from '@editor/stdlib';
 import { createAudioController } from './audio.js';
 import {
@@ -112,6 +116,7 @@ import {
   isMathPreviewActive,
   bufferMajorModeName,
 } from './math-preview-host.js';
+import { buildModeMenuItems } from './mode-menu-build.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
@@ -517,6 +522,13 @@ let addPaneHandle = null;
  *  `addPaneHandle`. */
 let moveViewHandle = null;
 
+/** Live handle for the *RefTeX Select* right-edge overlay, or `null` when
+ *  closed. Modelled on `move-view-mode.js`: a drawer over `#editor-host`
+ *  with a window-capture key handler, so SPC-peek can drive the editor
+ *  pane *underneath* while the panel keeps control. See
+ *  `openReftexSelectOverlay`. */
+let reftexSelectHandle = null;
+
 /** Recompute the layout of every leaf pane against the current editor-
  *  host bounds and write each leaf's rect to its element. Cheap to call
  *  repeatedly — the rounded rects mean a no-op write when the size
@@ -921,28 +933,32 @@ function fillPlaceholderViaCommand(leaf, text) {
   if (leaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
 }
 
-/** Common implementation of split-horizontal! / split-vertical!.
- *  Replaces TARGET (a leaf) with a split node; a freshly-created leaf
- *  is its sibling, holding a *placeholder* chooser. With SIDE =
- *  `'after'` (default) the new leaf is the *second* child (right of /
- *  below the original); with SIDE = `'before'` it is the *first* child
- *  (left of / above the original). The originating leaf's id is
- *  preserved across the replacement so its editor-view bindings don't
- *  churn.
+/** Split TARGET (a leaf) and put a GIVEN view into the new sibling
+ *  leaf — the programmatic counterpart to the placeholder-showing
+ *  `splitPaneAtLeaf`. TARGET is replaced with a split node; a freshly-
+ *  created leaf holding VIEW is its sibling. With SIDE = `'after'`
+ *  (default) the new leaf is the *second* child (right of / below the
+ *  original); with SIDE = `'before'` it is the *first* child (left of /
+ *  above the original). The originating leaf's id is preserved across
+ *  the replacement so its editor-view bindings don't churn.
  *
- *  Focus MOVES to the new placeholder pane (a deliberate change from
- *  the old "originating pane keeps focus" contract — the user is now
- *  asked what the new pane should hold, so the keyboard belongs there).
- *  Returns `{ first, second }`. */
-function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
+ *  VIEW must already be a real view (in `views`); this function does NOT
+ *  push it — the caller (e.g. `splitAndOpenFile`, or `splitPaneAtLeaf`
+ *  with a freshly-built placeholder) owns that. There is no placeholder
+ *  and no chooser: the new pane is filled directly, leaving no orphaned-
+ *  view residue.
+ *
+ *  Focus MOVES to the new pane and its element is mounted + focused so
+ *  its accelerator keys are live. Returns `{ first, second }`. */
+function splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, view) {
   if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
   if (
     orientation !== SPLIT_HORIZONTAL &&
     orientation !== SPLIT_VERTICAL
   ) return null;
   if (side !== 'after' && side !== 'before') return null;
-  const placeholder = buildPlaceholderForSplit(targetLeaf.view);
-  const newLeaf = createLeafPane({ view: placeholder });
+  if (!view) return null;
+  const newLeaf = createLeafPane({ view });
   // Ratio interpretation: it always describes the *first* child's
   // share. With SIDE='before' the new leaf is first, so the supplied
   // ratio applies to it directly. With SIDE='after' the originating
@@ -957,16 +973,102 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
   });
   rootPane = replacePane(rootPane, targetLeaf, split);
   syncPaneElements();
-  // Focus moves to the new placeholder pane and its element is mounted +
-  // focused so its accelerator keys are live. setCurrentPaneId syncs
-  // currentViewIndex to the placeholder; mountKindView builds the element.
+  // For a leaf-direct text view, ensure its editor instance exists
+  // before mounting (the placeholder path skips this — placeholders are
+  // never text).
+  if (view.kind === 'text') ensureEditorViewForLeaf(newLeaf);
+  // Focus moves to the new pane and its element is mounted + focused so
+  // its accelerator keys are live. setCurrentPaneId syncs
+  // currentViewIndex to VIEW; mountKindView builds the element.
   setCurrentPaneId(newLeaf.id);
-  hideInactiveRendererViews(placeholder.kind);
-  mountKindView(placeholder);
+  hideInactiveRendererViews(view.kind);
+  mountKindView(view);
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
   return { first, second };
+}
+
+/** Common implementation of split-horizontal! / split-vertical!.
+ *  Replaces TARGET (a leaf) with a split node; a freshly-created leaf
+ *  is its sibling, holding a *placeholder* chooser. With SIDE =
+ *  `'after'` (default) the new leaf is the *second* child (right of /
+ *  below the original); with SIDE = `'before'` it is the *first* child
+ *  (left of / above the original). The originating leaf's id is
+ *  preserved across the replacement so its editor-view bindings don't
+ *  churn.
+ *
+ *  Focus MOVES to the new placeholder pane (a deliberate change from
+ *  the old "originating pane keeps focus" contract — the user is now
+ *  asked what the new pane should hold, so the keyboard belongs there).
+ *  Returns `{ first, second }`.
+ *
+ *  This is the user-facing split (the keyboard `split-*!` primitives and
+ *  the paneHost split methods route through it). The programmatic
+ *  fill-a-pane-directly variant is `splitPaneAtLeafWith`. */
+function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
+  if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
+  if (
+    orientation !== SPLIT_HORIZONTAL &&
+    orientation !== SPLIT_VERTICAL
+  ) return null;
+  if (side !== 'after' && side !== 'before') return null;
+  const placeholder = buildPlaceholderForSplit(targetLeaf.view);
+  return splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, placeholder);
+}
+
+/** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
+ *  Keyword both carry a `.name`), with any leading `:` stripped, or null
+ *  when ARG isn't symbol-like. Mirrors pane-primitives' `sideFromArg` /
+ *  `coerceEdge` coercion so `open-file-in-split!` reads its
+ *  orientation/side args the same way the split primitives read theirs. */
+function symbolNameOf(arg) {
+  let name = null;
+  if (typeof arg === 'string') name = arg;
+  else if (arg && typeof arg === 'object' && typeof arg.name === 'string') {
+    name = arg.name;
+  }
+  if (name === null) return null;
+  return name.startsWith(':') ? name.slice(1) : name;
+}
+
+/** Programmatically split the focused pane and open FILEPATH directly in
+ *  the new sibling pane — no placeholder, no chooser. The split runs at
+ *  an even 0.5 ratio; ORIENTATION is `SPLIT_HORIZONTAL` / `SPLIT_VERTICAL`
+ *  and SIDE is `'after'` (default) / `'before'`. When PERSIST is true the
+ *  opened view is flagged session-persistent (the latex-output PDF case);
+ *  this is applied atomically with the open so a Lisp caller needn't race
+ *  the async open to find the handle. Focus moves to the new pane
+ *  (consistent with `splitPaneAtLeaf`). Returns the opened view, or null
+ *  on failure (unreadable path, no focused leaf, unrecognised
+ *  orientation). This is the programmatic counterpart to the user-facing
+ *  `split-*!` primitives — callers that want a pane filled straight away
+ *  (latex-view's source|PDF) use this instead of split-then-open, which
+ *  would strand a placeholder. */
+async function splitAndOpenFile(filePath, orientation, side = 'after', persist = false) {
+  const target = currentPane();
+  if (!target || target.kind !== 'leaf') return null;
+  // Split with a placeholder; splitPaneAtLeaf moves focus to the new pane.
+  // Then open FILEPATH into that focused pane through the *normal* open
+  // path — switchToViewIndex replaces the placeholder with the file's view,
+  // the proven `fillPlaceholderViaOpen` mechanism the `o` action uses. (A
+  // bespoke mount via splitPaneAtLeafWith mis-rendered PDFs and didn't
+  // honour {switch:false}, switching the source pane to the PDF instead.)
+  const split = splitPaneAtLeaf(target, orientation, 0.5, side);
+  if (!split) return null;
+  const newLeaf = side === 'before' ? split.first : split.second;
+  const placeholder = newLeaf.view;
+  // forceDuplicate: a fresh View even if the file is already open elsewhere
+  // (Q9). The open lands in the focused (new) leaf, replacing its placeholder.
+  await openFileByPath(filePath, { forceDuplicate: true });
+  // Splice the orphaned placeholder out of `views` — no residue.
+  if (newLeaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
+  const view = newLeaf.view;
+  if (view && persist === true && view.kind === 'pdf') {
+    view.persist = true;
+    sessionController.save();
+  }
+  return view;
 }
 
 /** Insert a fresh leaf "in the gap" of the split node with id SPLIT_ID.
@@ -1977,6 +2079,19 @@ async function openFileInteractive() {
   }
 }
 
+/** Whether a freshly-opened PDF should be session-persistent by default,
+ *  read from the `*pdf-restore-default*` defcustom. Defaults to false
+ *  (generic / texdoc PDFs are transient) when the var is unset or the
+ *  read fails — so a missing/broken setting never makes a transient doc
+ *  sticky. */
+function pdfRestoreDefault() {
+  try {
+    return interpreter.evaluate('*pdf-restore-default*') === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Route an open-file IPC result to its matching non-text view, when
  *  the shape calls for one. Returns whether a view was mounted — the
  *  caller falls through to the text path on `false`. */
@@ -2024,10 +2139,14 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
   // it with Range support, same as audio/video). PDF.js inside
   // <pdf-view> fetches the URL and renders each page to a canvas.
   if (result.pdfKind === true) {
+    // A freshly-opened PDF is ephemeral by default (a transient
+    // texdoc/consult doc); `*pdf-restore-default*` lets the user make
+    // every PDF persist instead. latex-view marks its own output PDF
+    // persistent regardless (via `*latex-pdf-restore*`).
     views.push(createView({
       kind: 'pdf',
       name: result.name,
-      extras: { filePath: result.path, src: result.src },
+      extras: { filePath: result.path, src: result.src, persist: pdfRestoreDefault() },
     }));
     return finalise();
   }
@@ -2900,12 +3019,25 @@ const viewHost = {
   },
 };
 
+// --- general process runner (run-process!) -----------------------------
+//
+// Each `(run-process! …)` call gets a monotonic runId (a counter, not a
+// timestamp/random — deterministic and collision-free for the session).
+// The on-exit Lisp procedure is parked in `runProcessCallbacks` keyed by
+// that id; the single `onRunProcessExit` listener (wired once, below)
+// looks it up when the host reports the exit, builds the result hash-map,
+// and applies the procedure exactly once.
+let nextRunId = 0;
+/** @type {Map<string, *>} runId → the parked on-exit Lisp procedure. */
+const runProcessCallbacks = new Map();
+
 const interpreter = createInterpreter({
   write: (text) => repl.appendOutput(text),
   primitives: {
     ...createBufferPrimitives(session),
     ...createViewPrimitives(viewHost),
     ...createPanePrimitives(paneHost),
+    ...createLatexPrimitives(),
 
     // File commands run async work and return at once.
     'open-file!': () => {
@@ -3102,6 +3234,123 @@ const interpreter = createInterpreter({
         throw new LispError(`citation-keys: ${error.message ?? error}`);
       }
     },
+    // `(citation-entries HANDLE)` — a best-effort projection of each
+    // entry in HANDLE into a picker-friendly hash-map
+    // `{:key :author :year :title}`. `author` is the first author's
+    // family (or a "given family" join, or an institutional literal);
+    // `year` is the issued year as an integer; missing fields are nil.
+    // This drives a citation picker (downstream of this branch).
+    'citation-entries': (args) => {
+      const handle = String(args[0] ?? '');
+      if (handle === '') return NIL;
+      try {
+        const entries = citationEntries(handle);
+        const records = entries.map((e) => {
+          const map = new Map();
+          map.set(keyword('key'), e.key ?? '');
+          map.set(keyword('author'), e.author == null ? NIL : e.author);
+          map.set(keyword('year'), e.year == null ? NIL : e.year);
+          map.set(keyword('title'), e.title == null ? NIL : e.title);
+          return map;
+        });
+        return arrayToList(records);
+      } catch (error) {
+        throw new LispError(`citation-entries: ${error.message ?? error}`);
+      }
+    },
+
+    // --- LaTeX / RefTeX host primitives --------------------------------
+    // (The pure scanning + path helpers are provided by
+    // createLatexPrimitives, spread in above. These need app.js scope:
+    // the filesystem, the view list, the process runner, the pdf
+    // singleton.)
+
+    // `(file-exists? PATH)` — #t when PATH (tilde-expanded host-side)
+    // names an existing file or directory, #f otherwise. Synchronous,
+    // mirroring `read-file-text!`. RefTeX uses it to skip \input chains
+    // whose targets are absent.
+    'file-exists?': (args) => {
+      const path = String(args[0] ?? '');
+      if (path === '') return false;
+      return window.host.fileExistsSync(path) === true;
+    },
+
+    // `(view-file-path VIEW)` — the filesystem path associated with
+    // VIEW (its buffer's file, or a non-text view's own path), or nil.
+    // Thin wrapper over the `viewFilePath` derivation helper.
+    'view-file-path': (args) => {
+      const path = viewFilePath(args[0]);
+      return typeof path === 'string' ? path : NIL;
+    },
+
+    // `(set-view-persistent! VIEW BOOL)` — set whether the session
+    // restores VIEW across a relaunch. Most non-text views are ephemeral;
+    // this opts a specific one (e.g. a latexed-output PDF) back in. BOOL
+    // is Lisp-truthy (anything but #f turns it on). Returns BOOL.
+    'set-view-persistent!': (args) => {
+      const view = args[0];
+      const on = args[1] !== false;
+      if (view && typeof view === 'object' && 'kind' in view) {
+        view.persist = on;
+        sessionController.save();
+      }
+      return on;
+    },
+    // `(view-persistent? VIEW)` — #t when VIEW is flagged to survive a
+    // relaunch, #f otherwise (the default for most non-text views).
+    'view-persistent?': (args) => {
+      const view = args[0];
+      return !!(view && typeof view === 'object' && view.persist === true);
+    },
+
+    // `(view-directory VIEW)` — the directory containing VIEW's file,
+    // or nil when VIEW has no path. The compile/view loop runs the
+    // LaTeX toolchain in this directory.
+    'view-directory': (args) => {
+      const path = viewFilePath(args[0]);
+      return typeof path === 'string' ? pathDirname(path) : NIL;
+    },
+
+    // `(run-process! PROGRAM ARGS CWD ON-EXIT)` — spawn PROGRAM (a
+    // string) with ARGS (a Lisp list of strings) in CWD (a directory
+    // string, or nil for the default). ON-EXIT is a Lisp procedure
+    // called once, with one argument: a hash-map
+    // `{:stdout STR :stderr STR :code INT-OR-NIL}` (code nil when the
+    // process was killed by a signal or failed to spawn). The host
+    // spawns with NO shell interpretation. Returns the runId string.
+    'run-process!': (args) => {
+      const program = String(args[0] ?? '');
+      if (program === '') return NIL;
+      const argList = args[1] != null && args[1] !== NIL
+        ? listToArray(args[1]).map((a) => String(a))
+        : [];
+      const cwd = args[2] != null && args[2] !== NIL ? String(args[2]) : undefined;
+      const onExit = args[3];
+
+      const runId = `run-${nextRunId++}`;
+      if (onExit != null && onExit !== NIL) {
+        runProcessCallbacks.set(runId, onExit);
+      }
+      window.host.runProcess(runId, program, argList, cwd ? { cwd } : {});
+      return runId;
+    },
+
+    // `(pdf-reload! [PATH])` — reload the PDF view after a recompile.
+    // A recompile produces the SAME path with NEW bytes, which the
+    // pdf-view's same-path load guard would skip; `.reload()` bypasses
+    // it. With no PATH, reloads the singleton's current PDF; with a
+    // PATH, only reloads when the singleton is showing that file. A
+    // no-op (returns nil) when no PDF is open.
+    'pdf-reload!': (args) => {
+      const current = pdfView.buffer;
+      if (!current) return NIL;
+      const wanted = args[0] != null && args[0] !== NIL
+        ? String(args[0]) : null;
+      if (wanted !== null && viewFilePath(current) !== wanted) return NIL;
+      if (typeof pdfView.reload === 'function') pdfView.reload();
+      return NIL;
+    },
+
     // The current user's home directory — find-file uses it as the
     // starting point for its TAB-completion path. An empty string is
     // returned when the host does not know the home (unlikely).
@@ -3125,6 +3374,57 @@ const interpreter = createInterpreter({
       openFileByPath(filePath);
       return NIL;
     },
+    // `(open-file-in-split! PATH [ORIENTATION [SIDE [PERSIST]]])` — the
+    // programmatic counterpart to the placeholder-showing `split-*!`
+    // primitives: split the focused pane and open PATH directly in the
+    // new sibling pane, with no chooser/placeholder and no orphaned-view
+    // residue (the source|PDF layout latex-view wants). ORIENTATION is a
+    // symbol/keyword `horizontal` (default) / `vertical`; SIDE is `after`
+    // (default) / `before`. PERSIST (Lisp-truthy, default #f) flags the
+    // opened view session-persistent — threaded here so latex-view can
+    // mark its output PDF without racing the async open for the handle.
+    // Fires the async open like `open-file-path!` and returns nil (the
+    // split lands once the file resolves).
+    'open-file-in-split!': (args) => {
+      const filePath = expandTilde(String(args[0] ?? ''));
+      if (filePath === '') return NIL;
+      const orientation =
+        symbolNameOf(args[1]) === 'vertical' ? SPLIT_VERTICAL : SPLIT_HORIZONTAL;
+      const side = symbolNameOf(args[2]) === 'before' ? 'before' : 'after';
+      const persist = args.length > 3 && args[3] !== false && args[3] !== NIL;
+      splitAndOpenFile(filePath, orientation, side, persist);
+      return NIL;
+    },
+    // `(set-view-text! NAME TEXT)` — replace the whole text of the text
+    // view named NAME, creating it (a fresh text view) if absent, WITHOUT
+    // changing the focused pane. The compile loop uses this to update
+    // *TeX output* / *TeX errors* in place: the old approach switched the
+    // focused pane to the view, set its text, and switched back, which
+    // (a) refused + clobbered the current buffer when the view was already
+    // shown in another pane (switchToView's guard), and (b) stole focus.
+    // A displayed view re-renders via its buffer's change notification.
+    // Returns the view, or nil (empty name, or a non-text view of that
+    // name we won't clobber).
+    'set-view-text!': (args) => {
+      const name = String(args[0] ?? '');
+      const text = String(args[1] ?? '');
+      if (name === '') return NIL;
+      const existing = views.find((v) => v.name === name);
+      if (existing) {
+        if (!existing.buffer) return NIL;
+        existing.buffer.setText(text);
+        return existing;
+      }
+      const view = createView({
+        kind: 'text',
+        buffer: createBuffer(text, { name }),
+      });
+      views.push(view);
+      if (viewListView && typeof viewListView.refresh === 'function') {
+        viewListView.refresh();
+      }
+      return view;
+    },
     // Open a directory-tree buffer rooted at `path`. The view lists
     // the directory's entries with FontAwesome icons; folders expand
     // on click; files route through the same open path as the REPL.
@@ -3145,6 +3445,17 @@ const interpreter = createInterpreter({
       const view = ensureViewListView();
       switchToViewIndex(views.indexOf(view));
       viewListView.refresh();
+      return NIL;
+    },
+    // Open the *RefTeX Select* picker as a right-edge drawer overlaid on
+    // the editor (the document stays visible underneath). RefTeX's
+    // reftex-reference uses this as the selection-first path; the panel
+    // reads its rows through reftex-select-candidates and its keys call
+    // back into reftex-select-on-{select,peek,cancel}. SPC-peek navigates
+    // the editor pane UNDER the overlay (the bug the old pane-takeover
+    // form couldn't fix). See `openReftexSelectOverlay`.
+    'open-reftex-select!': () => {
+      openReftexSelectOverlay();
       return NIL;
     },
     // Open a shell view — a child process running the user's default
@@ -4302,7 +4613,16 @@ window.addEventListener('keydown', (event) => {
 // renderer owns the keymaps, so it builds the menu data here and ships
 // it to the main process; a click comes back through onMenuCommand.
 
-/** The mode menu for the current buffer, or null when it has none. */
+/** The mode menu for the current buffer, or null when it has none.
+ *
+ * Two shapes, both consumed by menu.js's recursive renderer:
+ *  - flat (the default): `items` are leaves `{label, command, toolTip}`,
+ *    one per bound command — byte-for-byte the historical menu;
+ *  - nested: when the mode registered a structured menu
+ *    (`mode-menu-sections`), `items` are submenus `{label, items:[…]}`,
+ *    one per section, whose leaves are resolved (keys + docstring) from
+ *    the same flat `mode-menu-entries` data.
+ */
 function currentModeMenu() {
   if (!keymapReady) return null;
   let raw;
@@ -4313,10 +4633,21 @@ function currentModeMenu() {
     return null;
   }
   if (raw.length === 0) return null;
-  const items = raw.map((entry) => {
-    const [keys, command, docText] = listToArray(entry);
-    return { label: `${command}    ${keys}`, command, toolTip: docText };
-  });
+
+  // The structured (sectioned) menu, when this mode registered one.
+  let sections = [];
+  try {
+    sections = listToArray(interpreter.call('mode-menu-sections-resolved'))
+      .map((section) => listToArray(section).map((cell, i) =>
+        i === 0 ? cell : listToArray(cell)));
+  } catch (error) {
+    // A registry slip shouldn't lose the menu — fall back to flat.
+    repl.appendError(`mode menu sections failed: ${error.message}`);
+    sections = [];
+  }
+
+  const flatEntries = raw.map((entry) => listToArray(entry));
+  const items = buildModeMenuItems(flatEntries, sections);
   return { label: interpreter.call('major-mode-name'), items };
 }
 
@@ -5237,6 +5568,166 @@ const viewListView = /** @type {*} */ (document.createElement('view-list-view'))
 viewListView.configure(configureViewListView());
 editorPaneElement().append(viewListView);
 viewListView.style.display = 'none';
+
+// The *RefTeX Select* picker — RefTeX's label / cite picker, mounted as a
+// right-edge drawer overlaid on the editor (NOT a pane view). The panel
+// is populated and driven entirely from Lisp (reftex-refs.lisp): the
+// candidate model, the origin view+point, and the select / peek / cancel
+// actions all live there. The host closures are thin bridges that marshal
+// Lisp records into the renderer's plain-JS candidate objects and forward
+// the user's choices back. See plans/RefTeX.md "The interactive views".
+//
+// reftexSelectCandidates reads a flat list the Lisp side prepared when
+// the picker opened; each Lisp candidate is a list (name type macro
+// context), which we map positionally into {name,type,macro,context}.
+function reftexSelectCandidates() {
+  if (!keymapReady) return [];
+  try {
+    const rows = listToArray(interpreter.call('reftex-select-candidates'));
+    return rows.map((row) => {
+      const fields = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return {
+        name: fields[0] ?? '',
+        type: fields[1] ?? '',
+        macro: fields[2] ?? '',
+        context: fields[3] ?? '',
+      };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-select: ${error.lispMessage ?? error.message}`);
+    return [];
+  }
+}
+
+/** Invoke a RefTeX-select Lisp callback (select / peek / cancel),
+ *  swallowing and reporting any Lisp error so the picker never crashes
+ *  the renderer. */
+function reftexSelectCallback(name, arg) {
+  if (!keymapReady) return;
+  try {
+    if (arg === undefined) interpreter.call(name);
+    else interpreter.call(name, arg);
+  } catch (error) {
+    repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
+  }
+}
+
+/**
+ * Open the *RefTeX Select* picker as a modal drawer that slides in from
+ * the right edge of `#editor-host`, over the editor — the document stays
+ * visible to the left. Modelled on `enterMoveViewsMode`: the overlay
+ * grabs focus and installs a **window capture-phase** keydown handler so
+ * keystrokes reach the panel even when a focused `<webview>` would eat
+ * them, and stay modal while it's up.
+ *
+ * The crucial difference from a pane view: SPC-peek calls
+ * `reftex-select-on-peek`, which navigates the editor pane *underneath*
+ * the overlay (`open-file-path!` + `goto-line!`). Because the panel keeps
+ * its window-capture handler, that navigation (which may move pane focus)
+ * does NOT steal keystrokes — the next key still reaches the panel, so
+ * peek keeps the picker alive. Select / cancel `close()` it.
+ *
+ * Re-opening while one is up is a no-op (reftex-reference is the only
+ * caller and only runs once at a time).
+ */
+function openReftexSelectOverlay() {
+  if (reftexSelectHandle && reftexSelectHandle.active) return;
+
+  const panel = createReftexSelectPanel({
+    getCandidates: reftexSelectCandidates,
+    onSelect: (name) => {
+      // Insert at the origin, then close (the Lisp side returns focus to
+      // the origin view; close() also restores editor focus).
+      reftexSelectCallback('reftex-select-on-select', name);
+      close();
+    },
+    onPeek: (name) => {
+      // Drive the editor pane underneath; the overlay stays mounted.
+      reftexSelectCallback('reftex-select-on-peek', name);
+      // The panel and its capture handler survive the navigation, but a
+      // peek may have re-pointed `editorView`; keep focus on the overlay
+      // so the next key still feeds the panel.
+      container.focus();
+    },
+    onCancel: () => {
+      reftexSelectCallback('reftex-select-on-cancel');
+      close();
+    },
+  });
+
+  const container = document.createElement('div');
+  container.className = 'reftex-select-overlay';
+  container.dataset.role = 'reftex-select-overlay';
+  container.tabIndex = -1; // focusable, so it can pull focus off a webview
+  container.append(panel.element);
+
+  editorHostEl.dataset.reftexSelect = '1';
+  editorHostEl.append(container);
+  // Force a reflow so the off-screen start state is committed before the
+  // .is-open class flips the transform — otherwise the browser collapses
+  // both into one frame and there's no slide.
+  void container.offsetWidth;
+  container.classList.add('is-open');
+  container.focus();
+
+  let alive = true;
+
+  function close() {
+    if (!alive) return;
+    alive = false;
+    window.removeEventListener('keydown', onKeyDown, true);
+    container.classList.remove('is-open'); // slide out
+    const remove = () => {
+      container.removeEventListener('transitionend', remove);
+      panel.destroy();
+      container.remove();
+    };
+    container.addEventListener('transitionend', remove);
+    // Fallback in case transitionend doesn't fire (display quirks).
+    setTimeout(remove, 320);
+    delete editorHostEl.dataset.reftexSelect;
+    reftexSelectHandle = null;
+    // Restore focus to the editor pane (the origin pane the Lisp side
+    // switched back to). `editorView` tracks the active leaf's text view.
+    if (editorView && typeof editorView.focus === 'function') editorView.focus();
+  }
+
+  function onKeyDown(event) {
+    if (REFTEX_MODIFIERS.has(event.key)) return;
+    // Stay modal: swallow every plain key so it can't reach the editor or
+    // the global key router while the panel is up. Genuine system chords
+    // (Cmd/Ctrl/Alt held) pass through untouched.
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const key = keyEventToString(event);
+    panel.handleKey(key);
+  }
+
+  // A click on the panel keeps focus on the overlay so key capture
+  // survives (a click that lands on a pane underneath would steal it).
+  container.addEventListener('mousedown', (event) => {
+    // Let clicks on the rows through (the panel selects on row click), but
+    // re-grab focus afterwards.
+    if (!event.target.closest('.reftex-select-row')) {
+      event.preventDefault();
+    }
+    container.focus();
+  });
+
+  window.addEventListener('keydown', onKeyDown, true);
+
+  reftexSelectHandle = {
+    get active() {
+      return alive;
+    },
+    close,
+    refresh: panel.refresh,
+  };
+}
+
+/** A bare modifier press is not a key the picker acts on. */
+const REFTEX_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
 // The placeholder view — the chooser a freshly-split pane shows until
 // the user decides what it should hold (replacing split's old silent
@@ -6724,6 +7215,28 @@ window.host.onMenuCommand((command) => {
 });
 refreshModeMenu();
 
+// Wire the one-shot process runner's completion channel exactly once.
+// When a `(run-process! …)` child exits, the host sends one
+// `process:exit` with the buffered output; we look up the parked
+// on-exit Lisp procedure (keyed by runId), build the result hash-map
+// `{:stdout :stderr :code}`, apply the procedure, and forget the entry.
+if (window.host && typeof window.host.onRunProcessExit === 'function') {
+  window.host.onRunProcessExit(({ runId, stdout, stderr, code }) => {
+    const proc = runProcessCallbacks.get(runId);
+    runProcessCallbacks.delete(runId);
+    if (proc == null || proc === NIL) return;
+    const result = new Map();
+    result.set(keyword('stdout'), typeof stdout === 'string' ? stdout : '');
+    result.set(keyword('stderr'), typeof stderr === 'string' ? stderr : '');
+    result.set(keyword('code'), typeof code === 'number' ? code : NIL);
+    try {
+      applyProcedure(proc, [result]);
+    } catch (error) {
+      repl.appendError(error.lispMessage ?? error.message ?? String(error));
+    }
+  });
+}
+
 // The startup splash: the editor's own Lisp, behind the welcome text.
 // It lives in the view's background layer and is dismissed — faded out
 // and removed — the first time a buffer is edited or switched.
@@ -7443,7 +7956,15 @@ const sessionController = createSession({
     // the bug in before.png/after.png.
     const view = await openFileByPath(path, { switch: false, forceDuplicate: true });
     if (view === null) return null;
-    // Only text views carry point/mark; image/audio/video views don't.
+    // A pdf blob is only persisted when its view was flagged `persist`
+    // (the latexed-output case). Re-mark the restored view so it persists
+    // again next session — `openFileByPath` minted it with the default
+    // (which is *pdf-restore-default*, transient unless the user opted in
+    // globally), but this one was explicitly saved as persistent.
+    if (view.kind === 'pdf' && entry && entry.kind === 'pdf') {
+      view.persist = true;
+    }
+    // Only text views carry point/mark; image/audio/video/pdf views don't.
     const buffer = view.buffer;
     if (view.kind === 'text' && buffer) {
       const point = Number.isFinite(entry.point) ? entry.point : 0;

@@ -102,7 +102,14 @@ one-key read that looks up a symbol table and inserts (with a completion
 fallback for unknown keys). Toggle + `*latex-math-abbrev-prefix*`
 defcustom. The table is pure and unit-testable.
 
-### Phase 4 — references & citations (RefTeX-lite)
+### Phase 4 — references & citations (RefTeX)
+> **Superseded by `plans/RefTeX.md`.** Jason chose the full RefTeX
+> companion (multi-file document model, label DB + rename, TOC reorg,
+> `\index`, a context-showing selection view) over the lite sketch below.
+> RefTeX is an **independent track** — it needs none of Phase 0's
+> `run-process!`. The sketch below is the original lite plan, kept for
+> context; build to `plans/RefTeX.md` instead.
+
 - **`\ref`/`\eqref`** (`C-c )`): scan the buffer for `\label{…}` →
   complete → insert `\ref{…}`. **`\label`** insertion with an
   auto-suggested key (`sec:`/`fig:`/`eq:`).

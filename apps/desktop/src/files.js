@@ -6,6 +6,7 @@
 
 import { app, dialog, ipcMain, shell } from 'electron';
 import {
+  existsSync,
   readdirSync,
   readFileSync as nodeReadFileSync,
   readlinkSync,
@@ -443,6 +444,19 @@ export function registerFileHandlers() {
       event.returnValue = nodeReadFileSync(target, 'utf8');
     } catch {
       event.returnValue = null;
+    }
+  });
+
+  // Synchronous existence check — returns true when the (tilde-expanded)
+  // path names an existing file or directory. The Lisp interpreter is
+  // synchronous, so the `(file-exists? path)` primitive reaches the
+  // filesystem here, mirroring `file:read-text-sync`. RefTeX uses it to
+  // skip \input chains whose target files are absent.
+  ipcMain.on('file:exists-sync', (event, payload) => {
+    try {
+      event.returnValue = existsSync(expandTilde(payload?.path));
+    } catch {
+      event.returnValue = false;
     }
   });
 

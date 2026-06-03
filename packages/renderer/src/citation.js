@@ -86,3 +86,54 @@ export function citationKeys(cslJsonSource) {
   const entries = JSON.parse(cslJsonSource);
   return entries.map((e) => (typeof e.id === 'string' ? e.id : '')).filter(Boolean);
 }
+
+/**
+ * A best-effort projection of each parsed entry into the small shape a
+ * citation picker needs: `{ key, author, year, title }`. CSL-JSON is
+ * sprawling; this pulls out the few fields a one-line picker row shows.
+ *
+ *   - `key`    — the CSL `id` (the BibTeX key).
+ *   - `author` — the first author's family name (falling back to a
+ *                `given family` join, then the `literal` field for
+ *                institutional authors); `null` when no author.
+ *   - `year`   — the first `issued.date-parts` year as a number;
+ *                `null` when absent.
+ *   - `title`  — the `title` string; `null` when absent.
+ *
+ * Missing fields are `null` consistently so the caller can render a
+ * placeholder.
+ *
+ * @param {string} cslJsonSource
+ * @returns {Array<{key: string, author: (string|null), year: (number|null), title: (string|null)}>}
+ */
+export function citationEntries(cslJsonSource) {
+  const entries = JSON.parse(cslJsonSource);
+  return entries.map((e) => {
+    const key = typeof e.id === 'string' ? e.id : '';
+
+    let author = null;
+    if (Array.isArray(e.author) && e.author.length > 0) {
+      const first = e.author[0];
+      if (first && typeof first === 'object') {
+        if (typeof first.family === 'string' && first.family !== '') {
+          author = typeof first.given === 'string' && first.given !== ''
+            ? `${first.given} ${first.family}`
+            : first.family;
+        } else if (typeof first.literal === 'string' && first.literal !== '') {
+          author = first.literal;
+        }
+      }
+    }
+
+    let year = null;
+    const parts = e.issued && e.issued['date-parts'];
+    if (Array.isArray(parts) && Array.isArray(parts[0]) && parts[0].length > 0) {
+      const y = Number(parts[0][0]);
+      if (Number.isFinite(y)) year = y;
+    }
+
+    const title = typeof e.title === 'string' ? e.title : null;
+
+    return { key, author, year, title };
+  });
+}

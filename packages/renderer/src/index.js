@@ -30,6 +30,7 @@ export { createInlineEval } from './inline-eval.js';
 export { renderMarkdown } from './markdown.js';
 export {
   parseCitations, formatBibliography, formatCitation, citationKeys,
+  citationEntries,
 } from './citation.js';
 export {
   ImageView,
@@ -71,6 +72,15 @@ export {
   moveItem,
 } from './notebook-view.js';
 export { ViewListView, kindLabel, fileLabel } from './view-list-view.js';
+export {
+  createReftexSelectPanel,
+  mapReftexKey,
+  groupHeading,
+  filterCandidates,
+  distinctTypes,
+  groupByType,
+  nextTypeFilter,
+} from './reftex-select-panel.js';
 export { PlaceholderView } from './placeholder-view.js';
 export {
   PLACEHOLDER_ACTIONS,

@@ -2619,6 +2619,152 @@ test('latex-mode has a C-c keymap with latex-textbf under "b"', async () => {
   assert.equal(String(km && km.name), 'latex-textbf');
 });
 
+// --- AUCTeX Phase 1: the compile / view loop (latex-compile.lisp) ----
+
+test('latex-compile.lisp binds C-c C-c / C-c C-v / C-c ` in latex-mode', async () => {
+  const { interpreter } = await editor();
+  const at = (chord) =>
+    String(
+      (interpreter.evaluate(
+        `(get (get (resolve-keymap 'latex-mode-map) "C-c" {}) "${chord}" nil)`
+      ) || {}).name
+    );
+  assert.equal(at('C-c'), 'latex-compile');
+  assert.equal(at('C-v'), 'latex-view');
+  assert.equal(at('`'), 'latex-next-error');
+});
+
+test('latex-compile.lisp leaves the existing C-c sub-bindings intact', async () => {
+  const { interpreter } = await editor();
+  const at = (chord) =>
+    String(
+      (interpreter.evaluate(
+        `(get (get (resolve-keymap 'latex-mode-map) "C-c" {}) "${chord}" nil)`
+      ) || {}).name
+    );
+  // The Phase-0 latex.lisp bindings must survive the extension.
+  assert.equal(at('b'), 'latex-textbf');
+  assert.equal(at('i'), 'latex-textit');
+  assert.equal(at('e'), 'latex-emph');
+  assert.equal(at('m'), 'latex-math-inline');
+  assert.equal(at('M'), 'latex-math-display');
+  assert.equal(at('s'), 'latex-section');
+  assert.equal(at('S'), 'latex-subsection');
+  assert.equal(at('l'), 'latex-itemize');
+  assert.equal(at('n'), 'latex-enumerate');
+  assert.equal(at('C-p'), 'toggle-latex-math-preview');
+});
+
+test('the compile-loop commands are all registered', async () => {
+  const { interpreter } = await editor();
+  for (const name of [
+    'latex-compile',
+    'latex-view',
+    'latex-next-error',
+    'latex-previous-error',
+    'latex-show-output',
+  ]) {
+    assert.ok(
+      interpreter.evaluate(`(command-registered? '${name})`),
+      `${name} should be a registered command`
+    );
+  }
+});
+
+test('the latex defcustoms have list/symbol defaults', async () => {
+  const { interpreter } = await editor();
+  // *latex-command* is a LIST of strings (program + flags), not a
+  // shell string — run-process! takes no shell.
+  assert.ok(interpreter.evaluate('(list? *latex-command*)'));
+  assert.deepEqual(
+    listToArray(interpreter.evaluate('*latex-command*')),
+    ['latexmk', '-pdf', '-synctex=1', '-interaction=nonstopmode']
+  );
+  assert.ok(interpreter.evaluate('(list? *latex-bibtex-command*)'));
+  assert.deepEqual(
+    listToArray(interpreter.evaluate('*latex-bibtex-command*')),
+    ['bibtex']
+  );
+  assert.ok(interpreter.evaluate('(list? *latex-clean*)'));
+  // *latex-view* is a symbol (the seam for external viewers later).
+  assert.ok(interpreter.evaluate('(symbol? *latex-view*)'));
+  assert.equal(
+    interpreter.evaluate('(symbol->string *latex-view*)'),
+    'pdf-view'
+  );
+});
+
+test('-latex-pdf-path swaps .tex for .pdf in the same directory', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(-latex-pdf-path "/a/b/paper.tex")'),
+    '/a/b/paper.pdf'
+  );
+});
+
+test('-latex-tex-file? recognises .tex paths only', async () => {
+  const { interpreter } = await editor();
+  assert.equal(interpreter.evaluate('(-latex-tex-file? "x.tex")'), true);
+  assert.equal(interpreter.evaluate('(-latex-tex-file? "x.md")'), false);
+  assert.equal(interpreter.evaluate('(-latex-tex-file? nil)'), false);
+});
+
+test('-latex-errors-text reports success in words for no diagnostics', async () => {
+  const { interpreter } = await editor();
+  const text = interpreter.evaluate("(-latex-errors-text '())");
+  assert.match(String(text), /No LaTeX errors/);
+});
+
+test('-latex-diag-line renders FILE:LINE: MESSAGE occur-style', async () => {
+  const { interpreter } = await editor();
+  const line = interpreter.evaluate(
+    '(-latex-diag-line (hash-map :file "p.tex" :line 42 ' +
+      ':message "Undefined control sequence" :kind :error))'
+  );
+  assert.equal(String(line), 'p.tex:42: Undefined control sequence');
+  const warn = interpreter.evaluate(
+    '(-latex-diag-line (hash-map :file "p.tex" :line 7 ' +
+      ':message "Reference undefined" :kind :warning))'
+  );
+  assert.equal(String(warn), 'p.tex:7: warning: Reference undefined');
+});
+
+test('-latex-spawn-failed? detects an ENOENT spawn failure', async () => {
+  const { interpreter } = await editor();
+  // :code nil + ENOENT in stderr => the program was not on PATH.
+  assert.equal(
+    interpreter.evaluate(
+      '(-latex-spawn-failed? (hash-map :code nil ' +
+        ':stderr "spawn latexmk ENOENT" :stdout ""))'
+    ),
+    true
+  );
+  // :code nil but no ENOENT (a signal kill) => not a spawn failure.
+  assert.equal(
+    interpreter.evaluate(
+      '(-latex-spawn-failed? (hash-map :code nil :stderr "" :stdout ""))'
+    ),
+    false
+  );
+  // A normal non-zero exit => not a spawn failure.
+  assert.equal(
+    interpreter.evaluate(
+      '(-latex-spawn-failed? (hash-map :code 1 :stderr "x" :stdout ""))'
+    ),
+    false
+  );
+});
+
+test('latex-next-error reports an empty list when nothing was compiled', async () => {
+  const { interpreter, statusCalls } = await editor();
+  interpreter.evaluate('(set! *latex-error-list* (list))');
+  interpreter.evaluate('(latex-next-error)');
+  assert.ok(
+    statusCalls.some((s) => typeof s === 'string' && /No LaTeX errors/.test(s)),
+    'should echo a no-errors status'
+  );
+});
+
 test('makefile-mode has a C-c keymap with makefile-target under "t"', async () => {
   const { interpreter } = await editor();
   const km = interpreter.evaluate(
