@@ -67,6 +67,9 @@ export const STDLIB_FILES = Object.freeze([
   'menus.lisp',
   'markdown.lisp',
   'latex.lisp',
+  // latex-compile.lisp extends latex.lisp's `latex-c-c-map`, so it must
+  // load after it (the AUCTeX Phase-1 compile/view loop).
+  'latex-compile.lisp',
   'makefile.lisp',
   'view-menu.lisp',
   'sticky-notes.lisp',
