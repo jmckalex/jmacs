@@ -16,6 +16,7 @@ import {
   currentSource,
   committedAssignments,
   candidateNumbers,
+  destinationForPane,
 } from '../src/move-view-state.js';
 
 const d = (digit) => ({ type: 'digit', digit });
@@ -143,4 +144,30 @@ test('permute: backspace steps back a source assignment', () => {
 test('cancel aborts at any point', () => {
   const r = reduce(reduce(createMoveViewState('permute', 3), d('2')).state, CANCEL);
   assert.deepEqual(r.effect, { type: 'abort' });
+});
+
+// --- destinationForPane (forced-last display) -------------------------------
+
+test('destinationForPane: explicit entries and the forced last are shown', () => {
+  // permute n=3: pane1 -> 2, pane2 -> 3 ; pane3 forced -> 1
+  const r = run(createMoveViewState('permute', 3), [d('2'), d('3')]);
+  assert.equal(destinationForPane(r.state, 1), 2);
+  assert.equal(destinationForPane(r.state, 2), 3);
+  assert.equal(destinationForPane(r.state, 3), 1); // forced/auto-filled
+});
+
+test('destinationForPane: undetermined panes return null mid-entry', () => {
+  // permute n=4: only pane1 assigned so far; 2/3/4 not yet forced
+  const r = reduce(createMoveViewState('permute', 4), d('3'));
+  assert.equal(destinationForPane(r.state, 1), 3);
+  assert.equal(destinationForPane(r.state, 2), null);
+  assert.equal(destinationForPane(r.state, 4), null);
+});
+
+test('destinationForPane: null in swap mode and out of range', () => {
+  const r = run(createMoveViewState('swap', 4), [d('1'), d('3')]);
+  assert.equal(destinationForPane(r.state, 1), null); // swap has no dests
+  const p = run(createMoveViewState('permute', 3), [d('2'), d('3')]);
+  assert.equal(destinationForPane(p.state, 0), null);
+  assert.equal(destinationForPane(p.state, 4), null);
 });

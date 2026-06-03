@@ -27,6 +27,7 @@ import {
   reduce,
   candidateNumbers,
   currentSource,
+  destinationForPane,
   isReady,
 } from './move-view-state.js';
 
@@ -104,12 +105,16 @@ export function enterMoveViewsMode(options) {
       badge.classList.toggle('is-candidate', candidates.has(number));
       badge.classList.toggle('is-current-source', src === number);
       let label = String(number);
-      if (state.mode === 'permute' && number - 1 < state.entries.length) {
-        label = `${number}→${state.entries[number - 1]}`;
-        badge.classList.add('is-assigned');
-      } else {
-        badge.classList.remove('is-assigned');
-      }
+      // In permute mode show `k→dest` for every pane whose destination is
+      // known — including the forced last one, which destinationForPane
+      // fills in automatically once all but one source has been assigned.
+      const dest =
+        state.mode === 'permute' ? destinationForPane(state, number) : null;
+      const assigned = dest != null;
+      const derived = assigned && number - 1 >= state.entries.length;
+      if (assigned) label = `${number}→${dest}`;
+      badge.classList.toggle('is-assigned', assigned);
+      badge.classList.toggle('is-derived', derived);
       badge.textContent = label;
     }
     promptEl.textContent = promptText(state);
@@ -125,7 +130,9 @@ export function enterMoveViewsMode(options) {
       return `Swap views: ${picked}${pend}${help}`;
     }
     const src = currentSource(s);
-    if (src === null) return `Permute views: ready — press Enter${help}`;
+    if (src === null) {
+      return `Permute views: ready — last pane auto-filled, press Enter${help}`;
+    }
     return `Permute views: pane ${src} → ?${pend}${help}`;
   }
 

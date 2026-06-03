@@ -110,6 +110,27 @@ export function committedAssignments(state) {
 }
 
 /**
+ * The destination slot currently shown for a 1-based source pane in
+ * permute mode: an explicitly-typed entry, or — once every source but
+ * the last has been assigned — the *forced* final destination (so the
+ * full permutation can be displayed before Enter). Returns null when the
+ * pane's destination isn't determined yet, in swap mode, or for an
+ * out-of-range pane.
+ *
+ * @param {MoveViewState} state
+ * @param {number} paneNumber - 1-based source pane.
+ * @returns {number | null}
+ */
+export function destinationForPane(state, paneNumber) {
+  if (state.mode !== 'permute') return null;
+  const i = paneNumber - 1;
+  if (i < 0 || i >= state.n) return null;
+  if (i < state.entries.length) return state.entries[i];
+  const full = committedAssignments(state);
+  return full ? full[i] : null;
+}
+
+/**
  * Advance the state machine by one event.
  *
  * @param {MoveViewState} state

@@ -495,6 +495,12 @@ tabline-view[data-edge='right'] .tabline-resizer {
   background: color-mix(in srgb, var(--accent) 30%, #000 50%);
 }
 
+/* (permute) the forced last destination — auto-filled once N-1 panes are
+   assigned. Dashed outline marks it as derived rather than typed. */
+.move-view-badge.is-derived {
+  outline-style: dashed;
+}
+
 /* The instruction strip along the bottom edge. */
 .move-view-prompt {
   position: absolute;
