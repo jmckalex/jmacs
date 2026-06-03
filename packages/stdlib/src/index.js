@@ -95,6 +95,11 @@ export const STDLIB_FILES = Object.freeze([
   // `latex-master-file` seam) and after cite.lisp (it reads
   // `*citation-bib-path*` and uses the citation bridge for cite keys).
   'reftex.lisp',
+  // RefTeX R2 — labels & references (reftex-label, reftex-reference).
+  // Loads after reftex.lisp (it queries the R1 DB and reuses its
+  // `*reftex-env-types*` / type-inference helpers) and extends the
+  // `latex-c-c-map` further with the `(` and `)` slots.
+  'reftex-refs.lisp',
 ]);
 
 /**
