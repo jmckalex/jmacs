@@ -90,15 +90,18 @@ import {
   formatBibliography,
   formatCitation,
   citationKeys,
+  citationEntries,
   createLatexMathPreview,
   TextView,
   TablineView,
 } from '@editor/renderer';
 import {
   createBufferPrimitives,
+  createLatexPrimitives,
   createPanePrimitives,
   createViewPrimitives,
   loadStdlib,
+  pathDirname,
 } from '@editor/stdlib';
 import { createAudioController } from './audio.js';
 import {
@@ -2896,12 +2899,25 @@ const viewHost = {
   },
 };
 
+// --- general process runner (run-process!) -----------------------------
+//
+// Each `(run-process! …)` call gets a monotonic runId (a counter, not a
+// timestamp/random — deterministic and collision-free for the session).
+// The on-exit Lisp procedure is parked in `runProcessCallbacks` keyed by
+// that id; the single `onRunProcessExit` listener (wired once, below)
+// looks it up when the host reports the exit, builds the result hash-map,
+// and applies the procedure exactly once.
+let nextRunId = 0;
+/** @type {Map<string, *>} runId → the parked on-exit Lisp procedure. */
+const runProcessCallbacks = new Map();
+
 const interpreter = createInterpreter({
   write: (text) => repl.appendOutput(text),
   primitives: {
     ...createBufferPrimitives(session),
     ...createViewPrimitives(viewHost),
     ...createPanePrimitives(paneHost),
+    ...createLatexPrimitives(),
 
     // File commands run async work and return at once.
     'open-file!': () => {
@@ -3098,6 +3114,103 @@ const interpreter = createInterpreter({
         throw new LispError(`citation-keys: ${error.message ?? error}`);
       }
     },
+    // `(citation-entries HANDLE)` — a best-effort projection of each
+    // entry in HANDLE into a picker-friendly hash-map
+    // `{:key :author :year :title}`. `author` is the first author's
+    // family (or a "given family" join, or an institutional literal);
+    // `year` is the issued year as an integer; missing fields are nil.
+    // This drives a citation picker (downstream of this branch).
+    'citation-entries': (args) => {
+      const handle = String(args[0] ?? '');
+      if (handle === '') return NIL;
+      try {
+        const entries = citationEntries(handle);
+        const records = entries.map((e) => {
+          const map = new Map();
+          map.set(keyword('key'), e.key ?? '');
+          map.set(keyword('author'), e.author == null ? NIL : e.author);
+          map.set(keyword('year'), e.year == null ? NIL : e.year);
+          map.set(keyword('title'), e.title == null ? NIL : e.title);
+          return map;
+        });
+        return arrayToList(records);
+      } catch (error) {
+        throw new LispError(`citation-entries: ${error.message ?? error}`);
+      }
+    },
+
+    // --- LaTeX / RefTeX host primitives --------------------------------
+    // (The pure scanning + path helpers are provided by
+    // createLatexPrimitives, spread in above. These need app.js scope:
+    // the filesystem, the view list, the process runner, the pdf
+    // singleton.)
+
+    // `(file-exists? PATH)` — #t when PATH (tilde-expanded host-side)
+    // names an existing file or directory, #f otherwise. Synchronous,
+    // mirroring `read-file-text!`. RefTeX uses it to skip \input chains
+    // whose targets are absent.
+    'file-exists?': (args) => {
+      const path = String(args[0] ?? '');
+      if (path === '') return false;
+      return window.host.fileExistsSync(path) === true;
+    },
+
+    // `(view-file-path VIEW)` — the filesystem path associated with
+    // VIEW (its buffer's file, or a non-text view's own path), or nil.
+    // Thin wrapper over the `viewFilePath` derivation helper.
+    'view-file-path': (args) => {
+      const path = viewFilePath(args[0]);
+      return typeof path === 'string' ? path : NIL;
+    },
+
+    // `(view-directory VIEW)` — the directory containing VIEW's file,
+    // or nil when VIEW has no path. The compile/view loop runs the
+    // LaTeX toolchain in this directory.
+    'view-directory': (args) => {
+      const path = viewFilePath(args[0]);
+      return typeof path === 'string' ? pathDirname(path) : NIL;
+    },
+
+    // `(run-process! PROGRAM ARGS CWD ON-EXIT)` — spawn PROGRAM (a
+    // string) with ARGS (a Lisp list of strings) in CWD (a directory
+    // string, or nil for the default). ON-EXIT is a Lisp procedure
+    // called once, with one argument: a hash-map
+    // `{:stdout STR :stderr STR :code INT-OR-NIL}` (code nil when the
+    // process was killed by a signal or failed to spawn). The host
+    // spawns with NO shell interpretation. Returns the runId string.
+    'run-process!': (args) => {
+      const program = String(args[0] ?? '');
+      if (program === '') return NIL;
+      const argList = args[1] != null && args[1] !== NIL
+        ? listToArray(args[1]).map((a) => String(a))
+        : [];
+      const cwd = args[2] != null && args[2] !== NIL ? String(args[2]) : undefined;
+      const onExit = args[3];
+
+      const runId = `run-${nextRunId++}`;
+      if (onExit != null && onExit !== NIL) {
+        runProcessCallbacks.set(runId, onExit);
+      }
+      window.host.runProcess(runId, program, argList, cwd ? { cwd } : {});
+      return runId;
+    },
+
+    // `(pdf-reload! [PATH])` — reload the PDF view after a recompile.
+    // A recompile produces the SAME path with NEW bytes, which the
+    // pdf-view's same-path load guard would skip; `.reload()` bypasses
+    // it. With no PATH, reloads the singleton's current PDF; with a
+    // PATH, only reloads when the singleton is showing that file. A
+    // no-op (returns nil) when no PDF is open.
+    'pdf-reload!': (args) => {
+      const current = pdfView.buffer;
+      if (!current) return NIL;
+      const wanted = args[0] != null && args[0] !== NIL
+        ? String(args[0]) : null;
+      if (wanted !== null && viewFilePath(current) !== wanted) return NIL;
+      if (typeof pdfView.reload === 'function') pdfView.reload();
+      return NIL;
+    },
+
     // The current user's home directory — find-file uses it as the
     // starting point for its TAB-completion path. An empty string is
     // returned when the host does not know the home (unlikely).
@@ -6685,6 +6798,28 @@ window.host.onMenuCommand((command) => {
   refreshModeMenu();
 });
 refreshModeMenu();
+
+// Wire the one-shot process runner's completion channel exactly once.
+// When a `(run-process! …)` child exits, the host sends one
+// `process:exit` with the buffered output; we look up the parked
+// on-exit Lisp procedure (keyed by runId), build the result hash-map
+// `{:stdout :stderr :code}`, apply the procedure, and forget the entry.
+if (window.host && typeof window.host.onRunProcessExit === 'function') {
+  window.host.onRunProcessExit(({ runId, stdout, stderr, code }) => {
+    const proc = runProcessCallbacks.get(runId);
+    runProcessCallbacks.delete(runId);
+    if (proc == null || proc === NIL) return;
+    const result = new Map();
+    result.set(keyword('stdout'), typeof stdout === 'string' ? stdout : '');
+    result.set(keyword('stderr'), typeof stderr === 'string' ? stderr : '');
+    result.set(keyword('code'), typeof code === 'number' ? code : NIL);
+    try {
+      applyProcedure(proc, [result]);
+    } catch (error) {
+      repl.appendError(error.lispMessage ?? error.message ?? String(error));
+    }
+  });
+}
 
 // The startup splash: the editor's own Lisp, behind the welcome text.
 // It lives in the view's background layer and is dismissed — faded out

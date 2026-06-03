@@ -255,6 +255,30 @@ export class PdfView extends ViewElement {
     this._buffer = null;
   }
 
+  /**
+   * Force a reload of the current PDF, bypassing the same-path load
+   * guard. A recompile (AUCTeX) produces the *same* file path with
+   * *new* bytes on disk — `_loadFromBuffer` would normally short-circuit
+   * because `_loadedFilePath` still matches. `_teardownDoc()` clears
+   * that guard (it resets `_loadedFilePath = null`), so re-running
+   * `_loadFromBuffer` fetches the fresh bytes.
+   *
+   * The current page is preserved across the reload: it is stashed on
+   * the buffer's `page` slot, which `_loadFromBuffer` reads back as the
+   * saved page (clamped to the new page count). A no-op when no buffer
+   * is loaded or the view was never mounted.
+   */
+  reload() {
+    if (!this._buffer) return;
+    // Preserve the page the user is on. `_loadFromBuffer` restores
+    // `view.page` (clamped to the reloaded doc's page count).
+    if (typeof this._currentPage === 'number' && this._currentPage >= 1) {
+      this._buffer.page = this._currentPage;
+    }
+    this._teardownDoc();
+    if (this._mounted) this._loadFromBuffer();
+  }
+
   // --- internal: mount ------------------------------------------------
 
   _ensureMounted() {

@@ -113,6 +113,18 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.sendSync('file:read-text-sync', { path }),
 
   /**
+   * Synchronous existence check. Returns `true` when `path` (tilde-
+   * expanded host-side) names an existing file or directory, `false`
+   * otherwise. The Lisp interpreter is synchronous, so the
+   * `(file-exists? path)` primitive reaches the filesystem this way —
+   * the same `sendSync` pattern as `readFileTextSync`.
+   * @param {string} path
+   * @returns {boolean}
+   */
+  fileExistsSync: (path) =>
+    ipcRenderer.sendSync('file:exists-sync', { path }),
+
+  /**
    * A directory listing with per-entry type info — each result is
    * `{ name, type }` where `type` is `"directory"` or `"file"`.
    * Find-file's tab-completion uses this synchronously.
@@ -389,6 +401,60 @@ contextBridge.exposeInMainWorld('host', {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('shell:exit', handler);
     return () => ipcRenderer.removeListener('shell:exit', handler);
+  },
+
+  // --- general process runner ------------------------------------------
+  //
+  // A one-shot child process: spawn a program with an explicit argv in
+  // an optional cwd, buffer its output, and report the result through
+  // `onRunProcessExit` when it exits. The host spawns with NO shell
+  // interpretation (no `shell: true`). This is the foundation for the
+  // AUCTeX compile/view loop; it is otherwise general-purpose.
+
+  /**
+   * Spawn a one-shot child process. The `runId` is renderer-generated
+   * and ties the spawn to its later `process:exit` event. Returns
+   * `{ ok }` immediately; the buffered output arrives via
+   * `onRunProcessExit`.
+   *
+   * @param {string} runId
+   * @param {string} program
+   * @param {string[]} args
+   * @param {{ cwd?: string }} [opts]
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  runProcess: (runId, program, args, opts = {}) =>
+    ipcRenderer.invoke('process:run', {
+      runId,
+      program,
+      args,
+      cwd: opts?.cwd,
+    }),
+
+  /**
+   * Kill a running process by id (SIGTERM). Its `onRunProcessExit`
+   * still fires with whatever output was buffered.
+   *
+   * @param {string} runId
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  runProcessKill: (runId) =>
+    ipcRenderer.invoke('process:kill', { runId }),
+
+  /**
+   * Register a handler for one-shot process exits. Fires once per
+   * run with `{ runId, stdout, stderr, code }` — `code` is null when
+   * the process was killed by a signal or failed to spawn.
+   *
+   * Returns an unsubscribe function.
+   *
+   * @param {(payload: { runId: string, stdout: string, stderr: string, code: number | null }) => void} callback
+   * @returns {() => void}
+   */
+  onRunProcessExit: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('process:exit', handler);
+    return () => ipcRenderer.removeListener('process:exit', handler);
   },
 
   // --- gnuplot ---------------------------------------------------------
