@@ -135,17 +135,15 @@
         (else (-latex-find-view-by-file/loop (cdr views) path))))
 
 (define (-latex-write-view name text)
-  "Find-or-create the view called NAME, replace its whole buffer with
-   TEXT, and return focus to the view that was current on entry. So the
-   *TeX output* / *TeX errors* views update in place without stealing
-   focus or accumulating duplicates."
-  (let ((origin (current-view))
-        (existing (find-view name)))
-    (if (nil? existing)
-        (begin (new-view! name) (set-buffer-text! text))
-        (begin (switch-to-view! existing) (set-buffer-text! text)))
-    (when (not (nil? origin))
-      (switch-to-view! origin))))
+  "Update (or create) the text view called NAME with TEXT, WITHOUT
+   touching the focused pane. `set-view-text!` writes the named view's
+   buffer in place (creating a fresh text view if absent) and never
+   switches the current view — so a compile never steals focus, reverts
+   to another view, or clobbers the current buffer. (The old
+   switch-there-set-text-switch-back dance broke when the view was
+   already shown in another pane: switch-to-view! refuses, and
+   set-buffer-text! then hit the wrong / a buffer-less current view.)"
+  (set-view-text! name text))
 
 ;; --- the log → *TeX output* / *TeX errors* views ----------------------
 

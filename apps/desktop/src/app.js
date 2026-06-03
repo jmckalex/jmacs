@@ -3391,6 +3391,36 @@ const interpreter = createInterpreter({
       splitAndOpenFile(filePath, orientation, side, persist);
       return NIL;
     },
+    // `(set-view-text! NAME TEXT)` — replace the whole text of the text
+    // view named NAME, creating it (a fresh text view) if absent, WITHOUT
+    // changing the focused pane. The compile loop uses this to update
+    // *TeX output* / *TeX errors* in place: the old approach switched the
+    // focused pane to the view, set its text, and switched back, which
+    // (a) refused + clobbered the current buffer when the view was already
+    // shown in another pane (switchToView's guard), and (b) stole focus.
+    // A displayed view re-renders via its buffer's change notification.
+    // Returns the view, or nil (empty name, or a non-text view of that
+    // name we won't clobber).
+    'set-view-text!': (args) => {
+      const name = String(args[0] ?? '');
+      const text = String(args[1] ?? '');
+      if (name === '') return NIL;
+      const existing = views.find((v) => v.name === name);
+      if (existing) {
+        if (!existing.buffer) return NIL;
+        existing.buffer.setText(text);
+        return existing;
+      }
+      const view = createView({
+        kind: 'text',
+        buffer: createBuffer(text, { name }),
+      });
+      views.push(view);
+      if (viewListView && typeof viewListView.refresh === 'function') {
+        viewListView.refresh();
+      }
+      return view;
+    },
     // Open a directory-tree buffer rooted at `path`. The view lists
     // the directory's entries with FontAwesome icons; folders expand
     // on click; files route through the same open path as the REPL.
