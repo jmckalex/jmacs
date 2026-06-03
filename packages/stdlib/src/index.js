@@ -119,6 +119,12 @@ export const STDLIB_FILES = Object.freeze([
   // for list detection, extends `latex-c-c-map` (C-c C-n/C-r/%), and adds
   // two top-level keys (M-RET, ") to latex-mode-map.
   'latex-nav.lisp',
+  // The structured (grouped) LaTeX mode menu. Loads LAST among the
+  // LaTeX/RefTeX files: it names every latex-* / reftex-* command in its
+  // sections, so all those symbols must already exist. Uses the generic
+  // `register-mode-menu!` from menus.lisp; purely additive (the flat
+  // `mode-menu-entries` and every other mode's menu are unaffected).
+  'latex-menu.lisp',
 ]);
 
 /**

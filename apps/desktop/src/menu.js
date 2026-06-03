@@ -32,12 +32,19 @@
 
 import { Menu } from 'electron';
 
+import { renderModeMenuItem } from './mode-menu-build.js';
+
+/**
+ * @typedef {import('./mode-menu-build.js').ModeMenuLeaf} ModeMenuLeaf
+ * @typedef {import('./mode-menu-build.js').ModeMenuGroup} ModeMenuGroup
+ */
+
 /**
  * @typedef {object} ModeMenu
  * @property {string} label - The menu title (the major mode's name).
- * @property {{label: string, command: string, toolTip?: string}[]} items
- *   - One per mode command: `label` shows the command and its keys,
- *   `command` is the name to dispatch, `toolTip` is the docstring.
+ * @property {(ModeMenuLeaf | ModeMenuGroup)[]} items - Either flat leaves
+ *   (the default) or section submenus (when the mode registered a
+ *   structured menu). Rendered recursively by `renderModeMenuItem`.
  */
 
 /**
@@ -153,11 +160,7 @@ export function buildAppMenu(modeMenu, onCommand) {
   if (modeMenu && modeMenu.items.length > 0) {
     template.push({
       label: modeMenu.label,
-      submenu: modeMenu.items.map((item) => ({
-        label: item.label,
-        toolTip: item.toolTip || undefined,
-        click: () => onCommand(item.command),
-      })),
+      submenu: modeMenu.items.map((item) => renderModeMenuItem(item, onCommand)),
     });
   }
 

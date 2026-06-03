@@ -112,6 +112,7 @@ import {
 } from './face-overrides.js';
 import { applyFaceStyles } from './face-styles.js';
 import { isLatexMathPreviewActive } from './latex-math-preview-host.js';
+import { buildModeMenuItems } from './mode-menu-build.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
@@ -4426,7 +4427,16 @@ window.addEventListener('keydown', (event) => {
 // renderer owns the keymaps, so it builds the menu data here and ships
 // it to the main process; a click comes back through onMenuCommand.
 
-/** The mode menu for the current buffer, or null when it has none. */
+/** The mode menu for the current buffer, or null when it has none.
+ *
+ * Two shapes, both consumed by menu.js's recursive renderer:
+ *  - flat (the default): `items` are leaves `{label, command, toolTip}`,
+ *    one per bound command — byte-for-byte the historical menu;
+ *  - nested: when the mode registered a structured menu
+ *    (`mode-menu-sections`), `items` are submenus `{label, items:[…]}`,
+ *    one per section, whose leaves are resolved (keys + docstring) from
+ *    the same flat `mode-menu-entries` data.
+ */
 function currentModeMenu() {
   if (!keymapReady) return null;
   let raw;
@@ -4437,10 +4447,21 @@ function currentModeMenu() {
     return null;
   }
   if (raw.length === 0) return null;
-  const items = raw.map((entry) => {
-    const [keys, command, docText] = listToArray(entry);
-    return { label: `${command}    ${keys}`, command, toolTip: docText };
-  });
+
+  // The structured (sectioned) menu, when this mode registered one.
+  let sections = [];
+  try {
+    sections = listToArray(interpreter.call('mode-menu-sections-resolved'))
+      .map((section) => listToArray(section).map((cell, i) =>
+        i === 0 ? cell : listToArray(cell)));
+  } catch (error) {
+    // A registry slip shouldn't lose the menu — fall back to flat.
+    repl.appendError(`mode menu sections failed: ${error.message}`);
+    sections = [];
+  }
+
+  const flatEntries = raw.map((entry) => listToArray(entry));
+  const items = buildModeMenuItems(flatEntries, sections);
   return { label: interpreter.call('major-mode-name'), items };
 }
 
