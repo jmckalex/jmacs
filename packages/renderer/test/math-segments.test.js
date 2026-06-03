@@ -79,6 +79,45 @@ test('multi-line display math: \\[ … \\] spanning newlines', () => {
   assert.equal(segs[0].body, '\n  a + b\n');
 });
 
+test('scans a \\begin{align}…\\end{align} environment as block', () => {
+  const text = '\\begin{align}\na &= b \\\\\nc &= d\n\\end{align}';
+  const segs = scanMathSegments(text);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].kind, 'block');
+  assert.equal(segs[0].start, 0);
+  assert.equal(segs[0].end, text.length);
+  // The body is the FULL environment source (MathJax processes it).
+  assert.equal(segs[0].body, text);
+});
+
+test('scans a starred environment (align*) within prose, offsets correct', () => {
+  const text = 'see \\begin{align*}x=1\\end{align*} above';
+  const segs = scanMathSegments(text);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].kind, 'block');
+  assert.equal(segs[0].start, 4);
+  assert.equal(segs[0].body, '\\begin{align*}x=1\\end{align*}');
+});
+
+test('scans equation/gather/multline environments as block', () => {
+  for (const env of ['equation', 'gather', 'multline']) {
+    const text = `\\begin{${env}}E=mc^2\\end{${env}}`;
+    const segs = scanMathSegments(text);
+    assert.equal(segs.length, 1, env);
+    assert.equal(segs[0].kind, 'block', env);
+    assert.equal(segs[0].body, text, env);
+  }
+});
+
+test('non-math environments (itemize) are not scanned', () => {
+  const text = '\\begin{itemize}\\item a\\end{itemize}';
+  assert.deepEqual(scanMathSegments(text), []);
+});
+
+test('a \\begin{align} with no matching \\end is not reported', () => {
+  assert.deepEqual(scanMathSegments('\\begin{align} a &= b'), []);
+});
+
 test('escaped \\$ is not a math delimiter', () => {
   const text = 'price is \\$5 and \\$6';
   assert.deepEqual(scanMathSegments(text), []);

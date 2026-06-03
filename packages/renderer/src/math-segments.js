@@ -1,11 +1,15 @@
 /**
  * @file Math-segment scanning — the pure core of the LaTeX math preview.
  *
- * A *math segment* is a stretch of buffer text delimited by one of the
- * four LaTeX math delimiter pairs:
+ * A *math segment* is a stretch of buffer text that is either delimited
+ * by one of the four LaTeX math delimiter pairs or a display-math
+ * `\begin{…}…\end{…}` environment:
  *
  *   - `$ … $`   and `\( … \)`  → inline math   (`kind: 'inline'`)
  *   - `$$ … $$` and `\[ … \]`  → display math  (`kind: 'block'`, may span lines)
+ *   - `\begin{align}…\end{align}` and friends (equation, gather, multline,
+ *     alignat, flalign, eqnarray, displaymath; starred or not) → display
+ *     math (`kind: 'block'`, usually spanning lines)
  *
  * The scanner walks the text once and returns the segments it finds as
  * `{ start, end, kind, body }`:
@@ -13,8 +17,10 @@
  *   - `start` is the offset of the opening delimiter's first character;
  *   - `end` is the offset one past the closing delimiter's last character;
  *   - `kind` is `'inline'` or `'block'`;
- *   - `body` is the source *between* the delimiters (delimiters stripped),
- *     used as the typeset input and the cache key.
+ *   - `body` is the source *between* the delimiters (delimiters stripped)
+ *     — or, for a `\begin…\end` environment, the *full* environment source
+ *     (MathJax processes the environment itself). It is the typeset input
+ *     and the cache key.
  *
  * This module is pure and DOM-free, so it is tested on its own. The
  * minor-mode controller prefers the LaTeX tree-sitter parse when it is
@@ -100,6 +106,21 @@ export function scanMathSegments(text) {
     // command (`\(`, `\[`). `\(` / `\[` are math openers; any other
     // `\x` consumes the following char so e.g. `\$` is never a `$`.
     if (ch === 92 /* '\\' */) {
+      // `\begin{ENV}…\end{ENV}` math environments (align, equation,
+      // gather, multline, alignat, flalign, eqnarray, displaymath — and
+      // their starred forms). MathJax typesets the whole environment, so
+      // the segment body is the *full* `\begin…\end` source (delimiters
+      // are part of the math, not stripped). Always display (`block`).
+      if (text.startsWith('\\begin{', i)) {
+        const env = scanEnvironment(text, i);
+        if (env) {
+          segments.push(env);
+          i = env.end;
+          continue;
+        }
+        // Not a math environment (or no matching `\end`) — fall through
+        // and treat the backslash as an ordinary command.
+      }
       const next = text.charCodeAt(i + 1);
       if (next === 40 /* '(' */) {
         const found = scanTo(text, i + 2, '\\)');
@@ -174,6 +195,50 @@ export function scanMathSegments(text) {
   }
 
   return segments;
+}
+
+/**
+ * The display-math `\begin{…}…\end{…}` environments MathJax typesets at
+ * the top level (base names; the starred form is stripped before lookup).
+ * Inner environments used *inside* math (matrix, cases, …) are not here —
+ * they appear within another segment, not standalone.
+ */
+const MATH_ENVIRONMENTS = new Set([
+  'equation',
+  'align',
+  'alignat',
+  'gather',
+  'multline',
+  'flalign',
+  'eqnarray',
+  'displaymath',
+]);
+
+/**
+ * Parse a `\begin{ENV}…\end{ENV}` math environment whose `\begin` is at
+ * `start` (the backslash). Returns a `block` segment whose `body` is the
+ * *full* source (`\begin{ENV}` … `\end{ENV}` included — MathJax processes
+ * the environment itself), or null when ENV isn't a recognised math
+ * environment or there's no matching `\end`.
+ *
+ * @param {string} text
+ * @param {number} start - Offset of the `\` in `\begin{`.
+ * @returns {MathSegment | null}
+ */
+function scanEnvironment(text, start) {
+  const nameStart = start + '\\begin{'.length;
+  const nameEnd = text.indexOf('}', nameStart);
+  if (nameEnd === -1) return null;
+  const name = text.slice(nameStart, nameEnd);
+  const base = name.endsWith('*') ? name.slice(0, -1) : name;
+  if (!MATH_ENVIRONMENTS.has(base)) return null;
+  // The matching close. These top-level environments don't nest the same
+  // name, so the first `\end{NAME}` after the opener is the right one.
+  const closer = `\\end{${name}}`;
+  const closeAt = text.indexOf(closer, nameEnd + 1);
+  if (closeAt === -1) return null;
+  const end = closeAt + closer.length;
+  return { start, end, kind: 'block', body: text.slice(start, end) };
 }
 
 /**
