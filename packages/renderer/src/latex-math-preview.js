@@ -266,6 +266,7 @@ export function createLatexMathPreview(options) {
         start: segment.start,
         end: segment.end,
         kind: segment.kind,
+        key: segment.body,
         el: () => widgetNode(segment) ?? invalidNode(segment),
       });
     }
