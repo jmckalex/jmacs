@@ -1181,6 +1181,102 @@ export class PdfView extends ViewElement {
     return out;
   }
 
+  /**
+   * Forward SyncTeX: scroll page `page` into view and flash a transient
+   * highlight at the source position SyncTeX reported. Coordinates are in
+   * PDF points with SyncTeX's convention — `(x, y)` is the click point and
+   * the optional `box` `{h, v, w, h_}` (anchor `h`,`v` plus size `W`,`H`)
+   * is the surrounding box; we draw the box when given, else a small
+   * marker at `(x, y)`.
+   *
+   * Coordinate path: SyncTeX measures `v` from the page TOP, while PDF.js
+   * uses PDF-native coordinates (origin bottom-left, y up). We flip with
+   * `pageHeight - v` and run it through the page's viewport
+   * `convertToViewportPoint`, which yields CSS-px coordinates inside the
+   * page container (the container is CSS-px sized — DPR scales only the
+   * canvas backing store, not layout — so no DPR factor enters here). The
+   * highlight is an absolutely-positioned div in the page container; it
+   * fades out via a CSS transition and is removed after the fade.
+   *
+   * Pragmatic about un-rendered pages: it forces a render of the target
+   * page so the container has its real size, then scrolls + places the
+   * highlight. A no-op when no document is loaded or the page is out of
+   * range.
+   *
+   * @param {number} page - 1-based PDF page number.
+   * @param {number} x - Click-point x (PDF points).
+   * @param {number} y - Click-point y (PDF points, from page top).
+   * @param {{ h?: number, v?: number, w?: number, h_?: number } | null} [box]
+   *   Optional box anchor/size (PDF points): `h`,`v` top-left from page
+   *   top, `w`,`h_` width/height. When present, the highlight covers it.
+   * @returns {Promise<void>}
+   */
+  async syncTexShow(page, x, y, box) {
+    const pdfDoc = this._pdfDoc;
+    if (pdfDoc === null) return;
+    const clamped = Math.max(1, Math.min(page, pdfDoc.numPages));
+    const entry = this._pages.find((p) => p.pageNum === clamped);
+    if (entry === undefined) return;
+
+    // Bring the page on screen and ensure it's rendered so the container
+    // carries its real CSS-px size (and `entry.page`/`entry.scale` exist).
+    this._gotoPage(clamped, { instant: true });
+    await this._renderPage(entry);
+    if (entry.page === null) return;
+
+    const scale = entry.scale || this._scale;
+    const pageViewport = entry.page.getViewport({ scale });
+    // The page's intrinsic height in PDF points (origin bottom-left).
+    const baseViewBox = entry.page.getViewport({ scale: 1 }).viewBox;
+    const pageHeightPts = baseViewBox[3] - baseViewBox[1];
+
+    // SyncTeX v is from the TOP; PDF-native y is from the BOTTOM. Flip,
+    // then convert to viewport (CSS-px, top-left origin) coordinates.
+    const anchorH = (box && typeof box.h === 'number') ? box.h : x;
+    const anchorV = (box && typeof box.v === 'number') ? box.v : y;
+    const [vx, vy] = pageViewport.convertToViewportPoint(
+      anchorH,
+      pageHeightPts - anchorV,
+    );
+
+    const boxW = box && typeof box.w === 'number' && box.w > 0 ? box.w : 0;
+    const boxH = box && typeof box.h_ === 'number' && box.h_ > 0 ? box.h_ : 0;
+    // Box size scales linearly with the render scale (points -> CSS px).
+    const cssW = boxW > 0 ? boxW * scale : 24;
+    const cssH = boxH > 0 ? boxH * scale : 14;
+
+    const doc = this.ownerDocument;
+    const hl = doc.createElement('div');
+    hl.className = 'pdf-synctex-highlight';
+    hl.style.position = 'absolute';
+    // `vy` is the top of the box (we flipped v, which is the box top);
+    // when no box height, centre a small marker on the point instead.
+    const left = boxW > 0 ? vx : vx - cssW / 2;
+    const top = boxH > 0 ? vy : vy - cssH / 2;
+    hl.style.left = `${left}px`;
+    hl.style.top = `${top}px`;
+    hl.style.width = `${cssW}px`;
+    hl.style.height = `${cssH}px`;
+    entry.container.appendChild(hl);
+
+    // Force a layout read so the appended element starts opaque, then
+    // trip the fade on the next frame (CSS transitions the opacity).
+    // eslint-disable-next-line no-unused-expressions
+    hl.offsetWidth;
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        hl.classList.add('is-fading');
+        hl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      });
+    } else {
+      hl.classList.add('is-fading');
+    }
+    // Remove after the fade completes (CSS transition is ~1.2s).
+    setTimeout(() => {
+      if (hl.parentNode !== null) hl.parentNode.removeChild(hl);
+    }, 1400);
+  }
+
   // --- internal: state + teardown ------------------------------------
 
   /** Write the current page + zoom back to the view's top-level fields

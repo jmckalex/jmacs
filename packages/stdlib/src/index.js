@@ -17,6 +17,7 @@ export { createViewPrimitives } from './view-primitives.js';
 export { createPanePrimitives } from './pane-primitives.js';
 export { createLatexPrimitives } from './latex-primitives.js';
 export { scanLatex } from './latex-scan.js';
+export { parseSynctexView } from './synctex-parse.js';
 export { pathDirname, pathBasename, pathResolve, normalizePath } from './path-resolve.js';
 
 /**
@@ -122,6 +123,13 @@ export const STDLIB_FILES = Object.freeze([
   // for list detection, extends `latex-c-c-map` (C-c C-n/C-r/%), and adds
   // two top-level keys (M-RET, ") to latex-mode-map.
   'latex-nav.lisp',
+  // AUCTeX Phase 6 — SyncTeX forward & inverse search. Loads after
+  // latex-compile.lisp (it redefines `latex-view` to fold in forward
+  // search) and after reftex.lisp (so `latex-master-file` is the
+  // master-detecting R1 version). Defines `latex-forward-search` and
+  // `latex-synctex-inverse`; adds no keybindings of its own (forward is
+  // folded into C-c C-v; inverse is the host's Option-click callback).
+  'latex-synctex.lisp',
   // The structured (grouped) LaTeX mode menu. Loads LAST among the
   // LaTeX/RefTeX files: it names every latex-* / reftex-* command in its
   // sections, so all those symbols must already exist. Uses the generic

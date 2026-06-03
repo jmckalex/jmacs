@@ -2386,6 +2386,27 @@ pdf-view,
   background: rgba(255, 150, 0, 0.75);
 }
 
+/* Forward SyncTeX (C-c C-v) flash: a translucent accent box the viewer
+   drops at the source line's typeset spot, then fades out. It sits over
+   the page container in CSS-px coords; pointer-events are off so it never
+   eats an Option-click. The `.is-fading` class trips the opacity
+   transition once the element is in the DOM. */
+.pdf-synctex-highlight {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(109, 164, 255, 0.40);
+  border: 1px solid rgba(109, 164, 255, 0.85);
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(109, 164, 255, 0.6);
+  opacity: 1;
+  transition: opacity 1.2s ease-out;
+  z-index: 5;
+}
+
+.pdf-synctex-highlight.is-fading {
+  opacity: 0;
+}
+
 .pdf-status {
   flex: 0 0 auto;
   padding: 4px 10px;

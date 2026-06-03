@@ -26,6 +26,7 @@ import { arrayToList, keyword, NIL } from '@editor/lisp';
 
 import { scanLatex } from './latex-scan.js';
 import { parseLatexLog } from './latex-log-parse.js';
+import { parseSynctexView } from './synctex-parse.js';
 import { pathDirname, pathBasename, pathResolve } from './path-resolve.js';
 
 /**
@@ -131,6 +132,21 @@ export function createLatexPrimitives() {
         })
       );
       return arrayToList(records);
+    },
+
+    // `(parse-synctex-view STDOUT)` — parse `synctex view` output into a
+    // hash-map `{:page :x :y :h :v :W :H}` (PDF points, :page 1-based),
+    // or nil when STDOUT has no parsable record. Drives forward search:
+    // the box's :h/:v anchor and :W/:H size place the transient highlight.
+    'parse-synctex-view': (args) => {
+      const box = parseSynctexView(typeof args[0] === 'string' ? args[0] : '');
+      if (box === null) return NIL;
+      return record({
+        page: box.page,
+        x: box.x, y: box.y,
+        h: box.h, v: box.v,
+        W: box.W, H: box.H,
+      });
     },
 
     // `(path-dirname PATH)` — the directory portion of PATH (no
