@@ -120,3 +120,28 @@ export {
   createColourSwatches,
   replaceLiteralInBuffer,
 } from './colour-swatches.js';
+export {
+  scanMathSegments,
+  segmentsFromNodeRanges,
+  pointInsideSegment,
+  segmentContainingPoint,
+  isEmptyBody,
+} from './math-segments.js';
+export {
+  typesetMath,
+  isMathJaxReady,
+  whenMathJaxReady,
+  cacheKey,
+  createMathCache,
+  typesetCached,
+} from './typeset-math.js';
+export {
+  computeMathLayout,
+  rangeRevealedByAnyCursor,
+  spliceInlineWidgets,
+} from './math-layout.js';
+export {
+  createLatexMathPreview,
+  planSegments,
+  detectLeave,
+} from './latex-math-preview.js';

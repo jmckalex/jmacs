@@ -26,6 +26,7 @@ import { highlightBuffer, highlightLine, languageForName } from './highlight.js'
 import { matchingBracket } from './brackets.js';
 import { createColourSwatches } from './colour-swatches.js';
 import { foldRanges, indexFoldRanges, hiddenLines } from './folding.js';
+import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
 
 /** Keys that are only modifiers — never a keystroke on their own. */
 const MODIFIER_KEYS = new Set([
@@ -120,6 +121,17 @@ export function createEditorView(buffer, container, options = {}) {
     typeof options.getTabWidth === 'function'
       ? options.getTabWidth
       : () => 4;
+
+  // Replaced-range widgets (math preview is the first consumer). A
+  // function returning the current list of `{ start, end, kind, el }`
+  // ranges, where `el()` returns the widget Node to mount. Read fresh
+  // on every render so the controller can swap widgets (re-typeset on
+  // edit) without rewiring. Defaults to none, so the existing
+  // text-only render path is untouched.
+  const getReplacedRanges =
+    typeof options.getReplacedRanges === 'function'
+      ? options.getReplacedRanges
+      : () => [];
 
   // The colour-swatch decorator: places a clickable swatch beside every
   // colour literal in a rendered line, and edits the buffer when a
@@ -241,14 +253,24 @@ export function createEditorView(buffer, container, options = {}) {
     return out;
   }
 
-  /** Fill a line element with its highlighted runs. */
+  /** Fill a line element with its highlighted runs. An item may be an
+   *  ordinary `{ text, face }` run or a `{ widget }` marker (an inline
+   *  replaced-range widget — a math SVG span); the widget's Node is
+   *  appended in place of the source characters it covers. */
   function renderRuns(lineEl, runs) {
-    if (runs.length === 1 && runs[0].face === null) {
+    if (runs.length === 1 && !runs[0].widget && runs[0].face === null) {
       lineEl.textContent = runs[0].text;
       return;
     }
     for (const run of runs) {
-      if (run.face === null) {
+      if (run.widget) {
+        // `run.widget` is the originating replaced-range (it carries
+        // both the widget `el` factory and the segment offsets). Mount
+        // an inline widget span; a falsy widget node degrades to
+        // nothing (the reveal path avoids that case).
+        const span = mountWidget(run.widget, false);
+        if (span) lineEl.append(span);
+      } else if (run.face === null) {
         lineEl.append(doc.createTextNode(run.text));
       } else {
         const span = el('span', `tok-${run.face}`);
@@ -256,6 +278,42 @@ export function createEditorView(buffer, container, options = {}) {
         lineEl.append(span);
       }
     }
+  }
+
+  /**
+   * Build the DOM element for a replaced-range widget (a typeset math
+   * span/row). Calls the range's `el()` factory for the widget Node,
+   * wraps it in a positioned span, and wires a click that reveals the
+   * segment by placing point just inside the opening delimiter — the
+   * click-to-segment mapping the spec asks for. Returns null when the
+   * factory yields no node (an invalid/empty segment renders as source
+   * instead, so it should never reach here, but degrade gracefully).
+   *
+   * @param {{ start: number, end: number, el?: () => Node }} range
+   * @param {boolean} block - Block (own row) vs inline.
+   * @returns {HTMLElement | null}
+   */
+  function mountWidget(range, block) {
+    const node = typeof range.el === 'function' ? range.el() : range.el;
+    if (!node) return null;
+    const span = el(
+      'span',
+      block ? 'math-widget math-block' : 'math-widget math-inline'
+    );
+    span.append(node);
+    // A mousedown on the widget reveals it: place point just inside the
+    // opening delimiter (start + 1, strictly inside per the exclusive
+    // rule) so the next render shows the source for editing. Stop the
+    // event so the editor's own mousedown (grid-based offset) doesn't
+    // also fire and land somewhere else.
+    span.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      root.focus();
+      const target = Math.min(range.start + 1, range.end - 1);
+      activeBuffer.moveTo(target);
+    });
+    return span;
   }
 
   // The whole-buffer tree-sitter highlight is cached, so a scroll-only
@@ -272,6 +330,81 @@ export function createEditorView(buffer, container, options = {}) {
   /** @type {Int32Array | null} */
   let displayRowForLine = null;
   let displayRowCount = 0;
+  /** Visible lines that carry inline math widgets → each widget's source
+   *  column span and mounted element. Lets the cursor / selection / click
+   *  position by the widget's *measured* pixel width instead of its
+   *  source-character count (a typeset `$…$` is usually narrower than its
+   *  source, so a column past it would otherwise sit too far right).
+   *  Rebuilt each render; only visible, widget-bearing lines appear. */
+  let inlineWidgetsByLine = new Map();
+
+  /** Measured display-row count per block-math widget, keyed by its
+   *  content (the segment body). A block reserves the rows its source
+   *  *spanned* on first sight, then this records how many rows its
+   *  typeset height actually needs, so the next render reserves exactly
+   *  that — no big empty gap under a compact multi-line `align`, no
+   *  overflow under a tall single-line equation. Persists across renders;
+   *  re-measured every render, so it self-corrects on font/theme change. */
+  let blockRowsByKey = new Map();
+
+  /** Pixel x of a (visual) column on a line, accounting for inline math
+   *  widgets fully to its left whose rendered width differs from their
+   *  source span. For a line with no widget this is exactly
+   *  `column * charWidth` (i.e. `column * 1ch`), so non-math lines are
+   *  unaffected. A cursor is never *inside* a shown widget (it would be
+   *  revealed), so every widget is wholly left or right of `column`. */
+  function columnToXPx(line, column) {
+    const cw = charWidth();
+    let x = column * cw;
+    const widgets = inlineWidgetsByLine.get(line);
+    if (widgets) {
+      for (const w of widgets) {
+        if (w.toColumn <= column) {
+          const sourceW = (w.toColumn - w.fromColumn) * cw;
+          const realW = w.element ? w.element.getBoundingClientRect().width : sourceW;
+          x -= sourceW - realW;
+        }
+      }
+    }
+    return x;
+  }
+
+  /** A CSS `left`/x value for a column: the cheap `calc(… * 1ch)` for a
+   *  plain line, a measured pixel value for a widget-bearing line. */
+  function xForColumn(line, column) {
+    return inlineWidgetsByLine.has(line)
+      ? `${columnToXPx(line, column)}px`
+      : `calc(${column} * 1ch)`;
+  }
+
+  /** Inverse of `columnToXPx`: the source column nearest pixel x on a
+   *  line, accounting for inline widget widths. Plain lines fall back to
+   *  `round(x / charWidth)`. */
+  function xPxToColumn(line, xPx) {
+    const cw = charWidth();
+    const widgets = inlineWidgetsByLine.get(line);
+    if (!widgets || widgets.length === 0) {
+      return Math.max(0, Math.round(xPx / cw));
+    }
+    let px = 0;
+    let col = 0;
+    for (const w of widgets) {
+      const textPx = (w.fromColumn - col) * cw;
+      if (xPx <= px + textPx) return col + Math.max(0, Math.round((xPx - px) / cw));
+      px += textPx;
+      col = w.fromColumn;
+      const realW = w.element
+        ? w.element.getBoundingClientRect().width
+        : (w.toColumn - w.fromColumn) * cw;
+      // A click within the widget snaps to its nearer edge (clicks on the
+      // widget itself are handled separately — it reveals on mousedown).
+      if (xPx <= px + realW) return xPx < px + realW / 2 ? w.fromColumn : w.toColumn;
+      px += realW;
+      col = w.toColumn;
+    }
+    return col + Math.max(0, Math.round((xPx - px) / cw));
+  }
+
   /** Translate a buffer line number to its visible row (or hidden). */
   function rowOf(line) {
     if (!displayRowForLine || line < 0 || line >= displayRowForLine.length) {
@@ -310,6 +443,46 @@ export function createEditorView(buffer, container, options = {}) {
       if (!foldCache.endByStart.has(start)) folded.delete(start);
     }
     const hidden = hiddenLines(folded, foldCache.endByStart);
+
+    // Replaced-range widget layout (math preview). Build the line-offset
+    // model the layout needs, gather the cursor offsets that drive the
+    // exclusive reveal rule, and compute which inline runs are replaced,
+    // which lines a block widget hides, and where each block widget sits.
+    // The block-hidden lines are *merged into the fold-hidden set below*
+    // so the single display-row / cursor / scroll accounting stays the
+    // one source of truth — no parallel line-hiding bookkeeping.
+    const lineStarts = new Array(lineCount);
+    const lineLengths = new Array(lineCount);
+    {
+      let off = 0;
+      for (let i = 0; i < lineCount; i += 1) {
+        lineStarts[i] = off;
+        lineLengths[i] = lines[i].content.length;
+        off += lines[i].content.length + 1;
+      }
+    }
+    const replacedRanges = getReplacedRanges() || [];
+    const cursorPoints = getCursors().map((c) => c.point);
+    const mathLayout = computeMathLayout({
+      ranges: replacedRanges,
+      lineStarts,
+      lineLengths,
+      points: cursorPoints,
+    });
+    // Reserve a block widget's *measured* height (cached by content from a
+    // prior render) when known; the source-line span computeMathLayout
+    // returns is only the first-frame fallback — it over-reserves a
+    // compact multi-line `align` and under-reserves a tall equation.
+    for (const placement of mathLayout.blockByStartLine.values()) {
+      const k = placement.range && placement.range.key;
+      if (k != null && blockRowsByKey.has(k)) {
+        placement.rowSpan = blockRowsByKey.get(k);
+      }
+    }
+    // Merge the block-widget-hidden lines into the fold-hidden set
+    // before display rows are assigned.
+    for (const line of mathLayout.hiddenByBlock) hidden.add(line);
+
     displayRowForLine = new Int32Array(lineCount);
     let row = 0;
     for (let i = 0; i < lineCount; i += 1) {
@@ -317,7 +490,11 @@ export function createEditorView(buffer, container, options = {}) {
         displayRowForLine[i] = -1;
       } else {
         displayRowForLine[i] = row;
-        row += 1;
+        // A block-math start line reserves the rows its source spanned, so
+        // a tall typeset equation keeps its footprint instead of
+        // overflowing onto the next visible line.
+        const blk = mathLayout.blockByStartLine.get(i);
+        row += blk ? blk.rowSpan : 1;
       }
     }
     displayRowCount = row;
@@ -378,6 +555,8 @@ export function createEditorView(buffer, container, options = {}) {
     // Walk every line so we can keep `lineStartOffset` accurate; skip
     // hidden lines and only emit DOM for lines whose display row is in
     // the viewport window.
+    inlineWidgetsByLine = new Map();
+    const blockMeasure = [];
     const lineEls = [];
     const numberEls = [];
     let lineStartOffset = 0;
@@ -386,10 +565,62 @@ export function createEditorView(buffer, container, options = {}) {
       if (displayRow !== -1 && displayRow >= firstRow && displayRow < lastRow) {
         const lineEl = el('div', 'editor-line');
         lineEl.style.top = `calc(${displayRow} * 1lh)`;
-        const runs = perLine
+        let runs = perLine
           ? perLine[index] ?? []
           : highlightLine(lines[index].content, language);
-        renderRuns(lineEl, runs);
+        // Splice in any inline math widgets that fall on this line,
+        // replacing the source characters they cover. Block widgets are
+        // emitted as a separate row below (the source lines they span
+        // are already hidden).
+        const inlinePlacements = mathLayout.inlineByLine.get(index);
+        if (inlinePlacements && inlinePlacements.length > 0) {
+          runs = spliceInlineWidgets(runs, inlinePlacements);
+        }
+        const blockPlacement = mathLayout.blockByStartLine.get(index);
+        if (blockPlacement) {
+          // The start line holds the block's opening delimiter. Show only
+          // the source *before* the delimiter (any prefix text on that
+          // line), then the widget — so the raw `$$` / `\[` isn't drawn.
+          // The body lines below are already hidden (`hiddenByBlock`).
+          if (blockPlacement.startColumn > 0) {
+            runs = spliceInlineWidgets(runs, [
+              {
+                fromColumn: blockPlacement.startColumn,
+                toColumn: Number.MAX_SAFE_INTEGER,
+                range: { el: null, start: 0, end: 0 },
+              },
+            ]).filter((r) => !r.widget); // drop the placeholder marker
+          } else {
+            runs = [];
+          }
+          renderRuns(lineEl, runs);
+          const widget = mountWidget(blockPlacement.range, true);
+          if (widget) {
+            lineEl.append(widget);
+            blockMeasure.push({ key: blockPlacement.range.key, el: widget });
+          }
+          lineEl.classList.add('has-block-math');
+          // Reserve the rows the source spanned (see math-layout's
+          // rowSpan) so the equation doesn't overflow onto the next line.
+          lineEl.style.height = `calc(${blockPlacement.rowSpan} * 1lh)`;
+        } else {
+          renderRuns(lineEl, runs);
+        }
+        // Record the inline math widgets mounted on this line (column
+        // order matches DOM order), so the cursor/selection/click can
+        // position by their measured width rather than source columns.
+        if (inlinePlacements && inlinePlacements.length > 0 && !blockPlacement) {
+          const widgetEls = lineEl.querySelectorAll('.math-widget.math-inline');
+          const captured = [];
+          for (let k = 0; k < inlinePlacements.length && k < widgetEls.length; k += 1) {
+            captured.push({
+              fromColumn: inlinePlacements[k].fromColumn,
+              toColumn: inlinePlacements[k].toColumn,
+              element: widgetEls[k],
+            });
+          }
+          if (captured.length > 0) inlineWidgetsByLine.set(index, captured);
+        }
         // Folded header: tack a `…` glyph plus the closing line's
         // SYNTAX-HIGHLIGHTED text on the end so the user sees both
         // ends of the collapsed structure at a glance with proper
@@ -460,6 +691,25 @@ export function createEditorView(buffer, container, options = {}) {
     }
     linesEl.replaceChildren(...lineEls);
     gutter.replaceChildren(...numberEls);
+
+    // The block widgets are now laid out: measure each one's real height
+    // and remember how many rows it needs (height + the .math-block top/
+    // bottom margin, rounded up to whole lines). When that differs from
+    // what we reserved this frame, re-render so the next frame reserves
+    // exactly the right vertical space. Converges in one extra frame and
+    // then stays cached, so there's no flicker on steady state.
+    let rowsChanged = false;
+    for (const { key, el: widgetEl } of blockMeasure) {
+      if (key == null) continue;
+      const h = widgetEl.getBoundingClientRect().height;
+      if (h <= 0) continue;
+      const rows = Math.max(1, Math.ceil((h + 0.4 * lineHeight) / lineHeight));
+      if (blockRowsByKey.get(key) !== rows) {
+        blockRowsByKey.set(key, rows);
+        rowsChanged = true;
+      }
+    }
+    if (rowsChanged) schedule();
   }
 
   /** Render the selection highlight, one rectangle per touched line,
@@ -473,13 +723,22 @@ export function createEditorView(buffer, container, options = {}) {
           if (row === -1) return null;
           const span = rect.toColumn - rect.fromColumn;
           const box = el('div', 'editor-selection-rect');
-          box.style.left = `calc(${rect.fromColumn} * 1ch)`;
           box.style.top = `calc(${row} * 1lh)`;
           // A selection that runs past this line shows its newline as a
-          // sliver of trailing highlight.
-          box.style.width = rect.toLineEnd
-            ? `calc(${span} * 1ch + 0.5ch)`
-            : `calc(${span} * 1ch)`;
+          // sliver of trailing highlight. On a line with inline math
+          // widgets, measure the endpoints so the highlight tracks the
+          // typeset width rather than the source-character columns.
+          if (inlineWidgetsByLine.has(rect.line)) {
+            const leftPx = columnToXPx(rect.line, rect.fromColumn);
+            const rightPx = columnToXPx(rect.line, rect.toColumn);
+            box.style.left = `${leftPx}px`;
+            box.style.width = `${rightPx - leftPx + (rect.toLineEnd ? charWidth() * 0.5 : 0)}px`;
+          } else {
+            box.style.left = `calc(${rect.fromColumn} * 1ch)`;
+            box.style.width = rect.toLineEnd
+              ? `calc(${span} * 1ch + 0.5ch)`
+              : `calc(${span} * 1ch)`;
+          }
           return box;
         })
         .filter((b) => b !== null)
@@ -546,7 +805,7 @@ export function createEditorView(buffer, container, options = {}) {
     const primaryDisplayRow = primaryRow === -1
       ? rowOf(findVisibleAncestorLine(primaryPos.line))
       : primaryRow;
-    cursorEl.style.left = `calc(${primaryPos.column} * 1ch)`;
+    cursorEl.style.left = xForColumn(primaryPos.line, primaryPos.column);
     cursorEl.style.top = `calc(${primaryDisplayRow} * 1lh)`;
     currentLineEl.style.top = `calc(${primaryDisplayRow} * 1lh)`;
 
@@ -566,7 +825,7 @@ export function createEditorView(buffer, container, options = {}) {
       const row = rowOf(line);
       const displayRow = row === -1 ? rowOf(findVisibleAncestorLine(line)) : row;
       const extra = secondaryCursors[i];
-      extra.style.left = `calc(${column} * 1ch)`;
+      extra.style.left = xForColumn(line, column);
       extra.style.top = `calc(${displayRow} * 1lh)`;
     }
 
@@ -662,15 +921,23 @@ export function createEditorView(buffer, container, options = {}) {
     // multiple visual columns, so clicking past a tab needs the
     // inverse-tab-stop math (charIndexAtVisualColumn) to land on the
     // right insertion point.
-    const visCol = Math.max(0, Math.round((clientX - box.left) / charWidth()));
-    const tabW = getTabWidth();
-    let column = visCol;
-    if (tabW > 0) {
-      const lineMeta = activeBuffer.lineAt(activeBuffer.offsetAt(line, 0));
-      const lineText = typeof lineMeta.text === 'string'
-        ? lineMeta.text
-        : activeBuffer.slice(lineMeta.from, lineMeta.to);
-      column = charIndexAtVisualColumn(lineText, visCol, tabW);
+    const px = clientX - box.left;
+    let column;
+    if (inlineWidgetsByLine.has(line)) {
+      // On a line with inline math widgets, invert the measured layout so
+      // a click past the (narrow) typeset math lands on the right offset.
+      column = xPxToColumn(line, px);
+    } else {
+      const visCol = Math.max(0, Math.round(px / charWidth()));
+      const tabW = getTabWidth();
+      column = visCol;
+      if (tabW > 0) {
+        const lineMeta = activeBuffer.lineAt(activeBuffer.offsetAt(line, 0));
+        const lineText = typeof lineMeta.text === 'string'
+          ? lineMeta.text
+          : activeBuffer.slice(lineMeta.from, lineMeta.to);
+        column = charIndexAtVisualColumn(lineText, visCol, tabW);
+      }
     }
     return activeBuffer.offsetAt(line, column);
   }
@@ -693,21 +960,21 @@ export function createEditorView(buffer, container, options = {}) {
   }
 
   /**
-   * Walk up from a hidden line to its enclosing folded header — the
-   * one visible ancestor. Used to keep the cursor display sensible
-   * when point lands inside a fold (the buffer doesn't know about
-   * folds; only the view does).
+   * Map a hidden line to the nearest visible line above it — the one
+   * visible ancestor to draw the cursor at. Keeps the cursor display
+   * (and scroll-follow) sensible when point lands on a line the view has
+   * hidden but the buffer knows nothing about: a folded region (→ its
+   * header) or the body/closing lines a block-math widget collapses
+   * (→ the equation's start line, which carries the widget). Walking up
+   * to the first non-hidden line covers both uniformly; previously this
+   * only consulted the fold index, so a cursor on a block-math-hidden
+   * line stayed at row -1 and scrolled the viewport to the top.
    */
   function findVisibleAncestorLine(line) {
     if (!displayRowForLine || displayRowForLine[line] !== -1) return line;
-    const folded = foldsFor(activeBuffer);
-    let best = line;
-    for (const start of folded) {
-      const end = foldCache.endByStart.get(start);
-      if (end === undefined) continue;
-      if (line > start && line <= end && start < best) best = start;
-    }
-    return best;
+    let l = line;
+    while (l > 0 && displayRowForLine[l] === -1) l -= 1;
+    return l;
   }
 
   // --- folding controls -------------------------------------------------
@@ -785,9 +1052,12 @@ export function createEditorView(buffer, container, options = {}) {
     return displayRowCount;
   }
 
-  /** The pixel width of one character, measured from a rendered line. */
+  /** The pixel width of one character, measured from a rendered line.
+   *  Skips lines carrying a math widget — the widget's width and its
+   *  text content (the SVG / assistive MathML) would skew the average. */
   function charWidth() {
     for (const lineEl of linesEl.children) {
+      if (lineEl.querySelector('.math-widget')) continue;
       const length = lineEl.textContent.length;
       if (length > 0) return lineEl.getBoundingClientRect().width / length;
     }

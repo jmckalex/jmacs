@@ -90,6 +90,7 @@ import {
   formatBibliography,
   formatCitation,
   citationKeys,
+  createLatexMathPreview,
   TextView,
   TablineView,
 } from '@editor/renderer';
@@ -106,6 +107,7 @@ import {
   lispToJsonOverrides,
 } from './face-overrides.js';
 import { applyFaceStyles } from './face-styles.js';
+import { isLatexMathPreviewActive } from './latex-math-preview-host.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
@@ -4342,6 +4344,119 @@ function refreshModeMenu() {
 /** @type {Map<string, ReturnType<typeof createEditorView>>} */
 const editorViewByPaneId = new Map();
 
+// --- LaTeX math preview (latex-math-preview-mode) -----------------------
+//
+// The renderer owns the typesetting controller (createLatexMathPreview);
+// the host owns its lifecycle, one per leaf pane (keyed by leaf id, like
+// editorViewByPaneId). A controller is created lazily the first time a
+// leaf's buffer is seen with the mode on, reused while the mode stays on
+// (its body/typeset cache persists across renders), and disposed when the
+// leaf's editor view is torn down. The mode toggle itself needs no
+// special path: enabling/disabling the minor mode sets buffer.minorModes,
+// which emits an onChange the renderer is already subscribed to, so the
+// view re-renders and re-reads getMathReplacedRanges below — which now
+// sees the mode on (ranges) or off (empty).
+
+/** @type {Map<string, ReturnType<typeof createLatexMathPreview>>} */
+const mathPreviewByPaneId = new Map();
+
+/** The stdlib's `latex-math-preview-mode` map, resolved once the keymap
+ *  (and so the stdlib) is loaded. Compared by identity against a
+ *  buffer's minor-mode list. Null until resolved / if resolution fails. */
+let latexMathPreviewMode = null;
+/** Whether we've attempted to resolve `latexMathPreviewMode` yet. */
+let latexMathPreviewModeResolved = false;
+
+/** Resolve (once) the `latex-math-preview-mode` map from the stdlib. */
+function resolveLatexMathPreviewMode() {
+  if (latexMathPreviewModeResolved || !keymapReady) return latexMathPreviewMode;
+  latexMathPreviewModeResolved = true;
+  try {
+    latexMathPreviewMode = interpreter.evaluate('latex-math-preview-mode');
+  } catch {
+    // The mode is defined in latex.lisp; if it isn't loaded the feature
+    // is simply unavailable and we leave the reference null (→ inactive).
+    latexMathPreviewMode = null;
+  }
+  return latexMathPreviewMode;
+}
+
+/** The math-preview replaced ranges for LEAF's view this render, or an
+ *  empty list when the leaf's buffer does not have latex-math-preview-mode
+ *  on (or the feature isn't available). Called by the leaf's renderer on
+ *  every render via its `getReplacedRanges` option.
+ *
+ *  When the mode is on, this lazily creates / reuses the leaf's controller,
+ *  runs its per-render `update()` (point tracking + the MathJax-startup
+ *  one-shot re-render arm), and returns `ranges()`. When the mode goes off,
+ *  it returns `[]` so the view shows plain source; the idle controller is
+ *  disposed so its cache is released.
+ *
+ *  @param {*} leaf - The leaf pane whose view is rendering.
+ *  @returns {Array<{start:number,end:number,kind:'inline'|'block',el?:() => Node}>}
+ */
+function getMathReplacedRanges(leaf) {
+  const mode = resolveLatexMathPreviewMode();
+  // Peel a tabline wrapper to the active text child; the buffer/point
+  // live on the text view, exactly as the getPoint/getCursors closures do.
+  const view = peelTabline(leaf.view);
+  const isText = view && !isTablineView(view) && view.kind === 'text';
+  const buffer = isText ? view.buffer : null;
+  if (!buffer || !isLatexMathPreviewActive(buffer, mode)) {
+    // Mode off (or no buffer): drop any idle controller and show source.
+    disposeMathPreviewForLeaf(leaf);
+    return [];
+  }
+  let controller = mathPreviewByPaneId.get(leaf.id);
+  if (!controller) {
+    // The controller reads text / point fresh through these closures,
+    // and the closures re-peel `leaf.view` on each call — so the same
+    // controller follows the leaf across a view/buffer swap or a
+    // multi-cursor change without needing to be rebuilt. (A swap to a
+    // non-text view is handled above: getMathReplacedRanges returns []
+    // for it, and the controller never runs.) The buffer's body/typeset
+    // cache is keyed by math-body text, so it stays valid across swaps.
+    const peeledTextView = () => {
+      const v = peelTabline(leaf.view);
+      return v && !isTablineView(v) && v.kind === 'text' ? v : null;
+    };
+    controller = createLatexMathPreview({
+      getText: () => {
+        const v = peeledTextView();
+        return v && v.buffer ? v.buffer.text : '';
+      },
+      getPoints: () => {
+        const v = peeledTextView();
+        if (!v) return [];
+        const cursors = Array.isArray(v.cursors) ? v.cursors : null;
+        if (cursors && cursors.length > 0) {
+          return cursors.map((c) => c.point);
+        }
+        return [typeof v.point === 'number' ? v.point : 0];
+      },
+      doc: document,
+      // The startup one-shot: once MathJax finishes loading, ask the
+      // leaf's renderer to redraw so segments left as source during
+      // startup flip to typeset widgets.
+      requestRender: () => {
+        const instance = editorViewByPaneId.get(leaf.id);
+        if (instance) instance.setView(leaf.view);
+      },
+    });
+    mathPreviewByPaneId.set(leaf.id, controller);
+  }
+  // Per-render bookkeeping (segment-under-point tracking, MathJax-ready
+  // arm) must run before ranges() reads.
+  controller.update();
+  return controller.ranges();
+}
+
+/** Drop the math-preview controller bound to LEAF, if any. Releases its
+ *  typeset cache. Safe to call when none exists. */
+function disposeMathPreviewForLeaf(leaf) {
+  mathPreviewByPaneId.delete(leaf.id);
+}
+
 /** The leaf pane whose view is currently focused. Used to resolve
  *  `editorView` callsites that operate on the "current" instance. */
 function focusedTextLeafId() {
@@ -4411,6 +4526,10 @@ function ensureEditorViewForLeaf(leaf) {
       }];
     },
     getTabWidth: () => currentTabWidth,
+    // Per-view math preview: the renderer reads this fresh each render
+    // and merges the ranges into its replaced-range / fold layout. It
+    // returns [] unless this leaf's buffer has latex-math-preview-mode on.
+    getReplacedRanges: () => getMathReplacedRanges(leaf),
   });
   instance.setView(leaf.view);     // populates pending buffer/view
   paneEl.append(instance);          // triggers connectedCallback → mount
@@ -4425,6 +4544,8 @@ function disposeEditorViewForLeaf(leaf) {
   if (!instance) return;
   instance.destroy();
   editorViewByPaneId.delete(leaf.id);
+  // Release the leaf's math-preview controller (and its typeset cache).
+  disposeMathPreviewForLeaf(leaf);
 }
 
 // The "current" editor view — the instance bound to the focused leaf

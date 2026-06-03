@@ -621,6 +621,74 @@ text-view {
   margin-left: 0.2ch;
 }
 
+/* --- LaTeX math preview widgets ---------------------------------------
+   A replaced-range widget: typeset MathJax SVG shown in place of the
+   source. Inline widgets sit in the text line; block widgets are their
+   own row at the equation's start line (the body source lines are
+   hidden, folding-style). Clicking either reveals the source for
+   editing (point lands just inside the opening delimiter). */
+.math-widget {
+  cursor: pointer;
+}
+.math-widget.math-inline {
+  /* Transparent wrapper. MathJax computes a per-formula baseline offset
+     (a `vertical-align` on its container) so inline math sits on the
+     surrounding text baseline; a `vertical-align: middle` here used to
+     override that, centring the box on the x-height and lifting math
+     with subscript descenders (e.g. w_{ij}) above the baseline. Leaving
+     the wrapper `display: inline` lets the container's own alignment
+     reach the text baseline. */
+  display: inline;
+}
+.math-widget.math-inline mjx-container {
+  /* MathJax's stylesheet (which we don't load) makes the container an
+     inline-block; do it here so its `vertical-align` aligns the math. */
+  display: inline-block;
+}
+.math-widget.math-block {
+  display: block;
+  /* Centre display math, like a typeset \[ … \]. */
+  text-align: center;
+  margin: 0.2lh 0;
+}
+.math-widget mjx-container {
+  /* MathJax sizes the SVG itself; never let it spill the editor width. */
+  max-width: 100%;
+}
+/* MathJax's SVG output ships an assistive-MathML copy of each formula
+   for screen readers. MathJax normally hides it via a stylesheet it
+   injects when it typesets a document — but we build SVGs with
+   `tex2svg()` and mount them ourselves, so that stylesheet is never
+   present, and Chromium (which renders MathML natively) paints the copy
+   visibly, doubling every formula. Reinstate MathJax's own
+   visually-hidden treatment: the node stays in the DOM for assistive
+   tech, but is clipped off-screen. */
+mjx-assistive-mml {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  clip: rect(1px, 1px, 1px, 1px);
+  clip-path: inset(50%);
+  padding: 1px 0 0 0 !important;
+  border: 0 !important;
+  display: block !important;
+  width: auto !important;
+  overflow: hidden !important;
+  user-select: none;
+}
+mjx-assistive-mml[display='block'] {
+  width: 100% !important;
+}
+
+/* Empty or invalid math (empty body, or MathJax parse error): the
+   source is rendered (not a broken widget) with a spell-check-style red
+   wavy underline so the user can see and fix it. */
+.tok-math-invalid,
+.math-invalid {
+  text-decoration: underline wavy var(--tok-error, #e06c75);
+  text-decoration-skip-ink: none;
+}
+
 .editor-content {
   position: relative;
   flex: 1 1 auto;
@@ -680,6 +748,15 @@ text-view {
    * --tab-width var on the root element when the setting changes). */
   tab-size: var(--tab-width, 4);
   -moz-tab-size: var(--tab-width, 4);
+}
+
+/* A block (display) math widget line. Its height is reserved inline to
+   the block's source-line span (so a tall equation doesn't overflow onto
+   the next line); `right: 0` stretches the line to the full text width
+   (it's otherwise shrink-to-fit) so `.math-block`'s `text-align: center`
+   actually has room to centre the equation. */
+.editor-line.has-block-math {
+  right: 0;
 }
 
 /* --- cursor ------------------------------------------------------------ */
