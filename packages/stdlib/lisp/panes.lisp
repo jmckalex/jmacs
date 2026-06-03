@@ -11,12 +11,29 @@
 ;;; the Emacs-style C-x 2 / 3 / 0 / 1 / o bindings, and on
 ;;; C-x C-{left,right,up,down} for spatial pane navigation).
 
+;; --- split placeholder -------------------------------------------------
+;; Splitting a pane no longer silently clones the current view into the
+;; new pane (the root of the "four copies in the View List" bug).
+;; Instead the new pane shows a *placeholder* chooser asking what it
+;; should hold: open a file (o), clone the previous view (c), start a new
+;; file (s), or run a command (r). Enter performs the default action,
+;; which this setting controls.
+(defgroup 'panes 'jmacs "Pane splitting and the split placeholder.")
+(defcustom *placeholder-default-action* 'clone :choice
+  :group 'panes
+  :options '(open clone new command none)
+  :doc "What Enter does in a fresh split's placeholder chooser: one of
+   'open (find a file), 'clone (duplicate the originating view — the
+   default), 'new (a fresh *scratch* view), 'command (drop into the
+   run-command input), or 'none (Enter does nothing).")
+
 (defcommand add-pane ()
   "Enter the visual add-pane macro. An overlay over the editor area
    highlights every splitter and the four outer borders; click one to
-   insert a fresh pane at that location. The new pane gets a duplicate
-   of the focused view (text → shared buffer, fresh point; non-text →
-   `*scratch*`) and takes focus.
+   insert a fresh pane at that location. The new pane shows a
+   *placeholder* chooser (open a file / clone the previous view / start
+   a new file / run a command) and **takes focus**, so the keyboard is
+   ready to answer it.
 
    A click on a splitter inserts a new sibling along that split's axis
    (three equal panes from the original two). A click on a border wraps
@@ -26,9 +43,10 @@
   (enter-add-pane-mode!))
 
 (defcommand split-horizontal ()
-  "Split the current pane side-by-side. The originating pane keeps
-   focus; the new pane gets a duplicate view over the same buffer
-   (text views) or the `*scratch*` view (non-text views).
+  "Split the current pane side-by-side. **Focus moves to the new pane**,
+   which shows a placeholder chooser asking what it should hold (open a
+   file, clone the previous view, start a new file, or run a command);
+   Enter performs `*placeholder-default-action*` (clone by default).
 
    With no prefix-arg (the default) the new pane appears to the
    *right*. With `C-u` prefix it appears to the *left*. Bound to
@@ -37,9 +55,9 @@
     (split-horizontal! 0.5 side)))
 
 (defcommand split-vertical ()
-  "Split the current pane top-and-bottom. The originating pane keeps
-   focus; the new pane gets a duplicate view (text) or `*scratch*`
-   (non-text).
+  "Split the current pane top-and-bottom. **Focus moves to the new
+   pane**, which shows a placeholder chooser asking what it should hold;
+   Enter performs `*placeholder-default-action*` (clone by default).
 
    With no prefix-arg (the default) the new pane appears *below*.
    With `C-u` prefix it appears *above*. Bound to `C-x 2`."

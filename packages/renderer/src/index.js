@@ -71,6 +71,14 @@ export {
   moveItem,
 } from './notebook-view.js';
 export { ViewListView, kindLabel, fileLabel } from './view-list-view.js';
+export { PlaceholderView } from './placeholder-view.js';
+export {
+  PLACEHOLDER_ACTIONS,
+  DEFAULT_PLACEHOLDER_ACTION,
+  resolvePlaceholderAction,
+  cloneTargetForKind,
+  isPlaceholderView,
+} from './placeholder-actions.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,
