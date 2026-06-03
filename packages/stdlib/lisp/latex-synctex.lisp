@@ -172,15 +172,12 @@
            ((not (file-exists? pdf))
             (show-status! "latex-view: no PDF yet — compile with C-c C-c"))
            (else
+            ;; Open the PDF beside the source if it isn't already shown.
+            ;; No reload here: the compile auto-reloads fresh bytes, and a
+            ;; reload would re-render and fight the forward-search scroll.
             (when (nil? (-latex-find-view-by-file pdf))
-              ;; Not on screen yet: split the source pane and open the PDF
-              ;; beside it (same as the Phase-1 latex-view). When it IS on
-              ;; screen, the reload happens via forward search's caller
-              ;; chain; we still reload here to pick up fresh bytes.
               (open-file-in-split! pdf 'horizontal 'after *latex-pdf-restore*))
-            (when (not (nil? (-latex-find-view-by-file pdf)))
-              (pdf-reload! pdf))
-            ;; Now jump/scroll the (just-shown) PDF to the current line.
+            ;; Jump/scroll the (shown) PDF to the current source line + flash.
             (latex-forward-search))))))))
 
 (register-command! 'latex-view nil)
