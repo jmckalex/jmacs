@@ -113,6 +113,12 @@ export const STDLIB_FILES = Object.freeze([
   // for the unknown-key completion fallback and extends `latex-c-c-map`
   // with the C-c ~ toggle slot.
   'latex-math.lisp',
+  // AUCTeX Phase 5 — navigation & niceties (section next/prev, \begin <->
+  // \end matching jump, M-RET insert-\item, smart quotes). Loads after
+  // latex-math.lisp: it reuses latex-insert.lisp's `-latex-innermost-open-env`
+  // for list detection, extends `latex-c-c-map` (C-c C-n/C-r/%), and adds
+  // two top-level keys (M-RET, ") to latex-mode-map.
+  'latex-nav.lisp',
 ]);
 
 /**

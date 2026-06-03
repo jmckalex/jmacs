@@ -4,6 +4,42 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-03] LaTeX Phase 5 (latex-nav): "M-return" → "M-enter" binding deviation
+
+**Context**: Built AUCTeX Phase 5 (navigation & niceties) on branch
+`latex-nav`: `latex-next-section` / `latex-previous-section` (C-c C-n /
+C-c C-r), `latex-goto-matching-env` (C-c %), `latex-insert-item` (M-RET),
+`latex-smart-quote` (the `"` key). New file
+`packages/stdlib/lisp/latex-nav.lisp` + `test/latex-nav.test.js` (28
+tests). Full suite **1480 / 0 fail** (1452 baseline + 28).
+
+**Deviation (one, deliberate)**: the brief said to bind M-RET as
+`"M-return"`. The renderer's `keymap.js` normalises the Enter key's name
+to `enter` (NAMED_KEYS / NAMED_CODES), so Alt+Return arrives as
+**`"M-enter"`**, never `"M-return"` — `jukebox-view.js` already relies on
+exactly `"M-enter"`. Binding `"M-return"` would be a dead key (the feature
+would never fire), so I bound the live name `"M-enter"` and the wiring
+test asserts that. Nothing else changed. Flagging per the standing rule
+("the brief wins, but flag the conflict"); if you'd genuinely rather it be
+`"M-return"`, the feature is simply unreachable until the renderer emits
+that string.
+
+**Other choices to be aware of** (all within the brief's latitude):
+- Section nav is **self-contained** (scans `(buffer-text)` from `(point)`
+  via the pure `next/prev-section-offset`), not reftex-dependent — works
+  without a built RefTeX DB.
+- `latex-goto-matching-env` is C-c **%** (vim's match mnemonic; also the
+  TeX comment char, free here). Section prev is C-c **C-r** (C-p was
+  taken by toggle-latex-math-preview).
+- Smart-quote v1 looks only at the char before point — **no math/verbatim
+  detection** (documented in the command's docstring). Double-press (or a
+  press right after a `"`/`` ` ``/`'`) inserts a literal straight quote.
+
+**State**: committed on `latex-nav`, suite green. Not merged (per the
+"hand off for live testing before merge" rule).
+
+---
+
 ## [2026-06-03 overnight] swap-views / permute-views: built, needs live test + a keybinding call
 
 **Context**: Implemented the two commands designed in
