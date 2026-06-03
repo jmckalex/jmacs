@@ -330,6 +330,72 @@ export function createEditorView(buffer, container, options = {}) {
   /** @type {Int32Array | null} */
   let displayRowForLine = null;
   let displayRowCount = 0;
+  /** Visible lines that carry inline math widgets → each widget's source
+   *  column span and mounted element. Lets the cursor / selection / click
+   *  position by the widget's *measured* pixel width instead of its
+   *  source-character count (a typeset `$…$` is usually narrower than its
+   *  source, so a column past it would otherwise sit too far right).
+   *  Rebuilt each render; only visible, widget-bearing lines appear. */
+  let inlineWidgetsByLine = new Map();
+
+  /** Pixel x of a (visual) column on a line, accounting for inline math
+   *  widgets fully to its left whose rendered width differs from their
+   *  source span. For a line with no widget this is exactly
+   *  `column * charWidth` (i.e. `column * 1ch`), so non-math lines are
+   *  unaffected. A cursor is never *inside* a shown widget (it would be
+   *  revealed), so every widget is wholly left or right of `column`. */
+  function columnToXPx(line, column) {
+    const cw = charWidth();
+    let x = column * cw;
+    const widgets = inlineWidgetsByLine.get(line);
+    if (widgets) {
+      for (const w of widgets) {
+        if (w.toColumn <= column) {
+          const sourceW = (w.toColumn - w.fromColumn) * cw;
+          const realW = w.element ? w.element.getBoundingClientRect().width : sourceW;
+          x -= sourceW - realW;
+        }
+      }
+    }
+    return x;
+  }
+
+  /** A CSS `left`/x value for a column: the cheap `calc(… * 1ch)` for a
+   *  plain line, a measured pixel value for a widget-bearing line. */
+  function xForColumn(line, column) {
+    return inlineWidgetsByLine.has(line)
+      ? `${columnToXPx(line, column)}px`
+      : `calc(${column} * 1ch)`;
+  }
+
+  /** Inverse of `columnToXPx`: the source column nearest pixel x on a
+   *  line, accounting for inline widget widths. Plain lines fall back to
+   *  `round(x / charWidth)`. */
+  function xPxToColumn(line, xPx) {
+    const cw = charWidth();
+    const widgets = inlineWidgetsByLine.get(line);
+    if (!widgets || widgets.length === 0) {
+      return Math.max(0, Math.round(xPx / cw));
+    }
+    let px = 0;
+    let col = 0;
+    for (const w of widgets) {
+      const textPx = (w.fromColumn - col) * cw;
+      if (xPx <= px + textPx) return col + Math.max(0, Math.round((xPx - px) / cw));
+      px += textPx;
+      col = w.fromColumn;
+      const realW = w.element
+        ? w.element.getBoundingClientRect().width
+        : (w.toColumn - w.fromColumn) * cw;
+      // A click within the widget snaps to its nearer edge (clicks on the
+      // widget itself are handled separately — it reveals on mousedown).
+      if (xPx <= px + realW) return xPx < px + realW / 2 ? w.fromColumn : w.toColumn;
+      px += realW;
+      col = w.toColumn;
+    }
+    return col + Math.max(0, Math.round((xPx - px) / cw));
+  }
+
   /** Translate a buffer line number to its visible row (or hidden). */
   function rowOf(line) {
     if (!displayRowForLine || line < 0 || line >= displayRowForLine.length) {
@@ -470,6 +536,7 @@ export function createEditorView(buffer, container, options = {}) {
     // Walk every line so we can keep `lineStartOffset` accurate; skip
     // hidden lines and only emit DOM for lines whose display row is in
     // the viewport window.
+    inlineWidgetsByLine = new Map();
     const lineEls = [];
     const numberEls = [];
     let lineStartOffset = 0;
@@ -515,6 +582,21 @@ export function createEditorView(buffer, container, options = {}) {
           lineEl.style.height = `calc(${blockPlacement.rowSpan} * 1lh)`;
         } else {
           renderRuns(lineEl, runs);
+        }
+        // Record the inline math widgets mounted on this line (column
+        // order matches DOM order), so the cursor/selection/click can
+        // position by their measured width rather than source columns.
+        if (inlinePlacements && inlinePlacements.length > 0 && !blockPlacement) {
+          const widgetEls = lineEl.querySelectorAll('.math-widget.math-inline');
+          const captured = [];
+          for (let k = 0; k < inlinePlacements.length && k < widgetEls.length; k += 1) {
+            captured.push({
+              fromColumn: inlinePlacements[k].fromColumn,
+              toColumn: inlinePlacements[k].toColumn,
+              element: widgetEls[k],
+            });
+          }
+          if (captured.length > 0) inlineWidgetsByLine.set(index, captured);
         }
         // Folded header: tack a `…` glyph plus the closing line's
         // SYNTAX-HIGHLIGHTED text on the end so the user sees both
@@ -599,13 +681,22 @@ export function createEditorView(buffer, container, options = {}) {
           if (row === -1) return null;
           const span = rect.toColumn - rect.fromColumn;
           const box = el('div', 'editor-selection-rect');
-          box.style.left = `calc(${rect.fromColumn} * 1ch)`;
           box.style.top = `calc(${row} * 1lh)`;
           // A selection that runs past this line shows its newline as a
-          // sliver of trailing highlight.
-          box.style.width = rect.toLineEnd
-            ? `calc(${span} * 1ch + 0.5ch)`
-            : `calc(${span} * 1ch)`;
+          // sliver of trailing highlight. On a line with inline math
+          // widgets, measure the endpoints so the highlight tracks the
+          // typeset width rather than the source-character columns.
+          if (inlineWidgetsByLine.has(rect.line)) {
+            const leftPx = columnToXPx(rect.line, rect.fromColumn);
+            const rightPx = columnToXPx(rect.line, rect.toColumn);
+            box.style.left = `${leftPx}px`;
+            box.style.width = `${rightPx - leftPx + (rect.toLineEnd ? charWidth() * 0.5 : 0)}px`;
+          } else {
+            box.style.left = `calc(${rect.fromColumn} * 1ch)`;
+            box.style.width = rect.toLineEnd
+              ? `calc(${span} * 1ch + 0.5ch)`
+              : `calc(${span} * 1ch)`;
+          }
           return box;
         })
         .filter((b) => b !== null)
@@ -672,7 +763,7 @@ export function createEditorView(buffer, container, options = {}) {
     const primaryDisplayRow = primaryRow === -1
       ? rowOf(findVisibleAncestorLine(primaryPos.line))
       : primaryRow;
-    cursorEl.style.left = `calc(${primaryPos.column} * 1ch)`;
+    cursorEl.style.left = xForColumn(primaryPos.line, primaryPos.column);
     cursorEl.style.top = `calc(${primaryDisplayRow} * 1lh)`;
     currentLineEl.style.top = `calc(${primaryDisplayRow} * 1lh)`;
 
@@ -692,7 +783,7 @@ export function createEditorView(buffer, container, options = {}) {
       const row = rowOf(line);
       const displayRow = row === -1 ? rowOf(findVisibleAncestorLine(line)) : row;
       const extra = secondaryCursors[i];
-      extra.style.left = `calc(${column} * 1ch)`;
+      extra.style.left = xForColumn(line, column);
       extra.style.top = `calc(${displayRow} * 1lh)`;
     }
 
@@ -788,15 +879,23 @@ export function createEditorView(buffer, container, options = {}) {
     // multiple visual columns, so clicking past a tab needs the
     // inverse-tab-stop math (charIndexAtVisualColumn) to land on the
     // right insertion point.
-    const visCol = Math.max(0, Math.round((clientX - box.left) / charWidth()));
-    const tabW = getTabWidth();
-    let column = visCol;
-    if (tabW > 0) {
-      const lineMeta = activeBuffer.lineAt(activeBuffer.offsetAt(line, 0));
-      const lineText = typeof lineMeta.text === 'string'
-        ? lineMeta.text
-        : activeBuffer.slice(lineMeta.from, lineMeta.to);
-      column = charIndexAtVisualColumn(lineText, visCol, tabW);
+    const px = clientX - box.left;
+    let column;
+    if (inlineWidgetsByLine.has(line)) {
+      // On a line with inline math widgets, invert the measured layout so
+      // a click past the (narrow) typeset math lands on the right offset.
+      column = xPxToColumn(line, px);
+    } else {
+      const visCol = Math.max(0, Math.round(px / charWidth()));
+      const tabW = getTabWidth();
+      column = visCol;
+      if (tabW > 0) {
+        const lineMeta = activeBuffer.lineAt(activeBuffer.offsetAt(line, 0));
+        const lineText = typeof lineMeta.text === 'string'
+          ? lineMeta.text
+          : activeBuffer.slice(lineMeta.from, lineMeta.to);
+        column = charIndexAtVisualColumn(lineText, visCol, tabW);
+      }
     }
     return activeBuffer.offsetAt(line, column);
   }
@@ -911,9 +1010,12 @@ export function createEditorView(buffer, container, options = {}) {
     return displayRowCount;
   }
 
-  /** The pixel width of one character, measured from a rendered line. */
+  /** The pixel width of one character, measured from a rendered line.
+   *  Skips lines carrying a math widget — the widget's width and its
+   *  text content (the SVG / assistive MathML) would skew the average. */
   function charWidth() {
     for (const lineEl of linesEl.children) {
+      if (lineEl.querySelector('.math-widget')) continue;
       const length = lineEl.textContent.length;
       if (length > 0) return lineEl.getBoundingClientRect().width / length;
     }
