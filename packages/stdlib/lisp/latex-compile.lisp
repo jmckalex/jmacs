@@ -172,10 +172,19 @@
 
 ;; --- the build callback -----------------------------------------------
 
-(define (-latex-on-exit result)
-  "Handle a finished build: RESULT is `{:stdout :stderr :code}`. Write
-   the combined log to *TeX output*, parse it, store the diagnostics,
-   refresh *TeX errors*, and echo a status summary."
+(define (-latex-reload-pdf-if-open pdf)
+  "Reload the PDF at path PDF in place when it is currently open in a
+   view; a no-op otherwise. Shared by the compile success path (auto-
+   refresh after a build) and by `latex-view`."
+  (when (not (nil? (-latex-find-view-by-file pdf)))
+    (pdf-reload! pdf)))
+
+(define (-latex-on-exit result tex)
+  "Handle a finished build: RESULT is `{:stdout :stderr :code}`, TEX the
+   source that was built. Write the combined log to *TeX output*, parse
+   it, store the diagnostics, refresh *TeX errors*, echo a status summary,
+   and — on a build with no errors — reload the output PDF if it is open,
+   so an on-screen preview refreshes without a manual C-c C-v."
   (let* ((out (get result :stdout ""))
          (err (get result :stderr ""))
          (log (str out (if (equal? err "") "" (str "\n" err))))
@@ -194,7 +203,11 @@
          (show-status! (str "LaTeX: success (" (length diags)
                             " warning" (if (= (length diags) 1) "" "s")
                             ")")))
-        (else (show-status! "LaTeX: success"))))))
+        (else (show-status! "LaTeX: success")))
+      ;; A no-error build (re)produced the PDF — refresh an open preview
+      ;; in place so the user need not re-run C-c C-v after every compile.
+      (when (= errors 0)
+        (-latex-reload-pdf-if-open (-latex-pdf-path tex))))))
 
 ;; --- spawn detection (latexmk -> pdflatex fallback) -------------------
 
@@ -251,8 +264,9 @@
                         " not found — trying pdflatex …"))
                   (-latex-run
                    '("pdflatex" "-synctex=1" "-interaction=nonstopmode")
-                   tex dir -latex-on-exit))
-                (-latex-on-exit result)))))))))
+                   tex dir
+                   (lambda (r) (-latex-on-exit r tex))))
+                (-latex-on-exit result tex)))))))))
 
 (defcommand latex-view ()
   "Open the built PDF for `(latex-master-file)` beside the source, or

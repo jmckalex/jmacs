@@ -516,8 +516,13 @@ export class PdfView extends ViewElement {
       return;
     }
 
+    // Cache-bust the media:// URL so a reload after a recompile fetches
+    // the NEW bytes, not Chromium's cached copy of the same path. The
+    // media protocol resolves the file from url.pathname (serve.js), so
+    // the query is ignored server-side but makes each load a distinct URL.
+    const bustedSrc = `${src}${src.includes('?') ? '&' : '?'}v=${generation}`;
     const task = pdfjs.getDocument({
-      url: src,
+      url: bustedSrc,
       cMapUrl: `${PDFJS_BASE}/cmaps/`,
       cMapPacked: true,
       standardFontDataUrl: `${PDFJS_BASE}/standard_fonts/`,
