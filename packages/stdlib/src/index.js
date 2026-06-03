@@ -15,6 +15,9 @@
 export { createBufferPrimitives } from './buffer-primitives.js';
 export { createViewPrimitives } from './view-primitives.js';
 export { createPanePrimitives } from './pane-primitives.js';
+export { createLatexPrimitives } from './latex-primitives.js';
+export { scanLatex } from './latex-scan.js';
+export { pathDirname, pathBasename, pathResolve, normalizePath } from './path-resolve.js';
 
 /**
  * The standard-library Lisp files, in load order. The command files
