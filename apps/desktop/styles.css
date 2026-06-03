@@ -549,10 +549,19 @@ text-view {
   cursor: pointer;
 }
 .math-widget.math-inline {
+  /* Transparent wrapper. MathJax computes a per-formula baseline offset
+     (a `vertical-align` on its container) so inline math sits on the
+     surrounding text baseline; a `vertical-align: middle` here used to
+     override that, centring the box on the x-height and lifting math
+     with subscript descenders (e.g. w_{ij}) above the baseline. Leaving
+     the wrapper `display: inline` lets the container's own alignment
+     reach the text baseline. */
+  display: inline;
+}
+.math-widget.math-inline mjx-container {
+  /* MathJax's stylesheet (which we don't load) makes the container an
+     inline-block; do it here so its `vertical-align` aligns the math. */
   display: inline-block;
-  vertical-align: middle;
-  /* The SVG carries its own height; keep it from inflating the line. */
-  line-height: 0;
 }
 .math-widget.math-block {
   display: block;
