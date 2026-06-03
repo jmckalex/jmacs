@@ -1042,21 +1042,28 @@ function symbolNameOf(arg) {
  *  (latex-view's source|PDF) use this instead of split-then-open, which
  *  would strand a placeholder. */
 async function splitAndOpenFile(filePath, orientation, side = 'after', persist = false) {
-  const currentLeaf = currentPane();
-  if (!currentLeaf || currentLeaf.kind !== 'leaf') return null;
-  // forceDuplicate: true so the new pane always gets a FRESH view object
-  // — never the same View as an existing pane (Q9). { switch: false } so
-  // the focused pane isn't disturbed before we split.
-  const view = await openFileByPath(filePath, {
-    switch: false,
-    forceDuplicate: true,
-  });
-  if (!view) return null;
-  if (persist === true) {
+  const target = currentPane();
+  if (!target || target.kind !== 'leaf') return null;
+  // Split with a placeholder; splitPaneAtLeaf moves focus to the new pane.
+  // Then open FILEPATH into that focused pane through the *normal* open
+  // path — switchToViewIndex replaces the placeholder with the file's view,
+  // the proven `fillPlaceholderViaOpen` mechanism the `o` action uses. (A
+  // bespoke mount via splitPaneAtLeafWith mis-rendered PDFs and didn't
+  // honour {switch:false}, switching the source pane to the PDF instead.)
+  const split = splitPaneAtLeaf(target, orientation, 0.5, side);
+  if (!split) return null;
+  const newLeaf = side === 'before' ? split.first : split.second;
+  const placeholder = newLeaf.view;
+  // forceDuplicate: a fresh View even if the file is already open elsewhere
+  // (Q9). The open lands in the focused (new) leaf, replacing its placeholder.
+  await openFileByPath(filePath, { forceDuplicate: true });
+  // Splice the orphaned placeholder out of `views` — no residue.
+  if (newLeaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
+  const view = newLeaf.view;
+  if (view && persist === true && view.kind === 'pdf') {
     view.persist = true;
     sessionController.save();
   }
-  splitPaneAtLeafWith(currentLeaf, orientation, 0.5, side, view);
   return view;
 }
 
