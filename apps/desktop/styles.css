@@ -564,6 +564,30 @@ text-view {
   /* MathJax sizes the SVG itself; never let it spill the editor width. */
   max-width: 100%;
 }
+/* MathJax's SVG output ships an assistive-MathML copy of each formula
+   for screen readers. MathJax normally hides it via a stylesheet it
+   injects when it typesets a document — but we build SVGs with
+   `tex2svg()` and mount them ourselves, so that stylesheet is never
+   present, and Chromium (which renders MathML natively) paints the copy
+   visibly, doubling every formula. Reinstate MathJax's own
+   visually-hidden treatment: the node stays in the DOM for assistive
+   tech, but is clipped off-screen. */
+mjx-assistive-mml {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  clip: rect(1px, 1px, 1px, 1px);
+  clip-path: inset(50%);
+  padding: 1px 0 0 0 !important;
+  border: 0 !important;
+  display: block !important;
+  width: auto !important;
+  overflow: hidden !important;
+  user-select: none;
+}
+mjx-assistive-mml[display='block'] {
+  width: 100% !important;
+}
 
 /* Empty or invalid math (empty body, or MathJax parse error): the
    source is rendered (not a broken widget) with a spell-check-style red
