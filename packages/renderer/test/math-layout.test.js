@@ -138,6 +138,42 @@ test('block range with a cursor inside is revealed — nothing hidden', () => {
   assert.deepEqual(layout.revealed, [range]);
 });
 
+test('block revealed when a cursor is on its closing line (not strictly inside)', () => {
+  // Arrowing onto the closing $$ line lands point at the segment's
+  // exclusive `end` — offset-wise *not* inside, but still on a line the
+  // block spans. It must reveal (show source) so the cursor isn't
+  // stranded on a line the widget would hide.
+  const text = 'text\n$$\na+b\n$$\nmore';
+  const { lineStarts, lineLengths } = lineModel(text);
+  const start = lineStarts[1];
+  const end = lineStarts[3] + 2; // just past the closing $$, on line 3
+  const range = { start, end, kind: 'block' };
+  const layout = computeMathLayout({
+    ranges: [range],
+    lineStarts,
+    lineLengths,
+    points: [end],
+  });
+  assert.equal(layout.hiddenByBlock.size, 0);
+  assert.equal(layout.blockByStartLine.size, 0);
+  assert.deepEqual(layout.revealed, [range]);
+});
+
+test('block collapses when the cursor is on the line after it', () => {
+  const text = 'text\n$$\na+b\n$$\nmore';
+  const { lineStarts, lineLengths } = lineModel(text);
+  const range = { start: lineStarts[1], end: lineStarts[3] + 2, kind: 'block' };
+  const layout = computeMathLayout({
+    ranges: [range],
+    lineStarts,
+    lineLengths,
+    points: [lineStarts[4]], // line 4 ('more'), past the block
+  });
+  assert.deepEqual([...layout.hiddenByBlock].sort((a, b) => a - b), [2, 3]);
+  assert.ok(layout.blockByStartLine.has(1));
+  assert.equal(layout.revealed.length, 0);
+});
+
 test('single-line block range hides nothing extra but still emits a block widget', () => {
   const text = 'x $$y$$ z';
   const { lineStarts, lineLengths } = lineModel(text);

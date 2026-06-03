@@ -819,21 +819,21 @@ export function createEditorView(buffer, container, options = {}) {
   }
 
   /**
-   * Walk up from a hidden line to its enclosing folded header — the
-   * one visible ancestor. Used to keep the cursor display sensible
-   * when point lands inside a fold (the buffer doesn't know about
-   * folds; only the view does).
+   * Map a hidden line to the nearest visible line above it — the one
+   * visible ancestor to draw the cursor at. Keeps the cursor display
+   * (and scroll-follow) sensible when point lands on a line the view has
+   * hidden but the buffer knows nothing about: a folded region (→ its
+   * header) or the body/closing lines a block-math widget collapses
+   * (→ the equation's start line, which carries the widget). Walking up
+   * to the first non-hidden line covers both uniformly; previously this
+   * only consulted the fold index, so a cursor on a block-math-hidden
+   * line stayed at row -1 and scrolled the viewport to the top.
    */
   function findVisibleAncestorLine(line) {
     if (!displayRowForLine || displayRowForLine[line] !== -1) return line;
-    const folded = foldsFor(activeBuffer);
-    let best = line;
-    for (const start of folded) {
-      const end = foldCache.endByStart.get(start);
-      if (end === undefined) continue;
-      if (line > start && line <= end && start < best) best = start;
-    }
-    return best;
+    let l = line;
+    while (l > 0 && displayRowForLine[l] === -1) l -= 1;
+    return l;
   }
 
   // --- folding controls -------------------------------------------------

@@ -153,12 +153,27 @@ export function computeMathLayout({ ranges, lineStarts, lineLengths, points }) {
   const sorted = [...ranges].sort((a, b) => a.start - b.start);
 
   for (const range of sorted) {
-    if (rangeRevealedByAnyCursor(range, pts)) {
+    const startPos = positionOf(lineStarts, range.start);
+    const endPos = positionOf(lineStarts, range.end);
+
+    // Reveal (suppress the widget → show editable source) when a cursor
+    // is "on" the range. Inline: strictly inside the delimiters
+    // (offset-exclusive). Block: on *any* line the equation spans — so
+    // arrowing onto the closing-delimiter line keeps it as source instead
+    // of collapsing and stranding the cursor on a now-hidden line (which
+    // scrolled the viewport away). It still collapses the moment the
+    // cursor moves to a line before or after the block.
+    const revealedNow =
+      range.kind === 'block'
+        ? pts.some((p) => {
+            const line = positionOf(lineStarts, p).line;
+            return line >= startPos.line && line <= endPos.line;
+          })
+        : rangeRevealedByAnyCursor(range, pts);
+    if (revealedNow) {
       revealed.push(range);
       continue;
     }
-    const startPos = positionOf(lineStarts, range.start);
-    const endPos = positionOf(lineStarts, range.end);
 
     if (range.kind === 'block') {
       // Hide every line strictly after the start line up to (and
