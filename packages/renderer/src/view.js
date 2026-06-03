@@ -338,6 +338,15 @@ export function createEditorView(buffer, container, options = {}) {
    *  Rebuilt each render; only visible, widget-bearing lines appear. */
   let inlineWidgetsByLine = new Map();
 
+  /** Measured display-row count per block-math widget, keyed by its
+   *  content (the segment body). A block reserves the rows its source
+   *  *spanned* on first sight, then this records how many rows its
+   *  typeset height actually needs, so the next render reserves exactly
+   *  that — no big empty gap under a compact multi-line `align`, no
+   *  overflow under a tall single-line equation. Persists across renders;
+   *  re-measured every render, so it self-corrects on font/theme change. */
+  let blockRowsByKey = new Map();
+
   /** Pixel x of a (visual) column on a line, accounting for inline math
    *  widgets fully to its left whose rendered width differs from their
    *  source span. For a line with no widget this is exactly
@@ -460,6 +469,16 @@ export function createEditorView(buffer, container, options = {}) {
       lineLengths,
       points: cursorPoints,
     });
+    // Reserve a block widget's *measured* height (cached by content from a
+    // prior render) when known; the source-line span computeMathLayout
+    // returns is only the first-frame fallback — it over-reserves a
+    // compact multi-line `align` and under-reserves a tall equation.
+    for (const placement of mathLayout.blockByStartLine.values()) {
+      const k = placement.range && placement.range.key;
+      if (k != null && blockRowsByKey.has(k)) {
+        placement.rowSpan = blockRowsByKey.get(k);
+      }
+    }
     // Merge the block-widget-hidden lines into the fold-hidden set
     // before display rows are assigned.
     for (const line of mathLayout.hiddenByBlock) hidden.add(line);
@@ -537,6 +556,7 @@ export function createEditorView(buffer, container, options = {}) {
     // hidden lines and only emit DOM for lines whose display row is in
     // the viewport window.
     inlineWidgetsByLine = new Map();
+    const blockMeasure = [];
     const lineEls = [];
     const numberEls = [];
     let lineStartOffset = 0;
@@ -575,7 +595,10 @@ export function createEditorView(buffer, container, options = {}) {
           }
           renderRuns(lineEl, runs);
           const widget = mountWidget(blockPlacement.range, true);
-          if (widget) lineEl.append(widget);
+          if (widget) {
+            lineEl.append(widget);
+            blockMeasure.push({ key: blockPlacement.range.key, el: widget });
+          }
           lineEl.classList.add('has-block-math');
           // Reserve the rows the source spanned (see math-layout's
           // rowSpan) so the equation doesn't overflow onto the next line.
@@ -668,6 +691,25 @@ export function createEditorView(buffer, container, options = {}) {
     }
     linesEl.replaceChildren(...lineEls);
     gutter.replaceChildren(...numberEls);
+
+    // The block widgets are now laid out: measure each one's real height
+    // and remember how many rows it needs (height + the .math-block top/
+    // bottom margin, rounded up to whole lines). When that differs from
+    // what we reserved this frame, re-render so the next frame reserves
+    // exactly the right vertical space. Converges in one extra frame and
+    // then stays cached, so there's no flicker on steady state.
+    let rowsChanged = false;
+    for (const { key, el: widgetEl } of blockMeasure) {
+      if (key == null) continue;
+      const h = widgetEl.getBoundingClientRect().height;
+      if (h <= 0) continue;
+      const rows = Math.max(1, Math.ceil((h + 0.4 * lineHeight) / lineHeight));
+      if (blockRowsByKey.get(key) !== rows) {
+        blockRowsByKey.set(key, rows);
+        rowsChanged = true;
+      }
+    }
+    if (rowsChanged) schedule();
   }
 
   /** Render the selection highlight, one rectangle per touched line,

@@ -240,6 +240,7 @@ export function createLatexMathPreview(options) {
           start: segment.start,
           end: segment.end,
           kind: segment.kind,
+          key: segment.body,
           el: () => invalidNode(segment),
         });
         continue;
@@ -254,6 +255,7 @@ export function createLatexMathPreview(options) {
           start: segment.start,
           end: segment.end,
           kind: segment.kind,
+          key: segment.body,
           el: () => invalidNode(segment),
         });
         continue;
