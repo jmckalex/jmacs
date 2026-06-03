@@ -100,6 +100,13 @@ export const STDLIB_FILES = Object.freeze([
   // `*reftex-env-types*` / type-inference helpers) and extends the
   // `latex-c-c-map` further with the `(` and `)` slots.
   'reftex-refs.lisp',
+  // AUCTeX Phase 2 — smart insertion (environment / macro / section /
+  // font). Loads after reftex-refs.lisp: it extends `latex-c-c-map`
+  // further (C-c C-e/]/C-m/C-s/C-f), redefines `minibuffer-tab-complete`
+  // once more to add a third completion source (delegating to RefTeX's
+  // dispatcher, then find-file), and softly reuses RefTeX's
+  // `*reftex-label-prefixes*` for figure/table/section label keys.
+  'latex-insert.lisp',
 ]);
 
 /**
