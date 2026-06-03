@@ -10,7 +10,8 @@
 ;;;   C-c ]    latex-close-environment   — \end the innermost open env
 ;;;   C-c C-m  latex-insert-macro        — \NAME{} (point inside / wrap region)
 ;;;   C-c C-s  latex-insert-section      — \<level>{} (+ optional \label)
-;;;   C-c C-f …  font sub-map            — C-b/C-i/C-e/C-t → bf/it/emph/tt
+;;;   C-c C-f …  font sub-map            — AUCTeX letters b/i/e/t/c/s/r/f/m
+;;;     (and their C- forms) → bf/it/emph/tt/sc/sl/rm/sf/md
 ;;;
 ;;; Loaded AFTER reftex-refs.lisp (it extends `latex-c-c-map` further and
 ;;; softly reuses RefTeX's `*reftex-label-prefixes*` when present). It does
@@ -618,6 +619,26 @@
    latex-textbf / latex-textit / latex-emph from latex.lisp."
   (latex-surround "\\texttt{" "}"))
 
+(defcommand latex-textsc ()
+  "Wrap the selection in \\textsc{…} (small caps). C-c C-f c."
+  (latex-surround "\\textsc{" "}"))
+
+(defcommand latex-textsl ()
+  "Wrap the selection in \\textsl{…} (slanted). C-c C-f s."
+  (latex-surround "\\textsl{" "}"))
+
+(defcommand latex-textrm ()
+  "Wrap the selection in \\textrm{…} (roman). C-c C-f r."
+  (latex-surround "\\textrm{" "}"))
+
+(defcommand latex-textsf ()
+  "Wrap the selection in \\textsf{…} (sans serif). C-c C-f f."
+  (latex-surround "\\textsf{" "}"))
+
+(defcommand latex-textmd ()
+  "Wrap the selection in \\textmd{…} (medium weight). C-c C-f m."
+  (latex-surround "\\textmd{" "}"))
+
 ;; --- shared completion dispatch ---------------------------------------
 ;; The host's onTab always calls `minibuffer-tab-complete`. reftex-refs
 ;; already redefined it to dispatch on `*reftex-tab-complete*` (delegating
@@ -695,11 +716,22 @@
 ;; same mechanism that makes latex-c-c-map a sub-map under "C-c"), so a
 ;; "C-f" -> this map entry gives the C-c C-f <key> three-level chord.
 
+;; AUCTeX's letter→font scheme. Both the plain letter and its control
+;; version map to the same command, so C-c C-f e and C-c C-f C-e both
+;; insert \emph{} — matching AUCTeX muscle memory either way. Within this
+;; sub-map plain `c` and `C-c` are distinct keys that both name
+;; latex-textsc; that is no conflict, since the sub-map is only reached
+;; after the C-c C-f prefix.
 (define latex-font-map
-  {"C-b" 'latex-textbf
-   "C-i" 'latex-textit
-   "C-e" 'latex-emph
-   "C-t" 'latex-texttt})
+  {"b"   'latex-textbf  "C-b" 'latex-textbf
+   "i"   'latex-textit  "C-i" 'latex-textit
+   "e"   'latex-emph    "C-e" 'latex-emph
+   "t"   'latex-texttt  "C-t" 'latex-texttt
+   "c"   'latex-textsc  "C-c" 'latex-textsc
+   "s"   'latex-textsl  "C-s" 'latex-textsl
+   "r"   'latex-textrm  "C-r" 'latex-textrm
+   "f"   'latex-textsf  "C-f" 'latex-textsf
+   "m"   'latex-textmd  "C-m" 'latex-textmd})
 
 ;; --- keybindings ------------------------------------------------------
 ;; Extend the C-c prefix map further (latex.lisp built it; latex-compile,
@@ -710,7 +742,7 @@
 ;;   C-c ]     latex-close-environment
 ;;   C-c C-m   latex-insert-macro
 ;;   C-c C-s   latex-insert-section
-;;   C-c C-f   the font sub-map (C-b/C-i/C-e/C-t)
+;;   C-c C-f   the font sub-map (AUCTeX b/i/e/t/c/s/r/f/m and C- forms)
 ;;
 ;; `assoc` returns a new map; we rebuild it and re-install under "C-c".
 

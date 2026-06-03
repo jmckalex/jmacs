@@ -349,23 +349,6 @@ test('latex-c-c-map has the Phase-2 chords and keeps the existing ones', async (
   );
   // C-f is a nested sub-map (the font map), not a bare command symbol.
   assert.equal(ev('(map? (get latex-c-c-map "C-f"))'), true);
-  // The font sub-map wires the four font commands.
-  assert.equal(
-    ev("(eq? (get (get latex-c-c-map \"C-f\") \"C-b\") 'latex-textbf)"),
-    true
-  );
-  assert.equal(
-    ev("(eq? (get (get latex-c-c-map \"C-f\") \"C-i\") 'latex-textit)"),
-    true
-  );
-  assert.equal(
-    ev("(eq? (get (get latex-c-c-map \"C-f\") \"C-e\") 'latex-emph)"),
-    true
-  );
-  assert.equal(
-    ev("(eq? (get (get latex-c-c-map \"C-f\") \"C-t\") 'latex-texttt)"),
-    true
-  );
   // Existing bindings are intact (latex.lisp + latex-compile + reftex).
   assert.equal(ev("(eq? (get latex-c-c-map \"b\") 'latex-textbf)"), true);
   assert.equal(ev("(eq? (get latex-c-c-map \"s\") 'latex-section)"), true);
@@ -377,7 +360,39 @@ test('latex-c-c-map has the Phase-2 chords and keeps the existing ones', async (
   assert.equal(ev("(eq? (get latex-c-c-map \")\") 'reftex-reference)"), true);
 });
 
-test('the four Phase-2 commands and latex-texttt are registered', async () => {
+test('the font sub-map follows the AUCTeX letter scheme (letter + C- form)', async () => {
+  const { ev } = await insertEditor();
+  // AUCTeX letter→command scheme. Both the plain letter (C-c C-f e) and
+  // the control version (C-c C-f C-e) bind the same command.
+  const scheme = [
+    ['b', 'latex-textbf'],
+    ['i', 'latex-textit'],
+    ['e', 'latex-emph'],
+    ['t', 'latex-texttt'],
+    ['c', 'latex-textsc'],
+    ['s', 'latex-textsl'],
+    ['r', 'latex-textrm'],
+    ['f', 'latex-textsf'],
+    ['m', 'latex-textmd'],
+  ];
+  for (const [letter, command] of scheme) {
+    assert.equal(
+      ev(`(eq? (get latex-font-map "${letter}") '${command})`),
+      true,
+      `plain ${letter} -> ${command}`
+    );
+    assert.equal(
+      ev(`(eq? (get latex-font-map "C-${letter}") '${command})`),
+      true,
+      `C-${letter} -> ${command}`
+    );
+  }
+  // The request specifically: C-c C-f e and C-c C-f C-e both -> emph.
+  assert.equal(ev('(eq? (get latex-font-map "e") \'latex-emph)'), true);
+  assert.equal(ev('(eq? (get latex-font-map "C-e") \'latex-emph)'), true);
+});
+
+test('the four Phase-2 commands and the font commands are registered', async () => {
   const { ev } = await insertEditor();
   for (const cmd of [
     'latex-insert-environment',
@@ -385,6 +400,11 @@ test('the four Phase-2 commands and latex-texttt are registered', async () => {
     'latex-insert-macro',
     'latex-insert-section',
     'latex-texttt',
+    'latex-textsc',
+    'latex-textsl',
+    'latex-textrm',
+    'latex-textsf',
+    'latex-textmd',
   ]) {
     assert.equal(ev(`(command-registered? '${cmd})`), true, cmd);
   }
