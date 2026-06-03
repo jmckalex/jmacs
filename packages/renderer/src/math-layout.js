@@ -60,6 +60,9 @@ import { pointInsideSegment } from './math-segments.js';
  *   block's opening delimiter begins. The view renders the start line's
  *   source only up to this column (the prefix before `$$` / `\[`), then
  *   the widget row — so the raw opening delimiter isn't shown.
+ * @property {number} rowSpan - How many display rows the start line
+ *   reserves (the block's source-line span, `endLine − startLine + 1`),
+ *   so a tall typeset widget keeps its footprint without overflowing.
  */
 
 /**
@@ -165,9 +168,18 @@ export function computeMathLayout({ ranges, lineStarts, lineLengths, points }) {
       for (let line = startPos.line + 1; line <= endLine; line += 1) {
         hiddenByBlock.add(line);
       }
+      // `rowSpan` is how many display rows the start line should occupy:
+      // the number of source lines the block spanned. The view reserves
+      // that height so a typeset equation keeps its source's vertical
+      // footprint instead of overflowing onto the line below (the editor
+      // lays lines out at a uniform 1lh, so a tall widget would otherwise
+      // cover the next line). A single-line display equation that
+      // typesets taller than one row is the known edge a future
+      // measured-height pass would size exactly.
       blockByStartLine.set(startPos.line, {
         range,
         startColumn: startPos.column,
+        rowSpan: endLine - startPos.line + 1,
       });
       continue;
     }

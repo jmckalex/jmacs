@@ -659,6 +659,15 @@ mjx-assistive-mml[display='block'] {
   -moz-tab-size: var(--tab-width, 4);
 }
 
+/* A block (display) math widget line. Its height is reserved inline to
+   the block's source-line span (so a tall equation doesn't overflow onto
+   the next line); `right: 0` stretches the line to the full text width
+   (it's otherwise shrink-to-fit) so `.math-block`'s `text-align: center`
+   actually has room to centre the equation. */
+.editor-line.has-block-math {
+  right: 0;
+}
+
 /* --- cursor ------------------------------------------------------------ */
 
 .editor-cursor {

@@ -118,6 +118,7 @@ test('block range hides the spanned lines except the start line', () => {
   const block = layout.blockByStartLine.get(1);
   assert.equal(block.range, range);
   assert.equal(block.startColumn, 0); // $$ at column 0 of line 1
+  assert.equal(block.rowSpan, 3); // spans source lines 1..3 → reserve 3 rows
 });
 
 test('block range with a cursor inside is revealed — nothing hidden', () => {
@@ -151,6 +152,7 @@ test('single-line block range hides nothing extra but still emits a block widget
   const block = layout.blockByStartLine.get(0);
   assert.equal(block.range, range);
   assert.equal(block.startColumn, 2); // $$ at column 2 of "x $$y$$ z"
+  assert.equal(block.rowSpan, 1); // single source line → reserve 1 row
 });
 
 test('block range clamps a past-the-end span to the last line', () => {

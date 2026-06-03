@@ -405,7 +405,11 @@ export function createEditorView(buffer, container, options = {}) {
         displayRowForLine[i] = -1;
       } else {
         displayRowForLine[i] = row;
-        row += 1;
+        // A block-math start line reserves the rows its source spanned, so
+        // a tall typeset equation keeps its footprint instead of
+        // overflowing onto the next visible line.
+        const blk = mathLayout.blockByStartLine.get(i);
+        row += blk ? blk.rowSpan : 1;
       }
     }
     displayRowCount = row;
@@ -506,6 +510,9 @@ export function createEditorView(buffer, container, options = {}) {
           const widget = mountWidget(blockPlacement.range, true);
           if (widget) lineEl.append(widget);
           lineEl.classList.add('has-block-math');
+          // Reserve the rows the source spanned (see math-layout's
+          // rowSpan) so the equation doesn't overflow onto the next line.
+          lineEl.style.height = `calc(${blockPlacement.rowSpan} * 1lh)`;
         } else {
           renderRuns(lineEl, runs);
         }
