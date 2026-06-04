@@ -105,7 +105,11 @@ export async function serveAppFile(request) {
       const data = await readFile(filePath);
       const type = MIME[extname(filePath).toLowerCase()]
         ?? 'application/octet-stream';
-      return new Response(data, { headers: { 'content-type': type } });
+      // No-store: this route serves the live PDF after each compile, so a
+      // recompiled document must never be masked by a stale cached copy.
+      return new Response(data, {
+        headers: { 'content-type': type, 'cache-control': 'no-store' },
+      });
     } catch {
       return new Response('Not found', { status: 404 });
     }
@@ -131,7 +135,14 @@ export async function serveAppFile(request) {
   try {
     const data = await readFile(filePath);
     const type = MIME[extname(filePath)] ?? 'application/octet-stream';
-    return new Response(data, { headers: { 'content-type': type } });
+    // No-store: the renderer's source (app.js / view.js / *.lisp /
+    // styles.css …) is served straight from the working tree on every
+    // request, so a reload or restart always picks up edited code rather
+    // than a stale copy from Chromium's HTTP cache. (There is no build
+    // step; freshness matters more than caching for a local dev editor.)
+    return new Response(data, {
+      headers: { 'content-type': type, 'cache-control': 'no-store' },
+    });
   } catch {
     return new Response('Not found', { status: 404 });
   }
