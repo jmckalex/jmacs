@@ -1124,6 +1124,28 @@ export function createEditorView(buffer, container, options = {}) {
       cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
     },
 
+    /** Flash a transient highlight band over the cursor's line, then fade
+     *  it out and remove it. Used by SyncTeX inverse search to call
+     *  attention to the line it landed on. The band sits in the content
+     *  layer (so it scrolls with the text) at the line's display row. */
+    flashCurrentLine() {
+      const positions = cursorPositions(activeBuffer, getCursors(), getTabWidth());
+      const pos = positions[0] ?? { line: 0, column: 0 };
+      const row = rowOf(pos.line);
+      const displayRow = row === -1 ? rowOf(findVisibleAncestorLine(pos.line)) : row;
+      const flash = el('div', 'editor-line-flash');
+      flash.style.top = `calc(${displayRow} * 1lh)`;
+      content.append(flash);
+      const remove = () => flash.remove();
+      flash.addEventListener('transitionend', remove, { once: true });
+      // Fallback in case the transition doesn't fire (element detached, etc.).
+      setTimeout(remove, 2000);
+      // Paint the start state, then trigger the fade on the next frame.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => flash.classList.add('is-fading'));
+      });
+    },
+
     /** Roughly how many lines fit in the viewport — used for paging. */
     pageLines() {
       const lineHeight = cursorEl.getBoundingClientRect().height || 22;

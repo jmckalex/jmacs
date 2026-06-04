@@ -178,16 +178,27 @@
                   (equal? (view-kind v) "text")
                   (not (equal? (view-file-path v) pdf)))))))))
 
+(define (-latex-goto-line-flash line)
+  "Land the inverse-search jump on LINE: move point there (column 0 —
+   SyncTeX gives no column), recenter the view so the line sits mid-screen
+   rather than at the top/bottom edge, and flash a transient highlight to
+   call attention to it. A nil LINE is a no-op."
+  (when (not (nil? line))
+    (goto-line! line)
+    (recenter!)
+    (flash-current-line!)))
+
 (define (-latex-reveal-source file line)
   "Show FILE at LINE in a source pane — never the PDF's pane (see the
    block comment above). Focuses the pane already showing FILE, or the
-   source pane, then jumps to LINE (column 0; SyncTeX gives no column)."
+   source pane, then jumps to LINE (`-latex-goto-line-flash`: recenter +
+   flash)."
   (let ((pane (-latex-pane-showing-file file)))
     (cond
       ((not (nil? pane))
        ;; Case 1: already displayed — just return focus to that view.
        (focus-pane! pane)
-       (when (not (nil? line)) (goto-line! line)))
+       (-latex-goto-line-flash line))
       (else
        (let ((view (-latex-find-view-by-file file))
              (src (-latex-source-pane (pdf-current-path))))
@@ -200,12 +211,12 @@
             (if (not (nil? view))
                 (switch-to-view! view)
                 (open-file-path! file))
-            (when (not (nil? line)) (goto-line! line)))
+            (-latex-goto-line-flash line))
            (else
             ;; No source pane to land in — open beside the PDF rather
             ;; than clobbering it.
             (open-file-in-split! file 'horizontal 'before)
-            (when (not (nil? line)) (goto-line! line)))))))))
+            (-latex-goto-line-flash line))))))))
 
 (define (latex-synctex-inverse page x y)
   "Inverse SyncTeX: given a PDF PAGE (1-based) and a PDF-point (X, Y) the

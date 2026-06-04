@@ -733,6 +733,25 @@ mjx-assistive-mml[display='block'] {
   background: #ffffff0a;
 }
 
+/* A transient mild-yellow band over a line, fading out — SyncTeX inverse
+   search uses it to call attention to the line it jumped to. Same layer
+   as the current-line band (behind the text); removed after the fade. */
+.editor-line-flash {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 1lh;
+  z-index: 1;
+  background: rgba(255, 209, 102, 0.34);
+  opacity: 1;
+  transition: opacity 1.4s ease-out;
+  pointer-events: none;
+}
+
+.editor-line-flash.is-fading {
+  opacity: 0;
+}
+
 .editor-lines {
   position: relative;
   z-index: 2;

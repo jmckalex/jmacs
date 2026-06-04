@@ -4130,6 +4130,15 @@ const interpreter = createInterpreter({
       editorView.recenter();
       return NIL;
     },
+    // `(flash-current-line!)` — briefly highlight the cursor's line with a
+    // transient mild-yellow band that fades out, to call attention to it
+    // (SyncTeX inverse search uses it on the landed source line).
+    'flash-current-line!': () => {
+      if (typeof editorView.flashCurrentLine === 'function') {
+        editorView.flashCurrentLine();
+      }
+      return NIL;
+    },
     'page-lines': () => editorView.pageLines(),
     'toggle-fold-at-point!': () => {
       editorView.toggleFoldAtPoint();

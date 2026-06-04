@@ -68,6 +68,9 @@ async function inverseEditor(model) {
       'open-file-path!': (args) => { rec.opened.push(String(args[0])); return NIL; },
       'open-file-in-split!': (args) => { rec.split.push(String(args[0])); return NIL; },
       'goto-line!': (args) => { rec.gotos.push(Number(args[0])); return NIL; },
+      // The inverse-search landing recenters + flashes the line.
+      'recenter!': () => NIL,
+      'flash-current-line!': () => NIL,
       'file-exists?': () => true,
       // Stubs the rest of the stdlib touches when loaded.
       'read-file-text!': () => NIL,
