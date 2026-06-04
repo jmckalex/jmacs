@@ -8054,8 +8054,18 @@ const sessionController = createSession({
     // Only text views carry point/mark; image/audio/video/pdf views don't.
     const buffer = view.buffer;
     if (view.kind === 'text' && buffer) {
-      const point = Number.isFinite(entry.point) ? entry.point : 0;
-      const mark = Number.isFinite(entry.mark) ? entry.mark : null;
+      // Clamp the persisted point/mark to the restored buffer's length.
+      // A file-backed buffer re-reads its content from disk on restore, so
+      // that content can be SHORTER than when the session was saved — an
+      // unsaved/new-file buffer (find-file on a missing path) re-reads
+      // empty, or the file shrank between runs. `buffer.moveTo`/`setMark`
+      // already clamp, but `view.point` was stored raw, and a stale offset
+      // poisons the cursor / mode-selection path (`positionAt` out of
+      // range → "mode selection failed: offset N out of range [0, 0]").
+      const len = typeof buffer.length === 'number' ? buffer.length : 0;
+      const clampOffset = (n) => (n < 0 ? 0 : n > len ? len : n);
+      const point = clampOffset(Number.isFinite(entry.point) ? entry.point : 0);
+      const mark = Number.isFinite(entry.mark) ? clampOffset(entry.mark) : null;
       view.point = point;
       view.mark = mark;
       if (typeof buffer.moveTo === 'function') buffer.moveTo(point);
