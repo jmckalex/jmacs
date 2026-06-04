@@ -27,6 +27,9 @@
 ;;;   * A \begin{...} line sits at the OUTER level (its body is one
 ;;;     deeper); an \end{...} line dedents back to the outer level —
 ;;;     AUCTeX's "Backindent at \end" branch.
+;;;   * Environments in `*latex-non-indenting-environments*' (AUCTeX's
+;;;     `LaTeX-document-regexp', default `document') add NO level: prose
+;;;     directly inside \begin{document} stays at column 0.
 ;;;   * An \item line indents at  D * indent-level; its wrapped
 ;;;     CONTINUATION lines indent one level deeper, (D+1) * indent-level,
 ;;;     so continuation prose aligns past the item marker. In AUCTeX terms
@@ -93,6 +96,27 @@
 ;; keep 72 for consistency across the editor.
 (define *latex-fill-column* 72)
 
+;; Environments that do NOT add an indentation level — AUCTeX's
+;; `LaTeX-document-regexp'. By default `document': prose directly inside
+;; \begin{document}…\end{document} stays flush-left, as AUCTeX leaves it,
+;; rather than picking up a spurious level of indent. A list of env name
+;; strings so a user can add their own (e.g. a custom wrapper env).
+(defcustom *latex-non-indenting-environments* (list "document")
+  :list
+  :group 'latex
+  :doc "Environment names whose body does NOT gain a level of indentation
+   from `latex-fill-paragraph' (M-q), mirroring AUCTeX's
+   `LaTeX-document-regexp'. Default `(\"document\")` — content directly
+   inside \\begin{document} stays at column 0. Add names here to treat
+   other wrapper environments the same way.")
+
+(define (-latex-non-indenting-env? name)
+  "Whether environment NAME adds no indentation level (it is listed in
+   `*latex-non-indenting-environments*', e.g. `document'). A nil NAME is
+   not a match. PURE w.r.t. the custom list."
+  (and (not (nil? name))
+       (-latex-member? name *latex-non-indenting-environments*)))
+
 ;; --- pure: the full open-environment stack ----------------------------
 ;; latex-insert.lisp's `-latex-open-env-walk` returns only the INNERMOST
 ;; open env. For depth we need the whole stack. We reuse its
@@ -123,9 +147,12 @@
            (-latex-env-stack-walk (cdr markers) (-latex-pop-env name stack)))))))
 
 (define (-latex-env-depth-at text offset)
-  "The environment nesting depth at OFFSET in TEXT (the number of \\begin
-   not yet matched by an \\end). PURE."
-  (length (-latex-open-env-stack text offset)))
+  "The INDENTATION depth at OFFSET in TEXT: the number of open \\begin not
+   yet matched by an \\end, EXCLUDING environments that add no indent level
+   (`*latex-non-indenting-environments*', e.g. `document'), so prose inside
+   \\begin{document} is not pushed in a level. PURE."
+  (length (filter (lambda (e) (not (-latex-non-indenting-env? e)))
+                  (-latex-open-env-stack text offset))))
 
 ;; --- pure: line classification ----------------------------------------
 ;; Each line of the block is classified by its leading control word (after
@@ -204,6 +231,17 @@
    AUCTeX's `LaTeX-item-regexp'. PURE."
   (let ((cw (-latex-fill-control-word content)))
     (or (string=? cw "item") (string=? cw "bibitem"))))
+
+(define (-latex-fill-env-name content)
+  "The environment name in a \\begin{NAME} / \\end{NAME} CONTENT line — the
+   text between the first `{` and the next `}` — or \"\" when absent. Used
+   to recognise a non-indenting env (`document') on a begin/end line inside
+   a filled block. PURE."
+  (let ((open (string-index-of content "{")))
+    (if (< open 0)
+        ""
+        (let ((close (string-index-of content "}" (+ open 1))))
+          (if (< close 0) "" (substring content (+ open 1) close))))))
 
 (define (-latex-fill-display-math-line? content)
   "Whether left-trimmed CONTENT starts a display-math \\[ or \\] (a
@@ -353,15 +391,23 @@
          ((-latex-fill-blank-line? raw)
           (-latex-fill-walk (cdr lines) depth level item-indent fill-column
                             (list) (cons "" (-latex-fill-flush pending acc))))
-         ;; \begin{...}: flush, emit at outer level, then go one deeper.
+         ;; \begin{...}: flush, emit at outer level, then go one deeper —
+         ;; UNLESS it is a non-indenting env (`document'), which keeps the
+         ;; depth so its body stays at the outer level.
          ((-latex-fill-begin-line? content)
-          (-latex-fill-walk
-           (cdr lines) (+ depth 1) level item-indent fill-column (list)
-           (cons (str (-latex-fill-body-indent depth level) content)
-                 (-latex-fill-flush pending acc))))
-         ;; \end{...}: flush, dedent first, emit at the outer level.
+          (let ((next (if (-latex-non-indenting-env? (-latex-fill-env-name content))
+                          depth
+                          (+ depth 1))))
+            (-latex-fill-walk
+             (cdr lines) next level item-indent fill-column (list)
+             (cons (str (-latex-fill-body-indent depth level) content)
+                   (-latex-fill-flush pending acc)))))
+         ;; \end{...}: flush, dedent first, emit at the outer level — unless
+         ;; a non-indenting env (`document'), which never changed the depth.
          ((-latex-fill-end-line? content)
-          (let ((d (- depth 1)))
+          (let ((d (if (-latex-non-indenting-env? (-latex-fill-env-name content))
+                       depth
+                       (- depth 1))))
             (-latex-fill-walk
              (cdr lines) d level item-indent fill-column (list)
              (cons (str (-latex-fill-body-indent d level) content)

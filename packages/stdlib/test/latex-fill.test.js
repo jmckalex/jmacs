@@ -443,3 +443,77 @@ test('the indent-level and item-indent defcustoms have the AUCTeX defaults', asy
   assert.equal(ev('*latex-indent-level*'), 2);
   assert.equal(ev('*latex-item-indent*'), -2);
 });
+
+// --- the `document' (non-indenting) environment exclusion ----------------
+// AUCTeX's `LaTeX-document-regexp': content inside \begin{document} is not
+// pushed in a level. Mirrored via `*latex-non-indenting-environments*'.
+
+test('*latex-non-indenting-environments* defaults to ("document")', async () => {
+  const { ev } = await fillEditor();
+  assert.equal(
+    ev('(equal? *latex-non-indenting-environments* (list "document"))'), true);
+});
+
+test('-latex-env-depth-at does not count the document environment', async () => {
+  const { ev } = await fillEditor();
+  // Prose directly inside \begin{document} -> depth 0 (document excluded).
+  const top = '\\begin{document}\nHERE\n\\end{document}';
+  assert.equal(ev(`(-latex-env-depth-at ${lispString(top)} ${top.indexOf('HERE')})`), 0);
+  // document + proof -> depth 1 (only proof counts).
+  const nested = '\\begin{document}\n\\begin{proof}\nHERE\n\\end{proof}\n\\end{document}';
+  assert.equal(
+    ev(`(-latex-env-depth-at ${lispString(nested)} ${nested.indexOf('HERE')})`), 1);
+});
+
+test('latex-fill-block leaves a \\begin{document} body at column 0', async () => {
+  const { ev } = await fillEditor();
+  // A block that itself contains the document begin/end lines: the body must
+  // NOT pick up a level (the walk skips the non-indenting env's depth).
+  const block = '\\begin{document}\nHello world\n\\end{document}';
+  assert.equal(ev(`(latex-fill-block ${lispString(block)} 0 2 -2 72)`), block);
+});
+
+test('latex-fill-paragraph keeps document-level prose flush-left', async () => {
+  // Without the document exclusion this prose would gain a 2-space indent.
+  const initial = '\\begin{document}\n\nProse paragraph here.\n\n\\end{document}';
+  const { ev, buffer } = await bufferEditor(initial);
+  ev(`(goto! ${initial.indexOf('Prose')})`);
+  ev('(latex-fill-paragraph)');
+  assert.equal(buffer.text, initial, 'document-level prose stays at column 0');
+});
+
+test('latex-fill-paragraph: a list inside document indents from column 0', async () => {
+  const initial = [
+    '\\begin{document}',
+    '',
+    '\\begin{itemize}',
+    '\\item This is a long item that goes well past the fill column and therefore needs to be wrapped onto continuation lines that align nicely under it.',
+    '\\item Short one.',
+    '\\end{itemize}',
+    '',
+    '\\end{document}',
+  ].join('\n');
+  const { ev, buffer } = await bufferEditor(initial);
+  ev(`(goto! ${initial.indexOf('goes well')})`);
+  ev('(latex-fill-paragraph)');
+  const expected = [
+    '\\begin{document}',
+    '',
+    '\\begin{itemize}',           // column 0, not indented by `document`
+    '  \\item This is a long item that goes well past the fill column and',
+    '    therefore needs to be wrapped onto continuation lines that align',
+    '    nicely under it.',
+    '  \\item Short one.',
+    '\\end{itemize}',
+    '',
+    '\\end{document}',
+  ].join('\n');
+  assert.equal(buffer.text, expected);
+});
+
+test('*latex-non-indenting-environments* is customisable (e.g. a frame env)', async () => {
+  const { ev } = await fillEditor();
+  ev('(set! *latex-non-indenting-environments* (list "document" "frame"))');
+  const text = '\\begin{frame}\nHERE\n\\end{frame}';
+  assert.equal(ev(`(-latex-env-depth-at ${lispString(text)} ${text.indexOf('HERE')})`), 0);
+});
