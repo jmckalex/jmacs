@@ -105,3 +105,45 @@ test('parse-latex-log on a clean log yields NIL (empty list)', () => {
   assert.equal(prims['parse-latex-log'](['Output written on x.pdf.']), NIL);
   assert.equal(prims['parse-latex-log']([42]), NIL);
 });
+
+test('parse-synctex-view returns a keyword-keyed box record', () => {
+  const stdout = [
+    'SyncTeX result begin',
+    'Page:3',
+    'x:1', 'y:2', 'h:120', 'v:650', 'W:300', 'H:12',
+    'SyncTeX result end',
+  ].join('\n');
+  const box = prims['parse-synctex-view']([stdout]);
+  assert.ok(box instanceof Map);
+  assert.equal(slot(box, 'page'), 3);
+  assert.equal(slot(box, 'h'), 120);
+  assert.equal(slot(box, 'v'), 650);
+  assert.equal(slot(box, 'W'), 300);
+  assert.equal(slot(box, 'H'), 12);
+});
+
+test('parse-synctex-view yields NIL on no record / non-string', () => {
+  assert.equal(prims['parse-synctex-view'](['no records here']), NIL);
+  assert.equal(prims['parse-synctex-view']([42]), NIL);
+});
+
+test('parse-synctex-edit returns a keyword-keyed source record', () => {
+  const stdout = [
+    'SyncTeX result begin',
+    'Output:paper.pdf',
+    'Input:/abs/main.tex',
+    'Line:42',
+    'Column:-1',
+    'SyncTeX result end',
+  ].join('\n');
+  const hit = prims['parse-synctex-edit']([stdout]);
+  assert.ok(hit instanceof Map);
+  assert.equal(slot(hit, 'file'), '/abs/main.tex');
+  assert.equal(slot(hit, 'line'), 42);
+  assert.equal(slot(hit, 'column'), -1);
+});
+
+test('parse-synctex-edit yields NIL on no record / non-string', () => {
+  assert.equal(prims['parse-synctex-edit'](['Line:3']), NIL);
+  assert.equal(prims['parse-synctex-edit']([42]), NIL);
+});

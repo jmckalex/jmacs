@@ -1256,6 +1256,23 @@ function focusNextPane() {
   return next;
 }
 
+/** Focus a *specific* leaf pane by its handle (the absolute counterpart
+ *  to `focusNextPane` / `focusPaneByDirection`, which move focus
+ *  relatively). Used by features that already hold the pane they want
+ *  focused — e.g. inverse SyncTeX, which focuses the pane showing the
+ *  resolved source file instead of landing in whatever pane the PDF
+ *  click stole focus to. Returns the focused leaf, or null when PANE
+ *  isn't a leaf currently in the tree (a split node, a stale handle).
+ *  Re-focusing the already-current pane is a no-op that still returns
+ *  the leaf. */
+function focusPaneHandle(pane) {
+  if (!pane || typeof pane !== 'object' || pane.kind !== 'leaf') return null;
+  const leaf = leafPanes(rootPane).find((l) => l.id === pane.id);
+  if (!leaf) return null;
+  setCurrentPaneId(leaf.id);
+  return leaf;
+}
+
 /** Spatial pane navigation: focus the leaf adjacent to the current one
  *  in DIRECTION. Returns the new current pane handle, or null when
  *  there's no neighbour on that side. */
@@ -2861,6 +2878,7 @@ const paneHost = {
   deleteOtherPanes: (pane) => deleteOtherPanesInTree(pane),
   otherPane: () => focusNextPane(),
   focusPaneDirection: (direction) => focusPaneByDirection(direction),
+  focusPane: (pane) => focusPaneHandle(pane),
   balancePanes: () => balancePanesInTree(),
   setSplitRatio: (pane, ratio) => setSplitRatioOnNode(pane, ratio),
   // Phase 3b tabline-view operations. Implementations sit further
@@ -3392,6 +3410,47 @@ const interpreter = createInterpreter({
         ? String(args[0]) : null;
       if (wanted !== null && viewFilePath(current) !== wanted) return NIL;
       if (typeof pdfView.reload === 'function') pdfView.reload();
+      return NIL;
+    },
+
+    // `(pdf-current-path)` — the filesystem path of the PDF the singleton
+    // pdf-view is currently showing, or nil when no PDF is open. Inverse
+    // SyncTeX resolves the master/output PDF from this — the clicked PDF
+    // is the one on screen, and `synctex edit -o <that.pdf>` resolves the
+    // source `Input:` file itself, so no master detection is needed.
+    'pdf-current-path': () => {
+      const current = pdfView.buffer;
+      if (!current) return NIL;
+      const path = viewFilePath(current);
+      return typeof path === 'string' ? path : NIL;
+    },
+
+    // `(pdf-synctex-show! PATH PAGE X Y [W H])` — forward SyncTeX: scroll
+    // the singleton PDF (when it is showing PATH) to PAGE and flash a
+    // transient highlight at the SyncTeX-reported source spot. X/Y are the
+    // click point and W/H the optional box size, all in PDF points (PAGE
+    // 1-based). A no-op (returns nil) when no PDF is open or the singleton
+    // is showing a different file — mirrors `pdf-reload!`.
+    'pdf-synctex-show!': (args) => {
+      const current = pdfView.buffer;
+      if (!current) return NIL;
+      const wanted = args[0] != null && args[0] !== NIL ? String(args[0]) : null;
+      if (wanted !== null && viewFilePath(current) !== wanted) return NIL;
+      const page = Number(args[1]);
+      const x = Number(args[2]);
+      const y = Number(args[3]);
+      if (!Number.isFinite(page) || !Number.isFinite(x) || !Number.isFinite(y)) {
+        return NIL;
+      }
+      const w = args.length > 4 && args[4] !== NIL ? Number(args[4]) : 0;
+      const h = args.length > 5 && args[5] !== NIL ? Number(args[5]) : 0;
+      if (typeof pdfView.syncTexShow === 'function') {
+        // The box anchor is (x, y) here: latex-synctex.lisp passes the
+        // box's h/v as X/Y so the highlight covers the box, not just the
+        // click point. `h_` avoids clobbering the box-height with the
+        // anchor `h`.
+        pdfView.syncTexShow(page, x, y, { h: x, v: y, w, h_: h });
+      }
       return NIL;
     },
 
@@ -4038,6 +4097,18 @@ const interpreter = createInterpreter({
         buffer.moveTo(buffer.offsetAt(Math.min(n, buffer.lineCount) - 1, 0));
       }
       return NIL;
+    },
+    // `(point-line-col)` — the cursor's 1-based line and column in the
+    // current text buffer, as a cons `(LINE . COL)`. The buffer reports
+    // a 0-based line/column from `positionAt(point)`; we add 1 to each so
+    // both match the 1-based convention SyncTeX (and the status bar) use.
+    // Returns nil when no text buffer is current. Used by forward search
+    // (`synctex view -i LINE:COL:file`).
+    'point-line-col': () => {
+      const buffer = currentTextBuffer;
+      if (!buffer || typeof buffer.positionAt !== 'function') return NIL;
+      const { line, column } = buffer.positionAt(buffer.point);
+      return cons(line + 1, column + 1);
     },
     'replace-all!': (args) => {
       const buffer = currentTextBuffer;
@@ -5467,6 +5538,19 @@ videoView.style.display = 'none';
 function configurePdfView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // Inverse SyncTeX: an Option-click in the PDF jumps the editor to the
+    // source. The pdf-view hands us the 1-based page and the clicked PDF
+    // point (SyncTeX convention); `latex-synctex-inverse` runs
+    // `synctex edit` and opens the resulting file:line. Guarded by the
+    // keymap-ready latch and wrapped so a Lisp error can't break the click.
+    onSyncTexClick: (page, x, y) => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('latex-synctex-inverse', page, x, y);
+      } catch (error) {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      }
+    },
   };
 }
 const pdfView = /** @type {*} */ (document.createElement('pdf-view'));

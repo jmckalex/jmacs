@@ -446,3 +446,35 @@ test('latex-master-file is redefined to follow the RefTeX master', async () => {
   // redefinition returns the detected master.
   assert.equal(ev('(latex-master-file)'), '/d/book.tex');
 });
+
+test('master detection does NOT overflow on a large document', async () => {
+  // Regression: `% !TEX root` detection walked every line with Lisp
+  // recursion, which overflowed the stack on a real (multi-hundred-line)
+  // article — so C-c C-c / C-c C-v crashed with "Maximum call stack
+  // exceeded". Master detection runs on every compile/view.
+  const body = Array.from({ length: 4000 }, (_, i) => `Prose on line ${i}.`).join('\n');
+  const big = `\\documentclass{article}\n\\begin{document}\n${body}\n\\end{document}\n`;
+  const { ev } = await reftexEditor({
+    currentFile: '/d/paper.tex',
+    files: { '/d/paper.tex': big },
+    dirs: { '/d': ['paper.tex'] },
+  });
+  let master;
+  assert.doesNotThrow(() => {
+    master = ev('(latex-master-file)');
+  });
+  // It has a \documentclass and no `% !TEX root`, so it is its own master.
+  assert.equal(master, '/d/paper.tex');
+});
+
+test('a `% !TEX root` magic comment is still honoured after the rewrite', async () => {
+  const { ev } = await reftexEditor({
+    currentFile: '/d/chapter.tex',
+    files: {
+      '/d/chapter.tex': 'intro\n% !TEX root = thesis.tex\n\\section{One}\n',
+      '/d/thesis.tex': '\\documentclass{book}\n',
+    },
+    dirs: { '/d': ['chapter.tex', 'thesis.tex'] },
+  });
+  assert.equal(ev('(latex-master-file)'), '/d/thesis.tex');
+});

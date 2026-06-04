@@ -149,15 +149,15 @@
   "Extract the path X from a `% !TEX root = X` magic comment in TEXT, or
    nil. Tolerant of the TeXShop / TeXworks / VS Code spellings: case in
    `TEX root` is ignored and surrounding whitespace is trimmed. Only the
-   first line carrying the directive is honoured."
-  (-reftex-tex-root-scan (string-split text "\n")))
+   first line carrying the directive is honoured.
 
-(define (-reftex-tex-root-scan lines)
-  (cond
-    ((nil? lines) nil)
-    (else
-     (let ((hit (-reftex-tex-root-of-line (car lines))))
-       (if (not (nil? hit)) hit (-reftex-tex-root-scan (cdr lines)))))))
+   Iterates over the lines with the host `map`/`filter` (each a single
+   JavaScript loop) rather than walking the list with Lisp recursion: the
+   interpreter has no tail-call optimisation, so a per-line recursion
+   overflowed the stack on a real (multi-hundred-line) document."
+  (let ((hits (filter (lambda (x) (not (nil? x)))
+                      (map -reftex-tex-root-of-line (string-split text "\n")))))
+    (if (nil? hits) nil (car hits))))
 
 (define (-reftex-tex-root-of-line line)
   "If LINE is a `% !TEX root = X` directive, return X (trimmed); else nil.

@@ -211,6 +211,21 @@ export function createPanePrimitives(paneHost) {
       const pane = paneHost.focusPaneDirection(direction);
       return pane ?? NIL;
     },
+    // `(focus-pane! pane)` — move focus to a *specific* leaf pane handle,
+    // rebinding the current view/buffer to it. The absolute counterpart
+    // to `other-pane!` / `focus-pane-direction!`, which move focus
+    // relatively; this focuses a pane the caller already holds (e.g. the
+    // pane that shows a particular file). Returns the focused pane
+    // handle, or nil when PANE isn't a focusable leaf (a split node, a
+    // stale handle, or a non-pane argument).
+    'focus-pane!': (args) => {
+      const pane = args[0];
+      if (pane === null || pane === undefined || pane === NIL) return NIL;
+      if (typeof pane !== 'object' || pane.kind !== 'leaf') return NIL;
+      if (typeof paneHost.focusPane !== 'function') return NIL;
+      const focused = paneHost.focusPane(pane);
+      return focused ?? NIL;
+    },
     // `(balance-panes!)` — reset every split node's ratio to 0.5.
     // Returns nil.
     'balance-panes!': () => {
@@ -566,6 +581,9 @@ function coerceIntList(arg) {
  * @property {(pane: Pane) => void} [deleteOtherPanes]
  * @property {() => (Pane | null)} [otherPane]
  * @property {(direction: 'left'|'right'|'up'|'down') => (Pane | null)} [focusPaneDirection]
+ * @property {(pane: Pane) => (Pane | null)} [focusPane] - Focus a specific
+ *   leaf pane handle; returns the focused leaf, or null when it isn't a
+ *   leaf in the current tree.
  * @property {() => void} [balancePanes]
  * @property {(pane: Pane, ratio: number) => void} [setSplitRatio]
  * @property {() => (View | null)} [currentTabline]
