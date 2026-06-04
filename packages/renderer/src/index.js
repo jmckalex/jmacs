@@ -30,7 +30,8 @@ export { createInlineEval } from './inline-eval.js';
 export { renderMarkdown } from './markdown.js';
 export {
   parseCitations, formatBibliography, formatCitation, citationKeys,
-  citationEntries,
+  citationEntries, formatBibliographyEntries, splitBibliographyEntries,
+  registerCslStyle,
 } from './citation.js';
 export {
   ImageView,

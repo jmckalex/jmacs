@@ -92,6 +92,8 @@ import {
   formatCitation,
   citationKeys,
   citationEntries,
+  formatBibliographyEntries,
+  registerCslStyle,
   createMathPreview,
   mathPreviewProviderForMode,
   TextView,
@@ -3318,6 +3320,42 @@ const interpreter = createInterpreter({
         return arrayToList(records);
       } catch (error) {
         throw new LispError(`citation-entries: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-format-entries HANDLE STYLE)` — format each entry in
+    // HANDLE (a parsed-bib handle from `citation-parse`) to HTML via the
+    // CSL STYLE, returned as a list of `{:key :html}` records in entry
+    // order. The HTML carries the style's inline markup (italics,
+    // numbering) so the cite picker can show a professionally formatted
+    // reference per row; the inserted text is still `\cite{key}`. STYLE is
+    // a template id — a built-in (`apa`/`vancouver`/`harvard1`) or one
+    // registered via `citation-register-style!`. Returns nil for an empty
+    // handle.
+    'citation-format-entries': (args) => {
+      const handle = String(args[0] ?? '');
+      if (handle === '') return NIL;
+      const style = args[1] != null && args[1] !== NIL ? String(args[1]) : 'apa';
+      try {
+        const entries = formatBibliographyEntries(handle, { style });
+        return arrayToList(
+          entries.map((e) => record({ key: e.key ?? '', html: e.html ?? '' }))
+        );
+      } catch (error) {
+        throw new LispError(`citation-format-entries: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-register-style! XML)` — register a custom CSL style from
+    // its XML and return the template id to pass as STYLE to
+    // `citation-format-entries`. Lets `*reftex-cite-style*` point at a
+    // user-supplied `.csl` file for any style beyond the three built-ins.
+    // Idempotent (re-registering a known id is a no-op).
+    'citation-register-style!': (args) => {
+      const xml = String(args[0] ?? '');
+      if (xml === '') return NIL;
+      try {
+        return registerCslStyle(xml);
+      } catch (error) {
+        throw new LispError(`citation-register-style!: ${error.message ?? error}`);
       }
     },
 
