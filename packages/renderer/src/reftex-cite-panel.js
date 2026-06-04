@@ -1,0 +1,408 @@
+/**
+ * @file The RefTeX **citation** bottom panels — RefTeX R3's two-step,
+ * format-first cite flow (plans/RefTeX.md). Both dock at the bottom of
+ * the editor (full width — formatted references need horizontal room),
+ * mounted by `openReftexBottomDock` in apps/desktop/src/app.js.
+ *
+ *   1. `createReftexCiteFormatPanel` — the *format menu*: the cite macros
+ *      from `*reftex-cite-format*` (\cite / \citep / \citet / …), each on
+ *      a single key. RefTeX shows this first; picking one swaps the dock
+ *      for the picker below.
+ *   2. `createReftexCitePanel` — the *cite picker*: the bibliography
+ *      entries shown as professionally formatted references (citation.js
+ *      + a CSL style), searchable, with `m` to mark several. RET inserts
+ *      `<macro>{k1,k2}`.
+ *
+ * Both feed keys in via `handleKey(keyString)` (the overlay's modal
+ * window-capture handler). The pure key/selection helpers are exported
+ * and unit-tested without a DOM.
+ *
+ * Key strings are exactly what `keyEventToString` produces: named keys
+ * lowercased (`enter`, `up`, `down`, `escape`, `backspace`), printables
+ * verbatim (so `p` and `P` are distinct — the format menu uses both).
+ */
+
+// -----------------------------------------------------------------------
+// Pure helpers (no DOM) — unit-tested in Node.
+
+/**
+ * @typedef {object} CiteFormat
+ * @property {string} key - The keystroke that picks this format.
+ * @property {string} macro - The LaTeX macro inserted (e.g. `\citep`).
+ * @property {string} desc - The menu hint.
+ */
+
+/**
+ * @typedef {object} CiteRow
+ * @property {string} key - The bib key (inserted into the macro).
+ * @property {string} html - The CSL-formatted reference HTML (display).
+ * @property {string} plain - Plain text (key/author/year/title) to filter.
+ */
+
+/**
+ * The macro whose format KEY matches the pressed key, or null. Drives the
+ * format menu's single-key selection.
+ *
+ * @param {string} key
+ * @param {CiteFormat[]} formats
+ * @returns {string|null}
+ */
+export function matchCiteFormatKey(key, formats) {
+  for (const f of formats ?? []) {
+    if (f && f.key === key) return f.macro;
+  }
+  return null;
+}
+
+/**
+ * Filter cite rows by a case-insensitive substring of the key or the
+ * plain author/year/title text. An empty filter matches everything.
+ *
+ * @param {CiteRow[]} rows
+ * @param {string} filter
+ * @returns {CiteRow[]}
+ */
+export function filterCiteRows(rows, filter) {
+  const needle = (filter ?? '').toLowerCase();
+  if (needle === '') return rows ?? [];
+  return (rows ?? []).filter((r) => {
+    const key = (r.key ?? '').toLowerCase();
+    const plain = (r.plain ?? '').toLowerCase();
+    return key.includes(needle) || plain.includes(needle);
+  });
+}
+
+/**
+ * The keys to insert, given the marked set and the highlighted row: the
+ * marked keys in row order when any are marked, else the single
+ * highlighted key, else `[]`. This is RefTeX's "marked, or current"
+ * rule.
+ *
+ * @param {CiteRow[]} rows - The currently displayed (filtered) rows.
+ * @param {Set<string>} marked - The set of marked keys.
+ * @param {number} highlight - Index of the highlighted row.
+ * @returns {string[]}
+ */
+export function citeKeysToInsert(rows, marked, highlight) {
+  const list = rows ?? [];
+  const inOrder = list.filter((r) => marked && marked.has(r.key)).map((r) => r.key);
+  if (inOrder.length > 0) return inOrder;
+  const cur = list[highlight];
+  return cur ? [cur.key] : [];
+}
+
+/**
+ * Map a key string to the cite picker's action — PURE. `n`/`p` and the
+ * arrows move; `m` marks; `enter` inserts; `q`/`escape` cancel;
+ * `backspace` edits the filter; any other single printable extends it.
+ *
+ * @param {string} key
+ * @returns {{type: string, delta?: number, char?: string}|null}
+ */
+export function mapCiteKey(key) {
+  switch (key) {
+    case 'n':
+    case 'down':
+      return { type: 'move', delta: 1 };
+    case 'p':
+    case 'up':
+      return { type: 'move', delta: -1 };
+    case 'm':
+      return { type: 'mark' };
+    case 'enter':
+      return { type: 'insert' };
+    case 'q':
+    case 'escape':
+      return { type: 'cancel' };
+    case 'backspace':
+    case 'delete':
+      return { type: 'backspace' };
+    default:
+      if (key.length === 1) return { type: 'filter', char: key };
+      return null;
+  }
+}
+
+// -----------------------------------------------------------------------
+// The format-menu panel (step 1).
+
+/**
+ * Create the cite *format menu* panel. The host mounts `element` in the
+ * bottom dock and feeds keys via `handleKey`.
+ *
+ * @param {object} [options]
+ * @param {Document} [options.document]
+ * @param {() => CiteFormat[]} [options.getFormats]
+ * @param {(macro: string) => void} [options.onPick]
+ * @param {() => void} [options.onCancel]
+ * @returns {{element: HTMLElement, handleKey: (key: string) => boolean, refresh: Function, focus: Function, destroy: Function}}
+ */
+export function createReftexCiteFormatPanel(options = {}) {
+  const doc = options.document ?? globalThis.document;
+  const getFormats = typeof options.getFormats === 'function' ? options.getFormats : () => [];
+  const onPick = typeof options.onPick === 'function' ? options.onPick : null;
+  const onCancel = typeof options.onCancel === 'function' ? options.onCancel : null;
+
+  const root = doc.createElement('div');
+  root.className = 'reftex-cite-view reftex-cite-format';
+  root.tabIndex = -1;
+
+  const header = doc.createElement('div');
+  header.className = 'reftex-cite-header';
+  const icon = doc.createElement('i');
+  icon.className = 'fa-solid fa-quote-right';
+  const label = doc.createElement('span');
+  label.className = 'reftex-cite-header-label';
+  label.textContent = 'Select citation format';
+  header.append(icon, label);
+  root.append(header);
+
+  const list = doc.createElement('div');
+  list.className = 'reftex-cite-format-list';
+  root.append(list);
+
+  /** A human label for a format key ("enter" → "⏎"). */
+  function keyLabel(key) {
+    return key === 'enter' ? '⏎' : key;
+  }
+
+  function render() {
+    list.replaceChildren();
+    for (const f of getFormats() || []) {
+      const row = doc.createElement('div');
+      row.className = 'reftex-cite-format-row';
+      row.dataset.key = f.key ?? '';
+      const keyEl = doc.createElement('span');
+      keyEl.className = 'reftex-cite-format-key';
+      keyEl.textContent = keyLabel(f.key ?? '');
+      const macroEl = doc.createElement('span');
+      macroEl.className = 'reftex-cite-format-macro';
+      macroEl.textContent = f.macro ?? '';
+      const descEl = doc.createElement('span');
+      descEl.className = 'reftex-cite-format-desc';
+      descEl.textContent = f.desc ?? '';
+      row.append(keyEl, macroEl, descEl);
+      list.append(row);
+    }
+  }
+
+  list.addEventListener('click', (event) => {
+    const row = event.target.closest('.reftex-cite-format-row');
+    if (!row) return;
+    const macro = matchCiteFormatKey(row.dataset.key ?? '', getFormats() || []);
+    if (macro != null && onPick) onPick(macro);
+  });
+
+  function handleKey(key) {
+    if (key === 'q' || key === 'escape') {
+      if (onCancel) onCancel();
+      return true;
+    }
+    const macro = matchCiteFormatKey(key, getFormats() || []);
+    if (macro != null) {
+      if (onPick) onPick(macro);
+      return true;
+    }
+    return false;
+  }
+
+  render();
+  return {
+    element: root,
+    refresh: render,
+    focus: () => root.focus(),
+    handleKey,
+    destroy: () => root.remove(),
+  };
+}
+
+// -----------------------------------------------------------------------
+// The cite-picker panel (step 2).
+
+/**
+ * Assign citation.js-formatted reference HTML to EL. The HTML comes from
+ * the host's `citation-format-entries` (citation.js bibliography output),
+ * which HTML-escapes every bib field's text and emits only its own
+ * formatting tags (`<i>`, `<span>`, the Vancouver numbering `<div>`s); the
+ * bib file is the user's own local source. So `innerHTML` here renders the
+ * professional reference without a sanitiser. Defensively drop `<script`
+ * just in case a future formatter path changes.
+ *
+ * @param {HTMLElement} el
+ * @param {string} html
+ */
+function setReferenceHtml(el, html) {
+  el.innerHTML = typeof html === 'string' ? html.replace(/<script/gi, '&lt;script') : '';
+}
+
+/**
+ * Create the cite *picker* panel — the formatted, searchable, markable
+ * bibliography.
+ *
+ * @param {object} [options]
+ * @param {Document} [options.document]
+ * @param {() => CiteRow[]} [options.getRows]
+ * @param {(keysCsv: string) => void} [options.onInsert] - Called with the
+ *   comma-joined keys to cite (marked, or the highlighted row).
+ * @param {() => void} [options.onCancel]
+ * @returns {{element: HTMLElement, handleKey: (key: string) => boolean, refresh: Function, focus: Function, destroy: Function}}
+ */
+export function createReftexCitePanel(options = {}) {
+  const doc = options.document ?? globalThis.document;
+  const getRows = typeof options.getRows === 'function' ? options.getRows : () => [];
+  const onInsert = typeof options.onInsert === 'function' ? options.onInsert : null;
+  const onCancel = typeof options.onCancel === 'function' ? options.onCancel : null;
+
+  /** @type {CiteRow[]} The current filtered list, index-aligned with rows. */
+  let flat = [];
+  let highlight = 0;
+  let filter = '';
+  /** @type {Set<string>} Marked bib keys (survive filtering). */
+  const marked = new Set();
+
+  const root = doc.createElement('div');
+  root.className = 'reftex-cite-view reftex-cite-picker';
+  root.tabIndex = -1;
+
+  const header = doc.createElement('div');
+  header.className = 'reftex-cite-header';
+  const icon = doc.createElement('i');
+  icon.className = 'fa-solid fa-book';
+  const label = doc.createElement('span');
+  label.className = 'reftex-cite-header-label';
+  label.textContent = 'Insert citation';
+  const filterEl = doc.createElement('span');
+  filterEl.className = 'reftex-cite-filter';
+  header.append(icon, label, filterEl);
+  root.append(header);
+
+  const scroll = doc.createElement('div');
+  scroll.className = 'reftex-cite-scroll';
+  root.append(scroll);
+
+  const hint = doc.createElement('div');
+  hint.className = 'reftex-cite-hint';
+  hint.textContent =
+    'n/p or ↑↓ move · m mark · Enter insert · type to filter · q quit';
+  root.append(hint);
+
+  function render() {
+    const all = getRows() || [];
+    flat = filterCiteRows(all, filter);
+    if (highlight >= flat.length) highlight = Math.max(0, flat.length - 1);
+    if (highlight < 0) highlight = 0;
+
+    const bits = [];
+    if (filter !== '') bits.push(`"${filter}"`);
+    if (marked.size > 0) bits.push(`${marked.size} marked`);
+    filterEl.textContent = bits.join(' ');
+
+    scroll.replaceChildren();
+    if (flat.length === 0) {
+      const empty = doc.createElement('div');
+      empty.className = 'reftex-cite-empty';
+      empty.textContent = all.length === 0 ? 'No bibliography entries.' : 'No matches.';
+      scroll.append(empty);
+      return;
+    }
+
+    flat.forEach((row, idx) => {
+      const el = doc.createElement('div');
+      el.className = 'reftex-cite-row';
+      el.dataset.index = String(idx);
+      if (idx === highlight) el.classList.add('is-current');
+      if (marked.has(row.key)) el.classList.add('is-marked');
+
+      const mark = doc.createElement('span');
+      mark.className = 'reftex-cite-mark';
+      mark.textContent = marked.has(row.key) ? '•' : '';
+      const keyEl = doc.createElement('span');
+      keyEl.className = 'reftex-cite-key';
+      keyEl.textContent = row.key ?? '';
+      const refEl = doc.createElement('div');
+      refEl.className = 'reftex-cite-ref';
+      setReferenceHtml(refEl, row.html ?? '');
+
+      const top = doc.createElement('div');
+      top.className = 'reftex-cite-row-top';
+      top.append(mark, keyEl);
+      el.append(top, refEl);
+      scroll.append(el);
+    });
+    scrollHighlightIntoView();
+  }
+
+  function scrollHighlightIntoView() {
+    const el = scroll.querySelector('.reftex-cite-row.is-current');
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function move(delta) {
+    if (flat.length === 0) return;
+    highlight = Math.min(flat.length - 1, Math.max(0, highlight + delta));
+    render();
+  }
+
+  function toggleMark() {
+    const row = flat[highlight];
+    if (!row) return;
+    if (marked.has(row.key)) marked.delete(row.key);
+    else marked.add(row.key);
+    // Advance so repeated `m` marks a run, RefTeX-style.
+    if (highlight < flat.length - 1) highlight += 1;
+    render();
+  }
+
+  function insert() {
+    const keys = citeKeysToInsert(flat, marked, highlight);
+    if (onInsert) onInsert(keys.join(','));
+  }
+
+  function backspaceFilter() {
+    if (filter.length > 0) {
+      filter = filter.slice(0, -1);
+      highlight = 0;
+      render();
+    }
+  }
+
+  function extendFilter(char) {
+    filter += char;
+    highlight = 0;
+    render();
+  }
+
+  scroll.addEventListener('click', (event) => {
+    const el = event.target.closest('.reftex-cite-row');
+    if (!el) return;
+    const idx = Number.parseInt(el.dataset.index ?? '', 10);
+    if (!Number.isFinite(idx)) return;
+    highlight = idx;
+    toggleMark();
+  });
+
+  function handleKey(key) {
+    const action = mapCiteKey(key);
+    if (!action) return false;
+    switch (action.type) {
+      case 'move': move(action.delta); return true;
+      case 'mark': toggleMark(); return true;
+      case 'insert': insert(); return true;
+      case 'cancel': if (onCancel) onCancel(); return true;
+      case 'backspace': backspaceFilter(); return true;
+      case 'filter': extendFilter(action.char); return true;
+      default: return false;
+    }
+  }
+
+  render();
+  return {
+    element: root,
+    refresh: render,
+    focus: () => root.focus(),
+    handleKey,
+    destroy: () => root.remove(),
+  };
+}

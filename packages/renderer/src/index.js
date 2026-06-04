@@ -82,6 +82,14 @@ export {
   groupByType,
   nextTypeFilter,
 } from './reftex-select-panel.js';
+export {
+  createReftexCiteFormatPanel,
+  createReftexCitePanel,
+  matchCiteFormatKey,
+  filterCiteRows,
+  citeKeysToInsert,
+  mapCiteKey,
+} from './reftex-cite-panel.js';
 export { PlaceholderView } from './placeholder-view.js';
 export {
   PLACEHOLDER_ACTIONS,
