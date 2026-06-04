@@ -224,6 +224,11 @@ export class TextView extends ViewElement {
     if (this._editor !== null) this._editor.recenter();
   }
 
+  /** Flash a transient highlight band over the cursor's line. */
+  flashCurrentLine() {
+    if (this._editor !== null) this._editor.flashCurrentLine();
+  }
+
   /** Roughly how many lines fit in the viewport — for paging. */
   pageLines() {
     return this._editor !== null ? this._editor.pageLines() : 0;

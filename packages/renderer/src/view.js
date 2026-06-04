@@ -858,6 +858,37 @@ export function createEditorView(buffer, container, options = {}) {
   // must not: pulling the cursor back into view would yank the viewport
   // back, so the user could never scroll past the cursor's line.
   let followCursor = false;
+  // Recenter / flash are *deferred to the end of a render*, not run
+  // synchronously by their callers. `goto-line!` (and any buffer move)
+  // repositions the cursor on the next animation frame, so a recenter or
+  // flash issued right after it would otherwise read the cursor's *old*
+  // row. Running them in `render()` — after `renderCursor()` has moved
+  // `cursorEl` and rebuilt `displayRowForLine` — fixes that, and lets a
+  // pending recenter win over the plain follow-cursor scroll (which only
+  // nudges the line to the nearest edge, not the centre).
+  let pendingRecenter = false;
+  let pendingFlash = false;
+
+  /** Paint the transient flash band over the cursor's current line. The
+   *  band sits in the content layer (so it scrolls with the text) at the
+   *  line's display row, then fades out and removes itself. */
+  function paintLineFlash() {
+    const positions = cursorPositions(activeBuffer, getCursors(), getTabWidth());
+    const pos = positions[0] ?? { line: 0, column: 0 };
+    const row = rowOf(pos.line);
+    const displayRow = row === -1 ? rowOf(findVisibleAncestorLine(pos.line)) : row;
+    const flash = el('div', 'editor-line-flash');
+    flash.style.top = `calc(${displayRow} * 1lh)`;
+    content.append(flash);
+    const remove = () => flash.remove();
+    flash.addEventListener('transitionend', remove, { once: true });
+    // Fallback in case the transition doesn't fire (element detached, etc.).
+    setTimeout(remove, 2000);
+    // Paint the start state, then trigger the fade on the next frame.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => flash.classList.add('is-fading'));
+    });
+  }
 
   /** Render everything once; called on an animation frame. */
   function render() {
@@ -867,9 +898,20 @@ export function createEditorView(buffer, container, options = {}) {
     renderSelection();
     renderBrackets();
     renderCursor();
-    if (followCursor) {
+    // Scroll handling, after the cursor has been repositioned. A pending
+    // recenter takes precedence over follow-cursor: centre the line and
+    // drop the edge-nudge that would otherwise override it.
+    if (pendingRecenter) {
+      pendingRecenter = false;
+      followCursor = false;
+      cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
+    } else if (followCursor) {
       followCursor = false;
       cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+    if (pendingFlash) {
+      pendingFlash = false;
+      paintLineFlash();
     }
   }
 
@@ -1119,31 +1161,22 @@ export function createEditorView(buffer, container, options = {}) {
     backgroundLayer,
     overlayLayer,
 
-    /** Scroll so the cursor's line sits in the middle of the viewport. */
+    /** Scroll so the cursor's line sits in the middle of the viewport.
+     *  Deferred to the next render so it reads the cursor's *new* row
+     *  after a preceding buffer move (e.g. `goto-line!`), and wins over
+     *  that move's follow-cursor edge-scroll. */
     recenter() {
-      cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
+      pendingRecenter = true;
+      schedule();
     },
 
     /** Flash a transient highlight band over the cursor's line, then fade
      *  it out and remove it. Used by SyncTeX inverse search to call
-     *  attention to the line it landed on. The band sits in the content
-     *  layer (so it scrolls with the text) at the line's display row. */
+     *  attention to the line it landed on. Deferred to the next render so
+     *  it lands on the line the cursor was just moved to. */
     flashCurrentLine() {
-      const positions = cursorPositions(activeBuffer, getCursors(), getTabWidth());
-      const pos = positions[0] ?? { line: 0, column: 0 };
-      const row = rowOf(pos.line);
-      const displayRow = row === -1 ? rowOf(findVisibleAncestorLine(pos.line)) : row;
-      const flash = el('div', 'editor-line-flash');
-      flash.style.top = `calc(${displayRow} * 1lh)`;
-      content.append(flash);
-      const remove = () => flash.remove();
-      flash.addEventListener('transitionend', remove, { once: true });
-      // Fallback in case the transition doesn't fire (element detached, etc.).
-      setTimeout(remove, 2000);
-      // Paint the start state, then trigger the fade on the next frame.
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => flash.classList.add('is-fading'));
-      });
+      pendingFlash = true;
+      schedule();
     },
 
     /** Roughly how many lines fit in the viewport — used for paging. */
