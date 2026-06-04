@@ -129,6 +129,23 @@ import { enterAddPaneMode } from './add-pane-mode.js';
 import { enterMoveViewsMode } from './move-view-mode.js';
 import { createTabline } from '@editor/renderer';
 
+/**
+ * Build a Lisp hash-map (a JS `Map` with interned-keyword keys) from a
+ * plain object — the shape the host's citation / synctex primitives
+ * return. (latex-primitives.js keeps its own copy for its own scope; this
+ * is the app.js-scope equivalent, used by the citation primitives.)
+ *
+ * @param {Record<string, *>} fields
+ * @returns {Map<*, *>}
+ */
+function record(fields) {
+  const map = new Map();
+  for (const [key, value] of Object.entries(fields)) {
+    map.set(keyword(key), value);
+  }
+  return map;
+}
+
 const WELCOME = `
 
       jmacs
