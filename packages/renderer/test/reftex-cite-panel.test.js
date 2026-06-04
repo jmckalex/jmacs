@@ -62,17 +62,26 @@ test('an empty filter returns every row', () => {
 
 // --- citeKeysToInsert (marked, or current) ----------------------------
 
-test('citeKeysToInsert returns the highlighted key when nothing is marked', () => {
-  assert.deepEqual(citeKeysToInsert(ROWS, new Set(), 1), ['patel2020']);
+test('citeKeysToInsert returns the current key when nothing is marked', () => {
+  assert.deepEqual(citeKeysToInsert(ROWS, new Set(), 'patel2020'), ['patel2020']);
 });
 
-test('citeKeysToInsert returns marked keys in row order when any are marked', () => {
+test('citeKeysToInsert returns marked keys in index order when any are marked', () => {
   const marked = new Set(['smith2019', 'lee2021']);
-  assert.deepEqual(citeKeysToInsert(ROWS, marked, 1), ['lee2021', 'smith2019']);
+  // Current key is irrelevant when there are marks; order follows the index.
+  assert.deepEqual(citeKeysToInsert(ROWS, marked, 'patel2020'), ['lee2021', 'smith2019']);
 });
 
-test('citeKeysToInsert is empty for an empty list', () => {
-  assert.deepEqual(citeKeysToInsert([], new Set(), 0), []);
+test('citeKeysToInsert collects a marked key even when it is filtered out', () => {
+  // The marked key need not be among the currently shown rows — it is
+  // collected from the full index passed in.
+  const marked = new Set(['smith2019']);
+  assert.deepEqual(citeKeysToInsert(ROWS, marked, 'lee2021'), ['smith2019']);
+});
+
+test('citeKeysToInsert is empty when nothing marked and no current key', () => {
+  assert.deepEqual(citeKeysToInsert(ROWS, new Set(), null), []);
+  assert.deepEqual(citeKeysToInsert([], new Set(), null), []);
 });
 
 // --- mapCiteKey -------------------------------------------------------

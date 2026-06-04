@@ -132,29 +132,30 @@
       ((number? v) (number->string v))
       (else v))))
 
-(define (-reftex-cite-row entry formatted)
-  "One picker row (KEY HTML PLAIN) from a parallel ENTRY record (key /
-   author / year / title) and FORMATTED record (key / html)."
+(define (-reftex-cite-index-row entry)
+  "One cheap index row (KEY PLAIN) from an ENTRY record (key / author /
+   year / title). PLAIN is the substring-filter text; the CSL-formatted
+   HTML is fetched lazily per shown row (`reftex-cite-format`), so a large
+   bibliography is never formatted whole."
   (list (get entry :key "")
-        (get formatted :html "")
         (-reftex-cite-plain entry)))
 
-(define (-reftex-build-cite-rows handle)
-  "Build the cite picker rows — (key html plain) per bib entry, in bib
-   order — by zipping `citation-entries` (for the filter text) with
-   `citation-format-entries` (for the CSL-formatted HTML). HANDLE is a
+(define (-reftex-build-cite-index handle)
+  "Build the cheap cite index — (key plain) per bib entry, in bib order —
+   from `citation-entries` only (no CSL formatting). HANDLE is a
    parsed-bib handle; an empty/nil HANDLE yields no rows."
   (if (or (nil? handle) (string=? handle ""))
       (list)
-      (map -reftex-cite-row
-           (citation-entries handle)
-           (citation-format-entries handle (-reftex-cite-template)))))
+      (map -reftex-cite-index-row (citation-entries handle))))
 
 ;; --- the picker state + host-read accessors ---------------------------
 
-;; The prepared rows for the open cite picker (key html plain), and the
-;; cite macro the format menu chose. Both set when `reftex-citation` runs.
-(define *reftex-cite-rows* (list))
+;; The open picker's state: the cheap index (key plain), the parsed bib
+;; handle + resolved CSL template id (for lazy per-row formatting), and the
+;; cite macro the format menu chose. All set when `reftex-citation` runs.
+(define *reftex-cite-index* (list))
+(define *reftex-cite-handle* nil)
+(define *reftex-cite-style-id* "apa")
 (define *reftex-cite-macro* "\\cite")
 
 (define (reftex-cite-formats)
@@ -162,10 +163,25 @@
    (key macro description). The host's format menu reads this."
   *reftex-cite-format*)
 
-(define (reftex-cite-select-rows)
-  "The prepared cite-picker rows — a list of (key html plain). The host's
-   getRows closure reads this on every repaint."
-  *reftex-cite-rows*)
+(define (reftex-cite-index)
+  "The cheap cite index — a list of (key plain) for EVERY bib entry. The
+   picker filters this client-side; formatting is deferred to
+   `reftex-cite-format` for the rows actually shown."
+  *reftex-cite-index*)
+
+(define (reftex-cite-format keys-csv)
+  "Format just the entries named in KEYS-CSV (comma-separated), as a list
+   of (key html). The picker calls this for the rows it is about to show,
+   so only the visible subset of a large bibliography is ever formatted.
+   Empty list when nothing is requested or no bib is open."
+  (if (or (nil? *reftex-cite-handle*)
+          (nil? keys-csv)
+          (string=? keys-csv ""))
+      (list)
+      (map (lambda (r) (list (get r :key "") (get r :html "")))
+           (citation-format-keys *reftex-cite-handle*
+                                  keys-csv
+                                  *reftex-cite-style-id*))))
 
 ;; --- the command + callbacks ------------------------------------------
 
@@ -183,13 +199,17 @@
         (show-status! "RefTeX: no bibliography entries found")
         (let* ((handle (get parsed :handle nil))
                (skipped (get parsed :skipped 0))
-               (rows (-reftex-build-cite-rows handle)))
+               (index (-reftex-build-cite-index handle)))
           (cond
-            ((nil? rows)
+            ((nil? index)
              (show-status! "RefTeX: no bibliography entries found"))
             (else
              (-reftex-remember-origin)
-             (set! *reftex-cite-rows* rows)
+             ;; Store the handle + resolved style once so the picker can
+             ;; format shown rows on demand without re-reading/registering.
+             (set! *reftex-cite-handle* handle)
+             (set! *reftex-cite-style-id* (-reftex-cite-template))
+             (set! *reftex-cite-index* index)
              (when (> skipped 0)
                (show-status! (-reftex-cite-skipped-message skipped)))
              (open-reftex-cite-format!)))))))

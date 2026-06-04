@@ -52,6 +52,16 @@ async function citeEditor(model = {}) {
       arrayToList((model.entries ?? []).map((e) => entry(e))),
     'citation-format-entries': () =>
       arrayToList((model.formatted ?? []).map((f) => formatted(f[0], f[1]))),
+    // Lazy per-row formatting: return only the requested keys' html.
+    'citation-format-keys': (a) => {
+      const csv = String(a[1] ?? '');
+      const want = new Set(csv.split(',').map((s) => s.trim()).filter(Boolean));
+      return arrayToList(
+        (model.formatted ?? [])
+          .filter((f) => want.has(f[0]))
+          .map((f) => formatted(f[0], f[1]))
+      );
+    },
     'citation-register-style!': (a) => model.registeredId ?? String(a[0] ?? ''),
     // The parsed bib is provided directly as a {:handle :skipped} record
     // (bypassing the full R1 DB walk, which the tiny model doesn't
@@ -116,14 +126,13 @@ test('-reftex-cite-plain joins key/author/year/title, skipping nils', async () =
   assert.equal(sparse, 'x');
 });
 
-test('-reftex-cite-row zips an entry record with its formatted html', async () => {
+test('-reftex-cite-index-row builds the cheap (key plain) row', async () => {
   const { ev } = await citeEditor();
   const row = listToArray(ev(
-    '(-reftex-cite-row (hash-map :key "k" :author "A" :year 2020 :title "T") ' +
-    '(hash-map :key "k" :html "<i>T</i>"))'
+    '(-reftex-cite-index-row (hash-map :key "k" :author "A" :year 2020 :title "T"))'
   ));
-  // (key html plain)
-  assert.deepEqual(row, ['k', '<i>T</i>', 'k A 2020 T']);
+  // (key plain) — no HTML; formatting is deferred to reftex-cite-format.
+  assert.deepEqual(row, ['k', 'k A 2020 T']);
 });
 
 // --- style resolution -------------------------------------------------
@@ -160,9 +169,28 @@ test('reftex-citation builds rows and opens the format menu first', async () => 
   });
   ev('(reftex-citation)');
   assert.deepEqual(rec.opened, ['format'], 'format menu opens first, not the picker');
-  // Rows were prepared for the picker.
-  const rows = listToArray(ev('(reftex-cite-select-rows)'));
-  assert.equal(rows.length, 2, 'two rows prepared');
+  // The cheap index was prepared for the picker (key + plain, no HTML).
+  const index = listToArray(ev('(reftex-cite-index)')).map((r) => listToArray(r));
+  assert.equal(index.length, 2, 'two index rows prepared');
+  assert.equal(index[0][0], 'lee2021', 'row carries the key');
+  assert.match(index[0][1], /Jane Lee/, 'row carries the filter text, not HTML');
+});
+
+test('reftex-cite-format formats only the requested keys (lazy)', async () => {
+  const { ev } = await citeEditor({
+    handle: '[]',
+    entries: [
+      { key: 'lee2021', author: 'Jane Lee', year: 2021, title: 'A' },
+      { key: 'patel2020', author: 'Riya Patel', year: 2020, title: 'B' },
+    ],
+    formatted: [
+      ['lee2021', '<i>A</i>'],
+      ['patel2020', '<i>B</i>'],
+    ],
+  });
+  ev('(reftex-citation)'); // sets *reftex-cite-handle* / *reftex-cite-style-id*
+  const got = listToArray(ev('(reftex-cite-format "patel2020")')).map((r) => listToArray(r));
+  assert.deepEqual(got, [['patel2020', '<i>B</i>']], 'only the asked-for key is formatted');
 });
 
 test('format choice swaps to the picker; RET inserts <macro>{keys} at origin', async () => {

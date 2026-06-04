@@ -3380,6 +3380,30 @@ const interpreter = createInterpreter({
         throw new LispError(`citation-format-entries: ${error.message ?? error}`);
       }
     },
+    // `(citation-format-keys HANDLE KEYS-CSV STYLE)` — format ONLY the
+    // entries in HANDLE whose id is in the comma-separated KEYS-CSV, as a
+    // list of `{:key :html}`. The cite picker calls this for just the rows
+    // it is showing, so a large bibliography is never formatted whole
+    // (formatting is the costly step; the cheap key/author/year/title
+    // index drives filtering). Unknown keys are silently absent.
+    'citation-format-keys': (args) => {
+      const handle = String(args[0] ?? '');
+      const keysCsv = String(args[1] ?? '');
+      if (handle === '' || keysCsv === '') return NIL;
+      const style = args[2] != null && args[2] !== NIL ? String(args[2]) : 'apa';
+      try {
+        const wanted = new Set(
+          keysCsv.split(',').map((s) => s.trim()).filter(Boolean)
+        );
+        const subset = JSON.parse(handle).filter((e) => wanted.has(e.id));
+        const entries = formatBibliographyEntries(JSON.stringify(subset), { style });
+        return arrayToList(
+          entries.map((e) => record({ key: e.key ?? '', html: e.html ?? '' }))
+        );
+      } catch (error) {
+        throw new LispError(`citation-format-keys: ${error.message ?? error}`);
+      }
+    },
     // `(citation-register-style! XML)` — register a custom CSL style from
     // its XML and return the template id to pass as STYLE to
     // `citation-format-entries`. Lets `*reftex-cite-style*` point at a
@@ -5895,15 +5919,33 @@ function reftexCiteFormats() {
   }
 }
 
-/** The cite *picker* rows the Lisp side prepared: each Lisp row is
- *  `(key html plain)`, mapped to `{key, html, plain}`. `html` is the
- *  CSL-formatted reference; `plain` is the filter text. */
-function reftexCiteRows() {
+/** The cheap cite *index* the Lisp side prepared: each Lisp row is
+ *  `(key plain)`, mapped to `{key, plain}`. The picker filters this
+ *  client-side; the CSL HTML is fetched lazily via `reftexCiteFormatted`
+ *  for the rows actually shown, so a big bibliography isn't formatted
+ *  whole. */
+function reftexCiteIndex() {
   if (!keymapReady) return [];
   try {
-    return listToArray(interpreter.call('reftex-cite-select-rows')).map((row) => {
+    return listToArray(interpreter.call('reftex-cite-index')).map((row) => {
       const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-      return { key: r[0] ?? '', html: r[1] ?? '', plain: r[2] ?? '' };
+      return { key: r[0] ?? '', plain: r[1] ?? '' };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
+    return [];
+  }
+}
+
+/** CSL-format just the entries named in KEYSCSV (the rows the picker is
+ *  about to show), as `{key, html}` pairs. Backed by `reftex-cite-format`
+ *  → `citation-format-keys` over a sub-handle. */
+function reftexCiteFormatted(keysCsv) {
+  if (!keymapReady || !keysCsv) return [];
+  try {
+    return listToArray(interpreter.call('reftex-cite-format', keysCsv)).map((row) => {
+      const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return { key: r[0] ?? '', html: r[1] ?? '' };
     });
   } catch (error) {
     repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
@@ -6070,10 +6112,12 @@ function openReftexCiteFormat() {
   }));
 }
 
-/** R3 step 2: the cite *picker* (formatted entries, mark + insert). */
+/** R3 step 2: the cite *picker* (cheap index, lazily formats shown rows,
+ *  mark + insert). */
 function openReftexCiteSelect() {
   openReftexBottomDock((dock) => createReftexCitePanel({
-    getRows: reftexCiteRows,
+    getIndex: reftexCiteIndex,
+    getFormatted: reftexCiteFormatted,
     onInsert: (keysCsv) => {
       reftexCiteCallback('reftex-cite-insert', keysCsv);
       dock.close();

@@ -73,22 +73,22 @@ export function filterCiteRows(rows, filter) {
 }
 
 /**
- * The keys to insert, given the marked set and the highlighted row: the
- * marked keys in row order when any are marked, else the single
- * highlighted key, else `[]`. This is RefTeX's "marked, or current"
+ * The keys to insert: the marked keys in full-index order when any are
+ * marked (so a mark survives filtering to something else), else the
+ * currently highlighted key, else `[]`. RefTeX's "marked, or current"
  * rule.
  *
- * @param {CiteRow[]} rows - The currently displayed (filtered) rows.
+ * @param {Array<{key: string}>} allRows - The FULL index, in bib order.
  * @param {Set<string>} marked - The set of marked keys.
- * @param {number} highlight - Index of the highlighted row.
+ * @param {string|null} currentKey - The highlighted row's key.
  * @returns {string[]}
  */
-export function citeKeysToInsert(rows, marked, highlight) {
-  const list = rows ?? [];
-  const inOrder = list.filter((r) => marked && marked.has(r.key)).map((r) => r.key);
+export function citeKeysToInsert(allRows, marked, currentKey) {
+  const inOrder = (allRows ?? [])
+    .filter((r) => marked && marked.has(r.key))
+    .map((r) => r.key);
   if (inOrder.length > 0) return inOrder;
-  const cur = list[highlight];
-  return cur ? [cur.key] : [];
+  return currentKey ? [currentKey] : [];
 }
 
 /**
@@ -235,13 +235,25 @@ function setReferenceHtml(el, html) {
   el.innerHTML = typeof html === 'string' ? html.replace(/<script/gi, '&lt;script') : '';
 }
 
+/** The most rows the picker renders (and formats) at once. A larger
+ *  bibliography is filtered down by typing; the rest are summarised as
+ *  "N more — type to filter" rather than formatted. Keeps both DOM and
+ *  CSL-formatting work bounded regardless of bib size. */
+const MAX_VISIBLE = 40;
+
 /**
- * Create the cite *picker* panel — the formatted, searchable, markable
- * bibliography.
+ * Create the cite *picker* panel. It is driven by a CHEAP index (one
+ * `{key, plain}` per bib entry — `plain` is the author/year/title filter
+ * text) and formats the CSL references LAZILY: only the rows it actually
+ * shows are formatted, via `getFormatted`, and each result is cached. So
+ * a 1000-entry bibliography opens instantly and is never formatted whole.
  *
  * @param {object} [options]
  * @param {Document} [options.document]
- * @param {() => CiteRow[]} [options.getRows]
+ * @param {() => Array<{key: string, plain: string}>} [options.getIndex] -
+ *   The full cheap index, in bib order.
+ * @param {(keysCsv: string) => Array<{key: string, html: string}>} [options.getFormatted]
+ *   - CSL-format just the named keys (the rows about to be shown).
  * @param {(keysCsv: string) => void} [options.onInsert] - Called with the
  *   comma-joined keys to cite (marked, or the highlighted row).
  * @param {() => void} [options.onCancel]
@@ -249,16 +261,20 @@ function setReferenceHtml(el, html) {
  */
 export function createReftexCitePanel(options = {}) {
   const doc = options.document ?? globalThis.document;
-  const getRows = typeof options.getRows === 'function' ? options.getRows : () => [];
+  const getIndex = typeof options.getIndex === 'function' ? options.getIndex : () => [];
+  const getFormatted =
+    typeof options.getFormatted === 'function' ? options.getFormatted : () => [];
   const onInsert = typeof options.onInsert === 'function' ? options.onInsert : null;
   const onCancel = typeof options.onCancel === 'function' ? options.onCancel : null;
 
-  /** @type {CiteRow[]} The current filtered list, index-aligned with rows. */
-  let flat = [];
+  /** @type {Array<{key: string, plain: string}>} The shown (capped) rows. */
+  let shown = [];
   let highlight = 0;
   let filter = '';
   /** @type {Set<string>} Marked bib keys (survive filtering). */
   const marked = new Set();
+  /** @type {Map<string, string>} key → formatted HTML (lazy, cached). */
+  const htmlCache = new Map();
 
   const root = doc.createElement('div');
   root.className = 'reftex-cite-view reftex-cite-picker';
@@ -286,27 +302,45 @@ export function createReftexCitePanel(options = {}) {
     'n/p or ↑↓ move · m mark · Enter insert · type to filter · q quit';
   root.append(hint);
 
+  /** Ensure every key in KEYS has formatted HTML cached, fetching the
+   *  uncached ones in one batched call. Misses are cached as '' so a key
+   *  the formatter can't render isn't requested again. */
+  function ensureFormatted(keys) {
+    const need = keys.filter((k) => !htmlCache.has(k));
+    if (need.length === 0) return;
+    const got = getFormatted(need.join(',')) || [];
+    for (const { key, html } of got) htmlCache.set(key, html ?? '');
+    for (const k of need) if (!htmlCache.has(k)) htmlCache.set(k, '');
+  }
+
   function render() {
-    const all = getRows() || [];
-    flat = filterCiteRows(all, filter);
-    if (highlight >= flat.length) highlight = Math.max(0, flat.length - 1);
+    const index = getIndex() || [];
+    const matches = filterCiteRows(index, filter);
+    shown = matches.slice(0, MAX_VISIBLE);
+    if (highlight >= shown.length) highlight = Math.max(0, shown.length - 1);
     if (highlight < 0) highlight = 0;
+
+    // Format only the rows we're about to paint.
+    ensureFormatted(shown.map((r) => r.key));
 
     const bits = [];
     if (filter !== '') bits.push(`"${filter}"`);
     if (marked.size > 0) bits.push(`${marked.size} marked`);
-    filterEl.textContent = bits.join(' ');
+    if (matches.length > shown.length) {
+      bits.push(`${shown.length} of ${matches.length} — type to filter`);
+    }
+    filterEl.textContent = bits.join(' · ');
 
     scroll.replaceChildren();
-    if (flat.length === 0) {
+    if (shown.length === 0) {
       const empty = doc.createElement('div');
       empty.className = 'reftex-cite-empty';
-      empty.textContent = all.length === 0 ? 'No bibliography entries.' : 'No matches.';
+      empty.textContent = index.length === 0 ? 'No bibliography entries.' : 'No matches.';
       scroll.append(empty);
       return;
     }
 
-    flat.forEach((row, idx) => {
+    shown.forEach((row, idx) => {
       const el = doc.createElement('div');
       el.className = 'reftex-cite-row';
       el.dataset.index = String(idx);
@@ -321,7 +355,10 @@ export function createReftexCitePanel(options = {}) {
       keyEl.textContent = row.key ?? '';
       const refEl = doc.createElement('div');
       refEl.className = 'reftex-cite-ref';
-      setReferenceHtml(refEl, row.html ?? '');
+      // The formatted reference, or the cheap filter text until it loads.
+      const html = htmlCache.get(row.key);
+      if (html) setReferenceHtml(refEl, html);
+      else refEl.textContent = row.plain ?? '';
 
       const top = doc.createElement('div');
       top.className = 'reftex-cite-row-top';
@@ -340,23 +377,24 @@ export function createReftexCitePanel(options = {}) {
   }
 
   function move(delta) {
-    if (flat.length === 0) return;
-    highlight = Math.min(flat.length - 1, Math.max(0, highlight + delta));
+    if (shown.length === 0) return;
+    highlight = Math.min(shown.length - 1, Math.max(0, highlight + delta));
     render();
   }
 
   function toggleMark() {
-    const row = flat[highlight];
+    const row = shown[highlight];
     if (!row) return;
     if (marked.has(row.key)) marked.delete(row.key);
     else marked.add(row.key);
     // Advance so repeated `m` marks a run, RefTeX-style.
-    if (highlight < flat.length - 1) highlight += 1;
+    if (highlight < shown.length - 1) highlight += 1;
     render();
   }
 
   function insert() {
-    const keys = citeKeysToInsert(flat, marked, highlight);
+    const cur = shown[highlight];
+    const keys = citeKeysToInsert(getIndex() || [], marked, cur ? cur.key : null);
     if (onInsert) onInsert(keys.join(','));
   }
 
