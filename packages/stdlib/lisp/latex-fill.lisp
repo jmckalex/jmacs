@@ -382,7 +382,7 @@
    blank line flushes PENDING first. Returns the output lines in order."
   (cond
     ((nil? lines)
-     (reverse (-latex-fill-flush pending acc)))
+     (reverse (-latex-fill-flush pending acc fill-column)))
     (else
      (let* ((raw (car lines))
             (content (-latex-fill-trim-leading raw)))
@@ -390,7 +390,7 @@
          ;; Blank line: flush any prose, emit an empty line.
          ((-latex-fill-blank-line? raw)
           (-latex-fill-walk (cdr lines) depth level item-indent fill-column
-                            (list) (cons "" (-latex-fill-flush pending acc))))
+                            (list) (cons "" (-latex-fill-flush pending acc fill-column))))
          ;; \begin{...}: flush, emit at outer level, then go one deeper —
          ;; UNLESS it is a non-indenting env (`document'), which keeps the
          ;; depth so its body stays at the outer level.
@@ -401,7 +401,7 @@
             (-latex-fill-walk
              (cdr lines) next level item-indent fill-column (list)
              (cons (str (-latex-fill-body-indent depth level) content)
-                   (-latex-fill-flush pending acc)))))
+                   (-latex-fill-flush pending acc fill-column)))))
          ;; \end{...}: flush, dedent first, emit at the outer level — unless
          ;; a non-indenting env (`document'), which never changed the depth.
          ((-latex-fill-end-line? content)
@@ -411,7 +411,7 @@
             (-latex-fill-walk
              (cdr lines) d level item-indent fill-column (list)
              (cons (str (-latex-fill-body-indent d level) content)
-                   (-latex-fill-flush pending acc)))))
+                   (-latex-fill-flush pending acc fill-column)))))
          ;; \item / \bibitem: flush the previous unit, start a NEW prose
          ;; run seeded with the item's own words (so items never merge),
          ;; first line at item indent, continuations one step deeper.
@@ -421,14 +421,14 @@
            (-latex-fill-pending (-latex-fill-words content)
                                 (-latex-fill-item-indent depth level item-indent)
                                 (-latex-fill-continuation-indent depth level))
-           (-latex-fill-flush pending acc)))
+           (-latex-fill-flush pending acc fill-column)))
          ;; Paragraph command (\par, \section, \caption, …) / display math:
          ;; flush, emit on its own line at the body level.
          ((-latex-fill-paragraph-command-line? content)
           (-latex-fill-walk
            (cdr lines) depth level item-indent fill-column (list)
            (cons (str (-latex-fill-body-indent depth level) content)
-                 (-latex-fill-flush pending acc))))
+                 (-latex-fill-flush pending acc fill-column))))
          ;; Plain prose: append its words to the current run (seeding the
          ;; run's indents from the body level when it is the first line).
          (else
@@ -463,16 +463,17 @@
                 :first (get pending :first first-indent)
                 :rest (get pending :rest rest-indent))))
 
-(define (-latex-fill-flush pending acc)
-  "Wrap PENDING's prose run (if any) onto ACC (reversed output lines),
-   returning the new reversed ACC. An empty run leaves ACC unchanged."
+(define (-latex-fill-flush pending acc fill-column)
+  "Wrap PENDING's prose run (if any) to FILL-COLUMN onto ACC (reversed
+   output lines), returning the new reversed ACC. An empty run leaves ACC
+   unchanged."
   (if (-latex-fill-pending-empty? pending)
       acc
       (-latex-fill-prepend-reversed
        (-latex-fill-wrap (get pending :words (list))
                          (get pending :first "")
                          (get pending :rest "")
-                         *latex-fill-column*)
+                         fill-column)
        acc)))
 
 (define (-latex-fill-prepend-reversed lines acc)
@@ -585,7 +586,7 @@
               (from (-latex-fill-line-offset lines start-line))
               (to (+ (-latex-fill-line-offset lines end-line)
                      (string-length (nth lines end-line))))
-              (base-depth (-latex-fill-env-depth-at text from))
+              (base-depth (-latex-env-depth-at text from))
               (block (substring text from to))
               (filled (latex-fill-block block base-depth
                                         *latex-indent-level* *latex-item-indent*
@@ -597,20 +598,6 @@
                (goto! from)
                (insert! filled)
                (show-status! "Filled paragraph"))))))))
-
-(define (-latex-fill-env-depth-at text from)
-  "The environment depth that applies to the FIRST line of the block at
-   offset FROM: the depth at FROM, but if FROM's own line opens with an
-   \\end, that \\end has not yet been counted at FROM, so the depth is one
-   LESS than the surrounding-body depth — the block's own \\end re-dedents
-   it inside `latex-fill-block`. We therefore use the depth at FROM
-   directly (the \\begin/\\end on the first line are handled by the walk)."
-  (-latex-fill-env-depth text from))
-
-(define (-latex-fill-env-depth text from)
-  "Environment depth at offset FROM. Thin name kept distinct from the pure
-   `-latex-env-depth-at` so the command reads clearly."
-  (-latex-env-depth-at text from))
 
 (define (-latex-fill-line-of-offset text offset)
   "The 0-based line index containing OFFSET in TEXT (the count of newlines

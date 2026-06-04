@@ -517,3 +517,20 @@ test('*latex-non-indenting-environments* is customisable (e.g. a frame env)', as
   const text = '\\begin{frame}\nHERE\n\\end{frame}';
   assert.equal(ev(`(-latex-env-depth-at ${lispString(text)} ${text.indexOf('HERE')})`), 0);
 });
+
+// --- latex-fill-block honours its fill-column argument -------------------
+// Regression: the wrap step once read the global `*latex-fill-column*`
+// rather than the threaded FILL-COLUMN parameter, so a custom column was
+// ignored. Wrapping the same prose at 20 vs 72 must differ.
+
+test('latex-fill-block wraps at the passed fill column, not the global', async () => {
+  const { ev } = await fillEditor();
+  const prose = 'one two three four five six seven eight nine ten eleven twelve';
+  const at72 = ev(`(latex-fill-block ${lispString(prose)} 0 2 -2 72)`);
+  const at20 = ev(`(latex-fill-block ${lispString(prose)} 0 2 -2 20)`);
+  assert.equal(at72, prose, 'fits on one line at column 72');
+  assert.ok(at20.split('\n').length > 1, 'breaks into several lines at column 20');
+  for (const line of at20.split('\n')) {
+    assert.ok(line.length <= 20, `"${line}" within the 20-column budget`);
+  }
+});
