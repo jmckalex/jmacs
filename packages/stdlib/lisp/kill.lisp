@@ -6,8 +6,12 @@
 (define *kill-ring* (list))
 
 (define (kill-ring-add! text)
-  "Push TEXT onto the kill ring."
-  (set! *kill-ring* (cons text *kill-ring*)))
+  "Push TEXT onto the kill ring AND mirror it to the system clipboard
+   (Emacs's interprogram-cut), so every editor kill / copy can be pasted
+   in another application (or with Cmd+V here). All cut/copy commands
+   funnel through here, so this one hook covers the whole family."
+  (set! *kill-ring* (cons text *kill-ring*))
+  (clipboard-set-text! text))
 
 (define (kill-ring-top)
   "The most recent kill, or an empty string when the ring is empty."
@@ -65,9 +69,22 @@
         (kill-ring-add! (buffer-substring from end))
         (delete-region! from end)))))
 
+(define (-yank-sync-clipboard!)
+  "Pull the system clipboard onto the kill ring when it holds non-empty
+   text the ring's top does not already have (Emacs's interprogram-paste).
+   Pushed directly — it is already on the clipboard, so no write-back. So
+   C-y pastes text copied in another app, and a fresh ring isn't empty."
+  (let ((clip (clipboard-text)))
+    (when (and (not (equal? clip ""))
+               (not (equal? clip (kill-ring-top))))
+      (set! *kill-ring* (cons clip *kill-ring*)))))
+
 (defcommand yank ()
-  "Insert the most recent kill at the cursor. Records the insertion so a
-   following `yank-pop` (M-y) can cycle through the kill ring."
+  "Insert the most recent kill at the cursor. First syncs in the system
+   clipboard (so C-y also pastes text copied elsewhere), then inserts the
+   ring's top. Records the insertion so a following `yank-pop` (M-y) can
+   cycle through the kill ring."
+  (-yank-sync-clipboard!)
   (let ((start (point))
         (text (kill-ring-top)))
     (insert! text)

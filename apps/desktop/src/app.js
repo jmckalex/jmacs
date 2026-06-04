@@ -3053,6 +3053,50 @@ const interpreter = createInterpreter({
       openFileByPath(filePath);
       return NIL;
     },
+    // `(find-file-new! PATH)` — visit a path that does NOT exist yet:
+    // open an empty text buffer whose file is PATH, so the next
+    // `save-buffer` (C-x C-s) creates it. Emacs's find-file-on-a-missing-
+    // file behaviour. If a view already visits PATH, just switch to it.
+    // The file is NOT written to disk here — only on save. Returns nil.
+    'find-file-new!': (args) => {
+      const filePath = expandTilde(String(args[0] ?? ''));
+      if (filePath === '') return NIL;
+      const existing = views.findIndex((v) => viewFilePath(v) === filePath);
+      if (existing >= 0) {
+        switchToViewIndex(existing);
+        return NIL;
+      }
+      const name = filePath.slice(filePath.lastIndexOf('/') + 1) || filePath;
+      const buffer = createBuffer('', { name });
+      buffer.filePath = filePath;
+      const view = createView({ kind: 'text', buffer });
+      views.push(view);
+      notifyViewsChanged();
+      switchToViewIndex(views.length - 1);
+      return NIL;
+    },
+    // `(clipboard-text)` — the system clipboard's plain text (''
+    // when empty or unavailable). The kill ring's `yank` reads this so
+    // C-y pastes text copied in another application.
+    'clipboard-text': () => {
+      try {
+        const text = window.host.clipboardReadText();
+        return typeof text === 'string' ? text : '';
+      } catch {
+        return '';
+      }
+    },
+    // `(clipboard-set-text! TEXT)` — write TEXT to the system clipboard.
+    // The kill ring mirrors every kill/copy here so editor kills paste
+    // into other apps. Returns nil.
+    'clipboard-set-text!': (args) => {
+      try {
+        window.host.clipboardWriteText(String(args[0] ?? ''));
+      } catch {
+        // No clipboard host (e.g. headless): silently skip.
+      }
+      return NIL;
+    },
     // Show a transient message in the minibuffer's echo area (the
     // status line at the foot of the window). Used by the keymap to
     // surface a mid-build chord prefix ("C-x-"), among other things.
@@ -4597,6 +4641,32 @@ window.addEventListener('keydown', (event) => {
   // Add-pane mode runs its own transient key handling over the host.
   if (editorHostEl.dataset.addPane) return;
 
+  // macOS clipboard chords: Cmd+V / Cmd+C / Cmd+X. Cmd and Ctrl both
+  // normalise to "C-", so these would otherwise fire C-v (scroll-up),
+  // the C-c prefix, and the C-x prefix. We disambiguate on the raw event
+  // (metaKey, not ctrlKey) and route them to the kill-ring commands,
+  // which sync with the system clipboard: Cmd+V → yank (reads the
+  // clipboard), Cmd+C → copy-region, Cmd+X → kill-region. Ctrl+V/C/X
+  // keep their Emacs meanings. Native inputs already returned above, so
+  // the minibuffer still pastes natively. Clipboard ops apply to text
+  // views only; in other views the chord is swallowed (no paste target).
+  if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+    const k = event.key.toLowerCase();
+    if (k === 'v' || k === 'c' || k === 'x') {
+      const current = views[currentViewIndex];
+      if (current && current.kind === 'text') {
+        event.preventDefault();
+        const command = k === 'v' ? 'yank' : k === 'c' ? 'copy-region' : 'kill-region';
+        try {
+          interpreter.call(command);
+        } catch (error) {
+          repl.appendError(`${command}: ${error.message}`);
+        }
+      }
+      return;
+    }
+  }
+
   const key = keyEventToString(event);
   // A bare printable character self-inserts; only route that to a text
   // view. Command keys and chords route regardless of the view kind, so
@@ -4606,6 +4676,23 @@ window.addEventListener('keydown', (event) => {
     if (!current || current.kind !== 'text') return;
   }
   if (dispatchKey(key)) event.preventDefault();
+});
+
+// Right-click → Paste (and any other native paste action that isn't the
+// Cmd+V chord, which keydown handles above). The custom renderer isn't
+// contenteditable, so a paste event would otherwise do nothing. Route it
+// through the clipboard-aware `yank`. Native inputs keep their own paste.
+window.addEventListener('paste', (event) => {
+  if (!keymapReady) return;
+  if (targetOwnsKeys(event.target)) return;
+  const current = views[currentViewIndex];
+  if (!current || current.kind !== 'text') return;
+  event.preventDefault();
+  try {
+    interpreter.call('yank');
+  } catch (error) {
+    repl.appendError(`paste: ${error.message}`);
+  }
 });
 
 // --- mode menu ----------------------------------------------------------

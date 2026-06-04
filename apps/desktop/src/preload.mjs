@@ -5,7 +5,7 @@
  * functions and nothing else — no `require`, no `fs`.
  */
 
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, clipboard } from 'electron';
 import { homedir } from 'node:os';
 
 contextBridge.exposeInMainWorld('host', {
@@ -13,6 +13,17 @@ contextBridge.exposeInMainWorld('host', {
    *  expand `~/…` paths a user types from the REPL into something the
    *  filesystem and `file://` URL scheme will accept. */
   homeDirectory: homedir(),
+
+  /** Read the system clipboard's plain text, synchronously. Electron's
+   *  `clipboard` module works in the preload (sandbox is off); the
+   *  renderer's kill ring reads this so C-y / yank can paste text copied
+   *  in another app (Emacs's interprogram-paste). Returns '' when empty. */
+  clipboardReadText: () => clipboard.readText(),
+
+  /** Write TEXT to the system clipboard, synchronously. The kill ring
+   *  mirrors every kill/copy here (interprogram-cut) so editor kills are
+   *  pasteable in other apps. */
+  clipboardWriteText: (text) => clipboard.writeText(String(text ?? '')),
 
   /**
    * Show an open dialog and read the chosen file. The shape of the

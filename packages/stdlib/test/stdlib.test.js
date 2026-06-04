@@ -71,6 +71,14 @@ async function editor(initialText = 'hello world', options = {}) {
     write: (text) => output.push(text),
     primitives: {
       ...createBufferPrimitives({ current: buffer }),
+      // An in-memory system clipboard so the kill ring's interprogram
+      // sync (kill-ring-add! writes it; yank reads it) has somewhere to
+      // go. `options.clipboard` lets a test seed/inspect it.
+      'clipboard-text': () => (options.clipboard ? options.clipboard.text : ''),
+      'clipboard-set-text!': (args) => {
+        if (options.clipboard) options.clipboard.text = String(args[0] ?? '');
+        return NIL;
+      },
       'open-file!': () => {
         fileCalls.push('open');
         return NIL;
@@ -350,6 +358,15 @@ async function editor(initialText = 'hello world', options = {}) {
         );
       },
       'open-file-path!': (args) => {
+        openedPath = String(args[0] ?? '');
+        return NIL;
+      },
+      // find-file checks existence to decide open-vs-create; in this
+      // harness every submitted path is treated as existing, so the
+      // submission test routes through `open-file-path!`. The
+      // create-a-missing-file branch is covered in find-file.test.js.
+      'file-exists?': () => true,
+      'find-file-new!': (args) => {
         openedPath = String(args[0] ?? '');
         return NIL;
       },
@@ -772,6 +789,52 @@ test('C-k at the end of a line kills the newline', async () => {
   buffer.moveTo(1);
   press(interpreter, 'C-k');
   assert.equal(buffer.text, 'ab');
+});
+
+// --- system clipboard integration ---------------------------------------
+// kill/copy mirror the system clipboard (interprogram-cut); yank reads it
+// (interprogram-paste), so C-y / Cmd+V paste text copied in another app.
+
+test('kill-ring-add! mirrors the text to the system clipboard', async () => {
+  const clipboard = { text: '' };
+  const { interpreter } = await editor('', { clipboard });
+  interpreter.evaluate('(kill-ring-add! "hello")');
+  assert.equal(clipboard.text, 'hello');
+});
+
+test('M-w copies the selection to the system clipboard', async () => {
+  const clipboard = { text: '' };
+  const { buffer, interpreter } = await editor('abc', { clipboard });
+  buffer.moveTo(0);
+  buffer.setMark(3);
+  press(interpreter, 'M-w');
+  assert.equal(clipboard.text, 'abc');
+});
+
+test('C-y yanks text copied in another app (empty kill ring)', async () => {
+  const clipboard = { text: 'from elsewhere' };
+  const { buffer, interpreter } = await editor('', { clipboard });
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'from elsewhere');
+});
+
+test('C-y prefers a newer system clipboard over the ring top', async () => {
+  const clipboard = { text: '' };
+  const { buffer, interpreter } = await editor('', { clipboard });
+  interpreter.evaluate('(kill-ring-add! "internal")'); // also sets clipboard
+  clipboard.text = 'external';                          // an external copy after
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'external');
+});
+
+test('C-y uses the ring top when the clipboard already matches it', async () => {
+  const clipboard = { text: '' };
+  const { buffer, interpreter } = await editor('', { clipboard });
+  interpreter.evaluate('(kill-ring-add! "ring")'); // clipboard becomes "ring" too
+  press(interpreter, 'C-y');
+  press(interpreter, 'C-y');
+  // No spurious extra push from the matching clipboard: just two yanks.
+  assert.equal(buffer.text, 'ringring');
 });
 
 // --- yank-pop -----------------------------------------------------------
