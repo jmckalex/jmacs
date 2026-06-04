@@ -9,9 +9,15 @@
  * source form — and so are *not* hygienic; that is a deliberate, noted
  * v0 limitation (see docs/spec/lisp.md).
  *
- * No tail-call optimisation yet: deep non-tail recursion can exhaust
- * the JavaScript stack. Editor command code is not deeply recursive, so
- * this is acceptable for v0; a trampoline can be added later.
+ * Tail calls run in constant stack via a trampoline: `evaluate` is a
+ * loop, and a call in tail position returns a `TailCall {form, env}`
+ * thunk that the loop bounces instead of recursing. So deeply
+ * tail-recursive Lisp (the idiomatic way to walk a list) does not grow
+ * the JavaScript stack. NON-tail recursion still does — e.g. building a
+ * result by recursing inside an argument, `(cons x (f …))` or
+ * `(str line (f …))` — because the inner call is not in tail position;
+ * those few hot spots are written iteratively (or with host primitives)
+ * instead.
  */
 
 import { Environment } from './environment.js';
@@ -34,34 +40,58 @@ import {
 } from './values.js';
 
 /**
+ * A deferred tail call. Internal helpers in tail position return one of
+ * these instead of recursing through `evaluate`; the `evaluate` loop
+ * bounces it (reassigns `form`/`env` and continues), so tail recursion
+ * runs in constant JavaScript stack. It never escapes to callers — the
+ * public `evaluate` / `applyProcedure` always bounce to a real value.
+ */
+class TailCall {
+  constructor(form, env) {
+    this.form = form;
+    this.env = env;
+  }
+}
+
+/**
  * Evaluate a form in an environment.
  * @param {*} form
  * @param {Environment} env
  * @returns {*}
  */
 export function evaluate(form, env) {
-  // Symbols are variable references.
-  if (form instanceof Sym) {
-    return env.lookup(form.name);
-  }
-  // Lists are special forms, macro uses, or procedure applications.
-  if (form instanceof Pair) {
-    return evaluateForm(form, env);
-  }
-  // Vectors and maps evaluate their elements.
-  if (Array.isArray(form)) {
-    return Object.freeze(form.map((element) => evaluate(element, env)));
-  }
-  if (form instanceof Map) {
-    const result = new Map();
-    for (const [key, value] of form) {
-      result.set(evaluate(key, env), evaluate(value, env));
+  // The trampoline: each iteration either returns a value or rebinds
+  // `form`/`env` from a TailCall and loops, instead of recursing.
+  for (;;) {
+    // Symbols are variable references.
+    if (form instanceof Sym) {
+      return env.lookup(form.name);
     }
-    return result;
+    // Lists are special forms, macro uses, or procedure applications.
+    if (form instanceof Pair) {
+      const result = evaluateForm(form, env);
+      if (result instanceof TailCall) {
+        form = result.form;
+        env = result.env;
+        continue;
+      }
+      return result;
+    }
+    // Vectors and maps evaluate their elements.
+    if (Array.isArray(form)) {
+      return Object.freeze(form.map((element) => evaluate(element, env)));
+    }
+    if (form instanceof Map) {
+      const result = new Map();
+      for (const [key, value] of form) {
+        result.set(evaluate(key, env), evaluate(value, env));
+      }
+      return result;
+    }
+    // Everything else — numbers, strings, booleans, keywords, nil,
+    // procedures — is self-evaluating.
+    return form;
   }
-  // Everything else — numbers, strings, booleans, keywords, nil,
-  // procedures — is self-evaluating.
-  return form;
 }
 
 /** Evaluate a non-empty list form. */
@@ -80,30 +110,49 @@ function evaluateForm(form, env) {
           binding.transformer,
           listToArray(form.tail)
         );
-        return evaluate(expanded, env);
+        // A macro use evaluates to its expansion, in tail position.
+        return new TailCall(expanded, env);
       }
     }
   }
 
   const procedure = evaluate(head, env);
   const args = listToArray(form.tail).map((arg) => evaluate(arg, env));
-  return applyProcedure(procedure, args);
+  // Tail position: `applyTail` may return a TailCall (Lambda body) that
+  // the `evaluate` loop bounces; a Primitive returns its value directly.
+  return applyTail(procedure, args);
 }
 
 /**
- * Apply a procedure to already-evaluated arguments.
+ * Apply a procedure to already-evaluated arguments, returning a finished
+ * value. This is the public entry — `interpreter.call`, the host, and
+ * higher-order primitives (`map`/`filter`/`reduce`/`apply`) use it — so
+ * it bounces any tail call and callers never see a `TailCall`.
  * @param {*} procedure
  * @param {*[]} args
  * @returns {*}
  */
 export function applyProcedure(procedure, args) {
+  const result = applyTail(procedure, args);
+  return result instanceof TailCall
+    ? evaluate(result.form, result.env)
+    : result;
+}
+
+/**
+ * Apply a procedure in TAIL position. A Primitive returns its value
+ * directly; a Lambda runs its body's earlier forms and returns a
+ * `TailCall` for the last form, which the `evaluate` loop bounces — so a
+ * tail call (including self-recursion) does not grow the JS stack.
+ */
+function applyTail(procedure, args) {
   if (procedure instanceof Primitive) {
     return procedure.fn(args);
   }
   if (procedure instanceof Lambda) {
     const env = new Environment(procedure.env);
     bindParameters(procedure, args, env);
-    return evaluateBody(procedure.body, env);
+    return evaluateBodyTail(procedure.body, env);
   }
   throw new LispError(`not a procedure: ${writeString(procedure)}`);
 }
@@ -127,13 +176,27 @@ function bindParameters(lambda, args, env) {
   }
 }
 
-/** Evaluate body forms in sequence, returning the last result. */
+/** Evaluate body forms in sequence, returning the last result. Eager:
+ *  used where a tail call must NOT escape — a `try` body (it sits inside
+ *  the JS try/catch, which must stay on the stack) and a module body. */
 function evaluateBody(body, env) {
   let result = NIL;
   for (const form of body) {
     result = evaluate(form, env);
   }
   return result;
+}
+
+/** Evaluate a body in TAIL position: run every form but the last eagerly,
+ *  then return a `TailCall` for the last form so the `evaluate` loop
+ *  bounces it (constant stack). An empty body is nil. Used by lambda
+ *  bodies and the tail-position special forms (begin / let* / cond / …). */
+function evaluateBodyTail(body, env) {
+  if (body.length === 0) return NIL;
+  for (let i = 0; i < body.length - 1; i += 1) {
+    evaluate(body[i], env);
+  }
+  return new TailCall(body[body.length - 1], env);
 }
 
 /**
@@ -285,10 +348,11 @@ const SPECIAL_FORMS = {
     if (parts.length < 2 || parts.length > 3) {
       throw new LispError('if: expected (if test then else?)');
     }
+    // The test is non-tail; the chosen branch is in tail position.
     if (isTruthy(evaluate(parts[0], env))) {
-      return evaluate(parts[1], env);
+      return new TailCall(parts[1], env);
     }
-    return parts.length === 3 ? evaluate(parts[2], env) : NIL;
+    return parts.length === 3 ? new TailCall(parts[2], env) : NIL;
   },
 
   define(form, env) {
@@ -357,7 +421,7 @@ const SPECIAL_FORMS = {
   },
 
   begin(form, env) {
-    return evaluateBody(args(form), env);
+    return evaluateBodyTail(args(form), env);
   },
 
   'set!'(form, env) {
@@ -376,7 +440,7 @@ const SPECIAL_FORMS = {
       // Values are evaluated in the outer environment.
       scope.define(name.name, evaluate(valueForm, env));
     }
-    return evaluateBody(parts.slice(1), scope);
+    return evaluateBodyTail(parts.slice(1), scope);
   },
 
   'let*'(form, env) {
@@ -387,7 +451,7 @@ const SPECIAL_FORMS = {
       // Each value sees the bindings before it.
       scope.define(name.name, evaluate(valueForm, scope));
     }
-    return evaluateBody(parts.slice(1), scope);
+    return evaluateBodyTail(parts.slice(1), scope);
   },
 
   letrec(form, env) {
@@ -399,7 +463,7 @@ const SPECIAL_FORMS = {
     for (const [name, valueForm] of bindings) {
       scope.assign(name.name, evaluate(valueForm, scope));
     }
-    return evaluateBody(parts.slice(1), scope);
+    return evaluateBodyTail(parts.slice(1), scope);
   },
 
   cond(form, env) {
@@ -408,30 +472,36 @@ const SPECIAL_FORMS = {
       const test = parts[0];
       const isElse = test instanceof Sym && test.name === 'else';
       if (isElse || isTruthy(evaluate(test, env))) {
+        // A one-element clause `(x)` yields x's value; a clause body runs
+        // in tail position.
         return parts.length === 1
-          ? evaluate(test, env)
-          : evaluateBody(parts.slice(1), env);
+          ? new TailCall(test, env)
+          : evaluateBodyTail(parts.slice(1), env);
       }
     }
     return NIL;
   },
 
   and(form, env) {
-    let result = true;
-    for (const part of args(form)) {
-      result = evaluate(part, env);
-      if (!isTruthy(result)) return result;
+    const parts = args(form);
+    if (parts.length === 0) return true;
+    // All but the last short-circuit on a falsy value; the last is tail.
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const value = evaluate(parts[i], env);
+      if (!isTruthy(value)) return value;
     }
-    return result;
+    return new TailCall(parts[parts.length - 1], env);
   },
 
   or(form, env) {
-    let result = false;
-    for (const part of args(form)) {
-      result = evaluate(part, env);
-      if (isTruthy(result)) return result;
+    const parts = args(form);
+    if (parts.length === 0) return false;
+    // All but the last short-circuit on a truthy value; the last is tail.
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const value = evaluate(parts[i], env);
+      if (isTruthy(value)) return value;
     }
-    return result;
+    return new TailCall(parts[parts.length - 1], env);
   },
 
   try(form, env) {
