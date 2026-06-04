@@ -122,6 +122,13 @@ export const STDLIB_FILES = Object.freeze([
   // for list detection, extends `latex-c-c-map` (C-c C-n/C-r/%), and adds
   // two top-level keys (M-RET, ") to latex-mode-map.
   'latex-nav.lisp',
+  // AUCTeX-style `LaTeX-fill-paragraph` (M-q). Loads after latex-nav.lisp:
+  // it reuses latex-insert.lisp's pure \begin/\end env-marker scanner
+  // (generalised to the full open-env stack for depth) and `assoc`s an
+  // M-q slot onto latex-mode-map, overriding keymap.lisp's global
+  // M-q -> fill-paragraph for LaTeX buffers. Adds `*latex-indent-level*`
+  // (and `*latex-item-indent*`) to the `latex` customize group.
+  'latex-fill.lisp',
   // The structured (grouped) LaTeX mode menu. Loads LAST among the
   // LaTeX/RefTeX files: it names every latex-* / reftex-* command in its
   // sections, so all those symbols must already exist. Uses the generic
