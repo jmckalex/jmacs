@@ -31,7 +31,7 @@ export { renderMarkdown } from './markdown.js';
 export {
   parseCitations, formatBibliography, formatCitation, citationKeys,
   citationEntries, formatBibliographyEntries, splitBibliographyEntries,
-  registerCslStyle,
+  registerCslStyle, parseCitationsLenient, splitBibtexEntries,
 } from './citation.js';
 export {
   ImageView,

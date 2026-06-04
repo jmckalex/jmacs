@@ -31,6 +31,84 @@ export function parseCitations(source) {
 }
 
 /**
+ * Split a BibTeX/BibLaTeX source into its individual entries, each as
+ * `{ type, source }` where `type` is the lowercased entry type
+ * (`article`, `book`, `string`, `preamble`, `comment`, …) and `source`
+ * is the verbatim `@type{…}` text. Brace-balanced, so a `{…}` field
+ * value (which may itself nest braces) doesn't end the entry early.
+ * PURE — used by `parseCitationsLenient` to parse entry-by-entry.
+ *
+ * @param {string} text
+ * @returns {Array<{type: string, source: string}>}
+ */
+export function splitBibtexEntries(text) {
+  const out = [];
+  if (typeof text !== 'string') return out;
+  const re = /@(\w+)\s*\{/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const type = m[1].toLowerCase();
+    let depth = 0;
+    let i = re.lastIndex - 1; // sits on the opening brace
+    for (; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) { i += 1; break; }
+      }
+    }
+    out.push({ type, source: text.slice(m.index, i) });
+    re.lastIndex = i;
+  }
+  return out;
+}
+
+/**
+ * Parse a citation source like `parseCitations`, but TOLERANT of entries
+ * Citation.js can't parse: a single malformed entry (e.g. a name field
+ * with a bare TeX accent like `Fran{\c}ois`) otherwise throws and loses
+ * the WHOLE bibliography. Strategy: try the whole file first (fast,
+ * unchanged for clean input); only on failure fall back to parsing each
+ * BibTeX entry on its own, prepending the `@string`/`@preamble` macros so
+ * abbreviations still resolve, and skipping the entries that throw.
+ *
+ * @param {string} source
+ * @returns {{json: string, skipped: number}} CSL-JSON of the entries that
+ *   parsed, and how many were skipped.
+ */
+export function parseCitationsLenient(source) {
+  const text = typeof source === 'string' ? source : '';
+  try {
+    return { json: parseCitations(text), skipped: 0 };
+  } catch (wholeError) {
+    // Nothing BibTeX-shaped to salvage entry-by-entry.
+    if (!/@\w+\s*\{/.test(text)) return { json: '[]', skipped: 0 };
+    const all = splitBibtexEntries(text);
+    // @string / @preamble define macros that later entries reference
+    // (`journal = jphil`), so prepend them to each entry we parse alone.
+    const headers = all
+      .filter((e) => e.type === 'string' || e.type === 'preamble')
+      .map((e) => e.source)
+      .join('\n');
+    const records = [];
+    let skipped = 0;
+    for (const e of all) {
+      if (e.type === 'string' || e.type === 'preamble' || e.type === 'comment') {
+        continue;
+      }
+      try {
+        const data = new Cite(`${headers}\n${e.source}`).data;
+        for (const d of data) records.push(d);
+      } catch {
+        skipped += 1;
+      }
+    }
+    return { json: JSON.stringify(records), skipped };
+  }
+}
+
+/**
  * Format a CSL-JSON entry list (the output of `parseCitations`) as a
  * bibliography using the chosen CSL style and locale.
  *

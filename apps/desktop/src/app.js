@@ -96,6 +96,7 @@ import {
   citationEntries,
   formatBibliographyEntries,
   registerCslStyle,
+  parseCitationsLenient,
   createMathPreview,
   mathPreviewProviderForMode,
   TextView,
@@ -3255,6 +3256,21 @@ const interpreter = createInterpreter({
       try { return parseCitations(source); }
       catch (error) {
         throw new LispError(`citation-parse: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-parse-lenient SOURCE)` — like `citation-parse`, but
+    // tolerant: a single entry Citation.js can't parse (e.g. a name field
+    // with a bare TeX accent `Fran{\c}ois`) would otherwise throw away the
+    // WHOLE bibliography. Returns a record `{:handle CSL-JSON :skipped N}`;
+    // N is how many entries were dropped. The RefTeX cite picker uses this
+    // so one bad entry never blanks the picker.
+    'citation-parse-lenient': (args) => {
+      const source = String(args[0] ?? '');
+      try {
+        const { json, skipped } = parseCitationsLenient(source);
+        return record({ handle: json, skipped });
+      } catch (error) {
+        throw new LispError(`citation-parse-lenient: ${error.message ?? error}`);
       }
     },
     // `(citation-format-bibliography HANDLE [STYLE [FORMAT [LANG]]])`

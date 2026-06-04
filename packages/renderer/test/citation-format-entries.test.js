@@ -18,6 +18,8 @@ import {
   splitBibliographyEntries,
   formatBibliographyEntries,
   registerCslStyle,
+  splitBibtexEntries,
+  parseCitationsLenient,
 } from '../src/citation.js';
 
 const BIB = `
@@ -93,6 +95,56 @@ test('a numbered style (vancouver) yields nested-div entry HTML', () => {
 });
 
 // --- registerCslStyle -------------------------------------------------
+
+// --- splitBibtexEntries -----------------------------------------------
+
+test('splitBibtexEntries brace-balances entries (incl. nested field braces)', () => {
+  const text = `@string{jp = {J. Phil.}}
+@article{a1, title = {A {Nested} Title}, journal = jp, year = {2020}}
+@book{b2, title = {Plain}, year = {2021}}`;
+  const entries = splitBibtexEntries(text);
+  assert.deepEqual(entries.map((e) => e.type), ['string', 'article', 'book']);
+  assert.match(entries[1].source, /A \{Nested\} Title/);
+  assert.ok(entries[1].source.endsWith('}'));
+});
+
+// --- parseCitationsLenient (the François bug) -------------------------
+
+test('parseCitationsLenient skips an entry Citation.js cannot parse', () => {
+  // `Fran{\c}ois` is the real-world bare-accent form that throws and would
+  // otherwise lose the WHOLE bibliography.
+  const bib = `@article{claveau2020,
+    author = {Fran{\\c}ois Claveau and Jane Lee}, title = {On Things},
+    journal = {J. Phil.}, year = {2020}}
+@book{ok2021, author = {Okafor, Ada}, title = {Foundations},
+    publisher = {Springer}, year = {2021}}`;
+  // Sanity: the whole-file parse genuinely throws on this input.
+  assert.throws(() => parseCitations(bib));
+  const { json, skipped } = parseCitationsLenient(bib);
+  assert.equal(skipped, 1, 'the malformed entry is skipped');
+  const ids = JSON.parse(json).map((e) => e.id);
+  assert.deepEqual(ids, ['ok2021'], 'the good entry survives');
+});
+
+test('parseCitationsLenient preserves @string macros in the fallback', () => {
+  const bib = `@string{jp = {Journal of Philosophy}}
+@article{bad, author = {X{\\c}Y}, title = {Bad}, journal = jp, year = {2020}}
+@article{good, author = {Lee, Jane}, title = {Good}, journal = jp, year = {2021}}`;
+  const { json, skipped } = parseCitationsLenient(bib);
+  assert.equal(skipped, 1);
+  const entries = JSON.parse(json);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].id, 'good');
+  // The `jp` abbreviation resolved (proves @string was prepended).
+  assert.equal(entries[0]['container-title'], 'Journal of Philosophy');
+});
+
+test('parseCitationsLenient leaves a clean file on the fast path (skipped 0)', () => {
+  const bib = `@book{ok2021, author = {Okafor, Ada}, title = {Foundations}, year = {2021}}`;
+  const { json, skipped } = parseCitationsLenient(bib);
+  assert.equal(skipped, 0);
+  assert.deepEqual(JSON.parse(json).map((e) => e.id), ['ok2021']);
+});
 
 test('registers a custom CSL style and formats with its id', () => {
   const xml = `<?xml version="1.0" encoding="utf-8"?>

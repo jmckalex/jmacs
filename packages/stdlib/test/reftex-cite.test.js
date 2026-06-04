@@ -53,9 +53,16 @@ async function citeEditor(model = {}) {
     'citation-format-entries': () =>
       arrayToList((model.formatted ?? []).map((f) => formatted(f[0], f[1]))),
     'citation-register-style!': (a) => model.registeredId ?? String(a[0] ?? ''),
-    // The bib handle is provided directly (bypassing the full R1 DB walk,
-    // which the tiny in-memory model doesn't populate).
-    'cite-handle-fixture': () => model.handle ?? NIL,
+    // The parsed bib is provided directly as a {:handle :skipped} record
+    // (bypassing the full R1 DB walk, which the tiny model doesn't
+    // populate). nil when the model gives no handle.
+    'cite-parsed-fixture': () => {
+      if (model.handle == null || model.handle === NIL) return NIL;
+      const m = new Map();
+      m.set(keyword('handle'), model.handle);
+      m.set(keyword('skipped'), model.skipped ?? 0);
+      return m;
+    },
     // bottom panel openers — recorded.
     'open-reftex-cite-format!': () => { rec.opened.push('format'); return NIL; },
     'open-reftex-cite-select!': () => { rec.opened.push('select'); return NIL; },
@@ -80,8 +87,8 @@ async function citeEditor(model = {}) {
   interp = createInterpreter({ write: () => {}, primitives });
   await loadStdlib(interp, (name) => readFile(join(lispDir, name), 'utf8'), {});
   // Bypass the R1 DB walk: the cite flow's only dependency on it is the
-  // parsed bib handle, which the model supplies via `cite-handle-fixture`.
-  interp.evaluate('(define (-reftex-cite-handle) (cite-handle-fixture))');
+  // parsed bib record, which the model supplies via `cite-parsed-fixture`.
+  interp.evaluate('(define (-reftex-cite-parsed) (cite-parsed-fixture))');
   return { rec, interp, ev: (src) => interp.evaluate(src) };
 }
 
@@ -172,6 +179,21 @@ test('format choice swaps to the picker; RET inserts <macro>{keys} at origin', a
   assert.deepEqual(rec.opened, ['format', 'select'], 'picker opens after format chosen');
   ev('(reftex-cite-insert "lee2021,patel2020")');
   assert.deepEqual(rec.inserted, ['\\citep{lee2021,patel2020}']);
+});
+
+test('reftex-citation reports skipped (unparseable) entries', async () => {
+  const { rec, ev } = await citeEditor({
+    handle: '[]',
+    skipped: 2,
+    entries: [{ key: 'a', author: 'A', year: 2000, title: 'T' }],
+    formatted: [['a', 'A (2000)']],
+  });
+  ev('(reftex-citation)');
+  assert.ok(
+    rec.status.some((s) => /skipped 2 unparseable bib entries/.test(s)),
+    'echoes how many entries were skipped'
+  );
+  assert.deepEqual(rec.opened, ['format'], 'still opens the picker for the rest');
 });
 
 test('reftex-citation with no bibliography is a no-op with a status', async () => {

@@ -86,27 +86,30 @@
 
 ;; --- the bib handle + entry rows --------------------------------------
 
-(define (-reftex-cite-handle)
-  "The parsed-bib handle (`citation-parse` output) for the first existing
-   bibliography path of the current document, or nil. Bib paths come from
-   the R1 DB (`\\bibliography`/`\\addbibresource` + `*citation-bib-path*`),
-   resolved absolute by reftex.lisp's `-reftex-bib-abs-paths`."
+(define (-reftex-cite-parsed)
+  "The parsed bibliography for the current document as a record
+   `{:handle CSL-JSON :skipped N}`, or nil when no readable bib. Bib paths
+   come from the R1 DB (`\\bibliography`/`\\addbibresource` +
+   `*citation-bib-path*`), resolved absolute by `-reftex-bib-abs-paths`.
+   Lenient (`citation-parse-lenient`): an entry citation.js can't parse —
+   some real-world TeX-accent forms throw — is skipped (counted in
+   :skipped) rather than blanking the whole picker."
   (let ((db (reftex-document)))
     (if (nil? db)
         nil
-        (-reftex-cite-handle-from (-reftex-bib-abs-paths db)))))
+        (-reftex-cite-parsed-from (-reftex-bib-abs-paths db)))))
 
-(define (-reftex-cite-handle-from paths)
-  "Parse the first PATH that exists and reads, returning its handle; nil
-   when none work."
+(define (-reftex-cite-parsed-from paths)
+  "Parse the first PATH that exists and reads, returning its
+   `{:handle :skipped}` record; nil when none work."
   (cond
     ((nil? paths) nil)
     ((file-exists? (car paths))
      (let ((text (read-file-text! (car paths))))
        (if (nil? text)
-           (-reftex-cite-handle-from (cdr paths))
-           (citation-parse text))))
-    (else (-reftex-cite-handle-from (cdr paths)))))
+           (-reftex-cite-parsed-from (cdr paths))
+           (citation-parse-lenient text))))
+    (else (-reftex-cite-parsed-from (cdr paths)))))
 
 (define (-reftex-cite-plain entry)
   "A lowercase-ish plain-text blob for ENTRY (a {:key :author :year
@@ -136,17 +139,16 @@
         (get formatted :html "")
         (-reftex-cite-plain entry)))
 
-(define (-reftex-build-cite-rows)
+(define (-reftex-build-cite-rows handle)
   "Build the cite picker rows — (key html plain) per bib entry, in bib
    order — by zipping `citation-entries` (for the filter text) with
-   `citation-format-entries` (for the CSL-formatted HTML). Empty list
-   when the document has no readable bibliography."
-  (let ((handle (-reftex-cite-handle)))
-    (if (nil? handle)
-        (list)
-        (map -reftex-cite-row
-             (citation-entries handle)
-             (citation-format-entries handle (-reftex-cite-template))))))
+   `citation-format-entries` (for the CSL-formatted HTML). HANDLE is a
+   parsed-bib handle; an empty/nil HANDLE yields no rows."
+  (if (or (nil? handle) (string=? handle ""))
+      (list)
+      (map -reftex-cite-row
+           (citation-entries handle)
+           (citation-format-entries handle (-reftex-cite-template)))))
 
 ;; --- the picker state + host-read accessors ---------------------------
 
@@ -176,14 +178,26 @@
    `\\bibliography`/`\\addbibresource` (plus `*citation-bib-path*`). A
    no-op with a status message when no readable bibliography is found.
    Bound to C-c [."
-  (let ((rows (-reftex-build-cite-rows)))
-    (cond
-      ((nil? rows)
-       (show-status! "RefTeX: no bibliography entries found"))
-      (else
-       (-reftex-remember-origin)
-       (set! *reftex-cite-rows* rows)
-       (open-reftex-cite-format!)))))
+  (let ((parsed (-reftex-cite-parsed)))
+    (if (nil? parsed)
+        (show-status! "RefTeX: no bibliography entries found")
+        (let* ((handle (get parsed :handle nil))
+               (skipped (get parsed :skipped 0))
+               (rows (-reftex-build-cite-rows handle)))
+          (cond
+            ((nil? rows)
+             (show-status! "RefTeX: no bibliography entries found"))
+            (else
+             (-reftex-remember-origin)
+             (set! *reftex-cite-rows* rows)
+             (when (> skipped 0)
+               (show-status! (-reftex-cite-skipped-message skipped)))
+             (open-reftex-cite-format!)))))))
+
+(define (-reftex-cite-skipped-message n)
+  "A status note that N bib entries were skipped as unparseable."
+  (str "RefTeX: skipped " (number->string n) " unparseable bib entr"
+       (if (= n 1) "y" "ies")))
 
 (define (reftex-cite-format-chosen macro)
   "Format-menu callback: remember the chosen MACRO and swap the bottom
