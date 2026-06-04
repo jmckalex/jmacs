@@ -227,6 +227,24 @@ test('string-suffix? tests how a string ends', () => {
   assert.equal(run('(string-suffix? "" "abc")'), true);
 });
 
+test('string-join joins a list with a separator', () => {
+  assert.equal(run('(string-join (list "a" "b" "c") "-")'), 'a-b-c');
+  assert.equal(run('(string-join (list "x" "y"))'), 'xy'); // default separator
+  assert.equal(run('(string-join (list) ",")'), '');
+  assert.equal(run('(string-join (list "solo") ",")'), 'solo');
+  // Elements are coerced like `str` (numbers, etc.).
+  assert.equal(run('(string-join (list 1 2 3) ".")'), '1.2.3');
+});
+
+test('string-join is iterative — no stack overflow on a long list', () => {
+  // The interpreter has no TCO; a hand-written Lisp join would overflow
+  // here. `string-join` joins in one host pass.
+  assert.equal(
+    run('(string-length (string-join (map number->string (range 50000)) ","))') > 0,
+    true
+  );
+});
+
 // --- output -------------------------------------------------------------
 
 test('print writes to the output sink', () => {

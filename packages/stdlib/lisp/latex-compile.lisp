@@ -172,10 +172,14 @@
              (-latex-format-diags diags)))))
 
 (define (-latex-format-diags diags)
+  "One `FILE:LINE: MESSAGE` row per diagnostic, each newline-terminated.
+   Built with the host `map`/`string-join` (iterative) rather than a
+   per-diagnostic Lisp recursion: a real article emits hundreds–thousands
+   of warnings, and the old `(str line (recurse))` recursed once per
+   diagnostic and overflowed the stack (the interpreter has no TCO)."
   (if (nil? diags)
       ""
-      (str (-latex-diag-line (car diags)) "\n"
-           (-latex-format-diags (cdr diags)))))
+      (str (string-join (map -latex-diag-line diags) "\n") "\n")))
 
 (define (-latex-count-errors diags)
   "How many of DIAGS are errors (kind :error), not warnings."
