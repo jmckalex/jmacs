@@ -7601,13 +7601,16 @@ function materialiseRestoredView(blob, handlesByBlob) {
   if (!blob) return buildScratchTextView();
   if (
     blob.kind === 'text' || blob.kind === 'image' ||
-    blob.kind === 'audio' || blob.kind === 'video' ||
+    blob.kind === 'audio' || blob.kind === 'video' || blob.kind === 'pdf' ||
     blob.kind === 'directory-tree' || blob.kind === 'directory-columns'
   ) {
     const handle = handlesByBlob.get(blob);
     // If the file failed to open, fall back to a fresh scratch so the
     // owning leaf still has something to render. (Applies to all file-
-    // backed kinds — a missing audio file becomes scratch too.)
+    // backed kinds — a missing audio file becomes scratch too.) `pdf`
+    // must be here too: `collectTextViewBlobs` opens it (it's a persisted
+    // file-backed kind), so its handle is in `handlesByBlob` — omitting it
+    // left the pdf opened-but-orphaned (in the view list, not in its pane).
     return handle ?? buildScratchTextView();
   }
   if (blob.kind === 'tabline') {
@@ -7628,7 +7631,7 @@ function materialiseRestoredView(blob, handlesByBlob) {
       if (!tabBlob) continue;
       if (
         tabBlob.kind === 'text' || tabBlob.kind === 'image' ||
-        tabBlob.kind === 'audio' || tabBlob.kind === 'video' ||
+        tabBlob.kind === 'audio' || tabBlob.kind === 'video' || tabBlob.kind === 'pdf' ||
         tabBlob.kind === 'directory-tree' || tabBlob.kind === 'directory-columns'
       ) {
         const handle = handlesByBlob.get(tabBlob);
