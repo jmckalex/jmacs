@@ -59,6 +59,11 @@ function buildRichHost(initialPane) {
         calls.push({ name: 'focusPaneDirection', direction });
         return direction === 'left' ? null : pane;
       },
+      focusPane: (target) => {
+        calls.push({ name: 'focusPane', target });
+        // Emulate the host: only a leaf actually in the tree focuses.
+        return target && target.kind === 'leaf' ? target : null;
+      },
       balancePanes: () => { calls.push({ name: 'balancePanes' }); },
       setSplitRatio: (target, ratio) => {
         calls.push({ name: 'setSplitRatio', target, ratio });
@@ -247,6 +252,33 @@ test('focus-pane-direction! returns nil when no neighbour exists', () => {
   // The host returns null for 'left' in buildRichHost — emulating
   // the no-neighbour case.
   assert.equal(prims['focus-pane-direction!']([sym('left')]), NIL);
+});
+
+test('focus-pane! focuses a specific leaf handle and returns it', () => {
+  const leaf = createLeafPane();
+  const target = createLeafPane();
+  const { host, calls } = buildRichHost(leaf);
+  const prims = createPanePrimitives(host);
+  assert.equal(prims['focus-pane!']([target]), target);
+  assert.equal(calls[0].name, 'focusPane');
+  assert.equal(calls[0].target, target);
+});
+
+test('focus-pane! returns nil for a split node or a non-pane argument', () => {
+  const leaf = createLeafPane();
+  const split = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.5,
+    first: createLeafPane(),
+    second: createLeafPane(),
+  });
+  const { host, calls } = buildRichHost(leaf);
+  const prims = createPanePrimitives(host);
+  assert.equal(prims['focus-pane!']([split]), NIL);
+  assert.equal(prims['focus-pane!']([NIL]), NIL);
+  assert.equal(prims['focus-pane!']([]), NIL);
+  // None of the rejected forms should have reached the host.
+  assert.equal(calls.length, 0);
 });
 
 test('balance-panes! returns nil and delegates', () => {

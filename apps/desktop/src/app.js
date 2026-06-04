@@ -1256,6 +1256,23 @@ function focusNextPane() {
   return next;
 }
 
+/** Focus a *specific* leaf pane by its handle (the absolute counterpart
+ *  to `focusNextPane` / `focusPaneByDirection`, which move focus
+ *  relatively). Used by features that already hold the pane they want
+ *  focused — e.g. inverse SyncTeX, which focuses the pane showing the
+ *  resolved source file instead of landing in whatever pane the PDF
+ *  click stole focus to. Returns the focused leaf, or null when PANE
+ *  isn't a leaf currently in the tree (a split node, a stale handle).
+ *  Re-focusing the already-current pane is a no-op that still returns
+ *  the leaf. */
+function focusPaneHandle(pane) {
+  if (!pane || typeof pane !== 'object' || pane.kind !== 'leaf') return null;
+  const leaf = leafPanes(rootPane).find((l) => l.id === pane.id);
+  if (!leaf) return null;
+  setCurrentPaneId(leaf.id);
+  return leaf;
+}
+
 /** Spatial pane navigation: focus the leaf adjacent to the current one
  *  in DIRECTION. Returns the new current pane handle, or null when
  *  there's no neighbour on that side. */
@@ -2861,6 +2878,7 @@ const paneHost = {
   deleteOtherPanes: (pane) => deleteOtherPanesInTree(pane),
   otherPane: () => focusNextPane(),
   focusPaneDirection: (direction) => focusPaneByDirection(direction),
+  focusPane: (pane) => focusPaneHandle(pane),
   balancePanes: () => balancePanesInTree(),
   setSplitRatio: (pane, ratio) => setSplitRatioOnNode(pane, ratio),
   // Phase 3b tabline-view operations. Implementations sit further

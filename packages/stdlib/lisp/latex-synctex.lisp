@@ -13,14 +13,19 @@
 ;;;   Inverse (PDF -> source)  — Option-click in the pdf-view fires
 ;;;     `latex-synctex-inverse`, which runs
 ;;;     `synctex edit -o PAGE:X:Y:master.pdf`, parses `Input:`/`Line:`,
-;;;     and jumps the editor there (`open-file-path!` + `goto-line!`).
+;;;     and reveals the source in a *source* pane — never the PDF's pane
+;;;     (`-latex-reveal-source`): it returns focus to the pane already
+;;;     showing that file, or opens it in the source text pane.
 ;;;
 ;;; Loaded AFTER latex-compile.lisp (it redefines that file's `latex-view`
 ;;; command) and after reftex.lisp (so `latex-master-file` is the
 ;;; master-detecting R1 version). All Lisp on top of the host primitives
 ;;; `run-process!`, `parse-synctex-view`, `parse-synctex-edit`,
 ;;; `point-line-col`, `pdf-synctex-show!`, `pdf-current-path`,
-;;; `open-file-path!`, `goto-line!`, plus latex-compile.lisp's helpers.
+;;; `open-file-path!`, `open-file-in-split!`, `goto-line!`, the pane
+;;; primitives (`panes-in-spiral-order`, `pane-view`, `focus-pane!`,
+;;; `view-kind`, `view-file-path`, `tabline-tabs`/`tabline-active`,
+;;; `switch-to-view!`), plus latex-compile.lisp's helpers.
 
 ;; --- user-facing settings ---------------------------------------------
 
@@ -111,14 +116,105 @@
 (register-command! 'latex-forward-search nil)
 
 ;; --- inverse search (PDF -> source) -----------------------------------
+;;
+;; The clicked source must land in a *source* pane, never in the PDF's
+;; pane — yet the Option-click that triggers inverse search first moves
+;; focus onto the PDF pane (the window's capture-phase pane-focus
+;; handler runs before the synctex click handler). So we can't rely on
+;; the focused pane: we find the right pane explicitly and `focus-pane!`
+;; it before showing the source. Three cases, in order:
+;;   1. FILE is already displayed in some pane -> focus THAT pane (so a
+;;      re-click on the same paragraph returns to the open source view).
+;;      Fully synchronous, so the line jump is reliable.
+;;   2. FILE is open but not displayed -> surface it in the source pane.
+;;   3. FILE isn't open -> open it in the source pane.
+;; The "source pane" is a text pane that isn't the PDF's, preferring one
+;; already showing a .tex file. SyncTeX (pdflatex) reports no column
+;; (Column:-1), so point lands at the start of the line.
+
+(define (-latex-pane-shown-view pane)
+  "The view actually displayed in leaf PANE, peeling a tabline-view to
+   its active tab. nil for an empty / split / malformed pane."
+  (let ((v (pane-view pane)))
+    (cond
+      ((nil? v) nil)
+      ((equal? (view-kind v) "tabline")
+       (let ((tabs (tabline-tabs v))
+             (active (tabline-active v)))
+         (if (or (nil? tabs) (nil? active)) nil (nth tabs active))))
+      (else v))))
+
+(define (-latex-find-pane panes pred)
+  "The first pane in PANES for which (PRED pane) is truthy, or nil."
+  (cond ((nil? panes) nil)
+        ((pred (car panes)) (car panes))
+        (else (-latex-find-pane (cdr panes) pred))))
+
+(define (-latex-pane-showing-file file)
+  "The first leaf pane whose displayed view visits FILE, or nil."
+  (-latex-find-pane
+   (panes-in-spiral-order)
+   (lambda (p)
+     (let ((v (-latex-pane-shown-view p)))
+       (and (not (nil? v)) (equal? (view-file-path v) file))))))
+
+(define (-latex-source-pane pdf)
+  "A leaf pane to host source: a text pane that is not PDF's pane.
+   Prefers one already showing a .tex file; else any text pane that
+   isn't the PDF; nil when none exists (e.g. only the PDF is on screen)."
+  (let ((panes (panes-in-spiral-order)))
+    (or (-latex-find-pane
+         panes
+         (lambda (p)
+           (let ((v (-latex-pane-shown-view p)))
+             (and (not (nil? v))
+                  (equal? (view-kind v) "text")
+                  (-latex-tex-file? (view-file-path v))))))
+        (-latex-find-pane
+         panes
+         (lambda (p)
+           (let ((v (-latex-pane-shown-view p)))
+             (and (not (nil? v))
+                  (equal? (view-kind v) "text")
+                  (not (equal? (view-file-path v) pdf)))))))))
+
+(define (-latex-reveal-source file line)
+  "Show FILE at LINE in a source pane — never the PDF's pane (see the
+   block comment above). Focuses the pane already showing FILE, or the
+   source pane, then jumps to LINE (column 0; SyncTeX gives no column)."
+  (let ((pane (-latex-pane-showing-file file)))
+    (cond
+      ((not (nil? pane))
+       ;; Case 1: already displayed — just return focus to that view.
+       (focus-pane! pane)
+       (when (not (nil? line)) (goto-line! line)))
+      (else
+       (let ((view (-latex-find-view-by-file file))
+             (src (-latex-source-pane (pdf-current-path))))
+         (cond
+           ((not (nil? src))
+            (focus-pane! src)
+            ;; Case 2 (open elsewhere, not displayed) vs case 3 (not
+            ;; open). switch-to-view! is synchronous so the line jump
+            ;; lands; the open path is async (mirrors -latex-visit-diag).
+            (if (not (nil? view))
+                (switch-to-view! view)
+                (open-file-path! file))
+            (when (not (nil? line)) (goto-line! line)))
+           (else
+            ;; No source pane to land in — open beside the PDF rather
+            ;; than clobbering it.
+            (open-file-in-split! file 'horizontal 'before)
+            (when (not (nil? line)) (goto-line! line)))))))))
 
 (define (latex-synctex-inverse page x y)
   "Inverse SyncTeX: given a PDF PAGE (1-based) and a PDF-point (X, Y) the
    user Option-clicked, run `synctex edit -o PAGE:X:Y:PDF` (PDF = the
-   on-screen PDF's own path) and jump the editor to the resulting source
-   `Input:`/`Line:`. `synctex edit` resolves the source file itself, so no
-   master detection is needed here. A no-op with a status message when no
-   PDF is open or SyncTeX reports no match."
+   on-screen PDF's own path) and reveal the resulting source
+   `Input:`/`Line:` in a source pane (`-latex-reveal-source`). `synctex
+   edit` resolves the source file itself, so no master detection is
+   needed here. A no-op with a status message when no PDF is open or
+   SyncTeX reports no match."
   (let ((pdf (pdf-current-path)))
     (if (nil? pdf)
         (show-status! "SyncTeX: no PDF open")
@@ -138,9 +234,7 @@
                        (let ((file (get hit :file nil))
                              (line (get hit :line nil)))
                          (when (and (not (nil? file)) (file-exists? file))
-                           (open-file-path! file)
-                           (when (not (nil? line))
-                             (goto-line! line))
+                           (-latex-reveal-source file line)
                            (show-status!
                             (str "SyncTeX: " (path-basename file)
                                  ":" (number->string line))))))))))))))
