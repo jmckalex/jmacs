@@ -11,10 +11,10 @@
 ;;; The build runs the configured `*latex-command*` (a *list* of program
 ;;; + flags — `run-process!` takes no shell, so the command is a token
 ;;; list, never a string) in the source file's directory. Output is
-;;; buffered (no streaming): the whole log lands in a `*TeX output*` view
-;;; at exit, is parsed by `parse-latex-log` (the pure JS parser exposed
-;;; in latex-primitives.js), and the diagnostics populate a `*TeX errors*`
-;;; view that `latex-next-error` walks.
+;;; buffered (no streaming): the whole log lands in a "TeX output" tab in
+;;; the utility dock at exit, is parsed by `parse-latex-log` (the pure JS
+;;; parser exposed in latex-primitives.js), and the diagnostics populate a
+;;; "TeX errors" tab; `latex-next-error` walks `*latex-error-list*`.
 ;;;
 ;;; Loaded AFTER latex.lisp (it extends `latex-c-c-map`). All of it is
 ;;; Lisp on top of the host primitives `run-process!`, `view-file-path`,
@@ -93,6 +93,9 @@
 
 (define *latex-error-list* '())
 (define *latex-error-index* -1)
+;; Whether a build has produced output yet (so latex-show-output can tell
+;; "nothing compiled" from a clean build with no diagnostics).
+(define *latex-output-ready?* #f)
 
 ;; --- the master file seam (R1 extends this) ---------------------------
 ;; AUCTeX compiles the *master* file, not necessarily the current buffer
@@ -134,18 +137,11 @@
         ((equal? (view-file-path (car views)) path) (car views))
         (else (-latex-find-view-by-file/loop (cdr views) path))))
 
-(define (-latex-write-view name text)
-  "Update (or create) the text view called NAME with TEXT, WITHOUT
-   touching the focused pane. `set-view-text!` writes the named view's
-   buffer in place (creating a fresh text view if absent) and never
-   switches the current view — so a compile never steals focus, reverts
-   to another view, or clobbers the current buffer. (The old
-   switch-there-set-text-switch-back dance broke when the view was
-   already shown in another pane: switch-to-view! refuses, and
-   set-buffer-text! then hit the wrong / a buffer-less current view.)"
-  (set-view-text! name text))
-
-;; --- the log → *TeX output* / *TeX errors* views ----------------------
+;; --- the log → utility-pane output/errors tabs ------------------------
+;; Build output and the parsed diagnostics render as read-only tabs in the
+;; utility dock (`utility-output-set`), never as pane-tree text views — so a
+;; compile never steals a pane or focus. Error *navigation* (C-c `) is driven
+;; off `*latex-error-list*` below, independent of where the text is shown.
 
 (define (-latex-diag-line diag)
   "Render one diagnostic hash-map as an occur-style `FILE:LINE: MESSAGE`
@@ -204,10 +200,11 @@
          (err (get result :stderr ""))
          (log (str out (if (equal? err "") "" (str "\n" err))))
          (diags (parse-latex-log log)))
-    (-latex-write-view "*TeX output*" log)
+    (utility-output-set "tex-output" "TeX output" log)
     (set! *latex-error-list* diags)
     (set! *latex-error-index* -1)
-    (-latex-write-view "*TeX errors*" (-latex-errors-text diags))
+    (utility-output-set "tex-errors" "TeX errors" (-latex-errors-text diags))
+    (set! *latex-output-ready?* #t)
     (let ((errors (-latex-count-errors diags)))
       (cond
         ((> errors 0)
@@ -357,12 +354,12 @@
      (-latex-visit-diag (nth *latex-error-list* *latex-error-index*)))))
 
 (defcommand latex-show-output ()
-  "Pop up the *TeX output* view with the last build's full log, if any.
-   A convenience for inspecting the raw toolchain output."
-  (let ((v (find-view "*TeX output*")))
-    (if (nil? v)
-        (show-status! "No *TeX output* yet — compile with C-c C-c")
-        (switch-to-view! v))))
+  "Bring the TeX output tab forward in the utility dock with the last
+   build's full log, if any. A convenience for inspecting raw toolchain
+   output."
+  (if *latex-output-ready?*
+      (utility-panel-activate! "tex-output")
+      (show-status! "No TeX output yet — compile with C-c C-c")))
 
 ;; --- latex-clean ------------------------------------------------------
 ;; The `*latex-clean*` defcustom (above) lists the by-product extensions

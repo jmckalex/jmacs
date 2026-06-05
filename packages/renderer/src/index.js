@@ -8,6 +8,9 @@
 
 export { createEditorView } from './view.js';
 export { createReplView } from './repl.js';
+export { createUtilityDock } from './utility-dock.js';
+export { createOutputPanel, appendLines } from './output-panel.js';
+export { createDocPanel } from './doc-panel.js';
 export {
   createMarkdownPreview,
   PREVIEW_DEBOUNCE_MS,
@@ -30,7 +33,8 @@ export { createInlineEval } from './inline-eval.js';
 export { renderMarkdown } from './markdown.js';
 export {
   parseCitations, formatBibliography, formatCitation, citationKeys,
-  citationEntries,
+  citationEntries, formatBibliographyEntries, splitBibliographyEntries,
+  registerCslStyle, parseCitationsLenient, splitBibtexEntries,
 } from './citation.js';
 export {
   ImageView,
@@ -81,6 +85,14 @@ export {
   groupByType,
   nextTypeFilter,
 } from './reftex-select-panel.js';
+export {
+  createReftexCiteFormatPanel,
+  createReftexCitePanel,
+  matchCiteFormatKey,
+  filterCiteRows,
+  citeKeysToInsert,
+  mapCiteKey,
+} from './reftex-cite-panel.js';
 export { PlaceholderView } from './placeholder-view.js';
 export {
   PLACEHOLDER_ACTIONS,

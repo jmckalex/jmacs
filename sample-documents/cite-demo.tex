@@ -1,0 +1,25 @@
+\documentclass{article}
+
+\title{A Citation Demo}
+\author{RefTeX R3}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+This document exists to exercise RefTeX citations (\texttt{C-c [}).
+Put point somewhere in this paragraph and press \texttt{C-c [}: choose a
+cite format in the bottom menu, then pick one or more entries (press
+\texttt{m} to mark several) from \texttt{cite-demo.bib}. For example,
+a single cite goes here ---\ and a multi-key cite goes here ---.
+
+\section{Notes}
+
+The bibliography below is what the picker reads. Marking two entries and
+inserting should produce \verb|\cite{key1,key2}|.
+
+\bibliographystyle{plain}
+\bibliography{cite-demo}
+
+\end{document}

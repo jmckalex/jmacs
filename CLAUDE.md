@@ -10,6 +10,14 @@ The architect (the human you are working with) is Jason. Jason works in vanilla 
 
 The editor exposes two extension languages: a custom Lisp (the primary, what gives the editor its character) and JavaScript (also first-class, given that we're in a JS runtime).
 
+At the start of a session, read `HANDOVER.md` (an untracked rolling doc at the repo root) for the current state, in-flight branch, and immediate next action — it is written at the end of each session for the next one.
+
+## Running and testing the app
+
+- **Launch the app:** `cd apps/desktop && ./node_modules/.bin/electron .`. Do **not** use `pnpm dev` — pnpm's pre-run dependency check currently fails on an unresolved `citation-js` ignored-build placeholder; the direct `electron .` invocation sidesteps it. (If you need the architect to run an interactive command, suggest they type `! <command>` in the prompt.)
+- **Reloading edits:** `app://` assets are served `no-store` (`apps/desktop/src/serve.js`), so a window **reload (Cmd+R)** reliably picks up edited *renderer* code — `apps/desktop/src/app.js`, anything under `packages/renderer/src`, `*.lisp`, `styles.css`. Edits to *main-process* code (`serve.js`, the main entry, `preload.mjs`) need a full **Cmd+Q + relaunch**.
+- **Tests:** `pnpm test` at the root runs all packages; `pnpm --filter @editor/<pkg> test` runs one. Caveat: unit tests **stub the host primitives**, so the real bodies of `apps/desktop/src/app.js` primitives never execute under test — sanity-check new primitive bodies in the running app, not just via green suites.
+
 ## Working Agreements
 
 ### Branching and commits
@@ -98,11 +106,12 @@ Don't delete previous notes. The architect reads through them.
 
 For any non-trivial task:
 
-1. `docs/VISION.md` and `docs/ARCHITECTURE.md`
-2. The relevant plan document in `plans/`
-3. The spec document for any layer you interact with
-4. The existing code in your package and its tests
-5. Current state of `architect-notes.md`
+1. `HANDOVER.md` (current state + in-flight branch) and `MEMORY.md`
+2. `docs/VISION.md` and `docs/ARCHITECTURE.md`
+3. The relevant plan document in `plans/`
+4. The spec document for any layer you interact with
+5. The existing code in your package and its tests
+6. Current state of `architect-notes.md`
 
 **If the task touches views or panes**, read `docs/VIEWS.md` *first*.
 It is the condensed playbook of which display-state is owned by

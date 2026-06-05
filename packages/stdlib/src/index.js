@@ -51,6 +51,10 @@ export const STDLIB_FILES = Object.freeze([
   'occur.lisp',
   'expand-region.lisp',
   'system.lisp',
+  // The utility-pane Lisp surface (toggle/focus/cycle + output helpers).
+  // After system.lisp (reuses toggle-repl!); before latex-compile.lisp,
+  // which routes its build output through `utility-output`.
+  'utility-pane.lisp',
   'modes.lisp',
   // The face registry loads before themes.lisp, which registers all
   // built-in faces via `defface`.
@@ -104,6 +108,11 @@ export const STDLIB_FILES = Object.freeze([
   // `*reftex-env-types*` / type-inference helpers) and extends the
   // `latex-c-c-map` further with the `(` and `)` slots.
   'reftex-refs.lisp',
+  // RefTeX R3 — citations (reftex-citation, C-c [). Loads after
+  // reftex-refs.lisp (it reuses R2's origin bookkeeping + extends the
+  // `latex-c-c-map` with `[`) and reftex.lisp (R1 DB + bib paths). The
+  // cite picker formats references via the host citation.js bridge.
+  'reftex-cite.lisp',
   // AUCTeX Phase 2 — smart insertion (environment / macro / section /
   // font). Loads after reftex-refs.lisp: it extends `latex-c-c-map`
   // further (C-c C-e/]/C-m/C-s/C-f), redefines `minibuffer-tab-complete`

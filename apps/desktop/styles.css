@@ -915,20 +915,110 @@ mjx-assistive-mml[display='block'] {
   color: var(--fg);
 }
 
-/* --- REPL --------------------------------------------------------------- */
+/* --- Utility dock ------------------------------------------------------- */
+/* The tabbed chrome region at the bottom: a tab strip + a content area that
+   hosts the REPL (resident) and transient tool panels. It occupies the space
+   the REPL used to own; sized by the (legacy-named) --repl-height var + the
+   #utility-splitter. */
 
-.repl-host {
+.utility-host {
   flex: 0 0 var(--repl-height);
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--bg-repl);
   border-top: 1px solid #00000055;
 }
 
-/* toggle-repl (C-x p) hides the panel; the editor takes the freed space.
+/* toggle (C-x p) hides the whole dock; the editor takes the freed space.
    The splitter goes with it — there's nothing to resize. */
-body.repl-hidden .repl-host,
-body.repl-hidden #repl-splitter {
+body.utility-hidden .utility-host,
+body.utility-hidden #utility-splitter {
   display: none;
+}
+
+.utility-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid #ffffff14;
+}
+
+.utility-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 5px 5px 0 0;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.utility-tab:hover {
+  background: #ffffff0a;
+  color: var(--fg);
+}
+
+.utility-tab.is-active {
+  background: #ffffff14;
+  color: var(--fg);
+}
+
+.utility-tab-icon {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.utility-tab-close {
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--fg-dim);
+  opacity: 0.7;
+}
+
+.utility-tab-close:hover {
+  background: #ffffff1a;
+  color: var(--fg);
+  opacity: 1;
+}
+
+.utility-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.utility-panel {
+  height: 100%;
+  outline: none;
+}
+
+/* Generic output/log panel (compile output, process logs). */
+.utility-output {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.utility-output-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
 }
 
 .repl {
@@ -2862,50 +2952,33 @@ view-list-view,
   background: #ffffff0a;
 }
 
-/* --- reftex-select picker (right-edge drawer) ------------------------ */
-/* The *RefTeX Select* picker: the document's reference candidates grouped
-   by type, each row a name + macro hint + a one-line context. It is NOT a
-   pane view — the host mounts `.reftex-select-view` inside a
-   `.reftex-select-overlay` drawer that slides in from the right edge over
-   `#editor-host`, so the document stays visible to the left and SPC-peek
-   can drive the editor pane underneath. Mirrors the view-list shell
-   (header + scrolling body + hint footer) and uses the project tokens.
-   Keyboard-driven; the highlighted row is `.is-current`. */
+/* --- reftex pickers (utility-pane tabs) ----------------------------- */
+/* The RefTeX pickers are NOT pane views — the host mounts each panel as a
+   tab in the utility dock (the bottom chrome region; see .utility-host).
+   The *RefTeX Select* picker (labels/refs) groups candidates by type, each
+   row a name + macro hint + a one-line context; the cite panels (R3) are
+   below. Keyboard-driven; the highlighted row is `.is-current`. */
 
-/* The drawer: an absolutely-positioned panel anchored to the right edge,
-   starting off-screen (translateX(100%)) and sliding to translateX(0)
-   when `.is-open` is added (one frame after mount). z-index sits above
-   the panes and below the move-view overlay. */
-.reftex-select-overlay {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 380px;
-  max-width: 80%;
-  z-index: 55;
-  transform: translateX(100%);
-  transition: transform 160ms ease;
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
-  outline: none;
-}
-
-.reftex-select-overlay.is-open {
-  transform: translateX(0);
+/* In the utility dock the panels fill the (splitter-resizable) dock height,
+   not their old 60vh overlay cap. */
+.utility-panel .reftex-select-view,
+.utility-panel .reftex-cite-view {
+  max-height: 100%;
+  height: 100%;
 }
 
 reftex-select-view,
 .reftex-select-view {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  max-height: 60vh;
   outline: none;
   background: var(--bg-editor);
   color: var(--fg);
   font-family: system-ui, sans-serif;
   font-size: 13px;
   overflow: hidden;
-  border-left: 1px solid #ffffff1a;
+  border-top: 1px solid #ffffff1a;
 }
 
 .reftex-select-header {
@@ -3008,6 +3081,230 @@ reftex-select-view,
 .reftex-select-hint {
   flex: 0 0 auto;
   padding: 6px 14px;
+  border-top: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+/* --- reftex citation panels (utility-pane tabs) --------------------- */
+/* R3's two cite panels share the `reftex-cite` utility tab: the format menu
+   (choose a \cite-family macro) and the picker (CSL-formatted, searchable,
+   markable references). Full width so a formatted reference fits on a line. */
+
+.reftex-cite-view {
+  display: flex;
+  flex-direction: column;
+  max-height: 60vh;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+  border-top: 1px solid #ffffff1a;
+}
+
+.reftex-cite-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.reftex-cite-header-label {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.reftex-cite-filter {
+  flex: 1 1 auto;
+  color: var(--accent);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+/* The cite picker's search box. Keystrokes are captured by the dock and
+   routed to handleKey (no native <input> takes focus), so this is a
+   styled display of the live filter + a blinking caret, made to read as a
+   real text field. */
+.reftex-cite-search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 16px 4px;
+  padding: 7px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: #00000026;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.reftex-cite-search-icon {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+/* text + caret + placeholder as one no-gap inline group, so the caret
+   hugs the typed text instead of the outer flex gap pushing it away. */
+.reftex-cite-search-field {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.reftex-cite-search-text {
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reftex-cite-search-placeholder {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.reftex-cite-caret {
+  align-self: stretch;
+  width: 0;
+  margin: 1px 0;
+  border-left: 2px solid var(--accent);
+  animation: reftex-cite-caret-blink 1.05s steps(1) infinite;
+}
+
+@keyframes reftex-cite-caret-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+/* Format menu: macro choices, each with a key chip. */
+.reftex-cite-format-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 14px 16px;
+}
+
+.reftex-cite-format-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+.reftex-cite-format-row:hover {
+  background: #ffffff0a;
+}
+
+.reftex-cite-format-key {
+  display: inline-block;
+  min-width: 1.4em;
+  text-align: center;
+  padding: 1px 6px;
+  border: 1px solid #ffffff2a;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.reftex-cite-format-macro {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+
+.reftex-cite-format-desc {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+/* Picker: a scrolling list of formatted references. */
+.reftex-cite-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.reftex-cite-row {
+  cursor: pointer;
+  user-select: none;
+  padding: 8px 16px;
+  border-bottom: 1px solid #ffffff0a;
+}
+
+.reftex-cite-row:hover {
+  background: #ffffff0a;
+}
+
+.reftex-cite-row.is-current {
+  background: #ffffff14;
+}
+
+/* A left accent bar marks the entries chosen for a multi-key \cite. */
+.reftex-cite-row.is-marked {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.reftex-cite-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.reftex-cite-mark {
+  width: 1ch;
+  color: var(--accent);
+}
+
+.reftex-cite-key {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.reftex-cite-row.is-current .reftex-cite-key {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.reftex-cite-ref {
+  margin-top: 3px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.reftex-cite-ref i {
+  font-style: italic;
+}
+
+/* citation.js Vancouver-style numbering: a left margin + right inline. */
+.reftex-cite-ref .csl-left-margin {
+  display: inline-block;
+  min-width: 2em;
+  color: var(--fg-dim);
+}
+
+.reftex-cite-ref .csl-right-inline {
+  display: inline;
+}
+
+.reftex-cite-empty {
+  padding: 16px;
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.reftex-cite-hint {
+  flex: 0 0 auto;
+  padding: 6px 16px;
   border-top: 1px solid #ffffff14;
   color: var(--fg-dim);
   font-size: 11px;

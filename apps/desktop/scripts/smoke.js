@@ -1312,8 +1312,10 @@ app.whenReady().then(() => {
         // dispatches an async fetch through host.readDocPage, then a
         // buffer switch. A handful of frames is enough for both.
         for (let i = 0; i < 6; i += 1) await frame();
-        const view = document.querySelector('doc-view:not([style*="display: none"])');
-        const shown = !!(view && getComputedStyle(view).display !== 'none');
+        // Docs render as utility-dock tabs now; the active tab is the one
+        // visible panel (its wrapper has no hidden attribute).
+        const view = document.querySelector('.utility-panel:not([hidden]) doc-view');
+        const shown = !!view;
         const page = view ? view.querySelector('.doc-page') : null;
         const pageText = page ? page.textContent : '';
         // Click the first cross-link inside the page (the cmd() helper
@@ -1324,7 +1326,7 @@ app.whenReady().then(() => {
           xref.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
           for (let i = 0; i < 6; i += 1) await frame();
         }
-        const secondPage = document.querySelector('doc-view:not([style*="display: none"]) .doc-page');
+        const secondPage = document.querySelector('.utility-panel:not([hidden]) doc-view .doc-page');
         const secondText = secondPage ? secondPage.textContent : '';
         return {
           shown,
@@ -1366,10 +1368,11 @@ app.whenReady().then(() => {
         await frame();
         submit('(open-doc "smoke-doc-fn")');
         for (let i = 0; i < 8; i += 1) await frame();
-        const view = document.querySelector('doc-view:not([style*="display: none"])');
-        const shown = !!(view && getComputedStyle(view).display !== 'none');
+        const view = document.querySelector('.utility-panel:not([hidden]) doc-view');
+        const shown = !!view;
         const page = view ? view.querySelector('.doc-page') : null;
         const html = page ? page.innerHTML : '';
+        const activeTabEl = document.querySelector('.utility-tab.is-active .utility-tab-label');
         return {
           shown,
           // marked's rendered output uses these tags for **bold**,
@@ -1378,7 +1381,9 @@ app.whenReady().then(() => {
           hasStrong: /<strong>bold<\\/strong>/.test(html),
           hasEm: /<em>live<\\/em>/.test(html),
           hasList: /<ul>[\\s\\S]*<li>/.test(html),
-          modeline: document.querySelector('.modeline')?.textContent ?? '',
+          // The doc is a utility tab now (not a pane view), so its name
+          // shows on the active tab, not the modeline.
+          activeTab: activeTabEl ? activeTabEl.textContent : '',
         };
       })()`);
       console.log('  liveDocs:', JSON.stringify(liveDocs));
@@ -1965,7 +1970,7 @@ app.whenReady().then(() => {
         }));
         await wait(400);
         const previewSplit = document.getElementById('preview-splitter');
-        const replSplit = document.getElementById('repl-splitter');
+        const replSplit = document.getElementById('utility-splitter');
         const previewShown = !!(previewSplit
           && getComputedStyle(previewSplit).display !== 'none');
         const replShown = !!(replSplit
@@ -3687,7 +3692,7 @@ app.whenReady().then(() => {
         liveDocs.hasStrong &&
         liveDocs.hasEm &&
         liveDocs.hasList &&
-        liveDocs.modeline.includes('*Doc: smoke-doc-fn*');
+        liveDocs.activeTab.includes('smoke-doc-fn');
       // Buffer menu arm: header present, both seeded buffers listed,
       // *Buffer List* lists itself, and `d` then `x` removes the
       // marked buffer.

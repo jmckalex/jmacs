@@ -47,6 +47,7 @@
           (list (cons "Insert Label" 'reftex-label)
                 (cons "Insert Reference…" 'reftex-reference)
                 (cons "Reference (minibuffer)" 'reftex-reference-minibuffer)
+                (cons "Insert Citation…" 'reftex-citation)
                 (cons "Reparse Document" 'reftex-reparse)))
     (cons "Navigation"
           (list (cons "Next Section" 'latex-next-section)

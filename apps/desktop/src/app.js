@@ -65,11 +65,16 @@ import {
   createMarkdownPreview,
   createMinibuffer,
   createReplView,
+  createUtilityDock,
+  createOutputPanel,
+  createDocPanel,
   ShellView,
   GnuplotView,
   NotebookView,
   ViewListView,
   createReftexSelectPanel,
+  createReftexCiteFormatPanel,
+  createReftexCitePanel,
   PlaceholderView,
   cloneTargetForKind,
   isPlaceholderView,
@@ -92,6 +97,9 @@ import {
   formatCitation,
   citationKeys,
   citationEntries,
+  formatBibliographyEntries,
+  registerCslStyle,
+  parseCitationsLenient,
   createMathPreview,
   mathPreviewProviderForMode,
   TextView,
@@ -123,6 +131,23 @@ import { createStickyNotes } from './sticky-notes.js';
 import { enterAddPaneMode } from './add-pane-mode.js';
 import { enterMoveViewsMode } from './move-view-mode.js';
 import { createTabline } from '@editor/renderer';
+
+/**
+ * Build a Lisp hash-map (a JS `Map` with interned-keyword keys) from a
+ * plain object — the shape the host's citation / synctex primitives
+ * return. (latex-primitives.js keeps its own copy for its own scope; this
+ * is the app.js-scope equivalent, used by the citation primitives.)
+ *
+ * @param {Record<string, *>} fields
+ * @returns {Map<*, *>}
+ */
+function record(fields) {
+  const map = new Map();
+  for (const [key, value] of Object.entries(fields)) {
+    map.set(keyword(key), value);
+  }
+  return map;
+}
 
 const WELCOME = `
 
@@ -522,12 +547,6 @@ let addPaneHandle = null;
  *  `addPaneHandle`. */
 let moveViewHandle = null;
 
-/** Live handle for the *RefTeX Select* right-edge overlay, or `null` when
- *  closed. Modelled on `move-view-mode.js`: a drawer over `#editor-host`
- *  with a window-capture key handler, so SPC-peek can drive the editor
- *  pane *underneath* while the panel keeps control. See
- *  `openReftexSelectOverlay`. */
-let reftexSelectHandle = null;
 
 /** Recompute the layout of every leaf pane against the current editor-
  *  host bounds and write each leaf's rect to its element. Cheap to call
@@ -1954,14 +1973,35 @@ function openCustomize(name, scope) {
   switchToViewIndex(index);
 }
 
-/** Find or create the doc view for `docName`, fetching the HTML from
+/** Open (or re-activate) a doc panel in the utility dock for `docName`,
+ *  showing the given pre-built HTML. One tab per doc name (id `doc:<name>`).
+ *  Reuses the doc-view's behaviour (cross-links, `q`-to-close, code
+ *  highlight) via `configureDocView`, with `q` wired to close the tab. */
+function openDocUtilityPanel(docName, html) {
+  const id = `doc:${docName}`;
+  const cfg = configureDocView();
+  utilityDock.openUtilityPanel({
+    id,
+    title: `Doc: ${docName}`,
+    icon: 'fa-solid fa-book-open',
+    modal: false,
+    makePanel: (dock) => createDocPanel({
+      html,
+      title: `Doc: ${docName}`,
+      onKey: cfg.onKey,
+      openDoc: cfg.openDoc,
+      highlightCode: cfg.highlightCode,
+      closeBuffer: dock.close, // `q` closes the tab
+    }),
+  });
+}
+
+/** Find or create the doc panel for `docName`, fetching the HTML from
  *  the host if it isn't already open. */
 async function openDocBuffer(docName) {
-  const existing = views.findIndex(
-    (v) => v.kind === 'doc' && v.docName === docName
-  );
-  if (existing >= 0) {
-    switchToViewIndex(existing);
+  const id = `doc:${docName}`;
+  if (utilityDock.hasTab(id)) {
+    utilityDock.activateUtilityTab(id);
     return;
   }
   let page;
@@ -1975,12 +2015,7 @@ async function openDocBuffer(docName) {
     repl.appendError(`no doc page for ${docName}`);
     return;
   }
-  views.push(createView({
-    kind: 'doc',
-    name: `*Doc: ${docName}*`,
-    extras: { docName, html: page.html },
-  }));
-  switchToViewIndex(views.length - 1);
+  openDocUtilityPanel(docName, page.html);
 }
 
 /** Minimal HTML-escape for embedding a user-supplied name into an
@@ -1998,11 +2033,9 @@ function escapeHtml(text) {
  *  live path — for user-defined procedures whose documentation
  *  isn't in the pre-built manifest. */
 async function openDocstringBuffer(docName, source) {
-  const existing = views.findIndex(
-    (v) => v.kind === 'doc' && v.docName === docName
-  );
-  if (existing >= 0) {
-    switchToViewIndex(existing);
+  const id = `doc:${docName}`;
+  if (utilityDock.hasTab(id)) {
+    utilityDock.activateUtilityTab(id);
     return;
   }
   let body;
@@ -2018,12 +2051,7 @@ async function openDocstringBuffer(docName, source) {
   const html =
     `<h3 class="doc-name"><code>${escapeHtml(docName)}</code></h3>\n` +
     `<div class="doc-docstring">${body}</div>`;
-  views.push(createView({
-    kind: 'doc',
-    name: `*Doc: ${docName}*`,
-    extras: { docName, html },
-  }));
-  switchToViewIndex(views.length - 1);
+  openDocUtilityPanel(docName, html);
 }
 
 // --- audio playback (jukebox mode) --------------------------------------
@@ -2836,11 +2864,44 @@ function startDescribeCommand() {
 
 // --- Lisp interpreter and REPL -----------------------------------------
 
-const repl = createReplView(document.getElementById('repl-host'), {
+// The utility dock — the tabbed chrome region at the bottom. The REPL is its
+// resident tab; tools (RefTeX pickers, doc, compile output) open additional
+// tabs here instead of overlaying the editor. `onFocusOrigin` reads the LIVE
+// `editorView` binding (it is reassigned across the session), so a tool that
+// closes / a dock that hides returns focus to the current text view.
+const utilityHostEl = document.getElementById('utility-host');
+const utilityDock = createUtilityDock({
+  hostEl: utilityHostEl,
+  tabsEl: utilityHostEl.querySelector('.utility-tabs'),
+  contentEl: utilityHostEl.querySelector('.utility-content'),
+  onFocusOrigin: () => {
+    if (editorView && typeof editorView.focus === 'function') editorView.focus();
+  },
+});
+
+// The REPL is built detached, then mounted as the dock's resident tab; the
+// dock reparents `repl.element` into its content area. The `repl` facade is
+// unchanged — every appendOutput/appendResult/… call site keeps working.
+const repl = createReplView(document.createElement('div'), {
   prompt: 'λ ',
   welcome: 'REPL — type Lisp, press Enter. It shares the editor buffers.',
   onSubmit: evaluateInRepl,
 });
+// focus:false — the editor keeps focus at startup; the REPL is just mounted.
+utilityDock.openUtilityPanel({ id: 'repl-view', makePanel: () => repl, focus: false });
+
+// Registry of named utility-panel factories. Commands/tools/processes (mostly
+// Lisp) address panels BY NAME via the `utility-panel-*!` primitives, since the
+// panels themselves are JS DOM factories. A factory is
+// `(handle, opts) => panel` (the openUtilityPanel contract; `handle` is the
+// per-tab {close, focus, activate}). Built-ins seeded here; tools can add more
+// via `registerUtilityPanelFactory`.
+const utilityPanelFactories = new Map();
+function registerUtilityPanelFactory(name, makePanel) {
+  utilityPanelFactories.set(String(name), makePanel);
+}
+registerUtilityPanelFactory('output', (handle, opts) =>
+  createOutputPanel({ title: opts?.title, onClose: handle.close }));
 
 /** Cached doc-page names from `docs/build/manifest.json`. The
  *  `load-doc-manifest!` primitive returns this; populated near
@@ -3252,6 +3313,21 @@ const interpreter = createInterpreter({
         throw new LispError(`citation-parse: ${error.message ?? error}`);
       }
     },
+    // `(citation-parse-lenient SOURCE)` — like `citation-parse`, but
+    // tolerant: a single entry Citation.js can't parse (e.g. a name field
+    // with a bare TeX accent `Fran{\c}ois`) would otherwise throw away the
+    // WHOLE bibliography. Returns a record `{:handle CSL-JSON :skipped N}`;
+    // N is how many entries were dropped. The RefTeX cite picker uses this
+    // so one bad entry never blanks the picker.
+    'citation-parse-lenient': (args) => {
+      const source = String(args[0] ?? '');
+      try {
+        const { json, skipped } = parseCitationsLenient(source);
+        return record({ handle: json, skipped });
+      } catch (error) {
+        throw new LispError(`citation-parse-lenient: ${error.message ?? error}`);
+      }
+    },
     // `(citation-format-bibliography HANDLE [STYLE [FORMAT [LANG]]])`
     // — render every entry in HANDLE as a bibliography. STYLE is a
     // CSL style id (default `*citation-style*` — the Lisp side
@@ -3318,6 +3394,66 @@ const interpreter = createInterpreter({
         return arrayToList(records);
       } catch (error) {
         throw new LispError(`citation-entries: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-format-entries HANDLE STYLE)` — format each entry in
+    // HANDLE (a parsed-bib handle from `citation-parse`) to HTML via the
+    // CSL STYLE, returned as a list of `{:key :html}` records in entry
+    // order. The HTML carries the style's inline markup (italics,
+    // numbering) so the cite picker can show a professionally formatted
+    // reference per row; the inserted text is still `\cite{key}`. STYLE is
+    // a template id — a built-in (`apa`/`vancouver`/`harvard1`) or one
+    // registered via `citation-register-style!`. Returns nil for an empty
+    // handle.
+    'citation-format-entries': (args) => {
+      const handle = String(args[0] ?? '');
+      if (handle === '') return NIL;
+      const style = args[1] != null && args[1] !== NIL ? String(args[1]) : 'apa';
+      try {
+        const entries = formatBibliographyEntries(handle, { style });
+        return arrayToList(
+          entries.map((e) => record({ key: e.key ?? '', html: e.html ?? '' }))
+        );
+      } catch (error) {
+        throw new LispError(`citation-format-entries: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-format-keys HANDLE KEYS-CSV STYLE)` — format ONLY the
+    // entries in HANDLE whose id is in the comma-separated KEYS-CSV, as a
+    // list of `{:key :html}`. The cite picker calls this for just the rows
+    // it is showing, so a large bibliography is never formatted whole
+    // (formatting is the costly step; the cheap key/author/year/title
+    // index drives filtering). Unknown keys are silently absent.
+    'citation-format-keys': (args) => {
+      const handle = String(args[0] ?? '');
+      const keysCsv = String(args[1] ?? '');
+      if (handle === '' || keysCsv === '') return NIL;
+      const style = args[2] != null && args[2] !== NIL ? String(args[2]) : 'apa';
+      try {
+        const wanted = new Set(
+          keysCsv.split(',').map((s) => s.trim()).filter(Boolean)
+        );
+        const subset = JSON.parse(handle).filter((e) => wanted.has(e.id));
+        const entries = formatBibliographyEntries(JSON.stringify(subset), { style });
+        return arrayToList(
+          entries.map((e) => record({ key: e.key ?? '', html: e.html ?? '' }))
+        );
+      } catch (error) {
+        throw new LispError(`citation-format-keys: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-register-style! XML)` — register a custom CSL style from
+    // its XML and return the template id to pass as STYLE to
+    // `citation-format-entries`. Lets `*reftex-cite-style*` point at a
+    // user-supplied `.csl` file for any style beyond the three built-ins.
+    // Idempotent (re-registering a known id is a no-op).
+    'citation-register-style!': (args) => {
+      const xml = String(args[0] ?? '');
+      if (xml === '') return NIL;
+      try {
+        return registerCslStyle(xml);
+      } catch (error) {
+        throw new LispError(`citation-register-style!: ${error.message ?? error}`);
       }
     },
 
@@ -3550,6 +3686,69 @@ const interpreter = createInterpreter({
       viewListView.refresh();
       return NIL;
     },
+    // --- Utility pane (the tabbed bottom dock) -------------------------
+    // Open (or reuse) a utility panel as a tab. FACTORY selects a
+    // registered factory; ID is the tab id (defaults to FACTORY, i.e. a
+    // single instance); TITLE is the tab label (defaults to ID). So one
+    // 'output' factory can back several tabs ("tex-output", "tex-errors").
+    // Does NOT steal focus (informational) — use utility-panel-activate! /
+    // -focus! to bring it forward. Returns the tab id, or NIL if no such
+    // factory.
+    'utility-panel-open!': (args) => {
+      const factoryName = String(args[0] ?? '');
+      const id = args[1] != null && args[1] !== NIL ? String(args[1]) : factoryName;
+      const title = args[2] != null && args[2] !== NIL ? String(args[2]) : id;
+      const factory = utilityPanelFactories.get(factoryName);
+      if (!factory) {
+        repl.appendError(`utility-panel-open!: no panel "${factoryName}"`);
+        return NIL;
+      }
+      utilityDock.openUtilityPanel({
+        id,
+        title,
+        makePanel: (handle) => factory(handle, { title }),
+        focus: false,
+      });
+      return id;
+    },
+    // Bring the named tab forward (creating focus on it). No-op if absent.
+    'utility-panel-activate!': (args) => {
+      utilityDock.activateUtilityTab(String(args[0] ?? ''));
+      return NIL;
+    },
+    // Append TEXT to the named panel's log (streaming output). No-op if the
+    // panel isn't open or doesn't accept appends.
+    'utility-panel-append!': (args) => {
+      const panel = utilityDock.getPanel(String(args[0] ?? ''));
+      if (panel && typeof panel.appendOutput === 'function') {
+        panel.appendOutput(String(args[1] ?? ''));
+      }
+      return NIL;
+    },
+    // Replace the named panel's content with TEXT.
+    'utility-panel-set!': (args) => {
+      const panel = utilityDock.getPanel(String(args[0] ?? ''));
+      if (panel && typeof panel.setContent === 'function') {
+        panel.setContent(String(args[1] ?? ''));
+      }
+      return NIL;
+    },
+    // Close the named tab (no-op for the non-closable resident REPL).
+    'utility-panel-close!': (args) => {
+      utilityDock.closeUtilityTab(String(args[0] ?? ''));
+      return NIL;
+    },
+    // Focus the active utility tab's panel.
+    'utility-panel-focus!': () => {
+      utilityDock.focusUtilityPane();
+      return NIL;
+    },
+    // Cycle the active utility tab by DELTA (wraps); default +1.
+    'utility-cycle-tab!': (args) => {
+      const n = Number(args[0]);
+      utilityDock.cycleUtilityTab(Number.isFinite(n) && n !== 0 ? n : 1);
+      return NIL;
+    },
     // Open the *RefTeX Select* picker as a right-edge drawer overlaid on
     // the editor (the document stays visible underneath). RefTeX's
     // reftex-reference uses this as the selection-first path; the panel
@@ -3559,6 +3758,20 @@ const interpreter = createInterpreter({
     // form couldn't fix). See `openReftexSelectOverlay`.
     'open-reftex-select!': () => {
       openReftexSelectOverlay();
+      return NIL;
+    },
+    // RefTeX R3 citation flow (bottom dock). `open-reftex-cite-format!`
+    // opens the format menu (\cite / \citep / …); choosing one runs
+    // reftex-cite-format-chosen, which calls `open-reftex-cite-select!` —
+    // and because a dock is already up, that SWAPS it in place for the
+    // cite picker. The picker reads its rows via reftex-cite-select-rows
+    // and inserts via reftex-cite-insert.
+    'open-reftex-cite-format!': () => {
+      openReftexCiteFormat();
+      return NIL;
+    },
+    'open-reftex-cite-select!': () => {
+      openReftexCiteSelect();
       return NIL;
     },
     // Open a shell view — a child process running the user's default
@@ -4153,8 +4366,7 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'toggle-repl!': () => {
-      const hidden = document.body.classList.toggle('repl-hidden');
-      if (hidden) editorView.focus();
+      utilityDock.toggleUtilityDock();
       return NIL;
     },
     'markdown-preview!': () => {
@@ -5369,10 +5581,9 @@ function configureDocView() {
     highlightCode: highlightCodeForDocView,
   };
 }
-const docView = /** @type {*} */ (document.createElement('doc-view'));
-docView.configure(configureDocView());
-editorPaneElement().append(docView);
-docView.style.display = 'none';
+// Doc pages render as utility-dock tabs now (see openDocUtilityPanel), not as
+// pane-tree views — so there is no singleton doc-view element. configureDocView
+// above is reused by the doc panel for cross-link / highlight / key wiring.
 
 // The jukebox view — the view a `jukebox`-kind buffer is shown
 // through. Replaces the old text-buffer jukebox mode. The shared
@@ -5792,122 +6003,140 @@ function reftexSelectCallback(name, arg) {
   }
 }
 
-/**
- * Open the *RefTeX Select* picker as a modal drawer that slides in from
- * the right edge of `#editor-host`, over the editor — the document stays
- * visible to the left. Modelled on `enterMoveViewsMode`: the overlay
- * grabs focus and installs a **window capture-phase** keydown handler so
- * keystrokes reach the panel even when a focused `<webview>` would eat
- * them, and stay modal while it's up.
- *
- * The crucial difference from a pane view: SPC-peek calls
- * `reftex-select-on-peek`, which navigates the editor pane *underneath*
- * the overlay (`open-file-path!` + `goto-line!`). Because the panel keeps
- * its window-capture handler, that navigation (which may move pane focus)
- * does NOT steal keystrokes — the next key still reaches the panel, so
- * peek keeps the picker alive. Select / cancel `close()` it.
- *
- * Re-opening while one is up is a no-op (reftex-reference is the only
- * caller and only runs once at a time).
- */
-function openReftexSelectOverlay() {
-  if (reftexSelectHandle && reftexSelectHandle.active) return;
-
-  const panel = createReftexSelectPanel({
-    getCandidates: reftexSelectCandidates,
-    onSelect: (name) => {
-      // Insert at the origin, then close (the Lisp side returns focus to
-      // the origin view; close() also restores editor focus).
-      reftexSelectCallback('reftex-select-on-select', name);
-      close();
-    },
-    onPeek: (name) => {
-      // Drive the editor pane underneath; the overlay stays mounted.
-      reftexSelectCallback('reftex-select-on-peek', name);
-      // The panel and its capture handler survive the navigation, but a
-      // peek may have re-pointed `editorView`; keep focus on the overlay
-      // so the next key still feeds the panel.
-      container.focus();
-    },
-    onCancel: () => {
-      reftexSelectCallback('reftex-select-on-cancel');
-      close();
-    },
-  });
-
-  const container = document.createElement('div');
-  container.className = 'reftex-select-overlay';
-  container.dataset.role = 'reftex-select-overlay';
-  container.tabIndex = -1; // focusable, so it can pull focus off a webview
-  container.append(panel.element);
-
-  editorHostEl.dataset.reftexSelect = '1';
-  editorHostEl.append(container);
-  // Force a reflow so the off-screen start state is committed before the
-  // .is-open class flips the transform — otherwise the browser collapses
-  // both into one frame and there's no slide.
-  void container.offsetWidth;
-  container.classList.add('is-open');
-  container.focus();
-
-  let alive = true;
-
-  function close() {
-    if (!alive) return;
-    alive = false;
-    window.removeEventListener('keydown', onKeyDown, true);
-    container.classList.remove('is-open'); // slide out
-    const remove = () => {
-      container.removeEventListener('transitionend', remove);
-      panel.destroy();
-      container.remove();
-    };
-    container.addEventListener('transitionend', remove);
-    // Fallback in case transitionend doesn't fire (display quirks).
-    setTimeout(remove, 320);
-    delete editorHostEl.dataset.reftexSelect;
-    reftexSelectHandle = null;
-    // Restore focus to the editor pane (the origin pane the Lisp side
-    // switched back to). `editorView` tracks the active leaf's text view.
-    if (editorView && typeof editorView.focus === 'function') editorView.focus();
+/** The cite *format menu* rows the Lisp side prepared: each Lisp row is
+ *  `(key macro desc)`, mapped positionally to `{key, macro, desc}`. */
+function reftexCiteFormats() {
+  if (!keymapReady) return [];
+  try {
+    return listToArray(interpreter.call('reftex-cite-formats')).map((row) => {
+      const f = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return { key: f[0] ?? '', macro: f[1] ?? '', desc: f[2] ?? '' };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
+    return [];
   }
-
-  function onKeyDown(event) {
-    if (REFTEX_MODIFIERS.has(event.key)) return;
-    // Stay modal: swallow every plain key so it can't reach the editor or
-    // the global key router while the panel is up. Genuine system chords
-    // (Cmd/Ctrl/Alt held) pass through untouched.
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const key = keyEventToString(event);
-    panel.handleKey(key);
-  }
-
-  // A click on the panel keeps focus on the overlay so key capture
-  // survives (a click that lands on a pane underneath would steal it).
-  container.addEventListener('mousedown', (event) => {
-    // Let clicks on the rows through (the panel selects on row click), but
-    // re-grab focus afterwards.
-    if (!event.target.closest('.reftex-select-row')) {
-      event.preventDefault();
-    }
-    container.focus();
-  });
-
-  window.addEventListener('keydown', onKeyDown, true);
-
-  reftexSelectHandle = {
-    get active() {
-      return alive;
-    },
-    close,
-    refresh: panel.refresh,
-  };
 }
 
-/** A bare modifier press is not a key the picker acts on. */
-const REFTEX_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
+/** The cheap cite *index* the Lisp side prepared: each Lisp row is
+ *  `(key plain)`, mapped to `{key, plain}`. The picker filters this
+ *  client-side; the CSL HTML is fetched lazily via `reftexCiteFormatted`
+ *  for the rows actually shown, so a big bibliography isn't formatted
+ *  whole. */
+function reftexCiteIndex() {
+  if (!keymapReady) return [];
+  try {
+    return listToArray(interpreter.call('reftex-cite-index')).map((row) => {
+      const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return { key: r[0] ?? '', plain: r[1] ?? '' };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
+    return [];
+  }
+}
+
+/** CSL-format just the entries named in KEYSCSV (the rows the picker is
+ *  about to show), as `{key, html}` pairs. Backed by `reftex-cite-format`
+ *  → `citation-format-keys` over a sub-handle. */
+function reftexCiteFormatted(keysCsv) {
+  if (!keymapReady || !keysCsv) return [];
+  try {
+    return listToArray(interpreter.call('reftex-cite-format', keysCsv)).map((row) => {
+      const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return { key: r[0] ?? '', html: r[1] ?? '' };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
+    return [];
+  }
+}
+
+/** Invoke a cite-flow Lisp callback (format-chosen / insert / cancel),
+ *  reporting errors without crashing the renderer. */
+function reftexCiteCallback(name, arg) {
+  if (!keymapReady) return;
+  try {
+    if (arg === undefined) interpreter.call(name);
+    else interpreter.call(name, arg);
+  } catch (error) {
+    repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
+  }
+}
+
+/** R2: the *RefTeX Select* label/reference picker, as a utility-pane tab.
+ *  Modal (captures keys, beats a focused webview); SPC-peek drives the editor
+ *  pane underneath via the peek callback, then re-focuses the dock so the next
+ *  key still feeds the panel. */
+function openReftexSelectOverlay() {
+  utilityDock.openUtilityPanel({
+    id: 'reftex-select',
+    title: 'RefTeX Select',
+    icon: 'fa-solid fa-anchor',
+    modal: true,
+    makePanel: (dock) => createReftexSelectPanel({
+      getCandidates: reftexSelectCandidates,
+      onSelect: (name) => {
+        // Lisp inserts at the origin + re-points editorView; closing the tab
+        // then returns focus to that origin view.
+        reftexSelectCallback('reftex-select-on-select', name);
+        dock.close();
+      },
+      onPeek: (name) => {
+        reftexSelectCallback('reftex-select-on-peek', name);
+        dock.focus();
+      },
+      onCancel: () => {
+        reftexSelectCallback('reftex-select-on-cancel');
+        dock.close();
+      },
+    }),
+  });
+}
+
+/** R3 step 1: the cite *format menu* (choose \cite / \citep / …) as the
+ *  `reftex-cite` tab. Picking a format runs the Lisp callback, which calls
+ *  open-reftex-cite-select! — re-opening the SAME tab id replaces the format
+ *  menu with the picker in place (the swap). */
+function openReftexCiteFormat() {
+  utilityDock.openUtilityPanel({
+    id: 'reftex-cite',
+    title: 'Select citation format',
+    icon: 'fa-solid fa-quote-right',
+    modal: true,
+    makePanel: (dock) => createReftexCiteFormatPanel({
+      getFormats: reftexCiteFormats,
+      onPick: (macro) => reftexCiteCallback('reftex-cite-format-chosen', macro),
+      onCancel: () => {
+        reftexCiteCallback('reftex-cite-on-cancel');
+        dock.close();
+      },
+    }),
+  });
+}
+
+/** R3 step 2: the cite *picker* (cheap index, lazily formats shown rows, mark
+ *  + insert). Re-opens the `reftex-cite` tab, replacing the format menu. */
+function openReftexCiteSelect() {
+  utilityDock.openUtilityPanel({
+    id: 'reftex-cite',
+    title: 'Insert citation',
+    icon: 'fa-solid fa-book',
+    modal: true,
+    makePanel: (dock) => createReftexCitePanel({
+      getIndex: reftexCiteIndex,
+      getFormatted: reftexCiteFormatted,
+      onInsert: (keysCsv) => {
+        reftexCiteCallback('reftex-cite-insert', keysCsv);
+        dock.close();
+      },
+      onCancel: () => {
+        reftexCiteCallback('reftex-cite-on-cancel');
+        dock.close();
+      },
+    }),
+  });
+}
 
 // The placeholder view — the chooser a freshly-split pane shows until
 // the user decides what it should hold (replacing split's old silent
@@ -6263,7 +6492,6 @@ notebookView.style.display = 'none';
 const SINGLETON_VIEWS = [
   { kind: 'customize',         el: customizeView,         releasesBuffer: false },
   { kind: 'image',             el: imageView,             releasesBuffer: false },
-  { kind: 'doc',               el: docView,               releasesBuffer: false },
   { kind: 'jukebox',           el: jukeboxView,           releasesBuffer: false },
   { kind: 'audio',             el: audioView,             releasesBuffer: true  },
   { kind: 'video',             el: videoView,             releasesBuffer: true  },
@@ -6624,7 +6852,6 @@ function perKindConfigureFactory(kind) {
   switch (kind) {
     case 'customize':         return configureCustomizeView;
     case 'image':             return configureImageView;
-    case 'doc':               return configureDocView;
     case 'jukebox':           return configureJukeboxView;
     case 'audio':             return configureAudioView;
     case 'video':             return configureVideoView;
@@ -7318,7 +7545,7 @@ editorView.focus();
 
 const workspaceEl = document.getElementById('workspace');
 const previewSplitterEl = document.getElementById('preview-splitter');
-const replSplitterEl = document.getElementById('repl-splitter');
+const utilitySplitterEl = document.getElementById('utility-splitter');
 
 /** The persisted pane sizes — read once at startup and re-saved after
  *  each drag, so the layout survives quits. */
@@ -7347,13 +7574,14 @@ const previewSplitter = createSplitter({
   },
 });
 
-const replSplitter = createSplitter({
+const utilitySplitter = createSplitter({
   orientation: 'vertical',
-  element: replSplitterEl,
+  element: utilitySplitterEl,
   target: document.body,
+  // Legacy var/key names kept so persisted panes.json needs no migration.
   cssVar: '--repl-height',
   min: 80,
-  // The workspace + chrome above the REPL needs at least 300px.
+  // The workspace + chrome above the dock needs at least 300px.
   max: () => Math.max(80, window.innerHeight - 300),
   onResize: (value) => {
     persistedPanes.replHeight = value;
@@ -7374,7 +7602,7 @@ if (typeof window.host?.readPanes === 'function') {
         previewSplitter.set(stored.previewWidth);
       }
       if (typeof stored.replHeight === 'number') {
-        replSplitter.set(stored.replHeight);
+        utilitySplitter.set(stored.replHeight);
       }
     })
     .catch(() => {
