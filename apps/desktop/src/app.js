@@ -545,13 +545,6 @@ let addPaneHandle = null;
  *  `addPaneHandle`. */
 let moveViewHandle = null;
 
-/** Live handle for the RefTeX bottom dock (the label/ref picker AND the
- *  two cite panels share it), or `null` when closed. Modelled on
- *  `move-view-mode.js`: a modal panel over `#editor-host` with a
- *  window-capture key handler, so SPC-peek can drive the editor pane
- *  *underneath* while the panel keeps control, and the cite flow can swap
- *  the format menu for the picker in place. See `openReftexBottomDock`. */
-let reftexDockHandle = null;
 
 /** Recompute the layout of every leaf pane against the current editor-
  *  host bounds and write each leaf's rect to its element. Cheap to call
@@ -5985,182 +5978,79 @@ function reftexCiteCallback(name, arg) {
   }
 }
 
-/**
- * Open a modal **bottom dock** over `#editor-host` and mount a panel in
- * it. The dock slides up from the bottom edge (full width — the cite
- * format menu and the formatted references want horizontal room), grabs
- * focus, and installs a **window capture-phase** keydown handler so
- * keystrokes reach the panel even when a focused `<webview>` would eat
- * them. Modal while up.
- *
- * `makePanel(dock)` builds the panel, receiving the dock handle so its
- * callbacks can `dock.close()` / `dock.focus()`. The handle also exposes
- * `swap(makePanel)`, which replaces the panel WITHOUT a close/reopen — the
- * RefTeX cite flow swaps the format menu for the picker in place. Invoking
- * `openReftexBottomDock` again while a dock is up swaps it rather than
- * stacking a second one.
- *
- * Both RefTeX pickers ride this: R2's *RefTeX Select* (labels/refs) whose
- * SPC-peek drives the editor pane *underneath* the dock — because the
- * panel keeps its capture handler, that navigation doesn't steal the next
- * keystroke — and R3's two cite panels.
- */
-function openReftexBottomDock(makePanel) {
-  // A dock is already up: reuse it (swap content) rather than stacking.
-  if (reftexDockHandle && reftexDockHandle.active) {
-    return reftexDockHandle.swap(makePanel);
-  }
-
-  const container = document.createElement('div');
-  container.className = 'reftex-dock';
-  container.dataset.role = 'reftex-dock';
-  container.tabIndex = -1; // focusable, so it can pull focus off a webview
-
-  let panel = null;
-  let alive = true;
-
-  function mount(make) {
-    if (panel) panel.destroy();
-    panel = make(dock);
-    container.append(panel.element);
-    container.focus();
-    return dock;
-  }
-
-  function close() {
-    if (!alive) return;
-    alive = false;
-    window.removeEventListener('keydown', onKeyDown, true);
-    container.classList.remove('is-open'); // slide out
-    const remove = () => {
-      container.removeEventListener('transitionend', remove);
-      if (panel) panel.destroy();
-      container.remove();
-    };
-    container.addEventListener('transitionend', remove);
-    // Fallback in case transitionend doesn't fire (display quirks).
-    setTimeout(remove, 320);
-    delete editorHostEl.dataset.reftexDock;
-    reftexDockHandle = null;
-    // Restore focus to the editor pane (the origin pane the Lisp side
-    // switched back to). `editorView` tracks the active leaf's text view.
-    if (editorView && typeof editorView.focus === 'function') editorView.focus();
-  }
-
-  const dock = {
-    get active() {
-      return alive;
-    },
-    close,
-    swap: (make) => mount(make),
-    focus: () => container.focus(),
-  };
-
-  function onKeyDown(event) {
-    if (REFTEX_MODIFIERS.has(event.key)) return;
-    const keyString = keyEventToString(event);
-    // A Cmd/Ctrl/Alt chord: offer it to the panel — the cite picker claims
-    // C-n/C-p for navigation now that every letter types into its filter —
-    // and swallow it ONLY if the panel consumes it. Anything the panel
-    // doesn't claim (system chords, global commands) passes through.
-    if (event.metaKey || event.ctrlKey || event.altKey) {
-      if (panel && typeof panel.handleKey === 'function' && panel.handleKey(keyString)) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-      return;
-    }
-    // Stay modal: swallow every plain key so it can't reach the editor or
-    // the global key router while the panel is up, then feed it to the panel.
-    event.preventDefault();
-    event.stopPropagation();
-    if (panel && typeof panel.handleKey === 'function') {
-      panel.handleKey(keyString);
-    }
-  }
-
-  // A click inside the dock keeps focus on it so key capture survives;
-  // clicks on selectable rows pass through (panels select on row click).
-  container.addEventListener('mousedown', (event) => {
-    if (!event.target.closest(
-      '.reftex-select-row, .reftex-cite-row, .reftex-cite-format-row'
-    )) {
-      event.preventDefault();
-    }
-    container.focus();
-  });
-
-  editorHostEl.dataset.reftexDock = '1';
-  editorHostEl.append(container);
-  mount(makePanel);
-  // Force a reflow so the off-screen start state is committed before the
-  // .is-open class flips the transform — otherwise the browser collapses
-  // both into one frame and there's no slide.
-  void container.offsetWidth;
-  container.classList.add('is-open');
-  window.addEventListener('keydown', onKeyDown, true);
-
-  reftexDockHandle = dock;
-  return dock;
-}
-
-/** R2: the *RefTeX Select* label/reference picker, in the bottom dock. */
+/** R2: the *RefTeX Select* label/reference picker, as a utility-pane tab.
+ *  Modal (captures keys, beats a focused webview); SPC-peek drives the editor
+ *  pane underneath via the peek callback, then re-focuses the dock so the next
+ *  key still feeds the panel. */
 function openReftexSelectOverlay() {
-  openReftexBottomDock((dock) => createReftexSelectPanel({
-    getCandidates: reftexSelectCandidates,
-    onSelect: (name) => {
-      // Insert at the origin, then close (the Lisp side returns focus to
-      // the origin view; close() also restores editor focus).
-      reftexSelectCallback('reftex-select-on-select', name);
-      dock.close();
-    },
-    onPeek: (name) => {
-      // Drive the editor pane underneath; the dock stays mounted. A peek
-      // may have re-pointed `editorView`; keep focus on the dock so the
-      // next key still feeds the panel.
-      reftexSelectCallback('reftex-select-on-peek', name);
-      dock.focus();
-    },
-    onCancel: () => {
-      reftexSelectCallback('reftex-select-on-cancel');
-      dock.close();
-    },
-  }));
+  utilityDock.openUtilityPanel({
+    id: 'reftex-select',
+    title: 'RefTeX Select',
+    icon: 'fa-solid fa-anchor',
+    modal: true,
+    makePanel: (dock) => createReftexSelectPanel({
+      getCandidates: reftexSelectCandidates,
+      onSelect: (name) => {
+        // Lisp inserts at the origin + re-points editorView; closing the tab
+        // then returns focus to that origin view.
+        reftexSelectCallback('reftex-select-on-select', name);
+        dock.close();
+      },
+      onPeek: (name) => {
+        reftexSelectCallback('reftex-select-on-peek', name);
+        dock.focus();
+      },
+      onCancel: () => {
+        reftexSelectCallback('reftex-select-on-cancel');
+        dock.close();
+      },
+    }),
+  });
 }
 
-/** R3 step 1: the cite *format menu* (choose \cite / \citep / …). Picking
- *  a format runs the Lisp callback, which calls open-reftex-cite-select!
- *  to swap THIS dock for the picker. */
+/** R3 step 1: the cite *format menu* (choose \cite / \citep / …) as the
+ *  `reftex-cite` tab. Picking a format runs the Lisp callback, which calls
+ *  open-reftex-cite-select! — re-opening the SAME tab id replaces the format
+ *  menu with the picker in place (the swap). */
 function openReftexCiteFormat() {
-  openReftexBottomDock((dock) => createReftexCiteFormatPanel({
-    getFormats: reftexCiteFormats,
-    onPick: (macro) => reftexCiteCallback('reftex-cite-format-chosen', macro),
-    onCancel: () => {
-      reftexCiteCallback('reftex-cite-on-cancel');
-      dock.close();
-    },
-  }));
+  utilityDock.openUtilityPanel({
+    id: 'reftex-cite',
+    title: 'Select citation format',
+    icon: 'fa-solid fa-quote-right',
+    modal: true,
+    makePanel: (dock) => createReftexCiteFormatPanel({
+      getFormats: reftexCiteFormats,
+      onPick: (macro) => reftexCiteCallback('reftex-cite-format-chosen', macro),
+      onCancel: () => {
+        reftexCiteCallback('reftex-cite-on-cancel');
+        dock.close();
+      },
+    }),
+  });
 }
 
-/** R3 step 2: the cite *picker* (cheap index, lazily formats shown rows,
- *  mark + insert). */
+/** R3 step 2: the cite *picker* (cheap index, lazily formats shown rows, mark
+ *  + insert). Re-opens the `reftex-cite` tab, replacing the format menu. */
 function openReftexCiteSelect() {
-  openReftexBottomDock((dock) => createReftexCitePanel({
-    getIndex: reftexCiteIndex,
-    getFormatted: reftexCiteFormatted,
-    onInsert: (keysCsv) => {
-      reftexCiteCallback('reftex-cite-insert', keysCsv);
-      dock.close();
-    },
-    onCancel: () => {
-      reftexCiteCallback('reftex-cite-on-cancel');
-      dock.close();
-    },
-  }));
+  utilityDock.openUtilityPanel({
+    id: 'reftex-cite',
+    title: 'Insert citation',
+    icon: 'fa-solid fa-book',
+    modal: true,
+    makePanel: (dock) => createReftexCitePanel({
+      getIndex: reftexCiteIndex,
+      getFormatted: reftexCiteFormatted,
+      onInsert: (keysCsv) => {
+        reftexCiteCallback('reftex-cite-insert', keysCsv);
+        dock.close();
+      },
+      onCancel: () => {
+        reftexCiteCallback('reftex-cite-on-cancel');
+        dock.close();
+      },
+    }),
+  });
 }
-
-/** A bare modifier press is not a key the picker acts on. */
-const REFTEX_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
 // The placeholder view — the chooser a freshly-split pane shows until
 // the user decides what it should hold (replacing split's old silent

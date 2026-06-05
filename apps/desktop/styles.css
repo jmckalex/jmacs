@@ -2931,35 +2931,19 @@ view-list-view,
   background: #ffffff0a;
 }
 
-/* --- reftex bottom dock + select picker ----------------------------- */
-/* The RefTeX pickers are NOT pane views — the host mounts each panel
-   inside a `.reftex-dock` that slides up from the BOTTOM edge over
-   `#editor-host`, full width (the cite format menu and formatted
-   references want horizontal room), so the document stays visible above
-   and SPC-peek (R2) can drive the editor pane underneath. The
-   *RefTeX Select* picker (labels/refs) groups candidates by type, each
+/* --- reftex pickers (utility-pane tabs) ----------------------------- */
+/* The RefTeX pickers are NOT pane views — the host mounts each panel as a
+   tab in the utility dock (the bottom chrome region; see .utility-host).
+   The *RefTeX Select* picker (labels/refs) groups candidates by type, each
    row a name + macro hint + a one-line context; the cite panels (R3) are
    below. Keyboard-driven; the highlighted row is `.is-current`. */
 
-/* The dock: an absolutely-positioned, full-width panel anchored to the
-   bottom edge, starting off-screen (translateY(100%)) and sliding up to
-   translateY(0) when `.is-open` is added (one frame after mount). Height
-   is content-driven, capped by each panel's own max-height. z-index sits
-   above the panes and below the move-view overlay. */
-.reftex-dock {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 55;
-  transform: translateY(100%);
-  transition: transform 160ms ease;
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
-  outline: none;
-}
-
-.reftex-dock.is-open {
-  transform: translateY(0);
+/* In the utility dock the panels fill the (splitter-resizable) dock height,
+   not their old 60vh overlay cap. */
+.utility-panel .reftex-select-view,
+.utility-panel .reftex-cite-view {
+  max-height: 100%;
+  height: 100%;
 }
 
 reftex-select-view,
@@ -3081,10 +3065,10 @@ reftex-select-view,
   font-size: 11px;
 }
 
-/* --- reftex citation panels (bottom dock) --------------------------- */
-/* R3's two cite panels share `.reftex-dock`: the format menu (choose a
-   \cite-family macro) and the picker (CSL-formatted, searchable, markable
-   references). Full width so a formatted reference fits on a line. */
+/* --- reftex citation panels (utility-pane tabs) --------------------- */
+/* R3's two cite panels share the `reftex-cite` utility tab: the format menu
+   (choose a \cite-family macro) and the picker (CSL-formatted, searchable,
+   markable references). Full width so a formatted reference fits on a line. */
 
 .reftex-cite-view {
   display: flex;

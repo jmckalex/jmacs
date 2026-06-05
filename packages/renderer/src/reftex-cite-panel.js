@@ -2,7 +2,8 @@
  * @file The RefTeX **citation** bottom panels — RefTeX R3's two-step,
  * format-first cite flow (plans/RefTeX.md). Both dock at the bottom of
  * the editor (full width — formatted references need horizontal room),
- * mounted by `openReftexBottomDock` in apps/desktop/src/app.js.
+ * opened as the `reftex-cite` utility-dock tab via `openUtilityPanel`
+ * in apps/desktop/src/app.js.
  *
  *   1. `createReftexCiteFormatPanel` — the *format menu*: the cite macros
  *      from `*reftex-cite-format*` (\cite / \citep / \citet / …), each on

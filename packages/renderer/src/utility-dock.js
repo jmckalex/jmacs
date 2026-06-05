@@ -172,6 +172,9 @@ export function createUtilityDock(options) {
   /** @type {((event: KeyboardEvent) => void)|null} The window-capture handler
    *  for the active modal tab, or null. */
   let captureHandler = null;
+  /** True when a tool auto-revealed a hidden dock, so closing the last tool
+   *  re-hides it — restoring the user's prior "dock hidden" state. */
+  let autoShownForTool = false;
 
   function removeCapture() {
     if (captureHandler) {
@@ -253,12 +256,16 @@ export function createUtilityDock(options) {
   }
 
   function hideUtilityDock() {
+    autoShownForTool = false;
     doc.body.classList.add('utility-hidden');
     removeCapture();
     if (onFocusOrigin) onFocusOrigin();
   }
 
   function toggleUtilityDock() {
+    // A manual toggle is the user's own choice of visibility — drop any
+    // pending "re-hide after the tool closes" intent.
+    autoShownForTool = false;
     const hidden = doc.body.classList.toggle('utility-hidden');
     if (hidden) {
       removeCapture();
@@ -303,6 +310,9 @@ export function createUtilityDock(options) {
   function openUtilityPanel(opts) {
     const { id, makePanel } = opts;
     const wantFocus = opts.focus !== false;
+    // If a tool reveals a hidden dock, remember to re-hide it when the last
+    // tool closes (unless the user toggles it manually in the meantime).
+    if (!isUtilityVisible()) autoShownForTool = true;
     const existing = entries.get(id);
     if (existing) {
       if (makePanel) {
@@ -360,6 +370,12 @@ export function createUtilityDock(options) {
     entries.delete(id);
     renderTabs();
     renderActive();
+    // The last tool closed and a tool had auto-revealed the dock: restore the
+    // prior hidden state (hideUtilityDock returns focus to the origin).
+    if (autoShownForTool && !state.tabs.some((t) => t.closable)) {
+      hideUtilityDock();
+      return;
+    }
     if (wasActive) {
       const active = entries.get(state.activeId);
       if (active && active.tab.modal) focusActivePanel();
