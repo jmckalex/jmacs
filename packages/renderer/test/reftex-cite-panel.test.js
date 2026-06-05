@@ -86,16 +86,27 @@ test('citeKeysToInsert is empty when nothing marked and no current key', () => {
 
 // --- mapCiteKey -------------------------------------------------------
 
-test('mapCiteKey covers move / mark / insert / cancel / filter', () => {
-  assert.deepEqual(mapCiteKey('n'), { type: 'move', delta: 1 });
+test('mapCiteKey: arrows and C-n/C-p move, Tab marks, Enter inserts', () => {
   assert.deepEqual(mapCiteKey('down'), { type: 'move', delta: 1 });
-  assert.deepEqual(mapCiteKey('p'), { type: 'move', delta: -1 });
   assert.deepEqual(mapCiteKey('up'), { type: 'move', delta: -1 });
-  assert.deepEqual(mapCiteKey('m'), { type: 'mark' });
+  assert.deepEqual(mapCiteKey('C-n'), { type: 'move', delta: 1 });
+  assert.deepEqual(mapCiteKey('C-p'), { type: 'move', delta: -1 });
+  assert.deepEqual(mapCiteKey('tab'), { type: 'mark' });
   assert.deepEqual(mapCiteKey('enter'), { type: 'insert' });
-  assert.deepEqual(mapCiteKey('q'), { type: 'cancel' });
   assert.deepEqual(mapCiteKey('escape'), { type: 'cancel' });
   assert.deepEqual(mapCiteKey('backspace'), { type: 'backspace' });
-  assert.deepEqual(mapCiteKey('a'), { type: 'filter', char: 'a' });
+  assert.deepEqual(mapCiteKey('delete'), { type: 'backspace' });
   assert.equal(mapCiteKey('f1'), null);
+});
+
+test('mapCiteKey: every bare letter types into the filter (the n/p bug)', () => {
+  // The regression: n, p, m, q were swallowed as commands, so authors
+  // like "Peano" and "Alexander" could never be typed. Now every bare
+  // printable extends the filter — including those four — and a space.
+  for (const ch of 'peano') {
+    assert.deepEqual(mapCiteKey(ch), { type: 'filter', char: ch });
+  }
+  for (const ch of ['n', 'p', 'm', 'q', 'a', 'A', '2', ' ']) {
+    assert.deepEqual(mapCiteKey(ch), { type: 'filter', char: ch });
+  }
 });

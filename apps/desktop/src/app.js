@@ -6038,14 +6038,24 @@ function openReftexBottomDock(makePanel) {
 
   function onKeyDown(event) {
     if (REFTEX_MODIFIERS.has(event.key)) return;
+    const keyString = keyEventToString(event);
+    // A Cmd/Ctrl/Alt chord: offer it to the panel — the cite picker claims
+    // C-n/C-p for navigation now that every letter types into its filter —
+    // and swallow it ONLY if the panel consumes it. Anything the panel
+    // doesn't claim (system chords, global commands) passes through.
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      if (panel && typeof panel.handleKey === 'function' && panel.handleKey(keyString)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
     // Stay modal: swallow every plain key so it can't reach the editor or
-    // the global key router while the panel is up. Genuine system chords
-    // (Cmd/Ctrl/Alt held) pass through untouched.
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // the global key router while the panel is up, then feed it to the panel.
     event.preventDefault();
     event.stopPropagation();
     if (panel && typeof panel.handleKey === 'function') {
-      panel.handleKey(keyEventToString(event));
+      panel.handleKey(keyString);
     }
   }
 

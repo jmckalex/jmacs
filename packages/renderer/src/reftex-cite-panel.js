@@ -92,26 +92,28 @@ export function citeKeysToInsert(allRows, marked, currentKey) {
 }
 
 /**
- * Map a key string to the cite picker's action — PURE. `n`/`p` and the
- * arrows move; `m` marks; `enter` inserts; `q`/`escape` cancel;
- * `backspace` edits the filter; any other single printable extends it.
+ * Map a key string to the cite picker's action — PURE. The picker is a
+ * search box, so EVERY bare printable (including `n`, `p`, `m`, `q`)
+ * extends the filter — that is what lets authors like "Peano" and
+ * "Alexander" be typed. Navigation lives off the letters: the arrows and
+ * `C-n`/`C-p` move; `tab` marks; `enter` inserts; `escape` cancels;
+ * `backspace`/`delete` edit the filter.
  *
  * @param {string} key
  * @returns {{type: string, delta?: number, char?: string}|null}
  */
 export function mapCiteKey(key) {
   switch (key) {
-    case 'n':
     case 'down':
+    case 'C-n':
       return { type: 'move', delta: 1 };
-    case 'p':
     case 'up':
+    case 'C-p':
       return { type: 'move', delta: -1 };
-    case 'm':
+    case 'tab':
       return { type: 'mark' };
     case 'enter':
       return { type: 'insert' };
-    case 'q':
     case 'escape':
       return { type: 'cancel' };
     case 'backspace':
@@ -292,6 +294,25 @@ export function createReftexCitePanel(options = {}) {
   header.append(icon, label, filterEl);
   root.append(header);
 
+  // The search box — a focused text-input affordance. The dock captures
+  // keystrokes at the window level and routes them through `handleKey`
+  // (no native <input> takes focus here), so this renders the live filter
+  // plus a blinking caret. Every printable types, so n/p/m/q are
+  // searchable rather than commands.
+  const search = doc.createElement('div');
+  search.className = 'reftex-cite-search';
+  const searchIcon = doc.createElement('i');
+  searchIcon.className = 'fa-solid fa-magnifying-glass reftex-cite-search-icon';
+  const searchText = doc.createElement('span');
+  searchText.className = 'reftex-cite-search-text';
+  const caret = doc.createElement('span');
+  caret.className = 'reftex-cite-caret';
+  const placeholder = doc.createElement('span');
+  placeholder.className = 'reftex-cite-search-placeholder';
+  placeholder.textContent = 'Type to filter…';
+  search.append(searchIcon, searchText, caret, placeholder);
+  root.append(search);
+
   const scroll = doc.createElement('div');
   scroll.className = 'reftex-cite-scroll';
   root.append(scroll);
@@ -299,7 +320,7 @@ export function createReftexCitePanel(options = {}) {
   const hint = doc.createElement('div');
   hint.className = 'reftex-cite-hint';
   hint.textContent =
-    'n/p or ↑↓ move · m mark · Enter insert · type to filter · q quit';
+    'type to filter · ↑↓ or C-n/C-p move · Tab mark · Enter insert · Esc cancel';
   root.append(hint);
 
   /** Ensure every key in KEYS has formatted HTML cached, fetching the
@@ -323,11 +344,15 @@ export function createReftexCitePanel(options = {}) {
     // Format only the rows we're about to paint.
     ensureFormatted(shown.map((r) => r.key));
 
+    // The typed filter shows in the search box; the header keeps the
+    // marks + "showing N of M" status.
+    searchText.textContent = filter;
+    placeholder.style.display = filter === '' ? '' : 'none';
+
     const bits = [];
-    if (filter !== '') bits.push(`"${filter}"`);
     if (marked.size > 0) bits.push(`${marked.size} marked`);
     if (matches.length > shown.length) {
-      bits.push(`${shown.length} of ${matches.length} — type to filter`);
+      bits.push(`showing ${shown.length} of ${matches.length}`);
     }
     filterEl.textContent = bits.join(' · ');
 
