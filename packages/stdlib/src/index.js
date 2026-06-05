@@ -51,6 +51,10 @@ export const STDLIB_FILES = Object.freeze([
   'occur.lisp',
   'expand-region.lisp',
   'system.lisp',
+  // The utility-pane Lisp surface (toggle/focus/cycle + output helpers).
+  // After system.lisp (reuses toggle-repl!); before latex-compile.lisp,
+  // which routes its build output through `utility-output`.
+  'utility-pane.lisp',
   'modes.lisp',
   // The face registry loads before themes.lisp, which registers all
   // built-in faces via `defface`.

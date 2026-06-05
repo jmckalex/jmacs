@@ -1000,6 +1000,27 @@ body.utility-hidden #utility-splitter {
   outline: none;
 }
 
+/* Generic output/log panel (compile output, process logs). */
+.utility-output {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.utility-output-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+}
+
 .repl {
   display: flex;
   flex-direction: column;

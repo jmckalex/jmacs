@@ -66,6 +66,7 @@ import {
   createMinibuffer,
   createReplView,
   createUtilityDock,
+  createOutputPanel,
   ShellView,
   GnuplotView,
   NotebookView,
@@ -2879,6 +2880,19 @@ const repl = createReplView(document.createElement('div'), {
 // focus:false — the editor keeps focus at startup; the REPL is just mounted.
 utilityDock.openUtilityPanel({ id: 'repl-view', makePanel: () => repl, focus: false });
 
+// Registry of named utility-panel factories. Commands/tools/processes (mostly
+// Lisp) address panels BY NAME via the `utility-panel-*!` primitives, since the
+// panels themselves are JS DOM factories. A factory is
+// `(handle, opts) => panel` (the openUtilityPanel contract; `handle` is the
+// per-tab {close, focus, activate}). Built-ins seeded here; tools can add more
+// via `registerUtilityPanelFactory`.
+const utilityPanelFactories = new Map();
+function registerUtilityPanelFactory(name, makePanel) {
+  utilityPanelFactories.set(String(name), makePanel);
+}
+registerUtilityPanelFactory('output', (handle, opts) =>
+  createOutputPanel({ title: opts?.title, onClose: handle.close }));
+
 /** Cached doc-page names from `docs/build/manifest.json`. The
  *  `load-doc-manifest!` primitive returns this; populated near
  *  startup once the host has read the file. `null` means unknown
@@ -3660,6 +3674,66 @@ const interpreter = createInterpreter({
       const view = ensureViewListView();
       switchToViewIndex(views.indexOf(view));
       viewListView.refresh();
+      return NIL;
+    },
+    // --- Utility pane (the tabbed bottom dock) -------------------------
+    // Open (or reuse) the named utility panel as a tab. NAME selects a
+    // registered factory; the tab id IS the name (single instance per
+    // name). Does NOT steal focus (informational) — use
+    // utility-panel-activate! / -focus! to bring it forward. Returns the
+    // tab id, or NIL if no such factory.
+    'utility-panel-open!': (args) => {
+      const name = String(args[0] ?? '');
+      const title = args[1] != null && args[1] !== NIL ? String(args[1]) : undefined;
+      const factory = utilityPanelFactories.get(name);
+      if (!factory) {
+        repl.appendError(`utility-panel-open!: no panel "${name}"`);
+        return NIL;
+      }
+      utilityDock.openUtilityPanel({
+        id: name,
+        title: title ?? name,
+        makePanel: (handle) => factory(handle, { title: title ?? name }),
+        focus: false,
+      });
+      return name;
+    },
+    // Bring the named tab forward (creating focus on it). No-op if absent.
+    'utility-panel-activate!': (args) => {
+      utilityDock.activateUtilityTab(String(args[0] ?? ''));
+      return NIL;
+    },
+    // Append TEXT to the named panel's log (streaming output). No-op if the
+    // panel isn't open or doesn't accept appends.
+    'utility-panel-append!': (args) => {
+      const panel = utilityDock.getPanel(String(args[0] ?? ''));
+      if (panel && typeof panel.appendOutput === 'function') {
+        panel.appendOutput(String(args[1] ?? ''));
+      }
+      return NIL;
+    },
+    // Replace the named panel's content with TEXT.
+    'utility-panel-set!': (args) => {
+      const panel = utilityDock.getPanel(String(args[0] ?? ''));
+      if (panel && typeof panel.setContent === 'function') {
+        panel.setContent(String(args[1] ?? ''));
+      }
+      return NIL;
+    },
+    // Close the named tab (no-op for the non-closable resident REPL).
+    'utility-panel-close!': (args) => {
+      utilityDock.closeUtilityTab(String(args[0] ?? ''));
+      return NIL;
+    },
+    // Focus the active utility tab's panel.
+    'utility-panel-focus!': () => {
+      utilityDock.focusUtilityPane();
+      return NIL;
+    },
+    // Cycle the active utility tab by DELTA (wraps); default +1.
+    'utility-cycle-tab!': (args) => {
+      const n = Number(args[0]);
+      utilityDock.cycleUtilityTab(Number.isFinite(n) && n !== 0 ? n : 1);
       return NIL;
     },
     // Open the *RefTeX Select* picker as a right-edge drawer overlaid on
