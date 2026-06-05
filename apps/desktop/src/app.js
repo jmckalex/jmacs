@@ -3687,26 +3687,29 @@ const interpreter = createInterpreter({
       return NIL;
     },
     // --- Utility pane (the tabbed bottom dock) -------------------------
-    // Open (or reuse) the named utility panel as a tab. NAME selects a
-    // registered factory; the tab id IS the name (single instance per
-    // name). Does NOT steal focus (informational) — use
-    // utility-panel-activate! / -focus! to bring it forward. Returns the
-    // tab id, or NIL if no such factory.
+    // Open (or reuse) a utility panel as a tab. FACTORY selects a
+    // registered factory; ID is the tab id (defaults to FACTORY, i.e. a
+    // single instance); TITLE is the tab label (defaults to ID). So one
+    // 'output' factory can back several tabs ("tex-output", "tex-errors").
+    // Does NOT steal focus (informational) — use utility-panel-activate! /
+    // -focus! to bring it forward. Returns the tab id, or NIL if no such
+    // factory.
     'utility-panel-open!': (args) => {
-      const name = String(args[0] ?? '');
-      const title = args[1] != null && args[1] !== NIL ? String(args[1]) : undefined;
-      const factory = utilityPanelFactories.get(name);
+      const factoryName = String(args[0] ?? '');
+      const id = args[1] != null && args[1] !== NIL ? String(args[1]) : factoryName;
+      const title = args[2] != null && args[2] !== NIL ? String(args[2]) : id;
+      const factory = utilityPanelFactories.get(factoryName);
       if (!factory) {
-        repl.appendError(`utility-panel-open!: no panel "${name}"`);
+        repl.appendError(`utility-panel-open!: no panel "${factoryName}"`);
         return NIL;
       }
       utilityDock.openUtilityPanel({
-        id: name,
-        title: title ?? name,
-        makePanel: (handle) => factory(handle, { title: title ?? name }),
+        id,
+        title,
+        makePanel: (handle) => factory(handle, { title }),
         focus: false,
       });
-      return name;
+      return id;
     },
     // Bring the named tab forward (creating focus on it). No-op if absent.
     'utility-panel-activate!': (args) => {

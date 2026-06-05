@@ -34,16 +34,16 @@
   "Switch to the previous tab in the utility dock."
   (utility-cycle-tab! -1))
 
-;; Helpers for tools that produce text output. `utility-output` appends
-;; (streaming); `utility-output-set` replaces. Both open/reuse the named
-;; panel first. These are plain functions (not commands) — building blocks
-;; for command/process flows like the LaTeX compile loop.
-(define (utility-output name text)
-  "Open (or reuse) the named output panel and append TEXT to it."
-  (utility-panel-open! name)
-  (utility-panel-append! name text))
+;; Helpers for tools that produce text output. They back an output tab with
+;; id ID (titled TITLE) using the built-in 'output' factory; `utility-output`
+;; appends (streaming), `utility-output-set` replaces. Plain functions (not
+;; commands) — building blocks for flows like the LaTeX compile loop.
+(define (utility-output id title text)
+  "Open (or reuse) the output tab ID (titled TITLE) and append TEXT to it."
+  (utility-panel-open! "output" id title)
+  (utility-panel-append! id text))
 
-(define (utility-output-set name text)
-  "Open (or reuse) the named output panel and replace its content with TEXT."
-  (utility-panel-open! name)
-  (utility-panel-set! name text))
+(define (utility-output-set id title text)
+  "Open (or reuse) the output tab ID (titled TITLE), replacing its content with TEXT."
+  (utility-panel-open! "output" id title)
+  (utility-panel-set! id text))
