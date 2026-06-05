@@ -8,6 +8,7 @@
 
 export { createEditorView } from './view.js';
 export { createReplView } from './repl.js';
+export { createUtilityDock } from './utility-dock.js';
 export {
   createMarkdownPreview,
   PREVIEW_DEBOUNCE_MS,
