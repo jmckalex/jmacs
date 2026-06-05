@@ -60,6 +60,11 @@ export const STDLIB_FILES = Object.freeze([
   // built-in faces via `defface`.
   'faces.lisp',
   'themes.lisp',
+  // The Lisp surface for user `kind -> face` highlight overrides. Loads
+  // after faces.lisp (reuses `*face-overrides-saver*` for persistence)
+  // and modes.lisp (rules are keyed by major-mode display name). The
+  // host primitive `set-highlight-overrides!` recompiles queries live.
+  'highlight-rules.lisp',
   'keymap.lisp',
   // multi-cursor.lisp needs `expand-region-word-bounds` (expand-region.lisp)
   // and rebinds `keyboard-quit` (keymap.lisp), so it loads after both.
