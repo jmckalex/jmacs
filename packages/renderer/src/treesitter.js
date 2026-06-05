@@ -26,6 +26,7 @@
 
 import { Language, Parser, Query } from '../vendor/web-tree-sitter.js';
 import { splitIntoLineRuns } from './runs.js';
+import { augmentQuery, rulesSignature } from './highlight-overrides.js';
 
 /** Where the vendored WebAssembly files are served. */
 const VENDOR = 'app://editor/packages/renderer/vendor';
@@ -57,9 +58,13 @@ export const MAX_INJECTION_DEPTH = 4;
 
 /**
  * @typedef {object} Highlighter
- * @property {(text: string) => import('./highlight.js').Run[][]} highlight -
- *   Highlight source into one array of runs per line.
- * @property {(text: string, depth?: number) => CaptureRange[]} captures -
+ * @property {(text: string, modeName?: string | null) =>
+ *   import('./highlight.js').Run[][]} highlight -
+ *   Highlight source into one array of runs per line. The optional
+ *   `modeName` (the buffer's major-mode display name) selects mode-scoped
+ *   user override rules; omit it for a base highlight.
+ * @property {(text: string, depth?: number, modeName?: string | null) =>
+ *   CaptureRange[]} captures -
  *   Raw absolute-offset capture ranges. Used by the injection pipeline
  *   to splice an inner language's tokens into an outer document.
  * @property {(text: string, pos: number) => NodeInfo | null} nodeAtPoint -
@@ -91,6 +96,15 @@ export const MAX_INJECTION_DEPTH = 4;
  *   A query whose `@fold` captures mark foldable nodes. When set, the
  *   returned highlighter exposes `foldCaptures(text)` for the view
  *   layer to consume (`./folding.js`).
+ * @property {string} [tag] -
+ *   The language tag for this highlighter. Required to consult the
+ *   user-override store (rules are keyed by language tag and major-mode
+ *   name). Absent for injection-only or test highlighters.
+ * @property {import('./highlight-overrides.js').OverrideStore} [overrideStore] -
+ *   The live store of user-defined `kind -> face` highlight rules. When
+ *   present, `highlight`/`captures` augment the base query with the
+ *   effective rules for the (tag, modeName) being highlighted, recompiling
+ *   the `Query` only when the effective rule set changes.
  */
 
 /** The web-tree-sitter runtime is initialised once, lazily. */
@@ -133,16 +147,61 @@ export async function createTreeSitterHighlighter(
     ? new Query(language, options.foldQuery)
     : null;
   const getHighlighter = options.getHighlighter;
+  const tag = typeof options.tag === 'string' ? options.tag : null;
+  const overrideStore = options.overrideStore ?? null;
+
+  // The augmented `Query` is cached by the effective rule-set signature
+  // so a recompile happens only when the user's rules change — not on
+  // every keystroke. A signature of '' means "no rules", and we fall back
+  // to the base `query` (no recompile, ever, in the common case).
+  let cachedSig = null;
+  /** @type {Query | null} */
+  let cachedQuery = null;
+
+  /**
+   * The `Query` to run for a buffer in MODENAME: the base query when the
+   * user has no rules for this (tag, mode), or a cached augmented query
+   * otherwise. A user rule that fails to compile is dropped wholesale for
+   * that signature (we keep the base query) so a bad rule never blanks the
+   * buffer — the engine "guards" exactly as the spike showed it must.
+   *
+   * @param {string | null} modeName
+   * @returns {Query}
+   */
+  function queryFor(modeName) {
+    if (!overrideStore || !tag) return query;
+    const rules = overrideStore.rulesFor(tag, modeName ?? null);
+    const sig = rulesSignature(rules);
+    if (sig === '') return query;
+    if (sig === cachedSig && cachedQuery) return cachedQuery;
+    try {
+      const compiled = new Query(language, augmentQuery(querySource, rules));
+      if (cachedQuery && cachedQuery !== query) cachedQuery.delete?.();
+      cachedQuery = compiled;
+      cachedSig = sig;
+      return compiled;
+    } catch {
+      // A malformed user pattern: keep painting with the base query.
+      cachedSig = sig;
+      cachedQuery = query;
+      return query;
+    }
+  }
 
   /**
    * @param {string} text
    * @param {number} depth - Current nesting depth; outermost call is 0.
+   * @param {string | null} [modeName] - The buffer's major-mode display
+   *   name, used to pick mode-scoped user rules. Null for injected
+   *   regions (their host mode does not transfer) and test callers — they
+   *   still get any language-wide ("everywhere") rules.
    * @returns {CaptureRange[]}
    */
-  function captures(text, depth = 0) {
+  function captures(text, depth = 0, modeName = null) {
     const tree = parser.parse(text);
+    const activeQuery = queryFor(modeName);
     /** @type {CaptureRange[]} */
-    const outerRanges = query.captures(tree.rootNode).map((capture) => ({
+    const outerRanges = activeQuery.captures(tree.rootNode).map((capture) => ({
       start: capture.node.startIndex,
       end: capture.node.endIndex,
       face: capture.name,
@@ -214,8 +273,8 @@ export async function createTreeSitterHighlighter(
 
   /** @type {Highlighter} */
   const highlighter = {
-    highlight(text) {
-      return splitIntoLineRuns(text, captures(text, 0));
+    highlight(text, modeName = null) {
+      return splitIntoLineRuns(text, captures(text, 0, modeName));
     },
     captures,
     nodeAtPoint,

@@ -65,6 +65,14 @@ const MODIFIER_KEYS = new Set([
  *   import('./folding.js').FoldCapture[]>} [options.foldCaptures] -
  *   Tree-sitter fold-capture extractors, keyed by language. A language
  *   without an entry has no fold support.
+ * @param {() => (string | null)} [options.getMajorModeName] - The active
+ *   buffer's major-mode display name (e.g. `'LaTeX'`), read fresh each
+ *   render. Threaded into the tree-sitter highlighter so mode-scoped user
+ *   `kind -> face` override rules apply. Defaults to `() => null`.
+ * @param {() => number} [options.getOverrideGeneration] - A counter the
+ *   host bumps when the user's highlight override rules change. Folded
+ *   into the highlight cache key so a live rule edit re-highlights even
+ *   when the buffer text is unchanged. Defaults to `() => 0`.
  * @param {boolean} [options.colourSwatches=true] - Whether to decorate
  *   colour literals in the text with clickable inline swatches.
  * @param {() => number} [options.getPoint] - Per-view-point: where to
@@ -147,6 +155,24 @@ export function createEditorView(buffer, container, options = {}) {
     options.highlighters && typeof options.highlighters === 'object'
       ? options.highlighters
       : {};
+
+  // The buffer's major-mode display name, used to pick mode-scoped user
+  // highlight override rules at highlight time. Read fresh on every
+  // render so a major-mode change re-highlights with the right rules.
+  // Defaults to null (no mode scoping) for renderer unit tests.
+  const getMajorModeName =
+    typeof options.getMajorModeName === 'function'
+      ? options.getMajorModeName
+      : () => null;
+
+  // A monotonically-increasing counter the host bumps when the user's
+  // highlight override rules change. Folded into the highlight cache key
+  // so a rule edit forces a re-highlight even when the text is unchanged.
+  // Defaults to a constant for hosts/tests with no override store.
+  const getOverrideGeneration =
+    typeof options.getOverrideGeneration === 'function'
+      ? options.getOverrideGeneration
+      : () => 0;
 
   const foldCapturesByLanguage =
     options.foldCaptures && typeof options.foldCaptures === 'object'
@@ -317,9 +343,13 @@ export function createEditorView(buffer, container, options = {}) {
   }
 
   // The whole-buffer tree-sitter highlight is cached, so a scroll-only
-  // render (the text unchanged) does not re-parse the buffer.
+  // render (the text unchanged) does not re-parse the buffer. The key
+  // also tracks the major-mode name and the user-override generation so
+  // a mode change or a live highlight-rule edit forces a re-parse.
   let highlightCacheText = null;
   let highlightCacheLanguage = null;
+  let highlightCacheMode = null;
+  let highlightCacheGen = null;
   let highlightCache = null;
 
   // The "display row" for each buffer line — i.e. its visible row index
@@ -523,24 +553,31 @@ export function createEditorView(buffer, container, options = {}) {
     let perLine = null;
     const treeSitter = highlighters[language];
     const text = activeBuffer.text;
+    const modeName = getMajorModeName();
+    const overrideGen = getOverrideGeneration();
+    const cacheFresh =
+      text === highlightCacheText &&
+      language === highlightCacheLanguage &&
+      modeName === highlightCacheMode &&
+      overrideGen === highlightCacheGen;
     if (treeSitter) {
-      if (text === highlightCacheText && language === highlightCacheLanguage) {
+      if (cacheFresh) {
         perLine = highlightCache;
       } else {
         try {
-          perLine = treeSitter(text);
+          // Pass the major-mode name so mode-scoped user override rules
+          // apply; language-wide rules apply regardless.
+          perLine = treeSitter(text, modeName);
         } catch {
           perLine = null;
         }
         highlightCacheText = text;
         highlightCacheLanguage = language;
+        highlightCacheMode = modeName;
+        highlightCacheGen = overrideGen;
         highlightCache = perLine;
       }
-    } else if (
-      text === highlightCacheText &&
-      language === highlightCacheLanguage &&
-      highlightCache !== null
-    ) {
+    } else if (cacheFresh && highlightCache !== null) {
       perLine = highlightCache;
     } else {
       const whole = highlightBuffer(text, language);
@@ -548,6 +585,8 @@ export function createEditorView(buffer, container, options = {}) {
         perLine = whole;
         highlightCacheText = text;
         highlightCacheLanguage = language;
+        highlightCacheMode = modeName;
+        highlightCacheGen = overrideGen;
         highlightCache = perLine;
       }
     }

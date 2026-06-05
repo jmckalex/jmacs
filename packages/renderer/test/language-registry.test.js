@@ -169,8 +169,11 @@ test('loadLanguageHighlighters threads getHighlighter only into injection-bearin
     };
   };
   await loadLanguageHighlighters(create);
-  // The plain language got no options at all.
-  assert.equal(seenOptions['tree-sitter-fortran.wasm'], undefined);
+  // Every language now gets at least its tag in options; the plain one
+  // gets no injection wiring.
+  assert.equal(seenOptions['tree-sitter-fortran.wasm'].tag, 'fortran');
+  assert.equal(seenOptions['tree-sitter-fortran.wasm'].injectionQuery, undefined);
+  assert.equal(seenOptions['tree-sitter-fortran.wasm'].getHighlighter, undefined);
   // The injection-bearing one got the query and a lookup closure.
   const cobolOpts = seenOptions['tree-sitter-cobol.wasm'];
   assert.equal(typeof cobolOpts.injectionQuery, 'string');
@@ -256,8 +259,9 @@ test('loadLanguageHighlighters threads foldQuery into create and exposes foldCap
     };
   };
   const { highlighters, foldCaptures } = await loadLanguageHighlighters(create);
-  // The plain language got no options.
-  assert.equal(seen['tree-sitter-fortran.wasm'], undefined);
+  // The plain language got options carrying its tag but no fold query.
+  assert.equal(seen['tree-sitter-fortran.wasm'].tag, 'fortran');
+  assert.equal(seen['tree-sitter-fortran.wasm'].foldQuery, undefined);
   // The folding one got the query.
   assert.equal(seen['tree-sitter-cobol.wasm'].foldQuery, '(division) @fold');
   // Only the folding language has a foldCaptures entry.
@@ -267,6 +271,55 @@ test('loadLanguageHighlighters threads foldQuery into create and exposes foldCap
   // Both languages have highlighters.
   assert.ok('fortran' in highlighters);
   assert.ok('cobol' in highlighters);
+});
+
+test('loadLanguageHighlighters threads tag + overrideStore into every create', async () => {
+  registerLanguage(SPEC);
+  registerLanguage({
+    ...SPEC,
+    tag: 'cobol',
+    grammar: 'tree-sitter-cobol.wasm',
+    suffixes: ['.cob'],
+  });
+  const store = { marker: 'store' };
+  /** @type {Record<string, object>} */
+  const seen = {};
+  const create = async (grammar, _query, options) => {
+    seen[grammar] = options;
+    return { highlight: () => [], captures: () => [] };
+  };
+  await loadLanguageHighlighters(create, () => {}, store);
+  assert.equal(seen['tree-sitter-fortran.wasm'].tag, 'fortran');
+  assert.equal(seen['tree-sitter-fortran.wasm'].overrideStore, store);
+  assert.equal(seen['tree-sitter-cobol.wasm'].tag, 'cobol');
+  assert.equal(seen['tree-sitter-cobol.wasm'].overrideStore, store);
+});
+
+test('the exposed highlighter callable forwards a modeName argument', async () => {
+  registerLanguage(SPEC);
+  /** @type {(string|null)[]} */
+  const highlightModes = [];
+  /** @type {(string|null)[]} */
+  const captureModes = [];
+  const create = async () => ({
+    highlight: (_text, modeName) => {
+      highlightModes.push(modeName);
+      return [];
+    },
+    captures: (_text, _depth, modeName) => {
+      captureModes.push(modeName);
+      return [];
+    },
+    nodeAtPoint: () => null,
+  });
+  const { highlighters } = await loadLanguageHighlighters(create);
+  highlighters.fortran('code', 'Fortran');
+  highlighters.fortran.captures('code', 'Fortran');
+  assert.deepEqual(highlightModes, ['Fortran']);
+  assert.deepEqual(captureModes, ['Fortran']);
+  // Called with no mode, the callable forwards null (a base highlight).
+  highlighters.fortran('code');
+  assert.equal(highlightModes[1], null);
 });
 
 test('getHighlighter resolves siblings lazily, after every language is loaded', async () => {
@@ -290,7 +343,9 @@ test('getHighlighter resolves siblings lazily, after every language is loaded', 
   /** @type {(tag: string) => unknown} */
   let capturedLookup = null;
   const create = async (grammar, _query, options) => {
-    if (options) capturedLookup = options.getHighlighter;
+    if (options && options.getHighlighter) {
+      capturedLookup = options.getHighlighter;
+    }
     return {
       highlight: () => [],
       captures: () => [`captured-${grammar}`],
