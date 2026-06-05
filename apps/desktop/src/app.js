@@ -5518,7 +5518,10 @@ function applyCurrentTheme() {
 function applyCurrentFaceStyles() {
   try {
     const alist = listToArray(interpreter.call('current-face-styles'));
-    applyFaceStyles(document, alist, listToArray);
+    const modeAlist = listToArray(
+      interpreter.call('current-mode-face-styles')
+    );
+    applyFaceStyles(document, alist, listToArray, modeAlist);
   } catch (error) {
     repl.appendError(`face-styles: ${error.lispMessage ?? error.message}`);
   }

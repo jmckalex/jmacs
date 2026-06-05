@@ -555,6 +555,15 @@ export function createEditorView(buffer, container, options = {}) {
     const text = activeBuffer.text;
     const modeName = getMajorModeName();
     const overrideGen = getOverrideGeneration();
+    // Tag the editor root with the buffer's major-mode name so per-mode
+    // face colour overrides (mode-scoped `.tok-*` CSS, see
+    // face-styles.js) can target this buffer's tokens. Cheap idempotent
+    // attribute write.
+    if (modeName) {
+      if (root.dataset.majorMode !== modeName) root.dataset.majorMode = modeName;
+    } else if (root.dataset.majorMode) {
+      delete root.dataset.majorMode;
+    }
     const cacheFresh =
       text === highlightCacheText &&
       language === highlightCacheLanguage &&

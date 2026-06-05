@@ -5,12 +5,19 @@
  * JSON shape (what the user sees and edits if they open faces.json):
  *
  *   { "global":  { "keyword": { "weight": "bold" } },
- *     "themes":  { "dark": { "operator": { "foreground": "#62b3b2" } } } }
+ *     "themes":  { "dark": { "operator": { "foreground": "#62b3b2" } } },
+ *     "perMode": { "LaTeX": { "keyword": { "foreground": "#c0a" } } } }
  *
  * Lisp shape (`*face-overrides*`):
  *
  *   {:global  { keyword       -> { :weight :bold } }
- *    :themes  { dark -> { operator -> { :foreground "#62b3b2" } } }}
+ *    :themes  { dark -> { operator -> { :foreground "#62b3b2" } } }
+ *    :perMode { "LaTeX" -> { keyword -> { :foreground "#c0a" } } }}
+ *
+ * The `perMode` bucket is keyed by the major-mode DISPLAY NAME (a plain
+ * string — "LaTeX", "Python" — not a symbol), since that is how Lisp's
+ * per-mode store is keyed. A faces.json written before perMode existed
+ * (no `perMode` key) loads cleanly: the bucket is simply empty.
  *
  * Face names and theme names are *symbols* (Sym). Attribute names are
  * *keywords* (Keyword). Weight / slant values that are symbolic in
@@ -39,6 +46,7 @@ export function emptyOverrides(f) {
   const m = new Map();
   m.set(f.keyword('global'), new Map());
   m.set(f.keyword('themes'), new Map());
+  m.set(f.keyword('perMode'), new Map());
   return m;
 }
 
@@ -105,6 +113,22 @@ export function jsonToLispOverrides(json, f) {
       themes.set(f.sym(theme), themeMap);
     }
   }
+  // perMode is keyed by the mode DISPLAY NAME (a string), so the bucket
+  // key stays a string; only the inner face names are symbols. Absent
+  // in a pre-perMode faces.json — the bucket then stays empty (migration
+  // is a no-op read).
+  const perMode = out.get(f.keyword('perMode'));
+  if (json.perMode && typeof json.perMode === 'object') {
+    for (const [mode, faces] of Object.entries(json.perMode)) {
+      const modeMap = new Map();
+      if (faces && typeof faces === 'object') {
+        for (const [face, attrs] of Object.entries(faces)) {
+          modeMap.set(f.sym(face), jsonFaceToLisp(attrs, f));
+        }
+      }
+      perMode.set(mode, modeMap);
+    }
+  }
   return out;
 }
 
@@ -112,7 +136,7 @@ export function jsonToLispOverrides(json, f) {
  *  @param {Map<*, *>} overrides
  *  @param {LispFactories} f */
 export function lispToJsonOverrides(overrides, f) {
-  const out = { global: {}, themes: {} };
+  const out = { global: {}, themes: {}, perMode: {} };
   if (!(overrides instanceof Map)) return out;
   const globals = overrides.get(f.keyword('global'));
   if (globals instanceof Map) {
@@ -135,6 +159,23 @@ export function lispToJsonOverrides(overrides, f) {
         }
       }
       if (Object.keys(tjson).length > 0) out.themes[tname] = tjson;
+    }
+  }
+  // perMode: the bucket key is a mode DISPLAY NAME (a string already);
+  // inner face names are symbols.
+  const perMode = overrides.get(f.keyword('perMode'));
+  if (perMode instanceof Map) {
+    for (const [mode, faces] of perMode.entries()) {
+      const mname = mode && typeof mode.name === 'string' ? mode.name : String(mode);
+      const mjson = {};
+      if (faces instanceof Map) {
+        for (const [face, attrs] of faces.entries()) {
+          const fname = face && typeof face.name === 'string' ? face.name : String(face);
+          const json = lispFaceToJson(attrs);
+          if (Object.keys(json).length > 0) mjson[fname] = json;
+        }
+      }
+      if (Object.keys(mjson).length > 0) out.perMode[mname] = mjson;
     }
   }
   return out;

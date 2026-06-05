@@ -32,7 +32,12 @@
 ;; In-memory overrides. The structure mirrors faces.json:
 ;;   :global  -> { face-name -> face-attrs }
 ;;   :themes  -> { theme-name -> { face-name -> face-attrs } }
-(define *face-overrides* (hash-map :global {} :themes {}))
+;;   :perMode -> { mode-name -> { face-name -> face-attrs } }
+;; The per-mode bucket lets a face's colour differ by major mode; it is
+;; resolved on top of the global/theme/default layers (see
+;; `resolve-face-for-mode`) and painted via mode-scoped CSS in the host
+;; (a `[data-major-mode="…"] .tok-<face>` rule).
+(define *face-overrides* (hash-map :global {} :themes {} :perMode {}))
 
 ;; Regeneration of `<style id="face-overrides">` lives in the host:
 ;; the primitive `apply-face-styles!` reads `current-face-styles` and
@@ -201,6 +206,34 @@
     (let ((theme (get opts :theme *theme*)))
       (get (resolve-face name theme) attr nil))))
 
+;; --- per-mode resolution ----------------------------------------------
+;; A per-mode override layers on TOP of the fully-resolved face for the
+;; active theme. MODE is the major-mode display name (a string, e.g.
+;; "LaTeX"). These contribute the mode-scoped `.tok-<face>` CSS rules.
+
+(define (-mode-overrides)
+  "The per-mode-overrides sub-map: mode-name -> { face -> attrs }."
+  (get *face-overrides* :perMode {}))
+
+(define (face-mode-override name mode)
+  "The user's per-mode override for face NAME under MODE, or {}."
+  (get (get (-mode-overrides) mode {}) name {}))
+
+(define (resolve-face-for-mode name theme mode)
+  "The resolved face for NAME under THEME, with MODE's per-mode override
+   layered on top of the normal (default + global + per-theme + parent)
+   resolution."
+  (merge-faces (resolve-face name theme) (face-mode-override name mode)))
+
+(define (modes-with-overrides)
+  "The names of every major mode that has at least one per-mode face
+   override."
+  (keys (-mode-overrides)))
+
+(define (faces-overridden-in-mode mode)
+  "The names of the faces overridden in MODE."
+  (keys (get (-mode-overrides) mode {})))
+
 ;; --- the data the host paints with ------------------------------------
 
 (define (-resolved-faces-step names theme acc)
@@ -238,6 +271,30 @@
   "The data the renderer paints into `<style id=\"face-overrides\">`.
    An alist of (face-name . ((:attr . value) …))."
   (faces->alist (current-resolved-faces)))
+
+;; --- per-mode resolved styles for the host ----------------------------
+;; For each mode with overrides, the host paints a mode-scoped rule
+;; (`[data-major-mode="MODE"] .tok-<face> { … }`). We resolve ONLY the
+;; faces that mode actually overrides — the rest fall through to the
+;; global `.tok-<face>` rule — and emit the full resolved attrs so the
+;; scoped rule fully specifies the face's appearance in that mode.
+
+(define (-mode-face-styles-for mode)
+  "An alist (face-name . ((:attr . value) …)) for the faces overridden
+   in MODE, fully resolved under the active theme + MODE."
+  (map (lambda (name)
+         (cons name
+               (face-attribute-list
+                 (resolve-face-for-mode name *theme* mode))))
+       (faces-overridden-in-mode mode)))
+
+(define (current-mode-face-styles)
+  "An alist (mode-name . ((face-name . ((:attr . value) …)) …)) — one
+   entry per major mode that has per-mode face overrides. The host turns
+   each into mode-scoped `.tok-*` CSS. Empty when nothing is overridden
+   per mode (the common case), so the host writes only the global rules."
+  (map (lambda (mode) (cons mode (-mode-face-styles-for mode)))
+       (modes-with-overrides)))
 
 ;; --- a hook the persistence layer installs (Phase 3) ------------------
 ;; Any change to *face-overrides* runs this — the host sets it to the
@@ -294,20 +351,54 @@
           (set! *face-overrides*
                 (assoc *face-overrides* :themes themes2)))))))
 
+(define (-set-mode-face! mode name face)
+  "Replace the per-mode override for NAME under MODE with FACE. An empty
+   FACE removes the entry; an emptied mode drops out of the bucket."
+  (let ((modes (get *face-overrides* :perMode {})))
+    (let ((mode-map (get modes mode {})))
+      (let ((updated-mode
+             (if (= (length face) 0)
+                 (dissoc mode-map name)
+                 (assoc mode-map name face))))
+        (let ((modes2
+               (if (= (length updated-mode) 0)
+                   (dissoc modes mode)
+                   (assoc modes mode updated-mode))))
+          (set! *face-overrides*
+                (assoc *face-overrides* :perMode modes2)))))))
+
 (define (set-face-attribute name attr value . options)
   "Set ATTR of face NAME to VALUE.
 
-   Without :theme — modifies the global override. With (:theme 'dark)
-   — modifies the per-theme override for that theme. Triggers CSS
-   regeneration and (when installed) persistence."
+   Without :theme/:mode — modifies the global override. With (:theme
+   'dark) — modifies the per-theme override. With (:mode \"LaTeX\") —
+   modifies the per-mode override (the face's colour in that major mode
+   only). Triggers CSS regeneration and (when installed) persistence."
   (let ((opts (apply hash-map options)))
-    (let ((theme (get opts :theme nil)))
-      (if (nil? theme)
-          (let ((current (face-global-override name)))
-            (-set-global-face! name (assoc current attr value)))
-          (let ((current (face-theme-override name theme)))
-            (-set-theme-face! theme name (assoc current attr value))))
+    (let ((theme (get opts :theme nil))
+          (mode (get opts :mode nil)))
+      (cond
+        ((not (nil? mode))
+         (let ((current (face-mode-override name mode)))
+           (-set-mode-face! mode name (assoc current attr value))))
+        ((not (nil? theme))
+         (let ((current (face-theme-override name theme)))
+           (-set-theme-face! theme name (assoc current attr value))))
+        (else
+         (let ((current (face-global-override name)))
+           (-set-global-face! name (assoc current attr value)))))
       (-on-face-change!))))
+
+(define (set-face-in-mode! name mode attrs)
+  "Replace the per-mode override of face NAME in MODE (a major-mode
+   display name) with the attribute map ATTRS at once. Live + persists."
+  (-set-mode-face! mode name attrs)
+  (-on-face-change!))
+
+(define (reset-face-in-mode! name mode)
+  "Drop the per-mode override of face NAME in MODE. Live + persists."
+  (-set-mode-face! mode name {})
+  (-on-face-change!))
 
 (define (set-face! name attrs . options)
   "Replace every overridden attribute of face NAME with the attribute
@@ -333,9 +424,9 @@
       (-on-face-change!))))
 
 (define (reset-all-faces)
-  "Wipe every override — global and per-theme. The renderer reverts
-   to built-in defaults for the active theme."
-  (set! *face-overrides* (hash-map :global {} :themes {}))
+  "Wipe every override — global, per-theme and per-mode. The renderer
+   reverts to built-in defaults for the active theme."
+  (set! *face-overrides* (hash-map :global {} :themes {} :perMode {}))
   (-on-face-change!))
 
 ;; --- the persistence shape --------------------------------------------
@@ -352,7 +443,8 @@
   (set! *face-overrides*
         (hash-map
          :global (get overrides :global {})
-         :themes (get overrides :themes {})))
+         :themes (get overrides :themes {})
+         :perMode (get overrides :perMode {})))
   (apply-face-styles!))
 
 (define (current-face-overrides)

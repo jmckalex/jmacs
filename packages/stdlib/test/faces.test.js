@@ -138,6 +138,59 @@ test('multi-level chain (A from B from C) resolves bottom-up', async () => {
   assert.equal(weight && weight.name, 'normal');
 });
 
+test('a per-mode override layers on top of the resolved face', async () => {
+  const lisp = await makeInterpreter();
+  lisp.evaluate(`
+    (defface 'pm :default-dark (face :foreground "#111" :weight :bold))
+    (set-face-attribute 'pm :foreground "#abc" :mode "LaTeX")
+  `);
+  // In LaTeX the foreground is overridden; weight still inherited.
+  const fg = lisp.evaluate(`(get (resolve-face-for-mode 'pm 'dark "LaTeX") :foreground)`);
+  assert.equal(fg, '#abc');
+  const weight = lisp.evaluate(`(get (resolve-face-for-mode 'pm 'dark "LaTeX") :weight)`);
+  assert.equal(weight && weight.name, 'bold');
+  // Outside that mode the base resolution is unchanged.
+  assert.equal(lisp.evaluate(`(face-attribute 'pm :foreground :theme 'dark)`), '#111');
+});
+
+test('modes-with-overrides lists only modes that have per-mode faces', async () => {
+  const lisp = await makeInterpreter();
+  lisp.evaluate(`
+    (defface 'pm2 :default-dark (face :foreground "#111"))
+    (set-face-attribute 'pm2 :foreground "#abc" :mode "Python")
+  `);
+  const modes = lisp.evaluate(`(modes-with-overrides)`);
+  // modes is a Lisp list of strings.
+  const arr = [];
+  let n = modes;
+  while (n && n.head !== undefined) { arr.push(n.head); n = n.tail; }
+  assert.deepEqual(arr, ['Python']);
+});
+
+test('reset-face-in-mode! drops just that mode override', async () => {
+  const lisp = await makeInterpreter();
+  lisp.evaluate(`
+    (defface 'pm3 :default-dark (face :foreground "#111"))
+    (set-face-attribute 'pm3 :foreground "#abc" :mode "Python")
+    (reset-face-in-mode! 'pm3 "Python")
+  `);
+  // Back to the base resolution in that mode.
+  const fg = lisp.evaluate(`(get (resolve-face-for-mode 'pm3 'dark "Python") :foreground)`);
+  assert.equal(fg, '#111');
+});
+
+test('set-face-overrides! round-trips the perMode bucket', async () => {
+  const lisp = await makeInterpreter();
+  lisp.evaluate(`
+    (defface 'pm4 :default-dark (face :foreground "#111"))
+    (set-face-overrides!
+      (hash-map :global {} :themes {}
+                :perMode (hash-map "LaTeX" (hash-map 'pm4 (face :foreground "#999")))))
+  `);
+  const fg = lisp.evaluate(`(get (resolve-face-for-mode 'pm4 'dark "LaTeX") :foreground)`);
+  assert.equal(fg, '#999');
+});
+
 test('a cycle (A from B, B from A) is detected with a clear error', async () => {
   const lisp = await makeInterpreter();
   lisp.evaluate(`

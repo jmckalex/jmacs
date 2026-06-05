@@ -88,9 +88,47 @@ test('lispToJsonOverrides round-trips per-theme overrides', () => {
       dark: { operator: { foreground: '#62b3b2' } },
       midnight: { comment: { weight: 'bold' } },
     },
+    perMode: {},
   };
   const back = lispToJsonOverrides(jsonToLispOverrides(json, f), f);
   assert.deepEqual(back, json);
+});
+
+test('jsonToLispOverrides reads per-mode overrides keyed by mode name', () => {
+  const json = { perMode: { LaTeX: { keyword: { foreground: '#c0a' } } } };
+  const m = jsonToLispOverrides(json, f);
+  const perMode = m.get(keyword('perMode'));
+  assert.ok(perMode instanceof Map);
+  // The bucket key is the plain mode name STRING, not a symbol.
+  const modeMap = perMode.get('LaTeX');
+  assert.ok(modeMap instanceof Map);
+  assert.equal(modeMap.get(sym('keyword')).get(keyword('foreground')), '#c0a');
+});
+
+test('lispToJsonOverrides round-trips per-mode overrides', () => {
+  const json = {
+    global: {},
+    themes: {},
+    perMode: {
+      LaTeX: { keyword: { foreground: '#c0a' } },
+      Python: { string: { weight: 'bold' } },
+    },
+  };
+  const back = lispToJsonOverrides(jsonToLispOverrides(json, f), f);
+  assert.deepEqual(back, json);
+});
+
+test('a pre-perMode faces.json (v1) migrates cleanly to an empty bucket', () => {
+  // No `perMode` key at all — the old on-disk shape.
+  const json = { global: { keyword: { weight: 'bold' } }, themes: {} };
+  const m = jsonToLispOverrides(json, f);
+  assert.ok(m.get(keyword('perMode')) instanceof Map);
+  assert.equal(m.get(keyword('perMode')).size, 0);
+  // And it still reads the global it does have.
+  assert.equal(
+    m.get(keyword('global')).get(sym('keyword')).get(keyword('weight')).name,
+    'bold'
+  );
 });
 
 test('lispToJsonOverrides skips empty face entries', () => {
