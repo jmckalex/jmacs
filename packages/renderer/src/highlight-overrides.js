@@ -98,6 +98,41 @@ export function augmentQuery(baseQuery, rules) {
 }
 
 /**
+ * Collapse capture ranges that share an EXACT (start, end) span, keeping
+ * the LAST one. A user override rule is appended after the base query, so
+ * when it captures the very same node as a built-in rule both produce a
+ * range with identical bounds; keeping the last makes the user's face win
+ * and — crucially — removes the exact-overlap that would otherwise make
+ * `splitIntoLineRuns` emit a (harmless but noisy) overlap warning on
+ * every highlight. Genuinely *nested* ranges (different bounds) are left
+ * untouched; the line splitter resolves those as it always has.
+ *
+ * Order within the input is otherwise preserved (the result is filtered
+ * in place by a last-wins map keyed on `start:end`).
+ *
+ * @param {CaptureRangeLike[]} ranges
+ * @returns {CaptureRangeLike[]}
+ * @typedef {{ start: number, end: number, face: string }} CaptureRangeLike
+ */
+export function dedupeExactRanges(ranges) {
+  if (!Array.isArray(ranges) || ranges.length === 0) return ranges;
+  // Index of the LAST occurrence for each exact span.
+  const lastIndex = new Map();
+  for (let i = 0; i < ranges.length; i += 1) {
+    const r = ranges[i];
+    lastIndex.set(`${r.start}:${r.end}`, i);
+  }
+  // Fast path: no exact duplicates → return the input unchanged.
+  if (lastIndex.size === ranges.length) return ranges;
+  const out = [];
+  for (let i = 0; i < ranges.length; i += 1) {
+    const r = ranges[i];
+    if (lastIndex.get(`${r.start}:${r.end}`) === i) out.push(r);
+  }
+  return out;
+}
+
+/**
  * A stable signature for a rule list — used as a cache key so the
  * highlighter recompiles the `Query` only when the rule set actually
  * changes. Order matters (it changes match precedence), so this is NOT

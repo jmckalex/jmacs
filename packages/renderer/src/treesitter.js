@@ -26,7 +26,11 @@
 
 import { Language, Parser, Query } from '../vendor/web-tree-sitter.js';
 import { splitIntoLineRuns } from './runs.js';
-import { augmentQuery, rulesSignature } from './highlight-overrides.js';
+import {
+  augmentQuery,
+  rulesSignature,
+  dedupeExactRanges,
+} from './highlight-overrides.js';
 
 /** Where the vendored WebAssembly files are served. */
 const VENDOR = 'app://editor/packages/renderer/vendor';
@@ -201,11 +205,19 @@ export async function createTreeSitterHighlighter(
     const tree = parser.parse(text);
     const activeQuery = queryFor(modeName);
     /** @type {CaptureRange[]} */
-    const outerRanges = activeQuery.captures(tree.rootNode).map((capture) => ({
+    let outerRanges = activeQuery.captures(tree.rootNode).map((capture) => ({
       start: capture.node.startIndex,
       end: capture.node.endIndex,
       face: capture.name,
     }));
+    // When an augmented (user-rule) query ran, a user rule may capture the
+    // very same node as a built-in rule; collapse those exact-span twins
+    // (user-appended-last wins) so the override takes effect cleanly and
+    // the line splitter sees no spurious exact overlap. Skipped on the
+    // base path (activeQuery === query) — zero overhead for the common case.
+    if (activeQuery !== query) {
+      outerRanges = dedupeExactRanges(outerRanges);
+    }
     const injections = injectionQuery
       ? collectInjections(injectionQuery, tree.rootNode)
       : [];

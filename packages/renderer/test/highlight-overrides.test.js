@@ -14,6 +14,7 @@ import {
   ruleToClause,
   rulesSignature,
   createHighlightOverrideStore,
+  dedupeExactRanges,
 } from '../src/highlight-overrides.js';
 
 test('ruleToClause wraps a bare node type', () => {
@@ -149,6 +150,35 @@ test('store: replaceAll bumps the generation and replaces wholesale', () => {
   store.replaceAll([]);
   assert.equal(store.generation(), g0 + 2);
   assert.deepEqual(store.rulesFor('python', 'Python'), []);
+});
+
+test('dedupeExactRanges keeps the LAST of two exact-span twins (user wins)', () => {
+  const ranges = [
+    { start: 4, end: 11, face: 'function' }, // built-in
+    { start: 0, end: 3, face: 'comment' },
+    { start: 4, end: 11, face: 'variable' }, // user override (appended last)
+  ];
+  const out = dedupeExactRanges(ranges);
+  // The function/variable twin collapses to the variable (last).
+  assert.deepEqual(out, [
+    { start: 0, end: 3, face: 'comment' },
+    { start: 4, end: 11, face: 'variable' },
+  ]);
+});
+
+test('dedupeExactRanges leaves nested (different-bound) ranges untouched', () => {
+  const ranges = [
+    { start: 0, end: 20, face: 'string' },
+    { start: 4, end: 6, face: 'operator' },
+  ];
+  // No exact duplicate → returned as-is (same array, fast path).
+  assert.equal(dedupeExactRanges(ranges), ranges);
+});
+
+test('dedupeExactRanges is a no-op on empty / unique input', () => {
+  assert.deepEqual(dedupeExactRanges([]), []);
+  const uniq = [{ start: 0, end: 1, face: 'a' }];
+  assert.equal(dedupeExactRanges(uniq), uniq);
 });
 
 test('store: malformed entries are ignored', () => {

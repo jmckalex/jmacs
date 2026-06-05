@@ -118,7 +118,6 @@ import { createAudioController } from './audio.js';
 import {
   emptyOverrides,
   jsonToLispOverrides,
-  lispToJsonOverrides,
   lispToJsonFacesFile,
   jsonToLispUserFaces,
   jsonToLispHighlightRules,
@@ -4194,23 +4193,6 @@ const interpreter = createInterpreter({
     'load-face-overrides!': () =>
       faceOverridesCache ?? emptyOverrides(lispFactories),
 
-    // Face customisation: write the live overrides to faces.json.
-    // The Lisp side passes its current `*face-overrides*` map; we
-    // convert it back to the JSON shape and hand it to the host.
-    'write-face-overrides!': (args) => {
-      const overrides = args[0];
-      try {
-        const json = lispToJsonOverrides(overrides, lispFactories);
-        // Fire-and-forget; the write is small and the next read
-        // will pick up whatever was last written.
-        window.host.writeFaces(json);
-      } catch (error) {
-        repl.appendError(
-          `faces:write: ${error.lispMessage ?? error.message}`
-        );
-      }
-      return NIL;
-    },
     // Face customisation: write the COMPLETE faces.json — colour
     // overrides + user-created faces + highlight rules — in one blob.
     // The Lisp side passes `(current-faces-file)`; we serialise all

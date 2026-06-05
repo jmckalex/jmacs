@@ -136,6 +136,7 @@ export {
   augmentQuery,
   ruleToClause,
   rulesSignature,
+  dedupeExactRanges,
 } from './highlight-overrides.js';
 export {
   matchingBracket,
