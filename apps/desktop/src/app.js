@@ -67,6 +67,7 @@ import {
   createReplView,
   createUtilityDock,
   createOutputPanel,
+  createDocPanel,
   ShellView,
   GnuplotView,
   NotebookView,
@@ -1972,14 +1973,35 @@ function openCustomize(name, scope) {
   switchToViewIndex(index);
 }
 
-/** Find or create the doc view for `docName`, fetching the HTML from
+/** Open (or re-activate) a doc panel in the utility dock for `docName`,
+ *  showing the given pre-built HTML. One tab per doc name (id `doc:<name>`).
+ *  Reuses the doc-view's behaviour (cross-links, `q`-to-close, code
+ *  highlight) via `configureDocView`, with `q` wired to close the tab. */
+function openDocUtilityPanel(docName, html) {
+  const id = `doc:${docName}`;
+  const cfg = configureDocView();
+  utilityDock.openUtilityPanel({
+    id,
+    title: `Doc: ${docName}`,
+    icon: 'fa-solid fa-book-open',
+    modal: false,
+    makePanel: (dock) => createDocPanel({
+      html,
+      title: `Doc: ${docName}`,
+      onKey: cfg.onKey,
+      openDoc: cfg.openDoc,
+      highlightCode: cfg.highlightCode,
+      closeBuffer: dock.close, // `q` closes the tab
+    }),
+  });
+}
+
+/** Find or create the doc panel for `docName`, fetching the HTML from
  *  the host if it isn't already open. */
 async function openDocBuffer(docName) {
-  const existing = views.findIndex(
-    (v) => v.kind === 'doc' && v.docName === docName
-  );
-  if (existing >= 0) {
-    switchToViewIndex(existing);
+  const id = `doc:${docName}`;
+  if (utilityDock.hasTab(id)) {
+    utilityDock.activateUtilityTab(id);
     return;
   }
   let page;
@@ -1993,12 +2015,7 @@ async function openDocBuffer(docName) {
     repl.appendError(`no doc page for ${docName}`);
     return;
   }
-  views.push(createView({
-    kind: 'doc',
-    name: `*Doc: ${docName}*`,
-    extras: { docName, html: page.html },
-  }));
-  switchToViewIndex(views.length - 1);
+  openDocUtilityPanel(docName, page.html);
 }
 
 /** Minimal HTML-escape for embedding a user-supplied name into an
@@ -2016,11 +2033,9 @@ function escapeHtml(text) {
  *  live path — for user-defined procedures whose documentation
  *  isn't in the pre-built manifest. */
 async function openDocstringBuffer(docName, source) {
-  const existing = views.findIndex(
-    (v) => v.kind === 'doc' && v.docName === docName
-  );
-  if (existing >= 0) {
-    switchToViewIndex(existing);
+  const id = `doc:${docName}`;
+  if (utilityDock.hasTab(id)) {
+    utilityDock.activateUtilityTab(id);
     return;
   }
   let body;
@@ -2036,12 +2051,7 @@ async function openDocstringBuffer(docName, source) {
   const html =
     `<h3 class="doc-name"><code>${escapeHtml(docName)}</code></h3>\n` +
     `<div class="doc-docstring">${body}</div>`;
-  views.push(createView({
-    kind: 'doc',
-    name: `*Doc: ${docName}*`,
-    extras: { docName, html },
-  }));
-  switchToViewIndex(views.length - 1);
+  openDocUtilityPanel(docName, html);
 }
 
 // --- audio playback (jukebox mode) --------------------------------------
@@ -5568,10 +5578,9 @@ function configureDocView() {
     highlightCode: highlightCodeForDocView,
   };
 }
-const docView = /** @type {*} */ (document.createElement('doc-view'));
-docView.configure(configureDocView());
-editorPaneElement().append(docView);
-docView.style.display = 'none';
+// Doc pages render as utility-dock tabs now (see openDocUtilityPanel), not as
+// pane-tree views — so there is no singleton doc-view element. configureDocView
+// above is reused by the doc panel for cross-link / highlight / key wiring.
 
 // The jukebox view — the view a `jukebox`-kind buffer is shown
 // through. Replaces the old text-buffer jukebox mode. The shared
@@ -6480,7 +6489,6 @@ notebookView.style.display = 'none';
 const SINGLETON_VIEWS = [
   { kind: 'customize',         el: customizeView,         releasesBuffer: false },
   { kind: 'image',             el: imageView,             releasesBuffer: false },
-  { kind: 'doc',               el: docView,               releasesBuffer: false },
   { kind: 'jukebox',           el: jukeboxView,           releasesBuffer: false },
   { kind: 'audio',             el: audioView,             releasesBuffer: true  },
   { kind: 'video',             el: videoView,             releasesBuffer: true  },
@@ -6841,7 +6849,6 @@ function perKindConfigureFactory(kind) {
   switch (kind) {
     case 'customize':         return configureCustomizeView;
     case 'image':             return configureImageView;
-    case 'doc':               return configureDocView;
     case 'jukebox':           return configureJukeboxView;
     case 'audio':             return configureAudioView;
     case 'video':             return configureVideoView;
