@@ -3077,6 +3077,14 @@ reftex-select-view,
   font-size: 12px;
 }
 
+/* text + caret + placeholder as one no-gap inline group, so the caret
+   hugs the typed text instead of the outer flex gap pushing it away. */
+.reftex-cite-search-field {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
 .reftex-cite-search-text {
   color: var(--fg);
   white-space: pre-wrap;

@@ -303,6 +303,11 @@ export function createReftexCitePanel(options = {}) {
   search.className = 'reftex-cite-search';
   const searchIcon = doc.createElement('i');
   searchIcon.className = 'fa-solid fa-magnifying-glass reftex-cite-search-icon';
+  // text + caret + placeholder share one inline group with NO gap, so the
+  // caret sits flush against the typed text. (The outer flex `gap` would
+  // otherwise wedge a space between them: "Alexand |".)
+  const field = doc.createElement('span');
+  field.className = 'reftex-cite-search-field';
   const searchText = doc.createElement('span');
   searchText.className = 'reftex-cite-search-text';
   const caret = doc.createElement('span');
@@ -310,7 +315,8 @@ export function createReftexCitePanel(options = {}) {
   const placeholder = doc.createElement('span');
   placeholder.className = 'reftex-cite-search-placeholder';
   placeholder.textContent = 'Type to filter…';
-  search.append(searchIcon, searchText, caret, placeholder);
+  field.append(searchText, caret, placeholder);
+  search.append(searchIcon, field);
   root.append(search);
 
   const scroll = doc.createElement('div');
