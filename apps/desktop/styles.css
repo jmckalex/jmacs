@@ -915,20 +915,89 @@ mjx-assistive-mml[display='block'] {
   color: var(--fg);
 }
 
-/* --- REPL --------------------------------------------------------------- */
+/* --- Utility dock ------------------------------------------------------- */
+/* The tabbed chrome region at the bottom: a tab strip + a content area that
+   hosts the REPL (resident) and transient tool panels. It occupies the space
+   the REPL used to own; sized by the (legacy-named) --repl-height var + the
+   #utility-splitter. */
 
-.repl-host {
+.utility-host {
   flex: 0 0 var(--repl-height);
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--bg-repl);
   border-top: 1px solid #00000055;
 }
 
-/* toggle-repl (C-x p) hides the panel; the editor takes the freed space.
+/* toggle (C-x p) hides the whole dock; the editor takes the freed space.
    The splitter goes with it — there's nothing to resize. */
-body.repl-hidden .repl-host,
-body.repl-hidden #repl-splitter {
+body.utility-hidden .utility-host,
+body.utility-hidden #utility-splitter {
   display: none;
+}
+
+.utility-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid #ffffff14;
+}
+
+.utility-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 5px 5px 0 0;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.utility-tab:hover {
+  background: #ffffff0a;
+  color: var(--fg);
+}
+
+.utility-tab.is-active {
+  background: #ffffff14;
+  color: var(--fg);
+}
+
+.utility-tab-icon {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.utility-tab-close {
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--fg-dim);
+  opacity: 0.7;
+}
+
+.utility-tab-close:hover {
+  background: #ffffff1a;
+  color: var(--fg);
+  opacity: 1;
+}
+
+.utility-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.utility-panel {
+  height: 100%;
+  outline: none;
 }
 
 .repl {

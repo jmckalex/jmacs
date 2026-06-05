@@ -1965,7 +1965,7 @@ app.whenReady().then(() => {
         }));
         await wait(400);
         const previewSplit = document.getElementById('preview-splitter');
-        const replSplit = document.getElementById('repl-splitter');
+        const replSplit = document.getElementById('utility-splitter');
         const previewShown = !!(previewSplit
           && getComputedStyle(previewSplit).display !== 'none');
         const replShown = !!(replSplit

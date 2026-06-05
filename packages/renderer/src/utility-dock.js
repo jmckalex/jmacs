@@ -295,10 +295,14 @@ export function createUtilityDock(options) {
    * @param {string} [opts.icon]
    * @param {boolean} [opts.modal]
    * @param {boolean} [opts.closable]
+   * @param {boolean} [opts.focus] - Focus the panel after opening (default
+   *   true). Pass false to mount without stealing focus — e.g. the resident
+   *   REPL at startup, where the editor should keep focus.
    * @returns {string} the tab id.
    */
   function openUtilityPanel(opts) {
     const { id, makePanel } = opts;
+    const wantFocus = opts.focus !== false;
     const existing = entries.get(id);
     if (existing) {
       if (makePanel) {
@@ -315,7 +319,7 @@ export function createUtilityDock(options) {
       showUtilityDock();
       renderTabs();
       renderActive();
-      focusActivePanel();
+      if (wantFocus) focusActivePanel();
       return id;
     }
 
@@ -331,7 +335,7 @@ export function createUtilityDock(options) {
     showUtilityDock();
     renderTabs();
     renderActive();
-    focusActivePanel();
+    if (wantFocus) focusActivePanel();
     return id;
   }
 

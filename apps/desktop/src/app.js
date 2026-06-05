@@ -65,6 +65,7 @@ import {
   createMarkdownPreview,
   createMinibuffer,
   createReplView,
+  createUtilityDock,
   ShellView,
   GnuplotView,
   NotebookView,
@@ -2859,11 +2860,31 @@ function startDescribeCommand() {
 
 // --- Lisp interpreter and REPL -----------------------------------------
 
-const repl = createReplView(document.getElementById('repl-host'), {
+// The utility dock — the tabbed chrome region at the bottom. The REPL is its
+// resident tab; tools (RefTeX pickers, doc, compile output) open additional
+// tabs here instead of overlaying the editor. `onFocusOrigin` reads the LIVE
+// `editorView` binding (it is reassigned across the session), so a tool that
+// closes / a dock that hides returns focus to the current text view.
+const utilityHostEl = document.getElementById('utility-host');
+const utilityDock = createUtilityDock({
+  hostEl: utilityHostEl,
+  tabsEl: utilityHostEl.querySelector('.utility-tabs'),
+  contentEl: utilityHostEl.querySelector('.utility-content'),
+  onFocusOrigin: () => {
+    if (editorView && typeof editorView.focus === 'function') editorView.focus();
+  },
+});
+
+// The REPL is built detached, then mounted as the dock's resident tab; the
+// dock reparents `repl.element` into its content area. The `repl` facade is
+// unchanged — every appendOutput/appendResult/… call site keeps working.
+const repl = createReplView(document.createElement('div'), {
   prompt: 'λ ',
   welcome: 'REPL — type Lisp, press Enter. It shares the editor buffers.',
   onSubmit: evaluateInRepl,
 });
+// focus:false — the editor keeps focus at startup; the REPL is just mounted.
+utilityDock.openUtilityPanel({ id: 'repl-view', makePanel: () => repl, focus: false });
 
 /** Cached doc-page names from `docs/build/manifest.json`. The
  *  `load-doc-manifest!` primitive returns this; populated near
@@ -4265,8 +4286,7 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'toggle-repl!': () => {
-      const hidden = document.body.classList.toggle('repl-hidden');
-      if (hidden) editorView.focus();
+      utilityDock.toggleUtilityDock();
       return NIL;
     },
     'markdown-preview!': () => {
@@ -7551,7 +7571,7 @@ editorView.focus();
 
 const workspaceEl = document.getElementById('workspace');
 const previewSplitterEl = document.getElementById('preview-splitter');
-const replSplitterEl = document.getElementById('repl-splitter');
+const utilitySplitterEl = document.getElementById('utility-splitter');
 
 /** The persisted pane sizes — read once at startup and re-saved after
  *  each drag, so the layout survives quits. */
@@ -7580,13 +7600,14 @@ const previewSplitter = createSplitter({
   },
 });
 
-const replSplitter = createSplitter({
+const utilitySplitter = createSplitter({
   orientation: 'vertical',
-  element: replSplitterEl,
+  element: utilitySplitterEl,
   target: document.body,
+  // Legacy var/key names kept so persisted panes.json needs no migration.
   cssVar: '--repl-height',
   min: 80,
-  // The workspace + chrome above the REPL needs at least 300px.
+  // The workspace + chrome above the dock needs at least 300px.
   max: () => Math.max(80, window.innerHeight - 300),
   onResize: (value) => {
     persistedPanes.replHeight = value;
@@ -7607,7 +7628,7 @@ if (typeof window.host?.readPanes === 'function') {
         previewSplitter.set(stored.previewWidth);
       }
       if (typeof stored.replHeight === 'number') {
-        replSplitter.set(stored.replHeight);
+        utilitySplitter.set(stored.replHeight);
       }
     })
     .catch(() => {
