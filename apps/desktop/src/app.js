@@ -91,6 +91,7 @@ import {
   keyEventToString,
   languageForFilename,
   loadLanguageHighlighters,
+  createHighlightOverrideStore,
   renderMarkdown,
   parseCitations,
   formatBibliography,
@@ -2916,6 +2917,12 @@ let docManifestNames = null;
  *  on first launch — that case fills it with `emptyOverrides()`). */
 let faceOverridesCache = null;
 
+/** The persisted user highlight rules, as the Lisp store shape
+ *  (scope-key -> list of (pattern . face)) — built from faces.json at
+ *  startup, or `null` when none were persisted. Installed via
+ *  `installHighlightRules` after each stdlib (re)load. */
+let highlightRulesCache = null;
+
 /** The Sym / Keyword constructors face-overrides.js needs to build
  *  Lisp-shaped maps. Passed in so that module stays free of a hard
  *  dependency on `@editor/lisp` (the unit tests use stand-ins). */
@@ -4195,6 +4202,40 @@ const interpreter = createInterpreter({
       }
       return NIL;
     },
+    // Highlight customisation: receive the user's `kind -> face` rule
+    // set from Lisp (highlight-rules.lisp) and push it into the live
+    // highlighter store. Each ARG[0] element is a record with :scope
+    // ("mode" | "language"), :key (mode display name / language tag),
+    // :pattern (a tree-sitter node type or query fragment), and :face
+    // (a registered face name). The store recompiles the affected
+    // languages' queries lazily at the next highlight; we re-render the
+    // open editors so the change is visible immediately.
+    'set-highlight-overrides!': (args) => {
+      const list = args[0];
+      const entries = [];
+      try {
+        for (const rec of listToArray(list)) {
+          if (!(rec instanceof Map)) continue;
+          const scope = rec.get(keyword('scope'));
+          const key = rec.get(keyword('key'));
+          const pattern = rec.get(keyword('pattern'));
+          const face = rec.get(keyword('face'));
+          entries.push({
+            scope: typeof scope === 'string' ? scope : 'language',
+            key: key == null ? '' : String(key),
+            pattern: pattern == null ? '' : String(pattern),
+            face: face == null ? '' : String(face),
+          });
+        }
+        highlightOverrideStore.replaceAll(entries);
+        rerenderAllEditors();
+      } catch (error) {
+        repl.appendError(
+          `highlight-overrides: ${error.lispMessage ?? error.message}`
+        );
+      }
+      return NIL;
+    },
     'start-search!': () => {
       startSearch('forward');
       return NIL;
@@ -4745,6 +4786,10 @@ async function reloadStdlib() {
     if (faceOverridesCache !== null) {
       interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
     }
+    // Re-install the user highlight rules into the freshly-built stdlib
+    // (a reload reset *highlight-rules* to empty) and re-push them so the
+    // live highlighter keeps the user's overrides.
+    installHighlightRules();
     await loadUserConfig();
     applyCurrentTheme();
     applyCurrentFaceStyles();
@@ -4762,6 +4807,25 @@ function installFacePersistence() {
   interpreter.evaluate(
     '(set-face-overrides-saver! (lambda () (write-face-overrides! (current-face-overrides))))'
   );
+}
+
+/** Install the persisted user highlight rules into the (freshly-loaded)
+ *  stdlib and push them into the live highlighter. A no-op-but-safe push
+ *  of the empty set when nothing was persisted. Called after the first
+ *  stdlib load and after every reload-stdlib (which resets the Lisp
+ *  `*highlight-rules*`). */
+function installHighlightRules() {
+  try {
+    if (highlightRulesCache !== null) {
+      interpreter.call('set-highlight-rules!', highlightRulesCache);
+    } else {
+      interpreter.call('push-highlight-rules!');
+    }
+  } catch (error) {
+    repl.appendError(
+      `highlight-rules: ${error.lispMessage ?? error.message}`
+    );
+  }
 }
 
 /** Things that want a callback when the editor theme changes. The
@@ -4843,13 +4907,26 @@ window.host
 // highlighter per registered language. A grammar that fails to load
 // disables only its language; the rest still highlight.
 await discoverRendererLanguages();
+// The live store of user-defined `kind -> face` highlight rules. Built
+// before the highlighters so each one can consult it (rules are applied
+// on top of the base grammar query, recompiled live). The Lisp side
+// (highlight-rules.lisp) pushes rules in through `set-highlight-overrides!`.
+const highlightOverrideStore = createHighlightOverrideStore();
 const { highlighters, foldCaptures } = await loadLanguageHighlighters(
   createTreeSitterHighlighter,
   (tag, error) => {
     repl.appendError(`${tag} highlighter unavailable: ${error.message}`);
-  }
+  },
+  highlightOverrideStore
 );
 document.body.dataset.treesitter = Object.keys(highlighters).join(',');
+
+// Install the persisted user highlight rules now that the override store
+// and the highlighters exist. (The faces.json read above already filled
+// `highlightRulesCache`.) Re-render-on-push is a guarded no-op here —
+// the editors mount below — so the rules are simply seeded into the
+// store, ready for the first highlight call.
+if (keymapReady) installHighlightRules();
 
 /** Dispatch a keystroke through the Lisp keymap. */
 function dispatchKey(key) {
@@ -5278,6 +5355,15 @@ function ensureEditorViewForLeaf(leaf) {
     // returns [] unless this leaf's buffer has math-preview-mode on and
     // its major mode has a math provider.
     getReplacedRanges: () => getMathReplacedRanges(leaf),
+    // User highlight overrides: the buffer's major-mode name selects
+    // mode-scoped `kind -> face` rules; the override generation forces a
+    // re-tokenize when the rule set changes (see set-highlight-overrides!).
+    getMajorModeName: () => {
+      const v = peelTabline(leaf.view);
+      const buf = v && !isTablineView(v) ? v.buffer : null;
+      return bufferMajorModeName(buf, keyword);
+    },
+    getOverrideGeneration: () => highlightOverrideStore.generation(),
   });
   instance.setView(leaf.view);     // populates pending buffer/view
   paneEl.append(instance);          // triggers connectedCallback → mount
@@ -5435,6 +5521,41 @@ function applyCurrentFaceStyles() {
     applyFaceStyles(document, alist, listToArray);
   } catch (error) {
     repl.appendError(`face-styles: ${error.lispMessage ?? error.message}`);
+  }
+}
+
+/** Force every mounted text editor — pane leaves and tabline children —
+ *  to re-render. A CSS-only face change is picked up by re-painting the
+ *  existing `.tok-*` spans, but a highlight-RULE change adds or removes
+ *  spans, so the buffer must be re-tokenized. Re-pointing each instance
+ *  at its current view re-runs the render (the override-generation in
+ *  the cache key forces the tree-sitter parse to repeat). Tolerant:
+ *  a disposed/unmounted instance is skipped. */
+function rerenderAllEditors() {
+  // Guard against an early call (e.g. the startup rule push runs before
+  // the pane/tabline registries are initialised): those are module-level
+  // `const`s, so touching them in their TDZ throws. A no-op then is
+  // correct — no editor is mounted yet to re-render.
+  let paneInstances;
+  try {
+    paneInstances = editorViewByPaneId;
+  } catch {
+    return;
+  }
+  for (const instance of paneInstances.values()) {
+    try {
+      if (instance && instance.boundView) instance.setView(instance.boundView);
+    } catch { /* tolerant — a disposed instance */ }
+  }
+  for (const state of tablineStateByView.values()) {
+    if (!state || !(state.editorByChild instanceof Map)) continue;
+    for (const el of state.editorByChild.values()) {
+      try {
+        if (el && typeof el.setView === 'function' && el.boundView) {
+          el.setView(el.boundView);
+        }
+      } catch { /* tolerant */ }
+    }
   }
 }
 
@@ -6908,6 +7029,9 @@ function ensureTabElement(state, child) {
         }];
       },
       getTabWidth: () => currentTabWidth,
+      getMajorModeName: () =>
+        bufferMajorModeName(child.buffer ?? null, keyword),
+      getOverrideGeneration: () => highlightOverrideStore.generation(),
     });
     el.setView(child);
   } else if (child.kind === 'tabline') {
