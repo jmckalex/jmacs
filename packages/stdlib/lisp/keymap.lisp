@@ -58,6 +58,7 @@
   {"k" 'describe-key
    "f" 'describe-command
    "F" 'describe-face-at-point
+   "C-f" 'highlight-construct-at-point
    "a" 'apropos-doc
    "." 'describe-symbol-at-point})
 
