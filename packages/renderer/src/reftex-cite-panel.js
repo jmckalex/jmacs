@@ -55,20 +55,49 @@ export function matchCiteFormatKey(key, formats) {
 }
 
 /**
- * Filter cite rows by a case-insensitive substring of the key or the
- * plain author/year/title text. An empty filter matches everything.
+ * Compile a filter query into AND-ed matchers, RefTeX-style. Whitespace
+ * splits the query into terms that must ALL match; each term compiles to a
+ * case-insensitive RegExp. A term that isn't a valid regexp degrades to a
+ * literal (case-insensitive) substring matcher — so a half-typed pattern
+ * like `foo(` never throws while you type. Returns `[]` for an empty or
+ * whitespace-only query (which matches everything).
+ *
+ * Splitting on literal whitespace means a power-user can still match a
+ * phrase by using `\s` (e.g. `van\sder`), since that survives the split.
+ *
+ * @param {string} filter
+ * @returns {Array<{test: (s: string) => boolean}>}
+ */
+export function compileCiteFilter(filter) {
+  const parts = (filter ?? '').trim().split(/\s+/).filter((p) => p !== '');
+  return parts.map((p) => {
+    try {
+      return new RegExp(p, 'i');
+    } catch {
+      const lit = p.toLowerCase();
+      return { test: (s) => (s ?? '').toLowerCase().includes(lit) };
+    }
+  });
+}
+
+/**
+ * Filter cite rows by a RefTeX-style query: whitespace-separated terms
+ * that must ALL match (AND), each a case-insensitive regular expression
+ * tested against the bib key or the plain author/year/title text. An empty
+ * query matches everything; see {@link compileCiteFilter} for the term
+ * grammar and the invalid-regexp fallback.
  *
  * @param {CiteRow[]} rows
  * @param {string} filter
  * @returns {CiteRow[]}
  */
 export function filterCiteRows(rows, filter) {
-  const needle = (filter ?? '').toLowerCase();
-  if (needle === '') return rows ?? [];
+  const terms = compileCiteFilter(filter);
+  if (terms.length === 0) return rows ?? [];
   return (rows ?? []).filter((r) => {
-    const key = (r.key ?? '').toLowerCase();
-    const plain = (r.plain ?? '').toLowerCase();
-    return key.includes(needle) || plain.includes(needle);
+    const key = r.key ?? '';
+    const plain = r.plain ?? '';
+    return terms.every((t) => t.test(key) || t.test(plain));
   });
 }
 
@@ -326,7 +355,7 @@ export function createReftexCitePanel(options = {}) {
   const hint = doc.createElement('div');
   hint.className = 'reftex-cite-hint';
   hint.textContent =
-    'type to filter · ↑↓ or C-n/C-p move · Tab mark · Enter insert · Esc cancel';
+    'filter: regexp, space = and · ↑↓ or C-n/C-p move · Tab mark · Enter insert · Esc cancel';
   root.append(hint);
 
   /** Ensure every key in KEYS has formatted HTML cached, fetching the

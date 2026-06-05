@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   matchCiteFormatKey,
   filterCiteRows,
+  compileCiteFilter,
   citeKeysToInsert,
   mapCiteKey,
 } from '../src/reftex-cite-panel.js';
@@ -58,6 +59,58 @@ test('filterCiteRows matches key and plain text, case-insensitively', () => {
 test('an empty filter returns every row', () => {
   assert.equal(filterCiteRows(ROWS, '').length, 3);
   assert.equal(filterCiteRows(ROWS, null).length, 3);
+  assert.equal(filterCiteRows(ROWS, '   ').length, 3); // whitespace-only
+});
+
+test('filterCiteRows: space means AND — every term must match', () => {
+  // "lee" and "theory" both appear in lee2021's plain text; only there.
+  assert.deepEqual(filterCiteRows(ROWS, 'lee theory').map((r) => r.key), ['lee2021']);
+  // "patel" matches patel2020 but "theory" does not, so AND yields nothing.
+  assert.deepEqual(filterCiteRows(ROWS, 'patel theory'), []);
+  // Order doesn't matter; extra interior whitespace is collapsed.
+  assert.deepEqual(filterCiteRows(ROWS, '2021   jane').map((r) => r.key), ['lee2021']);
+});
+
+test('filterCiteRows: each term is a regular expression', () => {
+  // Alternation across keys.
+  assert.deepEqual(
+    filterCiteRows(ROWS, 'lee|patel').map((r) => r.key),
+    ['lee2021', 'patel2020'],
+  );
+  // `.` is a wildcard, not a literal.
+  assert.deepEqual(filterCiteRows(ROWS, 'th.ory').map((r) => r.key), ['lee2021']);
+  // A character class.
+  assert.deepEqual(
+    filterCiteRows(ROWS, '20(19|20)').map((r) => r.key),
+    ['patel2020', 'smith2019'],
+  );
+});
+
+test('filterCiteRows: an invalid regexp degrades to a literal substring', () => {
+  const rows = [{ key: 'a', plain: 'smith (2020) theory' }];
+  // "(2020" is an unbalanced group → not a valid regexp → matched literally.
+  assert.deepEqual(filterCiteRows(rows, '(2020').map((r) => r.key), ['a']);
+  // A literal that isn't present still excludes the row (no crash).
+  assert.deepEqual(filterCiteRows(rows, '(1999'), []);
+});
+
+test('compileCiteFilter splits on whitespace and drops empties', () => {
+  assert.equal(compileCiteFilter('').length, 0);
+  assert.equal(compileCiteFilter('   ').length, 0);
+  assert.equal(compileCiteFilter('a b').length, 2);
+  assert.equal(compileCiteFilter('  foo   bar  ').length, 2);
+});
+
+test('compileCiteFilter: valid term is a case-insensitive regexp', () => {
+  const [t] = compileCiteFilter('a.c');
+  assert.equal(t.test('AXC'), true); // wildcard + case-insensitive
+  assert.equal(t.test('abd'), false);
+});
+
+test('compileCiteFilter: invalid term falls back to literal substring', () => {
+  const [t] = compileCiteFilter('(');
+  assert.equal(t.test('a(b'), true);
+  assert.equal(t.test('ab'), false);
 });
 
 // --- citeKeysToInsert (marked, or current) ----------------------------
