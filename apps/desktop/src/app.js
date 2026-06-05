@@ -119,6 +119,9 @@ import {
   emptyOverrides,
   jsonToLispOverrides,
   lispToJsonOverrides,
+  lispToJsonFacesFile,
+  jsonToLispUserFaces,
+  jsonToLispHighlightRules,
 } from './face-overrides.js';
 import { applyFaceStyles } from './face-styles.js';
 import {
@@ -2923,6 +2926,12 @@ let faceOverridesCache = null;
  *  `installHighlightRules` after each stdlib (re)load. */
 let highlightRulesCache = null;
 
+/** The persisted user-created faces, as the Lisp `*user-faces*` map —
+ *  built from faces.json at startup, `null` when none. Re-installed via
+ *  `set-user-faces!` after each stdlib (re)load (a fresh stdlib drops
+ *  the registry). */
+let userFacesCache = null;
+
 /** The Sym / Keyword constructors face-overrides.js needs to build
  *  Lisp-shaped maps. Passed in so that module stays free of a hard
  *  dependency on `@editor/lisp` (the unit tests use stand-ins). */
@@ -4202,6 +4211,22 @@ const interpreter = createInterpreter({
       }
       return NIL;
     },
+    // Face customisation: write the COMPLETE faces.json — colour
+    // overrides + user-created faces + highlight rules — in one blob.
+    // The Lisp side passes `(current-faces-file)`; we serialise all
+    // three sections (lists are unfolded via listToArray for the rules).
+    'write-faces!': (args) => {
+      const facesFile = args[0];
+      try {
+        const json = lispToJsonFacesFile(facesFile, lispFactories, listToArray);
+        window.host.writeFaces(json);
+      } catch (error) {
+        repl.appendError(
+          `faces:write: ${error.lispMessage ?? error.message}`
+        );
+      }
+      return NIL;
+    },
     // Highlight customisation: receive the user's `kind -> face` rule
     // set from Lisp (highlight-rules.lisp) and push it into the live
     // highlighter store. Each ARG[0] element is a record with :scope
@@ -4781,8 +4806,12 @@ const stdlibOptions = { listLanguageFiles: listStdlibLanguageFiles };
 async function reloadStdlib() {
   try {
     await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
-    // Reapply face hooks + overrides: a fresh stdlib reset both.
+    // Reapply face hooks + state: a fresh stdlib reset all of them.
+    // Re-register user faces FIRST (overrides/rules may reference them).
     installFacePersistence();
+    if (userFacesCache !== null) {
+      interpreter.call('set-user-faces!', userFacesCache);
+    }
     if (faceOverridesCache !== null) {
       interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
     }
@@ -4804,8 +4833,12 @@ async function reloadStdlib() {
  *  CSS regeneration is already handled by the `apply-face-styles!`
  *  primitive that Lisp calls directly on every change. */
 function installFacePersistence() {
+  // The saver writes the WHOLE faces.json — colour overrides, user-
+  // created faces, and highlight rules — so both the face-change and
+  // highlight-rule-change paths (which share this hook) persist
+  // everything in one atomic write.
   interpreter.evaluate(
-    '(set-face-overrides-saver! (lambda () (write-face-overrides! (current-face-overrides))))'
+    '(set-face-overrides-saver! (lambda () (write-faces! (current-faces-file))))'
   );
 }
 
@@ -4845,14 +4878,26 @@ try {
   repl.appendError(`standard library failed to load: ${error.message}`);
 }
 
-// Face overrides: read faces.json (or get null if it's missing) and
-// install into the Lisp face system before the first paint. The
-// stdlib has already loaded `faces.lisp`, so the mutators exist.
+// Faces: read faces.json (or get null if it's missing) and install into
+// the Lisp face system before the first paint. The stdlib has already
+// loaded `faces.lisp` + `highlight-rules.lisp`, so the mutators exist.
+// We install in dependency order: USER FACES first (so colour overrides
+// and highlight rules can reference them), then the colour overrides.
+// The highlight rules are installed later (`installHighlightRules`, once
+// the override store + highlighters exist) from `highlightRulesCache`.
 if (keymapReady) {
   installFacePersistence();
   try {
     const json = await window.host.readFaces();
     faceOverridesCache = jsonToLispOverrides(json, lispFactories);
+    userFacesCache = jsonToLispUserFaces(json, lispFactories);
+    highlightRulesCache = jsonToLispHighlightRules(
+      json,
+      lispFactories,
+      arrayToList,
+      cons
+    );
+    interpreter.call('set-user-faces!', userFacesCache);
     interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
   } catch (error) {
     repl.appendError(

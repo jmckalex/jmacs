@@ -191,6 +191,57 @@ test('set-face-overrides! round-trips the perMode bucket', async () => {
   assert.equal(fg, '#999');
 });
 
+test('create-face! registers a live, coloured user face', async () => {
+  const lisp = await makeInterpreter();
+  lisp.evaluate('(create-face! \'my-face "#ff8800")');
+  assert.equal(lisp.evaluate('(face-registered? \'my-face)'), true);
+  assert.equal(lisp.evaluate('(user-face? \'my-face)'), true);
+  assert.equal(lisp.evaluate('(face-attribute \'my-face :foreground :theme \'dark)'), '#ff8800');
+  // Same colour across every theme by default.
+  assert.equal(lisp.evaluate('(face-attribute \'my-face :foreground :theme \'light)'), '#ff8800');
+});
+
+test('create-face! with a parent inherits the parent attributes', async () => {
+  const lisp = await makeInterpreter();
+  lisp.evaluate(`
+    (defface 'cf-parent :default-dark (face :weight :bold :underline true))
+    (create-face! 'cf-child "#abcdef" :parent 'cf-parent)
+  `);
+  // Child's own colour wins; parent's weight/underline inherited.
+  assert.equal(lisp.evaluate('(face-attribute \'cf-child :foreground :theme \'dark)'), '#abcdef');
+  const w = lisp.evaluate('(face-attribute \'cf-child :weight :theme \'dark)');
+  assert.equal(w && w.name, 'bold');
+  assert.equal(lisp.evaluate('(face-attribute \'cf-child :underline :theme \'dark)'), true);
+});
+
+test('set-user-faces! re-registers persisted user faces', async () => {
+  const lisp = await makeInterpreter();
+  // Simulate a fresh stdlib: register from a persisted *user-faces* map.
+  lisp.evaluate(`
+    (set-user-faces!
+      (hash-map 'restored
+        (hash-map :doc "r" :parent nil
+                  :light  (face :foreground "#111")
+                  :dark   (face :foreground "#222")
+                  :bright (face :foreground "#333")
+                  :midnight (face :foreground "#444"))))
+  `);
+  assert.equal(lisp.evaluate('(face-registered? \'restored)'), true);
+  assert.equal(lisp.evaluate('(face-attribute \'restored :foreground :theme \'dark)'), '#222');
+});
+
+test('current-faces-file gathers overrides, user faces and rules', async () => {
+  const lisp = await makeInterpreter();
+  lisp.evaluate('(create-face! \'ff "#0a0a0a")');
+  const file = lisp.evaluate('(current-faces-file)');
+  // file is a hash-map (Map) with :overrides :userFaces :highlightRules
+  const keys = [];
+  for (const k of file.keys()) keys.push(k.name);
+  assert.ok(keys.includes('overrides'));
+  assert.ok(keys.includes('userFaces'));
+  assert.ok(keys.includes('highlightRules'));
+});
+
 test('a cycle (A from B, B from A) is detected with a clear error', async () => {
   const lisp = await makeInterpreter();
   lisp.evaluate(`

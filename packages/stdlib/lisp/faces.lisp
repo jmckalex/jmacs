@@ -95,6 +95,79 @@
           (if has-from parent-form nil)
           (cons 'list options))))
 
+;; --- user-defined faces ------------------------------------------------
+;; Faces created from the customisation flow (C-h F, `create-face!`) are
+;; recorded here so they can be persisted and re-registered on the next
+;; launch (a `defface` is code, not data, so we persist the *arguments*
+;; and replay them via `-defface-impl`). Each entry:
+;;   name -> { :doc :parent :light :dark :bright :midnight }
+;; where each theme value is a face attribute map.
+(define *user-faces* {})
+
+(define (-record-user-face! name parent doc light dark bright midnight)
+  "Record a user face's defining attributes for persistence."
+  (set! *user-faces*
+        (assoc *user-faces* name
+               (hash-map :doc doc :parent parent
+                         :light light :dark dark
+                         :bright bright :midnight midnight))))
+
+(define (user-faces)
+  "The registry of user-created faces (for persistence). Plain data."
+  *user-faces*)
+
+(define (user-face? name)
+  "True when NAME was created by the user (not a built-in defface)."
+  (contains? *user-faces* name))
+
+(define (create-face! name color . options)
+  "Create (or recolour) a user face NAME (a symbol or string) with
+   foreground COLOR (a hex string). Optional keyword args:
+     :parent  a registered face NAME to inherit from (symbol/string/nil)
+     :doc     a documentation string
+   The same colour seeds every theme default (light/dark/bright/midnight);
+   the user can recolour per theme/mode afterwards via customize. The
+   face is registered live, applied immediately, and persisted so it
+   survives a restart. Side-effecting; note the `!`."
+  (let* ((opts (apply hash-map options))
+         (sym-name (if (symbol? name) name (string->symbol (str name))))
+         (parent-opt (get opts :parent nil))
+         (parent (cond ((nil? parent-opt) nil)
+                       ((symbol? parent-opt) parent-opt)
+                       (else (string->symbol (str parent-opt)))))
+         (doc (get opts :doc (str "User face " (symbol->string sym-name))))
+         (attrs (face :foreground color)))
+    (-defface-impl sym-name parent
+                   (list :doc doc
+                         :default-light attrs
+                         :default-dark attrs
+                         :default-bright attrs
+                         :default-midnight attrs))
+    (-record-user-face! sym-name parent doc attrs attrs attrs attrs)
+    (-on-face-change!)
+    sym-name))
+
+(define (set-user-faces! faces)
+  "Replace the user-face registry with FACES and re-register each one
+   into the live face registry. Called by the host at load. Does NOT
+   persist (the host calls it while loading)."
+  (set! *user-faces* (if (nil? faces) {} faces))
+  (-replay-user-faces! (keys *user-faces*)))
+
+(define (-replay-user-faces! names)
+  "Re-run `-defface-impl` for each recorded user face so it is present
+   in `*face-registry*` after a fresh stdlib load."
+  (unless (nil? names)
+    (let* ((name (car names))
+           (entry (get *user-faces* name {})))
+      (-defface-impl name (get entry :parent nil)
+                     (list :doc (get entry :doc "")
+                           :default-light (get entry :light {})
+                           :default-dark (get entry :dark {})
+                           :default-bright (get entry :bright {})
+                           :default-midnight (get entry :midnight {}))))
+    (-replay-user-faces! (cdr names))))
+
 (define (face-registered? name)
   "True when NAME names a registered face."
   (contains? *face-registry* name))
@@ -451,6 +524,19 @@
   "Return the live overrides map. The persistence layer reads this
    to know what to write."
   *face-overrides*)
+
+(define (current-faces-file)
+  "The complete persistable face state — the colour overrides, the
+   user-created faces, and the highlight rules — in one hash-map the
+   host serialises to faces.json:
+     {:overrides *face-overrides*
+      :userFaces *user-faces*
+      :highlightRules *highlight-rules*}
+   `*highlight-rules*` is defined in highlight-rules.lisp, which loads
+   after this file; the symbol resolves at call time."
+  (hash-map :overrides *face-overrides*
+            :userFaces *user-faces*
+            :highlightRules *highlight-rules*))
 
 ;; --- the customisation buffer model -----------------------------------
 ;; The customize view reads `face-row` for each registered face and

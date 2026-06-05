@@ -5,6 +5,9 @@ import {
   emptyOverrides,
   jsonToLispOverrides,
   lispToJsonOverrides,
+  lispToJsonFacesFile,
+  jsonToLispUserFaces,
+  jsonToLispHighlightRules,
 } from '../src/face-overrides.js';
 
 // --- stand-ins for @editor/lisp's keyword / sym -----------------------
@@ -147,4 +150,109 @@ test('lispToJsonOverrides handles boolean attribute values', () => {
   const back = lispToJsonOverrides(m, f);
   assert.equal(back.global.link.underline, true);
   assert.equal(back.global.link['strike-through'], false);
+});
+
+// --- the full faces.json file (v2) ------------------------------------
+// Lisp cons / list stand-ins matching @editor/lisp's Pair shape, plus
+// the arrayToList / listToArray helpers the converters take.
+
+const consCell = (head, tail) => ({ head, tail });
+const NIL_SENTINEL = { isNil: true };
+const arrayToList = (items) => {
+  let acc = NIL_SENTINEL;
+  for (let i = items.length - 1; i >= 0; i -= 1) acc = consCell(items[i], acc);
+  return acc;
+};
+const listToArr = (node) => {
+  const out = [];
+  let n = node;
+  while (n && n.isNil !== true && n.head !== undefined) {
+    out.push(n.head);     // each element (a cons pair) is the node's head
+    n = n.tail;
+  }
+  return out;
+};
+
+test('jsonToLispUserFaces builds the *user-faces* map', () => {
+  const json = {
+    userFaces: {
+      myface: {
+        doc: 'mine',
+        parent: 'keyword',
+        light: { foreground: '#111' },
+        dark: { foreground: '#222' },
+        bright: { foreground: '#333' },
+        midnight: { foreground: '#444' },
+      },
+    },
+  };
+  const m = jsonToLispUserFaces(json, f);
+  const entry = m.get(sym('myface'));
+  assert.ok(entry instanceof Map);
+  assert.equal(entry.get(keyword('doc')), 'mine');
+  assert.equal(entry.get(keyword('parent')), sym('keyword'));
+  assert.equal(entry.get(keyword('dark')).get(keyword('foreground')), '#222');
+});
+
+test('jsonToLispUserFaces tolerates a null parent', () => {
+  const json = { userFaces: { x: { doc: '', parent: null, dark: {} } } };
+  const m = jsonToLispUserFaces(json, f);
+  assert.equal(m.get(sym('x')).get(keyword('parent')), null);
+});
+
+test('jsonToLispHighlightRules builds the scope-keyed rule store', () => {
+  const json = {
+    highlightRules: {
+      'mode:LaTeX': [['command_name', 'keyword']],
+      'lang:python': [['identifier', 'variable']],
+    },
+  };
+  const m = jsonToLispHighlightRules(json, f, arrayToList, consCell);
+  const latex = listToArr(m.get('mode:LaTeX'));
+  assert.equal(latex.length, 1);
+  assert.equal(latex[0].head, 'command_name');
+  assert.equal(latex[0].tail, 'keyword');
+});
+
+test('lispToJsonFacesFile serialises overrides + user faces + rules', () => {
+  // Build the Lisp `current-faces-file` map: {:overrides :userFaces :highlightRules}.
+  const overrides = emptyOverrides(f);
+  overrides
+    .get(keyword('global'))
+    .set(sym('keyword'), new Map([[keyword('weight'), keyword('bold')]]));
+
+  const userFaces = new Map();
+  const uf = new Map();
+  uf.set(keyword('doc'), 'mine');
+  uf.set(keyword('parent'), null);
+  uf.set(keyword('dark'), new Map([[keyword('foreground'), '#222']]));
+  userFaces.set(sym('myface'), uf);
+
+  const rules = new Map();
+  rules.set('mode:LaTeX', arrayToList([consCell('command_name', 'keyword')]));
+
+  const facesFile = new Map([
+    [keyword('overrides'), overrides],
+    [keyword('userFaces'), userFaces],
+    [keyword('highlightRules'), rules],
+  ]);
+
+  const json = lispToJsonFacesFile(facesFile, f, listToArr);
+  assert.equal(json.version, 2);
+  assert.deepEqual(json.global.keyword, { weight: 'bold' });
+  assert.equal(json.userFaces.myface.doc, 'mine');
+  assert.equal(json.userFaces.myface.parent, null);
+  assert.deepEqual(json.userFaces.myface.dark, { foreground: '#222' });
+  assert.deepEqual(json.highlightRules['mode:LaTeX'], [
+    ['command_name', 'keyword'],
+  ]);
+});
+
+test('a v1 faces.json yields empty userFaces and highlightRules', () => {
+  const json = { global: { keyword: { weight: 'bold' } }, themes: {} };
+  assert.deepEqual(jsonToLispUserFaces(json, f), new Map());
+  assert.deepEqual(
+    jsonToLispHighlightRules(json, f, arrayToList, consCell),
+    new Map()
+  );
 });
