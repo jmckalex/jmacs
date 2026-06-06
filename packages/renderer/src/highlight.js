@@ -17,7 +17,11 @@
  */
 
 import { languageForFilename } from './language-registry.js';
-import { scanMathSegments, MARKDOWN_MATH_CONFIG } from './math-segments.js';
+import {
+  scanMathSegments,
+  maskMarkdownCode,
+  MARKDOWN_MATH_CONFIG,
+} from './math-segments.js';
 
 /** A maximal stretch of a line sharing one highlight face. */
 /** @typedef {{ text: string, face: string | null }} Run */
@@ -647,120 +651,23 @@ export function highlightMakefileBuffer(text) {
 /** The face applied to math delimiters (`$`, `$$`, `\(`, `\[`, …). */
 const MATH_DELIM_FACE = 'string';
 
-/** Math notation recognised inside Markdown for the injection provider:
- *  everything MathJax handles — the four delimiter pairs *and*
- *  `\begin{…}…\end{…}` environments. (The per-line overlay fallback uses
- *  the narrower MARKDOWN_MATH_CONFIG, which omits environments — it can't
- *  splice their variable-length delimiters.) */
-const MARKDOWN_MATH_INJECT_CONFIG = {
-  inlineDollar: true,
-  displayDollar: true,
-  parens: true,
-  brackets: true,
-  environments: true,
-};
-
 /**
- * Mask Markdown code so a `$` inside it is never read as a math
- * delimiter. Returns a same-length copy (offsets preserved) with code
- * characters replaced by spaces; newlines are kept so line structure is
- * intact. Covers fenced code blocks (``` ``` ```/`~~~`) and inline code
- * spans (matched backtick runs). Indented (4-space) code blocks are not
- * masked — a known v1 gap.
- *
- * Masking *before* scanning (rather than dropping segments after) is
- * deliberate: an odd `$` in code would otherwise mis-pair with a real
- * `$` and consume the following formula.
- *
- * @param {string} text
- * @returns {string}
- */
-function maskMarkdownCode(text) {
-  const lines = text.split('\n');
-  const out = [];
-  let fenceLen = 0; // >0 while inside a fence; the opener's run length
-  let fenceChar = '';
-  for (const line of lines) {
-    const fence = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (fenceLen > 0) {
-      out.push(' '.repeat(line.length));
-      if (
-        fence &&
-        fence[1][0] === fenceChar &&
-        fence[1].length >= fenceLen
-      ) {
-        fenceLen = 0;
-      }
-      continue;
-    }
-    if (fence) {
-      out.push(' '.repeat(line.length));
-      fenceLen = fence[1].length;
-      fenceChar = fence[1][0];
-      continue;
-    }
-    out.push(maskInlineCode(line));
-  }
-  return out.join('\n');
-}
-
-/**
- * Replace inline code spans (backtick runs of equal length) in one line
- * with spaces, preserving length. An unclosed run is left as-is.
- *
- * @param {string} line
- * @returns {string}
- */
-function maskInlineCode(line) {
-  let out = '';
-  let i = 0;
-  while (i < line.length) {
-    if (line[i] !== '`') {
-      out += line[i];
-      i += 1;
-      continue;
-    }
-    let n = 0;
-    while (line[i + n] === '`') n += 1;
-    // Find a closing run of exactly n backticks.
-    let j = i + n;
-    let closed = -1;
-    while (j < line.length) {
-      if (line[j] === '`') {
-        let k = 0;
-        while (line[j + k] === '`') k += 1;
-        if (k === n) {
-          closed = j;
-          break;
-        }
-        j += k;
-      } else {
-        j += 1;
-      }
-    }
-    if (closed !== -1) {
-      const end = closed + n;
-      out += ' '.repeat(end - i);
-      i = end;
-    } else {
-      out += line.slice(i, i + n);
-      i += n;
-    }
-  }
-  return out;
-}
-
-/**
- * The byte widths of a segment's opening and closing delimiters. Block
- * math (`$$`, `\[…\]`) is 2/2; inline is 1/1 for `$…$` and 2/2 for
- * `\(…\)`.
+ * The byte widths of a segment's opening and closing delimiters, so the
+ * overlay can face them as delimiters and hand only the body to
+ * `tokenizeLatex`. `$…$` is 1/1; `$$…$$` and `\[…\]`/`\(…\)` are 2/2.
+ * A `\begin{…}…\end{…}` environment has *variable-length* delimiters, so
+ * we claim 0/0 and let `tokenizeLatex` face the `\begin`/`\end` commands
+ * itself (as keywords) — the whole environment is its body.
  *
  * @param {string} text
  * @param {MathSegment} seg
  * @returns {{ openLen: number, closeLen: number }}
  */
 function delimiterWidths(text, seg) {
-  if (seg.kind === 'block') return { openLen: 2, closeLen: 2 };
+  if (seg.kind === 'block') {
+    if (text.startsWith('\\begin', seg.start)) return { openLen: 0, closeLen: 0 };
+    return { openLen: 2, closeLen: 2 };
+  }
   return text[seg.start] === '$'
     ? { openLen: 1, closeLen: 1 }
     : { openLen: 2, closeLen: 2 };
@@ -964,7 +871,7 @@ export function overlayMarkdownMath(text, perLine, lines) {
 export function markdownMathInjections(text) {
   return scanMathSegments(
     maskMarkdownCode(text),
-    MARKDOWN_MATH_INJECT_CONFIG
+    MARKDOWN_MATH_CONFIG
   ).map((seg) => ({ start: seg.start, end: seg.end, language: 'latex' }));
 }
 

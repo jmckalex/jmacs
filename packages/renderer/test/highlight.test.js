@@ -401,6 +401,18 @@ test('overlayMarkdownMath spans multiple lines for display math', () => {
   assert.equal(out[4], base[4]);
 });
 
+test('overlayMarkdownMath faces a \\begin{…} environment via tokenizeLatex', () => {
+  // Environments have variable-length delimiters, so the overlay hands
+  // the whole thing to tokenizeLatex — \begin/\end face as keywords, not
+  // as 2-char delimiters.
+  const src = '\\begin{align}\na &= b\n\\end{align}';
+  const base = src.split('\n').map((line) => [{ text: line, face: null }]);
+  const out = overlayMarkdownMath(src, base);
+  assert.ok(out[0].some((r) => r.face === 'keyword' && r.text === '\\begin'));
+  assert.ok(out[2].some((r) => r.face === 'keyword' && r.text === '\\end'));
+  assert.equal(out[0].map((r) => r.text).join(''), '\\begin{align}');
+});
+
 // markdownMathInjections is the primary path: the `markdown_inline`
 // grammar's injection provider, routing each math region to the latex
 // grammar. The view wires it through tree-sitter; these test the pure
