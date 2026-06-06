@@ -24,6 +24,11 @@ const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
 /** The editor window — there is only ever one. */
 let mainWindow = null;
 
+/** True once a quit has been confirmed through the renderer (nothing
+ *  unsaved, or the user chose to discard). Lets `before-quit` allow the
+ *  quit through instead of prompting again. */
+let quitConfirmed = false;
+
 /** Send a command chosen from a native menu to the renderer to run. */
 function dispatchMenuCommand(command) {
   if (mainWindow) mainWindow.webContents.send('menu:invoke', command);
@@ -63,7 +68,13 @@ app.whenReady().then(() => {
   registerProcessHandlers();
   registerGnuplotHandlers();
   buildAppMenu(null, dispatchMenuCommand);
-  ipcMain.on('app:quit', () => app.quit());
+  // The renderer calls this (via host.quit) from quitInteractive, after
+  // it has confirmed there is nothing unsaved to lose. Mark the quit
+  // confirmed so before-quit lets it through, then quit.
+  ipcMain.on('app:quit', () => {
+    quitConfirmed = true;
+    app.quit();
+  });
   // Render a sticky note's JMarkdown via the user-configured command.
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
@@ -83,4 +94,23 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   // macOS apps conventionally stay open with no windows; quit elsewhere.
   if (process.platform !== 'darwin') app.quit();
+});
+
+// A native Quit (Cmd+Q or the app-menu Quit) calls app.quit() directly,
+// which would bypass the renderer's unsaved-changes prompt and silently
+// drop edits. Intercept the first quit and hand off to the renderer: it
+// runs quitInteractive (confirm + flush metadata) and calls back via
+// `app:quit` to actually quit, or does nothing to cancel. If the window
+// is already gone there is nothing to confirm — let the quit proceed.
+app.on('before-quit', (event) => {
+  if (quitConfirmed) return;
+  if (
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    mainWindow.webContents.isDestroyed()
+  ) {
+    return;
+  }
+  event.preventDefault();
+  mainWindow.webContents.send('app:confirm-quit');
 });

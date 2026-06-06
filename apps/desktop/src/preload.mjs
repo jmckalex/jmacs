@@ -185,6 +185,17 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.on('menu:invoke', (_event, command) => callback(command)),
 
   /**
+   * Register a handler invoked when a native Quit (Cmd+Q / app-menu
+   * Quit) is requested. The main process holds the quit until the
+   * renderer responds, so the handler should run its unsaved-changes
+   * confirm + flush and then call `quit()` to proceed — or do nothing
+   * to cancel.
+   * @param {() => void} callback
+   */
+  onConfirmQuit: (callback) =>
+    ipcRenderer.on('app:confirm-quit', () => callback()),
+
+  /**
    * Read a user config file (e.g. `custom.lisp`, `init.lisp`) from the
    * per-user data directory, or null when it does not exist.
    * @param {string} name - A bare filename.

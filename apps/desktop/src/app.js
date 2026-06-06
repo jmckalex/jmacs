@@ -7777,6 +7777,16 @@ window.host.onMenuCommand((command) => {
 });
 refreshModeMenu();
 
+// A native Quit (Cmd+Q / app-menu Quit) is intercepted in the main
+// process and routed here, so it gets the same unsaved-changes confirm
+// and metadata flush as C-x C-c (quitInteractive) instead of dropping
+// edits silently. quitInteractive calls host.quit() to actually exit.
+if (window.host && typeof window.host.onConfirmQuit === 'function') {
+  window.host.onConfirmQuit(() => {
+    quitInteractive();
+  });
+}
+
 // Wire the one-shot process runner's completion channel exactly once.
 // When a `(run-process! …)` child exits, the host sends one
 // `process:exit` with the buffered output; we look up the parked
