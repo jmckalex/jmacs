@@ -44,6 +44,12 @@
  *   `@injection.content` regions paired with a language tag. When set,
  *   the loader threads a `getHighlighter` lookup into the highlighter
  *   so inner ranges render in the injected language's palette.
+ * @property {(text: string) => {start: number, end: number,
+ *   language: string}[]} [injectionProvider] - A code-driven injection
+ *   source, merged with `injectionQuery`'s matches. For regions a
+ *   grammar doesn't parse as nodes (e.g. `$…$` math in Markdown, fed to
+ *   the `latex` grammar). Like `injectionQuery`, it makes the loader
+ *   thread `getHighlighter` in.
  * @property {string} [foldQuery] - A query whose `(node) @fold`
  *   captures mark foldable scopes — function bodies, class bodies,
  *   blocks, JSX elements, etc. When set, the highlighter exposes a
@@ -87,6 +93,14 @@ export function registerLanguage(spec) {
   ) {
     throw new Error(`language ${spec.tag}: foldQuery must be a string`);
   }
+  if (
+    spec.injectionProvider !== undefined &&
+    typeof spec.injectionProvider !== 'function'
+  ) {
+    throw new Error(
+      `language ${spec.tag}: injectionProvider must be a function`
+    );
+  }
   if (spec.aliases !== undefined && !Array.isArray(spec.aliases)) {
     throw new Error(`language ${spec.tag}: aliases must be a string[]`);
   }
@@ -102,6 +116,9 @@ export function registerLanguage(spec) {
   }
   if (spec.foldQuery !== undefined) {
     stored.foldQuery = spec.foldQuery;
+  }
+  if (spec.injectionProvider !== undefined) {
+    stored.injectionProvider = spec.injectionProvider;
   }
   if (spec.aliases !== undefined) {
     stored.aliases = [...spec.aliases];
@@ -213,6 +230,10 @@ export async function loadLanguageHighlighters(
       if (overrideStore !== undefined) options.overrideStore = overrideStore;
       if (spec.injectionQuery) {
         options.injectionQuery = spec.injectionQuery;
+        options.getHighlighter = getHighlighter;
+      }
+      if (spec.injectionProvider) {
+        options.injectionProvider = spec.injectionProvider;
         options.getHighlighter = getHighlighter;
       }
       if (spec.foldQuery) options.foldQuery = spec.foldQuery;

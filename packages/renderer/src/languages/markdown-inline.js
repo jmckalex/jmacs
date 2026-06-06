@@ -9,9 +9,17 @@
  *
  * The wasm binary is produced by `scripts/build-grammars.sh` alongside
  * `tree-sitter-markdown.wasm`.
+ *
+ * LaTeX math: the grammar parses `$…$`/`$$…$$` as `latex_block` but not
+ * `\(…\)`, `\[…\]` or `\begin{…}` environments, so rather than capture
+ * the grammar's nodes we use a code-driven `injectionProvider`
+ * (`markdownMathInjections`) that finds every MathJax notation and
+ * injects the `latex` grammar into it — accurate math highlighting
+ * without forking the markdown grammar. See plans/MD-MATH-AND-PREVIEW.md.
  */
 
 import { registerLanguage } from '../language-registry.js';
+import { markdownMathInjections } from '../highlight.js';
 
 const QUERY = `
   (emphasis) @emphasis
@@ -36,4 +44,5 @@ registerLanguage({
   grammar: 'tree-sitter-markdown-inline.wasm',
   query: QUERY,
   suffixes: [],
+  injectionProvider: markdownMathInjections,
 });
