@@ -175,7 +175,12 @@ test('the new languages reconstruct the line', () => {
 
 // --- multi-line tokenizers --------------------------------------------
 
-import { highlightBuffer, highlightLatexBuffer, highlightMakefileBuffer } from '../src/highlight.js';
+import {
+  highlightBuffer,
+  highlightLatexBuffer,
+  highlightMakefileBuffer,
+  highlightMarkdownBuffer,
+} from '../src/highlight.js';
 
 /** A line's faces, in order. */
 const lineFaces = (lines, n) => lines[n].map((r) => r.face);
@@ -256,4 +261,90 @@ test('Makefile: lines outside define still go through the per-line tokenizer', (
   assert.ok(lines[0].some((r) => r.face === 'constant' && r.text === 'CC'));
   assert.ok(lines[1].some((r) => r.face === 'keyword' && r.text === 'all'));
   assert.ok(lines[2].some((r) => r.face === 'constant' && r.text === '$(CC)'));
+});
+
+// --- Markdown with embedded LaTeX math --------------------------------
+
+/** All runs of a line whose face matches. */
+const lineRunsWithFace = (lines, n, face) =>
+  lines[n].filter((r) => r.face === face);
+
+test('Markdown: inline $…$ tokenizes the body as LaTeX, delimiters as string', () => {
+  const lines = highlightMarkdownBuffer('the $\\alpha + x$ end');
+  assert.equal(lines.length, 1);
+  assert.deepEqual(lineFaces(lines, 0), [
+    null, 'string', 'keyword', null, 'string', null,
+  ]);
+  // The control sequence in the body is keyword-styled.
+  assert.ok(lines[0].some((r) => r.face === 'keyword' && r.text === '\\alpha'));
+  // The delimiters are the string face.
+  assert.deepEqual(
+    lineRunsWithFace(lines, 0, 'string').map((r) => r.text),
+    ['$', '$']
+  );
+  assert.equal(lineText(lines, 0), 'the $\\alpha + x$ end');
+});
+
+test('Markdown: display $$…$$ spans lines, body highlighted as LaTeX', () => {
+  const src = '$$\n\\frac{a}{b}\n$$';
+  const lines = highlightMarkdownBuffer(src);
+  assert.equal(lines.length, 3);
+  assert.deepEqual(lines[0], [{ text: '$$', face: 'string' }]);
+  assert.ok(lines[1].some((r) => r.face === 'keyword' && r.text === '\\frac'));
+  assert.ok(lines[1].some((r) => r.face === 'paren' && r.text === '{'));
+  assert.deepEqual(lines[2], [{ text: '$$', face: 'string' }]);
+  assert.equal(src.split('\n').join('\n'),
+    lines.map((_, i) => lineText(lines, i)).join('\n'));
+});
+
+test('Markdown: \\(…\\) and \\[…\\] are recognised', () => {
+  const inline = highlightMarkdownBuffer('see \\(a+b\\) ok');
+  assert.deepEqual(
+    lineRunsWithFace(inline, 0, 'string').map((r) => r.text),
+    ['\\(', '\\)']
+  );
+  assert.equal(lineText(inline, 0), 'see \\(a+b\\) ok');
+
+  const block = highlightMarkdownBuffer('\\[\nx = y\n\\]');
+  assert.deepEqual(block[0], [{ text: '\\[', face: 'string' }]);
+  assert.deepEqual(block[2], [{ text: '\\]', face: 'string' }]);
+});
+
+test('Markdown: an escaped \\$ is not a math delimiter', () => {
+  const lines = highlightMarkdownBuffer('it cost \\$5 today');
+  assert.equal(lineRunsWithFace(lines, 0, 'string').length, 0);
+  assert.equal(lineText(lines, 0), 'it cost \\$5 today');
+});
+
+test('Markdown: $…$ inside an inline code span is not math', () => {
+  const lines = highlightMarkdownBuffer('use `$x$` here');
+  // No math: the code span keeps its markdown `code` face, no `string`.
+  assert.equal(lineRunsWithFace(lines, 0, 'string').length, 0);
+  assert.ok(lines[0].some((r) => r.face === 'code' && r.text === '`$x$`'));
+});
+
+test('Markdown: $…$ inside a fenced code block is not math', () => {
+  const lines = highlightMarkdownBuffer('```\n$x$\n```');
+  assert.equal(lines.length, 3);
+  // The fenced body line has no math `string` run.
+  assert.equal(lineRunsWithFace(lines, 1, 'string').length, 0);
+  assert.equal(lineText(lines, 1), '$x$');
+});
+
+test('Markdown: non-math lines are byte-identical to the per-line tokenizer', () => {
+  const src =
+    '# Heading\n\nA *strong* and `code` and [link](u).\n- item\n> quote';
+  const lines = highlightMarkdownBuffer(src);
+  const expected = src.split('\n');
+  assert.equal(lines.length, expected.length);
+  for (let i = 0; i < expected.length; i += 1) {
+    assert.deepEqual(lines[i], highlightLine(expected[i], 'markdown'));
+  }
+});
+
+test('Markdown: the whole-buffer dispatcher routes markdown here', () => {
+  assert.deepEqual(
+    highlightBuffer('a $x$ b', 'markdown'),
+    highlightMarkdownBuffer('a $x$ b')
+  );
 });

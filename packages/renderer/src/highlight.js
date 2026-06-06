@@ -17,6 +17,7 @@
  */
 
 import { languageForFilename } from './language-registry.js';
+import { scanMathSegments, MARKDOWN_MATH_CONFIG } from './math-segments.js';
 
 /** A maximal stretch of a line sharing one highlight face. */
 /** @typedef {{ text: string, face: string | null }} Run */
@@ -636,6 +637,269 @@ export function highlightMakefileBuffer(text) {
   return result;
 }
 
+// --- Markdown with embedded LaTeX math -------------------------------
+// Markdown's own constructs are line-independent, but its math regions
+// (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) can span lines, and we want their
+// *bodies* tokenized as LaTeX. So markdown gets a whole-buffer pass that
+// keeps `tokenizeMarkdown`'s per-line output verbatim and splices LaTeX
+// runs over the math columns. See plans/MD-MATH-AND-PREVIEW.md.
+
+/** The face applied to math delimiters (`$`, `$$`, `\(`, `\[`, …). */
+const MATH_DELIM_FACE = 'string';
+
+/**
+ * Mask Markdown code so a `$` inside it is never read as a math
+ * delimiter. Returns a same-length copy (offsets preserved) with code
+ * characters replaced by spaces; newlines are kept so line structure is
+ * intact. Covers fenced code blocks (``` ``` ```/`~~~`) and inline code
+ * spans (matched backtick runs). Indented (4-space) code blocks are not
+ * masked — a known v1 gap.
+ *
+ * Masking *before* scanning (rather than dropping segments after) is
+ * deliberate: an odd `$` in code would otherwise mis-pair with a real
+ * `$` and consume the following formula.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function maskMarkdownCode(text) {
+  const lines = text.split('\n');
+  const out = [];
+  let fenceLen = 0; // >0 while inside a fence; the opener's run length
+  let fenceChar = '';
+  for (const line of lines) {
+    const fence = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fenceLen > 0) {
+      out.push(' '.repeat(line.length));
+      if (
+        fence &&
+        fence[1][0] === fenceChar &&
+        fence[1].length >= fenceLen
+      ) {
+        fenceLen = 0;
+      }
+      continue;
+    }
+    if (fence) {
+      out.push(' '.repeat(line.length));
+      fenceLen = fence[1].length;
+      fenceChar = fence[1][0];
+      continue;
+    }
+    out.push(maskInlineCode(line));
+  }
+  return out.join('\n');
+}
+
+/**
+ * Replace inline code spans (backtick runs of equal length) in one line
+ * with spaces, preserving length. An unclosed run is left as-is.
+ *
+ * @param {string} line
+ * @returns {string}
+ */
+function maskInlineCode(line) {
+  let out = '';
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== '`') {
+      out += line[i];
+      i += 1;
+      continue;
+    }
+    let n = 0;
+    while (line[i + n] === '`') n += 1;
+    // Find a closing run of exactly n backticks.
+    let j = i + n;
+    let closed = -1;
+    while (j < line.length) {
+      if (line[j] === '`') {
+        let k = 0;
+        while (line[j + k] === '`') k += 1;
+        if (k === n) {
+          closed = j;
+          break;
+        }
+        j += k;
+      } else {
+        j += 1;
+      }
+    }
+    if (closed !== -1) {
+      const end = closed + n;
+      out += ' '.repeat(end - i);
+      i = end;
+    } else {
+      out += line.slice(i, i + n);
+      i += n;
+    }
+  }
+  return out;
+}
+
+/**
+ * The byte widths of a segment's opening and closing delimiters. Block
+ * math (`$$`, `\[…\]`) is 2/2; inline is 1/1 for `$…$` and 2/2 for
+ * `\(…\)`.
+ *
+ * @param {string} text
+ * @param {MathSegment} seg
+ * @returns {{ openLen: number, closeLen: number }}
+ */
+function delimiterWidths(text, seg) {
+  if (seg.kind === 'block') return { openLen: 2, closeLen: 2 };
+  return text[seg.start] === '$'
+    ? { openLen: 1, closeLen: 1 }
+    : { openLen: 2, closeLen: 2 };
+}
+
+/** Append every run in `src` to `dst`. */
+function pushRuns(dst, src) {
+  for (const r of src) dst.push(r);
+}
+
+/**
+ * The runs of `runs` covering columns `[a, b)`, with the boundary runs
+ * sliced. Texts always concatenate back to the covered substring.
+ *
+ * @param {Run[]} runs
+ * @param {number} a
+ * @param {number} b
+ * @returns {Run[]}
+ */
+function sliceRuns(runs, a, b) {
+  const out = [];
+  let col = 0;
+  for (const r of runs) {
+    const start = col;
+    const end = col + r.text.length;
+    col = end;
+    if (end <= a) continue;
+    if (start >= b) break;
+    const text = r.text.slice(Math.max(a, start) - start, Math.min(b, end) - start);
+    if (text !== '') out.push({ text, face: r.face });
+  }
+  return out;
+}
+
+/** Merge adjacent runs sharing a face into one run. */
+function mergeRuns(runs) {
+  const out = [];
+  for (const r of runs) {
+    const last = out[out.length - 1];
+    if (last && last.face === r.face) last.text += r.text;
+    else out.push({ text: r.text, face: r.face });
+  }
+  return out;
+}
+
+/**
+ * @typedef {object} MathPlacement
+ * @property {number} colStart - First column of the math on this line.
+ * @property {number} colEnd - One past the last column.
+ * @property {number} openLen - Leading delimiter chars on this line (0
+ *   unless the opener is here).
+ * @property {number} closeLen - Trailing delimiter chars on this line (0
+ *   unless the closer is here).
+ */
+
+/**
+ * The runs for one line's slice of a math segment: an opening-delimiter
+ * run (when present), the LaTeX-tokenized body, then a closing-delimiter
+ * run (when present).
+ *
+ * @param {string} line
+ * @param {MathPlacement} p
+ * @returns {Run[]}
+ */
+function mathRunsFor(line, p) {
+  const span = line.slice(p.colStart, p.colEnd);
+  const runs = [];
+  if (p.openLen > 0) runs.push({ text: span.slice(0, p.openLen), face: MATH_DELIM_FACE });
+  const body = span.slice(p.openLen, span.length - p.closeLen);
+  if (body !== '') pushRuns(runs, tokenizeLatex(body));
+  if (p.closeLen > 0) {
+    runs.push({ text: span.slice(span.length - p.closeLen), face: MATH_DELIM_FACE });
+  }
+  return runs;
+}
+
+/**
+ * Replace the math columns of a line's base (Markdown) runs with LaTeX
+ * runs. `placements` are non-overlapping; outside them the base runs
+ * carry through unchanged.
+ *
+ * @param {string} line
+ * @param {Run[]} baseRuns
+ * @param {MathPlacement[]} placements
+ * @returns {Run[]}
+ */
+function spliceMathRuns(line, baseRuns, placements) {
+  placements.sort((x, y) => x.colStart - y.colStart);
+  const out = [];
+  let col = 0;
+  for (const p of placements) {
+    if (p.colStart > col) pushRuns(out, sliceRuns(baseRuns, col, p.colStart));
+    pushRuns(out, mathRunsFor(line, p));
+    col = p.colEnd;
+  }
+  if (col < line.length) pushRuns(out, sliceRuns(baseRuns, col, line.length));
+  return mergeRuns(out);
+}
+
+/**
+ * Tokenize a whole Markdown buffer into per-line runs. Each line is
+ * tokenized exactly as `tokenizeMarkdown` would, then any embedded math
+ * region (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`, possibly multi-line) has its
+ * columns replaced by LaTeX-highlighted runs. Math inside code is left
+ * as ordinary text. See plans/MD-MATH-AND-PREVIEW.md.
+ *
+ * @param {string} text
+ * @returns {Run[][]}
+ */
+export function highlightMarkdownBuffer(text) {
+  const lines = text.split('\n');
+  const segments = scanMathSegments(maskMarkdownCode(text), MARKDOWN_MATH_CONFIG);
+  if (segments.length === 0) return lines.map((line) => tokenizeMarkdown(line));
+
+  // Line start offsets (each line plus its newline).
+  const lineStart = new Array(lines.length);
+  let off = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    lineStart[i] = off;
+    off += lines[i].length + 1;
+  }
+
+  /** @type {Map<number, MathPlacement[]>} */
+  const byLine = new Map();
+  for (const seg of segments) {
+    const { openLen, closeLen } = delimiterWidths(text, seg);
+    for (let line = 0; line < lines.length; line += 1) {
+      const ls = lineStart[line];
+      const le = ls + lines[line].length;
+      if (ls >= seg.end) break;
+      if (le <= seg.start) continue;
+      const colStart = Math.max(seg.start, ls) - ls;
+      const colEnd = Math.min(seg.end, le) - ls;
+      if (colEnd <= colStart) continue;
+      const placements = byLine.get(line) ?? [];
+      placements.push({
+        colStart,
+        colEnd,
+        openLen: seg.start >= ls ? openLen : 0,
+        closeLen: seg.end <= le ? closeLen : 0,
+      });
+      byLine.set(line, placements);
+    }
+  }
+
+  return lines.map((line, index) => {
+    const base = tokenizeMarkdown(line);
+    const placements = byLine.get(index);
+    return placements ? spliceMathRuns(line, base, placements) : base;
+  });
+}
+
 /**
  * The whole-buffer tokenizer for a language, or null if none. The view
  * uses this in preference to `highlightLine` when defined.
@@ -647,5 +911,6 @@ export function highlightMakefileBuffer(text) {
 export function highlightBuffer(text, language) {
   if (language === 'latex') return highlightLatexBuffer(text);
   if (language === 'makefile') return highlightMakefileBuffer(text);
+  if (language === 'markdown') return highlightMarkdownBuffer(text);
   return null;
 }
