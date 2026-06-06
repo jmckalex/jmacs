@@ -158,3 +158,37 @@
 
 ;; markdown-mode-map is declared empty in modes.lisp; fill it in here.
 (set! markdown-mode-map {"C-c" markdown-c-c-map})
+
+;; --- the markdown-mode menu -------------------------------------------
+;; A structured (grouped) menu, like latex-menu.lisp. Kept here rather
+;; than in a separate file because every command is defined above in this
+;; same file; menus.lisp (which defines register-mode-menu!) loads before
+;; markdown.lisp, so the call is safe. Each section is
+;;   (section-label (friendly-label . command-symbol) …)
+;; and the host resolves each command's keybinding and docstring from the
+;; flat `mode-menu-entries` data, so commands need only be named here.
+(register-mode-menu! "Markdown"
+  (list
+    (cons "Format"
+          (list (cons "Bold" 'markdown-bold)
+                (cons "Italic" 'markdown-italic)
+                (cons "Inline Code" 'markdown-code)
+                (cons "Highlight" 'markdown-highlight)))
+    (cons "Insert"
+          (list (cons "Link" 'markdown-insert-link)
+                (cons "Citation" 'markdown-insert-cite)
+                (cons "Footnote" 'markdown-insert-footnote)))
+    (cons "Headings"
+          (list (cons "Heading 1" 'markdown-heading-1)
+                (cons "Heading 2" 'markdown-heading-2)
+                (cons "Heading 3" 'markdown-heading-3)
+                (cons "Heading 4" 'markdown-heading-4)
+                (cons "Heading 5" 'markdown-heading-5)
+                (cons "Heading 6" 'markdown-heading-6)))
+    (cons "Blocks"
+          (list (cons "Blockquote" 'markdown-blockquote)
+                (cons "List Item" 'markdown-list-item)))
+    (cons "Preview & Math"
+          (list (cons "Toggle Preview Pane" 'markdown-preview)
+                (cons "Toggle Math Preview" 'toggle-markdown-math-preview)
+                (cons "Toggle Math Symbols" 'toggle-math-mode)))))

@@ -59,13 +59,41 @@ async function menuEditor() {
 
 test('a mode with no registration reports nil sections (flat menu path)', async () => {
   const { ev } = await menuEditor();
-  // markdown-mode is a real mode that registers no structured menu.
-  ev('(switch-major-mode markdown-mode)');
-  assert.equal(ev('(major-mode-name)'), 'Markdown');
+  // fundamental-mode is a real mode that registers no structured menu.
+  ev('(switch-major-mode fundamental-mode)');
+  assert.equal(ev('(major-mode-name)'), 'Fundamental');
   assert.equal(ev('(nil? (mode-menu-sections))'), true);
   // The host-friendly accessor returns an EMPTY list (not nil) so the
   // host can branch on length and keep the flat menu.
   assert.equal(ev('(length (mode-menu-sections-resolved))'), 0);
+});
+
+test('markdown.lisp registers the Markdown structured menu', async () => {
+  const { ev } = await menuEditor();
+  ev('(switch-major-mode markdown-mode)');
+  assert.equal(ev('(major-mode-name)'), 'Markdown');
+  assert.equal(ev('(nil? (mode-menu-sections))'), false);
+  const labels = listToArray(ev('(map car (mode-menu-sections))'));
+  assert.deepEqual(labels, [
+    'Format',
+    'Insert',
+    'Headings',
+    'Blocks',
+    'Preview & Math',
+  ]);
+  // The Headings section carries all six levels, resolved to strings.
+  const resolved = listToArray(ev('(mode-menu-sections-resolved)'));
+  const headings = listToArray(resolved[2]);
+  assert.equal(headings[0], 'Headings');
+  const headingCommands = headings.slice(1).map((leaf) => listToArray(leaf)[1]);
+  assert.deepEqual(headingCommands, [
+    'markdown-heading-1',
+    'markdown-heading-2',
+    'markdown-heading-3',
+    'markdown-heading-4',
+    'markdown-heading-5',
+    'markdown-heading-6',
+  ]);
 });
 
 test('latex-menu.lisp registers the LaTeX structured menu', async () => {
