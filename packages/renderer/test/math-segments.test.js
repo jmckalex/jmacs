@@ -13,6 +13,7 @@ import {
   pointInsideSegment,
   segmentContainingPoint,
   isEmptyBody,
+  maskMarkdownCode,
   LATEX_MATH_CONFIG,
   MARKDOWN_MATH_CONFIG,
 } from '../src/math-segments.js';
@@ -360,4 +361,37 @@ test('environments can be restricted to a name list', () => {
 test('an empty config still scans everything (flags default on)', () => {
   const text = '$a$ \\begin{align}b\\end{align}';
   assert.equal(scanMathSegments(text, {}).length, 2);
+});
+
+// --- maskMarkdownCode -------------------------------------------------
+
+test('maskMarkdownCode blanks an inline code span, preserving length', () => {
+  const text = 'a `$x$` b';
+  const masked = maskMarkdownCode(text);
+  assert.equal(masked.length, text.length);
+  assert.equal(masked, 'a       b');
+  // The masked `$` are gone, so no math is scanned there.
+  assert.equal(scanMathSegments(masked, MARKDOWN_MATH_CONFIG).length, 0);
+});
+
+test('maskMarkdownCode blanks a fenced code block but keeps newlines', () => {
+  const text = '```\n$x$\n```';
+  const masked = maskMarkdownCode(text);
+  assert.equal(masked.length, text.length);
+  assert.deepEqual(masked.split('\n'), ['   ', '   ', '   ']);
+  assert.equal(scanMathSegments(masked, MARKDOWN_MATH_CONFIG).length, 0);
+});
+
+test('maskMarkdownCode leaves real math (outside code) untouched, offsets intact', () => {
+  const text = 'see `code` then $y$ end';
+  const masked = maskMarkdownCode(text);
+  const segs = scanMathSegments(masked, MARKDOWN_MATH_CONFIG);
+  assert.equal(segs.length, 1);
+  // Offsets index back into the ORIGINAL text correctly.
+  assert.equal(text.slice(segs[0].start, segs[0].end), '$y$');
+  assert.equal(segs[0].body, 'y');
+});
+
+test('maskMarkdownCode leaves an unclosed backtick run alone', () => {
+  assert.equal(maskMarkdownCode('a ` b $x$'), 'a ` b $x$');
 });

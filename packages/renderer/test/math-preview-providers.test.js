@@ -65,3 +65,28 @@ test('providerForConfig builds a scan bound to the config', () => {
   assert.equal(provider.scan('\\begin{align}x\\end{align}').length, 0);
   assert.equal(provider.scan('$y$').length, 1);
 });
+
+test('the Markdown provider does not treat math inside code as math', () => {
+  const provider = mathPreviewProviderForMode('Markdown');
+  // The reported bug: a heading whose backtick span holds math — the
+  // `$$…$$` previously became a block segment wedged in the heading line
+  // and corrupted the preview. It must now be ignored.
+  assert.equal(provider.scan('## Inline `$x$` here').length, 0);
+  assert.equal(provider.scan('## Display `$$y$$` here').length, 0);
+  assert.equal(provider.scan('```\n$z$\n```').length, 0);
+  // Real math alongside masked code is still found, at correct offsets.
+  const text = 'text `$x$` and $y$';
+  const segs = provider.scan(text);
+  assert.equal(segs.length, 1);
+  assert.equal(text.slice(segs[0].start, segs[0].end), '$y$');
+});
+
+test('the LaTeX provider does NOT mask backticks (not code in .tex)', () => {
+  const provider = mathPreviewProviderForMode('LaTeX');
+  assert.equal(provider.scan('`$x$`').length, 1);
+});
+
+test('providerForConfig masks code only when asked', () => {
+  assert.equal(providerForConfig(MARKDOWN_MATH_CONFIG, true).scan('`$x$`').length, 0);
+  assert.equal(providerForConfig(MARKDOWN_MATH_CONFIG, false).scan('`$x$`').length, 1);
+});

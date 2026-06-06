@@ -521,3 +521,98 @@ export function segmentContainingPoint(segments, point) {
 export function isEmptyBody(body) {
   return typeof body !== 'string' || body.trim() === '';
 }
+
+/**
+ * Mask Markdown code so a `$` (or `\(`, `\[`, …) inside it is never read
+ * as a math delimiter. Returns a **same-length** copy (offsets and line
+ * structure preserved) with the characters of code spans/blocks replaced
+ * by spaces; newlines are kept.
+ *
+ * Markdown-like modes (Markdown, and later HTML/PHP) embed math in prose
+ * where a backtick code span — `` `$x$` `` — or a fenced block is *not*
+ * math; without this, the delimiter scanner mis-reads those `$` as math,
+ * which (e.g. for a `$$…$$` wedged in a heading's backticks) corrupts the
+ * preview. LaTeX mode does not use this — backticks aren't code in a
+ * `.tex` file.
+ *
+ * Covers fenced code blocks (```` ``` ````/`~~~`, the closing fence being
+ * the same character and at least as long as the opener) and inline code
+ * spans (matched backtick runs of equal length). Indented (4-space) code
+ * blocks are a known gap. Because masking is length-preserving and math
+ * is only ever found in the surviving (non-code) regions, segment offsets
+ * and bodies map back to the original text unchanged.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function maskMarkdownCode(text) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  const lines = text.split('\n');
+  const out = [];
+  let fenceLen = 0; // >0 while inside a fence; the opener's run length
+  let fenceChar = '';
+  for (const line of lines) {
+    const fence = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fenceLen > 0) {
+      out.push(' '.repeat(line.length));
+      if (fence && fence[1][0] === fenceChar && fence[1].length >= fenceLen) {
+        fenceLen = 0;
+      }
+      continue;
+    }
+    if (fence) {
+      out.push(' '.repeat(line.length));
+      fenceLen = fence[1].length;
+      fenceChar = fence[1][0];
+      continue;
+    }
+    out.push(maskInlineCode(line));
+  }
+  return out.join('\n');
+}
+
+/**
+ * Replace inline code spans (backtick runs of equal length) in one line
+ * with spaces, preserving length. An unclosed run is left as-is.
+ *
+ * @param {string} line
+ * @returns {string}
+ */
+function maskInlineCode(line) {
+  let out = '';
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== '`') {
+      out += line[i];
+      i += 1;
+      continue;
+    }
+    let n = 0;
+    while (line[i + n] === '`') n += 1;
+    // Find a closing run of exactly n backticks.
+    let j = i + n;
+    let closed = -1;
+    while (j < line.length) {
+      if (line[j] === '`') {
+        let k = 0;
+        while (line[j + k] === '`') k += 1;
+        if (k === n) {
+          closed = j;
+          break;
+        }
+        j += k;
+      } else {
+        j += 1;
+      }
+    }
+    if (closed !== -1) {
+      const end = closed + n;
+      out += ' '.repeat(end - i);
+      i = end;
+    } else {
+      out += line.slice(i, i + n);
+      i += n;
+    }
+  }
+  return out;
+}
