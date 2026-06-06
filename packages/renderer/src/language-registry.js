@@ -164,12 +164,18 @@ export function languageForFilename(name) {
  *   injectionQuery?: string,
  *   foldQuery?: string,
  *   getHighlighter?: (tag: string) => import('./treesitter.js').Highlighter | undefined,
+ *   tag?: string,
+ *   overrideStore?: import('./highlight-overrides.js').OverrideStore,
  * }) => Promise<import('./treesitter.js').Highlighter>
  * } create - Build a tree-sitter highlighter from a grammar file, a
  *   query, and (when set) an injection query plus a sibling-lookup, or
- *   a fold query.
+ *   a fold query. The language `tag` and the user `overrideStore` are
+ *   always threaded in so the highlighter can apply live user rules.
  * @param {(tag: string, error: Error) => void} [onError] - Called when a
  *   language's grammar fails to load. Defaults to ignoring the error.
+ * @param {import('./highlight-overrides.js').OverrideStore} [overrideStore] -
+ *   The live user-override store. Passed to every highlighter so user
+ *   `kind -> face` rules apply on top of the base query, recomputed live.
  * @returns {Promise<{
  *   highlighters: Record<string, ((text: string) =>
  *     import('./highlight.js').Run[][]) & {
@@ -187,7 +193,11 @@ export function languageForFilename(name) {
  *   a parallel map of fold-capture functions, populated only for
  *   languages that declared a `foldQuery`.
  */
-export async function loadLanguageHighlighters(create, onError = () => {}) {
+export async function loadLanguageHighlighters(
+  create,
+  onError = () => {},
+  overrideStore = undefined
+) {
   /** @type {Record<string, import('./treesitter.js').Highlighter>} */
   const highlighters = {};
   /** Closure read lazily at highlight time, after the loop populates. */
@@ -195,16 +205,17 @@ export async function loadLanguageHighlighters(create, onError = () => {}) {
 
   for (const spec of registry.values()) {
     try {
-      /** @type {object | undefined} */
-      let options;
-      if (spec.injectionQuery || spec.foldQuery) {
-        options = {};
-        if (spec.injectionQuery) {
-          options.injectionQuery = spec.injectionQuery;
-          options.getHighlighter = getHighlighter;
-        }
-        if (spec.foldQuery) options.foldQuery = spec.foldQuery;
+      // Every language carries its tag and the override store so the
+      // highlighter can layer user `kind -> face` rules on its base
+      // query. Injection/fold options are added only when declared.
+      /** @type {object} */
+      const options = { tag: spec.tag };
+      if (overrideStore !== undefined) options.overrideStore = overrideStore;
+      if (spec.injectionQuery) {
+        options.injectionQuery = spec.injectionQuery;
+        options.getHighlighter = getHighlighter;
       }
+      if (spec.foldQuery) options.foldQuery = spec.foldQuery;
       const highlighter = await create(spec.grammar, spec.query, options);
       highlighters[spec.tag] = highlighter;
       // Alias entries point at the same highlighter so an injection's
@@ -224,11 +235,12 @@ export async function loadLanguageHighlighters(create, onError = () => {}) {
   const exposedHighlighters = {};
   const exposedFolds = {};
   for (const [tag, highlighter] of Object.entries(highlighters)) {
-    const fn = (text) => highlighter.highlight(text);
+    const fn = (text, modeName = null) => highlighter.highlight(text, modeName);
     // Expose the raw capture list + node-at-point as properties on
     // the callable so a caller that wants either reach them without
     // a second registry.
-    fn.captures = (text) => highlighter.captures(text);
+    fn.captures = (text, modeName = null) =>
+      highlighter.captures(text, 0, modeName);
     fn.nodeAtPoint = (text, pos) => highlighter.nodeAtPoint(text, pos);
     exposedHighlighters[tag] = fn;
     if (typeof highlighter.foldCaptures === 'function') {

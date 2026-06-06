@@ -89,6 +89,33 @@ function truthy(value) {
   return true;
 }
 
+/** The CSS declarations for one face attribute map, or `[]` when the
+ *  face declares nothing. Shared by the global and per-mode generators. */
+function faceDeclarations(attrs) {
+  const decls = [];
+  const fg = valueToString(attrs.get('foreground'));
+  if (fg !== null) decls.push(`color: ${fg};`);
+  const bg = valueToString(attrs.get('background'));
+  if (bg !== null) decls.push(`background-color: ${bg};`);
+  const weight = cssWeight(attrs.get('weight'));
+  if (weight !== null) decls.push(`font-weight: ${weight};`);
+  const slant = cssSlant(attrs.get('slant'));
+  if (slant !== null) decls.push(`font-style: ${slant};`);
+  const decoration = cssDecoration(
+    attrs.get('underline'),
+    attrs.get('strike-through')
+  );
+  if (decoration !== null) decls.push(`text-decoration: ${decoration};`);
+  return decls;
+}
+
+/** Escape a major-mode name for use inside a CSS attribute-selector
+ *  string. Mode names are short display strings ("LaTeX", "Python");
+ *  a backslash or double-quote would break the selector, so escape both. */
+function cssAttrValue(name) {
+  return String(name).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 /**
  * Generate the CSS body for a face map.
  *
@@ -103,25 +130,36 @@ export function generateFaceCss(faces) {
   // Sort face names for stable, diffable output.
   const names = [...faces.keys()].sort();
   for (const name of names) {
-    const attrs = faces.get(name);
-    const decls = [];
-    const fg = valueToString(attrs.get('foreground'));
-    if (fg !== null) decls.push(`color: ${fg};`);
-    const bg = valueToString(attrs.get('background'));
-    if (bg !== null) decls.push(`background-color: ${bg};`);
-    const weight = cssWeight(attrs.get('weight'));
-    if (weight !== null) decls.push(`font-weight: ${weight};`);
-    const slant = cssSlant(attrs.get('slant'));
-    if (slant !== null) decls.push(`font-style: ${slant};`);
-    const decoration = cssDecoration(
-      attrs.get('underline'),
-      attrs.get('strike-through')
-    );
-    if (decoration !== null) {
-      decls.push(`text-decoration: ${decoration};`);
-    }
+    const decls = faceDeclarations(faces.get(name));
     if (decls.length === 0) continue;
     lines.push(`.tok-${name} { ${decls.join(' ')} }`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Generate mode-scoped CSS — `[data-major-mode="MODE"] .tok-NAME { … }`
+ * — from a map of mode-name → (face-name → attr-map). The editor view's
+ * root carries `data-major-mode` (see view.js), so these rules win over
+ * the unscoped `.tok-NAME` rules for buffers in that mode (equal
+ * specificity from the attribute selector, but later in the stylesheet).
+ *
+ * @param {Map<string, Map<string, Map<string, *>>>} perMode
+ * @returns {string}
+ */
+export function generateModeFaceCss(perMode) {
+  const lines = [];
+  const modes = [...perMode.keys()].sort();
+  for (const mode of modes) {
+    const faces = perMode.get(mode);
+    if (!(faces instanceof Map)) continue;
+    const sel = `[data-major-mode="${cssAttrValue(mode)}"]`;
+    const names = [...faces.keys()].sort();
+    for (const name of names) {
+      const decls = faceDeclarations(faces.get(name));
+      if (decls.length === 0) continue;
+      lines.push(`${sel} .tok-${name} { ${decls.join(' ')} }`);
+    }
   }
   return lines.join('\n');
 }
@@ -164,6 +202,29 @@ export function facesFromAlist(alist, listToArray) {
 }
 
 /**
+ * Parse the per-mode styles alist the Lisp side hands us —
+ * `(mode-name . ((face-name . ((:attr . value) …)) …))` — into a
+ * Map<modeName, Map<faceName, Map<attr, value>>>.
+ *
+ * @param {Array<{head: *, tail: *}>} alist - The list as a JS array of
+ *   cons pairs (caller already did `listToArray`).
+ * @param {(form: *) => Array<*>} listToArray
+ * @returns {Map<string, Map<string, Map<string, *>>>}
+ */
+export function modeFacesFromAlist(alist, listToArray) {
+  const out = new Map();
+  for (const cell of alist) {
+    if (cell === null || cell === undefined) continue;
+    const modeName = typeof cell.head === 'string'
+      ? cell.head
+      : (cell.head && cell.head.name) || String(cell.head);
+    const faces = facesFromAlist(listToArray(cell.tail), listToArray);
+    out.set(modeName, faces);
+  }
+  return out;
+}
+
+/**
  * Find or create the face-overrides `<style>` element in the
  * document head, and rewrite its text content to the given CSS.
  *
@@ -182,14 +243,25 @@ export function writeFaceStyleElement(doc, css) {
 
 /**
  * The top-level entry the host calls. Builds the CSS from the resolved
- * face map and writes it to the `<style id="face-overrides">` element.
+ * global face map (and any per-mode overrides) and writes it to the
+ * `<style id="face-overrides">` element. The per-mode rules are appended
+ * AFTER the global ones so they win for buffers in that mode.
  *
  * @param {Document} doc - The document to write into.
  * @param {Array<*>} alist - The Lisp-side current-face-styles alist
  *   already unfolded with listToArray.
  * @param {(form: *) => Array<*>} listToArray - The Lisp list helper.
+ * @param {Array<*>} [modeAlist] - The Lisp-side current-mode-face-styles
+ *   alist (per-mode overrides), already unfolded. Optional — omit it for
+ *   the global-only behaviour.
  */
-export function applyFaceStyles(doc, alist, listToArray) {
+export function applyFaceStyles(doc, alist, listToArray, modeAlist) {
   const faces = facesFromAlist(alist, listToArray);
-  writeFaceStyleElement(doc, generateFaceCss(faces));
+  let css = generateFaceCss(faces);
+  if (Array.isArray(modeAlist) && modeAlist.length > 0) {
+    const perMode = modeFacesFromAlist(modeAlist, listToArray);
+    const modeCss = generateModeFaceCss(perMode);
+    if (modeCss !== '') css = css === '' ? modeCss : `${css}\n${modeCss}`;
+  }
+  writeFaceStyleElement(doc, css);
 }

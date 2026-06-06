@@ -49,6 +49,7 @@ async function editor(initialText = 'hello world', options = {}) {
   const docCalls = [];
   const evalCalls = [];
   const tsCalls = [];
+  const highlightPushes = [];
   const captures = options.captures ?? NIL;
   const faceColors = options.faceColors ?? {};
   const nodeAtPoint = (() => {
@@ -275,6 +276,13 @@ async function editor(initialText = 'hello world', options = {}) {
       'write-custom-file!': () => NIL,
       'apply-theme!': () => NIL,
       'apply-face-styles!': () => NIL,
+      // The highlight-override push (highlight-rules.lisp): record the
+      // flattened rule records each push delivers so the C-h C-f flow
+      // and the rule data-ops can be asserted on.
+      'set-highlight-overrides!': (a) => {
+        highlightPushes.push(a[0]);
+        return NIL;
+      },
       // Documentation primitives: by default the test environment
       // has no doc manifest (`()`), so `doc-known?` is always false
       // and help commands fall back to the REPL. Individual tests
@@ -398,6 +406,7 @@ async function editor(initialText = 'hello world', options = {}) {
     docCalls,
     evalCalls,
     tsCalls,
+    highlightPushes,
     foldCalls,
     statusCalls,
     completingPrompts,
@@ -3123,6 +3132,18 @@ function captureValue(language, ranges) {
   return cons(language, captures);
 }
 
+/** Read the {scope,key,pattern,face} fields off a highlight-rule record
+ *  (a Lisp Map keyed by interned keywords) pushed via the
+ *  `set-highlight-overrides!` stub. */
+function recordFields(record) {
+  return {
+    scope: record.get(keyword('scope')),
+    key: record.get(keyword('key')),
+    pattern: record.get(keyword('pattern')),
+    face: record.get(keyword('face')),
+  };
+}
+
 test('smallest-covering-capture picks the narrowest range over a point', async () => {
   const { interpreter } = await editor();
   // Three captures: an outer string spanning [0, 20), a function inside
@@ -3491,7 +3512,7 @@ test('-face-info-render-ancestors renders the parent chain with left arrows', as
   );
 });
 
-test('the no-capture render names the node, ancestor chain, and query template', async () => {
+test('the no-capture render names the node, ancestor chain, and the live flow', async () => {
   const { interpreter } = await editor();
   const body = interpreter.evaluate(
     '(-face-info-render-no-capture '
@@ -3512,12 +3533,14 @@ test('the no-capture render names the node, ancestor chain, and query template',
     `expected the range; got: ${body}`);
   assert.ok(body.includes('foo.bar'),
     `expected the snippet text; got: ${body}`);
-  // The query template uses the immediate parent + node type.
-  assert.ok(body.includes('(call_expression (identifier) @<face>)'),
-    `expected a query rule template; got: ${body}`);
-  // Path hint for where to add the rule.
-  assert.ok(body.includes('packages/renderer/src/languages/javascript.js'),
-    `expected the file path hint; got: ${body}`);
+  // The page points at the live, no-file-editing flow (C-h C-f), not at
+  // hand-editing a .js query file.
+  assert.ok(body.includes('C-h C-f'),
+    `expected the C-h C-f flow; got: ${body}`);
+  assert.ok(body.includes('add-highlight-rule!'),
+    `expected the equivalent Lisp; got: ${body}`);
+  assert.ok(!body.includes('packages/renderer/src/languages'),
+    `must NOT tell the user to hand-edit a .js file; got: ${body}`);
 });
 
 test('the no-capture render handles a rootless node (no ancestors)', async () => {
@@ -3526,10 +3549,9 @@ test('the no-capture render handles a rootless node (no ancestors)', async () =>
     '(-face-info-render-no-capture '
     + '  "javascript" "program" 0 0 (quote ()) "")'
   );
-  // With no parent, the query template degrades to a bare node match
-  // — useful enough to start from.
-  assert.ok(body.includes('(program) @<face>'),
-    `expected a bare-node template; got: ${body}`);
+  // The node type appears in the equivalent-Lisp line.
+  assert.ok(body.includes('"program"'),
+    `expected the node type in the flow hint; got: ${body}`);
   assert.ok(body.includes('(none)'),
     `expected the ancestor chain to render as (none); got: ${body}`);
 });
@@ -3572,6 +3594,99 @@ test('C-h F is bound to describe-face-at-point', async () => {
     ),
     'C-h F must run describe-face-at-point'
   );
+});
+
+// --- highlight-construct-at-point (C-h C-f) ---------------------------
+
+test('C-h C-f is bound to highlight-construct-at-point', async () => {
+  const { interpreter } = await editor();
+  assert.ok(
+    interpreter.evaluate(
+      '(eq? (get c-h-keymap "C-f") (quote highlight-construct-at-point))'
+    ),
+    'C-h C-f must run highlight-construct-at-point'
+  );
+});
+
+test('the flow assigns an EXISTING face to the construct, mode scope by default', async () => {
+  const captures = captureValue('javascript', []);
+  const { interpreter, minibufferPrompts, highlightPushes } = await editor(
+    'abc',
+    {
+      captures,
+      nodeAtPoint: {
+        language: 'javascript', type: 'identifier', start: 0, end: 3,
+        ancestors: [],
+      },
+    }
+  );
+  // Force a known major mode for the scope label/key.
+  interpreter.evaluate('(switch-major-mode lisp-mode)');
+  interpreter.evaluate('(highlight-construct-at-point)');
+  // Prompt 1: the face name.
+  assert.equal(minibufferPrompts.length, 1);
+  assert.ok(minibufferPrompts[0].includes('Face for `identifier`'));
+  // An existing face → straight to scope (no colour prompt).
+  interpreter.evaluate('(minibuffer-delivered "keyword")');
+  assert.equal(minibufferPrompts.length, 2);
+  assert.ok(minibufferPrompts[1].includes('Scope'));
+  // Empty answer = default = mode scope.
+  interpreter.evaluate('(minibuffer-delivered "")');
+  // The push carries one mode-scoped rule for this mode.
+  const last = highlightPushes[highlightPushes.length - 1];
+  const recs = listToArray(last).map((r) => recordFields(r));
+  assert.deepEqual(recs, [
+    { scope: 'mode', key: 'Lisp', pattern: 'identifier', face: 'keyword' },
+  ]);
+});
+
+test('the flow creates + colours a NEW face, then language scope on "l"', async () => {
+  const captures = captureValue('javascript', []);
+  const { interpreter, minibufferPrompts, highlightPushes } = await editor(
+    'abc',
+    {
+      captures,
+      nodeAtPoint: {
+        language: 'javascript', type: 'identifier', start: 0, end: 3,
+        ancestors: [],
+      },
+    }
+  );
+  interpreter.evaluate('(highlight-construct-at-point)');
+  // Prompt 1: face name — a NEW one.
+  interpreter.evaluate('(minibuffer-delivered "shiny")');
+  // Prompt 2: colour for the new face.
+  assert.ok(minibufferPrompts[1].includes('colour'));
+  interpreter.evaluate('(minibuffer-delivered "#abcdef")');
+  // The face was created live.
+  assert.equal(interpreter.evaluate('(face-registered? (quote shiny))'), true);
+  assert.equal(
+    interpreter.evaluate('(face-attribute (quote shiny) :foreground :theme (quote dark))'),
+    '#abcdef'
+  );
+  // Prompt 3: scope — choose language ("l").
+  assert.ok(minibufferPrompts[2].includes('Scope'));
+  interpreter.evaluate('(minibuffer-delivered "l")');
+  const last = highlightPushes[highlightPushes.length - 1];
+  const recs = listToArray(last).map((r) => recordFields(r));
+  assert.deepEqual(recs, [
+    { scope: 'language', key: 'javascript', pattern: 'identifier', face: 'shiny' },
+  ]);
+});
+
+test('the flow aborts cleanly when the face-name prompt is cancelled', async () => {
+  const captures = captureValue('javascript', []);
+  const { interpreter, highlightPushes } = await editor('abc', {
+    captures,
+    nodeAtPoint: {
+      language: 'javascript', type: 'identifier', start: 0, end: 3,
+      ancestors: [],
+    },
+  });
+  const before = highlightPushes.length;
+  interpreter.evaluate('(highlight-construct-at-point)');
+  interpreter.evaluate('(minibuffer-delivered nil)'); // cancelled
+  assert.equal(highlightPushes.length, before, 'a cancel must push nothing');
 });
 
 // --- code folding ------------------------------------------------------

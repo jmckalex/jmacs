@@ -132,6 +132,13 @@ export {
   clearLanguages,
 } from './language-registry.js';
 export {
+  createHighlightOverrideStore,
+  augmentQuery,
+  ruleToClause,
+  rulesSignature,
+  dedupeExactRanges,
+} from './highlight-overrides.js';
+export {
   matchingBracket,
   formBoundsAtPoint,
   formBoundsBeforePoint,

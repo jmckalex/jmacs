@@ -79,7 +79,13 @@
     "**Range:** `[" (number->string start)
     ", " (number->string end) ")`\n\n"
     "**Text:**\n\n"
-    "```\n" snippet "\n```\n"))
+    "```\n" snippet "\n```\n\n"
+    "### Change it live\n\n"
+    "- **Recolour this face:** `M-x customize-face` "
+    "(or `(set-face-attribute '" face " :foreground \"#…\")`); add "
+    "`:mode \"…\"` to recolour it in this major mode only.\n"
+    "- **Reassign this construct to a different face:** press "
+    "`C-h C-f` (`highlight-construct-at-point`) here.\n"))
 
 (define (-face-info-render-ancestors ancestors)
   "Render ANCESTORS (immediate parent first) as a left-arrowed chain,
@@ -95,9 +101,9 @@
           lang node-type start end ancestors snippet)
   "Build the Markdown body for the no-capture diagnostic page. Used
    when tree-sitter has parsed the construct under the cursor but no
-   query rule fires on it — the user needs the node type and parent
-   chain to write a query rule."
-  (let ((parent (if (nil? ancestors) "" (car ancestors))))
+   query rule fires on it — the user gets the node type, the parent
+   chain, and the one-step `C-h C-f` flow to face it live."
+  (begin
     (str
       "**No face here** — tree-sitter parsed this construct but no "
       "query rule in the `" lang "` highlighter fires on it. The "
@@ -110,19 +116,22 @@
       ", " (number->string end) ")`\n\n"
       "**Text:**\n\n"
       "```\n" snippet "\n```\n\n"
-      "To face this construct, add a query rule to "
-      "`packages/renderer/src/languages/" lang ".js`. A typical shape:\n\n"
-      "```\n"
-      (cond
-        ((= (string-length parent) 0)
-         (str "(" node-type ") @<face>"))
-        (else
-          (str "(" parent " (" node-type ") @<face>)")))
-      "\n```\n\n"
-      "…where `<face>` is one of the registered faces (`@function`, "
-      "`@variable`, `@constant`, `@type`, …). The most-specific "
-      "capture covering a position wins, so adding a narrow rule "
-      "won't disturb existing ones.\n")))
+      "### Face it live — no file editing\n\n"
+      "Press **`C-h C-f`** (`highlight-construct-at-point`) with the "
+      "cursor here. You'll be asked to:\n\n"
+      "1. **name a face** — an existing one (`keyword`, `function`, "
+      "`variable`, `type`, `constant`, …) or a new name;\n"
+      "2. if it's new, **pick its colour** (a new face is created on the "
+      "spot);\n"
+      "3. **choose a scope** — *this major mode only* (the default, `m`) "
+      "or *everywhere for the language* (`l`).\n\n"
+      "The rule maps the node type `" node-type "` -> your face and "
+      "applies **immediately**; it is remembered across restarts. The "
+      "rule layers on top of the built-in `" lang "` grammar query — it "
+      "never edits the language's `.js` file.\n\n"
+      "(Power users: the equivalent Lisp is "
+      "`(add-highlight-rule! 'mode \"<Mode>\" \"" node-type
+      "\" '<face>)`; remove with `remove-highlight-rule!`.)\n")))
 
 ;; --- the command ------------------------------------------------------
 
@@ -176,3 +185,94 @@
   "Alias of `describe-face-at-point` — open a doc page describing the
    tree-sitter capture at point. Same key, same output."
   (describe-face-at-point))
+
+;;; --- the one-step "face this construct" flow (C-h C-f) ----------------
+;;;
+;;; `describe-face-at-point` (C-h F) is the diagnostic; this is the
+;;; ACTION. Point at a construct the grammar parses, run the flow, and:
+;;;   1. name a face (an existing one, or a new one you colour on the spot)
+;;;   2. assign the construct's tree-sitter node type -> that face
+;;;   3. choose scope: this major mode only (default) or everywhere
+;;;      (this language)
+;;;   4. see it apply LIVE — no file editing, no restart.
+;;;
+;;; Keyboard-driven via the minibuffer; built on the highlight-rules.lisp
+;;; override layer and faces.lisp's `create-face!`.
+
+(define (-hcap-pattern node-type)
+  "The tree-sitter pattern for NODE-TYPE — the bare node type, which
+   `add-highlight-rule!` wraps as `(node-type) @face`."
+  node-type)
+
+(define (-hcap-add-rule! scope key node-type face-name)
+  "Add the construct->face rule for NODE-TYPE in SCOPE/KEY and report it."
+  (add-highlight-rule! scope key (-hcap-pattern node-type) face-name)
+  (println (str "faced `" node-type "` -> `" (symbol->string face-name)
+                "` (" (if (eq? scope 'mode) "mode " "language ") key ")")))
+
+(define (-hcap-choose-scope node-type face-name lang mode)
+  "Prompt for the rule scope, then add it. Default (empty / 'm') is the
+   major mode; 'l' is the whole language."
+  (minibuffer-read
+    (str "Scope — [m] this mode (" mode ") or [l] everywhere (" lang ")? ")
+    (lambda (answer)
+      (unless (nil? answer)
+        (if (or (string=? answer "l") (string=? answer "L"))
+            (-hcap-add-rule! 'language lang node-type face-name)
+            (-hcap-add-rule! 'mode mode node-type face-name))))))
+
+(define (-hcap-with-face node-type face-name lang mode)
+  "Given a chosen FACE-NAME (a symbol): if it is already registered, go
+   straight to the scope prompt; otherwise prompt for a colour, create
+   the face, then the scope prompt."
+  (if (face-registered? face-name)
+      (-hcap-choose-scope node-type face-name lang mode)
+      (minibuffer-read
+        (str "New face `" (symbol->string face-name)
+             "` — foreground colour (e.g. #c792ea): ")
+        (lambda (color)
+          (cond
+            ((nil? color) nil)
+            ((= (string-length color) 0)
+             (println "no colour given — face not created"))
+            (else
+              (create-face! face-name color)
+              (println (str "created face `" (symbol->string face-name)
+                            "` = " color))
+              (-hcap-choose-scope node-type face-name lang mode)))))))
+
+(define (-hcap-prompt-face node-type lang mode)
+  "Prompt for the face name, then continue the flow."
+  (minibuffer-read
+    (str "Face for `" node-type "` (existing or new name): ")
+    (lambda (name)
+      (cond
+        ((nil? name) nil)
+        ((= (string-length name) 0) (println "no face name given"))
+        (else
+          (-hcap-with-face node-type (string->symbol name) lang mode))))))
+
+(defcommand highlight-construct-at-point ()
+  "Face the construct under the cursor in one step: name (or create +
+   colour) a face, assign the construct's tree-sitter node type to it,
+   pick a scope (this major mode, the default, or everywhere for the
+   language), and apply it LIVE. The action companion to
+   `describe-face-at-point` (C-h F); bound to `C-h C-f`."
+  (let ((info (tree-sitter-captures-for-buffer!)))
+    (cond
+      ((nil? info)
+       (println "no tree-sitter language for this buffer"))
+      (else
+        (let* ((lang (car info))
+               (pos (point))
+               (node (tree-sitter-node-at-point! pos)))
+          (cond
+            ((nil? node)
+             (println (str "no construct at point (" (number->string pos)
+                           ") in this " lang " buffer")))
+            (else
+              (let ((node-type (get node :type ""))
+                    (mode (major-mode-name)))
+                (if (= (string-length node-type) 0)
+                    (println "the construct at point has no node type")
+                    (-hcap-prompt-face node-type lang mode))))))))))
