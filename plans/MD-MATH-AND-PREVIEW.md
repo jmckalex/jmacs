@@ -27,15 +27,23 @@ the body so `\alpha` etc. light up.
 - Import `scanMathSegments`, `MARKDOWN_MATH_CONFIG` from `./math-segments.js`
   (pure module, no cycle).
 - Add `highlightMarkdownBuffer(text) → Run[][]`, registered in
-  `highlightBuffer` (line ~647) next to `latex`/`makefile`. The view prefers a
-  whole-buffer tokenizer when present (`view.js:592`) and caches it across
-  scroll-only renders, so this activates automatically for markdown.
+  `highlightBuffer` (line ~647) next to `latex`/`makefile`.
 - Line splitting via `text.split('\n')` — matches `highlightMakefileBuffer`
   and the view's line indexing exactly.
 
 **Why whole-buffer, not per-line:** inline `$…$` fits a line, but display
 `$$…$$` / `\[…\]` span lines — the per-line `tokenizeMarkdown` (`highlightLine`)
 structurally cannot see across them.
+
+**Integration correction (found in live testing).** Markdown is highlighted by
+its *tree-sitter* grammar (`tag: 'markdown'`, `suffixes: ['.md','.markdown']`),
+and the view consults `highlighters[language]` **before** `highlightBuffer`
+(`view.js:554`) — so `highlightMarkdownBuffer` was only ever the
+grammar-failed-to-load fallback and was dead in the app. The real fix is an
+**overlay**: `overlayMarkdownMath(text, perLine)` splices LaTeX onto the math
+regions of *already-computed* per-line runs (whatever produced them), called
+from the view's tree-sitter branch for markdown before caching.
+`highlightMarkdownBuffer` now delegates to it so the fallback path matches.
 
 ### Algorithm
 
