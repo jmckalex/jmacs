@@ -14,8 +14,11 @@
  * returns null, the host feeds the renderer an empty range list).
  *
  * Most modes share the *common* config (`MARKDOWN_MATH_CONFIG`): the four
- * delimiter pairs, no `\begin…\end` environments. Only `latex-mode`
- * recognises environments (`LATEX_MATH_CONFIG`).
+ * delimiter pairs plus `\begin…\end` math environments — everything
+ * MathJax typesets. (`latex-mode` uses `LATEX_MATH_CONFIG`, the same
+ * notation set.) The markdown-like modes additionally mask code before
+ * scanning (see `CODE_AWARE_MODES`), so a `$` inside a code span is not
+ * read as math.
  *
  * ── Adding a future mode (html-mode, php-mode, …) ─────────────────────
  * Those major modes do not exist yet. When one lands, add ONE entry to
@@ -30,9 +33,21 @@
 
 import {
   scanMathSegments,
+  maskMarkdownCode,
   LATEX_MATH_CONFIG,
   MARKDOWN_MATH_CONFIG,
 } from './math-segments.js';
+
+/**
+ * Major modes whose document is Markdown-like, where a `$` inside a code
+ * span/fence is literal text, not math. Their provider masks code before
+ * scanning so `` `$x$` `` (or a `$$…$$` wedged in a heading's backticks)
+ * is not mis-read as math. LaTeX is *not* here — backticks aren't code in
+ * a `.tex` file. Add html/php here when those modes land.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const CODE_AWARE_MODES = new Set(['Markdown']);
 
 /**
  * @typedef {import('./math-segments.js').MathSegment} MathSegment
@@ -64,15 +79,20 @@ export const MATH_PREVIEW_CONFIGS = Object.freeze({
 
 /**
  * Build a provider from a scanner config: a `scan(text)` closure bound to
- * that config plus the config itself.
+ * that config plus the config itself. When `maskCode` is set, the scan
+ * first masks Markdown code spans/blocks so a `$` inside them isn't read
+ * as math (see {@link maskMarkdownCode}); offsets are preserved.
  *
  * @param {MathConfig} config
+ * @param {boolean} [maskCode=false]
  * @returns {MathPreviewProvider}
  */
-export function providerForConfig(config) {
+export function providerForConfig(config, maskCode = false) {
   return {
     config,
-    scan: (text) => scanMathSegments(text, config),
+    scan: maskCode
+      ? (text) => scanMathSegments(maskMarkdownCode(text), config)
+      : (text) => scanMathSegments(text, config),
   };
 }
 
@@ -93,7 +113,7 @@ export function mathPreviewProviderForMode(modeName) {
   if (!config) return null;
   let provider = providerCache.get(modeName);
   if (!provider) {
-    provider = providerForConfig(config);
+    provider = providerForConfig(config, CODE_AWARE_MODES.has(modeName));
     providerCache.set(modeName, provider);
   }
   return provider;
