@@ -17,6 +17,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { atomicWrite } from './atomic-write.js';
 import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
@@ -365,7 +366,8 @@ export function registerFileHandlers() {
       }
       target = result.filePath;
     }
-    await writeFile(target, payload?.content ?? '', 'utf8');
+    // Atomic write: a crash mid-save must never truncate the user's file.
+    await atomicWrite(target, payload?.content ?? '', 'utf8');
     return { path: target, name: basename(target) };
   });
 
@@ -376,7 +378,7 @@ export function registerFileHandlers() {
       filters: [{ name: 'SVG image', extensions: ['svg'] }],
     });
     if (result.canceled || !result.filePath) return null;
-    await writeFile(result.filePath, payload?.svg ?? '', 'utf8');
+    await atomicWrite(result.filePath, payload?.svg ?? '', 'utf8');
     return { path: result.filePath };
   });
 
