@@ -66,7 +66,7 @@ $\operatorname{Tr}\hat{\rho} = 1$.
 \langle x_f \lvert\, e^{-i\hat{H}T/\hbar} \,\rvert x_i \rangle
   = \int \mathcal{D}[x(t)]\; \exp\!\left( \frac{i}{\hbar}\, S[x(t)] \right),
 \qquad S[x] = \int_0^T \! L(x, \dot{x})\,dt .
-$$
+\]
 
 ---
 
