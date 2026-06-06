@@ -14,11 +14,12 @@
  * Which of those constructs the scanner recognises is controlled by a
  * `config` argument (see `MathConfig`), so the same scanner serves every
  * major mode: `LATEX_MATH_CONFIG` recognises all of them (the LaTeX
- * default), while `MARKDOWN_MATH_CONFIG` recognises the four delimiter
- * pairs but **not** `\begin…\end` environments (the "common" config used
- * by markdown and, later, html/php). `scanMathSegments(text)` with no
- * config defaults to `LATEX_MATH_CONFIG`, so existing LaTeX callers are
- * unchanged.
+ * default), and `MARKDOWN_MATH_CONFIG` likewise recognises the four
+ * delimiter pairs **and** `\begin…\end` environments — everything MathJax
+ * typesets — for markdown and, later, html/php. (Markdown's only
+ * difference is at the provider layer, which masks code first.)
+ * `scanMathSegments(text)` with no config defaults to `LATEX_MATH_CONFIG`,
+ * so existing LaTeX callers are unchanged.
  *
  * The scanner walks the text once and returns the segments it finds as
  * `{ start, end, kind, body }`:
@@ -103,10 +104,14 @@ export const LATEX_MATH_CONFIG = Object.freeze({
 });
 
 /**
- * The "common" config: the four delimiter pairs but **no** `\begin…\end`
- * environments. Used by `markdown-mode` (and, when they land, html/php)
- * — prose modes where `\begin{equation}` is not display math the way it
- * is in a `.tex` file.
+ * The config for Markdown-like prose modes (`markdown-mode`, and, when
+ * they land, html/php): every delimiter pair **and** `\begin…\end` math
+ * environments — i.e. everything MathJax typesets, since MathJax's
+ * default `processEnvironments` handles `\begin{align}` & friends in
+ * prose too. (It currently matches `LATEX_MATH_CONFIG`'s notation set;
+ * the markdown-specific behaviour — ignoring a `$` inside a code
+ * span/fence — lives in the preview provider's code masking, see
+ * {@link maskMarkdownCode}, not in this config.)
  *
  * @type {Readonly<MathConfig>}
  */
@@ -115,7 +120,7 @@ export const MARKDOWN_MATH_CONFIG = Object.freeze({
   displayDollar: true,
   parens: true,
   brackets: true,
-  environments: false,
+  environments: true,
 });
 
 /**

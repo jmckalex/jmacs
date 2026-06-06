@@ -14,8 +14,11 @@
  * returns null, the host feeds the renderer an empty range list).
  *
  * Most modes share the *common* config (`MARKDOWN_MATH_CONFIG`): the four
- * delimiter pairs, no `\begin…\end` environments. Only `latex-mode`
- * recognises environments (`LATEX_MATH_CONFIG`).
+ * delimiter pairs plus `\begin…\end` math environments — everything
+ * MathJax typesets. (`latex-mode` uses `LATEX_MATH_CONFIG`, the same
+ * notation set.) The markdown-like modes additionally mask code before
+ * scanning (see `CODE_AWARE_MODES`), so a `$` inside a code span is not
+ * read as math.
  *
  * ── Adding a future mode (html-mode, php-mode, …) ─────────────────────
  * Those major modes do not exist yet. When one lands, add ONE entry to

@@ -322,18 +322,21 @@ test('MARKDOWN_MATH_CONFIG recognises all four delimiter pairs', () => {
   );
 });
 
-test('MARKDOWN_MATH_CONFIG does NOT treat \\begin{equation} as math', () => {
+test('MARKDOWN_MATH_CONFIG treats \\begin{equation} as math (matches MathJax)', () => {
   const text = '\\begin{equation}E=mc^2\\end{equation}';
-  assert.deepEqual(scanMathSegments(text, MARKDOWN_MATH_CONFIG), []);
-});
-
-test('MARKDOWN_MATH_CONFIG: a \\begin near real $…$ leaves the $…$ intact', () => {
-  // The \begin is not math under the common config; the $…$ after it is.
-  const text = '\\begin{equation}q\\end{equation} and $z$';
   const segs = scanMathSegments(text, MARKDOWN_MATH_CONFIG);
   assert.equal(segs.length, 1);
-  assert.equal(segs[0].body, 'z');
-  assert.equal(segs[0].kind, 'inline');
+  assert.equal(segs[0].kind, 'block');
+  assert.equal(segs[0].body, text);
+});
+
+test('MARKDOWN_MATH_CONFIG: a \\begin and a real $…$ are both math', () => {
+  const text = '\\begin{equation}q\\end{equation} and $z$';
+  const segs = scanMathSegments(text, MARKDOWN_MATH_CONFIG);
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0].kind, 'block');
+  assert.equal(segs[1].body, 'z');
+  assert.equal(segs[1].kind, 'inline');
 });
 
 test('config flags can disable individual delimiters', () => {

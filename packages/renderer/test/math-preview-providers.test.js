@@ -35,9 +35,22 @@ test('mathPreviewProviderForMode selects the Markdown provider', () => {
   const provider = mathPreviewProviderForMode('Markdown');
   assert.ok(provider);
   assert.equal(provider.config, MARKDOWN_MATH_CONFIG);
-  // The Markdown provider scans $…$ but NOT \begin…\end.
+  // The Markdown provider scans $…$ AND \begin…\end (matches MathJax).
   assert.equal(provider.scan('$z$').length, 1);
-  assert.equal(provider.scan('\\begin{align}x=1\\end{align}').length, 0);
+  const env = provider.scan('\\begin{align}x=1\\end{align}');
+  assert.equal(env.length, 1);
+  assert.equal(env[0].kind, 'block');
+});
+
+test('the Markdown provider previews \\begin{…} environments, but not in code', () => {
+  const provider = mathPreviewProviderForMode('Markdown');
+  const align = '\\begin{align}\na &= b \\\\\nc &= d\n\\end{align}';
+  const segs = provider.scan(align);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].kind, 'block');
+  assert.equal(segs[0].body, align); // whole environment is the typeset body
+  // ...but an environment inside a fenced code block stays literal.
+  assert.equal(provider.scan('```\n' + align + '\n```').length, 0);
 });
 
 test('a mode with no provider yields null (no preview)', () => {
