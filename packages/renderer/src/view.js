@@ -22,7 +22,12 @@ import {
 } from './projection.js';
 import { handleKeyEvent } from './commands.js';
 import { keyEventToString } from './keymap.js';
-import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
+import {
+  highlightBuffer,
+  highlightLine,
+  languageForName,
+  overlayMarkdownMath,
+} from './highlight.js';
 import { matchingBracket } from './brackets.js';
 import { createColourSwatches } from './colour-swatches.js';
 import { foldRanges, indexFoldRanges, hiddenLines } from './folding.js';
@@ -577,6 +582,13 @@ export function createEditorView(buffer, container, options = {}) {
           // Pass the major-mode name so mode-scoped user override rules
           // apply; language-wide rules apply regardless.
           perLine = treeSitter(text, modeName);
+          // The Markdown grammar doesn't parse `$…$`/`$$…$$` math, so
+          // overlay LaTeX highlighting onto those regions — embedded
+          // math reads like latex-mode. (The non-tree-sitter fallback
+          // gets this through highlightMarkdownBuffer.)
+          if (perLine && language === 'markdown') {
+            perLine = overlayMarkdownMath(text, perLine);
+          }
         } catch {
           perLine = null;
         }

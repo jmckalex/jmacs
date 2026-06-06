@@ -859,24 +859,52 @@ function spliceMathRuns(line, baseRuns, placements) {
  */
 export function highlightMarkdownBuffer(text) {
   const lines = text.split('\n');
+  const base = lines.map((line) => tokenizeMarkdown(line));
+  return overlayMarkdownMath(text, base, lines);
+}
+
+/**
+ * Overlay LaTeX highlighting onto the math regions of already-computed
+ * per-line Markdown runs, *whatever produced them* — the tree-sitter
+ * markdown highlighter (which has no notion of `$…$`) or the hand
+ * tokenizer. This is the integration point the editor view uses, since
+ * markdown is highlighted by tree-sitter and so never reaches
+ * `highlightBuffer`.
+ *
+ * Math is found over a code-masked copy of `text`, so a `$` inside
+ * fenced/inline code stays literal; each math region's columns are
+ * replaced by delimiter runs + a `tokenizeLatex` of its body, while the
+ * surrounding (non-math) runs — and their faces — pass through. Lines
+ * with no math are returned by reference. See
+ * plans/MD-MATH-AND-PREVIEW.md.
+ *
+ * @param {string} text - The whole buffer.
+ * @param {Run[][]} perLine - One Run[] per buffer line; the texts on
+ *   each line concatenate back to that line.
+ * @param {string[]} [lines] - `text` split on `\n` (recomputed if
+ *   omitted). Must index identically to `perLine`.
+ * @returns {Run[][]}
+ */
+export function overlayMarkdownMath(text, perLine, lines) {
+  const srcLines = lines ?? text.split('\n');
   const segments = scanMathSegments(maskMarkdownCode(text), MARKDOWN_MATH_CONFIG);
-  if (segments.length === 0) return lines.map((line) => tokenizeMarkdown(line));
+  if (segments.length === 0) return perLine;
 
   // Line start offsets (each line plus its newline).
-  const lineStart = new Array(lines.length);
+  const lineStart = new Array(srcLines.length);
   let off = 0;
-  for (let i = 0; i < lines.length; i += 1) {
+  for (let i = 0; i < srcLines.length; i += 1) {
     lineStart[i] = off;
-    off += lines[i].length + 1;
+    off += srcLines[i].length + 1;
   }
 
   /** @type {Map<number, MathPlacement[]>} */
   const byLine = new Map();
   for (const seg of segments) {
     const { openLen, closeLen } = delimiterWidths(text, seg);
-    for (let line = 0; line < lines.length; line += 1) {
+    for (let line = 0; line < srcLines.length; line += 1) {
       const ls = lineStart[line];
-      const le = ls + lines[line].length;
+      const le = ls + srcLines[line].length;
       if (ls >= seg.end) break;
       if (le <= seg.start) continue;
       const colStart = Math.max(seg.start, ls) - ls;
@@ -893,10 +921,10 @@ export function highlightMarkdownBuffer(text) {
     }
   }
 
-  return lines.map((line, index) => {
-    const base = tokenizeMarkdown(line);
+  return perLine.map((runs, index) => {
     const placements = byLine.get(index);
-    return placements ? spliceMathRuns(line, base, placements) : base;
+    if (!placements) return runs;
+    return spliceMathRuns(srcLines[index] ?? '', runs ?? [], placements);
   });
 }
 

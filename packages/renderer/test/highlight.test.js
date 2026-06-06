@@ -180,6 +180,7 @@ import {
   highlightLatexBuffer,
   highlightMakefileBuffer,
   highlightMarkdownBuffer,
+  overlayMarkdownMath,
 } from '../src/highlight.js';
 
 /** A line's faces, in order. */
@@ -347,4 +348,54 @@ test('Markdown: the whole-buffer dispatcher routes markdown here', () => {
     highlightBuffer('a $x$ b', 'markdown'),
     highlightMarkdownBuffer('a $x$ b')
   );
+});
+
+// overlayMarkdownMath is the integration point the editor view uses: it
+// splices math onto runs produced by the *tree-sitter* markdown
+// highlighter, which has no notion of `$…$`. These tests feed it base
+// runs shaped like that highlighter's output.
+
+test('overlayMarkdownMath splices LaTeX onto pre-existing runs', () => {
+  // A highlighter that returned the whole line as one plain run.
+  const line = 'the $\\alpha$ end';
+  const out = overlayMarkdownMath(line, [[{ text: line, face: null }]]);
+  assert.ok(out[0].some((r) => r.face === 'keyword' && r.text === '\\alpha'));
+  assert.deepEqual(
+    out[0].filter((r) => r.face === 'string').map((r) => r.text),
+    ['$', '$']
+  );
+  assert.equal(out[0].map((r) => r.text).join(''), line);
+});
+
+test('overlayMarkdownMath preserves the surrounding runs and their faces', () => {
+  const line = 'a *b* $x$';
+  const base = [[
+    { text: 'a ', face: null },
+    { text: '*b*', face: 'strong' },
+    { text: ' $x$', face: null },
+  ]];
+  const out = overlayMarkdownMath(line, base);
+  assert.ok(out[0].some((r) => r.face === 'strong' && r.text === '*b*'));
+  assert.deepEqual(
+    out[0].filter((r) => r.face === 'string').map((r) => r.text),
+    ['$', '$']
+  );
+  assert.equal(out[0].map((r) => r.text).join(''), line);
+});
+
+test('overlayMarkdownMath returns the runs unchanged when there is no math', () => {
+  const base = [[{ text: 'plain text', face: null }]];
+  assert.equal(overlayMarkdownMath('plain text', base), base);
+});
+
+test('overlayMarkdownMath spans multiple lines for display math', () => {
+  const src = 'before\n$$\n\\frac{a}{b}\n$$\nafter';
+  const base = src.split('\n').map((line) => [{ text: line, face: null }]);
+  const out = overlayMarkdownMath(src, base);
+  assert.deepEqual(out[1], [{ text: '$$', face: 'string' }]);
+  assert.ok(out[2].some((r) => r.face === 'keyword' && r.text === '\\frac'));
+  assert.deepEqual(out[3], [{ text: '$$', face: 'string' }]);
+  // Untouched lines pass through by reference.
+  assert.equal(out[0], base[0]);
+  assert.equal(out[4], base[4]);
 });
