@@ -16,5 +16,6 @@ needs to render. Current contents:
 |------------------|-------------------------------------------------------|
 | `Makefile`       | Makefile syntax highlighting (tab-indented recipes)   |
 | `fa-stacking.png` | image rendering in the image view                    |
+| `math-highlight-test.md` | Markdown + embedded LaTeX math: highlighting (LaTeX injection) and `C-c C-p` MathJax preview — `$…$`, `$$…$$`, `\(…\)`, `\[…\]`, `\begin{…}` envs, plus code/escaped-`$` exclusions |
 
 When you add a sample, add a row above explaining what it is meant to exercise.
