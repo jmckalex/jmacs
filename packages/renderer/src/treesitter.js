@@ -151,6 +151,10 @@ export async function createTreeSitterHighlighter(
     ? new Query(language, options.foldQuery)
     : null;
   const getHighlighter = options.getHighlighter;
+  const injectionProvider =
+    typeof options.injectionProvider === 'function'
+      ? options.injectionProvider
+      : null;
   const tag = typeof options.tag === 'string' ? options.tag : null;
   const overrideStore = options.overrideStore ?? null;
 
@@ -221,6 +225,11 @@ export async function createTreeSitterHighlighter(
     const injections = injectionQuery
       ? collectInjections(injectionQuery, tree.rootNode)
       : [];
+    // A code-driven injection source (e.g. Markdown `$…$` math → latex)
+    // supplements the query matches. Its ranges are offsets into `text`.
+    if (injectionProvider) {
+      for (const inj of injectionProvider(text)) injections.push(inj);
+    }
     tree.delete();
     return spliceInjections(
       text,

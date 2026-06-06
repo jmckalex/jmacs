@@ -181,6 +181,7 @@ import {
   highlightMakefileBuffer,
   highlightMarkdownBuffer,
   overlayMarkdownMath,
+  markdownMathInjections,
 } from '../src/highlight.js';
 
 /** A line's faces, in order. */
@@ -398,4 +399,41 @@ test('overlayMarkdownMath spans multiple lines for display math', () => {
   // Untouched lines pass through by reference.
   assert.equal(out[0], base[0]);
   assert.equal(out[4], base[4]);
+});
+
+// markdownMathInjections is the primary path: the `markdown_inline`
+// grammar's injection provider, routing each math region to the latex
+// grammar. The view wires it through tree-sitter; these test the pure
+// detection + range that feeds the injection.
+
+test('markdownMathInjections targets latex over the whole delimited span', () => {
+  const src = 'the $x^2$ end';
+  const injs = markdownMathInjections(src);
+  assert.equal(injs.length, 1);
+  assert.equal(injs[0].language, 'latex');
+  assert.equal(src.slice(injs[0].start, injs[0].end), '$x^2$');
+});
+
+test('markdownMathInjections covers every MathJax delimiter pair', () => {
+  for (const span of ['$a$', '$$a$$', '\\(a\\)', '\\[a\\]']) {
+    const injs = markdownMathInjections(span);
+    assert.equal(injs.length, 1, span);
+    assert.equal(span.slice(injs[0].start, injs[0].end), span, span);
+    assert.equal(injs[0].language, 'latex', span);
+  }
+});
+
+test('markdownMathInjections recognises \\begin{…} math environments', () => {
+  const src = '\\begin{align}\na &= b\n\\end{align}';
+  const injs = markdownMathInjections(src);
+  assert.equal(injs.length, 1);
+  assert.equal(src.slice(injs[0].start, injs[0].end), src);
+});
+
+test('markdownMathInjections ignores math inside inline code', () => {
+  assert.deepEqual(markdownMathInjections('use `$x$` here'), []);
+});
+
+test('markdownMathInjections ignores an escaped \\$', () => {
+  assert.deepEqual(markdownMathInjections('it cost \\$5 and \\$10'), []);
 });

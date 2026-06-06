@@ -647,6 +647,19 @@ export function highlightMakefileBuffer(text) {
 /** The face applied to math delimiters (`$`, `$$`, `\(`, `\[`, …). */
 const MATH_DELIM_FACE = 'string';
 
+/** Math notation recognised inside Markdown for the injection provider:
+ *  everything MathJax handles — the four delimiter pairs *and*
+ *  `\begin{…}…\end{…}` environments. (The per-line overlay fallback uses
+ *  the narrower MARKDOWN_MATH_CONFIG, which omits environments — it can't
+ *  splice their variable-length delimiters.) */
+const MARKDOWN_MATH_INJECT_CONFIG = {
+  inlineDollar: true,
+  displayDollar: true,
+  parens: true,
+  brackets: true,
+  environments: true,
+};
+
 /**
  * Mask Markdown code so a `$` inside it is never read as a math
  * delimiter. Returns a same-length copy (offsets preserved) with code
@@ -926,6 +939,33 @@ export function overlayMarkdownMath(text, perLine, lines) {
     if (!placements) return runs;
     return spliceMathRuns(srcLines[index] ?? '', runs ?? [], placements);
   });
+}
+
+/**
+ * The math regions of Markdown `text`, as tree-sitter injection ranges
+ * targeting the `latex` grammar. This is how the editor actually
+ * highlights markdown math: the markdown grammar injects each paragraph
+ * into `markdown_inline`, and this provider — attached to that inline
+ * grammar — injects the LaTeX grammar into every math region, so the
+ * body gets grammar-accurate LaTeX highlighting (superscripts, command
+ * structure, environments) and the delimiters are faced by the latex
+ * query.
+ *
+ * Recognises everything MathJax does — `$…$`, `$$…$$`, `\(…\)`, `\[…\]`,
+ * and `\begin{…}…\end{…}` environments — over a code-masked copy, so a
+ * `$` inside inline code stays literal. Ranges cover the *whole*
+ * delimited span (delimiters included) so the latex grammar parses it as
+ * inline_formula / displayed_equation / math_environment. See
+ * plans/MD-MATH-AND-PREVIEW.md.
+ *
+ * @param {string} text - A Markdown (inline) region's source.
+ * @returns {{ start: number, end: number, language: string }[]}
+ */
+export function markdownMathInjections(text) {
+  return scanMathSegments(
+    maskMarkdownCode(text),
+    MARKDOWN_MATH_INJECT_CONFIG
+  ).map((seg) => ({ start: seg.start, end: seg.end, language: 'latex' }));
 }
 
 /**

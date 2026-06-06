@@ -180,6 +180,31 @@ test('loadLanguageHighlighters threads getHighlighter only into injection-bearin
   assert.equal(typeof cobolOpts.getHighlighter, 'function');
 });
 
+test('registerLanguage stores an injectionProvider when provided', () => {
+  const provider = () => [];
+  registerLanguage({ ...SPEC, injectionProvider: provider });
+  assert.equal(registeredLanguages()[0].injectionProvider, provider);
+});
+
+test('registerLanguage rejects a non-function injectionProvider', () => {
+  assert.throws(
+    () => registerLanguage({ ...SPEC, injectionProvider: 'nope' }),
+    /injectionProvider must be a function/
+  );
+});
+
+test('loadLanguageHighlighters threads getHighlighter + the provider into provider languages', async () => {
+  registerLanguage({ ...SPEC, injectionProvider: () => [] });
+  let seen;
+  const create = async (_grammar, _query, options) => {
+    seen = options;
+    return { highlight: () => [], captures: () => [] };
+  };
+  await loadLanguageHighlighters(create);
+  assert.equal(typeof seen.injectionProvider, 'function');
+  assert.equal(typeof seen.getHighlighter, 'function');
+});
+
 test('aliases expose the same highlighter under additional tags', async () => {
   registerLanguage({ ...SPEC, aliases: ['for', 'f'] });
   let count = 0;

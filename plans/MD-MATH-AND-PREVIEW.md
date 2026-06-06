@@ -39,11 +39,35 @@ structurally cannot see across them.
 its *tree-sitter* grammar (`tag: 'markdown'`, `suffixes: ['.md','.markdown']`),
 and the view consults `highlighters[language]` **before** `highlightBuffer`
 (`view.js:554`) — so `highlightMarkdownBuffer` was only ever the
-grammar-failed-to-load fallback and was dead in the app. The real fix is an
-**overlay**: `overlayMarkdownMath(text, perLine)` splices LaTeX onto the math
-regions of *already-computed* per-line runs (whatever produced them), called
-from the view's tree-sitter branch for markdown before caching.
-`highlightMarkdownBuffer` now delegates to it so the fallback path matches.
+grammar-failed-to-load fallback and was dead in the app.
+
+**Final design — tree-sitter injection (Jason's call).** Rather than splice our
+own `tokenizeLatex`, route markdown math to the **`latex` tree-sitter grammar**
+via injection — same mechanism the editor uses for fenced code / `<script>`,
+giving grammar-accurate math highlighting (superscripts, command structure,
+environments). The markdown grammar only parses `$…$`/`$$…$$` (as `latex_block`)
+and not `\(…\)`, `\[…\]`, or `\begin{…}` — so instead of capturing grammar
+nodes we added a code-driven **injection provider**:
+
+- New `LanguageSpec.injectionProvider: (text) => {start,end,language}[]`, merged
+  with query injections in `createTreeSitterHighlighter.captures()`; the loader
+  threads `getHighlighter` in just as for `injectionQuery`.
+- `markdownMathInjections(text)` (in highlight.js) finds **every MathJax
+  notation** — `$…$`, `$$…$$`, `\(…\)`, `\[…\]`, and `\begin{…}…\end{…}`
+  environments — over a code-masked copy, returning whole-span ranges
+  → `language: 'latex'`.
+- Attached to the **`markdown_inline`** grammar (not the block grammar), so each
+  math injection nests *inside* the paragraph→inline injection as a child — no
+  sibling overlap, and the inline grammar's own ranges inside a math region are
+  dropped by `rangeFullyContainedInAny`. (Block-level would double-cover with
+  the paragraph injection.) Math environments can't contain blank lines — LaTeX
+  forbids it — so they always stay within one paragraph/inline slice.
+
+The earlier `overlayMarkdownMath` (splices `tokenizeLatex` onto per-line runs)
+is **kept only as the no-grammar fallback** behind `highlightMarkdownBuffer`;
+the view's tree-sitter overlay call was reverted (injection supersedes it).
+No markdown grammar fork (a C-external-scanner change + Docker rebuild) was
+needed — detection stays in JS, where adding a notation is a config line.
 
 ### Algorithm
 
