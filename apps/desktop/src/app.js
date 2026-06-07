@@ -7608,13 +7608,16 @@ stickyNotes.setBuffer(currentTextBuffer);
 
 /** Typeset mathematics inside the preview iframe, once its own MathJax
  *  has started. The iframe loads its own MathJax (see buildPreviewHead),
- *  so this runs against THAT instance, not the editor's. */
-function typesetPreview(frameWindow, body) {
+ *  so this runs against THAT instance, not the editor's. `elements` is
+ *  the set to typeset: the whole body `[body]` after a rebuild, or just
+ *  the math spans morphdom brought in fresh on the incremental path. */
+function typesetPreview(frameWindow, elements) {
   const mathJax = frameWindow && frameWindow.MathJax;
   if (!mathJax) return;
+  if (!Array.isArray(elements) || elements.length === 0) return;
   const run = () => {
     if (typeof mathJax.typesetPromise === 'function') {
-      mathJax.typesetPromise([body]).catch(() => {});
+      mathJax.typesetPromise(elements).catch(() => {});
     }
   };
   const ready = mathJax.startup && mathJax.startup.promise;

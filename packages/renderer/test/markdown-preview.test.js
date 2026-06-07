@@ -8,6 +8,9 @@ import {
   buildPreviewDocument,
   cssLinkTags,
   isFullDocument,
+  previewMathSpans,
+  makePreviewKeyer,
+  hashMathBody,
 } from '../src/markdown-preview.js';
 
 /**
@@ -176,4 +179,59 @@ test('clear cancels a pending render', async () => {
 
 test('PREVIEW_DEBOUNCE_MS is the documented 250ms default', () => {
   assert.equal(PREVIEW_DEBOUNCE_MS, 250);
+});
+
+// --- Math detection (pure) — the morphdom diff's keyed spans ----------
+
+test('previewMathSpans finds inline and display dollar math', () => {
+  const spans = previewMathSpans('a $x$ and $$y$$ b');
+  assert.equal(spans.length, 2);
+  assert.equal(spans[0].display, false);
+  assert.equal(spans[0].body, 'x');
+  assert.equal(spans[1].display, true);
+  assert.equal(spans[1].body, 'y');
+});
+
+test('previewMathSpans recognises \\(…\\) and \\[…\\]', () => {
+  const spans = previewMathSpans('\\(a\\) and \\[b\\]');
+  assert.deepEqual(spans.map((s) => s.display), [false, true]);
+  assert.deepEqual(spans.map((s) => s.body), ['a', 'b']);
+});
+
+test('previewMathSpans ignores an escaped \\$', () => {
+  assert.deepEqual(previewMathSpans('it cost \\$5 and \\$10'), []);
+});
+
+// --- Key generation (pure) -------------------------------------------
+
+test('hashMathBody is deterministic and content-sensitive', () => {
+  assert.equal(hashMathBody('a+b'), hashMathBody('a+b'));
+  assert.notEqual(hashMathBody('a+b'), hashMathBody('a-b'));
+});
+
+test('makePreviewKeyer gives the same body the same key across renders', () => {
+  const render1 = makePreviewKeyer();
+  const render2 = makePreviewKeyer();
+  assert.equal(render1(false, 'x^2'), render2(false, 'x^2'));
+});
+
+test('makePreviewKeyer disambiguates repeated identical formulas', () => {
+  const k = makePreviewKeyer();
+  const a = k(false, 'x');
+  const b = k(false, 'x');
+  assert.notEqual(a, b);
+  assert.match(a, /#0$/);
+  assert.match(b, /#1$/);
+});
+
+test('makePreviewKeyer separates display from inline and distinct bodies', () => {
+  const k = makePreviewKeyer();
+  assert.notEqual(k(false, 'x'), k(true, 'x'));
+  const k2 = makePreviewKeyer();
+  assert.notEqual(k2(false, 'x'), k2(false, 'y'));
+});
+
+test('the Nth identical formula keeps its key across renders', () => {
+  const seq = (keyer) => ['x', 'y', 'x'].map((b) => keyer(false, b));
+  assert.deepEqual(seq(makePreviewKeyer()), seq(makePreviewKeyer()));
 });
