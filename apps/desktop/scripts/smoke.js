@@ -851,9 +851,13 @@ app.whenReady().then(() => {
         }));
         await wait(600);
         const pane = document.querySelector('.markdown-preview-host');
-        const body = document.querySelector('.markdown-preview-body');
+        // The preview renders inside an isolated iframe now; read its
+        // document body for the rendered text.
+        const frameEl = document.querySelector('.markdown-preview-frame');
+        const frameBody = () => (frameEl && frameEl.contentDocument)
+          ? frameEl.contentDocument.body : null;
         const shown = !!(pane && getComputedStyle(pane).display !== 'none');
-        const rendered = !!(body && body.textContent.includes('# Heading'));
+        const rendered = !!(frameBody() && frameBody().textContent.includes('Heading'));
         // Editing the buffer refreshes the pane (debounced ~250ms).
         editor.focus();
         for (const ch of ' more') {
@@ -862,7 +866,7 @@ app.whenReady().then(() => {
           }));
         }
         await wait(600);
-        const refreshed = !!(body && body.textContent.includes('Heading more'));
+        const refreshed = !!(frameBody() && frameBody().textContent.includes('Heading more'));
         // C-c v again hides the pane.
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'c', ctrlKey: true, bubbles: true, cancelable: true,

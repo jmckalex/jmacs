@@ -27,7 +27,19 @@ const MIME = {
   '.json': 'application/json',
   '.wasm': 'application/wasm',
   '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.ttf': 'font/ttf',
   '.pdf': 'application/pdf',
+  // Images — so the `__host__` route serves a markdown file's relative
+  // images (and a stylesheet's referenced art) into the preview iframe
+  // with a real type. SVG especially must not fall back to octet-stream,
+  // or the browser won't render it as an image.
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
 };
 
 /** Path prefix on `app://editor/` under which arbitrary file paths

@@ -13,6 +13,7 @@ export { createOutputPanel, appendLines } from './output-panel.js';
 export { createDocPanel } from './doc-panel.js';
 export {
   createMarkdownPreview,
+  buildPreviewHead,
   PREVIEW_DEBOUNCE_MS,
 } from './markdown-preview.js';
 export { createMinibuffer } from './minibuffer.js';

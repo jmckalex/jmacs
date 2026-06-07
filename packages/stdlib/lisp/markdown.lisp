@@ -76,6 +76,22 @@
    refreshes as the buffer is edited."
   (markdown-preview!))
 
+;; --- preview styling ---------------------------------------------------
+;; The preview renders into an isolated iframe, so it can carry its own
+;; CSS without affecting (or being affected by) the editor chrome.
+;;   *markdown-preview-css* — a list of stylesheet file paths the iframe
+;;     links, e.g. your book's CSS. Absolute or ~ paths are served as-is;
+;;     a relative path resolves against the previewed file's directory.
+;;     Set it in init.lisp, e.g. (set! *markdown-preview-css*
+;;       (list "~/book/style.css")).
+;;   *markdown-preview-default-style* — link the built-in stylesheet;
+;;     turn off to let your own CSS fully own the look.
+(define *markdown-preview-css* (list))
+
+(defcustom *markdown-preview-default-style* #t :boolean
+  :group 'jmacs
+  :doc "Link the built-in Markdown-preview stylesheet in the preview iframe. Turn off to let your own *markdown-preview-css* fully control the preview's appearance.")
+
 ;; --- live inline math preview -----------------------------------------
 ;; Markdown gets the same live MathJax typesetting LaTeX does, built on
 ;; the general `math-preview-mode` (math-preview.lisp). The host scans a
