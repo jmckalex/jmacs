@@ -57,6 +57,19 @@ function createWindow() {
     },
   });
   mainWindow = win;
+
+  // The red traffic-light button / Cmd+W closes the window directly,
+  // which (like a native Quit) would tear down the renderer and drop
+  // unsaved edits with no prompt. Intercept the first close and route it
+  // through the same renderer confirm as before-quit; quitInteractive
+  // calls back via `app:quit` (which sets quitConfirmed) to let the next
+  // close through, or does nothing to cancel and the window stays open.
+  win.on('close', (event) => {
+    if (!shouldHoldForConfirm()) return;
+    event.preventDefault();
+    win.webContents.send('app:confirm-quit');
+  });
+
   win.loadURL(EDITOR_URL);
 }
 
@@ -96,21 +109,31 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// A native Quit (Cmd+Q or the app-menu Quit) calls app.quit() directly,
-// which would bypass the renderer's unsaved-changes prompt and silently
-// drop edits. Intercept the first quit and hand off to the renderer: it
-// runs quitInteractive (confirm + flush metadata) and calls back via
-// `app:quit` to actually quit, or does nothing to cancel. If the window
-// is already gone there is nothing to confirm — let the quit proceed.
-app.on('before-quit', (event) => {
-  if (quitConfirmed) return;
+// Whether an exit (a native Quit or a window close) should be held for
+// the renderer's unsaved-changes confirm. False once a quit has been
+// confirmed, or if the window / renderer is already gone — then there is
+// nothing left to lose, so let the exit proceed.
+function shouldHoldForConfirm() {
+  if (quitConfirmed) return false;
   if (
     !mainWindow ||
     mainWindow.isDestroyed() ||
     mainWindow.webContents.isDestroyed()
   ) {
-    return;
+    return false;
   }
+  return true;
+}
+
+// A native Quit (Cmd+Q or the app-menu Quit) calls app.quit() directly,
+// which would bypass the renderer's unsaved-changes prompt and silently
+// drop edits. Intercept the first quit and hand off to the renderer: it
+// runs quitInteractive (confirm + flush metadata) and calls back via
+// `app:quit` to actually quit, or does nothing to cancel. Holding here
+// means the windows never close, so the `close` guard below does not
+// also fire for the same Cmd+Q.
+app.on('before-quit', (event) => {
+  if (!shouldHoldForConfirm()) return;
   event.preventDefault();
   mainWindow.webContents.send('app:confirm-quit');
 });
