@@ -16,9 +16,10 @@
  * `innerHTML`. So an edit touches only the nodes that actually changed:
  * scroll position survives, there is no flicker, and — crucially —
  * unchanged mathematics is left typeset rather than re-rendered. Each
- * math region is wrapped in a keyed `<span class="math" data-math-key=…>`
- * and only spans whose key is *new* this render are handed to the
- * typeset hook. A head change / full-document engine output still
+ * math region is wrapped in a keyed `class="math" data-math-key=…`
+ * element (a block `<div>` for display math, an inline `<span>` for
+ * inline) and only those whose key is *new* this render are handed to
+ * the typeset hook. A head change / full-document engine output still
  * rebuilds the iframe via `srcdoc`. See plans/MD-MATH-AND-PREVIEW.md.
  *
  * Per the project's no-DOM-library convention, the iframe + morphdom
@@ -211,7 +212,8 @@ function collectMathTextNodes(el, out) {
 }
 
 /** Replace `node` with its text split around math regions, each region
- *  wrapped in a keyed span. A no-op when the node holds no math. */
+ *  wrapped in a keyed element — a block `<div>` for display math, an
+ *  inline `<span>` for inline math. A no-op when the node holds no math. */
 function wrapMathInTextNode(node, doc, keyer) {
   const text = node.nodeValue;
   const spans = previewMathSpans(text);
@@ -222,7 +224,7 @@ function wrapMathInTextNode(node, doc, keyer) {
     if (span.start > pos) {
       frag.appendChild(doc.createTextNode(text.slice(pos, span.start)));
     }
-    const el = doc.createElement('span');
+    const el = doc.createElement(span.display ? 'div' : 'span');
     el.className = 'math';
     el.setAttribute('data-math-key', keyer(span.display, span.body));
     el.setAttribute('data-math-display', span.display ? '1' : '0');
@@ -235,10 +237,11 @@ function wrapMathInTextNode(node, doc, keyer) {
 }
 
 /**
- * Wrap each math region under `root` in a keyed `<span class="math">`,
- * keeping the raw delimiters inside so the typeset hook still recognises
- * it. Text inside code/pre/etc. is left untouched. One `keyer` is shared
- * across the whole tree so occurrence indices are document-global.
+ * Wrap each math region under `root` in a keyed `class="math"` element
+ * (a `<div>` for display math, a `<span>` for inline), keeping the raw
+ * delimiters inside so the typeset hook still recognises it. Text inside
+ * code/pre/etc. is left untouched. One `keyer` is shared across the whole
+ * tree so occurrence indices are document-global.
  *
  * @param {Element} root
  * @param {Document} doc - The document that owns `root` (the iframe's).
@@ -328,7 +331,7 @@ function makeIframeCommit(frame, typeset) {
       if (!win || !body) return;
       if (wrap) {
         wrapMathInDom(body, cdoc);
-        for (const el of body.querySelectorAll('span.math')) {
+        for (const el of body.querySelectorAll('.math')) {
           el.setAttribute('data-typeset', '');
         }
       }
@@ -354,10 +357,10 @@ function makeIframeCommit(frame, typeset) {
         getNodeKey: previewNodeKey,
         onBeforeElUpdated: previewBeforeElUpdated,
       });
-      // Preserved (unchanged-key) spans keep their `data-typeset`; spans
-      // morphdom inserted fresh carry none — those are the ones to run.
+      // Preserved (unchanged-key) math keeps its `data-typeset`; math
+      // morphdom inserted fresh carries none — those are the ones to run.
       const fresh = Array.from(
-        body.querySelectorAll('span.math:not([data-typeset])')
+        body.querySelectorAll('.math:not([data-typeset])')
       );
       typesetFresh(win, fresh, typeset);
     } catch {
