@@ -22,7 +22,9 @@ At the start of a session, read `HANDOVER.md` (an untracked rolling doc at the r
 
 ### Branching and commits
 
-- **Never commit directly to `main`.** All work happens on branches.
+- **`main` is protected.** **Sub-agents must never touch `main`** — all sub-agent work happens on a branch; the ban on *checking out* `main` is the guard rail that stops an autonomous agent from going rogue. The **main interactive assistant**, working with the architect live, may commit *small, low-risk polish* (a doc tweak, a sample file, a one-line fix) directly to `main` — but **features and anything substantial go on a branch and are merged only when the architect explicitly asks**.
+- **Switch to `main` with `git switch main`, never `git checkout main`** — the `checkout main` form is blocked by a permission hook (the same guard rail). `git switch` is allowed and is how you move onto `main` to merge.
+- **Merge to `main` with `git merge --no-ff` plus a pre-merge recovery tag** — tag `main`'s tip before merging (e.g. `git tag pre-<feature>`), so any merge is easy to recover from. Push only when the architect asks (`git push origin main --follow-tags`).
 - **Sub-agents work on branches named for their role**: `agent-1-storage`, `agent-2-buffer`, etc. Sub-tasks can use further branches like `agent-2-buffer/markers`.
 - **Commit frequently.** Each logically complete unit of work gets its own commit. Small commits are recoverable; large ones are not.
 - **Commit messages follow conventional commits**: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`. Subject under 72 characters, imperative mood ("add" not "added"). Body explains *why* if not self-evident.
