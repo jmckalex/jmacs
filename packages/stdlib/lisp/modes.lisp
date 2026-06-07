@@ -102,11 +102,80 @@
   (registry-lookup *mode-registry* name))
 
 ;; --- mode hooks --------------------------------------------------------
+;; A mode may carry a single built-in :on-enable / :on-disable procedure
+;; (set at define-mode time). On top of that, `add-hook` registers any
+;; number of independent functions to run when a mode is enabled or
+;; disabled — Emacs-style additive hooks, so the stdlib and a user's
+;; init.lisp can both hook the same mode without clobbering each other.
+;; Hooks are keyed by the mode's display name, so they survive a mode
+;; being redefined and may be registered before the mode even loads.
+
+(define *mode-hooks* {})
+
+(define (-mode-name-of mode)
+  "The display name for MODE — a mode object's :name, or MODE itself when
+   it is already a name string."
+  (if (string? mode) mode (get mode :name nil)))
+
+(define (-hook-key name phase)
+  "The registry key for a mode NAME and PHASE (:on-enable / :on-disable)."
+  (str name "/" (if (eq? phase :on-disable) "disable" "enable")))
+
+(define (-memq? item lst)
+  "Membership by identity (eq?) — matches a procedure by object, not by a
+   deep value compare."
+  (cond ((nil? lst) #f)
+        ((eq? item (car lst)) #t)
+        (else (-memq? item (cdr lst)))))
+
+(define (-without-all item lst)
+  "LST with every eq? ITEM removed."
+  (cond ((nil? lst) (list))
+        ((eq? item (car lst)) (-without-all item (cdr lst)))
+        (else (cons (car lst) (-without-all item (cdr lst))))))
+
+(define (add-hook mode thunk . opts)
+  "Register THUNK (a zero-argument procedure) to run when MODE is enabled.
+   MODE is a mode object (e.g. markdown-mode) or its display name. Pass
+   :on-disable as the optional third argument to run THUNK on disable
+   instead. Hooks run in the order added; re-adding the same procedure
+   object is a no-op (idempotent)."
+  (let ((name (-mode-name-of mode))
+        (phase (if (nil? opts) :on-enable (car opts))))
+    (when (and name (procedure? thunk))
+      (let* ((key (-hook-key name phase))
+             (current (get *mode-hooks* key (list))))
+        (unless (-memq? thunk current)
+          (set! *mode-hooks*
+                (assoc *mode-hooks* key (append current (list thunk)))))))))
+
+(define (remove-hook mode thunk . opts)
+  "Remove THUNK from MODE's hook list — the inverse of `add-hook`. Pass
+   :on-disable to target the disable list."
+  (let ((name (-mode-name-of mode))
+        (phase (if (nil? opts) :on-enable (car opts))))
+    (when name
+      (let ((key (-hook-key name phase)))
+        (set! *mode-hooks*
+              (assoc *mode-hooks* key
+                     (-without-all thunk (get *mode-hooks* key (list)))))))))
+
+(define (-run-thunks thunks)
+  "Call each procedure in THUNKS, in order."
+  (unless (nil? thunks)
+    (when (procedure? (car thunks)) ((car thunks)))
+    (-run-thunks (cdr thunks))))
+
 (define (run-mode-hook mode key)
-  "Run MODE's hook stored under KEY (a procedure), if it has one."
+  "Run MODE's hooks for KEY (:on-enable / :on-disable): first its built-in
+   single-slot procedure (from define-mode), then every function
+   registered with `add-hook`, in registration order."
   (unless (nil? mode)
-    (let ((hook (get mode key nil)))
-      (when (procedure? hook) (hook)))))
+    (let ((builtin (get mode key nil)))
+      (when (procedure? builtin) (builtin)))
+    (let ((name (-mode-name-of mode)))
+      (when name
+        (-run-thunks (get *mode-hooks* (-hook-key name key) (list)))))))
 
 ;; --- the current buffer's major mode -----------------------------------
 (define (switch-major-mode mode)
