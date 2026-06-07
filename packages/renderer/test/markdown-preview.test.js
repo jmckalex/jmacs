@@ -4,12 +4,17 @@ import assert from 'node:assert/strict';
 import {
   createMarkdownPreview,
   PREVIEW_DEBOUNCE_MS,
+  buildPreviewHead,
+  buildPreviewDocument,
+  cssLinkTags,
+  isFullDocument,
 } from '../src/markdown-preview.js';
 
 /**
- * A minimal DOM stand-in — the preview component only needs
- * `createElement`, `className`, `textContent`, `innerHTML` and
- * `append`. Keeping it tiny avoids pulling in a DOM library.
+ * A minimal DOM stand-in. The component's scheduling/error/clear logic
+ * only needs `createElement`/`className`/`append`; the iframe path itself
+ * is exercised live (real DOM), so these tests inject a recording
+ * `commit` instead of touching the iframe.
  */
 function fakeDocument() {
   function makeElement() {
@@ -28,115 +33,147 @@ function fakeDocument() {
   const doc = { createElement: () => makeElement() };
   return doc;
 }
-
-/** A container element to mount the preview into. */
-function fakeContainer() {
-  const doc = fakeDocument();
-  return doc.createElement('div');
-}
-
-/** Resolve after `ms` milliseconds. */
+const fakeContainer = () => fakeDocument().createElement('div');
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// --- pure: head / document builders -----------------------------------
+
+test('cssLinkTags emits a <link> per URL, dropping empties', () => {
+  assert.equal(
+    cssLinkTags(['a.css', 'b.css']),
+    '<link rel="stylesheet" href="a.css">\n<link rel="stylesheet" href="b.css">'
+  );
+  assert.equal(cssLinkTags([]), '');
+  assert.equal(cssLinkTags(['x.css', '', null]), '<link rel="stylesheet" href="x.css">');
+});
+
+test('buildPreviewHead orders base, default CSS, user CSS, then MathJax', () => {
+  const head = buildPreviewHead({
+    baseUrl: 'app://editor/__host__/d/',
+    defaultCssUrl: 'app://editor/apps/desktop/markdown-preview.css',
+    cssUrls: ['app://editor/__host__/book.css'],
+    mathjaxSrc: 'app://editor/mj.js',
+    mathjaxConfig: { tex: {} },
+  });
+  const iBase = head.indexOf('<base');
+  const iDefault = head.indexOf('markdown-preview.css');
+  const iUser = head.indexOf('book.css');
+  const iMj = head.indexOf('mj.js');
+  assert.ok(iBase >= 0 && iBase < iDefault && iDefault < iUser && iUser < iMj);
+  assert.ok(head.includes('window.MathJax={"tex":{}}'));
+});
+
+test('buildPreviewHead omits the pieces it is not given', () => {
+  const head = buildPreviewHead({});
+  assert.ok(!head.includes('<base'));
+  assert.ok(!head.includes('<link'));
+  assert.ok(!head.includes('MathJax'));
+});
+
+test('buildPreviewHead escapes attribute values', () => {
+  const head = buildPreviewHead({ baseUrl: 'x"><script>bad' });
+  assert.ok(!head.includes('"><script>'));
+  assert.ok(head.includes('&quot;'));
+});
+
+test('buildPreviewDocument wraps head + body in a full document', () => {
+  const d = buildPreviewDocument('<base>', '<p>hi</p>');
+  assert.ok(d.startsWith('<!doctype html>'));
+  assert.ok(d.includes('<head>\n<base>\n</head>'));
+  assert.ok(d.includes('<body><p>hi</p></body>'));
+});
+
+test('isFullDocument detects a complete page vs a fragment', () => {
+  assert.equal(isFullDocument('<!doctype html><html>'), true);
+  assert.equal(isFullDocument('  <html lang="en">'), true);
+  assert.equal(isFullDocument('<h1>frag</h1>'), false);
+  assert.equal(isFullDocument('<p>$x$</p>'), false);
+});
+
+// --- scheduling via an injected commit --------------------------------
 
 test('createMarkdownPreview mounts a pane into its container', () => {
   const container = fakeContainer();
-  const preview = createMarkdownPreview(container, {
-    render: async () => '',
-  });
+  const preview = createMarkdownPreview(container, { render: async () => '' });
   assert.equal(container.children.length, 1);
   assert.equal(container.children[0], preview.element);
   assert.equal(preview.element.className, 'markdown-preview');
 });
 
-test('refreshNow renders the source and shows the HTML', async () => {
+test('refreshNow renders and commits the html plus the head', async () => {
   const container = fakeContainer();
+  const commits = [];
   const preview = createMarkdownPreview(container, {
-    render: async (source) => `<h1>${source}</h1>`,
+    render: async (s) => `<h1>${s}</h1>`,
+    buildHead: () => 'HEAD',
+    commit: (html, head) => commits.push([html, head]),
   });
-  await preview.refreshNow('Hello');
-  const body = preview.element.children[1];
-  assert.equal(body.innerHTML, '<h1>Hello</h1>');
+  await preview.refreshNow('Hi');
+  assert.deepEqual(commits, [['<h1>Hi</h1>', 'HEAD']]);
 });
 
-test('refreshNow shows an error message when the render fails', async () => {
+test('a failed render commits an error fragment instead of throwing', async () => {
   const container = fakeContainer();
+  let committed = null;
   const preview = createMarkdownPreview(container, {
     render: async () => {
-      throw new Error('command not found');
+      throw new Error('boom');
+    },
+    commit: (html) => {
+      committed = html;
     },
   });
-  await preview.refreshNow('# anything');
-  const body = preview.element.children[1];
-  assert.match(body.textContent, /Preview unavailable: command not found/);
+  await preview.refreshNow('x');
+  assert.match(committed, /Preview unavailable: boom/);
 });
 
-test('update debounces — only the last source is rendered', async () => {
+test('update debounces to a single commit of the last source', async () => {
   const container = fakeContainer();
-  const rendered = [];
+  const commits = [];
   const preview = createMarkdownPreview(container, {
     debounceMs: 20,
-    render: async (source) => {
-      rendered.push(source);
-      return source;
-    },
+    render: async (s) => s,
+    commit: (html) => commits.push(html),
   });
   preview.update('one');
   preview.update('two');
   preview.update('three');
   await wait(60);
-  assert.deepEqual(rendered, ['three']);
-  assert.equal(preview.element.children[1].innerHTML, 'three');
+  assert.deepEqual(commits, ['three']);
 });
 
 test('a stale slow render cannot overwrite a newer one', async () => {
   const container = fakeContainer();
   let call = 0;
+  const commits = [];
   const preview = createMarkdownPreview(container, {
-    render: async (source) => {
+    render: async (s) => {
       call += 1;
-      // The first render is slow; the second is immediate.
       if (call === 1) await wait(40);
-      return source;
+      return s;
     },
+    commit: (html) => commits.push(html),
   });
   const slow = preview.refreshNow('stale');
   const fast = preview.refreshNow('fresh');
   await Promise.all([slow, fast]);
-  assert.equal(preview.element.children[1].innerHTML, 'fresh');
+  assert.deepEqual(commits, ['fresh']);
 });
 
-test('typeset hook runs on the body after a successful render', async () => {
+test('clear cancels a pending render', async () => {
   const container = fakeContainer();
-  let typesetTarget = null;
-  const preview = createMarkdownPreview(container, {
-    render: async () => '<p>math</p>',
-    typeset: (element) => {
-      typesetTarget = element;
-    },
-  });
-  await preview.refreshNow('math');
-  assert.equal(typesetTarget, preview.element.children[1]);
-});
-
-test('clear empties the body and cancels a pending render', async () => {
-  const container = fakeContainer();
-  const rendered = [];
+  const commits = [];
   const preview = createMarkdownPreview(container, {
     debounceMs: 20,
-    render: async (source) => {
-      rendered.push(source);
-      return source;
-    },
+    render: async (s) => s,
+    commit: (html) => commits.push(html),
   });
-  await preview.refreshNow('content');
-  assert.equal(preview.element.children[1].innerHTML, 'content');
   preview.update('pending');
   preview.clear();
   await wait(60);
-  assert.equal(preview.element.children[1].innerHTML, '');
-  assert.deepEqual(rendered, ['content']);
+  assert.deepEqual(commits, []);
 });
 
-test('PREVIEW_DEBOUNCE_MS is the documented ~250ms default', () => {
+test('PREVIEW_DEBOUNCE_MS is the documented 250ms default', () => {
   assert.equal(PREVIEW_DEBOUNCE_MS, 250);
 });

@@ -63,6 +63,7 @@ import {
   JukeboxView,
   PdfView,
   createMarkdownPreview,
+  buildPreviewHead,
   createMinibuffer,
   createReplView,
   createUtilityDock,
@@ -7605,17 +7606,15 @@ stickyNotes.setBuffer(currentTextBuffer);
 // markdown-mode buffer to HTML through the same JMarkdown pipeline the
 // sticky notes use, refreshing — debounced — as the buffer is edited.
 
-/** Typeset mathematics in the rendered preview, once MathJax is ready.
- *  A nice-to-have: MathJax is already loaded for the sticky notes. */
-function typesetPreview(element) {
-  const mathJax = globalThis.MathJax;
+/** Typeset mathematics inside the preview iframe, once its own MathJax
+ *  has started. The iframe loads its own MathJax (see buildPreviewHead),
+ *  so this runs against THAT instance, not the editor's. */
+function typesetPreview(frameWindow, body) {
+  const mathJax = frameWindow && frameWindow.MathJax;
   if (!mathJax) return;
   const run = () => {
-    if (typeof mathJax.typesetClear === 'function') {
-      mathJax.typesetClear([element]);
-    }
     if (typeof mathJax.typesetPromise === 'function') {
-      mathJax.typesetPromise([element]).catch(() => {});
+      mathJax.typesetPromise([body]).catch(() => {});
     }
   };
   const ready = mathJax.startup && mathJax.startup.promise;
@@ -7623,9 +7622,84 @@ function typesetPreview(element) {
   else run();
 }
 
+/** Build an `app://editor/__host__/…` URL for an absolute file path —
+ *  the renderer-side mirror of serve.js's `hostFileUrl` (keep in sync).
+ *  Serves any local file same-origin, so the preview iframe can load the
+ *  book's CSS and a file's relative assets. */
+function hostFileUrl(filePath) {
+  return (
+    'app://editor/__host__' +
+    filePath.split('/').map(encodeURIComponent).join('/')
+  );
+}
+
+/** The MathJax config the preview iframe uses — mirrors index.html. */
+const PREVIEW_MATHJAX_CONFIG = {
+  tex: {
+    inlineMath: [['$', '$'], ['\\(', '\\)']],
+    displayMath: [['$$', '$$'], ['\\[', '\\]']],
+  },
+  svg: { fontCache: 'local' },
+  startup: { typeset: false },
+};
+const PREVIEW_MATHJAX_SRC =
+  'app://editor/apps/desktop/vendor/mathjax/tex-svg.js';
+const PREVIEW_DEFAULT_CSS_URL =
+  'app://editor/apps/desktop/markdown-preview.css';
+
+/** The current markdown buffer's directory as a base URL the iframe
+ *  resolves relative assets against — or null for an unsaved buffer. */
+function currentPreviewBaseUrl() {
+  const path = currentTextBuffer && currentTextBuffer.filePath;
+  if (typeof path !== 'string' || path === '') return null;
+  const dir = path.slice(0, path.lastIndexOf('/') + 1);
+  return dir ? hostFileUrl(dir) : null;
+}
+
+/** The user's `*markdown-preview-css*` paths as iframe-loadable URLs.
+ *  Absolute (and `~`) paths go through the host-file scheme; a relative
+ *  path is left as-is to resolve against the iframe's <base>. */
+function currentPreviewCssUrls() {
+  let paths = [];
+  try {
+    paths = listToArray(interpreter.evaluate('*markdown-preview-css*')).map(String);
+  } catch {
+    paths = [];
+  }
+  return paths.map((p) => {
+    let path = p;
+    if (path.startsWith('~/')) path = window.host.homeDirectory + path.slice(1);
+    return path.startsWith('/') ? hostFileUrl(path) : path;
+  });
+}
+
+/** Whether the built-in preview stylesheet should be linked. */
+function previewDefaultStyleOn() {
+  try {
+    return interpreter.evaluate('*markdown-preview-default-style*') !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** The <head> for the preview iframe: base + stylesheets + MathJax. */
+function buildPreviewFrameHead() {
+  return buildPreviewHead({
+    baseUrl: currentPreviewBaseUrl(),
+    cssUrls: currentPreviewCssUrls(),
+    defaultCssUrl: previewDefaultStyleOn() ? PREVIEW_DEFAULT_CSS_URL : null,
+    mathjaxSrc: PREVIEW_MATHJAX_SRC,
+    mathjaxConfig: PREVIEW_MATHJAX_CONFIG,
+  });
+}
+
 const markdownPreview = createMarkdownPreview(
   document.getElementById('markdown-preview-host'),
-  { render: renderNoteHtml, typeset: typesetPreview }
+  {
+    render: renderNoteHtml,
+    buildHead: buildPreviewFrameHead,
+    typeset: typesetPreview,
+  }
 );
 // The pane starts hidden; markdown-preview reveals it.
 document.body.classList.add('markdown-preview-hidden');

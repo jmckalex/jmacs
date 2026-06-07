@@ -1137,28 +1137,15 @@ body.markdown-preview-hidden #preview-splitter {
   user-select: none;
 }
 
-.markdown-preview-body {
+/* The preview renders into an isolated iframe; its inner styling comes
+   from markdown-preview.css (and the user's *markdown-preview-css*), not
+   from here. This rule only sizes the frame to fill the pane. */
+.markdown-preview-frame {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
-  padding: 14px 20px;
+  width: 100%;
+  border: 0;
   background: #ffffff;
-  color: #1a1a1a;
-  font-family: var(--font-ui, system-ui, sans-serif);
-  font-size: 14px;
-  line-height: 1.6;
-  user-select: text;
-}
-
-.markdown-preview-body img {
-  max-width: 100%;
-}
-
-.markdown-preview-body pre {
-  overflow-x: auto;
-  background: #f4f4f4;
-  padding: 8px 10px;
-  border-radius: 4px;
 }
 
 /* --- drag-resize splitters --------------------------------------------- */
