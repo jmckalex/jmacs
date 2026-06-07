@@ -7638,6 +7638,9 @@ const PREVIEW_MATHJAX_CONFIG = {
   tex: {
     inlineMath: [['$', '$'], ['\\(', '\\)']],
     displayMath: [['$$', '$$'], ['\\[', '\\]']],
+    // Honour `\$` as a literal dollar (renderMarkdown preserves it), so a
+    // price like "\$45" isn't paired into math.
+    processEscapes: true,
   },
   svg: { fontCache: 'local' },
   startup: { typeset: false },
