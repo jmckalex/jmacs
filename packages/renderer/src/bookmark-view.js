@@ -121,6 +121,19 @@ function createBookmarkView(container, options = {}) {
       empty.className = 'bookmark-empty';
       empty.textContent = 'No bookmarks — set one with C-x r m.';
       body.append(empty);
+      // TEMP DIAGNOSTIC (empty-after-restart): show what the outline is
+      // actually reading, right here in the pane the user is looking at,
+      // so we don't depend on the REPL being open. Reveals whether the
+      // source buffer and its metadata arrived. Remove once fixed.
+      const diag = doc.createElement('div');
+      diag.className = 'bookmark-empty';
+      const md = buf && buf.metadata ? buf.metadata : null;
+      const bm = md && Array.isArray(md.bookmarks) ? md.bookmarks.length : 'n/a';
+      diag.textContent =
+        `[diag] source=${buf ? (buf.name ?? '?') : 'NULL'} · ` +
+        `metadata-keys=${md ? Object.keys(md).join(',') : '(none)'} · ` +
+        `bookmarks=${bm}`;
+      body.append(diag);
       selected = 0;
       return;
     }
