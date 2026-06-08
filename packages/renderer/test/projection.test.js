@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createBuffer } from '@editor/buffer';
 import {
-  toLines, selectionRects, cursorPositions,
+  toLines, selectionRects, decorationRects, cursorPositions,
   visualColumn, charIndexAtVisualColumn,
 } from '../src/projection.js';
 
@@ -156,4 +156,93 @@ test('cursorPositions: tabWidth shifts the column to the visual position', () =>
   assert.deepEqual(cursorPositions(buf), [{ line: 0, column: 3 }]);
   // With tabWidth=4: tab → column 4, then +2 chars → column 6.
   assert.deepEqual(cursorPositions(buf, undefined, 4), [{ line: 0, column: 6 }]);
+});
+
+// --- decorationRects (snippet field / mirror boxes) --------------------
+
+test('decorationRects: empty when given no ranges', () => {
+  const buf = createBuffer('hello world');
+  assert.deepEqual(decorationRects(buf, []), []);
+  assert.deepEqual(decorationRects(buf, null), []);
+});
+
+test('decorationRects: a single-line range carries its face', () => {
+  const buf = createBuffer('for (let i = 0; ...');
+  // The field on "i" spans offsets 9..10.
+  assert.deepEqual(
+    decorationRects(buf, [{ start: 9, end: 10, face: 'snippet-active-face' }]),
+    [{ line: 0, fromColumn: 9, toColumn: 10, toLineEnd: false, face: 'snippet-active-face' }]
+  );
+});
+
+test('decorationRects: paints active + mirror ranges independently', () => {
+  const buf = createBuffer('aXbbXc');
+  const rects = decorationRects(buf, [
+    { start: 1, end: 2, face: 'snippet-active-face' }, // first "X"
+    { start: 4, end: 5, face: 'snippet-mirror-face' }, // second "X"
+  ]);
+  assert.deepEqual(rects, [
+    { line: 0, fromColumn: 1, toColumn: 2, toLineEnd: false, face: 'snippet-active-face' },
+    { line: 0, fromColumn: 4, toColumn: 5, toLineEnd: false, face: 'snippet-mirror-face' },
+  ]);
+});
+
+test('decorationRects: a multi-line range emits one rect per touched line', () => {
+  const buf = createBuffer('abcd\nefgh\nijkl');
+  const rects = decorationRects(buf, [
+    { start: 2, end: 12, face: 'snippet-active-face' },
+  ]);
+  assert.deepEqual(rects, [
+    { line: 0, fromColumn: 2, toColumn: 4, toLineEnd: true, face: 'snippet-active-face' },
+    { line: 1, fromColumn: 0, toColumn: 4, toLineEnd: true, face: 'snippet-active-face' },
+    { line: 2, fromColumn: 0, toColumn: 2, toLineEnd: false, face: 'snippet-active-face' },
+  ]);
+});
+
+test('decorationRects: a zero-width (empty-field) range still emits a marker', () => {
+  const buf = createBuffer('ab');
+  const rects = decorationRects(buf, [
+    { start: 1, end: 1, face: 'snippet-active-face' },
+  ]);
+  assert.deepEqual(rects, [
+    { line: 0, fromColumn: 1, toColumn: 1, toLineEnd: false, face: 'snippet-active-face' },
+  ]);
+});
+
+test('decorationRects: out-of-range offsets are clamped to the buffer', () => {
+  const buf = createBuffer('abc');
+  // end past the buffer length is clamped to 3.
+  assert.deepEqual(
+    decorationRects(buf, [{ start: 1, end: 99, face: 'snippet-active-face' }]),
+    [{ line: 0, fromColumn: 1, toColumn: 3, toLineEnd: false, face: 'snippet-active-face' }]
+  );
+});
+
+test('decorationRects: skips inverted, faceless or malformed ranges', () => {
+  const buf = createBuffer('abcde');
+  assert.deepEqual(
+    decorationRects(buf, [
+      { start: 4, end: 2, face: 'snippet-active-face' }, // inverted
+      { start: 0, end: 2, face: '' },                    // no face
+      { start: 0, end: 2 },                              // no face key
+      null,                                              // junk
+      { face: 'snippet-active-face' },                   // no offsets
+    ]),
+    []
+  );
+});
+
+test('decorationRects: tabWidth shifts the columns to the visual position', () => {
+  const buf = createBuffer('\thello');
+  // Field over "hell" (offsets 1..5). Without tabWidth the rect uses
+  // character columns (1..5); with tabWidth=4 the leading tab pushes
+  // the start to column 4 and the end to column 8.
+  assert.deepEqual(
+    decorationRects(buf, [{ start: 1, end: 5, face: 'snippet-active-face' }]),
+    [{ line: 0, fromColumn: 1, toColumn: 5, toLineEnd: false, face: 'snippet-active-face' }]
+  );
+  assert.deepEqual(
+    decorationRects(buf, [{ start: 1, end: 5, face: 'snippet-active-face' }], 4),
+    [{ line: 0, fromColumn: 4, toColumn: 8, toLineEnd: false, face: 'snippet-active-face' }]
+  );
 });

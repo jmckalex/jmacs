@@ -149,6 +149,82 @@ export function selectionRects(buffer, cursorsOrPoint, maybeMark, tabWidth) {
 }
 
 /**
+ * A face-tagged offset range to paint as a styled box, e.g. a snippet
+ * field. Like {@link selectionRects} but each input range carries a
+ * `face` the renderer turns into a CSS class, and the rects are derived
+ * from absolute buffer offsets (not from cursor/mark), so they survive
+ * edits as long as the supplier keeps the offsets live.
+ *
+ * @typedef {object} DecorationRange
+ * @property {number} start - Absolute buffer offset where the box opens.
+ * @property {number} end - Absolute buffer offset where the box closes.
+ * @property {string} face - The face name; the renderer paints the box
+ *   with the `.tok-<face>` rule the face-styles module generates.
+ */
+
+/**
+ * One painted rectangle per (range, touched-line) pair, mirroring the
+ * shape {@link selectionRects} returns but with the range's `face`
+ * carried through. Zero-width ranges (`start === end`) still emit a
+ * single zero-width rect so an empty field is visible as a thin caret-
+ * width marker; the renderer can widen it to a sliver. Ranges whose
+ * bounds fall outside the buffer are clamped, and an inverted or null
+ * range is skipped.
+ *
+ * The columns are *visual* columns when a positive `tabWidth` is passed
+ * (so the box lines up with the glyphs past a tab), matching
+ * `selectionRects`.
+ *
+ * @param {import('@editor/buffer').Buffer} buffer
+ * @param {DecorationRange[]} ranges - Face-tagged absolute offset ranges.
+ * @param {number} [tabWidth] - Stops per tab; 0/undefined keeps the
+ *   legacy character-indexed columns (test fixtures rely on this).
+ * @returns {{ line: number, fromColumn: number, toColumn: number,
+ *   toLineEnd: boolean, face: string }[]}
+ */
+export function decorationRects(buffer, ranges, tabWidth) {
+  if (!Array.isArray(ranges) || ranges.length === 0) return [];
+  const tabW = typeof tabWidth === 'number' && tabWidth > 0 ? tabWidth : 0;
+  const docLength = typeof buffer.length === 'number'
+    ? buffer.length
+    : (typeof buffer.text === 'string' ? buffer.text.length : 0);
+  const rects = [];
+  for (const range of ranges) {
+    if (!range || typeof range.start !== 'number' || typeof range.end !== 'number') {
+      continue;
+    }
+    const face = typeof range.face === 'string' ? range.face : '';
+    if (face === '') continue;
+    let start = Math.max(0, Math.min(range.start, docLength));
+    let end = Math.max(0, Math.min(range.end, docLength));
+    if (end < start) continue;
+    const first = buffer.positionAt(start);
+    const last = buffer.positionAt(end);
+    for (let line = first.line; line <= last.line; line += 1) {
+      const lineMeta = buffer.lineAt(buffer.offsetAt(line, 0));
+      const lineText = typeof lineMeta.text === 'string'
+        ? lineMeta.text
+        : buffer.slice(lineMeta.from, lineMeta.to);
+      const lineLength = lineMeta.to - lineMeta.from;
+      const fromChar = line === first.line ? first.column : 0;
+      const toChar = line === last.line ? last.column : lineLength;
+      const fromColumn = tabW > 0 ? visualColumn(lineText, fromChar, tabW) : fromChar;
+      const toColumn = tabW > 0 ? visualColumn(lineText, toChar, tabW) : toChar;
+      rects.push({
+        line,
+        fromColumn,
+        toColumn,
+        // A range that continues past this line shows its newline as a
+        // sliver of trailing box, the same convention selectionRects uses.
+        toLineEnd: line !== last.line,
+        face,
+      });
+    }
+  }
+  return rects;
+}
+
+/**
  * The on-screen position of every caret in CURSORS, in document order.
  * When `cursors` is omitted, falls back to `buffer.selections`. Used
  * by the renderer to paint one caret per cursor.
