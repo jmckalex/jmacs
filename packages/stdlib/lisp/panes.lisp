@@ -118,10 +118,15 @@
 (defcommand close-tab ()
   "Close the active tab in the focused tabline-view. The view leaves
    the strip but stays alive in the global list (reachable via
-   `switch-view`). To remove the view itself, use `kill-view`."
+   `switch-view`). When it was the LAST tab, the pane collapses into its
+   sibling (`close-pane`) — the view still stays alive; at the sole root
+   pane there is nothing to collapse into, so the last tab stays put. To
+   remove the view itself, use `kill-view`."
   (let ((tlv (current-tabline)))
     (when (not (nil? tlv))
-      (remove-tab! tlv (tabline-active tlv)))))
+      (if (> (length (tabline-tabs tlv)) 1)
+          (remove-tab! tlv (tabline-active tlv))
+          (close-pane)))))
 
 ;; --- moving views between panes ---------------------------------------
 ;; Three workflows the user wanted:
