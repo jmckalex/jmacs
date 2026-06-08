@@ -129,6 +129,7 @@ import {
   bufferMajorModeName,
 } from './math-preview-host.js';
 import { buildModeMenuItems } from './mode-menu-build.js';
+import { createRecovery } from './recovery-controller.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
@@ -283,6 +284,21 @@ const session = {
 
 /** Buffers with unsaved changes. */
 const dirtyBuffers = new Set();
+
+/** The autosave / crash-recovery controller: snapshots every dirty
+ *  buffer to `<userData>/recovery/` (debounced on edit, immediate on
+ *  blur), drops a buffer's snapshot when it is saved, and clears them
+ *  all on a clean confirmed quit. A crash leaves the snapshots in place
+ *  for the next launch to offer back. */
+const recovery = createRecovery({
+  getDirtyBuffers: () => dirtyBuffers,
+  host: window.host,
+});
+
+/** Set once a clean quit is committed (the unsaved-changes confirm
+ *  passed), so the `pagehide` handler doesn't re-snapshot dirty buffers
+ *  after `recovery.clear()` already wiped them. */
+let quitting = false;
 
 /** Monotonic id source for shell-buffer session ids. Each new shell
  *  buffer gets a fresh id; the host keys its child-process table off
@@ -450,6 +466,7 @@ function watchCurrentBuffer() {
   unwatch = buffer.onChange((event) => {
     if (event.change !== null) {
       dirtyBuffers.add(buffer);
+      recovery.save();
       dismissSplash();
       // Keep the Markdown preview pane in step with the buffer.
       refreshMarkdownPreview();
@@ -2399,6 +2416,8 @@ async function saveBufferInteractive() {
     // display name from the buffer).
     view.name = result.name;
     dirtyBuffers.delete(buffer);
+    // The buffer is on disk now — drop its crash-recovery snapshot.
+    recovery.forget(buffer);
     updateModeline();
     notifyViewsChanged();
     // Persist sticky notes alongside the file — this also covers a
@@ -2455,7 +2474,13 @@ async function quitInteractive() {
   ) {
     return;
   }
+  // A clean, confirmed quit is not a crash: drop every recovery snapshot
+  // so the next launch doesn't offer to "recover" work the user chose to
+  // discard (or had already saved). `quitting` stops the pagehide handler
+  // below from re-writing snapshots after this.
+  quitting = true;
   await flushAllMetadata();
+  await recovery.clear();
   window.host.quit();
 }
 
@@ -6624,6 +6649,7 @@ function configureNotebookView() {
     onSourceChange: (buffer) => {
       if (buffer) {
         dirtyBuffers.add(buffer);
+        recovery.save();
         updateModeline();
       }
     },
@@ -8701,6 +8727,17 @@ onViewsChanged = () => {
 // process even after pagehide returns.
 window.addEventListener('pagehide', () => {
   sessionController.flush();
+  // Capture the latest unsaved edits before a reload/navigation teardown.
+  // Skip it on a clean quit — quitInteractive already cleared the
+  // snapshots, and re-writing them here would resurrect discarded work.
+  if (!quitting) recovery.flush();
+});
+
+// Snapshot dirty buffers when the window loses focus — a cheap, frequent
+// safety net between debounced edit-time writes (and the moment a user
+// is most likely to wander off and leave unsaved work).
+window.addEventListener('blur', () => {
+  if (!quitting) recovery.flush();
 });
 
 // Restore: re-open the files the previous session left open and the

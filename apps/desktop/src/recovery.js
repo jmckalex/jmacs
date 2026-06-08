@@ -21,16 +21,18 @@
 export const RECOVERY_DIR_NAME = 'recovery';
 
 /**
- * A small, stable djb2 hash (base36) of a key, used only to keep a
- * recovery filename unique when two different keys sanitise alike.
+ * A small, stable djb2 hash (base36) of a string. Used to keep a
+ * recovery filename unique when two keys sanitise alike, and by the
+ * renderer controller as a snapshot's content hash.
  *
- * @param {string} key
+ * @param {string} text
  * @returns {string}
  */
-function hashKey(key) {
+export function hashText(text) {
+  const str = String(text);
   let h = 5381;
-  for (let i = 0; i < key.length; i += 1) {
-    h = ((h << 5) + h + key.charCodeAt(i)) | 0;
+  for (let i = 0; i < str.length; i += 1) {
+    h = ((h << 5) + h + str.charCodeAt(i)) | 0;
   }
   return (h >>> 0).toString(36);
 }
@@ -48,7 +50,7 @@ function hashKey(key) {
 export function recoveryFileName(key) {
   const str = String(key);
   const slug = str.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 96);
-  return `${slug}-${hashKey(str)}.json`;
+  return `${slug}-${hashText(str)}.json`;
 }
 
 /**
