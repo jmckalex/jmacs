@@ -665,6 +665,36 @@ text-view {
   border-radius: 2px;
 }
 
+/* --- snippet field decorations ---------------------------------------- */
+/* Boxes painted behind a snippet's active field and its mirrors while a
+ * snippet is being navigated. Sits in the same z-band as the selection
+ * but earlier in the DOM, so the active field's selection highlight
+ * draws over the field tint until the user types ("type to replace"
+ * stays intact — the box augments the selection, it doesn't replace it).
+ * The face supplies the `background-color` via the generated
+ * `.tok-snippet-active-face` / `.tok-snippet-mirror-face` rule. */
+.editor-decorations {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+}
+
+.editor-decoration {
+  position: absolute;
+  height: 1lh;
+  border-radius: 2px;
+  /* The face fills the background; a faint outline keeps a field with a
+   * pale tint (or an empty one) legible against the editor background. */
+  box-shadow: inset 0 0 0 1px #ffffff22;
+}
+
+/* An empty field (zero-width default) collapses to a thin marker so the
+ * user can still see where the field is. */
+.editor-decoration.is-empty {
+  box-shadow: inset 0 0 0 1px #ffffff44;
+}
+
 /* --- matching brackets ------------------------------------------------- */
 
 .editor-brackets {

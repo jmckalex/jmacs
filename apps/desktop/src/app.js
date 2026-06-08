@@ -3843,6 +3843,67 @@ function refreshModeMenu() {
   window.host.setModeMenu(menu);
 }
 
+// --- snippet field decorations -----------------------------------------
+//
+// While a snippet is being navigated, the active field is painted with
+// `snippet-active-face` and its live mirrors with `snippet-mirror-face`.
+// The Lisp side keeps the field offsets current as the user edits
+// (`snippet-after-edit!`), and exposes them as absolute `(start . end)`
+// ranges; the renderer recomputes the boxes from these offsets on every
+// frame, so they track the buffer under edits (unlike the inline-eval
+// pill, which hides on any mutation). The active-field *selection* still
+// rides on top until the user types, so "type to replace" is unchanged —
+// the face box augments it, it doesn't replace it.
+//
+// The faces become `.tok-snippet-active-face` / `.tok-snippet-mirror-face`
+// CSS rules through the same `current-face-styles` -> face-styles.js path
+// every other face uses, so a theme / customise edit re-tints the boxes
+// with no extra wiring.
+
+/** Read one `(start . end)` cons pair into a `{start, end}` of finite
+ *  numbers, or null when the value is nil / malformed. */
+function snippetRangePair(pair, face) {
+  if (pair === null || pair === undefined || pair === NIL) return null;
+  const start = Number(pair.head);
+  const end = Number(pair.tail);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return { start, end, face };
+}
+
+/**
+ * The face-tagged decoration ranges for an active snippet, or an empty
+ * array when none is active (or the read fails). Only the buffer that
+ * actually holds the active snippet — the focused text buffer the
+ * snippet primitives operate on — gets painted; a background pane over a
+ * different buffer returns nothing.
+ *
+ * @param {object | null} buffer - The buffer this renderer is showing.
+ * @returns {Array<{start: number, end: number, face: string}>}
+ */
+function snippetDecorationsFor(buffer) {
+  if (!keymapReady) return [];
+  // The active snippet is global (one across the editor) and its offsets
+  // are into the focused buffer; only paint on the pane showing it.
+  if (!buffer || buffer !== currentTextBuffer) return [];
+  try {
+    const ranges = [];
+    const active = snippetRangePair(
+      interpreter.call('snippet-active-region'),
+      'snippet-active-face'
+    );
+    if (active !== null) ranges.push(active);
+    for (const mirror of listToArray(interpreter.call('snippet-mirror-regions'))) {
+      const m = snippetRangePair(mirror, 'snippet-mirror-face');
+      if (m !== null) ranges.push(m);
+    }
+    return ranges;
+  } catch {
+    // A snippet read must never break rendering — drop the boxes for
+    // this frame. The next render retries.
+    return [];
+  }
+}
+
 // --- editor view (per-pane instances) -----------------------------------
 //
 // Phase 3a of plans/PANES.md: each leaf pane that holds a text view owns
@@ -3928,6 +3989,13 @@ function ensureEditorViewForLeaf(leaf) {
       }];
     },
     getTabWidth: () => currentTabWidth,
+    // Snippet field + mirror boxes for this leaf's buffer. Recomputed
+    // every render from live offsets, so they survive edits.
+    getDecorations: () => {
+      const v = peelTabline(leaf.view);
+      const b = v && !isTablineView(v) ? v.buffer : null;
+      return snippetDecorationsFor(b);
+    },
   });
   instance.setView(leaf.view);     // populates pending buffer/view
   paneEl.append(instance);          // triggers connectedCallback → mount
@@ -4930,6 +4998,8 @@ function ensureTabElement(state, child) {
         }];
       },
       getTabWidth: () => currentTabWidth,
+      // Snippet field + mirror boxes for this tab's buffer.
+      getDecorations: () => snippetDecorationsFor(child.buffer ?? null),
     });
     el.setView(child);
   } else if (child.kind === 'tabline') {
