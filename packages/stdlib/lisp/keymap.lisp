@@ -11,6 +11,15 @@
 ;;; are bound by name and resolved late, so redefining one takes effect
 ;;; immediately.
 
+;; The C-x r prefix map — bookmarks (Emacs's register/bookmark family).
+;; C-x r m set · C-x r b jump. (C-x r l list arrives with the bookmark
+;; view.) C-x r d is left free — it is delete-rectangle in Emacs; delete
+;; a bookmark via M-x bookmark-delete or the bookmark list.
+(define bookmark-keymap
+  {"m" 'bookmark-set
+   "b" 'bookmark-jump
+   "l" 'list-bookmarks})
+
 ;; The C-x prefix map — keys reached by first pressing C-x.
 (define c-x-keymap
   {"C-f"   'find-file
@@ -31,6 +40,8 @@
    "j"     'jukebox
    "C-x"   'exchange-point-and-mark
    "C-e"   'eval-expression-before-point
+   ;; C-x r — bookmarks (set / jump; see bookmark-keymap above).
+   "r"     bookmark-keymap
    ;; Panes (phase 3a of plans/PANES.md) — Emacs's C-x 2/3/0/1/o.
    "0"     'delete-pane
    "1"     'delete-other-panes

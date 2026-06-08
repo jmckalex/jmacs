@@ -208,6 +208,17 @@ function serialiseView(view) {
     if (!path) return null;
     return { kind: view.kind, path };
   }
+  // The bookmark outline is a singleton pane that follows the focused
+  // buffer. Persist the open pane plus its source buffer's path so restore
+  // re-targets it to the same file; a null path (no source yet) still
+  // restores the pane, which then follows focus.
+  if (view.kind === 'bookmark') {
+    const path =
+      view.sourceBuffer && typeof view.sourceBuffer.filePath === 'string'
+        ? view.sourceBuffer.filePath
+        : null;
+    return { kind: 'bookmark', path };
+  }
   // Other non-text views (jukebox/shell/customize/doc).
   return null;
 }
@@ -448,6 +459,11 @@ function parseView(raw) {
   if (raw.kind === 'directory-tree' || raw.kind === 'directory-columns') {
     if (typeof raw.path !== 'string' || raw.path === '') return null;
     return { kind: raw.kind, path: raw.path };
+  }
+  // Bookmark outline: a `path` (the source file) is optional — the pane
+  // restores either way and re-targets on focus.
+  if (raw.kind === 'bookmark') {
+    return { kind: 'bookmark', path: typeof raw.path === 'string' ? raw.path : null };
   }
   if (raw.kind === 'tabline') {
     const rawTabs = Array.isArray(raw.tabs) ? raw.tabs : [];

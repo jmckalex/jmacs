@@ -41,6 +41,18 @@ import { createBuffer as createStorageBuffer } from '@editor/storage';
  */
 
 /**
+ * An invisible, edit-tracking position in the buffer. Its `offset`
+ * updates as text is inserted or deleted around it, and a deletion that
+ * spans it collapses it to the edit point rather than removing it — a
+ * marker is never destroyed by editing, only by `remove()`. Markers are
+ * not serialized; they exist only while the buffer is open.
+ *
+ * @typedef {object} Marker
+ * @property {number} offset - The marker's current offset (read-only).
+ * @property {() => void} remove - Drop the marker.
+ */
+
+/**
  * A single cursor / selection pair held in the cursor source's `cursors`
  * array. The primary cursor is index 0; secondaries are at index 1+.
  *
@@ -132,8 +144,16 @@ export function createBuffer(initialText = '', options = {}) {
   // after undo/redo, where L2 does not compute the change itself.
   /** @type {BufferChange | null} */
   let lastChange = null;
+  // Live markers — invisible edit-tracking positions (see `createMarker`).
+  // Every L1 change shifts them here, so they ride inserts, deletes, undo
+  // and redo alike (the one place every mutation funnels through).
+  /** @type {Set<(change: BufferChange) => void>} */
+  const markerShifts = new Set();
   storage.onChange((change) => {
     lastChange = change;
+    if (change !== null) {
+      for (const shift of markerShifts) shift(change);
+    }
   });
 
   /** Clamp an offset into the valid `[0, length]` range. */
@@ -141,6 +161,41 @@ export function createBuffer(initialText = '', options = {}) {
     if (offset < 0) return 0;
     if (offset > storage.length) return storage.length;
     return offset;
+  }
+
+  /**
+   * Create a {@link Marker} at OFFSET — an invisible position that rides
+   * the text. It shifts when edits land before it; a deletion that spans
+   * it collapses it to the edit point rather than destroying it. Left
+   * gravity: text inserted exactly at the marker stays after it (the
+   * marker holds its place). Live until `remove()`.
+   *
+   * @param {number} offset
+   * @returns {Marker}
+   */
+  function makeMarker(offset) {
+    const state = { pos: clamp(offset) };
+    /** @param {BufferChange} change */
+    const shift = (change) => {
+      const { start } = change;
+      const removed = change.removed.length;
+      const inserted = change.inserted.length;
+      if (state.pos <= start) return; // before the edit: hold
+      if (state.pos >= start + removed) {
+        state.pos += inserted - removed; // wholly after: ride the delta
+        return;
+      }
+      state.pos = start; // inside the removed span: collapse to the edit
+    };
+    markerShifts.add(shift);
+    return {
+      get offset() {
+        return state.pos;
+      },
+      remove() {
+        markerShifts.delete(shift);
+      },
+    };
   }
 
   /** The current cursor array on the bound source. */
@@ -348,6 +403,18 @@ export function createBuffer(initialText = '', options = {}) {
      */
     offsetAt(line, column) {
       return storage.offsetAt(line, column);
+    },
+
+    /**
+     * Create a live {@link Marker} at OFFSET — an invisible, edit-tracking
+     * position. The marker rides the text and is never destroyed by
+     * editing (a deletion spanning it collapses it to the edit point);
+     * only `remove()` drops it.
+     * @param {number} offset
+     * @returns {Marker}
+     */
+    createMarker(offset) {
+      return makeMarker(offset);
     },
 
     // --- cursor ---------------------------------------------------------

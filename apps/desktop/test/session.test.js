@@ -273,6 +273,37 @@ test('serialiseTree: a media view with no filePath still serialises as null', ()
   assert.equal(out.rootPane.view, null);
 });
 
+test('serialiseTree: a bookmark outline persists its source file path', () => {
+  const tree = makeLeaf('pane-leaf-bmk', {
+    kind: 'bookmark',
+    name: '*Bookmarks: notes.md*',
+    buffer: null,
+    sourceBuffer: { filePath: '/tmp/notes.md', name: 'notes.md' },
+  });
+  const out = serialiseTree(tree, 'pane-leaf-bmk');
+  assert.deepEqual(out.rootPane.view, { kind: 'bookmark', path: '/tmp/notes.md' });
+});
+
+test('serialiseTree: a bookmark outline with no source persists a null path', () => {
+  const tree = makeLeaf('pane-leaf-bmk2', {
+    kind: 'bookmark', name: '*Bookmarks*', buffer: null, sourceBuffer: null,
+  });
+  const out = serialiseTree(tree, 'pane-leaf-bmk2');
+  assert.deepEqual(out.rootPane.view, { kind: 'bookmark', path: null });
+});
+
+test('deserialise: a bookmark blob round-trips (path preserved)', () => {
+  const tree = makeLeaf('pane-leaf-bmk', {
+    kind: 'bookmark',
+    name: '*Bookmarks: notes.md*',
+    buffer: null,
+    sourceBuffer: { filePath: '/tmp/notes.md', name: 'notes.md' },
+  });
+  const written = serialiseTree(tree, 'pane-leaf-bmk');
+  const back = deserialise(JSON.parse(JSON.stringify(written)));
+  assert.deepEqual(back.rootPane.view, { kind: 'bookmark', path: '/tmp/notes.md' });
+});
+
 test('serialiseTree: media tabs alongside text in a tabline persist together', () => {
   const tabline = makeTabline(
     [

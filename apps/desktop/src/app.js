@@ -54,6 +54,7 @@ import {
   BrowserView,
   CustomizeView,
   DocView,
+  BookmarkView,
   DirectoryColumnsView,
   DirectoryTreeView,
   createEditorView,
@@ -132,6 +133,7 @@ import { buildModeMenuItems } from './mode-menu-build.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
+import { createBookmarks } from './bookmarks.js';
 import { enterAddPaneMode } from './add-pane-mode.js';
 import { enterMoveViewsMode } from './move-view-mode.js';
 import { createTabline } from '@editor/renderer';
@@ -3692,6 +3694,32 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.indexOf(view));
       return NIL;
     },
+    // Open the bookmark outline for the current text buffer (C-x r l) in
+    // a narrow pane to the RIGHT of the focused pane — a navigator, so the
+    // source buffer stays visible (jump from the outline moves it). If the
+    // outline is already shown anywhere, reuse that pane (re-target +
+    // focus it) instead of splitting again; otherwise split the focused
+    // pane side-by-side (the source — a leaf view OR a whole tabline —
+    // rides into the left child, the outline into the new right child).
+    'open-bookmark-view!': () => {
+      const buf = currentTextBuffer;
+      if (!buf) return NIL;
+      const view = ensureBookmarkView();
+      retargetBookmarkView(buf);
+      const shownLeaf = leafPanes(rootPane).find((leaf) => leaf.view === view);
+      if (shownLeaf) {
+        setCurrentPaneId(shownLeaf.id);
+        return NIL;
+      }
+      const focused = currentPane();
+      if (focused && focused.kind === 'leaf') {
+        // ratio is the FIRST (source) child's share; bias narrow-right.
+        splitPaneAtLeafWith(focused, SPLIT_HORIZONTAL, 0.7, 'after', view);
+      } else {
+        switchToViewIndex(views.indexOf(view));
+      }
+      return NIL;
+    },
     // Open the *View List* — a clickable HTML table of every open view
     // (the replacement for the old text *Buffer List*). There is one
     // such view; this finds or creates it, switches the current pane to
@@ -4511,6 +4539,22 @@ const interpreter = createInterpreter({
       stickyNotes.toggle();
       return NIL;
     },
+
+    // Bookmarks — see bookmarks.js and bookmarks.lisp.
+    'bookmark-set!': (args) => {
+      const name = bookmarks.set(String(args[0]));
+      return name === null ? NIL : name;
+    },
+    'bookmark-jump!': (args) => {
+      bookmarks.jump(String(args[0]));
+      return NIL;
+    },
+    'bookmark-delete!': (args) => {
+      bookmarks.remove(String(args[0]));
+      return NIL;
+    },
+    'bookmark-names': () => arrayToList(bookmarks.names()),
+    'bookmark-count': () => bookmarks.count(),
 
     // Jukebox audio — see audio.js and jukebox-view.js. Each primitive
     // is a thin wrapper over the shared HTMLAudioElement; the panel
@@ -6447,6 +6491,55 @@ directoryColumnsView.configure(configureDirectoryColumnsView());
 editorPaneElement().append(directoryColumnsView);
 directoryColumnsView.style.display = 'none';
 
+// The bookmark view — a `bookmark`-kind buffer (extras.sourceBuffer is the
+// text buffer it annotates) is shown through this outliner. Outline edits
+// write back to the source buffer's metadata.bookmarks via `persist`.
+function configureBookmarkView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // While a chord is mid-flight (C-x just pressed) the outline must
+    // forward the *next* key — even a plain one like the `0` of `C-x 0`
+    // — to the keymap instead of swallowing it; otherwise focus is
+    // trapped in the outline and prefix chords (C-x 0/1/2/b/p …) die.
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    closeBuffer: () => {
+      // q collapses the outline's pane (the source returns full-width);
+      // the single outline view persists hidden and re-opens on C-x r l.
+      const view = views.find((v) => v.kind === 'bookmark');
+      if (!view) return;
+      const leaf = leafPanes(rootPane).find((l) => l.view === view);
+      if (leaf) deletePaneInTree(leaf);
+    },
+    persist: (buf) => {
+      if (buf) scheduleMetadataWrite(buf);
+    },
+    jump: (buf, name) => {
+      const idx = views.findIndex((v) => v.kind === 'text' && v.buffer === buf);
+      if (idx < 0) return;
+      // Focus the pane already showing the source (a direct leaf view OR a
+      // tab in a tabline) BEFORE switching, so the jump lands there rather
+      // than pulling the source into the outline's own (right) pane. Falls
+      // back to the focused pane when the source isn't shown anywhere.
+      const targetView = views[idx];
+      const leaf = leafPanes(rootPane).find(
+        (l) =>
+          l.view === targetView ||
+          (isTablineView(l.view) && l.view.tabs.includes(targetView))
+      );
+      if (leaf) setCurrentPaneId(leaf.id);
+      switchToViewIndex(idx);
+      // The engine now tracks `buf` (markers recreated on mount), so a
+      // jump-by-name lands on the live marker, post-relocation.
+      bookmarks.jump(name);
+    },
+  };
+}
+const bookmarkView = /** @type {*} */ (document.createElement('bookmark-view'));
+bookmarkView.configure(configureBookmarkView());
+editorPaneElement().append(bookmarkView);
+bookmarkView.style.display = 'none';
+
 // The shell view — a `shell`-kind buffer is shown through this view.
 // v4: xterm.js owns the DOM. The host pipes pty bytes in and out;
 // xterm.js parses every escape sequence, draws the grid, and emits
@@ -6652,6 +6745,7 @@ const SINGLETON_VIEWS = [
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'view-list',         el: viewListView,          releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
+  { kind: 'bookmark',          el: bookmarkView,          releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
   { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
   { kind: 'notebook',          el: notebookView,          releasesBuffer: false },
@@ -6688,6 +6782,9 @@ function applyTextMountSideEffects(view, instance) {
     }
   }
   stickyNotes.setBuffer(view.buffer);
+  bookmarks.setBuffer(view.buffer);
+  // If the bookmark outline is open beside us, follow focus to this buffer.
+  followBookmarkView(view.buffer);
   watchCurrentBuffer();
   ensureMajorMode();
   if (editorView && typeof editorView.focus === 'function') editorView.focus();
@@ -6742,6 +6839,19 @@ function mountKindView(view, context) {
   }
   const el = singletonElementForKind(view.kind);
   if (el) {
+    // Re-parent the singleton into THIS view's pane element so it
+    // actually appears there. `switchToViewIndex` did this inline, but
+    // the split-with-view path (`splitPaneAtLeafWith`, how the bookmark
+    // outline opens) did not — leaving the singleton mounted in its
+    // previous parent while the freshly-split pane rendered blank ("the
+    // pane appeared but nothing was shown"). Centralised here so every
+    // leaf-direct singleton mount (switch / split / restore) is covered;
+    // the restore path passes its pane element explicitly via context.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl =
+      (context && context.paneEl) ||
+      (leaf ? paneElements.get(leaf.id) : null);
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
     el.setBuffer(view);
     el.focus();
   }
@@ -7017,6 +7127,7 @@ function perKindConfigureFactory(kind) {
     case 'placeholder':       return () => configurePlaceholderView(null);
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
+    case 'bookmark':          return configureBookmarkView;
     case 'view-list':         return configureViewListView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
@@ -7601,6 +7712,17 @@ const stickyNotes = createStickyNotes({
 });
 stickyNotes.setBuffer(currentTextBuffer);
 
+// Bookmarks fill no overlay — they're invisible named positions backed by
+// buffer markers (see bookmarks.js), persisted through the same companion-
+// metadata pipeline the notes use.
+const bookmarks = createBookmarks({
+  onChange: () => {
+    scheduleMetadataWrite(currentTextBuffer);
+    refreshBookmarkOutline();
+  },
+});
+bookmarks.setBuffer(currentTextBuffer);
+
 // --- Markdown preview pane ---------------------------------------------
 // A toggleable pane (markdown-preview, C-c v) that renders the current
 // markdown-mode buffer to HTML through the same JMarkdown pipeline the
@@ -8035,6 +8157,61 @@ function ensureDirectoryColumnsViewForPath(rootPath) {
   return view;
 }
 
+/** Find an existing bookmark view for SOURCEBUFFER or build a fresh one
+ *  and push it into `views`. The view edits the source buffer's
+ *  metadata.bookmarks directly; jump / persist are host callbacks. */
+/** The single bookmark outline. There is one — it re-targets to whichever
+ *  text buffer has focus (see `followBookmarkView`) rather than one view
+ *  per buffer, so the outline beside your buffer always shows that
+ *  buffer's bookmarks. Find-or-create. */
+function ensureBookmarkView() {
+  const existing = views.find((v) => v.kind === 'bookmark');
+  if (existing) return existing;
+  const view = createView({
+    kind: 'bookmark',
+    name: '*Bookmarks*',
+    extras: { sourceBuffer: null },
+  });
+  views.push(view);
+  return view;
+}
+
+/** Point the bookmark outline at BUFFER and repaint it. Updates the
+ *  view's name (for the modeline / *View List*) too. */
+function retargetBookmarkView(buffer) {
+  const view = views.find((v) => v.kind === 'bookmark');
+  if (!view) return;
+  // createView spreads `extras` onto the view, so the source lives at
+  // `view.sourceBuffer` (there is no `view.extras`). The element re-reads
+  // it from the handle on setBuffer.
+  view.sourceBuffer = buffer;
+  const name = buffer && buffer.name ? buffer.name : 'buffer';
+  view.name = `*Bookmarks: ${name}*`;
+  bookmarkView.setBuffer(view);
+}
+
+/** Auto-follow: when focus moves to a text buffer and the outline is
+ *  shown, re-target it to that buffer. A no-op when the outline is closed
+ *  or already on this buffer, so it's cheap to call on every focus
+ *  change. */
+function followBookmarkView(buffer) {
+  if (!buffer) return;
+  const view = views.find((v) => v.kind === 'bookmark');
+  if (!view || view.sourceBuffer === buffer) return;
+  if (!leafPanes(rootPane).some((leaf) => leaf.view === view)) return;
+  retargetBookmarkView(buffer);
+}
+
+/** Repaint the open bookmark outline in place — called when a bookmark is
+ *  set/deleted so the change shows immediately (the engine otherwise only
+ *  schedules a metadata write). A no-op when the outline isn't shown. */
+function refreshBookmarkOutline() {
+  const view = views.find((v) => v.kind === 'bookmark');
+  if (!view) return;
+  if (!leafPanes(rootPane).some((leaf) => leaf.view === view)) return;
+  bookmarkView.setBuffer(view);
+}
+
 /** Open a file from a directory-tree / directory-columns row and place
  *  it as a NEW TAB in the focused pane, promoting the pane to a
  *  tabline first if it's still a plain leaf. The previous behaviour
@@ -8080,6 +8257,24 @@ async function openFileInTabAdjacent(filePath) {
  *  Returns the live view handle. The caller wires it into a leaf. */
 function materialiseRestoredView(blob, handlesByBlob) {
   if (!blob) return buildScratchTextView();
+  if (blob.kind === 'bookmark') {
+    // The bookmark outline is the singleton; ensure it and re-target it
+    // to the persisted source file if that file is open as a text view
+    // (the restore loop opened it already). Otherwise it stays blank and
+    // re-targets to whatever buffer gets focus, per its follow behaviour.
+    const view = ensureBookmarkView();
+    const srcPath = typeof blob.path === 'string' ? blob.path : null;
+    if (srcPath) {
+      const srcView = views.find(
+        (v) => v.kind === 'text' && viewFilePath(v) === srcPath
+      );
+      if (srcView && srcView.buffer) {
+        view.sourceBuffer = srcView.buffer;
+        view.name = `*Bookmarks: ${srcView.buffer.name ?? 'buffer'}*`;
+      }
+    }
+    return view;
+  }
   if (
     blob.kind === 'text' || blob.kind === 'image' ||
     blob.kind === 'audio' || blob.kind === 'video' || blob.kind === 'pdf' ||
