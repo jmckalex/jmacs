@@ -56,7 +56,14 @@ function makeKeyer() {
  * }} options.host - The recovery IPC bridge (usually `window.host`).
  * @param {() => number} [options.now] - Clock for the snapshot timestamp;
  *   defaults to `Date.now`. Injected for tests.
- * @param {number} [options.debounceMs=1000] - Autosave debounce.
+ * @param {number} [options.debounceMs=1000] - Autosave debounce (the
+ *   default for `getDebounceMs`).
+ * @param {() => boolean} [options.isEnabled] - Whether autosave is on
+ *   (the `*autosave-recovery*` defcustom). When it returns false, no
+ *   snapshots are written; `forget`/`clear` still run. Defaults to on.
+ * @param {() => number} [options.getDebounceMs] - The live debounce (the
+ *   `*autosave-recovery-interval*` defcustom). Read on each `save()` so a
+ *   Lisp change takes effect immediately. Defaults to `debounceMs`.
  * @returns {{
  *   save: () => void,
  *   flush: () => Promise<void>,
@@ -69,6 +76,8 @@ export function createRecovery({
   host,
   now = () => Date.now(),
   debounceMs = 1000,
+  isEnabled = () => true,
+  getDebounceMs = () => debounceMs,
 }) {
   const keyFor = makeKeyer();
   let timer = null;
@@ -90,10 +99,12 @@ export function createRecovery({
     };
   }
 
-  /** Snapshot every dirty buffer. Per-buffer failures are non-fatal —
-   *  the next tick (or flush) retries. */
+  /** Snapshot every dirty buffer. A no-op when autosave is disabled.
+   *  Per-buffer failures are non-fatal — the next tick (or flush)
+   *  retries. */
   async function writeAll() {
     timer = null;
+    if (!isEnabled()) return;
     for (const buffer of [...getDirtyBuffers()]) {
       try {
         await host.writeRecovery(recordFor(buffer));
@@ -103,10 +114,12 @@ export function createRecovery({
     }
   }
 
-  /** Schedule a debounced snapshot of all dirty buffers. */
+  /** Schedule a debounced snapshot of all dirty buffers (using the live
+   *  interval). A no-op when autosave is disabled. */
   function save() {
+    if (!isEnabled()) return;
     if (timer !== null) clearTimeout(timer);
-    timer = setTimeout(writeAll, debounceMs);
+    timer = setTimeout(writeAll, getDebounceMs());
   }
 
   /** Snapshot all dirty buffers now (on blur / before a reload). */

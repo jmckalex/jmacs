@@ -2939,6 +2939,149 @@ view-list-view,
   background: #ffffff0a;
 }
 
+/* --- recover-view --------------------------------------------------- */
+/* The *Recover* view: shown at startup when crash-recovery snapshots are
+   found. A table of recoverable buffers, each row with a Recover / Discard
+   action, plus Recover-all / Discard-all in the footer. Mirrors the
+   view-list shell. */
+
+recover-view,
+.recover-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.recover-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg);
+}
+
+.recover-header-label {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.recover-intro {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 14px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.recover-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.recover-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.recover-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  background: var(--bg-editor);
+  padding: 8px 12px;
+  border-bottom: 1px solid #ffffff14;
+  white-space: nowrap;
+}
+
+.recover-row > td {
+  padding: 6px 12px;
+  border-bottom: 1px solid #ffffff0a;
+  white-space: nowrap;
+}
+
+.recover-row:hover {
+  background: #ffffff0a;
+}
+
+.recover-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22ch;
+}
+
+.recover-file {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40ch;
+  direction: rtl;        /* keep the filename tail visible when clipped */
+  text-align: left;
+}
+
+.recover-age {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.recover-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.recover-btn,
+.recover-discard-btn,
+.recover-all-btn,
+.recover-discard-all-btn {
+  border: 1px solid #ffffff1f;
+  background: #ffffff0a;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 10px;
+  margin-left: 6px;
+  border-radius: 5px;
+}
+
+.recover-btn:hover,
+.recover-all-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.recover-discard-btn:hover,
+.recover-discard-all-btn:hover {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
+}
+
+.recover-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 10px 14px;
+  border-top: 1px solid #ffffff14;
+}
+
 /* --- reftex pickers (utility-pane tabs) ----------------------------- */
 /* The RefTeX pickers are NOT pane views — the host mounts each panel as a
    tab in the utility dock (the bottom chrome region; see .utility-host).

@@ -109,6 +109,41 @@ test('clear() wipes all snapshots and cancels a pending debounced write', async 
   assert.equal(host.writes.length, 0, 'the pending debounced write was cancelled');
 });
 
+test('isEnabled() false → no snapshots written (save or flush)', async () => {
+  const host = fakeHost();
+  let on = false;
+  const rec = createRecovery({
+    getDirtyBuffers: () => new Set([buf({ text: 'x' })]),
+    host,
+    now: () => 1,
+    debounceMs: 10,
+    isEnabled: () => on,
+  });
+  rec.save();
+  await rec.flush();
+  await wait(30);
+  assert.equal(host.writes.length, 0, 'disabled autosave writes nothing');
+  // Re-enable: flush now writes.
+  on = true;
+  await rec.flush();
+  assert.equal(host.writes.length, 1);
+});
+
+test('getDebounceMs() is read live on each save()', async () => {
+  const host = fakeHost();
+  let ms = 15;
+  const rec = createRecovery({
+    getDirtyBuffers: () => new Set([buf({ text: 'x' })]),
+    host,
+    now: () => 1,
+    getDebounceMs: () => ms,
+  });
+  ms = 10;
+  rec.save();
+  await wait(40);
+  assert.equal(host.writes.length, 1);
+});
+
 test('a write failure is swallowed — editing is never broken', async () => {
   const host = fakeHost();
   host.writeRecovery = async () => {

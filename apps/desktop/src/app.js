@@ -73,6 +73,7 @@ import {
   GnuplotView,
   NotebookView,
   ViewListView,
+  RecoverView,
   createReftexSelectPanel,
   createReftexCiteFormatPanel,
   createReftexCitePanel,
@@ -293,6 +294,26 @@ const dirtyBuffers = new Set();
 const recovery = createRecovery({
   getDirtyBuffers: () => dirtyBuffers,
   host: window.host,
+  // Live-read the Lisp defcustoms (see system.lisp) so a user can
+  // toggle autosave or retune the interval from Lisp without a restart.
+  // Both default safely (on, 1000ms) before the stdlib has loaded.
+  isEnabled: () => {
+    if (!keymapReady) return true;
+    try {
+      return interpreter.evaluate('*autosave-recovery*') !== false;
+    } catch {
+      return true;
+    }
+  },
+  getDebounceMs: () => {
+    if (!keymapReady) return 1000;
+    try {
+      const v = interpreter.evaluate('*autosave-recovery-interval*');
+      return typeof v === 'number' && v > 0 ? v : 1000;
+    } catch {
+      return 1000;
+    }
+  },
 });
 
 /** Set once a clean quit is committed (the unsaved-changes confirm
@@ -3727,6 +3748,14 @@ const interpreter = createInterpreter({
       viewListView.refresh();
       return NIL;
     },
+    // Re-scan the crash-recovery snapshots and open the *Recover* view —
+    // the manual entry point to the same flow the startup scan runs. The
+    // scan is async; the view opens once it resolves (showing an
+    // empty-state when there is nothing to recover).
+    'recover-session!': () => {
+      scanForRecovery().then(openRecoverView);
+      return NIL;
+    },
     // --- Utility pane (the tabbed bottom dock) -------------------------
     // Open (or reuse) a utility panel as a tab. FACTORY selects a
     // registered factory; ID is the tab id (defaults to FACTORY, i.e. a
@@ -6167,6 +6196,92 @@ viewListView.configure(configureViewListView());
 editorPaneElement().append(viewListView);
 viewListView.style.display = 'none';
 
+// The *Recover* view — shown at startup when crash-recovery snapshots are
+// found (see recovery.js + the autosave controller). It lists the
+// recoverable buffers; the user recovers each into a live (unsaved)
+// buffer or discards it.
+
+/** The recoverable snapshots offered this session, mutated as the user
+ *  recovers / discards rows. Populated by the startup scan. */
+let recoverableSnapshots = [];
+
+/** A snapshot's display name: its buffer name, else the file's basename,
+ *  else a generic recovered-buffer label. */
+function recoverDisplayName(snap) {
+  if (snap.name) return snap.name;
+  if (snap.path) return snap.path.split('/').pop() || snap.path;
+  return '*recovered*';
+}
+
+/** Display records for the *Recover* table. */
+function recoverViewRecords() {
+  return recoverableSnapshots.map((s) => ({
+    key: s.key,
+    name: recoverDisplayName(s),
+    path: s.path ?? null,
+    savedAt: s.savedAt,
+  }));
+}
+
+/** Drop a snapshot from the offered list and repaint the *Recover* view.
+ *  The view stays open (showing an empty-state once the list clears) so
+ *  the user closes it when ready. */
+function removeRecoverEntry(key) {
+  recoverableSnapshots = recoverableSnapshots.filter((s) => s.key !== key);
+  recoverView.refresh();
+}
+
+/** Recover one snapshot: open its text as a live, dirty buffer (keeping
+ *  the file path so `C-x C-s` overwrites the original), drop the on-disk
+ *  snapshot, and remove the row. The recovered buffer is added as a
+ *  background tab so the *Recover* list stays put for the next choice. */
+function recoverSnapshot(key) {
+  const snap = recoverableSnapshots.find((s) => s.key === key);
+  if (!snap) return;
+  const buffer = createBuffer(typeof snap.text === 'string' ? snap.text : '', {
+    name: recoverDisplayName(snap),
+  });
+  if (snap.path) buffer.filePath = snap.path;
+  const view = createView({ kind: 'text', buffer });
+  views.push(view);
+  // The recovered content is, by definition, unsaved.
+  dirtyBuffers.add(buffer);
+  const tlv = currentTablineView();
+  if (tlv && !tlv.tabs.includes(view)) {
+    addTabToTabline(tlv, view, tlv.tabs.length);
+  }
+  window.host.deleteRecovery(key).catch(() => {});
+  removeRecoverEntry(key);
+  notifyViewsChanged();
+}
+
+/** Discard one snapshot: delete it from disk and remove the row. */
+function discardSnapshot(key) {
+  window.host.deleteRecovery(key).catch(() => {});
+  removeRecoverEntry(key);
+}
+
+function configureRecoverView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    getEntries: recoverViewRecords,
+    recover: recoverSnapshot,
+    discard: discardSnapshot,
+    recoverAll: () => {
+      for (const s of [...recoverableSnapshots]) recoverSnapshot(s.key);
+    },
+    discardAll: () => {
+      for (const s of [...recoverableSnapshots]) discardSnapshot(s.key);
+    },
+  };
+}
+const recoverView = /** @type {*} */ (document.createElement('recover-view'));
+recoverView.configure(configureRecoverView());
+editorPaneElement().append(recoverView);
+recoverView.style.display = 'none';
+
 // The *RefTeX Select* picker — RefTeX's label / cite picker, mounted as a
 // right-edge drawer overlaid on the editor (NOT a pane view). The panel
 // is populated and driven entirely from Lisp (reftex-refs.lisp): the
@@ -6707,6 +6822,7 @@ const SINGLETON_VIEWS = [
   // browser is per-instance (browserElementByView) — not a singleton.
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'view-list',         el: viewListView,          releasesBuffer: false },
+  { kind: 'recover',           el: recoverView,           releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
   { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
@@ -7074,6 +7190,7 @@ function perKindConfigureFactory(kind) {
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'view-list':         return configureViewListView;
+    case 'recover':           return configureRecoverView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
     case 'notebook':          return configureNotebookView;
@@ -8068,6 +8185,52 @@ function ensureViewListView() {
   return view;
 }
 
+/** Find the single *Recover* view, or build it and push it into `views`.
+ *  Like the *View List*, there is only ever one. */
+function ensureRecoverView() {
+  const existing = views.find((v) => v.kind === 'recover');
+  if (existing) return existing;
+  const view = createView({ kind: 'recover', name: '*Recover*' });
+  views.push(view);
+  return view;
+}
+
+/** Show the *Recover* view in the focused pane (promoting it to a
+ *  tabline first so recovered buffers can land as sibling tabs), and
+ *  repaint its rows. */
+function openRecoverView() {
+  const pane = currentPane();
+  if (pane) promoteToTablineOnPane(pane);
+  const view = ensureRecoverView();
+  switchToViewIndex(views.indexOf(view));
+  recoverView.refresh();
+}
+
+/** Read the recovery snapshots and keep the ones worth offering: a
+ *  snapshot whose on-disk file is older than it (unsaved edits were
+ *  lost), or that has no on-disk file at all (a path-less or deleted
+ *  buffer). Updates `recoverableSnapshots`; returns the count. Never
+ *  throws — a recovery-scan failure must not block startup. */
+async function scanForRecovery() {
+  let snapshots;
+  try {
+    snapshots = await window.host.listRecovery();
+  } catch {
+    recoverableSnapshots = [];
+    return 0;
+  }
+  recoverableSnapshots = Array.isArray(snapshots)
+    ? snapshots.filter(
+        (s) =>
+          s &&
+          typeof s.text === 'string' &&
+          (!s.diskExists ||
+            (typeof s.diskModified === 'number' && s.savedAt > s.diskModified))
+      )
+    : [];
+  return recoverableSnapshots.length;
+}
+
 /** Find an existing directory-columns view for ROOTPATH or build a
  *  fresh one and push it into `views`. Companion to
  *  `ensureDirectoryTreeViewForPath`. */
@@ -8801,3 +8964,15 @@ if (sessionInstalledTree) {
 // shape lands in the on-disk session under schema v2.
 refreshPaneTabStrips();
 sessionController.save();
+
+// Offer back any crash-recovery snapshots a previous run left behind.
+// Session restore only reopens files from disk — it can't bring back
+// unsaved edits — so this is the path that recovers work lost to a
+// crash. Best-effort: a scan failure must never stop the editor coming
+// up. The *Recover* view opens on top of the restored session only when
+// there is something worth recovering.
+try {
+  if ((await scanForRecovery()) > 0) openRecoverView();
+} catch {
+  // Recovery is best-effort; never block startup on it.
+}
