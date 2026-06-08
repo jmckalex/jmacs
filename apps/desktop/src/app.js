@@ -8896,11 +8896,17 @@ window.addEventListener('pagehide', () => {
   if (!quitting) recovery.flush();
 });
 
-// Snapshot dirty buffers when the window loses focus — a cheap, frequent
-// safety net between debounced edit-time writes (and the moment a user
-// is most likely to wander off and leave unsaved work).
+// Snapshot dirty buffers when the window loses focus or is hidden — a
+// cheap, frequent safety net between debounced edit-time writes (and the
+// moment a user is most likely to wander off and leave unsaved work, or
+// the app is about to be backgrounded/torn down). visibilitychange also
+// fires when the window is minimised/hidden, which blur does not always
+// cover.
 window.addEventListener('blur', () => {
   if (!quitting) recovery.flush();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && !quitting) recovery.flush();
 });
 
 // Restore: re-open the files the previous session left open and the

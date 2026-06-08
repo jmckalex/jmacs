@@ -103,7 +103,10 @@ export function createRecovery({
    *  Per-buffer failures are non-fatal — the next tick (or flush)
    *  retries. */
   async function writeAll() {
-    timer = null;
+    // NB: timer management lives in save()/flush()/the trailing callback,
+    // NOT here — clearing `timer` from writeAll would clobber the timer
+    // a leading-edge save() just set, making every edit look like a new
+    // burst.
     if (!isEnabled()) return;
     for (const buffer of [...getDirtyBuffers()]) {
       try {
@@ -114,12 +117,22 @@ export function createRecovery({
     }
   }
 
-  /** Schedule a debounced snapshot of all dirty buffers (using the live
-   *  interval). A no-op when autosave is disabled. */
+  /** Note an edit. **Leading + trailing**: the first edit of a burst
+   *  writes a snapshot immediately, so a crash a fraction of a second
+   *  later still finds work to recover (a pure trailing debounce leaves
+   *  a window where nothing is on disk yet — the gap behind the
+   *  "edit, quit fast, nothing recovered" bug). Edits during the burst
+   *  coalesce into one trailing write of the final state when it settles.
+   *  A no-op when autosave is disabled. */
   function save() {
     if (!isEnabled()) return;
+    const burstStart = timer === null;
     if (timer !== null) clearTimeout(timer);
-    timer = setTimeout(writeAll, getDebounceMs());
+    timer = setTimeout(() => {
+      timer = null;
+      writeAll();
+    }, getDebounceMs());
+    if (burstStart) writeAll();
   }
 
   /** Snapshot all dirty buffers now (on blur / before a reload). */

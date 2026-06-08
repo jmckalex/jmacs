@@ -28,7 +28,7 @@ function fakeHost() {
 
 const buf = (fields) => ({ text: '', name: 'untitled', filePath: null, ...fields });
 
-test('save() debounces, then snapshots every dirty buffer', async () => {
+test('save() writes immediately (leading edge), then once more after the burst', async () => {
   const host = fakeHost();
   const dirty = new Set([buf({ name: 'a', text: 'A' }), buf({ name: 'b', text: 'B' })]);
   const rec = createRecovery({
@@ -40,10 +40,15 @@ test('save() debounces, then snapshots every dirty buffer', async () => {
   rec.save();
   rec.save();
   rec.save();
-  assert.equal(host.writes.length, 0, 'nothing written before the debounce elapses');
-  await wait(50);
-  assert.equal(host.writes.length, 2, 'one snapshot per dirty buffer, collapsed to one tick');
+  // Leading edge: a snapshot per dirty buffer right away (writeAll is
+  // async, so let its writes settle), so a crash a fraction of a second
+  // later still has work to recover.
+  await wait(0);
+  assert.equal(host.writes.length, 2, 'leading-edge snapshot per dirty buffer');
   assert.deepEqual(host.writes.map((w) => w.name).sort(), ['a', 'b']);
+  await wait(50);
+  // Plus one trailing write of the burst's final state.
+  assert.equal(host.writes.length, 4, 'a trailing write after the burst settles');
 });
 
 test('a record carries key, path, name, text, savedAt and a content hash', async () => {
@@ -93,7 +98,7 @@ test('forget() deletes the snapshot under the buffer\'s cached key', async () =>
   assert.deepEqual(host.deletes, [key]);
 });
 
-test('clear() wipes all snapshots and cancels a pending debounced write', async () => {
+test('clear() wipes all snapshots and cancels the pending trailing write', async () => {
   const host = fakeHost();
   const dirty = new Set([buf({ text: 'x' })]);
   const rec = createRecovery({
@@ -102,11 +107,16 @@ test('clear() wipes all snapshots and cancels a pending debounced write', async 
     now: () => 1,
     debounceMs: 20,
   });
-  rec.save();
+  rec.save(); // leading-edge writes once immediately, schedules a trailing one
+  const afterLeading = host.writes.length;
   await rec.clear();
   await wait(50);
   assert.equal(host.cleared(), 1);
-  assert.equal(host.writes.length, 0, 'the pending debounced write was cancelled');
+  assert.equal(
+    host.writes.length,
+    afterLeading,
+    'no further (trailing) write after clear cancelled it'
+  );
 });
 
 test('isEnabled() false → no snapshots written (save or flush)', async () => {
@@ -129,7 +139,7 @@ test('isEnabled() false → no snapshots written (save or flush)', async () => {
   assert.equal(host.writes.length, 1);
 });
 
-test('getDebounceMs() is read live on each save()', async () => {
+test('getDebounceMs() is read live for the trailing write', async () => {
   const host = fakeHost();
   let ms = 15;
   const rec = createRecovery({
@@ -140,8 +150,9 @@ test('getDebounceMs() is read live on each save()', async () => {
   });
   ms = 10;
   rec.save();
+  assert.equal(host.writes.length, 1, 'leading write fires immediately');
   await wait(40);
-  assert.equal(host.writes.length, 1);
+  assert.equal(host.writes.length, 2, 'trailing write fires after the live debounce');
 });
 
 test('a write failure is swallowed — editing is never broken', async () => {
