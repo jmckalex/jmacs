@@ -7697,7 +7697,10 @@ stickyNotes.setBuffer(currentTextBuffer);
 // buffer markers (see bookmarks.js), persisted through the same companion-
 // metadata pipeline the notes use.
 const bookmarks = createBookmarks({
-  onChange: () => scheduleMetadataWrite(currentTextBuffer),
+  onChange: () => {
+    scheduleMetadataWrite(currentTextBuffer);
+    refreshBookmarkOutline();
+  },
 });
 bookmarks.setBuffer(currentTextBuffer);
 
@@ -8178,6 +8181,16 @@ function followBookmarkView(buffer) {
   if (!view || view.sourceBuffer === buffer) return;
   if (!leafPanes(rootPane).some((leaf) => leaf.view === view)) return;
   retargetBookmarkView(buffer);
+}
+
+/** Repaint the open bookmark outline in place — called when a bookmark is
+ *  set/deleted so the change shows immediately (the engine otherwise only
+ *  schedules a metadata write). A no-op when the outline isn't shown. */
+function refreshBookmarkOutline() {
+  const view = views.find((v) => v.kind === 'bookmark');
+  if (!view) return;
+  if (!leafPanes(rootPane).some((leaf) => leaf.view === view)) return;
+  bookmarkView.setBuffer(view);
 }
 
 /** Open a file from a directory-tree / directory-columns row and place
