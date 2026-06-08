@@ -77,6 +77,11 @@ export function mimeTypeForPdf(name) {
  *   and didn't originate inside the find input. Returns whether the key
  *   was handled (truthy → preventDefault). Lets chord keys like `C-x b`
  *   reach Godot's keymap while the PDF view has focus.
+ * @property {(page: number, x: number, y: number) => void} [onSyncTexClick]
+ *   - Inverse-SyncTeX click hook. Called when the user Option-clicks a
+ *   page, with the 1-based `page` and the clicked PDF point `(x, y)` in
+ *   SyncTeX's convention (points, origin at the page's top-left). The
+ *   host runs `synctex edit` and jumps the editor to the source line.
  */
 
 /**
@@ -253,6 +258,30 @@ export class PdfView extends ViewElement {
   destroy() {
     this._teardownDoc();
     this._buffer = null;
+  }
+
+  /**
+   * Force a reload of the current PDF, bypassing the same-path load
+   * guard. A recompile (AUCTeX) produces the *same* file path with
+   * *new* bytes on disk — `_loadFromBuffer` would normally short-circuit
+   * because `_loadedFilePath` still matches. `_teardownDoc()` clears
+   * that guard (it resets `_loadedFilePath = null`), so re-running
+   * `_loadFromBuffer` fetches the fresh bytes.
+   *
+   * The current page is preserved across the reload: it is stashed on
+   * the buffer's `page` slot, which `_loadFromBuffer` reads back as the
+   * saved page (clamped to the new page count). A no-op when no buffer
+   * is loaded or the view was never mounted.
+   */
+  reload() {
+    if (!this._buffer) return;
+    // Preserve the page the user is on. `_loadFromBuffer` restores
+    // `view.page` (clamped to the reloaded doc's page count).
+    if (typeof this._currentPage === 'number' && this._currentPage >= 1) {
+      this._buffer.page = this._currentPage;
+    }
+    this._teardownDoc();
+    if (this._mounted) this._loadFromBuffer();
   }
 
   // --- internal: mount ------------------------------------------------
@@ -492,8 +521,13 @@ export class PdfView extends ViewElement {
       return;
     }
 
+    // Cache-bust the media:// URL so a reload after a recompile fetches
+    // the NEW bytes, not Chromium's cached copy of the same path. The
+    // media protocol resolves the file from url.pathname (serve.js), so
+    // the query is ignored server-side but makes each load a distinct URL.
+    const bustedSrc = `${src}${src.includes('?') ? '&' : '?'}v=${generation}`;
     const task = pdfjs.getDocument({
-      url: src,
+      url: bustedSrc,
       cMapUrl: `${PDFJS_BASE}/cmaps/`,
       cMapPacked: true,
       standardFontDataUrl: `${PDFJS_BASE}/standard_fonts/`,
@@ -607,6 +641,15 @@ export class PdfView extends ViewElement {
       };
       this._pages.push(entry);
       observer.observe(container);
+
+      // Inverse SyncTeX: an Option-click (Alt) on a page asks the editor
+      // to jump to the source that produced the clicked spot. We use
+      // `mousedown` (not `click`) so we can `preventDefault` before the
+      // browser begins a text selection on the overlapping text layer.
+      container.addEventListener('mousedown', (event) => {
+        if (!event.altKey) return;
+        this._onPageOptionClick(entry, event);
+      });
     }
 
     /** @type {HTMLSpanElement} */ (this._pageCountEl).textContent = `/ ${numPages}`;
@@ -1150,6 +1193,140 @@ export class PdfView extends ViewElement {
       out.push(await this.extractPageText(i));
     }
     return out;
+  }
+
+  /**
+   * Forward SyncTeX: scroll page `page` into view and flash a transient
+   * highlight at the source position SyncTeX reported. Coordinates are in
+   * PDF points with SyncTeX's convention — `(x, y)` is the click point and
+   * the optional `box` `{h, v, w, h_}` (anchor `h`,`v` plus size `W`,`H`)
+   * is the surrounding box; we draw the box when given, else a small
+   * marker at `(x, y)`.
+   *
+   * Coordinate path: SyncTeX measures `v` from the page TOP, while PDF.js
+   * uses PDF-native coordinates (origin bottom-left, y up). We flip with
+   * `pageHeight - v` and run it through the page's viewport
+   * `convertToViewportPoint`, which yields CSS-px coordinates inside the
+   * page container (the container is CSS-px sized — DPR scales only the
+   * canvas backing store, not layout — so no DPR factor enters here). The
+   * highlight is an absolutely-positioned div in the page container; it
+   * fades out via a CSS transition and is removed after the fade.
+   *
+   * Pragmatic about un-rendered pages: it forces a render of the target
+   * page so the container has its real size, then scrolls + places the
+   * highlight. A no-op when no document is loaded or the page is out of
+   * range.
+   *
+   * @param {number} page - 1-based PDF page number.
+   * @param {number} x - Click-point x (PDF points).
+   * @param {number} y - Click-point y (PDF points, from page top).
+   * @param {{ h?: number, v?: number, w?: number, h_?: number } | null} [box]
+   *   Optional box anchor/size (PDF points): `h`,`v` top-left from page
+   *   top, `w`,`h_` width/height. When present, the highlight covers it.
+   * @returns {Promise<void>}
+   */
+  async syncTexShow(page, x, y, box) {
+    const pdfDoc = this._pdfDoc;
+    if (pdfDoc === null) return;
+    const clamped = Math.max(1, Math.min(page, pdfDoc.numPages));
+    const entry = this._pages.find((p) => p.pageNum === clamped);
+    if (entry === undefined) return;
+
+    // Bring the page on screen and ensure it's rendered so the container
+    // carries its real CSS-px size (and `entry.page`/`entry.scale` exist).
+    this._gotoPage(clamped, { instant: true });
+    await this._renderPage(entry);
+    if (entry.page === null) return;
+
+    const scale = entry.scale || this._scale;
+    const pageViewport = entry.page.getViewport({ scale });
+    // The page's intrinsic height in PDF points (origin bottom-left).
+    const baseViewBox = entry.page.getViewport({ scale: 1 }).viewBox;
+    const pageHeightPts = baseViewBox[3] - baseViewBox[1];
+
+    // SyncTeX v is from the TOP; PDF-native y is from the BOTTOM. Flip,
+    // then convert to viewport (CSS-px, top-left origin) coordinates.
+    const anchorH = (box && typeof box.h === 'number') ? box.h : x;
+    const anchorV = (box && typeof box.v === 'number') ? box.v : y;
+    const [vx, vy] = pageViewport.convertToViewportPoint(
+      anchorH,
+      pageHeightPts - anchorV,
+    );
+
+    const boxW = box && typeof box.w === 'number' && box.w > 0 ? box.w : 0;
+    const boxH = box && typeof box.h_ === 'number' && box.h_ > 0 ? box.h_ : 0;
+    // Box size scales linearly with the render scale (points -> CSS px).
+    const cssW = boxW > 0 ? boxW * scale : 24;
+    const cssH = boxH > 0 ? boxH * scale : 14;
+
+    const doc = this.ownerDocument;
+    const hl = doc.createElement('div');
+    hl.className = 'pdf-synctex-highlight';
+    hl.style.position = 'absolute';
+    // `vy` is the top of the box (we flipped v, which is the box top);
+    // when no box height, centre a small marker on the point instead.
+    const left = boxW > 0 ? vx : vx - cssW / 2;
+    const top = boxH > 0 ? vy : vy - cssH / 2;
+    hl.style.left = `${left}px`;
+    hl.style.top = `${top}px`;
+    hl.style.width = `${cssW}px`;
+    hl.style.height = `${cssH}px`;
+    entry.container.appendChild(hl);
+
+    // Force a layout read so the appended element starts opaque, then
+    // trip the fade on the next frame (CSS transitions the opacity).
+    // eslint-disable-next-line no-unused-expressions
+    hl.offsetWidth;
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        hl.classList.add('is-fading');
+        hl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      });
+    } else {
+      hl.classList.add('is-fading');
+    }
+    // Remove after the fade completes (CSS transition is ~1.2s).
+    setTimeout(() => {
+      if (hl.parentNode !== null) hl.parentNode.removeChild(hl);
+    }, 1400);
+  }
+
+  /**
+   * Inverse SyncTeX click handler: translate an Option-click on a page
+   * into a PDF point (SyncTeX convention: origin top-left, points) and
+   * hand it to the host's `onSyncTexClick(page, x, y)`.
+   *
+   * The page container is CSS-px sized (DPR scales only the canvas
+   * backing store, never layout), so the click's offset relative to the
+   * container's bounding box IS in CSS px and converts directly through
+   * the page viewport's `convertToPdfPoint` — no DPR factor. That yields
+   * PDF-native coordinates (origin bottom-left, y up); SyncTeX's `edit`
+   * wants y measured from the page TOP, so we flip with `pageHeight - y`.
+   *
+   * @param {*} entry - The page entry that was clicked.
+   * @param {MouseEvent} event
+   */
+  _onPageOptionClick(entry, event) {
+    const onClick = this._options && this._options.onSyncTexClick;
+    if (typeof onClick !== 'function') return;
+    if (entry.page === null) return;
+    // Don't let the Option-click also start a text selection.
+    event.preventDefault();
+
+    const rect = entry.container.getBoundingClientRect();
+    const cssX = event.clientX - rect.left;
+    const cssY = event.clientY - rect.top;
+
+    const scale = entry.scale || this._scale;
+    const pageViewport = entry.page.getViewport({ scale });
+    const [pdfX, pdfYFromBottom] = pageViewport.convertToPdfPoint(cssX, cssY);
+
+    // Flip to SyncTeX's top-origin convention.
+    const baseViewBox = entry.page.getViewport({ scale: 1 }).viewBox;
+    const pageHeightPts = baseViewBox[3] - baseViewBox[1];
+    const pdfY = pageHeightPts - pdfYFromBottom;
+
+    onClick(entry.pageNum, pdfX, pdfY);
   }
 
   // --- internal: state + teardown ------------------------------------

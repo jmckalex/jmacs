@@ -53,6 +53,9 @@
             ['$$', '$$'],
             ['\\[', '\\]'],
           ],
+          // `\$` is a literal dollar (renderMarkdown preserves it), so it
+          // is not paired into math — for sticky notes / live docstrings.
+          processEscapes: true,
         },
         svg: { fontCache: 'local' },
         startup: { typeset: false },
@@ -78,14 +81,17 @@
     </div>
 
     <div
-      id="repl-splitter"
+      id="utility-splitter"
       class="splitter splitter-vertical"
       role="separator"
       aria-orientation="horizontal"
-      aria-label="Resize the REPL pane"
+      aria-label="Resize the utility pane"
     ></div>
 
-    <section id="repl-host" class="repl-host"></section>
+    <section id="utility-host" class="utility-host">
+      <div class="utility-tabs" role="tablist" hidden></div>
+      <div class="utility-content"></div>
+    </section>
 
     <div id="minibuffer-host"></div>
 

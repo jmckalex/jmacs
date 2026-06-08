@@ -17,6 +17,11 @@
  */
 
 import { languageForFilename } from './language-registry.js';
+import {
+  scanMathSegments,
+  maskMarkdownCode,
+  MARKDOWN_MATH_CONFIG,
+} from './math-segments.js';
 
 /** A maximal stretch of a line sharing one highlight face. */
 /** @typedef {{ text: string, face: string | null }} Run */
@@ -636,6 +641,240 @@ export function highlightMakefileBuffer(text) {
   return result;
 }
 
+// --- Markdown with embedded LaTeX math -------------------------------
+// Markdown's own constructs are line-independent, but its math regions
+// (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) can span lines, and we want their
+// *bodies* tokenized as LaTeX. So markdown gets a whole-buffer pass that
+// keeps `tokenizeMarkdown`'s per-line output verbatim and splices LaTeX
+// runs over the math columns. See plans/MD-MATH-AND-PREVIEW.md.
+
+/** The face applied to math delimiters (`$`, `$$`, `\(`, `\[`, …). */
+const MATH_DELIM_FACE = 'string';
+
+/**
+ * The byte widths of a segment's opening and closing delimiters, so the
+ * overlay can face them as delimiters and hand only the body to
+ * `tokenizeLatex`. `$…$` is 1/1; `$$…$$` and `\[…\]`/`\(…\)` are 2/2.
+ * A `\begin{…}…\end{…}` environment has *variable-length* delimiters, so
+ * we claim 0/0 and let `tokenizeLatex` face the `\begin`/`\end` commands
+ * itself (as keywords) — the whole environment is its body.
+ *
+ * @param {string} text
+ * @param {MathSegment} seg
+ * @returns {{ openLen: number, closeLen: number }}
+ */
+function delimiterWidths(text, seg) {
+  if (seg.kind === 'block') {
+    if (text.startsWith('\\begin', seg.start)) return { openLen: 0, closeLen: 0 };
+    return { openLen: 2, closeLen: 2 };
+  }
+  return text[seg.start] === '$'
+    ? { openLen: 1, closeLen: 1 }
+    : { openLen: 2, closeLen: 2 };
+}
+
+/** Append every run in `src` to `dst`. */
+function pushRuns(dst, src) {
+  for (const r of src) dst.push(r);
+}
+
+/**
+ * The runs of `runs` covering columns `[a, b)`, with the boundary runs
+ * sliced. Texts always concatenate back to the covered substring.
+ *
+ * @param {Run[]} runs
+ * @param {number} a
+ * @param {number} b
+ * @returns {Run[]}
+ */
+function sliceRuns(runs, a, b) {
+  const out = [];
+  let col = 0;
+  for (const r of runs) {
+    const start = col;
+    const end = col + r.text.length;
+    col = end;
+    if (end <= a) continue;
+    if (start >= b) break;
+    const text = r.text.slice(Math.max(a, start) - start, Math.min(b, end) - start);
+    if (text !== '') out.push({ text, face: r.face });
+  }
+  return out;
+}
+
+/** Merge adjacent runs sharing a face into one run. */
+function mergeRuns(runs) {
+  const out = [];
+  for (const r of runs) {
+    const last = out[out.length - 1];
+    if (last && last.face === r.face) last.text += r.text;
+    else out.push({ text: r.text, face: r.face });
+  }
+  return out;
+}
+
+/**
+ * @typedef {object} MathPlacement
+ * @property {number} colStart - First column of the math on this line.
+ * @property {number} colEnd - One past the last column.
+ * @property {number} openLen - Leading delimiter chars on this line (0
+ *   unless the opener is here).
+ * @property {number} closeLen - Trailing delimiter chars on this line (0
+ *   unless the closer is here).
+ */
+
+/**
+ * The runs for one line's slice of a math segment: an opening-delimiter
+ * run (when present), the LaTeX-tokenized body, then a closing-delimiter
+ * run (when present).
+ *
+ * @param {string} line
+ * @param {MathPlacement} p
+ * @returns {Run[]}
+ */
+function mathRunsFor(line, p) {
+  const span = line.slice(p.colStart, p.colEnd);
+  const runs = [];
+  if (p.openLen > 0) runs.push({ text: span.slice(0, p.openLen), face: MATH_DELIM_FACE });
+  const body = span.slice(p.openLen, span.length - p.closeLen);
+  if (body !== '') pushRuns(runs, tokenizeLatex(body));
+  if (p.closeLen > 0) {
+    runs.push({ text: span.slice(span.length - p.closeLen), face: MATH_DELIM_FACE });
+  }
+  return runs;
+}
+
+/**
+ * Replace the math columns of a line's base (Markdown) runs with LaTeX
+ * runs. `placements` are non-overlapping; outside them the base runs
+ * carry through unchanged.
+ *
+ * @param {string} line
+ * @param {Run[]} baseRuns
+ * @param {MathPlacement[]} placements
+ * @returns {Run[]}
+ */
+function spliceMathRuns(line, baseRuns, placements) {
+  placements.sort((x, y) => x.colStart - y.colStart);
+  const out = [];
+  let col = 0;
+  for (const p of placements) {
+    if (p.colStart > col) pushRuns(out, sliceRuns(baseRuns, col, p.colStart));
+    pushRuns(out, mathRunsFor(line, p));
+    col = p.colEnd;
+  }
+  if (col < line.length) pushRuns(out, sliceRuns(baseRuns, col, line.length));
+  return mergeRuns(out);
+}
+
+/**
+ * Tokenize a whole Markdown buffer into per-line runs. Each line is
+ * tokenized exactly as `tokenizeMarkdown` would, then any embedded math
+ * region (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`, possibly multi-line) has its
+ * columns replaced by LaTeX-highlighted runs. Math inside code is left
+ * as ordinary text. See plans/MD-MATH-AND-PREVIEW.md.
+ *
+ * @param {string} text
+ * @returns {Run[][]}
+ */
+export function highlightMarkdownBuffer(text) {
+  const lines = text.split('\n');
+  const base = lines.map((line) => tokenizeMarkdown(line));
+  return overlayMarkdownMath(text, base, lines);
+}
+
+/**
+ * Overlay LaTeX highlighting onto the math regions of already-computed
+ * per-line Markdown runs, *whatever produced them* — the tree-sitter
+ * markdown highlighter (which has no notion of `$…$`) or the hand
+ * tokenizer. This is the integration point the editor view uses, since
+ * markdown is highlighted by tree-sitter and so never reaches
+ * `highlightBuffer`.
+ *
+ * Math is found over a code-masked copy of `text`, so a `$` inside
+ * fenced/inline code stays literal; each math region's columns are
+ * replaced by delimiter runs + a `tokenizeLatex` of its body, while the
+ * surrounding (non-math) runs — and their faces — pass through. Lines
+ * with no math are returned by reference. See
+ * plans/MD-MATH-AND-PREVIEW.md.
+ *
+ * @param {string} text - The whole buffer.
+ * @param {Run[][]} perLine - One Run[] per buffer line; the texts on
+ *   each line concatenate back to that line.
+ * @param {string[]} [lines] - `text` split on `\n` (recomputed if
+ *   omitted). Must index identically to `perLine`.
+ * @returns {Run[][]}
+ */
+export function overlayMarkdownMath(text, perLine, lines) {
+  const srcLines = lines ?? text.split('\n');
+  const segments = scanMathSegments(maskMarkdownCode(text), MARKDOWN_MATH_CONFIG);
+  if (segments.length === 0) return perLine;
+
+  // Line start offsets (each line plus its newline).
+  const lineStart = new Array(srcLines.length);
+  let off = 0;
+  for (let i = 0; i < srcLines.length; i += 1) {
+    lineStart[i] = off;
+    off += srcLines[i].length + 1;
+  }
+
+  /** @type {Map<number, MathPlacement[]>} */
+  const byLine = new Map();
+  for (const seg of segments) {
+    const { openLen, closeLen } = delimiterWidths(text, seg);
+    for (let line = 0; line < srcLines.length; line += 1) {
+      const ls = lineStart[line];
+      const le = ls + srcLines[line].length;
+      if (ls >= seg.end) break;
+      if (le <= seg.start) continue;
+      const colStart = Math.max(seg.start, ls) - ls;
+      const colEnd = Math.min(seg.end, le) - ls;
+      if (colEnd <= colStart) continue;
+      const placements = byLine.get(line) ?? [];
+      placements.push({
+        colStart,
+        colEnd,
+        openLen: seg.start >= ls ? openLen : 0,
+        closeLen: seg.end <= le ? closeLen : 0,
+      });
+      byLine.set(line, placements);
+    }
+  }
+
+  return perLine.map((runs, index) => {
+    const placements = byLine.get(index);
+    if (!placements) return runs;
+    return spliceMathRuns(srcLines[index] ?? '', runs ?? [], placements);
+  });
+}
+
+/**
+ * The math regions of Markdown `text`, as tree-sitter injection ranges
+ * targeting the `latex` grammar. This is how the editor actually
+ * highlights markdown math: the markdown grammar injects each paragraph
+ * into `markdown_inline`, and this provider — attached to that inline
+ * grammar — injects the LaTeX grammar into every math region, so the
+ * body gets grammar-accurate LaTeX highlighting (superscripts, command
+ * structure, environments) and the delimiters are faced by the latex
+ * query.
+ *
+ * Recognises everything MathJax does — `$…$`, `$$…$$`, `\(…\)`, `\[…\]`,
+ * and `\begin{…}…\end{…}` environments — over a code-masked copy, so a
+ * `$` inside inline code stays literal. Ranges cover the *whole*
+ * delimited span (delimiters included) so the latex grammar parses it as
+ * inline_formula / displayed_equation / math_environment. See
+ * plans/MD-MATH-AND-PREVIEW.md.
+ *
+ * @param {string} text - A Markdown (inline) region's source.
+ * @returns {{ start: number, end: number, language: string }[]}
+ */
+export function markdownMathInjections(text) {
+  return scanMathSegments(
+    maskMarkdownCode(text),
+    MARKDOWN_MATH_CONFIG
+  ).map((seg) => ({ start: seg.start, end: seg.end, language: 'latex' }));
+}
+
 /**
  * The whole-buffer tokenizer for a language, or null if none. The view
  * uses this in preference to `highlightLine` when defined.
@@ -647,5 +886,6 @@ export function highlightMakefileBuffer(text) {
 export function highlightBuffer(text, language) {
   if (language === 'latex') return highlightLatexBuffer(text);
   if (language === 'makefile') return highlightMakefileBuffer(text);
+  if (language === 'markdown') return highlightMarkdownBuffer(text);
   return null;
 }

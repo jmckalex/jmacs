@@ -29,6 +29,9 @@ import {
   parentOf,
   replacePane,
   siblingOf,
+  swapLeaves,
+  permuteLeaves,
+  spiralOrder,
   bumpIdCounterPast,
   SPLIT_HORIZONTAL,
   SPLIT_VERTICAL,
@@ -51,6 +54,7 @@ import {
   BrowserView,
   CustomizeView,
   DocView,
+  BookmarkView,
   DirectoryColumnsView,
   DirectoryTreeView,
   createEditorView,
@@ -60,9 +64,23 @@ import {
   JukeboxView,
   PdfView,
   createMarkdownPreview,
+  buildPreviewHead,
   createMinibuffer,
   createReplView,
+  createUtilityDock,
+  createOutputPanel,
+  createDocPanel,
   ShellView,
+  GnuplotView,
+  NotebookView,
+  ViewListView,
+  createReftexSelectPanel,
+  createReftexCiteFormatPanel,
+  createReftexCitePanel,
+  PlaceholderView,
+  cloneTargetForKind,
+  isPlaceholderView,
+  resolvePlaceholderAction,
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
@@ -72,34 +90,70 @@ import {
   fuzzyFilter,
   highlightLine,
   isAudioFile,
+  keyEventToString,
   languageForFilename,
   loadLanguageHighlighters,
+  createHighlightOverrideStore,
   renderMarkdown,
   parseCitations,
   formatBibliography,
   formatCitation,
   citationKeys,
+  citationEntries,
+  formatBibliographyEntries,
+  registerCslStyle,
+  parseCitationsLenient,
+  createMathPreview,
+  mathPreviewProviderForMode,
   TextView,
   TablineView,
 } from '@editor/renderer';
 import {
   createBufferPrimitives,
+  createLatexPrimitives,
   createPanePrimitives,
   createViewPrimitives,
   loadStdlib,
+  pathDirname,
 } from '@editor/stdlib';
 import { createAudioController } from './audio.js';
 import {
   emptyOverrides,
   jsonToLispOverrides,
-  lispToJsonOverrides,
+  lispToJsonFacesFile,
+  jsonToLispUserFaces,
+  jsonToLispHighlightRules,
 } from './face-overrides.js';
 import { applyFaceStyles } from './face-styles.js';
+import {
+  isMathPreviewActive,
+  bufferMajorModeName,
+} from './math-preview-host.js';
+import { buildModeMenuItems } from './mode-menu-build.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
+import { createBookmarks } from './bookmarks.js';
 import { enterAddPaneMode } from './add-pane-mode.js';
+import { enterMoveViewsMode } from './move-view-mode.js';
 import { createTabline } from '@editor/renderer';
+
+/**
+ * Build a Lisp hash-map (a JS `Map` with interned-keyword keys) from a
+ * plain object — the shape the host's citation / synctex primitives
+ * return. (latex-primitives.js keeps its own copy for its own scope; this
+ * is the app.js-scope equivalent, used by the citation primitives.)
+ *
+ * @param {Record<string, *>} fields
+ * @returns {Map<*, *>}
+ */
+function record(fields) {
+  const map = new Map();
+  for (const [key, value] of Object.entries(fields)) {
+    map.set(keyword(key), value);
+  }
+  return map;
+}
 
 const WELCOME = `
 
@@ -241,6 +295,60 @@ function nextShellSessionId() {
   return `shell-${shellSessionCounter}-${Date.now()}`;
 }
 
+/** Monotonic id source for gnuplot-buffer session ids. Each new gnuplot
+ *  buffer gets a fresh id; the host keys its child-process table off
+ *  this. */
+let gnuplotSessionCounter = 0;
+function nextGnuplotSessionId() {
+  gnuplotSessionCounter += 1;
+  return `gnuplot-${gnuplotSessionCounter}-${Date.now()}`;
+}
+
+/** Monotonic id source for notebook views. The reactive engine keys its
+ *  per-notebook record (cell values, dep graph) off this id. */
+let notebookCounter = 0;
+function nextNotebookId() {
+  notebookCounter += 1;
+  return `notebook-${notebookCounter}-${Date.now()}`;
+}
+
+/** Rename the notebook with NOTEBOOK-ID to NAME (its display + buffer
+ *  name; the file on disk is unchanged). Keyed by id, not by "current
+ *  view", so it's robust to focus moving during a minibuffer prompt. */
+function renameNotebookById(id, name) {
+  const n = String(name ?? '').trim();
+  if (n === '') return;
+  const view = views.find((v) => v.kind === 'notebook' && v.notebookId === id);
+  if (!view) return;
+  view.name = n;
+  if (view.buffer) view.buffer.name = n;
+  updateModeline();
+  notifyViewsChanged();
+  // Refresh every notebook view's header picker so the new name shows in
+  // the dropdown — the inline ✎ button refreshes its own, but the M-x
+  // command path (rename-notebook-by-id!) has no view handle, so do it for
+  // all notebook elements here.
+  for (const el of document.querySelectorAll('notebook-view')) {
+    if (typeof el.refreshHeader === 'function') el.refreshHeader();
+  }
+}
+
+/** Switch to the next (DELTA +1) or previous (-1) open notebook, wrapping
+ *  around. If the current view isn't a notebook, jump to the first/last. */
+function cycleNotebook(delta) {
+  const notebooks = views.filter((v) => v.kind === 'notebook');
+  if (notebooks.length === 0) return;
+  const current = views[currentViewIndex];
+  const here = current && current.kind === 'notebook' ? notebooks.indexOf(current) : -1;
+  const next =
+    here === -1
+      ? delta > 0
+        ? 0
+        : notebooks.length - 1
+      : (here + delta + notebooks.length) % notebooks.length;
+  switchToViewIndex(views.indexOf(notebooks[next]));
+}
+
 /** A change to the view list or the current index. Refreshes the
  *  tabline and schedules a debounced session save. Both targets are
  *  wired in later (the tabline and session controller depend on the
@@ -269,6 +377,21 @@ function peelTabline(view) {
   return v;
 }
 
+/** The next index in `views` from FROM, stepping by DELTA (+1 / -1) and
+ *  skipping transient placeholder entries. Wraps around. Returns -1 when
+ *  there is no non-placeholder view to land on. Used by the
+ *  next/previous-view cycling fallback so the cycle never lands on a
+ *  placeholder. */
+function nextNonPlaceholderIndex(from, delta) {
+  const n = views.length;
+  if (n === 0) return -1;
+  for (let step = 1; step <= n; step += 1) {
+    const i = ((from + delta * step) % n + n) % n;
+    if (!isPlaceholderView(views[i])) return i;
+  }
+  return -1;
+}
+
 // --- modeline -----------------------------------------------------------
 
 const nameEl = document.getElementById('modeline-name');
@@ -276,8 +399,25 @@ const positionEl = document.getElementById('modeline-position');
 
 function updateModeline() {
   const shown = views[currentViewIndex];
+  // A placeholder chooser pane shows its label and no count — never a
+  // `9/7`-style index (it isn't part of the user-visible view list).
+  if (isPlaceholderView(shown)) {
+    const label = shown.name || '(choose a view)';
+    nameEl.textContent = label;
+    positionEl.textContent = '';
+    document.title = `${label} — editor`;
+    return;
+  }
+  // The user-visible count excludes placeholders, and the index is the
+  // current view's position among the *real* views (so a split that
+  // dropped a placeholder doesn't push the count past the list — the
+  // `9/7` hazard). Falls back to no count when only one real view.
+  const realViews = views.filter((v) => !isPlaceholderView(v));
+  const realIndex = shown ? realViews.indexOf(shown) : -1;
   const count =
-    views.length > 1 ? `  ${currentViewIndex + 1}/${views.length}` : '';
+    realViews.length > 1 && realIndex >= 0
+      ? `  ${realIndex + 1}/${realViews.length}`
+      : '';
   // A non-text view (image, doc, shell, customize, ...) has no point
   // and no mode — show just the view name.
   if (shown && shown.kind !== 'text') {
@@ -424,6 +564,12 @@ let relayoutHandle = 0;
  *  Re-entering the chord toggles it; a successful click or Escape
  *  clears it via the `exit` shim installed at entry. */
 let addPaneHandle = null;
+
+/** Live handle for an active move-views overlay (swap-views /
+ *  permute-views), or `null` when off. Same toggle/clear lifecycle as
+ *  `addPaneHandle`. */
+let moveViewHandle = null;
+
 
 /** Recompute the layout of every leaf pane against the current editor-
  *  host bounds and write each leaf's rect to its element. Cheap to call
@@ -602,62 +748,259 @@ refreshPaneFocusIndicators();
 // focus pane id, the editor-view instance map, and the splitter handle
 // divs follow.
 
-/** Build the duplicate view a freshly-split text pane gets, or the
- *  fallback `*scratch*` view for non-text origins. The new view is
- *  appended to `views` and a fresh editor-view instance is constructed
- *  for it once its pane element exists.
+/** Build the placeholder view a freshly-split pane gets. The split no
+ *  longer silently auto-clones the originating view (the old
+ *  `buildDuplicateViewForSplit` — the root of the "four copies in the
+ *  View List" bug); instead the new pane shows a chooser that asks the
+ *  user what it should hold. The originating view is remembered on
+ *  `previousView` so the chooser's *clone* action can reproduce it.
  *
- *  Phase 3b: when the source leaf holds a tabline-view, peel through
- *  to its active child so the split duplicates the *visible* view
- *  (typically a text view) rather than the tabline wrapper (which has
- *  no buffer and would fall through to `*scratch*`). */
-function buildDuplicateViewForSplit(originalView) {
+ *  The placeholder is pushed to `views` (transient — it keeps
+ *  currentViewIndex / the modeline valid) but is excluded from the View
+ *  List and the cycling ring, and is spliced out the instant it is
+ *  filled (`replacePlaceholder`) or its pane is closed.
+ *
+ *  Phase 3b: when the source leaf holds a tabline-view, peel through to
+ *  its active child so *clone* reproduces the visible view rather than
+ *  the tabline wrapper. */
+function buildPlaceholderForSplit(originalView) {
   const peeled = peelTabline(originalView);
-  if (peeled && !isTablineView(peeled)) {
-    originalView = peeled;
-  }
-  if (originalView && originalView.kind === 'text' && originalView.buffer) {
-    // Q9 auto-duplicate path: a new View over the *same* buffer, with
-    // a fresh point copied from the original and mark cleared. The
-    // view list grows by one entry; the buffer is shared.
-    const dup = createView({
-      kind: 'text',
-      buffer: originalView.buffer,
-      point: typeof originalView.point === 'number' ? originalView.point : 0,
-    });
-    views.push(dup);
-    notifyViewsChanged();
-    return dup;
-  }
-  // Non-text origin: drop a fresh empty *scratch* text view in the new
-  // pane (the brief's "predictable default"). The non-text singleton
-  // stays mounted in the originating pane.
-  const scratch = createView({
+  const origin = peeled && !isTablineView(peeled) ? peeled : originalView;
+  const placeholder = createView({
+    kind: 'placeholder',
+    name: '(choose a view)',
+    extras: { previousView: origin ?? null },
+  });
+  views.push(placeholder);
+  notifyViewsChanged();
+  return placeholder;
+}
+
+/** A fresh `*scratch*` text view — the clone fallback and the `s` action. */
+function freshScratchView() {
+  return createView({
     kind: 'text',
     buffer: createBuffer('', { name: '*scratch*' }),
   });
-  views.push(scratch);
-  notifyViewsChanged();
-  return scratch;
 }
 
-/** Common implementation of split-horizontal! / split-vertical!.
- *  Replaces TARGET (a leaf) with a split node; the originating leaf
- *  keeps focus, a freshly-created leaf is its sibling. With SIDE =
- *  `'after'` (default) the new leaf is the *second* child (right of /
- *  below the original); with SIDE = `'before'` it is the *first* child
- *  (left of / above the original). The originating leaf's id is
- *  preserved across the replacement so focus + editor-view bindings
- *  don't churn. Returns `{ first, second }`. */
-function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
+/** Clone the originating view ORIGINVIEW as a *new instance at the same
+ *  target* (plans/PANES-PLACEHOLDER.md's clone table). Returns a fresh
+ *  view object NOT yet in `views` — `replacePlaceholder` pushes it. The
+ *  per-kind decision is the pure `cloneTargetForKind`; the host turns
+ *  the tag into a concrete `createView`. */
+function cloneViewForPlaceholder(originView) {
+  if (!originView) return freshScratchView();
+  switch (cloneTargetForKind(originView.kind)) {
+    case 'same-buffer':
+      // Text: a new view over the same buffer, fresh point, mark cleared
+      // (Q2/Q9 — independent cursor; today's text duplicate semantics).
+      if (originView.buffer) {
+        return createView({
+          kind: 'text',
+          buffer: originView.buffer,
+          point: typeof originView.point === 'number' ? originView.point : 0,
+        });
+      }
+      return freshScratchView();
+    case 'same-url':
+      // Browser: a new browser at the same URL.
+      return createView({
+        kind: 'browser',
+        name: originView.name ?? originView.url ?? 'about:blank',
+        extras: {
+          url:
+            typeof originView.url === 'string' && originView.url !== ''
+              ? originView.url
+              : 'about:blank',
+        },
+      });
+    case 'same-file': {
+      // pdf / image / audio / video: a new view of the same file. The
+      // origin already carries `filePath` / `src` (and audio's metadata /
+      // art) on its own fields — reproduce them on a fresh instance.
+      const extras = { filePath: originView.filePath, src: originView.src };
+      if (originView.metadata) extras.metadata = originView.metadata;
+      if (originView.albumArtSrc) extras.albumArtSrc = originView.albumArtSrc;
+      return createView({
+        kind: originView.kind,
+        name: originView.name ?? null,
+        extras,
+      });
+    }
+    case 'fresh':
+      // Session-bearing kinds: a fresh instance (a pty's scrollback etc.
+      // can't be cloned — "same target" means a new session/root).
+      if (originView.kind === 'shell') {
+        const sessionId = nextShellSessionId();
+        const seq = views.filter((v) => v.kind === 'shell').length + 1;
+        return createView({
+          kind: 'shell',
+          name: seq === 1 ? '*shell*' : `*shell*<${seq}>`,
+          extras: { sessionId, transcript: [], ended: false, spawned: false },
+        });
+      }
+      if (originView.kind === 'gnuplot') {
+        const sessionId = nextGnuplotSessionId();
+        const seq = views.filter((v) => v.kind === 'gnuplot').length + 1;
+        return createView({
+          kind: 'gnuplot',
+          name: seq === 1 ? '*gnuplot*' : `*gnuplot*<${seq}>`,
+          extras: { sessionId, ended: false, spawned: false },
+        });
+      }
+      if (originView.kind === 'notebook') {
+        const notebookId = nextNotebookId();
+        const seq = views.filter((v) => v.kind === 'notebook').length + 1;
+        const name = seq === 1 ? '*notebook*' : `*notebook*<${seq}>`;
+        return createView({
+          kind: 'notebook',
+          name,
+          buffer: { text: '', filePath: null, name },
+          extras: { notebookId },
+        });
+      }
+      // directory-tree / directory-columns: a fresh view at the same
+      // root. Build a NEW instance directly (not the ensure-helpers,
+      // which reuse an existing view for a path — that would put one
+      // View object in two panes, the Q9 violation the placeholder
+      // exists to avoid). A blank root falls through to scratch.
+      if (originView.kind === 'directory-tree' && typeof originView.rootPath === 'string' && originView.rootPath !== '') {
+        const segments = originView.rootPath.split('/');
+        const tail = segments[segments.length - 1] || originView.rootPath;
+        return createView({
+          kind: 'directory-tree',
+          name: `*Tree: ${tail}*`,
+          extras: { rootPath: originView.rootPath, expanded: new Set() },
+        });
+      }
+      if (originView.kind === 'directory-columns' && typeof originView.rootPath === 'string' && originView.rootPath !== '') {
+        const segments = originView.rootPath.split('/');
+        const tail = segments[segments.length - 1] || originView.rootPath;
+        return createView({
+          kind: 'directory-columns',
+          name: `*Columns: ${tail}*`,
+          extras: {
+            rootPath: originView.rootPath,
+            columns: [{ path: originView.rootPath, selected: null }],
+            previewPath: null,
+          },
+        });
+      }
+      return freshScratchView();
+    case 'scratch':
+    default:
+      return freshScratchView();
+  }
+}
+
+/** Replace the placeholder in LEAF with NEWVIEW, leaving no residue:
+ *  the placeholder is spliced out of `views`, its element disposed, and
+ *  currentViewIndex re-pointed at NEWVIEW. The leaf becomes leaf-direct
+ *  on NEWVIEW and the new view is mounted + focused. */
+function replacePlaceholder(leaf, newView) {
+  if (!leaf || leaf.kind !== 'leaf' || !newView) return;
+  const placeholder = leaf.view;
+  // Put the new view in the leaf and the global list before tearing the
+  // placeholder down, so the splice + index fix-up below see a coherent
+  // state.
+  leaf.view = newView;
+  if (!views.includes(newView)) views.push(newView);
+  // Splice the placeholder out of `views` (no residue). Its element is
+  // disposed via disposeKindView.
+  splicePlaceholderFromViews(placeholder);
+  // Build the new view's renderer + focus it. For a leaf-direct text
+  // view, ensure its editor instance exists first.
+  if (newView.kind === 'text') ensureEditorViewForLeaf(leaf);
+  // currentPaneId is already this leaf (the placeholder pane was
+  // focused); re-sync currentViewIndex to the new view and mount it.
+  setCurrentPaneId(leaf.id);
+  currentViewIndex = views.indexOf(newView);
+  hideInactiveRendererViews(newView.kind);
+  mountKindView(newView);
+  refreshPaneFocusIndicators();
+  scheduleRelayout();
+  updateModeline();
+  notifyViewsChanged();
+}
+
+/** Remove PLACEHOLDER from `views` and dispose its element, fixing
+ *  currentViewIndex so it never outlives the splice (the 9/7 hazard).
+ *  No-op when PLACEHOLDER isn't a placeholder or isn't in `views`. */
+function splicePlaceholderFromViews(placeholder) {
+  if (!isPlaceholderView(placeholder)) return;
+  const idx = views.indexOf(placeholder);
+  if (idx < 0) {
+    disposePlaceholderElementForView(placeholder);
+    return;
+  }
+  views.splice(idx, 1);
+  disposePlaceholderElementForView(placeholder);
+  // Keep currentViewIndex valid relative to the splice.
+  if (currentViewIndex > idx) {
+    currentViewIndex -= 1;
+  } else if (currentViewIndex === idx) {
+    currentViewIndex = Math.min(currentViewIndex, views.length - 1);
+  }
+}
+
+/** The `o` action: find-file into the placeholder's pane. The chosen
+ *  file opens in the focused pane (this one); afterwards the placeholder
+ *  is spliced out. */
+function fillPlaceholderViaOpen(leaf) {
+  const placeholder = leaf.view;
+  // openFileInteractive is async and lands the file in the focused pane
+  // (which is this placeholder leaf). It replaces `leaf.view` through
+  // switchToViewIndex's plain-leaf branch, orphaning the placeholder in
+  // `views`. Splice it out once the open settles — whether or not a file
+  // was actually chosen, if the leaf no longer shows the placeholder.
+  const after = () => {
+    if (leaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
+  };
+  openFileInteractive().then(after, after);
+}
+
+/** The `r` action: run the typed command in the placeholder's pane. The
+ *  focused pane is this one, so a view-opening command (e.g. `gnuplot`)
+ *  lands here. Afterwards the placeholder is spliced out. */
+function fillPlaceholderViaCommand(leaf, text) {
+  const placeholder = leaf.view;
+  try {
+    interpreter.evaluate(`(run-command (quote ${text}))`);
+  } catch (error) {
+    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+  }
+  // A view-opening command replaced `leaf.view` via switchToViewIndex;
+  // a non-view command (or a failure) leaves the placeholder in place.
+  if (leaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
+}
+
+/** Split TARGET (a leaf) and put a GIVEN view into the new sibling
+ *  leaf — the programmatic counterpart to the placeholder-showing
+ *  `splitPaneAtLeaf`. TARGET is replaced with a split node; a freshly-
+ *  created leaf holding VIEW is its sibling. With SIDE = `'after'`
+ *  (default) the new leaf is the *second* child (right of / below the
+ *  original); with SIDE = `'before'` it is the *first* child (left of /
+ *  above the original). The originating leaf's id is preserved across
+ *  the replacement so its editor-view bindings don't churn.
+ *
+ *  VIEW must already be a real view (in `views`); this function does NOT
+ *  push it — the caller (e.g. `splitAndOpenFile`, or `splitPaneAtLeaf`
+ *  with a freshly-built placeholder) owns that. There is no placeholder
+ *  and no chooser: the new pane is filled directly, leaving no orphaned-
+ *  view residue.
+ *
+ *  Focus MOVES to the new pane and its element is mounted + focused so
+ *  its accelerator keys are live. Returns `{ first, second }`. */
+function splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, view) {
   if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
   if (
     orientation !== SPLIT_HORIZONTAL &&
     orientation !== SPLIT_VERTICAL
   ) return null;
   if (side !== 'after' && side !== 'before') return null;
-  const dup = buildDuplicateViewForSplit(targetLeaf.view);
-  const newLeaf = createLeafPane({ view: dup });
+  if (!view) return null;
+  const newLeaf = createLeafPane({ view });
   // Ratio interpretation: it always describes the *first* child's
   // share. With SIDE='before' the new leaf is first, so the supplied
   // ratio applies to it directly. With SIDE='after' the originating
@@ -672,42 +1015,121 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
   });
   rootPane = replacePane(rootPane, targetLeaf, split);
   syncPaneElements();
-  // Build the editor-view instance for the new (text) leaf so its pane
-  // renders at once. The focused leaf is unchanged; the editor view
-  // mount for the focused view re-runs as part of the relayout.
-  if (dup && dup.kind === 'text') {
-    // The new pane's div was created by syncPaneElements; ensure its
-    // editor-view exists and is bound to the duplicate view.
-    ensureEditorViewForLeaf(newLeaf);
-  }
-  // currentPaneId stays the same — the originating leaf survived (just
-  // possibly as `second` instead of `first`) with its id intact.
-  // Refresh the indicator + splitters, then relayout.
+  // For a leaf-direct text view, ensure its editor instance exists
+  // before mounting (the placeholder path skips this — placeholders are
+  // never text).
+  if (view.kind === 'text') ensureEditorViewForLeaf(newLeaf);
+  // Focus moves to the new pane and its element is mounted + focused so
+  // its accelerator keys are live. setCurrentPaneId syncs
+  // currentViewIndex to VIEW; mountKindView builds the element.
+  setCurrentPaneId(newLeaf.id);
+  hideInactiveRendererViews(view.kind);
+  mountKindView(view);
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
   return { first, second };
 }
 
+/** Common implementation of split-horizontal! / split-vertical!.
+ *  Replaces TARGET (a leaf) with a split node; a freshly-created leaf
+ *  is its sibling, holding a *placeholder* chooser. With SIDE =
+ *  `'after'` (default) the new leaf is the *second* child (right of /
+ *  below the original); with SIDE = `'before'` it is the *first* child
+ *  (left of / above the original). The originating leaf's id is
+ *  preserved across the replacement so its editor-view bindings don't
+ *  churn.
+ *
+ *  Focus MOVES to the new placeholder pane (a deliberate change from
+ *  the old "originating pane keeps focus" contract — the user is now
+ *  asked what the new pane should hold, so the keyboard belongs there).
+ *  Returns `{ first, second }`.
+ *
+ *  This is the user-facing split (the keyboard `split-*!` primitives and
+ *  the paneHost split methods route through it). The programmatic
+ *  fill-a-pane-directly variant is `splitPaneAtLeafWith`. */
+function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
+  if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
+  if (
+    orientation !== SPLIT_HORIZONTAL &&
+    orientation !== SPLIT_VERTICAL
+  ) return null;
+  if (side !== 'after' && side !== 'before') return null;
+  const placeholder = buildPlaceholderForSplit(targetLeaf.view);
+  return splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, placeholder);
+}
+
+/** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
+ *  Keyword both carry a `.name`), with any leading `:` stripped, or null
+ *  when ARG isn't symbol-like. Mirrors pane-primitives' `sideFromArg` /
+ *  `coerceEdge` coercion so `open-file-in-split!` reads its
+ *  orientation/side args the same way the split primitives read theirs. */
+function symbolNameOf(arg) {
+  let name = null;
+  if (typeof arg === 'string') name = arg;
+  else if (arg && typeof arg === 'object' && typeof arg.name === 'string') {
+    name = arg.name;
+  }
+  if (name === null) return null;
+  return name.startsWith(':') ? name.slice(1) : name;
+}
+
+/** Programmatically split the focused pane and open FILEPATH directly in
+ *  the new sibling pane — no placeholder, no chooser. The split runs at
+ *  an even 0.5 ratio; ORIENTATION is `SPLIT_HORIZONTAL` / `SPLIT_VERTICAL`
+ *  and SIDE is `'after'` (default) / `'before'`. When PERSIST is true the
+ *  opened view is flagged session-persistent (the latex-output PDF case);
+ *  this is applied atomically with the open so a Lisp caller needn't race
+ *  the async open to find the handle. Focus moves to the new pane
+ *  (consistent with `splitPaneAtLeaf`). Returns the opened view, or null
+ *  on failure (unreadable path, no focused leaf, unrecognised
+ *  orientation). This is the programmatic counterpart to the user-facing
+ *  `split-*!` primitives — callers that want a pane filled straight away
+ *  (latex-view's source|PDF) use this instead of split-then-open, which
+ *  would strand a placeholder. */
+async function splitAndOpenFile(filePath, orientation, side = 'after', persist = false) {
+  const target = currentPane();
+  if (!target || target.kind !== 'leaf') return null;
+  // Split with a placeholder; splitPaneAtLeaf moves focus to the new pane.
+  // Then open FILEPATH into that focused pane through the *normal* open
+  // path — switchToViewIndex replaces the placeholder with the file's view,
+  // the proven `fillPlaceholderViaOpen` mechanism the `o` action uses. (A
+  // bespoke mount via splitPaneAtLeafWith mis-rendered PDFs and didn't
+  // honour {switch:false}, switching the source pane to the PDF instead.)
+  const split = splitPaneAtLeaf(target, orientation, 0.5, side);
+  if (!split) return null;
+  const newLeaf = side === 'before' ? split.first : split.second;
+  const placeholder = newLeaf.view;
+  // forceDuplicate: a fresh View even if the file is already open elsewhere
+  // (Q9). The open lands in the focused (new) leaf, replacing its placeholder.
+  await openFileByPath(filePath, { forceDuplicate: true });
+  // Splice the orphaned placeholder out of `views` — no residue.
+  if (newLeaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
+  const view = newLeaf.view;
+  if (view && persist === true && view.kind === 'pdf') {
+    view.persist = true;
+    sessionController.save();
+  }
+  return view;
+}
+
 /** Insert a fresh leaf "in the gap" of the split node with id SPLIT_ID.
- *  The new leaf gets a duplicate of the focused view (text → buffer-
- *  shared; non-text → fresh *scratch*) and becomes the focused pane.
- *  Returns the inserted leaf, or `null` when the split id isn't in the
- *  tree. */
+ *  The new leaf gets a *placeholder* chooser (remembering the focused
+ *  view as the clone origin) and becomes the focused pane. Returns the
+ *  inserted leaf, or `null` when the split id isn't in the tree. */
 function addPaneAtSplitterId(splitId) {
   if (typeof splitId !== 'string') return null;
   const splitNode = findPaneById(rootPane, splitId);
   if (!splitNode || splitNode.kind !== 'split') return null;
   const sourceView =
     (currentPane()?.view) ?? views[currentViewIndex] ?? null;
-  const dup = buildDuplicateViewForSplit(sourceView);
-  const newLeaf = createLeafPane({ view: dup });
+  const placeholder = buildPlaceholderForSplit(sourceView);
+  const newLeaf = createLeafPane({ view: placeholder });
   rootPane = insertAtSplit(rootPane, splitNode, newLeaf);
   syncPaneElements();
-  if (dup && dup.kind === 'text') {
-    ensureEditorViewForLeaf(newLeaf);
-  }
   setCurrentPaneId(newLeaf.id);
+  hideInactiveRendererViews(placeholder.kind);
+  mountKindView(placeholder);
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
@@ -727,14 +1149,13 @@ function addPaneAtRootBorder(side) {
   }
   const sourceView =
     (currentPane()?.view) ?? views[currentViewIndex] ?? null;
-  const dup = buildDuplicateViewForSplit(sourceView);
-  const newLeaf = createLeafPane({ view: dup });
+  const placeholder = buildPlaceholderForSplit(sourceView);
+  const newLeaf = createLeafPane({ view: placeholder });
   rootPane = insertAtRootBorder(rootPane, side, newLeaf);
   syncPaneElements();
-  if (dup && dup.kind === 'text') {
-    ensureEditorViewForLeaf(newLeaf);
-  }
   setCurrentPaneId(newLeaf.id);
+  hideInactiveRendererViews(placeholder.kind);
+  mountKindView(placeholder);
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
@@ -758,6 +1179,13 @@ function deletePaneInTree(targetLeaf) {
   // leaves only). Non-text views' singletons stay alive — they may
   // outlive the pane they were originally mounted in.
   disposeEditorViewForLeaf(targetLeaf);
+  // A placeholder pane closed without being filled leaves no residue:
+  // splice its transient view out of `views` (and dispose its element).
+  // Do this before the tree mutation so the index fix-up sees the
+  // current `currentViewIndex`.
+  if (isPlaceholderView(targetLeaf.view)) {
+    splicePlaceholderFromViews(targetLeaf.view);
+  }
   rootPane = replacePane(rootPane, parent, sibling);
   syncPaneElements();
   // Focus follows: if the deleted leaf held focus, the sibling's first
@@ -800,9 +1228,11 @@ function deleteOtherPanesInTree(targetLeaf) {
   if (rootPane === targetLeaf) return;
   // Dispose every editor-view instance for leaves that are about to
   // disappear (text leaves only — non-text singletons aren't per-pane).
+  // A placeholder pane among them leaves no residue: splice it out.
   for (const leaf of leafPanes(rootPane)) {
     if (leaf === targetLeaf) continue;
     disposeEditorViewForLeaf(leaf);
+    if (isPlaceholderView(leaf.view)) splicePlaceholderFromViews(leaf.view);
   }
   rootPane = targetLeaf;
   syncPaneElements();
@@ -866,6 +1296,23 @@ function focusNextPane() {
   const next = leaves[(i < 0 ? 0 : i + 1) % leaves.length];
   setCurrentPaneId(next.id);
   return next;
+}
+
+/** Focus a *specific* leaf pane by its handle (the absolute counterpart
+ *  to `focusNextPane` / `focusPaneByDirection`, which move focus
+ *  relatively). Used by features that already hold the pane they want
+ *  focused — e.g. inverse SyncTeX, which focuses the pane showing the
+ *  resolved source file instead of landing in whatever pane the PDF
+ *  click stole focus to. Returns the focused leaf, or null when PANE
+ *  isn't a leaf currently in the tree (a split node, a stale handle).
+ *  Re-focusing the already-current pane is a no-op that still returns
+ *  the leaf. */
+function focusPaneHandle(pane) {
+  if (!pane || typeof pane !== 'object' || pane.kind !== 'leaf') return null;
+  const leaf = leafPanes(rootPane).find((l) => l.id === pane.id);
+  if (!leaf) return null;
+  setCurrentPaneId(leaf.id);
+  return leaf;
 }
 
 /** Spatial pane navigation: focus the leaf adjacent to the current one
@@ -1108,13 +1555,22 @@ function hideInactiveRendererViews(activeKind) {
   if (focusedTextView) {
     focusedTextView.style.display = activeKind === 'text' ? '' : 'none';
   }
-  // Non-focused panes' text editors stay visible — they belong to
-  // other panes and aren't affected by what the focused pane shows.
-  // Same direct-child-only constraint.
+  // Non-focused panes' leaf-direct text editors follow THEIR OWN view
+  // kind: visible only when that pane is showing a leaf-direct *text*
+  // view. A non-focused pane showing a non-text leaf view (a PDF, image,
+  // gnuplot, …) must keep its text-view hidden so the singleton overlay
+  // stays visible. Showing it unconditionally was the bug behind "open a
+  // gnuplot view in pane A and pane B's PDF is replaced by an empty
+  // text buffer". Same direct-child-only constraint.
+  const leafById = new Map();
+  for (const leaf of leafPanes(rootPane)) leafById.set(leaf.id, leaf);
   for (const [paneId, paneEl] of paneElements) {
     if (paneId === currentPaneId) continue;
+    const leaf = leafById.get(paneId);
+    const showsLeafText =
+      !!leaf && !isTablineView(leaf.view) && !!leaf.view && leaf.view.kind === 'text';
     for (const tv of paneEl.querySelectorAll(':scope > text-view')) {
-      tv.style.display = '';
+      tv.style.display = showsLeafText ? '' : 'none';
     }
   }
   hideInactiveSingletons();
@@ -1146,6 +1602,10 @@ function hideInactiveSingletons() {
     el.style.display = inUse ? '' : 'none';
     if (!inUse && releasesBuffer) el.setBuffer(null);
   }
+  // Browsers and placeholders are per-instance, not in SINGLETON_VIEWS —
+  // toggle their own elements here too.
+  hideInactiveBrowsers();
+  hideInactivePlaceholders();
 }
 
 /** Switch to the view at INDEX: dispatch through mountKindView to
@@ -1284,6 +1744,20 @@ function killViewAtIndex(target) {
   if (target < 0 || target >= views.length) return;
   const wasCurrent = target === currentViewIndex;
   const victim = views[target];
+  // Killing a placeholder chooser is "discard this empty pane": close
+  // the pane (which splices the placeholder out, leaving no residue)
+  // rather than pull a foreign view into it. The split path only ever
+  // creates a placeholder as a leaf-direct view, so find that leaf.
+  if (isPlaceholderView(victim)) {
+    const leaf = leafPanes(rootPane).find((l) => l.view === victim);
+    if (leaf) {
+      deletePaneInTree(leaf);
+      return;
+    }
+    // No pane shows it (shouldn't happen) — just splice it out.
+    splicePlaceholderFromViews(victim);
+    return;
+  }
   // Per-kind cleanup. The dispose hook on the spec runs first (it
   // doesn't know whether the view was current); the audio/video
   // current-view destroy() lives here because it depends on the
@@ -1522,14 +1996,35 @@ function openCustomize(name, scope) {
   switchToViewIndex(index);
 }
 
-/** Find or create the doc view for `docName`, fetching the HTML from
+/** Open (or re-activate) a doc panel in the utility dock for `docName`,
+ *  showing the given pre-built HTML. One tab per doc name (id `doc:<name>`).
+ *  Reuses the doc-view's behaviour (cross-links, `q`-to-close, code
+ *  highlight) via `configureDocView`, with `q` wired to close the tab. */
+function openDocUtilityPanel(docName, html) {
+  const id = `doc:${docName}`;
+  const cfg = configureDocView();
+  utilityDock.openUtilityPanel({
+    id,
+    title: `Doc: ${docName}`,
+    icon: 'fa-solid fa-book-open',
+    modal: false,
+    makePanel: (dock) => createDocPanel({
+      html,
+      title: `Doc: ${docName}`,
+      onKey: cfg.onKey,
+      openDoc: cfg.openDoc,
+      highlightCode: cfg.highlightCode,
+      closeBuffer: dock.close, // `q` closes the tab
+    }),
+  });
+}
+
+/** Find or create the doc panel for `docName`, fetching the HTML from
  *  the host if it isn't already open. */
 async function openDocBuffer(docName) {
-  const existing = views.findIndex(
-    (v) => v.kind === 'doc' && v.docName === docName
-  );
-  if (existing >= 0) {
-    switchToViewIndex(existing);
+  const id = `doc:${docName}`;
+  if (utilityDock.hasTab(id)) {
+    utilityDock.activateUtilityTab(id);
     return;
   }
   let page;
@@ -1543,12 +2038,7 @@ async function openDocBuffer(docName) {
     repl.appendError(`no doc page for ${docName}`);
     return;
   }
-  views.push(createView({
-    kind: 'doc',
-    name: `*Doc: ${docName}*`,
-    extras: { docName, html: page.html },
-  }));
-  switchToViewIndex(views.length - 1);
+  openDocUtilityPanel(docName, page.html);
 }
 
 /** Minimal HTML-escape for embedding a user-supplied name into an
@@ -1566,11 +2056,9 @@ function escapeHtml(text) {
  *  live path — for user-defined procedures whose documentation
  *  isn't in the pre-built manifest. */
 async function openDocstringBuffer(docName, source) {
-  const existing = views.findIndex(
-    (v) => v.kind === 'doc' && v.docName === docName
-  );
-  if (existing >= 0) {
-    switchToViewIndex(existing);
+  const id = `doc:${docName}`;
+  if (utilityDock.hasTab(id)) {
+    utilityDock.activateUtilityTab(id);
     return;
   }
   let body;
@@ -1586,12 +2074,7 @@ async function openDocstringBuffer(docName, source) {
   const html =
     `<h3 class="doc-name"><code>${escapeHtml(docName)}</code></h3>\n` +
     `<div class="doc-docstring">${body}</div>`;
-  views.push(createView({
-    kind: 'doc',
-    name: `*Doc: ${docName}*`,
-    extras: { docName, html },
-  }));
-  switchToViewIndex(views.length - 1);
+  openDocUtilityPanel(docName, html);
 }
 
 // --- audio playback (jukebox mode) --------------------------------------
@@ -1668,6 +2151,19 @@ async function openFileInteractive() {
   }
 }
 
+/** Whether a freshly-opened PDF should be session-persistent by default,
+ *  read from the `*pdf-restore-default*` defcustom. Defaults to false
+ *  (generic / texdoc PDFs are transient) when the var is unset or the
+ *  read fails — so a missing/broken setting never makes a transient doc
+ *  sticky. */
+function pdfRestoreDefault() {
+  try {
+    return interpreter.evaluate('*pdf-restore-default*') === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Route an open-file IPC result to its matching non-text view, when
  *  the shape calls for one. Returns whether a view was mounted — the
  *  caller falls through to the text path on `false`. */
@@ -1715,10 +2211,30 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
   // it with Range support, same as audio/video). PDF.js inside
   // <pdf-view> fetches the URL and renders each page to a canvas.
   if (result.pdfKind === true) {
+    // A freshly-opened PDF is ephemeral by default (a transient
+    // texdoc/consult doc); `*pdf-restore-default*` lets the user make
+    // every PDF persist instead. latex-view marks its own output PDF
+    // persistent regardless (via `*latex-pdf-restore*`).
     views.push(createView({
       kind: 'pdf',
       name: result.name,
-      extras: { filePath: result.path, src: result.src },
+      extras: { filePath: result.path, src: result.src, persist: pdfRestoreDefault() },
+    }));
+    return finalise();
+  }
+  // A `.rxlisp` file is a reactive Lisp notebook: open it through the
+  // notebook view, its `(cell …)` source backing `buffer.text` so the
+  // generic save path round-trips it.
+  if (result.notebookKind === true) {
+    views.push(createView({
+      kind: 'notebook',
+      name: result.name,
+      buffer: {
+        text: result.content ?? '',
+        filePath: result.path,
+        name: result.name,
+      },
+      extras: { notebookId: nextNotebookId() },
     }));
     return finalise();
   }
@@ -2375,11 +2891,44 @@ function startDescribeCommand() {
 
 // --- Lisp interpreter and REPL -----------------------------------------
 
-const repl = createReplView(document.getElementById('repl-host'), {
+// The utility dock — the tabbed chrome region at the bottom. The REPL is its
+// resident tab; tools (RefTeX pickers, doc, compile output) open additional
+// tabs here instead of overlaying the editor. `onFocusOrigin` reads the LIVE
+// `editorView` binding (it is reassigned across the session), so a tool that
+// closes / a dock that hides returns focus to the current text view.
+const utilityHostEl = document.getElementById('utility-host');
+const utilityDock = createUtilityDock({
+  hostEl: utilityHostEl,
+  tabsEl: utilityHostEl.querySelector('.utility-tabs'),
+  contentEl: utilityHostEl.querySelector('.utility-content'),
+  onFocusOrigin: () => {
+    if (editorView && typeof editorView.focus === 'function') editorView.focus();
+  },
+});
+
+// The REPL is built detached, then mounted as the dock's resident tab; the
+// dock reparents `repl.element` into its content area. The `repl` facade is
+// unchanged — every appendOutput/appendResult/… call site keeps working.
+const repl = createReplView(document.createElement('div'), {
   prompt: 'λ ',
   welcome: 'REPL — type Lisp, press Enter. It shares the editor buffers.',
   onSubmit: evaluateInRepl,
 });
+// focus:false — the editor keeps focus at startup; the REPL is just mounted.
+utilityDock.openUtilityPanel({ id: 'repl-view', makePanel: () => repl, focus: false });
+
+// Registry of named utility-panel factories. Commands/tools/processes (mostly
+// Lisp) address panels BY NAME via the `utility-panel-*!` primitives, since the
+// panels themselves are JS DOM factories. A factory is
+// `(handle, opts) => panel` (the openUtilityPanel contract; `handle` is the
+// per-tab {close, focus, activate}). Built-ins seeded here; tools can add more
+// via `registerUtilityPanelFactory`.
+const utilityPanelFactories = new Map();
+function registerUtilityPanelFactory(name, makePanel) {
+  utilityPanelFactories.set(String(name), makePanel);
+}
+registerUtilityPanelFactory('output', (handle, opts) =>
+  createOutputPanel({ title: opts?.title, onClose: handle.close }));
 
 /** Cached doc-page names from `docs/build/manifest.json`. The
  *  `load-doc-manifest!` primitive returns this; populated near
@@ -2393,6 +2942,18 @@ let docManifestNames = null;
  *  `null` until the file has been read (it may be missing entirely
  *  on first launch — that case fills it with `emptyOverrides()`). */
 let faceOverridesCache = null;
+
+/** The persisted user highlight rules, as the Lisp store shape
+ *  (scope-key -> list of (pattern . face)) — built from faces.json at
+ *  startup, or `null` when none were persisted. Installed via
+ *  `installHighlightRules` after each stdlib (re)load. */
+let highlightRulesCache = null;
+
+/** The persisted user-created faces, as the Lisp `*user-faces*` map —
+ *  built from faces.json at startup, `null` when none. Re-installed via
+ *  `set-user-faces!` after each stdlib (re)load (a fresh stdlib drops
+ *  the registry). */
+let userFacesCache = null;
 
 /** The Sym / Keyword constructors face-overrides.js needs to build
  *  Lisp-shaped maps. Passed in so that module stays free of a hard
@@ -2417,6 +2978,7 @@ const paneHost = {
   deleteOtherPanes: (pane) => deleteOtherPanesInTree(pane),
   otherPane: () => focusNextPane(),
   focusPaneDirection: (direction) => focusPaneByDirection(direction),
+  focusPane: (pane) => focusPaneHandle(pane),
   balancePanes: () => balancePanesInTree(),
   setSplitRatio: (pane, ratio) => setSplitRatioOnNode(pane, ratio),
   // Phase 3b tabline-view operations. Implementations sit further
@@ -2443,7 +3005,12 @@ const paneHost = {
   // gap on the former.)
   moveTab: (srcTlv, srcIdx, dstTlv, dstIdx) =>
     moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx),
-  swapPanes: (paneA, paneB) => swapPaneViews(paneA, paneB),
+  // swap-views / permute-views move the *frames* (swap leaf positions in
+  // the tree, relayout repositions the divs) so view DOM never moves and
+  // webview/pdf/shell panes survive. See plans/PANES-SWAP-PERMUTE.md.
+  swapPanes: (paneA, paneB) => swapPaneFrames(paneA, paneB),
+  permutePanes: (dests) => permutePaneFrames(dests),
+  panesInSpiralOrder: () => spiralOrderedLeaves(),
 };
 
 /** The view-host the Lisp view-primitives operate through. Every
@@ -2508,7 +3075,10 @@ const viewHost = {
     // Plain-leaf pane: one view per pane, nothing to cycle.
     if (focused && focused.view) return focused.view;
     if (views.length === 0) return null;
-    return switchToViewIndex((currentViewIndex + 1) % views.length);
+    // Defensive fallback (no focused pane): step to the next index,
+    // skipping any transient placeholder entries.
+    const next = nextNonPlaceholderIndex(currentViewIndex, 1);
+    return next < 0 ? null : switchToViewIndex(next);
   },
   previousView: () => {
     dismissSplash();
@@ -2528,9 +3098,8 @@ const viewHost = {
     }
     if (focused && focused.view) return focused.view;
     if (views.length === 0) return null;
-    return switchToViewIndex(
-      (currentViewIndex - 1 + views.length) % views.length
-    );
+    const prev = nextNonPlaceholderIndex(currentViewIndex, -1);
+    return prev < 0 ? null : switchToViewIndex(prev);
   },
   findViewByName: (name) => views.find((v) => v.name === name) ?? null,
   // The snapshot the *Buffer List* (view-menu) renders against. One
@@ -2538,24 +3107,13 @@ const viewHost = {
   // :modified. The major mode's display name lives on a text view's
   // buffer; non-text views don't carry a mode.
   listViewRecords: () => {
-    // Phase 3b (Q12): build a view → pane-id map for the :pane column.
-    // A view's pane is the leaf showing it (directly, or as the
-    // active tab of a tabline-view); buried tabs and views in no
-    // pane at all show as nil.
-    const paneByView = new Map();
-    for (const leaf of leafPanes(rootPane)) {
-      let v = leaf.view;
-      while (v && isTablineView(v)) {
-        const child = tablineActiveChild(v);
-        if (!child) break;
-        if (!paneByView.has(child)) paneByView.set(child, leaf.id);
-        v = child;
-      }
-      if (v && !isTablineView(v) && !paneByView.has(v)) {
-        paneByView.set(v, leaf.id);
-      }
-    }
-    return views.map((view) => {
+    // Phase 3b (Q12): the :pane column is the 1-based spiral position of
+    // the pane showing each view (the swap-views / permute-views badge
+    // numbering — tracks on-screen position, not an internal leaf id);
+    // views in no pane (incl. buried tabs) are nil. Placeholders are
+    // transient chooser panes — never shown here (decision 2).
+    const paneByView = panePositionByView();
+    return views.filter((view) => !isPlaceholderView(view)).map((view) => {
       const record = new Map();
       record.set(keyword('name'), view.name ?? '');
       record.set(keyword('kind'), view.kind);
@@ -2579,12 +3137,25 @@ const viewHost = {
   },
 };
 
+// --- general process runner (run-process!) -----------------------------
+//
+// Each `(run-process! …)` call gets a monotonic runId (a counter, not a
+// timestamp/random — deterministic and collision-free for the session).
+// The on-exit Lisp procedure is parked in `runProcessCallbacks` keyed by
+// that id; the single `onRunProcessExit` listener (wired once, below)
+// looks it up when the host reports the exit, builds the result hash-map,
+// and applies the procedure exactly once.
+let nextRunId = 0;
+/** @type {Map<string, *>} runId → the parked on-exit Lisp procedure. */
+const runProcessCallbacks = new Map();
+
 const interpreter = createInterpreter({
   write: (text) => repl.appendOutput(text),
   primitives: {
     ...createBufferPrimitives(session),
     ...createViewPrimitives(viewHost),
     ...createPanePrimitives(paneHost),
+    ...createLatexPrimitives(),
 
     // File commands run async work and return at once.
     'open-file!': () => {
@@ -2598,6 +3169,50 @@ const interpreter = createInterpreter({
       const filePath = expandTilde(String(args[0] ?? ''));
       if (filePath === '') return NIL;
       openFileByPath(filePath);
+      return NIL;
+    },
+    // `(find-file-new! PATH)` — visit a path that does NOT exist yet:
+    // open an empty text buffer whose file is PATH, so the next
+    // `save-buffer` (C-x C-s) creates it. Emacs's find-file-on-a-missing-
+    // file behaviour. If a view already visits PATH, just switch to it.
+    // The file is NOT written to disk here — only on save. Returns nil.
+    'find-file-new!': (args) => {
+      const filePath = expandTilde(String(args[0] ?? ''));
+      if (filePath === '') return NIL;
+      const existing = views.findIndex((v) => viewFilePath(v) === filePath);
+      if (existing >= 0) {
+        switchToViewIndex(existing);
+        return NIL;
+      }
+      const name = filePath.slice(filePath.lastIndexOf('/') + 1) || filePath;
+      const buffer = createBuffer('', { name });
+      buffer.filePath = filePath;
+      const view = createView({ kind: 'text', buffer });
+      views.push(view);
+      notifyViewsChanged();
+      switchToViewIndex(views.length - 1);
+      return NIL;
+    },
+    // `(clipboard-text)` — the system clipboard's plain text (''
+    // when empty or unavailable). The kill ring's `yank` reads this so
+    // C-y pastes text copied in another application.
+    'clipboard-text': () => {
+      try {
+        const text = window.host.clipboardReadText();
+        return typeof text === 'string' ? text : '';
+      } catch {
+        return '';
+      }
+    },
+    // `(clipboard-set-text! TEXT)` — write TEXT to the system clipboard.
+    // The kill ring mirrors every kill/copy here so editor kills paste
+    // into other apps. Returns nil.
+    'clipboard-set-text!': (args) => {
+      try {
+        window.host.clipboardWriteText(String(args[0] ?? ''));
+      } catch {
+        // No clipboard host (e.g. headless): silently skip.
+      }
       return NIL;
     },
     // Show a transient message in the minibuffer's echo area (the
@@ -2637,6 +3252,52 @@ const interpreter = createInterpreter({
         original();
         addPaneHandle = null;
       };
+      return NIL;
+    },
+    // `(enter-move-views-mode! kind)` — enter the swap-views /
+    // permute-views overlay (KIND is 'swap or 'permute). Numbers every
+    // pane and reads digit input over the whole window (so it works with
+    // a browser pane focused); on Enter it moves the frames. Re-entering
+    // toggles the overlay off. See plans/PANES-SWAP-PERMUTE.md.
+    'enter-move-views-mode!': (args) => {
+      if (moveViewHandle && moveViewHandle.active) {
+        moveViewHandle.exit();
+        moveViewHandle = null;
+        return NIL;
+      }
+      const raw = args[0];
+      const name =
+        typeof raw === 'string'
+          ? raw
+          : raw && typeof raw === 'object' && typeof raw.name === 'string'
+            ? raw.name
+            : 'swap';
+      const mode = name === 'permute' ? 'permute' : 'swap';
+      moveViewHandle = enterMoveViewsMode({
+        mode,
+        host: editorHostEl,
+        getRootPane: () => rootPane,
+        onCommit: (assignments) => {
+          moveViewHandle = null;
+          if (mode === 'swap') {
+            const panes = spiralOrderedLeaves();
+            const a = panes[assignments[0] - 1];
+            const b = panes[assignments[1] - 1];
+            if (a && b) swapPaneFrames(a, b);
+          } else {
+            permutePaneFrames(assignments);
+          }
+        },
+      });
+      // Clear the handle on any exit (Escape / click / commit), so the
+      // next entry doesn't try to exit() a dead overlay.
+      if (moveViewHandle) {
+        const original = moveViewHandle.exit;
+        moveViewHandle.exit = () => {
+          original();
+          moveViewHandle = null;
+        };
+      }
       return NIL;
     },
     // Push the *tab-width* setting onto the document root as the
@@ -2691,6 +3352,21 @@ const interpreter = createInterpreter({
         throw new LispError(`citation-parse: ${error.message ?? error}`);
       }
     },
+    // `(citation-parse-lenient SOURCE)` — like `citation-parse`, but
+    // tolerant: a single entry Citation.js can't parse (e.g. a name field
+    // with a bare TeX accent `Fran{\c}ois`) would otherwise throw away the
+    // WHOLE bibliography. Returns a record `{:handle CSL-JSON :skipped N}`;
+    // N is how many entries were dropped. The RefTeX cite picker uses this
+    // so one bad entry never blanks the picker.
+    'citation-parse-lenient': (args) => {
+      const source = String(args[0] ?? '');
+      try {
+        const { json, skipped } = parseCitationsLenient(source);
+        return record({ handle: json, skipped });
+      } catch (error) {
+        throw new LispError(`citation-parse-lenient: ${error.message ?? error}`);
+      }
+    },
     // `(citation-format-bibliography HANDLE [STYLE [FORMAT [LANG]]])`
     // — render every entry in HANDLE as a bibliography. STYLE is a
     // CSL style id (default `*citation-style*` — the Lisp side
@@ -2735,6 +3411,224 @@ const interpreter = createInterpreter({
         throw new LispError(`citation-keys: ${error.message ?? error}`);
       }
     },
+    // `(citation-entries HANDLE)` — a best-effort projection of each
+    // entry in HANDLE into a picker-friendly hash-map
+    // `{:key :author :year :title}`. `author` is the first author's
+    // family (or a "given family" join, or an institutional literal);
+    // `year` is the issued year as an integer; missing fields are nil.
+    // This drives a citation picker (downstream of this branch).
+    'citation-entries': (args) => {
+      const handle = String(args[0] ?? '');
+      if (handle === '') return NIL;
+      try {
+        const entries = citationEntries(handle);
+        const records = entries.map((e) => {
+          const map = new Map();
+          map.set(keyword('key'), e.key ?? '');
+          map.set(keyword('author'), e.author == null ? NIL : e.author);
+          map.set(keyword('year'), e.year == null ? NIL : e.year);
+          map.set(keyword('title'), e.title == null ? NIL : e.title);
+          return map;
+        });
+        return arrayToList(records);
+      } catch (error) {
+        throw new LispError(`citation-entries: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-format-entries HANDLE STYLE)` — format each entry in
+    // HANDLE (a parsed-bib handle from `citation-parse`) to HTML via the
+    // CSL STYLE, returned as a list of `{:key :html}` records in entry
+    // order. The HTML carries the style's inline markup (italics,
+    // numbering) so the cite picker can show a professionally formatted
+    // reference per row; the inserted text is still `\cite{key}`. STYLE is
+    // a template id — a built-in (`apa`/`vancouver`/`harvard1`) or one
+    // registered via `citation-register-style!`. Returns nil for an empty
+    // handle.
+    'citation-format-entries': (args) => {
+      const handle = String(args[0] ?? '');
+      if (handle === '') return NIL;
+      const style = args[1] != null && args[1] !== NIL ? String(args[1]) : 'apa';
+      try {
+        const entries = formatBibliographyEntries(handle, { style });
+        return arrayToList(
+          entries.map((e) => record({ key: e.key ?? '', html: e.html ?? '' }))
+        );
+      } catch (error) {
+        throw new LispError(`citation-format-entries: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-format-keys HANDLE KEYS-CSV STYLE)` — format ONLY the
+    // entries in HANDLE whose id is in the comma-separated KEYS-CSV, as a
+    // list of `{:key :html}`. The cite picker calls this for just the rows
+    // it is showing, so a large bibliography is never formatted whole
+    // (formatting is the costly step; the cheap key/author/year/title
+    // index drives filtering). Unknown keys are silently absent.
+    'citation-format-keys': (args) => {
+      const handle = String(args[0] ?? '');
+      const keysCsv = String(args[1] ?? '');
+      if (handle === '' || keysCsv === '') return NIL;
+      const style = args[2] != null && args[2] !== NIL ? String(args[2]) : 'apa';
+      try {
+        const wanted = new Set(
+          keysCsv.split(',').map((s) => s.trim()).filter(Boolean)
+        );
+        const subset = JSON.parse(handle).filter((e) => wanted.has(e.id));
+        const entries = formatBibliographyEntries(JSON.stringify(subset), { style });
+        return arrayToList(
+          entries.map((e) => record({ key: e.key ?? '', html: e.html ?? '' }))
+        );
+      } catch (error) {
+        throw new LispError(`citation-format-keys: ${error.message ?? error}`);
+      }
+    },
+    // `(citation-register-style! XML)` — register a custom CSL style from
+    // its XML and return the template id to pass as STYLE to
+    // `citation-format-entries`. Lets `*reftex-cite-style*` point at a
+    // user-supplied `.csl` file for any style beyond the three built-ins.
+    // Idempotent (re-registering a known id is a no-op).
+    'citation-register-style!': (args) => {
+      const xml = String(args[0] ?? '');
+      if (xml === '') return NIL;
+      try {
+        return registerCslStyle(xml);
+      } catch (error) {
+        throw new LispError(`citation-register-style!: ${error.message ?? error}`);
+      }
+    },
+
+    // --- LaTeX / RefTeX host primitives --------------------------------
+    // (The pure scanning + path helpers are provided by
+    // createLatexPrimitives, spread in above. These need app.js scope:
+    // the filesystem, the view list, the process runner, the pdf
+    // singleton.)
+
+    // `(file-exists? PATH)` — #t when PATH (tilde-expanded host-side)
+    // names an existing file or directory, #f otherwise. Synchronous,
+    // mirroring `read-file-text!`. RefTeX uses it to skip \input chains
+    // whose targets are absent.
+    'file-exists?': (args) => {
+      const path = String(args[0] ?? '');
+      if (path === '') return false;
+      return window.host.fileExistsSync(path) === true;
+    },
+
+    // `(view-file-path VIEW)` — the filesystem path associated with
+    // VIEW (its buffer's file, or a non-text view's own path), or nil.
+    // Thin wrapper over the `viewFilePath` derivation helper.
+    'view-file-path': (args) => {
+      const path = viewFilePath(args[0]);
+      return typeof path === 'string' ? path : NIL;
+    },
+
+    // `(set-view-persistent! VIEW BOOL)` — set whether the session
+    // restores VIEW across a relaunch. Most non-text views are ephemeral;
+    // this opts a specific one (e.g. a latexed-output PDF) back in. BOOL
+    // is Lisp-truthy (anything but #f turns it on). Returns BOOL.
+    'set-view-persistent!': (args) => {
+      const view = args[0];
+      const on = args[1] !== false;
+      if (view && typeof view === 'object' && 'kind' in view) {
+        view.persist = on;
+        sessionController.save();
+      }
+      return on;
+    },
+    // `(view-persistent? VIEW)` — #t when VIEW is flagged to survive a
+    // relaunch, #f otherwise (the default for most non-text views).
+    'view-persistent?': (args) => {
+      const view = args[0];
+      return !!(view && typeof view === 'object' && view.persist === true);
+    },
+
+    // `(view-directory VIEW)` — the directory containing VIEW's file,
+    // or nil when VIEW has no path. The compile/view loop runs the
+    // LaTeX toolchain in this directory.
+    'view-directory': (args) => {
+      const path = viewFilePath(args[0]);
+      return typeof path === 'string' ? pathDirname(path) : NIL;
+    },
+
+    // `(run-process! PROGRAM ARGS CWD ON-EXIT)` — spawn PROGRAM (a
+    // string) with ARGS (a Lisp list of strings) in CWD (a directory
+    // string, or nil for the default). ON-EXIT is a Lisp procedure
+    // called once, with one argument: a hash-map
+    // `{:stdout STR :stderr STR :code INT-OR-NIL}` (code nil when the
+    // process was killed by a signal or failed to spawn). The host
+    // spawns with NO shell interpretation. Returns the runId string.
+    'run-process!': (args) => {
+      const program = String(args[0] ?? '');
+      if (program === '') return NIL;
+      const argList = args[1] != null && args[1] !== NIL
+        ? listToArray(args[1]).map((a) => String(a))
+        : [];
+      const cwd = args[2] != null && args[2] !== NIL ? String(args[2]) : undefined;
+      const onExit = args[3];
+
+      const runId = `run-${nextRunId++}`;
+      if (onExit != null && onExit !== NIL) {
+        runProcessCallbacks.set(runId, onExit);
+      }
+      window.host.runProcess(runId, program, argList, cwd ? { cwd } : {});
+      return runId;
+    },
+
+    // `(pdf-reload! [PATH])` — reload the PDF view after a recompile.
+    // A recompile produces the SAME path with NEW bytes, which the
+    // pdf-view's same-path load guard would skip; `.reload()` bypasses
+    // it. With no PATH, reloads the singleton's current PDF; with a
+    // PATH, only reloads when the singleton is showing that file. A
+    // no-op (returns nil) when no PDF is open.
+    'pdf-reload!': (args) => {
+      const current = pdfView.buffer;
+      if (!current) return NIL;
+      const wanted = args[0] != null && args[0] !== NIL
+        ? String(args[0]) : null;
+      if (wanted !== null && viewFilePath(current) !== wanted) return NIL;
+      if (typeof pdfView.reload === 'function') pdfView.reload();
+      return NIL;
+    },
+
+    // `(pdf-current-path)` — the filesystem path of the PDF the singleton
+    // pdf-view is currently showing, or nil when no PDF is open. Inverse
+    // SyncTeX resolves the master/output PDF from this — the clicked PDF
+    // is the one on screen, and `synctex edit -o <that.pdf>` resolves the
+    // source `Input:` file itself, so no master detection is needed.
+    'pdf-current-path': () => {
+      const current = pdfView.buffer;
+      if (!current) return NIL;
+      const path = viewFilePath(current);
+      return typeof path === 'string' ? path : NIL;
+    },
+
+    // `(pdf-synctex-show! PATH PAGE X Y [W H])` — forward SyncTeX: scroll
+    // the singleton PDF (when it is showing PATH) to PAGE and flash a
+    // transient highlight at the SyncTeX-reported source spot. X/Y are the
+    // click point and W/H the optional box size, all in PDF points (PAGE
+    // 1-based). A no-op (returns nil) when no PDF is open or the singleton
+    // is showing a different file — mirrors `pdf-reload!`.
+    'pdf-synctex-show!': (args) => {
+      const current = pdfView.buffer;
+      if (!current) return NIL;
+      const wanted = args[0] != null && args[0] !== NIL ? String(args[0]) : null;
+      if (wanted !== null && viewFilePath(current) !== wanted) return NIL;
+      const page = Number(args[1]);
+      const x = Number(args[2]);
+      const y = Number(args[3]);
+      if (!Number.isFinite(page) || !Number.isFinite(x) || !Number.isFinite(y)) {
+        return NIL;
+      }
+      const w = args.length > 4 && args[4] !== NIL ? Number(args[4]) : 0;
+      const h = args.length > 5 && args[5] !== NIL ? Number(args[5]) : 0;
+      if (typeof pdfView.syncTexShow === 'function') {
+        // The box anchor is (x, y) here: latex-synctex.lisp passes the
+        // box's h/v as X/Y so the highlight covers the box, not just the
+        // click point. `h_` avoids clobbering the box-height with the
+        // anchor `h`.
+        pdfView.syncTexShow(page, x, y, { h: x, v: y, w, h_: h });
+      }
+      return NIL;
+    },
+
     // The current user's home directory — find-file uses it as the
     // starting point for its TAB-completion path. An empty string is
     // returned when the host does not know the home (unlikely).
@@ -2783,6 +3677,57 @@ const interpreter = createInterpreter({
       openFileByPath(filePath);
       return NIL;
     },
+    // `(open-file-in-split! PATH [ORIENTATION [SIDE [PERSIST]]])` — the
+    // programmatic counterpart to the placeholder-showing `split-*!`
+    // primitives: split the focused pane and open PATH directly in the
+    // new sibling pane, with no chooser/placeholder and no orphaned-view
+    // residue (the source|PDF layout latex-view wants). ORIENTATION is a
+    // symbol/keyword `horizontal` (default) / `vertical`; SIDE is `after`
+    // (default) / `before`. PERSIST (Lisp-truthy, default #f) flags the
+    // opened view session-persistent — threaded here so latex-view can
+    // mark its output PDF without racing the async open for the handle.
+    // Fires the async open like `open-file-path!` and returns nil (the
+    // split lands once the file resolves).
+    'open-file-in-split!': (args) => {
+      const filePath = expandTilde(String(args[0] ?? ''));
+      if (filePath === '') return NIL;
+      const orientation =
+        symbolNameOf(args[1]) === 'vertical' ? SPLIT_VERTICAL : SPLIT_HORIZONTAL;
+      const side = symbolNameOf(args[2]) === 'before' ? 'before' : 'after';
+      const persist = args.length > 3 && args[3] !== false && args[3] !== NIL;
+      splitAndOpenFile(filePath, orientation, side, persist);
+      return NIL;
+    },
+    // `(set-view-text! NAME TEXT)` — replace the whole text of the text
+    // view named NAME, creating it (a fresh text view) if absent, WITHOUT
+    // changing the focused pane. The compile loop uses this to update
+    // *TeX output* / *TeX errors* in place: the old approach switched the
+    // focused pane to the view, set its text, and switched back, which
+    // (a) refused + clobbered the current buffer when the view was already
+    // shown in another pane (switchToView's guard), and (b) stole focus.
+    // A displayed view re-renders via its buffer's change notification.
+    // Returns the view, or nil (empty name, or a non-text view of that
+    // name we won't clobber).
+    'set-view-text!': (args) => {
+      const name = String(args[0] ?? '');
+      const text = String(args[1] ?? '');
+      if (name === '') return NIL;
+      const existing = views.find((v) => v.name === name);
+      if (existing) {
+        if (!existing.buffer) return NIL;
+        existing.buffer.setText(text);
+        return existing;
+      }
+      const view = createView({
+        kind: 'text',
+        buffer: createBuffer(text, { name }),
+      });
+      views.push(view);
+      if (viewListView && typeof viewListView.refresh === 'function') {
+        viewListView.refresh();
+      }
+      return view;
+    },
     // Open a directory-tree buffer rooted at `path`. The view lists
     // the directory's entries with FontAwesome icons; folders expand
     // on click; files route through the same open path as the REPL.
@@ -2793,6 +3738,130 @@ const interpreter = createInterpreter({
       if (rootPath === '') return NIL;
       const view = ensureDirectoryTreeViewForPath(rootPath);
       switchToViewIndex(views.indexOf(view));
+      return NIL;
+    },
+    // Open the bookmark outline for the current text buffer (C-x r l) in
+    // a narrow pane to the RIGHT of the focused pane — a navigator, so the
+    // source buffer stays visible (jump from the outline moves it). If the
+    // outline is already shown anywhere, reuse that pane (re-target +
+    // focus it) instead of splitting again; otherwise split the focused
+    // pane side-by-side (the source — a leaf view OR a whole tabline —
+    // rides into the left child, the outline into the new right child).
+    'open-bookmark-view!': () => {
+      const buf = currentTextBuffer;
+      if (!buf) return NIL;
+      const view = ensureBookmarkView();
+      retargetBookmarkView(buf);
+      const shownLeaf = leafPanes(rootPane).find((leaf) => leaf.view === view);
+      if (shownLeaf) {
+        setCurrentPaneId(shownLeaf.id);
+        return NIL;
+      }
+      const focused = currentPane();
+      if (focused && focused.kind === 'leaf') {
+        // ratio is the FIRST (source) child's share; bias narrow-right.
+        splitPaneAtLeafWith(focused, SPLIT_HORIZONTAL, 0.7, 'after', view);
+      } else {
+        switchToViewIndex(views.indexOf(view));
+      }
+      return NIL;
+    },
+    // Open the *View List* — a clickable HTML table of every open view
+    // (the replacement for the old text *Buffer List*). There is one
+    // such view; this finds or creates it, switches the current pane to
+    // it, and refreshes its rows so they reflect the live view list.
+    'open-view-list!': () => {
+      const view = ensureViewListView();
+      switchToViewIndex(views.indexOf(view));
+      viewListView.refresh();
+      return NIL;
+    },
+    // --- Utility pane (the tabbed bottom dock) -------------------------
+    // Open (or reuse) a utility panel as a tab. FACTORY selects a
+    // registered factory; ID is the tab id (defaults to FACTORY, i.e. a
+    // single instance); TITLE is the tab label (defaults to ID). So one
+    // 'output' factory can back several tabs ("tex-output", "tex-errors").
+    // Does NOT steal focus (informational) — use utility-panel-activate! /
+    // -focus! to bring it forward. Returns the tab id, or NIL if no such
+    // factory.
+    'utility-panel-open!': (args) => {
+      const factoryName = String(args[0] ?? '');
+      const id = args[1] != null && args[1] !== NIL ? String(args[1]) : factoryName;
+      const title = args[2] != null && args[2] !== NIL ? String(args[2]) : id;
+      const factory = utilityPanelFactories.get(factoryName);
+      if (!factory) {
+        repl.appendError(`utility-panel-open!: no panel "${factoryName}"`);
+        return NIL;
+      }
+      utilityDock.openUtilityPanel({
+        id,
+        title,
+        makePanel: (handle) => factory(handle, { title }),
+        focus: false,
+      });
+      return id;
+    },
+    // Bring the named tab forward (creating focus on it). No-op if absent.
+    'utility-panel-activate!': (args) => {
+      utilityDock.activateUtilityTab(String(args[0] ?? ''));
+      return NIL;
+    },
+    // Append TEXT to the named panel's log (streaming output). No-op if the
+    // panel isn't open or doesn't accept appends.
+    'utility-panel-append!': (args) => {
+      const panel = utilityDock.getPanel(String(args[0] ?? ''));
+      if (panel && typeof panel.appendOutput === 'function') {
+        panel.appendOutput(String(args[1] ?? ''));
+      }
+      return NIL;
+    },
+    // Replace the named panel's content with TEXT.
+    'utility-panel-set!': (args) => {
+      const panel = utilityDock.getPanel(String(args[0] ?? ''));
+      if (panel && typeof panel.setContent === 'function') {
+        panel.setContent(String(args[1] ?? ''));
+      }
+      return NIL;
+    },
+    // Close the named tab (no-op for the non-closable resident REPL).
+    'utility-panel-close!': (args) => {
+      utilityDock.closeUtilityTab(String(args[0] ?? ''));
+      return NIL;
+    },
+    // Focus the active utility tab's panel.
+    'utility-panel-focus!': () => {
+      utilityDock.focusUtilityPane();
+      return NIL;
+    },
+    // Cycle the active utility tab by DELTA (wraps); default +1.
+    'utility-cycle-tab!': (args) => {
+      const n = Number(args[0]);
+      utilityDock.cycleUtilityTab(Number.isFinite(n) && n !== 0 ? n : 1);
+      return NIL;
+    },
+    // Open the *RefTeX Select* picker as a right-edge drawer overlaid on
+    // the editor (the document stays visible underneath). RefTeX's
+    // reftex-reference uses this as the selection-first path; the panel
+    // reads its rows through reftex-select-candidates and its keys call
+    // back into reftex-select-on-{select,peek,cancel}. SPC-peek navigates
+    // the editor pane UNDER the overlay (the bug the old pane-takeover
+    // form couldn't fix). See `openReftexSelectOverlay`.
+    'open-reftex-select!': () => {
+      openReftexSelectOverlay();
+      return NIL;
+    },
+    // RefTeX R3 citation flow (bottom dock). `open-reftex-cite-format!`
+    // opens the format menu (\cite / \citep / …); choosing one runs
+    // reftex-cite-format-chosen, which calls `open-reftex-cite-select!` —
+    // and because a dock is already up, that SWAPS it in place for the
+    // cite picker. The picker reads its rows via reftex-cite-select-rows
+    // and inserts via reftex-cite-insert.
+    'open-reftex-cite-format!': () => {
+      openReftexCiteFormat();
+      return NIL;
+    },
+    'open-reftex-cite-select!': () => {
+      openReftexCiteSelect();
       return NIL;
     },
     // Open a shell view — a child process running the user's default
@@ -2817,6 +3886,72 @@ const interpreter = createInterpreter({
         },
       }));
       switchToViewIndex(views.length - 1);
+      return NIL;
+    },
+    // Open a gnuplot buffer: a long-lived gnuplot child shown through
+    // the L4 gnuplot view (a notebook REPL — per-command cells over an
+    // input line). The process is spawned by the host on first mount and
+    // killed when the view is killed. Like `open-shell-buffer!`, each
+    // call creates a new view; switch to an existing one with C-x b.
+    'open-gnuplot-buffer!': () => {
+      const sessionId = nextGnuplotSessionId();
+      const sequence = views.filter((v) => v.kind === 'gnuplot').length + 1;
+      const name = sequence === 1 ? '*gnuplot*' : `*gnuplot*<${sequence}>`;
+      views.push(createView({
+        kind: 'gnuplot',
+        name,
+        extras: {
+          sessionId,
+          ended: false,
+          spawned: false,
+        },
+      }));
+      switchToViewIndex(views.length - 1);
+      return NIL;
+    },
+    // Open a reactive Lisp notebook: a sheet of `(cell NAME EXPR)` cells
+    // shown through the L4 notebook view, where editing one cell
+    // recomputes everything downstream. Like `open-gnuplot-buffer!`,
+    // each call creates a fresh view; switch to an existing one with
+    // C-x b. In-memory for now (M2); a `.rxlisp` file backing comes with
+    // persistence (M3).
+    'open-notebook-buffer!': () => {
+      const notebookId = nextNotebookId();
+      const sequence = views.filter((v) => v.kind === 'notebook').length + 1;
+      const name = sequence === 1 ? '*notebook*' : `*notebook*<${sequence}>`;
+      views.push(createView({
+        kind: 'notebook',
+        name,
+        // The canonical `(cell …)` source lives in buffer.text so the
+        // generic save path works once the user gives it a file.
+        buffer: { text: '', filePath: null, name },
+        extras: { notebookId },
+      }));
+      switchToViewIndex(views.length - 1);
+      return NIL;
+    },
+    // The current notebook's id, or nil. Captured by the rename command
+    // *before* it prompts, so the rename targets the right notebook even
+    // after the minibuffer moves focus.
+    'current-notebook-id': () => {
+      const view = session.currentView;
+      return view && view.kind === 'notebook' && typeof view.notebookId === 'string'
+        ? view.notebookId
+        : NIL;
+    },
+    // Rename the notebook with this id (display + buffer name; the file on
+    // disk is unchanged — use save-as to rename that).
+    'rename-notebook-by-id!': (args) => {
+      renameNotebookById(String(args[0] ?? ''), String(args[1] ?? ''));
+      return NIL;
+    },
+    // Cycle among open notebooks (also reachable via the header picker).
+    'next-notebook!': () => {
+      cycleNotebook(1);
+      return NIL;
+    },
+    'previous-notebook!': () => {
+      cycleNotebook(-1);
       return NIL;
     },
     // Open a Finder-style column-view buffer rooted at `path`. Same
@@ -2866,6 +4001,22 @@ const interpreter = createInterpreter({
     'open-url!': (args) => {
       const url = String(args[0] ?? '').trim();
       if (url === '') return NIL;
+      const current = session.currentView;
+      // If the active pane already shows a browser, navigate THAT one in
+      // place — don't spawn a duplicate browser view (and don't yank a
+      // browser element over from another pane). Find the live element
+      // showing this view (the leaf-direct singleton or a per-tab
+      // instance) and repaint it at the new URL.
+      if (current && current.kind === 'browser') {
+        current.url = url;
+        current.name = url;
+        const el = browserElementByView.get(current);
+        if (el) el.setBuffer(current);
+        updateModeline();
+        notifyViewsChanged();
+        return NIL;
+      }
+      // The active pane isn't a browser — open a fresh browser there.
       const view = createView({
         kind: 'browser',
         name: url,
@@ -3117,19 +4268,52 @@ const interpreter = createInterpreter({
     'load-face-overrides!': () =>
       faceOverridesCache ?? emptyOverrides(lispFactories),
 
-    // Face customisation: write the live overrides to faces.json.
-    // The Lisp side passes its current `*face-overrides*` map; we
-    // convert it back to the JSON shape and hand it to the host.
-    'write-face-overrides!': (args) => {
-      const overrides = args[0];
+    // Face customisation: write the COMPLETE faces.json — colour
+    // overrides + user-created faces + highlight rules — in one blob.
+    // The Lisp side passes `(current-faces-file)`; we serialise all
+    // three sections (lists are unfolded via listToArray for the rules).
+    'write-faces!': (args) => {
+      const facesFile = args[0];
       try {
-        const json = lispToJsonOverrides(overrides, lispFactories);
-        // Fire-and-forget; the write is small and the next read
-        // will pick up whatever was last written.
+        const json = lispToJsonFacesFile(facesFile, lispFactories, listToArray);
         window.host.writeFaces(json);
       } catch (error) {
         repl.appendError(
           `faces:write: ${error.lispMessage ?? error.message}`
+        );
+      }
+      return NIL;
+    },
+    // Highlight customisation: receive the user's `kind -> face` rule
+    // set from Lisp (highlight-rules.lisp) and push it into the live
+    // highlighter store. Each ARG[0] element is a record with :scope
+    // ("mode" | "language"), :key (mode display name / language tag),
+    // :pattern (a tree-sitter node type or query fragment), and :face
+    // (a registered face name). The store recompiles the affected
+    // languages' queries lazily at the next highlight; we re-render the
+    // open editors so the change is visible immediately.
+    'set-highlight-overrides!': (args) => {
+      const list = args[0];
+      const entries = [];
+      try {
+        for (const rec of listToArray(list)) {
+          if (!(rec instanceof Map)) continue;
+          const scope = rec.get(keyword('scope'));
+          const key = rec.get(keyword('key'));
+          const pattern = rec.get(keyword('pattern'));
+          const face = rec.get(keyword('face'));
+          entries.push({
+            scope: typeof scope === 'string' ? scope : 'language',
+            key: key == null ? '' : String(key),
+            pattern: pattern == null ? '' : String(pattern),
+            face: face == null ? '' : String(face),
+          });
+        }
+        highlightOverrideStore.replaceAll(entries);
+        rerenderAllEditors();
+      } catch (error) {
+        repl.appendError(
+          `highlight-overrides: ${error.lispMessage ?? error.message}`
         );
       }
       return NIL;
@@ -3250,6 +4434,18 @@ const interpreter = createInterpreter({
       }
       return NIL;
     },
+    // `(point-line-col)` — the cursor's 1-based line and column in the
+    // current text buffer, as a cons `(LINE . COL)`. The buffer reports
+    // a 0-based line/column from `positionAt(point)`; we add 1 to each so
+    // both match the 1-based convention SyncTeX (and the status bar) use.
+    // Returns nil when no text buffer is current. Used by forward search
+    // (`synctex view -i LINE:COL:file`).
+    'point-line-col': () => {
+      const buffer = currentTextBuffer;
+      if (!buffer || typeof buffer.positionAt !== 'function') return NIL;
+      const { line, column } = buffer.positionAt(buffer.point);
+      return cons(line + 1, column + 1);
+    },
     'replace-all!': (args) => {
       const buffer = currentTextBuffer;
       const search = String(args[0]);
@@ -3270,6 +4466,15 @@ const interpreter = createInterpreter({
       editorView.recenter();
       return NIL;
     },
+    // `(flash-current-line!)` — briefly highlight the cursor's line with a
+    // transient mild-yellow band that fades out, to call attention to it
+    // (SyncTeX inverse search uses it on the landed source line).
+    'flash-current-line!': () => {
+      if (typeof editorView.flashCurrentLine === 'function') {
+        editorView.flashCurrentLine();
+      }
+      return NIL;
+    },
     'page-lines': () => editorView.pageLines(),
     'toggle-fold-at-point!': () => {
       editorView.toggleFoldAtPoint();
@@ -3284,8 +4489,7 @@ const interpreter = createInterpreter({
       return NIL;
     },
     'toggle-repl!': () => {
-      const hidden = document.body.classList.toggle('repl-hidden');
-      if (hidden) editorView.focus();
+      utilityDock.toggleUtilityDock();
       return NIL;
     },
     'markdown-preview!': () => {
@@ -3381,6 +4585,22 @@ const interpreter = createInterpreter({
       stickyNotes.toggle();
       return NIL;
     },
+
+    // Bookmarks — see bookmarks.js and bookmarks.lisp.
+    'bookmark-set!': (args) => {
+      const name = bookmarks.set(String(args[0]));
+      return name === null ? NIL : name;
+    },
+    'bookmark-jump!': (args) => {
+      bookmarks.jump(String(args[0]));
+      return NIL;
+    },
+    'bookmark-delete!': (args) => {
+      bookmarks.remove(String(args[0]));
+      return NIL;
+    },
+    'bookmark-names': () => arrayToList(bookmarks.names()),
+    'bookmark-count': () => bookmarks.count(),
 
     // Jukebox audio — see audio.js and jukebox-view.js. Each primitive
     // is a thin wrapper over the shared HTMLAudioElement; the panel
@@ -3659,11 +4879,19 @@ const stdlibOptions = { listLanguageFiles: listStdlibLanguageFiles };
 async function reloadStdlib() {
   try {
     await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
-    // Reapply face hooks + overrides: a fresh stdlib reset both.
+    // Reapply face hooks + state: a fresh stdlib reset all of them.
+    // Re-register user faces FIRST (overrides/rules may reference them).
     installFacePersistence();
+    if (userFacesCache !== null) {
+      interpreter.call('set-user-faces!', userFacesCache);
+    }
     if (faceOverridesCache !== null) {
       interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
     }
+    // Re-install the user highlight rules into the freshly-built stdlib
+    // (a reload reset *highlight-rules* to empty) and re-push them so the
+    // live highlighter keeps the user's overrides.
+    installHighlightRules();
     await loadUserConfig();
     applyCurrentTheme();
     applyCurrentFaceStyles();
@@ -3678,9 +4906,32 @@ async function reloadStdlib() {
  *  CSS regeneration is already handled by the `apply-face-styles!`
  *  primitive that Lisp calls directly on every change. */
 function installFacePersistence() {
+  // The saver writes the WHOLE faces.json — colour overrides, user-
+  // created faces, and highlight rules — so both the face-change and
+  // highlight-rule-change paths (which share this hook) persist
+  // everything in one atomic write.
   interpreter.evaluate(
-    '(set-face-overrides-saver! (lambda () (write-face-overrides! (current-face-overrides))))'
+    '(set-face-overrides-saver! (lambda () (write-faces! (current-faces-file))))'
   );
+}
+
+/** Install the persisted user highlight rules into the (freshly-loaded)
+ *  stdlib and push them into the live highlighter. A no-op-but-safe push
+ *  of the empty set when nothing was persisted. Called after the first
+ *  stdlib load and after every reload-stdlib (which resets the Lisp
+ *  `*highlight-rules*`). */
+function installHighlightRules() {
+  try {
+    if (highlightRulesCache !== null) {
+      interpreter.call('set-highlight-rules!', highlightRulesCache);
+    } else {
+      interpreter.call('push-highlight-rules!');
+    }
+  } catch (error) {
+    repl.appendError(
+      `highlight-rules: ${error.lispMessage ?? error.message}`
+    );
+  }
 }
 
 /** Things that want a callback when the editor theme changes. The
@@ -3700,14 +4951,26 @@ try {
   repl.appendError(`standard library failed to load: ${error.message}`);
 }
 
-// Face overrides: read faces.json (or get null if it's missing) and
-// install into the Lisp face system before the first paint. The
-// stdlib has already loaded `faces.lisp`, so the mutators exist.
+// Faces: read faces.json (or get null if it's missing) and install into
+// the Lisp face system before the first paint. The stdlib has already
+// loaded `faces.lisp` + `highlight-rules.lisp`, so the mutators exist.
+// We install in dependency order: USER FACES first (so colour overrides
+// and highlight rules can reference them), then the colour overrides.
+// The highlight rules are installed later (`installHighlightRules`, once
+// the override store + highlighters exist) from `highlightRulesCache`.
 if (keymapReady) {
   installFacePersistence();
   try {
     const json = await window.host.readFaces();
     faceOverridesCache = jsonToLispOverrides(json, lispFactories);
+    userFacesCache = jsonToLispUserFaces(json, lispFactories);
+    highlightRulesCache = jsonToLispHighlightRules(
+      json,
+      lispFactories,
+      arrayToList,
+      cons
+    );
+    interpreter.call('set-user-faces!', userFacesCache);
     interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
   } catch (error) {
     repl.appendError(
@@ -3762,19 +5025,34 @@ window.host
 // highlighter per registered language. A grammar that fails to load
 // disables only its language; the rest still highlight.
 await discoverRendererLanguages();
+// The live store of user-defined `kind -> face` highlight rules. Built
+// before the highlighters so each one can consult it (rules are applied
+// on top of the base grammar query, recompiled live). The Lisp side
+// (highlight-rules.lisp) pushes rules in through `set-highlight-overrides!`.
+const highlightOverrideStore = createHighlightOverrideStore();
 const { highlighters, foldCaptures } = await loadLanguageHighlighters(
   createTreeSitterHighlighter,
   (tag, error) => {
     repl.appendError(`${tag} highlighter unavailable: ${error.message}`);
-  }
+  },
+  highlightOverrideStore
 );
 document.body.dataset.treesitter = Object.keys(highlighters).join(',');
+
+// Install the persisted user highlight rules now that the override store
+// and the highlighters exist. (The faces.json read above already filled
+// `highlightRulesCache`.) Re-render-on-push is a guarded no-op here —
+// the editors mount below — so the rules are simply seeded into the
+// store, ready for the first highlight call.
+if (keymapReady) installHighlightRules();
 
 /** Dispatch a keystroke through the Lisp keymap. */
 function dispatchKey(key) {
   // M-1..M-9 jumps to the Nth buffer (1-indexed). Intercepted here,
   // before the Lisp keymap, so the tabline shortcut is unaffected by
   // user keymap edits. Out-of-range indexes are a no-op (handled).
+  // Placeholders are excluded so the count matches the user-visible
+  // View List (the Nth *real* view, not the Nth `views[]` slot).
   if (
     typeof key === 'string' &&
     key.length === 3 &&
@@ -3782,8 +5060,10 @@ function dispatchKey(key) {
     key[2] >= '1' &&
     key[2] <= '9'
   ) {
-    const target = Number(key[2]) - 1;
-    if (target < views.length) switchToViewIndex(target);
+    const nth = Number(key[2]) - 1;
+    const realViews = views.filter((v) => !isPlaceholderView(v));
+    const target = views.indexOf(realViews[nth]);
+    if (target >= 0) switchToViewIndex(target);
     return true;
   }
   try {
@@ -3808,12 +5088,125 @@ function dispatchKey(key) {
   }
 }
 
+/** Keys that are modifiers in their own right — a bare press of one is
+ *  not a keystroke to dispatch (waiting for the real key). */
+const BARE_MODIFIER_KEYS = new Set([
+  'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'OS', 'AltGraph', 'Fn',
+]);
+
+/** True when EL (a keydown target) is a native text-entry control that
+ *  owns its own keys — a minibuffer / REPL / customize / pdf input, or a
+ *  browser-view's URL bar. The editor's own `.editor` surface is a
+ *  focusable div, not an input/contenteditable, so it is excluded here
+ *  on purpose (we *do* want to route for it). */
+function targetOwnsKeys(el) {
+  return (
+    el instanceof Element &&
+    el.closest(
+      'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
+    ) !== null
+  );
+}
+
+// --- the global key router ---------------------------------------------
+//
+// Key dispatch must not depend on which DOM element happens to hold
+// focus. Each view's keydown listener (the text `.editor`, image-view,
+// audio-view, …) only fires when its own element is focused, so a key
+// pressed while DOM focus has drifted to <body> — after the window
+// regains focus, after a DOM rebuild detached the focused element, after
+// a programmatic pane switch — is lost, and prefix chords like C-x C-f go
+// unrecognised in non-text views. `handle-key` already resolves against
+// the *logical* current view (not `document.activeElement`), so a single
+// window-level listener can route every otherwise-unhandled key.
+//
+// Bubble phase + a `defaultPrevented` guard is what makes this safe: any
+// deeper listener (a focused view, a modal overlay, a native input) runs
+// first, and if it claimed the key it has already called preventDefault —
+// so we stand down and never double-dispatch. Only keys that reach <body>
+// unclaimed are routed here. browser-view is exempt by nature: a focused
+// <webview> delivers keydown to the guest page, which never reaches us.
+window.addEventListener('keydown', (event) => {
+  if (!keymapReady) return;
+  // A deeper listener already claimed it (focused view, modal, input).
+  if (event.defaultPrevented) return;
+  // A bare modifier press is not a keystroke in its own right.
+  if (BARE_MODIFIER_KEYS.has(event.key)) return;
+  // Native inputs keep every key — including editor chords — so a user
+  // typing in the minibuffer/REPL/url-bar is never interrupted.
+  if (targetOwnsKeys(event.target)) return;
+  // Add-pane mode runs its own transient key handling over the host.
+  if (editorHostEl.dataset.addPane) return;
+
+  // macOS clipboard chords: Cmd+V / Cmd+C / Cmd+X. Cmd and Ctrl both
+  // normalise to "C-", so these would otherwise fire C-v (scroll-up),
+  // the C-c prefix, and the C-x prefix. We disambiguate on the raw event
+  // (metaKey, not ctrlKey) and route them to the kill-ring commands,
+  // which sync with the system clipboard: Cmd+V → yank (reads the
+  // clipboard), Cmd+C → copy-region, Cmd+X → kill-region. Ctrl+V/C/X
+  // keep their Emacs meanings. Native inputs already returned above, so
+  // the minibuffer still pastes natively. Clipboard ops apply to text
+  // views only; in other views the chord is swallowed (no paste target).
+  if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+    const k = event.key.toLowerCase();
+    if (k === 'v' || k === 'c' || k === 'x') {
+      const current = views[currentViewIndex];
+      if (current && current.kind === 'text') {
+        event.preventDefault();
+        const command = k === 'v' ? 'yank' : k === 'c' ? 'copy-region' : 'kill-region';
+        try {
+          interpreter.call(command);
+        } catch (error) {
+          repl.appendError(`${command}: ${error.message}`);
+        }
+      }
+      return;
+    }
+  }
+
+  const key = keyEventToString(event);
+  // A bare printable character self-inserts; only route that to a text
+  // view. Command keys and chords route regardless of the view kind, so
+  // C-x C-f (etc.) work from an image, pdf or audio view too.
+  if (key.length === 1) {
+    const current = views[currentViewIndex];
+    if (!current || current.kind !== 'text') return;
+  }
+  if (dispatchKey(key)) event.preventDefault();
+});
+
+// Right-click → Paste (and any other native paste action that isn't the
+// Cmd+V chord, which keydown handles above). The custom renderer isn't
+// contenteditable, so a paste event would otherwise do nothing. Route it
+// through the clipboard-aware `yank`. Native inputs keep their own paste.
+window.addEventListener('paste', (event) => {
+  if (!keymapReady) return;
+  if (targetOwnsKeys(event.target)) return;
+  const current = views[currentViewIndex];
+  if (!current || current.kind !== 'text') return;
+  event.preventDefault();
+  try {
+    interpreter.call('yank');
+  } catch (error) {
+    repl.appendError(`paste: ${error.message}`);
+  }
+});
+
 // --- mode menu ----------------------------------------------------------
 // The native menu shows the current buffer's mode commands. The
 // renderer owns the keymaps, so it builds the menu data here and ships
 // it to the main process; a click comes back through onMenuCommand.
 
-/** The mode menu for the current buffer, or null when it has none. */
+/** The mode menu for the current buffer, or null when it has none.
+ *
+ * Two shapes, both consumed by menu.js's recursive renderer:
+ *  - flat (the default): `items` are leaves `{label, command, toolTip}`,
+ *    one per bound command — byte-for-byte the historical menu;
+ *  - nested: when the mode registered a structured menu
+ *    (`mode-menu-sections`), `items` are submenus `{label, items:[…]}`,
+ *    one per section, whose leaves are resolved (keys + docstring) from
+ *    the same flat `mode-menu-entries` data.
+ */
 function currentModeMenu() {
   if (!keymapReady) return null;
   let raw;
@@ -3824,10 +5217,21 @@ function currentModeMenu() {
     return null;
   }
   if (raw.length === 0) return null;
-  const items = raw.map((entry) => {
-    const [keys, command, docText] = listToArray(entry);
-    return { label: `${command}    ${keys}`, command, toolTip: docText };
-  });
+
+  // The structured (sectioned) menu, when this mode registered one.
+  let sections = [];
+  try {
+    sections = listToArray(interpreter.call('mode-menu-sections-resolved'))
+      .map((section) => listToArray(section).map((cell, i) =>
+        i === 0 ? cell : listToArray(cell)));
+  } catch (error) {
+    // A registry slip shouldn't lose the menu — fall back to flat.
+    repl.appendError(`mode menu sections failed: ${error.message}`);
+    sections = [];
+  }
+
+  const flatEntries = raw.map((entry) => listToArray(entry));
+  const items = buildModeMenuItems(flatEntries, sections);
   return { label: interpreter.call('major-mode-name'), items };
 }
 
@@ -3929,6 +5333,152 @@ function snippetDecorationsFor(buffer) {
 /** @type {Map<string, ReturnType<typeof createEditorView>>} */
 const editorViewByPaneId = new Map();
 
+// --- math preview (math-preview-mode) -----------------------------------
+//
+// The renderer owns the typesetting controller (createMathPreview); the
+// host owns its lifecycle, one per leaf pane (keyed by leaf id, like
+// editorViewByPaneId). A controller is created lazily the first time a
+// leaf's buffer is seen with the mode on, reused while the mode stays on
+// (its body/typeset cache persists across renders), and disposed when the
+// leaf's editor view is torn down. The mode toggle itself needs no
+// special path: enabling/disabling the minor mode sets buffer.minorModes,
+// which emits an onChange the renderer is already subscribed to, so the
+// view re-renders and re-reads getMathReplacedRanges below — which now
+// sees the mode on (ranges) or off (empty).
+//
+// The mode is *general*: any major mode can enable `math-preview-mode`.
+// What math each buffer recognises is chosen by its major mode via the
+// renderer's provider registry (mathPreviewProviderForMode), selected by
+// the major mode's display name (LaTeX recognises \begin…\end
+// environments; Markdown / the common config does not). A major mode with
+// no provider gets no preview even with the minor mode on. The original
+// LaTeX UX is preserved: `latex-math-preview-mode` is an alias of this
+// general mode (see math-preview.lisp / latex.lisp), so a `.tex` buffer
+// toggled with C-c C-p still enables this very mode and the LaTeX provider
+// scans it exactly as before.
+
+/** @type {Map<string, ReturnType<typeof createMathPreview>>} */
+const mathPreviewByPaneId = new Map();
+
+/** The stdlib's general `math-preview-mode` map, resolved once the keymap
+ *  (and so the stdlib) is loaded. Compared by identity against a
+ *  buffer's minor-mode list. Null until resolved / if resolution fails.
+ *  `latex-math-preview-mode` is an alias of this same map, so a LaTeX
+ *  buffer toggled the old way is still recognised here. */
+let mathPreviewMode = null;
+/** Whether we've attempted to resolve `mathPreviewMode` yet. */
+let mathPreviewModeResolved = false;
+
+/** Resolve (once) the general `math-preview-mode` map from the stdlib. */
+function resolveMathPreviewMode() {
+  if (mathPreviewModeResolved || !keymapReady) return mathPreviewMode;
+  mathPreviewModeResolved = true;
+  try {
+    mathPreviewMode = interpreter.evaluate('math-preview-mode');
+  } catch {
+    // The mode is defined in math-preview.lisp; if it isn't loaded the
+    // feature is simply unavailable and we leave the reference null
+    // (→ inactive).
+    mathPreviewMode = null;
+  }
+  return mathPreviewMode;
+}
+
+/** The math-preview replaced ranges for LEAF's view this render, or an
+ *  empty list when the leaf's buffer does not have math-preview-mode on,
+ *  its major mode has no math provider, or the feature isn't available.
+ *  Called by the leaf's renderer on every render via its
+ *  `getReplacedRanges` option.
+ *
+ *  When the mode is on, this lazily creates / reuses the leaf's controller,
+ *  runs its per-render `update()` (point tracking + the MathJax-startup
+ *  one-shot re-render arm), and returns `ranges()`. When the mode goes off,
+ *  it returns `[]` so the view shows plain source; the idle controller is
+ *  disposed so its cache is released.
+ *
+ *  @param {*} leaf - The leaf pane whose view is rendering.
+ *  @returns {Array<{start:number,end:number,kind:'inline'|'block',el?:() => Node}>}
+ */
+function getMathReplacedRanges(leaf) {
+  const mode = resolveMathPreviewMode();
+  // Peel a tabline wrapper to the active text child; the buffer/point
+  // live on the text view, exactly as the getPoint/getCursors closures do.
+  const view = peelTabline(leaf.view);
+  const isText = view && !isTablineView(view) && view.kind === 'text';
+  const buffer = isText ? view.buffer : null;
+  if (!buffer || !isMathPreviewActive(buffer, mode)) {
+    // Mode off (or no buffer): drop any idle controller and show source.
+    disposeMathPreviewForLeaf(leaf);
+    return [];
+  }
+  // Pick the scanner provider by the buffer's major mode. No provider
+  // (a mode without math support) → show source, no controller.
+  const provider = mathPreviewProviderForMode(bufferMajorModeName(buffer, keyword));
+  if (!provider) {
+    disposeMathPreviewForLeaf(leaf);
+    return [];
+  }
+  let controller = mathPreviewByPaneId.get(leaf.id);
+  if (!controller) {
+    // The controller reads text / point fresh through these closures,
+    // and the closures re-peel `leaf.view` on each call — so the same
+    // controller follows the leaf across a view/buffer swap or a
+    // multi-cursor change without needing to be rebuilt. (A swap to a
+    // non-text view is handled above: getMathReplacedRanges returns []
+    // for it, and the controller never runs.) The buffer's body/typeset
+    // cache is keyed by math-body text, so it stays valid across swaps.
+    const peeledTextView = () => {
+      const v = peelTabline(leaf.view);
+      return v && !isTablineView(v) && v.kind === 'text' ? v : null;
+    };
+    controller = createMathPreview({
+      getText: () => {
+        const v = peeledTextView();
+        return v && v.buffer ? v.buffer.text : '';
+      },
+      getPoints: () => {
+        const v = peeledTextView();
+        if (!v) return [];
+        const cursors = Array.isArray(v.cursors) ? v.cursors : null;
+        if (cursors && cursors.length > 0) {
+          return cursors.map((c) => c.point);
+        }
+        return [typeof v.point === 'number' ? v.point : 0];
+      },
+      doc: document,
+      // The scanner is mode-specific. Resolve the provider fresh on each
+      // scan so a major-mode change on this leaf's buffer (e.g. a buffer
+      // swap or M-x change-mode) is reflected without rebuilding the
+      // controller; falls back to the LaTeX scanner if the provider has
+      // gone (defensive — getMathReplacedRanges already gated on one).
+      scan: (text) => {
+        const v = peeledTextView();
+        const buf = v ? v.buffer : null;
+        const p = mathPreviewProviderForMode(bufferMajorModeName(buf, keyword));
+        return p ? p.scan(text) : provider.scan(text);
+      },
+      // The startup one-shot: once MathJax finishes loading, ask the
+      // leaf's renderer to redraw so segments left as source during
+      // startup flip to typeset widgets.
+      requestRender: () => {
+        const instance = editorViewByPaneId.get(leaf.id);
+        if (instance) instance.setView(leaf.view);
+      },
+    });
+    mathPreviewByPaneId.set(leaf.id, controller);
+  }
+  // Per-render bookkeeping (segment-under-point tracking, MathJax-ready
+  // arm) must run before ranges() reads.
+  controller.update();
+  return controller.ranges();
+}
+
+/** Drop the math-preview controller bound to LEAF, if any. Releases its
+ *  typeset cache. Safe to call when none exists. */
+function disposeMathPreviewForLeaf(leaf) {
+  mathPreviewByPaneId.delete(leaf.id);
+}
+
 /** The leaf pane whose view is currently focused. Used to resolve
  *  `editorView` callsites that operate on the "current" instance. */
 function focusedTextLeafId() {
@@ -4005,6 +5555,20 @@ function ensureEditorViewForLeaf(leaf) {
       const b = v && !isTablineView(v) ? v.buffer : null;
       return snippetDecorationsFor(b);
     },
+    // Per-view math preview: the renderer reads this fresh each render
+    // and merges the ranges into its replaced-range / fold layout. It
+    // returns [] unless this leaf's buffer has math-preview-mode on and
+    // its major mode has a math provider.
+    getReplacedRanges: () => getMathReplacedRanges(leaf),
+    // User highlight overrides: the buffer's major-mode name selects
+    // mode-scoped `kind -> face` rules; the override generation forces a
+    // re-tokenize when the rule set changes (see set-highlight-overrides!).
+    getMajorModeName: () => {
+      const v = peelTabline(leaf.view);
+      const buf = v && !isTablineView(v) ? v.buffer : null;
+      return bufferMajorModeName(buf, keyword);
+    },
+    getOverrideGeneration: () => highlightOverrideStore.generation(),
   });
   instance.setView(leaf.view);     // populates pending buffer/view
   paneEl.append(instance);          // triggers connectedCallback → mount
@@ -4019,6 +5583,8 @@ function disposeEditorViewForLeaf(leaf) {
   if (!instance) return;
   instance.destroy();
   editorViewByPaneId.delete(leaf.id);
+  // Release the leaf's math-preview controller (and its typeset cache).
+  disposeMathPreviewForLeaf(leaf);
 }
 
 // The "current" editor view — the instance bound to the focused leaf
@@ -4157,9 +5723,47 @@ function applyCurrentTheme() {
 function applyCurrentFaceStyles() {
   try {
     const alist = listToArray(interpreter.call('current-face-styles'));
-    applyFaceStyles(document, alist, listToArray);
+    const modeAlist = listToArray(
+      interpreter.call('current-mode-face-styles')
+    );
+    applyFaceStyles(document, alist, listToArray, modeAlist);
   } catch (error) {
     repl.appendError(`face-styles: ${error.lispMessage ?? error.message}`);
+  }
+}
+
+/** Force every mounted text editor — pane leaves and tabline children —
+ *  to re-render. A CSS-only face change is picked up by re-painting the
+ *  existing `.tok-*` spans, but a highlight-RULE change adds or removes
+ *  spans, so the buffer must be re-tokenized. Re-pointing each instance
+ *  at its current view re-runs the render (the override-generation in
+ *  the cache key forces the tree-sitter parse to repeat). Tolerant:
+ *  a disposed/unmounted instance is skipped. */
+function rerenderAllEditors() {
+  // Guard against an early call (e.g. the startup rule push runs before
+  // the pane/tabline registries are initialised): those are module-level
+  // `const`s, so touching them in their TDZ throws. A no-op then is
+  // correct — no editor is mounted yet to re-render.
+  let paneInstances;
+  try {
+    paneInstances = editorViewByPaneId;
+  } catch {
+    return;
+  }
+  for (const instance of paneInstances.values()) {
+    try {
+      if (instance && instance.boundView) instance.setView(instance.boundView);
+    } catch { /* tolerant — a disposed instance */ }
+  }
+  for (const state of tablineStateByView.values()) {
+    if (!state || !(state.editorByChild instanceof Map)) continue;
+    for (const el of state.editorByChild.values()) {
+      try {
+        if (el && typeof el.setView === 'function' && el.boundView) {
+          el.setView(el.boundView);
+        }
+      } catch { /* tolerant */ }
+    }
   }
 }
 
@@ -4306,10 +5910,9 @@ function configureDocView() {
     highlightCode: highlightCodeForDocView,
   };
 }
-const docView = /** @type {*} */ (document.createElement('doc-view'));
-docView.configure(configureDocView());
-editorPaneElement().append(docView);
-docView.style.display = 'none';
+// Doc pages render as utility-dock tabs now (see openDocUtilityPanel), not as
+// pane-tree views — so there is no singleton doc-view element. configureDocView
+// above is reused by the doc panel for cross-link / highlight / key wiring.
 
 // The jukebox view — the view a `jukebox`-kind buffer is shown
 // through. Replaces the old text-buffer jukebox mode. The shared
@@ -4484,6 +6087,19 @@ videoView.style.display = 'none';
 function configurePdfView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // Inverse SyncTeX: an Option-click in the PDF jumps the editor to the
+    // source. The pdf-view hands us the 1-based page and the clicked PDF
+    // point (SyncTeX convention); `latex-synctex-inverse` runs
+    // `synctex edit` and opens the resulting file:line. Guarded by the
+    // keymap-ready latch and wrapped so a Lisp error can't break the click.
+    onSyncTexClick: (page, x, y) => {
+      if (!keymapReady) return;
+      try {
+        interpreter.call('latex-synctex-inverse', page, x, y);
+      } catch (error) {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      }
+    },
   };
 }
 const pdfView = /** @type {*} */ (document.createElement('pdf-view'));
@@ -4509,10 +6125,58 @@ function configureBrowserView() {
     onTitleChanged: () => notifyViewsChanged(),
   };
 }
-const browserView = /** @type {*} */ (document.createElement('browser-view'));
-browserView.configure(configureBrowserView());
-editorPaneElement().append(browserView);
-browserView.style.display = 'none';
+// Browsers are PER-INSTANCE, not a shared singleton: each browser VIEW
+// owns its own <browser-view> element (and Chromium <webview> guest),
+// created directly in its pane and never moved. Moving a <webview>
+// re-creates its guest, which used to drop open-url!'s navigation and
+// "jump" the one shared browser between panes. This mirrors how the
+// tabline already gives each browser tab its own element (editorByChild),
+// but for leaf-direct browser panes — so two browsers can sit in two
+// panes at once, each with its own history/URL.
+const browserElementByView = new Map();
+
+/** The <browser-view> element for browser VIEW — created (configured +
+ *  mounted in PANE-EL) on first use, then reused. Pointing it at the view
+ *  navigates the webview to the view's URL. The element is born in its
+ *  pane and re-attached only if a re-layout detached it (defensive). */
+function ensureBrowserElementForView(view, paneEl) {
+  let el = browserElementByView.get(view);
+  if (el) {
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    el.setBuffer(view);
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('browser-view'));
+  el.configure(configureBrowserView());
+  el.setBuffer(view); // pending buffer; painted on connectedCallback
+  if (paneEl) paneEl.append(el); // triggers mount → navigate to view.url
+  browserElementByView.set(view, el);
+  return el;
+}
+
+/** Show every browser element whose view is a leaf-direct active view;
+ *  hide the rest. Called from `hideInactiveSingletons` so it runs
+ *  wherever non-text view visibility is recomputed. */
+function hideInactiveBrowsers() {
+  const active = new Set();
+  for (const leaf of leafPanes(rootPane)) {
+    if (!isTablineView(leaf.view) && leaf.view && leaf.view.kind === 'browser') {
+      active.add(leaf.view);
+    }
+  }
+  for (const [view, el] of browserElementByView) {
+    el.style.display = active.has(view) ? '' : 'none';
+  }
+}
+
+/** Tear down the browser element bound to VIEW (on kill). */
+function disposeBrowserElementForView(view) {
+  const el = browserElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ }
+  el.remove();
+  browserElementByView.delete(view);
+}
 
 // The directory tree-view — a `directory-tree`-kind buffer is shown
 // through this view. Folder rows expand on click; file rows route
@@ -4541,6 +6205,383 @@ const directoryTreeView = /** @type {*} */ (document.createElement('directory-tr
 directoryTreeView.configure(configureDirectoryTreeView());
 editorPaneElement().append(directoryTreeView);
 directoryTreeView.style.display = 'none';
+
+// The view-list view — a clickable HTML table of every open view (the
+// *View List*, replacing the old text *Buffer List*). The element pulls
+// its rows from getViews() on every render, so the host keeps it live by
+// calling refresh() on notifyViewsChanged.
+
+/** Map each on-screen view to the 1-based clockwise-spiral position of the
+ *  pane showing it — the same numbering the swap-views / permute-views
+ *  badges use, so the *View List*'s Pane column tracks where a view sits
+ *  on screen (which shifts as panes are rearranged) rather than an internal
+ *  leaf id (which doesn't). Tabline active children inherit their leaf's
+ *  position; views in no pane are absent. */
+function panePositionByView() {
+  const hostRect = editorHostEl.getBoundingClientRect();
+  const { indexByLeaf } = spiralOrder(rootPane, {
+    width: hostRect.width,
+    height: hostRect.height,
+  });
+  const byView = new Map();
+  for (const leaf of leafPanes(rootPane)) {
+    const slot = indexByLeaf.get(leaf);
+    if (typeof slot !== 'number') continue;
+    const position = slot + 1;
+    let v = leaf.view;
+    while (v && isTablineView(v)) {
+      const child = tablineActiveChild(v);
+      if (!child) break;
+      if (!byView.has(child)) byView.set(child, position);
+      v = child;
+    }
+    if (v && !isTablineView(v) && !byView.has(v)) byView.set(v, position);
+  }
+  return byView;
+}
+
+/** Plain-JS records for the view-list — one per open view, with a stable
+ *  id so selection isn't ambiguous when two views share a name. Mirrors
+ *  viewHost.listViewRecords (the Lisp `list-views`) but returns JS. */
+function viewListRecords() {
+  const paneByView = panePositionByView();
+  const current = session.currentView;
+  // Placeholders are transient chooser panes — excluded from the *View
+  // List* table (decision 2). They keep no buffer and would only show
+  // as noise rows the user can't meaningfully act on.
+  return views.filter((view) => !isPlaceholderView(view)).map((view) => {
+    const buffer = view.buffer;
+    const major = buffer ? buffer.majorMode : null;
+    const mode =
+      major && typeof major.get === 'function' ? major.get(keyword('name')) : null;
+    return {
+      id: view.id,
+      name: view.name ?? '',
+      kind: view.kind,
+      mode: typeof mode === 'string' ? mode : null,
+      lines: buffer && typeof buffer.lineCount === 'number' ? buffer.lineCount : 0,
+      pane: paneByView.get(view) ?? null,
+      file: viewFilePath(view) ?? null,
+      modified: buffer ? dirtyBuffers.has(buffer) : false,
+      current: view === current,
+    };
+  });
+}
+
+function configureViewListView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    getViews: viewListRecords,
+    selectView: (id) => {
+      const view = views.find((v) => v.id === id);
+      if (view) switchToView(view);
+    },
+    killView: (id) => {
+      const idx = views.findIndex((v) => v.id === id);
+      if (idx !== -1) killViewAtIndex(idx);
+    },
+  };
+}
+const viewListView = /** @type {*} */ (document.createElement('view-list-view'));
+viewListView.configure(configureViewListView());
+editorPaneElement().append(viewListView);
+viewListView.style.display = 'none';
+
+// The *RefTeX Select* picker — RefTeX's label / cite picker, mounted as a
+// right-edge drawer overlaid on the editor (NOT a pane view). The panel
+// is populated and driven entirely from Lisp (reftex-refs.lisp): the
+// candidate model, the origin view+point, and the select / peek / cancel
+// actions all live there. The host closures are thin bridges that marshal
+// Lisp records into the renderer's plain-JS candidate objects and forward
+// the user's choices back. See plans/RefTeX.md "The interactive views".
+//
+// reftexSelectCandidates reads a flat list the Lisp side prepared when
+// the picker opened; each Lisp candidate is a list (name type macro
+// context), which we map positionally into {name,type,macro,context}.
+function reftexSelectCandidates() {
+  if (!keymapReady) return [];
+  try {
+    const rows = listToArray(interpreter.call('reftex-select-candidates'));
+    return rows.map((row) => {
+      const fields = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return {
+        name: fields[0] ?? '',
+        type: fields[1] ?? '',
+        macro: fields[2] ?? '',
+        context: fields[3] ?? '',
+      };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-select: ${error.lispMessage ?? error.message}`);
+    return [];
+  }
+}
+
+/** Invoke a RefTeX-select Lisp callback (select / peek / cancel),
+ *  swallowing and reporting any Lisp error so the picker never crashes
+ *  the renderer. */
+function reftexSelectCallback(name, arg) {
+  if (!keymapReady) return;
+  try {
+    if (arg === undefined) interpreter.call(name);
+    else interpreter.call(name, arg);
+  } catch (error) {
+    repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
+  }
+}
+
+/** The cite *format menu* rows the Lisp side prepared: each Lisp row is
+ *  `(key macro desc)`, mapped positionally to `{key, macro, desc}`. */
+function reftexCiteFormats() {
+  if (!keymapReady) return [];
+  try {
+    return listToArray(interpreter.call('reftex-cite-formats')).map((row) => {
+      const f = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return { key: f[0] ?? '', macro: f[1] ?? '', desc: f[2] ?? '' };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
+    return [];
+  }
+}
+
+/** The cheap cite *index* the Lisp side prepared: each Lisp row is
+ *  `(key plain)`, mapped to `{key, plain}`. The picker filters this
+ *  client-side; the CSL HTML is fetched lazily via `reftexCiteFormatted`
+ *  for the rows actually shown, so a big bibliography isn't formatted
+ *  whole. */
+function reftexCiteIndex() {
+  if (!keymapReady) return [];
+  try {
+    return listToArray(interpreter.call('reftex-cite-index')).map((row) => {
+      const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return { key: r[0] ?? '', plain: r[1] ?? '' };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
+    return [];
+  }
+}
+
+/** CSL-format just the entries named in KEYSCSV (the rows the picker is
+ *  about to show), as `{key, html}` pairs. Backed by `reftex-cite-format`
+ *  → `citation-format-keys` over a sub-handle. */
+function reftexCiteFormatted(keysCsv) {
+  if (!keymapReady || !keysCsv) return [];
+  try {
+    return listToArray(interpreter.call('reftex-cite-format', keysCsv)).map((row) => {
+      const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
+      return { key: r[0] ?? '', html: r[1] ?? '' };
+    });
+  } catch (error) {
+    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
+    return [];
+  }
+}
+
+/** Invoke a cite-flow Lisp callback (format-chosen / insert / cancel),
+ *  reporting errors without crashing the renderer. */
+function reftexCiteCallback(name, arg) {
+  if (!keymapReady) return;
+  try {
+    if (arg === undefined) interpreter.call(name);
+    else interpreter.call(name, arg);
+  } catch (error) {
+    repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
+  }
+}
+
+/** R2: the *RefTeX Select* label/reference picker, as a utility-pane tab.
+ *  Modal (captures keys, beats a focused webview); SPC-peek drives the editor
+ *  pane underneath via the peek callback, then re-focuses the dock so the next
+ *  key still feeds the panel. */
+function openReftexSelectOverlay() {
+  utilityDock.openUtilityPanel({
+    id: 'reftex-select',
+    title: 'RefTeX Select',
+    icon: 'fa-solid fa-anchor',
+    modal: true,
+    makePanel: (dock) => createReftexSelectPanel({
+      getCandidates: reftexSelectCandidates,
+      onSelect: (name) => {
+        // Lisp inserts at the origin + re-points editorView; closing the tab
+        // then returns focus to that origin view.
+        reftexSelectCallback('reftex-select-on-select', name);
+        dock.close();
+      },
+      onPeek: (name) => {
+        reftexSelectCallback('reftex-select-on-peek', name);
+        dock.focus();
+      },
+      onCancel: () => {
+        reftexSelectCallback('reftex-select-on-cancel');
+        dock.close();
+      },
+    }),
+  });
+}
+
+/** R3 step 1: the cite *format menu* (choose \cite / \citep / …) as the
+ *  `reftex-cite` tab. Picking a format runs the Lisp callback, which calls
+ *  open-reftex-cite-select! — re-opening the SAME tab id replaces the format
+ *  menu with the picker in place (the swap). */
+function openReftexCiteFormat() {
+  utilityDock.openUtilityPanel({
+    id: 'reftex-cite',
+    title: 'Select citation format',
+    icon: 'fa-solid fa-quote-right',
+    modal: true,
+    makePanel: (dock) => createReftexCiteFormatPanel({
+      getFormats: reftexCiteFormats,
+      onPick: (macro) => reftexCiteCallback('reftex-cite-format-chosen', macro),
+      onCancel: () => {
+        reftexCiteCallback('reftex-cite-on-cancel');
+        dock.close();
+      },
+    }),
+  });
+}
+
+/** R3 step 2: the cite *picker* (cheap index, lazily formats shown rows, mark
+ *  + insert). Re-opens the `reftex-cite` tab, replacing the format menu. */
+function openReftexCiteSelect() {
+  utilityDock.openUtilityPanel({
+    id: 'reftex-cite',
+    title: 'Insert citation',
+    icon: 'fa-solid fa-book',
+    modal: true,
+    makePanel: (dock) => createReftexCitePanel({
+      getIndex: reftexCiteIndex,
+      getFormatted: reftexCiteFormatted,
+      onInsert: (keysCsv) => {
+        reftexCiteCallback('reftex-cite-insert', keysCsv);
+        dock.close();
+      },
+      onCancel: () => {
+        reftexCiteCallback('reftex-cite-on-cancel');
+        dock.close();
+      },
+    }),
+  });
+}
+
+// The placeholder view — the chooser a freshly-split pane shows until
+// the user decides what it should hold (replacing split's old silent
+// auto-clone). Like browsers, placeholders are PER-INSTANCE, not a shared
+// singleton: each split mints its own placeholder VIEW, and that view owns
+// its own <placeholder-view> element, created in its pane and never moved.
+// A placeholder is a transient `views` entry (so currentViewIndex / the
+// modeline stay valid) but is excluded from the View List, skipped by
+// next/previous-view, never persisted, and spliced out of `views` the
+// instant it is filled or its pane is closed. See plans/PANES-PLACEHOLDER.md.
+const placeholderElementByView = new Map();
+
+/** A human label naming the origin view for the clone chip. */
+function placeholderCloneLabel(originView) {
+  const peeled = originView ? peelTabline(originView) : null;
+  const v = peeled && !isTablineView(peeled) ? peeled : originView;
+  if (!v) return 'the previous view';
+  if (v.kind === 'text') return 'this buffer';
+  const pretty =
+    typeof v.kind === 'string' && v.kind.length > 0
+      ? v.kind.charAt(0).toUpperCase() + v.kind.slice(1)
+      : 'the previous view';
+  return `the ${pretty.toLowerCase()} view`;
+}
+
+/** The configure options for a placeholder element bound to the
+ *  placeholder VIEW shown in LEAF. Each closure resolves the leaf
+ *  lazily by id (the tree is copy-on-write, so the leaf object can be
+ *  re-created across a relayout — the id is stable). The actions all
+ *  route through `replacePlaceholder` / the open + run-command paths,
+ *  which splice the placeholder out of `views`. */
+function configurePlaceholderView(view) {
+  const findLeaf = () =>
+    leafPanes(rootPane).find((l) => l.view === view) ?? null;
+  const origin = () => (view && view.previousView) || null;
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    cloneEnabled: !!origin(),
+    cloneLabel: placeholderCloneLabel(origin()),
+    defaultAction: () => {
+      let raw = null;
+      try {
+        if (keymapReady) raw = interpreter.evaluate('*placeholder-default-action*');
+      } catch {
+        raw = null;
+      }
+      return resolvePlaceholderAction(raw);
+    },
+    onOpen: () => {
+      const leaf = findLeaf();
+      if (leaf) fillPlaceholderViaOpen(leaf);
+    },
+    onClone: () => {
+      const leaf = findLeaf();
+      if (!leaf) return;
+      const cloned = cloneViewForPlaceholder(origin());
+      replacePlaceholder(leaf, cloned);
+    },
+    onNewFile: () => {
+      const leaf = findLeaf();
+      if (!leaf) return;
+      const scratch = createView({
+        kind: 'text',
+        buffer: createBuffer('', { name: '*scratch*' }),
+      });
+      replacePlaceholder(leaf, scratch);
+    },
+    onRunCommand: (text) => {
+      const leaf = findLeaf();
+      if (leaf) fillPlaceholderViaCommand(leaf, text);
+    },
+  };
+}
+
+/** The <placeholder-view> element for placeholder VIEW — created
+ *  (configured + mounted in PANE-EL) on first use, then reused. The
+ *  element is born in its pane and re-attached only if a relayout
+ *  detached it (defensive), mirroring `ensureBrowserElementForView`. */
+function ensurePlaceholderElementForView(view, paneEl) {
+  let el = placeholderElementByView.get(view);
+  if (el) {
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('placeholder-view'));
+  el.configure(configurePlaceholderView(view));
+  el.setBuffer(view);
+  if (paneEl) paneEl.append(el);
+  placeholderElementByView.set(view, el);
+  return el;
+}
+
+/** Show every placeholder element whose view is a leaf-direct active
+ *  view; hide the rest. Called from `hideInactiveSingletons`. */
+function hideInactivePlaceholders() {
+  const active = new Set();
+  for (const leaf of leafPanes(rootPane)) {
+    if (!isTablineView(leaf.view) && leaf.view && leaf.view.kind === 'placeholder') {
+      active.add(leaf.view);
+    }
+  }
+  for (const [view, el] of placeholderElementByView) {
+    el.style.display = active.has(view) ? '' : 'none';
+  }
+}
+
+/** Tear down the placeholder element bound to VIEW and drop it from the
+ *  element map. Called when the placeholder is replaced or its pane is
+ *  closed. */
+function disposePlaceholderElementForView(view) {
+  const el = placeholderElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ }
+  el.remove();
+  placeholderElementByView.delete(view);
+}
 
 // The directory columns-view — Finder-style horizontal browser.
 // Click a folder → spawns a column to its right; click a file →
@@ -4582,6 +6623,55 @@ const directoryColumnsView = /** @type {*} */ (document.createElement('directory
 directoryColumnsView.configure(configureDirectoryColumnsView());
 editorPaneElement().append(directoryColumnsView);
 directoryColumnsView.style.display = 'none';
+
+// The bookmark view — a `bookmark`-kind buffer (extras.sourceBuffer is the
+// text buffer it annotates) is shown through this outliner. Outline edits
+// write back to the source buffer's metadata.bookmarks via `persist`.
+function configureBookmarkView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // While a chord is mid-flight (C-x just pressed) the outline must
+    // forward the *next* key — even a plain one like the `0` of `C-x 0`
+    // — to the keymap instead of swallowing it; otherwise focus is
+    // trapped in the outline and prefix chords (C-x 0/1/2/b/p …) die.
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    closeBuffer: () => {
+      // q collapses the outline's pane (the source returns full-width);
+      // the single outline view persists hidden and re-opens on C-x r l.
+      const view = views.find((v) => v.kind === 'bookmark');
+      if (!view) return;
+      const leaf = leafPanes(rootPane).find((l) => l.view === view);
+      if (leaf) deletePaneInTree(leaf);
+    },
+    persist: (buf) => {
+      if (buf) scheduleMetadataWrite(buf);
+    },
+    jump: (buf, name) => {
+      const idx = views.findIndex((v) => v.kind === 'text' && v.buffer === buf);
+      if (idx < 0) return;
+      // Focus the pane already showing the source (a direct leaf view OR a
+      // tab in a tabline) BEFORE switching, so the jump lands there rather
+      // than pulling the source into the outline's own (right) pane. Falls
+      // back to the focused pane when the source isn't shown anywhere.
+      const targetView = views[idx];
+      const leaf = leafPanes(rootPane).find(
+        (l) =>
+          l.view === targetView ||
+          (isTablineView(l.view) && l.view.tabs.includes(targetView))
+      );
+      if (leaf) setCurrentPaneId(leaf.id);
+      switchToViewIndex(idx);
+      // The engine now tracks `buf` (markers recreated on mount), so a
+      // jump-by-name lands on the live marker, post-relocation.
+      bookmarks.jump(name);
+    },
+  };
+}
+const bookmarkView = /** @type {*} */ (document.createElement('bookmark-view'));
+bookmarkView.configure(configureBookmarkView());
+editorPaneElement().append(bookmarkView);
+bookmarkView.style.display = 'none';
 
 // The shell view — a `shell`-kind buffer is shown through this view.
 // v4: xterm.js owns the DOM. The host pipes pty bytes in and out;
@@ -4630,6 +6720,132 @@ shellView.style.display = 'none';
 // any later theme change into it.
 themeListeners.add(() => shellView.applyTheme());
 
+// The gnuplot view — a notebook REPL over a long-lived gnuplot child.
+// Like shell-view it's a hide-not-kill custom element; the factory is
+// reused by the tabline mount path for per-tab `<gnuplot-view>`
+// instances, each with its own gnuplot session. There's no resize
+// channel (gnuplot is a plain pipe, no pty), but there is a `signal`
+// member (C-c interrupts a running plot) and chord-key forwarding via
+// `onKey` so the host keymap fires while the input is focused.
+function configureGnuplotView() {
+  return {
+    spawn: (sessionId, opts) =>
+      window.host && typeof window.host.gnuplotSpawn === 'function'
+        ? window.host.gnuplotSpawn(sessionId, opts)
+        : Promise.resolve({ ok: false, error: 'gnuplot IPC unavailable' }),
+    write: (sessionId, data) =>
+      window.host && typeof window.host.gnuplotWrite === 'function'
+        ? window.host.gnuplotWrite(sessionId, data)
+        : Promise.resolve({ ok: false }),
+    signal: (sessionId) =>
+      window.host && typeof window.host.gnuplotSignal === 'function'
+        ? window.host.gnuplotSignal(sessionId)
+        : Promise.resolve({ ok: false }),
+    kill: (sessionId) =>
+      window.host && typeof window.host.gnuplotKill === 'function'
+        ? window.host.gnuplotKill(sessionId)
+        : Promise.resolve({ ok: false }),
+    onResult: (callback) =>
+      window.host && typeof window.host.onGnuplotResult === 'function'
+        ? window.host.onGnuplotResult(callback)
+        : () => {},
+    onExit: (callback) =>
+      window.host && typeof window.host.onGnuplotExit === 'function'
+        ? window.host.onGnuplotExit(callback)
+        : () => {},
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    exportSvg: (svg, name) =>
+      window.host && typeof window.host.gnuplotSaveSvg === 'function'
+        ? window.host.gnuplotSaveSvg(svg, name)
+        : Promise.resolve(null),
+    setTheme: (sessionId, theme) =>
+      window.host && typeof window.host.gnuplotSetTheme === 'function'
+        ? window.host.gnuplotSetTheme(sessionId, theme)
+        : Promise.resolve({ ok: false }),
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+  };
+}
+const gnuplotView = /** @type {*} */ (document.createElement('gnuplot-view'));
+gnuplotView.configure(configureGnuplotView());
+editorPaneElement().append(gnuplotView);
+gnuplotView.style.display = 'none';
+themeListeners.add(() => gnuplotView.applyTheme());
+
+// The notebook view — a reactive Lisp notebook (a sheet of `(cell …)`
+// cells). Per-view-instance like gnuplot: this singleton is the
+// leaf-direct element and the factory is reused by the tabline mount
+// path for per-tab `<notebook-view>` instances. Evaluation is in-process
+// through the shared interpreter's reactive engine, so the only
+// callbacks are `evaluate` (run the engine for this notebook id, marshal
+// the per-cell records to plain JS) and chord-key forwarding so the host
+// keymap fires while a cell editor is focused. `onSourceChange` (mirror
+// the canonical source into a backing buffer) is wired with persistence.
+const NOTEBOOK_KEYS = {
+  name: keyword('name'),
+  output: keyword('output'),
+  state: keyword('state'),
+  error: keyword('error'),
+  graphic: keyword('graphic'),
+  deps: keyword('deps'),
+};
+/** Marshal one Lisp cell-record map into a plain JS object. */
+function marshalNotebookCell(m) {
+  return {
+    name: String(m.get(NOTEBOOK_KEYS.name) ?? ''),
+    output: String(m.get(NOTEBOOK_KEYS.output) ?? ''),
+    state: String(m.get(NOTEBOOK_KEYS.state) ?? 'ok'),
+    error: String(m.get(NOTEBOOK_KEYS.error) ?? ''),
+    graphic: String(m.get(NOTEBOOK_KEYS.graphic) ?? ''),
+    deps: listToArray(m.get(NOTEBOOK_KEYS.deps) ?? NIL).map(String),
+  };
+}
+function configureNotebookView() {
+  return {
+    evaluate: (id, source) => {
+      try {
+        const cells = listToArray(
+          interpreter.call('notebook-eval!', id, source)
+        );
+        return cells.map(marshalNotebookCell);
+      } catch {
+        return [];
+      }
+    },
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // A cell edit changed the canonical source (the view already wrote it
+    // into buffer.text). Mark the buffer dirty so C-x C-s saves it and the
+    // modeline shows the unsaved indicator.
+    onSourceChange: (buffer) => {
+      if (buffer) {
+        dirtyBuffers.add(buffer);
+        updateModeline();
+      }
+    },
+    // The notebook picker: list the open notebooks and switch to one.
+    listNotebooks: () =>
+      views
+        .filter((v) => v.kind === 'notebook')
+        .map((v) => ({ id: v.notebookId, name: v.name ?? '*notebook*' })),
+    selectNotebook: (id) => {
+      const idx = views.findIndex(
+        (v) => v.kind === 'notebook' && v.notebookId === id
+      );
+      if (idx !== -1) switchToViewIndex(idx);
+    },
+    renameNotebook: (id, name) => renameNotebookById(id, name),
+    // Forward editor chords (C-x b, M-x, …) to the host keymap. Always
+    // present and guarded at call time, so it works regardless of whether
+    // the keymap had finished loading when this factory ran.
+    onKey: (key) => keymapReady && dispatchKey(key),
+  };
+}
+const notebookView = /** @type {*} */ (document.createElement('notebook-view'));
+notebookView.configure(configureNotebookView());
+editorPaneElement().append(notebookView);
+notebookView.style.display = 'none';
+
 // --- kind dispatch -----------------------------------------------------
 //
 // Phase 4a: the `kindRegistry` abstraction is gone. Every view kind is
@@ -4654,15 +6870,18 @@ themeListeners.add(() => shellView.applyTheme());
 const SINGLETON_VIEWS = [
   { kind: 'customize',         el: customizeView,         releasesBuffer: false },
   { kind: 'image',             el: imageView,             releasesBuffer: false },
-  { kind: 'doc',               el: docView,               releasesBuffer: false },
   { kind: 'jukebox',           el: jukeboxView,           releasesBuffer: false },
   { kind: 'audio',             el: audioView,             releasesBuffer: true  },
   { kind: 'video',             el: videoView,             releasesBuffer: true  },
   { kind: 'pdf',               el: pdfView,               releasesBuffer: false },
-  { kind: 'browser',           el: browserView,           releasesBuffer: false },
+  // browser is per-instance (browserElementByView) — not a singleton.
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
+  { kind: 'view-list',         el: viewListView,          releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
+  { kind: 'bookmark',          el: bookmarkView,          releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
+  { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
+  { kind: 'notebook',          el: notebookView,          releasesBuffer: false },
 ];
 
 /** Side-effect bundle for mounting a text view: rebind the cursor,
@@ -4696,6 +6915,9 @@ function applyTextMountSideEffects(view, instance) {
     }
   }
   stickyNotes.setBuffer(view.buffer);
+  bookmarks.setBuffer(view.buffer);
+  // If the bookmark outline is open beside us, follow focus to this buffer.
+  followBookmarkView(view.buffer);
   watchCurrentBuffer();
   ensureMajorMode();
   if (editorView && typeof editorView.focus === 'function') editorView.focus();
@@ -4729,21 +6951,64 @@ function mountKindView(view, context) {
     mountTablineKind(view, context);
     return;
   }
+  if (view.kind === 'browser') {
+    // Per-instance: mount THIS view's own browser element in its pane.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = leaf ? paneElements.get(leaf.id) : null;
+    const el = ensureBrowserElementForView(view, paneEl);
+    el.style.display = '';
+    el.focus();
+    return;
+  }
+  if (view.kind === 'placeholder') {
+    // Per-instance, like browser: mount THIS placeholder's own element
+    // in its pane and focus it so its accelerator keys are live.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = leaf ? paneElements.get(leaf.id) : null;
+    const el = ensurePlaceholderElementForView(view, paneEl);
+    el.style.display = '';
+    el.focus();
+    return;
+  }
   const el = singletonElementForKind(view.kind);
   if (el) {
+    // Re-parent the singleton into THIS view's pane element so it
+    // actually appears there. `switchToViewIndex` did this inline, but
+    // the split-with-view path (`splitPaneAtLeafWith`, how the bookmark
+    // outline opens) did not — leaving the singleton mounted in its
+    // previous parent while the freshly-split pane rendered blank ("the
+    // pane appeared but nothing was shown"). Centralised here so every
+    // leaf-direct singleton mount (switch / split / restore) is covered;
+    // the restore path passes its pane element explicitly via context.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl =
+      (context && context.paneEl) ||
+      (leaf ? paneElements.get(leaf.id) : null);
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
     el.setBuffer(view);
     el.focus();
   }
 }
 
 /** Dispose any kind-specific resources held by VIEW. Most kinds have
- *  none (the singleton's state is GC'd). Two exceptions:
+ *  none (the singleton's state is GC'd). Three exceptions:
  *
  *   - shell: kill the child process so it doesn't leak.
+ *   - gnuplot: kill the gnuplot child so it doesn't leak.
  *   - tabline: detach the container and release the per-tabline state.
  */
 function disposeKindView(view, context) {
   if (!view || typeof view.kind !== 'string') return;
+  if (view.kind === 'browser') {
+    // Per-instance: reap this view's own browser element + webview.
+    disposeBrowserElementForView(view);
+    return;
+  }
+  if (view.kind === 'placeholder') {
+    // Per-instance: reap this placeholder's own element.
+    disposePlaceholderElementForView(view);
+    return;
+  }
   if (view.kind === 'shell') {
     if (typeof view.sessionId !== 'string') return;
     try {
@@ -4752,6 +7017,29 @@ function disposeKindView(view, context) {
       }
     } catch {
       // Process is already gone — nothing to do.
+    }
+    return;
+  }
+  if (view.kind === 'gnuplot') {
+    if (typeof view.sessionId !== 'string') return;
+    try {
+      if (window.host && typeof window.host.gnuplotKill === 'function') {
+        window.host.gnuplotKill(view.sessionId);
+      }
+    } catch {
+      // Process is already gone — nothing to do.
+    }
+    return;
+  }
+  if (view.kind === 'notebook') {
+    // No subprocess; just drop the engine's stored notebook record so a
+    // closed notebook's cell values don't linger.
+    if (typeof view.notebookId === 'string') {
+      try {
+        if (keymapReady) interpreter.call('notebook-forget!', view.notebookId);
+      } catch {
+        // Engine not ready / already gone — nothing to do.
+      }
     }
     return;
   }
@@ -4959,15 +7247,24 @@ function perKindConfigureFactory(kind) {
   switch (kind) {
     case 'customize':         return configureCustomizeView;
     case 'image':             return configureImageView;
-    case 'doc':               return configureDocView;
     case 'jukebox':           return configureJukeboxView;
     case 'audio':             return configureAudioView;
     case 'video':             return configureVideoView;
     case 'pdf':               return configurePdfView;
     case 'browser':           return configureBrowserView;
+    // Placeholders are leaf-direct only (a split's new pane); the
+    // leaf-direct mount path (`ensurePlaceholderElementForView`) binds
+    // the per-view closures. A placeholder should never become a tabline
+    // tab, but if one ever does, give the strip a benign config whose
+    // actions resolve the leaf by the active view — no crash, no orphan.
+    case 'placeholder':       return () => configurePlaceholderView(null);
     case 'directory-tree':    return configureDirectoryTreeView;
     case 'directory-columns': return configureDirectoryColumnsView;
+    case 'bookmark':          return configureBookmarkView;
+    case 'view-list':         return configureViewListView;
     case 'shell':             return configureShellView;
+    case 'gnuplot':           return configureGnuplotView;
+    case 'notebook':          return configureNotebookView;
     default:                  return null;
   }
 }
@@ -5009,6 +7306,9 @@ function ensureTabElement(state, child) {
       getTabWidth: () => currentTabWidth,
       // Snippet field + mirror boxes for this tab's buffer.
       getDecorations: () => snippetDecorationsFor(child.buffer ?? null),
+      getMajorModeName: () =>
+        bufferMajorModeName(child.buffer ?? null, keyword),
+      getOverrideGeneration: () => highlightOverrideStore.generation(),
     });
     el.setView(child);
   } else if (child.kind === 'tabline') {
@@ -5159,6 +7459,10 @@ function elementForViewInstance(view) {
   for (const state of tablineStateByView.values()) {
     const el = state.editorByChild.get(view);
     if (el !== undefined) return el;
+  }
+  // Browsers are per-instance, keyed by view rather than a singleton.
+  if (view.kind === 'browser' && browserElementByView.has(view)) {
+    return browserElementByView.get(view);
   }
   return singletonElementForKind(view.kind);
 }
@@ -5543,22 +7847,34 @@ const stickyNotes = createStickyNotes({
 });
 stickyNotes.setBuffer(currentTextBuffer);
 
+// Bookmarks fill no overlay — they're invisible named positions backed by
+// buffer markers (see bookmarks.js), persisted through the same companion-
+// metadata pipeline the notes use.
+const bookmarks = createBookmarks({
+  onChange: () => {
+    scheduleMetadataWrite(currentTextBuffer);
+    refreshBookmarkOutline();
+  },
+});
+bookmarks.setBuffer(currentTextBuffer);
+
 // --- Markdown preview pane ---------------------------------------------
 // A toggleable pane (markdown-preview, C-c v) that renders the current
 // markdown-mode buffer to HTML through the same JMarkdown pipeline the
 // sticky notes use, refreshing — debounced — as the buffer is edited.
 
-/** Typeset mathematics in the rendered preview, once MathJax is ready.
- *  A nice-to-have: MathJax is already loaded for the sticky notes. */
-function typesetPreview(element) {
-  const mathJax = globalThis.MathJax;
+/** Typeset mathematics inside the preview iframe, once its own MathJax
+ *  has started. The iframe loads its own MathJax (see buildPreviewHead),
+ *  so this runs against THAT instance, not the editor's. `elements` is
+ *  the set to typeset: the whole body `[body]` after a rebuild, or just
+ *  the math spans morphdom brought in fresh on the incremental path. */
+function typesetPreview(frameWindow, elements) {
+  const mathJax = frameWindow && frameWindow.MathJax;
   if (!mathJax) return;
+  if (!Array.isArray(elements) || elements.length === 0) return;
   const run = () => {
-    if (typeof mathJax.typesetClear === 'function') {
-      mathJax.typesetClear([element]);
-    }
     if (typeof mathJax.typesetPromise === 'function') {
-      mathJax.typesetPromise([element]).catch(() => {});
+      mathJax.typesetPromise(elements).catch(() => {});
     }
   };
   const ready = mathJax.startup && mathJax.startup.promise;
@@ -5566,9 +7882,87 @@ function typesetPreview(element) {
   else run();
 }
 
+/** Build an `app://editor/__host__/…` URL for an absolute file path —
+ *  the renderer-side mirror of serve.js's `hostFileUrl` (keep in sync).
+ *  Serves any local file same-origin, so the preview iframe can load the
+ *  book's CSS and a file's relative assets. */
+function hostFileUrl(filePath) {
+  return (
+    'app://editor/__host__' +
+    filePath.split('/').map(encodeURIComponent).join('/')
+  );
+}
+
+/** The MathJax config the preview iframe uses — mirrors index.html. */
+const PREVIEW_MATHJAX_CONFIG = {
+  tex: {
+    inlineMath: [['$', '$'], ['\\(', '\\)']],
+    displayMath: [['$$', '$$'], ['\\[', '\\]']],
+    // Honour `\$` as a literal dollar (renderMarkdown preserves it), so a
+    // price like "\$45" isn't paired into math.
+    processEscapes: true,
+  },
+  svg: { fontCache: 'local' },
+  startup: { typeset: false },
+};
+const PREVIEW_MATHJAX_SRC =
+  'app://editor/apps/desktop/vendor/mathjax/tex-svg.js';
+const PREVIEW_DEFAULT_CSS_URL =
+  'app://editor/apps/desktop/markdown-preview.css';
+
+/** The current markdown buffer's directory as a base URL the iframe
+ *  resolves relative assets against — or null for an unsaved buffer. */
+function currentPreviewBaseUrl() {
+  const path = currentTextBuffer && currentTextBuffer.filePath;
+  if (typeof path !== 'string' || path === '') return null;
+  const dir = path.slice(0, path.lastIndexOf('/') + 1);
+  return dir ? hostFileUrl(dir) : null;
+}
+
+/** The user's `*markdown-preview-css*` paths as iframe-loadable URLs.
+ *  Absolute (and `~`) paths go through the host-file scheme; a relative
+ *  path is left as-is to resolve against the iframe's <base>. */
+function currentPreviewCssUrls() {
+  let paths = [];
+  try {
+    paths = listToArray(interpreter.evaluate('*markdown-preview-css*')).map(String);
+  } catch {
+    paths = [];
+  }
+  return paths.map((p) => {
+    let path = p;
+    if (path.startsWith('~/')) path = window.host.homeDirectory + path.slice(1);
+    return path.startsWith('/') ? hostFileUrl(path) : path;
+  });
+}
+
+/** Whether the built-in preview stylesheet should be linked. */
+function previewDefaultStyleOn() {
+  try {
+    return interpreter.evaluate('*markdown-preview-default-style*') !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** The <head> for the preview iframe: base + stylesheets + MathJax. */
+function buildPreviewFrameHead() {
+  return buildPreviewHead({
+    baseUrl: currentPreviewBaseUrl(),
+    cssUrls: currentPreviewCssUrls(),
+    defaultCssUrl: previewDefaultStyleOn() ? PREVIEW_DEFAULT_CSS_URL : null,
+    mathjaxSrc: PREVIEW_MATHJAX_SRC,
+    mathjaxConfig: PREVIEW_MATHJAX_CONFIG,
+  });
+}
+
 const markdownPreview = createMarkdownPreview(
   document.getElementById('markdown-preview-host'),
-  { render: renderNoteHtml, typeset: typesetPreview }
+  {
+    render: renderNoteHtml,
+    buildHead: buildPreviewFrameHead,
+    typeset: typesetPreview,
+  }
 );
 // The pane starts hidden; markdown-preview reveals it.
 document.body.classList.add('markdown-preview-hidden');
@@ -5642,7 +8036,7 @@ editorView.focus();
 
 const workspaceEl = document.getElementById('workspace');
 const previewSplitterEl = document.getElementById('preview-splitter');
-const replSplitterEl = document.getElementById('repl-splitter');
+const utilitySplitterEl = document.getElementById('utility-splitter');
 
 /** The persisted pane sizes — read once at startup and re-saved after
  *  each drag, so the layout survives quits. */
@@ -5671,13 +8065,14 @@ const previewSplitter = createSplitter({
   },
 });
 
-const replSplitter = createSplitter({
+const utilitySplitter = createSplitter({
   orientation: 'vertical',
-  element: replSplitterEl,
+  element: utilitySplitterEl,
   target: document.body,
+  // Legacy var/key names kept so persisted panes.json needs no migration.
   cssVar: '--repl-height',
   min: 80,
-  // The workspace + chrome above the REPL needs at least 300px.
+  // The workspace + chrome above the dock needs at least 300px.
   max: () => Math.max(80, window.innerHeight - 300),
   onResize: (value) => {
     persistedPanes.replHeight = value;
@@ -5698,7 +8093,7 @@ if (typeof window.host?.readPanes === 'function') {
         previewSplitter.set(stored.previewWidth);
       }
       if (typeof stored.replHeight === 'number') {
-        replSplitter.set(stored.replHeight);
+        utilitySplitter.set(stored.replHeight);
       }
     })
     .catch(() => {
@@ -5718,6 +8113,38 @@ window.host.onMenuCommand((command) => {
   refreshModeMenu();
 });
 refreshModeMenu();
+
+// A native Quit (Cmd+Q / app-menu Quit) is intercepted in the main
+// process and routed here, so it gets the same unsaved-changes confirm
+// and metadata flush as C-x C-c (quitInteractive) instead of dropping
+// edits silently. quitInteractive calls host.quit() to actually exit.
+if (window.host && typeof window.host.onConfirmQuit === 'function') {
+  window.host.onConfirmQuit(() => {
+    quitInteractive();
+  });
+}
+
+// Wire the one-shot process runner's completion channel exactly once.
+// When a `(run-process! …)` child exits, the host sends one
+// `process:exit` with the buffered output; we look up the parked
+// on-exit Lisp procedure (keyed by runId), build the result hash-map
+// `{:stdout :stderr :code}`, apply the procedure, and forget the entry.
+if (window.host && typeof window.host.onRunProcessExit === 'function') {
+  window.host.onRunProcessExit(({ runId, stdout, stderr, code }) => {
+    const proc = runProcessCallbacks.get(runId);
+    runProcessCallbacks.delete(runId);
+    if (proc == null || proc === NIL) return;
+    const result = new Map();
+    result.set(keyword('stdout'), typeof stdout === 'string' ? stdout : '');
+    result.set(keyword('stderr'), typeof stderr === 'string' ? stderr : '');
+    result.set(keyword('code'), typeof code === 'number' ? code : NIL);
+    try {
+      applyProcedure(proc, [result]);
+    } catch (error) {
+      repl.appendError(error.lispMessage ?? error.message ?? String(error));
+    }
+  });
+}
 
 // The startup splash: the editor's own Lisp, behind the welcome text.
 // It lives in the view's background layer and is dismissed — faded out
@@ -5831,6 +8258,17 @@ function ensureDirectoryTreeViewForPath(rootPath) {
   return view;
 }
 
+/** Find the single *View List* view, or build it and push it into
+ *  `views`. There is only ever one (it lists all the others), so this is
+ *  a find-or-create by kind rather than by name. */
+function ensureViewListView() {
+  const existing = views.find((v) => v.kind === 'view-list');
+  if (existing) return existing;
+  const view = createView({ kind: 'view-list', name: '*View List*' });
+  views.push(view);
+  return view;
+}
+
 /** Find an existing directory-columns view for ROOTPATH or build a
  *  fresh one and push it into `views`. Companion to
  *  `ensureDirectoryTreeViewForPath`. */
@@ -5852,6 +8290,61 @@ function ensureDirectoryColumnsViewForPath(rootPath) {
   });
   views.push(view);
   return view;
+}
+
+/** Find an existing bookmark view for SOURCEBUFFER or build a fresh one
+ *  and push it into `views`. The view edits the source buffer's
+ *  metadata.bookmarks directly; jump / persist are host callbacks. */
+/** The single bookmark outline. There is one — it re-targets to whichever
+ *  text buffer has focus (see `followBookmarkView`) rather than one view
+ *  per buffer, so the outline beside your buffer always shows that
+ *  buffer's bookmarks. Find-or-create. */
+function ensureBookmarkView() {
+  const existing = views.find((v) => v.kind === 'bookmark');
+  if (existing) return existing;
+  const view = createView({
+    kind: 'bookmark',
+    name: '*Bookmarks*',
+    extras: { sourceBuffer: null },
+  });
+  views.push(view);
+  return view;
+}
+
+/** Point the bookmark outline at BUFFER and repaint it. Updates the
+ *  view's name (for the modeline / *View List*) too. */
+function retargetBookmarkView(buffer) {
+  const view = views.find((v) => v.kind === 'bookmark');
+  if (!view) return;
+  // createView spreads `extras` onto the view, so the source lives at
+  // `view.sourceBuffer` (there is no `view.extras`). The element re-reads
+  // it from the handle on setBuffer.
+  view.sourceBuffer = buffer;
+  const name = buffer && buffer.name ? buffer.name : 'buffer';
+  view.name = `*Bookmarks: ${name}*`;
+  bookmarkView.setBuffer(view);
+}
+
+/** Auto-follow: when focus moves to a text buffer and the outline is
+ *  shown, re-target it to that buffer. A no-op when the outline is closed
+ *  or already on this buffer, so it's cheap to call on every focus
+ *  change. */
+function followBookmarkView(buffer) {
+  if (!buffer) return;
+  const view = views.find((v) => v.kind === 'bookmark');
+  if (!view || view.sourceBuffer === buffer) return;
+  if (!leafPanes(rootPane).some((leaf) => leaf.view === view)) return;
+  retargetBookmarkView(buffer);
+}
+
+/** Repaint the open bookmark outline in place — called when a bookmark is
+ *  set/deleted so the change shows immediately (the engine otherwise only
+ *  schedules a metadata write). A no-op when the outline isn't shown. */
+function refreshBookmarkOutline() {
+  const view = views.find((v) => v.kind === 'bookmark');
+  if (!view) return;
+  if (!leafPanes(rootPane).some((leaf) => leaf.view === view)) return;
+  bookmarkView.setBuffer(view);
 }
 
 /** Open a file from a directory-tree / directory-columns row and place
@@ -5899,15 +8392,36 @@ async function openFileInTabAdjacent(filePath) {
  *  Returns the live view handle. The caller wires it into a leaf. */
 function materialiseRestoredView(blob, handlesByBlob) {
   if (!blob) return buildScratchTextView();
+  if (blob.kind === 'bookmark') {
+    // The bookmark outline is the singleton; ensure it and re-target it
+    // to the persisted source file if that file is open as a text view
+    // (the restore loop opened it already). Otherwise it stays blank and
+    // re-targets to whatever buffer gets focus, per its follow behaviour.
+    const view = ensureBookmarkView();
+    const srcPath = typeof blob.path === 'string' ? blob.path : null;
+    if (srcPath) {
+      const srcView = views.find(
+        (v) => v.kind === 'text' && viewFilePath(v) === srcPath
+      );
+      if (srcView && srcView.buffer) {
+        view.sourceBuffer = srcView.buffer;
+        view.name = `*Bookmarks: ${srcView.buffer.name ?? 'buffer'}*`;
+      }
+    }
+    return view;
+  }
   if (
     blob.kind === 'text' || blob.kind === 'image' ||
-    blob.kind === 'audio' || blob.kind === 'video' ||
+    blob.kind === 'audio' || blob.kind === 'video' || blob.kind === 'pdf' ||
     blob.kind === 'directory-tree' || blob.kind === 'directory-columns'
   ) {
     const handle = handlesByBlob.get(blob);
     // If the file failed to open, fall back to a fresh scratch so the
     // owning leaf still has something to render. (Applies to all file-
-    // backed kinds — a missing audio file becomes scratch too.)
+    // backed kinds — a missing audio file becomes scratch too.) `pdf`
+    // must be here too: `collectTextViewBlobs` opens it (it's a persisted
+    // file-backed kind), so its handle is in `handlesByBlob` — omitting it
+    // left the pdf opened-but-orphaned (in the view list, not in its pane).
     return handle ?? buildScratchTextView();
   }
   if (blob.kind === 'tabline') {
@@ -5928,7 +8442,7 @@ function materialiseRestoredView(blob, handlesByBlob) {
       if (!tabBlob) continue;
       if (
         tabBlob.kind === 'text' || tabBlob.kind === 'image' ||
-        tabBlob.kind === 'audio' || tabBlob.kind === 'video' ||
+        tabBlob.kind === 'audio' || tabBlob.kind === 'video' || tabBlob.kind === 'pdf' ||
         tabBlob.kind === 'directory-tree' || tabBlob.kind === 'directory-columns'
       ) {
         const handle = handlesByBlob.get(tabBlob);
@@ -6306,47 +8820,71 @@ function moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx) {
   return dstTlv;
 }
 
-/** Swap which view PANE-A and PANE-B show. Plain leaves swap their
- *  `.view`; the mount machinery then re-runs for each new leaf-view
- *  pairing so renderer instances + singleton placements catch up.
- *  Tabline leaves swap-as-a-whole — the tabline-view (with all its
- *  tabs) moves to the other leaf. Returns true when the swap
- *  happened, false on a no-op (same leaf, or either handle missing). */
-function swapPaneViews(paneA, paneB) {
+/** Every leaf pane handle in clockwise-spiral badge order (the numbering
+ *  swap-views / permute-views show). Slot 0 is the top-left pane. */
+function spiralOrderedLeaves() {
+  const hostRect = editorHostEl.getBoundingClientRect();
+  const { ordered } = spiralOrder(rootPane, {
+    width: hostRect.width,
+    height: hostRect.height,
+  });
+  return ordered;
+}
+
+/** Swap which view PANE-A and PANE-B show by *moving the frames*: exchange
+ *  the two leaves' positions in the tree and relayout. No view DOM moves —
+ *  relayout only repositions the existing `.pane` divs by id — so a
+ *  browser/pdf/shell guest is never recreated, and the per-leaf maps stay
+ *  valid (the leaf nodes keep their ids + contents, just land in new
+ *  slots; focus follows the view). Returns true on success, false on a
+ *  no-op (same leaf, missing handle, or a non-leaf). */
+function swapPaneFrames(paneA, paneB) {
   if (!paneA || !paneB || paneA === paneB) return false;
   if (paneA.kind !== 'leaf' || paneB.kind !== 'leaf') return false;
-  const va = paneA.view;
-  const vb = paneB.view;
-  paneA.view = vb;
-  paneB.view = va;
-  // Re-mount each via mountKindView. A tabline-view's `mount`
-  // is paneEl-aware and will move its `<tabline-view>` container to
-  // the new pane element; plain-leaf views are routed through
-  // switchToViewIndex's plain-leaf branch via a direct mount here so
-  // the singleton reparent + display:'' logic fires.
+  rootPane = swapLeaves(rootPane, paneA, paneB);
   syncPaneElements();
-  const aEl = paneElements.get(paneA.id);
-  const bEl = paneElements.get(paneB.id);
-  if (paneA.view) {
-    if (isTablineView(paneA.view) && aEl) {
-      mountKindView(paneA.view, { paneEl: aEl });
-    } else {
-      const sing = singletonElementForKind(paneA.view.kind);
-      if (sing && aEl) { aEl.append(sing); sing.style.display = ''; }
-      mountKindView(paneA.view);
-    }
-  }
-  if (paneB.view) {
-    if (isTablineView(paneB.view) && bEl) {
-      mountKindView(paneB.view, { paneEl: bEl });
-    } else {
-      const sing = singletonElementForKind(paneB.view.kind);
-      if (sing && bEl) { bEl.append(sing); sing.style.display = ''; }
-      mountKindView(paneB.view);
-    }
-  }
   refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
   updateModeline();
+  // Pane positions changed (not the view set) — refresh the View List so
+  // its spiral Pane column tracks the move, and re-pickle the session.
+  notifyViewsChanged();
+  return true;
+}
+
+/** Rearrange every pane's view by moving the frames. DESTS is a 1-based
+ *  destination slot per pane in spiral order: the content of pane K
+ *  (1-based) moves to slot DESTS[K]. DESTS must be a permutation of 1..N.
+ *  Returns true on success, false on a malformed / non-bijective DESTS or
+ *  a mismatched length. Same frame-move guarantees as swapPaneFrames. */
+function permutePaneFrames(dests) {
+  const hostRect = editorHostEl.getBoundingClientRect();
+  const dims = { width: hostRect.width, height: hostRect.height };
+  const { ordered, indexByLeaf } = spiralOrder(rootPane, dims);
+  const n = ordered.length;
+  if (!Array.isArray(dests) || dests.length !== n) return false;
+  // occupantBySlot[slot] = the leaf whose content should land at that
+  // slot. Pane k (ordered[k]) goes to slot dests[k] - 1.
+  const occupantBySlot = new Array(n);
+  const seen = new Set();
+  for (let k = 0; k < n; k += 1) {
+    const dest = dests[k] - 1;
+    if (!Number.isInteger(dest) || dest < 0 || dest >= n || seen.has(dest)) {
+      return false;
+    }
+    seen.add(dest);
+    occupantBySlot[dest] = ordered[k];
+  }
+  rootPane = permuteLeaves(rootPane, indexByLeaf, occupantBySlot);
+  syncPaneElements();
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+  updateModeline();
+  // Pane positions changed (not the view set) — refresh the View List so
+  // its spiral Pane column tracks the move, and re-pickle the session.
+  notifyViewsChanged();
   return true;
 }
 
@@ -6403,11 +8941,29 @@ const sessionController = createSession({
     // the bug in before.png/after.png.
     const view = await openFileByPath(path, { switch: false, forceDuplicate: true });
     if (view === null) return null;
-    // Only text views carry point/mark; image/audio/video views don't.
+    // A pdf blob is only persisted when its view was flagged `persist`
+    // (the latexed-output case). Re-mark the restored view so it persists
+    // again next session — `openFileByPath` minted it with the default
+    // (which is *pdf-restore-default*, transient unless the user opted in
+    // globally), but this one was explicitly saved as persistent.
+    if (view.kind === 'pdf' && entry && entry.kind === 'pdf') {
+      view.persist = true;
+    }
+    // Only text views carry point/mark; image/audio/video/pdf views don't.
     const buffer = view.buffer;
     if (view.kind === 'text' && buffer) {
-      const point = Number.isFinite(entry.point) ? entry.point : 0;
-      const mark = Number.isFinite(entry.mark) ? entry.mark : null;
+      // Clamp the persisted point/mark to the restored buffer's length.
+      // A file-backed buffer re-reads its content from disk on restore, so
+      // that content can be SHORTER than when the session was saved — an
+      // unsaved/new-file buffer (find-file on a missing path) re-reads
+      // empty, or the file shrank between runs. `buffer.moveTo`/`setMark`
+      // already clamp, but `view.point` was stored raw, and a stale offset
+      // poisons the cursor / mode-selection path (`positionAt` out of
+      // range → "mode selection failed: offset N out of range [0, 0]").
+      const len = typeof buffer.length === 'number' ? buffer.length : 0;
+      const clampOffset = (n) => (n < 0 ? 0 : n > len ? len : n);
+      const point = clampOffset(Number.isFinite(entry.point) ? entry.point : 0);
+      const mark = Number.isFinite(entry.mark) ? clampOffset(entry.mark) : null;
       view.point = point;
       view.mark = mark;
       if (typeof buffer.moveTo === 'function') buffer.moveTo(point);
@@ -6433,6 +8989,9 @@ const sessionController = createSession({
 let restoring = false;
 onViewsChanged = () => {
   refreshPaneTabStrips();
+  // Keep the *View List* table live: opening, killing, renaming or
+  // switching a view changes what the list should show.
+  viewListView.refresh();
   if (!restoring) sessionController.save();
 };
 

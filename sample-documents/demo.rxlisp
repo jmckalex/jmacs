@@ -1,0 +1,16 @@
+(cell size 60)
+
+(cell angle 20)
+
+(cell hue 210)
+
+(cell area (* size size))
+
+(cell summary (str "size=" size ", angle=" angle ", hue=" hue))
+
+(cell square
+  (str "<svg width='140' height='140' viewBox='0 0 140 140'>"
+       "<rect x='" (- 70 (/ size 2)) "' y='" (- 70 (/ size 2)) "'"
+       " width='" size "' height='" size "' rx='6'"
+       " fill='hsl(" hue ", 70%, 55%)'"
+       " transform='rotate(" angle " 70 70)'/></svg>"))

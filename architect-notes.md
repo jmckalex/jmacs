@@ -1,118 +1,124 @@
-## [2026-06-01] Snippets (godot-snippets, inline build): Phases 1–3 done, ready for live test
+# Architect notes
 
-**Branch**: `worktree-agent-a6b0e3df7f194a59a` (isolated worktree off `main`).
-**Do not merge.** Tests are green; this is a hand-off for live testing per
-the "test before merge" rule.
+Running log for decisions/blockers that need Jason. Newest first.
 
-### What I built
+---
 
-A yasnippet-style snippet engine, inline in the stdlib (the package
-system doesn't exist yet — see `docs/SNIPPETS-INLINE-NOTES.md` for the
-repackaging checklist).
+## [2026-06-03] LaTeX Phase 5 (latex-nav): "M-return" → "M-enter" binding deviation
 
-- **Phase 1 (static expansion)** — file-format reader, body parser,
-  per-mode store with `.yas-parents` fallthrough, `*snippet-directories*`,
-  commands `snippet-expand` / `snippet-insert` / `snippet-list` /
-  `snippet-reload`, a built-in starter set (~11 snippets), and the TAB
-  trigger with the documented precedence.
-- **Phase 2 (tab stops + navigation)** — `$N` / `${N:default}` / `$0`,
-  the buffer-local active-snippet record, `snippet-next-field` (TAB) /
-  `snippet-prev-field` (S-TAB) / `snippet-cancel` (ESC, C-g), default
-  selected on field arrival (type to replace), modeline `[snippet: 2/4]`.
-  Field highlighting uses the **selection/region** mechanism (see "Gap"),
-  not overlays.
-- **Phase 3 (mirrors)** — STRETCH, done and committed separately so it
-  can be dropped. Repeated `$N` installs a multi-cursor set (Policy A);
-  typing updates every occurrence live; `*snippet-mirror-multi-cursor*`
-  (default #t) toggles it.
+**Context**: Built AUCTeX Phase 5 (navigation & niceties) on branch
+`latex-nav`: `latex-next-section` / `latex-previous-section` (C-c C-n /
+C-c C-r), `latex-goto-matching-env` (C-c %), `latex-insert-item` (M-RET),
+`latex-smart-quote` (the `"` key). New file
+`packages/stdlib/lisp/latex-nav.lisp` + `test/latex-nav.test.js` (28
+tests). Full suite **1480 / 0 fail** (1452 baseline + 28).
 
-Phases 4 (transformations / embedded code / conditions) and 5 are out of
-scope and not built. `# condition:` is parsed but not evaluated.
+**Deviation (one, deliberate)**: the brief said to bind M-RET as
+`"M-return"`. The renderer's `keymap.js` normalises the Enter key's name
+to `enter` (NAMED_KEYS / NAMED_CODES), so Alt+Return arrives as
+**`"M-enter"`**, never `"M-return"` — `jukebox-view.js` already relies on
+exactly `"M-enter"`. Binding `"M-return"` would be a dead key (the feature
+would never fire), so I bound the live name `"M-enter"` and the wiring
+test asserts that. Nothing else changed. Flagging per the standing rule
+("the brief wins, but flag the conflict"); if you'd genuinely rather it be
+`"M-return"`, the feature is simply unreachable until the renderer emits
+that string.
 
-### Files
+**Other choices to be aware of** (all within the brief's latitude):
+- Section nav is **self-contained** (scans `(buffer-text)` from `(point)`
+  via the pure `next/prev-section-offset`), not reftex-dependent — works
+  without a built RefTeX DB.
+- `latex-goto-matching-env` is C-c **%** (vim's match mnemonic; also the
+  TeX comment char, free here). Section prev is C-c **C-r** (C-p was
+  taken by toggle-latex-math-preview).
+- Smart-quote v1 looks only at the char before point — **no math/verbatim
+  detection** (documented in the command's docstring). Double-press (or a
+  press right after a `"`/`` ` ``/`'`) inserts a literal straight quote.
 
-- New Lisp: `packages/stdlib/lisp/snippets-parser.lisp`,
-  `snippets.lisp`, `snippets-keymap.lisp` (added to `STDLIB_FILES` after
-  `multi-cursor.lisp`).
-- New tests: `packages/stdlib/test/snippets.test.js` (39 tests).
-- Edited test harness: `packages/stdlib/test/stdlib.test.js` (snippet
-  primitive stubs; the face-count test relaxed to a subset check since I
-  added 4 decoration faces).
-- **Host territory (apps/desktop), edited because the feature needs host
-  wiring — please eyeball these):**
-  - `apps/desktop/src/preload.mjs` — exposes `host.userDataDirectory`
-    (one new sync IPC call at preload time).
-  - `apps/desktop/src/files.js` — `userdata:dir-sync` ipcMain handler.
-  - `apps/desktop/src/app.js` — `USER_DATA_DIR` const; two new Lisp
-    primitives (`snippet-user-directory`, `snippet-date-string`);
-    modeline appends `(snippet-modeline-indicator)`; buffer `onChange`
-    calls `(snippet-after-edit!)`; `dispatchKey` calls
-    `(snippet-soft-commit-if-outside)` after each key. All hooks are
-    guarded in Lisp (no-op when no snippet active) and wrapped so a
-    snippet error never breaks editing/key dispatch.
-- New docs: `docs/SNIPPETS-INLINE-NOTES.md` (repackaging checklist).
+**State**: committed on `latex-nav`, suite green. Not merged (per the
+"hand off for live testing before merge" rule).
 
-### Tests
+---
 
-`packages/stdlib`: 410 pass / 0 fail (39 snippet). `apps/desktop`: 166 /
-0. All other packages unchanged and green. (`pnpm test` at the root trips
-a pnpm install-check on the ignored `citation-js` build script — run
-`node --test` per package instead, which is what `pnpm -r test` invokes.)
+## [2026-06-03 overnight] swap-views / permute-views: built, needs live test + a keybinding call
 
-### How to live-test (in the running app)
+**Context**: Implemented the two commands designed in
+`plans/PANES-SWAP-PERMUTE.md` (number every pane, type pane numbers to
+swap / permute which view each pane shows). Built bottom-up on branch
+`swap-permute-views`. Full suite green throughout (**1144 tests, 0
+fail**; +34 over the 1109 baseline).
 
-Open or create a buffer. The starter snippets are mode-aware:
+**What's done and unit-tested (safe):**
 
-1. **Static expansion (fundamental-mode, any `.txt`):** type `todo` then
-   TAB -> `TODO(author): describe the task` with point on `author`
-   selected. Type to replace, TAB to the next field, TAB again to commit.
-2. **Date snippet:** type `date` + TAB in a `.txt` buffer -> today's date
-   (no fields, commits immediately). `datetime`, `copyright` (uses
-   `` `year` ``) too.
-3. **for-loop (a `.js` buffer):** type `for` + TAB ->
-   `for (let i = 0; i < n; i++) { … }` with `i` selected; TAB cycles to
-   `n` then to the body exit. Watch the modeline show `[snippet: 1/2]`,
-   `[snippet: 2/2]`.
-4. **Mirrors (Phase 3):** the built-in `for` has `$1` three times
-   (`i`, `i < n`, `i++`). On arrival at field 1 you should get **three
-   cursors**; typing `idx` updates all three live. (If mirrors misbehave,
-   `(set! *snippet-mirror-multi-cursor* #f)` in the REPL disables them and
-   isolates the rest.)
-5. **TAB fall-through:** TAB with no trigger word still indents
-   (`insert-tab`). `(set! *snippet-expand-key* nil)` disables the trigger
-   entirely.
-6. **ESC / C-g cancel:** mid-snippet, ESC or C-g drops the active record;
-   the text stays.
-7. **User snippets:** drop a file at
-   `<userData>/snippets/fundamental-mode/greet` (a `# key: greet` /
-   `# --` / body file), `M-x snippet-reload`, then `greet` + TAB. On
-   macOS `<userData>` is `~/Library/Application Support/<app>/`. A user
-   file silently shadows a built-in of the same key.
-8. `M-x snippet-list` echoes the available triggers for the current mode;
-   `M-x snippet-insert` prompts for a key.
+- **Layer 1 — pane package** (`tree.js`, `layout.js`): `swapLeaves`,
+  `permuteLeaves` (copy-on-write, identity-preserving frame moves) and
+  `spiralOrder` (your clockwise-spiral-from-top-left numbering,
+  furthest-out-first, stable-id tiebreak). 13 tests — incl. the exact
+  orderings for L/R, T/B, 2×2 (TL→TR→BR→BL), tall-left+stacked-right;
+  swap=transposition; permute∘inverse=identity; bijection guard.
+- **Layer 3 — stdlib primitives** (`pane-primitives.js`):
+  `permute-panes!`, `panes-in-spiral-order` (+ `swap-panes!` unchanged,
+  still delegating to `paneHost.swapPanes`). 7 tests with a mock host.
+- **State machine** (`move-view-state.js`): pure reducer for digit
+  entry — unambiguous-prefix auto-accept (single keypress ≤9; waits only
+  on a genuinely ambiguous prefix like 1 vs 10–12), Space force-accept,
+  Backspace undo, bijection, permute forced-last. 14 tests.
 
-**The single most important thing to verify live:** the **TAB key in a
-real text buffer** — that expansion + field navigation + the fall-through
-to indent all feel right, and that mirrors (item 4) update live via the
-multi-cursor surface without leaving stray cursors after commit. The unit
-tests drive `handle-key` directly; the live keyboard path (renderer key
-normalisation -> `dispatchKey` -> `handle-key`) and the multi-cursor
-rendering are the parts the tests can't fully exercise.
+**What's written but NOT yet verified (needs the running app):**
 
-### Gap / decision to review
+- `app.js`: `swapPaneFrames` / `permutePaneFrames` / `spiralOrderedLeaves`;
+  `paneHost.swapPanes` repointed to the frame-move (so
+  `swap-with-other-pane`, `C-x X`, now rides it too — please sanity-check
+  that still works); `permutePanes` + `panesInSpiralOrder` added;
+  `enter-move-views-mode!` primitive; **old `swapPaneViews` deleted**.
+- `move-view-mode.js`: the overlay (numbered badges + prompt strip),
+  window-capture key handling, modal focus grab.
+- `panes.lisp`: `swap-views` / `permute-views` commands.
+- `menu.js`: **View menu → "Swap Views…" / "Permute Views…"** (the
+  primary entry point).
+- `styles.css`: overlay/badge/prompt styling + beep shake.
 
-- **Field highlighting uses the selection, not face overlays.** The
-  renderer's overlay surface (`inline-eval.js` pattern) is a single pill
-  that hides on any edit — not a robust offset-tracking highlight. Per
-  the brief, I selected the active field's default via the
-  selection/region mechanism instead (which is robust under edits and
-  gives "type to replace" for free). The four `snippet-*-face` faces are
-  registered and the host can read `(snippet-active-region)` /
-  `(snippet-mirror-regions)` to paint them later, but no overlay
-  painting is wired yet. If you want the yasnippet-style coloured field
-  boxes, that's a renderer task (a real offset-tracking decoration layer)
-  — flag it and I'll spec it.
-- **Embedded code is a 3-token allow-list** (`` `date` ``,
-  `` `datetime` ``, `` `year` ``), not general `` `(form)` ``. Phase 4.
+**Please live-test (per our test-before-merge rule — do not merge on
+tests-green alone):**
+
+1. View menu → *Swap Views…* with ≥2 panes: badges appear top-left of
+   each pane, numbered clockwise-spiral from the top-left pane; type two
+   numbers, Enter swaps them; Esc/`C-g`/backdrop-click cancels; Delete
+   undoes.
+2. *Permute Views…*: it walks pane 1→?, pane 2→?, …; each badge shows
+   `k→d` as assigned; the last is auto-filled; Enter applies all at once.
+3. **The whole point — a browser/pdf/shell pane must NOT reload/blank
+   when moved** (frame-move). Put a live page in one pane, swap it,
+   confirm it survives.
+4. **Two things I couldn't verify and am least sure about:**
+   - *Badge z-order over a focused `<webview>`.* The overlay is
+     z-index 60 and grabs focus, but a `<webview>` guest can paint over
+     sibling DOM. If badges are hidden behind a browser pane, we may need
+     to dim/cover the webview while the overlay is up.
+   - *Multi-digit over a focused browser.* Menu entry focuses the editor
+     first (releasing the key grab) and the overlay re-grabs focus, so
+     digits should reach the window — but this is the exact "webview
+     swallows keys" hazard, worth a direct check.
+   - Minor edge: if the host is resized *during* entry, badge numbers use
+     the entry-time layout while the apply re-derives spiral order — a
+     mismatch is possible. Rare (modal, brief); flagging only.
+
+**Decision I need from you — keybindings (deliberately left unbound).**
+
+I did not bind `swap-views` / `permute-views` to keys — that's
+user-facing taste, and binding blindly risks annoyance. They're reachable
+via the View menu and `M-x`. Free `C-x` slots: `C-x 4`–`C-x 9`.
+
+- **Options**: (a) leave menu/`M-x` only; (b) bind under `C-x` digits
+  (e.g. `C-x 4` swap, `C-x 5` permute) — but `4`/`5` are Emacs
+  other-window/other-frame prefixes, so this diverges from muscle memory;
+  (c) a small mnemonic prefix of your choosing.
+- My lean: (a) for now — the menu is the right primary path anyway, since
+  the commands are most useful when a browser pane is focused and would
+  swallow a chord. Tell me which you want and I'll wire it in `keymap.lisp`.
+
+**State of the work**: branch `swap-permute-views`, 5 commits off `main`
+(`6e502a9` spec is already on `main`). Nothing half-done; tree clean;
+suite green. Ready for your live test, the keybinding call, then merge.
 
 ---

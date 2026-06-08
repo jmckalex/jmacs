@@ -438,6 +438,88 @@ tabline-view[data-edge='right'] .tabline-resizer {
   background: transparent;
 }
 
+/* --- move-views overlay (swap-views / permute-views) ------------------
+   A transient layer above the panes that numbers each pane with a shaded
+   badge and shows a prompt strip. Sits above the panes (and, with luck,
+   a focused <webview>) so the badges are visible. See
+   plans/PANES-SWAP-PERMUTE.md. */
+.move-view-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--bg-editor) 22%, transparent);
+  outline: none;
+}
+
+.move-view-overlay.move-view-beep {
+  animation: move-view-shake 160ms ease-in-out;
+}
+
+@keyframes move-view-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+
+/* One numbered badge per pane, nudged a little in from the pane's
+   top-left corner (its inline left/top are the corner). */
+.move-view-badge {
+  position: absolute;
+  transform: translate(10px, 10px);
+  min-width: 1.4em;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-editor) 78%, #000 22%);
+  color: #fff;
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  font: 600 15px/1.2 ui-monospace, monospace;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+/* A pane whose number matches the digits typed so far. */
+.move-view-badge.is-candidate {
+  background: color-mix(in srgb, var(--accent) 65%, #000 35%);
+  outline-color: var(--accent);
+}
+
+/* (permute) the pane currently being assigned a destination. */
+.move-view-badge.is-current-source {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* (permute) a pane whose destination is set — shows "k→d". */
+.move-view-badge.is-assigned {
+  background: color-mix(in srgb, var(--accent) 30%, #000 50%);
+}
+
+/* (permute) the forced last destination — auto-filled once N-1 panes are
+   assigned. Dashed outline marks it as derived rather than typed. */
+.move-view-badge.is-derived {
+  outline-style: dashed;
+}
+
+/* The instruction strip along the bottom edge. */
+.move-view-prompt {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--bg-editor) 92%, #000 8%);
+  color: color-mix(in srgb, #fff 82%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  font: 13px/1.4 ui-monospace, monospace;
+  pointer-events: none;
+}
+
+.move-view-overlay.is-ready .move-view-prompt {
+  border-top-color: var(--accent);
+  color: #fff;
+}
+
 /* The <text-view> custom element is the per-pane / per-tab editor
    instance. It wraps the .editor div (the createEditorView root). The
    wrapper must be a layout-bearing block that fills its container so
@@ -539,6 +621,74 @@ text-view {
   margin-left: 0.2ch;
 }
 
+/* --- LaTeX math preview widgets ---------------------------------------
+   A replaced-range widget: typeset MathJax SVG shown in place of the
+   source. Inline widgets sit in the text line; block widgets are their
+   own row at the equation's start line (the body source lines are
+   hidden, folding-style). Clicking either reveals the source for
+   editing (point lands just inside the opening delimiter). */
+.math-widget {
+  cursor: pointer;
+}
+.math-widget.math-inline {
+  /* Transparent wrapper. MathJax computes a per-formula baseline offset
+     (a `vertical-align` on its container) so inline math sits on the
+     surrounding text baseline; a `vertical-align: middle` here used to
+     override that, centring the box on the x-height and lifting math
+     with subscript descenders (e.g. w_{ij}) above the baseline. Leaving
+     the wrapper `display: inline` lets the container's own alignment
+     reach the text baseline. */
+  display: inline;
+}
+.math-widget.math-inline mjx-container {
+  /* MathJax's stylesheet (which we don't load) makes the container an
+     inline-block; do it here so its `vertical-align` aligns the math. */
+  display: inline-block;
+}
+.math-widget.math-block {
+  display: block;
+  /* Centre display math, like a typeset \[ … \]. */
+  text-align: center;
+  margin: 0.2lh 0;
+}
+.math-widget mjx-container {
+  /* MathJax sizes the SVG itself; never let it spill the editor width. */
+  max-width: 100%;
+}
+/* MathJax's SVG output ships an assistive-MathML copy of each formula
+   for screen readers. MathJax normally hides it via a stylesheet it
+   injects when it typesets a document — but we build SVGs with
+   `tex2svg()` and mount them ourselves, so that stylesheet is never
+   present, and Chromium (which renders MathML natively) paints the copy
+   visibly, doubling every formula. Reinstate MathJax's own
+   visually-hidden treatment: the node stays in the DOM for assistive
+   tech, but is clipped off-screen. */
+mjx-assistive-mml {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  clip: rect(1px, 1px, 1px, 1px);
+  clip-path: inset(50%);
+  padding: 1px 0 0 0 !important;
+  border: 0 !important;
+  display: block !important;
+  width: auto !important;
+  overflow: hidden !important;
+  user-select: none;
+}
+mjx-assistive-mml[display='block'] {
+  width: 100% !important;
+}
+
+/* Empty or invalid math (empty body, or MathJax parse error): the
+   source is rendered (not a broken widget) with a spell-check-style red
+   wavy underline so the user can see and fix it. */
+.tok-math-invalid,
+.math-invalid {
+  text-decoration: underline wavy var(--tok-error, #e06c75);
+  text-decoration-skip-ink: none;
+}
+
 .editor-content {
   position: relative;
   flex: 1 1 auto;
@@ -583,6 +733,25 @@ text-view {
   background: #ffffff0a;
 }
 
+/* A transient mild-yellow band over a line, fading out — SyncTeX inverse
+   search uses it to call attention to the line it jumped to. Same layer
+   as the current-line band (behind the text); removed after the fade. */
+.editor-line-flash {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 1lh;
+  z-index: 1;
+  background: rgba(255, 209, 102, 0.34);
+  opacity: 1;
+  transition: opacity 1.4s ease-out;
+  pointer-events: none;
+}
+
+.editor-line-flash.is-fading {
+  opacity: 0;
+}
+
 .editor-lines {
   position: relative;
   z-index: 2;
@@ -598,6 +767,15 @@ text-view {
    * --tab-width var on the root element when the setting changes). */
   tab-size: var(--tab-width, 4);
   -moz-tab-size: var(--tab-width, 4);
+}
+
+/* A block (display) math widget line. Its height is reserved inline to
+   the block's source-line span (so a tall equation doesn't overflow onto
+   the next line); `right: 0` stretches the line to the full text width
+   (it's otherwise shrink-to-fit) so `.math-block`'s `text-align: center`
+   actually has room to centre the equation. */
+.editor-line.has-block-math {
+  right: 0;
 }
 
 /* --- cursor ------------------------------------------------------------ */
@@ -794,20 +972,110 @@ text-view {
   color: var(--fg);
 }
 
-/* --- REPL --------------------------------------------------------------- */
+/* --- Utility dock ------------------------------------------------------- */
+/* The tabbed chrome region at the bottom: a tab strip + a content area that
+   hosts the REPL (resident) and transient tool panels. It occupies the space
+   the REPL used to own; sized by the (legacy-named) --repl-height var + the
+   #utility-splitter. */
 
-.repl-host {
+.utility-host {
   flex: 0 0 var(--repl-height);
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--bg-repl);
   border-top: 1px solid #00000055;
 }
 
-/* toggle-repl (C-x p) hides the panel; the editor takes the freed space.
+/* toggle (C-x p) hides the whole dock; the editor takes the freed space.
    The splitter goes with it — there's nothing to resize. */
-body.repl-hidden .repl-host,
-body.repl-hidden #repl-splitter {
+body.utility-hidden .utility-host,
+body.utility-hidden #utility-splitter {
   display: none;
+}
+
+.utility-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid #ffffff14;
+}
+
+.utility-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 5px 5px 0 0;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.utility-tab:hover {
+  background: #ffffff0a;
+  color: var(--fg);
+}
+
+.utility-tab.is-active {
+  background: #ffffff14;
+  color: var(--fg);
+}
+
+.utility-tab-icon {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.utility-tab-close {
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--fg-dim);
+  opacity: 0.7;
+}
+
+.utility-tab-close:hover {
+  background: #ffffff1a;
+  color: var(--fg);
+  opacity: 1;
+}
+
+.utility-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.utility-panel {
+  height: 100%;
+  outline: none;
+}
+
+/* Generic output/log panel (compile output, process logs). */
+.utility-output {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.utility-output-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
 }
 
 .repl {
@@ -926,28 +1194,15 @@ body.markdown-preview-hidden #preview-splitter {
   user-select: none;
 }
 
-.markdown-preview-body {
+/* The preview renders into an isolated iframe; its inner styling comes
+   from markdown-preview.css (and the user's *markdown-preview-css*), not
+   from here. This rule only sizes the frame to fill the pane. */
+.markdown-preview-frame {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
-  padding: 14px 20px;
+  width: 100%;
+  border: 0;
   background: #ffffff;
-  color: #1a1a1a;
-  font-family: var(--font-ui, system-ui, sans-serif);
-  font-size: 14px;
-  line-height: 1.6;
-  user-select: text;
-}
-
-.markdown-preview-body img {
-  max-width: 100%;
-}
-
-.markdown-preview-body pre {
-  overflow-x: auto;
-  background: #f4f4f4;
-  padding: 8px 10px;
-  border-radius: 4px;
 }
 
 /* --- drag-resize splitters --------------------------------------------- */
@@ -983,13 +1238,25 @@ body.markdown-preview-hidden #preview-splitter {
 
 /* --- minibuffer --------------------------------------------------------- */
 
-.minibuffer {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 7px 14px;
+/* The footer host always renders at a fixed 32px tall — no bounce as
+   the prompt / echo rows show and hide. The host owns the background
+   tint and a soft grey divider; children sit transparently over it,
+   centred vertically by flex so a small font-metrics drift from the
+   inherited mono line-height can't push the host taller. */
+#minibuffer-host {
+  height: 32px;
   background: var(--bg-chrome);
-  border-top: 1px solid var(--accent);
+  border-top: 1px solid color-mix(in srgb, var(--fg-dim) 40%, transparent);
+  box-sizing: border-box;
+}
+
+.minibuffer {
+  height: 31px;          /* host content area = 32 total - 1 border */
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
   font-size: 13px;
 }
 
@@ -1018,11 +1285,15 @@ body.markdown-preview-hidden #preview-splitter {
 
 /* The echo area: a single-line note shown along the footer when no
    minibuffer prompt is open. Used by the keymap to surface a
-   mid-build chord prefix ("C-x-") and other transient messages. */
+   mid-build chord prefix ("C-x-") and other transient messages. The
+   tint + divider are owned by #minibuffer-host above; the echo only
+   adds its text. */
 .minibuffer-echo {
-  padding: 7px 14px;
-  background: var(--bg-chrome);
-  border-top: 1px solid var(--accent);
+  height: 31px;          /* matches .minibuffer; locks the row height */
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
   font-size: 13px;
   color: var(--fg-dim);
   user-select: none;
@@ -2268,6 +2539,27 @@ pdf-view,
   background: rgba(255, 150, 0, 0.75);
 }
 
+/* Forward SyncTeX (C-c C-v) flash: a translucent accent box the viewer
+   drops at the source line's typeset spot, then fades out. It sits over
+   the page container in CSS-px coords; pointer-events are off so it never
+   eats an Option-click. The `.is-fading` class trips the opacity
+   transition once the element is in the DOM. */
+.pdf-synctex-highlight {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(109, 164, 255, 0.40);
+  border: 1px solid rgba(109, 164, 255, 0.85);
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(109, 164, 255, 0.6);
+  opacity: 1;
+  transition: opacity 1.2s ease-out;
+  z-index: 5;
+}
+
+.pdf-synctex-highlight.is-fading {
+  opacity: 0;
+}
+
 .pdf-status {
   flex: 0 0 auto;
   padding: 4px 10px;
@@ -2399,6 +2691,148 @@ browser-view,
 
 /* Phase 3g: `<directory-tree-view>` is the custom element. */
 directory-tree-view,
+/* --- bookmark view ------------------------------------------------------ */
+
+.bookmark-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.bookmark-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+}
+
+.bookmark-title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.bookmark-subtitle {
+  color: var(--fg-dim);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.bookmark-empty {
+  padding: 24px 16px;
+  color: var(--fg-dim);
+  text-align: center;
+  font-style: italic;
+}
+
+.bookmark-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 14px 3px 8px;
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+  border-left: 2px solid transparent;
+}
+
+.bookmark-row:hover {
+  background: #ffffff0a;
+}
+
+.bookmark-row.is-selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-left-color: var(--accent);
+}
+
+/* Disclosure triangle — fixed slot so names stay aligned; rotates open.
+   Leaf rows reserve the same slot but hide the glyph. */
+.bookmark-twist {
+  flex: 0 0 auto;
+  width: 14px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  text-align: center;
+  transition: transform 0.1s ease-out;
+  cursor: pointer;
+}
+
+.bookmark-twist.is-leaf {
+  visibility: hidden;
+  cursor: default;
+}
+
+.bookmark-twist.is-open {
+  transform: rotate(90deg);
+}
+
+.bookmark-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bookmark-pos {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bookmark-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0 4px;
+  font: inherit;
+  outline: none;
+}
+
+/* Right-click context menu (rename / delete). */
+.bookmark-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 140px;
+  padding: 4px;
+  background: var(--bg-chrome, #2a2f3a);
+  border: 1px solid #ffffff1f;
+  border-radius: 6px;
+  box-shadow: 0 6px 24px #00000066;
+  font-size: 13px;
+}
+
+.bookmark-menu-item {
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bookmark-menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
 .directory-tree-view {
   display: flex;
   flex-direction: column;
@@ -2535,6 +2969,652 @@ directory-tree-view,
   color: var(--fg-dim);
   font-size: 12px;
   padding: 2px 14px;
+}
+
+/* --- view-list-view -------------------------------------------------- */
+/* The *View List*: a clickable HTML table of every open view, replacing
+   the old fixed-width text *Buffer List*. Click a row to switch to that
+   view; the trailing ✕ kills it. Mirrors the directory-tree-view shell
+   (header + scrolling body) and uses the project tokens. */
+
+view-list-view,
+.view-list-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.view-list-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.view-list-header-label {
+  flex: 1 1 auto;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.view-list-refresh {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.view-list-refresh:hover {
+  color: var(--fg);
+  background: #ffffff0a;
+}
+
+.view-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.view-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.view-list-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  background: var(--bg-editor);
+  padding: 8px 12px;
+  border-bottom: 1px solid #ffffff14;
+  white-space: nowrap;
+}
+
+.view-list-row {
+  cursor: pointer;
+  user-select: none;
+}
+
+.view-list-row > td {
+  padding: 5px 12px;
+  border-bottom: 1px solid #ffffff0a;
+  white-space: nowrap;
+}
+
+.view-list-row:hover {
+  background: #ffffff0a;
+}
+
+.view-list-row.is-current {
+  background: #ffffff14;
+}
+
+.view-list-row.is-current .view-list-name {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* Modified dot — a tight fixed column. */
+.view-list-modified {
+  width: 1em;
+  text-align: center;
+  color: var(--accent);
+}
+
+.view-list-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22ch;
+}
+
+.view-list-kind {
+  color: var(--fg-dim);
+}
+
+.view-list-lines {
+  text-align: right;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.view-list-pane {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.view-list-file {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 36ch;
+  direction: rtl;        /* keep the tail (the filename) visible when clipped */
+  text-align: left;
+}
+
+.view-list-kill {
+  width: 1.5em;
+  text-align: center;
+}
+
+.view-list-kill-btn {
+  border: none;
+  background: transparent;
+  color: transparent;    /* revealed on row hover */
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.view-list-row:hover .view-list-kill-btn {
+  color: var(--fg-dim);
+}
+
+.view-list-kill-btn:hover {
+  color: #ff6b6b;
+  background: #ffffff0a;
+}
+
+/* --- reftex pickers (utility-pane tabs) ----------------------------- */
+/* The RefTeX pickers are NOT pane views — the host mounts each panel as a
+   tab in the utility dock (the bottom chrome region; see .utility-host).
+   The *RefTeX Select* picker (labels/refs) groups candidates by type, each
+   row a name + macro hint + a one-line context; the cite panels (R3) are
+   below. Keyboard-driven; the highlighted row is `.is-current`. */
+
+/* In the utility dock the panels fill the (splitter-resizable) dock height,
+   not their old 60vh overlay cap. */
+.utility-panel .reftex-select-view,
+.utility-panel .reftex-cite-view {
+  max-height: 100%;
+  height: 100%;
+}
+
+reftex-select-view,
+.reftex-select-view {
+  display: flex;
+  flex-direction: column;
+  max-height: 60vh;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+  border-top: 1px solid #ffffff1a;
+}
+
+.reftex-select-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.reftex-select-header-label {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.reftex-select-filter {
+  flex: 1 1 auto;
+  color: var(--accent);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.reftex-select-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.reftex-select-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  background: var(--bg-editor);
+  padding: 6px 14px;
+  border-bottom: 1px solid #ffffff0a;
+}
+
+.reftex-select-row {
+  cursor: pointer;
+  user-select: none;
+  padding: 5px 14px;
+  border-bottom: 1px solid #ffffff0a;
+}
+
+.reftex-select-row:hover {
+  background: #ffffff0a;
+}
+
+.reftex-select-row.is-current {
+  background: #ffffff14;
+}
+
+.reftex-select-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.reftex-select-name {
+  font-family: var(--font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reftex-select-row.is-current .reftex-select-name {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.reftex-select-macro {
+  margin-left: auto;
+  color: var(--fg-dim);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.reftex-select-context {
+  color: var(--fg-dim);
+  font-size: 12px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reftex-select-empty {
+  padding: 16px;
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.reftex-select-hint {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  border-top: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+/* --- reftex citation panels (utility-pane tabs) --------------------- */
+/* R3's two cite panels share the `reftex-cite` utility tab: the format menu
+   (choose a \cite-family macro) and the picker (CSL-formatted, searchable,
+   markable references). Full width so a formatted reference fits on a line. */
+
+.reftex-cite-view {
+  display: flex;
+  flex-direction: column;
+  max-height: 60vh;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+  border-top: 1px solid #ffffff1a;
+}
+
+.reftex-cite-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.reftex-cite-header-label {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.reftex-cite-filter {
+  flex: 1 1 auto;
+  color: var(--accent);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+/* The cite picker's search box. Keystrokes are captured by the dock and
+   routed to handleKey (no native <input> takes focus), so this is a
+   styled display of the live filter + a blinking caret, made to read as a
+   real text field. */
+.reftex-cite-search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 16px 4px;
+  padding: 7px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: #00000026;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.reftex-cite-search-icon {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+/* text + caret + placeholder as one no-gap inline group, so the caret
+   hugs the typed text instead of the outer flex gap pushing it away. */
+.reftex-cite-search-field {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.reftex-cite-search-text {
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reftex-cite-search-placeholder {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.reftex-cite-caret {
+  align-self: stretch;
+  width: 0;
+  margin: 1px 0;
+  border-left: 2px solid var(--accent);
+  animation: reftex-cite-caret-blink 1.05s steps(1) infinite;
+}
+
+@keyframes reftex-cite-caret-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+/* Format menu: macro choices, each with a key chip. */
+.reftex-cite-format-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 14px 16px;
+}
+
+.reftex-cite-format-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+.reftex-cite-format-row:hover {
+  background: #ffffff0a;
+}
+
+.reftex-cite-format-key {
+  display: inline-block;
+  min-width: 1.4em;
+  text-align: center;
+  padding: 1px 6px;
+  border: 1px solid #ffffff2a;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.reftex-cite-format-macro {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+
+.reftex-cite-format-desc {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+/* Picker: a scrolling list of formatted references. */
+.reftex-cite-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.reftex-cite-row {
+  cursor: pointer;
+  user-select: none;
+  padding: 8px 16px;
+  border-bottom: 1px solid #ffffff0a;
+}
+
+.reftex-cite-row:hover {
+  background: #ffffff0a;
+}
+
+.reftex-cite-row.is-current {
+  background: #ffffff14;
+}
+
+/* A left accent bar marks the entries chosen for a multi-key \cite. */
+.reftex-cite-row.is-marked {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.reftex-cite-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.reftex-cite-mark {
+  width: 1ch;
+  color: var(--accent);
+}
+
+.reftex-cite-key {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.reftex-cite-row.is-current .reftex-cite-key {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.reftex-cite-ref {
+  margin-top: 3px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.reftex-cite-ref i {
+  font-style: italic;
+}
+
+/* citation.js Vancouver-style numbering: a left margin + right inline. */
+.reftex-cite-ref .csl-left-margin {
+  display: inline-block;
+  min-width: 2em;
+  color: var(--fg-dim);
+}
+
+.reftex-cite-ref .csl-right-inline {
+  display: inline;
+}
+
+.reftex-cite-empty {
+  padding: 16px;
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.reftex-cite-hint {
+  flex: 0 0 auto;
+  padding: 6px 16px;
+  border-top: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+/* --- placeholder-view ------------------------------------------------- */
+/* The chooser a freshly-split pane shows until the user decides what it
+   should hold. A centred prompt with o/c/s/r accelerator chips, an Enter
+   default, and a command-mode bare input. Themed with the project tokens
+   to match the editor surface. */
+
+placeholder-view,
+.placeholder-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  user-select: none;
+}
+
+.placeholder-chooser {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 24px 28px;
+  max-width: 90%;
+  text-align: center;
+}
+
+.placeholder-prompt {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--fg);
+}
+
+.placeholder-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.placeholder-chip {
+  border: 1px solid color-mix(in srgb, var(--fg-dim) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.placeholder-chip:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.placeholder-chip:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+.placeholder-chip.is-disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* The underlined accelerator letter inside a chip. */
+.placeholder-accel {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.placeholder-hint {
+  font-size: 11px;
+  color: var(--fg-dim);
+  letter-spacing: 0.02em;
+}
+
+/* Command mode: a short label above a bare centred input. */
+.placeholder-command {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 28px;
+}
+
+.placeholder-command-label {
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+
+.placeholder-command-input {
+  width: 320px;
+  max-width: 70vw;
+  border: 1px solid color-mix(in srgb, var(--fg-dim) 50%, transparent);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.placeholder-command-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent);
 }
 
 /* --- directory columns-view ------------------------------------------ */
@@ -3312,4 +4392,465 @@ shell-view,
   text-transform: lowercase;
   letter-spacing: 0.04em;
   opacity: 0.75;
+}
+
+/* --- gnuplot view ------------------------------------------------------ */
+/* A `gnuplot`-kind buffer is shown through this view as an interactive
+   notebook REPL: a scrolling column of per-command cells (echoed
+   command + inline SVG plot / text / error) above a bottom input line.
+   Each gnuplot view owns one long-lived gnuplot child (managed by the
+   host). The plot SVGs bake their own dark page background, so the cells
+   only need to frame them. */
+
+gnuplot-view,
+.gnuplot-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.gnuplot-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.gnuplot-header-label {
+  overflow-wrap: anywhere;
+}
+
+/* Theme selector — pushed to the right edge of the header. Changes the
+   colours of subsequent plots (the SVG output), not the view chrome. */
+.gnuplot-theme-select {
+  margin-left: auto;
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid #ffffff1f;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gnuplot-theme-select:hover {
+  border-color: var(--accent);
+}
+
+/* The scrolling transcript of cells. `min-height: 0` lets it shrink
+   inside the flex column so the input row stays pinned at the bottom. */
+.gnuplot-transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* One cell per submitted command. */
+.gnuplot-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #ffffff10;
+  border-radius: 8px;
+  background: #ffffff06;
+}
+
+.gnuplot-cell-pending {
+  opacity: 0.7;
+}
+
+.gnuplot-cell-error {
+  border-color: var(--ansi-red, #ff6b8a)44;
+}
+
+.gnuplot-cell-command {
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gnuplot-cell-prompt {
+  color: var(--ansi-green, #7ed491);
+  user-select: none;
+}
+
+.gnuplot-cell-text {
+  color: var(--fg);
+}
+
+/* The inline plot. The SVG scales to the cell width (the host renders it
+   with the `dynamic` svg terminal option). */
+.gnuplot-cell-plot {
+  width: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.gnuplot-cell-plot svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Right-click menu on a plot (Save plot as… / Copy SVG). */
+.gnuplot-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--bg-chrome, #2a2f3a);
+  border: 1px solid #ffffff1f;
+  border-radius: 6px;
+  box-shadow: 0 6px 24px #00000066;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.gnuplot-menu-item {
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.gnuplot-menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.gnuplot-cell-stdout,
+.gnuplot-cell-stderr,
+.gnuplot-cell-warn,
+.gnuplot-cell-empty {
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gnuplot-cell-stdout {
+  color: var(--fg);
+}
+
+.gnuplot-cell-stderr {
+  color: var(--ansi-red, #ff6b8a);
+}
+
+/* A non-fatal gnuplot notice shown beneath a successful plot. */
+.gnuplot-cell-warn {
+  color: var(--ansi-yellow, #e2b340);
+}
+
+.gnuplot-cell-empty {
+  color: var(--fg-dim);
+  font-style: italic;
+  opacity: 0.7;
+}
+
+/* A dim note when the gnuplot process exits. */
+.gnuplot-exit-note {
+  color: var(--fg-dim);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* The bottom input line: a prompt glyph + a text input. */
+.gnuplot-input-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid #ffffff14;
+  background: var(--bg-editor);
+}
+
+.gnuplot-prompt {
+  color: var(--ansi-green, #7ed491);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  user-select: none;
+}
+
+.gnuplot-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  caret-color: var(--fg);
+}
+
+.gnuplot-input::placeholder {
+  color: var(--fg-dim);
+  opacity: 0.6;
+}
+
+.gnuplot-input:disabled {
+  opacity: 0.5;
+}
+
+/* The graceful-degradation card shown when gnuplot isn't installed.
+   `white-space: pre-line` so the \n-separated install hints render as
+   real line breaks. */
+.gnuplot-not-installed {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: 460px;
+  padding: 28px 32px;
+  text-align: center;
+  color: var(--fg-dim);
+}
+
+.gnuplot-not-installed-icon {
+  font-size: 40px;
+  opacity: 0.35;
+}
+
+.gnuplot-not-installed-text {
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-line;
+  text-align: left;
+  color: var(--fg);
+}
+
+/* --- notebook view ----------------------------------------------------- */
+/* A `notebook`-kind buffer is shown as a reactive Lisp notebook: a column
+   of cells, each a name field + a multi-line expression editor + a live
+   result panel + a state badge. Editing any cell recomputes everything
+   downstream. */
+
+notebook-view,
+.notebook-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.notebook-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #ffffff14;
+  color: var(--fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.notebook-header-label {
+  overflow-wrap: anywhere;
+}
+
+/* The notebook picker — switches which open notebook is shown. */
+.notebook-select {
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid #ffffff1f;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12px;
+  max-width: 40ch;
+  cursor: pointer;
+}
+.notebook-select:hover {
+  border-color: var(--accent);
+}
+
+/* Rename: a ✎ button that swaps the picker for a text field. */
+.notebook-rename-btn {
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.notebook-rename-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.notebook-rename-field {
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12px;
+  max-width: 32ch;
+}
+
+.notebook-add-cell {
+  margin-left: auto;
+  background: var(--bg-chrome, #2a2f3a);
+  color: var(--fg);
+  border: 1px solid #ffffff1f;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.notebook-add-cell:hover {
+  border-color: var(--accent);
+}
+
+/* The scrolling column of cells. `min-height: 0` lets it shrink inside
+   the flex column. */
+.notebook-cells {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* One cell: [ gutter badge ] [ body: name + expr + result ] [ × ]. */
+.notebook-cell {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid #ffffff14;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+
+.notebook-cell[data-state='error'] {
+  border-color: color-mix(in srgb, var(--error, #e06c75) 55%, transparent);
+}
+
+.notebook-cell-gutter {
+  display: flex;
+  justify-content: center;
+  padding-top: 3px;
+}
+
+.notebook-badge {
+  font-size: 12px;
+  line-height: 1;
+  user-select: none;
+}
+.notebook-badge-ok { color: var(--ok, #7ed491); }
+.notebook-badge-stale { color: var(--fg-dim); opacity: 0.6; }
+.notebook-badge-error { color: var(--error, #e06c75); }
+.notebook-badge-cycle { color: var(--ansi-yellow, #e2b340); }
+
+.notebook-cell-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.notebook-cell-name {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  padding: 0 0 1px;
+  outline: none;
+  /* Width follows the `size` attribute the view keeps in sync with the
+     name, so long names ("circumference") aren't clipped. */
+  min-width: 4ch;
+}
+.notebook-cell-name:focus {
+  border-bottom-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.notebook-cell-expr {
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  resize: none;
+  outline: none;
+  padding: 0;
+  width: 100%;
+  overflow: hidden;
+  white-space: pre;
+}
+
+.notebook-cell-result {
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-height: 1em;
+}
+.notebook-cell[data-state='error'] .notebook-cell-result {
+  color: var(--error, #e06c75);
+}
+
+/* A cell that returned an inline graphic (SVG) draws it here. */
+.notebook-cell-result.notebook-cell-graphic {
+  margin-top: 4px;
+}
+.notebook-cell-graphic svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.notebook-cell-delete {
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.notebook-cell:hover .notebook-cell-delete {
+  opacity: 0.7;
+}
+.notebook-cell-delete:hover {
+  color: var(--error, #e06c75);
+  opacity: 1;
 }

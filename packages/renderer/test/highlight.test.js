@@ -175,7 +175,14 @@ test('the new languages reconstruct the line', () => {
 
 // --- multi-line tokenizers --------------------------------------------
 
-import { highlightBuffer, highlightLatexBuffer, highlightMakefileBuffer } from '../src/highlight.js';
+import {
+  highlightBuffer,
+  highlightLatexBuffer,
+  highlightMakefileBuffer,
+  highlightMarkdownBuffer,
+  overlayMarkdownMath,
+  markdownMathInjections,
+} from '../src/highlight.js';
 
 /** A line's faces, in order. */
 const lineFaces = (lines, n) => lines[n].map((r) => r.face);
@@ -256,4 +263,189 @@ test('Makefile: lines outside define still go through the per-line tokenizer', (
   assert.ok(lines[0].some((r) => r.face === 'constant' && r.text === 'CC'));
   assert.ok(lines[1].some((r) => r.face === 'keyword' && r.text === 'all'));
   assert.ok(lines[2].some((r) => r.face === 'constant' && r.text === '$(CC)'));
+});
+
+// --- Markdown with embedded LaTeX math --------------------------------
+
+/** All runs of a line whose face matches. */
+const lineRunsWithFace = (lines, n, face) =>
+  lines[n].filter((r) => r.face === face);
+
+test('Markdown: inline $…$ tokenizes the body as LaTeX, delimiters as string', () => {
+  const lines = highlightMarkdownBuffer('the $\\alpha + x$ end');
+  assert.equal(lines.length, 1);
+  assert.deepEqual(lineFaces(lines, 0), [
+    null, 'string', 'keyword', null, 'string', null,
+  ]);
+  // The control sequence in the body is keyword-styled.
+  assert.ok(lines[0].some((r) => r.face === 'keyword' && r.text === '\\alpha'));
+  // The delimiters are the string face.
+  assert.deepEqual(
+    lineRunsWithFace(lines, 0, 'string').map((r) => r.text),
+    ['$', '$']
+  );
+  assert.equal(lineText(lines, 0), 'the $\\alpha + x$ end');
+});
+
+test('Markdown: display $$…$$ spans lines, body highlighted as LaTeX', () => {
+  const src = '$$\n\\frac{a}{b}\n$$';
+  const lines = highlightMarkdownBuffer(src);
+  assert.equal(lines.length, 3);
+  assert.deepEqual(lines[0], [{ text: '$$', face: 'string' }]);
+  assert.ok(lines[1].some((r) => r.face === 'keyword' && r.text === '\\frac'));
+  assert.ok(lines[1].some((r) => r.face === 'paren' && r.text === '{'));
+  assert.deepEqual(lines[2], [{ text: '$$', face: 'string' }]);
+  assert.equal(src.split('\n').join('\n'),
+    lines.map((_, i) => lineText(lines, i)).join('\n'));
+});
+
+test('Markdown: \\(…\\) and \\[…\\] are recognised', () => {
+  const inline = highlightMarkdownBuffer('see \\(a+b\\) ok');
+  assert.deepEqual(
+    lineRunsWithFace(inline, 0, 'string').map((r) => r.text),
+    ['\\(', '\\)']
+  );
+  assert.equal(lineText(inline, 0), 'see \\(a+b\\) ok');
+
+  const block = highlightMarkdownBuffer('\\[\nx = y\n\\]');
+  assert.deepEqual(block[0], [{ text: '\\[', face: 'string' }]);
+  assert.deepEqual(block[2], [{ text: '\\]', face: 'string' }]);
+});
+
+test('Markdown: an escaped \\$ is not a math delimiter', () => {
+  const lines = highlightMarkdownBuffer('it cost \\$5 today');
+  assert.equal(lineRunsWithFace(lines, 0, 'string').length, 0);
+  assert.equal(lineText(lines, 0), 'it cost \\$5 today');
+});
+
+test('Markdown: $…$ inside an inline code span is not math', () => {
+  const lines = highlightMarkdownBuffer('use `$x$` here');
+  // No math: the code span keeps its markdown `code` face, no `string`.
+  assert.equal(lineRunsWithFace(lines, 0, 'string').length, 0);
+  assert.ok(lines[0].some((r) => r.face === 'code' && r.text === '`$x$`'));
+});
+
+test('Markdown: $…$ inside a fenced code block is not math', () => {
+  const lines = highlightMarkdownBuffer('```\n$x$\n```');
+  assert.equal(lines.length, 3);
+  // The fenced body line has no math `string` run.
+  assert.equal(lineRunsWithFace(lines, 1, 'string').length, 0);
+  assert.equal(lineText(lines, 1), '$x$');
+});
+
+test('Markdown: non-math lines are byte-identical to the per-line tokenizer', () => {
+  const src =
+    '# Heading\n\nA *strong* and `code` and [link](u).\n- item\n> quote';
+  const lines = highlightMarkdownBuffer(src);
+  const expected = src.split('\n');
+  assert.equal(lines.length, expected.length);
+  for (let i = 0; i < expected.length; i += 1) {
+    assert.deepEqual(lines[i], highlightLine(expected[i], 'markdown'));
+  }
+});
+
+test('Markdown: the whole-buffer dispatcher routes markdown here', () => {
+  assert.deepEqual(
+    highlightBuffer('a $x$ b', 'markdown'),
+    highlightMarkdownBuffer('a $x$ b')
+  );
+});
+
+// overlayMarkdownMath is the integration point the editor view uses: it
+// splices math onto runs produced by the *tree-sitter* markdown
+// highlighter, which has no notion of `$…$`. These tests feed it base
+// runs shaped like that highlighter's output.
+
+test('overlayMarkdownMath splices LaTeX onto pre-existing runs', () => {
+  // A highlighter that returned the whole line as one plain run.
+  const line = 'the $\\alpha$ end';
+  const out = overlayMarkdownMath(line, [[{ text: line, face: null }]]);
+  assert.ok(out[0].some((r) => r.face === 'keyword' && r.text === '\\alpha'));
+  assert.deepEqual(
+    out[0].filter((r) => r.face === 'string').map((r) => r.text),
+    ['$', '$']
+  );
+  assert.equal(out[0].map((r) => r.text).join(''), line);
+});
+
+test('overlayMarkdownMath preserves the surrounding runs and their faces', () => {
+  const line = 'a *b* $x$';
+  const base = [[
+    { text: 'a ', face: null },
+    { text: '*b*', face: 'strong' },
+    { text: ' $x$', face: null },
+  ]];
+  const out = overlayMarkdownMath(line, base);
+  assert.ok(out[0].some((r) => r.face === 'strong' && r.text === '*b*'));
+  assert.deepEqual(
+    out[0].filter((r) => r.face === 'string').map((r) => r.text),
+    ['$', '$']
+  );
+  assert.equal(out[0].map((r) => r.text).join(''), line);
+});
+
+test('overlayMarkdownMath returns the runs unchanged when there is no math', () => {
+  const base = [[{ text: 'plain text', face: null }]];
+  assert.equal(overlayMarkdownMath('plain text', base), base);
+});
+
+test('overlayMarkdownMath spans multiple lines for display math', () => {
+  const src = 'before\n$$\n\\frac{a}{b}\n$$\nafter';
+  const base = src.split('\n').map((line) => [{ text: line, face: null }]);
+  const out = overlayMarkdownMath(src, base);
+  assert.deepEqual(out[1], [{ text: '$$', face: 'string' }]);
+  assert.ok(out[2].some((r) => r.face === 'keyword' && r.text === '\\frac'));
+  assert.deepEqual(out[3], [{ text: '$$', face: 'string' }]);
+  // Untouched lines pass through by reference.
+  assert.equal(out[0], base[0]);
+  assert.equal(out[4], base[4]);
+});
+
+test('overlayMarkdownMath faces a \\begin{…} environment via tokenizeLatex', () => {
+  // Environments have variable-length delimiters, so the overlay hands
+  // the whole thing to tokenizeLatex — \begin/\end face as keywords, not
+  // as 2-char delimiters.
+  const src = '\\begin{align}\na &= b\n\\end{align}';
+  const base = src.split('\n').map((line) => [{ text: line, face: null }]);
+  const out = overlayMarkdownMath(src, base);
+  assert.ok(out[0].some((r) => r.face === 'keyword' && r.text === '\\begin'));
+  assert.ok(out[2].some((r) => r.face === 'keyword' && r.text === '\\end'));
+  assert.equal(out[0].map((r) => r.text).join(''), '\\begin{align}');
+});
+
+// markdownMathInjections is the primary path: the `markdown_inline`
+// grammar's injection provider, routing each math region to the latex
+// grammar. The view wires it through tree-sitter; these test the pure
+// detection + range that feeds the injection.
+
+test('markdownMathInjections targets latex over the whole delimited span', () => {
+  const src = 'the $x^2$ end';
+  const injs = markdownMathInjections(src);
+  assert.equal(injs.length, 1);
+  assert.equal(injs[0].language, 'latex');
+  assert.equal(src.slice(injs[0].start, injs[0].end), '$x^2$');
+});
+
+test('markdownMathInjections covers every MathJax delimiter pair', () => {
+  for (const span of ['$a$', '$$a$$', '\\(a\\)', '\\[a\\]']) {
+    const injs = markdownMathInjections(span);
+    assert.equal(injs.length, 1, span);
+    assert.equal(span.slice(injs[0].start, injs[0].end), span, span);
+    assert.equal(injs[0].language, 'latex', span);
+  }
+});
+
+test('markdownMathInjections recognises \\begin{…} math environments', () => {
+  const src = '\\begin{align}\na &= b\n\\end{align}';
+  const injs = markdownMathInjections(src);
+  assert.equal(injs.length, 1);
+  assert.equal(src.slice(injs[0].start, injs[0].end), src);
+});
+
+test('markdownMathInjections ignores math inside inline code', () => {
+  assert.deepEqual(markdownMathInjections('use `$x$` here'), []);
+});
+
+test('markdownMathInjections ignores an escaped \\$', () => {
+  assert.deepEqual(markdownMathInjections('it cost \\$5 and \\$10'), []);
 });

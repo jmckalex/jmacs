@@ -11,6 +11,15 @@
 ;;; are bound by name and resolved late, so redefining one takes effect
 ;;; immediately.
 
+;; The C-x r prefix map — bookmarks (Emacs's register/bookmark family).
+;; C-x r m set · C-x r b jump. (C-x r l list arrives with the bookmark
+;; view.) C-x r d is left free — it is delete-rectangle in Emacs; delete
+;; a bookmark via M-x bookmark-delete or the bookmark list.
+(define bookmark-keymap
+  {"m" 'bookmark-set
+   "b" 'bookmark-jump
+   "l" 'list-bookmarks})
+
 ;; The C-x prefix map — keys reached by first pressing C-x.
 (define c-x-keymap
   {"C-f"   'find-file
@@ -31,6 +40,8 @@
    "j"     'jukebox
    "C-x"   'exchange-point-and-mark
    "C-e"   'eval-expression-before-point
+   ;; C-x r — bookmarks (set / jump; see bookmark-keymap above).
+   "r"     bookmark-keymap
    ;; Panes (phase 3a of plans/PANES.md) — Emacs's C-x 2/3/0/1/o.
    "0"     'delete-pane
    "1"     'delete-other-panes
@@ -58,6 +69,7 @@
   {"k" 'describe-key
    "f" 'describe-command
    "F" 'describe-face-at-point
+   "C-f" 'highlight-construct-at-point
    "a" 'apropos-doc
    "." 'describe-symbol-at-point})
 
@@ -85,7 +97,15 @@
    ;; Multi-cursor (see multi-cursor.lisp). C-c d adds the next match;
    ;; C-c D selects all matches of the current word/region.
    "d"         'add-cursor-next
-   "D"         'select-all-matches})
+   "D"         'select-all-matches
+   ;; C-c g opens a gnuplot buffer (see gnuplot.lisp). Bound by symbol;
+   ;; the command resolves at dispatch time, so load order doesn't matter.
+   "g"         'gnuplot
+   ;; C-c n opens a reactive Lisp notebook (see notebook-commands.lisp);
+   ;; C-c C-n / C-c C-p cycle among open notebooks.
+   "n"         'notebook
+   "C-n"       'next-notebook
+   "C-p"       'previous-notebook})
 
 ;; The root keymap.
 (define the-keymap
@@ -319,6 +339,15 @@
 (define (read-next-key callback)
   "Route the next keystroke to CALLBACK rather than the keymap."
   (set! *key-reader* callback))
+
+(define (chord-in-progress?)
+  "True when a multi-key sequence is mid-flight (a prefix chord has
+   started) or a key-reader is pending — i.e. the next keystroke, even a
+   plain character, should be routed to the keymap rather than typed. A
+   non-text input view (e.g. the gnuplot prompt) consults this so the
+   continuation of C-x 3 etc. completes even though `3` carries no
+   modifier."
+  (or (not (nil? active-keymap)) (not (nil? *key-reader*))))
 
 (define (handle-key key)
   "Dispatch KEY. If a key-reader is pending it receives the key;

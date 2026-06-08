@@ -211,6 +211,21 @@ export function createPanePrimitives(paneHost) {
       const pane = paneHost.focusPaneDirection(direction);
       return pane ?? NIL;
     },
+    // `(focus-pane! pane)` — move focus to a *specific* leaf pane handle,
+    // rebinding the current view/buffer to it. The absolute counterpart
+    // to `other-pane!` / `focus-pane-direction!`, which move focus
+    // relatively; this focuses a pane the caller already holds (e.g. the
+    // pane that shows a particular file). Returns the focused pane
+    // handle, or nil when PANE isn't a focusable leaf (a split node, a
+    // stale handle, or a non-pane argument).
+    'focus-pane!': (args) => {
+      const pane = args[0];
+      if (pane === null || pane === undefined || pane === NIL) return NIL;
+      if (typeof pane !== 'object' || pane.kind !== 'leaf') return NIL;
+      if (typeof paneHost.focusPane !== 'function') return NIL;
+      const focused = paneHost.focusPane(pane);
+      return focused ?? NIL;
+    },
     // `(balance-panes!)` — reset every split node's ratio to 0.5.
     // Returns nil.
     'balance-panes!': () => {
@@ -412,6 +427,34 @@ export function createPanePrimitives(paneHost) {
       if (typeof paneHost.swapPanes !== 'function') return false;
       return paneHost.swapPanes(a, b) === true;
     },
+    // `(panes-in-spiral-order)` — every pane (leaf) handle in the
+    // clockwise-spiral badge numbering used by swap-views / permute-views:
+    // slot 1 is the top-left pane; numbering increases clockwise and
+    // spirals inward (see plans/PANES-SWAP-PERMUTE.md). Returns a Lisp
+    // list of pane handles (its length is the pane count), or nil when
+    // the host can't enumerate panes.
+    'panes-in-spiral-order': () => {
+      if (typeof paneHost.panesInSpiralOrder !== 'function') return NIL;
+      const panes = paneHost.panesInSpiralOrder();
+      if (!Array.isArray(panes)) return NIL;
+      let acc = NIL;
+      for (let i = panes.length - 1; i >= 0; i -= 1) acc = cons(panes[i], acc);
+      return acc;
+    },
+    // `(permute-panes! dests)` — rearrange which view each pane shows by
+    // moving the *frames*: panes keep their contents and only their
+    // on-screen slots change, so browser/pdf/shell panes survive. DESTS
+    // is a list of 1-based destination slots in spiral order — the
+    // content of pane K (1-based, as in `panes-in-spiral-order`) moves to
+    // slot DESTS[K]. DESTS must be a permutation of 1..N. Returns #t when
+    // the permutation was applied, #f for a no-op / invalid permutation /
+    // single pane.
+    'permute-panes!': (args) => {
+      if (typeof paneHost.permutePanes !== 'function') return false;
+      const dests = coerceIntList(args[0]);
+      if (dests === null) return false;
+      return paneHost.permutePanes(dests) === true;
+    },
     // `(tabline-active tlv)` — the active tab's index, or nil when
     // TLV isn't a tabline-view (or is empty).
     'tabline-active': (args) => {
@@ -495,6 +538,34 @@ function coerceEdge(edgeArg) {
   return null;
 }
 
+/** Coerce a Lisp list (cons-cell chain ending in NIL) or a JS array of
+ *  numbers into a JS array of integers. Returns null when the argument
+ *  isn't list-like, or contains a non-finite entry. */
+function coerceIntList(arg) {
+  let items;
+  if (Array.isArray(arg)) {
+    items = arg;
+  } else if (arg === NIL || arg === null || arg === undefined) {
+    items = [];
+  } else if (typeof arg === 'object' && 'head' in arg) {
+    items = [];
+    let node = arg;
+    while (node && node !== NIL && typeof node === 'object' && 'head' in node) {
+      items.push(node.head);
+      node = node.tail;
+    }
+  } else {
+    return null;
+  }
+  const out = [];
+  for (const item of items) {
+    const n = Number(item);
+    if (!Number.isFinite(n)) return null;
+    out.push(Math.trunc(n));
+  }
+  return out;
+}
+
 /**
  * @typedef {import('@editor/pane').Pane} Pane
  * @typedef {import('@editor/view').View} View
@@ -510,6 +581,9 @@ function coerceEdge(edgeArg) {
  * @property {(pane: Pane) => void} [deleteOtherPanes]
  * @property {() => (Pane | null)} [otherPane]
  * @property {(direction: 'left'|'right'|'up'|'down') => (Pane | null)} [focusPaneDirection]
+ * @property {(pane: Pane) => (Pane | null)} [focusPane] - Focus a specific
+ *   leaf pane handle; returns the focused leaf, or null when it isn't a
+ *   leaf in the current tree.
  * @property {() => void} [balancePanes]
  * @property {(pane: Pane, ratio: number) => void} [setSplitRatio]
  * @property {() => (View | null)} [currentTabline]
@@ -519,4 +593,10 @@ function coerceEdge(edgeArg) {
  * @property {(tlv: View, index: number) => View} [removeTab]
  * @property {(tlv: View, index: number) => View} [activateTab]
  * @property {(tlv: View, edge: 'top'|'bottom'|'left'|'right') => View} [setTablineEdge]
+ * @property {(paneA: Pane, paneB: Pane) => boolean} [swapPanes] - Exchange
+ *   which view two leaf panes show (frame-move). Returns true on success.
+ * @property {(dests: number[]) => boolean} [permutePanes] - Rearrange
+ *   panes by 1-based destination slots in spiral order (frame-move).
+ * @property {() => Pane[]} [panesInSpiralOrder] - Every leaf pane handle
+ *   in clockwise-spiral badge order.
  */

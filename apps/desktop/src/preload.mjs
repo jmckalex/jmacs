@@ -5,7 +5,7 @@
  * functions and nothing else — no `require`, no `fs`.
  */
 
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, clipboard } from 'electron';
 import { homedir } from 'node:os';
 
 contextBridge.exposeInMainWorld('host', {
@@ -26,6 +26,17 @@ contextBridge.exposeInMainWorld('host', {
       return '';
     }
   })(),
+
+  /** Read the system clipboard's plain text, synchronously. Electron's
+   *  `clipboard` module works in the preload (sandbox is off); the
+   *  renderer's kill ring reads this so C-y / yank can paste text copied
+   *  in another app (Emacs's interprogram-paste). Returns '' when empty. */
+  clipboardReadText: () => clipboard.readText(),
+
+  /** Write TEXT to the system clipboard, synchronously. The kill ring
+   *  mirrors every kill/copy here (interprogram-cut) so editor kills are
+   *  pasteable in other apps. */
+  clipboardWriteText: (text) => clipboard.writeText(String(text ?? '')),
 
   /**
    * Show an open dialog and read the chosen file. The shape of the
@@ -126,6 +137,18 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.sendSync('file:read-text-sync', { path }),
 
   /**
+   * Synchronous existence check. Returns `true` when `path` (tilde-
+   * expanded host-side) names an existing file or directory, `false`
+   * otherwise. The Lisp interpreter is synchronous, so the
+   * `(file-exists? path)` primitive reaches the filesystem this way —
+   * the same `sendSync` pattern as `readFileTextSync`.
+   * @param {string} path
+   * @returns {boolean}
+   */
+  fileExistsSync: (path) =>
+    ipcRenderer.sendSync('file:exists-sync', { path }),
+
+  /**
    * A directory listing with per-entry type info — each result is
    * `{ name, type }` where `type` is `"directory"` or `"file"`.
    * Find-file's tab-completion uses this synchronously.
@@ -173,6 +196,17 @@ contextBridge.exposeInMainWorld('host', {
    */
   onMenuCommand: (callback) =>
     ipcRenderer.on('menu:invoke', (_event, command) => callback(command)),
+
+  /**
+   * Register a handler invoked when a native Quit (Cmd+Q / app-menu
+   * Quit) is requested. The main process holds the quit until the
+   * renderer responds, so the handler should run its unsaved-changes
+   * confirm + flush and then call `quit()` to proceed — or do nothing
+   * to cancel.
+   * @param {() => void} callback
+   */
+  onConfirmQuit: (callback) =>
+    ipcRenderer.on('app:confirm-quit', () => callback()),
 
   /**
    * Read a user config file (e.g. `custom.lisp`, `init.lisp`) from the
@@ -402,5 +436,165 @@ contextBridge.exposeInMainWorld('host', {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('shell:exit', handler);
     return () => ipcRenderer.removeListener('shell:exit', handler);
+  },
+
+  // --- general process runner ------------------------------------------
+  //
+  // A one-shot child process: spawn a program with an explicit argv in
+  // an optional cwd, buffer its output, and report the result through
+  // `onRunProcessExit` when it exits. The host spawns with NO shell
+  // interpretation (no `shell: true`). This is the foundation for the
+  // AUCTeX compile/view loop; it is otherwise general-purpose.
+
+  /**
+   * Spawn a one-shot child process. The `runId` is renderer-generated
+   * and ties the spawn to its later `process:exit` event. Returns
+   * `{ ok }` immediately; the buffered output arrives via
+   * `onRunProcessExit`.
+   *
+   * @param {string} runId
+   * @param {string} program
+   * @param {string[]} args
+   * @param {{ cwd?: string }} [opts]
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  runProcess: (runId, program, args, opts = {}) =>
+    ipcRenderer.invoke('process:run', {
+      runId,
+      program,
+      args,
+      cwd: opts?.cwd,
+    }),
+
+  /**
+   * Kill a running process by id (SIGTERM). Its `onRunProcessExit`
+   * still fires with whatever output was buffered.
+   *
+   * @param {string} runId
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  runProcessKill: (runId) =>
+    ipcRenderer.invoke('process:kill', { runId }),
+
+  /**
+   * Register a handler for one-shot process exits. Fires once per
+   * run with `{ runId, stdout, stderr, code }` — `code` is null when
+   * the process was killed by a signal or failed to spawn.
+   *
+   * Returns an unsubscribe function.
+   *
+   * @param {(payload: { runId: string, stdout: string, stderr: string, code: number | null }) => void} callback
+   * @returns {() => void}
+   */
+  onRunProcessExit: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('process:exit', handler);
+    return () => ipcRenderer.removeListener('process:exit', handler);
+  },
+
+  // --- gnuplot ---------------------------------------------------------
+  //
+  // A gnuplot view is a notebook REPL over one long-lived `gnuplot`
+  // child. The renderer generates the session id; the host frames each
+  // submitted command, routes the plot to a temp SVG, and sends one
+  // `gnuplot:result` per submission. A missing gnuplot binary surfaces
+  // via `onGnuplotExit` with `notInstalled: true`.
+
+  /**
+   * Spawn a long-lived gnuplot process for `sessionId`. Returns
+   * `{ ok }` immediately; a missing gnuplot binary surfaces later
+   * through `onGnuplotExit` with `notInstalled: true` rather than as a
+   * spawn error (spawn doesn't throw for ENOENT).
+   *
+   * @param {string} sessionId
+   * @param {object} [options]
+   * @param {string} [options.cwd]
+   * @returns {Promise<{ ok: boolean, pid?: number, error?: string }>}
+   */
+  gnuplotSpawn: (sessionId, options = {}) =>
+    ipcRenderer.invoke('gnuplot:spawn', { sessionId, cwd: options.cwd }),
+
+  /**
+   * Submit a gnuplot command. The host appends the protocol epilogue
+   * and the newline; the caller passes just the command line(s). The
+   * result arrives asynchronously via `onGnuplotResult`.
+   *
+   * @param {string} sessionId
+   * @param {string} data
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  gnuplotWrite: (sessionId, data) =>
+    ipcRenderer.invoke('gnuplot:write', { sessionId, data }),
+
+  /**
+   * Send SIGINT to a gnuplot session — interrupts a long-running plot.
+   *
+   * @param {string} sessionId
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  gnuplotSignal: (sessionId) =>
+    ipcRenderer.invoke('gnuplot:signal', { sessionId }),
+
+  /**
+   * Terminate a gnuplot session — kill the child and forget the entry.
+   * Called from the kill-view path when a gnuplot buffer is removed.
+   *
+   * @param {string} sessionId
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  gnuplotKill: (sessionId) =>
+    ipcRenderer.invoke('gnuplot:kill', { sessionId }),
+
+  /**
+   * Save a plot's SVG via a native Save dialog (suggests a .svg name).
+   * @param {string} svg
+   * @param {string} name
+   * @returns {Promise<{ path: string } | null>}
+   */
+  gnuplotSaveSvg: (svg, name) =>
+    ipcRenderer.invoke('gnuplot:save-svg', { svg, name }),
+
+  /**
+   * Set a gnuplot session's plot theme (e.g. 'dark' | 'light'). Affects
+   * subsequent plots in that session.
+   * @param {string} sessionId
+   * @param {string} theme
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  gnuplotSetTheme: (sessionId, theme) =>
+    ipcRenderer.invoke('gnuplot:set-theme', { sessionId, theme }),
+
+  /**
+   * Register a handler for per-submission gnuplot results. Fires once
+   * per submitted command with
+   * `{ sessionId, id, svg, text, error }` — `svg` is the plot markup
+   * (or null if the command produced no plot), `text` is stdout output,
+   * `error` is stderr output.
+   *
+   * Returns an unsubscribe function.
+   *
+   * @param {(payload: { sessionId: string, id: number, svg: string|null, text: string, error: string }) => void} callback
+   * @returns {() => void}
+   */
+  onGnuplotResult: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('gnuplot:result', handler);
+    return () => ipcRenderer.removeListener('gnuplot:result', handler);
+  },
+
+  /**
+   * Register a handler for gnuplot process exits and not-installed
+   * events. Payload carries `{ sessionId, code, signal }` and, when
+   * gnuplot isn't installed, `{ notInstalled: true, message }`.
+   *
+   * Returns an unsubscribe function.
+   *
+   * @param {(payload: { sessionId: string, code: number|null, signal: string|null, notInstalled?: boolean, message?: string }) => void} callback
+   * @returns {() => void}
+   */
+  onGnuplotExit: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('gnuplot:exit', handler);
+    return () => ipcRenderer.removeListener('gnuplot:exit', handler);
   },
 });

@@ -6,6 +6,7 @@
 
 import { app, dialog, ipcMain, shell } from 'electron';
 import {
+  existsSync,
   readdirSync,
   readFileSync as nodeReadFileSync,
   readlinkSync,
@@ -16,10 +17,17 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { atomicWrite } from './atomic-write.js';
 import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
 import { hostFileUrl } from './serve.js';
+import {
+  metadataPath,
+  legacyMetadataPath,
+  isEmptyMetadata,
+  METADATA_VERSION,
+} from './metadata.js';
 
 /**
  * Expand a leading `~` (or `~/…`) to the current user's home directory.
@@ -73,8 +81,7 @@ async function loadDocManifest() {
   }
 }
 
-/** The companion file holding a file's jmacs metadata (sticky notes). */
-const metadataPath = (filePath) => `${filePath}.jmacs-metadata`;
+// The companion-metadata path scheme + emptiness rule live in metadata.js.
 
 /** Image file suffixes → MIME type. A file with one of these suffixes
  *  is read as binary and returned as a `data:` URL, so the renderer can
@@ -106,6 +113,7 @@ const VIDEO_SUFFIXES = new Set([
  *  symmetry with the audio / video sets; the renderer's `isPdfName`
  *  twin lives in `packages/renderer/src/pdf-view.js`. */
 const PDF_SUFFIXES = new Set(['.pdf']);
+const NOTEBOOK_SUFFIXES = new Set(['.rxlisp']);
 
 /** The image MIME type for a path, by its suffix, or `null` when the
  *  path is not a recognised image. The renderer's `mimeTypeForImage`
@@ -260,6 +268,11 @@ async function readPathAsBuffer(path) {
     };
   }
   const content = await readFile(path, 'utf8');
+  if (NOTEBOOK_SUFFIXES.has(extname(path).toLowerCase())) {
+    // A reactive Lisp notebook (.rxlisp) — opens as a `notebook` view,
+    // not a text editor. Its `(cell …)` source is the content.
+    return { path, name: basename(path), content, notebookKind: true };
+  }
   return { path, name: basename(path), content };
 }
 
@@ -358,19 +371,38 @@ export function registerFileHandlers() {
       }
       target = result.filePath;
     }
-    await writeFile(target, payload?.content ?? '', 'utf8');
+    // Atomic write: a crash mid-save must never truncate the user's file.
+    await atomicWrite(target, payload?.content ?? '', 'utf8');
     return { path: target, name: basename(target) };
   });
 
-  // Read a file's companion metadata (sticky notes). Returns the parsed
-  // JSON, or null when the companion file is absent or unreadable.
+  // Save a gnuplot plot's SVG via a Save dialog (suggests a .svg name).
+  ipcMain.handle('gnuplot:save-svg', async (_event, payload) => {
+    const result = await dialog.showSaveDialog({
+      defaultPath: payload?.name || 'plot.svg',
+      filters: [{ name: 'SVG image', extensions: ['svg'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    await atomicWrite(result.filePath, payload?.svg ?? '', 'utf8');
+    return { path: result.filePath };
+  });
+
+  // Read a file's companion metadata (sticky notes, bookmarks, …).
+  // Prefers the hidden `.NAME.godot-metadata`; falls back to the legacy
+  // visible `NAME.jmacs-metadata` so pre-rename data still loads (it
+  // migrates to the new file on the next write). Returns parsed JSON, or
+  // null when neither candidate exists or is readable.
   ipcMain.handle('metadata:read', async (_event, payload) => {
-    try {
-      const content = await readFile(metadataPath(payload?.path), 'utf8');
-      return JSON.parse(content);
-    } catch {
-      return null;
+    const path = payload?.path;
+    if (typeof path !== 'string') return null;
+    for (const target of [metadataPath(path), legacyMetadataPath(path)]) {
+      try {
+        return JSON.parse(await readFile(target, 'utf8'));
+      } catch {
+        // Try the next candidate.
+      }
     }
+    return null;
   });
 
   // List the (non-hidden) entries of a directory. Returns an array of
@@ -441,6 +473,19 @@ export function registerFileHandlers() {
     }
   });
 
+  // Synchronous existence check — returns true when the (tilde-expanded)
+  // path names an existing file or directory. The Lisp interpreter is
+  // synchronous, so the `(file-exists? path)` primitive reaches the
+  // filesystem here, mirroring `file:read-text-sync`. RefTeX uses it to
+  // skip \input chains whose target files are absent.
+  ipcMain.on('file:exists-sync', (event, payload) => {
+    try {
+      event.returnValue = existsSync(expandTilde(payload?.path));
+    } catch {
+      event.returnValue = false;
+    }
+  });
+
   ipcMain.on('directory:list-detailed-sync', (event, payload) => {
     try {
       const dirPath = expandTilde(payload?.path);
@@ -485,17 +530,27 @@ export function registerFileHandlers() {
     }
   });
 
-  // Write a file's companion metadata. With no notes, the companion
-  // file is removed rather than left as an empty husk.
+  // Write a file's companion metadata to the hidden `.NAME.godot-metadata`.
+  // An empty payload (no notes, no bookmarks, …) removes the file rather
+  // than leaving a husk. Either way the pre-rename legacy sidecar is
+  // retired, completing the migration on the first write.
   ipcMain.handle('metadata:write', async (_event, payload) => {
-    const target = metadataPath(payload?.path);
+    const path = payload?.path;
+    if (typeof path !== 'string') return { removed: true };
+    const target = metadataPath(path);
+    const legacy = legacyMetadataPath(path);
     const data = payload?.data ?? {};
-    const notes = Array.isArray(data.notes) ? data.notes : [];
-    if (notes.length === 0) {
+    if (isEmptyMetadata(data)) {
       await rm(target, { force: true });
+      await rm(legacy, { force: true });
       return { path: target, removed: true };
     }
-    await writeFile(target, JSON.stringify(data, null, 2), 'utf8');
+    await writeFile(
+      target,
+      JSON.stringify({ version: METADATA_VERSION, ...data }, null, 2),
+      'utf8'
+    );
+    await rm(legacy, { force: true });
     return { path: target };
   });
 

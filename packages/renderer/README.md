@@ -43,7 +43,10 @@ const view = createEditorView(buffer, document.getElementById('host'));
 view.focus();
 // view.element — the root node; view.destroy() — unsubscribe and remove.
 
-const repl = createReplView(document.getElementById('repl-host'), {
+// The REPL is a content panel; the host mounts it in the utility dock (it
+// returns the utility-panel contract — title/handleKey/… — alongside its
+// append API). Any container works; the dock reparents `repl.element`.
+const repl = createReplView(document.createElement('div'), {
   onSubmit: (source) => { /* evaluate, then repl.appendResult(...) */ },
 });
 ```

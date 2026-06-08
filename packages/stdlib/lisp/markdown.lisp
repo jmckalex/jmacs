@@ -76,6 +76,42 @@
    refreshes as the buffer is edited."
   (markdown-preview!))
 
+;; --- preview styling ---------------------------------------------------
+;; The preview renders into an isolated iframe, so it can carry its own
+;; CSS without affecting (or being affected by) the editor chrome.
+;;   *markdown-preview-css* — a list of stylesheet file paths the iframe
+;;     links, e.g. your book's CSS. Absolute or ~ paths are served as-is;
+;;     a relative path resolves against the previewed file's directory.
+;;     Set it in init.lisp, e.g. (set! *markdown-preview-css*
+;;       (list "~/book/style.css")).
+;;   *markdown-preview-default-style* — link the built-in stylesheet;
+;;     turn off to let your own CSS fully own the look.
+(define *markdown-preview-css* (list))
+
+(defcustom *markdown-preview-default-style* #t :boolean
+  :group 'jmacs
+  :doc "Link the built-in Markdown-preview stylesheet in the preview iframe. Turn off to let your own *markdown-preview-css* fully control the preview's appearance.")
+
+;; --- live inline math preview -----------------------------------------
+;; Markdown gets the same live MathJax typesetting LaTeX does, built on
+;; the general `math-preview-mode` (math-preview.lisp). The host scans a
+;; markdown buffer with the *common* config: $…$, $$…$$, \(…\), \[…\] —
+;; but NOT \begin…\end environments (those aren't display math in prose).
+;; OFF by default — opt in per buffer with `toggle-markdown-math-preview`
+;; (C-c C-p), or globally via the defcustom below.
+
+(defcustom *markdown-math-preview-default* #f :boolean
+  :group 'jmacs
+  :doc "When #t, typeset math inline automatically for Markdown buffers.
+   Off by default — opt in per-buffer with `toggle-markdown-math-preview`,
+   or set this in your init / customisation to default it on.")
+
+(defcommand toggle-markdown-math-preview ()
+  "Toggle live inline MathJax typesetting for the current Markdown buffer.
+   With it on, math segments render typeset in place of their source and
+   flip back to source for editing when point enters them."
+  (toggle-math-preview))
+
 ;; --- math symbol minor mode -------------------------------------------
 ;; AUCTeX-style: with math mode on, ` then a key inserts a LaTeX symbol.
 ;; ` followed by an unmapped key inserts that key (so ` ` gives a `).
@@ -133,7 +169,42 @@
    "5" 'markdown-heading-5
    "6" 'markdown-heading-6
    "m" 'toggle-math-mode
-   "v" 'markdown-preview})
+   "v" 'markdown-preview
+   "C-p" 'toggle-markdown-math-preview})
 
 ;; markdown-mode-map is declared empty in modes.lisp; fill it in here.
 (set! markdown-mode-map {"C-c" markdown-c-c-map})
+
+;; --- the markdown-mode menu -------------------------------------------
+;; A structured (grouped) menu, like latex-menu.lisp. Kept here rather
+;; than in a separate file because every command is defined above in this
+;; same file; menus.lisp (which defines register-mode-menu!) loads before
+;; markdown.lisp, so the call is safe. Each section is
+;;   (section-label (friendly-label . command-symbol) …)
+;; and the host resolves each command's keybinding and docstring from the
+;; flat `mode-menu-entries` data, so commands need only be named here.
+(register-mode-menu! "Markdown"
+  (list
+    (cons "Format"
+          (list (cons "Bold" 'markdown-bold)
+                (cons "Italic" 'markdown-italic)
+                (cons "Inline Code" 'markdown-code)
+                (cons "Highlight" 'markdown-highlight)))
+    (cons "Insert"
+          (list (cons "Link" 'markdown-insert-link)
+                (cons "Citation" 'markdown-insert-cite)
+                (cons "Footnote" 'markdown-insert-footnote)))
+    (cons "Headings"
+          (list (cons "Heading 1" 'markdown-heading-1)
+                (cons "Heading 2" 'markdown-heading-2)
+                (cons "Heading 3" 'markdown-heading-3)
+                (cons "Heading 4" 'markdown-heading-4)
+                (cons "Heading 5" 'markdown-heading-5)
+                (cons "Heading 6" 'markdown-heading-6)))
+    (cons "Blocks"
+          (list (cons "Blockquote" 'markdown-blockquote)
+                (cons "List Item" 'markdown-list-item)))
+    (cons "Preview & Math"
+          (list (cons "Toggle Preview Pane" 'markdown-preview)
+                (cons "Toggle Math Preview" 'toggle-markdown-math-preview)
+                (cons "Toggle Math Symbols" 'toggle-math-mode)))))

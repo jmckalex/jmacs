@@ -8,8 +8,12 @@
 
 export { createEditorView } from './view.js';
 export { createReplView } from './repl.js';
+export { createUtilityDock } from './utility-dock.js';
+export { createOutputPanel, appendLines } from './output-panel.js';
+export { createDocPanel } from './doc-panel.js';
 export {
   createMarkdownPreview,
+  buildPreviewHead,
   PREVIEW_DEBOUNCE_MS,
 } from './markdown-preview.js';
 export { createMinibuffer } from './minibuffer.js';
@@ -30,6 +34,8 @@ export { createInlineEval } from './inline-eval.js';
 export { renderMarkdown } from './markdown.js';
 export {
   parseCitations, formatBibliography, formatCitation, citationKeys,
+  citationEntries, formatBibliographyEntries, splitBibliographyEntries,
+  registerCslStyle, parseCitationsLenient, splitBibtexEntries,
 } from './citation.js';
 export {
   ImageView,
@@ -51,6 +57,7 @@ export {
 export { AudioView, formatDuration } from './audio-view.js';
 export { VideoView } from './video-view.js';
 export { BrowserView, normaliseUrl } from './browser-view.js';
+export { BookmarkView } from './bookmark-view.js';
 export {
   DirectoryTreeView,
   iconClassForFile,
@@ -59,6 +66,43 @@ export {
   DirectoryColumnsView,
 } from './directory-columns-view.js';
 export { ShellView } from './shell-view.js';
+export { GnuplotView } from './gnuplot-view.js';
+export { createHistory } from './gnuplot-history.js';
+export {
+  NotebookView,
+  serializeCells,
+  cellsFromSource,
+  topLevelForms,
+  shouldForwardChord,
+  badgeForState,
+  moveItem,
+} from './notebook-view.js';
+export { ViewListView, kindLabel, fileLabel } from './view-list-view.js';
+export {
+  createReftexSelectPanel,
+  mapReftexKey,
+  groupHeading,
+  filterCandidates,
+  distinctTypes,
+  groupByType,
+  nextTypeFilter,
+} from './reftex-select-panel.js';
+export {
+  createReftexCiteFormatPanel,
+  createReftexCitePanel,
+  matchCiteFormatKey,
+  filterCiteRows,
+  citeKeysToInsert,
+  mapCiteKey,
+} from './reftex-cite-panel.js';
+export { PlaceholderView } from './placeholder-view.js';
+export {
+  PLACEHOLDER_ACTIONS,
+  DEFAULT_PLACEHOLDER_ACTION,
+  resolvePlaceholderAction,
+  cloneTargetForKind,
+  isPlaceholderView,
+} from './placeholder-actions.js';
 export {
   AUDIO_SUFFIXES,
   ART_FILENAMES,
@@ -91,6 +135,13 @@ export {
   clearLanguages,
 } from './language-registry.js';
 export {
+  createHighlightOverrideStore,
+  augmentQuery,
+  ruleToClause,
+  rulesSignature,
+  dedupeExactRanges,
+} from './highlight-overrides.js';
+export {
   matchingBracket,
   formBoundsAtPoint,
   formBoundsBeforePoint,
@@ -101,3 +152,37 @@ export {
   createColourSwatches,
   replaceLiteralInBuffer,
 } from './colour-swatches.js';
+export {
+  scanMathSegments,
+  segmentsFromNodeRanges,
+  pointInsideSegment,
+  segmentContainingPoint,
+  isEmptyBody,
+  LATEX_MATH_CONFIG,
+  MARKDOWN_MATH_CONFIG,
+  MATH_ENVIRONMENT_NAMES,
+} from './math-segments.js';
+export {
+  MATH_PREVIEW_CONFIGS,
+  providerForConfig,
+  mathPreviewProviderForMode,
+} from './math-preview-providers.js';
+export {
+  typesetMath,
+  isMathJaxReady,
+  whenMathJaxReady,
+  cacheKey,
+  createMathCache,
+  typesetCached,
+} from './typeset-math.js';
+export {
+  computeMathLayout,
+  rangeRevealedByAnyCursor,
+  spliceInlineWidgets,
+} from './math-layout.js';
+export {
+  createMathPreview,
+  createLatexMathPreview,
+  planSegments,
+  detectLeave,
+} from './math-preview.js';

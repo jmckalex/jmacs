@@ -227,6 +227,24 @@ test('string-suffix? tests how a string ends', () => {
   assert.equal(run('(string-suffix? "" "abc")'), true);
 });
 
+test('string-join joins a list with a separator', () => {
+  assert.equal(run('(string-join (list "a" "b" "c") "-")'), 'a-b-c');
+  assert.equal(run('(string-join (list "x" "y"))'), 'xy'); // default separator
+  assert.equal(run('(string-join (list) ",")'), '');
+  assert.equal(run('(string-join (list "solo") ",")'), 'solo');
+  // Elements are coerced like `str` (numbers, etc.).
+  assert.equal(run('(string-join (list 1 2 3) ".")'), '1.2.3');
+});
+
+test('string-join is iterative — no stack overflow on a long list', () => {
+  // The interpreter has no TCO; a hand-written Lisp join would overflow
+  // here. `string-join` joins in one host pass.
+  assert.equal(
+    run('(string-length (string-join (map number->string (range 50000)) ","))') > 0,
+    true
+  );
+});
+
 // --- output -------------------------------------------------------------
 
 test('print writes to the output sink', () => {
@@ -257,4 +275,61 @@ test('host primitives can be registered', () => {
     primitives: { 'double!': (args) => args[0] * 2 },
   });
   assert.equal(lisp.evaluate('(double! 21)'), 42);
+});
+
+// --- tail-call optimisation (the trampoline) ----------------------------
+// Tail calls run in constant JS stack; depths here would overflow a
+// naive tree-walker. `run`/`show` use a fresh interpreter (core forms
+// only), so the tests define what they need with `define`/`defmacro`.
+
+test('deep self tail-recursion runs in constant stack', () => {
+  const src = `(begin
+    (define (loop n) (if (= n 0) (quote done) (loop (- n 1))))
+    (loop 1000000))`;
+  assert.equal(show(src), 'done');
+});
+
+test('a tail-recursive accumulator is correct (sum 1..100000)', () => {
+  const src = `(begin
+    (define (sum n acc) (if (= n 0) acc (sum (- n 1) (+ acc n))))
+    (sum 100000 0))`;
+  assert.equal(run(src), 5000050000);
+});
+
+test('mutual tail-recursion runs in constant stack', () => {
+  const src = `(begin
+    (define (ev? n) (if (= n 0) #t (od? (- n 1))))
+    (define (od? n) (if (= n 0) #f (ev? (- n 1))))
+    (ev? 500000))`;
+  assert.equal(run(src), true);
+});
+
+test('the tail slot of cond/let/begin/and/or is optimised', () => {
+  const cases = {
+    cond: '(define (f n) (cond ((= n 0) (quote ok)) (else (f (- n 1)))))',
+    let: '(define (f n) (let ((m (- n 1))) (if (= n 0) (quote ok) (f m))))',
+    begin: '(define (f n) (begin 1 (if (= n 0) (quote ok) (f (- n 1)))))',
+    and: '(define (f n) (and #t (if (= n 0) (quote ok) (f (- n 1)))))',
+    or: '(define (f n) (or #f (if (= n 0) (quote ok) (f (- n 1)))))',
+  };
+  for (const [name, def] of Object.entries(cases)) {
+    assert.equal(show(`(begin ${def} (f 200000))`), 'ok', `tail via ${name}`);
+  }
+});
+
+test('tail position survives macro expansion', () => {
+  const src = `(begin
+    (defmacro my-if (c t e) (list (quote cond) (list c t) (list (quote else) e)))
+    (define (f n) (my-if (= n 0) (quote ok) (f (- n 1))))
+    (f 200000))`;
+  assert.equal(show(src), 'ok');
+});
+
+test('non-tail recursion is unchanged (correct at safe depth)', () => {
+  // The recursive call sits inside `cons` (an argument), so it is NOT a
+  // tail call — TCO does not (and should not) flatten it. Still correct.
+  const src = `(begin
+    (define (build n) (if (= n 0) (list) (cons n (build (- n 1)))))
+    (length (build 500)))`;
+  assert.equal(run(src), 500);
 });
