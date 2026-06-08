@@ -321,6 +321,49 @@ const recovery = createRecovery({
  *  after `recovery.clear()` already wiped them. */
 let quitting = false;
 
+/**
+ * Report a renderer-side fault — a render-loop throw, a global `error`,
+ * or an unhandled promise rejection (§3). Logs it to the REPL eval log,
+ * flashes a one-line minibuffer note, and triggers an immediate
+ * crash-recovery snapshot flush so a fault that spirals into a
+ * crash-loop can't eat unsaved work. Never throws — the reporter must
+ * not become a second fault.
+ *
+ * @param {string} label - A short prefix, e.g. `render error`.
+ * @param {*} error
+ */
+function reportRendererFault(label, error) {
+  const detail =
+    (error && (error.message ?? error.lispMessage)) || String(error);
+  try {
+    repl.appendError(`${label}: ${detail}`);
+  } catch {
+    /* the eval log may not be up yet */
+  }
+  try {
+    minibuffer.message(`${label} — see the eval log`);
+  } catch {
+    /* the minibuffer may not be up yet */
+  }
+  try {
+    recovery.flush();
+  } catch {
+    /* best-effort */
+  }
+}
+
+// §3a global safety net: any uncaught error or unhandled promise
+// rejection in the renderer is logged + recovery-flushed instead of
+// silently killing a flow. The render loop has its own finer-grained
+// guard (view.js); this catches everything else — a broken event
+// handler, a rejected async command, an overlay built outside render.
+window.addEventListener('error', (event) => {
+  reportRendererFault('uncaught error', event.error ?? event.message);
+});
+window.addEventListener('unhandledrejection', (event) => {
+  reportRendererFault('unhandled rejection', event.reason);
+});
+
 /** Monotonic id source for shell-buffer session ids. Each new shell
  *  buffer gets a fresh id; the host keys its child-process table off
  *  this. */
@@ -5476,6 +5519,7 @@ function ensureEditorViewForLeaf(leaf) {
       return bufferMajorModeName(buf, keyword);
     },
     getOverrideGeneration: () => highlightOverrideStore.generation(),
+    onRenderError: (error) => reportRendererFault('render error', error),
   });
   instance.setView(leaf.view);     // populates pending buffer/view
   paneEl.append(instance);          // triggers connectedCallback → mount
@@ -7252,6 +7296,7 @@ function ensureTabElement(state, child) {
       getMajorModeName: () =>
         bufferMajorModeName(child.buffer ?? null, keyword),
       getOverrideGeneration: () => highlightOverrideStore.generation(),
+      onRenderError: (error) => reportRendererFault('render error', error),
     });
     el.setView(child);
   } else if (child.kind === 'tabline') {

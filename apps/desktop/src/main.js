@@ -21,6 +21,17 @@ import { registerGnuplotHandlers } from './gnuplot.js';
 
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
 
+// §3a: a main-process throw or unhandled rejection should log, not kill
+// the host silently (which would take the window down with no warning).
+// The renderer owns the user's data and has its own recovery/error
+// nets; here we just keep the process alive and leave a trail.
+process.on('uncaughtException', (error) => {
+  console.error('[main] uncaught exception:', error);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandled rejection:', reason);
+});
+
 /** The editor window — there is only ever one. */
 let mainWindow = null;
 
@@ -70,6 +81,14 @@ function createWindow() {
     if (!shouldHoldForConfirm()) return;
     event.preventDefault();
     win.webContents.send('app:confirm-quit');
+  });
+
+  // §3a: the renderer crashing (or being killed) takes the editor down.
+  // Log the cause; the user's unsaved work is recoverable on relaunch
+  // from the autosave snapshots (the *Recover* view), since a crash is
+  // exactly the case those exist for.
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[main] render process gone:', details?.reason ?? details);
   });
 
   win.loadURL(EDITOR_URL);
