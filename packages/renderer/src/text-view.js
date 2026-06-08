@@ -50,6 +50,9 @@ import { defineViewElement, ViewElement } from './view-elements.js';
  * @property {() => Array<{point: number, mark: number|null}>} [getCursors]
  *   - Multi-cursor reader.
  * @property {() => number} [getTabWidth] - The tab-width reader.
+ * @property {() => import('./projection.js').DecorationRange[]}
+ *   [getDecorations] - Face-tagged offset ranges to paint as styled
+ *   boxes (e.g. snippet fields + mirrors). Read every render.
  * @property {() => Array<{start:number, end:number, kind:'inline'|'block',
  *   el?: () => Node}>} [getReplacedRanges] - Replaced-range widgets
  *   (math preview). Read fresh each render.

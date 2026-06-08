@@ -14,6 +14,19 @@ contextBridge.exposeInMainWorld('host', {
    *  filesystem and `file://` URL scheme will accept. */
   homeDirectory: homedir(),
 
+  /** The editor's per-user data directory (`app.getPath('userData')`),
+   *  resolved once at preload time over a synchronous IPC call. The
+   *  snippet engine reads `<userDataDirectory>/snippets`. Empty string
+   *  when the main process can't resolve it. */
+  userDataDirectory: (() => {
+    try {
+      const dir = ipcRenderer.sendSync('userdata:dir-sync');
+      return typeof dir === 'string' ? dir : '';
+    } catch {
+      return '';
+    }
+  })(),
+
   /** Read the system clipboard's plain text, synchronously. Electron's
    *  `clipboard` module works in the preload (sandbox is off); the
    *  renderer's kill ring reads this so C-y / yank can paste text copied

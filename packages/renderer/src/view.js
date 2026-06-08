@@ -17,7 +17,7 @@
  */
 
 import {
-  toLines, selectionRects, cursorPositions,
+  toLines, selectionRects, cursorPositions, decorationRects,
   visualColumn, charIndexAtVisualColumn,
 } from './projection.js';
 import { handleKeyEvent } from './commands.js';
@@ -94,6 +94,13 @@ const MODIFIER_KEYS = new Set([
  *   the cursor / selection rects in lockstep with the CSS tab-size
  *   variable. Defaults to `() => 4` (matches the CSS fallback and
  *   the `*tab-width*` defcustom default).
+ * @param {() => import('./projection.js').DecorationRange[]}
+ *   [options.getDecorations] - Face-tagged offset ranges to paint as
+ *   styled boxes behind the text (e.g. snippet fields + mirrors). Read
+ *   on *every* render, so the boxes track the buffer as it changes — the
+ *   supplier returns live absolute offsets and the renderer recomputes
+ *   the rectangles each frame, exactly as it does for the selection.
+ *   Defaults to a function returning no decorations.
  * @returns {EditorView}
  */
 export function createEditorView(buffer, container, options = {}) {
@@ -129,6 +136,15 @@ export function createEditorView(buffer, container, options = {}) {
     typeof options.getTabWidth === 'function'
       ? options.getTabWidth
       : () => 4;
+  // Face-tagged decoration ranges (snippet fields + mirrors). Read every
+  // render so the boxes recompute from live offsets and survive edits —
+  // unlike the inline-eval pill, which hides on any mutation. Default to
+  // none so renderer unit tests and hosts that haven't wired snippets
+  // keep the old behaviour.
+  const getDecorations =
+    typeof options.getDecorations === 'function'
+      ? options.getDecorations
+      : () => [];
 
   // Replaced-range widgets (math preview is the first consumer). A
   // function returning the current list of `{ start, end, kind, el }`
@@ -238,6 +254,10 @@ export function createEditorView(buffer, container, options = {}) {
   // coordinate space and span the whole document.
   const backgroundLayer = el('div', 'editor-background');
   const currentLineEl = el('div', 'editor-current-line');
+  // Face-tagged decoration boxes (snippet fields + mirrors) sit behind
+  // the selection so an active field shows its face tint with the
+  // selection highlight drawn over it until the user types.
+  const decorationLayer = el('div', 'editor-decorations');
   const selectionLayer = el('div', 'editor-selection');
   const bracketLayer = el('div', 'editor-brackets');
   const linesEl = el('div', 'editor-lines');
@@ -246,6 +266,7 @@ export function createEditorView(buffer, container, options = {}) {
   content.append(
     backgroundLayer,
     currentLineEl,
+    decorationLayer,
     selectionLayer,
     bracketLayer,
     linesEl,
@@ -793,6 +814,54 @@ export function createEditorView(buffer, container, options = {}) {
     );
   }
 
+  /** Paint the face-tagged decoration boxes (snippet fields + mirrors).
+   *  Recomputed from live offsets every render, so the boxes track the
+   *  buffer as it changes; the host supplies the ranges and faces. */
+  function renderDecorations() {
+    let ranges;
+    try {
+      ranges = getDecorations();
+    } catch {
+      // A decoration-supplier error must never break rendering — drop
+      // the boxes for this frame and carry on.
+      ranges = [];
+    }
+    if (!Array.isArray(ranges) || ranges.length === 0) {
+      if (decorationLayer.firstChild) decorationLayer.replaceChildren();
+      return;
+    }
+    const rects = decorationRects(activeBuffer, ranges, getTabWidth());
+    decorationLayer.replaceChildren(
+      ...rects
+        .map((rect) => {
+          const row = rowOf(rect.line);
+          if (row === -1) return null;
+          const span = rect.toColumn - rect.fromColumn;
+          const box = el('div', `editor-decoration tok-${rect.face}`);
+          // Inflate the box a sliver on each side (PAD) so the rounded
+          // pill has horizontal breathing room around the glyphs rather
+          // than clipping them at the rounded ends.
+          const PAD = '0.18em';
+          box.style.left = `calc(${rect.fromColumn} * 1ch - ${PAD})`;
+          box.style.top = `calc(${row} * 1lh)`;
+          // A zero-width field (empty default) still gets a thin marker
+          // so the user can see where it is; otherwise width tracks the
+          // span, plus a sliver when the box runs past the line's end.
+          if (span <= 0) {
+            box.style.width = `calc(0.5ch + 2 * ${PAD})`;
+            box.classList.add('is-empty');
+          } else {
+            const base = rect.toLineEnd
+              ? `${span} * 1ch + 0.5ch`
+              : `${span} * 1ch`;
+            box.style.width = `calc(${base} + 2 * ${PAD})`;
+          }
+          return box;
+        })
+        .filter((b) => b !== null)
+    );
+  }
+
   /** Outline the bracket pair around the cursor, if any. */
   function renderBrackets() {
     const match = matchingBracket(
@@ -943,6 +1012,7 @@ export function createEditorView(buffer, container, options = {}) {
     dirty = false;
     frame = 0;
     renderLines();
+    renderDecorations();
     renderSelection();
     renderBrackets();
     renderCursor();

@@ -115,6 +115,7 @@ export {
 export {
   toLines,
   selectionRects,
+  decorationRects,
   cursorPositions,
   visualColumn,
   charIndexAtVisualColumn,

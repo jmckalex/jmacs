@@ -432,7 +432,13 @@ function updateModeline() {
     ? `   ${interpreter.call('major-mode-name')}` +
       interpreter.call('minor-mode-line')
     : '';
-  nameEl.textContent = mark + buffer.name + mode + count;
+  // The snippet indicator (e.g. "[snippet: 2/4]") appears while a snippet
+  // is being navigated; the Lisp getter returns "" when none is active.
+  const snippet = keymapReady
+    ? interpreter.call('snippet-modeline-indicator')
+    : '';
+  const snippetTag = snippet ? `   ${snippet}` : '';
+  nameEl.textContent = mark + buffer.name + mode + snippetTag + count;
   const { line, column } = buffer.positionAt(buffer.point);
   positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
   // Reflect the current view in the OS window title.
@@ -455,6 +461,17 @@ function watchCurrentBuffer() {
       dismissSplash();
       // Keep the Markdown preview pane in step with the buffer.
       refreshMarkdownPreview();
+      // While a snippet is active, reflow the active field's extent and
+      // the trailing offsets after each edit. A no-op when no snippet is
+      // active (guarded in Lisp).
+      if (keymapReady) {
+        try {
+          interpreter.call('snippet-after-edit!');
+        } catch {
+          // A reflow error must not break editing; the snippet simply
+          // stops tracking. Surfaced lazily on the next command.
+        }
+      }
     }
     updateModeline();
   });
@@ -2071,6 +2088,10 @@ const audio = createAudioController();
  *  and dispatch directly from the renderer, so they need the same
  *  expansion at their own entry. */
 const HOME = window.host?.homeDirectory ?? '';
+/** The editor's per-user data directory (where init.lisp, custom.lisp,
+ *  faces.json live). Used by the snippet engine to find
+ *  `<userData>/snippets`. Empty when the host can't resolve it. */
+const USER_DATA_DIR = window.host?.userDataDirectory ?? '';
 function expandTilde(path) {
   if (typeof path !== 'string' || HOME === '') return path;
   if (path === '~') return HOME;
@@ -3612,6 +3633,31 @@ const interpreter = createInterpreter({
     // starting point for its TAB-completion path. An empty string is
     // returned when the host does not know the home (unlikely).
     'home-directory': () => HOME,
+    // --- snippet support (packages/stdlib/lisp/snippets.lisp) ----------
+    // The user's snippet root directory — `<userData>/snippets`. The
+    // snippet engine searches `<root>/<mode>/` for trigger files and
+    // reads `.yas-parents` from each mode directory. Returns "" when the
+    // host can't resolve userData (then only the built-in starter set is
+    // available). The directory is not created here — a missing directory
+    // simply yields no user snippets.
+    'snippet-user-directory': () =>
+      USER_DATA_DIR === '' ? '' : `${USER_DATA_DIR}/snippets`,
+    // Format a date/time string for the built-in date snippets. KIND is
+    // "date" (YYYY-MM-DD), "datetime" (YYYY-MM-DD HH:MM) or "year"
+    // (YYYY). Snippet bodies use the backtick forms `date` / `datetime` /
+    // `year`, which the engine resolves through this primitive.
+    'snippet-date-string': (args) => {
+      const kind = String(args[0] ?? 'date');
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const ymd =
+        `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      if (kind === 'year') return String(now.getFullYear());
+      if (kind === 'datetime') {
+        return `${ymd} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      }
+      return ymd;
+    },
     // Open an image file at PATH (a string) as an image-kind buffer.
     // Mirrors `open-file!` for an explicit path; jukebox-mode uses this
     // for M-RET on the album-art file.
@@ -5025,6 +5071,16 @@ function dispatchKey(key) {
     // A key may have switched mode (e.g. toggle-math-mode) — keep the
     // mode menu in step.
     refreshModeMenu();
+    // If point has wandered out of an active snippet's body (an arrow
+    // key, a click-driven move), soft-commit it — the text stays, the
+    // active record is dropped. Field navigation (TAB/S-TAB) keeps point
+    // inside the body, so it does not trip this. A no-op when no snippet
+    // is active (guarded in Lisp).
+    try {
+      interpreter.call('snippet-soft-commit-if-outside');
+    } catch {
+      // Ignore — never let the soft-commit check break key dispatch.
+    }
     return handled;
   } catch (error) {
     repl.appendError(error.lispMessage ?? error.message ?? String(error));
@@ -5189,6 +5245,76 @@ function refreshModeMenu() {
   if (json === lastModeMenuJson) return;
   lastModeMenuJson = json;
   window.host.setModeMenu(menu);
+}
+
+// --- snippet field decorations -----------------------------------------
+//
+// While a snippet is being navigated, the active field is painted with
+// `snippet-active-face`, its live mirrors with `snippet-mirror-face`, and
+// the not-yet-reached (forthcoming) fields with `snippet-inactive-face`,
+// so the upcoming tab stops are visible as "pending" pills.
+// The Lisp side keeps the field offsets current as the user edits
+// (`snippet-after-edit!`), and exposes them as absolute `(start . end)`
+// ranges; the renderer recomputes the boxes from these offsets on every
+// frame, so they track the buffer under edits (unlike the inline-eval
+// pill, which hides on any mutation). The active-field *selection* still
+// rides on top until the user types, so "type to replace" is unchanged —
+// the face box augments it, it doesn't replace it.
+//
+// The faces become `.tok-snippet-active-face` / `.tok-snippet-mirror-face`
+// CSS rules through the same `current-face-styles` -> face-styles.js path
+// every other face uses, so a theme / customise edit re-tints the boxes
+// with no extra wiring.
+
+/** Read one `(start . end)` cons pair into a `{start, end}` of finite
+ *  numbers, or null when the value is nil / malformed. */
+function snippetRangePair(pair, face) {
+  if (pair === null || pair === undefined || pair === NIL) return null;
+  const start = Number(pair.head);
+  const end = Number(pair.tail);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return { start, end, face };
+}
+
+/**
+ * The face-tagged decoration ranges for an active snippet, or an empty
+ * array when none is active (or the read fails). Only the buffer that
+ * actually holds the active snippet — the focused text buffer the
+ * snippet primitives operate on — gets painted; a background pane over a
+ * different buffer returns nothing.
+ *
+ * @param {object | null} buffer - The buffer this renderer is showing.
+ * @returns {Array<{start: number, end: number, face: string}>}
+ */
+function snippetDecorationsFor(buffer) {
+  if (!keymapReady) return [];
+  // The active snippet is global (one across the editor) and its offsets
+  // are into the focused buffer; only paint on the pane showing it.
+  if (!buffer || buffer !== currentTextBuffer) return [];
+  try {
+    const ranges = [];
+    // Forthcoming tab stops first, so the active / mirror boxes paint
+    // over them if anything ever overlaps. These read as amber "pending"
+    // pills via `snippet-inactive-face`.
+    for (const pending of listToArray(interpreter.call('snippet-forthcoming-regions'))) {
+      const p = snippetRangePair(pending, 'snippet-inactive-face');
+      if (p !== null) ranges.push(p);
+    }
+    const active = snippetRangePair(
+      interpreter.call('snippet-active-region'),
+      'snippet-active-face'
+    );
+    if (active !== null) ranges.push(active);
+    for (const mirror of listToArray(interpreter.call('snippet-mirror-regions'))) {
+      const m = snippetRangePair(mirror, 'snippet-mirror-face');
+      if (m !== null) ranges.push(m);
+    }
+    return ranges;
+  } catch {
+    // A snippet read must never break rendering — drop the boxes for
+    // this frame. The next render retries.
+    return [];
+  }
 }
 
 // --- editor view (per-pane instances) -----------------------------------
@@ -5422,6 +5548,13 @@ function ensureEditorViewForLeaf(leaf) {
       }];
     },
     getTabWidth: () => currentTabWidth,
+    // Snippet field + mirror boxes for this leaf's buffer. Recomputed
+    // every render from live offsets, so they survive edits.
+    getDecorations: () => {
+      const v = peelTabline(leaf.view);
+      const b = v && !isTablineView(v) ? v.buffer : null;
+      return snippetDecorationsFor(b);
+    },
     // Per-view math preview: the renderer reads this fresh each render
     // and merges the ranges into its replaced-range / fold layout. It
     // returns [] unless this leaf's buffer has math-preview-mode on and
@@ -7171,6 +7304,8 @@ function ensureTabElement(state, child) {
         }];
       },
       getTabWidth: () => currentTabWidth,
+      // Snippet field + mirror boxes for this tab's buffer.
+      getDecorations: () => snippetDecorationsFor(child.buffer ?? null),
       getMajorModeName: () =>
         bufferMajorModeName(child.buffer ?? null, keyword),
       getOverrideGeneration: () => highlightOverrideStore.generation(),

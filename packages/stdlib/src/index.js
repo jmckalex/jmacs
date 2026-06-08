@@ -72,6 +72,15 @@ export const STDLIB_FILES = Object.freeze([
   // resolve at dispatch time, so the order with keymap.lisp doesn't matter
   // for those bindings.
   'multi-cursor.lisp',
+  // Snippets (yasnippet-style expansion). The parser is pure and loads
+  // first; `snippets.lisp` declares the commands, settings and faces and
+  // the active-snippet navigation; `snippets-keymap.lisp` rebinds
+  // TAB/S-TAB through the snippet dispatch and so must load after
+  // `keymap.lisp` (above) and after `multi-cursor.lisp` (whose
+  // keyboard-quit extension the snippet cancel further wraps).
+  'snippets-parser.lisp',
+  'snippets.lisp',
+  'snippets-keymap.lisp',
   // These read the keymap, so they load after it.
   'auto-pair.lisp',
   'menus.lisp',

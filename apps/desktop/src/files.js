@@ -461,6 +461,18 @@ export function registerFileHandlers() {
     }
   });
 
+  // The per-user data directory, synchronously — preload resolves it
+  // once at startup and exposes it as `host.userDataDirectory`. The
+  // snippet engine reads `<userData>/snippets`. `app.getPath('userData')`
+  // is only available in the main process, hence this bridge.
+  ipcMain.on('userdata:dir-sync', (event) => {
+    try {
+      event.returnValue = app.getPath('userData');
+    } catch {
+      event.returnValue = '';
+    }
+  });
+
   // Synchronous existence check — returns true when the (tilde-expanded)
   // path names an existing file or directory. The Lisp interpreter is
   // synchronous, so the `(file-exists? path)` primitive reaches the
