@@ -6852,6 +6852,19 @@ function mountKindView(view, context) {
   }
   const el = singletonElementForKind(view.kind);
   if (el) {
+    // Re-parent the singleton into THIS view's pane element so it
+    // actually appears there. `switchToViewIndex` did this inline, but
+    // the split-with-view path (`splitPaneAtLeafWith`, how the bookmark
+    // outline opens) did not — leaving the singleton mounted in its
+    // previous parent while the freshly-split pane rendered blank ("the
+    // pane appeared but nothing was shown"). Centralised here so every
+    // leaf-direct singleton mount (switch / split / restore) is covered;
+    // the restore path passes its pane element explicitly via context.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl =
+      (context && context.paneEl) ||
+      (leaf ? paneElements.get(leaf.id) : null);
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
     el.setBuffer(view);
     el.focus();
   }
