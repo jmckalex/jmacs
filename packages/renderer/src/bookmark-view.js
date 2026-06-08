@@ -42,6 +42,8 @@ const INDENT = 16;
 function createBookmarkView(container, options = {}) {
   const doc = container.ownerDocument;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
+  const chordPending =
+    typeof options.chordPending === 'function' ? options.chordPending : () => false;
   const closeBuffer =
     typeof options.closeBuffer === 'function' ? options.closeBuffer : null;
   const jump = typeof options.jump === 'function' ? options.jump : null;
@@ -350,7 +352,11 @@ function createBookmarkView(container, options = {}) {
     if (event.target.tagName === 'INPUT') return; // inline rename owns its keys
     const key = keyEventToString(event);
 
-    if (event.ctrlKey || event.metaKey || event.altKey) {
+    // Mid-chord (C-x just pressed) or any modified key: forward to the
+    // editor keymap. The `chordPending()` guard is what lets the plain
+    // second key of a prefix chord through — `C-x 0`, `C-x b`, `C-x p`
+    // — instead of the switch/length-1 swallow below trapping it here.
+    if (chordPending() || event.ctrlKey || event.metaKey || event.altKey) {
       if (onKey && onKey(key)) event.preventDefault();
       return;
     }

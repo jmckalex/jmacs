@@ -6510,6 +6510,12 @@ directoryColumnsView.style.display = 'none';
 function configureBookmarkView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // While a chord is mid-flight (C-x just pressed) the outline must
+    // forward the *next* key — even a plain one like the `0` of `C-x 0`
+    // — to the keymap instead of swallowing it; otherwise focus is
+    // trapped in the outline and prefix chords (C-x 0/1/2/b/p …) die.
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
     closeBuffer: () => {
       // q collapses the outline's pane (the source returns full-width);
       // the single outline view persists hidden and re-opens on C-x r l.
