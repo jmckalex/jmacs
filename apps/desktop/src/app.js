@@ -3704,19 +3704,6 @@ const interpreter = createInterpreter({
     'open-bookmark-view!': () => {
       const buf = currentTextBuffer;
       if (!buf) return NIL;
-      // TEMP DIAGNOSTIC (bookmark empty-after-restart): report which
-      // buffer the outline is about to read and how many bookmarks live
-      // on its metadata. If this shows 0 right after restart, the load
-      // path isn't reaching this buffer; if it shows N, the outline must
-      // render them. Remove once the empty-outline bug is closed.
-      const diagRecs =
-        buf.metadata && Array.isArray(buf.metadata.bookmarks)
-          ? buf.metadata.bookmarks
-          : [];
-      repl.appendOutput(
-        `[bookmarks] source=${buf.name ?? '?'} path=${buf.filePath ?? '(none)'} ` +
-          `metadata=${buf.metadata ? 'yes' : 'no'} count=${diagRecs.length}`
-      );
       const view = ensureBookmarkView();
       retargetBookmarkView(buf);
       const shownLeaf = leafPanes(rootPane).find((leaf) => leaf.view === view);
@@ -8270,6 +8257,24 @@ async function openFileInTabAdjacent(filePath) {
  *  Returns the live view handle. The caller wires it into a leaf. */
 function materialiseRestoredView(blob, handlesByBlob) {
   if (!blob) return buildScratchTextView();
+  if (blob.kind === 'bookmark') {
+    // The bookmark outline is the singleton; ensure it and re-target it
+    // to the persisted source file if that file is open as a text view
+    // (the restore loop opened it already). Otherwise it stays blank and
+    // re-targets to whatever buffer gets focus, per its follow behaviour.
+    const view = ensureBookmarkView();
+    const srcPath = typeof blob.path === 'string' ? blob.path : null;
+    if (srcPath) {
+      const srcView = views.find(
+        (v) => v.kind === 'text' && viewFilePath(v) === srcPath
+      );
+      if (srcView && srcView.buffer) {
+        view.sourceBuffer = srcView.buffer;
+        view.name = `*Bookmarks: ${srcView.buffer.name ?? 'buffer'}*`;
+      }
+    }
+    return view;
+  }
   if (
     blob.kind === 'text' || blob.kind === 'image' ||
     blob.kind === 'audio' || blob.kind === 'video' || blob.kind === 'pdf' ||

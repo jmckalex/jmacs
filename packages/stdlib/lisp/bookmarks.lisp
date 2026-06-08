@@ -34,6 +34,7 @@
 
 (defcommand list-bookmarks ()
   "Open the bookmark outline for the current buffer. Bound to C-x r l.
-   Navigate with arrows, Enter to jump, Tab / Shift-Tab to indent /
-   outdent, Space to fold, r to rename, d to delete, q to close."
+   Bookmarks list in document order. Navigate with arrows or n/p, Enter
+   to jump, Tab / Shift-Tab to indent / outdent, Space to fold, r to
+   rename, d to delete, q to close."
   (open-bookmark-view!))

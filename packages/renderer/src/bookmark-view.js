@@ -6,7 +6,7 @@
  * `.godot-metadata` sidecar), so editing the outline here writes back
  * through the host's `persist` callback.
  *
- * Interaction: ↑/↓ select · Enter jump to the mark · Tab / Shift-Tab
+ * Interaction: ↑/↓ or n/p select · Enter jump to the mark · Tab / Shift-Tab
  * indent / outdent (with the whole subtree) · Space toggle a parent's
  * disclosure · r rename (inline) · d delete · g refresh · q close ·
  * right-click for a rename/delete menu. Chords (C-x …, M-x) pass through
@@ -20,6 +20,7 @@ import {
   visibleRows,
   indent,
   outdent,
+  sortByDocumentPosition,
 } from './bookmark-outline.js';
 
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
@@ -110,6 +111,14 @@ function createBookmarkView(container, options = {}) {
   function paint() {
     closeMenu();
     const recs = records();
+    // Keep the outline in document order: sort siblings by position with
+    // subtrees kept intact, in place. A bookmark set mid-document then
+    // lands where it belongs instead of at the end. Mutating the shared
+    // array means the order also persists (the debounced metadata write
+    // reads it by reference) and the index-based ops below stay aligned.
+    if (recs.length > 1) {
+      recs.splice(0, recs.length, ...sortByDocumentPosition(recs));
+    }
     const buf = source();
     subtitle.textContent =
       `${buf && buf.name ? buf.name : ''}${recs.length ? `  ·  ${recs.length}` : ''}`;
@@ -121,19 +130,6 @@ function createBookmarkView(container, options = {}) {
       empty.className = 'bookmark-empty';
       empty.textContent = 'No bookmarks — set one with C-x r m.';
       body.append(empty);
-      // TEMP DIAGNOSTIC (empty-after-restart): show what the outline is
-      // actually reading, right here in the pane the user is looking at,
-      // so we don't depend on the REPL being open. Reveals whether the
-      // source buffer and its metadata arrived. Remove once fixed.
-      const diag = doc.createElement('div');
-      diag.className = 'bookmark-empty';
-      const md = buf && buf.metadata ? buf.metadata : null;
-      const bm = md && Array.isArray(md.bookmarks) ? md.bookmarks.length : 'n/a';
-      diag.textContent =
-        `[diag] source=${buf ? (buf.name ?? '?') : 'NULL'} · ` +
-        `metadata-keys=${md ? Object.keys(md).join(',') : '(none)'} · ` +
-        `bookmarks=${bm}`;
-      body.append(diag);
       selected = 0;
       return;
     }
@@ -375,8 +371,8 @@ function createBookmarkView(container, options = {}) {
     }
 
     switch (key) {
-      case 'down': moveSelection(1); event.preventDefault(); return;
-      case 'up': moveSelection(-1); event.preventDefault(); return;
+      case 'down': case 'n': moveSelection(1); event.preventDefault(); return;
+      case 'up': case 'p': moveSelection(-1); event.preventDefault(); return;
       case 'enter': jumpSelected(); event.preventDefault(); return;
       case 'tab': indentSelected(); event.preventDefault(); return;
       case 'S-tab': outdentSelected(); event.preventDefault(); return;

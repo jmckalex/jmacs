@@ -55,6 +55,50 @@ export function outdent(records, i) {
 }
 
 /**
+ * Reorder RECORDS so that, at every level of the hierarchy, siblings sit
+ * in ascending document position — with each subtree kept contiguous
+ * beneath its parent. `offsetOf` reads a record's document offset
+ * (default: its `anchor`).
+ *
+ * Pure: returns a new array referencing the same record objects, only
+ * reordered. The depth/hierarchy is preserved — a child never leaves its
+ * parent's subtree, even when an edit has moved it before the parent in
+ * the text. For a flat list (all depth 0) this is a plain sort by offset,
+ * which is what makes a bookmark set mid-document appear in the middle
+ * rather than tacked onto the end.
+ *
+ * @param {Array<{anchor?: number, depth?: number}>} records
+ * @param {(record: object) => number} [offsetOf]
+ * @returns {Array<object>}
+ */
+export function sortByDocumentPosition(
+  records,
+  offsetOf = (r) => (typeof r.anchor === 'number' ? r.anchor : 0)
+) {
+  function parse(start, end) {
+    const nodes = [];
+    let i = start;
+    while (i < end) {
+      const subEnd = subtreeEnd(records, i);
+      nodes.push({ record: records[i], children: parse(i + 1, subEnd) });
+      i = subEnd;
+    }
+    // Array.prototype.sort is stable (ES2019+): equal offsets keep their
+    // existing relative order, so re-sorting an unchanged list is a no-op.
+    nodes.sort((a, b) => offsetOf(a.record) - offsetOf(b.record));
+    return nodes;
+  }
+  const out = [];
+  (function flatten(nodes) {
+    for (const node of nodes) {
+      out.push(node.record);
+      flatten(node.children);
+    }
+  })(parse(0, records.length));
+  return out;
+}
+
+/**
  * The rows to render given collapse state: every entry except those
  * hidden beneath a collapsed ancestor. Each row carries its index in
  * `records`, its depth, whether it has children, and whether it is
