@@ -508,6 +508,54 @@ test('snippet-reload rescans without error and keeps snippets working', async ()
   );
 });
 
+// --- starter set: the additional built-in snippets -----------------------
+
+test('the link snippet fills two inline fields (fundamental-mode)', async () => {
+  const { buffer, interp } = await engine({ name: 'notes.txt', text: '' });
+  buffer.insert('link');
+  press(interp, 'tab');        // expand → [text](url), 'text' selected
+  type(interp, 'Godot');       // replace field 1
+  press(interp, 'tab');        // → field 2 (url)
+  type(interp, 'https://x');   // replace field 2
+  press(interp, 'tab');        // commit ($0)
+  assert.equal(buffer.text, '[Godot](https://x)');
+  assert.equal(interp.evaluate('(snippet-active?)'), false);
+});
+
+test('the imp snippet fills the named imports and module (js-mode)', async () => {
+  const { buffer, interp } = await engine({ name: 'main.js', text: '' });
+  buffer.insert('imp');
+  press(interp, 'tab');
+  type(interp, 'createView');
+  press(interp, 'tab');
+  type(interp, '@editor/view');
+  press(interp, 'tab');
+  assert.equal(buffer.text, "import { createView } from '@editor/view';");
+  assert.equal(interp.evaluate('(snippet-active?)'), false);
+});
+
+test('the try snippet mirrors the error name into the handler body', async () => {
+  const { buffer, interp } = await engine({ name: 'main.js', text: '' });
+  buffer.insert('try');
+  press(interp, 'tab');        // expand → field 1 (err) + its mirror
+  type(interp, 'oops');        // rename the error; the mirror updates live
+  assert.ok(
+    buffer.text.includes('catch (oops)') &&
+      buffer.text.includes('console.error(oops)'),
+    `expected both occurrences renamed; got ${JSON.stringify(buffer.text)}`
+  );
+});
+
+test('the while snippet is available in js via prog-mode inheritance', async () => {
+  const { buffer, interp } = await engine({ name: 'main.js', text: '' });
+  buffer.insert('while');
+  press(interp, 'tab');
+  assert.ok(
+    buffer.text.startsWith('while ('),
+    `expected while expansion; got ${JSON.stringify(buffer.text)}`
+  );
+});
+
 // --- engine: soft commit -------------------------------------------------
 
 test('moving point outside the snippet soft-commits it', async () => {

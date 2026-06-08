@@ -151,16 +151,28 @@
    ;; A copyright / licence header.
    (list "fundamental-mode" "copyright" "copyright header"
          "Copyright (c) `year` ${1:Author}. All rights reserved.$0")
+   ;; An inline Markdown link — two fields on one line.
+   (list "fundamental-mode" "link" "markdown link"
+         "[${1:text}](${2:url})$0")
    ;; prog-mode — common across programming languages.
    (list "prog-mode" "shebang" "shebang line"
          "#!/usr/bin/env ${1:bash}\n$0")
    (list "prog-mode" "if" "if block"
          "if (${1:condition}) {\n  $0\n}")
+   (list "prog-mode" "while" "while loop"
+         "while (${1:condition}) {\n  $0\n}")
    (list "prog-mode" "for" "for loop"
          "for (let ${1:i} = 0; $1 < ${2:n}; $1++) {\n  $0\n}")
    ;; js-mode — a small JS-specific set on top of prog-mode.
    (list "js-mode" "fn" "function"
          "function ${1:name}(${2:args}) {\n  $0\n}")
+   (list "js-mode" "afn" "arrow function"
+         "const ${1:name} = (${2:args}) => {\n  $0\n}")
+   ;; try / catch — the `$1` error name is mirrored into the handler body.
+   (list "js-mode" "try" "try / catch"
+         "try {\n  $0\n} catch (${1:err}) {\n  console.error($1);\n}")
+   (list "js-mode" "imp" "import"
+         "import { ${1:names} } from '${2:module}';$0")
    (list "js-mode" "log" "console.log"
          "console.log(${1:value})$0")))
 
