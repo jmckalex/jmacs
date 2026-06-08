@@ -3694,13 +3694,30 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.indexOf(view));
       return NIL;
     },
-    // Open the bookmark outline for the current text buffer (C-x r l).
-    // Edits in the view write back to that buffer's metadata sidecar.
+    // Open the bookmark outline for the current text buffer (C-x r l) in
+    // a narrow pane to the RIGHT of the focused pane — a navigator, so the
+    // source buffer stays visible (jump from the outline moves it). If the
+    // outline is already shown anywhere, reuse that pane (re-target +
+    // focus it) instead of splitting again; otherwise split the focused
+    // pane side-by-side (the source — a leaf view OR a whole tabline —
+    // rides into the left child, the outline into the new right child).
     'open-bookmark-view!': () => {
       const buf = currentTextBuffer;
       if (!buf) return NIL;
-      const view = ensureBookmarkViewForBuffer(buf);
-      switchToViewIndex(views.indexOf(view));
+      const view = ensureBookmarkView();
+      retargetBookmarkView(buf);
+      const shownLeaf = leafPanes(rootPane).find((leaf) => leaf.view === view);
+      if (shownLeaf) {
+        setCurrentPaneId(shownLeaf.id);
+        return NIL;
+      }
+      const focused = currentPane();
+      if (focused && focused.kind === 'leaf') {
+        // ratio is the FIRST (source) child's share; bias narrow-right.
+        splitPaneAtLeafWith(focused, SPLIT_HORIZONTAL, 0.7, 'after', view);
+      } else {
+        switchToViewIndex(views.indexOf(view));
+      }
       return NIL;
     },
     // Open the *View List* — a clickable HTML table of every open view
@@ -6481,12 +6498,12 @@ function configureBookmarkView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
+      // q collapses the outline's pane (the source returns full-width);
+      // the single outline view persists hidden and re-opens on C-x r l.
+      const view = views.find((v) => v.kind === 'bookmark');
+      if (!view) return;
+      const leaf = leafPanes(rootPane).find((l) => l.view === view);
+      if (leaf) deletePaneInTree(leaf);
     },
     persist: (buf) => {
       if (buf) scheduleMetadataWrite(buf);
@@ -6494,6 +6511,17 @@ function configureBookmarkView() {
     jump: (buf, name) => {
       const idx = views.findIndex((v) => v.kind === 'text' && v.buffer === buf);
       if (idx < 0) return;
+      // Focus the pane already showing the source (a direct leaf view OR a
+      // tab in a tabline) BEFORE switching, so the jump lands there rather
+      // than pulling the source into the outline's own (right) pane. Falls
+      // back to the focused pane when the source isn't shown anywhere.
+      const targetView = views[idx];
+      const leaf = leafPanes(rootPane).find(
+        (l) =>
+          l.view === targetView ||
+          (isTablineView(l.view) && l.view.tabs.includes(targetView))
+      );
+      if (leaf) setCurrentPaneId(leaf.id);
       switchToViewIndex(idx);
       // The engine now tracks `buf` (markers recreated on mount), so a
       // jump-by-name lands on the live marker, post-relocation.
@@ -6749,6 +6777,8 @@ function applyTextMountSideEffects(view, instance) {
   }
   stickyNotes.setBuffer(view.buffer);
   bookmarks.setBuffer(view.buffer);
+  // If the bookmark outline is open beside us, follow focus to this buffer.
+  followBookmarkView(view.buffer);
   watchCurrentBuffer();
   ensureMajorMode();
   if (editorView && typeof editorView.focus === 'function') editorView.focus();
@@ -8108,22 +8138,44 @@ function ensureDirectoryColumnsViewForPath(rootPath) {
 /** Find an existing bookmark view for SOURCEBUFFER or build a fresh one
  *  and push it into `views`. The view edits the source buffer's
  *  metadata.bookmarks directly; jump / persist are host callbacks. */
-function ensureBookmarkViewForBuffer(sourceBuffer) {
-  const existing = views.find(
-    (v) =>
-      v.kind === 'bookmark' &&
-      v.extras &&
-      v.extras.sourceBuffer === sourceBuffer
-  );
+/** The single bookmark outline. There is one — it re-targets to whichever
+ *  text buffer has focus (see `followBookmarkView`) rather than one view
+ *  per buffer, so the outline beside your buffer always shows that
+ *  buffer's bookmarks. Find-or-create. */
+function ensureBookmarkView() {
+  const existing = views.find((v) => v.kind === 'bookmark');
   if (existing) return existing;
-  const name = sourceBuffer && sourceBuffer.name ? sourceBuffer.name : 'buffer';
   const view = createView({
     kind: 'bookmark',
-    name: `*Bookmarks: ${name}*`,
-    extras: { sourceBuffer },
+    name: '*Bookmarks*',
+    extras: { sourceBuffer: null },
   });
   views.push(view);
   return view;
+}
+
+/** Point the bookmark outline at BUFFER and repaint it. Updates the
+ *  view's name (for the modeline / *View List*) too. */
+function retargetBookmarkView(buffer) {
+  const view = views.find((v) => v.kind === 'bookmark');
+  if (!view) return;
+  view.extras.sourceBuffer = buffer;
+  const name = buffer && buffer.name ? buffer.name : 'buffer';
+  view.name = `*Bookmarks: ${name}*`;
+  // The element re-reads extras.sourceBuffer from the handle on setBuffer.
+  bookmarkView.setBuffer(view);
+}
+
+/** Auto-follow: when focus moves to a text buffer and the outline is
+ *  shown, re-target it to that buffer. A no-op when the outline is closed
+ *  or already on this buffer, so it's cheap to call on every focus
+ *  change. */
+function followBookmarkView(buffer) {
+  if (!buffer) return;
+  const view = views.find((v) => v.kind === 'bookmark');
+  if (!view || view.extras.sourceBuffer === buffer) return;
+  if (!leafPanes(rootPane).some((leaf) => leaf.view === view)) return;
+  retargetBookmarkView(buffer);
 }
 
 /** Open a file from a directory-tree / directory-columns row and place
