@@ -167,10 +167,17 @@
     (if (equal? home "") "" (str home "/"))))
 
 (define (-find-file-deliver path)
-  "The submit handler — open PATH if non-empty, after tilde expansion."
+  "The submit handler — open PATH if non-empty, after tilde expansion. A
+   path that names no existing file opens an empty buffer visiting it
+   (Emacs's find-file behaviour: the file is created on the first save),
+   via `find-file-new!`."
   (cond ((nil? path) nil)
         ((equal? path "") nil)
-        (else (open-file-path! (-expand-tilde path)))))
+        (else
+         (let ((p (-expand-tilde path)))
+           (if (file-exists? p)
+               (open-file-path! p)
+               (find-file-new! p))))))
 
 (defcommand find-file ()
   "Open a file, choosing the path in the minibuffer with TAB

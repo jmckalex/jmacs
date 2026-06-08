@@ -14,7 +14,7 @@
  * shapes; the round-trip is cheap.
  */
 
-import { Cite } from '../vendor/citation-js.esm.js';
+import { Cite, plugins } from '../vendor/citation-js.esm.js';
 
 /**
  * Parse a citation source (BibTeX / BibLaTeX / CSL-JSON / many
@@ -28,6 +28,84 @@ import { Cite } from '../vendor/citation-js.esm.js';
 export function parseCitations(source) {
   const cite = new Cite(source);
   return JSON.stringify(cite.data);
+}
+
+/**
+ * Split a BibTeX/BibLaTeX source into its individual entries, each as
+ * `{ type, source }` where `type` is the lowercased entry type
+ * (`article`, `book`, `string`, `preamble`, `comment`, …) and `source`
+ * is the verbatim `@type{…}` text. Brace-balanced, so a `{…}` field
+ * value (which may itself nest braces) doesn't end the entry early.
+ * PURE — used by `parseCitationsLenient` to parse entry-by-entry.
+ *
+ * @param {string} text
+ * @returns {Array<{type: string, source: string}>}
+ */
+export function splitBibtexEntries(text) {
+  const out = [];
+  if (typeof text !== 'string') return out;
+  const re = /@(\w+)\s*\{/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const type = m[1].toLowerCase();
+    let depth = 0;
+    let i = re.lastIndex - 1; // sits on the opening brace
+    for (; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) { i += 1; break; }
+      }
+    }
+    out.push({ type, source: text.slice(m.index, i) });
+    re.lastIndex = i;
+  }
+  return out;
+}
+
+/**
+ * Parse a citation source like `parseCitations`, but TOLERANT of entries
+ * Citation.js can't parse: a single malformed entry (e.g. a name field
+ * with a bare TeX accent like `Fran{\c}ois`) otherwise throws and loses
+ * the WHOLE bibliography. Strategy: try the whole file first (fast,
+ * unchanged for clean input); only on failure fall back to parsing each
+ * BibTeX entry on its own, prepending the `@string`/`@preamble` macros so
+ * abbreviations still resolve, and skipping the entries that throw.
+ *
+ * @param {string} source
+ * @returns {{json: string, skipped: number}} CSL-JSON of the entries that
+ *   parsed, and how many were skipped.
+ */
+export function parseCitationsLenient(source) {
+  const text = typeof source === 'string' ? source : '';
+  try {
+    return { json: parseCitations(text), skipped: 0 };
+  } catch (wholeError) {
+    // Nothing BibTeX-shaped to salvage entry-by-entry.
+    if (!/@\w+\s*\{/.test(text)) return { json: '[]', skipped: 0 };
+    const all = splitBibtexEntries(text);
+    // @string / @preamble define macros that later entries reference
+    // (`journal = jphil`), so prepend them to each entry we parse alone.
+    const headers = all
+      .filter((e) => e.type === 'string' || e.type === 'preamble')
+      .map((e) => e.source)
+      .join('\n');
+    const records = [];
+    let skipped = 0;
+    for (const e of all) {
+      if (e.type === 'string' || e.type === 'preamble' || e.type === 'comment') {
+        continue;
+      }
+      try {
+        const data = new Cite(`${headers}\n${e.source}`).data;
+        for (const d of data) records.push(d);
+      } catch {
+        skipped += 1;
+      }
+    }
+    return { json: JSON.stringify(records), skipped };
+  }
 }
 
 /**
@@ -85,4 +163,139 @@ export function formatCitation(cslJsonSource, options = {}) {
 export function citationKeys(cslJsonSource) {
   const entries = JSON.parse(cslJsonSource);
   return entries.map((e) => (typeof e.id === 'string' ? e.id : '')).filter(Boolean);
+}
+
+/**
+ * Split a CSL `bibliography` HTML blob into one `{ key, html }` per
+ * entry. Citation.js wraps the list in `<div class="csl-bib-body">` and
+ * tags each entry div with `data-csl-entry-id="KEY"`; an entry's inner
+ * HTML may itself contain nested `<div>`s (e.g. Vancouver's
+ * left-margin / right-inline numbering), so we balance `<div>`/`</div>`
+ * to find each entry's true end rather than stopping at the first
+ * `</div>`. PURE — no DOM; safe to unit-test in Node.
+ *
+ * @param {string} html - A `cite.format('bibliography', {format:'html'})` blob.
+ * @returns {Array<{key: string, html: string}>}
+ */
+export function splitBibliographyEntries(html) {
+  const out = [];
+  if (typeof html !== 'string' || html === '') return out;
+  const open = /<div\s+data-csl-entry-id="([^"]*)"[^>]*>/g;
+  let m;
+  while ((m = open.exec(html)) !== null) {
+    const key = m[1];
+    let end = open.lastIndex;
+    let depth = 1;
+    const tags = /<\/?div\b[^>]*>/g;
+    tags.lastIndex = open.lastIndex;
+    let t;
+    while ((t = tags.exec(html)) !== null) {
+      if (t[0].startsWith('</')) {
+        depth -= 1;
+        if (depth === 0) {
+          end = t.index;
+          break;
+        }
+      } else {
+        depth += 1;
+      }
+    }
+    out.push({ key, html: html.slice(open.lastIndex, end).trim() });
+    open.lastIndex = end;
+  }
+  return out;
+}
+
+/**
+ * Format a CSL-JSON entry list to HTML and return it split per entry as
+ * `{ key, html }`, in entry order. The per-entry HTML carries the CSL
+ * style's inline markup (italics, numbering) so a picker can render a
+ * professionally formatted reference for each candidate. The inserted
+ * citation is still `\cite{key}` — this is display only.
+ *
+ * @param {string} cslJsonSource - JSON string of CSL-JSON entries.
+ * @param {object} [options] - As `formatBibliography` (style/format/lang);
+ *   `format` is forced to `'html'`.
+ * @returns {Array<{key: string, html: string}>}
+ */
+export function formatBibliographyEntries(cslJsonSource, options = {}) {
+  const html = formatBibliography(cslJsonSource, { ...options, format: 'html' });
+  return splitBibliographyEntries(html);
+}
+
+/**
+ * Register a custom CSL style from its XML so it can be used as a
+ * `template` id in `formatBibliography` / `formatBibliographyEntries`.
+ * The id is the style's own `<id>` element (falling back to a
+ * length-tagged `custom-csl` id when absent). Idempotent — re-registering
+ * an already-known id is a no-op; the same id is returned so callers can
+ * format with it.
+ *
+ * @param {string} xml - The CSL style XML.
+ * @returns {string} The template id to pass as `options.style`.
+ * @throws {Error} when the XML can't be registered.
+ */
+export function registerCslStyle(xml) {
+  const text = typeof xml === 'string' ? xml : '';
+  const idMatch = text.match(/<id>\s*([^<\s]+)\s*<\/id>/);
+  const id = idMatch ? idMatch[1] : `custom-csl-${text.length}`;
+  const config = plugins.config.get('@csl');
+  const templates = config && config.templates;
+  if (!templates || typeof templates.add !== 'function') {
+    throw new Error('CSL template registry unavailable');
+  }
+  const known = typeof templates.has === 'function' ? templates.has(id) : false;
+  if (!known) templates.add(id, text);
+  return id;
+}
+
+/**
+ * A best-effort projection of each parsed entry into the small shape a
+ * citation picker needs: `{ key, author, year, title }`. CSL-JSON is
+ * sprawling; this pulls out the few fields a one-line picker row shows.
+ *
+ *   - `key`    — the CSL `id` (the BibTeX key).
+ *   - `author` — the first author's family name (falling back to a
+ *                `given family` join, then the `literal` field for
+ *                institutional authors); `null` when no author.
+ *   - `year`   — the first `issued.date-parts` year as a number;
+ *                `null` when absent.
+ *   - `title`  — the `title` string; `null` when absent.
+ *
+ * Missing fields are `null` consistently so the caller can render a
+ * placeholder.
+ *
+ * @param {string} cslJsonSource
+ * @returns {Array<{key: string, author: (string|null), year: (number|null), title: (string|null)}>}
+ */
+export function citationEntries(cslJsonSource) {
+  const entries = JSON.parse(cslJsonSource);
+  return entries.map((e) => {
+    const key = typeof e.id === 'string' ? e.id : '';
+
+    let author = null;
+    if (Array.isArray(e.author) && e.author.length > 0) {
+      const first = e.author[0];
+      if (first && typeof first === 'object') {
+        if (typeof first.family === 'string' && first.family !== '') {
+          author = typeof first.given === 'string' && first.given !== ''
+            ? `${first.given} ${first.family}`
+            : first.family;
+        } else if (typeof first.literal === 'string' && first.literal !== '') {
+          author = first.literal;
+        }
+      }
+    }
+
+    let year = null;
+    const parts = e.issued && e.issued['date-parts'];
+    if (Array.isArray(parts) && Array.isArray(parts[0]) && parts[0].length > 0) {
+      const y = Number(parts[0][0]);
+      if (Number.isFinite(y)) year = y;
+    }
+
+    const title = typeof e.title === 'string' ? e.title : null;
+
+    return { key, author, year, title };
+  });
 }

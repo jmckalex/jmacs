@@ -6,6 +6,8 @@ import {
   applyFaceStyles,
   facesFromAlist,
   generateFaceCss,
+  generateModeFaceCss,
+  modeFacesFromAlist,
   writeFaceStyleElement,
 } from '../src/face-styles.js';
 
@@ -175,4 +177,62 @@ test('applyFaceStyles writes generated CSS into the document', () => {
   const el = doc.getElementById(FACE_STYLE_ELEMENT_ID);
   assert.match(el.textContent, /\.tok-keyword/);
   assert.match(el.textContent, /color: #ff0000;/);
+});
+
+// --- generateModeFaceCss ----------------------------------------------
+
+test('generateModeFaceCss scopes a face rule to a major mode', () => {
+  const perMode = new Map([
+    ['LaTeX', new Map([['keyword', new Map([['foreground', '#abcdef']])]])],
+  ]);
+  const css = generateModeFaceCss(perMode);
+  assert.match(css, /\[data-major-mode="LaTeX"\] \.tok-keyword/);
+  assert.match(css, /color: #abcdef;/);
+});
+
+test('generateModeFaceCss emits nothing for an empty map', () => {
+  assert.equal(generateModeFaceCss(new Map()), '');
+});
+
+test('generateModeFaceCss escapes quotes/backslashes in a mode name', () => {
+  const perMode = new Map([
+    ['We"ird', new Map([['x', new Map([['foreground', '#000']])]])],
+  ]);
+  const css = generateModeFaceCss(perMode);
+  assert.match(css, /\[data-major-mode="We\\"ird"\]/);
+});
+
+// --- modeFacesFromAlist -----------------------------------------------
+
+test('modeFacesFromAlist parses the per-mode styles alist', () => {
+  const alist = [
+    cons(
+      sym('LaTeX'),
+      list(cons(sym('keyword'), list(cons(sym('foreground'), '#111'))))
+    ),
+  ];
+  const perMode = modeFacesFromAlist(alist, listToArray);
+  assert.deepEqual(
+    perMode.get('LaTeX').get('keyword').get('foreground'),
+    '#111'
+  );
+});
+
+test('applyFaceStyles appends mode-scoped rules after the global ones', () => {
+  const doc = makeDoc();
+  const alist = [
+    cons(sym('keyword'), list(cons(sym('foreground'), '#ff0000'))),
+  ];
+  const modeAlist = [
+    cons(
+      sym('LaTeX'),
+      list(cons(sym('keyword'), list(cons(sym('foreground'), '#00ff00'))))
+    ),
+  ];
+  applyFaceStyles(doc, alist, listToArray, modeAlist);
+  const css = doc.getElementById(FACE_STYLE_ELEMENT_ID).textContent;
+  const global = css.indexOf('.tok-keyword { color: #ff0000;');
+  const scoped = css.indexOf('[data-major-mode="LaTeX"] .tok-keyword');
+  assert.ok(global >= 0 && scoped >= 0);
+  assert.ok(global < scoped, 'mode rule must come after the global rule');
 });

@@ -50,6 +50,9 @@ import { defineViewElement, ViewElement } from './view-elements.js';
  * @property {() => Array<{point: number, mark: number|null}>} [getCursors]
  *   - Multi-cursor reader.
  * @property {() => number} [getTabWidth] - The tab-width reader.
+ * @property {() => Array<{start:number, end:number, kind:'inline'|'block',
+ *   el?: () => Node}>} [getReplacedRanges] - Replaced-range widgets
+ *   (math preview). Read fresh each render.
  */
 
 export class TextView extends ViewElement {
@@ -219,6 +222,11 @@ export class TextView extends ViewElement {
   /** Scroll the cursor's line to the centre of the viewport. */
   recenter() {
     if (this._editor !== null) this._editor.recenter();
+  }
+
+  /** Flash a transient highlight band over the cursor's line. */
+  flashCurrentLine() {
+    if (this._editor !== null) this._editor.flashCurrentLine();
   }
 
   /** Roughly how many lines fit in the viewport — for paging. */

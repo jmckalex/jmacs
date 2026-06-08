@@ -27,7 +27,19 @@ const MIME = {
   '.json': 'application/json',
   '.wasm': 'application/wasm',
   '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.ttf': 'font/ttf',
   '.pdf': 'application/pdf',
+  // Images — so the `__host__` route serves a markdown file's relative
+  // images (and a stylesheet's referenced art) into the preview iframe
+  // with a real type. SVG especially must not fall back to octet-stream,
+  // or the browser won't render it as an image.
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
 };
 
 /** Path prefix on `app://editor/` under which arbitrary file paths
@@ -105,7 +117,11 @@ export async function serveAppFile(request) {
       const data = await readFile(filePath);
       const type = MIME[extname(filePath).toLowerCase()]
         ?? 'application/octet-stream';
-      return new Response(data, { headers: { 'content-type': type } });
+      // No-store: this route serves the live PDF after each compile, so a
+      // recompiled document must never be masked by a stale cached copy.
+      return new Response(data, {
+        headers: { 'content-type': type, 'cache-control': 'no-store' },
+      });
     } catch {
       return new Response('Not found', { status: 404 });
     }
@@ -131,7 +147,14 @@ export async function serveAppFile(request) {
   try {
     const data = await readFile(filePath);
     const type = MIME[extname(filePath)] ?? 'application/octet-stream';
-    return new Response(data, { headers: { 'content-type': type } });
+    // No-store: the renderer's source (app.js / view.js / *.lisp /
+    // styles.css …) is served straight from the working tree on every
+    // request, so a reload or restart always picks up edited code rather
+    // than a stale copy from Chromium's HTTP cache. (There is no build
+    // step; freshness matters more than caching for a local dev editor.)
+    return new Response(data, {
+      headers: { 'content-type': type, 'cache-control': 'no-store' },
+    });
   } catch {
     return new Response('Not found', { status: 404 });
   }

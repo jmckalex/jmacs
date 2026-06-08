@@ -6,6 +6,7 @@
 
 import { app, dialog, ipcMain, shell } from 'electron';
 import {
+  existsSync,
   readdirSync,
   readFileSync as nodeReadFileSync,
   readlinkSync,
@@ -16,6 +17,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { atomicWrite } from './atomic-write.js';
 import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
@@ -111,6 +113,7 @@ const VIDEO_SUFFIXES = new Set([
  *  symmetry with the audio / video sets; the renderer's `isPdfName`
  *  twin lives in `packages/renderer/src/pdf-view.js`. */
 const PDF_SUFFIXES = new Set(['.pdf']);
+const NOTEBOOK_SUFFIXES = new Set(['.rxlisp']);
 
 /** The image MIME type for a path, by its suffix, or `null` when the
  *  path is not a recognised image. The renderer's `mimeTypeForImage`
@@ -265,6 +268,11 @@ async function readPathAsBuffer(path) {
     };
   }
   const content = await readFile(path, 'utf8');
+  if (NOTEBOOK_SUFFIXES.has(extname(path).toLowerCase())) {
+    // A reactive Lisp notebook (.rxlisp) — opens as a `notebook` view,
+    // not a text editor. Its `(cell …)` source is the content.
+    return { path, name: basename(path), content, notebookKind: true };
+  }
   return { path, name: basename(path), content };
 }
 
@@ -363,8 +371,20 @@ export function registerFileHandlers() {
       }
       target = result.filePath;
     }
-    await writeFile(target, payload?.content ?? '', 'utf8');
+    // Atomic write: a crash mid-save must never truncate the user's file.
+    await atomicWrite(target, payload?.content ?? '', 'utf8');
     return { path: target, name: basename(target) };
+  });
+
+  // Save a gnuplot plot's SVG via a Save dialog (suggests a .svg name).
+  ipcMain.handle('gnuplot:save-svg', async (_event, payload) => {
+    const result = await dialog.showSaveDialog({
+      defaultPath: payload?.name || 'plot.svg',
+      filters: [{ name: 'SVG image', extensions: ['svg'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    await atomicWrite(result.filePath, payload?.svg ?? '', 'utf8');
+    return { path: result.filePath };
   });
 
   // Read a file's companion metadata (sticky notes, bookmarks, …).
@@ -438,6 +458,19 @@ export function registerFileHandlers() {
       event.returnValue = nodeReadFileSync(target, 'utf8');
     } catch {
       event.returnValue = null;
+    }
+  });
+
+  // Synchronous existence check — returns true when the (tilde-expanded)
+  // path names an existing file or directory. The Lisp interpreter is
+  // synchronous, so the `(file-exists? path)` primitive reaches the
+  // filesystem here, mirroring `file:read-text-sync`. RefTeX uses it to
+  // skip \input chains whose target files are absent.
+  ipcMain.on('file:exists-sync', (event, payload) => {
+    try {
+      event.returnValue = existsSync(expandTilde(payload?.path));
+    } catch {
+      event.returnValue = false;
     }
   });
 

@@ -125,5 +125,15 @@ export function createReplView(container, options) {
     appendError: (text) => appendLine(text, 'repl-error'),
     appendNote: (text) => appendLine(text, 'repl-note'),
     focus: () => input.focus(),
+    // Utility-dock panel contract. The REPL is the resident, non-closable,
+    // non-modal tab: it keeps its native <input> (so the dock installs no
+    // capture handler for it) and is never torn down.
+    title: 'REPL',
+    icon: 'fa-solid fa-terminal',
+    modal: false,
+    closable: false,
+    handleKey: () => false,
+    reset: () => {},
+    destroy: () => {},
   };
 }

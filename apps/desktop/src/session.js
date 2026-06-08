@@ -26,10 +26,13 @@
  *     "active": <int>, "tabs": [<view-blob>, ...] }
  *
  * Non-text leaf views (image, audio, video, shell, customize, doc,
- * directory-*) are ephemeral — they don't survive a relaunch. The
- * serialiser emits `null` for them; on restore the owning pane falls
- * back to `*scratch*` per the brief's "Non-text views stay ephemeral"
- * rule.
+ * directory-*, placeholder) are ephemeral — they don't survive a
+ * relaunch. The serialiser emits `null` for them; on restore the owning
+ * pane falls back to `*scratch*` per the brief's "Non-text views stay
+ * ephemeral" rule. (A `placeholder` is doubly transient — it is also
+ * spliced out of `views` the instant it is filled or its pane closes —
+ * so it never reaches a save in normal use; the explicit guard below
+ * keeps it out even if one is somehow live at save time.)
  *
  * Backwards compatibility. The reader recognises the older v1 shape
  *
@@ -135,6 +138,9 @@ export function isEphemeral(view) {
  */
 function serialiseView(view) {
   if (!view || typeof view !== 'object') return null;
+  // A placeholder is a transient chooser pane — never persisted (the
+  // owning leaf restores to `*scratch*`, matching the no-residue rule).
+  if (view.kind === 'placeholder') return null;
   if (view.kind === 'tabline' && Array.isArray(view.tabs)) {
     const tabs = view.tabs.map(serialiseView).filter((t) => t !== null);
     const rawActive = typeof view.active === 'number' ? view.active : 0;
@@ -179,6 +185,17 @@ function serialiseView(view) {
     const path = typeof view.filePath === 'string' ? view.filePath : null;
     if (!path) return null;
     return { kind: view.kind, path };
+  }
+  // A PDF view is ephemeral BY DEFAULT (a transient texdoc/consult doc),
+  // but persists when its `persist` flag is set — the latexed output of
+  // a document the user wants back across a relaunch. Restore reopens
+  // the path through `openFileByPath` (the .pdf suffix routes to a pdf
+  // view) and re-marks it persistent.
+  if (view.kind === 'pdf') {
+    if (view.persist !== true) return null;
+    const path = typeof view.filePath === 'string' ? view.filePath : null;
+    if (!path) return null;
+    return { kind: 'pdf', path };
   }
   // Directory views persist their rootPath. Restore goes through
   // `openByPath` (which dispatches on `kind` for directory-* and calls
@@ -421,7 +438,10 @@ function parseView(raw) {
       mark: Number.isFinite(raw.mark) ? Number(raw.mark) : null,
     };
   }
-  if (raw.kind === 'image' || raw.kind === 'audio' || raw.kind === 'video') {
+  if (
+    raw.kind === 'image' || raw.kind === 'audio' ||
+    raw.kind === 'video' || raw.kind === 'pdf'
+  ) {
     if (typeof raw.path !== 'string' || raw.path === '') return null;
     return { kind: raw.kind, path: raw.path };
   }
@@ -562,10 +582,12 @@ export function createSession({
 
 /**
  * Walk a serialised pane tree and collect every file-backed view-blob
- * (text/image/audio/video) in encounter order. Tablines' tabs are
- * included; nested tablines are walked too. The restore loop opens
- * each path through `openByPath` (which dispatches to the matching
- * kind in app.js) and maps the resulting handle back via the blob.
+ * (text/image/audio/video/pdf/directory-*) in encounter order. Tablines'
+ * tabs are included; nested tablines are walked too. The restore loop
+ * opens each path through `openByPath` (which dispatches to the matching
+ * kind in app.js) and maps the resulting handle back via the blob. (A
+ * pdf blob is only present when its view's `persist` flag was set; an
+ * unflagged pdf serialises as null and never reaches here.)
  *
  * @param {SerialisedPane | null} pane
  * @returns {object[]}
@@ -585,7 +607,7 @@ function collectTextViewBlobs(pane) {
     if (!v) return;
     if (
       v.kind === 'text' || v.kind === 'image' ||
-      v.kind === 'audio' || v.kind === 'video' ||
+      v.kind === 'audio' || v.kind === 'video' || v.kind === 'pdf' ||
       v.kind === 'directory-tree' || v.kind === 'directory-columns'
     ) {
       out.push(v);

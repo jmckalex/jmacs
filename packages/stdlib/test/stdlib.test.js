@@ -49,6 +49,7 @@ async function editor(initialText = 'hello world', options = {}) {
   const docCalls = [];
   const evalCalls = [];
   const tsCalls = [];
+  const highlightPushes = [];
   const captures = options.captures ?? NIL;
   const faceColors = options.faceColors ?? {};
   const nodeAtPoint = (() => {
@@ -71,6 +72,14 @@ async function editor(initialText = 'hello world', options = {}) {
     write: (text) => output.push(text),
     primitives: {
       ...createBufferPrimitives({ current: buffer }),
+      // An in-memory system clipboard so the kill ring's interprogram
+      // sync (kill-ring-add! writes it; yank reads it) has somewhere to
+      // go. `options.clipboard` lets a test seed/inspect it.
+      'clipboard-text': () => (options.clipboard ? options.clipboard.text : ''),
+      'clipboard-set-text!': (args) => {
+        if (options.clipboard) options.clipboard.text = String(args[0] ?? '');
+        return NIL;
+      },
       'open-file!': () => {
         fileCalls.push('open');
         return NIL;
@@ -267,6 +276,13 @@ async function editor(initialText = 'hello world', options = {}) {
       'write-custom-file!': () => NIL,
       'apply-theme!': () => NIL,
       'apply-face-styles!': () => NIL,
+      // The highlight-override push (highlight-rules.lisp): record the
+      // flattened rule records each push delivers so the C-h C-f flow
+      // and the rule data-ops can be asserted on.
+      'set-highlight-overrides!': (a) => {
+        highlightPushes.push(a[0]);
+        return NIL;
+      },
       // Documentation primitives: by default the test environment
       // has no doc manifest (`()`), so `doc-known?` is always false
       // and help commands fall back to the REPL. Individual tests
@@ -353,6 +369,15 @@ async function editor(initialText = 'hello world', options = {}) {
         openedPath = String(args[0] ?? '');
         return NIL;
       },
+      // find-file checks existence to decide open-vs-create; in this
+      // harness every submitted path is treated as existing, so the
+      // submission test routes through `open-file-path!`. The
+      // create-a-missing-file branch is covered in find-file.test.js.
+      'file-exists?': () => true,
+      'find-file-new!': (args) => {
+        openedPath = String(args[0] ?? '');
+        return NIL;
+      },
       // The find-file flow seeds its prompt with the home directory;
       // the test harness pins it so directoryStub keys can match.
       'home-directory': () => '/home/test',
@@ -381,6 +406,7 @@ async function editor(initialText = 'hello world', options = {}) {
     docCalls,
     evalCalls,
     tsCalls,
+    highlightPushes,
     foldCalls,
     statusCalls,
     completingPrompts,
@@ -585,6 +611,17 @@ test('C-x C-c is bound to quit-editor', async () => {
   assert.equal(press(interpreter, 'C-c'), true);
 });
 
+test('gnuplot.lisp defines the gnuplot command bound to C-c g', async () => {
+  const { interpreter } = await editor();
+  // The command exists (gnuplot.lisp loaded and parsed).
+  assert.equal(interpreter.evaluate('(procedure? gnuplot)'), true);
+  assert.equal(typeof interpreter.evaluate('(doc gnuplot)'), 'string');
+  // C-c g resolves to the gnuplot command symbol in the c-c prefix map.
+  assert.ok(
+    interpreter.evaluate('(eq? (get c-c-keymap "g") (quote gnuplot))')
+  );
+});
+
 test('C-x C-f opens the find-file completing minibuffer', async () => {
   const { interpreter, completingPrompts } = await editor();
   press(interpreter, 'C-x');
@@ -761,6 +798,52 @@ test('C-k at the end of a line kills the newline', async () => {
   buffer.moveTo(1);
   press(interpreter, 'C-k');
   assert.equal(buffer.text, 'ab');
+});
+
+// --- system clipboard integration ---------------------------------------
+// kill/copy mirror the system clipboard (interprogram-cut); yank reads it
+// (interprogram-paste), so C-y / Cmd+V paste text copied in another app.
+
+test('kill-ring-add! mirrors the text to the system clipboard', async () => {
+  const clipboard = { text: '' };
+  const { interpreter } = await editor('', { clipboard });
+  interpreter.evaluate('(kill-ring-add! "hello")');
+  assert.equal(clipboard.text, 'hello');
+});
+
+test('M-w copies the selection to the system clipboard', async () => {
+  const clipboard = { text: '' };
+  const { buffer, interpreter } = await editor('abc', { clipboard });
+  buffer.moveTo(0);
+  buffer.setMark(3);
+  press(interpreter, 'M-w');
+  assert.equal(clipboard.text, 'abc');
+});
+
+test('C-y yanks text copied in another app (empty kill ring)', async () => {
+  const clipboard = { text: 'from elsewhere' };
+  const { buffer, interpreter } = await editor('', { clipboard });
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'from elsewhere');
+});
+
+test('C-y prefers a newer system clipboard over the ring top', async () => {
+  const clipboard = { text: '' };
+  const { buffer, interpreter } = await editor('', { clipboard });
+  interpreter.evaluate('(kill-ring-add! "internal")'); // also sets clipboard
+  clipboard.text = 'external';                          // an external copy after
+  press(interpreter, 'C-y');
+  assert.equal(buffer.text, 'external');
+});
+
+test('C-y uses the ring top when the clipboard already matches it', async () => {
+  const clipboard = { text: '' };
+  const { buffer, interpreter } = await editor('', { clipboard });
+  interpreter.evaluate('(kill-ring-add! "ring")'); // clipboard becomes "ring" too
+  press(interpreter, 'C-y');
+  press(interpreter, 'C-y');
+  // No spurious extra push from the matching clipboard: just two yanks.
+  assert.equal(buffer.text, 'ringring');
 });
 
 // --- yank-pop -----------------------------------------------------------
@@ -2608,12 +2691,251 @@ test('latex-mode has a C-c keymap with latex-textbf under "b"', async () => {
   assert.equal(String(km && km.name), 'latex-textbf');
 });
 
+// --- AUCTeX Phase 1: the compile / view loop (latex-compile.lisp) ----
+
+test('latex-compile.lisp binds C-c C-c / C-c C-v / C-c ` in latex-mode', async () => {
+  const { interpreter } = await editor();
+  const at = (chord) =>
+    String(
+      (interpreter.evaluate(
+        `(get (get (resolve-keymap 'latex-mode-map) "C-c" {}) "${chord}" nil)`
+      ) || {}).name
+    );
+  assert.equal(at('C-c'), 'latex-compile');
+  assert.equal(at('C-v'), 'latex-view');
+  assert.equal(at('`'), 'latex-next-error');
+});
+
+test('latex-compile.lisp leaves the existing C-c sub-bindings intact', async () => {
+  const { interpreter } = await editor();
+  const at = (chord) =>
+    String(
+      (interpreter.evaluate(
+        `(get (get (resolve-keymap 'latex-mode-map) "C-c" {}) "${chord}" nil)`
+      ) || {}).name
+    );
+  // The Phase-0 latex.lisp bindings must survive the extension.
+  assert.equal(at('b'), 'latex-textbf');
+  assert.equal(at('i'), 'latex-textit');
+  assert.equal(at('e'), 'latex-emph');
+  assert.equal(at('m'), 'latex-math-inline');
+  assert.equal(at('M'), 'latex-math-display');
+  assert.equal(at('s'), 'latex-section');
+  assert.equal(at('S'), 'latex-subsection');
+  assert.equal(at('l'), 'latex-itemize');
+  assert.equal(at('n'), 'latex-enumerate');
+  assert.equal(at('C-p'), 'toggle-latex-math-preview');
+});
+
+test('the compile-loop commands are all registered', async () => {
+  const { interpreter } = await editor();
+  for (const name of [
+    'latex-compile',
+    'latex-view',
+    'latex-next-error',
+    'latex-previous-error',
+    'latex-show-output',
+  ]) {
+    assert.ok(
+      interpreter.evaluate(`(command-registered? '${name})`),
+      `${name} should be a registered command`
+    );
+  }
+});
+
+test('the latex defcustoms have list/symbol defaults', async () => {
+  const { interpreter } = await editor();
+  // *latex-command* is a LIST of strings (program + flags), not a
+  // shell string — run-process! takes no shell.
+  assert.ok(interpreter.evaluate('(list? *latex-command*)'));
+  assert.deepEqual(
+    listToArray(interpreter.evaluate('*latex-command*')),
+    ['latexmk', '-pdf', '-synctex=1', '-interaction=nonstopmode']
+  );
+  assert.ok(interpreter.evaluate('(list? *latex-bibtex-command*)'));
+  assert.deepEqual(
+    listToArray(interpreter.evaluate('*latex-bibtex-command*')),
+    ['bibtex']
+  );
+  assert.ok(interpreter.evaluate('(list? *latex-clean*)'));
+  // *latex-view* is a symbol (the seam for external viewers later).
+  assert.ok(interpreter.evaluate('(symbol? *latex-view*)'));
+  assert.equal(
+    interpreter.evaluate('(symbol->string *latex-view*)'),
+    'pdf-view'
+  );
+});
+
+test('-latex-pdf-path swaps .tex for .pdf in the same directory', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(-latex-pdf-path "/a/b/paper.tex")'),
+    '/a/b/paper.pdf'
+  );
+});
+
+test('-latex-tex-file? recognises .tex paths only', async () => {
+  const { interpreter } = await editor();
+  assert.equal(interpreter.evaluate('(-latex-tex-file? "x.tex")'), true);
+  assert.equal(interpreter.evaluate('(-latex-tex-file? "x.md")'), false);
+  assert.equal(interpreter.evaluate('(-latex-tex-file? nil)'), false);
+});
+
+test('-latex-errors-text reports success in words for no diagnostics', async () => {
+  const { interpreter } = await editor();
+  const text = interpreter.evaluate("(-latex-errors-text '())");
+  assert.match(String(text), /No LaTeX errors/);
+});
+
+test('-latex-diag-line renders FILE:LINE: MESSAGE occur-style', async () => {
+  const { interpreter } = await editor();
+  const line = interpreter.evaluate(
+    '(-latex-diag-line (hash-map :file "p.tex" :line 42 ' +
+      ':message "Undefined control sequence" :kind :error))'
+  );
+  assert.equal(String(line), 'p.tex:42: Undefined control sequence');
+  const warn = interpreter.evaluate(
+    '(-latex-diag-line (hash-map :file "p.tex" :line 7 ' +
+      ':message "Reference undefined" :kind :warning))'
+  );
+  assert.equal(String(warn), 'p.tex:7: warning: Reference undefined');
+});
+
+test('-latex-spawn-failed? detects an ENOENT spawn failure', async () => {
+  const { interpreter } = await editor();
+  // :code nil + ENOENT in stderr => the program was not on PATH.
+  assert.equal(
+    interpreter.evaluate(
+      '(-latex-spawn-failed? (hash-map :code nil ' +
+        ':stderr "spawn latexmk ENOENT" :stdout ""))'
+    ),
+    true
+  );
+  // :code nil but no ENOENT (a signal kill) => not a spawn failure.
+  assert.equal(
+    interpreter.evaluate(
+      '(-latex-spawn-failed? (hash-map :code nil :stderr "" :stdout ""))'
+    ),
+    false
+  );
+  // A normal non-zero exit => not a spawn failure.
+  assert.equal(
+    interpreter.evaluate(
+      '(-latex-spawn-failed? (hash-map :code 1 :stderr "x" :stdout ""))'
+    ),
+    false
+  );
+});
+
+test('latex-next-error reports an empty list when nothing was compiled', async () => {
+  const { interpreter, statusCalls } = await editor();
+  interpreter.evaluate('(set! *latex-error-list* (list))');
+  interpreter.evaluate('(latex-next-error)');
+  assert.ok(
+    statusCalls.some((s) => typeof s === 'string' && /No LaTeX errors/.test(s)),
+    'should echo a no-errors status'
+  );
+});
+
 test('makefile-mode has a C-c keymap with makefile-target under "t"', async () => {
   const { interpreter } = await editor();
   const km = interpreter.evaluate(
     "(get (get (resolve-keymap 'makefile-mode-map) \"C-c\" {}) \"t\" nil)"
   );
   assert.equal(String(km && km.name), 'makefile-target');
+});
+
+// --- general math preview --------------------------------------------
+
+test('the general math-preview-mode and toggle-math-preview are defined', async () => {
+  const { interpreter } = await editor();
+  // The mode is a map with the MathPreview name.
+  assert.equal(
+    String(interpreter.evaluate('(get math-preview-mode :name "?")')),
+    'MathPreview'
+  );
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote toggle-math-preview))'),
+    true
+  );
+});
+
+test('toggle-math-preview toggles the general minor mode on and off', async () => {
+  const { interpreter } = await editor('');
+  interpreter.evaluate('(toggle-math-preview)');
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 1);
+  // The enabled mode is the general math-preview-mode.
+  assert.equal(
+    interpreter.evaluate('(if (member math-preview-mode (minor-modes)) #t #f)'),
+    true
+  );
+  interpreter.evaluate('(toggle-math-preview)');
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 0);
+});
+
+test('latex-math-preview-mode is an alias of the general mode', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(eq? latex-math-preview-mode math-preview-mode)'),
+    true
+  );
+});
+
+test('toggle-latex-math-preview enables the general math-preview-mode', async () => {
+  const { interpreter } = await editor('');
+  interpreter.evaluate('(toggle-latex-math-preview)');
+  assert.equal(
+    interpreter.evaluate('(if (member math-preview-mode (minor-modes)) #t #f)'),
+    true
+  );
+  interpreter.evaluate('(toggle-latex-math-preview)');
+  assert.equal(interpreter.evaluate('(length (minor-modes))'), 0);
+});
+
+test('latex C-c C-p stays bound to toggle-latex-math-preview', async () => {
+  const { interpreter } = await editor();
+  const km = interpreter.evaluate(
+    "(get (get (resolve-keymap 'latex-mode-map) \"C-c\" {}) \"C-p\" nil)"
+  );
+  assert.equal(String(km && km.name), 'toggle-latex-math-preview');
+});
+
+test('*latex-math-preview-default* is a #f boolean defcustom', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(custom-value (quote *latex-math-preview-default*))'),
+    false
+  );
+});
+
+test('markdown wires a math-preview toggle and defcustom', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote toggle-markdown-math-preview))'),
+    true
+  );
+  // The markdown defcustom mirrors the latex one (off by default).
+  assert.equal(
+    interpreter.evaluate('(custom-value (quote *markdown-math-preview-default*))'),
+    false
+  );
+});
+
+test('markdown C-c C-p toggles math preview', async () => {
+  const { interpreter } = await editor();
+  const km = interpreter.evaluate(
+    "(get (get (resolve-keymap 'markdown-mode-map) \"C-c\" {}) \"C-p\" nil)"
+  );
+  assert.equal(String(km && km.name), 'toggle-markdown-math-preview');
+});
+
+test('toggle-markdown-math-preview enables the general math-preview-mode', async () => {
+  const { interpreter } = await editor('');
+  interpreter.evaluate('(toggle-markdown-math-preview)');
+  assert.equal(
+    interpreter.evaluate('(if (member math-preview-mode (minor-modes)) #t #f)'),
+    true
+  );
 });
 
 test('html-bold wraps the selection in <strong>...</strong>', async () => {
@@ -2808,6 +3130,18 @@ function captureValue(language, ranges) {
     ranges.map(([s, e, f]) => arrayToList([s, e, f]))
   );
   return cons(language, captures);
+}
+
+/** Read the {scope,key,pattern,face} fields off a highlight-rule record
+ *  (a Lisp Map keyed by interned keywords) pushed via the
+ *  `set-highlight-overrides!` stub. */
+function recordFields(record) {
+  return {
+    scope: record.get(keyword('scope')),
+    key: record.get(keyword('key')),
+    pattern: record.get(keyword('pattern')),
+    face: record.get(keyword('face')),
+  };
 }
 
 test('smallest-covering-capture picks the narrowest range over a point', async () => {
@@ -3178,7 +3512,7 @@ test('-face-info-render-ancestors renders the parent chain with left arrows', as
   );
 });
 
-test('the no-capture render names the node, ancestor chain, and query template', async () => {
+test('the no-capture render names the node, ancestor chain, and the live flow', async () => {
   const { interpreter } = await editor();
   const body = interpreter.evaluate(
     '(-face-info-render-no-capture '
@@ -3199,12 +3533,14 @@ test('the no-capture render names the node, ancestor chain, and query template',
     `expected the range; got: ${body}`);
   assert.ok(body.includes('foo.bar'),
     `expected the snippet text; got: ${body}`);
-  // The query template uses the immediate parent + node type.
-  assert.ok(body.includes('(call_expression (identifier) @<face>)'),
-    `expected a query rule template; got: ${body}`);
-  // Path hint for where to add the rule.
-  assert.ok(body.includes('packages/renderer/src/languages/javascript.js'),
-    `expected the file path hint; got: ${body}`);
+  // The page points at the live, no-file-editing flow (C-h C-f), not at
+  // hand-editing a .js query file.
+  assert.ok(body.includes('C-h C-f'),
+    `expected the C-h C-f flow; got: ${body}`);
+  assert.ok(body.includes('add-highlight-rule!'),
+    `expected the equivalent Lisp; got: ${body}`);
+  assert.ok(!body.includes('packages/renderer/src/languages'),
+    `must NOT tell the user to hand-edit a .js file; got: ${body}`);
 });
 
 test('the no-capture render handles a rootless node (no ancestors)', async () => {
@@ -3213,10 +3549,9 @@ test('the no-capture render handles a rootless node (no ancestors)', async () =>
     '(-face-info-render-no-capture '
     + '  "javascript" "program" 0 0 (quote ()) "")'
   );
-  // With no parent, the query template degrades to a bare node match
-  // — useful enough to start from.
-  assert.ok(body.includes('(program) @<face>'),
-    `expected a bare-node template; got: ${body}`);
+  // The node type appears in the equivalent-Lisp line.
+  assert.ok(body.includes('"program"'),
+    `expected the node type in the flow hint; got: ${body}`);
   assert.ok(body.includes('(none)'),
     `expected the ancestor chain to render as (none); got: ${body}`);
 });
@@ -3259,6 +3594,99 @@ test('C-h F is bound to describe-face-at-point', async () => {
     ),
     'C-h F must run describe-face-at-point'
   );
+});
+
+// --- highlight-construct-at-point (C-h C-f) ---------------------------
+
+test('C-h C-f is bound to highlight-construct-at-point', async () => {
+  const { interpreter } = await editor();
+  assert.ok(
+    interpreter.evaluate(
+      '(eq? (get c-h-keymap "C-f") (quote highlight-construct-at-point))'
+    ),
+    'C-h C-f must run highlight-construct-at-point'
+  );
+});
+
+test('the flow assigns an EXISTING face to the construct, mode scope by default', async () => {
+  const captures = captureValue('javascript', []);
+  const { interpreter, minibufferPrompts, highlightPushes } = await editor(
+    'abc',
+    {
+      captures,
+      nodeAtPoint: {
+        language: 'javascript', type: 'identifier', start: 0, end: 3,
+        ancestors: [],
+      },
+    }
+  );
+  // Force a known major mode for the scope label/key.
+  interpreter.evaluate('(switch-major-mode lisp-mode)');
+  interpreter.evaluate('(highlight-construct-at-point)');
+  // Prompt 1: the face name.
+  assert.equal(minibufferPrompts.length, 1);
+  assert.ok(minibufferPrompts[0].includes('Face for `identifier`'));
+  // An existing face → straight to scope (no colour prompt).
+  interpreter.evaluate('(minibuffer-delivered "keyword")');
+  assert.equal(minibufferPrompts.length, 2);
+  assert.ok(minibufferPrompts[1].includes('Scope'));
+  // Empty answer = default = mode scope.
+  interpreter.evaluate('(minibuffer-delivered "")');
+  // The push carries one mode-scoped rule for this mode.
+  const last = highlightPushes[highlightPushes.length - 1];
+  const recs = listToArray(last).map((r) => recordFields(r));
+  assert.deepEqual(recs, [
+    { scope: 'mode', key: 'Lisp', pattern: 'identifier', face: 'keyword' },
+  ]);
+});
+
+test('the flow creates + colours a NEW face, then language scope on "l"', async () => {
+  const captures = captureValue('javascript', []);
+  const { interpreter, minibufferPrompts, highlightPushes } = await editor(
+    'abc',
+    {
+      captures,
+      nodeAtPoint: {
+        language: 'javascript', type: 'identifier', start: 0, end: 3,
+        ancestors: [],
+      },
+    }
+  );
+  interpreter.evaluate('(highlight-construct-at-point)');
+  // Prompt 1: face name — a NEW one.
+  interpreter.evaluate('(minibuffer-delivered "shiny")');
+  // Prompt 2: colour for the new face.
+  assert.ok(minibufferPrompts[1].includes('colour'));
+  interpreter.evaluate('(minibuffer-delivered "#abcdef")');
+  // The face was created live.
+  assert.equal(interpreter.evaluate('(face-registered? (quote shiny))'), true);
+  assert.equal(
+    interpreter.evaluate('(face-attribute (quote shiny) :foreground :theme (quote dark))'),
+    '#abcdef'
+  );
+  // Prompt 3: scope — choose language ("l").
+  assert.ok(minibufferPrompts[2].includes('Scope'));
+  interpreter.evaluate('(minibuffer-delivered "l")');
+  const last = highlightPushes[highlightPushes.length - 1];
+  const recs = listToArray(last).map((r) => recordFields(r));
+  assert.deepEqual(recs, [
+    { scope: 'language', key: 'javascript', pattern: 'identifier', face: 'shiny' },
+  ]);
+});
+
+test('the flow aborts cleanly when the face-name prompt is cancelled', async () => {
+  const captures = captureValue('javascript', []);
+  const { interpreter, highlightPushes } = await editor('abc', {
+    captures,
+    nodeAtPoint: {
+      language: 'javascript', type: 'identifier', start: 0, end: 3,
+      ancestors: [],
+    },
+  });
+  const before = highlightPushes.length;
+  interpreter.evaluate('(highlight-construct-at-point)');
+  interpreter.evaluate('(minibuffer-delivered nil)'); // cancelled
+  assert.equal(highlightPushes.length, before, 'a cancel must push nothing');
 });
 
 // --- code folding ------------------------------------------------------

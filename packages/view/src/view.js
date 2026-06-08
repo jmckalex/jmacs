@@ -78,6 +78,11 @@ export function createView(options) {
     name: options.name ?? null,
     buffer: options.buffer ?? null,
     mode: options.mode ?? null,
+    // Whether the session should restore this view across a relaunch.
+    // Most non-text views are ephemeral by default; the flag lets a
+    // specific one (e.g. the latexed-output PDF) opt back in. `extras`
+    // may override it (so a restored view can be re-marked persistent).
+    persist: false,
     ...(options.extras ?? {}),
   };
   // For text views the canonical name comes from the buffer; fall
@@ -200,6 +205,10 @@ export function tablineActiveChild(view) {
  *   buffer for text views; null otherwise.
  * @property {*} mode - The view's own mode (non-text views); null for
  *   text views (their modes live on the buffer).
+ * @property {boolean} persist - Whether the session restores this view
+ *   across a relaunch. Defaults to `false`; an `extras.persist` (or the
+ *   `set-view-persistent!` primitive) opts a specific view back in. Read
+ *   by `viewToBlob` for the otherwise-ephemeral `pdf` kind.
  * @property {number} [point] - The primary cursor's offset, for text
  *   views. Two views over the same buffer have independent cursors.
  *   Backed by `cursors[0].point`.

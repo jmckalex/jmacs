@@ -176,11 +176,26 @@ catalogue of minor modes can grow later, pulled by real need.
 ## 8. Hooks
 
 A mode's `:on-enable` runs when the mode becomes active in a buffer,
-`:on-disable` when it stops. That is the whole hook story for v1 — it
-covers "set things up for this buffer". Per-buffer hook *lists* that
-several parties can append to (Emacs's `lisp-mode-hook`) are deferred;
-until then, customising a mode means redefining it or wrapping its
-`:on-enable` in the REPL.
+`:on-disable` when it stops — the built-in, single procedure slot set at
+`define-mode` time, for "set things up for this buffer".
+
+On top of that, **additive hooks** (Emacs's `lisp-mode-hook` story) are
+now implemented in `modes.lisp`:
+
+```lisp
+(add-hook markdown-mode (lambda () (enable-minor-mode math-mode)))
+(add-hook markdown-mode another-fn)            ; both run, in order
+(add-hook markdown-mode on-leave :on-disable)  ; the disable phase
+(remove-hook markdown-mode another-fn)
+```
+
+`add-hook` registers any number of functions per mode (keyed by display
+name, so they survive a redefinition and can be registered before the
+mode loads); it is idempotent by procedure identity and accepts a mode
+object *or* its name. `run-mode-hook` runs the built-in `:on-enable` /
+`:on-disable` slot **first**, then every registered hook in registration
+order — so the built-in slot and community hooks coexist. This fires on
+major-mode switch and minor-mode enable/disable alike.
 
 ## 9. The modeline
 

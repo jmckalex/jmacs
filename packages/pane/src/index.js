@@ -37,12 +37,15 @@ export {
   siblingOf,
   insertAtSplit,
   insertAtRootBorder,
+  swapLeaves,
+  permuteLeaves,
 } from './tree.js';
 
 export {
   computeRects,
   splitRect,
   computeSplitterEdges,
+  spiralOrder,
 } from './layout.js';
 
 export { paneInDirection } from './navigation.js';

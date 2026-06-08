@@ -15,6 +15,10 @@
 export { createBufferPrimitives } from './buffer-primitives.js';
 export { createViewPrimitives } from './view-primitives.js';
 export { createPanePrimitives } from './pane-primitives.js';
+export { createLatexPrimitives } from './latex-primitives.js';
+export { scanLatex } from './latex-scan.js';
+export { parseSynctexView, parseSynctexEdit } from './synctex-parse.js';
+export { pathDirname, pathBasename, pathResolve, normalizePath } from './path-resolve.js';
 
 /**
  * The standard-library Lisp files, in load order. The command files
@@ -47,11 +51,20 @@ export const STDLIB_FILES = Object.freeze([
   'occur.lisp',
   'expand-region.lisp',
   'system.lisp',
+  // The utility-pane Lisp surface (toggle/focus/cycle + output helpers).
+  // After system.lisp (reuses toggle-repl!); before latex-compile.lisp,
+  // which routes its build output through `utility-output`.
+  'utility-pane.lisp',
   'modes.lisp',
   // The face registry loads before themes.lisp, which registers all
   // built-in faces via `defface`.
   'faces.lisp',
   'themes.lisp',
+  // The Lisp surface for user `kind -> face` highlight overrides. Loads
+  // after faces.lisp (reuses `*face-overrides-saver*` for persistence)
+  // and modes.lisp (rules are keyed by major-mode display name). The
+  // host primitive `set-highlight-overrides!` recompiles queries live.
+  'highlight-rules.lisp',
   'keymap.lisp',
   // multi-cursor.lisp needs `expand-region-word-bounds` (expand-region.lisp)
   // and rebinds `keyboard-quit` (keymap.lisp), so it loads after both.
@@ -62,8 +75,14 @@ export const STDLIB_FILES = Object.freeze([
   // These read the keymap, so they load after it.
   'auto-pair.lisp',
   'menus.lisp',
+  // The general math-preview minor mode loads before the mode files that
+  // build their toggles on it (markdown.lisp, latex.lisp).
+  'math-preview.lisp',
   'markdown.lisp',
   'latex.lisp',
+  // latex-compile.lisp extends latex.lisp's `latex-c-c-map`, so it must
+  // load after it (the AUCTeX Phase-1 compile/view loop).
+  'latex-compile.lisp',
   'makefile.lisp',
   'view-menu.lisp',
   'sticky-notes.lisp',
@@ -72,6 +91,9 @@ export const STDLIB_FILES = Object.freeze([
   'directory-tree.lisp',
   'directory-columns.lisp',
   'shell.lisp',
+  'gnuplot.lisp',
+  'notebook.lisp',
+  'notebook-commands.lisp',
   'palette.lisp',
   'docs.lisp',
   'help.lisp',
@@ -82,6 +104,60 @@ export const STDLIB_FILES = Object.freeze([
   // etc. (renderer-side citation.js bundle). Defcustoms registered
   // after `custom.lisp`'s load.
   'cite.lisp',
+  // RefTeX R1 — the multi-file document model + label/section/cite DB.
+  // Loads after latex-compile.lisp (it redefines that file's
+  // `latex-master-file` seam) and after cite.lisp (it reads
+  // `*citation-bib-path*` and uses the citation bridge for cite keys).
+  'reftex.lisp',
+  // RefTeX R2 — labels & references (reftex-label, reftex-reference).
+  // Loads after reftex.lisp (it queries the R1 DB and reuses its
+  // `*reftex-env-types*` / type-inference helpers) and extends the
+  // `latex-c-c-map` further with the `(` and `)` slots.
+  'reftex-refs.lisp',
+  // RefTeX R3 — citations (reftex-citation, C-c [). Loads after
+  // reftex-refs.lisp (it reuses R2's origin bookkeeping + extends the
+  // `latex-c-c-map` with `[`) and reftex.lisp (R1 DB + bib paths). The
+  // cite picker formats references via the host citation.js bridge.
+  'reftex-cite.lisp',
+  // AUCTeX Phase 2 — smart insertion (environment / macro / section /
+  // font). Loads after reftex-refs.lisp: it extends `latex-c-c-map`
+  // further (C-c C-e/]/C-m/C-s/C-f), redefines `minibuffer-tab-complete`
+  // once more to add a third completion source (delegating to RefTeX's
+  // dispatcher, then find-file), and softly reuses RefTeX's
+  // `*reftex-label-prefixes*` for figure/table/section label keys.
+  'latex-insert.lisp',
+  // AUCTeX Phase 3 — LaTeX-math-mode (math symbol abbreviations). Loads
+  // after latex-insert.lisp: it reuses that file's shared completion
+  // dispatch (`*latex-insert-candidates*` / `*latex-insert-tab-complete*`)
+  // for the unknown-key completion fallback and extends `latex-c-c-map`
+  // with the C-c ~ toggle slot.
+  'latex-math.lisp',
+  // AUCTeX Phase 5 — navigation & niceties (section next/prev, \begin <->
+  // \end matching jump, M-RET insert-\item, smart quotes). Loads after
+  // latex-math.lisp: it reuses latex-insert.lisp's `-latex-innermost-open-env`
+  // for list detection, extends `latex-c-c-map` (C-c C-n/C-r/%), and adds
+  // two top-level keys (M-RET, ") to latex-mode-map.
+  'latex-nav.lisp',
+  // AUCTeX-style `LaTeX-fill-paragraph` (M-q). Loads after latex-nav.lisp:
+  // it reuses latex-insert.lisp's pure \begin/\end env-marker scanner
+  // (generalised to the full open-env stack for depth) and `assoc`s an
+  // M-q slot onto latex-mode-map, overriding keymap.lisp's global
+  // M-q -> fill-paragraph for LaTeX buffers. Adds `*latex-indent-level*`
+  // (and `*latex-item-indent*`) to the `latex` customize group.
+  'latex-fill.lisp',
+  // AUCTeX Phase 6 — SyncTeX forward & inverse search. Loads after
+  // latex-compile.lisp (it redefines `latex-view` to fold in forward
+  // search) and after reftex.lisp (so `latex-master-file` is the
+  // master-detecting R1 version). Defines `latex-forward-search` and
+  // `latex-synctex-inverse`; adds no keybindings of its own (forward is
+  // folded into C-c C-v; inverse is the host's Option-click callback).
+  'latex-synctex.lisp',
+  // The structured (grouped) LaTeX mode menu. Loads LAST among the
+  // LaTeX/RefTeX files: it names every latex-* / reftex-* command in its
+  // sections, so all those symbols must already exist. Uses the generic
+  // `register-mode-menu!` from menus.lisp; purely additive (the flat
+  // `mode-menu-entries` and every other mode's menu are unaffected).
+  'latex-menu.lisp',
 ]);
 
 /**
