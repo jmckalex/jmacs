@@ -81,7 +81,10 @@
   :doc "The snippet field the cursor is currently on."
   :default-light   (face :background "#cfe8ff")
   :default-dark    (face :background "#244a63")
-  :default-bright  (face :background "#cfe8ff")
+  ;; `bright` is a DARK-background theme with a light syntax palette, so
+  ;; its pill must be dark too — a light fill leaves the light text
+  ;; unreadable (white-on-light).
+  :default-bright  (face :background "#234f6e")
   :default-midnight (face :background "#1c3a4f"))
 
 (defface 'snippet-inactive-face
@@ -90,21 +93,24 @@
         the blue active field and the purple mirrors."
   :default-light   (face :background "#fdeecb")
   :default-dark    (face :background "#4a3f24")
-  :default-bright  (face :background "#fdeecb")
+  ;; Dark amber for the dark-background `bright` theme (see active-face).
+  :default-bright  (face :background "#514321")
   :default-midnight (face :background "#3a3018"))
 
 (defface 'snippet-mirror-face
   :doc "Mirror occurrences of the active field (live-updating echoes)."
   :default-light   (face :background "#e6dcff")
   :default-dark    (face :background "#3a2c5a")
-  :default-bright  (face :background "#e6dcff")
+  ;; Dark purple for the dark-background `bright` theme (see active-face).
+  :default-bright  (face :background "#3c2c62")
   :default-midnight (face :background "#2c2148"))
 
 (defface 'snippet-exit-face
   :doc "The snippet exit marker ($0)."
   :default-light   (face :background "#f0f0f0")
   :default-dark    (face :background "#333a40")
-  :default-bright  (face :background "#f0f0f0")
+  ;; Dark grey for the dark-background `bright` theme (see active-face).
+  :default-bright  (face :background "#2b333b")
   :default-midnight (face :background "#262c31"))
 
 ;; ----------------------------------------------------------------------
