@@ -682,17 +682,44 @@ text-view {
 
 .editor-decoration {
   position: absolute;
-  height: 1lh;
-  border-radius: 2px;
-  /* The face fills the background; a faint outline keeps a field with a
-   * pale tint (or an empty one) legible against the editor background. */
-  box-shadow: inset 0 0 0 1px #ffffff22;
+  /* Inset 1px top/bottom so the pill sits inside the line box and
+   * consecutive lines' pills don't touch. */
+  height: calc(1lh - 2px);
+  margin-top: 1px;
+  box-sizing: border-box;
+  /* A stadium / pill — the radius is clamped to half the height, so the
+   * ends are fully rounded regardless of width. */
+  border-radius: 999px;
+  /* The face fills the background; a faint inner outline keeps a field
+   * with a pale tint (or an empty one) legible against the editor. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+/* The active field — the one the cursor is on — gets an accent ring so it
+ * reads as "you are here", lifting it above the forthcoming pills. */
+.editor-decoration.tok-snippet-active-face {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--fg) 14%, transparent),
+    0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* Forthcoming fields — not yet reached — get a dashed outline so the
+ * upcoming tab stops read as "pending / waiting to be filled", distinct
+ * from the solid active pill. */
+.editor-decoration.tok-snippet-inactive-face {
+  border: 1px dashed color-mix(in srgb, var(--fg) 38%, transparent);
+  box-shadow: none;
 }
 
 /* An empty field (zero-width default) collapses to a thin marker so the
  * user can still see where the field is. */
 .editor-decoration.is-empty {
-  box-shadow: inset 0 0 0 1px #ffffff44;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 27%, transparent);
+}
+
+/* An empty *forthcoming* field keeps its dashed pending outline. */
+.editor-decoration.is-empty.tok-snippet-inactive-face {
+  box-shadow: none;
 }
 
 /* --- matching brackets ------------------------------------------------- */

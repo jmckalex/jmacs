@@ -85,11 +85,13 @@
   :default-midnight (face :background "#1c3a4f"))
 
 (defface 'snippet-inactive-face
-  :doc "Snippet fields the cursor has not yet reached."
-  :default-light   (face :background "#eef3f7")
-  :default-dark    (face :background "#2c3742")
-  :default-bright  (face :background "#eef3f7")
-  :default-midnight (face :background "#222b33"))
+  :doc "Forthcoming snippet fields the cursor has not yet reached. Tinted
+        amber so the upcoming tab stops read as 'pending', distinct from
+        the blue active field and the purple mirrors."
+  :default-light   (face :background "#fdeecb")
+  :default-dark    (face :background "#4a3f24")
+  :default-bright  (face :background "#fdeecb")
+  :default-midnight (face :background "#3a3018"))
 
 (defface 'snippet-mirror-face
   :doc "Mirror occurrences of the active field (live-updating echoes)."
@@ -841,3 +843,27 @@
       (list)
       (map (lambda (m) (cons (-abs (get m :start 0)) (-abs (get m :end 0))))
            (-as-get :mirrors (list)))))
+
+(define (-snippet-forthcoming-acc fields i cur acc)
+  "Accumulate fields whose index is strictly after CUR as absolute
+   (start . end) pairs — the not-yet-reached tab stops. Order is
+   irrelevant (each paints as its own box), so there is no final reverse."
+  (if (nil? fields)
+      acc
+      (-snippet-forthcoming-acc
+        (cdr fields) (+ i 1) cur
+        (if (> i cur)
+            (cons (cons (-abs (get (car fields) :start 0))
+                        (-abs (get (car fields) :end 0)))
+                  acc)
+            acc))))
+
+(define (snippet-forthcoming-regions)
+  "The not-yet-reached tab-stop fields (those after the current one) as
+   absolute (start . end) pairs, for the host to paint with
+   `snippet-inactive-face` so forthcoming stops show as pills. Empty when
+   no snippet is active or point is on the last field."
+  (if (not (snippet-active?))
+      (list)
+      (-snippet-forthcoming-acc
+        (-as-get :fields (list)) 0 (-as-get :current -1) (list))))

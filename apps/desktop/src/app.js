@@ -3846,7 +3846,9 @@ function refreshModeMenu() {
 // --- snippet field decorations -----------------------------------------
 //
 // While a snippet is being navigated, the active field is painted with
-// `snippet-active-face` and its live mirrors with `snippet-mirror-face`.
+// `snippet-active-face`, its live mirrors with `snippet-mirror-face`, and
+// the not-yet-reached (forthcoming) fields with `snippet-inactive-face`,
+// so the upcoming tab stops are visible as "pending" pills.
 // The Lisp side keeps the field offsets current as the user edits
 // (`snippet-after-edit!`), and exposes them as absolute `(start . end)`
 // ranges; the renderer recomputes the boxes from these offsets on every
@@ -3887,6 +3889,13 @@ function snippetDecorationsFor(buffer) {
   if (!buffer || buffer !== currentTextBuffer) return [];
   try {
     const ranges = [];
+    // Forthcoming tab stops first, so the active / mirror boxes paint
+    // over them if anything ever overlaps. These read as amber "pending"
+    // pills via `snippet-inactive-face`.
+    for (const pending of listToArray(interpreter.call('snippet-forthcoming-regions'))) {
+      const p = snippetRangePair(pending, 'snippet-inactive-face');
+      if (p !== null) ranges.push(p);
+    }
     const active = snippetRangePair(
       interpreter.call('snippet-active-region'),
       'snippet-active-face'

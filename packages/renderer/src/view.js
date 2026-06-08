@@ -531,18 +531,23 @@ export function createEditorView(buffer, container, options = {}) {
           if (row === -1) return null;
           const span = rect.toColumn - rect.fromColumn;
           const box = el('div', `editor-decoration tok-${rect.face}`);
-          box.style.left = `calc(${rect.fromColumn} * 1ch)`;
+          // Inflate the box a sliver on each side (PAD) so the rounded
+          // pill has horizontal breathing room around the glyphs rather
+          // than clipping them at the rounded ends.
+          const PAD = '0.18em';
+          box.style.left = `calc(${rect.fromColumn} * 1ch - ${PAD})`;
           box.style.top = `calc(${row} * 1lh)`;
           // A zero-width field (empty default) still gets a thin marker
           // so the user can see where it is; otherwise width tracks the
           // span, plus a sliver when the box runs past the line's end.
           if (span <= 0) {
-            box.style.width = '0.5ch';
+            box.style.width = `calc(0.5ch + 2 * ${PAD})`;
             box.classList.add('is-empty');
           } else {
-            box.style.width = rect.toLineEnd
-              ? `calc(${span} * 1ch + 0.5ch)`
-              : `calc(${span} * 1ch)`;
+            const base = rect.toLineEnd
+              ? `${span} * 1ch + 0.5ch`
+              : `${span} * 1ch`;
+            box.style.width = `calc(${base} + 2 * ${PAD})`;
           }
           return box;
         })

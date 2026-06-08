@@ -598,6 +598,24 @@ test('snippet-mirror-regions reports the mirror ranges for the host', async () =
   assert.equal(regions.length, 2);
 });
 
+test('snippet-forthcoming-regions reports the not-yet-reached fields', async () => {
+  const { buffer, interp } = await mirrorFixture();
+  buffer.insert('forof');
+  press(interp, 'tab'); // on field 1 ($1); field 2 (${2:xs}) is forthcoming
+  let regions = listToArray(interp.evaluate('(snippet-forthcoming-regions)'));
+  // Only $2 is forthcoming — the mirrors of $1 are not separate fields.
+  assert.equal(regions.length, 1);
+  press(interp, 'tab'); // advance to field 2 — nothing after it
+  regions = listToArray(interp.evaluate('(snippet-forthcoming-regions)'));
+  assert.equal(regions.length, 0);
+});
+
+test('snippet-forthcoming-regions is empty when no snippet is active', async () => {
+  const { interp } = await mirrorFixture();
+  const regions = listToArray(interp.evaluate('(snippet-forthcoming-regions)'));
+  assert.equal(regions.length, 0);
+});
+
 test('*snippet-mirror-multi-cursor* nil leaves a single cursor', async () => {
   const { buffer, interp } = await mirrorFixture();
   interp.evaluate('(set! *snippet-mirror-multi-cursor* #f)');
