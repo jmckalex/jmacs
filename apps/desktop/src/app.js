@@ -5049,6 +5049,20 @@ window.addEventListener('keydown', (event) => {
   // views only; in other views the chord is swallowed (no paste target).
   if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
     const k = event.key.toLowerCase();
+    // Cmd+W closes the active tab (Mac/editor-idiomatic). Like the
+    // clipboard chords, this disambiguates on the raw event so real
+    // Ctrl+W (C-w) keeps its Emacs meaning, kill-region. close-tab leaves
+    // the view alive in the global list (reachable via switch-view), so
+    // nothing is lost; it no-ops when the focused pane has no tabline.
+    if (k === 'w') {
+      event.preventDefault();
+      try {
+        interpreter.call('close-tab');
+      } catch (error) {
+        repl.appendError(`close-tab: ${error.message}`);
+      }
+      return;
+    }
     if (k === 'v' || k === 'c' || k === 'x') {
       const current = views[currentViewIndex];
       if (current && current.kind === 'text') {

@@ -58,12 +58,14 @@ function createWindow() {
   });
   mainWindow = win;
 
-  // The red traffic-light button / Cmd+W closes the window directly,
-  // which (like a native Quit) would tear down the renderer and drop
-  // unsaved edits with no prompt. Intercept the first close and route it
-  // through the same renderer confirm as before-quit; quitInteractive
-  // calls back via `app:quit` (which sets quitConfirmed) to let the next
-  // close through, or does nothing to cancel and the window stays open.
+  // The red traffic-light button closes the window directly, which (like
+  // a native Quit) would tear down the renderer and drop unsaved edits
+  // with no prompt. (Cmd+W does NOT reach here — the renderer binds it to
+  // close-tab; only the traffic-light button and app.quit() close the
+  // window.) Intercept the first close and route it through the same
+  // renderer confirm as before-quit; quitInteractive calls back via
+  // `app:quit` (which sets quitConfirmed) to let the next close through,
+  // or does nothing to cancel and the window stays open.
   win.on('close', (event) => {
     if (!shouldHoldForConfirm()) return;
     event.preventDefault();
