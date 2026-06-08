@@ -6238,17 +6238,33 @@ function removeRecoverEntry(key) {
 function recoverSnapshot(key) {
   const snap = recoverableSnapshots.find((s) => s.key === key);
   if (!snap) return;
-  const buffer = createBuffer(typeof snap.text === 'string' ? snap.text : '', {
-    name: recoverDisplayName(snap),
-  });
-  if (snap.path) buffer.filePath = snap.path;
-  const view = createView({ kind: 'text', buffer });
-  views.push(view);
-  // The recovered content is, by definition, unsaved.
-  dirtyBuffers.add(buffer);
-  const tlv = currentTablineView();
-  if (tlv && !tlv.tabs.includes(view)) {
-    addTabToTabline(tlv, view, tlv.tabs.length);
+  const text = typeof snap.text === 'string' ? snap.text : '';
+  // If this file is already open (session restore reopens every persisted
+  // file from disk on startup), recover INTO that existing view —
+  // overwrite its content with the recovered, unsaved text and mark it
+  // dirty — rather than minting a SECOND view of the same path. A
+  // duplicate would be persisted to session.json and then faithfully
+  // re-created (openByPath uses forceDuplicate) on every later restore,
+  // so the file would keep reappearing as an extra tabline tab.
+  const existing = snap.path
+    ? views.find(
+        (v) => v.kind === 'text' && v.buffer && viewFilePath(v) === snap.path
+      )
+    : null;
+  if (existing && typeof existing.buffer.setText === 'function') {
+    existing.buffer.setText(text);
+    dirtyBuffers.add(existing.buffer);
+  } else {
+    const buffer = createBuffer(text, { name: recoverDisplayName(snap) });
+    if (snap.path) buffer.filePath = snap.path;
+    const view = createView({ kind: 'text', buffer });
+    views.push(view);
+    // The recovered content is, by definition, unsaved.
+    dirtyBuffers.add(buffer);
+    const tlv = currentTablineView();
+    if (tlv && !tlv.tabs.includes(view)) {
+      addTabToTabline(tlv, view, tlv.tabs.length);
+    }
   }
   window.host.deleteRecovery(key).catch(() => {});
   removeRecoverEntry(key);
