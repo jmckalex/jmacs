@@ -12,12 +12,17 @@ import {
   readlinkSync,
   statSync,
 } from 'node:fs';
-import { readdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { atomicWrite } from './atomic-write.js';
+import {
+  RECOVERY_DIR_NAME,
+  recoveryFileName,
+  parseRecoveryRecord,
+} from './recovery.js';
 import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
@@ -182,6 +187,12 @@ function panesPath() {
 const sessionFileName = 'session.json';
 function sessionPath() {
   return join(app.getPath('userData'), sessionFileName);
+}
+
+/** The directory holding crash-recovery snapshots — one JSON file per
+ *  dirty buffer, inside the per-user data directory. */
+function recoveryDir() {
+  return join(app.getPath('userData'), RECOVERY_DIR_NAME);
 }
 
 /**
@@ -606,6 +617,78 @@ export function registerFileHandlers() {
     const data = payload?.data ?? { buffers: [], currentPath: null };
     await atomicWrite(target, JSON.stringify(data, null, 2), 'utf8');
     return { path: target };
+  });
+
+  // Crash-recovery snapshots — one JSON file per dirty buffer, written
+  // atomically into <userData>/recovery/. The renderer's autosave
+  // controller drives these (write on edit/blur, delete on save, clear
+  // on a clean quit); see recovery.js.
+  ipcMain.handle('recovery:write', async (_event, payload) => {
+    const record = payload?.record;
+    if (!record || typeof record.key !== 'string' || record.key === '') {
+      throw new Error('recovery:write needs a record with a non-empty key');
+    }
+    const dir = recoveryDir();
+    await mkdir(dir, { recursive: true });
+    const target = join(dir, recoveryFileName(record.key));
+    await atomicWrite(target, JSON.stringify(record, null, 2), 'utf8');
+    return { path: target };
+  });
+
+  // List every recovery snapshot, each enriched with the state of its
+  // on-disk file (so the renderer can tell a still-relevant snapshot from
+  // one the user already saved over): `diskExists` and `diskModified`
+  // (mtime ms, or null). A path-less buffer has no on-disk file. A
+  // missing recovery dir or a corrupt snapshot file is skipped, never
+  // fatal — the editor must always be able to start.
+  ipcMain.handle('recovery:list', async () => {
+    let names;
+    try {
+      names = await readdir(recoveryDir());
+    } catch {
+      return [];
+    }
+    const records = [];
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      let record;
+      try {
+        const text = await readFile(join(recoveryDir(), name), 'utf8');
+        record = parseRecoveryRecord(JSON.parse(text));
+      } catch {
+        continue;
+      }
+      if (!record) continue;
+      if (record.path) {
+        try {
+          const info = await stat(record.path);
+          record.diskExists = true;
+          record.diskModified = info.mtimeMs;
+        } catch {
+          record.diskExists = false;
+          record.diskModified = null;
+        }
+      } else {
+        record.diskExists = false;
+        record.diskModified = null;
+      }
+      records.push(record);
+    }
+    return records;
+  });
+
+  // Delete one buffer's recovery snapshot (on a successful save).
+  ipcMain.handle('recovery:delete', async (_event, payload) => {
+    const key = payload?.key;
+    if (typeof key !== 'string' || key === '') return { removed: false };
+    await rm(join(recoveryDir(), recoveryFileName(key)), { force: true });
+    return { removed: true };
+  });
+
+  // Remove every recovery snapshot (on a clean confirmed quit).
+  ipcMain.handle('recovery:clear', async () => {
+    await rm(recoveryDir(), { recursive: true, force: true });
+    return { cleared: true };
   });
 
   // Documentation: read the manifest produced by `pnpm run docs`.

@@ -254,6 +254,30 @@ contextBridge.exposeInMainWorld('host', {
   writeSession: (data) => ipcRenderer.invoke('session:write', { data }),
 
   /**
+   * Write a crash-recovery snapshot for one dirty buffer. `record` is
+   * `{ key, path, name, text, savedAt, hash }`; `key` identifies the
+   * buffer (its abs path, or an id for a path-less buffer).
+   * @param {object} record
+   */
+  writeRecovery: (record) => ipcRenderer.invoke('recovery:write', { record }),
+
+  /**
+   * List every recovery snapshot, each enriched with `diskExists` /
+   * `diskModified`. Called once on startup to offer recovery.
+   * @returns {Promise<object[]>}
+   */
+  listRecovery: () => ipcRenderer.invoke('recovery:list'),
+
+  /**
+   * Delete one buffer's recovery snapshot (on a successful save).
+   * @param {string} key
+   */
+  deleteRecovery: (key) => ipcRenderer.invoke('recovery:delete', { key }),
+
+  /** Remove every recovery snapshot (on a clean confirmed quit). */
+  clearRecovery: () => ipcRenderer.invoke('recovery:clear'),
+
+  /**
    * Read the documentation manifest (the list of doc-page names
    * produced by `pnpm run docs`). Returns `{ names: string[] }` or
    * `null` when the docs haven't been built yet.
