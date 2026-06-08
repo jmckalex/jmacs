@@ -8159,10 +8159,12 @@ function ensureBookmarkView() {
 function retargetBookmarkView(buffer) {
   const view = views.find((v) => v.kind === 'bookmark');
   if (!view) return;
-  view.extras.sourceBuffer = buffer;
+  // createView spreads `extras` onto the view, so the source lives at
+  // `view.sourceBuffer` (there is no `view.extras`). The element re-reads
+  // it from the handle on setBuffer.
+  view.sourceBuffer = buffer;
   const name = buffer && buffer.name ? buffer.name : 'buffer';
   view.name = `*Bookmarks: ${name}*`;
-  // The element re-reads extras.sourceBuffer from the handle on setBuffer.
   bookmarkView.setBuffer(view);
 }
 
@@ -8173,7 +8175,7 @@ function retargetBookmarkView(buffer) {
 function followBookmarkView(buffer) {
   if (!buffer) return;
   const view = views.find((v) => v.kind === 'bookmark');
-  if (!view || view.extras.sourceBuffer === buffer) return;
+  if (!view || view.sourceBuffer === buffer) return;
   if (!leafPanes(rootPane).some((leaf) => leaf.view === view)) return;
   retargetBookmarkView(buffer);
 }

@@ -66,7 +66,7 @@ function createBookmarkView(container, options = {}) {
   body.className = 'bookmark-body';
   root.append(body);
 
-  /** The View object (carries extras.sourceBuffer). */
+  /** The View object (carries `sourceBuffer`). */
   let view = null;
   /** Selection index into the *visible* rows. */
   let selected = 0;
@@ -75,9 +75,11 @@ function createBookmarkView(container, options = {}) {
   /** The open context menu element, or null. */
   let menuEl = null;
 
-  /** The source text buffer this view annotates, or null. */
+  /** The source text buffer this view annotates, or null. `createView`
+   *  spreads `extras` onto the view, so the buffer lives at
+   *  `view.sourceBuffer` (not `view.extras.sourceBuffer`). */
   function source() {
-    return view && view.extras ? view.extras.sourceBuffer ?? null : null;
+    return view ? view.sourceBuffer ?? null : null;
   }
 
   /** The source buffer's bookmark records (live array), or []. */
