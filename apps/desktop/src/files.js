@@ -12,7 +12,7 @@ import {
   readlinkSync,
   statSync,
 } from 'node:fs';
-import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -516,7 +516,7 @@ export function registerFileHandlers() {
       await rm(target, { force: true });
       return { path: target, removed: true };
     }
-    await writeFile(target, JSON.stringify(data, null, 2), 'utf8');
+    await atomicWrite(target, JSON.stringify(data, null, 2), 'utf8');
     return { path: target };
   });
 
@@ -536,7 +536,7 @@ export function registerFileHandlers() {
   ipcMain.handle('config:write', async (_event, payload) => {
     const target = configPath(payload?.name);
     if (target === null) throw new Error('invalid config file name');
-    await writeFile(target, payload?.content ?? '', 'utf8');
+    await atomicWrite(target, payload?.content ?? '', 'utf8');
     return { path: target };
   });
 
@@ -558,7 +558,7 @@ export function registerFileHandlers() {
   // file shape stays predictable; callers pass the whole object.
   ipcMain.handle('panes:write', async (_event, payload) => {
     const data = payload?.data ?? {};
-    await writeFile(panesPath(), JSON.stringify(data, null, 2), 'utf8');
+    await atomicWrite(panesPath(), JSON.stringify(data, null, 2), 'utf8');
     return { path: panesPath() };
   });
 
@@ -576,15 +576,14 @@ export function registerFileHandlers() {
     }
   });
 
-  // Face customisation: write `<userData>/faces.json`. Atomic-ish:
-  // payload.data is JSON-serialised and written in one call. The
-  // file is small (~few KB at most) so we don't bother with a
-  // temp-file dance.
+  // Face customisation: write `<userData>/faces.json`. Written through
+  // atomicWrite (temp + fsync + rename) so a crash mid-write can't
+  // corrupt the file and lose every face override at once.
   ipcMain.handle('faces:write', async (_event, payload) => {
     const target = configPath('faces.json');
     if (target === null) throw new Error('invalid faces target');
     const data = payload?.data ?? { global: {}, themes: {} };
-    await writeFile(target, JSON.stringify(data, null, 2), 'utf8');
+    await atomicWrite(target, JSON.stringify(data, null, 2), 'utf8');
     return { path: target };
   });
 
@@ -605,7 +604,7 @@ export function registerFileHandlers() {
   ipcMain.handle('session:write', async (_event, payload) => {
     const target = sessionPath();
     const data = payload?.data ?? { buffers: [], currentPath: null };
-    await writeFile(target, JSON.stringify(data, null, 2), 'utf8');
+    await atomicWrite(target, JSON.stringify(data, null, 2), 'utf8');
     return { path: target };
   });
 
