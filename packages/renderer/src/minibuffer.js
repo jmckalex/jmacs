@@ -43,6 +43,11 @@ import { keyEventToString } from './keymap.js';
  *   after the input (e.g. "no match"). While a prompt is open this
  *   appears in the prompt row; with no prompt open it shows in the
  *   echo area.
+ * @property {(text: string) => void} setValue - Replace the input value
+ *   programmatically and refocus the input (cursor at the end). Used by
+ *   click-to-complete in the find-file completions panel, which fills the
+ *   minibuffer from outside the keystroke flow. No-op when no prompt is
+ *   open.
  * @property {() => void} clearStatus - Clear the status note.
  * @property {(text: string) => void} showMessage - Display TEXT as a
  *   transient one-line message in the minibuffer area (no input
@@ -173,6 +178,15 @@ export function createMinibuffer(container) {
       statusEl.textContent = '';
       echoEl.textContent = '';
       echoEl.hidden = true;
+    },
+
+    setValue(text) {
+      if (root.hidden || handlers === null) return;
+      input.hidden = false;
+      input.value = text;
+      input.focus();
+      input.setSelectionRange(text.length, text.length);
+      handlers.onChange?.(text);
     },
 
     /**

@@ -35,10 +35,13 @@ export function completionsHeaderLabel(count) {
  * @param {string} [options.icon]
  * @param {string[]} [options.items] - Initial candidate display names (a
  *   directory carries a trailing '/').
+ * @param {(name: string) => void} [options.onSelect] - Called with a
+ *   candidate's display name when its row is clicked (click-to-complete).
  * @returns {object} the utility-panel contract + `setItems(items)`.
  */
 export function createCompletionsPanel(options = {}) {
   const doc = options.document ?? globalThis.document;
+  const onSelect = typeof options.onSelect === 'function' ? options.onSelect : null;
 
   const root = doc.createElement('div');
   root.className = 'completions-panel';
@@ -61,6 +64,7 @@ export function createCompletionsPanel(options = {}) {
       const isDir = name.endsWith('/');
       const item = doc.createElement('div');
       item.className = isDir ? 'completions-item is-dir' : 'completions-item';
+      item.dataset.name = name;
       const icon = doc.createElement('i');
       icon.className = isDir
         ? 'fa-solid fa-folder completions-item-icon'
@@ -73,6 +77,19 @@ export function createCompletionsPanel(options = {}) {
     }
     list.replaceChildren(frag);
     list.scrollTop = 0;
+  }
+
+  if (onSelect) {
+    // Complete on click. preventDefault on the preceding mousedown keeps
+    // focus in the minibuffer (the row is in the tab-indexed dock, which
+    // would otherwise blur the input before the click fires).
+    list.addEventListener('mousedown', (event) => {
+      if (event.target.closest('.completions-item')) event.preventDefault();
+    });
+    list.addEventListener('click', (event) => {
+      const item = event.target.closest('.completions-item');
+      if (item && item.dataset.name != null) onSelect(item.dataset.name);
+    });
   }
 
   render(options.items);

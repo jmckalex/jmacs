@@ -105,7 +105,9 @@ async function tabCompleteEditor(entries) {
       'show-status!': (args) => { display.push(['status', String(args[0] ?? '')]); return NIL; },
       'clear-status!': () => { display.push(['clear-status']); return NIL; },
       'show-completions!': (args) => {
-        display.push(['completions', listToArray(args[0] ?? NIL).map(String)]);
+        // [names, directory] — directory is the prefix a panel click
+        // rebuilds the full path from.
+        display.push(['completions', listToArray(args[0] ?? NIL).map(String), String(args[1] ?? '')]);
         return NIL;
       },
       'clear-completions!': () => { display.push(['clear-completions']); return NIL; },
@@ -130,15 +132,18 @@ test('-completion-names suffixes directories with a slash', async () => {
 });
 
 test('ambiguous candidates with no progress list in the completions panel', async () => {
-  // basename "z" matches both; their LCP is "z" (== current) → no inline
-  // progress, so the candidates go to the panel, the directory slashed.
+  // basename "z" matches both; their LCP is "z" (== the typed basename) →
+  // no inline progress, so the candidates go to the panel, directory
+  // slashed, with the directory prefix passed for click-to-complete.
   const { ev, display } = await tabCompleteEditor([
     ['zebra', 'file'],
     ['zoo', 'directory'],
   ]);
-  const result = ev('(minibuffer-tab-complete "z")');
-  assert.equal(result, 'z'); // value unchanged
-  assert.deepEqual(lastCompletions(display), ['zebra', 'zoo/']);
+  const result = ev('(minibuffer-tab-complete "/home/u/z")');
+  assert.equal(result, '/home/u/z'); // value unchanged
+  const rec = [...display].reverse().find((r) => r[0] === 'completions');
+  assert.deepEqual(rec[1], ['zebra', 'zoo/']); // display names
+  assert.equal(rec[2], '/home/u/'); // directory prefix for a click
   // It must NOT fall back to cramming the inline status with candidates.
   assert.ok(!display.some((r) => r[0] === 'status' && r[1] !== '(no matches)'));
 });

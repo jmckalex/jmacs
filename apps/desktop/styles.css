@@ -1122,6 +1122,11 @@ body.utility-hidden #utility-splitter {
   line-height: 1.6;
   white-space: nowrap;
   overflow: hidden;
+  cursor: pointer;
+}
+
+.completions-item:hover {
+  background: #ffffff14;
 }
 
 .completions-item-icon {

@@ -161,7 +161,9 @@
          (if (> (string-length extended) (string-length current))
              (begin (clear-status!) (clear-completions!) extended)
              (begin (clear-status!)
-                    (show-completions! (-completion-names matches))
+                    ;; DIRECTORY (the prefix up to the last '/') lets a
+                    ;; click in the panel rebuild the full path.
+                    (show-completions! (-completion-names matches) directory)
                     current)))))))
 
 (define (-initial-find-file-value)
