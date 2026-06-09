@@ -36,12 +36,17 @@ export function completionsHeaderLabel(count) {
  * @param {string[]} [options.items] - Initial candidate display names (a
  *   directory carries a trailing '/').
  * @param {(name: string) => void} [options.onSelect] - Called with a
- *   candidate's display name when its row is clicked (click-to-complete).
+ *   candidate's display name when its row is single-clicked (select: fill
+ *   the path, non-destructively).
+ * @param {(name: string) => void} [options.onActivate] - Called with a
+ *   candidate's display name when its row is double-clicked (activate: open
+ *   a file / enter a directory).
  * @returns {object} the utility-panel contract + `setItems(items)`.
  */
 export function createCompletionsPanel(options = {}) {
   const doc = options.document ?? globalThis.document;
   const onSelect = typeof options.onSelect === 'function' ? options.onSelect : null;
+  const onActivate = typeof options.onActivate === 'function' ? options.onActivate : null;
 
   const root = doc.createElement('div');
   root.className = 'completions-panel';
@@ -79,16 +84,28 @@ export function createCompletionsPanel(options = {}) {
     list.scrollTop = 0;
   }
 
-  if (onSelect) {
-    // Complete on click. preventDefault on the preceding mousedown keeps
-    // focus in the minibuffer (the row is in the tab-indexed dock, which
-    // would otherwise blur the input before the click fires).
+  if (onSelect || onActivate) {
+    // preventDefault on the mousedown keeps focus in the minibuffer (the
+    // row is in the tab-indexed dock, which would otherwise blur the input
+    // before the click fires). It does not suppress click/dblclick.
     list.addEventListener('mousedown', (event) => {
       if (event.target.closest('.completions-item')) event.preventDefault();
     });
+  }
+  if (onSelect) {
+    // Single-click = select (fill the path, panel stays open).
     list.addEventListener('click', (event) => {
       const item = event.target.closest('.completions-item');
       if (item && item.dataset.name != null) onSelect(item.dataset.name);
+    });
+  }
+  if (onActivate) {
+    // Double-click = activate (open a file / enter a directory). Fires
+    // after the two single-clicks, so the row list is only rebuilt (on a
+    // directory descend) once the whole gesture has been delivered.
+    list.addEventListener('dblclick', (event) => {
+      const item = event.target.closest('.completions-item');
+      if (item && item.dataset.name != null) onActivate(item.dataset.name);
     });
   }
 

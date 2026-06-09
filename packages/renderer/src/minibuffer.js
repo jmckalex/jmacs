@@ -49,6 +49,10 @@ import { keyEventToString } from './keymap.js';
  *   minibuffer from outside the keystroke flow. No-op when no prompt is
  *   open.
  * @property {() => void} clearStatus - Clear the status note.
+ * @property {(value?: string) => void} submit - Submit the prompt as if
+ *   Enter were pressed: close the prompt and fire `onSubmit` with VALUE (or
+ *   the current input when VALUE is omitted). Used by double-click-to-open
+ *   in the completions panel. No-op when no prompt is open.
  * @property {(text: string) => void} showMessage - Display TEXT as a
  *   transient one-line message in the minibuffer area (no input
  *   field; focus stays where it was). Used for the `y`/`n`/`q`-style
@@ -187,6 +191,14 @@ export function createMinibuffer(container) {
       input.focus();
       input.setSelectionRange(text.length, text.length);
       handlers.onChange?.(text);
+    },
+
+    submit(value) {
+      if (handlers === null) return;
+      const { onSubmit } = handlers;
+      const v = value ?? input.value;
+      close();
+      onSubmit?.(v);
     },
 
     /**

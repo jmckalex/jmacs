@@ -2917,12 +2917,19 @@ const COMPLETIONS_TAB_ID = 'completions';
 // (it is created once and reused across TABs).
 let completionsDirectory = '';
 
-/** Click-to-complete from the completions panel. NAME is a candidate's
- *  display string (a directory carries a trailing '/'). Fill the minibuffer
- *  with `completionsDirectory + NAME` and refocus it. A directory descends —
- *  re-running TAB completion so its contents list and the panel updates; a
- *  file fills the path and drops the panel, leaving Enter to open it. */
+/** Single-click in the completions panel = select. NAME is a candidate's
+ *  display string (a directory carries a trailing '/'); fill the minibuffer
+ *  with `completionsDirectory + NAME` and refocus it. Non-destructive (the
+ *  panel stays open) so a double-click can still activate the same row. */
 function completeFromPanel(name) {
+  minibuffer.setValue(completionsDirectory + name);
+}
+
+/** Double-click in the completions panel = activate (file-browser idiom): a
+ *  file OPENS (submit the prompt — drops the panel, delivers the path); a
+ *  directory is ENTERED — re-running TAB completion so its contents list and
+ *  the panel updates. */
+function activateFromPanel(name) {
   const full = completionsDirectory + name;
   if (name.endsWith('/')) {
     let next = full;
@@ -2934,8 +2941,7 @@ function completeFromPanel(name) {
     }
     minibuffer.setValue(next);
   } else {
-    utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
-    minibuffer.setValue(full);
+    minibuffer.submit(full);
   }
 }
 
@@ -3377,7 +3383,11 @@ const interpreter = createInterpreter({
           title: 'Completions',
           icon: 'fa-solid fa-list-ul',
           focus: false,
-          makePanel: () => createCompletionsPanel({ items, onSelect: completeFromPanel }),
+          makePanel: () => createCompletionsPanel({
+            items,
+            onSelect: completeFromPanel,
+            onActivate: activateFromPanel,
+          }),
         });
       }
       return NIL;
