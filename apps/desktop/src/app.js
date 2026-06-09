@@ -5244,6 +5244,36 @@ window.addEventListener('keydown', (event) => {
   if (dispatchKey(key)) event.preventDefault();
 });
 
+// Cmd+W → close the active tab (Mac/editor-idiomatic). This runs in the
+// CAPTURE phase, ahead of a focused text editor's own keydown — that
+// bubble-phase listener would otherwise dispatch Cmd+W as `C-w` (Cmd and
+// Ctrl both normalise to `C-`), which is a *complete* binding
+// (kill-region), claim it, and preventDefault before the window router
+// above ever sees it. (The clipboard chords escape this because C-c/C-x
+// are prefixes that bubble through; C-w is not.) stopPropagation keeps
+// the editor from *also* running kill-region. Real Ctrl+W still reaches
+// the editor as kill-region; a native input (minibuffer/REPL) keeps
+// Cmd+W for itself.
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (!keymapReady) return;
+    if (event.key.toLowerCase() !== 'w') return;
+    if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+      return;
+    }
+    if (targetOwnsKeys(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      interpreter.call('close-tab');
+    } catch (error) {
+      repl.appendError(`close-tab: ${error.message}`);
+    }
+  },
+  true
+);
+
 // Right-click → Paste (and any other native paste action that isn't the
 // Cmd+V chord, which keydown handles above). The custom renderer isn't
 // contenteditable, so a paste event would otherwise do nothing. Route it
