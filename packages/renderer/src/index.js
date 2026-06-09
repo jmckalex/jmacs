@@ -11,6 +11,7 @@ export { createReplView } from './repl.js';
 export { createUtilityDock } from './utility-dock.js';
 export { createOutputPanel, appendLines } from './output-panel.js';
 export { createDocPanel } from './doc-panel.js';
+export { createCompletionsPanel, completionsHeaderLabel } from './completions-panel.js';
 export {
   createMarkdownPreview,
   buildPreviewHead,

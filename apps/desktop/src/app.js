@@ -70,6 +70,7 @@ import {
   createUtilityDock,
   createOutputPanel,
   createDocPanel,
+  createCompletionsPanel,
   ShellView,
   GnuplotView,
   NotebookView,
@@ -2906,6 +2907,11 @@ const utilityDock = createUtilityDock({
   },
 });
 
+// The transient tab `show-completions!` opens for find-file's ambiguous TAB
+// candidates. Held as a constant so the display primitives and the
+// completing-minibuffer teardown (submit/cancel) all name the same tab.
+const COMPLETIONS_TAB_ID = 'completions';
+
 // The REPL is built detached, then mounted as the dock's resident tab; the
 // dock reparents `repl.element` into its content area. The `repl` facade is
 // unchanged — every appendOutput/appendResult/… call site keeps working.
@@ -3319,6 +3325,37 @@ const interpreter = createInterpreter({
     },
     'clear-status!': () => {
       minibuffer.clearStatus();
+      return NIL;
+    },
+    // Show CANDIDATES (a list of display strings; a directory carries a
+    // trailing '/') in a transient, scrollable utility-dock tab — the
+    // home for find-file's ambiguous TAB completions, which used to be
+    // crammed into the non-scrolling inline status line. Opened with
+    // `focus: false` so the minibuffer keeps focus while the user keeps
+    // typing / TABbing. Updating an open panel reuses it in place (no
+    // re-activation) so it never steals focus mid-keystroke. The tab is
+    // removed by `clear-completions!` (on TAB progress) or when the
+    // completing minibuffer closes (see `open-completing-minibuffer!`).
+    'show-completions!': (args) => {
+      const items = listToArray(args[0] ?? NIL).map(String);
+      const panel = utilityDock.hasTab(COMPLETIONS_TAB_ID)
+        ? utilityDock.getPanel(COMPLETIONS_TAB_ID)
+        : null;
+      if (panel && typeof panel.setItems === 'function') {
+        panel.setItems(items);
+      } else {
+        utilityDock.openUtilityPanel({
+          id: COMPLETIONS_TAB_ID,
+          title: 'Completions',
+          icon: 'fa-solid fa-list-ul',
+          focus: false,
+          makePanel: () => createCompletionsPanel({ items }),
+        });
+      }
+      return NIL;
+    },
+    'clear-completions!': () => {
+      utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
       return NIL;
     },
     // --- citation.js bridges -------------------------------------------
@@ -4705,10 +4742,14 @@ const interpreter = createInterpreter({
       minibuffer.prompt(promptText, {
         initialValue,
         onSubmit(value) {
+          // The command is finishing — drop the transient completions tab
+          // (a no-op when none is open, e.g. RefTeX/LaTeX prompts).
+          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
           editorView.focus();
           interpreter.call('minibuffer-delivered', value);
         },
         onCancel() {
+          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
           editorView.focus();
           interpreter.call('minibuffer-delivered', NIL);
         },
