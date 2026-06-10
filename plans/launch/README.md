@@ -12,6 +12,7 @@ cross-cutting sequencing is appended at the bottom once all are in.
 | 03 | [Stability & data safety](03-stability-and-data-safety.md) | Doesn't crash, doesn't lose data |
 | 04 | [Positioning & launch](04-positioning-and-launch.md) | The message, the demo, the go-to-market |
 | 05 | [Governance & community](05-governance-and-community.md) | Legal, contribution, maintainer model |
+| 06 | [Audit remediation & execution tracker](06-audit-remediation.md) | The ordered, ticketed backlog (from the 2026-06-10 code audit) that executes pillars 01–05 |
 
 ---
 
