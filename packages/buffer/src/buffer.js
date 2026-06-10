@@ -552,14 +552,20 @@ export function createBuffer(initialText = '', options = {}) {
 
     /** @param {{ extend?: boolean }} [opts] */
     moveLeft(opts) {
-      for (const c of cursors()) moveCursor(c, c.point - 1, opts);
+      // Step by a whole character (code point), so the cursor never
+      // lands between the two code units of a surrogate pair.
+      for (const c of cursors()) {
+        moveCursor(c, storage.stepBackward(clamp(c.point), 1), opts);
+      }
       dedupeCursors();
       emit(null);
     },
 
     /** @param {{ extend?: boolean }} [opts] */
     moveRight(opts) {
-      for (const c of cursors()) moveCursor(c, c.point + 1, opts);
+      for (const c of cursors()) {
+        moveCursor(c, storage.stepForward(clamp(c.point), 1), opts);
+      }
       dedupeCursors();
       emit(null);
     },
@@ -695,7 +701,9 @@ export function createBuffer(initialText = '', options = {}) {
           anyDeleted = true;
         } else {
           const at = c.point + shift;
-          const from = Math.max(0, at - count);
+          // Step back by whole characters so a surrogate pair (e.g. an
+          // emoji) is deleted as a unit, never split into a lone half.
+          const from = storage.stepBackward(at, count);
           if (from === at) {
             c.point = at;
           } else {
@@ -739,7 +747,9 @@ export function createBuffer(initialText = '', options = {}) {
           anyDeleted = true;
         } else {
           const at = c.point + shift;
-          const to = Math.min(storage.length, at + count);
+          // Step forward by whole characters so a surrogate pair is
+          // deleted as a unit, never split into a lone half.
+          const to = storage.stepForward(at, count);
           if (to === at) {
             c.point = at;
           } else {
