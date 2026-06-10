@@ -45,5 +45,8 @@ allowBuilds:
   tree-sitter-zig: false
   tree-sitter-make: false
   tree-sitter-perl: false
-  citation-js: set this to true or false
+  # citation-js ships no native postinstall we need; the editor uses the
+  # bundled ESM build, so the ignored-build placeholder must resolve to a
+  # boolean or `pnpm install` aborts on a fresh clone.
+  citation-js: false
   esbuild: true
