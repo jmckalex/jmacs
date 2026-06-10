@@ -12,13 +12,18 @@ import {
   readlinkSync,
   statSync,
 } from 'node:fs';
-import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { atomicWrite } from './atomic-write.js';
 import { createChangeTracker } from './external-change.js';
+import {
+  RECOVERY_DIR_NAME,
+  recoveryFileName,
+  parseRecoveryRecord,
+} from './recovery.js';
 
 // Tracks the on-disk (mtime, size) of files we have read or written, so a
 // save can refuse to silently clobber a file another program changed
@@ -193,6 +198,12 @@ function panesPath() {
 const sessionFileName = 'session.json';
 function sessionPath() {
   return join(app.getPath('userData'), sessionFileName);
+}
+
+/** The directory holding crash-recovery snapshots — one JSON file per
+ *  dirty buffer, inside the per-user data directory. */
+function recoveryDir() {
+  return join(app.getPath('userData'), RECOVERY_DIR_NAME);
 }
 
 /**
@@ -567,7 +578,10 @@ export function registerFileHandlers() {
       await rm(legacy, { force: true });
       return { path: target, removed: true };
     }
-    await writeFile(
+    // Route the versioned writer (with legacy cleanup) through the
+    // crash-safe atomic writer — the data-safety reconciliation: a crash
+    // mid-write must never truncate a file's sticky-note / bookmark sidecar.
+    await atomicWrite(
       target,
       JSON.stringify({ version: METADATA_VERSION, ...data }, null, 2),
       'utf8'
@@ -592,7 +606,7 @@ export function registerFileHandlers() {
   ipcMain.handle('config:write', async (_event, payload) => {
     const target = configPath(payload?.name);
     if (target === null) throw new Error('invalid config file name');
-    await writeFile(target, payload?.content ?? '', 'utf8');
+    await atomicWrite(target, payload?.content ?? '', 'utf8');
     return { path: target };
   });
 
@@ -614,7 +628,7 @@ export function registerFileHandlers() {
   // file shape stays predictable; callers pass the whole object.
   ipcMain.handle('panes:write', async (_event, payload) => {
     const data = payload?.data ?? {};
-    await writeFile(panesPath(), JSON.stringify(data, null, 2), 'utf8');
+    await atomicWrite(panesPath(), JSON.stringify(data, null, 2), 'utf8');
     return { path: panesPath() };
   });
 
@@ -632,15 +646,14 @@ export function registerFileHandlers() {
     }
   });
 
-  // Face customisation: write `<userData>/faces.json`. Atomic-ish:
-  // payload.data is JSON-serialised and written in one call. The
-  // file is small (~few KB at most) so we don't bother with a
-  // temp-file dance.
+  // Face customisation: write `<userData>/faces.json`. Written through
+  // atomicWrite (temp + fsync + rename) so a crash mid-write can't
+  // corrupt the file and lose every face override at once.
   ipcMain.handle('faces:write', async (_event, payload) => {
     const target = configPath('faces.json');
     if (target === null) throw new Error('invalid faces target');
     const data = payload?.data ?? { global: {}, themes: {} };
-    await writeFile(target, JSON.stringify(data, null, 2), 'utf8');
+    await atomicWrite(target, JSON.stringify(data, null, 2), 'utf8');
     return { path: target };
   });
 
@@ -661,8 +674,80 @@ export function registerFileHandlers() {
   ipcMain.handle('session:write', async (_event, payload) => {
     const target = sessionPath();
     const data = payload?.data ?? { buffers: [], currentPath: null };
-    await writeFile(target, JSON.stringify(data, null, 2), 'utf8');
+    await atomicWrite(target, JSON.stringify(data, null, 2), 'utf8');
     return { path: target };
+  });
+
+  // Crash-recovery snapshots — one JSON file per dirty buffer, written
+  // atomically into <userData>/recovery/. The renderer's autosave
+  // controller drives these (write on edit/blur, delete on save, clear
+  // on a clean quit); see recovery.js.
+  ipcMain.handle('recovery:write', async (_event, payload) => {
+    const record = payload?.record;
+    if (!record || typeof record.key !== 'string' || record.key === '') {
+      throw new Error('recovery:write needs a record with a non-empty key');
+    }
+    const dir = recoveryDir();
+    await mkdir(dir, { recursive: true });
+    const target = join(dir, recoveryFileName(record.key));
+    await atomicWrite(target, JSON.stringify(record, null, 2), 'utf8');
+    return { path: target };
+  });
+
+  // List every recovery snapshot, each enriched with the state of its
+  // on-disk file (so the renderer can tell a still-relevant snapshot from
+  // one the user already saved over): `diskExists` and `diskModified`
+  // (mtime ms, or null). A path-less buffer has no on-disk file. A
+  // missing recovery dir or a corrupt snapshot file is skipped, never
+  // fatal — the editor must always be able to start.
+  ipcMain.handle('recovery:list', async () => {
+    let names;
+    try {
+      names = await readdir(recoveryDir());
+    } catch {
+      return [];
+    }
+    const records = [];
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      let record;
+      try {
+        const text = await readFile(join(recoveryDir(), name), 'utf8');
+        record = parseRecoveryRecord(JSON.parse(text));
+      } catch {
+        continue;
+      }
+      if (!record) continue;
+      if (record.path) {
+        try {
+          const info = await stat(record.path);
+          record.diskExists = true;
+          record.diskModified = info.mtimeMs;
+        } catch {
+          record.diskExists = false;
+          record.diskModified = null;
+        }
+      } else {
+        record.diskExists = false;
+        record.diskModified = null;
+      }
+      records.push(record);
+    }
+    return records;
+  });
+
+  // Delete one buffer's recovery snapshot (on a successful save).
+  ipcMain.handle('recovery:delete', async (_event, payload) => {
+    const key = payload?.key;
+    if (typeof key !== 'string' || key === '') return { removed: false };
+    await rm(join(recoveryDir(), recoveryFileName(key)), { force: true });
+    return { removed: true };
+  });
+
+  // Remove every recovery snapshot (on a clean confirmed quit).
+  ipcMain.handle('recovery:clear', async () => {
+    await rm(recoveryDir(), { recursive: true, force: true });
+    return { cleared: true };
   });
 
   // Documentation: read the manifest produced by `pnpm run docs`.

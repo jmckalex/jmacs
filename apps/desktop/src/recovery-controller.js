@@ -1,0 +1,174 @@
+/**
+ * @file The renderer-side autosave / crash-recovery controller — the
+ * write side of §4c.
+ *
+ * Mirrors `session.js`'s `createSession`: a debounced `save()` plus an
+ * immediate `flush()` over the host's recovery IPC, so the rest of the
+ * app just signals "something changed" and lets the controller pace the
+ * writes. Where the session controller persists *structure* (the pane
+ * tree + file paths), this persists *content* — a full-text snapshot of
+ * every dirty buffer, so a crash with unsaved edits can be recovered on
+ * the next launch.
+ *
+ * Snapshots are written to `<userData>/recovery/` by the main process
+ * (see recovery.js + the files.js handlers). Each is keyed per buffer:
+ * a file-backed buffer by `file:<absPath>` (so the same file overwrites
+ * one snapshot across sessions), a path-less buffer by an in-session
+ * `buf:<n>`. The key is cached per buffer (a WeakMap) so it never
+ * changes mid-life — `forget()` on save deletes the exact file that was
+ * written, even for a buffer that has since gained a path.
+ *
+ * The host bridge and clock are injected so the controller is unit-
+ * testable without Electron.
+ */
+
+import { hashText } from './recovery.js';
+
+/** A buffer's stable recovery key: `file:<path>` for a file-backed
+ *  buffer, `buf:<n>` for a path-less one. Cached on first use. */
+function makeKeyer() {
+  const keys = new WeakMap();
+  let counter = 0;
+  return (buffer) => {
+    let key = keys.get(buffer);
+    if (key === undefined) {
+      const path =
+        typeof buffer.filePath === 'string' && buffer.filePath !== ''
+          ? buffer.filePath
+          : null;
+      key = path ? `file:${path}` : `buf:${(counter += 1)}`;
+      keys.set(buffer, key);
+    }
+    return key;
+  };
+}
+
+/**
+ * Build the renderer recovery controller.
+ *
+ * @param {object} options
+ * @param {() => Iterable<*>} options.getDirtyBuffers - Returns the live
+ *   set of buffers with unsaved edits (e.g. `() => dirtyBuffers`).
+ * @param {{
+ *   writeRecovery: (record: object) => Promise<*>,
+ *   deleteRecovery: (key: string) => Promise<*>,
+ *   clearRecovery: () => Promise<*>,
+ * }} options.host - The recovery IPC bridge (usually `window.host`).
+ * @param {() => number} [options.now] - Clock for the snapshot timestamp;
+ *   defaults to `Date.now`. Injected for tests.
+ * @param {number} [options.debounceMs=1000] - Autosave debounce (the
+ *   default for `getDebounceMs`).
+ * @param {() => boolean} [options.isEnabled] - Whether autosave is on
+ *   (the `*autosave-recovery*` defcustom). When it returns false, no
+ *   snapshots are written; `forget`/`clear` still run. Defaults to on.
+ * @param {() => number} [options.getDebounceMs] - The live debounce (the
+ *   `*autosave-recovery-interval*` defcustom). Read on each `save()` so a
+ *   Lisp change takes effect immediately. Defaults to `debounceMs`.
+ * @returns {{
+ *   save: () => void,
+ *   flush: () => Promise<void>,
+ *   forget: (buffer: *) => Promise<void>,
+ *   clear: () => Promise<void>,
+ * }}
+ */
+export function createRecovery({
+  getDirtyBuffers,
+  host,
+  now = () => Date.now(),
+  debounceMs = 1000,
+  isEnabled = () => true,
+  getDebounceMs = () => debounceMs,
+}) {
+  const keyFor = makeKeyer();
+  let timer = null;
+
+  /** The recovery record for one buffer. */
+  function recordFor(buffer) {
+    const text = typeof buffer.text === 'string' ? buffer.text : '';
+    const path =
+      typeof buffer.filePath === 'string' && buffer.filePath !== ''
+        ? buffer.filePath
+        : null;
+    return {
+      key: keyFor(buffer),
+      path,
+      name: typeof buffer.name === 'string' ? buffer.name : '',
+      text,
+      savedAt: now(),
+      hash: hashText(text),
+    };
+  }
+
+  /** Snapshot every dirty buffer. A no-op when autosave is disabled.
+   *  Per-buffer failures are non-fatal — the next tick (or flush)
+   *  retries. */
+  async function writeAll() {
+    // NB: timer management lives in save()/flush()/the trailing callback,
+    // NOT here — clearing `timer` from writeAll would clobber the timer
+    // a leading-edge save() just set, making every edit look like a new
+    // burst.
+    if (!isEnabled()) return;
+    for (const buffer of [...getDirtyBuffers()]) {
+      try {
+        await host.writeRecovery(recordFor(buffer));
+      } catch {
+        // A failed snapshot write must never break editing.
+      }
+    }
+  }
+
+  /** Note an edit. **Leading + trailing**: the first edit of a burst
+   *  writes a snapshot immediately, so a crash a fraction of a second
+   *  later still finds work to recover (a pure trailing debounce leaves
+   *  a window where nothing is on disk yet — the gap behind the
+   *  "edit, quit fast, nothing recovered" bug). Edits during the burst
+   *  coalesce into one trailing write of the final state when it settles.
+   *  A no-op when autosave is disabled. */
+  function save() {
+    if (!isEnabled()) return;
+    const burstStart = timer === null;
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      writeAll();
+    }, getDebounceMs());
+    if (burstStart) writeAll();
+  }
+
+  /** Snapshot all dirty buffers now (on blur / before a reload). */
+  async function flush() {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    await writeAll();
+  }
+
+  /** Drop one buffer's snapshot (on a successful save). `keyFor` returns
+   *  the cached key, so this deletes the exact file written even for a
+   *  buffer that has since gained or changed its path. For a buffer that
+   *  was never snapshotted, deleting its would-be file is harmless. */
+  async function forget(buffer) {
+    try {
+      await host.deleteRecovery(keyFor(buffer));
+    } catch {
+      // Non-fatal: a leftover snapshot is offered (and cleaned) at startup.
+    }
+  }
+
+  /** Remove every snapshot (on a clean confirmed quit — no crash, so
+   *  nothing to recover). Cancels any pending debounced write first. */
+  async function clear() {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    try {
+      await host.clearRecovery();
+    } catch {
+      // Non-fatal.
+    }
+  }
+
+  return { save, flush, forget, clear };
+}

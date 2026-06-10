@@ -79,6 +79,7 @@ export {
   moveItem,
 } from './notebook-view.js';
 export { ViewListView, kindLabel, fileLabel } from './view-list-view.js';
+export { RecoverView, formatAge, recoverFileLabel } from './recover-view.js';
 export {
   createReftexSelectPanel,
   mapReftexKey,
