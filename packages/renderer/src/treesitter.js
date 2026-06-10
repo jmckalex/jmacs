@@ -366,10 +366,47 @@ export function spliceInjections(
 
   if (liveInjections.length === 0) return outerRanges;
 
-  const filteredOuter = outerRanges.filter(
-    (r) => !rangeFullyContainedInAny(r, liveInjections)
+  // Clip every outer range against the live injection regions: the inner
+  // highlighter owns those regions, so the outer range keeps only the
+  // sub-spans that fall outside every injection. Fully-contained outer
+  // ranges clip to nothing (the old drop behaviour); a range that merely
+  // *crosses* an injection boundary — common where the outer grammar
+  // captures the math delimiters the LaTeX injection also spans — keeps
+  // its outside part and yields the overlap to the inner face. This is
+  // what stops `splitIntoLineRuns` seeing overlapping input (the warning),
+  // and renders the boundary with the injected language's face.
+  const clippedOuter = outerRanges.flatMap((r) =>
+    clipRangeAgainstRegions(r, liveInjections)
   );
-  return filteredOuter.concat(innerRanges);
+  return clippedOuter.concat(innerRanges);
+}
+
+/**
+ * Subtract `regions` from range `r`, returning the sub-ranges of `r`
+ * (0, 1, or more) that fall outside every region, each carrying `r`'s
+ * face. A region that splits `r` in two yields a left and a right
+ * piece; a region covering `r` yields none.
+ *
+ * @param {CaptureRange} r
+ * @param {{ start: number, end: number }[]} regions
+ * @returns {CaptureRange[]}
+ */
+function clipRangeAgainstRegions(r, regions) {
+  let pieces = [{ start: r.start, end: r.end }];
+  for (const region of regions) {
+    const next = [];
+    for (const p of pieces) {
+      if (region.end <= p.start || region.start >= p.end) {
+        next.push(p); // no overlap — keep the piece whole
+        continue;
+      }
+      if (p.start < region.start) next.push({ start: p.start, end: region.start });
+      if (region.end < p.end) next.push({ start: region.end, end: p.end });
+      // The span inside the region is dropped (the inner face owns it).
+    }
+    pieces = next;
+  }
+  return pieces.map((p) => ({ start: p.start, end: p.end, face: r.face }));
 }
 
 /**
@@ -411,17 +448,3 @@ function collectInjections(injectionQuery, rootNode) {
   return result;
 }
 
-/**
- * True if range `r` is fully inside any of the given regions. Used to
- * drop outer-highlighter captures that the inner highlighter is about
- * to replace.
- *
- * @param {{ start: number, end: number }} r
- * @param {{ start: number, end: number }[]} regions
- */
-function rangeFullyContainedInAny(r, regions) {
-  for (const region of regions) {
-    if (r.start >= region.start && r.end <= region.end) return true;
-  }
-  return false;
-}

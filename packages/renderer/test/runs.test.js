@@ -99,10 +99,9 @@ function withCapturedWarn(fn) {
   }
 }
 
-test('overlap safety: identical ranges resolve to the later input', () => {
-  // A buggy upstream emits the same range twice with different faces.
-  // The splitter's tie-break is deterministic: the later-input face
-  // wins, and a single warning is emitted.
+test('overlap: identical ranges resolve to the later input (no warning)', () => {
+  // Two captures of the same span with different faces resolve to the
+  // later input — and overlaps are now a handled input, so no warning.
   const { result, warnings } = withCapturedWarn(() =>
     splitIntoLineRuns('hello', [
       { start: 0, end: 5, face: 'first' },
@@ -110,11 +109,10 @@ test('overlap safety: identical ranges resolve to the later input', () => {
     ])
   );
   assert.deepEqual(result, [[{ text: 'hello', face: 'second' }]]);
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /overlapping ranges/);
+  assert.equal(warnings.length, 0);
 });
 
-test('overlap safety: order in the input determines the winner, not the order in the array', () => {
+test('overlap: input order decides the equal-size winner', () => {
   // Swap the input order — now 'first' is later in the input, so it wins.
   const { result } = withCapturedWarn(() =>
     splitIntoLineRuns('hello', [
@@ -125,21 +123,50 @@ test('overlap safety: order in the input determines the winner, not the order in
   assert.deepEqual(result, [[{ text: 'hello', face: 'first' }]]);
 });
 
-test('overlap safety: non-tie overlap is detected and still produces stable output', () => {
-  // A=[0,10) and B=[3,5) — nested, no tie at start. The existing
-  // "outer wins" behaviour for nested ranges is preserved; a warning
-  // still fires because the contract is "no overlap".
+test('overlap: a nested range wins its span; the outer fills the gaps', () => {
+  // A=[0,10) outer, B=[3,5) inner. The inner face shows on [3,5); the
+  // outer face survives only on the gaps around it. (The old splitter
+  // dropped the inner face entirely — the outer ate the whole span.)
   const { result, warnings } = withCapturedWarn(() =>
     splitIntoLineRuns('0123456789', [
       { start: 0, end: 10, face: 'outer' },
       { start: 3, end: 5, face: 'inner' },
     ])
   );
-  assert.deepEqual(result, [[{ text: '0123456789', face: 'outer' }]]);
-  assert.equal(warnings.length, 1);
+  assert.deepEqual(result, [
+    [
+      { text: '012', face: 'outer' },
+      { text: '34', face: 'inner' },
+      { text: '56789', face: 'outer' },
+    ],
+  ]);
+  assert.equal(warnings.length, 0);
 });
 
-test('overlap safety: no warning on adjacent (non-overlapping) ranges', () => {
+test('overlap: Markdown-style delimiters inside a strong span', () => {
+  // The real case: `**bold**` captured as @strong over [0,8) with each
+  // `*` delimiter captured as @paren. The delimiters (smaller) win, and
+  // the inner text stays @strong — even though @strong shares the start.
+  const { result, warnings } = withCapturedWarn(() =>
+    splitIntoLineRuns('**bold**', [
+      { start: 0, end: 8, face: 'strong' },
+      { start: 0, end: 1, face: 'paren' },
+      { start: 1, end: 2, face: 'paren' },
+      { start: 6, end: 7, face: 'paren' },
+      { start: 7, end: 8, face: 'paren' },
+    ])
+  );
+  assert.deepEqual(result, [
+    [
+      { text: '**', face: 'paren' },
+      { text: 'bold', face: 'strong' },
+      { text: '**', face: 'paren' },
+    ],
+  ]);
+  assert.equal(warnings.length, 0);
+});
+
+test('overlap: no warning on adjacent (non-overlapping) ranges', () => {
   const { result, warnings } = withCapturedWarn(() =>
     splitIntoLineRuns('abcdef', [
       { start: 0, end: 3, face: 'a' },
