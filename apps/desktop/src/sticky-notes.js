@@ -97,6 +97,53 @@ export function parseIconSize(raw) {
   return value;
 }
 
+/** The Font Awesome classes for a collapsed note's glyph when no `icon`
+ *  is set, or the value can't be parsed. */
+export const DEFAULT_ICON_CLASSES = 'fa-solid fa-note-sticky';
+
+/** Font Awesome style keywords recognised in an `icon:` value, so
+ *  `icon: regular star` picks the regular face. A value with no style
+ *  word defaults to `fa-solid` (the only universally free face besides
+ *  brands). */
+const ICON_STYLE_WORDS = new Set([
+  'solid',
+  'regular',
+  'brands',
+  'light',
+  'thin',
+  'duotone',
+  'sharp',
+]);
+
+/**
+ * Parse a metadata `icon:` value into a Font Awesome class string for the
+ * collapsed-note glyph. Forgiving by design: a bare name (`star`), an
+ * `fa-`-prefixed name (`fa-star`), an explicit style (`regular star`,
+ * `fa-regular fa-star`), and trailing FA utility classes (`star fa-spin`)
+ * all work. Every token is sanitised to `[a-z0-9-]`, so the result is
+ * always a safe class list regardless of input. Returns `null` when the
+ * value names no icon (so the caller can fall back to the default).
+ *
+ * @param {unknown} raw
+ * @returns {string | null}
+ */
+export function parseIconClasses(raw) {
+  if (typeof raw !== 'string') return null;
+  let style = null;
+  const names = [];
+  for (const token of raw.trim().toLowerCase().split(/\s+/)) {
+    const bare = (token.startsWith('fa-') ? token.slice(3) : token).replace(
+      /[^a-z0-9-]/g,
+      ''
+    );
+    if (!bare) continue;
+    if (ICON_STYLE_WORDS.has(bare)) style = `fa-${bare}`;
+    else names.push(`fa-${bare}`);
+  }
+  if (names.length === 0) return null;
+  return `${style ?? 'fa-solid'} ${names.join(' ')}`;
+}
+
 /**
  * Create the sticky-notes overlay manager.
  *
@@ -241,6 +288,12 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     }
   }
 
+  /** Apply a note's metadata `icon` (or restore the default) — sets the
+   *  Font Awesome classes on the collapsed-note glyph. */
+  function applyIcon(entry, raw) {
+    entry.iconGlyph.className = parseIconClasses(raw) ?? DEFAULT_ICON_CLASSES;
+  }
+
   /** Render a note's body from its source (async, cached, race-guarded). */
   function renderBody(id) {
     const note = noteById(id);
@@ -251,6 +304,7 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     const { meta, body } = parseNoteSource(note.source);
     applyColor(entry, meta.color);
     applyIconSize(entry, meta['icon-size']);
+    applyIcon(entry, meta.icon);
     const cached = htmlCache.get(body);
     if (cached !== undefined) {
       setBody(entry.body, cached);
@@ -300,11 +354,15 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
     grip.title = 'Resize';
 
     // Shown only while the note is collapsed — the note shrunk to its
-    // icon. Draggable, and double-clicked to expand again.
+    // icon. Draggable, and double-clicked to expand again. The glyph's
+    // Font Awesome classes are set from the note's `icon` metadata by
+    // applyIcon (renderBody); they default until then.
     const icon = doc.createElement('div');
     icon.className = 'sticky-note-icon';
     icon.title = 'Double-click to expand';
-    icon.innerHTML = '<i class="fa-solid fa-note-sticky"></i>';
+    const iconGlyph = doc.createElement('i');
+    iconGlyph.className = DEFAULT_ICON_CLASSES;
+    icon.append(iconGlyph);
 
     root.append(bar, body, grip, icon);
 
@@ -336,7 +394,7 @@ export function createStickyNotes({ overlayLayer, getBuffer, render, onChange })
       expandNote(note.id);
     });
 
-    return { root, body, editing: false };
+    return { root, body, iconGlyph, editing: false };
   }
 
   /** Shrink a note to its icon. */

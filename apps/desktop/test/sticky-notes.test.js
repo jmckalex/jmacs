@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import {
   adjustAnchor,
   parseIconSize,
+  parseIconClasses,
   parseNoteSource,
+  DEFAULT_ICON_CLASSES,
 } from '../src/sticky-notes.js';
 
 /** A BufferChange — `removed`/`inserted` are strings. */
@@ -92,4 +94,46 @@ test('parseIconSize rejects malformed input', () => {
   assert.equal(parseIconSize(undefined), null);
   assert.equal(parseIconSize(null), null);
   assert.equal(parseIconSize(60), null);
+});
+
+test('parseNoteSource reads the icon key', () => {
+  const { meta } = parseNoteSource('---\nicon: fa-star\n---\nx');
+  assert.equal(meta.icon, 'fa-star');
+});
+
+test('parseIconClasses accepts a bare name, defaulting to the solid face', () => {
+  assert.equal(parseIconClasses('star'), 'fa-solid fa-star');
+  assert.equal(parseIconClasses('note-sticky'), 'fa-solid fa-note-sticky');
+});
+
+test('parseIconClasses accepts an fa-prefixed name', () => {
+  assert.equal(parseIconClasses('fa-star'), 'fa-solid fa-star');
+});
+
+test('parseIconClasses honours an explicit style word, prefixed or not', () => {
+  assert.equal(parseIconClasses('regular star'), 'fa-regular fa-star');
+  assert.equal(parseIconClasses('fa-regular fa-star'), 'fa-regular fa-star');
+  assert.equal(parseIconClasses('brands github'), 'fa-brands fa-github');
+});
+
+test('parseIconClasses keeps trailing FA utility classes (e.g. fa-spin)', () => {
+  assert.equal(parseIconClasses('star fa-spin'), 'fa-solid fa-star fa-spin');
+});
+
+test('parseIconClasses sanitises tokens to a safe class list', () => {
+  // A would-be class-attribute break-out is stripped to bare class chars.
+  assert.equal(parseIconClasses('star"><script>'), 'fa-solid fa-starscript');
+});
+
+test('parseIconClasses returns null when no icon is named', () => {
+  // Only a style word, empty, whitespace, or a non-string → fall back.
+  assert.equal(parseIconClasses('regular'), null);
+  assert.equal(parseIconClasses(''), null);
+  assert.equal(parseIconClasses('   '), null);
+  assert.equal(parseIconClasses(undefined), null);
+  assert.equal(parseIconClasses(null), null);
+});
+
+test('DEFAULT_ICON_CLASSES is the sticky-note glyph', () => {
+  assert.equal(DEFAULT_ICON_CLASSES, 'fa-solid fa-note-sticky');
 });
