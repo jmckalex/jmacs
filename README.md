@@ -31,6 +31,7 @@ incidental complexity.
 - [Status and roadmap](#status-and-roadmap)
 - [Design principles](#design-principles)
 - [How it was built](#how-it-was-built)
+- [Beta testing](#beta-testing)
 - [License](#license)
 
 ---
@@ -319,6 +320,60 @@ Code, in a small number of intensive sessions. The five layers, the
 Lisp runtime, the standard library and the application were written and
 tested incrementally; `architect-notes.md` is the running log of that
 work, including the decisions and trade-offs made along the way.
+
+## Beta testing
+
+The editor is in **beta** (v0.1). This section is for people running a
+downloaded build and reporting back.
+
+### Install
+
+Beta builds are attached to each [GitHub Release][releases] — download the
+artifact for your platform:
+
+- **macOS** — the `.dmg`: open it and drag the app to Applications. Builds
+  are signed and notarized; if you run an *older* beta that predates
+  notarization and macOS refuses to open it, right-click the app →
+  **Open**, or clear the quarantine flag:
+  `xattr -dr com.apple.quarantine "/Applications/<App>.app"`.
+- **Linux** — the `.AppImage` (`chmod +x`, then run) or the `.deb`.
+- **Windows** — the `-setup.exe` (NSIS installer).
+
+[releases]: https://github.com/jmckalex/jmacs/releases
+
+> Per-platform download links are added here once the first release is cut.
+
+### Where your settings and data live
+
+The editor stores config and session state in the OS per-user data
+directory (`<App Name>` is the application's name in the packaged build):
+
+| OS | Path |
+|----|------|
+| macOS | `~/Library/Application Support/<App Name>/` |
+| Linux | `~/.config/<App Name>/` |
+| Windows | `%APPDATA%\<App Name>\` |
+
+There you'll find `init.lisp` and `custom.lisp` (your Lisp config, loaded
+at startup — the way to customise the editor), `session.json` (restored
+windows and buffers), `faces.json` (face overrides), and a `recovery/`
+folder of crash-recovery snapshots. Per-file data (sticky notes, bookmarks)
+lives in a hidden `.<filename>.godot-metadata` sidecar next to the file.
+
+### Known limitations
+
+The [Status and roadmap](#status-and-roadmap) section lists the standing
+limitations. For the beta specifically: Windows shell support is the
+least-exercised path, and very large files can be slow to open until view
+virtualisation lands.
+
+### Reporting bugs
+
+Please file issues on the [issue tracker][issues] — there's a structured
+**Bug report** form. Data-loss bugs are the top priority: if file contents
+were lost or corrupted, say so and they jump the queue.
+
+[issues]: https://github.com/jmckalex/jmacs/issues
 
 ## License
 

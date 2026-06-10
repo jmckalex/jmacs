@@ -1,0 +1,65 @@
+name: Bug report
+description: Report something broken or behaving unexpectedly in the beta.
+title: "[Bug]: "
+labels: ["bug", "beta"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping test the beta. Even a partial report is useful —
+        fill in what you can.
+
+        **If this involves lost or corrupted file contents, say so below —
+        data-safety bugs are the top priority.**
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Opened a Markdown file
+        2. Pressed C-c C-p
+        3. Expected an inline math preview; instead the source stayed as text.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that triggers it. A sample file or snippet helps a lot.
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release you downloaded (e.g. 0.1.0), or the commit if you built from source.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Error output (optional)
+      description: |
+        Errors surface in the editor's REPL, and more detail appears in the
+        dev console (View → Toggle Developer Tools). Paste anything relevant.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: data-safety
+    attributes:
+      label: Severity
+      options:
+        - label: This bug lost or corrupted file contents (we prioritise these).
+          required: false
