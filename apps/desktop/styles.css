@@ -1105,10 +1105,12 @@ body.utility-hidden #utility-splitter {
   color: var(--fg);
 }
 
-/* Find-file completions panel — a transient, scrollable, multi-column
-   candidate list. Directories carry a trailing '/' and an accent folder
-   icon; the column grid keeps a busy directory compact yet scrollable,
-   the cure for the old crammed one-line inline list. */
+/* Find-file completions panel — a transient, scrollable candidate list,
+   one entry per line. Directories carry a trailing '/' and an accent
+   folder icon. A plain vertical list that scrolls when the directory has
+   more entries than fit the dock; the cure for the old crammed one-line
+   inline list (and for the multi-column grid that packed entries to fit
+   rather than letting the view scroll). */
 .completions-panel {
   height: 100%;
   display: flex;
@@ -1130,15 +1132,17 @@ body.utility-hidden #utility-splitter {
 .completions-list {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
-  padding: 8px 14px;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 1px 16px;
-  align-content: start;
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
 }
 
 .completions-item {
+  /* flex: 0 0 auto so each row keeps its natural height and the list
+     scrolls — without it the rows would shrink to fit the dock (the very
+     squish this panel is meant to avoid). */
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1166,6 +1170,7 @@ body.utility-hidden #utility-splitter {
 }
 
 .completions-item-label {
+  min-width: 0; /* let the flex item shrink so the ellipsis can engage */
   overflow: hidden;
   text-overflow: ellipsis;
 }
