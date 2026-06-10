@@ -37,15 +37,50 @@ export function toLines(text) {
  * @param {number} tabWidth - Stops per tab — typically 4.
  * @returns {number} The visual column at `charIndex`.
  */
+/**
+ * Whether a code point renders double-width in a monospace context — East
+ * Asian Wide / Fullwidth (CJK ideographs, kana, Hangul, fullwidth forms)
+ * plus most emoji. An approximation of the Unicode East-Asian-Width
+ * property (the full table is huge) covering the common cases, so the
+ * cursor, selection and click mapping line up with double-width glyphs the
+ * way they do with tabs.
+ *
+ * @param {number} cp - A Unicode code point.
+ * @returns {boolean}
+ */
+export function isWideCharacter(cp) {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    (cp >= 0x2e80 && cp <= 0x303e) || // CJK radicals … CJK symbols
+    (cp >= 0x3041 && cp <= 0x33ff) || // kana, CJK symbols, compat
+    (cp >= 0x3400 && cp <= 0x4dbf) || // CJK Ext A
+    (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified
+    (cp >= 0xa000 && cp <= 0xa4cf) || // Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK compatibility ideographs
+    (cp >= 0xfe10 && cp <= 0xfe19) || // vertical forms
+    (cp >= 0xfe30 && cp <= 0xfe6f) || // CJK compat / small forms
+    (cp >= 0xff00 && cp <= 0xff60) || // fullwidth forms
+    (cp >= 0xffe0 && cp <= 0xffe6) || // fullwidth signs
+    (cp >= 0x1f300 && cp <= 0x1faff) || // emoji & pictographs
+    (cp >= 0x20000 && cp <= 0x3fffd) // CJK Ext B+ (supplementary)
+  );
+}
+
 export function visualColumn(line, charIndex, tabWidth) {
   const w = Math.max(1, tabWidth | 0);
   const stop = Math.min(charIndex, line.length);
   let col = 0;
-  for (let i = 0; i < stop; i += 1) {
-    if (line.charCodeAt(i) === 9) {
+  let i = 0;
+  while (i < stop) {
+    const code = line.charCodeAt(i);
+    if (code === 9) {
       col = (Math.floor(col / w) + 1) * w;
+      i += 1;
     } else {
-      col += 1;
+      const cp = line.codePointAt(i);
+      col += isWideCharacter(cp) ? 2 : 1;
+      i += cp > 0xffff ? 2 : 1; // skip the low surrogate of an astral char
     }
   }
   return col;
@@ -66,18 +101,25 @@ export function charIndexAtVisualColumn(line, targetCol, tabWidth) {
   const w = Math.max(1, tabWidth | 0);
   if (targetCol <= 0) return 0;
   let col = 0;
-  for (let i = 0; i < line.length; i += 1) {
+  let i = 0;
+  while (i < line.length) {
+    const code = line.charCodeAt(i);
     let next;
-    if (line.charCodeAt(i) === 9) {
+    let size;
+    if (code === 9) {
       next = (Math.floor(col / w) + 1) * w;
+      size = 1;
     } else {
-      next = col + 1;
+      const cp = line.codePointAt(i);
+      size = cp > 0xffff ? 2 : 1;
+      next = col + (isWideCharacter(cp) ? 2 : 1);
     }
     if (next > targetCol) {
       // Target sits inside this glyph's span — pick the closer edge.
-      return (targetCol - col) <= (next - targetCol) ? i : i + 1;
+      return (targetCol - col) <= (next - targetCol) ? i : i + size;
     }
     col = next;
+    i += size;
   }
   return line.length;
 }
