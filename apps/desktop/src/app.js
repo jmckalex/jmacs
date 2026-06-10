@@ -133,6 +133,7 @@ import {
 } from './math-preview-host.js';
 import { buildModeMenuItems } from './mode-menu-build.js';
 import { createRecovery } from './recovery-controller.js';
+import { hashText } from './recovery.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
@@ -288,6 +289,30 @@ const session = {
 
 /** Buffers with unsaved changes. */
 const dirtyBuffers = new Set();
+
+/** Per-buffer saved-state baseline — the length + content-hash of the
+ *  text that matches what's on disk (set when a file is opened and when
+ *  it is saved). A buffer counts as dirty only while its current text
+ *  differs from this, so undoing every edit back to the saved state
+ *  clears the modified flag. A buffer with no baseline (a new/scratch
+ *  buffer, or a recovered crash snapshot — unsaved by definition) is
+ *  treated as dirty whenever it changes, until its first save. */
+const savedBaseline = new WeakMap();
+
+/** Record BUFFER's current text as its saved baseline (on open / save). */
+function markBufferSaved(buffer) {
+  const text = typeof buffer?.text === 'string' ? buffer.text : '';
+  savedBaseline.set(buffer, { length: text.length, hash: hashText(text) });
+}
+
+/** Whether BUFFER's current text matches its saved baseline. False when
+ *  the buffer has no baseline (treat as not-yet-clean). */
+function bufferMatchesSaved(buffer) {
+  const base = savedBaseline.get(buffer);
+  if (!base) return false;
+  const text = typeof buffer?.text === 'string' ? buffer.text : '';
+  return text.length === base.length && hashText(text) === base.hash;
+}
 
 /** The autosave / crash-recovery controller: snapshots every dirty
  *  buffer to `<userData>/recovery/` (debounced on edit, immediate on
@@ -552,8 +577,16 @@ function watchCurrentBuffer() {
   }
   unwatch = buffer.onChange((event) => {
     if (event.change !== null) {
-      dirtyBuffers.add(buffer);
-      recovery.save();
+      // Dirty only while the text differs from the saved baseline, so
+      // undoing every edit back to the saved state clears the flag (and
+      // drops the now-pointless recovery snapshot).
+      if (bufferMatchesSaved(buffer)) {
+        dirtyBuffers.delete(buffer);
+        recovery.forget(buffer);
+      } else {
+        dirtyBuffers.add(buffer);
+        recovery.save();
+      }
       dismissSplash();
       // Keep the Markdown preview pane in step with the buffer.
       refreshMarkdownPreview();
@@ -2235,6 +2268,8 @@ async function openFileInteractive() {
     }
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
+    // The just-loaded content is the saved baseline (it matches disk).
+    markBufferSaved(buffer);
     // Load the file's sticky notes from its companion metadata file,
     // before the buffer is shown, so note anchors land against the
     // final text.
@@ -2482,6 +2517,8 @@ async function openFileByPath(filePath, {
     if (typeof result.content !== 'string') return null;
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
+    // The just-loaded content is the saved baseline (it matches disk).
+    markBufferSaved(buffer);
     const metadata = await window.host.readMetadata(result.path);
     if (metadata) buffer.metadata = metadata;
     const view = createView({ kind: 'text', buffer });
@@ -2541,6 +2578,9 @@ async function saveBufferInteractive() {
     // display name from the buffer).
     view.name = result.name;
     dirtyBuffers.delete(buffer);
+    // The saved text is the new clean baseline, so a later undo back to
+    // it (or a re-edit) is measured against what's actually on disk.
+    markBufferSaved(buffer);
     // The buffer is on disk now — drop its crash-recovery snapshot.
     recovery.forget(buffer);
     updateModeline();
