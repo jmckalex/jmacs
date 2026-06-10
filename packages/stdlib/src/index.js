@@ -170,7 +170,30 @@ export const STDLIB_FILES = Object.freeze([
 ]);
 
 /**
+ * A standard-library file that failed to load.
+ *
+ * @typedef {object} StdlibLoadFailure
+ * @property {string} name - The file's name (e.g. `'keymap.lisp'` or
+ *   `'languages/rust.lisp'`).
+ * @property {'fetch' | 'evaluate' | 'list'} phase - Where it failed:
+ *   fetching the source, evaluating it, or listing the language dir.
+ * @property {Error} error - The thrown error.
+ */
+
+/**
  * Load the standard library into an interpreter.
+ *
+ * Each file is loaded in isolation: if one fails to fetch or evaluate,
+ * it is recorded and loading continues with the rest, rather than
+ * aborting the whole standard library. A single broken file (a syntax
+ * error, an unbound reference) therefore degrades the editor — the
+ * commands from that file are missing — instead of bricking it with no
+ * keymap and no `M-x` at all. The caller surfaces the returned failures.
+ *
+ * (Files do have load-order dependencies — `keymap.lisp` binds commands
+ * defined earlier, for instance — so an early failure can cascade into
+ * later files that build on it. Those later files are still *attempted*;
+ * the editor recovers as much functionality as the breakage allows.)
  *
  * After the ordered `STDLIB_FILES`, `loadStdlib` loads every Lisp file
  * in the `languages/` subdirectory (when the caller supplies a lister).
@@ -186,17 +209,45 @@ export const STDLIB_FILES = Object.freeze([
  *   Returns the filenames in `lisp/languages/` (bare names, e.g.
  *   `'javascript.lisp'`). When absent, no language files are loaded —
  *   the caller has none.
- * @returns {Promise<void>}
+ * @returns {Promise<{ failures: StdlibLoadFailure[] }>} The files that
+ *   failed to load, in the order they were attempted (empty on success).
  */
 export async function loadStdlib(interpreter, getSource, options = {}) {
-  for (const name of STDLIB_FILES) {
-    interpreter.evaluate(await getSource(name));
-  }
-  if (typeof options.listLanguageFiles === 'function') {
-    const files = await options.listLanguageFiles();
-    for (const name of files) {
-      if (!name.endsWith('.lisp')) continue;
-      interpreter.evaluate(await getSource(`languages/${name}`));
+  /** @type {StdlibLoadFailure[]} */
+  const failures = [];
+
+  async function loadOne(name) {
+    let source;
+    try {
+      source = await getSource(name);
+    } catch (error) {
+      failures.push({ name, phase: 'fetch', error });
+      return;
+    }
+    try {
+      interpreter.evaluate(source);
+    } catch (error) {
+      failures.push({ name, phase: 'evaluate', error });
     }
   }
+
+  for (const name of STDLIB_FILES) {
+    await loadOne(name);
+  }
+
+  if (typeof options.listLanguageFiles === 'function') {
+    let files = [];
+    try {
+      files = await options.listLanguageFiles();
+    } catch (error) {
+      failures.push({ name: 'languages/', phase: 'list', error });
+      files = [];
+    }
+    for (const name of files) {
+      if (!name.endsWith('.lisp')) continue;
+      await loadOne(`languages/${name}`);
+    }
+  }
+
+  return { failures };
 }

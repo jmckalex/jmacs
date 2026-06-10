@@ -4977,10 +4977,36 @@ async function loadUserConfig() {
  *  hot reload, so language files are picked up by both paths. */
 const stdlibOptions = { listLanguageFiles: listStdlibLanguageFiles };
 
+/**
+ * Report any standard-library files that failed to load. `loadStdlib`
+ * isolates each file, so a broken one no longer aborts the rest — but the
+ * user still needs to know which file failed (and that its commands are
+ * gone), so name each one in the REPL.
+ *
+ * @param {{name: string, phase: string, error: Error}[]} failures
+ */
+function reportStdlibFailures(failures) {
+  if (!failures || failures.length === 0) return;
+  for (const { name, error } of failures) {
+    repl.appendError(
+      `stdlib: ${name} failed to load — ${error.lispMessage ?? error.message}`
+    );
+  }
+  repl.appendError(
+    `stdlib: ${failures.length} file(s) failed to load; the rest loaded. ` +
+      'Commands defined in the failed file(s) are unavailable.'
+  );
+}
+
 /** Re-evaluate the standard library — hot reload of the editor itself. */
 async function reloadStdlib() {
   try {
-    await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
+    const { failures } = await loadStdlib(
+      interpreter,
+      fetchStdlibSource,
+      stdlibOptions
+    );
+    reportStdlibFailures(failures);
     // Reapply face hooks + state: a fresh stdlib reset all of them.
     // Re-register user faces FIRST (overrides/rules may reference them).
     installFacePersistence();
@@ -5047,8 +5073,17 @@ const themeListeners = new Set();
 
 let keymapReady = false;
 try {
-  await loadStdlib(interpreter, fetchStdlibSource, stdlibOptions);
+  // Per-file isolation: a single broken stdlib file is reported and
+  // skipped, not allowed to abort the load and leave the editor with no
+  // keymap. The outer catch is now only a backstop for a catastrophic
+  // failure (e.g. the source fetch itself is broken).
+  const { failures } = await loadStdlib(
+    interpreter,
+    fetchStdlibSource,
+    stdlibOptions
+  );
   keymapReady = true;
+  reportStdlibFailures(failures);
 } catch (error) {
   repl.appendError(`standard library failed to load: ${error.message}`);
 }
