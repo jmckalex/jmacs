@@ -18,6 +18,12 @@ import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { atomicWrite } from './atomic-write.js';
+import { createChangeTracker } from './external-change.js';
+
+// Tracks the on-disk (mtime, size) of files we have read or written, so a
+// save can refuse to silently clobber a file another program changed
+// underneath us. See external-change.js.
+const changeTracker = createChangeTracker();
 import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
@@ -268,6 +274,10 @@ async function readPathAsBuffer(path) {
     };
   }
   const content = await readFile(path, 'utf8');
+  // Record the on-disk baseline for these savable text/notebook buffers,
+  // so a later save can detect an external change. (Re-opening the same
+  // path — e.g. a reload — re-notes it and clears any stale conflict.)
+  await changeTracker.note(path);
   if (NOTEBOOK_SUFFIXES.has(extname(path).toLowerCase())) {
     // A reactive Lisp notebook (.rxlisp) — opens as a `notebook` view,
     // not a text editor. Its `(cell …)` source is the content.
@@ -362,6 +372,12 @@ export function registerFileHandlers() {
   });
 
   // Write content to a path; with no path, prompt for one first.
+  //
+  // Before overwriting, check whether the file changed on disk since we
+  // last read or wrote it. If so — and the caller hasn't passed
+  // `force` — hold the save and report `{ conflict: true }` so the
+  // renderer can ask the user, rather than silently clobbering another
+  // program's change. `force: true` is the user's explicit "overwrite".
   ipcMain.handle('file:save', async (_event, payload) => {
     let target = payload?.path ?? null;
     if (target === null) {
@@ -371,8 +387,14 @@ export function registerFileHandlers() {
       }
       target = result.filePath;
     }
+    if (payload?.force !== true && (await changeTracker.changedSinceNoted(target))) {
+      return { conflict: true, path: target, name: basename(target) };
+    }
     // Atomic write: a crash mid-save must never truncate the user's file.
     await atomicWrite(target, payload?.content ?? '', 'utf8');
+    // The buffer and disk now agree: re-baseline so the next save isn't
+    // wrongly flagged.
+    await changeTracker.note(target);
     return { path: target, name: basename(target) };
   });
 

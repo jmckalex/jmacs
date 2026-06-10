@@ -61,11 +61,23 @@ contextBridge.exposeInMainWorld('host', {
 
   /**
    * Save content to a file. With a null path, prompts for one.
+   *
+   * If the file changed on disk since it was last read or written, the
+   * save is held and the result is `{ conflict: true, path, name }`
+   * instead of being written — unless `options.force` is true, the user's
+   * explicit "overwrite anyway".
+   *
    * @param {string | null} path
    * @param {string} content
-   * @returns {Promise<{path: string, name: string} | null>}
+   * @param {{ force?: boolean }} [options]
+   * @returns {Promise<{path: string, name: string} | {conflict: true, path: string, name: string} | null>}
    */
-  saveFile: (path, content) => ipcRenderer.invoke('file:save', { path, content }),
+  saveFile: (path, content, options) =>
+    ipcRenderer.invoke('file:save', {
+      path,
+      content,
+      force: options?.force === true,
+    }),
 
   /**
    * Rename / move a file. Returns `{ ok, path? error? }` so the caller

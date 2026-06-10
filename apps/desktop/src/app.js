@@ -2415,8 +2415,31 @@ async function saveBufferInteractive() {
     return;
   }
   try {
-    const result = await window.host.saveFile(buffer.filePath ?? null, buffer.text);
+    let result = await window.host.saveFile(buffer.filePath ?? null, buffer.text);
     if (result === null) return;
+    // The file changed on disk since we read it — another program rewrote
+    // it. Don't silently clobber that change: ask first. Cancelling is
+    // non-destructive (the buffer keeps its edits, the disk keeps its
+    // version), so the user can reload or diff before deciding.
+    if (result.conflict) {
+      const overwrite = window.confirm(
+        `"${result.name}" has changed on disk since you opened it.\n\n` +
+          'OK = overwrite it with your version.\n' +
+          'Cancel = write nothing and keep editing ' +
+          '(re-open the file to load the disk version).'
+      );
+      if (!overwrite) {
+        repl.appendError(
+          `save: "${result.name}" changed on disk — not overwritten. ` +
+            'Re-open the file to load the disk version.'
+        );
+        return;
+      }
+      result = await window.host.saveFile(buffer.filePath ?? null, buffer.text, {
+        force: true,
+      });
+      if (result === null || result.conflict) return;
+    }
     buffer.filePath = result.path;
     buffer.name = result.name;
     // Mirror the rename onto the view (text views derive their
