@@ -526,6 +526,20 @@ function updateModeline() {
   document.title = `${mark}${buffer.name} — editor`;
 }
 
+/** Make BUFFER the current text buffer AND re-point the dirty / autosave
+ *  watch at it. Every path that changes which buffer is current must go
+ *  through this, not a bare `currentTextBuffer = …` assignment —
+ *  otherwise edits to the newly-current buffer go unwatched: no dirty
+ *  mark, no autosave snapshot, and the quit guard sees nothing to
+ *  confirm. (The bug the focus / pane-switch / session-install paths had:
+ *  they updated `currentTextBuffer` without re-subscribing the watch, so
+ *  editing after a focus change or session restore silently lost the
+ *  unsaved-changes signal.) */
+function setCurrentTextBuffer(buffer) {
+  currentTextBuffer = buffer;
+  watchCurrentBuffer();
+}
+
 // Watch the current text view's buffer for changes; re-subscribed
 // when the active text view (and so the underlying buffer) switches.
 let unwatch = () => {};
@@ -800,7 +814,7 @@ function setCurrentPaneId(nextId) {
       if (typeof view.buffer.bindCursor === 'function') {
         view.buffer.bindCursor(view);
       }
-      currentTextBuffer = view.buffer;
+      setCurrentTextBuffer(view.buffer);
     }
     // Re-point the legacy `editorView` pointer at the focused leaf's
     // instance. Sticky-notes, hover-doc and inline-eval keep their
@@ -1285,7 +1299,7 @@ function deletePaneInTree(targetLeaf) {
           if (typeof view.buffer.bindCursor === 'function') {
             view.buffer.bindCursor(view);
           }
-          currentTextBuffer = view.buffer;
+          setCurrentTextBuffer(view.buffer);
         }
         const instance = editorViewByPaneId.get(next.id);
         if (instance) editorView = instance;
@@ -1328,7 +1342,7 @@ function deleteOtherPanesInTree(targetLeaf) {
         if (typeof view.buffer.bindCursor === 'function') {
           view.buffer.bindCursor(view);
         }
-        currentTextBuffer = view.buffer;
+        setCurrentTextBuffer(view.buffer);
       }
       const instance = editorViewByPaneId.get(targetLeaf.id);
       if (instance) editorView = instance;
@@ -9018,7 +9032,7 @@ function installRootPane(newRoot, savedCurrentPaneId) {
     currentViewIndex = views.indexOf(focusedView);
   }
   if (focusedView && focusedView.kind === 'text' && focusedView.buffer) {
-    currentTextBuffer = focusedView.buffer;
+    setCurrentTextBuffer(focusedView.buffer);
   }
   // Refresh per-pane focus indicators and splitter handles, schedule a
   // relayout so the freshly-installed tree sizes itself against the
