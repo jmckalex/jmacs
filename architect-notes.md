@@ -55,6 +55,46 @@ can't pass yet); I can re-add it verbatim the moment option (a) lands —
 it drives the real methods against a minimal DOM stub and needs no
 further source change. Full renderer suite green. Tree clean.
 
+**[2026-06-11 — RESOLVED]** Option (a) was taken: `@editor/view` is now
+declared in `packages/renderer/package.json` and `pnpm install` linked it,
+so `tabline-view.js` imports cleanly under `node --test`. Landed
+`packages/renderer/test/tabline-view-lifecycle.test.js` (26 tests, green):
+add/insert/append-out-of-range, remove (active vs non-active, last tab,
+out-of-range guard), active re-anchoring on close, activate (clears
+siblings + focus + out-of-range no-op), reorder (up/down/no-op), the Q9
+single-parent move, `tab-close` dispatch + bubbling (incl. via the strip's
+× button), the edge accessor, and destroy() teardown (DOM removed, nulled,
+idempotent, post-destroy mutations are safe no-ops). The test self-contains
+a compact fake DOM (element tree + attrs/dataset/classList + the one
+`:scope > [active]` selector + bubbling dispatchEvent), installed on
+`globalThis` before the import so `ViewElement` picks up `HTMLElement`.
+Full renderer suite 625 pass / 0 fail (was 599 + 26 new).
+
+**view.js render internals — NOT unit-tested here (deliberate, not a
+blocker).** E1 also asked for `view.js` render-loop tests (line
+virtualization, replaced-range/math-widget mount + cleanup across scroll,
+fold persistence across re-render). I did **not** add them, and recommend
+against forcing them under `node --test`: `createEditorView` is one large
+closure whose render path is driven by real pixel layout
+(`getBoundingClientRect().height` for the line height, `root.scrollTop` /
+`root.clientHeight` for the window, `createTreeWalker`/`createRange` for
+caret measurement), `requestAnimationFrame` batching, `morphdom`, and the
+tree-sitter highlighters. A fake DOM faithful enough to make the
+virtualization window or a widget's measured height come out *right* would
+be simulating layout — the assertions would then be testing the simulation,
+not the renderer (the "no speculative assertions" trap). The genuinely
+pure logic these features rest on is already extracted into siblings with
+their own green tests: line splitting + selection/cursor geometry in
+`projection.js` (`projection.test.js`), the math-widget layout/placement in
+`math-layout.js` (`math-layout.test.js`), and fold ranges + hidden-line
+computation in `folding.js` (`folding.test.js`). The remaining `view.js`
+glue (wiring those into the rAF render against the real viewport) is what
+the smoke arm / live app covers. If you want a unit-level seam, the
+cheapest honest one is to export the ~4-line `firstRow`/`lastRow` window
+arithmetic from the render closure as a pure helper and pin it — flagging
+it rather than doing it, since it's a source change to a hot file other
+sessions are also touching.
+
 ---
 
 ## [2026-06-03] LaTeX Phase 5 (latex-nav): "M-return" → "M-enter" binding deviation
