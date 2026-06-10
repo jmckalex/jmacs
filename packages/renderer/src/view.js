@@ -18,7 +18,7 @@
 
 import {
   toLines, selectionRects, cursorPositions, decorationRects,
-  visualColumn, charIndexAtVisualColumn,
+  visualColumn, charIndexAtVisualColumn, isWideCharacter,
 } from './projection.js';
 import { handleKeyEvent } from './commands.js';
 import { keyEventToString } from './keymap.js';
@@ -352,6 +352,47 @@ export function createEditorView(buffer, container, options = {}) {
     return node;
   }
 
+  /** Whether TEXT contains any East Asian wide / fullwidth / emoji char. */
+  function hasWide(text) {
+    for (let i = 0; i < text.length; ) {
+      const cp = text.codePointAt(i);
+      if (isWideCharacter(cp)) return true;
+      i += cp > 0xffff ? 2 : 1;
+    }
+    return false;
+  }
+
+  /** Append a run's text to PARENT, rendering each wide (CJK / fullwidth /
+   *  emoji) glyph in a fixed two-cell box (`.editor-wide`, width 2ch) so the
+   *  painted width matches the projection's two-columns-per-wide-char model.
+   *  Without this the system CJK-fallback advance (a hair under 2ch) drifts
+   *  the caret, selection and click mapping off the grid. The common ASCII
+   *  run takes the fast single-text-node path. */
+  function appendRunText(parent, text) {
+    if (!hasWide(text)) {
+      parent.append(doc.createTextNode(text));
+      return;
+    }
+    let buf = '';
+    for (let i = 0; i < text.length; ) {
+      const cp = text.codePointAt(i);
+      const size = cp > 0xffff ? 2 : 1;
+      if (isWideCharacter(cp)) {
+        if (buf) {
+          parent.append(doc.createTextNode(buf));
+          buf = '';
+        }
+        const cell = el('span', 'editor-wide');
+        cell.textContent = text.slice(i, i + size);
+        parent.append(cell);
+      } else {
+        buf += text.slice(i, i + size);
+      }
+      i += size;
+    }
+    if (buf) parent.append(doc.createTextNode(buf));
+  }
+
   /** Drop leading whitespace from a run list, keeping faces intact.
    *  Used when rendering the closing-line preview for a folded header:
    *  the line's leading indent isn't useful inline, but we want to
@@ -387,10 +428,10 @@ export function createEditorView(buffer, container, options = {}) {
         const span = mountWidget(run.widget, false);
         if (span) lineEl.append(span);
       } else if (run.face === null) {
-        lineEl.append(doc.createTextNode(run.text));
+        appendRunText(lineEl, run.text);
       } else {
         const span = el('span', `tok-${run.face}`);
-        span.textContent = run.text;
+        appendRunText(span, run.text);
         lineEl.append(span);
       }
     }
