@@ -136,8 +136,9 @@ a hard blocker for a *public, international* beta.
 - Fix: track an `inComposition` flag; suppress key-command dispatch while composing; insert committed text on `compositionend`.
 - **Acceptance:** with a system IME (e.g. Pinyin), composing and committing multi-character input inserts the correct text and does not trigger editor key-commands mid-composition; ASCII typing is unaffected. Add a smoke/manual checklist item (composition is hard to unit-test).
 
-### B2 — Restrict the `app://` `__host__` file route *(new from audit; verified)*
+### B2 — Restrict the `app://` `__host__` file route ✅ *(new from audit; verified)*
 **P1 · ½ day · branch: `harden-host-route` · Plan 03/05**
+**✅ DONE — merged to `main` 2026-06-10 (merge `d40cad8`, feature `b9613a7`); recovery tag `pre-host-route`. New `host-allowlist.js` allowlist (realpath roots, symlink-escape-proof); `host-allowlist.test.js` 8/8 green; PDFs + Markdown-preview images verified live. B3/B4 skipped by architect decision — see those tickets.**
 `serve.js` `__host__` reads **any** absolute path with no traversal guard
 (the sibling route right below it *is* guarded — this is an
 inconsistency). Since the renderer is exactly where untrusted content runs
@@ -150,6 +151,7 @@ CSP-permitted `https:` connect.
 
 ### B3 — Drop `shell:true` from the jmarkdown spawn *(new from audit; verified)*
 **P1 · 2 hours · branch: `harden-host-route` (same) · Plan 03**
+**⏭️ SKIPPED — architect decision 2026-06-10. Revisit if the markdown command ever becomes settable from untrusted document content; today it's a trusted user preference (`*markdown-interpreter*`).**
 `jmarkdown.js:39` spawns a renderer-configurable command through a shell;
 config-modifying content can inject arbitrary commands.
 - Files: `apps/desktop/src/jmarkdown.js:39`.
@@ -158,6 +160,7 @@ config-modifying content can inject arbitrary commands.
 
 ### B4 — Sanitize sticky-note HTML + tighten CSP *(new from audit)*
 **P1 · ½ day · branch: `sanitize-note-html` · Plan 03**
+**⏭️ SKIPPED — architect decision 2026-06-10. Sanitizing note HTML and tightening CSP would curtail what users can legitimately put in a sticky note (embeds, inline scripts/styles); the architect chose user capability over this hardening for v0.1.**
 `sticky-notes.js:199` sets `innerHTML` from external renderer output, and
 `index.html` CSP carries `'unsafe-inline'`.
 - Files: `apps/desktop/src/sticky-notes.js:199`, `apps/desktop/index.html` (CSP).
