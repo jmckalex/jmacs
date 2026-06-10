@@ -1097,7 +1097,7 @@ function fillPlaceholderViaCommand(leaf, text) {
   try {
     interpreter.evaluate(`(run-command (quote ${text}))`);
   } catch (error) {
-    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+    repl.appendError(formatLispError(error));
   }
   // A view-opening command replaced `leaf.view` via switchToViewIndex;
   // a non-view command (or a failure) leaves the placeholder in place.
@@ -5034,11 +5034,20 @@ audio.onEnded(() => {
 });
 
 /** Evaluate a line of REPL input and show the result. */
+/** Format a Lisp error for display: its message, plus the source location
+ *  of the offending form when the evaluator tagged one (B6) — so a failing
+ *  multi-line definition says *where*, not just *what*. */
+function formatLispError(error) {
+  const message = error?.lispMessage ?? error?.message ?? String(error);
+  const loc = error?.location;
+  return loc ? `${message} (at line ${loc.line}:${loc.col})` : message;
+}
+
 function evaluateInRepl(source) {
   try {
     repl.appendResult(writeString(interpreter.evaluate(source)));
   } catch (error) {
-    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+    repl.appendError(formatLispError(error));
   }
 }
 

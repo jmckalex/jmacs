@@ -220,6 +220,14 @@ export class LispError extends Error {
     this.name = 'LispError';
     this.lispMessage = message;
     this.irritants = irritants;
+    /**
+     * The source position `{line, col}` of the form that was executing
+     * when this error was raised, or `null` if unknown. The evaluator
+     * fills it in at a catch boundary (see `attachErrorLocation` in
+     * eval.js), so an error can report *where* as well as *what*.
+     * @type {{line: number, col: number} | null}
+     */
+    this.location = null;
   }
 }
 
