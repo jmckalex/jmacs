@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { registerFileHandlers } from './files.js';
 import { renderJMarkdown } from './jmarkdown.js';
 import { buildAppMenu } from './menu.js';
-import { EDITOR_URL, serveAppFile, serveMediaFile } from './serve.js';
+import { EDITOR_URL, serveAppFile, serveMediaFile, allowHostDir } from './serve.js';
 import { registerShellHandlers } from './shell.js';
 import { registerProcessHandlers } from './process.js';
 import { registerGnuplotHandlers } from './gnuplot.js';
@@ -97,6 +97,9 @@ function createWindow() {
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   protocol.handle('media', serveMediaFile);
+  // The per-user data dir (init.lisp, custom preview CSS kept there, …) is
+  // a trusted host root for the `__host__` route.
+  allowHostDir(app.getPath('userData'));
   registerFileHandlers();
   registerShellHandlers();
   registerProcessHandlers();
