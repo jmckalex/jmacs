@@ -21,6 +21,17 @@ import { registerGnuplotHandlers } from './gnuplot.js';
 
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
 
+// §3a: a main-process throw or unhandled rejection should log, not kill
+// the host silently (which would take the window down with no warning).
+// The renderer owns the user's data and has its own recovery/error
+// nets; here we just keep the process alive and leave a trail.
+process.on('uncaughtException', (error) => {
+  console.error('[main] uncaught exception:', error);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandled rejection:', reason);
+});
+
 /** The editor window — there is only ever one. */
 let mainWindow = null;
 
@@ -57,6 +68,29 @@ function createWindow() {
     },
   });
   mainWindow = win;
+
+  // The red traffic-light button closes the window directly, which (like
+  // a native Quit) would tear down the renderer and drop unsaved edits
+  // with no prompt. (Cmd+W does NOT reach here — the renderer binds it to
+  // close-tab; only the traffic-light button and app.quit() close the
+  // window.) Intercept the first close and route it through the same
+  // renderer confirm as before-quit; quitInteractive calls back via
+  // `app:quit` (which sets quitConfirmed) to let the next close through,
+  // or does nothing to cancel and the window stays open.
+  win.on('close', (event) => {
+    if (!shouldHoldForConfirm()) return;
+    event.preventDefault();
+    win.webContents.send('app:confirm-quit');
+  });
+
+  // §3a: the renderer crashing (or being killed) takes the editor down.
+  // Log the cause; the user's unsaved work is recoverable on relaunch
+  // from the autosave snapshots (the *Recover* view), since a crash is
+  // exactly the case those exist for.
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[main] render process gone:', details?.reason ?? details);
+  });
+
   win.loadURL(EDITOR_URL);
 }
 
@@ -96,21 +130,31 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// A native Quit (Cmd+Q or the app-menu Quit) calls app.quit() directly,
-// which would bypass the renderer's unsaved-changes prompt and silently
-// drop edits. Intercept the first quit and hand off to the renderer: it
-// runs quitInteractive (confirm + flush metadata) and calls back via
-// `app:quit` to actually quit, or does nothing to cancel. If the window
-// is already gone there is nothing to confirm — let the quit proceed.
-app.on('before-quit', (event) => {
-  if (quitConfirmed) return;
+// Whether an exit (a native Quit or a window close) should be held for
+// the renderer's unsaved-changes confirm. False once a quit has been
+// confirmed, or if the window / renderer is already gone — then there is
+// nothing left to lose, so let the exit proceed.
+function shouldHoldForConfirm() {
+  if (quitConfirmed) return false;
   if (
     !mainWindow ||
     mainWindow.isDestroyed() ||
     mainWindow.webContents.isDestroyed()
   ) {
-    return;
+    return false;
   }
+  return true;
+}
+
+// A native Quit (Cmd+Q or the app-menu Quit) calls app.quit() directly,
+// which would bypass the renderer's unsaved-changes prompt and silently
+// drop edits. Intercept the first quit and hand off to the renderer: it
+// runs quitInteractive (confirm + flush metadata) and calls back via
+// `app:quit` to actually quit, or does nothing to cancel. Holding here
+// means the windows never close, so the `close` guard below does not
+// also fire for the same Cmd+Q.
+app.on('before-quit', (event) => {
+  if (!shouldHoldForConfirm()) return;
   event.preventDefault();
   mainWindow.webContents.send('app:confirm-quit');
 });

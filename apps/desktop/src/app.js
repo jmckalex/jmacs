@@ -75,6 +75,7 @@ import {
   GnuplotView,
   NotebookView,
   ViewListView,
+  RecoverView,
   createReftexSelectPanel,
   createReftexCiteFormatPanel,
   createReftexCitePanel,
@@ -131,6 +132,8 @@ import {
   bufferMajorModeName,
 } from './math-preview-host.js';
 import { buildModeMenuItems } from './mode-menu-build.js';
+import { createRecovery } from './recovery-controller.js';
+import { hashText } from './recovery.js';
 import { createSession } from './session.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
@@ -286,6 +289,108 @@ const session = {
 
 /** Buffers with unsaved changes. */
 const dirtyBuffers = new Set();
+
+/** Per-buffer saved-state baseline — the length + content-hash of the
+ *  text that matches what's on disk (set when a file is opened and when
+ *  it is saved). A buffer counts as dirty only while its current text
+ *  differs from this, so undoing every edit back to the saved state
+ *  clears the modified flag. A buffer with no baseline (a new/scratch
+ *  buffer, or a recovered crash snapshot — unsaved by definition) is
+ *  treated as dirty whenever it changes, until its first save. */
+const savedBaseline = new WeakMap();
+
+/** Record BUFFER's current text as its saved baseline (on open / save). */
+function markBufferSaved(buffer) {
+  const text = typeof buffer?.text === 'string' ? buffer.text : '';
+  savedBaseline.set(buffer, { length: text.length, hash: hashText(text) });
+}
+
+/** Whether BUFFER's current text matches its saved baseline. False when
+ *  the buffer has no baseline (treat as not-yet-clean). */
+function bufferMatchesSaved(buffer) {
+  const base = savedBaseline.get(buffer);
+  if (!base) return false;
+  const text = typeof buffer?.text === 'string' ? buffer.text : '';
+  return text.length === base.length && hashText(text) === base.hash;
+}
+
+/** The autosave / crash-recovery controller: snapshots every dirty
+ *  buffer to `<userData>/recovery/` (debounced on edit, immediate on
+ *  blur), drops a buffer's snapshot when it is saved, and clears them
+ *  all on a clean confirmed quit. A crash leaves the snapshots in place
+ *  for the next launch to offer back. */
+const recovery = createRecovery({
+  getDirtyBuffers: () => dirtyBuffers,
+  host: window.host,
+  // Live-read the Lisp defcustoms (see system.lisp) so a user can
+  // toggle autosave or retune the interval from Lisp without a restart.
+  // Both default safely (on, 1000ms) before the stdlib has loaded.
+  isEnabled: () => {
+    if (!keymapReady) return true;
+    try {
+      return interpreter.evaluate('*autosave-recovery*') !== false;
+    } catch {
+      return true;
+    }
+  },
+  getDebounceMs: () => {
+    if (!keymapReady) return 1000;
+    try {
+      const v = interpreter.evaluate('*autosave-recovery-interval*');
+      return typeof v === 'number' && v > 0 ? v : 1000;
+    } catch {
+      return 1000;
+    }
+  },
+});
+
+/** Set once a clean quit is committed (the unsaved-changes confirm
+ *  passed), so the `pagehide` handler doesn't re-snapshot dirty buffers
+ *  after `recovery.clear()` already wiped them. */
+let quitting = false;
+
+/**
+ * Report a renderer-side fault — a render-loop throw, a global `error`,
+ * or an unhandled promise rejection (§3). Logs it to the REPL eval log,
+ * flashes a one-line minibuffer note, and triggers an immediate
+ * crash-recovery snapshot flush so a fault that spirals into a
+ * crash-loop can't eat unsaved work. Never throws — the reporter must
+ * not become a second fault.
+ *
+ * @param {string} label - A short prefix, e.g. `render error`.
+ * @param {*} error
+ */
+function reportRendererFault(label, error) {
+  const detail =
+    (error && (error.message ?? error.lispMessage)) || String(error);
+  try {
+    repl.appendError(`${label}: ${detail}`);
+  } catch {
+    /* the eval log may not be up yet */
+  }
+  try {
+    minibuffer.message(`${label} — see the eval log`);
+  } catch {
+    /* the minibuffer may not be up yet */
+  }
+  try {
+    recovery.flush();
+  } catch {
+    /* best-effort */
+  }
+}
+
+// §3a global safety net: any uncaught error or unhandled promise
+// rejection in the renderer is logged + recovery-flushed instead of
+// silently killing a flow. The render loop has its own finer-grained
+// guard (view.js); this catches everything else — a broken event
+// handler, a rejected async command, an overlay built outside render.
+window.addEventListener('error', (event) => {
+  reportRendererFault('uncaught error', event.error ?? event.message);
+});
+window.addEventListener('unhandledrejection', (event) => {
+  reportRendererFault('unhandled rejection', event.reason);
+});
 
 /** Monotonic id source for shell-buffer session ids. Each new shell
  *  buffer gets a fresh id; the host keys its child-process table off
@@ -446,6 +551,20 @@ function updateModeline() {
   document.title = `${mark}${buffer.name} — editor`;
 }
 
+/** Make BUFFER the current text buffer AND re-point the dirty / autosave
+ *  watch at it. Every path that changes which buffer is current must go
+ *  through this, not a bare `currentTextBuffer = …` assignment —
+ *  otherwise edits to the newly-current buffer go unwatched: no dirty
+ *  mark, no autosave snapshot, and the quit guard sees nothing to
+ *  confirm. (The bug the focus / pane-switch / session-install paths had:
+ *  they updated `currentTextBuffer` without re-subscribing the watch, so
+ *  editing after a focus change or session restore silently lost the
+ *  unsaved-changes signal.) */
+function setCurrentTextBuffer(buffer) {
+  currentTextBuffer = buffer;
+  watchCurrentBuffer();
+}
+
 // Watch the current text view's buffer for changes; re-subscribed
 // when the active text view (and so the underlying buffer) switches.
 let unwatch = () => {};
@@ -458,7 +577,16 @@ function watchCurrentBuffer() {
   }
   unwatch = buffer.onChange((event) => {
     if (event.change !== null) {
-      dirtyBuffers.add(buffer);
+      // Dirty only while the text differs from the saved baseline, so
+      // undoing every edit back to the saved state clears the flag (and
+      // drops the now-pointless recovery snapshot).
+      if (bufferMatchesSaved(buffer)) {
+        dirtyBuffers.delete(buffer);
+        recovery.forget(buffer);
+      } else {
+        dirtyBuffers.add(buffer);
+        recovery.save();
+      }
       dismissSplash();
       // Keep the Markdown preview pane in step with the buffer.
       refreshMarkdownPreview();
@@ -719,7 +847,7 @@ function setCurrentPaneId(nextId) {
       if (typeof view.buffer.bindCursor === 'function') {
         view.buffer.bindCursor(view);
       }
-      currentTextBuffer = view.buffer;
+      setCurrentTextBuffer(view.buffer);
     }
     // Re-point the legacy `editorView` pointer at the focused leaf's
     // instance. Sticky-notes, hover-doc and inline-eval keep their
@@ -1204,7 +1332,7 @@ function deletePaneInTree(targetLeaf) {
           if (typeof view.buffer.bindCursor === 'function') {
             view.buffer.bindCursor(view);
           }
-          currentTextBuffer = view.buffer;
+          setCurrentTextBuffer(view.buffer);
         }
         const instance = editorViewByPaneId.get(next.id);
         if (instance) editorView = instance;
@@ -1247,7 +1375,7 @@ function deleteOtherPanesInTree(targetLeaf) {
         if (typeof view.buffer.bindCursor === 'function') {
           view.buffer.bindCursor(view);
         }
-        currentTextBuffer = view.buffer;
+        setCurrentTextBuffer(view.buffer);
       }
       const instance = editorViewByPaneId.get(targetLeaf.id);
       if (instance) editorView = instance;
@@ -2140,6 +2268,8 @@ async function openFileInteractive() {
     }
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
+    // The just-loaded content is the saved baseline (it matches disk).
+    markBufferSaved(buffer);
     // Load the file's sticky notes from its companion metadata file,
     // before the buffer is shown, so note anchors land against the
     // final text.
@@ -2387,6 +2517,8 @@ async function openFileByPath(filePath, {
     if (typeof result.content !== 'string') return null;
     const buffer = createBuffer(result.content, { name: result.name });
     buffer.filePath = result.path;
+    // The just-loaded content is the saved baseline (it matches disk).
+    markBufferSaved(buffer);
     const metadata = await window.host.readMetadata(result.path);
     if (metadata) buffer.metadata = metadata;
     const view = createView({ kind: 'text', buffer });
@@ -2446,6 +2578,11 @@ async function saveBufferInteractive() {
     // display name from the buffer).
     view.name = result.name;
     dirtyBuffers.delete(buffer);
+    // The saved text is the new clean baseline, so a later undo back to
+    // it (or a re-edit) is measured against what's actually on disk.
+    markBufferSaved(buffer);
+    // The buffer is on disk now — drop its crash-recovery snapshot.
+    recovery.forget(buffer);
     updateModeline();
     notifyViewsChanged();
     // Persist sticky notes alongside the file — this also covers a
@@ -2502,7 +2639,13 @@ async function quitInteractive() {
   ) {
     return;
   }
+  // A clean, confirmed quit is not a crash: drop every recovery snapshot
+  // so the next launch doesn't offer to "recover" work the user chose to
+  // discard (or had already saved). `quitting` stops the pagehide handler
+  // below from re-writing snapshots after this.
+  quitting = true;
   await flushAllMetadata();
+  await recovery.clear();
   window.host.quit();
 }
 
@@ -3872,6 +4015,14 @@ const interpreter = createInterpreter({
       const view = ensureViewListView();
       switchToViewIndex(views.indexOf(view));
       viewListView.refresh();
+      return NIL;
+    },
+    // Re-scan the crash-recovery snapshots and open the *Recover* view —
+    // the manual entry point to the same flow the startup scan runs. The
+    // scan is async; the view opens once it resolves (showing an
+    // empty-state when there is nothing to recover).
+    'recover-session!': () => {
+      scanForRecovery().then(openRecoverView);
       return NIL;
     },
     // --- Utility pane (the tabbed bottom dock) -------------------------
@@ -5749,6 +5900,7 @@ function ensureEditorViewForLeaf(leaf) {
       return bufferMajorModeName(buf, keyword);
     },
     getOverrideGeneration: () => highlightOverrideStore.generation(),
+    onRenderError: (error) => reportRendererFault('render error', error),
   });
   instance.setView(leaf.view);     // populates pending buffer/view
   paneEl.append(instance);          // triggers connectedCallback → mount
@@ -6469,6 +6621,108 @@ viewListView.configure(configureViewListView());
 editorPaneElement().append(viewListView);
 viewListView.style.display = 'none';
 
+// The *Recover* view — shown at startup when crash-recovery snapshots are
+// found (see recovery.js + the autosave controller). It lists the
+// recoverable buffers; the user recovers each into a live (unsaved)
+// buffer or discards it.
+
+/** The recoverable snapshots offered this session, mutated as the user
+ *  recovers / discards rows. Populated by the startup scan. */
+let recoverableSnapshots = [];
+
+/** A snapshot's display name: its buffer name, else the file's basename,
+ *  else a generic recovered-buffer label. */
+function recoverDisplayName(snap) {
+  if (snap.name) return snap.name;
+  if (snap.path) return snap.path.split('/').pop() || snap.path;
+  return '*recovered*';
+}
+
+/** Display records for the *Recover* table. */
+function recoverViewRecords() {
+  return recoverableSnapshots.map((s) => ({
+    key: s.key,
+    name: recoverDisplayName(s),
+    path: s.path ?? null,
+    savedAt: s.savedAt,
+  }));
+}
+
+/** Drop a snapshot from the offered list and repaint the *Recover* view.
+ *  The view stays open (showing an empty-state once the list clears) so
+ *  the user closes it when ready. */
+function removeRecoverEntry(key) {
+  recoverableSnapshots = recoverableSnapshots.filter((s) => s.key !== key);
+  recoverView.refresh();
+}
+
+/** Recover one snapshot: open its text as a live, dirty buffer (keeping
+ *  the file path so `C-x C-s` overwrites the original), drop the on-disk
+ *  snapshot, and remove the row. The recovered buffer is added as a
+ *  background tab so the *Recover* list stays put for the next choice. */
+function recoverSnapshot(key) {
+  const snap = recoverableSnapshots.find((s) => s.key === key);
+  if (!snap) return;
+  const text = typeof snap.text === 'string' ? snap.text : '';
+  // If this file is already open (session restore reopens every persisted
+  // file from disk on startup), recover INTO that existing view —
+  // overwrite its content with the recovered, unsaved text and mark it
+  // dirty — rather than minting a SECOND view of the same path. A
+  // duplicate would be persisted to session.json and then faithfully
+  // re-created (openByPath uses forceDuplicate) on every later restore,
+  // so the file would keep reappearing as an extra tabline tab.
+  const existing = snap.path
+    ? views.find(
+        (v) => v.kind === 'text' && v.buffer && viewFilePath(v) === snap.path
+      )
+    : null;
+  if (existing && typeof existing.buffer.setText === 'function') {
+    existing.buffer.setText(text);
+    dirtyBuffers.add(existing.buffer);
+  } else {
+    const buffer = createBuffer(text, { name: recoverDisplayName(snap) });
+    if (snap.path) buffer.filePath = snap.path;
+    const view = createView({ kind: 'text', buffer });
+    views.push(view);
+    // The recovered content is, by definition, unsaved.
+    dirtyBuffers.add(buffer);
+    const tlv = currentTablineView();
+    if (tlv && !tlv.tabs.includes(view)) {
+      addTabToTabline(tlv, view, tlv.tabs.length);
+    }
+  }
+  window.host.deleteRecovery(key).catch(() => {});
+  removeRecoverEntry(key);
+  notifyViewsChanged();
+}
+
+/** Discard one snapshot: delete it from disk and remove the row. */
+function discardSnapshot(key) {
+  window.host.deleteRecovery(key).catch(() => {});
+  removeRecoverEntry(key);
+}
+
+function configureRecoverView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    chordPending: () =>
+      keymapReady && interpreter.call('chord-in-progress?') === true,
+    getEntries: recoverViewRecords,
+    recover: recoverSnapshot,
+    discard: discardSnapshot,
+    recoverAll: () => {
+      for (const s of [...recoverableSnapshots]) recoverSnapshot(s.key);
+    },
+    discardAll: () => {
+      for (const s of [...recoverableSnapshots]) discardSnapshot(s.key);
+    },
+  };
+}
+const recoverView = /** @type {*} */ (document.createElement('recover-view'));
+recoverView.configure(configureRecoverView());
+editorPaneElement().append(recoverView);
+recoverView.style.display = 'none';
+
 // The *RefTeX Select* picker — RefTeX's label / cite picker, mounted as a
 // right-edge drawer overlaid on the editor (NOT a pane view). The panel
 // is populated and driven entirely from Lisp (reftex-refs.lisp): the
@@ -7000,6 +7254,7 @@ function configureNotebookView() {
     onSourceChange: (buffer) => {
       if (buffer) {
         dirtyBuffers.add(buffer);
+        recovery.save();
         updateModeline();
       }
     },
@@ -7057,6 +7312,7 @@ const SINGLETON_VIEWS = [
   // browser is per-instance (browserElementByView) — not a singleton.
   { kind: 'directory-tree',    el: directoryTreeView,     releasesBuffer: false },
   { kind: 'view-list',         el: viewListView,          releasesBuffer: false },
+  { kind: 'recover',           el: recoverView,           releasesBuffer: false },
   { kind: 'directory-columns', el: directoryColumnsView,  releasesBuffer: false },
   { kind: 'bookmark',          el: bookmarkView,          releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
@@ -7442,6 +7698,7 @@ function perKindConfigureFactory(kind) {
     case 'directory-columns': return configureDirectoryColumnsView;
     case 'bookmark':          return configureBookmarkView;
     case 'view-list':         return configureViewListView;
+    case 'recover':           return configureRecoverView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
     case 'notebook':          return configureNotebookView;
@@ -7497,6 +7754,7 @@ function ensureTabElement(state, child) {
       getMajorModeName: () =>
         bufferMajorModeName(child.buffer ?? null, keyword),
       getOverrideGeneration: () => highlightOverrideStore.generation(),
+      onRenderError: (error) => reportRendererFault('render error', error),
     });
     el.setView(child);
   } else if (child.kind === 'tabline') {
@@ -8457,6 +8715,52 @@ function ensureViewListView() {
   return view;
 }
 
+/** Find the single *Recover* view, or build it and push it into `views`.
+ *  Like the *View List*, there is only ever one. */
+function ensureRecoverView() {
+  const existing = views.find((v) => v.kind === 'recover');
+  if (existing) return existing;
+  const view = createView({ kind: 'recover', name: '*Recover*' });
+  views.push(view);
+  return view;
+}
+
+/** Show the *Recover* view in the focused pane (promoting it to a
+ *  tabline first so recovered buffers can land as sibling tabs), and
+ *  repaint its rows. */
+function openRecoverView() {
+  const pane = currentPane();
+  if (pane) promoteToTablineOnPane(pane);
+  const view = ensureRecoverView();
+  switchToViewIndex(views.indexOf(view));
+  recoverView.refresh();
+}
+
+/** Read the recovery snapshots and keep the ones worth offering: a
+ *  snapshot whose on-disk file is older than it (unsaved edits were
+ *  lost), or that has no on-disk file at all (a path-less or deleted
+ *  buffer). Updates `recoverableSnapshots`; returns the count. Never
+ *  throws — a recovery-scan failure must not block startup. */
+async function scanForRecovery() {
+  let snapshots;
+  try {
+    snapshots = await window.host.listRecovery();
+  } catch {
+    recoverableSnapshots = [];
+    return 0;
+  }
+  recoverableSnapshots = Array.isArray(snapshots)
+    ? snapshots.filter(
+        (s) =>
+          s &&
+          typeof s.text === 'string' &&
+          (!s.diskExists ||
+            (typeof s.diskModified === 'number' && s.savedAt > s.diskModified))
+      )
+    : [];
+  return recoverableSnapshots.length;
+}
+
 /** Find an existing directory-columns view for ROOTPATH or build a
  *  fresh one and push it into `views`. Companion to
  *  `ensureDirectoryTreeViewForPath`. */
@@ -8768,7 +9072,7 @@ function installRootPane(newRoot, savedCurrentPaneId) {
     currentViewIndex = views.indexOf(focusedView);
   }
   if (focusedView && focusedView.kind === 'text' && focusedView.buffer) {
-    currentTextBuffer = focusedView.buffer;
+    setCurrentTextBuffer(focusedView.buffer);
   }
   // Refresh per-pane focus indicators and splitter handles, schedule a
   // relayout so the freshly-installed tree sizes itself against the
@@ -9189,6 +9493,23 @@ onViewsChanged = () => {
 // process even after pagehide returns.
 window.addEventListener('pagehide', () => {
   sessionController.flush();
+  // Capture the latest unsaved edits before a reload/navigation teardown.
+  // Skip it on a clean quit — quitInteractive already cleared the
+  // snapshots, and re-writing them here would resurrect discarded work.
+  if (!quitting) recovery.flush();
+});
+
+// Snapshot dirty buffers when the window loses focus or is hidden — a
+// cheap, frequent safety net between debounced edit-time writes (and the
+// moment a user is most likely to wander off and leave unsaved work, or
+// the app is about to be backgrounded/torn down). visibilitychange also
+// fires when the window is minimised/hidden, which blur does not always
+// cover.
+window.addEventListener('blur', () => {
+  if (!quitting) recovery.flush();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && !quitting) recovery.flush();
 });
 
 // Restore: re-open the files the previous session left open and the
@@ -9252,3 +9573,15 @@ if (sessionInstalledTree) {
 // shape lands in the on-disk session under schema v2.
 refreshPaneTabStrips();
 sessionController.save();
+
+// Offer back any crash-recovery snapshots a previous run left behind.
+// Session restore only reopens files from disk — it can't bring back
+// unsaved edits — so this is the path that recovers work lost to a
+// crash. Best-effort: a scan failure must never stop the editor coming
+// up. The *Recover* view opens on top of the restored session only when
+// there is something worth recovering.
+try {
+  if ((await scanForRecovery()) > 0) openRecoverView();
+} catch {
+  // Recovery is best-effort; never block startup on it.
+}

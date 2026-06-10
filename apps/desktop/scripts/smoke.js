@@ -1392,11 +1392,13 @@ app.whenReady().then(() => {
       })()`);
       console.log('  liveDocs:', JSON.stringify(liveDocs));
 
-      // Buffer menu: C-x C-b opens *Buffer List* with one row per
-      // open buffer; marking and executing kills the marked buffer.
-      // We drive the read-back through (buffer-text) in the REPL —
-      // the editor view is virtualised, so .innerText only shows the
-      // visible window.
+      // Buffer menu: C-x C-b now opens the HTML *View List* (view-list-view)
+      // — a clickable table of every open view, not the old text
+      // *Buffer List*. So we read its rows from the live element (the
+      // editor is virtualised; the old JSON.parse((buffer-text)) is gone)
+      // and kill a row by clicking its ✕. The whole body is wrapped so a
+      // failure here returns a clean shape instead of throwing and
+      // aborting every later arm (the §2 per-arm-isolation discipline).
       const bufferMenu = await win.webContents.executeJavaScript(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1411,73 +1413,71 @@ app.whenReady().then(() => {
           const all = document.querySelectorAll('.repl-result');
           return all.length ? all[all.length - 1].textContent : '';
         };
-        // Seed a couple of throwaway buffers to mark and kill.
-        submit('(new-view! "bm-target.txt")');
-        await frame();
-        submit('(new-view! "bm-keep.txt")');
-        await frame();
-        // Open the menu via the bound key.
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
-        editor.focus();
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
-        }));
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'b', ctrlKey: true, bubbles: true, cancelable: true,
-        }));
-        await frame();
-        // Read the menu contents from Lisp.
-        submit('(view-name)');
-        const menuName = lastResult();
-        submit('(buffer-text)');
-        const text = JSON.parse(lastResult());
-        const lines = text.split('\\n').filter((l) => l.length > 0);
-        const rowCount = lines.length - 1; // minus the header
-        const listsTarget = text.includes('bm-target.txt');
-        const listsKeep = text.includes('bm-keep.txt');
-        const listsSelf = text.includes('*Buffer List*');
-        // Mark bm-target and execute. We use Lisp to do the navigation:
-        // a goto-line based on the line that contains bm-target.
-        submit('(define (-bm-find-row i)'
-          + ' (goto-line! (+ i 1))'
-          + ' (cond ((>= i (buffer-line-count)) nil)'
-          + ' ((string-contains? (current-line-text) "bm-target.txt") i)'
-          + ' (else (-bm-find-row (+ i 1)))))');
-        await wait(20);
-        submit('(-bm-find-row 0)');
-        await wait(50);
-        submit('(current-line-text)');
-        await wait(50);
-        const cursorLine = lastResult();
-        editor.focus();
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'd', bubbles: true, cancelable: true,
-        }));
-        await frame();
-        // Capture the marked-state mid-flight so a failure tells us
-        // whether marking or execution broke.
-        submit('(current-line-text)');
-        await wait(50);
-        const afterMark = lastResult();
-        editor.focus();
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'x', bubbles: true, cancelable: true,
-        }));
-        await wait(100);
-        submit('(buffer-text)');
-        await wait(50);
-        const after = JSON.parse(lastResult());
-        return {
-          menuName,
-          rowCount,
-          listsTarget,
-          listsKeep,
-          listsSelf,
-          cursorLine,
-          afterMark,
-          targetGone: !after.includes('bm-target.txt'),
-          keepStill: after.includes('bm-keep.txt'),
-        };
+        const rowNames = (el) =>
+          Array.from(el ? el.querySelectorAll('.view-list-row') : []).map((r) => {
+            const c = r.querySelector('.view-list-name');
+            return c ? c.textContent : '';
+          });
+        try {
+          // Seed a couple of throwaway buffers to list and kill.
+          submit('(new-view! "bm-target.txt")');
+          await frame();
+          submit('(new-view! "bm-keep.txt")');
+          await frame();
+          // Open the menu via the bound key (C-x C-b -> open-view-list!).
+          const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+          editor.focus();
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
+          }));
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'b', ctrlKey: true, bubbles: true, cancelable: true,
+          }));
+          await frame();
+          await frame();
+          submit('(view-name)');
+          const menuName = lastResult();
+          // Read the live *View List* table — the visible view-list-view.
+          const lists = Array.from(document.querySelectorAll('view-list-view'))
+            .filter((e) => e.offsetParent !== null);
+          const listEl = lists.length ? lists[lists.length - 1] : null;
+          const names = rowNames(listEl);
+          const listsTarget = names.indexOf('bm-target.txt') >= 0;
+          const listsKeep = names.indexOf('bm-keep.txt') >= 0;
+          const listsSelf = names.indexOf('*View List*') >= 0;
+          const rowCount = names.length;
+          // Kill bm-target by clicking its row's ✕; the table re-renders,
+          // so re-read the rows to confirm the view is gone.
+          const targetRow = (listEl
+            ? Array.from(listEl.querySelectorAll('.view-list-row'))
+            : []
+          ).find((r) => {
+            const c = r.querySelector('.view-list-name');
+            return c && c.textContent === 'bm-target.txt';
+          });
+          if (targetRow) {
+            const killBtn = targetRow.querySelector('.view-list-kill-btn');
+            if (killBtn) killBtn.click();
+          }
+          await frame();
+          await wait(50);
+          const namesAfter = rowNames(listEl);
+          return {
+            menuName,
+            rowCount,
+            listsTarget,
+            listsKeep,
+            listsSelf,
+            targetGone: namesAfter.indexOf('bm-target.txt') < 0,
+            keepStill: namesAfter.indexOf('bm-keep.txt') >= 0,
+          };
+        } catch (error) {
+          return {
+            error: String(error && error.message ? error.message : error),
+            listsTarget: false, listsKeep: false, listsSelf: false,
+            rowCount: 0, targetGone: false, keepStill: false,
+          };
+        }
       })()`);
       console.log('  bufferMenu:', JSON.stringify(bufferMenu));
 

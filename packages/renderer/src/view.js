@@ -157,6 +157,29 @@ export function createEditorView(buffer, container, options = {}) {
       ? options.getReplacedRanges
       : () => [];
 
+  // Reported (once) when the render loop catches a throw — a bad
+  // highlighter, a widget factory that blew up, a malformed overlay. The
+  // host logs it and surfaces a message; the render itself degrades to
+  // plain text rather than freezing. Defaults to a no-op.
+  const onRenderError =
+    typeof options.onRenderError === 'function' ? options.onRenderError : () => {};
+  /** True only while a degraded (plain-text, no-highlight, no-widget)
+   *  retry of the current frame is in flight — see `render()`. */
+  let renderDegraded = false;
+  /** So a deterministic render error logs once, not every frame. */
+  let renderErrorReported = false;
+
+  /** Surface a render-loop error to the host at most once. */
+  function reportRenderError(error) {
+    if (renderErrorReported) return;
+    renderErrorReported = true;
+    try {
+      onRenderError(error);
+    } catch {
+      // The reporter must never itself break the render loop.
+    }
+  }
+
   // The colour-swatch decorator: places a clickable swatch beside every
   // colour literal in a rendered line, and edits the buffer when a
   // swatch's modal is confirmed. It reads the current buffer through
@@ -512,7 +535,9 @@ export function createEditorView(buffer, container, options = {}) {
         off += lines[i].content.length + 1;
       }
     }
-    const replacedRanges = getReplacedRanges() || [];
+    // In a degraded retry, skip widgets entirely (a throwing widget
+    // factory is a prime suspect for the failure we are recovering from).
+    const replacedRanges = renderDegraded ? [] : getReplacedRanges() || [];
     const cursorPoints = getCursors().map((c) => c.point);
     const mathLayout = computeMathLayout({
       ranges: replacedRanges,
@@ -590,34 +615,40 @@ export function createEditorView(buffer, container, options = {}) {
       language === highlightCacheLanguage &&
       modeName === highlightCacheMode &&
       overrideGen === highlightCacheGen;
-    if (treeSitter) {
-      if (cacheFresh) {
+    // Highlighting is the most error-prone work in the render (a whole-
+    // buffer tokenizer, user override rules). In a degraded retry, skip
+    // it entirely — `perLine` stays null, so the lines paint as plain
+    // text and the editor stays usable instead of freezing.
+    if (!renderDegraded) {
+      if (treeSitter) {
+        if (cacheFresh) {
+          perLine = highlightCache;
+        } else {
+          try {
+            // Pass the major-mode name so mode-scoped user override rules
+            // apply; language-wide rules apply regardless.
+            perLine = treeSitter(text, modeName);
+          } catch {
+            perLine = null;
+          }
+          highlightCacheText = text;
+          highlightCacheLanguage = language;
+          highlightCacheMode = modeName;
+          highlightCacheGen = overrideGen;
+          highlightCache = perLine;
+        }
+      } else if (cacheFresh && highlightCache !== null) {
         perLine = highlightCache;
       } else {
-        try {
-          // Pass the major-mode name so mode-scoped user override rules
-          // apply; language-wide rules apply regardless.
-          perLine = treeSitter(text, modeName);
-        } catch {
-          perLine = null;
+        const whole = highlightBuffer(text, language);
+        if (whole !== null) {
+          perLine = whole;
+          highlightCacheText = text;
+          highlightCacheLanguage = language;
+          highlightCacheMode = modeName;
+          highlightCacheGen = overrideGen;
+          highlightCache = perLine;
         }
-        highlightCacheText = text;
-        highlightCacheLanguage = language;
-        highlightCacheMode = modeName;
-        highlightCacheGen = overrideGen;
-        highlightCache = perLine;
-      }
-    } else if (cacheFresh && highlightCache !== null) {
-      perLine = highlightCache;
-    } else {
-      const whole = highlightBuffer(text, language);
-      if (whole !== null) {
-        perLine = whole;
-        highlightCacheText = text;
-        highlightCacheLanguage = language;
-        highlightCacheMode = modeName;
-        highlightCacheGen = overrideGen;
-        highlightCache = perLine;
       }
     }
 
@@ -1011,25 +1042,66 @@ export function createEditorView(buffer, container, options = {}) {
   function render() {
     dirty = false;
     frame = 0;
-    renderLines();
-    renderDecorations();
-    renderSelection();
-    renderBrackets();
-    renderCursor();
-    // Scroll handling, after the cursor has been repositioned. A pending
-    // recenter takes precedence over follow-cursor: centre the line and
-    // drop the edge-nudge that would otherwise override it.
-    if (pendingRecenter) {
-      pendingRecenter = false;
-      followCursor = false;
-      cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
-    } else if (followCursor) {
-      followCursor = false;
-      cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // The render loop is the editor's heartbeat — a throw here (a bad
+    // highlighter, a widget factory that blew up, a malformed overlay)
+    // must never stop repaint. Try the full render; on a throw, retry
+    // this frame *degraded* (plain text, no highlight, no widgets) so the
+    // visible text still paints, and report once. The degrade is
+    // per-frame, so highlighting returns the moment the offending content
+    // is edited away.
+    renderDegraded = false;
+    try {
+      renderLines();
+    } catch (error) {
+      reportRenderError(error);
+      renderDegraded = true;
+      try {
+        renderLines();
+      } catch {
+        // Even the plain path failed — leave the lines as-is; the cursor
+        // and selection below still run, and the rAF loop stays alive.
+      }
+      renderDegraded = false;
     }
-    if (pendingFlash) {
-      pendingFlash = false;
-      paintLineFlash();
+    // Snippet field / mirror decorations — a main-side pass the branch
+    // predates. Isolated like the passes below so a bad decoration can't
+    // stop the cursor from tracking.
+    try {
+      renderDecorations();
+    } catch (error) {
+      reportRenderError(error);
+    }
+    // Isolate the remaining passes so one failing can't stop the others —
+    // the cursor must keep tracking even if selection/brackets throw.
+    try {
+      renderSelection();
+    } catch (error) {
+      reportRenderError(error);
+    }
+    try {
+      renderBrackets();
+    } catch (error) {
+      reportRenderError(error);
+    }
+    try {
+      renderCursor();
+      // Scroll handling, after the cursor has been repositioned. A pending
+      // recenter takes precedence over follow-cursor: centre the line and
+      // drop the edge-nudge that would otherwise override it.
+      if (pendingRecenter) {
+        pendingRecenter = false;
+        followCursor = false;
+        cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
+      } else if (followCursor) {
+        followCursor = false;
+        cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+      if (pendingFlash) {
+        pendingFlash = false;
+        paintLineFlash();
+      }
+    } catch (error) {
+      reportRenderError(error);
     }
   }
 
