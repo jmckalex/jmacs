@@ -32,7 +32,7 @@ const changeTracker = createChangeTracker();
 import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
-import { hostFileUrl } from './serve.js';
+import { hostFileUrl, allowHostDir } from './serve.js';
 import {
   metadataPath,
   legacyMetadataPath,
@@ -226,6 +226,10 @@ function recoveryDir() {
  * @returns {Promise<object>}
  */
 async function readPathAsBuffer(path) {
+  // Opening a file vouches for its folder: the `__host__` route may serve
+  // from it (the preview's relative images, the PDF view). The renderer
+  // can't widen this set itself, so a malicious doc can't read elsewhere.
+  allowHostDir(dirname(path));
   const imageMime = imageMimeType(path);
   if (imageMime !== null) {
     const imageSrc = await readImageDataUrl(path, imageMime);

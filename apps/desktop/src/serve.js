@@ -12,6 +12,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { allowHostDir, hostPathAllowed } from './host-allowlist.js';
+export { allowHostDir };
+
 // apps/desktop/src -> repository root.
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -52,6 +55,11 @@ const MIME = {
  *  The prefix is intentionally unusual so it can't collide with a real
  *  repo path. */
 const HOST_FILE_PREFIX = '/__host__/';
+
+// The `__host__` route may only serve files under directories the main
+// process has vouched for — see host-allowlist.js for why and how. The
+// app's own tree is always serve-able (bundled assets, the docs site).
+allowHostDir(repoRoot);
 
 // Must run before the app is ready; importing this module is enough.
 //
@@ -109,10 +117,15 @@ export async function serveAppFile(request) {
   const url = new URL(request.url);
   const pathname = decodeURIComponent(url.pathname);
 
-  // Same-host arbitrary-file route. `__host__` is treated as opaque —
-  // the remainder is the absolute path to read. Returns 404 on unread.
+  // Same-host file route. `__host__` is the absolute path to read, but
+  // only inside a directory the main process has allowed (see hostRoots) —
+  // anything else is refused, so an opened document can't read arbitrary
+  // files off disk.
   if (url.host === 'editor' && pathname.startsWith(HOST_FILE_PREFIX)) {
     const filePath = pathname.slice(HOST_FILE_PREFIX.length - 1); // keep '/'
+    if (!hostPathAllowed(filePath)) {
+      return new Response('Forbidden', { status: 403 });
+    }
     try {
       const data = await readFile(filePath);
       const type = MIME[extname(filePath).toLowerCase()]
@@ -169,6 +182,9 @@ export async function serveAppFile(request) {
  * @returns {string}
  */
 export function hostFileUrl(filePath) {
+  // Exposing this file's folder is the main process vouching for it (the
+  // PDF view's path); allow the route to serve from it.
+  allowHostDir(dirname(filePath));
   return (
     'app://editor' + HOST_FILE_PREFIX.slice(0, -1)
     + filePath.split('/').map(encodeURIComponent).join('/')
