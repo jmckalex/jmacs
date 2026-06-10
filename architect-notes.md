@@ -4,6 +4,59 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-11 00:41] Renderer view-lifecycle tests (E1-A): `@editor/view` is undeclared in the renderer, blocking `tabline-view` tests
+
+**Context**: Audit ticket E1 part A — adding the renderer view layer's
+first lifecycle unit tests. I added `packages/renderer/test/text-view-lifecycle.test.js`
+(16 tests, green) covering the `<text-view>` wrapper's lifecycle. I then
+wrote a matching `tabline-view-lifecycle.test.js` (add/remove/reorder/
+activate/active-reanchor/tab-close/destroy) but **could not land it**:
+importing `tabline-view.js` fails at module-load with
+`ERR_MODULE_NOT_FOUND: '@editor/view'`.
+
+**Question/blocker**: Should the renderer **declare `@editor/view` as a
+dependency** (and link it in `node_modules`) so its source is importable
+under the package's own resolution? Root cause: `packages/renderer/src/tabline.js`
+has a real runtime `import { viewFilePath } from '@editor/view'`, but the
+renderer's `package.json` lists only `@editor/buffer`, and
+`node_modules/@editor/` symlinks only `buffer`. So `tabline.js` (and
+anything importing it, incl. `tabline-view.js`) is unimportable in the
+renderer test env. It only works in the running app because of how the
+desktop app bundles/serves. This is *why* the view layer has zero
+lifecycle tests — the modules aren't loadable under `node --test`.
+(`view.js` itself is fine: its only `@editor/view` reference is a
+JSDoc `@param {import('@editor/view').View}` type-only annotation, which
+ESM never resolves — hence the text-view test loads cleanly.)
+
+I did **not** make the fix myself: adding a cross-package dependency +
+node_modules link is dependency-management + layering territory, not a
+test change, and a bare local symlink would pass for me but break on a
+fresh `pnpm install` / in CI (a test must pass in the real suite, so I
+won't ship one that depends on an untracked symlink).
+
+**Options considered**:
+- (a) Add `"@editor/view": "workspace:*"` to `packages/renderer/package.json`
+  dependencies and let pnpm link it. Clean layering — `@editor/view`
+  depends only on `@editor/buffer`, so **no cycle**. My lean: this is the
+  right fix; it also unblocks any future `view.js`/`tabline.js` tests.
+  One `pnpm install` needed after.
+- (b) Refactor `tabline.js` to receive `viewFilePath` via injection
+  instead of a static import, so it loads without the dep. More invasive,
+  changes a stable module's API for test convenience — not worth it.
+- (c) Leave `tabline-view` untested for now (current state). The lifecycle
+  logic there (active re-anchoring on remove, single-parent move,
+  tab-close event) is exactly the bug-prone surface worth covering, so
+  I'd rather not.
+
+**State of the work**: branch `renderer-view-lifecycle-tests`. Committed:
+`text-view-lifecycle.test.js` (16 tests, green) + this note. The
+`tabline-view-lifecycle.test.js` I wrote is removed from the tree (it
+can't pass yet); I can re-add it verbatim the moment option (a) lands —
+it drives the real methods against a minimal DOM stub and needs no
+further source change. Full renderer suite green. Tree clean.
+
+---
+
 ## [2026-06-03] LaTeX Phase 5 (latex-nav): "M-return" → "M-enter" binding deviation
 
 **Context**: Built AUCTeX Phase 5 (navigation & niceties) on branch
