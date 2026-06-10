@@ -134,6 +134,41 @@ test('charIndexAtVisualColumn: click inside a tab snaps to nearest edge', () => 
   assert.equal(charIndexAtVisualColumn('\ta', 3, 4), 1);
 });
 
+test('visualColumn: East Asian wide characters count as two columns', () => {
+  // "你好" — each CJK ideograph is one code unit but renders double-width,
+  // so the caret after both sits at visual column 4 (not 2). Before the
+  // wide-char fix the cursor landed a full glyph too far left.
+  assert.equal(visualColumn('你好', 0, 4), 0);
+  assert.equal(visualColumn('你好', 1, 4), 2);
+  assert.equal(visualColumn('你好', 2, 4), 4);
+  // Mixed: ASCII stays single-width.
+  assert.equal(visualColumn('a你b', 0, 4), 0);
+  assert.equal(visualColumn('a你b', 1, 4), 1); // after 'a'
+  assert.equal(visualColumn('a你b', 2, 4), 3); // after the wide 你
+  assert.equal(visualColumn('a你b', 3, 4), 4); // after 'b'
+});
+
+test('visualColumn: an astral wide character (emoji) is two columns, two code units', () => {
+  // '🎨' is a surrogate pair (2 code units) and renders double-width.
+  // charIndex 2 is just past it → visual column 2.
+  assert.equal(visualColumn('🎨', 2, 4), 2);
+  assert.equal(visualColumn('🎨x', 3, 4), 3); // wide(2) + 'x'(1)
+});
+
+test('charIndexAtVisualColumn: wide characters map clicks to the right index', () => {
+  // "你好": columns 0,2,4. A click at visual column 4 lands after both
+  // (char index 2); column 2 lands between them (index 1).
+  assert.equal(charIndexAtVisualColumn('你好', 0, 4), 0);
+  assert.equal(charIndexAtVisualColumn('你好', 2, 4), 1);
+  assert.equal(charIndexAtVisualColumn('你好', 4, 4), 2);
+  // A click inside the first wide glyph (column 1) snaps to the nearer
+  // edge — column 0.
+  assert.equal(charIndexAtVisualColumn('你好', 1, 4), 0);
+  // An astral wide char advances the index by its two code units.
+  assert.equal(charIndexAtVisualColumn('🎨x', 2, 4), 2); // after the emoji
+  assert.equal(charIndexAtVisualColumn('🎨x', 3, 4), 3); // after 'x'
+});
+
 test('selectionRects: tabWidth shifts column edges to the next tab-stop', () => {
   // "\thello" — select chars 0..5 ('\thell'). Without tabWidth the
   // rect is fromCol=0, toCol=5 (the legacy character-indexed result).

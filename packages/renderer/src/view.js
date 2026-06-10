@@ -18,7 +18,7 @@
 
 import {
   toLines, selectionRects, cursorPositions, decorationRects,
-  visualColumn, charIndexAtVisualColumn,
+  visualColumn, charIndexAtVisualColumn, isWideCharacter,
 } from './projection.js';
 import { handleKeyEvent } from './commands.js';
 import { keyEventToString } from './keymap.js';
@@ -286,6 +286,20 @@ export function createEditorView(buffer, container, options = {}) {
   const linesEl = el('div', 'editor-lines');
   const cursorEl = el('div', 'editor-cursor');
   const overlayLayer = el('div', 'editor-overlay');
+  // The IME input sink. A custom, div-rendered editor has no natural
+  // editable element, so IME composition (CJK input, dead keys, accents)
+  // has nowhere to happen. A focused, visually-hidden <textarea> gives it
+  // one: it is the editor's focus target, kept over the caret so the IME
+  // candidate window appears there. Normal keys still flow through the
+  // keydown → keymap path (the buffer, not the textarea, holds the text);
+  // only *composed* text is read back from the sink on commit.
+  const input = el('textarea', 'editor-input');
+  input.setAttribute('autocomplete', 'off');
+  input.setAttribute('autocorrect', 'off');
+  input.setAttribute('autocapitalize', 'off');
+  input.setAttribute('spellcheck', 'false');
+  input.setAttribute('aria-hidden', 'true');
+  input.tabIndex = -1;
   content.append(
     backgroundLayer,
     currentLineEl,
@@ -294,8 +308,40 @@ export function createEditorView(buffer, container, options = {}) {
     bracketLayer,
     linesEl,
     cursorEl,
+    input,
     overlayLayer
   );
+
+  /** True while an IME composition is in progress — key dispatch is
+   *  suppressed and the committed text is inserted on `compositionend`. */
+  let composing = false;
+  input.addEventListener('compositionstart', () => {
+    composing = true;
+  });
+  input.addEventListener('compositionend', (event) => {
+    composing = false;
+    const text = typeof event.data === 'string' ? event.data : '';
+    input.value = ''; // the sink only hosts composition — never accumulate
+    if (text) {
+      activeBuffer.insert(text);
+      followCursor = true;
+      schedule();
+    }
+  });
+  // Any non-composition text reaching the sink (a rare unhandled printable
+  // key whose keydown wasn't preventDefault'd) is unwanted — the buffer
+  // holds the text, not the sink — so drop it. During composition the
+  // value is left alone so the IME can build it up.
+  input.addEventListener('input', () => {
+    if (!composing) input.value = '';
+  });
+
+  /** Focus the editor: focus the hidden input sink (a child of root), so
+   *  the IME composes there and keystrokes still bubble to root's keydown
+   *  listener. `preventScroll` stops focusing from yanking the viewport. */
+  function focusInput() {
+    input.focus({ preventScroll: true });
+  }
   root.append(gutter, content);
   container.append(root);
 
@@ -304,6 +350,44 @@ export function createEditorView(buffer, container, options = {}) {
     const node = doc.createElement(tag);
     node.className = className;
     return node;
+  }
+
+  /** Whether TEXT contains any East Asian wide / fullwidth / emoji char.
+   *  Wide glyphs render narrower than the two-column grid assumes, so a
+   *  line with one gets its caret x measured from the DOM instead of the
+   *  cheap `column * 1ch`. */
+  function hasWide(text) {
+    for (let i = 0; i < text.length; ) {
+      const cp = text.codePointAt(i);
+      if (isWideCharacter(cp)) return true;
+      i += cp > 0xffff ? 2 : 1;
+    }
+    return false;
+  }
+
+  /** The pixel x (relative to the line's left edge) of character offset
+   *  `charIndex` within the already-rendered LINEEL, by measuring a Range
+   *  over the line's text nodes. Exact for any font / glyph width — used
+   *  only for lines that contain wide glyphs, where the grid drifts.
+   *  Returns null when the offset can't be located. */
+  function measureCaretXPxIn(lineEl, charIndex) {
+    if (charIndex <= 0) return 0;
+    const range = doc.createRange();
+    range.setStart(lineEl, 0);
+    const walker = doc.createTreeWalker(lineEl, NodeFilter.SHOW_TEXT);
+    let acc = 0;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const len = node.nodeValue.length;
+      if (charIndex <= acc + len) {
+        range.setEnd(node, charIndex - acc);
+        return (
+          range.getBoundingClientRect().right -
+          lineEl.getBoundingClientRect().left
+        );
+      }
+      acc += len;
+    }
+    return null;
   }
 
   /** Drop leading whitespace from a run list, keeping faces intact.
@@ -379,7 +463,7 @@ export function createEditorView(buffer, container, options = {}) {
     span.addEventListener('mousedown', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      root.focus();
+      focusInput();
       const target = Math.min(range.start + 1, range.end - 1);
       activeBuffer.moveTo(target);
     });
@@ -664,6 +748,7 @@ export function createEditorView(buffer, container, options = {}) {
       const displayRow = displayRowForLine[index];
       if (displayRow !== -1 && displayRow >= firstRow && displayRow < lastRow) {
         const lineEl = el('div', 'editor-line');
+        lineEl.dataset.line = String(index);
         lineEl.style.top = `calc(${displayRow} * 1lh)`;
         let runs = perLine
           ? perLine[index] ?? []
@@ -953,8 +1038,28 @@ export function createEditorView(buffer, container, options = {}) {
     const primaryDisplayRow = primaryRow === -1
       ? rowOf(findVisibleAncestorLine(primaryPos.line))
       : primaryRow;
-    cursorEl.style.left = xForColumn(primaryPos.line, primaryPos.column);
+    // Caret x: the cheap grid value, unless the caret's line contains a
+    // wide (CJK / fullwidth / emoji) glyph — those render narrower than the
+    // grid's two-columns-per-char assumption, so measure the real x from
+    // the rendered DOM, the way the caret sits at the glyph's advance edge
+    // for ASCII. The querySelector + textContent check are cheap; the
+    // measuring reflow only happens on wide-char lines.
+    let caretLeft = xForColumn(primaryPos.line, primaryPos.column);
+    const caretLineEl = linesEl.querySelector(
+      `.editor-line[data-line="${primaryPos.line}"]`
+    );
+    if (caretLineEl && hasWide(caretLineEl.textContent)) {
+      const caretPoint = cursors[0] ? cursors[0].point : 0;
+      const caretCol = activeBuffer.positionAt(caretPoint).column;
+      const measured = measureCaretXPxIn(caretLineEl, caretCol);
+      if (measured !== null) caretLeft = `${measured}px`;
+    }
+    cursorEl.style.left = caretLeft;
     cursorEl.style.top = `calc(${primaryDisplayRow} * 1lh)`;
+    // Keep the IME sink over the caret so the candidate window opens at
+    // the cursor, not the editor corner.
+    input.style.left = cursorEl.style.left;
+    input.style.top = cursorEl.style.top;
     currentLineEl.style.top = `calc(${primaryDisplayRow} * 1lh)`;
 
     // Grow or shrink the secondary pool to match (cursor count − 1).
@@ -1129,6 +1234,12 @@ export function createEditorView(buffer, container, options = {}) {
     // right — dispatching it would, e.g., feed "S-shift" to a pending
     // key reader. Wait for the real key.
     if (MODIFIER_KEYS.has(event.key)) return;
+    // While an IME is composing, let it handle the key — don't dispatch to
+    // the editor keymap (which would self-insert the raw keys or fire
+    // commands mid-composition). `isComposing` covers the composition;
+    // keyCode 229 is the IME "still processing" sentinel that also covers
+    // the first keydown of a composition, before `isComposing` flips.
+    if (composing || event.isComposing || event.keyCode === 229) return;
     const handled = onKey
       ? onKey(keyEventToString(event))
       : handleKeyEvent(activeBuffer, event);
@@ -1328,7 +1439,7 @@ export function createEditorView(buffer, container, options = {}) {
   // the browser then dispatches neither click nor dblclick. The click
   // count on mousedown is unaffected.
   root.addEventListener('mousedown', (event) => {
-    root.focus();
+    focusInput();
     if (event.button !== 0) return;
     const offset = offsetFromPoint(event.clientX, event.clientY);
     if (offset === null) return;
@@ -1344,7 +1455,7 @@ export function createEditorView(buffer, container, options = {}) {
 
   followCursor = true;
   render();
-  root.focus();
+  focusInput();
 
   return {
     element: root,
@@ -1424,7 +1535,7 @@ export function createEditorView(buffer, container, options = {}) {
       render();
     },
 
-    focus: () => root.focus(),
+    focus: () => focusInput(),
 
     destroy: () => {
       unsubscribe();

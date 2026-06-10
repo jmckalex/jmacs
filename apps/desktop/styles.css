@@ -791,6 +791,33 @@ mjx-assistive-mml[display='block'] {
   border-radius: 1px;
 }
 
+/* The IME input sink — a focused, visually-hidden <textarea> that hosts
+   composition (CJK IMEs, dead keys, accented input). Positioned over the
+   caret in JS so the candidate window opens at the cursor. Never shown,
+   never interactive (clicks fall through to the editor); opacity:0 keeps
+   it invisible while still focusable and composable (display:none would
+   not be). */
+.editor-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1lh;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  opacity: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  pointer-events: none;
+  z-index: 4;
+}
+
 .editor-cursor.is-blinking {
   animation: cursor-blink 1.06s steps(1, end) infinite;
 }
