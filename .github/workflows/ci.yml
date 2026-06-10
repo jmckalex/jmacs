@@ -1,0 +1,73 @@
+# Continuous integration: run the full unit-test suite across every
+# workspace package on each push to main and every pull request, on both
+# Linux and macOS and on the two current Node LTS lines. A separate,
+# best-effort smoke job drives the real Electron app under a virtual
+# display (see the note on it below).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }} · node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One failing cell shouldn't cancel the others — we want the whole
+      # matrix's results on a red build.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm/action-setup reads the pinned version from package.json's
+      # `packageManager` field, so the CI pnpm always matches local.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Unit tests (all packages)
+        run: pnpm test
+
+  # The Electron smoke test drives the packaged app end-to-end. It needs a
+  # real GPU-less display and a pile of system libraries on Linux, so it
+  # lives in its own job under Xvfb. It is `continue-on-error` until it has
+  # been observed green in CI at least once — promote it to required (drop
+  # the flag) after the first successful run. Until then it is informational
+  # and never blocks a PR.
+  smoke:
+    name: smoke (electron · ubuntu)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: System libraries for headless Electron
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+            libgtk-3-0 libgbm1 libdrm2 libxkbcommon0 libasound2t64
+      - name: Smoke test under Xvfb
+        run: xvfb-run --auto-servernum pnpm --filter @editor/desktop smoke
