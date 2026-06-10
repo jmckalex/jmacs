@@ -352,7 +352,10 @@ export function createEditorView(buffer, container, options = {}) {
     return node;
   }
 
-  /** Whether TEXT contains any East Asian wide / fullwidth / emoji char. */
+  /** Whether TEXT contains any East Asian wide / fullwidth / emoji char.
+   *  Wide glyphs render narrower than the two-column grid assumes, so a
+   *  line with one gets its caret x measured from the DOM instead of the
+   *  cheap `column * 1ch`. */
   function hasWide(text) {
     for (let i = 0; i < text.length; ) {
       const cp = text.codePointAt(i);
@@ -362,35 +365,29 @@ export function createEditorView(buffer, container, options = {}) {
     return false;
   }
 
-  /** Append a run's text to PARENT, rendering each wide (CJK / fullwidth /
-   *  emoji) glyph in a fixed two-cell box (`.editor-wide`, width 2ch) so the
-   *  painted width matches the projection's two-columns-per-wide-char model.
-   *  Without this the system CJK-fallback advance (a hair under 2ch) drifts
-   *  the caret, selection and click mapping off the grid. The common ASCII
-   *  run takes the fast single-text-node path. */
-  function appendRunText(parent, text) {
-    if (!hasWide(text)) {
-      parent.append(doc.createTextNode(text));
-      return;
-    }
-    let buf = '';
-    for (let i = 0; i < text.length; ) {
-      const cp = text.codePointAt(i);
-      const size = cp > 0xffff ? 2 : 1;
-      if (isWideCharacter(cp)) {
-        if (buf) {
-          parent.append(doc.createTextNode(buf));
-          buf = '';
-        }
-        const cell = el('span', 'editor-wide');
-        cell.textContent = text.slice(i, i + size);
-        parent.append(cell);
-      } else {
-        buf += text.slice(i, i + size);
+  /** The pixel x (relative to the line's left edge) of character offset
+   *  `charIndex` within the already-rendered LINEEL, by measuring a Range
+   *  over the line's text nodes. Exact for any font / glyph width — used
+   *  only for lines that contain wide glyphs, where the grid drifts.
+   *  Returns null when the offset can't be located. */
+  function measureCaretXPxIn(lineEl, charIndex) {
+    if (charIndex <= 0) return 0;
+    const range = doc.createRange();
+    range.setStart(lineEl, 0);
+    const walker = doc.createTreeWalker(lineEl, NodeFilter.SHOW_TEXT);
+    let acc = 0;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const len = node.nodeValue.length;
+      if (charIndex <= acc + len) {
+        range.setEnd(node, charIndex - acc);
+        return (
+          range.getBoundingClientRect().right -
+          lineEl.getBoundingClientRect().left
+        );
       }
-      i += size;
+      acc += len;
     }
-    if (buf) parent.append(doc.createTextNode(buf));
+    return null;
   }
 
   /** Drop leading whitespace from a run list, keeping faces intact.
@@ -428,10 +425,10 @@ export function createEditorView(buffer, container, options = {}) {
         const span = mountWidget(run.widget, false);
         if (span) lineEl.append(span);
       } else if (run.face === null) {
-        appendRunText(lineEl, run.text);
+        lineEl.append(doc.createTextNode(run.text));
       } else {
         const span = el('span', `tok-${run.face}`);
-        appendRunText(span, run.text);
+        span.textContent = run.text;
         lineEl.append(span);
       }
     }
@@ -751,6 +748,7 @@ export function createEditorView(buffer, container, options = {}) {
       const displayRow = displayRowForLine[index];
       if (displayRow !== -1 && displayRow >= firstRow && displayRow < lastRow) {
         const lineEl = el('div', 'editor-line');
+        lineEl.dataset.line = String(index);
         lineEl.style.top = `calc(${displayRow} * 1lh)`;
         let runs = perLine
           ? perLine[index] ?? []
@@ -1040,7 +1038,23 @@ export function createEditorView(buffer, container, options = {}) {
     const primaryDisplayRow = primaryRow === -1
       ? rowOf(findVisibleAncestorLine(primaryPos.line))
       : primaryRow;
-    cursorEl.style.left = xForColumn(primaryPos.line, primaryPos.column);
+    // Caret x: the cheap grid value, unless the caret's line contains a
+    // wide (CJK / fullwidth / emoji) glyph — those render narrower than the
+    // grid's two-columns-per-char assumption, so measure the real x from
+    // the rendered DOM, the way the caret sits at the glyph's advance edge
+    // for ASCII. The querySelector + textContent check are cheap; the
+    // measuring reflow only happens on wide-char lines.
+    let caretLeft = xForColumn(primaryPos.line, primaryPos.column);
+    const caretLineEl = linesEl.querySelector(
+      `.editor-line[data-line="${primaryPos.line}"]`
+    );
+    if (caretLineEl && hasWide(caretLineEl.textContent)) {
+      const caretPoint = cursors[0] ? cursors[0].point : 0;
+      const caretCol = activeBuffer.positionAt(caretPoint).column;
+      const measured = measureCaretXPxIn(caretLineEl, caretCol);
+      if (measured !== null) caretLeft = `${measured}px`;
+    }
+    cursorEl.style.left = caretLeft;
     cursorEl.style.top = `calc(${primaryDisplayRow} * 1lh)`;
     // Keep the IME sink over the caret so the candidate window opens at
     // the cursor, not the editor corner.

@@ -791,21 +791,6 @@ mjx-assistive-mml[display='block'] {
   border-radius: 1px;
 }
 
-/* East Asian wide / fullwidth / emoji glyphs are boxed into a fixed
-   two-cell (2ch) inline-block so their painted width matches the editor's
-   two-columns-per-wide-char grid — keeping the caret, selection and click
-   mapping aligned. The glyph is centred in its cell; a font whose CJK
-   advance differs slightly from 2ch no longer drifts the grid. */
-.editor-wide {
-  display: inline-block;
-  width: 2ch;
-  text-align: center;
-  /* No `overflow: hidden` — on an inline-block it moves the baseline to
-     the bottom edge and would drop the glyph below the text line. The 2ch
-     width already pins the grid; a rare glyph wider than 2ch overflows
-     visually rather than clipping or shifting. */
-}
-
 /* The IME input sink — a focused, visually-hidden <textarea> that hosts
    composition (CJK IMEs, dead keys, accented input). Positioned over the
    caret in JS so the candidate window opens at the cursor. Never shown,
