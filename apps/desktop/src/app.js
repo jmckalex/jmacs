@@ -5568,9 +5568,11 @@ function getMathReplacedRanges(leaf) {
       },
       // The startup one-shot: once MathJax finishes loading, ask the
       // leaf's renderer to redraw so segments left as source during
-      // startup flip to typeset widgets.
+      // startup flip to typeset widgets. A tabline tab supplies its own
+      // per-tab element (`leaf.element`); a bare leaf resolves the
+      // pane's editor instance by id.
       requestRender: () => {
-        const instance = editorViewByPaneId.get(leaf.id);
+        const instance = leaf.element ?? editorViewByPaneId.get(leaf.id);
         if (instance) instance.setView(leaf.view);
       },
     });
@@ -5616,6 +5618,14 @@ function ensureEditorViewForLeaf(leaf) {
     if (instance.parentNode !== paneEl) {
       paneEl.append(instance);
     }
+    // The pane tree is immutable: every update hands us a *new* leaf
+    // object for this pane id. The instance is reused by id, so its
+    // per-view closures (getPoint / getReplacedRanges / …) must be
+    // re-pointed at the current leaf — otherwise they keep reading the
+    // leaf captured when the pane was first created (e.g. the startup
+    // welcome buffer), which is what broke math preview / decorations
+    // for restored or freshly-opened buffers.
+    instance._boundLeaf = leaf;
     instance.setView(leaf.view);
     return instance;
   }
@@ -5623,6 +5633,9 @@ function ensureEditorViewForLeaf(leaf) {
   // the element is appended — connectedCallback reads the options to
   // mount the inner editor.
   instance = /** @type {*} */ (document.createElement('text-view'));
+  // The closures below read `instance._boundLeaf`, kept current here and
+  // on every reuse, rather than capturing `leaf` (a per-update snapshot).
+  instance._boundLeaf = leaf;
   instance.configure({
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     highlighters,
@@ -5637,11 +5650,11 @@ function ensureEditorViewForLeaf(leaf) {
     // its own; the child (a text view) does. Nested tabline-views
     // (Q10) peel all the way through.
     getPoint: () => {
-      const v = peelTabline(leaf.view);
+      const v = peelTabline(instance._boundLeaf.view);
       return v && !isTablineView(v) && typeof v.point === 'number' ? v.point : 0;
     },
     getMark: () => {
-      const v = peelTabline(leaf.view);
+      const v = peelTabline(instance._boundLeaf.view);
       return v && !isTablineView(v) && v.mark !== undefined ? v.mark : null;
     },
     // Multi-cursor: the renderer paints this leaf's view's full cursor
@@ -5649,7 +5662,7 @@ function ensureEditorViewForLeaf(leaf) {
     // getPoint/getMark when the view hasn't been given a cursors[]
     // (non-text views, defensively).
     getCursors: () => {
-      const v = peelTabline(leaf.view);
+      const v = peelTabline(instance._boundLeaf.view);
       if (v && !isTablineView(v) && Array.isArray(v.cursors)) return v.cursors;
       return [{
         point: v && typeof v.point === 'number' ? v.point : 0,
@@ -5660,7 +5673,7 @@ function ensureEditorViewForLeaf(leaf) {
     // Snippet field + mirror boxes for this leaf's buffer. Recomputed
     // every render from live offsets, so they survive edits.
     getDecorations: () => {
-      const v = peelTabline(leaf.view);
+      const v = peelTabline(instance._boundLeaf.view);
       const b = v && !isTablineView(v) ? v.buffer : null;
       return snippetDecorationsFor(b);
     },
@@ -5668,12 +5681,12 @@ function ensureEditorViewForLeaf(leaf) {
     // and merges the ranges into its replaced-range / fold layout. It
     // returns [] unless this leaf's buffer has math-preview-mode on and
     // its major mode has a math provider.
-    getReplacedRanges: () => getMathReplacedRanges(leaf),
+    getReplacedRanges: () => getMathReplacedRanges(instance._boundLeaf),
     // User highlight overrides: the buffer's major-mode name selects
     // mode-scoped `kind -> face` rules; the override generation forces a
     // re-tokenize when the rule set changes (see set-highlight-overrides!).
     getMajorModeName: () => {
-      const v = peelTabline(leaf.view);
+      const v = peelTabline(instance._boundLeaf.view);
       const buf = v && !isTablineView(v) ? v.buffer : null;
       return bufferMajorModeName(buf, keyword);
     },
@@ -7415,6 +7428,14 @@ function ensureTabElement(state, child) {
       getTabWidth: () => currentTabWidth,
       // Snippet field + mirror boxes for this tab's buffer.
       getDecorations: () => snippetDecorationsFor(child.buffer ?? null),
+      // Per-view math preview — the leaf-direct path
+      // (`ensureEditorViewForLeaf`) wires this too; a tabline tab must
+      // have it as well or math-preview-mode renders nothing in tabs.
+      // The tab IS a plain text view (no tabline to peel), so the handle
+      // points `view`/`id` straight at `child` and supplies this tab's
+      // own element for the MathJax-startup re-render.
+      getReplacedRanges: () =>
+        getMathReplacedRanges({ id: child, view: child, element: el }),
       getMajorModeName: () =>
         bufferMajorModeName(child.buffer ?? null, keyword),
       getOverrideGeneration: () => highlightOverrideStore.generation(),
