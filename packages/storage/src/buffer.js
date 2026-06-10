@@ -200,6 +200,59 @@ export function createBuffer(initialText = '') {
       return text;
     },
 
+    /**
+     * The offset `count` whole characters before `offset`. A "character"
+     * is a Unicode code point, so a surrogate pair counts as one and the
+     * result never lands between a high and low surrogate. Clamped to 0.
+     *
+     * This is what callers should use to move or delete "by one
+     * character": stepping by a raw code unit can split an astral
+     * character (e.g. an emoji) and corrupt the text.
+     *
+     * @param {number} offset - A starting offset in `[0, length]`.
+     * @param {number} [count=1] - How many characters to step back.
+     * @returns {number}
+     */
+    stepBackward(offset, count = 1) {
+      assertOffset(offset, 'offset');
+      let pos = offset;
+      for (let i = 0; i < count && pos > 0; i++) {
+        const lo = text.charCodeAt(pos - 1);
+        if (pos >= 2 && lo >= 0xdc00 && lo <= 0xdfff) {
+          const hi = text.charCodeAt(pos - 2);
+          pos -= hi >= 0xd800 && hi <= 0xdbff ? 2 : 1;
+        } else {
+          pos -= 1;
+        }
+      }
+      return pos;
+    },
+
+    /**
+     * The offset `count` whole characters after `offset`. The forward
+     * mirror of {@link Buffer#stepBackward}: a surrogate pair counts as
+     * one character and the result never lands between a high and low
+     * surrogate. Clamped to `length`.
+     *
+     * @param {number} offset - A starting offset in `[0, length]`.
+     * @param {number} [count=1] - How many characters to step forward.
+     * @returns {number}
+     */
+    stepForward(offset, count = 1) {
+      assertOffset(offset, 'offset');
+      let pos = offset;
+      for (let i = 0; i < count && pos < text.length; i++) {
+        const hi = text.charCodeAt(pos);
+        if (hi >= 0xd800 && hi <= 0xdbff && pos + 1 < text.length) {
+          const lo = text.charCodeAt(pos + 1);
+          pos += lo >= 0xdc00 && lo <= 0xdfff ? 2 : 1;
+        } else {
+          pos += 1;
+        }
+      }
+      return pos;
+    },
+
     /** @returns {number} The number of characters in the buffer. */
     get length() {
       return text.length;
@@ -345,6 +398,8 @@ export function createBuffer(initialText = '') {
  * @property {(start: number, end: number, newText: string) => string} replace
  * @property {(start?: number, end?: number) => string} slice
  * @property {() => string} toString
+ * @property {(offset: number, count?: number) => number} stepBackward
+ * @property {(offset: number, count?: number) => number} stepForward
  * @property {number} length
  * @property {number} lineCount
  * @property {(position: number) => BufferLine} lineAt
