@@ -1105,12 +1105,13 @@ body.utility-hidden #utility-splitter {
   color: var(--fg);
 }
 
-/* Find-file completions panel — a transient, scrollable candidate list,
-   one entry per line. Directories carry a trailing '/' and an accent
-   folder icon. A plain vertical list that scrolls when the directory has
-   more entries than fit the dock; the cure for the old crammed one-line
-   inline list (and for the multi-column grid that packed entries to fit
-   rather than letting the view scroll). */
+/* Find-file completions panel — a transient, scrollable, multi-column
+   candidate list. Directories carry a trailing '/' and an accent folder
+   icon; the column grid keeps a busy directory compact (less scrolling)
+   while still scrolling when the entries overflow the dock. The cure for
+   the old crammed one-line inline list. The grid MUST pin its rows to
+   content height (grid-auto-rows: max-content) or it squeezes every row
+   to fit the dock instead of scrolling. */
 .completions-panel {
   height: 100%;
   display: flex;
@@ -1133,16 +1134,15 @@ body.utility-hidden #utility-splitter {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 6px 8px;
-  display: flex;
-  flex-direction: column;
+  padding: 6px 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-auto-rows: max-content; /* rows stay content-height; never squish to fit */
+  align-content: start;
+  gap: 1px 16px;
 }
 
 .completions-item {
-  /* flex: 0 0 auto so each row keeps its natural height and the list
-     scrolls — without it the rows would shrink to fit the dock (the very
-     squish this panel is meant to avoid). */
-  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 7px;
