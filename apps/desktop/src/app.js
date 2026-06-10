@@ -70,6 +70,7 @@ import {
   createUtilityDock,
   createOutputPanel,
   createDocPanel,
+  createCompletionsPanel,
   ShellView,
   GnuplotView,
   NotebookView,
@@ -2906,6 +2907,44 @@ const utilityDock = createUtilityDock({
   },
 });
 
+// The transient tab `show-completions!` opens for find-file's ambiguous TAB
+// candidates. Held as a constant so the display primitives and the
+// completing-minibuffer teardown (submit/cancel) all name the same tab.
+const COMPLETIONS_TAB_ID = 'completions';
+// The directory prefix the live completions list is relative to (the part
+// of the typed path up to its last '/'). `show-completions!` keeps it
+// current so a click can rebuild the full path; the panel reads it live
+// (it is created once and reused across TABs).
+let completionsDirectory = '';
+
+/** Single-click in the completions panel = select. NAME is a candidate's
+ *  display string (a directory carries a trailing '/'); fill the minibuffer
+ *  with `completionsDirectory + NAME` and refocus it. Non-destructive (the
+ *  panel stays open) so a double-click can still activate the same row. */
+function completeFromPanel(name) {
+  minibuffer.setValue(completionsDirectory + name);
+}
+
+/** Double-click in the completions panel = activate (file-browser idiom): a
+ *  file OPENS (submit the prompt — drops the panel, delivers the path); a
+ *  directory is ENTERED — re-running TAB completion so its contents list and
+ *  the panel updates. */
+function activateFromPanel(name) {
+  const full = completionsDirectory + name;
+  if (name.endsWith('/')) {
+    let next = full;
+    try {
+      const result = interpreter.call('minibuffer-tab-complete', full);
+      if (typeof result === 'string') next = result;
+    } catch (error) {
+      repl.appendError(`tab-complete: ${error.lispMessage ?? error.message}`);
+    }
+    minibuffer.setValue(next);
+  } else {
+    minibuffer.submit(full);
+  }
+}
+
 // The REPL is built detached, then mounted as the dock's resident tab; the
 // dock reparents `repl.element` into its content area. The `repl` facade is
 // unchanged — every appendOutput/appendResult/… call site keeps working.
@@ -3319,6 +3358,42 @@ const interpreter = createInterpreter({
     },
     'clear-status!': () => {
       minibuffer.clearStatus();
+      return NIL;
+    },
+    // Show CANDIDATES (a list of display strings; a directory carries a
+    // trailing '/') in a transient, scrollable utility-dock tab — the
+    // home for find-file's ambiguous TAB completions, which used to be
+    // crammed into the non-scrolling inline status line. Opened with
+    // `focus: false` so the minibuffer keeps focus while the user keeps
+    // typing / TABbing. Updating an open panel reuses it in place (no
+    // re-activation) so it never steals focus mid-keystroke. The tab is
+    // removed by `clear-completions!` (on TAB progress) or when the
+    // completing minibuffer closes (see `open-completing-minibuffer!`).
+    'show-completions!': (args) => {
+      const items = listToArray(args[0] ?? NIL).map(String);
+      completionsDirectory = String(args[1] ?? '');
+      const panel = utilityDock.hasTab(COMPLETIONS_TAB_ID)
+        ? utilityDock.getPanel(COMPLETIONS_TAB_ID)
+        : null;
+      if (panel && typeof panel.setItems === 'function') {
+        panel.setItems(items);
+      } else {
+        utilityDock.openUtilityPanel({
+          id: COMPLETIONS_TAB_ID,
+          title: 'Completions',
+          icon: 'fa-solid fa-list-ul',
+          focus: false,
+          makePanel: () => createCompletionsPanel({
+            items,
+            onSelect: completeFromPanel,
+            onActivate: activateFromPanel,
+          }),
+        });
+      }
+      return NIL;
+    },
+    'clear-completions!': () => {
+      utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
       return NIL;
     },
     // --- citation.js bridges -------------------------------------------
@@ -4705,10 +4780,14 @@ const interpreter = createInterpreter({
       minibuffer.prompt(promptText, {
         initialValue,
         onSubmit(value) {
+          // The command is finishing — drop the transient completions tab
+          // (a no-op when none is open, e.g. RefTeX/LaTeX prompts).
+          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
           editorView.focus();
           interpreter.call('minibuffer-delivered', value);
         },
         onCancel() {
+          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
           editorView.focus();
           interpreter.call('minibuffer-delivered', NIL);
         },

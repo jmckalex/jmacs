@@ -59,6 +59,8 @@ async function refsEditor(opts = {}) {
           : '',
       'show-status!': () => NIL,
       'clear-status!': () => NIL,
+      'show-completions!': () => NIL,
+      'clear-completions!': () => NIL,
     },
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'), {});

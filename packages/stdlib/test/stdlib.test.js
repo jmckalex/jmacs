@@ -65,6 +65,7 @@ async function editor(initialText = 'hello world', options = {}) {
   })();
   const foldCalls = [];
   const statusCalls = [];
+  const completionsCalls = [];
   const completingPrompts = [];
   const directoryStub = new Map();
   let openedPath = null;
@@ -347,6 +348,17 @@ async function editor(initialText = 'hello world', options = {}) {
         statusCalls.push(null);
         return NIL;
       },
+      // The completions panel — find-file routes ambiguous TAB candidates
+      // here; tests assert on `completionsCalls` (display names) and the
+      // `null` entries record `clear-completions!`.
+      'show-completions!': (args) => {
+        completionsCalls.push(listToArray(args[0] ?? NIL).map(String));
+        return NIL;
+      },
+      'clear-completions!': () => {
+        completionsCalls.push(null);
+        return NIL;
+      },
       // The find-file completing minibuffer — records the prompt and
       // its initial value so tests can drive Tab + Enter.
       'open-completing-minibuffer!': (args) => {
@@ -423,6 +435,7 @@ async function editor(initialText = 'hello world', options = {}) {
     highlightPushes,
     foldCalls,
     statusCalls,
+    completionsCalls,
     completingPrompts,
     directoryStub,
     openedPath: () => openedPath,
@@ -3779,23 +3792,22 @@ test('minibuffer-tab-complete completes to the longest common prefix', async () 
   assert.equal(completed, '/tmp/re');
 });
 
-test('ambiguous completion with no progress shows the candidates', async () => {
-  const { interpreter, directoryStub, statusCalls } = await editor();
+test('ambiguous completion with no progress lists candidates in the panel', async () => {
+  const { interpreter, directoryStub, completionsCalls } = await editor();
   directoryStub.set('/tmp/', [
     ['readme.md', 'file'],
     ['recipe.lisp', 'file'],
   ]);
-  // "/tmp/re" is already the longest common prefix — Tab cannot
-  // extend it, so the candidates appear in the status line and the
-  // value is returned unchanged.
+  // "/tmp/re" is already the longest common prefix — Tab cannot extend
+  // it, so the candidates go to the scrollable completions panel (not
+  // the crammed inline status line) and the value is returned unchanged.
   const result = interpreter.evaluate(
     '(minibuffer-tab-complete "/tmp/re")'
   );
   assert.equal(result, '/tmp/re');
-  const status = statusCalls.at(-1);
-  assert.ok(status.includes('readme.md'),
-    `expected the candidates in the status; got ${status}`);
-  assert.ok(status.includes('recipe.lisp'));
+  const shown = completionsCalls.at(-1);
+  assert.deepEqual(shown, ['readme.md', 'recipe.lisp'],
+    `expected the candidates in the completions panel; got ${shown}`);
 });
 
 test('completion in an unreadable directory shows (no matches)', async () => {

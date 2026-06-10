@@ -43,7 +43,16 @@ import { keyEventToString } from './keymap.js';
  *   after the input (e.g. "no match"). While a prompt is open this
  *   appears in the prompt row; with no prompt open it shows in the
  *   echo area.
+ * @property {(text: string) => void} setValue - Replace the input value
+ *   programmatically and refocus the input (cursor at the end). Used by
+ *   click-to-complete in the find-file completions panel, which fills the
+ *   minibuffer from outside the keystroke flow. No-op when no prompt is
+ *   open.
  * @property {() => void} clearStatus - Clear the status note.
+ * @property {(value?: string) => void} submit - Submit the prompt as if
+ *   Enter were pressed: close the prompt and fire `onSubmit` with VALUE (or
+ *   the current input when VALUE is omitted). Used by double-click-to-open
+ *   in the completions panel. No-op when no prompt is open.
  * @property {(text: string) => void} showMessage - Display TEXT as a
  *   transient one-line message in the minibuffer area (no input
  *   field; focus stays where it was). Used for the `y`/`n`/`q`-style
@@ -173,6 +182,23 @@ export function createMinibuffer(container) {
       statusEl.textContent = '';
       echoEl.textContent = '';
       echoEl.hidden = true;
+    },
+
+    setValue(text) {
+      if (root.hidden || handlers === null) return;
+      input.hidden = false;
+      input.value = text;
+      input.focus();
+      input.setSelectionRange(text.length, text.length);
+      handlers.onChange?.(text);
+    },
+
+    submit(value) {
+      if (handlers === null) return;
+      const { onSubmit } = handlers;
+      const v = value ?? input.value;
+      close();
+      onSubmit?.(v);
     },
 
     /**

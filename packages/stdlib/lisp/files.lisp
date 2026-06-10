@@ -32,8 +32,10 @@
 ;; lists the directory, finds the longest common prefix of matching
 ;; entries, and either:
 ;;   * completes inline (returns the new value), or
-;;   * shows the candidates as a transient status line, leaving the
-;;     value unchanged.
+;;   * lists the candidates in a transient, scrollable utility-dock tab
+;;     (`show-completions!`), leaving the value unchanged. The tab is
+;;     removed once TAB makes progress or the command finishes — so a
+;;     busy directory no longer crams the one-line status display.
 
 (define (-last-index-of/loop text char-str i)
   (cond ((< i 0) -1)
@@ -108,28 +110,25 @@
                   (-prefix-match? basename (car entry)))
                 entries))))
 
-(define (-join strings sep)
-  "Join STRINGS with SEP between them."
-  (cond ((nil? strings) "")
-        ((nil? (cdr strings)) (car strings))
-        (else (str (car strings) sep (-join (cdr strings) sep)))))
-
-(define (-format-candidates entries)
-  "Render ENTRIES (a list of (name . type)) for the status line.
-   Directories carry a trailing slash so the user sees the structure."
-  (-join (map (lambda (entry)
-                (if (eq? (cdr entry) :directory)
-                    (str (car entry) "/")
-                    (car entry)))
-              entries)
-         "  "))
+(define (-completion-names entries)
+  "Display names for ENTRIES (a list of (name . type)), for the
+   completions panel. Directories carry a trailing slash so the user
+   sees the structure (and the panel renders a folder icon)."
+  (map (lambda (entry)
+         (if (eq? (cdr entry) :directory)
+             (str (car entry) "/")
+             (car entry)))
+       entries))
 
 (define (minibuffer-tab-complete current)
   "Tab handler for the find-file minibuffer. Splits CURRENT at the
    last '/', lists the matching directory, and either returns a
    longer value (the longest common prefix of matching entries, with
-   a trailing '/' when the result is a directory) or shows the
-   candidates in the status line and returns CURRENT unchanged."
+   a trailing '/' when the result is a directory) or lists the
+   candidates in the scrollable completions panel and returns CURRENT
+   unchanged. Every branch that makes progress (or finds nothing)
+   removes any open completions panel via `clear-completions!`, so the
+   panel only lingers while the choice is genuinely ambiguous."
   (let* ((parts (-split-path current))
          (directory (car parts))
          (basename (cdr parts))
@@ -138,12 +137,14 @@
                     basename)))
     (cond
       ((nil? matches)
+       (clear-completions!)
        (show-status! "(no matches)")
        current)
       ((nil? (cdr matches))
        ;; Exactly one match — complete to it; add '/' for directories
        ;; so the next Tab descends.
        (clear-status!)
+       (clear-completions!)
        (let* ((entry (car matches))
               (name (car entry))
               (completed (str directory name)))
@@ -152,13 +153,18 @@
              completed)))
       (else
        ;; Many matches — extend to their longest common prefix, then
-       ;; show the candidates if no progress was made.
+       ;; list the candidates in the completions panel if no progress
+       ;; was made.
        (let* ((names (map car matches))
               (lcp (-fold-common-prefix names))
               (extended (str directory lcp)))
          (if (> (string-length extended) (string-length current))
-             (begin (clear-status!) extended)
-             (begin (show-status! (-format-candidates matches)) current)))))))
+             (begin (clear-status!) (clear-completions!) extended)
+             (begin (clear-status!)
+                    ;; DIRECTORY (the prefix up to the last '/') lets a
+                    ;; click in the panel rebuild the full path.
+                    (show-completions! (-completion-names matches) directory)
+                    current)))))))
 
 (define (-initial-find-file-value)
   "The path the find-file prompt starts with: the home directory with
