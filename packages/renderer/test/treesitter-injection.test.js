@@ -185,11 +185,12 @@ test('an injection without a registered getHighlighter is a no-op', () => {
   assert.deepEqual(result, outer);
 });
 
-test('outer ranges partially outside an injection are preserved', () => {
-  // An outer range spanning [0, 30) where the injection is [10, 20).
-  // The outer range is *not* fully contained in the injection, so it
-  // survives. (This guarantees, for example, that an outer block-level
-  // face surrounding a fenced block stays.)
+test('an outer range spanning an injection is clipped around it', () => {
+  // Outer [0, 30) spans injection [10, 20). The outer face survives on
+  // the parts that actually surround the injection ([0,10) and [20,30));
+  // the injected region is yielded to the inner face. This keeps the
+  // ranges non-overlapping (no splitIntoLineRuns warning) and renders the
+  // boundary with the injected language's face, not the outer one.
   const outer = [{ start: 0, end: 30, face: 'block' }];
   const injections = [{ start: 10, end: 20, language: 'x' }];
   const inner = fakeHighlighter([{ start: 0, end: 10, face: 'keyword' }]);
@@ -200,15 +201,42 @@ test('outer ranges partially outside an injection are preserved', () => {
     () => inner,
     0
   );
-  // The outer block survives — splitIntoLineRuns later resolves any
-  // overlap with the inner range deterministically.
-  assert.ok(
-    result.some((r) => r.start === 0 && r.end === 30 && r.face === 'block')
-  );
-  // The inner keyword is present, shifted by +10.
-  assert.ok(
-    result.some(
-      (r) => r.start === 10 && r.end === 20 && r.face === 'keyword'
-    )
-  );
+  assert.ok(result.some((r) => r.start === 0 && r.end === 10 && r.face === 'block'),
+    'left surrounding piece kept');
+  assert.ok(result.some((r) => r.start === 20 && r.end === 30 && r.face === 'block'),
+    'right surrounding piece kept');
+  assert.ok(result.some((r) => r.start === 10 && r.end === 20 && r.face === 'keyword'),
+    'inner face owns the injected region');
+  // No surviving outer range crosses into the injection.
+  assert.ok(!result.some((r) => r.face === 'block' && r.start < 20 && r.end > 10),
+    'no outer range overlaps the injection');
+});
+
+test('an outer range crossing only the injection start is clipped on the right', () => {
+  // Outer [5, 15) crosses into injection [10, 20): keep [5, 10) only.
+  const outer = [{ start: 5, end: 15, face: 'block' }];
+  const injections = [{ start: 10, end: 20, language: 'x' }];
+  const inner = fakeHighlighter([{ start: 0, end: 10, face: 'kw' }]);
+  const result = spliceInjections('a'.repeat(25), outer, injections, () => inner, 0);
+  assert.ok(result.some((r) => r.start === 5 && r.end === 10 && r.face === 'block'));
+  assert.ok(!result.some((r) => r.face === 'block' && r.end > 10));
+});
+
+test('an outer range crossing only the injection end is clipped on the left', () => {
+  // Outer [15, 25) crosses out of injection [10, 20): keep [20, 25) only.
+  const outer = [{ start: 15, end: 25, face: 'block' }];
+  const injections = [{ start: 10, end: 20, language: 'x' }];
+  const inner = fakeHighlighter([{ start: 0, end: 10, face: 'kw' }]);
+  const result = spliceInjections('a'.repeat(25), outer, injections, () => inner, 0);
+  assert.ok(result.some((r) => r.start === 20 && r.end === 25 && r.face === 'block'));
+  assert.ok(!result.some((r) => r.face === 'block' && r.start < 20));
+});
+
+test('an outer range fully inside an injection is dropped (inner wins)', () => {
+  const outer = [{ start: 12, end: 18, face: 'block' }];
+  const injections = [{ start: 10, end: 20, language: 'x' }];
+  const inner = fakeHighlighter([{ start: 0, end: 10, face: 'kw' }]);
+  const result = spliceInjections('a'.repeat(25), outer, injections, () => inner, 0);
+  assert.ok(!result.some((r) => r.face === 'block'), 'contained outer range dropped');
+  assert.ok(result.some((r) => r.start === 10 && r.end === 20 && r.face === 'kw'));
 });
