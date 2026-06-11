@@ -107,6 +107,23 @@ Least and greatest of the arguments.
 Square root.
 :::
 
+:::function{name="floor" aliases="ceiling round" path="reference/lisp-core/floor.html"}
+### `floor` / `ceiling` / `round`
+`(floor x)` / `(ceiling x)` / `(round x)`
+
+`x` as an integer: `floor` rounds down, `ceiling` rounds up, `round`
+to the nearest integer. Halves round *up* (towards +∞) — `(round 2.5)`
+is `3` and `(round -2.5)` is `-2` — not Scheme's round-to-even.
+:::
+
+:::function{name="random" path="reference/lisp-core/random.html"}
+### `random`
+`(random)` / `(random n)`
+
+With no argument, a random real in the interval [0, 1); with `n`, a
+random integer in [0, n). Each call draws afresh.
+:::
+
 ## Numeric comparison
 
 :::function{name="=" aliases="< > <= >=" path="reference/lisp-core/%3D.html"}
@@ -267,6 +284,18 @@ Call `proc` with the leading arguments followed by the elements of the
 final `list`.
 :::
 
+:::function{name="eval" path="reference/lisp-core/eval.html"}
+### `eval`
+`(eval form)`
+
+Evaluate `form` — a form as data, not a string — in the *global*
+environment, wherever the call appears: local bindings at the call
+site are invisible to it. Given a symbol, returns its current global
+binding, which is how the keymap resolves command *names* afresh on
+every keystroke. To evaluate source text, read it first with
+`read-string`.
+:::
+
 :::function{name="map" path="reference/lisp-core/map.html"}
 ### `map`
 `(map proc seq …)`
@@ -324,6 +353,16 @@ Concatenate strings. Unlike `str`, every argument must already be a
 string.
 :::
 
+:::function{name="string-join" path="reference/lisp-core/string-join.html"}
+### `string-join`
+`(string-join seq [sep])`
+
+Join the elements of a list or vector into one string, separated by
+`sep` (default `""`). Each element is coerced through its display
+form, as `str` does. The join happens in a single host pass — prefer
+it to building a long string element-by-element in Lisp.
+:::
+
 :::function{name="string-length" path="reference/lisp-core/string-length.html"}
 ### `string-length`
 `(string-length s)`
@@ -345,6 +384,14 @@ The slice of `s` from `start` to `end` (or to the end of the string).
 `s` with every letter in upper or lower case.
 :::
 
+:::function{name="string-repeat" path="reference/lisp-core/string-repeat.html"}
+### `string-repeat`
+`(string-repeat s n)`
+
+`s` concatenated with itself `n` times. `n` is truncated to an
+integer; zero or negative gives `""`.
+:::
+
 :::function{name="string-split" path="reference/lisp-core/string-split.html"}
 ### `string-split`
 `(string-split s sep)`
@@ -360,6 +407,15 @@ substrings.
 True when `s` contains `sub`.
 :::
 
+:::function{name="string-index-of" path="reference/lisp-core/string-index-of.html"}
+### `string-index-of`
+`(string-index-of s sub [start])`
+
+The zero-based index of the first occurrence of `sub` in `s` at or
+after `start` (default `0`), or `-1` when there is none. Note the
+not-found value is `-1`, not `false` — and `-1` is truthy.
+:::
+
 :::function{name="string-prefix?" aliases="string-suffix?" path="reference/lisp-core/string-prefix%3F.html"}
 ### `string-prefix?` / `string-suffix?`
 `(string-prefix? prefix s)` / `(string-suffix? suffix s)`
@@ -369,11 +425,39 @@ argument order: the affix comes first. `string-suffix?` is what the
 mode registry matches filenames with.
 :::
 
+:::function{name="read-string" path="reference/lisp-core/read-string.html"}
+### `read-string`
+`(read-string s)`
+
+Parse `s` as Lisp source — the reader, exposed to Lisp. Returns a list
+of *all* the forms read, unevaluated: `(read-string "(+ 1 2)")` is the
+one-element list `((+ 1 2))`. Raises a `LispError` on malformed
+source. Pair with `eval`: `(eval (car (read-string s)))`.
+:::
+
+:::function{name="string=?" path="reference/lisp-core/string%3D%3F.html"}
+### `string=?`
+`(string=? a b)`
+
+True when the strings `a` and `b` are identical. Exactly two
+arguments, both strings — unlike `equal?`, which compares strings the
+same way but accepts any values.
+:::
+
 :::function{name="string->symbol" aliases="symbol->string" path="reference/lisp-core/string-%3Esymbol.html"}
 ### `string->symbol` / `symbol->string`
 `(string->symbol s)` / `(symbol->string sym)`
 
 Convert between a string and an interned symbol.
+:::
+
+:::function{name="string->keyword" aliases="keyword->string" path="reference/lisp-core/string-%3Ekeyword.html"}
+### `string->keyword` / `keyword->string`
+`(string->keyword s)` / `(keyword->string kw)`
+
+Convert between a string and an interned keyword. The string carries
+no leading colon: `(string->keyword "tag")` is `:tag`, and
+`(keyword->string :tag)` is `"tag"`.
 :::
 
 :::function{name="string->number" path="reference/lisp-core/string-%3Enumber.html"}
@@ -478,8 +562,9 @@ The keys / values of `map`, as a list.
 ### `gensym`
 `(gensym [prefix])`
 
-A fresh, unique symbol — `prefix` (default `g`) plus a counter. Use it
-for names introduced by a macro, since macros are not hygienic in v0
+A fresh, *uninterned* symbol — `prefix` (default `g`) plus a counter,
+never `eq?` to any symbol the reader produces. Use it for names
+introduced by a macro, since macros are not hygienic in v0
 (`docs/spec/lisp.md` §5).
 :::
 
@@ -571,6 +656,7 @@ The `"line:col"` a procedure was defined at, or `nil` for a primitive.
 A map describing `x`: its `:kind`, and — for a procedure — its `:name`,
 `:params`, `:doc` and `:defined-at`. The structured form behind the
 `describe-command` command.
+:::
 
 ---
 
@@ -579,7 +665,6 @@ A map describing `x`: its `:kind`, and — for a procedure — its `:name`,
 The prelude is a little Lisp evaluated at startup, on top of the
 primitives — defining the common control macros in Lisp dogfoods the
 macro system. It is in `packages/lisp/src/interpreter.js`.
-:::
 
 ## Control-flow macros
 
