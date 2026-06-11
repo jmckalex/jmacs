@@ -48,7 +48,12 @@
   (hash-map
    "--bg"           "#2b333b"
    "--bg-chrome"    "#262d34"
-   "--bg-editor"    "#2e3842"
+   ;; Mariana's true editor background. (Was pre-compensated to #2e3842 to
+   ;; counteract Chromium's ICC-profile colour transform; that transform is
+   ;; now disabled via --force-color-profile=srgb in main.js, so the raw
+   ;; Mariana pixel is correct again — and the token palette below matches
+   ;; Sublime without per-colour pre-compensation.)
+   "--bg-editor"    "#303841"
    "--bg-repl"      "#2b333b"
    "--fg"           "#d8dee9"
    "--fg-dim"       "#7c8f9e"
