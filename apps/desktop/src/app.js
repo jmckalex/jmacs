@@ -6263,15 +6263,15 @@ function configureDocView() {
       }
     },
     openDoc: (name) => {
-      if (keymapReady) {
-        try {
-          interpreter.call('open-doc', name);
-        } catch (error) {
-          repl.appendError(`open-doc: ${error.lispMessage ?? error.message}`);
-        }
-      } else {
-        openDocBuffer(name);
-      }
+      // In-view navigation — a clicked cross-link, menu item, breadcrumb, or
+      // nav button. The target is a built page: a navigation node id (e.g.
+      // "getting-started") OR a documented function name. Open it directly;
+      // readDocPage resolves either against the manifest. This is distinct
+      // from the `open-doc` command (C-h f / M-x), which looks up docs for an
+      // arbitrary symbol and falls back to rendering its docstring — that
+      // command only knows function names, so routing node-id clicks through
+      // it reported "no doc page".
+      openDocBuffer(name);
     },
     highlightCode: highlightCodeForDocView,
   };
