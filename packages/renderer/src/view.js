@@ -21,7 +21,7 @@ import {
   visualColumn, charIndexAtVisualColumn, isWideCharacter,
 } from './projection.js';
 import { handleKeyEvent } from './commands.js';
-import { keyEventToString } from './keymap.js';
+import { keyEventToString, altComposedInsert } from './keymap.js';
 import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
 import { matchingBracket } from './brackets.js';
 import { createColourSwatches } from './colour-swatches.js';
@@ -1225,6 +1225,16 @@ export function createEditorView(buffer, container, options = {}) {
 
   let unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
 
+  // Re-render when the editor's own box changes — the utility dock
+  // hiding/showing, a splitter drag, the OS window resizing. The render
+  // window (renderLines) is sized from the root's clientHeight, so a
+  // grow exposes rows the last render never drew; without this they
+  // stay blank until the next scroll/edit. Guarded for the node test
+  // environment, which has no ResizeObserver.
+  const resizeObserver =
+    typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+  if (resizeObserver) resizeObserver.observe(root);
+
   // Key handling: use the host's dispatcher when given (the editor's
   // Lisp keymap), otherwise fall back to the renderer's built-in keymap
   // so the view stays usable on its own.
@@ -1240,9 +1250,15 @@ export function createEditorView(buffer, container, options = {}) {
     // keyCode 229 is the IME "still processing" sentinel that also covers
     // the first keydown of a composition, before `isComposing` flips.
     if (composing || event.isComposing || event.keyCode === 229) return;
-    const handled = onKey
+    let handled = onKey
       ? onKey(keyEventToString(event))
       : handleKeyEvent(activeBuffer, event);
+    // An unbound Option chord that composed a printable character
+    // (curly quotes, accents) self-inserts the composed character — a
+    // bound `A-…` chord above wins, so users can still bind Option keys.
+    if (!handled && onKey && altComposedInsert(event)) {
+      handled = onKey(event.key);
+    }
     if (handled) event.preventDefault();
   });
 
@@ -1540,6 +1556,7 @@ export function createEditorView(buffer, container, options = {}) {
     destroy: () => {
       unsubscribe();
       endDrag();
+      if (resizeObserver) resizeObserver.disconnect();
       if (frame) win.cancelAnimationFrame(frame);
       root.remove();
     },

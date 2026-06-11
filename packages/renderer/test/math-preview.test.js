@@ -264,3 +264,69 @@ test('invalidateAll clears the typeset cache', () => {
   ctrl.invalidateAll();
   assert.equal(ctrl.cache.size, 0);
 });
+
+// --- the buffer's TeX prelude (Math macros) ------------------------------
+
+test('a preamble rides ahead of every typeset body', () => {
+  const mj = stubMathJax();
+  const ctrl = createMathPreview({
+    getText: () => 'a $\\R$ b $$\\E[x]$$ c',
+    getPoints: () => [],
+    doc: stubDoc(),
+    mathjax: mj,
+    preamble: () => '\\newcommand{\\R}{\\mathbb{R}}',
+  });
+  const ranges = ctrl.ranges();
+  assert.equal(ranges.length, 2);
+  ranges.forEach((r) => r.el());
+  assert.ok(mj.calls.every((c) => c.latex.startsWith('\\newcommand{\\R}{\\mathbb{R}}\n')));
+  assert.ok(mj.calls.some((c) => c.latex.endsWith('\n\\R')));
+  assert.ok(mj.calls.some((c) => c.latex.endsWith('\n\\E[x]')));
+});
+
+test('an empty preamble leaves bodies untouched', () => {
+  const mj = stubMathJax();
+  const ctrl = createMathPreview({
+    getText: () => '$x$',
+    getPoints: () => [],
+    doc: stubDoc(),
+    mathjax: mj,
+    preamble: () => '',
+  });
+  ctrl.ranges()[0].el();
+  assert.equal(mj.calls[0].latex, 'x');
+});
+
+test('a throwing preamble harvester degrades to no prelude', () => {
+  const mj = stubMathJax();
+  const ctrl = createMathPreview({
+    getText: () => '$x$',
+    getPoints: () => [],
+    doc: stubDoc(),
+    mathjax: mj,
+    preamble: () => {
+      throw new Error('boom');
+    },
+  });
+  const ranges = ctrl.ranges();
+  assert.equal(ranges.length, 1);
+  ranges[0].el();
+  assert.equal(mj.calls[0].latex, 'x');
+});
+
+test('editing the preamble re-typesets (the cache keys on the full input)', () => {
+  const mj = stubMathJax();
+  let macros = '\\newcommand{\\R}{\\mathbb{R}}';
+  const ctrl = createMathPreview({
+    getText: () => '$\\R$',
+    getPoints: () => [],
+    doc: stubDoc(),
+    mathjax: mj,
+    preamble: () => macros,
+  });
+  ctrl.ranges()[0].el();
+  macros = '\\newcommand{\\R}{\\mathbb{Q}}';
+  ctrl.ranges()[0].el();
+  assert.equal(mj.calls.length, 2, 'a changed preamble is a cache miss');
+  assert.ok(mj.calls[1].latex.includes('mathbb{Q}'));
+});

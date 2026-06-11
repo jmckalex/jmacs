@@ -283,3 +283,65 @@ test('spliceInlineWidgets clamps a placement past the line end', () => {
     { widget: range },
   ]);
 });
+
+// --- line-wrapped inline math (a $…$ spanning a line break) --------------
+
+test('a multi-line inline range places the widget on its start line', () => {
+  // Text: 'pre $a +\nb$ post' — lines: 'pre $a +' (8), 'b$ post' (7).
+  const range = { start: 4, end: 11, kind: 'inline', el: () => null };
+  const layout = computeMathLayout({
+    ranges: [range],
+    lineStarts: [0, 9],
+    lineLengths: [8, 7],
+    points: [],
+  });
+  const first = layout.inlineByLine.get(0);
+  assert.equal(first.length, 1);
+  assert.equal(first[0].fromColumn, 4);
+  assert.equal(first[0].toColumn, 8, 'start-line placement runs to end of line');
+  assert.ok(!first[0].continuation, 'the start line mounts the widget');
+  const second = layout.inlineByLine.get(1);
+  assert.equal(second.length, 1);
+  assert.equal(second[0].fromColumn, 0);
+  assert.equal(second[0].toColumn, 2, 'end-line placement stops at the closing $');
+  assert.equal(second[0].continuation, true);
+  // Nothing hidden, nothing block.
+  assert.equal(layout.hiddenByBlock.size, 0);
+  assert.equal(layout.blockByStartLine.size, 0);
+});
+
+test('middle lines of a wrapped inline formula are continuation placements', () => {
+  // Lines: '$a' (2), 'b' (1), 'c$ tail' (7); range covers offsets 0..6.
+  const range = { start: 0, end: 7, kind: 'inline', el: () => null };
+  const layout = computeMathLayout({
+    ranges: [range],
+    lineStarts: [0, 3, 5],
+    lineLengths: [2, 1, 7],
+    points: [],
+  });
+  assert.ok(!layout.inlineByLine.get(0)[0].continuation);
+  assert.equal(layout.inlineByLine.get(1)[0].continuation, true);
+  assert.equal(layout.inlineByLine.get(1)[0].toColumn, 1);
+  assert.equal(layout.inlineByLine.get(2)[0].continuation, true);
+  assert.equal(layout.inlineByLine.get(2)[0].toColumn, 2);
+});
+
+test('a cursor inside a wrapped inline formula reveals it whole', () => {
+  const range = { start: 4, end: 11, kind: 'inline', el: () => null };
+  const layout = computeMathLayout({
+    ranges: [range],
+    lineStarts: [0, 9],
+    lineLengths: [8, 7],
+    points: [6],
+  });
+  assert.equal(layout.inlineByLine.size, 0);
+  assert.deepEqual(layout.revealed, [range]);
+});
+
+test('spliceInlineWidgets: a continuation placement removes text, mounts nothing', () => {
+  const runs = [{ text: 'b$ post', face: null }];
+  const out = spliceInlineWidgets(runs, [
+    { fromColumn: 0, toColumn: 2, range: { el: () => null }, continuation: true },
+  ]);
+  assert.deepEqual(out, [{ text: ' post', face: null }]);
+});

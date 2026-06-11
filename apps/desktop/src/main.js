@@ -19,6 +19,18 @@ import { registerShellHandlers } from './shell.js';
 import { registerProcessHandlers } from './process.js';
 import { registerGnuplotHandlers } from './gnuplot.js';
 
+// Match Sublime Text's colour rendering. By default Chromium colour-manages
+// CSS values — it transforms every hex through the display's ICC profile
+// before drawing — which desaturates the editor's themes (the Mariana
+// palette reads "washed out" next to Sublime, which writes native pixels
+// with no profile transform). Forcing the sRGB profile disables that
+// transform, so every hex renders as its raw sRGB pixel: the same convention
+// Sublime uses. Must be set before the app is ready, hence here at load.
+// (Paired with restoring the dark theme's --bg-editor to Mariana's true
+// #303841 in themes.lisp, since it had been pre-compensated for the now-
+// disabled transform.)
+app.commandLine.appendSwitch('force-color-profile', 'srgb');
+
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
 
 // §3a: a main-process throw or unhandled rejection should log, not kill

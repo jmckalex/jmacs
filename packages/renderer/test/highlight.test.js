@@ -80,9 +80,9 @@ test('an empty line yields no runs in a code language', () => {
   assert.deepEqual(highlightLine('', 'javascript'), []);
 });
 
-test('languageForName recognises markdown', () => {
+test('languageForName recognises markdown and jmarkdown', () => {
   assert.equal(languageForName('notes.md'), 'markdown');
-  assert.equal(languageForName('book.jmd'), 'markdown');
+  assert.equal(languageForName('book.jmd'), 'jmarkdown');
 });
 
 test('Markdown: a heading faces the whole line', () => {

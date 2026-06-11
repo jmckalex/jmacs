@@ -15,7 +15,7 @@ At the start of a session, read `HANDOVER.md` (an untracked rolling doc at the r
 ## Running and testing the app
 
 - **Launch the app:** `cd apps/desktop && ./node_modules/.bin/electron .`. Do **not** use `pnpm dev` — pnpm's pre-run dependency check currently fails on an unresolved `citation-js` ignored-build placeholder; the direct `electron .` invocation sidesteps it. (If you need the architect to run an interactive command, suggest they type `! <command>` in the prompt.)
-- **Reloading edits:** `app://` assets are served `no-store` (`apps/desktop/src/serve.js`), so a window **reload (Cmd+R)** reliably picks up edited *renderer* code — `apps/desktop/src/app.js`, anything under `packages/renderer/src`, `*.lisp`, `styles.css`. Edits to *main-process* code (`serve.js`, the main entry, `preload.mjs`) need a full **Cmd+Q + relaunch**.
+- **Reloading edits:** `app://` assets are served `no-store` (`apps/desktop/src/serve.js`), so a window **reload (Ctrl+Cmd+R — plain Cmd+R is M-r now that Command is Meta)** reliably picks up edited *renderer* code — `apps/desktop/src/app.js`, anything under `packages/renderer/src`, `*.lisp`, `styles.css`. Edits to *main-process* code (`serve.js`, the main entry, `preload.mjs`) need a full **quit (C-x C-c, or the app-menu Quit) + relaunch**.
 - **Tests:** `pnpm test` at the root runs all packages; `pnpm --filter @editor/<pkg> test` runs one. Caveat: unit tests **stub the host primitives**, so the real bodies of `apps/desktop/src/app.js` primitives never execute under test — sanity-check new primitive bodies in the running app, not just via green suites.
 
 ## Working Agreements

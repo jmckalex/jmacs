@@ -98,6 +98,19 @@
 (defcommand beginning-of-line-extending () (cursor-line-start! #t))
 (defcommand end-of-line-extending () (cursor-line-end! #t))
 
+;; Word-wise selection: anchor the mark when no region is active, then
+;; move — `goto!` extends an active region, so repeated presses keep
+;; growing (or shrinking) the selection word by word.
+(defcommand forward-word-extending ()
+  "Extend the selection to the end of the next word (M-S-right)."
+  (unless (region-active?) (set-mark! (point)))
+  (goto! (word-forward-offset)))
+
+(defcommand backward-word-extending ()
+  "Extend the selection to the start of the previous word (M-S-left)."
+  (unless (region-active?) (set-mark! (point)))
+  (goto! (word-backward-offset)))
+
 ;; --- editing -----------------------------------------------------------
 
 (defcommand delete-backward ()
@@ -130,6 +143,34 @@
 (defcommand fill-paragraph ()
   "Re-wrap the paragraph around the cursor to the fill column."
   (fill-paragraph!))
+
+;; --- atomic undo grouping ----------------------------------------------
+;; A command that edits the buffer several times (fill-paragraph,
+;; indent-region, the surround helpers) should undo as ONE step, not
+;; edit by edit — Emacs's `atomic-change-group`. The host primitives
+;; `begin-change-group!` / `end-change-group!` collect the edits into a
+;; single undo entry; the wrapper here guarantees the group closes even
+;; when the body raises.
+
+(define (call-with-atomic-undo thunk)
+  "Run THUNK with every buffer edit it makes grouped into a single undo
+   step. The group is closed even when THUNK raises (the error is
+   re-raised)."
+  (begin-change-group!)
+  (try
+    (let ((result (thunk)))
+      (end-change-group!)
+      result)
+    (catch err
+      (end-change-group!)
+      (error err))))
+
+(defmacro atomic-change-group (first . rest)
+  "Evaluate the body with every buffer edit grouped into a single undo
+   step (Emacs's atomic-change-group). Use around any command body that
+   edits the buffer more than once."
+  (list 'call-with-atomic-undo
+        (cons 'lambda (cons (list) (cons first rest)))))
 
 (defcommand mark-whole-buffer ()
   "Select the entire buffer."
