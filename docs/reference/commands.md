@@ -1060,3 +1060,37 @@ anchor order. Bound to `M-n f` / `M-n b`.
 
 Show or hide every sticky note in the buffer. Bound to `M-n t`.
 :::
+
+## Preview
+
+Live preview of Markdown and of typeset mathematics. Each renders the
+buffer through the same pipeline used elsewhere and refreshes as you edit.
+
+:::function{name="markdown-preview" path="reference/commands/markdown-preview.html"}
+### `markdown-preview`
+`(markdown-preview)`
+
+Toggle the live Markdown preview pane. It renders the current
+`markdown-mode` buffer to HTML through the JMarkdown pipeline and refreshes
+as the buffer is edited. Bound to `C-c v` in Markdown mode.
+:::
+
+:::function{name="toggle-math-preview" path="reference/commands/toggle-math-preview.html"}
+### `toggle-math-preview`
+`(toggle-math-preview)`
+
+Toggle live inline MathJax typesetting for the current buffer. Works in any
+major mode that has a math provider (LaTeX, Markdown, …): math segments
+render typeset in place of their source and flip back to source for editing
+when point enters them. Run with `M-x`. See also
+cmd(toggle-markdown-math-preview).
+:::
+
+:::function{name="toggle-markdown-math-preview" path="reference/commands/toggle-markdown-math-preview.html"}
+### `toggle-markdown-math-preview`
+`(toggle-markdown-math-preview)`
+
+Toggle live inline MathJax typesetting for the current Markdown buffer — a
+Markdown-mode convenience wrapper over cmd(toggle-math-preview). Bound to
+`C-c C-p` in Markdown mode.
+:::

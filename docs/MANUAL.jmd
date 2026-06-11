@@ -49,6 +49,12 @@ language itself (evaluation, special forms, macros, modules, errors), read
 [[reference/commands.md]]
 [[reference/buffer-primitives.md]]
 [[reference/lisp-core.md]]
+[[reference/panes.md]]
+[[reference/views.md]]
+[[reference/productivity.md]]
+[[reference/search-and-edit.md]]
+[[reference/latex.md]]
+[[reference/help-and-config.md]]
 
 <script data-type="jmarkdown">
   // The cross-link helper. After this <script>, any `cmd(name)` written
