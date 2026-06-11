@@ -66,7 +66,8 @@
 
 ;; The C-h prefix map — help.
 (define c-h-keymap
-  {"k" 'describe-key
+  {"d" 'open-manual
+   "k" 'describe-key
    "f" 'describe-command
    "F" 'describe-face-at-point
    "C-f" 'highlight-construct-at-point

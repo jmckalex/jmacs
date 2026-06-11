@@ -4254,6 +4254,15 @@ const interpreter = createInterpreter({
       openDocBuffer(name);
       return NIL;
     },
+    // Open the manual at its Top node (the table-of-contents root), so the
+    // doc-view's sidebar/breadcrumb/Next-Prev are anchored at the top. The
+    // top id comes from the loaded node tree; the manual's known root slug
+    // is the fallback before the manifest has arrived (readDocPage resolves
+    // a node id either way).
+    'open-manual!': () => {
+      openDocBuffer((docNavTree && docNavTree.top) || 'the-jmacs-manual');
+      return NIL;
+    },
     // Open URL in a browser-kind view. Creates the view, pushes it onto
     // the global list, switches to it, returns nil. The page title
     // overwrites `view.name` once the webview reports it.
