@@ -86,6 +86,20 @@ export const MAX_INJECTION_DEPTH = 4;
  */
 
 /**
+ * @typedef {object} ProvidedCaptures
+ * @property {CaptureRange[]} captures - Code-driven captures to paint,
+ *   merged after the injection splice. They may overlap grammar
+ *   captures: the run splitter resolves overlaps innermost-wins, with
+ *   exact-span ties going to the later input — i.e. to these.
+ * @property {{ start: number, end: number }[]} [regions] - Spans the
+ *   provider *owns*. Grammar and injected captures are clipped out of
+ *   them (exactly as injection regions clip outer captures), so a
+ *   construct the grammar mis-parses — a `:::` directive line read as a
+ *   paragraph, a metadata header read as a setext heading — renders
+ *   only the provider's faces.
+ */
+
+/**
  * @typedef {object} CreateHighlighterOptions
  * @property {string} [injectionQuery] -
  *   A second tree-sitter query whose matches each pair an
@@ -100,6 +114,17 @@ export const MAX_INJECTION_DEPTH = 4;
  *   A query whose `@fold` captures mark foldable nodes. When set, the
  *   returned highlighter exposes `foldCaptures(text)` for the view
  *   layer to consume (`./folding.js`).
+ * @property {(text: string) => ProvidedCaptures} [captureProvider] -
+ *   A code-driven capture source for constructs the grammar has no
+ *   nodes for (a dialect's extra syntax over a stock grammar). Runs on
+ *   the *whole* document — never on injected slices — after the
+ *   injection splice. See {@link ProvidedCaptures} and
+ *   {@link applyCaptureProvider}.
+ * @property {(text: string) => import('./folding.js').FoldCapture[]} [foldProvider] -
+ *   A code-driven fold source, merged with `foldQuery`'s captures (a
+ *   language may declare either or both). For foldable constructs the
+ *   grammar has no nodes for — `:::` directive blocks, `@begin/@end`
+ *   environments.
  * @property {string} [tag] -
  *   The language tag for this highlighter. Required to consult the
  *   user-override store (rules are keyed by language tag and major-mode
@@ -155,6 +180,12 @@ export async function createTreeSitterHighlighter(
     typeof options.injectionProvider === 'function'
       ? options.injectionProvider
       : null;
+  const captureProvider =
+    typeof options.captureProvider === 'function'
+      ? options.captureProvider
+      : null;
+  const foldProvider =
+    typeof options.foldProvider === 'function' ? options.foldProvider : null;
   const tag = typeof options.tag === 'string' ? options.tag : null;
   const overrideStore = options.overrideStore ?? null;
 
@@ -231,13 +262,16 @@ export async function createTreeSitterHighlighter(
       for (const inj of injectionProvider(text)) injections.push(inj);
     }
     tree.delete();
-    return spliceInjections(
+    const spliced = spliceInjections(
       text,
       outerRanges,
       injections,
       getHighlighter,
       depth
     );
+    return captureProvider
+      ? applyCaptureProvider(spliced, captureProvider(text))
+      : spliced;
   }
 
   /**
@@ -272,23 +306,29 @@ export async function createTreeSitterHighlighter(
   }
 
   /**
-   * Collect `@fold` captures over `text` as absolute character offsets.
-   * Returns an empty list when no fold query was given. Single-line
-   * captures are kept here; the pure `foldRanges` consumer drops them.
+   * Collect foldable scopes over `text` as absolute character offsets:
+   * the fold query's `@fold` captures (when a query was given) plus the
+   * fold provider's ranges (when one was given). Single-line captures
+   * are kept here; the pure `foldRanges` consumer drops them.
    *
    * @param {string} text
    * @returns {import('./folding.js').FoldCapture[]}
    */
   function foldCaptures(text) {
-    if (!foldQuery) return [];
-    const tree = parser.parse(text);
-    const matches = foldQuery.captures(tree.rootNode);
     /** @type {import('./folding.js').FoldCapture[]} */
-    const ranges = matches.map((m) => ({
-      start: m.node.startIndex,
-      end: m.node.endIndex,
-    }));
-    tree.delete();
+    const ranges = [];
+    if (foldQuery) {
+      const tree = parser.parse(text);
+      for (const m of foldQuery.captures(tree.rootNode)) {
+        ranges.push({ start: m.node.startIndex, end: m.node.endIndex });
+      }
+      tree.delete();
+    }
+    if (foldProvider) {
+      for (const r of foldProvider(text)) {
+        ranges.push({ start: r.start, end: r.end });
+      }
+    }
     return ranges;
   }
 
@@ -300,8 +340,36 @@ export async function createTreeSitterHighlighter(
     captures,
     nodeAtPoint,
   };
-  if (foldQuery) highlighter.foldCaptures = foldCaptures;
+  if (foldQuery || foldProvider) highlighter.foldCaptures = foldCaptures;
   return highlighter;
+}
+
+/**
+ * Merge a capture provider's output into the (already injection-spliced)
+ * capture list. The pure counterpart of {@link spliceInjections} for the
+ * `captureProvider` option, exported so tests can exercise it without
+ * loading a grammar.
+ *
+ * The provider's `regions` are spans it owns: every existing range is
+ * clipped against them, exactly as injection regions clip outer
+ * captures, so a grammar's mis-parse of dialect syntax cannot bleed
+ * through. The provider's `captures` are then appended — last, so an
+ * exact-span tie with a grammar capture resolves to the provider in
+ * `flattenInnermost` (later input wins).
+ *
+ * @param {CaptureRange[]} ranges - Captures after the injection splice.
+ * @param {ProvidedCaptures} provided - The capture provider's output.
+ * @returns {CaptureRange[]}
+ */
+export function applyCaptureProvider(ranges, provided) {
+  if (!provided || typeof provided !== 'object') return ranges;
+  const captures = Array.isArray(provided.captures) ? provided.captures : [];
+  const regions = Array.isArray(provided.regions) ? provided.regions : [];
+  const base =
+    regions.length === 0
+      ? ranges
+      : ranges.flatMap((r) => clipRangeAgainstRegions(r, regions));
+  return captures.length === 0 ? base : base.concat(captures);
 }
 
 /**
