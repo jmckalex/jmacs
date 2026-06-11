@@ -122,16 +122,21 @@ function main() {
     process.exit(1);
   }
 
-  // Copy docs/assets/ to docs/build/assets/ if the postprocessor
-  // didn't (it usually doesn't — assets are static).
+  // Refresh docs/build/assets/ from docs/assets/ on every build, so
+  // stylesheet edits propagate (copyDir overwrites in place).
   const assetsSrc = resolve(repoRoot, 'docs/assets');
   const assetsDst = join(outPath, 'assets');
-  if (existsSync(assetsSrc) && !existsSync(assetsDst)) copyDir(assetsSrc, assetsDst);
+  if (existsSync(assetsSrc)) copyDir(assetsSrc, assetsDst);
 
-  // Summary.
+  // Summary. The manifest now carries a flat `functions` map plus a `nodes`
+  // tree (TeXinfo-style navigation); report both.
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  const count = Object.keys(manifest).length;
-  console.error(`build-docs: wrote MANUAL.html and ${count} function page${count === 1 ? '' : 's'} to ${relative(repoRoot, outPath)}/`);
+  const fnCount = manifest.functions ? Object.keys(manifest.functions).length : 0;
+  const nodeCount = manifest.nodes ? Object.keys(manifest.nodes).length : 0;
+  console.error(
+    `build-docs: wrote MANUAL.html, ${fnCount} function name(s), and ` +
+    `${nodeCount} navigation node(s) to ${relative(repoRoot, outPath)}/`
+  );
 }
 
 main();

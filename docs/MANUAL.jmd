@@ -476,6 +476,27 @@ modules, errors — read `docs/spec/lisp.md`.
     if (!seenNames.has(name)) seenNames.set(name, []);
     seenNames.get(name).push({ path: target, tier });
   }
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function pageHtml(title, cssHref, bodyInner) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(title)} — jmacs</title>
+<link rel="stylesheet" href="${cssHref}">
+</head>
+<body>
+${bodyInner}
+</body>
+</html>`;
+  }
+
+  // --- 1. Per-function reference pages (as before) + the flat name→path
+  //        map. Each function is also a LEAF node in the tree (below). ---
   $('function').each((_, el) => {
     const $el = $(el);
     const name = $el.attr('name');
@@ -488,51 +509,170 @@ modules, errors — read `docs/spec/lisp.md`.
     const depth = target.split('/').length - 1;
     const cssHref = '../'.repeat(depth) + 'assets/docs.css';
     const fragment = $el.html();
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>${name} — jmacs</title>
-<link rel="stylesheet" href="${cssHref}">
-</head>
-<body>
-<article class="doc-page function-page" data-jmacs-doc-name="${name}">
-${fragment}
-</article>
-</body>
-</html>`;
-    fs.writeFileSync(file, html);
+    const body =
+      `<article class="doc-page function-page" ` +
+      `data-jmacs-doc-name="${name}" data-node-id="${name}">\n${fragment}\n</article>`;
+    fs.writeFileSync(file, pageHtml(name, cssHref, body));
     note(name, target);
     for (const alias of aliases) note(alias, target);
   });
-  const manifest = {};
+
+  // The flat function manifest (back-compat: apropos / doc-known? read this).
+  const functions = {};
   for (const [name, hits] of seenNames.entries()) {
     if (hits.length === 1) {
-      manifest[name] = hits[0].path;
+      functions[name] = hits[0].path;
       continue;
     }
     // Multiple tiers for the same bare name: every tier gets a
-    // qualified entry; the preferred tier wins the bare name.
-    for (const hit of hits) manifest[`${hit.tier}:${name}`] = hit.path;
-    const preferred =
-      hits.find((h) => PREFERRED_TIERS.indexOf(h.tier) >= 0) ?? hits[0];
+    // qualified `<tier>:<name>` entry; the preferred tier wins the bare name.
+    for (const hit of hits) functions[`${hit.tier}:${name}`] = hit.path;
     const ranked = [...hits].sort((a, b) => {
       const ai = PREFERRED_TIERS.indexOf(a.tier);
       const bi = PREFERRED_TIERS.indexOf(b.tier);
       return (ai < 0 ? PREFERRED_TIERS.length : ai)
         - (bi < 0 ? PREFERRED_TIERS.length : bi);
     });
-    manifest[name] = ranked[0].path;
+    functions[name] = ranked[0].path;
     console.error(
       `build-docs: name "${name}" appears in ${hits.length} tiers (` +
       hits.map((h) => h.tier).join(', ') +
       `); bare form resolves to ${ranked[0].tier}.`
     );
   }
+
+  // --- 2. The node tree (TeXinfo-style). Nodes are headings; each
+  //        `<function>` is a leaf parented to its enclosing heading.
+  //        Document order over `headings + functions` is preorder, so the
+  //        global Next/Prev are simply neighbours in `order`. ---
+  const HEADING_SEL = 'h1,h2,h3,h4,h5,h6';
+  const WALK_SEL = HEADING_SEL + ',function';
+  const nodes = {};      // id -> { id, title, level, path, up, children }
+  const elById = {};     // id -> cheerio element (for slicing section bodies)
+  const order = [];      // node ids in document (= preorder) order
+  const headingStack = []; // { id, level } for parent resolution
+
+  function uniqueId(base) {
+    let id = base || 'node';
+    let n = 2;
+    while (nodes[id]) { id = `${base}-${n}`; n += 1; }
+    return id;
+  }
+  function slugify(text) {
+    return String(text).toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+  // Included files leak their YAML front-matter as a stray heading
+  // ("Title: … Author: … Date: …"); never make a node from those.
+  function isFrontMatterHeading(text) {
+    return /^\s*(title|author|date)\s*:/i.test(text);
+  }
+
+  let currentHeadingId = null;
+  $(WALK_SEL).each((_, el) => {
+    const tag = (el.name || '').toLowerCase();
+    if (tag === 'function') {
+      const $el = $(el);
+      const name = $el.attr('name');
+      const target = $el.attr('path');
+      if (!name || !target || nodes[name]) {
+        if (name && nodes[name] && currentHeadingId) {
+          nodes[currentHeadingId].children.push(name);
+        }
+        return;
+      }
+      nodes[name] = {
+        id: name, title: name, level: 99, path: target,
+        up: currentHeadingId, children: [],
+      };
+      order.push(name);
+      if (currentHeadingId) nodes[currentHeadingId].children.push(name);
+      return;
+    }
+    // A heading.
+    const level = parseInt(tag.slice(1), 10);
+    const $h = $(el);
+    const title = $h.text().trim();
+    // Skip empty / front-matter / symbol-only "headings" (separators or
+    // stray rules) — they are not real nodes.
+    if (!title || isFrontMatterHeading(title) || !/[a-z0-9]/i.test(title)) return;
+    let base = ($h.attr('id') || '').replace(/^toc-/, '').replace(/^-+|-+$/g, '');
+    if (!/[a-z0-9]/i.test(base)) base = slugify(title);
+    const id = uniqueId(base || 'node');
+    while (
+      headingStack.length &&
+      headingStack[headingStack.length - 1].level >= level
+    ) headingStack.pop();
+    const up = headingStack.length
+      ? headingStack[headingStack.length - 1].id
+      : null;
+    nodes[id] = { id, title, level, path: `nodes/${id}.html`, up, children: [] };
+    elById[id] = el;
+    order.push(id);
+    if (up) nodes[up].children.push(id);
+    headingStack.push({ id, level });
+    currentHeadingId = id;
+  });
+
+  // --- 3. Write a page per section node: its heading + the intro prose up
+  //        to the next heading/function, plus an auto menu of its children. ---
+  for (const id of order) {
+    const node = nodes[id];
+    if (node.level === 99) continue; // function leaf — page already written
+    const $h = $(elById[id]);
+    let intro = '';
+    $h.nextUntil(WALK_SEL).each((_, e) => { intro += $.html(e); });
+    let menu = '';
+    if (node.children.length) {
+      const items = node.children.map((cid) => {
+        const c = nodes[cid];
+        const label = c.level === 99
+          ? `<code>${escapeHtml(c.title)}</code>`
+          : escapeHtml(c.title);
+        return `<li><a href="${c.path}" data-jmacs-doc="${cid}">${label}</a></li>`;
+      }).join('');
+      menu = `<nav class="doc-menu"><h2 class="doc-menu-title">In this section</h2><ul>${items}</ul></nav>`;
+    }
+    const target = node.path;
+    const file = path.join(outDir, target);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const depth = target.split('/').length - 1;
+    const cssHref = '../'.repeat(depth) + 'assets/docs.css';
+    const body =
+      `<article class="doc-page section-page" data-node-id="${id}">\n` +
+      `${$.html($h)}\n${intro}\n${menu}\n</article>`;
+    fs.writeFileSync(file, pageHtml(node.title, cssHref, body));
+  }
+
+  // --- 4. Assemble the manifest: flat functions map (back-compat) + the
+  //        node tree with computed up / prev / next / children. ---
+  const top = order.find((id) => nodes[id].up === null) || order[0] || null;
+  const nodesOut = {};
+  for (let i = 0; i < order.length; i += 1) {
+    const id = order[i];
+    const n = nodes[id];
+    nodesOut[id] = {
+      id,
+      title: n.title,
+      path: n.path,
+      level: n.level,
+      up: n.up,
+      prev: i > 0 ? order[i - 1] : null,
+      next: i < order.length - 1 ? order[i + 1] : null,
+      children: n.children,
+    };
+  }
+  const manifest = { functions, nodes: nodesOut, top, order };
+
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(
     path.join(outDir, 'manifest.json'),
     JSON.stringify(manifest, null, 2)
   );
-  console.error(`build-docs (postprocess): wrote ${Object.keys(manifest).length} function page(s)`);
+  const sectionCount = order.filter((id) => nodes[id].level !== 99).length;
+  console.error(
+    `build-docs (postprocess): ${Object.keys(functions).length} function name(s), ` +
+    `${order.length} nodes (${sectionCount} sections), top=${top}.`
+  );
 </script>
