@@ -549,7 +549,11 @@ text-view {
   outline: none;
   display: flex;
   align-items: flex-start;
-  padding: 18px 22px 18px 0;
+  /* No top padding: line 1 sits directly under the tab strip when
+     scrolled to the top (the old 18px read as a phantom empty row).
+     The bottom/right padding stays as breathing room against the
+     dock and the window edge. */
+  padding: 0 22px 18px 0;
   font-size: var(--font-size);
   line-height: var(--line-height);
 }
