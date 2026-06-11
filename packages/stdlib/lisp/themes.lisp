@@ -48,7 +48,11 @@
   (hash-map
    "--bg"           "#2b333b"
    "--bg-chrome"    "#262d34"
-   "--bg-editor"    "#2e3842"
+   ;; Mariana's true editor background — matches Sublime Text exactly. (With
+   ;; --force-color-profile=srgb in main.js, Chromium's ICC-profile transform
+   ;; is off, so this hex renders raw like Sublime; the token palette below
+   ;; matches too, with no per-colour pre-compensation.)
+   "--bg-editor"    "#303841"
    "--bg-repl"      "#2b333b"
    "--fg"           "#d8dee9"
    "--fg-dim"       "#7c8f9e"
@@ -115,7 +119,9 @@
   (hash-map
    "--bg"           "#2b333b"
    "--bg-chrome"    "#262d34"
-   "--bg-editor"    "#323e4a"
+   ;; Editor surface matches Sublime Text's Mariana background exactly
+   ;; (#303841), per Jason. Rendered raw thanks to --force-color-profile=srgb.
+   "--bg-editor"    "#303841"
    "--bg-repl"      "#2b333b"
    "--fg"           "#e8eef5"
    "--fg-dim"       "#8aa0b3"
