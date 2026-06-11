@@ -3562,6 +3562,15 @@ const interpreter = createInterpreter({
       utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
       return NIL;
     },
+    // `(view-modified?)` — whether the current view's buffer has unsaved
+    // changes (the same dirty set the modeline ● and the quit guard
+    // read). `kill-view`'s confirm-before-kill guard asks this before
+    // destroying a buffer.
+    'view-modified?': () => {
+      const view = views[currentViewIndex];
+      const buffer = view && view.kind === 'text' ? view.buffer : null;
+      return buffer ? dirtyBuffers.has(buffer) : false;
+    },
     // --- citation.js bridges -------------------------------------------
     // The renderer-side wrapper (`packages/renderer/src/citation.js`)
     // owns the heavy bundle. These primitives are thin string-in /

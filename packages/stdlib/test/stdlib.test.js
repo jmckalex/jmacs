@@ -38,6 +38,7 @@ const languagesDir = join(lispDir, 'languages');
 async function editor(initialText = 'hello world', options = {}) {
   const buffer = createBuffer(initialText, { name: 'test' });
   const fileCalls = [];
+  const viewState = { modified: false };
   const bufferCalls = [];
   const searchCalls = [];
   const paletteCalls = [];
@@ -110,6 +111,9 @@ async function editor(initialText = 'hello world', options = {}) {
         bufferCalls.push('kill');
         return NIL;
       },
+      // kill-view's confirm-before-kill guard reads this; tests flip
+      // `viewState.modified` to exercise the unsaved-changes prompt.
+      'view-modified?': () => viewState.modified,
       'start-buffer-switcher!': () => {
         bufferCalls.push('switch');
         return NIL;
@@ -428,6 +432,7 @@ async function editor(initialText = 'hello world', options = {}) {
     bufferCalls,
     searchCalls,
     paletteCalls,
+    viewState,
     noteCalls,
     replCalls,
     previewCalls,
@@ -3174,6 +3179,27 @@ test('C-x k runs kill-view through the host primitive', async () => {
   press(interpreter, 'k');
   assert.ok(bufferCalls.includes('kill'),
     `expected kill; got ${JSON.stringify(bufferCalls)}`);
+});
+
+test('C-x k on a modified buffer asks first; y kills', async () => {
+  const { interpreter, bufferCalls, viewState } = await editor();
+  viewState.modified = true;
+  press(interpreter, 'C-x');
+  press(interpreter, 'k');
+  assert.ok(!bufferCalls.includes('kill'), 'no kill before the answer');
+  press(interpreter, 'y');
+  assert.ok(bufferCalls.includes('kill'), 'y confirms the kill');
+});
+
+test('C-x k on a modified buffer cancels on any other key', async () => {
+  const { buffer, interpreter, bufferCalls, viewState } = await editor();
+  viewState.modified = true;
+  press(interpreter, 'C-x');
+  press(interpreter, 'k');
+  press(interpreter, 'n');
+  assert.ok(!bufferCalls.includes('kill'), 'n cancels');
+  // The answer keystroke was consumed by the prompt, not self-inserted.
+  assert.ok(!buffer.text.includes('n'), 'the n did not type into the buffer');
 });
 
 // --- describe-face-at-point (face-info.lisp) ---------------------------
