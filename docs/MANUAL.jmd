@@ -650,7 +650,8 @@ ${bodyInner}
 
   // --- 4. Assemble the manifest: flat functions map (back-compat) + the
   //        node tree with computed up / prev / next / children. ---
-  const top = order.find((id) => nodes[id].up === null) || order[0] || null;
+  const roots = order.filter((id) => nodes[id].up === null);
+  const top = roots[0] || order[0] || null;
   const nodesOut = {};
   for (let i = 0; i < order.length; i += 1) {
     const id = order[i];
@@ -666,7 +667,7 @@ ${bodyInner}
       children: n.children,
     };
   }
-  const manifest = { functions, nodes: nodesOut, top, order };
+  const manifest = { functions, nodes: nodesOut, top, roots, order };
 
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(

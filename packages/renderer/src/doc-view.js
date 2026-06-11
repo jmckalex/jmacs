@@ -334,20 +334,29 @@ function createDocView(container, options = {}) {
       }
       return ul;
     };
-    const topNode = ns[manifest.top];
-    // Show the Top node itself plus its subtree.
-    const rootLi = doc.createElement('li');
-    rootLi.className = 'doc-toc-item doc-toc-root doc-toc-branch';
-    const rootLink = navLink(manifest.top, topNode ? topNode.title : 'Top', false);
-    rootLink.classList.add('doc-toc-link');
-    rootLi.append(rootLink);
-    tocLiById.set(manifest.top, rootLi);
-    if (topNode && topNode.children && topNode.children.length) {
-      rootLi.append(makeList(topNode.children));
-    }
+    const buildRootLi = (rootId) => {
+      const node = ns[rootId];
+      const li = doc.createElement('li');
+      li.className = 'doc-toc-item doc-toc-root doc-toc-branch';
+      const link = navLink(rootId, node ? node.title : rootId, false);
+      link.classList.add('doc-toc-link');
+      li.append(link);
+      tocLiById.set(rootId, li);
+      if (node && node.children && node.children.length) {
+        li.append(makeList(node.children));
+      }
+      return li;
+    };
+    // Render every root (the manual plus the reference tiers) as a
+    // top-level entry, like an Info directory with several manuals.
+    const rootIds = Array.isArray(manifest.roots) && manifest.roots.length
+      ? manifest.roots
+      : [manifest.top];
     const rootUl = doc.createElement('ul');
     rootUl.className = 'doc-toc-list doc-toc-top';
-    rootUl.append(rootLi);
+    for (const rootId of rootIds) {
+      if (ns[rootId]) rootUl.append(buildRootLi(rootId));
+    }
     toc.append(rootUl);
   }
 
