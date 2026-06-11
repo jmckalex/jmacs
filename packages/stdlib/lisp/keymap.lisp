@@ -185,6 +185,16 @@
    "M-left"       'backward-word
    "A-right"      'forward-word
    "A-left"       'backward-word
+   ;; Shifted arrow motion selects: word-wise left/right (on both the
+   ;; Meta and Option sides), line-wise up/down.
+   "M-S-right"    'forward-word-extending
+   "M-S-left"     'backward-word-extending
+   "A-S-right"    'forward-word-extending
+   "A-S-left"     'backward-word-extending
+   "M-S-up"       'previous-line-extending
+   "M-S-down"     'next-line-extending
+   "A-S-up"       'previous-line-extending
+   "A-S-down"     'next-line-extending
    "M-m"          'back-to-indentation
    "M-v"          'scroll-down
    "M-g"          'goto-line

@@ -1942,6 +1942,22 @@ test('the line-op commands are bound to their keys', async () => {
   );
 });
 
+test('M-S-right / M-S-left select word-wise; M-S-down extends by line', async () => {
+  const { buffer, interpreter } = await editor('alpha beta\ngamma delta');
+  buffer.moveTo(0);
+  press(interpreter, 'M-S-right');
+  assert.equal(buffer.mark, 0);
+  assert.equal(buffer.point, 5, 'selection grows to the first word end');
+  press(interpreter, 'M-S-right');
+  assert.equal(buffer.point, 10, 'and on to the next word');
+  press(interpreter, 'M-S-left');
+  assert.equal(buffer.point, 6, 'shrinks back a word');
+  assert.equal(buffer.mark, 0, 'anchor stays put');
+  press(interpreter, 'M-S-down');
+  assert.equal(buffer.mark, 0);
+  assert.ok(buffer.point > 10, 'line-wise extension moved into line two');
+});
+
 test('M-left / M-right are word-motion synonyms for M-b / M-f', async () => {
   const { interpreter } = await editor();
   assert.equal(

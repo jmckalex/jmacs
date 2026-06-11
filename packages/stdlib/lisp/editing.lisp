@@ -98,6 +98,19 @@
 (defcommand beginning-of-line-extending () (cursor-line-start! #t))
 (defcommand end-of-line-extending () (cursor-line-end! #t))
 
+;; Word-wise selection: anchor the mark when no region is active, then
+;; move — `goto!` extends an active region, so repeated presses keep
+;; growing (or shrinking) the selection word by word.
+(defcommand forward-word-extending ()
+  "Extend the selection to the end of the next word (M-S-right)."
+  (unless (region-active?) (set-mark! (point)))
+  (goto! (word-forward-offset)))
+
+(defcommand backward-word-extending ()
+  "Extend the selection to the start of the previous word (M-S-left)."
+  (unless (region-active?) (set-mark! (point)))
+  (goto! (word-backward-offset)))
+
 ;; --- editing -----------------------------------------------------------
 
 (defcommand delete-backward ()
