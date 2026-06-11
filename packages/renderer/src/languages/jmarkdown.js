@@ -55,10 +55,12 @@ const QUERY = `
   (setext_heading) @heading
 
   ; --- fenced code blocks: delimiters, info string, body ---------------
+  ; (Unlike vanilla markdown, indented_code_block carries NO face:
+  ; jmarkdown disables marked's 4-space indented-code tokenizer, so
+  ; indented text is ordinary prose, not code.)
   (fenced_code_block_delimiter) @paren
   (info_string (language) @keyword)
   (code_fence_content) @code
-  (indented_code_block) @code
 
   ; --- list / quote markers --------------------------------------------
   (list_marker_plus) @keyword
@@ -79,6 +81,11 @@ const INJECTION_QUERY = `
     (info_string (language) @injection.language)
     (code_fence_content) @injection.content)
   ((paragraph) @injection.content (#set! injection.language "jmarkdown_inline"))
+  ; The grammar still parses 4-space-indented text as an
+  ; indented_code_block node; in jmarkdown that text is ordinary prose,
+  ; so it gets the same inline treatment as a paragraph.
+  ((indented_code_block) @injection.content
+   (#set! injection.language "jmarkdown_inline"))
 `;
 
 // Heading sections and fenced code fold via the grammar; directives

@@ -146,3 +146,25 @@ test('jmarkdown_inline injects latex into math, like markdown_inline', () => {
   assert.equal(ranges.length, 1);
   assert.equal(ranges[0].language, 'latex');
 });
+
+test('indented text is prose, not code (jmarkdown has no indented blocks)', () => {
+  const s = spec('jmarkdown');
+  const { language, parser } = grammars[s.grammar];
+  const text = 'A paragraph.\n\n    Indented prose, *bold* and all.\n';
+  const tree = parser.parse(text);
+  const captures = new Query(language, s.query).captures(tree.rootNode);
+  // The grammar still parses the indentation as indented_code_block,
+  // but the query paints no face on it — no green.
+  assert.ok(
+    captures.every((c) => c.node.type !== 'indented_code_block'),
+    'no capture on indented_code_block'
+  );
+  // And the injection query routes it into the inline grammar instead.
+  const injections = new Query(language, s.injectionQuery).matches(tree.rootNode);
+  const injected = injections.some((m) =>
+    m.captures.some(
+      (c) => c.name === 'injection.content' && c.node.type === 'indented_code_block'
+    )
+  );
+  assert.ok(injected, 'indented prose gets the jmarkdown_inline injection');
+});
