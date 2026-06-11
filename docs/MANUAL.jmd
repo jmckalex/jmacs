@@ -43,7 +43,8 @@ documents each Lisp procedure on its own — every command, every buffer
 primitive, every core function — grouped by tier. Read `index` first for
 how an entry is laid out and what the naming conventions mean. For the
 language itself (evaluation, special forms, macros, modules, errors), read
-`docs/spec/lisp.md`.
+*Programming in jmacs Lisp* — the language guide that follows the
+reference.
 
 [[reference/index.md]]
 [[reference/commands.md]]
@@ -55,6 +56,35 @@ language itself (evaluation, special forms, macros, modules, errors), read
 [[reference/search-and-edit.md]]
 [[reference/latex.md]]
 [[reference/help-and-config.md]]
+
+# Programming in jmacs Lisp
+
+The editor is written to be rewritten. This part is the language
+guide: a ground-up account of the editor's Lisp — the dialect itself,
+and then the editor-facing craft of commands, modes, and
+customization. It assumes you can program but not that you know Lisp.
+
+Read it in order the first time: the early chapters (*Lisp Data
+Types* through *Writing Macros*) teach the language; the later ones
+(*Editing Text from Lisp* onward) teach the editor's extension
+surface. The per-function reference above is the companion volume —
+this part explains the model and the craft, the reference states each
+procedure's contract. Where a chapter touches a procedure in passing,
+it links there rather than repeating it.
+
+[[guide/intro.md]]
+[[guide/data-types.md]]
+[[guide/evaluation.md]]
+[[guide/functions.md]]
+[[guide/control-flow.md]]
+[[guide/errors.md]]
+[[guide/macros.md]]
+[[guide/modules.md]]
+[[guide/text-editing.md]]
+[[guide/commands-keys.md]]
+[[guide/modes-hooks.md]]
+[[guide/custom-faces.md]]
+[[guide/style-pitfalls.md]]
 
 <script data-type="jmarkdown">
   // The cross-link helper. After this <script>, any `cmd(name)` written
