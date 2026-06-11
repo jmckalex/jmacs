@@ -4590,6 +4590,33 @@ doc-view,
   padding: 0 0.15em;
 }
 
+/* The alphabetical command index page. */
+.doc-view .index-page .doc-index-jump {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  line-height: 1.9;
+}
+.doc-view .index-page .doc-index-jump a {
+  border-bottom: none;
+  padding: 0 0.25em;
+}
+.doc-view .index-page h2 {
+  border-bottom: 1px solid #ffffff14;
+  padding-bottom: 0.2rem;
+  margin-top: 1.6rem;
+}
+.doc-view .index-page .doc-index-list {
+  list-style: none;
+  padding: 0;
+  columns: 3 12rem;
+  column-gap: 1.6rem;
+}
+.doc-view .index-page .doc-index-list li {
+  break-inside: avoid;
+  margin: 0.12rem 0;
+}
+
 /* The hover-doc tooltip — appears when the mouse rests on a Lisp
    symbol that has documentation. Click to open the full page. */
 

@@ -274,6 +274,63 @@ ${bodyInner}
     fs.writeFileSync(file, pageHtml(node.title, cssHref, body));
   }
 
+  // --- 3b. Alphabetical command index — a generated page listing every
+  //         documented name, grouped by first letter, each a cross-link.
+  //         Nested under the manual as a child (appears last in its menu). ---
+  {
+    const manualId = order[0]; // the manual's h1 is the first node walked
+    const names = Object.keys(functions)
+      .filter((n) => !n.includes(':')) // drop the qualified tier:name alternates
+      .sort((a, b) => a.localeCompare(b));
+    const groups = new Map(); // letter -> [name, …]
+    for (const name of names) {
+      const c = name[0].toUpperCase();
+      const key = /[A-Z]/.test(c) ? c : '#';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(name);
+    }
+    const letters = [...groups.keys()].sort((a, b) =>
+      a === '#' ? -1 : b === '#' ? 1 : a.localeCompare(b));
+    let body = '<h1>Command index</h1>\n';
+    body +=
+      '<p>Every documented command, primitive, and core procedure, in ' +
+      'alphabetical order. Click a name to open its reference entry.</p>\n';
+    body +=
+      '<p class="doc-index-jump">' +
+      letters
+        .map((L) => `<a href="#idx-${L === '#' ? 'sym' : L}">${L}</a>`)
+        .join(' ') +
+      '</p>\n';
+    for (const L of letters) {
+      const anchor = L === '#' ? 'sym' : L;
+      body +=
+        `<h2 id="idx-${anchor}">${L === '#' ? 'Symbols' : L}</h2>\n` +
+        '<ul class="doc-index-list">\n';
+      for (const name of groups.get(L)) {
+        body +=
+          `<li><a href="${functions[name]}" data-jmacs-doc="${escapeHtml(name)}">` +
+          `<code>${escapeHtml(name)}</code></a></li>\n`;
+      }
+      body += '</ul>\n';
+    }
+    const indexId = 'command-index';
+    const indexPath = 'nodes/command-index.html';
+    fs.writeFileSync(
+      path.join(outDir, indexPath),
+      pageHtml(
+        'Command index',
+        '../assets/docs.css',
+        `<article class="doc-page index-page" data-node-id="${indexId}">\n${body}</article>`
+      )
+    );
+    nodes[indexId] = {
+      id: indexId, title: 'Command index', level: 2,
+      path: indexPath, up: manualId, children: [],
+    };
+    if (nodes[manualId]) nodes[manualId].children.push(indexId);
+    order.push(indexId);
+  }
+
   // --- 4. Assemble the manifest: flat functions map (back-compat) + the
   //        node tree with computed up / prev / next / children. ---
   const roots = order.filter((id) => nodes[id].up === null);
