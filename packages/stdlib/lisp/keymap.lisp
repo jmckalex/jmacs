@@ -3,7 +3,10 @@
 ;;; The renderer reports each keystroke as a normalised string: a single
 ;;; character for printable keys ("a", " "), a name for the rest
 ;;; ("left", "backspace"), with modifier prefixes "C-" (Ctrl/Cmd),
-;;; "M-" (Alt) and "S-" (Shift) — e.g. "S-left", "C-z", "C-S-z".
+;;; "M-" (Command — Meta, Emacs-on-Mac style), "A-" (Option — free for
+;;; user bindings; an UNBOUND A- chord falls through to inserting the
+;;; character Option composed, so curly quotes and accents type
+;;; natively) and "S-" (Shift) — e.g. "S-left", "C-z", "M-x", "A-]".
 ;;;
 ;;; A keymap maps a key string to either a command *name* (a symbol) or
 ;;; a nested keymap. A nested keymap is a prefix: press the prefix key,
@@ -176,9 +179,12 @@
    "M-y"          'yank-pop
    "M-f"          'forward-word
    "M-b"          'backward-word
-   ;; Option+arrow word motion — the macOS-native synonyms for M-f/M-b.
+   ;; Arrow word motion — synonyms for M-f/M-b (and on the Option side
+   ;; too, matching the macOS-native Option+arrow habit).
    "M-right"      'forward-word
    "M-left"       'backward-word
+   "A-right"      'forward-word
+   "A-left"       'backward-word
    "M-m"          'back-to-indentation
    "M-v"          'scroll-down
    "M-g"          'goto-line
@@ -194,11 +200,9 @@
    "M-backspace"  'backward-kill-word
    "M-up"         'move-line-up
    "M-down"       'move-line-down
-   ;; Sublime-style block indentation (line-ops.lisp). The host names
-   ;; the bracket keys "[" / "]" (event.code BracketLeft/BracketRight).
-   ;; NB: global Keyboard Maestro curly-quote macros on Alt+[ / Alt+]
-   ;; once shadowed these (the editor received the re-typed quote
-   ;; chords instead); the editor is excluded from those macros now.
+   ;; Sublime-style block indentation (line-ops.lisp), on Cmd+[ / Cmd+].
+   ;; (With Command as Meta these no longer collide with Option-chord
+   ;; quote macros — Option is the separate "A-" modifier.)
    "M-["          'outdent-region
    "M-]"          'indent-region
    ;; expand-region — C-= as the spec names it; the host normalises that

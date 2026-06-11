@@ -138,12 +138,22 @@ function codeToBase(code) {
  *
  * A bare printable key is returned as typed — `"a"`, `"A"`, `"("`, `" "`
  * — so it can be self-inserted. Everything else gets a name and, when
- * held, modifier prefixes: `C-` (Ctrl or Cmd), `M-` (Alt), `S-` (Shift),
- * in that order. Examples: `"left"`, `"S-left"`, `"backspace"`, `"C-z"`,
- * `"C-S-z"`.
+ * held, modifier prefixes in this order:
+ *
+ *   `C-` Control · `M-` Command (Meta, the Emacs-on-Mac convention) ·
+ *   `A-` Option (Alt) · `S-` Shift
+ *
+ * Examples: `"left"`, `"S-left"`, `"C-z"`, `"M-x"` (Cmd+X), `"A-]"`
+ * (Option+]), `"C-M-S-q"`.
+ *
+ * Option deliberately gets its own `A-` prefix rather than Meta: it
+ * stays free for user bindings, and — because an *unbound* `A-` chord
+ * falls through to inserting the character Option composed (see the
+ * keydown dispatchers) — native macOS typing of curly quotes and
+ * accented letters works in the buffer.
  *
  * For a modified key the base name comes from `event.code` when present,
- * so `M-x` is `"M-x"` even where Option composes a character (macOS).
+ * so `A-x` is `"A-x"` even where Option composes a character (macOS).
  * Synthetic events without a `code` fall back to `event.key`.
  *
  * @param {Pick<KeyboardEvent, 'key' | 'code' | 'shiftKey' | 'metaKey' |
@@ -152,22 +162,44 @@ function codeToBase(code) {
  */
 export function keyEventToString(event) {
   const { key } = event;
-  const ctrl = event.ctrlKey || event.metaKey;
+  const ctrl = event.ctrlKey;
+  const meta = event.metaKey;
   const alt = event.altKey;
 
   // A bare printable character: return it exactly as typed.
-  if (key.length === 1 && !ctrl && !alt) {
+  if (key.length === 1 && !ctrl && !meta && !alt) {
     return key;
   }
 
   const base =
-    (ctrl || alt) && event.code
+    (ctrl || meta || alt) && event.code
       ? codeToBase(event.code)
       : NAMED_KEYS[key] ?? key.toLowerCase();
 
   let prefix = '';
   if (ctrl) prefix += 'C-';
-  if (alt) prefix += 'M-';
+  if (meta) prefix += 'M-';
+  if (alt) prefix += 'A-';
   if (event.shiftKey) prefix += 'S-';
   return prefix + base;
+}
+
+/**
+ * Whether an unhandled key event should fall back to inserting the
+ * character it composed: Option (alone, possibly with Shift) held, and
+ * the platform composed a single printable character (`’`, `“`, `é`,
+ * `å`, …). The dispatchers try the `A-…` chord first — a user binding
+ * wins — and call this only when the keymap declined.
+ *
+ * @param {Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey'>} event
+ * @returns {boolean}
+ */
+export function altComposedInsert(event) {
+  return (
+    event.altKey === true &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    typeof event.key === 'string' &&
+    event.key.length === 1
+  );
 }

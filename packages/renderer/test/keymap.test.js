@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveKey, keyEventToString } from '../src/keymap.js';
+import { resolveKey, keyEventToString, altComposedInsert } from '../src/keymap.js';
 
 /** Build a key event with sensible defaults. */
 function key(over) {
@@ -92,10 +92,19 @@ test('named keys get readable names', () => {
   assert.equal(keyEventToString(key({ key: 'Enter' })), 'enter');
 });
 
-test('modifiers become C- / M- / S- prefixes', () => {
+test('modifiers become C- / M- / A- / S- prefixes', () => {
   assert.equal(keyEventToString(key({ key: 'ArrowLeft', shiftKey: true })), 'S-left');
-  assert.equal(keyEventToString(key({ key: 'ArrowLeft', metaKey: true })), 'C-left');
+  // Command is Meta (Emacs-on-Mac); Control is C-; Option is A-.
+  assert.equal(keyEventToString(key({ key: 'ArrowLeft', metaKey: true })), 'M-left');
   assert.equal(keyEventToString(key({ key: 'z', ctrlKey: true })), 'C-z');
+  assert.equal(keyEventToString(key({ key: 'ArrowLeft', altKey: true })), 'A-left');
+  // Prefix order is C- M- A- S-.
+  assert.equal(
+    keyEventToString(
+      key({ key: 'q', code: 'KeyQ', ctrlKey: true, metaKey: true, altKey: true, shiftKey: true })
+    ),
+    'C-M-A-S-q'
+  );
 });
 
 test('a modified printable key is named, not self-inserting', () => {
@@ -104,13 +113,18 @@ test('a modified printable key is named, not self-inserting', () => {
     keyEventToString(key({ key: 'Z', ctrlKey: true, shiftKey: true })),
     'C-S-z'
   );
-  assert.equal(keyEventToString(key({ key: 'a', metaKey: true })), 'C-a');
+  assert.equal(keyEventToString(key({ key: 'a', metaKey: true })), 'M-a');
 });
 
 test('a modified key uses event.code, independent of event.key', () => {
   // On macOS, Option+X composes event.key to "≈"; event.code stays KeyX.
   assert.equal(
     keyEventToString(key({ key: '≈', code: 'KeyX', altKey: true })),
+    'A-x'
+  );
+  // Command does not compose; M-x is Cmd+X.
+  assert.equal(
+    keyEventToString(key({ key: 'x', code: 'KeyX', metaKey: true })),
     'M-x'
   );
   assert.equal(
@@ -120,22 +134,39 @@ test('a modified key uses event.code, independent of event.key', () => {
 });
 
 test('the bracket keys name as their characters under modifiers', () => {
-  // Option+] composes "'" on macOS; the code names the physical key,
-  // and the brackets map to their characters so bindings read "M-]".
+  // Option+] composes a quote on macOS; the code names the physical
+  // key, and the brackets map to their characters so bindings read
+  // "A-]" (Option) / "M-]" (Command).
   assert.equal(
     keyEventToString(key({ key: '\u2018', code: 'BracketLeft', altKey: true })),
-    'M-['
+    'A-['
   );
   assert.equal(
     keyEventToString(key({ key: '\u2019', code: 'BracketRight', altKey: true })),
+    'A-]'
+  );
+  assert.equal(
+    keyEventToString(key({ key: ']', code: 'BracketRight', metaKey: true })),
     'M-]'
   );
+});
+
+test('altComposedInsert: Option-composed printables, and only those', () => {
+  assert.equal(altComposedInsert(key({ key: '\u2019', altKey: true })), true);
+  assert.equal(altComposedInsert(key({ key: 'é', altKey: true })), true);
+  // Not with Command or Control along for the ride.
+  assert.equal(altComposedInsert(key({ key: ']', altKey: true, metaKey: true })), false);
+  assert.equal(altComposedInsert(key({ key: ']', altKey: true, ctrlKey: true })), false);
+  // Not for named keys (arrows compose nothing).
+  assert.equal(altComposedInsert(key({ key: 'ArrowLeft', altKey: true })), false);
+  // Not without Option.
+  assert.equal(altComposedInsert(key({ key: 'a' })), false);
 });
 
 test('event.code resolves named and digit keys under a modifier', () => {
   assert.equal(
     keyEventToString(key({ key: 'ArrowLeft', code: 'ArrowLeft', metaKey: true })),
-    'C-left'
+    'M-left'
   );
   assert.equal(
     keyEventToString(key({ key: '1', code: 'Digit1', ctrlKey: true })),

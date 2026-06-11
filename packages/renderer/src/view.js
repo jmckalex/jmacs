@@ -21,7 +21,7 @@ import {
   visualColumn, charIndexAtVisualColumn, isWideCharacter,
 } from './projection.js';
 import { handleKeyEvent } from './commands.js';
-import { keyEventToString } from './keymap.js';
+import { keyEventToString, altComposedInsert } from './keymap.js';
 import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
 import { matchingBracket } from './brackets.js';
 import { createColourSwatches } from './colour-swatches.js';
@@ -1240,9 +1240,15 @@ export function createEditorView(buffer, container, options = {}) {
     // keyCode 229 is the IME "still processing" sentinel that also covers
     // the first keydown of a composition, before `isComposing` flips.
     if (composing || event.isComposing || event.keyCode === 229) return;
-    const handled = onKey
+    let handled = onKey
       ? onKey(keyEventToString(event))
       : handleKeyEvent(activeBuffer, event);
+    // An unbound Option chord that composed a printable character
+    // (curly quotes, accents) self-inserts the composed character — a
+    // bound `A-…` chord above wins, so users can still bind Option keys.
+    if (!handled && onKey && altComposedInsert(event)) {
+      handled = onKey(event.key);
+    }
     if (handled) event.preventDefault();
   });
 

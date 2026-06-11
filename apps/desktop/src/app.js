@@ -93,6 +93,7 @@ import {
   highlightLine,
   isAudioFile,
   keyEventToString,
+  altComposedInsert,
   languageForFilename,
   loadLanguageHighlighters,
   createHighlightOverrideStore,
@@ -5435,31 +5436,14 @@ window.addEventListener('keydown', (event) => {
   // Add-pane mode runs its own transient key handling over the host.
   if (editorHostEl.dataset.addPane) return;
 
-  // macOS clipboard chords: Cmd+V / Cmd+C / Cmd+X. Cmd and Ctrl both
-  // normalise to "C-", so these would otherwise fire C-v (scroll-up),
-  // the C-c prefix, and the C-x prefix. We disambiguate on the raw event
-  // (metaKey, not ctrlKey) and route them to the kill-ring commands,
-  // which sync with the system clipboard: Cmd+V → yank (reads the
-  // clipboard), Cmd+C → copy-region, Cmd+X → kill-region. Ctrl+V/C/X
-  // keep their Emacs meanings. Native inputs already returned above, so
-  // the minibuffer still pastes natively. Clipboard ops apply to text
-  // views only; in other views the chord is swallowed (no paste target).
-  if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
-    const k = event.key.toLowerCase();
-    if (k === 'v' || k === 'c' || k === 'x') {
-      const current = views[currentViewIndex];
-      if (current && current.kind === 'text') {
-        event.preventDefault();
-        const command = k === 'v' ? 'yank' : k === 'c' ? 'copy-region' : 'kill-region';
-        try {
-          interpreter.call(command);
-        } catch (error) {
-          repl.appendError(`${command}: ${error.message}`);
-        }
-      }
-      return;
-    }
-  }
+  // (The pre-Meta Cmd+V/C/X clipboard chords and the capture-phase
+  // Cmd+W close-tab handler used to live here. With Command as Meta,
+  // those chords ARE Emacs bindings — Cmd+W is M-w copy-region, Cmd+X
+  // is M-x, Cmd+V is M-v — and the kill ring already syncs with the
+  // system clipboard. Native inputs returned above keep their own
+  // chords, and an unclaimed Cmd chord falls through to its menu role
+  // (Cmd+C copy, Cmd+Z undo, Cmd+O open…), since menu accelerators
+  // only fire for keydowns the renderer leaves unhandled.)
 
   const key = keyEventToString(event);
   // A bare printable character self-inserts; only route that to a text
@@ -5469,41 +5453,19 @@ window.addEventListener('keydown', (event) => {
     const current = views[currentViewIndex];
     if (!current || current.kind !== 'text') return;
   }
-  if (dispatchKey(key)) event.preventDefault();
+  let handled = dispatchKey(key);
+  // An unbound Option chord that composed a printable character (curly
+  // quotes, accents) self-inserts the composed character into a text
+  // view — a bound `A-…` chord above wins, so Option stays bindable.
+  if (!handled && altComposedInsert(event)) {
+    const current = views[currentViewIndex];
+    if (current && current.kind === 'text') handled = dispatchKey(event.key);
+  }
+  if (handled) event.preventDefault();
 });
 
-// Cmd+W → close the active tab (Mac/editor-idiomatic). This runs in the
-// CAPTURE phase, ahead of a focused text editor's own keydown — that
-// bubble-phase listener would otherwise dispatch Cmd+W as `C-w` (Cmd and
-// Ctrl both normalise to `C-`), which is a *complete* binding
-// (kill-region), claim it, and preventDefault before the window router
-// above ever sees it. (The clipboard chords escape this because C-c/C-x
-// are prefixes that bubble through; C-w is not.) stopPropagation keeps
-// the editor from *also* running kill-region. Real Ctrl+W still reaches
-// the editor as kill-region; a native input (minibuffer/REPL) keeps
-// Cmd+W for itself.
-window.addEventListener(
-  'keydown',
-  (event) => {
-    if (!keymapReady) return;
-    if (event.key.toLowerCase() !== 'w') return;
-    if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
-      return;
-    }
-    if (targetOwnsKeys(event.target)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    try {
-      interpreter.call('close-tab');
-    } catch (error) {
-      repl.appendError(`close-tab: ${error.message}`);
-    }
-  },
-  true
-);
-
-// Right-click → Paste (and any other native paste action that isn't the
-// Cmd+V chord, which keydown handles above). The custom renderer isn't
+// Right-click → Paste (and any other native paste action — the Edit
+// menu's Paste item included). The custom renderer isn't
 // contenteditable, so a paste event would otherwise do nothing. Route it
 // through the clipboard-aware `yank`. Native inputs keep their own paste.
 window.addEventListener('paste', (event) => {
