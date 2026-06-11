@@ -1458,6 +1458,22 @@ body.markdown-preview-hidden #preview-splitter {
   color: var(--tok-paren);
 }
 
+/* LaTeX commands — italic, matching Sublime's JMarkdown math palette.
+   Two faces (set by packages/renderer/src/languages/latex.js): blue for
+   functions/operations, purple for Greek letters, accents, named symbols
+   and \begin/\end. Dedicated faces (not @function/@keyword) so the italic
+   rides on the token itself — markdown math is injected, so mode-scoped
+   CSS can't reach it. */
+.tok-latex-command {
+  color: var(--tok-function);
+  font-style: italic;
+}
+
+.tok-latex-symbol {
+  color: var(--tok-keyword);
+  font-style: italic;
+}
+
 /* Markdown / JMarkdown */
 .tok-heading {
   color: var(--tok-heading);
