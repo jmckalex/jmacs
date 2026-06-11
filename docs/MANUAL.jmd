@@ -593,6 +593,9 @@ ${bodyInner}
     // A heading.
     const level = parseInt(tag.slice(1), 10);
     const $h = $(el);
+    // A heading INSIDE a :::function entry (its `### name`) belongs to that
+    // function leaf, not a separate section node — skip it.
+    if ($h.closest('function').length) return;
     const title = $h.text().trim();
     // Skip empty / front-matter / symbol-only "headings" (separators or
     // stray rules) — they are not real nodes.
