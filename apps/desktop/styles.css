@@ -4543,6 +4543,54 @@ doc-view,
   margin-right: auto;
 }
 
+/* Vertical rhythm. The app's global `* { margin: 0; padding: 0 }` reset
+   strips the default block spacing and list indentation, so paragraphs run
+   together; restore them for doc prose. */
+.doc-view .doc-page p,
+.doc-view .doc-page ul,
+.doc-view .doc-page ol,
+.doc-view .doc-page pre,
+.doc-view .doc-page blockquote,
+.doc-view .doc-page table {
+  margin-bottom: 0.95em;
+}
+.doc-view .doc-page h1,
+.doc-view .doc-page h2,
+.doc-view .doc-page h3,
+.doc-view .doc-page h4,
+.doc-view .doc-page h5,
+.doc-view .doc-page h6 {
+  margin-top: 1.7em;
+  margin-bottom: 0.55em;
+  line-height: 1.25;
+}
+.doc-view .doc-page > :first-child {
+  margin-top: 0;
+}
+.doc-view .doc-page ul,
+.doc-view .doc-page ol {
+  padding-left: 1.6em;
+}
+.doc-view .doc-page li {
+  margin-bottom: 0.3em;
+}
+.doc-view .doc-page li > ul,
+.doc-view .doc-page li > ol {
+  margin-top: 0.3em;
+  margin-bottom: 0;
+}
+.doc-view .doc-page blockquote {
+  padding-left: 1em;
+  border-left: 3px solid #ffffff20;
+  color: var(--fg-dim);
+}
+/* Keep the generated menus/index flush — they manage their own layout and
+   must override the prose list-indent above. */
+.doc-view .doc-page .doc-menu ul,
+.doc-view .index-page .doc-index-list {
+  padding-left: 0;
+}
+
 /* The auto-generated "In this section" menu on a section page. */
 .doc-menu { margin-top: 1.8rem; padding-top: 0.9rem; border-top: 1px solid #ffffff14; }
 .doc-menu-title {
