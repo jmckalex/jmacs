@@ -163,7 +163,9 @@
       result)
     (catch err
       (end-change-group!)
-      (error err))))
+      ;; `error` needs a string message; `err` is the condition map, so
+      ;; re-raise its parts to preserve the original message+irritants.
+      (apply error (get err :message) (get err :irritants)))))
 
 (defmacro atomic-change-group (first . rest)
   "Evaluate the body with every buffer edit grouped into a single undo

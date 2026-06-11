@@ -1864,6 +1864,18 @@ test('atomic-change-group closes its group even when the body raises', async () 
   assert.equal(buffer.text, 'abc');
 });
 
+test('atomic-change-group re-raises the original message and irritants', async () => {
+  const { interpreter } = await editor('abc');
+  const msg = interpreter.evaluate(
+    '(try (atomic-change-group (insert! "x") (error "boom" 42)) (catch e (get e :message)))'
+  );
+  assert.equal(msg, 'boom', 'the original message survives the re-raise');
+  const irritant = interpreter.evaluate(
+    '(try (atomic-change-group (error "again" 42)) (catch e (car (get e :irritants))))'
+  );
+  assert.equal(irritant, 42, 'irritants survive the re-raise');
+});
+
 test('C-x C-d duplicates the current line below it', async () => {
   const { buffer, interpreter } = await editor('one\ntwo');
   buffer.moveTo(1); // on "one"
@@ -2734,6 +2746,16 @@ test('faces is a registered customize group under jmacs', async () => {
   const { interpreter } = await editor();
   const parent = interpreter.evaluate(
     "(get (get *custom-groups* 'faces {}) :parent nil)"
+  );
+  assert.equal(parent && parent.name, 'jmacs');
+});
+
+test('editing is a registered customize group under jmacs', async () => {
+  // Six stdlib settings (indent, system, cite) file under 'editing;
+  // without this registration they are invisible to top-down browsing.
+  const { interpreter } = await editor();
+  const parent = interpreter.evaluate(
+    "(get (get *custom-groups* 'editing {}) :parent nil)"
   );
   assert.equal(parent && parent.name, 'jmacs');
 });
