@@ -61,10 +61,19 @@ export function createBuffer(initialText = '') {
   let text = initialText;
   /** @type {Set<ChangeListener>} */
   const listeners = new Set();
-  /** @type {BufferChange[]} */
+  /**
+   * Each entry is one undo step: a single change, or an array of
+   * changes recorded inside a change group (see `beginChangeGroup`),
+   * which undo/redo replay as one atomic unit.
+   * @type {(BufferChange | BufferChange[])[]}
+   */
   const undoStack = [];
-  /** @type {BufferChange[]} */
+  /** @type {(BufferChange | BufferChange[])[]} */
   const redoStack = [];
+  /** Change-group nesting depth; 0 = no group open. */
+  let groupDepth = 0;
+  /** The changes collected by the open group. @type {BufferChange[] | null} */
+  let groupChanges = null;
 
   /**
    * Validate that `offset` is an integer in `[0, length]`.
@@ -98,14 +107,24 @@ export function createBuffer(initialText = '') {
   }
 
   /**
-   * Apply a user-initiated edit: record it for undo, drop the redo
-   * stack, then apply it.
+   * Apply a user-initiated edit: record it for undo (into the open
+   * change group, when one is active), drop the redo stack, then
+   * apply it.
    * @param {BufferChange} change
    */
   function applyEdit(change) {
-    undoStack.push(change);
+    if (groupChanges !== null) {
+      groupChanges.push(change);
+    } else {
+      undoStack.push(change);
+    }
     redoStack.length = 0;
     emit(change);
+  }
+
+  /** The inverse of a change — what undoes it. @param {BufferChange} c */
+  function inverseOf(c) {
+    return { start: c.start, removed: c.inserted, inserted: c.removed };
   }
 
   /**
@@ -339,39 +358,78 @@ export function createBuffer(initialText = '') {
     },
 
     /**
-     * Undo the most recent edit. Edits produced by undo and redo are
-     * not themselves recorded as new edits.
+     * Group every edit made until the matching `endChangeGroup` into a
+     * SINGLE undo step — a multi-edit command (fill-paragraph,
+     * indent-region) undoes atomically instead of edit by edit.
+     * Re-entrant: only the outermost begin/end pair opens and closes
+     * the group.
+     */
+    beginChangeGroup() {
+      if (groupDepth === 0) groupChanges = [];
+      groupDepth += 1;
+    },
+
+    /**
+     * Close the current change group (see `beginChangeGroup`). The
+     * collected changes land on the undo stack as one entry; an empty
+     * group records nothing. Unbalanced calls are ignored.
+     */
+    endChangeGroup() {
+      if (groupDepth === 0) return;
+      groupDepth -= 1;
+      if (groupDepth > 0) return;
+      const collected = groupChanges;
+      groupChanges = null;
+      if (collected.length === 1) undoStack.push(collected[0]);
+      else if (collected.length > 1) undoStack.push(collected);
+    },
+
+    /**
+     * Undo the most recent edit — or, for a change group, every edit
+     * in it, replayed in reverse, as one step. Edits produced by undo
+     * and redo are not themselves recorded as new edits. A no-op while
+     * a change group is still open (its edits are not yet on the
+     * stack; undoing past them would corrupt the history).
      *
      * @returns {boolean} `true` if an edit was undone, `false` if there
      *   was nothing to undo.
      */
     undo() {
+      if (groupDepth > 0) return false;
       const change = undoStack.pop();
       if (change === undefined) {
         return false;
       }
       redoStack.push(change);
-      emit({
-        start: change.start,
-        removed: change.inserted,
-        inserted: change.removed,
-      });
+      if (Array.isArray(change)) {
+        for (let i = change.length - 1; i >= 0; i -= 1) {
+          emit(inverseOf(change[i]));
+        }
+      } else {
+        emit(inverseOf(change));
+      }
       return true;
     },
 
     /**
-     * Redo the most recently undone edit.
+     * Redo the most recently undone edit (a change group re-applies in
+     * full, as one step).
      *
      * @returns {boolean} `true` if an edit was redone, `false` if there
      *   was nothing to redo.
      */
     redo() {
+      if (groupDepth > 0) return false;
       const change = redoStack.pop();
       if (change === undefined) {
         return false;
       }
       undoStack.push(change);
-      emit(change);
+      if (Array.isArray(change)) {
+        for (const c of change) emit(c);
+      } else {
+        emit(change);
+      }
       return true;
     },
 
@@ -406,6 +464,8 @@ export function createBuffer(initialText = '') {
  * @property {(offset: number) => LinePosition} positionAt
  * @property {(line: number, column: number) => number} offsetAt
  * @property {(listener: ChangeListener) => (() => void)} onChange
+ * @property {() => void} beginChangeGroup
+ * @property {() => void} endChangeGroup
  * @property {() => boolean} undo
  * @property {() => boolean} redo
  * @property {boolean} canUndo

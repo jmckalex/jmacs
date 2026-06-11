@@ -42,6 +42,8 @@ async function jmdEditor() {
       'show-status!': () => NIL,
       'clear-status!': () => NIL,
       'buffer-major-mode': () => NIL,
+      'begin-change-group!': () => NIL,
+      'end-change-group!': () => NIL,
       'buffer-minor-modes': () => NIL,
       'insert!': (args) => {
         const s = String(args[0]);

@@ -48,14 +48,15 @@
           (text (current-line-text))
           (start (line-start))
           (end (line-end)))
-      ;; Remove the line and the newline that precedes it.
-      (delete-region! (- start 1) end)
-      ;; The cursor is now on what was the previous line; its start is
-      ;; where the moved line must be re-inserted.
-      (let ((above (line-start)))
-        (goto! above)
-        (insert! (str text "\n"))
-        (goto! (+ above col))))))
+      (atomic-change-group
+        ;; Remove the line and the newline that precedes it.
+        (delete-region! (- start 1) end)
+        ;; The cursor is now on what was the previous line; its start is
+        ;; where the moved line must be re-inserted.
+        (let ((above (line-start)))
+          (goto! above)
+          (insert! (str text "\n"))
+          (goto! (+ above col)))))))
 
 (defcommand move-line-down ()
   "Move the current line down one, swapping it with the line below.
@@ -65,15 +66,16 @@
           (text (current-line-text))
           (start (line-start))
           (end (line-end)))
-      ;; Remove the line and the newline that follows it.
-      (delete-region! start (+ end 1))
-      ;; The cursor now sits at the start of what was the next line;
-      ;; step to that line's end and re-insert below it.
-      (goto! start)
-      (let ((below-end (line-end)))
-        (goto! below-end)
-        (insert! (str "\n" text))
-        (goto! (+ (line-start) col))))))
+      (atomic-change-group
+        ;; Remove the line and the newline that follows it.
+        (delete-region! start (+ end 1))
+        ;; The cursor now sits at the start of what was the next line;
+        ;; step to that line's end and re-insert below it.
+        (goto! start)
+        (let ((below-end (line-end)))
+          (goto! below-end)
+          (insert! (str "\n" text))
+          (goto! (+ (line-start) col)))))))
 
 ;; --- duplicating a line ------------------------------------------------
 
@@ -102,9 +104,10 @@
              (trimmed (drop-leading-blanks rest))
              (consumed (- (string-length rest) (string-length trimmed))))
         ;; Replace the newline and the leading blanks with one space.
-        (delete-region! end (+ next-start consumed))
-        (insert! " ")
-        (goto! end)))))
+        (atomic-change-group
+          (delete-region! end (+ next-start consumed))
+          (insert! " ")
+          (goto! end))))))
 
 ;; --- indenting / outdenting lines (M-] / M-[) ---------------------------
 ;;
@@ -211,11 +214,12 @@
              (new-text (car result))
              (edits (cdr result)))
         (unless (nil? edits)
-          (delete-region! span-start span-end)
-          (goto! span-start)
-          (insert! new-text)
-          (when had-region (set-mark! (-shift-offset m edits 0)))
-          (goto! (-shift-offset p edits 0)))))))
+          (atomic-change-group
+            (delete-region! span-start span-end)
+            (goto! span-start)
+            (insert! new-text)
+            (when had-region (set-mark! (-shift-offset m edits 0)))
+            (goto! (-shift-offset p edits 0))))))))
 
 (defcommand indent-region ()
   "Indent the lines the region touches (or the current line) by one

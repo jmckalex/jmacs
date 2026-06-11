@@ -1839,6 +1839,26 @@ test('move-line-down then move-line-up is a round trip', async () => {
   assert.equal(buffer.text, 'a\nb\nc');
 });
 
+test('a multi-edit command undoes as ONE step (atomic-change-group)', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo\nthree');
+  buffer.moveTo(6); // inside "two"
+  press(interpreter, 'M-up'); // move-line-up = delete + insert
+  assert.equal(buffer.text, 'two\none\nthree');
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'one\ntwo\nthree', 'one undo restores the original');
+});
+
+test('atomic-change-group closes its group even when the body raises', async () => {
+  const { buffer, interpreter } = await editor('abc');
+  assert.throws(() =>
+    interpreter.evaluate('(atomic-change-group (insert! "x") (error "boom"))')
+  );
+  assert.equal(buffer.text, 'xabc');
+  // The group closed despite the error: undo works normally again.
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'abc');
+});
+
 test('C-x C-d duplicates the current line below it', async () => {
   const { buffer, interpreter } = await editor('one\ntwo');
   buffer.moveTo(1); // on "one"

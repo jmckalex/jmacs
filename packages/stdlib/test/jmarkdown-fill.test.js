@@ -35,6 +35,8 @@ async function fillEditor() {
       'show-status!': () => NIL,
       'clear-status!': () => NIL,
       'buffer-major-mode': () => NIL,
+      'begin-change-group!': () => NIL,
+      'end-change-group!': () => NIL,
       'buffer-minor-modes': () => NIL,
       'buffer-text': () => buffer.text,
       'buffer-length': () => buffer.text.length,

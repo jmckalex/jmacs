@@ -51,10 +51,11 @@
    body (an empty line when there is none), then place point
    CURSOR-OFFSET characters after the block's start."
   (let ((text (if (region-active?) (region-text) "")))
-    (unless (equal? text "") (delete-backward!))
-    (let ((p (point)))
-      (insert! (str opener "\n" text "\n" closer))
-      (goto! (+ p cursor-offset)))))
+    (atomic-change-group
+      (unless (equal? text "") (delete-backward!))
+      (let ((p (point)))
+        (insert! (str opener "\n" text "\n" closer))
+        (goto! (+ p cursor-offset))))))
 
 (defcommand jmarkdown-insert-directive ()
   "Insert a ::: directive block around the selection. With no
@@ -67,13 +68,14 @@
    @begin(…) and @end(…) together. ESC (or C-g) collapses back to the
    single cursor when done."
   (let ((text (if (region-active?) (region-text) "")))
-    (unless (equal? text "") (delete-backward!))
-    (let ((p (point)))
-      (insert! (str "@begin()\n" text "\n@end()"))
-      ;; Primary cursor inside @begin(, secondary inside @end( — the
-      ;; multi-cursor set mirrors typed input into both.
-      (goto! (+ p 7))
-      (add-selection! (+ p 15 (string-length text))))))
+    (atomic-change-group
+      (unless (equal? text "") (delete-backward!))
+      (let ((p (point)))
+        (insert! (str "@begin()\n" text "\n@end()"))
+        ;; Primary cursor inside @begin(, secondary inside @end( — the
+        ;; multi-cursor set mirrors typed input into both.
+        (goto! (+ p 7))
+        (add-selection! (+ p 15 (string-length text)))))))
 
 (defcommand jmarkdown-insert-tikz ()
   "Insert a :::TiKZ block, with point on the (LaTeX) body line."
@@ -355,9 +357,10 @@
              (from (-jmd-line-offset lines start))
              (to (+ (-jmd-line-offset lines end)
                     (string-length (-jmd-nth lines end)))))
-        (delete-region! from to)
-        (goto! from)
-        (insert! (-jmd-join replacement))))))
+        (atomic-change-group
+          (delete-region! from to)
+          (goto! from)
+          (insert! (-jmd-join replacement)))))))
 
 ;; --- the jmarkdown-mode keymap ------------------------------------------
 ;; C-c is the prefix, mirroring markdown-mode's map for the shared

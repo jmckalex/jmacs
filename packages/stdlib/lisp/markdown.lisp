@@ -8,8 +8,9 @@
    insert the pair and place the cursor between them."
   (if (region-active?)
       (let ((text (region-text)))
-        (delete-backward!)
-        (insert! (str opener text closer)))
+        (atomic-change-group
+          (delete-backward!)
+          (insert! (str opener text closer))))
       (begin
         (insert! (str opener closer))
         (goto! (- (point) (string-length closer))))))
@@ -42,9 +43,10 @@
   "Insert a link, wrapping the selection as the link text."
   (if (region-active?)
       (let ((text (region-text)))
-        (delete-backward!)
-        (insert! (str "[" text "]()"))
-        (goto! (- (point) 1)))
+        (atomic-change-group
+          (delete-backward!)
+          (insert! (str "[" text "]()"))
+          (goto! (- (point) 1))))
       (begin
         (insert! "[]()")
         (goto! (- (point) 3)))))
