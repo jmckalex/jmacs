@@ -192,9 +192,15 @@
    "M-up"         'move-line-up
    "M-down"       'move-line-down
    ;; Sublime-style block indentation (line-ops.lisp). The host names
-   ;; the bracket keys "[" / "]" (event.code BracketLeft/BracketRight).
+   ;; the bracket keys "[" / "]" (event.code BracketLeft/BracketRight) —
+   ;; but the architect's Karabiner remap re-emits both bracket keys on
+   ;; the BracketRight code: his [ key arrives as "M-]" and his ] key as
+   ;; "M-S-]" (verified with C-h k). Bind what actually arrives, so the
+   ;; keycaps behave like Sublime: ] indents, [ outdents. "M-[" stays
+   ;; bound for an unremapped keyboard.
    "M-["          'outdent-region
-   "M-]"          'indent-region
+   "M-]"          'outdent-region
+   "M-S-]"        'indent-region
    ;; expand-region — C-= as the spec names it; the host normalises that
    ;; keystroke (event.code "Equal") to "C-equal".
    "C-equal"      'expand-region

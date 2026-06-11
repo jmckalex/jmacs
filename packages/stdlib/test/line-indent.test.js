@@ -176,8 +176,12 @@ test('*tab-width* drives the indent amount', async () => {
   assert.equal(buffer.text, '  one\n');
 });
 
-test('M-[ and M-] are bound in the global keymap', async () => {
+test('the bracket bindings match what the architect\'s keyboard delivers', async () => {
+  // Karabiner re-emits both bracket keys on the BracketRight code:
+  // the [ key arrives as "M-]", the ] key as "M-S-]". "M-[" stays
+  // bound for an unremapped keyboard.
   const { ev } = await indentEditor();
-  assert.equal(ev(`(eq? (get the-keymap "M-]") 'indent-region)`), true);
+  assert.equal(ev(`(eq? (get the-keymap "M-S-]") 'indent-region)`), true);
+  assert.equal(ev(`(eq? (get the-keymap "M-]") 'outdent-region)`), true);
   assert.equal(ev(`(eq? (get the-keymap "M-[") 'outdent-region)`), true);
 });
