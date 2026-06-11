@@ -369,6 +369,18 @@ tabline-view[data-edge='right'] .tabline-resizer {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 65%, transparent);
 }
 
+/* The focused pane's editing surface — theme-controlled. Themes that
+   want the active pane to read darker set --bg-editor-focused a step
+   below --bg-editor (`bright` does); the rest set them equal. The
+   active tab follows so the tab flows into its surface seamlessly. */
+.pane--focused .editor {
+  background: var(--bg-editor-focused, var(--bg-editor));
+}
+
+.pane--focused .tabline-tab.is-current {
+  background: var(--bg-editor-focused, var(--bg-editor));
+}
+
 /* --- pane splitter ------------------------------------------------- */
 /* A draggable thin div per split-node interior edge in the pane tree
    (plans/PANES.md, phase 3a). Absolute-positioned inside #editor-host
