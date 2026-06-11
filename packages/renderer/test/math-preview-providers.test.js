@@ -103,3 +103,12 @@ test('providerForConfig masks code only when asked', () => {
   assert.equal(providerForConfig(MARKDOWN_MATH_CONFIG, true).scan('`$x$`').length, 0);
   assert.equal(providerForConfig(MARKDOWN_MATH_CONFIG, false).scan('`$x$`').length, 1);
 });
+
+test('JMarkdown selects the markdown config with code masking', () => {
+  const provider = mathPreviewProviderForMode('JMarkdown');
+  assert.ok(provider, 'JMarkdown has a provider');
+  assert.equal(provider.config, MARKDOWN_MATH_CONFIG);
+  // Code masking: a $ inside an inline code span is not math.
+  const segments = provider.scan('Code `$x$` but math $y$.');
+  assert.deepEqual(segments.map((s) => s.body), ['y']);
+});

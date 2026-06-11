@@ -47,7 +47,7 @@ import {
  *
  * @type {ReadonlySet<string>}
  */
-const CODE_AWARE_MODES = new Set(['Markdown']);
+const CODE_AWARE_MODES = new Set(['Markdown', 'JMarkdown']);
 
 /**
  * @typedef {import('./math-segments.js').MathSegment} MathSegment
@@ -72,6 +72,7 @@ const CODE_AWARE_MODES = new Set(['Markdown']);
 export const MATH_PREVIEW_CONFIGS = Object.freeze({
   LaTeX: LATEX_MATH_CONFIG,
   Markdown: MARKDOWN_MATH_CONFIG,
+  JMarkdown: MARKDOWN_MATH_CONFIG,
   // Future modes go here, e.g.:
   //   HTML: MARKDOWN_MATH_CONFIG,
   //   PHP: MARKDOWN_MATH_CONFIG,
