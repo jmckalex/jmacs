@@ -10,7 +10,7 @@ The bindings described here are the editor's *defaults*, defined in
 Lisp (`packages/stdlib/lisp/keymap.lisp`). None of them is baked into
 the host — they are a map you can edit, and a key you bind takes effect
 on the next keystroke. This chapter describes the map as shipped; the
-[Extending jmacs](extending.md) chapter explains how to change it.
+*Extending jmacs* chapter explains how to change it.
 
 ### How a key is named
 
@@ -27,21 +27,23 @@ string. The rule is simple:
 
 The modifier prefixes, in the order they are written:
 
-- `C-` — **Control or Command**. The two are treated alike, so the
-  editor is usable on a Mac (where Command is the natural reach) and on
-  a PC keyboard (where Control is). `C-f` is Control-F *or* Command-F.
-- `M-` — **Option / Alt** (the "Meta" key). `M-x` is Option-X.
+- `C-` — **Control**, and Control alone. `C-f` is Control-F.
+- `M-` — **Command** (the Meta of Emacs custom). `M-x` is Command-X.
+- `A-` — **Option / Alt**. An `A-` chord the keymap does not bind
+  falls through to inserting the character Option composed, so binding
+  an Option key costs exactly that one composition — the rest of
+  Option's typing (curly quotes, accents) is untouched.
 - `S-` — **Shift**. Usually only named on non-printable keys —
   `S-left`, `S-end` — since a shifted letter is already its own
   character.
 
-When more than one modifier is held they stack in that fixed order:
-Control, then Option, then Shift. So Control-Shift-Z is `"C-S-z"` and
-Control-Option-S is `"C-M-s"`.
+When more than one modifier is held they stack in that fixed order —
+`C-M-A-S-`: Control, Meta, Option, Shift. So Control-Shift-Z is
+`"C-S-z"` and Control-Option-S is `"C-A-s"`.
 
 Two details are worth knowing. First, a modified key takes its base
 name from the *physical* key, not the character the OS would compose.
-On macOS, Option-X composes `≈`, but the editor still sees `"M-x"`,
+On macOS, Option-X composes `≈`, but a binding still sees `"A-x"`,
 because the base name comes from the key's position rather than its
 output. Second, some keys you might think of as punctuation arrive
 *shifted* and so carry an `S-`: `M-<` is `"M-S-comma"` and `M-%` is
@@ -53,7 +55,7 @@ think about it unless you are writing a binding of your own.
 > `packages/renderer/src/keymap.js` (`keyEventToString`). `Enter` becomes
 > `enter`, the arrows become `left`/`right`/`up`/`down`, `Ctrl+M` is
 > `C-m` (no folding to a control character), and Option-Return is
-> `M-enter`. The Lisp keymap is written entirely in these strings.
+> `A-enter`. The Lisp keymap is written entirely in these strings.
 
 ### Prefix keys and chords
 
@@ -106,7 +108,7 @@ computed by cmd(command-names) — which is essentially the editor's whole
 public surface. `M-x` is therefore two things at once: the way to run
 commands that have no binding, and a way to *discover* the editor by
 browsing what is there. When you have found a command you use often, the
-[Extending jmacs](extending.md) chapter shows how to give it a key.
+*Extending jmacs* chapter shows how to give it a key.
 
 ### How a keystroke is dispatched
 

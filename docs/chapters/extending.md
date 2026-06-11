@@ -9,13 +9,14 @@ editor's own authors are doing, with the same tools, against the same
 live object. You change the editor the way you edit a document: type, try
 it, keep it.
 
-Extension happens in Lisp first — the custom dialect specified in
-`docs/spec/lisp.md` — and in JavaScript when you want it. This chapter is
+Extension happens in Lisp first — the custom dialect taught from the
+ground up in this manual's *Programming in jmacs Lisp* part — and in
+JavaScript when you want it. This chapter is
 the orientation: the REPL you try things in, how a command is defined and
 bound, how a change you make takes effect *now* without a restart, how
 the editor describes itself when you ask, the shape of a mode, and the
 JavaScript bridge underneath. The notation is the manual's throughout:
-`C-` is Control or Command, `M-` is Option, `S-` is Shift.
+`C-` is Control, `M-` is Command (Meta), `A-` is Option, `S-` is Shift.
 
 ### The REPL
 
@@ -27,8 +28,8 @@ acts on the document in front of you:
 
 ```lisp
 (insert! "hello")     ; types into the visible buffer at point
-(point)               ; => the cursor's offset
-(buffer-name)         ; => the current buffer's name
+(point)               ; ⇒ the cursor's offset
+(view-name)           ; ⇒ the current view's name
 ```
 
 The REPL is where you reach for a primitive to see what it does, sketch a
@@ -106,8 +107,8 @@ Keymaps are plain Lisp maps from a key string to either a command *name*
 
 A key string is exactly what the renderer reports: a single character for
 printable keys (`"a"`, `" "`), a name for the rest (`"left"`,
-`"backspace"`), with modifier prefixes `"C-"`, `"M-"`, `"S-"` — so
-`"C-d"`, `"S-left"`, `"C-S-z"`. A nested keymap is a prefix: bind a key to
+`"backspace"`), with modifier prefixes `"C-"`, `"M-"`, `"A-"`, `"S-"`,
+in that order — so `"C-d"`, `"S-left"`, `"C-S-z"`. A nested keymap is a prefix: bind a key to
 a sub-map and pressing the prefix then a key from that map is how `C-x
 C-f` reaches cmd(find-file). The standard library's prefix maps —
 `c-x-keymap`, `c-h-keymap`, `c-c-keymap` — are themselves just variables
@@ -140,16 +141,17 @@ C-r`, and the next keystroke uses the new version. This is the core of the
 editor's extensibility loop: the program rewrites itself while it runs,
 and you stay in the session you were working in.
 
-It works because of the Lisp's *module* hot-reload semantics
-(`docs/spec/lisp.md`, §6). Re-evaluating a `(module name …)` form does not
-build a fresh namespace; it reuses the module's existing environment,
-clearing it first so removed definitions disappear, then re-running the
-body. Because the evaluator resolves names late, every procedure that
-closes over that environment — the module's own procedures, and anything
-calling into them — picks up the new definitions the moment the module is
-re-evaluated. So re-evaluating a single module is hot reload in miniature:
-the unit `C-x C-r` applies to the standard library as a whole, you can
-apply to one module at a time.
+It works because of two properties of the language. The standard
+library's files are plain top-level Lisp, so re-evaluating them rebinds
+the same global names; and the evaluator resolves names *late* — a
+keymap holds command symbols looked up at dispatch time, and a procedure
+looks up the names in its body when it runs — so everything that refers
+to a rebound name uses the new definition on its next call. Modules have
+an analogous story: re-evaluating a `(module name …)` form does not
+build a fresh namespace, it reuses the module's existing environment,
+clearing it first so removed definitions disappear — hot reload in
+miniature, applied by hand where `C-x C-r` applies to the whole library.
+The precise rules are in *Modules and Program Structure*.
 
 One sharp edge to know. An *importer* holds a snapshot of what it
 imported, so a redefined *export* is stale in the importer until that
@@ -175,9 +177,9 @@ defined at. Three primitives surface that, callable anywhere — the REPL,
 a command, your own code:
 
 ```lisp
-(doc insert-divider)            ; => the docstring, or nil
-(where-defined insert-divider)  ; => "line:col" where it was defined
-(describe insert-divider)       ; => a map: name, params, docstring, location
+(doc insert-divider)            ; ⇒ the docstring, or nil
+(where-defined insert-divider)  ; ⇒ "line:col" where it was defined
+(describe insert-divider)       ; ⇒ a map: name, params, docstring, location
 ```
 
 Five commands present the same self-knowledge interactively, all under

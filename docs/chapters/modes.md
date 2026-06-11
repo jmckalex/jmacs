@@ -38,17 +38,19 @@ own view, not the editor's text view, and so carry no text keymap.
 ### How the major mode is chosen
 
 The major mode is selected from the buffer's *name* by a registry that
-maps filename suffixes to modes. Opening `notes.md` or `paper.jmd`
-gives you `markdown-mode`; `init.lisp` gives `lisp-mode`; `thesis.tex`
-gives `latex-mode`; a file named `Makefile` gives `makefile-mode`. A
-name that matches no registered suffix gets `fundamental-mode`.
+maps filename suffixes to modes. Opening `notes.md` gives you
+`markdown-mode` and `paper.jmd` gives `jmarkdown-mode`; `init.lisp`
+gives `lisp-mode`; `thesis.tex` gives `latex-mode`; a file named
+`Makefile` gives `makefile-mode`. A name that matches no registered
+suffix gets `fundamental-mode`.
 
-The choice is made automatically when a buffer is created, opened, or
-renamed — `choose-major-mode!` is run for you and the modeline updates
-to match. Selection is by name only: there is no detection from a
-shebang line or file contents. A buffer whose name later changes (for
-instance, you save an untitled buffer under a `.py` name) is
-re-evaluated and picks up the matching mode.
+The choice is made automatically when a buffer first appears with no
+mode — `choose-major-mode!` is run for you and the modeline updates to
+match. Selection is by name only: there is no detection from a shebang
+line or file contents. Once chosen, the mode sticks: renaming a buffer
+or saving it under a new name does not re-run selection. To change a
+buffer's mode after the fact, switch it explicitly —
+`(switch-major-mode python-mode)` from the REPL.
 
 ### Reading the modeline
 

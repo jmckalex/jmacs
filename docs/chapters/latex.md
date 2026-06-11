@@ -61,12 +61,13 @@ You rarely need to refresh the preview by hand: after a clean build,
 cmd(latex-compile) reloads an already-open PDF automatically, so the
 output beside your source stays current as you recompile.
 
-When a build reports errors, walk them with cmd(latex-next-error) —
-`C-c ` ` — which visits the next diagnostic from the last build, opening
-its file, jumping to its line, and echoing the message. Its companion
-cmd(latex-previous-error) steps backward (bound by name, reachable via
-`M-x`). cmd(latex-show-output) brings the raw **TeX output** tab forward
-when you want to read the unparsed log.
+When a build reports errors, walk them with cmd(latex-next-error),
+bound to the backtick key under the mode prefix (C-c then a backtick).
+It visits the next diagnostic from the last build, opening its file,
+jumping to its line, and echoing the message. Its
+companion cmd(latex-previous-error) steps backward (bound by name,
+reachable via `M-x`); cmd(latex-show-output) brings the raw
+**TeX output** tab forward when you want to read the unparsed log.
 
 Several settings tune the loop. `*latex-command*` and the fallback are
 described above; `*latex-bibtex-command*` is the seam for an explicit
