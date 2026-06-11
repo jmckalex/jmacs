@@ -122,3 +122,48 @@ via the View menu and `M-x`. Free `C-x` slots: `C-x 4`–`C-x 9`.
 suite green. Ready for your live test, the keybinding call, then merge.
 
 ---
+
+## [2026-06-11 00:00] desktop-logic-tests: unit tests for electron-free desktop modules (2 of 4 targets covered)
+
+**Context**: Overnight test-only task — add unit tests for currently-untested
+electron-free modules under `apps/desktop/src/`. Branch `desktop-logic-tests`,
+no `src/` touched.
+
+**Covered (both green)**:
+- `view-warehouse.js` → `test/view-warehouse.test.js` (14 tests). Fake-DOM
+  harness with real re-parenting semantics; pins reuse-vs-rebuild, document
+  order, snapshot semantics of `warehouseContents`, the lazy element cache,
+  and the missing-`#view-warehouse` throw.
+- `jmarkdown.js` → `test/jmarkdown.test.js` (14 tests). Drives real harmless
+  commands (`cat`/`tr`/shell `exit`); pins stdin-only delivery (the
+  shell-injection-safety property), stderr/exit-code error shapes, the
+  no-command guard, and "never rejects".
+
+Desktop suite: 314 → 342 pass, 0 fail (both `node --test` and
+`pnpm --filter @editor/desktop test`).
+
+**Skipped (could NOT import without changing production config — flagging, not
+guessing)**:
+- `splash.js` imports `@editor/renderer`; `move-view-mode.js` and
+  `add-pane-mode.js` import `@editor/pane`. Neither package is a declared
+  dependency of `apps/desktop/package.json` (only `@editor/view` is) and
+  neither is symlinked into `apps/desktop/node_modules`, so they fail to
+  resolve under `node --test` (`ERR_MODULE_NOT_FOUND`). Importing them in a
+  test would require adding `@editor/renderer` / `@editor/pane` to the desktop
+  package's deps — a production manifest change, out of scope for a test-only
+  task. If you want these covered, the clean fix is to add those two as
+  `workspace:*` deps of `apps/desktop` (they're already real workspace
+  packages); say the word and I'll do it on a follow-up branch. The pure
+  digit-entry state machine behind `move-view-mode` is already fully tested
+  in `test/move-view-state.test.js`.
+
+**Gap noted in jmarkdown coverage**: the 5s render-timeout path (`TIMEOUT_MS`,
+SIGKILL → `{ error: 'JMarkdown render timed out' }`) is not exercised — the
+limit is a fixed internal constant, not injectable, so a real test would have
+to wait the full 5s. Left uncovered deliberately (commented in the test file).
+If you'd like it tested, exposing `TIMEOUT_MS` as an optional parameter would
+make a fast test possible — but that's a `src/` change, so I didn't make it.
+
+No bugs found; all observed behaviour matched the modules' doc comments.
+
+---
