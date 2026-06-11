@@ -85,6 +85,10 @@ async function editor(initialText = 'hello world', options = {}) {
         fileCalls.push('open');
         return NIL;
       },
+      // find-file seeds its prompt from the current view's file path;
+      // the test views visit no file, so it falls back to home.
+      'current-view': () => NIL,
+      'view-file-path': () => NIL,
       'save-buffer!': () => {
         fileCalls.push('save');
         return NIL;
