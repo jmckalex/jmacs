@@ -386,6 +386,15 @@ export function applyCaptureProvider(ranges, provided) {
  * inner ranges take their place. Outer ranges that fall outside every
  * live injection, or inside a missing one, survive untouched.
  *
+ * Live injections may themselves overlap — a code-driven provider's
+ * region (LaTeX into a dialect's verbatim block) inside a query's
+ * region (a paragraph into an inline grammar). The *later* injection
+ * in the list wins the overlap: an earlier injection's inner ranges
+ * are clipped against every later live region, exactly as outer ranges
+ * are clipped against all of them. Provider injections are appended
+ * after query injections (see `captures`), so a provider can override
+ * the grammar's injection on the spans it knows better.
+ *
  * Recursion stops at {@link MAX_INJECTION_DEPTH}: at the cap the
  * outer ranges are returned as-is, leaving the outer face on what
  * would have been an injected region.
@@ -414,25 +423,40 @@ export function spliceInjections(
 
   /** @type {{ start: number, end: number }[]} */
   const liveInjections = [];
-  /** @type {CaptureRange[]} */
-  const innerRanges = [];
+  /** @type {CaptureRange[][]} Inner ranges per live injection, in order. */
+  const innerByInjection = [];
 
   for (const injection of injections) {
     const inner = getHighlighter(injection.language);
     if (!inner || typeof inner.captures !== 'function') continue;
     const sliced = text.slice(injection.start, injection.end);
     const ranges = inner.captures(sliced, depth + 1);
-    for (const r of ranges) {
-      innerRanges.push({
+    innerByInjection.push(
+      ranges.map((r) => ({
         start: r.start + injection.start,
         end: r.end + injection.start,
         face: r.face,
-      });
-    }
+      }))
+    );
     liveInjections.push({ start: injection.start, end: injection.end });
   }
 
   if (liveInjections.length === 0) return outerRanges;
+
+  // Where live injections overlap, the later one owns the overlap: clip
+  // each injection's inner ranges against every *later* live region.
+  /** @type {CaptureRange[]} */
+  const innerRanges = [];
+  for (let k = 0; k < innerByInjection.length; k += 1) {
+    const laterRegions = liveInjections.slice(k + 1);
+    if (laterRegions.length === 0) {
+      innerRanges.push(...innerByInjection[k]);
+    } else {
+      for (const r of innerByInjection[k]) {
+        innerRanges.push(...clipRangeAgainstRegions(r, laterRegions));
+      }
+    }
+  }
 
   // Clip every outer range against the live injection regions: the inner
   // highlighter owns those regions, so the outer range keeps only the
