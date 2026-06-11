@@ -759,6 +759,16 @@ export function registerFileHandlers() {
   ipcMain.handle('doc:manifest', async () => {
     const map = await loadDocManifest();
     if (map === null) return null;
+    // New shape: { functions (flat name→path), nodes (id→node), top, order }.
+    // Old shape (back-compat): a flat name→path map.
+    if (map.functions && map.nodes) {
+      return {
+        names: Object.keys(map.functions),
+        nodes: map.nodes,
+        top: map.top ?? null,
+        order: Array.isArray(map.order) ? map.order : [],
+      };
+    }
     return { names: Object.keys(map) };
   });
 
@@ -830,7 +840,10 @@ export function registerFileHandlers() {
     if (map === null) return null;
     const name = payload?.name;
     if (typeof name !== 'string') return null;
-    const relPath = map[name];
+    // Resolve a function name OR a navigation node id to a relative path.
+    const relPath = (map.functions && map.nodes)
+      ? (map.functions[name] ?? map.nodes[name]?.path)
+      : map[name];
     if (typeof relPath !== 'string') return null;
     const absPath = join(docsBuildDir, relPath);
     // Refuse to read outside docs/build/.

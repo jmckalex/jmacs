@@ -2125,37 +2125,50 @@ function openCustomize(name, scope) {
   switchToViewIndex(index);
 }
 
-/** Open (or re-activate) a doc panel in the utility dock for `docName`,
- *  showing the given pre-built HTML. One tab per doc name (id `doc:<name>`).
- *  Reuses the doc-view's behaviour (cross-links, `q`-to-close, code
- *  highlight) via `configureDocView`, with `q` wired to close the tab. */
-function openDocUtilityPanel(docName, html) {
-  const id = `doc:${docName}`;
-  const cfg = configureDocView();
-  utilityDock.openUtilityPanel({
-    id,
-    title: `Doc: ${docName}`,
-    icon: 'fa-solid fa-book-open',
-    modal: false,
-    makePanel: (dock) => createDocPanel({
-      html,
-      title: `Doc: ${docName}`,
-      onKey: cfg.onKey,
-      openDoc: cfg.openDoc,
-      highlightCode: cfg.highlightCode,
-      closeBuffer: dock.close, // `q` closes the tab
-    }),
-  });
-}
+/** The single navigable Manual panel (one utility-dock tab). All doc
+ *  navigation — cross-links, the sidebar, Next/Prev/Up, Info keys — replaces
+ *  this panel's content in place rather than spawning a tab per page, so the
+ *  manual reads like one Info buffer. `manualPanel` is the live panel contract
+ *  while the tab is open (null once closed); `docNavTree` is the node tree
+ *  the doc-view navigates by, set when the manifest loads. */
+const DOC_PANEL_ID = 'doc:manual';
+let manualPanel = null;
+let docNavTree = null;
 
-/** Find or create the doc panel for `docName`, fetching the HTML from
- *  the host if it isn't already open. */
-async function openDocBuffer(docName) {
-  const id = `doc:${docName}`;
-  if (utilityDock.hasTab(id)) {
-    utilityDock.activateUtilityTab(id);
+/** Show pre-built page HTML in the Manual panel — creating it if needed,
+ *  reusing it (in place) otherwise — then activate and focus it. */
+function showInManualPanel(html) {
+  if (manualPanel !== null && utilityDock.hasTab(DOC_PANEL_ID)) {
+    manualPanel.setHtml(html);
+    utilityDock.activateUtilityTab(DOC_PANEL_ID);
+    manualPanel.focus();
     return;
   }
+  const cfg = configureDocView();
+  utilityDock.openUtilityPanel({
+    id: DOC_PANEL_ID,
+    title: 'Manual',
+    icon: 'fa-solid fa-book-open',
+    modal: false,
+    makePanel: (dock) => {
+      manualPanel = createDocPanel({
+        html,
+        title: 'Manual',
+        manifest: docNavTree,
+        onKey: cfg.onKey,
+        openDoc: cfg.openDoc,
+        highlightCode: cfg.highlightCode,
+        closeBuffer: () => { manualPanel = null; dock.close(); },
+      });
+      return manualPanel;
+    },
+  });
+  if (manualPanel) manualPanel.focus();
+}
+
+/** Open the doc page for `docName` (a node id or function name), fetching its
+ *  HTML from the host and showing it in the navigable Manual panel. */
+async function openDocBuffer(docName) {
   let page;
   try {
     page = await window.host.readDocPage(docName);
@@ -2167,7 +2180,7 @@ async function openDocBuffer(docName) {
     repl.appendError(`no doc page for ${docName}`);
     return;
   }
-  openDocUtilityPanel(docName, page.html);
+  showInManualPanel(page.html);
 }
 
 /** Minimal HTML-escape for embedding a user-supplied name into an
@@ -2185,11 +2198,6 @@ function escapeHtml(text) {
  *  live path — for user-defined procedures whose documentation
  *  isn't in the pre-built manifest. */
 async function openDocstringBuffer(docName, source) {
-  const id = `doc:${docName}`;
-  if (utilityDock.hasTab(id)) {
-    utilityDock.activateUtilityTab(id);
-    return;
-  }
   let body;
   try {
     body = await renderMarkdownHtml(source);
@@ -2197,13 +2205,15 @@ async function openDocstringBuffer(docName, source) {
     repl.appendError(`doc render failed: ${error.message}`);
     return;
   }
-  // Frame the rendered body so the doc-view's article styling
-  // applies. The synthesised header matches the static pages'
-  // shape: <h3><code>name</code></h3>, then the prose.
+  // Frame the rendered body in the same `article.doc-page[data-node-id]`
+  // shape the built pages use, so the doc-view lifts it correctly. This
+  // node isn't in the manifest tree, so the view shows it with minimal
+  // chrome (Contents stays reachable; Prev/Up/Next are disabled).
   const html =
+    `<article class="doc-page docstring-page" data-node-id="${escapeHtml(docName)}">` +
     `<h3 class="doc-name"><code>${escapeHtml(docName)}</code></h3>\n` +
-    `<div class="doc-docstring">${body}</div>`;
-  openDocUtilityPanel(docName, html);
+    `<div class="doc-docstring">${body}</div></article>`;
+  showInManualPanel(html);
 }
 
 // --- audio playback (jukebox mode) --------------------------------------
@@ -5301,7 +5311,22 @@ if (keymapReady) applyCurrentFaceStyles();
 window.host
   .readDocManifest()
   .then((manifest) => {
-    if (manifest !== null) docManifestNames = manifest.names;
+    if (manifest === null) return;
+    docManifestNames = manifest.names;
+    // The navigation node tree (TeXinfo-style): hand it to the doc-view so
+    // it can render the sidebar, breadcrumb, and Next/Prev/Up. If the Manual
+    // panel is already open (docs opened before the manifest resolved), push
+    // the tree to it now.
+    if (manifest.nodes && manifest.top) {
+      docNavTree = {
+        nodes: manifest.nodes,
+        top: manifest.top,
+        order: Array.isArray(manifest.order) ? manifest.order : [],
+      };
+      if (manualPanel && typeof manualPanel.setManifest === 'function') {
+        manualPanel.setManifest(docNavTree);
+      }
+    }
   })
   .catch(() => {
     /* leave docManifestNames null */
