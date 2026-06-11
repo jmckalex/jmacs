@@ -176,6 +176,9 @@
    "M-y"          'yank-pop
    "M-f"          'forward-word
    "M-b"          'backward-word
+   ;; Option+arrow word motion — the macOS-native synonyms for M-f/M-b.
+   "M-right"      'forward-word
+   "M-left"       'backward-word
    "M-m"          'back-to-indentation
    "M-v"          'scroll-down
    "M-g"          'goto-line

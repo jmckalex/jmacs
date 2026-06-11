@@ -41,6 +41,8 @@ $$
 
 Header-defined macros work in the preview too: $f : \R \to \R$ with
 $\Var(X) = \E[X^2] - \E[X]^2$ — toggle `C-c C-p` to see them typeset.
+Inline math survives a hard wrap, like this sum $\sum_{i=1}^{n} x_i =
+x_1 + x_2 + \cdots + x_n$ continuing mid-paragraph.
 
 Bracket form \(a^2 + b^2 = c^2\) and an environment:
 

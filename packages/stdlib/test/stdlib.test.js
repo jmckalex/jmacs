@@ -1942,6 +1942,18 @@ test('the line-op commands are bound to their keys', async () => {
   );
 });
 
+test('M-left / M-right are word-motion synonyms for M-b / M-f', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(eq? (get the-keymap "M-right") (quote forward-word))'),
+    true
+  );
+  assert.equal(
+    interpreter.evaluate('(eq? (get the-keymap "M-left") (quote backward-word))'),
+    true
+  );
+});
+
 // --- auto-pairing -------------------------------------------------------
 
 test('*auto-pair* is a registered boolean setting, on by default', async () => {
