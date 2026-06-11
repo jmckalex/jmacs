@@ -108,6 +108,12 @@ const NAMED_CODES = {
   End: 'end',
   Escape: 'escape',
   Space: 'space',
+  // The bracket keys read as their characters, so a binding can say
+  // "M-[" / "M-]" (Sublime's indent keys) rather than "M-bracketleft".
+  // Other punctuation codes keep their lowercased code names — existing
+  // bindings like "M-S-comma" depend on them.
+  BracketLeft: '[',
+  BracketRight: ']',
 };
 
 /**

@@ -191,6 +191,10 @@
    "M-backspace"  'backward-kill-word
    "M-up"         'move-line-up
    "M-down"       'move-line-down
+   ;; Sublime-style block indentation (line-ops.lisp). The host names
+   ;; the bracket keys "[" / "]" (event.code BracketLeft/BracketRight).
+   "M-["          'outdent-region
+   "M-]"          'indent-region
    ;; expand-region — C-= as the spec names it; the host normalises that
    ;; keystroke (event.code "Equal") to "C-equal".
    "C-equal"      'expand-region

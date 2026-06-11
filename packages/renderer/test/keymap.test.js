@@ -119,6 +119,19 @@ test('a modified key uses event.code, independent of event.key', () => {
   );
 });
 
+test('the bracket keys name as their characters under modifiers', () => {
+  // Option+] composes "'" on macOS; the code names the physical key,
+  // and the brackets map to their characters so bindings read "M-]".
+  assert.equal(
+    keyEventToString(key({ key: '\u2018', code: 'BracketLeft', altKey: true })),
+    'M-['
+  );
+  assert.equal(
+    keyEventToString(key({ key: '\u2019', code: 'BracketRight', altKey: true })),
+    'M-]'
+  );
+});
+
 test('event.code resolves named and digit keys under a modifier', () => {
   assert.equal(
     keyEventToString(key({ key: 'ArrowLeft', code: 'ArrowLeft', metaKey: true })),
