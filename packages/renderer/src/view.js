@@ -1225,6 +1225,16 @@ export function createEditorView(buffer, container, options = {}) {
 
   let unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
 
+  // Re-render when the editor's own box changes — the utility dock
+  // hiding/showing, a splitter drag, the OS window resizing. The render
+  // window (renderLines) is sized from the root's clientHeight, so a
+  // grow exposes rows the last render never drew; without this they
+  // stay blank until the next scroll/edit. Guarded for the node test
+  // environment, which has no ResizeObserver.
+  const resizeObserver =
+    typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+  if (resizeObserver) resizeObserver.observe(root);
+
   // Key handling: use the host's dispatcher when given (the editor's
   // Lisp keymap), otherwise fall back to the renderer's built-in keymap
   // so the view stays usable on its own.
@@ -1546,6 +1556,7 @@ export function createEditorView(buffer, container, options = {}) {
     destroy: () => {
       unsubscribe();
       endDrag();
+      if (resizeObserver) resizeObserver.disconnect();
       if (frame) win.cancelAnimationFrame(frame);
       root.remove();
     },
