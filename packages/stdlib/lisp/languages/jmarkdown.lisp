@@ -62,9 +62,18 @@
   (-jmarkdown-block ":::" ":::" 3))
 
 (defcommand jmarkdown-insert-environment ()
-  "Insert an @begin()/@end() environment around the selection. Point
-   is left inside @begin( to type the environment name."
-  (-jmarkdown-block "@begin()" "@end()" 7))
+  "Insert an @begin()/@end() environment around the selection, with a
+   cursor inside BOTH parens: type the name once and it lands in
+   @begin(…) and @end(…) together. ESC (or C-g) collapses back to the
+   single cursor when done."
+  (let ((text (if (region-active?) (region-text) "")))
+    (unless (equal? text "") (delete-backward!))
+    (let ((p (point)))
+      (insert! (str "@begin()\n" text "\n@end()"))
+      ;; Primary cursor inside @begin(, secondary inside @end( — the
+      ;; multi-cursor set mirrors typed input into both.
+      (goto! (+ p 7))
+      (add-selection! (+ p 15 (string-length text))))))
 
 (defcommand jmarkdown-insert-tikz ()
   "Insert a :::TiKZ block, with point on the (LaTeX) body line."

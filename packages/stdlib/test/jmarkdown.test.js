@@ -26,7 +26,7 @@ const lispDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lisp');
  * one in-memory buffer (text + point + an optional active region).
  */
 async function jmdEditor() {
-  const buffer = { text: '', pos: 0, region: null };
+  const buffer = { text: '', pos: 0, region: null, secondaries: [] };
   const interpreter = createInterpreter({
     write: () => {},
     primitives: {
@@ -60,6 +60,10 @@ async function jmdEditor() {
       'delete-backward!': () => {
         // The commands use this to delete the active region.
         buffer.region = null;
+        return NIL;
+      },
+      'add-selection!': (args) => {
+        buffer.secondaries.push(Number(args[0]));
         return NIL;
       },
     },
@@ -132,11 +136,24 @@ test('jmarkdown-insert-directive wraps the selection as the body', async () => {
   assert.equal(buffer.pos, 3);
 });
 
-test('jmarkdown-insert-environment leaves point inside @begin(', async () => {
+test('jmarkdown-insert-environment cursors both parens (multi-cursor)', async () => {
   const { ev, buffer } = await jmdEditor();
   ev('(jmarkdown-insert-environment)');
   assert.equal(buffer.text, '@begin()\n\n@end()');
+  // Primary inside @begin(, a secondary cursor inside @end( — typing
+  // the environment name lands in both.
   assert.equal(buffer.pos, 7);
+  assert.deepEqual(buffer.secondaries, [15]);
+  assert.equal(buffer.text[15], ')', 'secondary sits just inside @end(');
+});
+
+test('jmarkdown-insert-environment wraps a selection, cursors aligned', async () => {
+  const { ev, buffer } = await jmdEditor();
+  buffer.region = 'Body line.';
+  ev('(jmarkdown-insert-environment)');
+  assert.equal(buffer.text, '@begin()\nBody line.\n@end()');
+  assert.equal(buffer.pos, 7);
+  assert.deepEqual(buffer.secondaries, [15 + 'Body line.'.length]);
 });
 
 test('TiKZ and mermaid templates leave point on the body line', async () => {
