@@ -193,11 +193,14 @@
    "M-down"       'move-line-down
    ;; Sublime-style block indentation (line-ops.lisp). The host names
    ;; the bracket keys "[" / "]" (event.code BracketLeft/BracketRight) —
-   ;; but the architect's Karabiner remap re-emits both bracket keys on
-   ;; the BracketRight code: his [ key arrives as "M-]" and his ] key as
-   ;; "M-S-]" (verified with C-h k). Bind what actually arrives, so the
-   ;; keycaps behave like Sublime: ] indents, [ outdents. "M-[" stays
-   ;; bound for an unremapped keyboard.
+   ;; but the architect's global Keyboard Maestro quote macros intercept
+   ;; Alt+[ / Alt+] and re-type them as the native curly-quote chords,
+   ;; so what ARRIVES (verified with C-h k) is "M-]" for the [ key and
+   ;; "M-S-]" for the ] key. Bound to match, so the keycaps behave like
+   ;; Sublime: ] indents, [ outdents. If the editor is ever excluded
+   ;; from those macros, rebind to the clean pair ("M-[" outdent /
+   ;; "M-]" indent); "M-[" meanwhile stays on outdent for any keyboard
+   ;; the macros don't see.
    "M-["          'outdent-region
    "M-]"          'outdent-region
    "M-S-]"        'indent-region
