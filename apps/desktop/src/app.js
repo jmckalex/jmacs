@@ -5775,6 +5775,16 @@ function getMathReplacedRanges(leaf) {
         const p = mathPreviewProviderForMode(bufferMajorModeName(buf, keyword));
         return p ? p.scan(text) : provider.scan(text);
       },
+      // The buffer's own macro definitions (JMarkdown's `Math macros:`
+      // header), prepended to every typeset segment. Resolved fresh per
+      // update, like the scanner.
+      preamble: (text) => {
+        const v = peeledTextView();
+        const buf = v ? v.buffer : null;
+        const p = mathPreviewProviderForMode(bufferMajorModeName(buf, keyword));
+        const harvest = (p ?? provider).preamble;
+        return typeof harvest === 'function' ? harvest(text) : '';
+      },
       // The startup one-shot: once MathJax finishes loading, ask the
       // leaf's renderer to redraw so segments left as source during
       // startup flip to typeset widgets. A tabline tab supplies its own

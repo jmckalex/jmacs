@@ -9,6 +9,9 @@ Custom element: my-element
       <strong>Hello</strong> from the header.
     </div>
 Extension smiley: /:-\)/ /:-\)/ true 0
+Math macros: \newcommand{\R}{\mathbb{R}}
+    \newcommand{\E}{\mathbb{E}}
+    \DeclareMathOperator{\Var}{Var}
 ---
 
 # JMarkdown mode demo :label[demo-top]
@@ -35,6 +38,9 @@ Inline math $e^{i\pi} + 1 = 0$ and display math:
 $$
 \int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
 $$
+
+Header-defined macros work in the preview too: $f : \R \to \R$ with
+$\Var(X) = \E[X^2] - \E[X]^2$ — toggle `C-c C-p` to see them typeset.
 
 Bracket form \(a^2 + b^2 = c^2\) and an environment:
 

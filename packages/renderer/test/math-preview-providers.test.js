@@ -10,6 +10,7 @@ import {
   MATH_PREVIEW_CONFIGS,
   providerForConfig,
   mathPreviewProviderForMode,
+  jmarkdownMathMacros,
 } from '../src/math-preview-providers.js';
 import {
   LATEX_MATH_CONFIG,
@@ -111,4 +112,55 @@ test('JMarkdown selects the markdown config with code masking', () => {
   // Code masking: a $ inside an inline code span is not math.
   const segments = provider.scan('Code `$x$` but math $y$.');
   assert.deepEqual(segments.map((s) => s.body), ['y']);
+});
+
+// --- jmarkdownMathMacros: the `Math macros:` header harvest --------------
+
+test('jmarkdownMathMacros harvests a fenced header key with continuations', () => {
+  const text = [
+    '---',
+    'Title: Doc',
+    'Math macros: \\newcommand{\\R}{\\mathbb{R}}',
+    '    \\newcommand{\\E}{\\mathbb{E}}',
+    '    \\DeclareMathOperator{\\Var}{Var}',
+    'Author: Me',
+    '---',
+    '',
+    'Body $\\R$.',
+  ].join('\n');
+  assert.equal(
+    jmarkdownMathMacros(text),
+    '\\newcommand{\\R}{\\mathbb{R}}\n\\newcommand{\\E}{\\mathbb{E}}\n\\DeclareMathOperator{\\Var}{Var}'
+  );
+});
+
+test('jmarkdownMathMacros: continuation-only value (empty rest of key line)', () => {
+  const text = '---\nMath macros:\n    \\newcommand{\\x}{y}\n---\n';
+  assert.equal(jmarkdownMathMacros(text), '\\newcommand{\\x}{y}');
+});
+
+test('jmarkdownMathMacros works in a legacy (fence-less) header', () => {
+  const text = 'Title: T\nMath macros: \\newcommand{\\a}{b}\n---\nBody.\n';
+  assert.equal(jmarkdownMathMacros(text), '\\newcommand{\\a}{b}');
+});
+
+test('jmarkdownMathMacros finds nothing outside a header', () => {
+  assert.equal(jmarkdownMathMacros('# Doc\n\nMath macros: \\newcommand{\\a}{b}\n'), '');
+  assert.equal(jmarkdownMathMacros('---\nTitle: T\n---\nMath macros: nope\n'), '');
+  assert.equal(jmarkdownMathMacros(''), '');
+});
+
+test('jmarkdownMathMacros matches the key case-insensitively on its first letter', () => {
+  const text = '---\nmath macros: \\def\\x{1}\n---\n';
+  assert.equal(jmarkdownMathMacros(text), '\\def\\x{1}');
+});
+
+test('the JMarkdown provider carries the macro harvester; LaTeX does not', () => {
+  const jmd = mathPreviewProviderForMode('JMarkdown');
+  assert.equal(
+    jmd.preamble('---\nMath macros: \\newcommand{\\q}{r}\n---\n'),
+    '\\newcommand{\\q}{r}'
+  );
+  const latex = mathPreviewProviderForMode('LaTeX');
+  assert.equal(latex.preamble('\\newcommand{\\q}{r}'), '');
 });
