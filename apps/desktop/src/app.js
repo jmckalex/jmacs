@@ -7448,6 +7448,11 @@ function applyTextMountSideEffects(view, instance) {
     // at boot.
     if (instance.overlayLayer) {
       stickyNotes.setOverlayLayer(instance.overlayLayer);
+      // The inline-eval pill has the same per-pane problem: it must
+      // render into the active editor's overlay. Without this, pills
+      // were invisible in any pane not served by the boot-time editor
+      // instance (e.g. every pane of a restored session).
+      inlineEval.setOverlayLayer(instance.overlayLayer);
     }
   }
   stickyNotes.setBuffer(view.buffer);

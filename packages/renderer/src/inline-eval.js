@@ -27,9 +27,11 @@ const FADE_AFTER_MS = 5000;
  * }}
  */
 export function createInlineEval(options) {
-  const overlayLayer = options.overlayLayer;
+  // Mutable: per-pane editor views each own an overlay layer, and the
+  // pill must render into the ACTIVE pane's layer (see
+  // `setOverlayLayer` below), not whichever layer existed at boot.
+  let overlayLayer = options.overlayLayer;
   const getBuffer = options.getBuffer;
-  const doc = overlayLayer.ownerDocument;
 
   /** @type {HTMLElement | null} */
   let pill = null;
@@ -93,8 +95,10 @@ export function createInlineEval(options) {
   /** Create or reuse the pill, applying `cls` and `label`. */
   function showPill(anchor, label, cls) {
     hide();
+    if (!overlayLayer) return;
     const buffer = getBuffer();
     if (!buffer || typeof buffer.positionAt !== 'function') return;
+    const doc = overlayLayer.ownerDocument;
     pill = doc.createElement('div');
     pill.className = `inline-eval ${cls}`;
     pill.textContent = label;
@@ -117,6 +121,15 @@ export function createInlineEval(options) {
     },
     showError(anchor, label) {
       showPill(anchor, label, 'is-error');
+    },
+    /** Re-point the pill at another editor instance's overlay layer —
+     *  the same dance the host does for sticky notes when pane focus
+     *  moves. Any visible pill is hidden first: its anchor belonged
+     *  to the previous pane's buffer. */
+    setOverlayLayer(layer) {
+      if (layer === overlayLayer) return;
+      hide();
+      overlayLayer = layer ?? null;
     },
     hide,
     destroy: hide,
