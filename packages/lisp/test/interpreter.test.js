@@ -107,6 +107,50 @@ test('set! mutates the nearest binding', () => {
   assert.equal(run('(define c 0) (set! c (+ c 5)) c'), 5);
 });
 
+// --- named let -----------------------------------------------------------
+
+test('named let loops and returns a value', () => {
+  assert.equal(
+    run(`(let loop ((n 5) (acc 1))
+           (if (= n 0) acc (loop (- n 1) (* acc n))))`),
+    120
+  );
+});
+
+test('named let inits see the outer scope, not each other or the name', () => {
+  // `y`'s init refers to the OUTER x (1), not the loop binding (10).
+  assert.equal(run('(let ((x 1)) (let loop ((x 10) (y x)) y))'), 1);
+  // The loop name is not visible to the inits.
+  assert.throws(() => run('(let loop ((f loop)) f)'), LispError);
+});
+
+test('named let recursion runs in constant stack', () => {
+  assert.equal(
+    run('(let loop ((n 1000000)) (if (= n 0) (quote done) (loop (- n 1))))'),
+    run('(quote done)')
+  );
+});
+
+test('named let with zero bindings', () => {
+  assert.equal(run('(let loop () 42)'), 42);
+});
+
+test('the named-let name does not leak into the surrounding scope', () => {
+  assert.throws(
+    () => run('(begin (let loop ((n 0)) n) loop)'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /unbound symbol: loop/);
+      return true;
+    }
+  );
+});
+
+test('plain let is unaffected by the named form', () => {
+  assert.equal(run('(let ((a 1) (b 2)) (+ a b))'), 3);
+  assert.equal(run('(let () 7)'), 7);
+});
+
 // --- lists and higher-order --------------------------------------------
 
 test('list construction and access', () => {
