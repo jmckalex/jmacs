@@ -147,7 +147,10 @@ export function applyProcedure(procedure, args) {
  */
 function applyTail(procedure, args) {
   if (procedure instanceof Primitive) {
-    return procedure.fn(args);
+    // The host boundary: a JS primitive that returns `undefined` (falls
+    // off the end, bare `return;`) or `null` means "nothing" — both
+    // become nil, so Lisp never sees a raw JS null/undefined.
+    return procedure.fn(args) ?? NIL;
   }
   if (procedure instanceof Lambda) {
     const env = new Environment(procedure.env);

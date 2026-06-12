@@ -296,6 +296,33 @@ test('host primitives can be registered', () => {
   assert.equal(lisp.evaluate('(double! 21)'), 42);
 });
 
+test('a host primitive returning undefined or null yields nil', () => {
+  // The boundary coercion: JS "nothing" never leaks into Lisp.
+  const lisp = createInterpreter({
+    primitives: {
+      'no-return!': () => {}, // falls off the end -> undefined
+      'null-return!': () => null,
+    },
+  });
+  assert.equal(lisp.evaluate('(no-return!)'), NIL);
+  assert.equal(lisp.evaluate('(null-return!)'), NIL);
+  assert.equal(lisp.evaluate('(nil? (no-return!))'), true);
+  assert.equal(lisp.evaluate('(nil? (null-return!))'), true);
+});
+
+test('falsy-but-real primitive returns pass through uncoerced', () => {
+  const lisp = createInterpreter({
+    primitives: {
+      'zero!': () => 0,
+      'false!': () => false,
+      'empty!': () => '',
+    },
+  });
+  assert.equal(lisp.evaluate('(zero!)'), 0);
+  assert.equal(lisp.evaluate('(false!)'), false);
+  assert.equal(lisp.evaluate('(empty!)'), '');
+});
+
 // --- tail-call optimisation (the trampoline) ----------------------------
 // Tail calls run in constant JS stack; depths here would overflow a
 // naive tree-walker. `run`/`show` use a fresh interpreter (core forms
