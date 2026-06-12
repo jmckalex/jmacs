@@ -348,6 +348,25 @@ Undo the last change. Bound to `C-z`.
 Redo the last undone change. Bound to `C-S-z`.
 :::
 
+### Atomic undo
+
+Defined in `editing.lisp`. The undo-grouping macro every multi-edit
+command wraps its mutations in.
+
+:::function{name="atomic-change-group" path="reference/commands/atomic-change-group.html"}
+#### `atomic-change-group`
+`(atomic-change-group body…)`
+
+Evaluate the body with every buffer edit it makes — however many,
+through whatever functions — grouped into a single undo step, and
+return the body's value. The group closes on every exit: normal
+return, a Lisp error, even a raw JS exception from a host primitive
+(it is built on `try`/`finally`). Nested groups fold into the
+outermost one; `undo!` and `redo!` are no-ops while a group is open.
+The rule of thumb: any command making more than one buffer mutation
+wraps them.
+:::
+
 ### Markers and excursions
 
 Defined in `editing.lisp`, over the marker primitives

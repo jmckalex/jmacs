@@ -58,12 +58,14 @@ The buffer's length in characters.
 The number of lines in the buffer (always at least 1).
 :::
 
-:::function{name="buffer-name" path="reference/buffer-primitives/buffer-name.html"}
-#### `buffer-name`
-`(buffer-name)`
+:::function{name="view-name" path="reference/buffer-primitives/view-name.html"}
+#### `view-name`
+`(view-name)`
 
-The buffer's name — a string, used by the modeline and by
-`mode-for-name` to choose a major mode.
+The current view's name — the modeline label, a string. Text views
+delegate to their buffer's name (also what `mode-for-name` consults
+to choose a major mode); non-text views supply their own. Formerly
+`buffer-name`.
 :::
 
 :::function{name="point" path="reference/buffer-primitives/point.html"}
@@ -365,6 +367,7 @@ The current buffer's minor modes — the value last stored, or `nil`.
 `(set-minor-modes! modes)`
 
 Set the current buffer's minor modes to `modes` (a list).
+:::
 
 ---
 
@@ -375,7 +378,6 @@ own machinery — file dialogs, the minibuffer, the buffer list. Each
 returns `nil`; the interactive ones (`start-…!`) hand control to a
 minibuffer loop and return at once. They are the primitives the
 file, search, buffer and system commands wrap.
-:::
 
 ### Files
 
