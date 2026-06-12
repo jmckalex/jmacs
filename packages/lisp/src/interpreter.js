@@ -9,7 +9,15 @@ import { Environment } from './environment.js';
 import { applyProcedure, evaluate } from './eval.js';
 import { installPrimitives } from './primitives.js';
 import { read } from './reader.js';
-import { NIL, Primitive } from './values.js';
+import {
+  LispError,
+  LispMacro,
+  listToArray,
+  NIL,
+  Pair,
+  Primitive,
+  Sym,
+} from './values.js';
 
 /**
  * The prelude — a little Lisp layered on top of the primitives.
@@ -116,6 +124,47 @@ export function createInterpreter(options = {}) {
   base.define(
     'eval',
     new Primitive('eval', (args) => evaluate(args[0], global))
+  );
+
+  // `macroexpand-1` / `macroexpand` expand a macro use as DATA, without
+  // evaluating the result. Like `eval`, they close over the global
+  // environment: the head symbol is resolved there, and if it names a
+  // macro the transformer is applied to the unevaluated argument forms.
+  // Anything else — non-pairs, special forms, procedure calls — passes
+  // through unchanged.
+  const macroexpand1 = (form) => {
+    if (
+      form instanceof Pair &&
+      form.head instanceof Sym &&
+      global.has(form.head.name)
+    ) {
+      const binding = global.lookup(form.head.name);
+      if (binding instanceof LispMacro) {
+        return {
+          expanded: true,
+          form: applyProcedure(binding.transformer, listToArray(form.tail)),
+        };
+      }
+    }
+    return { expanded: false, form };
+  };
+  base.define(
+    'macroexpand-1',
+    new Primitive('macroexpand-1', (args) => macroexpand1(args[0]).form)
+  );
+  base.define(
+    'macroexpand',
+    new Primitive('macroexpand', (args) => {
+      let form = args[0];
+      // Repeat until the head is no longer a macro, with a hard cap so
+      // a self-expanding macro cannot hang the editor.
+      for (let step = 0; step < 1000; step += 1) {
+        const result = macroexpand1(form);
+        if (!result.expanded) return result.form;
+        form = result.form;
+      }
+      throw new LispError('macroexpand: expansion did not terminate');
+    })
   );
 
   for (const form of read(PRELUDE)) {

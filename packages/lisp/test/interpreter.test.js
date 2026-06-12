@@ -318,6 +318,50 @@ test('a macro using quasiquote', () => {
   );
 });
 
+// --- macroexpand ----------------------------------------------------------
+
+test('macroexpand-1 expands a macro use one step, as data', () => {
+  assert.equal(
+    show("(macroexpand-1 '(when a b c))"),
+    '(if a (begin b c))'
+  );
+});
+
+test('macroexpand-1 passes non-macro forms through unchanged', () => {
+  assert.equal(show("(macroexpand-1 '(+ 1 2))"), '(+ 1 2)');
+  assert.equal(show("(macroexpand-1 '(if a b))"), '(if a b)'); // special form
+  assert.equal(run('(macroexpand-1 42)'), 42);
+  assert.equal(show("(macroexpand-1 'foo)"), 'foo');
+  assert.equal(run('(macroexpand-1 nil)'), NIL);
+});
+
+test('macroexpand expands until the head is no longer a macro', () => {
+  assert.equal(
+    show(`(defmacro my-unless (test . body)
+            (cons 'when (cons (list 'not test) body)))
+          (macroexpand '(my-unless p q))`),
+    '(if (not p) (begin q))'
+  );
+  // macroexpand-1 stops after the first step.
+  assert.equal(
+    show(`(defmacro my-unless (test . body)
+            (cons 'when (cons (list 'not test) body)))
+          (macroexpand-1 '(my-unless p q))`),
+    '(when (not p) q)'
+  );
+});
+
+test('macroexpand errors on a self-expanding macro (the cap)', () => {
+  assert.throws(
+    () => run("(defmacro forever (x) (list 'forever x)) (macroexpand '(forever 1))"),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /macroexpand: expansion did not terminate/);
+      return true;
+    }
+  );
+});
+
 // --- vectors and maps ---------------------------------------------------
 
 test('vectors evaluate their elements', () => {
