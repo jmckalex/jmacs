@@ -251,25 +251,48 @@ export function createUtilityDock(options) {
     else active.wrapper.focus();
   }
 
+  /**
+   * Whether keyboard focus currently sits inside the dock. Focus is only
+   * "returned" to the editing origin when the dock actually has it —
+   * closing or hiding a *background* tool (e.g. find-file's completions
+   * tab, opened `focus: false` while the minibuffer keeps focus) must
+   * never move focus.
+   */
+  function dockOwnsFocus() {
+    const focused = doc.activeElement;
+    return !!focused && hostEl.contains(focused);
+  }
+
   function showUtilityDock() {
     doc.body.classList.remove('utility-hidden');
   }
 
-  function hideUtilityDock() {
+  /**
+   * Hide the dock. `restoreFocus` defaults to whether the dock holds
+   * focus right now; `closeUtilityTab` passes the value it sampled
+   * before tearing the panel out of the DOM (removal blurs, so a late
+   * check would always say no).
+   *
+   * @param {boolean} [restoreFocus]
+   */
+  function hideUtilityDock(restoreFocus = dockOwnsFocus()) {
     autoShownForTool = false;
     doc.body.classList.add('utility-hidden');
     removeCapture();
-    if (onFocusOrigin) onFocusOrigin();
+    if (restoreFocus && onFocusOrigin) onFocusOrigin();
   }
 
   function toggleUtilityDock() {
     // A manual toggle is the user's own choice of visibility — drop any
     // pending "re-hide after the tool closes" intent.
     autoShownForTool = false;
+    // Sampled before the class flips: hiding (display:none) blurs any
+    // focused element inside, so a later check would always say no.
+    const hadFocus = dockOwnsFocus();
     const hidden = doc.body.classList.toggle('utility-hidden');
     if (hidden) {
       removeCapture();
-      if (onFocusOrigin) onFocusOrigin();
+      if (hadFocus && onFocusOrigin) onFocusOrigin();
     } else {
       renderActive();
       focusActivePanel();
@@ -363,6 +386,11 @@ export function createUtilityDock(options) {
     if (!entry) return;
     if (!entry.tab.closable) return;
     const wasActive = state.activeId === id;
+    // Sampled before the wrapper is torn out of the DOM (removal blurs).
+    // When the dock doesn't hold focus — find-file's completions tab is
+    // closed programmatically while the minibuffer keeps focus — closing
+    // must not move focus anywhere.
+    const hadFocus = dockOwnsFocus();
     state = removeTab(state, id);
     if (typeof entry.panel.onClose === 'function') entry.panel.onClose();
     if (typeof entry.panel.destroy === 'function') entry.panel.destroy();
@@ -371,12 +399,13 @@ export function createUtilityDock(options) {
     renderTabs();
     renderActive();
     // The last tool closed and a tool had auto-revealed the dock: restore the
-    // prior hidden state (hideUtilityDock returns focus to the origin).
+    // prior hidden state (returning focus to the origin only if the dock
+    // had it).
     if (autoShownForTool && !state.tabs.some((t) => t.closable)) {
-      hideUtilityDock();
+      hideUtilityDock(hadFocus);
       return;
     }
-    if (wasActive) {
+    if (wasActive && hadFocus) {
       const active = entries.get(state.activeId);
       if (active && active.tab.modal) focusActivePanel();
       else if (onFocusOrigin) onFocusOrigin();

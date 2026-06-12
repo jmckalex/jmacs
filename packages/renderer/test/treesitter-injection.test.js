@@ -240,3 +240,49 @@ test('an outer range fully inside an injection is dropped (inner wins)', () => {
   assert.ok(!result.some((r) => r.face === 'block'), 'contained outer range dropped');
   assert.ok(result.some((r) => r.start === 10 && r.end === 20 && r.face === 'kw'));
 });
+
+test('overlapping live injections: the later one wins the overlap', () => {
+  // A paragraph-wide inline injection [0, 30) overlapped by a later,
+  // code-driven LaTeX injection [10, 20) — the provider knows the span
+  // is verbatim LaTeX, so its faces must own it.
+  const text = 'a'.repeat(30);
+  const outer = [];
+  const injections = [
+    { start: 0, end: 30, language: 'inline' },
+    { start: 10, end: 20, language: 'latex' },
+  ];
+  const byTag = {
+    inline: fakeHighlighter([{ start: 0, end: 30, face: 'prose' }]),
+    latex: fakeHighlighter([{ start: 0, end: 10, face: 'math' }]),
+  };
+  const result = spliceInjections(text, outer, injections, (t) => byTag[t], 0);
+  // The earlier injection's range is clipped to the parts outside the
+  // later one; the later injection's range survives whole.
+  assert.deepEqual(result, [
+    { start: 0, end: 10, face: 'prose' },
+    { start: 20, end: 30, face: 'prose' },
+    { start: 10, end: 20, face: 'math' },
+  ]);
+});
+
+test('non-overlapping injections are unaffected by the later-wins rule', () => {
+  const injections = [
+    { start: 0, end: 10, language: 'a' },
+    { start: 20, end: 30, language: 'b' },
+  ];
+  const byTag = {
+    a: fakeHighlighter([{ start: 0, end: 10, face: 'fa' }]),
+    b: fakeHighlighter([{ start: 0, end: 10, face: 'fb' }]),
+  };
+  const result = spliceInjections(
+    'a'.repeat(30),
+    [],
+    injections,
+    (t) => byTag[t],
+    0
+  );
+  assert.deepEqual(result, [
+    { start: 0, end: 10, face: 'fa' },
+    { start: 20, end: 30, face: 'fb' },
+  ]);
+});
