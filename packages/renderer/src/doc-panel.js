@@ -36,6 +36,7 @@ export function createDocPanel(options = {}) {
     closeBuffer: options.closeBuffer,
     openDoc: options.openDoc,
     highlightCode: options.highlightCode,
+    manifest: options.manifest ?? null,
   });
   docEl.setBuffer({ kind: 'doc', html: options.html ?? '' });
 
@@ -45,8 +46,10 @@ export function createDocPanel(options = {}) {
     icon: options.icon ?? 'fa-solid fa-book-open',
     modal: false,
     closable: true,
-    /** Replace the rendered page, reusing the same tab. */
+    /** Replace the rendered page, reusing the same tab (in-place nav). */
     setHtml: (html) => docEl.setBuffer({ kind: 'doc', html: html ?? '' }),
+    /** Replace the navigation tree (once the manifest has loaded). */
+    setManifest: (manifest) => docEl.setManifest(manifest),
     focus: () => {
       if (typeof docEl.focus === 'function') docEl.focus();
     },

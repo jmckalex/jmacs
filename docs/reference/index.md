@@ -3,7 +3,7 @@ Author: J. McKenzie Alexander
 Date: 2026-05-22
 ---
 
-# jmacs Function Reference
+## jmacs Function Reference
 
 This is the per-function reference for jmacs. It documents, one by one,
 the procedures you can call from the editor's Lisp. For the editor as a
@@ -15,7 +15,7 @@ manual so that it can be maintained against the code as the code
 changes. When you add or change a procedure, update its entry here in
 the same commit.
 
-## The tiers
+### The tiers
 
 A procedure callable from jmacs Lisp belongs to one of four tiers. They
 differ in where they are defined and how stable they are.
@@ -45,7 +45,7 @@ The split matters when something breaks or needs changing: a command is
 Lisp you can edit and hot-reload (`C-x C-r`); a primitive is JavaScript
 in a package, changed and tested like any host code.
 
-## Naming conventions
+### Naming conventions
 
 The names follow the conventions set out in `docs/spec/lisp.md` §10:
 
@@ -68,7 +68,7 @@ keymap binds and the layer you redefine; the primitive is the host
 operation underneath. Both are documented, in `commands.jmd` and
 `buffer-primitives.jmd` respectively.
 
-## How to read an entry
+### How to read an entry
 
 Each entry gives the procedure's call form, then describes it:
 
@@ -85,7 +85,7 @@ Where a command is bound to a key, the entry names the binding using
 the key-string notation from the manual (§5): `C-` is Control or
 Command, `M-` is Option, `S-` is Shift.
 
-## Self-documentation
+### Self-documentation
 
 This written reference is the companion to the editor's *built-in*
 self-documentation. Every procedure defined with `define` carries its
@@ -100,7 +100,7 @@ f` describes a command by name. When this reference and a docstring
 disagree, the docstring is what the running editor will tell you — and
 one of the two needs fixing.
 
-## The documents
+### The documents
 
 - `commands.jmd` — the standard-library commands, grouped by task.
 - `buffer-primitives.jmd` — the host buffer primitives.
