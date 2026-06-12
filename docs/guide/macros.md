@@ -86,7 +86,10 @@ sites picks up the new definition immediately.
 
 ### Asking for an Expansion
 
-Two primitives let you look at what a macro call will become without
+Two primitives —
+<a href="reference/lisp-core/macroexpand-1.html" data-jmacs-doc="macroexpand-1">macroexpand-1</a> and
+<a href="reference/lisp-core/macroexpand.html" data-jmacs-doc="macroexpand">macroexpand</a>
+— let you look at what a macro call will become without
 running it. `(macroexpand-1 form)` performs **one** expansion step: if
 `form` is a list whose head names a macro in the global environment,
 the transformer is applied to the unevaluated argument forms and the

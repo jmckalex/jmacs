@@ -222,7 +222,11 @@ and a negative step counts down:
 
 When the iteration is about *doing* rather than building a value — run
 this until that, do this n times, do this to each — three macros from
-the interpreter's prelude read the way you would say them. All three
+the interpreter's prelude —
+<a href="reference/lisp-core/while.html" data-jmacs-doc="while">while</a>,
+<a href="reference/lisp-core/dotimes.html" data-jmacs-doc="dotimes">dotimes</a>, and
+<a href="reference/lisp-core/dolist.html" data-jmacs-doc="dolist">dolist</a>
+— read the way you would say them. All three
 evaluate their bodies purely for effect and return `nil`.
 
 ```lisp

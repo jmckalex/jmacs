@@ -218,14 +218,19 @@ the error `range: step must not be zero`.
 (range 10 0 -2)   ; ⇒ (10 8 6 4 2)
 ```
 
-Three more round out the toolkit. `sort` — `(sort seq less?)` —
+Three more round out the toolkit.
+<a href="reference/lisp-core/sort.html" data-jmacs-doc="sort">sort</a> —
+`(sort seq less?)` —
 returns a sorted copy of a list or vector, leaving the input untouched
 and preserving its type (a vector in, a vector out). The sort is
 *stable* — elements that compare equal keep their input order — and
 the optional `less?` is a Scheme-style strict less-than: `(less? a b)`
 truthy means `a` orders before `b`. Without it, all-numbers and
 all-strings sequences sort by `<`; anything mixed needs the predicate.
-And the two sequence predicates `any?` and `every?` ask whether a
+And the two sequence predicates
+<a href="reference/lisp-core/any%3F.html" data-jmacs-doc="any?">any?</a> and
+<a href="reference/lisp-core/every%3F.html" data-jmacs-doc="every?">every?</a>
+ask whether a
 predicate holds for *some* or for *every* element: both return strict
 booleans, both stop at the first deciding element, and on an empty
 sequence `any?` is `#f` while `every?` is vacuously `#t`.

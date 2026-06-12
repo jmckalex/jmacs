@@ -274,7 +274,7 @@ when `x` is not present. The truthy result doubles as a "found" flag.
 ### Higher-order procedures
 
 These accept lists *or* vectors for their sequence arguments; they
-return lists.
+return lists — except `sort`, which preserves its input's type.
 
 :::function{name="apply" path="reference/lisp-core/apply.html"}
 #### `apply`
@@ -324,6 +324,20 @@ Fold `seq` left-to-right: `(proc (proc init e1) e2) …`.
 
 Apply `proc` to each element of `seq` for its side effect; returns
 `nil`.
+:::
+
+:::function{name="sort" path="reference/lisp-core/sort.html"}
+#### `sort`
+`(sort seq [less?])`
+
+A sorted copy of `seq` — a list or a vector; the result has the
+input's type, and the input is untouched. `less?` is a strict
+less-than: `(less? a b)` truthy means `a` orders before `b`, and two
+elements neither of which orders before the other compare equal. The
+sort is *stable* — equal elements keep their input order. When `less?`
+is omitted, all-numbers and all-strings sequences sort by `<`;
+anything else raises `sort: mixed or unordered elements need a
+comparator`.
 :::
 
 :::function{name="range" path="reference/lisp-core/range.html"}
@@ -658,6 +672,28 @@ A map describing `x`: its `:kind`, and — for a procedure — its `:name`,
 `describe-command` command.
 :::
 
+:::function{name="macroexpand-1" path="reference/lisp-core/macroexpand-1.html"}
+#### `macroexpand-1`
+`(macroexpand-1 form)`
+
+Expand `form` one step, as data — nothing is evaluated. If `form` is a
+list whose head symbol names a macro in the *global* environment, the
+transformer is applied to the unevaluated argument forms and the
+resulting form returned; anything else — an atom, a special form, a
+procedure call — comes back unchanged. Expansion looks only at the
+head: macro uses nested in argument positions stay folded.
+:::
+
+:::function{name="macroexpand" path="reference/lisp-core/macroexpand.html"}
+#### `macroexpand`
+`(macroexpand form)`
+
+`macroexpand-1` repeated until the result's head no longer names a
+macro. Capped at 1000 steps, after which it raises `macroexpand:
+expansion did not terminate` — so a macro that expands to itself
+cannot hang the editor.
+:::
+
 ---
 
 ## The prelude
@@ -686,6 +722,38 @@ Evaluate `body` in sequence when `test` is *false*y; otherwise `nil`.
 The complement of `when`.
 :::
 
+### Iteration macros
+
+Loops for side effects — all three return `nil`. Each use expands to a
+`letrec`-bound procedure whose self-call sits in tail position, so a
+million iterations run in constant stack; the loop's name is a gensym,
+so it cannot capture a caller binding.
+
+:::function{name="while" path="reference/lisp-core/while.html"}
+#### `while`
+`(while test body …)` — *macro*
+
+Evaluate `body` repeatedly for as long as `test` — re-evaluated before
+each pass — is truthy. Possibly zero passes.
+:::
+
+:::function{name="dotimes" path="reference/lisp-core/dotimes.html"}
+#### `dotimes`
+`(dotimes var count body …)` — *macro*
+
+Evaluate `body` with `var` bound to `0`, `1`, … `count - 1` in turn.
+`count` is evaluated once, before the loop.
+:::
+
+:::function{name="dolist" path="reference/lisp-core/dolist.html"}
+#### `dolist`
+`(dolist var lst body …)` — *macro*
+
+Evaluate `body` with `var` bound to each element of the list `lst` in
+order. `lst` is evaluated once. Lists only — for a vector, use
+`for-each` (or `vector->list` first).
+:::
+
 ### List accessors
 
 Composed `car`/`cdr` accessors, read inside-out as usual.
@@ -705,4 +773,25 @@ dropped.
 
 The second and third elements of a list — readable names for `cadr`
 and `caddr`.
+:::
+
+### Sequence predicates
+
+Strict booleans (the `?` convention), short-circuiting. `seq` may be a
+list or a vector.
+
+:::function{name="any?" path="reference/lisp-core/any%3F.html"}
+#### `any?`
+`(any? pred seq)`
+
+Whether `(pred x)` is truthy for *some* element of `seq`. Stops at the
+first truthy result; `#f` on an empty sequence.
+:::
+
+:::function{name="every?" path="reference/lisp-core/every%3F.html"}
+#### `every?`
+`(every? pred seq)`
+
+Whether `(pred x)` is truthy for *every* element of `seq`. Stops at
+the first false result; vacuously `#t` on an empty sequence.
 :::

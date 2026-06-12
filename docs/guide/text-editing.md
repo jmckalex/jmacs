@@ -419,8 +419,8 @@ Try it from the REPL: set the mark, move point down a few lines, then
 evaluate
 `(reverse-region-lines (min (mark) (point)) (max (mark) (point)))`.
 
-The standard library's `sort-lines` command (`line-ops.lisp`; reach it
-as `M-x sort-lines`) is this same shape grown to production. The
+The standard library's cmd(sort-lines) command (`line-ops.lisp`; reach
+it as `M-x sort-lines`) is this same shape grown to production. The
 transformation is `(sort …)` instead of `(reverse …)`, and around it
 sit the details a shipped command owes its user: the range is snapped
 *outward* to whole lines — start back to its line's start, end forward
