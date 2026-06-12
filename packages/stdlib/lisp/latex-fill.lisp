@@ -594,9 +594,10 @@
          (if (string=? filled block)
              (show-status! "Paragraph already filled")
              (begin
-               (delete-region! from to)
-               (goto! from)
-               (insert! filled)
+               (atomic-change-group
+                 (delete-region! from to)
+                 (goto! from)
+                 (insert! filled))
                (show-status! "Filled paragraph"))))))))
 
 (define (-latex-fill-line-of-offset text offset)

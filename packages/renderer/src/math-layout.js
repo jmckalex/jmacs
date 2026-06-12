@@ -10,8 +10,9 @@
  *   - **Reveal:** a range with a cursor strictly inside it (`start <
  *     point < end`, exclusive) is *suppressed* — rendered as ordinary
  *     source so the user can edit it. Every other range is replaced.
- *   - **Inline** ranges (single visual line) replace the covered
- *     characters on their line with the widget element.
+ *   - **Inline** ranges replace the covered characters on their line
+ *     with the widget element (a line-wrapped one continues as
+ *     source-removing, widget-less placements on the lines it spans).
  *   - **Block** ranges hide every line the range touches *except its
  *     start line*, folding-style, and emit the widget as a block row at
  *     the start line.
@@ -47,6 +48,9 @@ import { pointInsideSegment } from './math-segments.js';
 
 /**
  * @typedef {object} InlinePlacement
+ * @property {boolean} [continuation] - True for the tail lines of a
+ *   line-wrapped inline formula: the columns are spliced out but no
+ *   widget is mounted (the start line carries it).
  * @property {number} fromColumn - Column on the line where the replaced
  *   span begins (inclusive).
  * @property {number} toColumn - Column where it ends (exclusive).
@@ -116,10 +120,11 @@ function positionOf(lineStarts, offset) {
  * Ranges with a cursor strictly inside are revealed (suppressed).
  * Remaining ranges:
  *
- *   - `kind: 'inline'` always renders as an inline replacement on its
- *     start line, spanning `[startColumn, endColumn)`. (An inline range
- *     is single-line by construction; if a malformed one spans lines it
- *     is dropped — defensive.)
+ *   - `kind: 'inline'` renders as an inline replacement on its start
+ *     line, spanning `[startColumn, endColumn)`. A `$…$` wrapped across
+ *     a line break (legal MathJax) carries the widget on its start line
+ *     and *continuation* placements on the following lines, which
+ *     splice the remaining source out without mounting anything.
  *   - `kind: 'block'` hides lines `startLine+1 … endLine` and emits the
  *     widget at `startLine`. A *single-line* block range (start and end
  *     on the same line) hides nothing extra and still emits its widget
@@ -199,21 +204,49 @@ export function computeMathLayout({ ranges, lineStarts, lineLengths, points }) {
       continue;
     }
 
-    // Inline: must be single-line. A multi-line inline range is
-    // malformed (the scanner never produces one); drop it defensively.
-    if (endPos.line !== startPos.line) continue;
-    const line = startPos.line;
-    const placement = {
+    // Inline. The common case is single-line; but a `$…$` wrapped
+    // across a line break inside a paragraph is legal MathJax (and the
+    // scanner matches it), so a multi-line inline range renders as: the
+    // widget on the start line (replacing `$…` to end of line), and
+    // *continuation* placements on the following lines that splice the
+    // remaining source out without mounting anything — prose after the
+    // closing `$` on the end line stays visible in place.
+    const push = (line, placement) => {
+      let list = inlineByLine.get(line);
+      if (!list) {
+        list = [];
+        inlineByLine.set(line, list);
+      }
+      list.push(placement);
+    };
+    if (endPos.line === startPos.line) {
+      push(startPos.line, {
+        fromColumn: startPos.column,
+        toColumn: endPos.column,
+        range,
+      });
+      continue;
+    }
+    const endLine = Math.min(endPos.line, lastLine);
+    push(startPos.line, {
       fromColumn: startPos.column,
+      toColumn: lineLengths[startPos.line] ?? Infinity,
+      range,
+    });
+    for (let line = startPos.line + 1; line < endLine; line += 1) {
+      push(line, {
+        fromColumn: 0,
+        toColumn: lineLengths[line] ?? Infinity,
+        range,
+        continuation: true,
+      });
+    }
+    push(endLine, {
+      fromColumn: 0,
       toColumn: endPos.column,
       range,
-    };
-    let list = inlineByLine.get(line);
-    if (!list) {
-      list = [];
-      inlineByLine.set(line, list);
-    }
-    list.push(placement);
+      continuation: true,
+    });
   }
 
   // Keep each line's inline placements ascending by column (they already
@@ -282,7 +315,10 @@ export function spliceInlineWidgets(runs, placements) {
     const from = Math.max(col, Math.min(placement.fromColumn, len));
     const to = Math.max(from, Math.min(placement.toColumn, len));
     if (from > col) pushText(col, from);
-    out.push({ widget: placement.range });
+    // A continuation placement (the tail lines of a line-wrapped inline
+    // formula) splices its source out without mounting anything — the
+    // widget already rendered on the range's start line.
+    if (!placement.continuation) out.push({ widget: placement.range });
     col = to;
   }
   if (col < len) pushText(col, len);

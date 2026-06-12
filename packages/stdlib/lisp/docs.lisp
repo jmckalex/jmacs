@@ -127,3 +127,10 @@
         (if (string? source)
             (open-docstring-page! name source)
             (println (str "no doc page for " name)))))))
+
+(defcommand open-manual ()
+  "Open the manual at its top — the table-of-contents root — in the
+   doc-view. Unlike `open-doc`, which prompts for a particular page, this
+   opens the manual's Top node so you can browse from the sidebar and the
+   Next/Prev/Up navigation. Bound to `C-h d`."
+  (open-manual!))

@@ -56,6 +56,18 @@
  *   `foldCaptures(text)` method the view uses to compute fold ranges
  *   (`./folding.js`). A capture whose node spans a single line is
  *   silently dropped — nothing to fold there.
+ * @property {(text: string) =>
+ *   import('./treesitter.js').ProvidedCaptures} [captureProvider] -
+ *   A code-driven capture source for constructs the grammar has no
+ *   nodes for — a dialect's extra syntax over a stock grammar (e.g.
+ *   JMarkdown's directives over the markdown grammar). Its `captures`
+ *   are merged after the injection splice; its `regions` occlude
+ *   grammar captures. See `treesitter.js#applyCaptureProvider`.
+ * @property {(text: string) =>
+ *   import('./folding.js').FoldCapture[]} [foldProvider] -
+ *   A code-driven fold source, merged with `foldQuery`'s captures.
+ *   Either or both may be declared; declaring only `foldProvider`
+ *   still exposes `foldCaptures(text)`.
  */
 
 /** @type {Map<string, LanguageSpec>} */
@@ -101,6 +113,18 @@ export function registerLanguage(spec) {
       `language ${spec.tag}: injectionProvider must be a function`
     );
   }
+  if (
+    spec.captureProvider !== undefined &&
+    typeof spec.captureProvider !== 'function'
+  ) {
+    throw new Error(`language ${spec.tag}: captureProvider must be a function`);
+  }
+  if (
+    spec.foldProvider !== undefined &&
+    typeof spec.foldProvider !== 'function'
+  ) {
+    throw new Error(`language ${spec.tag}: foldProvider must be a function`);
+  }
   if (spec.aliases !== undefined && !Array.isArray(spec.aliases)) {
     throw new Error(`language ${spec.tag}: aliases must be a string[]`);
   }
@@ -119,6 +143,12 @@ export function registerLanguage(spec) {
   }
   if (spec.injectionProvider !== undefined) {
     stored.injectionProvider = spec.injectionProvider;
+  }
+  if (spec.captureProvider !== undefined) {
+    stored.captureProvider = spec.captureProvider;
+  }
+  if (spec.foldProvider !== undefined) {
+    stored.foldProvider = spec.foldProvider;
   }
   if (spec.aliases !== undefined) {
     stored.aliases = [...spec.aliases];
@@ -181,6 +211,8 @@ export function languageForFilename(name) {
  *   injectionQuery?: string,
  *   foldQuery?: string,
  *   getHighlighter?: (tag: string) => import('./treesitter.js').Highlighter | undefined,
+ *   captureProvider?: (text: string) => import('./treesitter.js').ProvidedCaptures,
+ *   foldProvider?: (text: string) => import('./folding.js').FoldCapture[],
  *   tag?: string,
  *   overrideStore?: import('./highlight-overrides.js').OverrideStore,
  * }) => Promise<import('./treesitter.js').Highlighter>
@@ -237,6 +269,8 @@ export async function loadLanguageHighlighters(
         options.getHighlighter = getHighlighter;
       }
       if (spec.foldQuery) options.foldQuery = spec.foldQuery;
+      if (spec.captureProvider) options.captureProvider = spec.captureProvider;
+      if (spec.foldProvider) options.foldProvider = spec.foldProvider;
       const highlighter = await create(spec.grammar, spec.query, options);
       highlighters[spec.tag] = highlighter;
       // Alias entries point at the same highlighter so an injection's

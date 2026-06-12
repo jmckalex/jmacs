@@ -28,6 +28,10 @@
 
 (defgroup 'jmacs nil "All jmacs customisation.")
 
+;; Registered here rather than beside its settings because they span
+;; three files (indent.lisp, system.lisp, cite.lisp), all loaded later.
+(defgroup 'editing 'jmacs "Editing behaviour: indentation, citations, system integration.")
+
 ;; --- the registry ------------------------------------------------------
 
 (define (custom-registered? name)

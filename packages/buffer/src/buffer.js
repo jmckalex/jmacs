@@ -784,6 +784,20 @@ export function createBuffer(initialText = '', options = {}) {
     // --- history --------------------------------------------------------
 
     /**
+     * Group every edit made until the matching `endChangeGroup` into a
+     * single undo step (L1's change group), so a multi-edit command —
+     * fill-paragraph, indent-region — undoes atomically. Re-entrant.
+     */
+    beginChangeGroup() {
+      storage.beginChangeGroup();
+    },
+
+    /** Close the change group opened by `beginChangeGroup`. */
+    endChangeGroup() {
+      storage.endChangeGroup();
+    },
+
+    /**
      * Undo the last edit. The cursor set collapses to the primary and
      * moves to the changed region.
      * @returns {boolean} Whether anything was undone.

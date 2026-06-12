@@ -48,7 +48,12 @@
   (hash-map
    "--bg"           "#2b333b"
    "--bg-chrome"    "#262d34"
-   "--bg-editor"    "#2e3842"
+   ;; Mariana's true editor background — matches Sublime Text exactly. (With
+   ;; --force-color-profile=srgb in main.js, Chromium's ICC-profile transform
+   ;; is off, so this hex renders raw like Sublime; the token palette below
+   ;; matches too, with no per-colour pre-compensation.)
+   "--bg-editor"    "#303841"
+   "--bg-editor-focused" "#303841"
    "--bg-repl"      "#2b333b"
    "--fg"           "#d8dee9"
    "--fg-dim"       "#7c8f9e"
@@ -82,6 +87,7 @@
    "--bg"           "#fdf6e3"
    "--bg-chrome"    "#eee8d5"
    "--bg-editor"    "#fdf6e3"
+   "--bg-editor-focused" "#fdf6e3"
    "--bg-repl"      "#eee8d5"
    "--fg"           "#586e75"
    "--fg-dim"       "#93a1a1"
@@ -115,7 +121,12 @@
   (hash-map
    "--bg"           "#2b333b"
    "--bg-chrome"    "#262d34"
-   "--bg-editor"    "#323e4a"
+   ;; Editor surface matches Sublime Text's Mariana background exactly
+   ;; (#303841), per Jason. Rendered raw thanks to --force-color-profile=srgb.
+   ;; The FOCUSED pane sits a step darker (~10%) so the active editing
+   ;; surface reads at a glance; idle panes keep the Mariana shade.
+   "--bg-editor"    "#303841"
+   "--bg-editor-focused" "#2b323a"
    "--bg-repl"      "#2b333b"
    "--fg"           "#e8eef5"
    "--fg-dim"       "#8aa0b3"
@@ -149,6 +160,7 @@
    "--bg"           "#0d1117"
    "--bg-chrome"    "#0a0e14"
    "--bg-editor"    "#0d1117"
+   "--bg-editor-focused" "#0d1117"
    "--bg-repl"      "#0a0e14"
    "--fg"           "#c9d1d9"
    "--fg-dim"       "#8b949e"
