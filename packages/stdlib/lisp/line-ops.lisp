@@ -232,3 +232,30 @@
    level — a leading tab, or up to `*tab-width*` spaces (M-[). The
    selection survives."
   (-shift-region-lines -outdent-one))
+
+;; --- sorting lines -------------------------------------------------------
+
+(defcommand sort-lines (start end)
+  "Sort the lines in [START, END) into ascending order. The range is
+   snapped outward to whole lines — START back to its line start, END
+   forward to its line end, except that an END at column 0 does not
+   pull in that line (the indent-region rule). Point lands at the start
+   of the sorted block. Unbound; reach it via M-x."
+  (interactive region)
+  (goto! start)
+  (let ((span-start (line-start)))
+    (goto! end)
+    ;; A region ending at column 0 does not touch that line — step back
+    ;; onto the previous line's end.
+    (when (and (> end start) (= end (line-start)))
+      (goto! (- end 1)))
+    (let* ((span-end (line-end))
+           (old (buffer-substring span-start span-end))
+           (new-text (string-join (sort (-split-lines old)) "\n")))
+      (if (equal? new-text old)
+          (goto! span-start)            ; already sorted — no edit, no undo step
+          (atomic-change-group
+            (delete-region! span-start span-end)
+            (goto! span-start)
+            (insert! new-text)
+            (goto! span-start))))))

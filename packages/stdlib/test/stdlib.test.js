@@ -1954,6 +1954,80 @@ test('the line-op commands are bound to their keys', async () => {
   );
 });
 
+// --- sort-lines -----------------------------------------------------------
+
+test('sort-lines sorts the selected lines ascending', async () => {
+  const { buffer, interpreter } = await editor('banana\napple\ncherry');
+  buffer.moveTo(0);
+  buffer.setMark(18); // ...through "cherry"
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'apple\nbanana\ncherry');
+});
+
+test('sort-lines snaps a partial-line region outward to whole lines', async () => {
+  const { buffer, interpreter } = await editor('bbb\naaa\nccc');
+  buffer.moveTo(1); // inside "bbb"
+  buffer.setMark(5); // inside "aaa"
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'aaa\nbbb\nccc', 'both touched lines sort; ccc untouched');
+});
+
+test('sort-lines: a region ending at column 0 does not touch that line', async () => {
+  const { buffer, interpreter } = await editor('bbb\naaa\nccc');
+  buffer.moveTo(0);
+  buffer.setMark(8); // start of the "ccc" line
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'aaa\nbbb\nccc', '"ccc" stays out of the sort');
+});
+
+test('sort-lines lands point at the start of the sorted block', async () => {
+  const { buffer, interpreter } = await editor('zzz\nbbb\naaa');
+  buffer.moveTo(5); // inside "bbb"
+  buffer.setMark(10); // inside "aaa"
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'zzz\naaa\nbbb');
+  assert.equal(buffer.point, 4, 'point at the snapped span start');
+});
+
+test('sort-lines undoes as ONE step (atomic-change-group)', async () => {
+  const { buffer, interpreter } = await editor('banana\napple\ncherry');
+  buffer.moveTo(0);
+  buffer.setMark(18);
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'apple\nbanana\ncherry');
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'banana\napple\ncherry', 'one undo restores the original');
+});
+
+test('sort-lines on already-sorted lines makes no edit (clean undo history)', async () => {
+  const { buffer, interpreter } = await editor('aaa\nbbb');
+  buffer.moveTo(7);
+  interpreter.evaluate('(insert! "x")'); // a real edit to undo past
+  assert.equal(buffer.text, 'aaa\nbbbx');
+  buffer.moveTo(0);
+  buffer.setMark(buffer.text.length);
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'aaa\nbbbx', 'already sorted — text untouched');
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'aaa\nbbb', 'the undo step is the insert, not a no-op sort');
+});
+
+test('sort-lines needs an active region', async () => {
+  const { interpreter } = await editor('b\na');
+  assert.throws(
+    () => interpreter.evaluate('(run-command (quote sort-lines))'),
+    /needs an active region/
+  );
+});
+
+test('sort-lines is a registered command (M-x reachable), unbound', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote sort-lines))'),
+    true
+  );
+});
+
 test('M-S-right / M-S-left select word-wise; M-S-down extends by line', async () => {
   const { buffer, interpreter } = await editor('alpha beta\ngamma delta');
   buffer.moveTo(0);
