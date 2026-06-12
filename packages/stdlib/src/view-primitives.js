@@ -115,9 +115,11 @@ export function createViewPrimitives(viewHost) {
       return view ?? NIL;
     },
     'view-count': () => viewHost.viewList().length,
+    // A by-name lookup: no view of that name is an absence (miss
+    // convention), so the miss is `#f` — `(if (find-view n) …)` works.
     'find-view': (args) => {
       const view = viewHost.findViewByName(String(args[0] ?? ''));
-      return view ?? NIL;
+      return view ?? false;
     },
 
     // --- snapshots -----------------------------------------------------

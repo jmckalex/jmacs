@@ -253,6 +253,24 @@ test('(view-list) returns data and does NOT open the GUI (no shadowing)', async 
   assert.equal(editor.openViewListCalls(), 0);
 });
 
+test('find-view returns the view by name, #f when none matches', async () => {
+  const editor = await buildEditor([
+    { name: 'alpha.txt', text: 'one' },
+    { name: 'beta.txt', text: 'two' },
+  ]);
+  // A hit returns the (truthy) view handle.
+  assert.equal(
+    editor.interpreter.evaluate('(view-name-of (find-view "beta.txt"))'),
+    'beta.txt'
+  );
+  // A miss is #f (miss convention), so the bare if-test idiom works.
+  assert.equal(editor.interpreter.evaluate('(find-view "no-such")'), false);
+  assert.equal(
+    editor.interpreter.evaluate('(if (find-view "no-such") #t #f)'),
+    false
+  );
+});
+
 test('buffer-menu is an alias that opens the *View List*', async () => {
   const editor = await buildEditor();
   editor.interpreter.evaluate('(buffer-menu)');
