@@ -277,6 +277,42 @@ export function installPrimitives(env, { write }) {
     }
     return NIL;
   });
+  // (sort SEQ [LESS?]) — a sorted copy of SEQ, which may be a list or a
+  // vector; the result has the same type as the input, and the input is
+  // untouched. LESS? is a Lisp procedure used as a boolean less-than:
+  // (less? a b) truthy means a orders strictly before b. It is adapted
+  // to a three-way comparator — less?(a,b) ? -1 : less?(b,a) ? 1 : 0 —
+  // so elements neither orders before the other compare equal. The sort
+  // is STABLE (JS Array.prototype.sort): equal elements keep their
+  // input order. When LESS? is omitted, all-numbers sort by `<` and
+  // all-strings by JS string `<`; anything else needs a comparator.
+  def('sort', (a) => {
+    arity('sort', a, 1, 2);
+    const items = [...sequenceToArray('sort', a[0])];
+    let compare;
+    if (a.length === 2) {
+      const less = a[1];
+      if (!isProcedure(less)) {
+        throw new LispError(
+          `sort: expected a procedure, got ${typeName(less)}`
+        );
+      }
+      compare = (x, y) =>
+        applyProcedure(less, [x, y]) !== false
+          ? -1
+          : applyProcedure(less, [y, x]) !== false
+            ? 1
+            : 0;
+    } else if (items.every((x) => typeof x === 'number')) {
+      compare = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+    } else if (items.every((x) => typeof x === 'string')) {
+      compare = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+    } else {
+      throw new LispError('sort: mixed or unordered elements need a comparator');
+    }
+    items.sort(compare);
+    return Array.isArray(a[0]) ? Object.freeze(items) : arrayToList(items);
+  });
   def('range', (a) => {
     arity('range', a, 1, 3);
     const start = a.length === 1 ? 0 : num('range', a[0]);

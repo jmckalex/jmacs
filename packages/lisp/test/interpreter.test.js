@@ -181,6 +181,55 @@ test('range', () => {
   assert.equal(show('(range 2 6)'), '(2 3 4 5)');
 });
 
+// --- sort -----------------------------------------------------------------
+
+test('sort orders numbers and strings by default', () => {
+  assert.equal(show('(sort (list 3 1 2))'), '(1 2 3)');
+  assert.equal(show('(sort (list "pear" "apple" "fig"))'), '("apple" "fig" "pear")');
+  assert.equal(show('(sort nil)'), 'nil');
+});
+
+test('sort takes a less? comparator, e.g. for descending order', () => {
+  assert.equal(show('(sort (list 1 3 2) >)'), '(3 2 1)');
+  assert.equal(
+    show('(sort (list "bb" "a" "ccc") (lambda (x y) (< (string-length x) (string-length y))))'),
+    '("a" "bb" "ccc")'
+  );
+});
+
+test('sort is stable — equal keys keep their input order', () => {
+  assert.equal(
+    show(`(sort (list (cons 1 'a) (cons 0 'b) (cons 1 'c) (cons 0 'd))
+                (lambda (x y) (< (car x) (car y))))`),
+    '((0 . b) (0 . d) (1 . a) (1 . c))'
+  );
+});
+
+test('sort returns the input type: vector in, vector out', () => {
+  assert.equal(show('(sort [3 1 2])'), '[1 2 3]');
+  assert.equal(show('(sort (list 2 1))'), '(1 2)');
+});
+
+test('sort leaves the original untouched and returns a new object', () => {
+  assert.equal(show('(define v [3 1 2]) (sort v) v'), '[3 1 2]');
+  assert.equal(show('(define l (list 3 1 2)) (sort l) l'), '(3 1 2)');
+  assert.equal(run('(define l (list 1 2)) (eq? l (sort l))'), false);
+});
+
+test('sort without a comparator rejects mixed or unordered elements', () => {
+  const unsortable = ['(sort (list 1 "a"))', "(sort (list 'b 'a))"];
+  for (const src of unsortable) {
+    assert.throws(
+      () => run(src),
+      (err) => {
+        assert.ok(err instanceof LispError);
+        assert.match(err.message, /sort: mixed or unordered elements need a comparator/);
+        return true;
+      }
+    );
+  }
+});
+
 // --- quote and quasiquote ----------------------------------------------
 
 test('quote', () => {
