@@ -490,6 +490,29 @@ const SPECIAL_FORMS = {
 
   let(form, env) {
     const parts = args(form);
+    // Named let: (let name ((var init)…) body…). Rewritten to
+    //   ((letrec ((name (lambda (var…) body…))) name) init…)
+    // and bounced as a tail call, which yields the semantics for free:
+    // the inits are ordinary application arguments (evaluated in the
+    // OUTER scope), `name` recurs through the letrec frame without
+    // leaking into the surrounding scope, and the recursive call is a
+    // plain application the trampoline runs in constant stack.
+    if (parts[0] instanceof Sym) {
+      if (parts.length < 2) {
+        throw new LispError('let: expected (let name ((var init)...) body...)');
+      }
+      const name = parts[0];
+      const bindings = listToArray(parts[1]).map((b) => listToArray(b));
+      const vars = bindings.map(([v]) => v);
+      const inits = bindings.map(([, init]) => init);
+      const lambdaForm = arrayToList([
+        sym('lambda'),
+        arrayToList(vars),
+        ...parts.slice(2),
+      ]);
+      const letrecForm = list(sym('letrec'), list(list(name, lambdaForm)), name);
+      return new TailCall(arrayToList([letrecForm, ...inits]), env);
+    }
     const scope = new Environment(env);
     for (const binding of listToArray(parts[0])) {
       const [name, valueForm] = listToArray(binding);
