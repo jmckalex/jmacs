@@ -314,12 +314,16 @@ function createDocView(container, options = {}) {
     toc.replaceChildren();
     const ns = nodes();
     if (!ns || manifest.top == null) return;
-    const makeList = (childIds) => {
+    const makeList = (childIds, ancestors) => {
       const ul = doc.createElement('ul');
       ul.className = 'doc-toc-list';
       for (const cid of childIds) {
         const node = ns[cid];
-        if (!node) continue;
+        // Skip a child that is already its own ancestor: a malformed
+        // manifest (id collisions can yield self-children) must degrade
+        // to a truncated branch, not infinite recursion — the same
+        // defence breadcrumbTrail has against cyclic up-chains.
+        if (!node || ancestors.has(cid)) continue;
         const li = doc.createElement('li');
         li.className = 'doc-toc-item';
         const link = navLink(cid, node.title, node.level === 99);
@@ -328,7 +332,7 @@ function createDocView(container, options = {}) {
         tocLiById.set(cid, li);
         if (node.children && node.children.length) {
           li.classList.add('doc-toc-branch');
-          li.append(makeList(node.children));
+          li.append(makeList(node.children, new Set(ancestors).add(cid)));
         }
         ul.append(li);
       }
@@ -343,7 +347,7 @@ function createDocView(container, options = {}) {
       li.append(link);
       tocLiById.set(rootId, li);
       if (node && node.children && node.children.length) {
-        li.append(makeList(node.children));
+        li.append(makeList(node.children, new Set([rootId])));
       }
       return li;
     };

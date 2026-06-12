@@ -233,7 +233,14 @@ ${bodyInner}
       const name = $el.attr('name');
       const target = $el.attr('path');
       if (!name || !target || nodes[name]) {
-        if (name && nodes[name] && currentHeadingId) {
+        // A function whose name collides with an existing node id gets
+        // filed as a child of the current section — EXCEPT when that
+        // section IS the same-named node (a heading titled like the
+        // function, e.g. an "undo" section holding the undo entry):
+        // pushing it there would make the node its own child and the
+        // sidebar's recursive TOC would never terminate.
+        if (name && nodes[name] && currentHeadingId
+            && name !== currentHeadingId) {
           nodes[currentHeadingId].children.push(name);
         }
         return;
