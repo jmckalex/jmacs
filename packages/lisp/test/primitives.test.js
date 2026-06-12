@@ -509,10 +509,18 @@ test('type-of reports a keyword for each value type', () => {
   assert.equal(show('(type-of (cons 1 2))'), ':list');
 });
 
-test('doc returns a lambda docstring, nil otherwise', () => {
+test('doc returns a lambda docstring, #f otherwise (miss convention)', () => {
   assert.equal(run('(define (f x) "docs here" x) (doc f)'), 'docs here');
-  assert.equal(show('(define (g x) x) (doc g)'), 'nil'); // no docstring
-  assert.equal(show('(doc +)'), 'nil'); // primitives carry no doc
+  assert.equal(run('(define (g x) x) (doc g)'), false); // no docstring
+  assert.equal(run('(doc +)'), false); // primitives carry no doc
+  // Absence is #f, so a bare if-test takes the right branch.
+  assert.equal(show("(define (g x) x) (if (doc g) 'documented 'bare)"), 'bare');
+});
+
+test('where-defined returns "line:col" for a lambda, #f otherwise', () => {
+  assert.match(run('(define (f x) x) (where-defined f)'), /^\d+:\d+$/);
+  assert.equal(run('(where-defined +)'), false); // primitives: no source
+  assert.equal(run('(where-defined 42)'), false); // not a procedure at all
 });
 
 test('describe summarises a procedure, a primitive and a plain value', () => {

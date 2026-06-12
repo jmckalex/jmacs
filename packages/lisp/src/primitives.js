@@ -519,17 +519,19 @@ export function installPrimitives(env, { write }) {
   // --- introspection ----------------------------------------------------
   def('identity', (a) => a[0]);
   def('type-of', (a) => keyword(typeName(a[0])));
+  // Miss convention: no docstring / no recorded source is an absence,
+  // so both return `#f` — safe as a bare if-test.
   def('doc', (a) => {
     const v = a[0];
-    if (v instanceof Lambda) return v.doc ?? NIL;
-    return NIL;
+    if (v instanceof Lambda) return v.doc ?? false;
+    return false;
   });
   def('where-defined', (a) => {
     const v = a[0];
     if (v instanceof Lambda && v.source) {
       return `${v.source.line}:${v.source.col}`;
     }
-    return NIL;
+    return false;
   });
   def('describe', (a) => {
     const v = a[0];
