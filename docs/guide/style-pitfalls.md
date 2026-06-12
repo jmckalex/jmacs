@@ -59,10 +59,11 @@ out in *Lisp Data Types*.
 
 #### Truthy Ghosts from the Host
 
-Host primitives are JavaScript, and a JS `undefined` or `null` that
-leaks across the boundary is an opaque value — which means *truthy*. It
-prints as `undefined` and reports `(type-of x)` ⇒ `:value`. Even a
-well-behaved primitive's failure value is `nil`, just as truthy:
+Host primitives are JavaScript, but a JS `undefined` or `null` never
+reaches your code raw: the boundary coerces both to `nil` on the way
+out, so a primitive that "returns nothing" returns `nil`. The ghost
+that remains is that `nil` is *truthy* — a primitive's failure or
+nothing-to-report value passes a bare `if` test:
 
 ```lisp
 (define text (read-file-text! "/no/such/file"))
@@ -70,26 +71,8 @@ well-behaved primitive's failure value is `nil`, just as truthy:
 (when (string? text) (insert! text))  ; right — guard with the type
 ```
 
-The guard idiom: test for the type you intend to use, not for bare
-truth. If you write host primitives yourself, return `NIL` explicitly —
-never let a JS function fall off the end.
-
-#### A One-Test cond Clause Runs Twice
-
-A `cond` clause with no body, `(test)`, returns the test's value — by
-evaluating the test a second time. A pure expression never notices; a
-side-effecting one runs twice:
-
-```lisp
-(define hits 0)
-(define (probe) (set! hits (inc hits)))
-
-(cond ((probe)))            ; ⇒ 2 — and hits is 2: the test ran twice
-```
-
-The fix: give the clause a body, or use `or`, which evaluates each
-operand exactly once and returns the first true value — see *Control
-Flow and Iteration*.
+The guard idiom: test for the type you intend to use — or for the miss
+itself, with `nil?` — not for bare truth.
 
 #### Identity, Equality, and Map Keys
 
@@ -244,7 +227,9 @@ Sharp edges that fit in one line each:
 - `reduce` is `(reduce f init seq)` — the initial value is required.
 - `string-index-of` returns `-1` when nothing is found — truthy.
 - `define`, `defmacro`, `module`, and `import` return the *name
-  symbol*; `set!` returns the value.
+  symbol* — as does `defcommand`, whose expansion ends in a
+  `register-command!` that hands the name back; `set!` returns the
+  value.
 - Maps are immutable values: `(assoc m k v)` returns a copy, so a
   keymap edit is `(set! m (assoc m k v))` — without the `set!` the
   binding is silently dropped.
@@ -298,7 +283,10 @@ suspect call:
     (println (get e :irritants))))
 ```
 
-The condition map carries exactly those two keys. If nothing is caught
+The condition map always carries those two keys, plus `:line` and
+`:column` — the failing form's position in its source — when the
+evaluator could locate it; *Errors and Error Handling* reads the map
+in full. If nothing is caught
 at all, suspect a raw JavaScript exception from a host primitive —
 those escape every Lisp handler, as *Errors and Error Handling*
 explains. Finally, after editing stdlib files or your `init.lisp`,
@@ -329,8 +317,9 @@ whichever file already does something like what you want:
 | `faces.lisp`, `themes.lisp` | `defface`, the four themes, the `*theme*` setting |
 | `languages/*.lisp` | thirty-six drop-in modes — `python.lisp` is the documented template, `jmarkdown.lisp` the rich worked example |
 
-The prelude — `when`, `unless`, `cadr` and friends — is the only Lisp
-the interpreter itself ships, defined inline in
+The prelude — `when`, `unless`, the loop macros `while`, `dotimes`,
+and `dolist`, the predicates `any?` and `every?`, `cadr` and friends —
+is the only Lisp the interpreter itself ships, defined inline in
 `packages/lisp/src/interpreter.js`. Everything else is ordinary library
 code, written to be read.
 

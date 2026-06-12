@@ -325,10 +325,10 @@ and recovery are user-manual territory — see *Files and buffers*.
 ### A Complete Editing Function
 
 The capstone assembles the chapter: read a region, transform it with
-the string library, and write it back as one atomic edit. (There is no
-`sort` in the core library, so the transformation here is reversing
-the region's lines — the structure is identical for any line-wise
-transform.)
+the string library, and write it back as one atomic edit. The
+transformation here reverses the region's lines, but the structure is
+identical for any line-wise transform — put `sort` where the `reverse`
+is and you have the heart of the standard library's line sorter.
 
 ```lisp
 (define (reverse-region-lines start end)
@@ -352,6 +352,18 @@ wrapped in `atomic-change-group`, so one `C-z` restores the original.
 Try it from the REPL: set the mark, move point down a few lines, then
 evaluate
 `(reverse-region-lines (min (mark) (point)) (max (mark) (point)))`.
+
+The standard library's `sort-lines` command (`line-ops.lisp`; reach it
+as `M-x sort-lines`) is this same shape grown to production. The
+transformation is `(sort …)` instead of `(reverse …)`, and around it
+sit the details a shipped command owes its user: the range is snapped
+*outward* to whole lines — start back to its line's start, end forward
+to its line's end, except that an end at column 0 leaves that line
+alone, the same rule `indent-region` follows — an already-sorted block
+is recognised and left unedited, so no empty step pollutes the undo
+stack, and point lands at the start of the sorted block either way.
+Read it beside `reverse-region-lines` and you can see exactly what a
+chapter example leaves out.
 
 What remains is to make it a first-class citizen: a named command that
 gathers those bounds itself through an `(interactive region)` clause,

@@ -4,9 +4,10 @@ In jmacs Lisp, control flow is not a set of statements that *do*
 things — it is a set of expressions that *are* things. An `if` has a
 value, a `cond` has a value, and even a sequence of side effects has a
 value: the last one. This chapter walks through every branching
-construct the language offers, then turns to the question every
-newcomer asks sooner or later — where is the `while` loop? — and
-answers it honestly. One rule from *Lisp Data Types* governs
+construct the language offers, then through iteration: the
+higher-order functions, the loop macros `while`, `dotimes`, and
+`dolist`, named `let`, and the tail recursion they all stand on.
+One rule from *Lisp Data Types* governs
 everything below: **only `#f` is false**. `nil`, `0`, and `""` are
 all true, and every conditional here tests against that rule and no
 other.
@@ -76,29 +77,12 @@ matches. If no clause matches and there is no `else`, the value is
 (describe-count 3)   ; ⇒ "a few"
 ```
 
-> note: **a one-element clause evaluates its test twice.** A clause of
-> the form `(expr)` — a test with no body — returns the test's own
-> value, but the implementation gets that value by evaluating the
-> expression a second time: once for the truth check, once for the
-> result. For a pure expression you will never notice. For one with
-> side effects, you will:
->
-> ```lisp
-> (define calls 0)
-> (define (next-id)
->   (set! calls (inc calls))
->   calls)
->
-> (cond ((next-id)))   ; ⇒ 2 — next-id ran twice
-> calls                ; ⇒ 2
-> ```
->
-> If you mean "this value, or else keep trying", `or` already does
-> that with single evaluation. Otherwise bind the value once and test
-> the binding — `(let ((v expr)) (if v v fallback))` — or give the
-> clause an explicit body. A related edge: a bare `(else)` clause has
-> no body to run, so it tail-evaluates the symbol `else` itself and
-> throws `unbound symbol: else`.
+Two edge shapes are worth knowing. A one-element clause `(expr)` — a
+test with no body — evaluates its test once and returns that value, so
+`(cond (x) (else y))` reads as "x if truthy, otherwise y" (though `or`
+says the same thing more idiomatically). And a bare `(else)` clause
+has no body to run, so it tail-evaluates the symbol `else` itself and
+throws `unbound symbol: else` — give your `else` a body.
 
 ### Conditional Shorthands: when and unless
 
@@ -185,15 +169,15 @@ arm of `if`: `(if (even? n) (begin (println "halving") (/ n 2)) n)`
 logs on one branch and stays silent on the other. The full story of
 sequencing and evaluation order is in *The Evaluation Model*.
 
-### Iterating Without Loops
+### Iterating with Higher-Order Functions
 
-Now the absence you may have been circling: jmacs Lisp has **no
-looping construct**. There is no `while`, no `for`, no `dolist`, no
-`loop` — not among the seventeen special forms, not in the prelude,
-not in the standard library. This is a design position, not a gap.
-Iteration is expressed two ways — higher-order functions over lists,
-and recursion in tail position — and both return values while they
-work.
+Now iteration. None of the seventeen special forms is a loop — that is
+a design position, not a gap. Iteration is expressed three ways, in a
+deliberate order of preference: higher-order functions over sequences,
+which return values while they work; the loop macros and named `let`,
+for when the shape really is "do this repeatedly"; and underneath both,
+recursion in tail position, which is what the loop macros expand into.
+The rest of the chapter takes them in that order.
 
 #### Mapping, Filtering, and Reducing
 
@@ -221,8 +205,8 @@ example below leans on that.
 
 #### Counting with range
 
-For index-driven loops — "do this for i from 0 to n" — build the
-indices as a list with
+For index-driven loops that build a result — "the square of every i
+up to n" — make the indices a list with
 <a href="reference/lisp-core/range.html" data-jmacs-doc="range">range</a>
 and map over them. Ranges are half-open (the end value is excluded)
 and a negative step counts down:
@@ -234,11 +218,111 @@ and a negative step counts down:
 (map (lambda (i) (* i i)) (range 5))   ; ⇒ (0 1 4 9 16)
 ```
 
+### The Loop Macros: while, dotimes, and dolist
+
+When the iteration is about *doing* rather than building a value — run
+this until that, do this n times, do this to each — three macros from
+the interpreter's prelude read the way you would say them. All three
+evaluate their bodies purely for effect and return `nil`.
+
+```lisp
+(while test body…)
+```
+
+`test` is evaluated before each pass; while it is truthy, the body
+forms run in order, and when it turns false the form returns `nil` —
+possibly without running the body at all. Something must make the test
+change, which in practice means `set!` or an effect on the world:
+
+```lisp
+(define n 10)
+(define total 0)
+(while (> n 0)
+  (set! total (+ total n))
+  (set! n (dec n)))
+total   ; ⇒ 55
+```
+
+```lisp
+(dotimes var count body…)
+```
+
+`count` is evaluated once, before the loop; the body then runs with
+`var` bound to `0`, `1`, … `count - 1` in turn:
+
+```lisp
+(dotimes i 3 (println (str i ": ahoy")))
+; prints 0: ahoy, 1: ahoy, 2: ahoy on separate lines
+; ⇒ nil
+```
+
+```lisp
+(dolist var lst body…)
+```
+
+`lst` is evaluated once and must be a list; the body runs with `var`
+bound to each element in order. (For a vector, use `for-each` — or
+`vector->list` first.)
+
+```lisp
+(dolist w '("stone" "scissors" "paper")
+  (insert! w)
+  (insert! "\n"))   ; types three lines into the buffer; ⇒ nil
+```
+
+None of this is new evaluator machinery. The three are ordinary macros,
+defined in the prelude in a few lines each: every use expands to a
+small recursive procedure — bound under a `gensym` name so it cannot
+collide with your variables — whose self-call sits in tail position, so
+a million iterations run in constant stack. They are conveniences over
+the recursion this chapter ends with, not an alternative to it; in
+*Writing Macros* you will read the real definition of `dotimes` line by
+line. And because all three return `nil`, they are for side effects
+only — when the loop's point is a *value*, reach for the functions
+above or the patterns below.
+
+### Looping with Named let
+
+The fourth tool covers the case the macros do not: a loop that carries
+state and *returns a value*. `let` has a second, named form:
+
+```lisp
+(let name ((var init)…) body…)
+```
+
+It binds `name` — over the body only — to a procedure whose parameters
+are the `var`s, and immediately calls it with the `init` values;
+calling `name` inside the body re-enters it with new values. Each
+re-entry in tail position is a genuine tail call, so the loop runs in
+constant stack. The first power of two past a thousand:
+
+```lisp
+(let loop ((p 1))
+  (if (> p 1000)
+      p
+      (loop (* p 2))))   ; ⇒ 1024
+```
+
+Read it as: start with `p` at `1`; if `p` has passed a thousand it is
+the answer; otherwise go round again with `p` doubled. The full rules
+— where the inits are evaluated, how the form desugars — are in
+*Functions and Closures*; here it is enough that this is the idiomatic
+"loop with an answer", and the shape underneath is the accumulator
+pattern that closes this chapter.
+
+### The Accumulator Pattern Underneath
+
+Strip the sugar from any of the constructs above — the loop macros
+expand into it, named `let` is one binding form away from it — and you
+find the same mechanism: a recursive procedure that carries its state
+in its parameters. Knowing the pattern bare is what lets you write the
+loop nobody packaged for you.
+
 #### The Tail-Recursive Helper
 
-When no higher-order function fits — the loop's length is unknown, or
-each step depends on running state — write a small recursive helper
-that carries its state in an *accumulator* parameter:
+The pattern's plainest spelling is a local function that carries its
+state in an *accumulator* parameter — the same loop a named `let`
+writes in one form, here as a definition you can name and document:
 
 ```lisp
 (define (count-matching pred lst)
@@ -325,9 +409,12 @@ lines.
 | the same operation on every element | `map` |
 | keeping only some elements | `filter` |
 | collapsing a list to one value | `reduce` |
-| a side effect per element | `for-each` |
-| a counted, index-driven loop | `range` + `map` |
-| anything else — unknown length, evolving state | a tail-recursive helper |
+| a side effect per element | `for-each` or `dolist` |
+| a side effect n times, or per index | `dotimes` |
+| a side effect for as long as a condition holds | `while` |
+| a counted list of results | `range` + `map` |
+| a loop that carries state and returns a value | named `let` |
+| anything else — when no construct fits the shape | a tail-recursive helper |
 
 Two neighbouring chapters finish the picture. When a computation can
 *fail* rather than merely branch, you want `try` — see *Errors and

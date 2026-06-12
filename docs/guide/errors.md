@@ -57,8 +57,9 @@ shape. The common ones, with their exact message texts:
 | Division by zero in `/` or `mod` | `division by zero` · `mod: division by zero` |
 | Malformed source given to `read-string` | `unclosed '(' opened at 1:1` |
 
-Reader errors are the one place a line and column appear, embedded in
-the message text itself. Well-behaved host primitives follow the same
+Reader errors carry their line and column embedded in the message text
+itself; every other error carries its location separately, in the
+condition map of the next section. Well-behaved host primitives follow the same
 `name: what went wrong` convention — an error message usually names the
 function that refused before saying why.
 
@@ -84,23 +85,36 @@ whole `try` is then the value of the *last handler form*.
 (try (error "x") (catch e 1 2 3))      ; ⇒ 3
 ```
 
-What the handler's variable holds is a *condition map* with exactly two
-keys: `:message`, the message string, and `:irritants`, a proper list
-of the irritant values (`nil` when there were none). Read it with
+What the handler's variable holds is a *condition map*. Two keys are
+always present: `:message`, the message string, and `:irritants`, a
+proper list of the irritant values (`nil` when there were none). When
+the evaluator can locate the form that failed, two more join them:
+`:line` and `:column`, the form's 1-based position in its source. Read
+them with
 <a href="reference/lisp-core/get.html" data-jmacs-doc="get">get</a>,
 like any other map:
 
 ```lisp
 (try (error "boom" 1 2) (catch e e))
-; ⇒ {:message "boom" :irritants (1 2)}
+; ⇒ {:message "boom" :irritants (1 2) :line 1 :column 6}
 
 (try (foo-unbound)
   (catch e (get e :message)))
 ; ⇒ "unbound symbol: foo-unbound"
 ```
 
+The `:line 1 :column 6` above points at the `(error "boom" 1 2)` form —
+column 6 of the one-line source just submitted. One subtlety deserves
+stating precisely: the position is relative to *the source the
+offending form was read from*, and that is not always the text you just
+evaluated. Call a function defined earlier — in a standard-library
+file, or three REPL entries ago — and an error inside its body reports
+the failing form's line and column *in its defining source*, because
+that is where the form was read. Nothing in the map says which source
+that was; the location is a strong hint, not a full address.
+
 Interpreter-raised errors and explicit `error` calls arrive as the same
-two-key map — the handler cannot tell them apart, and there is no way
+map — the handler cannot tell them apart, and there is no way
 to catch only *some* errors by kind. A handler that should pass certain
 errors along inspects the map and rethrows (an idiom shown below).
 
@@ -110,13 +124,14 @@ errors along inspects the map and rethrows (an idiom shown below).
 to be written on both paths (the standard library's
 `atomic-change-group` does exactly this, closing its change group in
 the normal return and in the handler alike). There are no typed
-condition classes: every error is the same two-key map, and dispatching
+condition classes: every error is the same condition map, and dispatching
 on kinds means matching on the message string. There is no restart
 system — Common-Lisp-style conditions and restarts are the planned
 future, and `try`/`catch` will remain the everyday surface even then.
-And today the condition map carries no source location: no file, line,
-or stack trace. The message text is the whole story, which is one more
-reason to write messages that name their function.
+And there is no stack trace: `:line` and `:column` point at the form
+that failed, but not at the chain of calls that reached it, and not at
+which source it was read from — which is still a good reason to write
+messages that name their function.
 
 ### The JavaScript Boundary
 
@@ -170,7 +185,8 @@ condition map and re-signals the rest. The faithful rethrow uses
 
 The shorter `(error (get e :message))` also works when the irritants do
 not matter downstream. The rethrown error is a new condition as far as
-the next handler can tell — there is no provenance chain.
+the next handler can tell — there is no provenance chain, and its
+`:line`/`:column` point at the rethrow, not at the original failure.
 
 #### Validating Arguments Early
 
@@ -256,7 +272,9 @@ the boundary and reports it. Where you see it depends on how the code
 was running:
 
 - **The REPL** (`C-x p`, cmd(toggle-repl)) prints the message in its
-  error styling in place of a result. The REPL is also the editor's
+  error styling in place of a result, with the source location
+  appended — `unbound symbol: foo (at line 2:1)` — whenever the
+  evaluator tagged one. The REPL is also the editor's
   error log of record — most of the paths below write here.
 - **Inline evaluation** — `C-RET` (cmd(eval-expression-at-point)) and
   `C-x C-e` (cmd(eval-expression-before-point)) — shows a red pill

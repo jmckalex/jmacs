@@ -84,21 +84,51 @@ the expansion or in a function it calls. The flip side is a live-editing
 virtue: redefine a macro and every subsequent evaluation of its call
 sites picks up the new definition immediately.
 
-There is currently no `macroexpand` utility — no way to ask the
-evaluator for one expansion step. The honest workaround follows from
-what a macro is: the transformer is just a procedure over forms, so you
-can run its logic yourself on quoted arguments at the REPL — `C-x p`,
-the cmd(toggle-repl) command — inspect the result, and (because `eval`
-exists; last section) even run it. Here is the transformer body of the
-prelude's `unless`, read in full below, replayed by hand:
+### Asking for an Expansion
 
-```lisp
-(define expansion
-  (list 'if '(< 2 1) 'nil (cons 'begin '((println "expanded!")))))
-expansion          ; ⇒ (if (< 2 1) nil (begin (println "expanded!")))
-(eval expansion)   ; prints expanded!
-                   ; ⇒ nil
+Two primitives let you look at what a macro call will become without
+running it. `(macroexpand-1 form)` performs **one** expansion step: if
+`form` is a list whose head names a macro in the global environment,
+the transformer is applied to the unevaluated argument forms and the
+resulting form is returned — as data, not evaluated. Anything else — a
+call to a function, a special form, an atom — comes back unchanged.
+`(macroexpand form)` repeats that step until the head is no longer a
+macro. Both are ordinary functions, so quote the form you hand them.
+At the REPL (`C-x p`, the cmd(toggle-repl) command):
+
 ```
+λ (macroexpand-1 '(when done (println "x")))
+(if done (begin (println "x")))
+λ (macroexpand-1 '(+ 1 2))
+(+ 1 2)
+```
+
+Expansion chases only the *head* of the form. A macro whose expansion
+is itself a macro call gets expanded again by `macroexpand` — but a
+macro use nested in argument position stays folded:
+
+```
+λ (defmacro report (x) (list 'unless '*quiet* (list 'println x)))
+report
+λ (macroexpand-1 '(report "saved"))
+(unless *quiet* (println "saved"))
+λ (macroexpand '(report "saved"))
+(if *quiet* nil (begin (println "saved")))
+λ (macroexpand '(when a (unless b (f))))
+(if a (begin (unless b (f))))
+```
+
+`report` expands to an `unless`, itself a macro, so `macroexpand` takes
+the second step where `macroexpand-1` stops; in the last line the inner
+`(unless …)` sits inside the `begin`, not in head position, so it
+survives unexpanded. (A macro that expands to itself would never
+finish; `macroexpand` gives up after a thousand steps with
+`macroexpand: expansion did not terminate`.) These two are the macro
+writer's first debugging tool: when an expansion misbehaves, read the
+code it actually built before reasoning about what that code does. And
+since the expansion is plain data, `eval` (this chapter's final
+section) will run it —
+the inspect-then-run loop the worked examples below lean on.
 
 ### Quasiquote in Macro Templates
 
@@ -140,7 +170,7 @@ macros; everyday templates are one level deep.
 
 ### A Ladder of Worked Macros
 
-Four macros, easiest first; two are from the editor's own source.
+Four macros, easiest first; three are from the editor's own source.
 
 #### How the Prelude Defines unless
 
@@ -168,32 +198,71 @@ both styles are legitimate. The macros
 are described as control flow in *Control Flow and Iteration*; here you
 see they are two lines each.
 
-#### A First Macro of Your Own: dotimes
+#### How the Prelude Defines dotimes
 
-The language has no counting loop — iteration is recursion or the
-higher-order functions, as *Control Flow and Iteration* explains. So
-give yourself one:
+*Control Flow and Iteration* presented `dotimes` as a counting loop;
+here is what it actually is — the real definition, verbatim from the
+same prelude:
 
 ```lisp
+;; (dotimes var count body...) — evaluate body with var bound to
+;; 0, 1, ... count-1. count is evaluated once, before the loop.
 (defmacro dotimes (var count . body)
+  (let ((loop (gensym "dotimes"))
+        (n (gensym "count")))
+    `(let ((,n ,count))
+       (letrec ((,loop (lambda (,var)
+                         (when (< ,var ,n)
+                           ,@body
+                           (,loop (+ ,var 1))))))
+         (,loop 0)))))
+```
+
+Ask for an expansion and read them together:
+
+```
+λ (macroexpand-1 '(dotimes i 3 (println i)))
+(let ((count__2 3)) (letrec ((dotimes__1 (lambda (i) (when (< i count__2) (println i) (dotimes__1 (+ i 1)))))) (dotimes__1 0)))
+```
+
+The template wraps the body in a `letrec`-bound loop procedure whose
+self-call is the last thing it does — a tail call, so the loop runs in
+constant stack at any count (*Functions and Closures*). The caller's
+variable drops into the lambda's parameter list through `,var` — the
+one binding the caller is *supposed* to see, under the caller's own
+chosen name. Everything else the macro introduces hides behind
+<a href="reference/lisp-core/gensym.html" data-jmacs-doc="gensym">gensym</a>:
+the loop's name, so a body that happens to mention a variable called
+`loop` or `dotimes` cannot collide with it, and the count, bound once
+*outside* the loop so the `count` expression is evaluated a single time
+however many iterations run. Hold onto those two moves — gensym for
+introduced names, bind-once for caller forms — because they are the two
+disciplines the rest of this chapter teaches, already at work in a
+dozen lines of prelude.
+
+The classic exercise is still worth doing: a counting loop of your own,
+on different machinery —
+
+```lisp
+(defmacro my-dotimes (var count . body)
   `(for-each (lambda (,var) ,@body) (range ,count)))
 
-(dotimes i 3 (println i))
+(my-dotimes i 3 (println i))
 ; prints 0, 1, 2 on separate lines
 ; ⇒ nil
 ```
 
-The call expands to `(for-each (lambda (i) (println i)) (range 3))`: the
-caller's variable name drops into the lambda's parameter list through
-`,var`, the body splices in through `,@body`, and the count form lands
-inside `(range …)`, evaluated once when the expansion runs. Everything
-the macro uses —
+The call expands to `(for-each (lambda (i) (println i)) (range 3))`:
+the body splices in through `,@body`, and the count form lands inside
+`(range …)`, evaluated once when the expansion runs. Everything the
+macro uses —
 <a href="reference/lisp-core/for-each.html" data-jmacs-doc="for-each">for-each</a>,
 <a href="reference/lisp-core/range.html" data-jmacs-doc="range">range</a>,
-`lambda` — already exists; the macro contributes only syntax. What makes
-it easy: the only binding the expansion introduces is `var`, and the
-*caller* chose that name. Macros that invent bindings of their own are
-the next rung.
+`lambda` — already exists; the macro contributes only syntax, and it
+behaves like the real one apart from building the whole index list up
+front. What makes it easy: the only binding this expansion introduces
+is `var`, and the caller chose that name, so there is nothing to
+gensym. Macros that invent bindings of their own are the next rung.
 
 #### swap! and the Capture Problem
 
@@ -273,7 +342,9 @@ macro that makes a multi-edit command undo as a single step:
       result)
     (catch err
       (end-change-group!)
-      (error err))))
+      ;; `error` needs a string message; `err` is the condition map, so
+      ;; re-raise its parts to preserve the original message+irritants.
+      (apply error (get err :message) (get err :irritants)))))
 
 (defmacro atomic-change-group (first . rest)
   "Evaluate the body with every buffer edit grouped into a single undo
@@ -291,7 +362,9 @@ packaging it unevaluated into a thunk can a function be handed the body
 without running it first. The parameter list `(first . rest)` quietly
 enforces at least one body form. Everything else lives in the ordinary
 function: open the group, run the thunk inside `try`, and close the
-group on both exits — on the error path *before* re-signalling, so a
+group on both exits — on the error path *before* re-signalling (the
+`apply error` line is the faithful-rethrow idiom from *Errors and Error
+Handling*), so a
 command that fails halfway still leaves the undo stack well-formed.
 (The primitives pair re-entrantly — nested groups fold into the
 outermost — and `undo!` is a no-op while a group is open.)

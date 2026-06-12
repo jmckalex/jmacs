@@ -197,7 +197,8 @@ rules of evaluation: what evaluates to what, special forms against
 ordinary application, quoting, and tail calls. *Functions and Closures*
 covers `define` and `lambda`, parameters, docstrings, and what a
 closure captures. *Control Flow and Iteration* explains branching and
-how a language with no loop construct iterates anyway. *Errors and
+the iteration toolkit — higher-order functions, the loop macros, named
+`let`, and the recursion they stand on. *Errors and
 Error Handling* covers signalling with `error` and recovering with
 `try`. *Writing Macros* introduces `defmacro`, quasiquote, and the
 judgement of when a macro is warranted. *Modules and Program Structure*
