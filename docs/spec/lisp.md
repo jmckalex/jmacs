@@ -76,10 +76,12 @@ A procedure application evaluates the head to a procedure, evaluates
 the arguments, and applies. Closures capture their defining
 environment. Rest parameters: `(lambda (a b . rest) …)`.
 
-**Not yet:** tail-call optimisation. Deep non-tail recursion can
-exhaust the JavaScript stack. Editor command code is not deeply
-recursive, so this is acceptable for v0; a trampoline can be added
-without language-visible change.
+**Tail calls are optimised.** The evaluator is a trampoline
+(`eval.js`): a call in tail position runs in constant JavaScript
+stack, so tail-recursive loops — including named `let` and the prelude
+loop macros — iterate indefinitely. Deep **non-tail** recursion
+(building a result inside an argument, e.g. `(cons x (f …))`) can
+still exhaust the stack.
 
 ## 4. Special forms
 
@@ -95,6 +97,7 @@ its arguments, or it controls the environment.
 | `(define (name . params) doc? body…)` | Define a procedure. A leading string literal is its docstring. |
 | `(lambda params body…)` | An anonymous procedure. |
 | `(let ((n v)…) body…)` | Bindings evaluated in the outer scope. |
+| `(let name ((n v)…) body…)` | Named let: `name` is bound, over the body only, to a procedure of the variables; calling it loops, tail-call optimised. Inits evaluate in the outer scope. |
 | `(let* …)` | Each binding sees the previous ones. |
 | `(letrec …)` | All names visible to all bindings (mutual recursion). |
 | `(set! name value)` | Assign to the nearest existing binding. |
@@ -226,15 +229,16 @@ Symbols and keywords are opaque to JavaScript unless converted.
 
 ## 10. Standard library overview
 
-~75 primitives ship in `primitives.js`, grouped: arithmetic; numeric
+~80 primitives ship in `primitives.js`, grouped: arithmetic; numeric
 comparison; type predicates; equality (`eq?`, `equal?`); pairs and
-lists; higher-order (`map`, `filter`, `reduce`, `apply`, `range`);
-strings; vectors; maps; output (`print`, `display`, `newline`);
-`error`; and introspection (`type-of`, `doc`, `where-defined`,
-`describe`).
+lists; higher-order (`map`, `filter`, `reduce`, `apply`, `range`,
+`sort`); strings; vectors; maps; output (`print`, `display`,
+`newline`); `error`; introspection (`type-of`, `doc`, `where-defined`,
+`describe`); and macro expansion (`macroexpand-1`, `macroexpand`).
 
-A small **prelude** (`when`, `unless`, `caar`/`cadr`/…, `second`,
-`third`) is written in Lisp and dogfoods the macro system.
+A small **prelude** (`when`, `unless`, the loop macros `while` /
+`dotimes` / `dolist`, `caar`/`cadr`/…, `second`, `third`, `any?`,
+`every?`) is written in Lisp and dogfoods the macro system.
 
 Naming conventions:
 
@@ -280,12 +284,11 @@ commands — and its keymap — will be defined in Lisp on top of it.
 For quick reference, what this spec marks **Planned / not yet built**:
 
 1. Hygienic (`syntax-case`) macros — §5.
-2. Tail-call optimisation — §3.
-3. Conditions and restarts — §7.
-4. The concurrency model — §8.
-5. Lisp-to-JavaScript interop (`js/call`, JS module import) — §9.
-6. Source positions on atoms; set literals — §2.
-7. Hierarchical module names — §6.
+2. Conditions and restarts — §7.
+3. The concurrency model — §8.
+4. Lisp-to-JavaScript interop (`js/call`, JS module import) — §9.
+5. Source positions on atoms; set literals — §2.
+6. Hierarchical module names — §6.
 
 None of these change the language's settled core; each is an additive
 layer. The core — scoping, evaluation, the special forms — is fixed.
