@@ -131,6 +131,11 @@ export function detectLeave(previousSegment, points) {
  * @param {(text: string) => MathSegment[]} [options.scan] - Override the
  *   scanner (e.g. a tree-sitter-backed one). Defaults to the delimiter
  *   scanner.
+ * @param {(text: string) => string} [options.preamble] - The buffer's
+ *   TeX prelude (its own macro definitions, e.g. a JMarkdown `Math
+ *   macros:` header). Prepended to every typeset body — and thereby
+ *   folded into the typeset-cache key, so editing the definitions
+ *   re-typesets everything. Defaults to none.
  * @param {import('./typeset-math.js').MathJaxLike} [options.mathjax] -
  *   The MathJax instance; defaults to `globalThis.MathJax`. Injected for
  *   tests.
@@ -149,10 +154,14 @@ export function createMathPreview(options) {
   const requestRender =
     typeof options.requestRender === 'function' ? options.requestRender : () => {};
   const scan = typeof options.scan === 'function' ? options.scan : scanMathSegments;
+  const preambleFor =
+    typeof options.preamble === 'function' ? options.preamble : () => '';
   const mathjax = options.mathjax;
 
   const cache = createMathCache();
 
+  /** The buffer's TeX prelude, recomputed by `update()`. */
+  let texPreamble = '';
   /** The segment point was inside on the last update (for enter/leave). */
   let currentSegment = null;
   /** Whether we've already done the one-shot "MathJax just became ready"
@@ -176,7 +185,13 @@ export function createMathPreview(options) {
    */
   function widgetNode(segment) {
     const display = segment.kind === 'block';
-    const node = typesetCached(cache, segment.body, display, mj());
+    // The buffer's own macro definitions ride ahead of every body, so a
+    // `\newcommand` from the document works in each segment. The cache
+    // keys on the full input, so a preamble edit is a clean cache miss.
+    const tex = texPreamble === ''
+      ? segment.body
+      : `${texPreamble}\n${segment.body}`;
+    const node = typesetCached(cache, tex, display, mj());
     if (!node) return null;
     return typeof node.cloneNode === 'function' ? node.cloneNode(true) : node;
   }
@@ -202,6 +217,19 @@ export function createMathPreview(options) {
    * re-render if MathJax was not ready when we needed it. Called once
    * per render before `ranges()` reads.
    */
+  /**
+   * Recompute the buffer's TeX prelude. A throwing harvester must not
+   * take the preview down — fall back to no prelude.
+   * @param {string} text
+   */
+  function refreshPreamble(text) {
+    try {
+      texPreamble = preambleFor(text) || '';
+    } catch {
+      texPreamble = '';
+    }
+  }
+
   function update() {
     const text = getText();
     const points = getPoints();
@@ -239,6 +267,7 @@ export function createMathPreview(options) {
   function ranges() {
     const text = getText();
     const points = getPoints();
+    refreshPreamble(text);
     const planned = planSegments(text, points, { scan });
     const ready = isMathJaxReady(mj());
     /** @type {Array<{start:number,end:number,kind:'inline'|'block',el:() => Node}>} */

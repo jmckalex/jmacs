@@ -82,7 +82,7 @@
 ;; suffixes those modes catch); the tree-sitter languages register
 ;; their own suffixes from `languages/<name>.lisp`.
 (register-mode ".lisp"    lisp-mode)
-(register-mode ".jmd"     markdown-mode)
+;; .jmd is claimed by jmarkdown-mode (languages/jmarkdown.lisp).
 (register-mode ".md"      markdown-mode)
 (register-mode ".tex"     latex-mode)
 (register-mode ".latex"   latex-mode)

@@ -384,3 +384,41 @@ test('getHighlighter resolves siblings lazily, after every language is loaded', 
   assert.equal(typeof innerB.captures, 'function');
   assert.deepEqual(innerB.captures(''), ['captured-b.wasm']);
 });
+
+test('registerLanguage stores captureProvider and foldProvider when provided', () => {
+  const captureProvider = () => ({ captures: [] });
+  const foldProvider = () => [];
+  registerLanguage({ ...SPEC, captureProvider, foldProvider });
+  assert.equal(registeredLanguages()[0].captureProvider, captureProvider);
+  assert.equal(registeredLanguages()[0].foldProvider, foldProvider);
+});
+
+test('registerLanguage rejects a non-function captureProvider / foldProvider', () => {
+  assert.throws(
+    () => registerLanguage({ ...SPEC, captureProvider: 'nope' }),
+    /captureProvider must be a function/
+  );
+  assert.throws(
+    () => registerLanguage({ ...SPEC, foldProvider: 42 }),
+    /foldProvider must be a function/
+  );
+});
+
+test('loadLanguageHighlighters threads captureProvider and foldProvider into create', async () => {
+  const captureProvider = () => ({ captures: [] });
+  const foldProvider = () => [];
+  registerLanguage({ ...SPEC, captureProvider, foldProvider });
+  registerLanguage({ ...SPEC, tag: 'plainlang', suffixes: ['.pl9'] });
+  /** @type {Record<string, object>} */
+  const seenOptions = {};
+  const create = async (_grammar, _query, options) => {
+    seenOptions[options.tag] = options;
+    return { highlight: () => [], captures: () => [] };
+  };
+  await loadLanguageHighlighters(create);
+  assert.equal(seenOptions.fortran.captureProvider, captureProvider);
+  assert.equal(seenOptions.fortran.foldProvider, foldProvider);
+  // A providerless language gets neither option.
+  assert.equal(seenOptions.plainlang.captureProvider, undefined);
+  assert.equal(seenOptions.plainlang.foldProvider, undefined);
+});

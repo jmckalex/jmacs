@@ -122,7 +122,7 @@ export {
   visualColumn,
   charIndexAtVisualColumn,
 } from './projection.js';
-export { resolveKey, keyEventToString } from './keymap.js';
+export { resolveKey, keyEventToString, altComposedInsert } from './keymap.js';
 export { applyIntent, handleKeyEvent } from './commands.js';
 export { fuzzyFilter } from './fuzzy.js';
 export { createSplitter } from './splitter.js';

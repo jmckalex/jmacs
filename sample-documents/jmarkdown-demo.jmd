@@ -1,0 +1,142 @@
+---
+Title: JMarkdown Mode Demo
+Author: J. McKenzie Alexander
+Date: 2026-06-11
+Bibliography: bibliography.bib
+Bibliography style: harvard1
+Custom element: my-element
+    <div class="my-element">
+      <strong>Hello</strong> from the header.
+    </div>
+Extension smiley: /:-\)/ /:-\)/ true 0
+Math macros: \newcommand{\R}{\mathbb{R}}
+    \newcommand{\E}{\mathbb{E}}
+    \DeclareMathOperator{\Var}{Var}
+---
+
+# JMarkdown mode demo :label[demo-top]
+
+Every construct the highlighter knows, in one file. Open it, then try
+`C-c` commands, the JMarkdown menu, folding on the blocks below, and
+`C-c C-p` for the math preview.
+
+## Inline formatting
+
+This paragraph has *bold text*, /italic text/, **intense text**,
+__underlined text__, ==highlighted text==, `inline code`, and a
+[link](https://example.com). Escaped slashes work /inside \/an\/ italic
+span/, while paths like /usr/bin and fractions like 1/2 stay plain.
+Times like 3:30 and ratios a:b are not directives, but :today is, and
+so is :ref[demo-top].
+
+Mustache variables: dear {{name}}, your total is {{total}}.
+
+## Math
+
+Inline math $e^{i\pi} + 1 = 0$ and display math:
+
+$$
+\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
+$$
+
+Header-defined macros work in the preview too: $f : \R \to \R$ with
+$\Var(X) = \E[X^2] - \E[X]^2$ — toggle `C-c C-p` to see them typeset.
+Inline math survives a hard wrap, like this sum $\sum_{i=1}^{n} x_i =
+x_1 + x_2 + \cdots + x_n$ continuing mid-paragraph.
+
+Bracket form \(a^2 + b^2 = c^2\) and an environment:
+
+\begin{align}
+  \nabla \cdot \mathbf{E} &= \frac{\rho}{\varepsilon_0} \\
+  \nabla \cdot \mathbf{B} &= 0
+\end{align}
+
+## Citations and footnotes
+
+As argued in \citep[see][p. 42]{alexander2024}, structure emerges from
+dynamics.[^why: This is the labelled footnote body, attached at the
+call site.] Sometimes anonymously.[fn: An anonymous footnote.]
+
+## Directives
+
+:::note[A titled note]{.fancy #note-1 author="me"}
+Directive bodies are ordinary markdown: *bold*, /italic/, $x^2$.
+:::
+
+::::aside
+Containers nest by colon count.
+
+:::warning
+Three colons inside four.
+:::
+::::
+
+Inline format-specific output: :TeX[\noindent] is LaTeX-only, while
+:HTML[<em>web-only</em>] is HTML-only.
+
+## Environments
+
+@begin(theorem)[Euclid]{.numbered}
+There are infinitely many primes. The body is markdown: /italic/,
+*bold*, math $p_1 p_2 \cdots p_n + 1$.
+@end(theorem)
+
+@begin(equation*)
+\hat{H}\psi = E\psi
+@end(equation*)
+
+## Diagrams
+
+:::TiKZ
+\begin{tikzpicture}
+  \draw[->] (0,0) -- (2,1) node[right] {$x$};
+  \node at (1, -0.3) {a vector};
+\end{tikzpicture}
+:::
+
+:::mermaid
+graph TD
+  A[Start] -->|yes| B{Decision}
+  B --> C((Done))
+  subgraph The Loop
+    C --> A
+  end
+  classDef green fill:#9f6,stroke:#333
+  class C green
+%% a comment
+:::
+
+@begin(mermaid)
+sequenceDiagram
+  participant A as Alice
+  A->>B: Hello
+  Note over A,B: greeting
+@end(mermaid)
+
+## Embedded JavaScript
+
+The answer is compute(6, 7).label and pluralize.word("editor") in
+prose. Script blocks pass through:
+
+<script data-type="jmarkdown">
+let total = 6 * 7;
+global.output = `Total: ${total}`;
+</script>
+
+## Code fences
+
+```js
+// A fenced block highlights in its own language.
+const x = [1, 2, 3].map((n) => n * 2);
+```
+
+```lisp
+(define (greet) (insert! "hello"))
+```
+
+## Inclusion
+
+[[chapter-2.jmd]]
+
+That is the lot. Fold the sections from the gutter, and the directive
+and environment blocks from their opening lines.
