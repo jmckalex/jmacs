@@ -59,6 +59,25 @@ test('cond with else', () => {
   assert.equal(run('(cond (#f "a") (else "fallback"))'), 'fallback');
 });
 
+test('a singleton cond clause evaluates its test exactly once', () => {
+  // Regression: the test used to be evaluated for the truth check and
+  // then AGAIN to produce the clause's value.
+  const interpreter = createInterpreter();
+  interpreter.evaluate(`
+    (define count 0)
+    (define (bump!) (set! count (+ count 1)) "hit")
+  `);
+  assert.equal(interpreter.evaluate('(cond (#f "no") ((bump!)))'), 'hit');
+  assert.equal(interpreter.evaluate('count'), 1);
+});
+
+test('a bare (else) clause tail-evaluates the symbol else', () => {
+  // Documented edge, deliberately unchanged: `else` is special only as
+  // a clause GUARD; alone in a clause it is an ordinary variable.
+  assert.throws(() => run('(cond (else))'), /unbound|else/);
+  assert.equal(run('(define else 42) (cond (else))'), 42);
+});
+
 test('and / or short-circuit', () => {
   assert.equal(run('(and 1 2 3)'), 3);
   assert.equal(run('(and 1 #f 3)'), false);
@@ -107,6 +126,50 @@ test('set! mutates the nearest binding', () => {
   assert.equal(run('(define c 0) (set! c (+ c 5)) c'), 5);
 });
 
+// --- named let -----------------------------------------------------------
+
+test('named let loops and returns a value', () => {
+  assert.equal(
+    run(`(let loop ((n 5) (acc 1))
+           (if (= n 0) acc (loop (- n 1) (* acc n))))`),
+    120
+  );
+});
+
+test('named let inits see the outer scope, not each other or the name', () => {
+  // `y`'s init refers to the OUTER x (1), not the loop binding (10).
+  assert.equal(run('(let ((x 1)) (let loop ((x 10) (y x)) y))'), 1);
+  // The loop name is not visible to the inits.
+  assert.throws(() => run('(let loop ((f loop)) f)'), LispError);
+});
+
+test('named let recursion runs in constant stack', () => {
+  assert.equal(
+    run('(let loop ((n 1000000)) (if (= n 0) (quote done) (loop (- n 1))))'),
+    run('(quote done)')
+  );
+});
+
+test('named let with zero bindings', () => {
+  assert.equal(run('(let loop () 42)'), 42);
+});
+
+test('the named-let name does not leak into the surrounding scope', () => {
+  assert.throws(
+    () => run('(begin (let loop ((n 0)) n) loop)'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /unbound symbol: loop/);
+      return true;
+    }
+  );
+});
+
+test('plain let is unaffected by the named form', () => {
+  assert.equal(run('(let ((a 1) (b 2)) (+ a b))'), 3);
+  assert.equal(run('(let () 7)'), 7);
+});
+
 // --- lists and higher-order --------------------------------------------
 
 test('list construction and access', () => {
@@ -137,6 +200,55 @@ test('range', () => {
   assert.equal(show('(range 2 6)'), '(2 3 4 5)');
 });
 
+// --- sort -----------------------------------------------------------------
+
+test('sort orders numbers and strings by default', () => {
+  assert.equal(show('(sort (list 3 1 2))'), '(1 2 3)');
+  assert.equal(show('(sort (list "pear" "apple" "fig"))'), '("apple" "fig" "pear")');
+  assert.equal(show('(sort nil)'), 'nil');
+});
+
+test('sort takes a less? comparator, e.g. for descending order', () => {
+  assert.equal(show('(sort (list 1 3 2) >)'), '(3 2 1)');
+  assert.equal(
+    show('(sort (list "bb" "a" "ccc") (lambda (x y) (< (string-length x) (string-length y))))'),
+    '("a" "bb" "ccc")'
+  );
+});
+
+test('sort is stable — equal keys keep their input order', () => {
+  assert.equal(
+    show(`(sort (list (cons 1 'a) (cons 0 'b) (cons 1 'c) (cons 0 'd))
+                (lambda (x y) (< (car x) (car y))))`),
+    '((0 . b) (0 . d) (1 . a) (1 . c))'
+  );
+});
+
+test('sort returns the input type: vector in, vector out', () => {
+  assert.equal(show('(sort [3 1 2])'), '[1 2 3]');
+  assert.equal(show('(sort (list 2 1))'), '(1 2)');
+});
+
+test('sort leaves the original untouched and returns a new object', () => {
+  assert.equal(show('(define v [3 1 2]) (sort v) v'), '[3 1 2]');
+  assert.equal(show('(define l (list 3 1 2)) (sort l) l'), '(3 1 2)');
+  assert.equal(run('(define l (list 1 2)) (eq? l (sort l))'), false);
+});
+
+test('sort without a comparator rejects mixed or unordered elements', () => {
+  const unsortable = ['(sort (list 1 "a"))', "(sort (list 'b 'a))"];
+  for (const src of unsortable) {
+    assert.throws(
+      () => run(src),
+      (err) => {
+        assert.ok(err instanceof LispError);
+        assert.match(err.message, /sort: mixed or unordered elements need a comparator/);
+        return true;
+      }
+    );
+  }
+});
+
 // --- quote and quasiquote ----------------------------------------------
 
 test('quote', () => {
@@ -159,6 +271,104 @@ test('prelude macros: when and unless', () => {
   assert.equal(run('(unless #t 99)'), NIL);
 });
 
+// --- loop macros (while / dotimes / dolist) ------------------------------
+
+test('while loops on a set!-driven condition and returns nil', () => {
+  assert.equal(run('(define i 0) (while (< i 5) (set! i (+ i 1))) i'), 5);
+  assert.equal(run('(define i 0) (while (< i 3) (set! i (+ i 1)))'), NIL);
+  assert.equal(run('(while #f (error "never"))'), NIL);
+});
+
+test('dotimes binds var to 0..count-1 and returns nil', () => {
+  assert.equal(
+    show('(define acc nil) (dotimes i 4 (set! acc (cons i acc))) acc'),
+    '(3 2 1 0)'
+  );
+  assert.equal(run('(dotimes i 3 i)'), NIL);
+  assert.equal(run('(define hits 0) (dotimes i 0 (set! hits 1)) hits'), 0);
+});
+
+test('dolist binds var to each element in order and returns nil', () => {
+  assert.equal(
+    show(`(define acc nil)
+          (dolist x (list 1 2 3) (set! acc (cons (* x 10) acc)))
+          acc`),
+    '(30 20 10)'
+  );
+  assert.equal(run('(dolist x (list 1 2) x)'), NIL);
+  assert.equal(run('(define hits 0) (dolist x nil (set! hits 1)) hits'), 0);
+});
+
+test('while and dotimes run a million iterations in constant stack', () => {
+  assert.equal(
+    run('(define i 0) (while (< i 1000000) (set! i (+ i 1))) i'),
+    1000000
+  );
+  assert.equal(
+    run('(define sum 0) (dotimes i 1000000 (set! sum (+ sum 1))) sum'),
+    1000000
+  );
+});
+
+test('dotimes evaluates its count expression exactly once', () => {
+  assert.equal(
+    run(`(define calls 0)
+         (define (count!) (set! calls (+ calls 1)) 3)
+         (dotimes i (count!) i)
+         calls`),
+    1
+  );
+});
+
+test('dolist evaluates its list expression exactly once', () => {
+  assert.equal(
+    run(`(define calls 0)
+         (define (items!) (set! calls (+ calls 1)) (list 1 2 3))
+         (dolist x (items!) x)
+         calls`),
+    1
+  );
+});
+
+test('loop macros allow an empty body', () => {
+  assert.equal(run('(while #f)'), NIL);
+  assert.equal(run('(dotimes i 3)'), NIL);
+  assert.equal(run('(dolist x (list 1 2))'), NIL);
+});
+
+test('a loop body sees outer bindings', () => {
+  assert.equal(
+    run(`(define base 100) (define acc 0)
+         (dotimes i 3 (set! acc (+ acc base i)))
+         acc`),
+    303
+  );
+});
+
+test('loop macros do not capture caller bindings (gensym discipline)', () => {
+  // The expansions' internal names (the loop procedure, the saved count,
+  // the list walker) are gensyms — a caller's own `rest`, `n` or `loop`
+  // binding stays visible, untouched, inside the body.
+  assert.equal(
+    run(`(define rest 99) (define seen nil)
+         (dolist x (list 1) (set! seen rest))
+         seen`),
+    99
+  );
+  assert.equal(
+    run(`(define n 99) (define seen nil)
+         (dotimes i 1 (set! seen n))
+         seen`),
+    99
+  );
+  assert.equal(
+    run(`(define loop 99) (define i 0) (define seen nil)
+         (while (< i 1) (set! i (+ i 1)) (set! seen loop))
+         seen`),
+    99
+  );
+});
+
 test('a user-defined macro transforms code', () => {
   // swap-args rewrites (swap-args f a b) to (f b a).
   assert.equal(
@@ -173,6 +383,98 @@ test('a macro using quasiquote', () => {
            \`(if ,test (begin ,@body) nil))
          (my-when (> 5 3) 1 2 99)`),
     99
+  );
+});
+
+// --- any? / every? --------------------------------------------------------
+
+test('any? is #t when some element satisfies pred, strictly boolean', () => {
+  assert.equal(run('(any? odd? (list 2 4 5))'), true);
+  assert.equal(run('(any? odd? (list 2 4 6))'), false);
+  // The truthy pred result (a number) collapses to the boolean #t.
+  assert.equal(run('(any? (lambda (x) x) (list 7))'), true);
+});
+
+test('every? is #t when all elements satisfy pred, strictly boolean', () => {
+  assert.equal(run('(every? odd? (list 1 3 5))'), true);
+  assert.equal(run('(every? odd? (list 1 2 3))'), false);
+  assert.equal(run('(every? (lambda (x) x) (list 7))'), true);
+});
+
+test('any?/every? on the empty sequence: #f and vacuous #t', () => {
+  assert.equal(run('(any? odd? nil)'), false);
+  assert.equal(run('(every? odd? nil)'), true);
+  assert.equal(run('(any? odd? [])'), false);
+  assert.equal(run('(every? odd? [])'), true);
+});
+
+test('any?/every? accept vectors', () => {
+  assert.equal(run('(any? odd? [2 3 4])'), true);
+  assert.equal(run('(every? positive? [1 2 3])'), true);
+  assert.equal(run('(every? positive? [1 -2 3])'), false);
+});
+
+test('any? short-circuits at the first truthy element', () => {
+  assert.equal(
+    run(`(define calls 0)
+         (define (probe x) (set! calls (+ calls 1)) (odd? x))
+         (any? probe (list 2 3 4 5))
+         calls`),
+    2
+  );
+});
+
+test('every? short-circuits at the first false element', () => {
+  assert.equal(
+    run(`(define calls 0)
+         (define (probe x) (set! calls (+ calls 1)) (odd? x))
+         (every? probe (list 1 2 3 4))
+         calls`),
+    2
+  );
+});
+
+// --- macroexpand ----------------------------------------------------------
+
+test('macroexpand-1 expands a macro use one step, as data', () => {
+  assert.equal(
+    show("(macroexpand-1 '(when a b c))"),
+    '(if a (begin b c))'
+  );
+});
+
+test('macroexpand-1 passes non-macro forms through unchanged', () => {
+  assert.equal(show("(macroexpand-1 '(+ 1 2))"), '(+ 1 2)');
+  assert.equal(show("(macroexpand-1 '(if a b))"), '(if a b)'); // special form
+  assert.equal(run('(macroexpand-1 42)'), 42);
+  assert.equal(show("(macroexpand-1 'foo)"), 'foo');
+  assert.equal(run('(macroexpand-1 nil)'), NIL);
+});
+
+test('macroexpand expands until the head is no longer a macro', () => {
+  assert.equal(
+    show(`(defmacro my-unless (test . body)
+            (cons 'when (cons (list 'not test) body)))
+          (macroexpand '(my-unless p q))`),
+    '(if (not p) (begin q))'
+  );
+  // macroexpand-1 stops after the first step.
+  assert.equal(
+    show(`(defmacro my-unless (test . body)
+            (cons 'when (cons (list 'not test) body)))
+          (macroexpand-1 '(my-unless p q))`),
+    '(when (not p) q)'
+  );
+});
+
+test('macroexpand errors on a self-expanding macro (the cap)', () => {
+  assert.throws(
+    () => run("(defmacro forever (x) (list 'forever x)) (macroexpand '(forever 1))"),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /macroexpand: expansion did not terminate/);
+      return true;
+    }
   );
 });
 
@@ -237,8 +539,8 @@ test('string-join joins a list with a separator', () => {
 });
 
 test('string-join is iterative — no stack overflow on a long list', () => {
-  // The interpreter has no TCO; a hand-written Lisp join would overflow
-  // here. `string-join` joins in one host pass.
+  // A hand-written Lisp join recurses non-tail (inside `str`), which
+  // TCO does not flatten. `string-join` joins in one host pass.
   assert.equal(
     run('(string-length (string-join (map number->string (range 50000)) ","))') > 0,
     true
@@ -275,6 +577,33 @@ test('host primitives can be registered', () => {
     primitives: { 'double!': (args) => args[0] * 2 },
   });
   assert.equal(lisp.evaluate('(double! 21)'), 42);
+});
+
+test('a host primitive returning undefined or null yields nil', () => {
+  // The boundary coercion: JS "nothing" never leaks into Lisp.
+  const lisp = createInterpreter({
+    primitives: {
+      'no-return!': () => {}, // falls off the end -> undefined
+      'null-return!': () => null,
+    },
+  });
+  assert.equal(lisp.evaluate('(no-return!)'), NIL);
+  assert.equal(lisp.evaluate('(null-return!)'), NIL);
+  assert.equal(lisp.evaluate('(nil? (no-return!))'), true);
+  assert.equal(lisp.evaluate('(nil? (null-return!))'), true);
+});
+
+test('falsy-but-real primitive returns pass through uncoerced', () => {
+  const lisp = createInterpreter({
+    primitives: {
+      'zero!': () => 0,
+      'false!': () => false,
+      'empty!': () => '',
+    },
+  });
+  assert.equal(lisp.evaluate('(zero!)'), 0);
+  assert.equal(lisp.evaluate('(false!)'), false);
+  assert.equal(lisp.evaluate('(empty!)'), '');
 });
 
 // --- tail-call optimisation (the trampoline) ----------------------------

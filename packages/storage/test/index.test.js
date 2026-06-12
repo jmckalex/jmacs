@@ -304,3 +304,95 @@ test('undo emits a change event so observers stay in sync', () => {
   buf.undo();
   assert.deepEqual(changes, [{ start: 5, removed: '!', inserted: '' }]);
 });
+
+// --- change groups ------------------------------------------------------
+
+test('a change group undoes as one step', () => {
+  const buffer = createBuffer('alpha beta gamma');
+  buffer.beginChangeGroup();
+  buffer.delete(0, 5);
+  buffer.insert(0, 'ALPHA');
+  buffer.replace(6, 10, 'BETA');
+  buffer.endChangeGroup();
+  assert.equal(buffer.toString(), 'ALPHA BETA gamma');
+  assert.equal(buffer.undo(), true);
+  assert.equal(buffer.toString(), 'alpha beta gamma');
+  assert.equal(buffer.canUndo, false);
+});
+
+test('a change group redoes as one step', () => {
+  const buffer = createBuffer('one two');
+  buffer.beginChangeGroup();
+  buffer.delete(0, 3);
+  buffer.insert(0, 'ONE');
+  buffer.endChangeGroup();
+  buffer.undo();
+  assert.equal(buffer.toString(), 'one two');
+  assert.equal(buffer.redo(), true);
+  assert.equal(buffer.toString(), 'ONE two');
+  assert.equal(buffer.canRedo, false);
+});
+
+test('change groups nest: only the outermost pair closes the group', () => {
+  const buffer = createBuffer('xy');
+  buffer.beginChangeGroup();
+  buffer.insert(0, 'a');
+  buffer.beginChangeGroup();
+  buffer.insert(1, 'b');
+  buffer.endChangeGroup();
+  buffer.insert(2, 'c');
+  buffer.endChangeGroup();
+  assert.equal(buffer.toString(), 'abcxy');
+  buffer.undo();
+  assert.equal(buffer.toString(), 'xy');
+});
+
+test('an empty change group records nothing', () => {
+  const buffer = createBuffer('text');
+  buffer.beginChangeGroup();
+  buffer.endChangeGroup();
+  assert.equal(buffer.canUndo, false);
+});
+
+test('a single-change group undoes like a plain edit', () => {
+  const buffer = createBuffer('text');
+  buffer.beginChangeGroup();
+  buffer.insert(0, 'x');
+  buffer.endChangeGroup();
+  buffer.undo();
+  assert.equal(buffer.toString(), 'text');
+});
+
+test('undo and redo are refused while a group is open', () => {
+  const buffer = createBuffer('text');
+  buffer.insert(0, 'a');
+  buffer.beginChangeGroup();
+  buffer.insert(0, 'b');
+  assert.equal(buffer.undo(), false);
+  assert.equal(buffer.redo(), false);
+  buffer.endChangeGroup();
+  assert.equal(buffer.undo(), true);
+  assert.equal(buffer.toString(), 'atext');
+});
+
+test('an unbalanced endChangeGroup is ignored', () => {
+  const buffer = createBuffer('text');
+  buffer.endChangeGroup();
+  buffer.insert(0, 'x');
+  assert.equal(buffer.undo(), true);
+  assert.equal(buffer.toString(), 'text');
+});
+
+test('edits after a closed group undo separately from it', () => {
+  const buffer = createBuffer('');
+  buffer.beginChangeGroup();
+  buffer.insert(0, 'one ');
+  buffer.insert(4, 'two');
+  buffer.endChangeGroup();
+  buffer.insert(7, '!');
+  assert.equal(buffer.toString(), 'one two!');
+  buffer.undo();
+  assert.equal(buffer.toString(), 'one two');
+  buffer.undo();
+  assert.equal(buffer.toString(), '');
+});

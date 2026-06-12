@@ -48,14 +48,15 @@
           (text (current-line-text))
           (start (line-start))
           (end (line-end)))
-      ;; Remove the line and the newline that precedes it.
-      (delete-region! (- start 1) end)
-      ;; The cursor is now on what was the previous line; its start is
-      ;; where the moved line must be re-inserted.
-      (let ((above (line-start)))
-        (goto! above)
-        (insert! (str text "\n"))
-        (goto! (+ above col))))))
+      (atomic-change-group
+        ;; Remove the line and the newline that precedes it.
+        (delete-region! (- start 1) end)
+        ;; The cursor is now on what was the previous line; its start is
+        ;; where the moved line must be re-inserted.
+        (let ((above (line-start)))
+          (goto! above)
+          (insert! (str text "\n"))
+          (goto! (+ above col)))))))
 
 (defcommand move-line-down ()
   "Move the current line down one, swapping it with the line below.
@@ -65,15 +66,16 @@
           (text (current-line-text))
           (start (line-start))
           (end (line-end)))
-      ;; Remove the line and the newline that follows it.
-      (delete-region! start (+ end 1))
-      ;; The cursor now sits at the start of what was the next line;
-      ;; step to that line's end and re-insert below it.
-      (goto! start)
-      (let ((below-end (line-end)))
-        (goto! below-end)
-        (insert! (str "\n" text))
-        (goto! (+ (line-start) col))))))
+      (atomic-change-group
+        ;; Remove the line and the newline that follows it.
+        (delete-region! start (+ end 1))
+        ;; The cursor now sits at the start of what was the next line;
+        ;; step to that line's end and re-insert below it.
+        (goto! start)
+        (let ((below-end (line-end)))
+          (goto! below-end)
+          (insert! (str "\n" text))
+          (goto! (+ (line-start) col)))))))
 
 ;; --- duplicating a line ------------------------------------------------
 
@@ -102,6 +104,158 @@
              (trimmed (drop-leading-blanks rest))
              (consumed (- (string-length rest) (string-length trimmed))))
         ;; Replace the newline and the leading blanks with one space.
-        (delete-region! end (+ next-start consumed))
-        (insert! " ")
-        (goto! end)))))
+        (atomic-change-group
+          (delete-region! end (+ next-start consumed))
+          (insert! " ")
+          (goto! end))))))
+
+;; --- indenting / outdenting lines (M-] / M-[) ---------------------------
+;;
+;; Sublime-style block indentation: every line the region touches (or
+;; just the cursor's line) shifts by one indent level. A level is a
+;; literal tab when the mode pins tabs (`-indent-tabs-effective`,
+;; e.g. Makefiles), otherwise `*tab-width*` spaces (default 4; see
+;; indent.lisp). The selection survives the shift, so repeated presses
+;; keep indenting the same block.
+
+(define (-split-lines text)
+  "TEXT split on newlines, as a list (a trailing empty piece included)."
+  (let ((idx (string-index-of text "\n" 0)))
+    (if (< idx 0)
+        (list text)
+        (cons (substring text 0 idx)
+              (-split-lines (substring text (+ idx 1)))))))
+
+(define (-blank-line? line)
+  "True when LINE is empty or only spaces and tabs."
+  (equal? (drop-leading-blanks line) ""))
+
+(define (-leading-spaces line limit i)
+  "How many leading spaces LINE has, capped at LIMIT."
+  (if (and (< i limit)
+           (< i (string-length line))
+           (string-prefix? " " (substring line i)))
+      (-leading-spaces line limit (+ i 1))
+      i))
+
+(define (-indent-one line)
+  "LINE shifted in one level. Returns (new-line . delta); blank lines
+   are left alone."
+  (cond
+    ((-blank-line? line) (cons line 0))
+    ((-indent-tabs-effective) (cons (str "\t" line) 1))
+    (else
+      (let ((n (-tab-width-effective)))
+        (cons (str (string-repeat " " n) line) n)))))
+
+(define (-outdent-one line)
+  "LINE shifted out one level — a leading tab, or up to the effective
+   tab width in spaces. Returns (new-line . delta), delta <= 0."
+  (cond
+    ((string-prefix? "\t" line) (cons (substring line 1) -1))
+    (else
+      (let ((k (-leading-spaces line (-tab-width-effective) 0)))
+        (cons (substring line k) (- 0 k))))))
+
+(define (-transform-lines lines offset transform)
+  "Apply TRANSFORM (line -> (new-line . delta)) to each of LINES, the
+   first starting at buffer offset OFFSET. Returns (new-text . edits)
+   where edits lists (original-line-start . delta) for changed lines."
+  (if (nil? lines)
+      (cons "" (list))
+      (let* ((shifted (transform (car lines)))
+             (new-line (car shifted))
+             (delta (cdr shifted))
+             (rest (-transform-lines (cdr lines)
+                                     (+ offset (string-length (car lines)) 1)
+                                     transform))
+             (text (if (nil? (cdr lines))
+                       new-line
+                       (str new-line "\n" (car rest))))
+             (edits (if (= delta 0)
+                        (cdr rest)
+                        (cons (cons offset delta) (cdr rest)))))
+        (cons text edits))))
+
+(define (-shift-offset o edits acc)
+  "O adjusted for EDITS — leading-whitespace insertions (delta > 0) and
+   removals (delta < 0) at original line starts. An offset at a line
+   start stays put; one inside a removed prefix clamps to it."
+  (if (nil? edits)
+      (+ o acc)
+      (let* ((edit (car edits))
+             (l (car edit))
+             (d (cdr edit)))
+        (-shift-offset o (cdr edits)
+          (+ acc (cond
+                   ((<= o l) 0)
+                   ((> d 0) d)
+                   (else (- 0 (min (- 0 d) (- o l))))))))))
+
+(define (-shift-region-lines transform)
+  "Replace every line the region (or the cursor) touches with TRANSFORM
+   applied to it, then restore point — and the active region — shifted
+   to keep their place in the text."
+  (let* ((had-region (region-active?))
+         (p (point))
+         (m (if had-region (mark) p))
+         (lo (min p m))
+         (hi (max p m)))
+    (goto! lo)
+    (let ((span-start (line-start)))
+      ;; A region ending at column 0 does not touch that line (Sublime's
+      ;; rule) — step back onto the previous line's end.
+      (goto! hi)
+      (when (and had-region (> hi lo) (= hi (line-start)))
+        (goto! (- hi 1)))
+      (let* ((span-end (line-end))
+             (old (buffer-substring span-start span-end))
+             (result (-transform-lines (-split-lines old) span-start transform))
+             (new-text (car result))
+             (edits (cdr result)))
+        (unless (nil? edits)
+          (atomic-change-group
+            (delete-region! span-start span-end)
+            (goto! span-start)
+            (insert! new-text)
+            (when had-region (set-mark! (-shift-offset m edits 0)))
+            (goto! (-shift-offset p edits 0))))))))
+
+(defcommand indent-region ()
+  "Indent the lines the region touches (or the current line) by one
+   level — a tab where the mode pins tabs, else `*tab-width*` spaces
+   (M-]). Blank lines are left alone; the selection survives."
+  (-shift-region-lines -indent-one))
+
+(defcommand outdent-region ()
+  "Outdent the lines the region touches (or the current line) by one
+   level — a leading tab, or up to `*tab-width*` spaces (M-[). The
+   selection survives."
+  (-shift-region-lines -outdent-one))
+
+;; --- sorting lines -------------------------------------------------------
+
+(defcommand sort-lines (start end)
+  "Sort the lines in [START, END) into ascending order. The range is
+   snapped outward to whole lines — START back to its line start, END
+   forward to its line end, except that an END at column 0 does not
+   pull in that line (the indent-region rule). Point lands at the start
+   of the sorted block. Unbound; reach it via M-x."
+  (interactive region)
+  (goto! start)
+  (let ((span-start (line-start)))
+    (goto! end)
+    ;; A region ending at column 0 does not touch that line — step back
+    ;; onto the previous line's end.
+    (when (and (> end start) (= end (line-start)))
+      (goto! (- end 1)))
+    (let* ((span-end (line-end))
+           (old (buffer-substring span-start span-end))
+           (new-text (string-join (sort (-split-lines old)) "\n")))
+      (if (equal? new-text old)
+          (goto! span-start)            ; already sorted — no edit, no undo step
+          (atomic-change-group
+            (delete-region! span-start span-end)
+            (goto! span-start)
+            (insert! new-text)
+            (goto! span-start))))))

@@ -23,8 +23,11 @@
  * dispatches the command name back in the renderer.
  *
  * Note this menu does not touch the editor's own keys. The editor's
- * keymap lives in the renderer; `M-` there is the Option key, so M-x is
- * Option+X — no menu accelerator collides with it. Mode-menu items
+ * keymap lives in the renderer; `M-` there is the Command key (Command
+ * is Meta, Emacs-on-Mac style), so M-x is Cmd+X. A Cmd chord the keymap
+ * claims never reaches a menu accelerator (the renderer sees keydowns
+ * first and preventDefaults); an unclaimed one falls through to its
+ * menu role — Cmd+C copy, Cmd+Z undo, Cmd+O open. Mode-menu items
  * carry no accelerator at all: their keys (e.g. `C-c b`) are sequences,
  * which an Electron accelerator cannot express, so the key is shown in
  * the item's label and the renderer's keymap remains the one handler.
@@ -144,10 +147,19 @@ export function buildAppMenu(modeMenu, onCommand) {
         { role: 'zoomOut' },
         { type: 'separator' },
         { role: 'toggleDevTools' },
+        // Reload the renderer (picks up edited renderer code / Lisp /
+        // CSS). Ctrl+Cmd+R: with Command as Meta, plain Cmd+R is the
+        // editor's M-r (replace-string), so the reload chord carries
+        // Ctrl too.
+        {
+          label: 'Reload',
+          accelerator: 'Ctrl+Cmd+R',
+          role: 'reload',
+        },
         // Hard reload — ignores the HTTP cache and resets the
         // renderer. Drops all open buffers and the REPL session.
         // Diagnostic tool, not for casual use: bound to Cmd+Shift+R
-        // (not Cmd+R) to avoid accidents.
+        // (not the plain reload chord) to avoid accidents.
         {
           label: 'Hard Reload (Discards Buffers)',
           accelerator: 'CmdOrCtrl+Shift+R',

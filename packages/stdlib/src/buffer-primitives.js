@@ -237,9 +237,27 @@ export function createBufferPrimitives(session) {
 
       const from = buf.offsetAt(start, 0);
       const to = buf.offsetAt(end, lines[end].length);
-      buf.moveTo(from);
-      buf.deleteForward(to - from);
-      buf.insert(wrapped.join('\n'));
+      // One undo step for the whole fill (delete + insert).
+      buf.beginChangeGroup();
+      try {
+        buf.moveTo(from);
+        buf.deleteForward(to - from);
+        buf.insert(wrapped.join('\n'));
+      } finally {
+        buf.endChangeGroup();
+      }
+      return NIL;
+    },
+    // Atomic undo grouping: every edit between the begin/end pair lands
+    // on the undo stack as ONE step. Lisp code should reach these
+    // through `atomic-change-group` (editing.lisp), which closes the
+    // group even when the body raises.
+    'begin-change-group!': () => {
+      buffer().beginChangeGroup();
+      return NIL;
+    },
+    'end-change-group!': () => {
+      buffer().endChangeGroup();
       return NIL;
     },
     'region-active?': () => buffer().selection !== null,
