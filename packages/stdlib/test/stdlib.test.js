@@ -600,6 +600,17 @@ test('C-z undoes the last change', async () => {
   assert.equal(buffer.text, 'start');
 });
 
+test('M-z undoes and M-S-z redoes (Cmd+Z muscle memory post-Meta)', async () => {
+  const { buffer, interpreter } = await editor('start');
+  buffer.moveTo(5);
+  press(interpreter, '!');
+  assert.equal(buffer.text, 'start!');
+  press(interpreter, 'M-z');
+  assert.equal(buffer.text, 'start', 'Cmd+Z (M-z) undoes the edit');
+  press(interpreter, 'M-S-z');
+  assert.equal(buffer.text, 'start!', 'Cmd+Shift+Z (M-S-z) redoes it');
+});
+
 test('handle-key reports whether the key was handled', async () => {
   const { interpreter } = await editor();
   assert.equal(press(interpreter, 'right'), true);

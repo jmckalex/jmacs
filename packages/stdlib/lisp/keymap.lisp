@@ -160,6 +160,14 @@
    "C-g"          'keyboard-quit
    "C-z"          'undo
    "C-S-z"        'redo
+   ;; Cmd+Z / Cmd+Shift+Z. Before Command-as-Meta these reached C-z by
+   ;; modifier folding; now they arrive as M-z and must be claimed —
+   ;; the Edit menu's role-based Undo they'd otherwise fall through to
+   ;; drives the native DOM undo stack, which can't see the buffer.
+   ;; (Native inputs — REPL, minibuffer — still get the role: the key
+   ;; router only fires while the editing surface has focus.)
+   "M-z"          'undo
+   "M-S-z"        'redo
    ;; Universal-argument prefix. Pressing C-u sets `*prefix-arg*` so
    ;; the next command can alter its behaviour (e.g. flip a split's
    ;; direction). Numeric multi-press isn't supported yet — a single
