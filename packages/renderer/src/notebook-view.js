@@ -160,7 +160,7 @@ export function shouldForwardChord(event, chordPending) {
   if (bareModifier) return false;
   const pending = typeof chordPending === 'function' ? chordPending() : false;
   if (pending) return true;
-  if (!(event.ctrlKey || event.altKey)) return false;
+  if (!(event.ctrlKey || event.altKey || event.metaKey)) return false;
   const key = keyEventToString(event);
   return (
     key === 'C-x' ||

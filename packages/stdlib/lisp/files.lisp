@@ -167,10 +167,15 @@
                     current)))))))
 
 (define (-initial-find-file-value)
-  "The path the find-file prompt starts with: the home directory with
-   a trailing '/', so the user can TAB immediately to see its entries."
-  (let ((home (home-directory)))
-    (if (equal? home "") "" (str home "/"))))
+  "The path the find-file prompt starts with: the directory of the
+   file the current buffer is visiting, falling back to the home
+   directory — either way with a trailing '/', so the user can TAB
+   immediately to see its entries."
+  (let ((path (view-file-path (current-view))))
+    (if (or (nil? path) (equal? path ""))
+        (let ((home (home-directory)))
+          (if (equal? home "") "" (str home "/")))
+        (car (-split-path path)))))
 
 (define (-find-file-deliver path)
   "The submit handler — open PATH if non-empty, after tilde expansion. A

@@ -30,6 +30,17 @@ To add a language called `<tag>` (e.g. `rust`, `json`, `bash`):
    - `suffixes` — an array of filename suffixes (`['.rs']`) — anything
      `String.prototype.endsWith` matches.
 
+   Optional, for dialects and richer languages (see `jmarkdown.js` for
+   all of them in use):
+
+   - `injectionQuery` / `injectionProvider` — splice another language's
+     highlighter into regions (grammar-marked or code-computed).
+   - `captureProvider` — code-driven captures + owned regions for
+     constructs the grammar has no nodes for.
+   - `foldQuery` / `foldProvider` — foldable scopes, from a query and/or
+     code.
+   - `aliases` — extra tags for fenced-code info strings.
+
 3. **Write the Lisp mode.** Create
    `packages/stdlib/lisp/languages/<tag>.lisp`. It defines the major
    mode and the suffix-to-mode mapping. The template:

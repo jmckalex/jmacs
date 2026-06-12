@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { docLinkName } from '../src/doc-view.js';
+import {
+  docLinkName,
+  breadcrumbTrail,
+  navNeighbors,
+} from '../src/doc-view.js';
 
 /**
  * The pure click-routing logic in doc-view. The DOM event handler that
@@ -52,4 +56,55 @@ test('docLinkName ignores other selectors', () => {
     closest: () => null,
   };
   assert.equal(docLinkName(target), null);
+});
+
+// --- navigation tree helpers (TeXinfo-style nav) -----------------------
+
+// A small sample tree:  top → {a → {a1, a2}, b}
+const NODES = {
+  top: { id: 'top', title: 'Top', up: null, prev: null, next: 'a', children: ['a', 'b'] },
+  a:   { id: 'a',   title: 'A',   up: 'top', prev: 'top', next: 'a1', children: ['a1', 'a2'] },
+  a1:  { id: 'a1',  title: 'A1',  up: 'a',   prev: 'a',  next: 'a2', children: [] },
+  a2:  { id: 'a2',  title: 'A2',  up: 'a',   prev: 'a1', next: 'b',  children: [] },
+  b:   { id: 'b',   title: 'B',   up: 'top', prev: 'a2', next: null, children: [] },
+};
+
+test('breadcrumbTrail walks the up-chain from Top to the node (inclusive)', () => {
+  assert.deepEqual(
+    breadcrumbTrail(NODES, 'a2').map((n) => n.id),
+    ['top', 'a', 'a2']
+  );
+  assert.deepEqual(breadcrumbTrail(NODES, 'top').map((n) => n.id), ['top']);
+});
+
+test('breadcrumbTrail is empty for an unknown / null node', () => {
+  assert.deepEqual(breadcrumbTrail(NODES, 'nope'), []);
+  assert.deepEqual(breadcrumbTrail(NODES, null), []);
+  assert.deepEqual(breadcrumbTrail(null, 'a'), []);
+});
+
+test('breadcrumbTrail does not loop on a malformed cyclic tree', () => {
+  const cyclic = {
+    x: { id: 'x', title: 'X', up: 'y' },
+    y: { id: 'y', title: 'Y', up: 'x' },
+  };
+  // Terminates (cycle broken) and includes each node at most once.
+  const ids = breadcrumbTrail(cyclic, 'x').map((n) => n.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('navNeighbors returns prev/next/up plus the tree top', () => {
+  assert.deepEqual(navNeighbors(NODES, 'top', 'a2'), {
+    prev: 'a1', next: 'b', up: 'a', top: 'top',
+  });
+  // The Top node: no prev/up, but Contents still points at itself.
+  assert.deepEqual(navNeighbors(NODES, 'top', 'top'), {
+    prev: null, next: 'a', up: null, top: 'top',
+  });
+});
+
+test('navNeighbors degrades gracefully for an unknown node', () => {
+  assert.deepEqual(navNeighbors(NODES, 'top', 'nope'), {
+    prev: null, next: null, up: null, top: 'top',
+  });
 });

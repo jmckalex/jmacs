@@ -3,7 +3,10 @@
 ;;; The renderer reports each keystroke as a normalised string: a single
 ;;; character for printable keys ("a", " "), a name for the rest
 ;;; ("left", "backspace"), with modifier prefixes "C-" (Ctrl/Cmd),
-;;; "M-" (Alt) and "S-" (Shift) — e.g. "S-left", "C-z", "C-S-z".
+;;; "M-" (Command — Meta, Emacs-on-Mac style), "A-" (Option — free for
+;;; user bindings; an UNBOUND A- chord falls through to inserting the
+;;; character Option composed, so curly quotes and accents type
+;;; natively) and "S-" (Shift) — e.g. "S-left", "C-z", "M-x", "A-]".
 ;;;
 ;;; A keymap maps a key string to either a command *name* (a symbol) or
 ;;; a nested keymap. A nested keymap is a prefix: press the prefix key,
@@ -30,7 +33,9 @@
    "C-b"   'buffer-menu
    "right" 'next-view
    "left"  'previous-view
-   "n"     'new-view
+   ;; n was new-view (still on M-x); a seeded scratch is the more
+   ;; useful reach — architect's call, 2026-06-12.
+   "n"     'scratch-buffer
    "k"     'kill-view
    "p"     'toggle-repl
    "h"     'mark-whole-buffer
@@ -66,7 +71,8 @@
 
 ;; The C-h prefix map — help.
 (define c-h-keymap
-  {"k" 'describe-key
+  {"d" 'open-manual
+   "k" 'describe-key
    "f" 'describe-command
    "F" 'describe-face-at-point
    "C-f" 'highlight-construct-at-point
@@ -155,6 +161,14 @@
    "C-g"          'keyboard-quit
    "C-z"          'undo
    "C-S-z"        'redo
+   ;; Cmd+Z / Cmd+Shift+Z. Before Command-as-Meta these reached C-z by
+   ;; modifier folding; now they arrive as M-z and must be claimed —
+   ;; the Edit menu's role-based Undo they'd otherwise fall through to
+   ;; drives the native DOM undo stack, which can't see the buffer.
+   ;; (Native inputs — REPL, minibuffer — still get the role: the key
+   ;; router only fires while the editing surface has focus.)
+   "M-z"          'undo
+   "M-S-z"        'redo
    ;; Universal-argument prefix. Pressing C-u sets `*prefix-arg*` so
    ;; the next command can alter its behaviour (e.g. flip a split's
    ;; direction). Numeric multi-press isn't supported yet — a single
@@ -176,6 +190,22 @@
    "M-y"          'yank-pop
    "M-f"          'forward-word
    "M-b"          'backward-word
+   ;; Arrow word motion — synonyms for M-f/M-b (and on the Option side
+   ;; too, matching the macOS-native Option+arrow habit).
+   "M-right"      'forward-word
+   "M-left"       'backward-word
+   "A-right"      'forward-word
+   "A-left"       'backward-word
+   ;; Shifted arrow motion selects: word-wise left/right (on both the
+   ;; Meta and Option sides), line-wise up/down.
+   "M-S-right"    'forward-word-extending
+   "M-S-left"     'backward-word-extending
+   "A-S-right"    'forward-word-extending
+   "A-S-left"     'backward-word-extending
+   "M-S-up"       'previous-line-extending
+   "M-S-down"     'next-line-extending
+   "A-S-up"       'previous-line-extending
+   "A-S-down"     'next-line-extending
    "M-m"          'back-to-indentation
    "M-v"          'scroll-down
    "M-g"          'goto-line
@@ -191,6 +221,11 @@
    "M-backspace"  'backward-kill-word
    "M-up"         'move-line-up
    "M-down"       'move-line-down
+   ;; Sublime-style block indentation (line-ops.lisp), on Cmd+[ / Cmd+].
+   ;; (With Command as Meta these no longer collide with Option-chord
+   ;; quote macros — Option is the separate "A-" modifier.)
+   "M-["          'outdent-region
+   "M-]"          'indent-region
    ;; expand-region — C-= as the spec names it; the host normalises that
    ;; keystroke (event.code "Equal") to "C-equal".
    "C-equal"      'expand-region

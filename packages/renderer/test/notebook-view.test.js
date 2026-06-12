@@ -100,12 +100,14 @@ test('shouldForwardChord forwards editor commands, keeps native editing local', 
   assert.equal(shouldForwardChord(ev({ key: 'x', ctrlKey: true }), noChord), true); // C-x
   assert.equal(shouldForwardChord(ev({ key: 'c', ctrlKey: true }), noChord), true); // C-c
   assert.equal(shouldForwardChord(ev({ key: 'g', ctrlKey: true }), noChord), true); // C-g
-  assert.equal(shouldForwardChord(ev({ key: 'x', altKey: true }), noChord), true);  // M-x
-  assert.equal(shouldForwardChord(ev({ key: '1', altKey: true }), noChord), true);  // M-1
+  // M- rides on Command now (Command is Meta).
+  assert.equal(shouldForwardChord(ev({ key: 'x', metaKey: true }), noChord), true);  // M-x
+  assert.equal(shouldForwardChord(ev({ key: '1', metaKey: true }), noChord), true);  // M-1
   // native editing chords stay in the cell (no longer forwarded → no error)
   assert.equal(shouldForwardChord(ev({ key: 'a', ctrlKey: true }), noChord), false); // C-a
   assert.equal(shouldForwardChord(ev({ key: 'e', ctrlKey: true }), noChord), false); // C-e
-  assert.equal(shouldForwardChord(ev({ key: 'f', altKey: true }), noChord), false);  // M-f
+  assert.equal(shouldForwardChord(ev({ key: 'f', altKey: true }), noChord), false);  // A-f
+  assert.equal(shouldForwardChord(ev({ key: 'x', altKey: true }), noChord), false);  // A-x stays local
   // plain typing + bare modifiers
   assert.equal(shouldForwardChord(ev({ key: 'a' }), noChord), false);
   assert.equal(shouldForwardChord(ev({ key: 'Control', ctrlKey: true }), noChord), false);

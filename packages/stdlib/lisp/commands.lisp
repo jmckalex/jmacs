@@ -16,8 +16,11 @@
 (define *commands* {})
 
 (define (register-command! name spec)
-  "Record command NAME and its interactive SPEC in the registry."
-  (set! *commands* (assoc *commands* name spec)))
+  "Record command NAME and its interactive SPEC in the registry.
+   Returns NAME, so a defcommand echoes the command's name (like
+   define does) rather than the whole registry."
+  (set! *commands* (assoc *commands* name spec))
+  name)
 
 (define (command-registered? name)
   "True when NAME names a registered command."
