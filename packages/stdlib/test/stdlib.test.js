@@ -1620,6 +1620,32 @@ test('defcustom defines a variable and registers the setting', async () => {
   );
 });
 
+test('custom-entry misses with #f; custom-value stays nil (by design)', async () => {
+  const { interpreter } = await editor();
+  // An unregistered setting is an absence: #f, a safe bare if-test.
+  assert.equal(
+    interpreter.evaluate('(custom-entry (quote *no-such-setting*))'),
+    false
+  );
+  assert.equal(
+    interpreter.evaluate("(if (custom-entry '*no-such-setting*) 'yes 'no)"),
+    sym('no')
+  );
+  // custom-value keeps nil on a miss: a boolean setting's VALUE is
+  // often #f, so the result can never discriminate absence anyway.
+  assert.equal(
+    interpreter.evaluate('(nil? (custom-value (quote *no-such-setting*)))'),
+    true
+  );
+  // The miss-tolerant readers still behave for unknown names.
+  assert.equal(
+    interpreter.evaluate('(custom-state (quote *no-such*))'),
+    sym('standard')
+  );
+  // And custom-apply! on an unknown name stays a no-op (no throw).
+  interpreter.evaluate('(custom-apply! (quote *no-such*) 9)');
+});
+
 test('custom-apply! changes the variable and the registry', async () => {
   const { interpreter } = await editor();
   interpreter.evaluate(DECLARE);

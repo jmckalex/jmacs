@@ -39,8 +39,10 @@
   (contains? *custom-registry* name))
 
 (define (custom-entry name)
-  "The registry entry for setting NAME, or nil."
-  (get *custom-registry* name nil))
+  "The registry entry for setting NAME, or #f when NAME is not a
+   registered setting (miss convention: absence is #f, so the result
+   is a safe bare if-test — entries are always maps, hence truthy)."
+  (get *custom-registry* name))
 
 (define (custom-register! name default type . options)
   "Record a setting in the registry. OPTIONS is keyword pairs —
@@ -51,7 +53,7 @@
    setting's value changes."
   (let ((existing (custom-entry name))
         (opts (apply hash-map options)))
-    (let ((value (if (nil? existing)
+    (let ((value (if (not existing)     ; a miss is #f, not nil
                      default
                      (get existing :value default))))
       (set! *custom-registry*
@@ -78,14 +80,18 @@
 ;; --- reading and changing ----------------------------------------------
 
 (define (custom-value name)
-  "The current session value of setting NAME, or nil."
+  "The current session value of setting NAME, or nil for an unknown
+   setting. Deliberately nil, not #f: a boolean setting's value IS
+   often #f, so the result can never discriminate a miss — use
+   `custom-registered?` (or `custom-entry`) to test for absence."
   (let ((entry (custom-entry name)))
-    (if (nil? entry) nil (get entry :value nil))))
+    (if entry (get entry :value nil) nil)))
 
 (define (custom-default name)
-  "The default value of setting NAME, or nil."
+  "The default value of setting NAME, or nil for an unknown setting
+   (nil for the same reason as `custom-value`)."
   (let ((entry (custom-entry name)))
-    (if (nil? entry) nil (get entry :default nil))))
+    (if entry (get entry :default nil) nil)))
 
 (define (-find-symbol-option rest value)
   "Find the symbol in REST whose printed name matches the string VALUE.
@@ -118,7 +124,7 @@
    the live variable, and run its :on-change hook if one is set.
    Does nothing for an unregistered setting."
   (let ((entry (custom-entry name)))
-    (when (not (nil? entry))
+    (when entry                         ; a miss is #f, not nil
       (let ((coerced (-coerce-for-type
                       value
                       (get entry :type :string)
@@ -139,7 +145,7 @@
    value, 'standard when it holds its default, 'set otherwise."
   (let ((entry (custom-entry name)))
     (cond
-      ((nil? entry) 'standard)
+      ((not entry) 'standard)           ; unknown setting: a #f miss
       ((and (contains? entry :saved)
             (equal? (get entry :value nil) (get entry :saved nil)))
        'saved)
@@ -159,7 +165,7 @@
    a symbol on next save)."
   (custom-apply! name value)
   (let ((entry (custom-entry name)))
-    (when (not (nil? entry))
+    (when entry
       (set! *custom-registry*
             (assoc *custom-registry* name
                    (assoc entry :saved (get entry :value nil)))))))
@@ -167,7 +173,7 @@
 (define (custom-save! name)
   "Mark setting NAME's current value as its saved value."
   (let ((entry (custom-entry name)))
-    (when (not (nil? entry))
+    (when entry
       (set! *custom-registry*
             (assoc *custom-registry* name
                    (assoc entry :saved (get entry :value nil)))))))
