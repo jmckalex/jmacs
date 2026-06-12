@@ -19,7 +19,7 @@
  * Naming follows the spec: procedures that mutate end in `!`.
  */
 
-import { LispError, NIL, arrayToList, cons } from '@editor/lisp';
+import { LispError, NIL, arrayToList, cons, typeName } from '@editor/lisp';
 
 /** Assert a value is an integer offset. */
 function offset(value) {
@@ -27,6 +27,58 @@ function offset(value) {
     throw new LispError('expected an integer offset');
   }
   return value;
+}
+
+/**
+ * The Lisp-visible marker handle: an edit-tracking position in a
+ * specific L2 buffer. It wraps the buffer's own marker (see
+ * `@editor/buffer`'s `createMarker`) and remembers which buffer it
+ * belongs to, so `marker-position` reads correctly even when that
+ * buffer is not current. Releasing keeps the handle but drops the
+ * underlying marker (`live` becomes null) — markers cost the buffer a
+ * little work on every edit, so a leaked one is a slow leak.
+ */
+class LispMarker {
+  /**
+   * @param {import('@editor/buffer').Buffer} buffer
+   * @param {import('@editor/buffer').Marker} live
+   */
+  constructor(buffer, live) {
+    this.buffer = buffer;
+    /** The underlying L2 marker, or null once released. */
+    this.live = live;
+  }
+
+  /** How the REPL prints a marker (values.js's render falls back to
+   *  String(value)). */
+  toString() {
+    return this.live === null
+      ? '#<marker released>'
+      : `#<marker ${this.live.offset} in ${this.buffer.name}>`;
+  }
+}
+
+/** Assert a value is a marker handle (released or not). */
+function asMarker(name, value) {
+  if (!(value instanceof LispMarker)) {
+    throw new LispError(`${name}: expected a marker, got ${typeName(value)}`);
+  }
+  return value;
+}
+
+/**
+ * Assert a value is a marker that has not been released. Every
+ * operation except `release-marker!` itself goes through this: a
+ * released marker raises rather than returning nil, because nil is
+ * truthy in this Lisp — a nil position would flow into arithmetic and
+ * fail far from the actual bug, while raising here names it.
+ */
+function asLiveMarker(name, value) {
+  const m = asMarker(name, value);
+  if (m.live === null) {
+    throw new LispError(`${name}: the marker has been released`);
+  }
+  return m;
 }
 
 /** Whether a character is part of a word. */
@@ -380,6 +432,48 @@ export function createBufferPrimitives(session) {
         }
       } else {
         buffer().name = newName;
+      }
+      return NIL;
+    },
+
+    // --- markers ----------------------------------------------------------
+    // An L2 marker (an invisible, edit-tracking position — see
+    // `@editor/buffer`) surfaced as an opaque Lisp handle. The handle
+    // carries its buffer: `marker-position` reads from anywhere, but
+    // `set-marker!` only works while the marker's buffer is current.
+    // Markers cost incremental work per edit, so release them when done
+    // — Lisp code should normally reach these through `with-marker` or
+    // `save-excursion` (editing.lisp), which release on every exit.
+    'make-marker': (args) => {
+      const buf = buffer();
+      const at = args.length > 0 ? offset(args[0]) : buf.point;
+      return new LispMarker(buf, buf.createMarker(at));
+    },
+    'marker-position': (args) =>
+      asLiveMarker('marker-position', args[0]).live.offset,
+    'set-marker!': (args) => {
+      const m = asLiveMarker('set-marker!', args[0]);
+      const at = offset(args[1]);
+      if (currentBuffer() !== m.buffer) {
+        throw new LispError(
+          "set-marker!: the marker's buffer is not current — a marker " +
+            'can only be moved while its buffer is current'
+        );
+      }
+      // L2 markers do not move once created; swap in a fresh one.
+      m.live.remove();
+      m.live = m.buffer.createMarker(at);
+      return NIL;
+    },
+    'marker-buffer-current?': (args) =>
+      asLiveMarker('marker-buffer-current?', args[0]).buffer ===
+      currentBuffer(),
+    'release-marker!': (args) => {
+      const m = asMarker('release-marker!', args[0]);
+      // Safe to call twice — the second call finds `live` already null.
+      if (m.live !== null) {
+        m.live.remove();
+        m.live = null;
       }
       return NIL;
     },
