@@ -78,7 +78,7 @@
   "Find the next match of FROM at or after POS. When found, highlight
    it and ask the user what to do; when not, finish."
   (let ((match (find-string-forward from pos)))
-    (if (nil? match)
+    (if (not match)                     ; a miss is #f, not nil
         (query-replace-finish from count)
         (begin
           ;; Set the mark first, then move point — `goto!` extends an
@@ -134,7 +134,7 @@
 
 (define (query-replace-replace-rest-loop from to pos count)
   (let ((match (find-string-forward from pos)))
-    (if (nil? match)
+    (if (not match)                     ; a miss is #f, not nil
         (query-replace-finish from count)
         (begin
           (replace-range! (car match) (cdr match) to)
