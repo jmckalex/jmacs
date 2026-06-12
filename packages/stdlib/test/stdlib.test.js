@@ -12,6 +12,7 @@ import {
   keyword,
   listToArray,
   NIL,
+  sym,
 } from '@editor/lisp';
 import { createBufferPrimitives, loadStdlib } from '../src/index.js';
 
@@ -38,6 +39,7 @@ const languagesDir = join(lispDir, 'languages');
 async function editor(initialText = 'hello world', options = {}) {
   const buffer = createBuffer(initialText, { name: 'test' });
   const fileCalls = [];
+  const viewState = { modified: false };
   const bufferCalls = [];
   const searchCalls = [];
   const paletteCalls = [];
@@ -85,6 +87,10 @@ async function editor(initialText = 'hello world', options = {}) {
         fileCalls.push('open');
         return NIL;
       },
+      // find-file seeds its prompt from the current view's file path;
+      // the test views visit no file, so it falls back to home.
+      'current-view': () => NIL,
+      'view-file-path': () => NIL,
       'save-buffer!': () => {
         fileCalls.push('save');
         return NIL;
@@ -102,10 +108,17 @@ async function editor(initialText = 'hello world', options = {}) {
         bufferCalls.push('new');
         return NIL;
       },
+      'new-scratch-view!': () => {
+        bufferCalls.push('new-scratch');
+        return NIL;
+      },
       'kill-view!': () => {
         bufferCalls.push('kill');
         return NIL;
       },
+      // kill-view's confirm-before-kill guard reads this; tests flip
+      // `viewState.modified` to exercise the unsaved-changes prompt.
+      'view-modified?': () => viewState.modified,
       'start-buffer-switcher!': () => {
         bufferCalls.push('switch');
         return NIL;
@@ -424,6 +437,7 @@ async function editor(initialText = 'hello world', options = {}) {
     bufferCalls,
     searchCalls,
     paletteCalls,
+    viewState,
     noteCalls,
     replCalls,
     previewCalls,
@@ -585,6 +599,17 @@ test('C-z undoes the last change', async () => {
   assert.equal(buffer.text, 'start!');
   press(interpreter, 'C-z');
   assert.equal(buffer.text, 'start');
+});
+
+test('M-z undoes and M-S-z redoes (Cmd+Z muscle memory post-Meta)', async () => {
+  const { buffer, interpreter } = await editor('start');
+  buffer.moveTo(5);
+  press(interpreter, '!');
+  assert.equal(buffer.text, 'start!');
+  press(interpreter, 'M-z');
+  assert.equal(buffer.text, 'start', 'Cmd+Z (M-z) undoes the edit');
+  press(interpreter, 'M-S-z');
+  assert.equal(buffer.text, 'start!', 'Cmd+Shift+Z (M-S-z) redoes it');
 });
 
 test('handle-key reports whether the key was handled', async () => {
@@ -754,11 +779,15 @@ test('C-x left switches to the previous buffer', async () => {
   assert.deepEqual(bufferCalls, ['previous']);
 });
 
-test('C-x n creates a new buffer', async () => {
+test('C-x n opens a seeded scratch buffer; new-view stays on M-x', async () => {
   const { interpreter, bufferCalls } = await editor();
   press(interpreter, 'C-x');
   press(interpreter, 'n');
-  assert.deepEqual(bufferCalls, ['new']);
+  assert.deepEqual(bufferCalls, ['new-scratch']);
+  // new-view lost its key to scratch-buffer (2026-06-12) but remains a
+  // registered command, callable by name.
+  interpreter.evaluate('(new-view)');
+  assert.deepEqual(bufferCalls, ['new-scratch', 'new']);
 });
 
 test('C-s starts an incremental search', async () => {
@@ -1697,6 +1726,16 @@ test('defcommand defines the procedure and registers the command', async () => {
   );
 });
 
+test('a defcommand form evaluates to the command name symbol', async () => {
+  // Regression: register-command! used to end in a set! of *commands*,
+  // so a REPL defcommand printed the entire registry map.
+  const { interpreter } = await editor();
+  const result = interpreter.evaluate(
+    '(defcommand echo-me () "Doc." (quote done))'
+  );
+  assert.equal(result, sym('echo-me')); // symbols are interned
+});
+
 test('defcommand works without a docstring', async () => {
   const { interpreter } = await editor();
   interpreter.evaluate('(defcommand plain () 42)');
@@ -1835,6 +1874,38 @@ test('move-line-down then move-line-up is a round trip', async () => {
   assert.equal(buffer.text, 'a\nb\nc');
 });
 
+test('a multi-edit command undoes as ONE step (atomic-change-group)', async () => {
+  const { buffer, interpreter } = await editor('one\ntwo\nthree');
+  buffer.moveTo(6); // inside "two"
+  press(interpreter, 'M-up'); // move-line-up = delete + insert
+  assert.equal(buffer.text, 'two\none\nthree');
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'one\ntwo\nthree', 'one undo restores the original');
+});
+
+test('atomic-change-group closes its group even when the body raises', async () => {
+  const { buffer, interpreter } = await editor('abc');
+  assert.throws(() =>
+    interpreter.evaluate('(atomic-change-group (insert! "x") (error "boom"))')
+  );
+  assert.equal(buffer.text, 'xabc');
+  // The group closed despite the error: undo works normally again.
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'abc');
+});
+
+test('atomic-change-group re-raises the original message and irritants', async () => {
+  const { interpreter } = await editor('abc');
+  const msg = interpreter.evaluate(
+    '(try (atomic-change-group (insert! "x") (error "boom" 42)) (catch e (get e :message)))'
+  );
+  assert.equal(msg, 'boom', 'the original message survives the re-raise');
+  const irritant = interpreter.evaluate(
+    '(try (atomic-change-group (error "again" 42)) (catch e (car (get e :irritants))))'
+  );
+  assert.equal(irritant, 42, 'irritants survive the re-raise');
+});
+
 test('C-x C-d duplicates the current line below it', async () => {
   const { buffer, interpreter } = await editor('one\ntwo');
   buffer.moveTo(1); // on "one"
@@ -1910,6 +1981,108 @@ test('the line-op commands are bound to their keys', async () => {
   );
   assert.ok(
     interpreter.evaluate('(eq? (get c-x-keymap "C-j") (quote join-line))')
+  );
+});
+
+// --- sort-lines -----------------------------------------------------------
+
+test('sort-lines sorts the selected lines ascending', async () => {
+  const { buffer, interpreter } = await editor('banana\napple\ncherry');
+  buffer.moveTo(0);
+  buffer.setMark(18); // ...through "cherry"
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'apple\nbanana\ncherry');
+});
+
+test('sort-lines snaps a partial-line region outward to whole lines', async () => {
+  const { buffer, interpreter } = await editor('bbb\naaa\nccc');
+  buffer.moveTo(1); // inside "bbb"
+  buffer.setMark(5); // inside "aaa"
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'aaa\nbbb\nccc', 'both touched lines sort; ccc untouched');
+});
+
+test('sort-lines: a region ending at column 0 does not touch that line', async () => {
+  const { buffer, interpreter } = await editor('bbb\naaa\nccc');
+  buffer.moveTo(0);
+  buffer.setMark(8); // start of the "ccc" line
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'aaa\nbbb\nccc', '"ccc" stays out of the sort');
+});
+
+test('sort-lines lands point at the start of the sorted block', async () => {
+  const { buffer, interpreter } = await editor('zzz\nbbb\naaa');
+  buffer.moveTo(5); // inside "bbb"
+  buffer.setMark(10); // inside "aaa"
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'zzz\naaa\nbbb');
+  assert.equal(buffer.point, 4, 'point at the snapped span start');
+});
+
+test('sort-lines undoes as ONE step (atomic-change-group)', async () => {
+  const { buffer, interpreter } = await editor('banana\napple\ncherry');
+  buffer.moveTo(0);
+  buffer.setMark(18);
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'apple\nbanana\ncherry');
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'banana\napple\ncherry', 'one undo restores the original');
+});
+
+test('sort-lines on already-sorted lines makes no edit (clean undo history)', async () => {
+  const { buffer, interpreter } = await editor('aaa\nbbb');
+  buffer.moveTo(7);
+  interpreter.evaluate('(insert! "x")'); // a real edit to undo past
+  assert.equal(buffer.text, 'aaa\nbbbx');
+  buffer.moveTo(0);
+  buffer.setMark(buffer.text.length);
+  interpreter.evaluate('(run-command (quote sort-lines))');
+  assert.equal(buffer.text, 'aaa\nbbbx', 'already sorted — text untouched');
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'aaa\nbbb', 'the undo step is the insert, not a no-op sort');
+});
+
+test('sort-lines needs an active region', async () => {
+  const { interpreter } = await editor('b\na');
+  assert.throws(
+    () => interpreter.evaluate('(run-command (quote sort-lines))'),
+    /needs an active region/
+  );
+});
+
+test('sort-lines is a registered command (M-x reachable), unbound', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(command-registered? (quote sort-lines))'),
+    true
+  );
+});
+
+test('M-S-right / M-S-left select word-wise; M-S-down extends by line', async () => {
+  const { buffer, interpreter } = await editor('alpha beta\ngamma delta');
+  buffer.moveTo(0);
+  press(interpreter, 'M-S-right');
+  assert.equal(buffer.mark, 0);
+  assert.equal(buffer.point, 5, 'selection grows to the first word end');
+  press(interpreter, 'M-S-right');
+  assert.equal(buffer.point, 10, 'and on to the next word');
+  press(interpreter, 'M-S-left');
+  assert.equal(buffer.point, 6, 'shrinks back a word');
+  assert.equal(buffer.mark, 0, 'anchor stays put');
+  press(interpreter, 'M-S-down');
+  assert.equal(buffer.mark, 0);
+  assert.ok(buffer.point > 10, 'line-wise extension moved into line two');
+});
+
+test('M-left / M-right are word-motion synonyms for M-b / M-f', async () => {
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate('(eq? (get the-keymap "M-right") (quote forward-word))'),
+    true
+  );
+  assert.equal(
+    interpreter.evaluate('(eq? (get the-keymap "M-left") (quote backward-word))'),
+    true
   );
 });
 
@@ -2681,6 +2854,16 @@ test('faces is a registered customize group under jmacs', async () => {
   assert.equal(parent && parent.name, 'jmacs');
 });
 
+test('editing is a registered customize group under jmacs', async () => {
+  // Six stdlib settings (indent, system, cite) file under 'editing;
+  // without this registration they are invisible to top-down browsing.
+  const { interpreter } = await editor();
+  const parent = interpreter.evaluate(
+    "(get (get *custom-groups* 'editing {}) :parent nil)"
+  );
+  assert.equal(parent && parent.name, 'jmacs');
+});
+
 test('set-face-attribute triggers the saver hook', async () => {
   const { interpreter } = await editor();
   // Install a Lisp-side saver that counts invocations.
@@ -3150,6 +3333,27 @@ test('C-x k runs kill-view through the host primitive', async () => {
   press(interpreter, 'k');
   assert.ok(bufferCalls.includes('kill'),
     `expected kill; got ${JSON.stringify(bufferCalls)}`);
+});
+
+test('C-x k on a modified buffer asks first; y kills', async () => {
+  const { interpreter, bufferCalls, viewState } = await editor();
+  viewState.modified = true;
+  press(interpreter, 'C-x');
+  press(interpreter, 'k');
+  assert.ok(!bufferCalls.includes('kill'), 'no kill before the answer');
+  press(interpreter, 'y');
+  assert.ok(bufferCalls.includes('kill'), 'y confirms the kill');
+});
+
+test('C-x k on a modified buffer cancels on any other key', async () => {
+  const { buffer, interpreter, bufferCalls, viewState } = await editor();
+  viewState.modified = true;
+  press(interpreter, 'C-x');
+  press(interpreter, 'k');
+  press(interpreter, 'n');
+  assert.ok(!bufferCalls.includes('kill'), 'n cancels');
+  // The answer keystroke was consumed by the prompt, not self-inserted.
+  assert.ok(!buffer.text.includes('n'), 'the n did not type into the buffer');
 });
 
 // --- describe-face-at-point (face-info.lisp) ---------------------------

@@ -36,6 +36,13 @@
   "Create a fresh empty text view and switch to it."
   (new-view!))
 
+(defcommand scratch-buffer ()
+  "Open a fresh Lisp scratch buffer, seeded like the first-run
+   scratch.lisp and uniquely named. Joins the focused pane as a new
+   tab when it has a tabline. Session restore drops the startup
+   scratch; this conjures one any time. Bound to C-x n."
+  (new-scratch-view!))
+
 (defcommand switch-view ()
   "Switch to a view chosen by name, with completion."
   (start-buffer-switcher!))
@@ -43,8 +50,20 @@
 (defcommand kill-view ()
   "Remove the current view from the list and switch to the next one.
    Killing the last view creates a fresh empty `*scratch*` text view
-   so the list is never empty. Bound to `C-x k`."
-  (kill-view!))
+   so the list is never empty. A buffer with unsaved changes asks for
+   confirmation first (y kills, anything else cancels) — the same
+   guard the quit path has, so C-x k can't silently lose work. Bound
+   to `C-x k` (and the tab/doc-view close buttons)."
+  (if (view-modified?)
+      (begin
+        (show-status! "Buffer has unsaved changes — kill anyway? (y/n)")
+        (read-next-key
+          (lambda (key)
+            (clear-status!)
+            (if (equal? key "y")
+                (kill-view!)
+                (show-status! "Kill cancelled")))))
+      (kill-view!)))
 
 (defcommand toggle-pdf-persistent ()
   "Flip whether the current PDF view survives a relaunch, echoing the
