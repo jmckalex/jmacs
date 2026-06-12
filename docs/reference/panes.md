@@ -3,7 +3,7 @@ Author: J. McKenzie Alexander
 Date: 2026-06-11
 ---
 
-# Pane and window commands
+## Pane and window commands
 
 This document describes every command for managing the editor's visual
 layout — the *panes* that divide the editor area, the *views* that fill
@@ -28,7 +28,7 @@ See `index.jmd` for how to read an entry.
 
 ---
 
-## Splitting and focus
+### Splitting and focus
 
 Defined in `panes.lisp`. Splitting a pane moves focus to the new pane,
 which shows a *placeholder* chooser asking what it should hold — open a
@@ -37,7 +37,7 @@ a command (`r`). Enter performs `*placeholder-default-action*` (clone by
 default).
 
 :::function{name="split-vertical" path="reference/panes/split-vertical.html"}
-### `split-vertical`
+#### `split-vertical`
 `(split-vertical)`
 
 Split the current pane top-and-bottom; focus moves to the new pane. With
@@ -46,7 +46,7 @@ appears *above*. Bound to `C-x 2`. See also cmd(split-horizontal).
 :::
 
 :::function{name="split-horizontal" path="reference/panes/split-horizontal.html"}
-### `split-horizontal`
+#### `split-horizontal`
 `(split-horizontal)`
 
 Split the current pane side-by-side; focus moves to the new pane. With no
@@ -55,7 +55,7 @@ appears to the *left*. Bound to `C-x 3`. See also cmd(split-vertical).
 :::
 
 :::function{name="add-pane" path="reference/panes/add-pane.html"}
-### `add-pane`
+#### `add-pane`
 `(add-pane)`
 
 Enter the visual add-pane macro. An overlay highlights every splitter and
@@ -67,7 +67,7 @@ re-pressing the entry chord — cancels. Bound to `C-x +`.
 :::
 
 :::function{name="other-pane" path="reference/panes/other-pane.html"}
-### `other-pane`
+#### `other-pane`
 `(other-pane)`
 
 Cycle focus to the next pane in display order. Bound to `C-x o`. See also
@@ -75,7 +75,7 @@ cmd(focus-pane-left).
 :::
 
 :::function{name="focus-pane-left" path="reference/panes/focus-pane-left.html"}
-### `focus-pane-left`
+#### `focus-pane-left`
 `(focus-pane-left)`
 
 Focus the pane immediately to the left of the current one, if any. Bound
@@ -83,7 +83,7 @@ to `C-x C-←`. See also cmd(focus-pane-right), cmd(other-pane).
 :::
 
 :::function{name="focus-pane-right" path="reference/panes/focus-pane-right.html"}
-### `focus-pane-right`
+#### `focus-pane-right`
 `(focus-pane-right)`
 
 Focus the pane immediately to the right of the current one, if any. Bound
@@ -91,7 +91,7 @@ to `C-x C-→`. See also cmd(focus-pane-left).
 :::
 
 :::function{name="focus-pane-up" path="reference/panes/focus-pane-up.html"}
-### `focus-pane-up`
+#### `focus-pane-up`
 `(focus-pane-up)`
 
 Focus the pane immediately above the current one, if any. Bound to
@@ -99,14 +99,14 @@ Focus the pane immediately above the current one, if any. Bound to
 :::
 
 :::function{name="focus-pane-down" path="reference/panes/focus-pane-down.html"}
-### `focus-pane-down`
+#### `focus-pane-down`
 `(focus-pane-down)`
 
 Focus the pane immediately below the current one, if any. Bound to
 `C-x C-↓`. See also cmd(focus-pane-up).
 :::
 
-## Closing panes and tabs
+### Closing panes and tabs
 
 Defined in `panes.lisp`. jmacs distinguishes *closing* a pane — which
 collapses the pane but keeps its view alive in the global list — from
@@ -115,7 +115,7 @@ This is the same split Emacs makes between `C-x 0` (delete-window) and
 `C-x k` (kill-buffer).
 
 :::function{name="delete-pane" path="reference/panes/delete-pane.html"}
-### `delete-pane`
+#### `delete-pane`
 `(delete-pane)`
 
 Delete the current pane — collapse its parent split into its sibling. A
@@ -125,7 +125,7 @@ cmd(delete-other-panes).
 :::
 
 :::function{name="close-pane" path="reference/panes/close-pane.html"}
-### `close-pane`
+#### `close-pane`
 `(close-pane)`
 
 Close the current pane, collapsing its parent split into its sibling
@@ -136,7 +136,7 @@ itself use cmd(kill-view). Unbound — run with `M-x` or from the REPL.
 :::
 
 :::function{name="delete-other-panes" path="reference/panes/delete-other-panes.html"}
-### `delete-other-panes`
+#### `delete-other-panes`
 `(delete-other-panes)`
 
 Make the current pane fill the editor area, disposing every other pane.
@@ -144,7 +144,7 @@ Bound to `C-x 1`. See also cmd(delete-pane).
 :::
 
 :::function{name="close-tab" path="reference/panes/close-tab.html"}
-### `close-tab`
+#### `close-tab`
 `(close-tab)`
 
 Close the active tab in the focused tabline-view. The view leaves the
@@ -159,14 +159,14 @@ runs cmd(kill-region).
 :::
 
 :::function{name="balance-panes" path="reference/panes/balance-panes.html"}
-### `balance-panes`
+#### `balance-panes`
 `(balance-panes)`
 
 Reset every split's ratio to 0.5 so panes share their parent's space
 evenly. Unbound — run with `M-x` or from the REPL.
 :::
 
-## Rearranging
+### Rearranging
 
 Defined in `panes.lisp`. These move views between panes, or trade which
 view each pane shows, without changing the panes' geometry. The "other
@@ -174,7 +174,7 @@ pane" is the next leaf in display order; the single-target commands are a
 no-op when only one pane exists.
 
 :::function{name="send-view-to-other-pane" path="reference/panes/send-view-to-other-pane.html"}
-### `send-view-to-other-pane`
+#### `send-view-to-other-pane`
 `(send-view-to-other-pane)`
 
 Send the focused view to the next pane in display order. Both panes are
@@ -186,7 +186,7 @@ cmd(swap-with-other-pane), cmd(send-tab-to-other-pane).
 :::
 
 :::function{name="send-tab-to-other-pane" path="reference/panes/send-tab-to-other-pane.html"}
-### `send-tab-to-other-pane`
+#### `send-tab-to-other-pane`
 `(send-tab-to-other-pane)`
 
 Send the focused tab to the next pane's tabline — an alias for
@@ -194,7 +194,7 @@ cmd(send-view-to-other-pane). Unbound — run with `M-x` or from the REPL.
 :::
 
 :::function{name="swap-with-other-pane" path="reference/panes/swap-with-other-pane.html"}
-### `swap-with-other-pane`
+#### `swap-with-other-pane`
 `(swap-with-other-pane)`
 
 Swap the views shown in the current pane and the next pane in display
@@ -204,7 +204,7 @@ cmd(send-view-to-other-pane).
 :::
 
 :::function{name="swap-views" path="reference/panes/swap-views.html"}
-### `swap-views`
+#### `swap-views`
 `(swap-views)`
 
 Swap which view two panes show. Numbers every pane with a badge in its
@@ -217,7 +217,7 @@ See also cmd(permute-views), cmd(swap-with-other-pane).
 :::
 
 :::function{name="permute-views" path="reference/panes/permute-views.html"}
-### `permute-views`
+#### `permute-views`
 `(permute-views)`
 
 Rearrange which view every pane shows. Numbers every pane, then reads a
@@ -228,7 +228,7 @@ no-op with fewer than two panes. Bound only in the **View menu** (no
 key). See also cmd(swap-views).
 :::
 
-## Tablines
+### Tablines
 
 Defined in `tabline.lisp`. A *tabline-view* wraps several leaf views into
 one pane as a tab strip plus a content area. Promotion and demotion are
@@ -237,7 +237,7 @@ these carries a key binding — run them with `M-x`, from the REPL, or by
 composition in `init.lisp`.
 
 :::function{name="promote-to-tabline" path="reference/panes/promote-to-tabline.html"}
-### `promote-to-tabline`
+#### `promote-to-tabline`
 `(promote-to-tabline)`
 
 Wrap the current pane's view in a fresh tabline-view, with the existing
@@ -248,7 +248,7 @@ between them. Unbound. See also cmd(demote-tabline).
 :::
 
 :::function{name="demote-tabline" path="reference/panes/demote-tabline.html"}
-### `demote-tabline`
+#### `demote-tabline`
 `(demote-tabline)`
 
 Replace the current pane's tabline-view with its active child's view; the
@@ -259,7 +259,7 @@ Unbound. See also cmd(promote-to-tabline).
 :::
 
 :::function{name="tabline-edge-top" path="reference/panes/tabline-edge-top.html"}
-### `tabline-edge-top`
+#### `tabline-edge-top`
 `(tabline-edge-top)`
 
 Render the current pane's tab strip on the top edge of the pane (the
@@ -269,7 +269,7 @@ cmd(tabline-edge-right).
 :::
 
 :::function{name="tabline-edge-bottom" path="reference/panes/tabline-edge-bottom.html"}
-### `tabline-edge-bottom`
+#### `tabline-edge-bottom`
 `(tabline-edge-bottom)`
 
 Render the current pane's tab strip on the bottom edge of the pane. A
@@ -278,7 +278,7 @@ cmd(tabline-edge-top).
 :::
 
 :::function{name="tabline-edge-left" path="reference/panes/tabline-edge-left.html"}
-### `tabline-edge-left`
+#### `tabline-edge-left`
 `(tabline-edge-left)`
 
 Render the current pane's tab strip on the left edge of the pane. The
@@ -288,7 +288,7 @@ tabline. Unbound. See also cmd(tabline-edge-right), cmd(tabline-edge-top).
 :::
 
 :::function{name="tabline-edge-right" path="reference/panes/tabline-edge-right.html"}
-### `tabline-edge-right`
+#### `tabline-edge-right`
 `(tabline-edge-right)`
 
 Render the current pane's tab strip on the right edge of the pane,
@@ -297,14 +297,14 @@ current pane doesn't hold a tabline. Unbound. See also
 cmd(tabline-edge-left).
 :::
 
-## Views
+### Views
 
 Defined in `views.lisp`. The editor holds a list of views with one
 current; these commands change which view is current and re-mount the
 matching renderer surface.
 
 :::function{name="new-view" path="reference/panes/new-view.html"}
-### `new-view`
+#### `new-view`
 `(new-view)`
 
 Create a fresh empty text view and switch to it. Bound to `C-x n`. See
@@ -312,7 +312,7 @@ also cmd(kill-view).
 :::
 
 :::function{name="next-view" path="reference/panes/next-view.html"}
-### `next-view`
+#### `next-view`
 `(next-view)`
 
 Switch to the next view in the list. Bound to `C-x →`. See also
@@ -320,7 +320,7 @@ cmd(previous-view).
 :::
 
 :::function{name="previous-view" path="reference/panes/previous-view.html"}
-### `previous-view`
+#### `previous-view`
 `(previous-view)`
 
 Switch to the previous view in the list. Bound to `C-x ←`. See also
@@ -328,7 +328,7 @@ cmd(next-view).
 :::
 
 :::function{name="switch-view" path="reference/panes/switch-view.html"}
-### `switch-view`
+#### `switch-view`
 `(switch-view)`
 
 Switch to a view chosen by name, with completion. Bound to `C-x b`. The
@@ -336,7 +336,7 @@ chooser runs in the minibuffer. See also cmd(view-list!).
 :::
 
 :::function{name="kill-view" path="reference/panes/kill-view.html"}
-### `kill-view`
+#### `kill-view`
 `(kill-view)`
 
 Remove the current view from the list and switch to the next one. Killing
@@ -346,7 +346,7 @@ view alive, use cmd(close-pane).
 :::
 
 :::function{name="view-list!" path="reference/panes/view-list!.html"}
-### `view-list!`
+#### `view-list!`
 `(view-list!)`
 
 Open the *View List* — a clickable table of every open view. Click a row
@@ -358,7 +358,7 @@ the keymap points `C-x C-b` at cmd(buffer-menu).
 :::
 
 :::function{name="buffer-menu" path="reference/panes/buffer-menu.html"}
-### `buffer-menu`
+#### `buffer-menu`
 `(buffer-menu)`
 
 Alias for cmd(view-list!), kept for Emacs muscle memory. Bound to

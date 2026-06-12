@@ -3,7 +3,7 @@ Author: J. McKenzie Alexander
 Date: 2026-06-11
 ---
 
-# LaTeX and RefTeX commands
+## LaTeX and RefTeX commands
 
 This document describes the commands `latex-mode` adds for authoring
 LaTeX — the AUCTeX-style compile/view loop, smart insertion, math,
@@ -27,7 +27,7 @@ written `` ` ``.
 
 ---
 
-## Compiling and viewing
+### Compiling and viewing
 
 Defined in `latex-compile.lisp` — AUCTeX's `TeX-command-master` loop.
 The build runs `*latex-command*` (a token list, default `latexmk`) in
@@ -38,7 +38,7 @@ RefTeX (`reftex.lisp`) this is the detected master, not necessarily the
 current buffer.
 
 :::function{name="latex-compile" path="reference/latex/latex-compile.html"}
-### `latex-compile`
+#### `latex-compile`
 `(latex-compile)`
 
 Save the buffer and build the LaTeX document with `*latex-command*`,
@@ -50,7 +50,7 @@ and cmd(latex-next-error).
 :::
 
 :::function{name="latex-view" path="reference/latex/latex-view.html"}
-### `latex-view`
+#### `latex-view`
 `(latex-view)`
 
 Open the built PDF for `(latex-master-file)` beside the source, or
@@ -63,7 +63,7 @@ cmd(latex-forward-search).
 :::
 
 :::function{name="latex-next-error" path="reference/latex/latex-next-error.html"}
-### `latex-next-error`
+#### `latex-next-error`
 `(latex-next-error)`
 
 Visit the next LaTeX diagnostic from the last build: open its file,
@@ -73,7 +73,7 @@ list. Bound to `` C-c ` ``. See also cmd(latex-previous-error).
 :::
 
 :::function{name="latex-previous-error" path="reference/latex/latex-previous-error.html"}
-### `latex-previous-error`
+#### `latex-previous-error`
 `(latex-previous-error)`
 
 Visit the previous LaTeX diagnostic from the last build, the companion
@@ -82,7 +82,7 @@ run it with `M-x` or from the LaTeX menu.
 :::
 
 :::function{name="latex-show-output" path="reference/latex/latex-show-output.html"}
-### `latex-show-output`
+#### `latex-show-output`
 `(latex-show-output)`
 
 Bring the *TeX output* tab forward in the utility dock with the last
@@ -90,7 +90,7 @@ build's full toolchain log, if any. A convenience for inspecting raw
 output. Unbound by default — run it with `M-x` or from the LaTeX menu.
 :::
 
-## SyncTeX
+### SyncTeX
 
 Defined in `latex-synctex.lisp` — two-way sync between the `.tex`
 source and the in-app PDF viewer via the `synctex` CLI
@@ -98,7 +98,7 @@ source and the in-app PDF viewer via the `synctex` CLI
 `.synctex.gz` sits beside the PDF.
 
 :::function{name="latex-forward-search" path="reference/latex/latex-forward-search.html"}
-### `latex-forward-search`
+#### `latex-forward-search`
 `(latex-forward-search)`
 
 Forward SyncTeX from point: jump the open PDF to the typeset spot of
@@ -113,7 +113,7 @@ in the pdf-view fires the host-side `latex-synctex-inverse`, which runs
 `synctex edit` and reveals the source line in a text pane.
 :::
 
-## Writing LaTeX
+### Writing LaTeX
 
 Defined in `latex.lisp` (the quick wraps and stub environments) and
 `latex-insert.lisp` (the completing pickers). The wraps are built on
@@ -121,7 +121,7 @@ the `latex-surround` helper: with a region active they wrap it, with no
 region they insert the pair and place point between the braces.
 
 :::function{name="latex-insert-environment" path="reference/latex/latex-insert-environment.html"}
-### `latex-insert-environment`
+#### `latex-insert-environment`
 `(latex-insert-environment)`
 
 Insert a `\begin{ENV}…\end{ENV}` environment chosen in the minibuffer
@@ -135,7 +135,7 @@ cmd(latex-close-environment).
 :::
 
 :::function{name="latex-close-environment" path="reference/latex/latex-close-environment.html"}
-### `latex-close-environment`
+#### `latex-close-environment`
 `(latex-close-environment)`
 
 Close the innermost currently-open LaTeX environment: scan from the
@@ -146,7 +146,7 @@ Bound to `C-c ]`.
 :::
 
 :::function{name="latex-insert-macro" path="reference/latex/latex-insert-macro.html"}
-### `latex-insert-macro`
+#### `latex-insert-macro`
 `(latex-insert-macro)`
 
 Insert a `\NAME{}` macro chosen in the minibuffer with TAB completion
@@ -157,7 +157,7 @@ to `C-c C-m`.
 :::
 
 :::function{name="latex-insert-section" path="reference/latex/latex-insert-section.html"}
-### `latex-insert-section`
+#### `latex-insert-section`
 `(latex-insert-section)`
 
 Insert a sectioning command chosen in the minibuffer with TAB
@@ -170,7 +170,7 @@ remain.
 :::
 
 :::function{name="latex-section" path="reference/latex/latex-section.html"}
-### `latex-section`
+#### `latex-section`
 `(latex-section)`
 
 Wrap the selection in `\section{…}` (or insert the pair with point
@@ -179,7 +179,7 @@ cmd(latex-insert-section). Bound to `C-c s`.
 :::
 
 :::function{name="latex-subsection" path="reference/latex/latex-subsection.html"}
-### `latex-subsection`
+#### `latex-subsection`
 `(latex-subsection)`
 
 Wrap the selection in `\subsection{…}` (or insert the pair with point
@@ -187,7 +187,7 @@ between the braces). Bound to `C-c S`.
 :::
 
 :::function{name="latex-itemize" path="reference/latex/latex-itemize.html"}
-### `latex-itemize`
+#### `latex-itemize`
 `(latex-itemize)`
 
 Insert a stub `itemize` environment with point after the first
@@ -196,7 +196,7 @@ Insert a stub `itemize` environment with point after the first
 :::
 
 :::function{name="latex-enumerate" path="reference/latex/latex-enumerate.html"}
-### `latex-enumerate`
+#### `latex-enumerate`
 `(latex-enumerate)`
 
 Insert a stub `enumerate` environment with point after the first
@@ -204,7 +204,7 @@ Insert a stub `enumerate` environment with point after the first
 :::
 
 :::function{name="latex-insert-item" path="reference/latex/latex-insert-item.html"}
-### `latex-insert-item`
+#### `latex-insert-item`
 `(latex-insert-item)`
 
 Inside a list environment (the innermost enclosing itemize / enumerate
@@ -214,7 +214,7 @@ the brackets). Outside a list, fall back to a plain newline-and-indent.
 Bound to `M-RET` (the renderer's `M-enter`).
 :::
 
-## Fonts
+### Fonts
 
 Defined in `latex.lisp` (bf/it/emph) and `latex-insert.lisp` (the rest).
 All are `latex-surround` wraps. Beyond their own `C-c` keys they are
@@ -223,7 +223,7 @@ letter and its control form select the same command (so `C-c C-f e` and
 `C-c C-f C-e` both insert `\emph{}`).
 
 :::function{name="latex-textbf" path="reference/latex/latex-textbf.html"}
-### `latex-textbf`
+#### `latex-textbf`
 `(latex-textbf)`
 
 Wrap the selection in `\textbf{…}` (bold). Bound to `C-c b` and
@@ -231,7 +231,7 @@ Wrap the selection in `\textbf{…}` (bold). Bound to `C-c b` and
 :::
 
 :::function{name="latex-textit" path="reference/latex/latex-textit.html"}
-### `latex-textit`
+#### `latex-textit`
 `(latex-textit)`
 
 Wrap the selection in `\textit{…}` (italic). Bound to `C-c i` and
@@ -239,7 +239,7 @@ Wrap the selection in `\textit{…}` (italic). Bound to `C-c i` and
 :::
 
 :::function{name="latex-emph" path="reference/latex/latex-emph.html"}
-### `latex-emph`
+#### `latex-emph`
 `(latex-emph)`
 
 Wrap the selection in `\emph{…}` (emphasis). Bound to `C-c e` and
@@ -247,49 +247,49 @@ Wrap the selection in `\emph{…}` (emphasis). Bound to `C-c e` and
 :::
 
 :::function{name="latex-texttt" path="reference/latex/latex-texttt.html"}
-### `latex-texttt`
+#### `latex-texttt`
 `(latex-texttt)`
 
 Wrap the selection in `\texttt{…}` (monospace). Bound to `C-c C-f t`.
 :::
 
 :::function{name="latex-textsc" path="reference/latex/latex-textsc.html"}
-### `latex-textsc`
+#### `latex-textsc`
 `(latex-textsc)`
 
 Wrap the selection in `\textsc{…}` (small caps). Bound to `C-c C-f c`.
 :::
 
 :::function{name="latex-textsl" path="reference/latex/latex-textsl.html"}
-### `latex-textsl`
+#### `latex-textsl`
 `(latex-textsl)`
 
 Wrap the selection in `\textsl{…}` (slanted). Bound to `C-c C-f s`.
 :::
 
 :::function{name="latex-textrm" path="reference/latex/latex-textrm.html"}
-### `latex-textrm`
+#### `latex-textrm`
 `(latex-textrm)`
 
 Wrap the selection in `\textrm{…}` (roman). Bound to `C-c C-f r`.
 :::
 
 :::function{name="latex-textsf" path="reference/latex/latex-textsf.html"}
-### `latex-textsf`
+#### `latex-textsf`
 `(latex-textsf)`
 
 Wrap the selection in `\textsf{…}` (sans serif). Bound to `C-c C-f f`.
 :::
 
 :::function{name="latex-textmd" path="reference/latex/latex-textmd.html"}
-### `latex-textmd`
+#### `latex-textmd`
 `(latex-textmd)`
 
 Wrap the selection in `\textmd{…}` (medium weight). Bound to
 `C-c C-f m`.
 :::
 
-## Math
+### Math
 
 Defined in `latex.lisp` (the math wraps and the inline-preview toggle)
 and `latex-math.lisp` (the LaTeX-math abbreviation minor mode). The
@@ -297,7 +297,7 @@ abbreviation mode and the preview mode are independent minor modes that
 compose freely.
 
 :::function{name="latex-math-inline" path="reference/latex/latex-math-inline.html"}
-### `latex-math-inline`
+#### `latex-math-inline`
 `(latex-math-inline)`
 
 Wrap the selection in `$…$` (or insert the pair with point between).
@@ -305,7 +305,7 @@ Bound to `C-c m`. See also cmd(latex-math-display).
 :::
 
 :::function{name="latex-math-display" path="reference/latex/latex-math-display.html"}
-### `latex-math-display`
+#### `latex-math-display`
 `(latex-math-display)`
 
 Wrap the selection in `\[ … \]` (or insert the pair with point
@@ -313,7 +313,7 @@ between). Bound to `C-c M`.
 :::
 
 :::function{name="toggle-latex-math-mode" path="reference/latex/toggle-latex-math-mode.html"}
-### `toggle-latex-math-mode`
+#### `toggle-latex-math-mode`
 `(toggle-latex-math-mode)`
 
 Toggle the LaTeX math symbol-insertion minor mode in the current
@@ -327,7 +327,7 @@ intended default.
 :::
 
 :::function{name="toggle-latex-math-preview" path="reference/latex/toggle-latex-math-preview.html"}
-### `toggle-latex-math-preview`
+#### `toggle-latex-math-preview`
 `(toggle-latex-math-preview)`
 
 Toggle live inline MathJax typesetting for the current LaTeX buffer:
@@ -337,7 +337,7 @@ source for editing when point enters them. An alias of the general
 `*latex-math-preview-default*` records the intended default.
 :::
 
-## Navigation
+### Navigation
 
 Defined in `latex-nav.lisp` — the small daily motions, plus the
 context-sensitive quote on `latex-mode`. The section motions scan the
@@ -345,7 +345,7 @@ current buffer's own text, so they work without a built RefTeX document
 database.
 
 :::function{name="latex-next-section" path="reference/latex/latex-next-section.html"}
-### `latex-next-section`
+#### `latex-next-section`
 `(latex-next-section)`
 
 Move point to the start of the next sectioning command (part / chapter
@@ -355,7 +355,7 @@ section. Bound to `C-c C-n`. See also cmd(latex-previous-section).
 :::
 
 :::function{name="latex-previous-section" path="reference/latex/latex-previous-section.html"}
-### `latex-previous-section`
+#### `latex-previous-section`
 `(latex-previous-section)`
 
 Move point to the start of the previous sectioning command, the
@@ -364,7 +364,7 @@ Bound to `C-c C-r`.
 :::
 
 :::function{name="latex-goto-matching-env" path="reference/latex/latex-goto-matching-env.html"}
-### `latex-goto-matching-env`
+#### `latex-goto-matching-env`
 `(latex-goto-matching-env)`
 
 When point is on (or within the macro of) a `\begin{X}`, jump to its
@@ -375,7 +375,7 @@ or the document is unbalanced. Bound to `C-c %`.
 :::
 
 :::function{name="latex-smart-quote" path="reference/latex/latex-smart-quote.html"}
-### `latex-smart-quote`
+#### `latex-smart-quote`
 `(latex-smart-quote)`
 
 Insert a context-sensitive LaTeX quote on the `"` key: ` `` ` (open)
@@ -388,7 +388,7 @@ detect math or verbatim context.
 :::
 
 :::function{name="latex-fill-paragraph" path="reference/latex/latex-fill-paragraph.html"}
-### `latex-fill-paragraph`
+#### `latex-fill-paragraph`
 `(latex-fill-paragraph)`
 
 Re-wrap the paragraph around point AUCTeX-style: fill prose to
@@ -402,7 +402,7 @@ buffer unchanged. Bound to `M-q` in latex-mode, overriding the global
 cmd(fill-paragraph).
 :::
 
-## Labels and references
+### Labels and references
 
 Defined in `reftex.lisp` (the multi-file document model) and
 `reftex-refs.lisp` (the daily label/reference commands and the
@@ -411,7 +411,7 @@ resolves `\input`/`\include` transitively, and builds a cross-file
 database of labels, sections, refs and cites that these commands query.
 
 :::function{name="reftex-label" path="reference/latex/reftex-label.html"}
-### `reftex-label`
+#### `reftex-label`
 `(reftex-label)`
 
 Insert a `\label{KEY}` at point with a smart, unique key. The type is
@@ -424,7 +424,7 @@ the suggested key is offered in the minibuffer for editing. Bound to
 :::
 
 :::function{name="reftex-reference" path="reference/latex/reftex-reference.html"}
-### `reftex-reference`
+#### `reftex-reference`
 `(reftex-reference)`
 
 Insert a reference to a label chosen in the `*RefTeX Select*` view —
@@ -437,7 +437,7 @@ minibuffer flow, see cmd(reftex-reference-minibuffer).
 :::
 
 :::function{name="reftex-reference-minibuffer" path="reference/latex/reftex-reference-minibuffer.html"}
-### `reftex-reference-minibuffer`
+#### `reftex-reference-minibuffer`
 `(reftex-reference-minibuffer)`
 
 Insert a `\ref`/`\eqref`/… to a label chosen in the minibuffer with TAB
@@ -449,7 +449,7 @@ with `M-x` or from the LaTeX menu.
 :::
 
 :::function{name="reftex-reparse" path="reference/latex/reftex-reparse.html"}
-### `reftex-reparse`
+#### `reftex-reparse`
 `(reftex-reparse)`
 
 Clear the RefTeX database cache and rebuild the current document's
@@ -459,7 +459,7 @@ whose slice is always rebuilt live. Unbound by default — run it with
 `M-x` or from the LaTeX menu.
 :::
 
-## Citations
+### Citations
 
 Defined in `reftex-cite.lisp` — RefTeX's format-first citation flow.
 The bibliography comes from the document's `\bibliography` /
@@ -469,7 +469,7 @@ professionally formatted references (citation.js + the
 inserted text is always the `\cite`-family macro over the bib keys.
 
 :::function{name="reftex-citation" path="reference/latex/reftex-citation.html"}
-### `reftex-citation`
+#### `reftex-citation`
 `(reftex-citation)`
 
 Insert a citation. Choose a cite format (`\cite` / `\citep` / `\citet`
@@ -479,7 +479,7 @@ or more entries in the cite picker (`m` marks several, `RET` inserts
 readable bibliography is found. Bound to `C-c [`.
 :::
 
-## Not yet implemented
+### Not yet implemented
 
 A `latex-clean` command (delete the auxiliary build by-products listed
 in `*latex-clean*` — `.aux`, `.log`, `.synctex.gz`, …) is **not yet

@@ -308,7 +308,16 @@ function createDocView(container, options = {}) {
   }
 
   // The sidebar tree is built once per manifest; nav only re-highlights.
+  // A node can legitimately render in several branches (a function
+  // filed under two tiers), so the map holds a LIST of <li>s per id —
+  // a single-slot map would orphan the earlier <li>, leaving stale
+  // highlight classes on it forever.
   let tocLiById = new Map();
+  const registerTocLi = (id, li) => {
+    const lis = tocLiById.get(id);
+    if (lis) lis.push(li);
+    else tocLiById.set(id, [li]);
+  };
   function buildToc() {
     tocLiById = new Map();
     toc.replaceChildren();
@@ -329,7 +338,7 @@ function createDocView(container, options = {}) {
         const link = navLink(cid, node.title, node.level === 99);
         link.classList.add('doc-toc-link');
         li.append(link);
-        tocLiById.set(cid, li);
+        registerTocLi(cid, li);
         if (node.children && node.children.length) {
           li.classList.add('doc-toc-branch');
           li.append(makeList(node.children, new Set(ancestors).add(cid)));
@@ -345,7 +354,7 @@ function createDocView(container, options = {}) {
       const link = navLink(rootId, node ? node.title : rootId, false);
       link.classList.add('doc-toc-link');
       li.append(link);
-      tocLiById.set(rootId, li);
+      registerTocLi(rootId, li);
       if (node && node.children && node.children.length) {
         li.append(makeList(node.children, new Set([rootId])));
       }
@@ -365,20 +374,20 @@ function createDocView(container, options = {}) {
   }
 
   function highlightToc(id) {
-    for (const li of tocLiById.values()) {
-      li.classList.remove('is-active', 'is-open');
+    for (const lis of tocLiById.values()) {
+      for (const li of lis) li.classList.remove('is-active', 'is-open');
     }
     // Open the ancestor path; mark the current node active.
     for (const node of breadcrumbTrail(nodes(), id)) {
-      const li = tocLiById.get(node.id);
-      if (li) li.classList.add('is-open');
-    }
-    const cur = tocLiById.get(id);
-    if (cur) {
-      cur.classList.add('is-active');
-      if (typeof cur.scrollIntoView === 'function') {
-        cur.scrollIntoView({ block: 'nearest' });
+      for (const li of tocLiById.get(node.id) ?? []) {
+        li.classList.add('is-open');
       }
+    }
+    const curs = tocLiById.get(id) ?? [];
+    for (const cur of curs) cur.classList.add('is-active');
+    const first = curs[0];
+    if (first && typeof first.scrollIntoView === 'function') {
+      first.scrollIntoView({ block: 'nearest' });
     }
   }
 

@@ -3,7 +3,7 @@ Author: J. McKenzie Alexander
 Date: 2026-06-11
 ---
 
-# View and tool commands
+## View and tool commands
 
 jmacs is more than a text editor: a buffer can be shown through a
 *non-text view* — a shell transcript, a gnuplot notebook REPL, a
@@ -27,13 +27,13 @@ Command, `M-` is Option, `S-` is Shift.
 
 ---
 
-## Shell
+### Shell
 
 Defined in `shell.lisp`. The view lives in
 `packages/renderer/src/shell-view.js`.
 
 :::function{name="shell" path="reference/views/shell.html"}
-### `shell`
+#### `shell`
 `(shell)`
 
 Open a fresh shell buffer running the user's default shell (`$SHELL`,
@@ -48,13 +48,13 @@ with `C-x b`. Line-oriented commands work; curses applications
 `M-x shell`. Hands off to the `open-shell-buffer!` host primitive.
 :::
 
-## Gnuplot
+### Gnuplot
 
 Defined in `gnuplot.lisp`. The view lives in
 `packages/renderer/src/gnuplot-view.js`.
 
 :::function{name="gnuplot" path="reference/views/gnuplot.html"}
-### `gnuplot`
+#### `gnuplot`
 `(gnuplot)`
 
 Open a fresh gnuplot buffer — a long-lived `gnuplot` child process
@@ -69,7 +69,7 @@ install-instructions card. Bound to `C-c g`; also `M-x gnuplot`. Hands
 off to the `open-gnuplot-buffer!` host primitive.
 :::
 
-## Notebook
+### Notebook
 
 The reactive engine is in `notebook.lisp`; the user-facing commands are
 in `notebook-commands.lisp`. A notebook is a sheet of named
@@ -78,7 +78,7 @@ downstream (spreadsheet / Observable style). The view is the
 `<notebook-view>` custom element.
 
 :::function{name="notebook" path="reference/views/notebook.html"}
-### `notebook`
+#### `notebook`
 `(notebook)`
 
 Open a new reactive Lisp notebook — a sheet of named
@@ -88,7 +88,7 @@ downstream. Bound to `C-c n`; also `M-x notebook`. Hands off to the
 :::
 
 :::function{name="next-notebook" path="reference/views/next-notebook.html"}
-### `next-notebook`
+#### `next-notebook`
 `(next-notebook)`
 
 Switch to the next open notebook. Bound to `C-c C-n`; also
@@ -96,7 +96,7 @@ Switch to the next open notebook. Bound to `C-c C-n`; also
 :::
 
 :::function{name="previous-notebook" path="reference/views/previous-notebook.html"}
-### `previous-notebook`
+#### `previous-notebook`
 `(previous-notebook)`
 
 Switch to the previous open notebook. Bound to `C-c C-p`; also
@@ -104,7 +104,7 @@ Switch to the previous open notebook. Bound to `C-c C-p`; also
 :::
 
 :::function{name="rename-notebook" path="reference/views/rename-notebook.html"}
-### `rename-notebook`
+#### `rename-notebook`
 `(rename-notebook)`
 
 Rename the current notebook — its display name, not a file on disk.
@@ -114,14 +114,14 @@ before the prompt moves focus, so the rename lands on the right
 notebook.
 :::
 
-## Jukebox
+### Jukebox
 
 Defined in `jukebox.lisp`. The view lives in
 `packages/renderer/src/jukebox-view.js` — cover art, an `<audio>`
 element, and a track list.
 
 :::function{name="jukebox" path="reference/views/jukebox.html"}
-### `jukebox`
+#### `jukebox`
 `(jukebox [path])`
 
 Open a jukebox for a directory full of audio files, shown through the
@@ -139,7 +139,7 @@ can also be called with a directory from the REPL —
 :::
 
 :::function{name="jukebox-on-directory-chosen" path="reference/views/jukebox-on-directory-chosen.html"}
-### `jukebox-on-directory-chosen`
+#### `jukebox-on-directory-chosen`
 `(jukebox-on-directory-chosen path)`
 
 Called by the host when the user picks a directory from the
@@ -148,7 +148,7 @@ directory-picker dialog. Bridges the dialog's callback into the
 :::
 
 :::function{name="*jukebox-track-format*" path="reference/views/jukebox-track-format.html"}
-### `*jukebox-track-format*`
+#### `*jukebox-track-format*`
 
 The template string `format-track` uses to render each row in a
 jukebox buffer; default `"\"{title}\", {artist}, {album}"`. A
@@ -161,7 +161,7 @@ bare filename. Changing it calls `refresh-jukebox-labels!`.
 :::
 
 :::function{name="format-track" path="reference/views/format-track.html"}
-### `format-track`
+#### `format-track`
 `(format-track path)`
 
 The display string for the jukebox row at `path`. Reads the file's
@@ -171,7 +171,7 @@ embedded tag metadata (`audio-metadata`) and substitutes it into the
 helper the view calls per row.
 :::
 
-## Directory browsers
+### Directory browsers
 
 Two directory views, each an ordinary `define` that takes a `path`
 argument — so they are **invoked from the REPL** (e.g.
@@ -181,7 +181,7 @@ key binding. The views live in
 `directory-columns-view.js`.
 
 :::function{name="directory-tree" path="reference/views/directory-tree.html"}
-### `directory-tree`
+#### `directory-tree`
 `(directory-tree path)`
 
 Open a directory tree-view rooted at `path`, shown through the L4
@@ -194,7 +194,7 @@ command. Hands off to the `open-directory-tree!` host primitive.
 :::
 
 :::function{name="directory-columns" path="reference/views/directory-columns.html"}
-### `directory-columns`
+#### `directory-columns`
 `(directory-columns path)`
 
 Open a Finder-style column browser rooted at `path`, shown through the
@@ -206,10 +206,10 @@ buffer. A REPL-invoked `define`, not an `M-x` command. Hands off to the
 `open-directory-columns!` host primitive.
 :::
 
-## Web
+### Web
 
 :::function{name="open-url!" path="reference/views/open-url.html"}
-### `open-url!`
+#### `open-url!`
 `(open-url! url)`
 
 Open `url` in a browser-kind view (an Electron `<webview>`). A **host
@@ -222,14 +222,14 @@ empty URL is a no-op. The page title overwrites the view's name once
 the webview reports it.
 :::
 
-## Files
+### Files
 
 Defined in `files.lisp`. The native open-file dialog is reached through
 this command (the editor's `find-file` / `C-x C-f` is documented in
 `commands.md`).
 
 :::function{name="open-file-dialog" path="reference/views/open-file-dialog.html"}
-### `open-file-dialog`
+#### `open-file-dialog`
 `(open-file-dialog)`
 
 Open the native OS file-open dialog. Invoked by *File ▸ Open File…*

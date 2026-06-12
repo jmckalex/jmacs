@@ -36,15 +36,15 @@ each Lisp procedure one by one.
 [[chapters/customization.md]]
 [[chapters/architecture.md]]
 
-## The reference
+# The jmacs Reference
 
-The chapters above describe the editor feature by feature. The *reference*
-documents each Lisp procedure on its own — every command, every buffer
-primitive, every core function — grouped by tier. Read `index` first for
-how an entry is laid out and what the naming conventions mean. For the
-language itself (evaluation, special forms, macros, modules, errors), read
-*Programming in jmacs Lisp* — the language guide that follows the
-reference.
+The manual above describes the editor feature by feature. This
+*reference* documents each Lisp procedure on its own — every command,
+every buffer primitive, every core function — grouped by tier. Read
+`index` first for how an entry is laid out and what the naming
+conventions mean. For the language itself (evaluation, special forms,
+macros, modules, errors), read *Programming in jmacs Lisp* — the
+language guide that follows the reference.
 
 [[reference/index.md]]
 [[reference/commands.md]]
@@ -360,11 +360,16 @@ ${bodyInner}
         `<article class="doc-page index-page" data-node-id="${indexId}">\n${body}</article>`
       )
     );
+    // The index files under the reference book when it exists (it is
+    // reference material), falling back to the manual root.
+    const indexUp = nodes['the-jmacs-reference']
+      ? 'the-jmacs-reference'
+      : manualId;
     nodes[indexId] = {
       id: indexId, title: 'Command index', level: 2,
-      path: indexPath, up: manualId, children: [],
+      path: indexPath, up: indexUp, children: [],
     };
-    if (nodes[manualId]) nodes[manualId].children.push(indexId);
+    if (nodes[indexUp]) nodes[indexUp].children.push(indexId);
     order.push(indexId);
   }
 

@@ -3,7 +3,7 @@ Author: J. McKenzie Alexander
 Date: 2026-06-11
 ---
 
-# Help, bookmarks, and customization
+## Help, bookmarks, and customization
 
 This document describes the commands that let you find your way back to a
 place (bookmarks), change how the editor looks and behaves
@@ -26,7 +26,7 @@ or Command, `M-` is Option, `S-` is Shift.
 
 ---
 
-## Bookmarks
+### Bookmarks
 
 Defined in `bookmarks.lisp`. A bookmark is a named, persistent position
 in a buffer: an invisible, edit-tracking buffer marker named and
@@ -37,7 +37,7 @@ by default — it has no keymap of its own (the keys are global) and just
 marks the buffer as bookmark-capable in the modeline.
 
 :::function{name="bookmark-set" path="reference/help-and-config/bookmark-set.html"}
-### `bookmark-set`
+#### `bookmark-set`
 `(bookmark-set name)`
 
 Set (or move) a named bookmark at point — re-using a `name` moves it.
@@ -45,7 +45,7 @@ Prompts for the name in the minibuffer. Bound to `C-x r m`.
 :::
 
 :::function{name="bookmark-jump" path="reference/help-and-config/bookmark-jump.html"}
-### `bookmark-jump`
+#### `bookmark-jump`
 `(bookmark-jump name)`
 
 Jump to a named bookmark. Prompts for the name in the minibuffer. Bound
@@ -53,7 +53,7 @@ to `C-x r b`.
 :::
 
 :::function{name="bookmark-delete" path="reference/help-and-config/bookmark-delete.html"}
-### `bookmark-delete`
+#### `bookmark-delete`
 `(bookmark-delete name)`
 
 Delete a named bookmark. Prompts for the name in the minibuffer. No
@@ -62,7 +62,7 @@ bookmark via `M-x bookmark-delete` or the bookmark list.
 :::
 
 :::function{name="list-bookmarks" path="reference/help-and-config/list-bookmarks.html"}
-### `list-bookmarks`
+#### `list-bookmarks`
 `(list-bookmarks)`
 
 Open the bookmark outline for the current buffer. Bound to `C-x r l`.
@@ -71,7 +71,7 @@ Bookmarks list in document order. Navigate with arrows or `n` / `p`,
 fold, `r` to rename, `d` to delete, `q` to close.
 :::
 
-## Customization
+### Customization
 
 Defined in `custom.lisp` (the registry) and `themes.lisp` (the theme
 setting). `defcustom` declares a user-customisable setting — a variable
@@ -82,7 +82,7 @@ two, and a *saved* value persists across restarts. See the *Settings*
 section below for the individual variables.
 
 :::function{name="customize" path="reference/help-and-config/customize.html"}
-### `customize`
+#### `customize`
 `(customize)`
 
 Open the customisation buffer for all settings. The buffer lets you
@@ -91,7 +91,7 @@ the changes (Save persists to the custom file).
 :::
 
 :::function{name="customize-faces" path="reference/help-and-config/customize-faces.html"}
-### `customize-faces`
+#### `customize-faces`
 `(customize-faces)`
 
 Open the customisation buffer scoped to the Faces group — one row per
@@ -100,7 +100,7 @@ background, weight, slant, underline and strike-through. Defined in
 `faces.lisp`.
 :::
 
-## Faces and themes
+### Faces and themes
 
 Defined in `faces.lisp` and `face-info.lisp`. A *face* is a tagged
 attribute set — foreground colour, background colour, weight, slant,
@@ -113,7 +113,7 @@ attributes left un-overridden). See `docs/MANUAL.jmd` and the
 `*theme*` setting below.
 
 :::function{name="describe-face-at-point" aliases="describe-syntax-at-point" path="reference/help-and-config/describe-face-at-point.html"}
-### `describe-face-at-point` / `describe-syntax-at-point`
+#### `describe-face-at-point` / `describe-syntax-at-point`
 `(describe-face-at-point)`
 
 Open a `*Face at point*` doc buffer describing the tree-sitter capture
@@ -126,7 +126,7 @@ theme. Bound to `C-h F`; aliased as `describe-syntax-at-point`.
 :::
 
 :::function{name="highlight-construct-at-point" path="reference/help-and-config/highlight-construct-at-point.html"}
-### `highlight-construct-at-point`
+#### `highlight-construct-at-point`
 `(highlight-construct-at-point)`
 
 Face the construct under the cursor in one step: name (or create and
@@ -137,7 +137,7 @@ The rule layers on top of the built-in grammar query and never edits the
 language's `.js` file; it persists across restarts. Bound to `C-h C-f`.
 :::
 
-## Help and self-documentation
+### Help and self-documentation
 
 Defined in `help.lisp` and `docs.lisp`. Every command keeps its
 docstring; these commands surface it. When a command also has a built
@@ -146,7 +146,7 @@ that page in a doc buffer; otherwise they render the live docstring or
 print it to the REPL.
 
 :::function{name="describe-symbol-at-point" path="reference/help-and-config/describe-symbol-at-point.html"}
-### `describe-symbol-at-point`
+#### `describe-symbol-at-point`
 `(describe-symbol-at-point)`
 
 Open the documentation for the Lisp symbol under the cursor. Routes
@@ -156,7 +156,7 @@ cursor is not on a symbol. Bound to `C-h .`. Defined in `docs.lisp`.
 :::
 
 :::function{name="apropos-doc" path="reference/help-and-config/apropos-doc.html"}
-### `apropos-doc`
+#### `apropos-doc`
 `(apropos-doc)`
 
 Fuzzy-search the documentation manifest in the minibuffer and open the
@@ -165,7 +165,7 @@ matching doc page in the doc-view. Bound to `C-h a`. Defined in
 :::
 
 :::function{name="open-doc" path="reference/help-and-config/open-doc.html"}
-### `open-doc`
+#### `open-doc`
 `(open-doc name)`
 
 Open the documentation page for the function called `name`. The pre-built
@@ -179,20 +179,20 @@ interactively. Defined in `docs.lisp`.
 (See also `describe-key` (`C-h k`) and `describe-command` (`C-h f`) in
 `commands.md`.)
 
-## Session and the REPL
+### Session and the REPL
 
 Defined in `system.lisp`. The REPL panel is the editor's evaluation and
 message surface; crash recovery brings back unsaved work after a crash.
 
 :::function{name="toggle-repl" path="reference/help-and-config/toggle-repl.html"}
-### `toggle-repl`
+#### `toggle-repl`
 `(toggle-repl)`
 
 Show or hide the REPL panel. Bound to `C-x p`.
 :::
 
 :::function{name="recover-session" path="reference/help-and-config/recover-session.html"}
-### `recover-session`
+#### `recover-session`
 `(recover-session)`
 
 Open the `*Recover*` view: scan for crash-recovery snapshots left by a
@@ -201,7 +201,7 @@ startup when snapshots are present; this is the manual entry point. See
 the `*autosave-recovery*` setting below.
 :::
 
-## Settings
+### Settings
 
 These are `defcustom` variables, not procedures — user-facing settings
 you can change live (`(custom-apply! 'name value)`), persist
@@ -209,7 +209,7 @@ you can change live (`(custom-apply! 'name value)`), persist
 customize`. Each entry's signature line shows the default value.
 
 :::function{name="*autosave-recovery*" path="reference/help-and-config/autosave-recovery.html"}
-### `*autosave-recovery*`
+#### `*autosave-recovery*`
 `(default #t)`
 
 Whether to write crash-recovery snapshots of unsaved buffers (debounced
@@ -221,7 +221,7 @@ on each autosave, so toggling takes effect without a restart. Group:
 :::
 
 :::function{name="*autosave-recovery-interval*" path="reference/help-and-config/autosave-recovery-interval.html"}
-### `*autosave-recovery-interval*`
+#### `*autosave-recovery-interval*`
 `(default 1000)`
 
 Milliseconds to wait after an edit before writing a crash-recovery
@@ -231,7 +231,7 @@ effect without a restart. Group: `editing`. Defined in `system.lisp`.
 :::
 
 :::function{name="*find-file-case-sensitive*" path="reference/help-and-config/find-file-case-sensitive.html"}
-### `*find-file-case-sensitive*`
+#### `*find-file-case-sensitive*`
 `(default #f)`
 
 When `#t`, `find-file`'s TAB completion matches filenames with case taken
@@ -242,7 +242,7 @@ Group: `jmacs`. Defined in `files.lisp`.
 :::
 
 :::function{name="*theme*" path="reference/help-and-config/theme.html"}
-### `*theme*`
+#### `*theme*`
 `(default 'dark)`
 
 The colour theme. Applied on Apply or Save in the customisation buffer,
@@ -254,7 +254,7 @@ Defined in `themes.lisp`.
 :::
 
 :::function{name="*markdown-interpreter*" path="reference/help-and-config/markdown-interpreter.html"}
-### `*markdown-interpreter*`
+#### `*markdown-interpreter*`
 `(default "marked")`
 
 The Markdown renderer used for both sticky notes and the live docstring
