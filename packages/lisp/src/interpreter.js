@@ -23,6 +23,43 @@ const PRELUDE = `
   (defmacro unless (test . body)
     (list 'if test 'nil (cons 'begin body)))
 
+  ;; Iteration macros. Each expands to a letrec-bound loop procedure
+  ;; whose self-call sits in tail position, so a million iterations run
+  ;; in constant stack (eval.js's trampoline). The loop procedure's name
+  ;; is a gensym, so it cannot capture a caller binding. All return nil.
+
+  ;; (while test body...) — evaluate body while test is truthy.
+  (defmacro while (test . body)
+    (let ((loop (gensym "while")))
+      \`(letrec ((,loop (lambda ()
+                         (when ,test ,@body (,loop)))))
+         (,loop))))
+
+  ;; (dotimes var count body...) — evaluate body with var bound to
+  ;; 0, 1, ... count-1. count is evaluated once, before the loop.
+  (defmacro dotimes (var count . body)
+    (let ((loop (gensym "dotimes"))
+          (n (gensym "count")))
+      \`(let ((,n ,count))
+         (letrec ((,loop (lambda (,var)
+                           (when (< ,var ,n)
+                             ,@body
+                             (,loop (+ ,var 1))))))
+           (,loop 0)))))
+
+  ;; (dolist var lst body...) — evaluate body with var bound to each
+  ;; element of the list lst in order. lst is evaluated once. Lists
+  ;; only — for a vector, use for-each (or vector->list).
+  (defmacro dolist (var lst . body)
+    (let ((loop (gensym "dolist"))
+          (rest (gensym "rest")))
+      \`(letrec ((,loop (lambda (,rest)
+                         (when (pair? ,rest)
+                           (let ((,var (car ,rest)))
+                             ,@body)
+                           (,loop (cdr ,rest))))))
+         (,loop ,lst))))
+
   ;; Composed list accessors.
   (define (caar p) (car (car p)))
   (define (cadr p) (car (cdr p)))

@@ -203,6 +203,104 @@ test('prelude macros: when and unless', () => {
   assert.equal(run('(unless #t 99)'), NIL);
 });
 
+// --- loop macros (while / dotimes / dolist) ------------------------------
+
+test('while loops on a set!-driven condition and returns nil', () => {
+  assert.equal(run('(define i 0) (while (< i 5) (set! i (+ i 1))) i'), 5);
+  assert.equal(run('(define i 0) (while (< i 3) (set! i (+ i 1)))'), NIL);
+  assert.equal(run('(while #f (error "never"))'), NIL);
+});
+
+test('dotimes binds var to 0..count-1 and returns nil', () => {
+  assert.equal(
+    show('(define acc nil) (dotimes i 4 (set! acc (cons i acc))) acc'),
+    '(3 2 1 0)'
+  );
+  assert.equal(run('(dotimes i 3 i)'), NIL);
+  assert.equal(run('(define hits 0) (dotimes i 0 (set! hits 1)) hits'), 0);
+});
+
+test('dolist binds var to each element in order and returns nil', () => {
+  assert.equal(
+    show(`(define acc nil)
+          (dolist x (list 1 2 3) (set! acc (cons (* x 10) acc)))
+          acc`),
+    '(30 20 10)'
+  );
+  assert.equal(run('(dolist x (list 1 2) x)'), NIL);
+  assert.equal(run('(define hits 0) (dolist x nil (set! hits 1)) hits'), 0);
+});
+
+test('while and dotimes run a million iterations in constant stack', () => {
+  assert.equal(
+    run('(define i 0) (while (< i 1000000) (set! i (+ i 1))) i'),
+    1000000
+  );
+  assert.equal(
+    run('(define sum 0) (dotimes i 1000000 (set! sum (+ sum 1))) sum'),
+    1000000
+  );
+});
+
+test('dotimes evaluates its count expression exactly once', () => {
+  assert.equal(
+    run(`(define calls 0)
+         (define (count!) (set! calls (+ calls 1)) 3)
+         (dotimes i (count!) i)
+         calls`),
+    1
+  );
+});
+
+test('dolist evaluates its list expression exactly once', () => {
+  assert.equal(
+    run(`(define calls 0)
+         (define (items!) (set! calls (+ calls 1)) (list 1 2 3))
+         (dolist x (items!) x)
+         calls`),
+    1
+  );
+});
+
+test('loop macros allow an empty body', () => {
+  assert.equal(run('(while #f)'), NIL);
+  assert.equal(run('(dotimes i 3)'), NIL);
+  assert.equal(run('(dolist x (list 1 2))'), NIL);
+});
+
+test('a loop body sees outer bindings', () => {
+  assert.equal(
+    run(`(define base 100) (define acc 0)
+         (dotimes i 3 (set! acc (+ acc base i)))
+         acc`),
+    303
+  );
+});
+
+test('loop macros do not capture caller bindings (gensym discipline)', () => {
+  // The expansions' internal names (the loop procedure, the saved count,
+  // the list walker) are gensyms — a caller's own `rest`, `n` or `loop`
+  // binding stays visible, untouched, inside the body.
+  assert.equal(
+    run(`(define rest 99) (define seen nil)
+         (dolist x (list 1) (set! seen rest))
+         seen`),
+    99
+  );
+  assert.equal(
+    run(`(define n 99) (define seen nil)
+         (dotimes i 1 (set! seen n))
+         seen`),
+    99
+  );
+  assert.equal(
+    run(`(define loop 99) (define i 0) (define seen nil)
+         (while (< i 1) (set! i (+ i 1)) (set! seen loop))
+         seen`),
+    99
+  );
+});
+
 test('a user-defined macro transforms code', () => {
   // swap-args rewrites (swap-args f a b) to (f b a).
   assert.equal(
