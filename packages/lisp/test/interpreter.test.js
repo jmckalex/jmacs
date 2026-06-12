@@ -59,6 +59,25 @@ test('cond with else', () => {
   assert.equal(run('(cond (#f "a") (else "fallback"))'), 'fallback');
 });
 
+test('a singleton cond clause evaluates its test exactly once', () => {
+  // Regression: the test used to be evaluated for the truth check and
+  // then AGAIN to produce the clause's value.
+  const interpreter = createInterpreter();
+  interpreter.evaluate(`
+    (define count 0)
+    (define (bump!) (set! count (+ count 1)) "hit")
+  `);
+  assert.equal(interpreter.evaluate('(cond (#f "no") ((bump!)))'), 'hit');
+  assert.equal(interpreter.evaluate('count'), 1);
+});
+
+test('a bare (else) clause tail-evaluates the symbol else', () => {
+  // Documented edge, deliberately unchanged: `else` is special only as
+  // a clause GUARD; alone in a clause it is an ordinary variable.
+  assert.throws(() => run('(cond (else))'), /unbound|else/);
+  assert.equal(run('(define else 42) (cond (else))'), 42);
+});
+
 test('and / or short-circuit', () => {
   assert.equal(run('(and 1 2 3)'), 3);
   assert.equal(run('(and 1 #f 3)'), false);

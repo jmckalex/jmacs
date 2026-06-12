@@ -471,11 +471,21 @@ const SPECIAL_FORMS = {
       const parts = listToArray(clause);
       const test = parts[0];
       const isElse = test instanceof Sym && test.name === 'else';
-      if (isElse || isTruthy(evaluate(test, env))) {
-        // A one-element clause `(x)` yields x's value; a clause body runs
-        // in tail position.
+      if (isElse) {
+        // A bare `(else)` clause tail-evaluates the symbol `else` itself
+        // (unbound unless the user defined it) — documented behaviour.
         return parts.length === 1
           ? new TailCall(test, env)
+          : evaluateBodyTail(parts.slice(1), env);
+      }
+      const value = evaluate(test, env);
+      if (isTruthy(value)) {
+        // A one-element clause `(x)` yields x's value — already computed
+        // for the truth check, so return it directly rather than
+        // re-evaluating (there is no body, so nothing is lost from tail
+        // position). A clause body runs in tail position.
+        return parts.length === 1
+          ? value
           : evaluateBodyTail(parts.slice(1), env);
       }
     }
