@@ -185,7 +185,10 @@ Every buffer edit made while the body runs — however many, through
 whatever functions — lands on the undo stack as a single entry, and the
 body's value is returned. The group is closed even when the body raises
 an error: the edits made before the failure still form one undo step,
-and the error propagates on to the caller.
+and the error propagates on to the caller. The guarantee covers even a
+raw JavaScript exception from a faulting host primitive — the wrapper
+is built on `try`'s `finally` clause, which runs on that path too (see
+*Errors and Error Handling*).
 
 The rule of thumb is simple: **any command that makes more than one
 buffer mutation wraps them in `atomic-change-group`.** The standard
@@ -266,17 +269,14 @@ not here. Stating this plainly saves you an evening.
 
 **There is no `save-excursion`.** The idiom — used throughout the
 standard library — is to capture point and restore it yourself:
-`(let ((p (point))) … (goto! p))`. If the middle might fail, restore in
-both arms of a `try` (the form is covered in *Errors and Error
-Handling*):
+`(let ((p (point))) … (goto! p))`. If the middle might fail, let a
+`finally` clause restore on every exit (the form is covered in *Errors
+and Error Handling*):
 
 ```lisp
 (let ((p (point)))
-  (try
-    (begin (risky-edit) (goto! p))
-    (catch err
-      (goto! p)
-      (error (get err :message)))))
+  (try (risky-edit)
+    (finally (goto! p))))
 ```
 
 Be aware of what the idiom does not give you: `p` is a plain number, so

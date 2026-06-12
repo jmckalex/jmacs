@@ -273,8 +273,8 @@ And these positions are **not** constant-stack:
 
 - any argument position — `(+ n (f …))`, `(cons x (f …))`,
   `(str line (f …))` all grow the stack by one frame per call;
-- the `try` body and `catch` handler (the JavaScript `try`/`catch`
-  frame must stay live);
+- the `try` body, `catch` handler, and `finally` cleanup (the
+  JavaScript `try`/`catch`/`finally` frame must stay live);
 - the `module` body;
 - calls routed through `apply`, `map`, `filter`, `reduce`, `for-each`,
   or `eval` — these primitives re-enter the trampoline afresh, so the

@@ -127,8 +127,9 @@ The classic miss puts the recursive call in argument position:
 ;; the call sits inside str's arguments — the JS stack grows per line
 ```
 
-Not tail positions: any argument position, the bodies of `try` and
-`module`, and anything routed through `apply`, `map`, `filter`,
+Not tail positions: any argument position, every part of a `try`
+(body, handler, and `finally` cleanup alike), the `module` body, and
+anything routed through `apply`, `map`, `filter`,
 `reduce`, or `for-each`. The fix is the accumulator recipe — carry the
 partial result as a parameter so the recursive call is the whole answer
 — or a bulk primitive, here `(string-join lines "\n")`. A blown stack
@@ -214,7 +215,8 @@ per edit, so undo (`C-z`) leaves the buffer half-transformed:
 ```
 
 Wrap the edits in `atomic-change-group`, which lands them on the undo
-stack as a single step and closes the group even if the body raises —
+stack as a single step and closes the group on every exit, even a raw
+host fault —
 the stdlib does this everywhere it edits twice (`move-line-up`,
 `surround`, `indent-region`). See *Editing Text from Lisp*.
 
@@ -288,7 +290,8 @@ The condition map always carries those two keys, plus `:line` and
 evaluator could locate it; *Errors and Error Handling* reads the map
 in full. If nothing is caught
 at all, suspect a raw JavaScript exception from a host primitive —
-those escape every Lisp handler, as *Errors and Error Handling*
+those escape every Lisp handler (though a `finally` clause's cleanup
+still runs), as *Errors and Error Handling*
 explains. Finally, after editing stdlib files or your `init.lisp`,
 `C-x C-r` (cmd(reload-stdlib)) re-evaluates the standard library and
 replays your configuration into the running interpreter; because

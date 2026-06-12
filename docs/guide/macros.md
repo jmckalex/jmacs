@@ -333,18 +333,12 @@ macro that makes a multi-edit command undo as a single step:
 ```lisp
 (define (call-with-atomic-undo thunk)
   "Run THUNK with every buffer edit it makes grouped into a single undo
-   step. The group is closed even when THUNK raises (the error is
-   re-raised)."
+   step. The group is closed on every exit — normal return, a Lisp
+   error, even a raw JS exception from a host primitive — and any error
+   propagates untouched."
   (begin-change-group!)
-  (try
-    (let ((result (thunk)))
-      (end-change-group!)
-      result)
-    (catch err
-      (end-change-group!)
-      ;; `error` needs a string message; `err` is the condition map, so
-      ;; re-raise its parts to preserve the original message+irritants.
-      (apply error (get err :message) (get err :irritants)))))
+  (try (thunk)
+       (finally (end-change-group!))))
 
 (defmacro atomic-change-group (first . rest)
   "Evaluate the body with every buffer edit grouped into a single undo
@@ -361,11 +355,14 @@ wrapping is the whole reason a macro is needed — the body must run
 packaging it unevaluated into a thunk can a function be handed the body
 without running it first. The parameter list `(first . rest)` quietly
 enforces at least one body form. Everything else lives in the ordinary
-function: open the group, run the thunk inside `try`, and close the
-group on both exits — on the error path *before* re-signalling (the
-`apply error` line is the faithful-rethrow idiom from *Errors and Error
-Handling*), so a
-command that fails halfway still leaves the undo stack well-formed.
+function — and the function is three forms: open the group, run the
+thunk, and let `try`'s `finally` clause close the group. That one
+clause carries the whole guarantee. The cleanup runs on *every* exit —
+normal return, a Lisp error propagating (untouched: no handler runs, so
+nothing needs re-signalling), even a raw JS exception from a host
+fault, the one path no `catch` can see (*Errors and Error Handling*
+has the full map). A command that fails halfway, in Lisp or in the
+host, still leaves the undo stack well-formed.
 (The primitives pair re-entrantly — nested groups fold into the
 outermost — and `undo!` is a no-op while a group is open.)
 
