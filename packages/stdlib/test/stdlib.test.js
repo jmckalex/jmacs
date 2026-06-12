@@ -12,6 +12,7 @@ import {
   keyword,
   listToArray,
   NIL,
+  sym,
 } from '@editor/lisp';
 import { createBufferPrimitives, loadStdlib } from '../src/index.js';
 
@@ -1723,6 +1724,16 @@ test('defcommand defines the procedure and registers the command', async () => {
     interpreter.evaluate('(symbol->string (run-command (quote greet)))'),
     'hi'
   );
+});
+
+test('a defcommand form evaluates to the command name symbol', async () => {
+  // Regression: register-command! used to end in a set! of *commands*,
+  // so a REPL defcommand printed the entire registry map.
+  const { interpreter } = await editor();
+  const result = interpreter.evaluate(
+    '(defcommand echo-me () "Doc." (quote done))'
+  );
+  assert.equal(result, sym('echo-me')); // symbols are interned
 });
 
 test('defcommand works without a docstring', async () => {
