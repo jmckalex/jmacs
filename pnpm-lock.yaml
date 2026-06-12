@@ -26,6 +26,21 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@editor/buffer':
+        specifier: workspace:*
+        version: link:../../packages/buffer
+      '@editor/lisp':
+        specifier: workspace:*
+        version: link:../../packages/lisp
+      '@editor/pane':
+        specifier: workspace:*
+        version: link:../../packages/pane
+      '@editor/renderer':
+        specifier: workspace:*
+        version: link:../../packages/renderer
+      '@editor/stdlib':
+        specifier: workspace:*
+        version: link:../../packages/stdlib
       '@editor/view':
         specifier: workspace:*
         version: link:../../packages/view
