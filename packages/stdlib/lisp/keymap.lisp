@@ -33,7 +33,9 @@
    "C-b"   'buffer-menu
    "right" 'next-view
    "left"  'previous-view
-   "n"     'new-view
+   ;; n was new-view (still on M-x); a seeded scratch is the more
+   ;; useful reach — architect's call, 2026-06-12.
+   "n"     'scratch-buffer
    "k"     'kill-view
    "p"     'toggle-repl
    "h"     'mark-whole-buffer

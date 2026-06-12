@@ -36,6 +36,13 @@
   "Create a fresh empty text view and switch to it."
   (new-view!))
 
+(defcommand scratch-buffer ()
+  "Open a fresh Lisp scratch buffer, seeded like the first-run
+   scratch.lisp and uniquely named. Joins the focused pane as a new
+   tab when it has a tabline. Session restore drops the startup
+   scratch; this conjures one any time. Bound to C-x n."
+  (new-scratch-view!))
+
 (defcommand switch-view ()
   "Switch to a view chosen by name, with completion."
   (start-buffer-switcher!))

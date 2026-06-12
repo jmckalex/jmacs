@@ -3572,6 +3572,24 @@ const interpreter = createInterpreter({
       const buffer = view && view.kind === 'text' ? view.buffer : null;
       return buffer ? dirtyBuffers.has(buffer) : false;
     },
+    // `(new-scratch-view!)` — a fresh Lisp scratch view, seeded like the
+    // first-run scratch.lisp and uniquely named (scratch.lisp,
+    // scratch-2.lisp, …). Routed through switchToViewIndex, so it joins
+    // the focused pane as a new tab when that pane holds a tabline.
+    // Needed because the startup seed views are deliberately dropped on
+    // session restore — this conjures a scratch mid-session.
+    'new-scratch-view!': () => {
+      const names = new Set(views.map((v) => v.name));
+      let name = 'scratch.lisp';
+      for (let i = 2; names.has(name); i += 1) name = `scratch-${i}.lisp`;
+      const view = createView({
+        kind: 'text',
+        buffer: createBuffer(SCRATCH, { name }),
+      });
+      views.push(view);
+      switchToViewIndex(views.length - 1);
+      return view;
+    },
     // --- citation.js bridges -------------------------------------------
     // The renderer-side wrapper (`packages/renderer/src/citation.js`)
     // owns the heavy bundle. These primitives are thin string-in /

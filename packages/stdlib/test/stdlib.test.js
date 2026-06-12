@@ -107,6 +107,10 @@ async function editor(initialText = 'hello world', options = {}) {
         bufferCalls.push('new');
         return NIL;
       },
+      'new-scratch-view!': () => {
+        bufferCalls.push('new-scratch');
+        return NIL;
+      },
       'kill-view!': () => {
         bufferCalls.push('kill');
         return NIL;
@@ -763,11 +767,15 @@ test('C-x left switches to the previous buffer', async () => {
   assert.deepEqual(bufferCalls, ['previous']);
 });
 
-test('C-x n creates a new buffer', async () => {
+test('C-x n opens a seeded scratch buffer; new-view stays on M-x', async () => {
   const { interpreter, bufferCalls } = await editor();
   press(interpreter, 'C-x');
   press(interpreter, 'n');
-  assert.deepEqual(bufferCalls, ['new']);
+  assert.deepEqual(bufferCalls, ['new-scratch']);
+  // new-view lost its key to scratch-buffer (2026-06-12) but remains a
+  // registered command, callable by name.
+  interpreter.evaluate('(new-view)');
+  assert.deepEqual(bufferCalls, ['new-scratch', 'new']);
 });
 
 test('C-s starts an incremental search', async () => {
