@@ -1,0 +1,22 @@
+name: Feature request / idea
+description: Suggest a capability, a command, or a change.
+title: "[Idea]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What would you like, and what problem would it solve?
+    validations:
+      required: true
+  - type: textarea
+    id: lisp
+    attributes:
+      label: Could it be a Lisp extension? (optional)
+      description: |
+        Much of the editor is redefinable from its Lisp at runtime. If
+        you've already prototyped this in your `init.lisp`, share it — it
+        may belong in your own config, the standard library, or core.
+    validations:
+      required: false
