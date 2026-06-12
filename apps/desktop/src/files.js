@@ -759,13 +759,17 @@ export function registerFileHandlers() {
   ipcMain.handle('doc:manifest', async () => {
     const map = await loadDocManifest();
     if (map === null) return null;
-    // New shape: { functions (flat name→path), nodes (id→node), top, order }.
-    // Old shape (back-compat): a flat name→path map.
+    // New shape: { functions (flat name→path), nodes (id→node), top,
+    // roots, order }. Old shape (back-compat): a flat name→path map.
+    // `roots` must survive this handoff — the doc-view renders one
+    // sidebar entry per root (manual + reference tiers + guide); when
+    // it is missing the view falls back to showing `top` alone.
     if (map.functions && map.nodes) {
       return {
         names: Object.keys(map.functions),
         nodes: map.nodes,
         top: map.top ?? null,
+        roots: Array.isArray(map.roots) ? map.roots : [],
         order: Array.isArray(map.order) ? map.order : [],
       };
     }

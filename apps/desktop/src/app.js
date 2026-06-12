@@ -5288,6 +5288,10 @@ window.host
       docNavTree = {
         nodes: manifest.nodes,
         top: manifest.top,
+        // Without `roots` the doc-view's sidebar falls back to rendering
+        // the top root alone — the reference tiers and the Lisp guide
+        // disappear from the TOC.
+        roots: Array.isArray(manifest.roots) ? manifest.roots : [],
         order: Array.isArray(manifest.order) ? manifest.order : [],
       };
       // Hand the tree to any doc panes already open (manifest resolved
