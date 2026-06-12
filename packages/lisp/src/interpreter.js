@@ -6,7 +6,12 @@
  */
 
 import { Environment } from './environment.js';
-import { applyProcedure, evaluate } from './eval.js';
+import {
+  applyProcedure,
+  attachErrorLocation,
+  evaluate,
+  resetErrorLocation,
+} from './eval.js';
 import { installPrimitives } from './primitives.js';
 import { read } from './reader.js';
 import { NIL, Primitive } from './values.js';
@@ -96,7 +101,15 @@ export function createInterpreter(options = {}) {
     evaluate(source) {
       let value = NIL;
       for (const form of read(source)) {
-        value = evaluate(form, global);
+        // Reset per top-level form so an error before any located subform
+        // can't inherit a stale location; tag any escaping error with
+        // where it happened (B6).
+        resetErrorLocation();
+        try {
+          value = evaluate(form, global);
+        } catch (error) {
+          throw attachErrorLocation(error);
+        }
       }
       return value;
     },
@@ -106,7 +119,13 @@ export function createInterpreter(options = {}) {
     },
 
     call(name, ...args) {
-      return applyProcedure(global.lookup(name), args);
+      // The keystroke / host entry path. Tag an escaping error with the
+      // offending form's location too, so handle-key failures report it.
+      try {
+        return applyProcedure(global.lookup(name), args);
+      } catch (error) {
+        throw attachErrorLocation(error);
+      }
     },
   };
 }

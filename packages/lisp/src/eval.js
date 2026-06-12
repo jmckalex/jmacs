@@ -54,6 +54,40 @@ class TailCall {
 }
 
 /**
+ * The source location `{line, col}` of the innermost located form the
+ * evaluator has entered. Updated as `evaluate` descends (see
+ * `evaluateForm`); read at a catch boundary to tag a LispError with where
+ * it was raised. A throw unwinds the JS stack without evaluating more
+ * forms, so this still holds the offending form when the catch reads it.
+ */
+let currentLocation = null;
+
+/**
+ * Tag a LispError with the source location of the form that was executing
+ * when it was raised — unless it already carries one, so the innermost
+ * frame wins. Called at the catch boundaries (the host interpreter and the
+ * `try` special form) so an error surfaces *where* as well as *what*.
+ *
+ * @param {*} error - The caught value (only LispErrors are tagged).
+ * @returns {*} the same value, for `throw attachErrorLocation(e)`.
+ */
+export function attachErrorLocation(error) {
+  if (error instanceof LispError && error.location == null && currentLocation) {
+    error.location = currentLocation;
+  }
+  return error;
+}
+
+/**
+ * Clear the location tracker before a fresh top-level evaluation, so a
+ * stale location from a previously-evaluated form can't mislabel an error
+ * raised before any located form in the new one runs.
+ */
+export function resetErrorLocation() {
+  currentLocation = null;
+}
+
+/**
  * Evaluate a form in an environment.
  * @param {*} form
  * @param {Environment} env
@@ -96,6 +130,12 @@ export function evaluate(form, env) {
 
 /** Evaluate a non-empty list form. */
 function evaluateForm(form, env) {
+  // Record where we are for error reporting (B6): the innermost located
+  // form being evaluated. Cheap — one WeakMap.get per list form, with no
+  // try/catch in the trampoline, so tail-call performance is untouched.
+  const location = sourceLocations.get(form);
+  if (location !== undefined) currentLocation = location;
+
   const head = form.head;
 
   if (head instanceof Sym) {
@@ -110,6 +150,9 @@ function evaluateForm(form, env) {
           binding.transformer,
           listToArray(form.tail)
         );
+        // An error in the expansion belongs to the macro *use* site, not
+        // wherever the transformer last looked — re-stamp before bouncing.
+        if (location !== undefined) currentLocation = location;
         // A macro use evaluates to its expansion, in tail position.
         return new TailCall(expanded, env);
       }
@@ -118,6 +161,10 @@ function evaluateForm(form, env) {
 
   const procedure = evaluate(head, env);
   const args = listToArray(form.tail).map((arg) => evaluate(arg, env));
+  // Evaluating the args moved `currentLocation` to the last argument; an
+  // error from the application itself (arity, not-a-procedure, a throwing
+  // primitive) belongs to this call form, so re-stamp before applying.
+  if (location !== undefined) currentLocation = location;
   // Tail position: `applyTail` may return a TailCall (Lambda body) that
   // the `evaluate` loop bounces; a Primitive returns its value directly.
   return applyTail(procedure, args);
@@ -330,6 +377,12 @@ function conditionValue(error) {
   const condition = new Map();
   condition.set(keyword('message'), error.lispMessage ?? error.message);
   condition.set(keyword('irritants'), arrayToList(error.irritants ?? []));
+  // Surface the source location (B6) so a Lisp catch handler can report
+  // *where* the error came from, not just its message.
+  if (error.location) {
+    condition.set(keyword('line'), error.location.line);
+    condition.set(keyword('column'), error.location.col);
+  }
   return condition;
 }
 
@@ -523,6 +576,9 @@ const SPECIAL_FORMS = {
       return evaluateBody(parts.slice(0, -1), env);
     } catch (error) {
       if (!(error instanceof LispError)) throw error;
+      // Tag the offending form's location before the handler sees it, so
+      // the condition value can carry :line / :column (B6).
+      attachErrorLocation(error);
       const scope = new Environment(env);
       scope.define(varName.name, conditionValue(error));
       return evaluateBody(catchParts.slice(1), scope);
