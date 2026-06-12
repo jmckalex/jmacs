@@ -121,3 +121,40 @@ fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest));
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test('the real manual build produces an acyclic node tree', { skip }, () => {
+  // Regression: a `:::function` entry whose name collided with its own
+  // enclosing heading's id (undo / shell / notebook / jukebox) was
+  // pushed into that node's children, making the node its own child —
+  // and the doc-view sidebar, which recurses over this graph, blew the
+  // stack. The build must never emit a cycle.
+  const outDir = mkdtempSync(join(tmpdir(), 'jmacs-docs-cycles-'));
+  try {
+    const res = spawnSync(
+      process.execPath,
+      [join(repoRoot, 'scripts', 'build-docs.js'), `--out=${outDir}`],
+      { cwd: repoRoot, encoding: 'utf8' }
+    );
+    assert.equal(
+      res.status,
+      0,
+      `build-docs exited ${res.status}; stderr:\n${res.stderr}`
+    );
+    const manifest = JSON.parse(
+      readFileSync(join(outDir, 'manifest.json'), 'utf8')
+    );
+    const nodes = manifest.nodes ?? {};
+    const walk = (id, ancestors) => {
+      assert.ok(!ancestors.has(id), `cycle through node "${id}"`);
+      const next = new Set(ancestors).add(id);
+      for (const child of (nodes[id] ? nodes[id].children : []) ?? []) {
+        walk(child, next);
+      }
+    };
+    const roots = Array.isArray(manifest.roots) ? manifest.roots : [];
+    assert.ok(roots.length > 1, 'the real manifest has multiple roots');
+    for (const root of roots) walk(root, new Set());
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});

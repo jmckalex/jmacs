@@ -69,7 +69,6 @@ import {
   createReplView,
   createUtilityDock,
   createOutputPanel,
-  createDocPanel,
   createCompletionsPanel,
   ShellView,
   GnuplotView,
@@ -1735,6 +1734,7 @@ function hideInactiveSingletons() {
   // Browsers and placeholders are per-instance, not in SINGLETON_VIEWS —
   // toggle their own elements here too.
   hideInactiveBrowsers();
+  hideInactiveDocs();
   hideInactivePlaceholders();
 }
 
@@ -2126,50 +2126,11 @@ function openCustomize(name, scope) {
   switchToViewIndex(index);
 }
 
-/** Open (or re-activate) a doc panel in the utility dock for `docName`,
- *  showing the given pre-built HTML. One tab per doc name (id `doc:<name>`).
- *  Reuses the doc-view's behaviour (cross-links, `q`-to-close, code
- *  highlight) via `configureDocView`, with `q` wired to close the tab. */
-function openDocUtilityPanel(docName, html) {
-  const id = `doc:${docName}`;
-  const cfg = configureDocView();
-  utilityDock.openUtilityPanel({
-    id,
-    title: `Doc: ${docName}`,
-    icon: 'fa-solid fa-book-open',
-    modal: false,
-    makePanel: (dock) => createDocPanel({
-      html,
-      title: `Doc: ${docName}`,
-      onKey: cfg.onKey,
-      openDoc: cfg.openDoc,
-      highlightCode: cfg.highlightCode,
-      closeBuffer: dock.close, // `q` closes the tab
-    }),
-  });
-}
-
-/** Find or create the doc panel for `docName`, fetching the HTML from
- *  the host if it isn't already open. */
-async function openDocBuffer(docName) {
-  const id = `doc:${docName}`;
-  if (utilityDock.hasTab(id)) {
-    utilityDock.activateUtilityTab(id);
-    return;
-  }
-  let page;
-  try {
-    page = await window.host.readDocPage(docName);
-  } catch (error) {
-    repl.appendError(`doc: ${error.message}`);
-    return;
-  }
-  if (page === null) {
-    repl.appendError(`no doc page for ${docName}`);
-    return;
-  }
-  openDocUtilityPanel(docName, page.html);
-}
+/** The navigation node tree the doc panes navigate by (functions + nodes +
+ *  top + roots + order), set when the manifest loads. Documentation opens as
+ *  a pane view now (see `openDocInPane` and the doc per-instance helpers,
+ *  mirroring the browser view), not the utility dock. */
+let docNavTree = null;
 
 /** Minimal HTML-escape for embedding a user-supplied name into an
  *  attribute or text node. */
@@ -2186,11 +2147,6 @@ function escapeHtml(text) {
  *  live path — for user-defined procedures whose documentation
  *  isn't in the pre-built manifest. */
 async function openDocstringBuffer(docName, source) {
-  const id = `doc:${docName}`;
-  if (utilityDock.hasTab(id)) {
-    utilityDock.activateUtilityTab(id);
-    return;
-  }
   let body;
   try {
     body = await renderMarkdownHtml(source);
@@ -2198,13 +2154,15 @@ async function openDocstringBuffer(docName, source) {
     repl.appendError(`doc render failed: ${error.message}`);
     return;
   }
-  // Frame the rendered body so the doc-view's article styling
-  // applies. The synthesised header matches the static pages'
-  // shape: <h3><code>name</code></h3>, then the prose.
+  // Frame the rendered body in the same `article.doc-page[data-node-id]`
+  // shape the built pages use, so the doc-view lifts it correctly. This
+  // node isn't in the manifest tree, so the view shows it with minimal
+  // chrome (Contents stays reachable; Prev/Up/Next are disabled).
   const html =
+    `<article class="doc-page docstring-page" data-node-id="${escapeHtml(docName)}">` +
     `<h3 class="doc-name"><code>${escapeHtml(docName)}</code></h3>\n` +
-    `<div class="doc-docstring">${body}</div>`;
-  openDocUtilityPanel(docName, html);
+    `<div class="doc-docstring">${body}</div></article>`;
+  showDocInPane(docName, html, docName);
 }
 
 // --- audio playback (jukebox mode) --------------------------------------
@@ -4269,7 +4227,16 @@ const interpreter = createInterpreter({
     'open-doc!': (args) => {
       const name = String(args[0] ?? '');
       if (name === '') return NIL;
-      openDocBuffer(name);
+      openDocInPane(name);
+      return NIL;
+    },
+    // Open the manual at its Top node (the table-of-contents root), so the
+    // doc-view's sidebar/breadcrumb/Next-Prev are anchored at the top. The
+    // top id comes from the loaded node tree; the manual's known root slug
+    // is the fallback before the manifest has arrived (readDocPage resolves
+    // a node id either way).
+    'open-manual!': () => {
+      openDocInPane((docNavTree && docNavTree.top) || 'the-jmacs-manual');
       return NIL;
     },
     // Open URL in a browser-kind view. Creates the view, pushes it onto
@@ -5329,7 +5296,26 @@ if (keymapReady) applyCurrentFaceStyles();
 window.host
   .readDocManifest()
   .then((manifest) => {
-    if (manifest !== null) docManifestNames = manifest.names;
+    if (manifest === null) return;
+    docManifestNames = manifest.names;
+    // The navigation node tree (TeXinfo-style): hand it to the doc-view so
+    // it can render the sidebar, breadcrumb, and Next/Prev/Up. If the Manual
+    // panel is already open (docs opened before the manifest resolved), push
+    // the tree to it now.
+    if (manifest.nodes && manifest.top) {
+      docNavTree = {
+        nodes: manifest.nodes,
+        top: manifest.top,
+        // Without `roots` the doc-view's sidebar falls back to rendering
+        // the top root alone — the reference tiers and the Lisp guide
+        // disappear from the TOC.
+        roots: Array.isArray(manifest.roots) ? manifest.roots : [],
+        order: Array.isArray(manifest.order) ? manifest.order : [],
+      };
+      // Hand the tree to any doc panes already open (manifest resolved
+      // after a doc was opened).
+      broadcastDocManifest();
+    }
   })
   .catch(() => {
     /* leave docManifestNames null */
@@ -6228,17 +6214,18 @@ function configureDocView() {
       }
     },
     openDoc: (name) => {
-      if (keymapReady) {
-        try {
-          interpreter.call('open-doc', name);
-        } catch (error) {
-          repl.appendError(`open-doc: ${error.lispMessage ?? error.message}`);
-        }
-      } else {
-        openDocBuffer(name);
-      }
+      // In-view navigation — a clicked cross-link, menu item, breadcrumb, or
+      // nav button. The target is a built page: a navigation node id (e.g.
+      // "getting-started") OR a documented function name. Open it directly;
+      // readDocPage resolves either against the manifest. This is distinct
+      // from the `open-doc` command (C-h f / M-x), which looks up docs for an
+      // arbitrary symbol and falls back to rendering its docstring — that
+      // command only knows function names, so routing node-id clicks through
+      // it reported "no doc page".
+      openDocInPane(name);
     },
     highlightCode: highlightCodeForDocView,
+    manifest: docNavTree,
   };
 }
 // Doc pages render as utility-dock tabs now (see openDocUtilityPanel), not as
@@ -6507,6 +6494,111 @@ function disposeBrowserElementForView(view) {
   try { el.destroy(); } catch { /* already gone */ }
   el.remove();
   browserElementByView.delete(view);
+}
+
+// --- documentation as a pane view (per-instance, mirrors the browser) ---
+// A `doc`-kind view shows the navigable manual in a pane (bigger than the
+// utility dock). Each doc view owns its own <doc-view> element so two doc
+// panes can coexist; in-view navigation (links/sidebar/Next-Prev) replaces
+// the focused doc pane's content in place via `openDocInPane`.
+const docElementByView = new Map();
+
+/** The <doc-view> element for doc VIEW, created/mounted in PANE-EL on first
+ *  use then reused (the leaf-direct case; tabline tabs get theirs via
+ *  ensureTabElement/editorByChild). */
+function ensureDocElementForView(view, paneEl) {
+  let el = docElementByView.get(view);
+  if (el) {
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    el.setBuffer(view);
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('doc-view'));
+  el.configure(configureDocView());
+  if (docNavTree) el.setManifest(docNavTree);
+  el.setBuffer(view);
+  if (paneEl) paneEl.append(el);
+  docElementByView.set(view, el);
+  return el;
+}
+
+/** Show leaf-direct doc elements whose view is active; hide the rest.
+ *  Called from `hideInactiveSingletons`. */
+function hideInactiveDocs() {
+  const active = new Set();
+  for (const leaf of leafPanes(rootPane)) {
+    if (!isTablineView(leaf.view) && leaf.view && leaf.view.kind === 'doc') {
+      active.add(leaf.view);
+    }
+  }
+  for (const [view, el] of docElementByView) {
+    el.style.display = active.has(view) ? '' : 'none';
+  }
+}
+
+/** Tear down the doc element bound to VIEW (on kill). */
+function disposeDocElementForView(view) {
+  const el = docElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ }
+  el.remove();
+  docElementByView.delete(view);
+}
+
+/** Push the navigation tree to every live doc element (leaf-direct + tabs),
+ *  for the case where the manifest resolves after a doc pane is open. */
+function broadcastDocManifest() {
+  for (const el of docElementByView.values()) {
+    if (typeof el.setManifest === 'function') el.setManifest(docNavTree);
+  }
+  for (const state of tablineStateByView.values()) {
+    for (const [child, el] of state.editorByChild) {
+      if (child.kind === 'doc' && el && typeof el.setManifest === 'function') {
+        el.setManifest(docNavTree);
+      }
+    }
+  }
+}
+
+/** Show pre-built doc HTML in a pane: navigate the focused doc pane in
+ *  place if there is one, else open a fresh doc view. NAME is the node id /
+ *  function name (used as the view's identity + so in-view nav knows where
+ *  it is); LABEL is the tab/modeline title. */
+function showDocInPane(name, html, label) {
+  const cur = views[currentViewIndex];
+  if (cur && cur.kind === 'doc') {
+    cur.html = html;
+    cur.docName = name;
+    cur.name = label;
+    const el = elementForViewInstance(cur);
+    if (el && typeof el.setBuffer === 'function') el.setBuffer(cur);
+    notifyViewsChanged();
+    updateModeline();
+    return;
+  }
+  const view = createView({
+    kind: 'doc', name: label, extras: { html, docName: name },
+  });
+  views.push(view);
+  notifyViewsChanged();
+  switchToViewIndex(views.length - 1);
+}
+
+/** Open the documentation page for a node id / function name in a pane. */
+async function openDocInPane(name) {
+  let page;
+  try {
+    page = await window.host.readDocPage(name);
+  } catch (error) {
+    repl.appendError(`doc: ${error.message}`);
+    return;
+  }
+  if (page === null) {
+    repl.appendError(`no doc page for ${name}`);
+    return;
+  }
+  const node = docNavTree && docNavTree.nodes ? docNavTree.nodes[name] : null;
+  showDocInPane(name, page.html, node ? node.title : (name || 'Manual'));
 }
 
 // The directory tree-view — a `directory-tree`-kind buffer is shown
@@ -7395,6 +7487,15 @@ function mountKindView(view, context) {
     el.focus();
     return;
   }
+  if (view.kind === 'doc') {
+    // Per-instance, like browser: mount THIS doc view's own element.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = leaf ? paneElements.get(leaf.id) : null;
+    const el = ensureDocElementForView(view, paneEl);
+    el.style.display = '';
+    el.focus();
+    return;
+  }
   if (view.kind === 'placeholder') {
     // Per-instance, like browser: mount THIS placeholder's own element
     // in its pane and focus it so its accelerator keys are live.
@@ -7437,6 +7538,11 @@ function disposeKindView(view, context) {
   if (view.kind === 'browser') {
     // Per-instance: reap this view's own browser element + webview.
     disposeBrowserElementForView(view);
+    return;
+  }
+  if (view.kind === 'doc') {
+    // Per-instance: reap this doc view's own element.
+    disposeDocElementForView(view);
     return;
   }
   if (view.kind === 'placeholder') {
@@ -7687,6 +7793,7 @@ function perKindConfigureFactory(kind) {
     case 'video':             return configureVideoView;
     case 'pdf':               return configurePdfView;
     case 'browser':           return configureBrowserView;
+    case 'doc':               return configureDocView;
     // Placeholders are leaf-direct only (a split's new pane); the
     // leaf-direct mount path (`ensurePlaceholderElementForView`) binds
     // the per-view closures. A placeholder should never become a tabline
@@ -7905,9 +8012,12 @@ function elementForViewInstance(view) {
     const el = state.editorByChild.get(view);
     if (el !== undefined) return el;
   }
-  // Browsers are per-instance, keyed by view rather than a singleton.
+  // Browsers and docs are per-instance, keyed by view rather than a singleton.
   if (view.kind === 'browser' && browserElementByView.has(view)) {
     return browserElementByView.get(view);
+  }
+  if (view.kind === 'doc' && docElementByView.has(view)) {
+    return docElementByView.get(view);
   }
   return singletonElementForKind(view.kind);
 }
