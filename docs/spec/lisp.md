@@ -192,7 +192,12 @@ An error is signalled with `(error message irritant…)` and is a
 
 `(try body… (catch name handler…))` evaluates the body; if a
 `LispError` is raised, `name` is bound to a **condition** — a map with
-`:message` (string) and `:irritants` (list) — and the handler runs.
+`:message` (string), `:irritants` (list), and, when the evaluator
+could locate the offending form, `:line` and `:column` (1-based,
+relative to the source unit the form was read from) — and the handler
+runs. The host-level `LispError` carries the same location on its
+`.location` property, and the REPL appends it to uncaught error output
+as `(at line L:C)`.
 
 ```lisp
 (try (error "no such buffer" 'scratch)
