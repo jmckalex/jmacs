@@ -40,6 +40,154 @@ test('try/catch catches a runtime error raised by the interpreter', () => {
   );
 });
 
+// --- try / finally ------------------------------------------------------
+
+test('finally runs on normal completion and its value is discarded', () => {
+  assert.equal(
+    writeString(
+      run(`(define flag #f)
+           (define v (try 42 (finally (set! flag #t) 99)))
+           (list v flag)`)
+    ),
+    '(42 #t)'
+  );
+});
+
+test('catch runs before finally; the handler value is the result', () => {
+  assert.equal(
+    writeString(
+      run(`(define order '())
+           (define v (try (error "boom")
+                          (catch e (set! order (cons 'catch order)) 'handled)
+                          (finally (set! order (cons 'finally order)))))
+           (list v (reverse order))`)
+    ),
+    '(handled (catch finally))'
+  );
+});
+
+test('finally without catch: cleanup runs, then the error propagates', () => {
+  const interp = createInterpreter();
+  interp.evaluate('(define flag #f)');
+  assert.throws(
+    () => interp.evaluate('(try (error "boom") (finally (set! flag #t)))'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /boom/);
+      return true;
+    }
+  );
+  assert.equal(interp.evaluate('flag'), true, 'the cleanup ran first');
+});
+
+test('finally runs when the handler re-raises, and the re-raise escapes', () => {
+  const interp = createInterpreter();
+  interp.evaluate('(define flag #f)');
+  assert.throws(
+    () =>
+      interp.evaluate(`(try (error "first")
+                            (catch e (error "second"))
+                            (finally (set! flag #t)))`),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /second/);
+      return true;
+    }
+  );
+  assert.equal(interp.evaluate('flag'), true);
+});
+
+test('an error raised inside finally replaces the propagating one', () => {
+  assert.throws(
+    () => run('(try (error "original") (finally (error "replacement")))'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /replacement/);
+      return true;
+    }
+  );
+  // Same when the body completed normally: the finally error wins.
+  assert.throws(
+    () => run('(try 42 (finally (error "boom")))'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /boom/);
+      return true;
+    }
+  );
+});
+
+test('finally runs even when a raw JS exception passes through', () => {
+  // A host primitive throwing a plain TypeError is NOT catchable by
+  // (catch …), but the JS try/finally underneath still runs the cleanup
+  // while the TypeError escapes to the host untouched.
+  let flag = false;
+  const interp = createInterpreter({
+    primitives: {
+      'js-throw!': () => {
+        throw new TypeError('raw host fault');
+      },
+      'flip-flag!': () => {
+        flag = true;
+        return null;
+      },
+    },
+  });
+  assert.throws(
+    () => interp.evaluate("(try (js-throw!) (catch e 'caught) (finally (flip-flag!)))"),
+    (err) => {
+      assert.ok(err instanceof TypeError, 'the raw exception escaped uncaught');
+      assert.match(err.message, /raw host fault/);
+      return true;
+    }
+  );
+  assert.equal(flag, true, 'the cleanup ran on the way out');
+});
+
+test('catch-only try is unchanged, including the B6 condition map', () => {
+  // The pre-finally shape, bit for bit: handler value, :message,
+  // :irritants, :line/:column all behave as before.
+  assert.equal(run('(try 42 (catch e 0))'), 42);
+  assert.equal(
+    writeString(
+      run(`(try (error "boom" 1 2)
+                (catch e (list (get e :message) (get e :irritants))))`)
+    ),
+    '("boom" (1 2))'
+  );
+  assert.equal(run('(try\n  (oops)\n  (catch e (get e :line))\n  (finally 1))'), 2);
+});
+
+test('a try with neither catch nor finally is malformed', () => {
+  assert.throws(
+    () => run('(try 42)'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /try: the last clause/);
+      return true;
+    }
+  );
+});
+
+test('clauses out of order or duplicated are malformed', () => {
+  assert.throws(
+    () => run('(try 1 (finally 2) (catch e 3))'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /clauses must come last/);
+      return true;
+    }
+  );
+  assert.throws(
+    () => run('(try 1 (catch e 2) (catch e 3))'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /clauses must come last/);
+      return true;
+    }
+  );
+});
+
 // --- arity errors ------------------------------------------------------
 
 test('calling a lambda with too few arguments is an arity error', () => {

@@ -104,7 +104,7 @@ its arguments, or it controls the environment.
 | `(begin body…)` | Evaluate in sequence; yield the last. |
 | `(cond (test body…)… (else body…))` | First true clause wins. |
 | `(and …)` `(or …)` | Short-circuiting logic. |
-| `(try body… (catch name handler…))` | Error handling (§7). |
+| `(try body… (catch name handler…)? (finally cleanup…)?)` | Error handling and unwind protection (§7); at least one clause. |
 | `(defmacro name params body…)` | Define a macro (§5). |
 | `(module name body…)` | Define a module (§6). |
 | `(import name)` | Bring a module's exports into scope (§6). |
@@ -190,13 +190,22 @@ command definitions without a restart.
 An error is signalled with `(error message irritant…)` and is a
 `LispError` at the host level.
 
-`(try body… (catch name handler…))` evaluates the body; if a
-`LispError` is raised, `name` is bound to a **condition** — a map with
-`:message` (string) and `:irritants` (list) — and the handler runs.
+`(try body… (catch name handler…)? (finally cleanup…)?)` — clauses in
+that order, each optional, at least one present — evaluates the body;
+if a `LispError` is raised and a `catch` clause is present, `name` is
+bound to a **condition** — a map with `:message` (string), `:irritants`
+(list) and, when known, `:line`/`:column` — and the handler runs.
+The `finally` cleanup forms run on *every* exit — normal completion, a
+caught error (after the handler), an error propagating out, even a raw
+JS exception from a host primitive — their values are discarded, and an
+error raised inside them replaces the propagating one (JS semantics).
 
 ```lisp
 (try (error "no such buffer" 'scratch)
      (catch e (get e :message)))      ; => "no such buffer"
+
+(try (rename-buffer!)
+     (finally (end-change-group!)))   ; cleanup runs even on error
 ```
 
 **Planned:** the full Common Lisp condition/restart system as the

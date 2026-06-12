@@ -12,6 +12,7 @@ import {
   keyword,
   listToArray,
   NIL,
+  Primitive,
   sym,
 } from '@editor/lisp';
 import { createBufferPrimitives, loadStdlib } from '../src/index.js';
@@ -1904,6 +1905,33 @@ test('atomic-change-group re-raises the original message and irritants', async (
     '(try (atomic-change-group (error "again" 42)) (catch e (car (get e :irritants))))'
   );
   assert.equal(irritant, 42, 'irritants survive the re-raise');
+});
+
+test('atomic-change-group survives a raw JS exception from a host primitive', async () => {
+  // A host primitive throwing a plain TypeError is not a LispError, so
+  // the old catch-based wrapper never saw it and left the change group
+  // open — silently disabling undo!/redo! for the rest of the session.
+  // The finally-based wrapper closes the group on the way out.
+  const { buffer, interpreter } = await editor('abc');
+  interpreter.define(
+    'js-fault!',
+    new Primitive('js-fault!', () => {
+      throw new TypeError('host fault');
+    })
+  );
+  assert.throws(
+    () => interpreter.evaluate('(atomic-change-group (insert! "x") (js-fault!))'),
+    TypeError
+  );
+  assert.equal(buffer.text, 'xabc');
+  // The group closed despite the raw exception: undo works normally.
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'abc');
+  // And later groups still behave atomically.
+  interpreter.evaluate('(atomic-change-group (insert! "y") (insert! "z"))');
+  assert.equal(buffer.text, 'yzabc');
+  interpreter.evaluate('(undo!)');
+  assert.equal(buffer.text, 'abc');
 });
 
 test('C-x C-d duplicates the current line below it', async () => {

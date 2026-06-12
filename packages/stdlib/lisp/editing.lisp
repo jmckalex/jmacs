@@ -154,18 +154,12 @@
 
 (define (call-with-atomic-undo thunk)
   "Run THUNK with every buffer edit it makes grouped into a single undo
-   step. The group is closed even when THUNK raises (the error is
-   re-raised)."
+   step. The group is closed on every exit — normal return, a Lisp
+   error, even a raw JS exception from a host primitive — and any error
+   propagates untouched."
   (begin-change-group!)
-  (try
-    (let ((result (thunk)))
-      (end-change-group!)
-      result)
-    (catch err
-      (end-change-group!)
-      ;; `error` needs a string message; `err` is the condition map, so
-      ;; re-raise its parts to preserve the original message+irritants.
-      (apply error (get err :message) (get err :irritants)))))
+  (try (thunk)
+       (finally (end-change-group!))))
 
 (defmacro atomic-change-group (first . rest)
   "Evaluate the body with every buffer edit grouped into a single undo

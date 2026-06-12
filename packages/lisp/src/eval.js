@@ -593,31 +593,80 @@ const SPECIAL_FORMS = {
     return new TailCall(parts[parts.length - 1], env);
   },
 
+  // (try body… (catch name handler…)? (finally cleanup…)?)
+  // Clauses in that order, each optional, at least one present. Neither
+  // the body, the handler, nor the finally forms are tail positions: each
+  // sits inside this JS try/catch/finally, whose frame must stay live on
+  // the stack while they run — so all three use the eager evaluateBody,
+  // never a TailCall that would escape the frame.
   try(form, env) {
     const parts = args(form);
-    const catchClause = parts[parts.length - 1];
-    if (
-      !(catchClause instanceof Pair) ||
-      !(catchClause.head instanceof Sym) ||
-      catchClause.head.name !== 'catch'
-    ) {
-      throw new LispError('try: the last clause must be (catch name body...)');
+    const isClause = (part, name) =>
+      part instanceof Pair &&
+      part.head instanceof Sym &&
+      part.head.name === name;
+
+    // Peel the clauses off the end: (finally …) last, (catch …) before
+    // it. Whatever remains is the body — which must not itself contain a
+    // clause-shaped form (that means the clauses were duplicated or in
+    // the wrong order).
+    let end = parts.length;
+    let finallyClause = null;
+    if (end > 0 && isClause(parts[end - 1], 'finally')) {
+      finallyClause = parts[end - 1];
+      end -= 1;
     }
-    const catchParts = listToArray(catchClause.tail);
-    const varName = catchParts[0];
-    if (!(varName instanceof Sym)) {
-      throw new LispError('try: catch needs a variable name');
+    let catchClause = null;
+    if (end > 0 && isClause(parts[end - 1], 'catch')) {
+      catchClause = parts[end - 1];
+      end -= 1;
     }
+    if (catchClause === null && finallyClause === null) {
+      throw new LispError(
+        'try: the last clause must be (catch name body...) or (finally body...)'
+      );
+    }
+    const body = parts.slice(0, end);
+    for (const part of body) {
+      if (isClause(part, 'catch') || isClause(part, 'finally')) {
+        throw new LispError(
+          'try: clauses must come last, in the order (catch …) then (finally …)'
+        );
+      }
+    }
+
+    let varName = null;
+    let catchParts = null;
+    if (catchClause !== null) {
+      catchParts = listToArray(catchClause.tail);
+      varName = catchParts[0];
+      if (!(varName instanceof Sym)) {
+        throw new LispError('try: catch needs a variable name');
+      }
+    }
+
     try {
-      return evaluateBody(parts.slice(0, -1), env);
-    } catch (error) {
-      if (!(error instanceof LispError)) throw error;
-      // Tag the offending form's location before the handler sees it, so
-      // the condition value can carry :line / :column (B6).
-      attachErrorLocation(error);
-      const scope = new Environment(env);
-      scope.define(varName.name, conditionValue(error));
-      return evaluateBody(catchParts.slice(1), scope);
+      try {
+        return evaluateBody(body, env);
+      } catch (error) {
+        // Only LispErrors are catchable; raw JS exceptions from host
+        // primitives pass through (but still trigger the finally below).
+        if (catchClause === null || !(error instanceof LispError)) throw error;
+        // Tag the offending form's location before the handler sees it, so
+        // the condition value can carry :line / :column (B6).
+        attachErrorLocation(error);
+        const scope = new Environment(env);
+        scope.define(varName.name, conditionValue(error));
+        return evaluateBody(catchParts.slice(1), scope);
+      }
+    } finally {
+      if (finallyClause !== null) {
+        // Cleanup runs on EVERY exit: normal completion, a caught error
+        // (after the handler), an error propagating out — even a raw JS
+        // exception. Its value is discarded; an error raised here
+        // replaces whatever was propagating (JS semantics).
+        evaluateBody(listToArray(finallyClause.tail), env);
+      }
     }
   },
 
