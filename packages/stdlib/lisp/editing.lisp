@@ -76,7 +76,7 @@
 (defcommand exchange-point-and-mark ()
   "Move point to the mark, and the mark to where point was."
   (let ((m (mark)))
-    (when (not (nil? m))
+    (when m                             ; no mark set is #f; offset 0 is truthy
       (let ((p (point)))
         (goto! m)
         (set-mark! p)))))

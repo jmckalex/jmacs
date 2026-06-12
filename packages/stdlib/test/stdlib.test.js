@@ -1332,8 +1332,25 @@ test('mid-chord lookup prefers the mode-local binding when both bind the key', a
   // (A mark of null means add-cursor-next did NOT run.)
   // We can't easily assert save-buffer ran without the harness's
   // fileCalls, but the negative assertion is sufficient.
-  assert.equal(interpreter.evaluate('(nil? (mark))'), true,
+  // An unset mark is #f (miss convention), so test with `not`.
+  assert.equal(interpreter.evaluate('(not (mark))'), true,
     'mode-local C-c d did NOT route to add-cursor-next');
+});
+
+test('mark is #f when unset, the offset once set (miss convention)', async () => {
+  const { interpreter } = await editor('hello');
+  assert.equal(interpreter.evaluate('(mark)'), false);
+  // The bare if-test idiom — and offset 0 stays truthy once set.
+  assert.equal(
+    interpreter.evaluate("(if (mark) 'set 'unset)"),
+    interpreter.evaluate("'unset")
+  );
+  interpreter.evaluate('(set-mark! 0)');
+  assert.equal(interpreter.evaluate('(mark)'), 0);
+  assert.equal(
+    interpreter.evaluate("(if (mark) 'set 'unset)"),
+    interpreter.evaluate("'set")
+  );
 });
 
 // --- mode hooks and minor modes -----------------------------------------
