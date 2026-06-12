@@ -235,6 +235,10 @@ Sharp edges that fit in one line each:
 - Maps are immutable values: `(assoc m k v)` returns a copy, so a
   keymap edit is `(set! m (assoc m k v))` — without the `set!` the
   binding is silently dropped.
+- A bare `(make-marker)` is a debt: a live marker taxes every later
+  edit until `release-marker!`, and a *released* one raises on use —
+  prefer `with-marker` or `save-excursion`, which release on every
+  exit. See *Editing Text from Lisp*.
 
 ### Performance in a Tree-Walking Interpreter
 
@@ -310,7 +314,7 @@ whichever file already does something like what you want:
 | `commands.lisp` | `defcommand`, interactive sources, the command registry |
 | `keymap.lisp` | the global keymaps, the dispatch chain, `read-next-key` |
 | `modes.lisp` | `define-mode`, `register-mode`, hooks, minor modes |
-| `editing.lisp` | movement and editing commands; `atomic-change-group` lives here |
+| `editing.lisp` | movement and editing commands; `atomic-change-group`, `with-marker`, and `save-excursion` live here |
 | `line-ops.lisp` | whole-line edits on raw primitives — `move-line-up`, `indent-region` |
 | `kill.lisp` | a stateful feature in pure Lisp; the `*last-command*` idiom |
 | `files.lisp` | `find-file` and the TAB-completion policy hook |
