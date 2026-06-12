@@ -2,7 +2,8 @@
 ;;;
 ;;; `markdown-mode` itself is defined in `modes.lisp` (it pre-dates
 ;;; the tree-sitter integration, since the editor has a hand-tokenized
-;;; Markdown fallback). That definition already binds `.md` and `.jmd`.
+;;; Markdown fallback). That definition already binds `.md`; `.jmd`
+;;; belongs to jmarkdown-mode (see `jmarkdown.lisp` beside this file).
 ;;; This file is the conventional drop-in that pairs with the JS
 ;;; registration in `packages/renderer/src/languages/markdown.js`:
 ;;; it lives here so the language is "complete" from one directory's

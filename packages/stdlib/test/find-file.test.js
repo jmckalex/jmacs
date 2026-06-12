@@ -25,7 +25,7 @@ const lispDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lisp');
 
 /** Interpreter with the full stdlib loaded; EXISTING is the set of paths
  *  `file-exists?` reports true for. Returns the recorded open/new calls. */
-async function findFileEditor(existing) {
+async function findFileEditor(existing, currentFilePath = null) {
   const calls = [];
   const interpreter = createInterpreter({
     write: () => {},
@@ -38,7 +38,7 @@ async function findFileEditor(existing) {
       'list-directory-paths': () => NIL,
       'current-view': () => NIL,
       'view-list': () => NIL,
-      'view-file-path': () => NIL,
+      'view-file-path': () => (currentFilePath === null ? NIL : currentFilePath),
       'view-buffer': () => NIL,
       'buffer-text': () => '',
       'home-directory': () => '/home/u',
@@ -68,6 +68,23 @@ test('-find-file-deliver ignores empty / nil input', async () => {
   ev('(-find-file-deliver "")');
   ev('(-find-file-deliver nil)');
   assert.deepEqual(calls, []);
+});
+
+// --- the find-file seed: current file's directory, else home -----------
+
+test('the prompt seeds with the current file\'s directory', async () => {
+  const { ev } = await findFileEditor([], '/Users/u/Source/project/notes.md');
+  assert.equal(ev('(-initial-find-file-value)'), '/Users/u/Source/project/');
+});
+
+test('a buffer visiting no file seeds with the home directory', async () => {
+  const { ev } = await findFileEditor([]);
+  assert.equal(ev('(-initial-find-file-value)'), '/home/u/');
+});
+
+test('a file at the filesystem root seeds with /', async () => {
+  const { ev } = await findFileEditor([], '/notes.md');
+  assert.equal(ev('(-initial-find-file-value)'), '/');
 });
 
 // --- minibuffer-tab-complete: completions-panel routing ---------------

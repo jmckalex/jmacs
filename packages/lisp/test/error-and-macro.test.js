@@ -75,6 +75,60 @@ test('a named function reports its name in an arity error', () => {
   );
 });
 
+// --- source locations in errors (B6) -----------------------------------
+
+test('a runtime error carries the source location of the offending form', () => {
+  // `(bar x)` opens at line 2, column 3 (1-based). bar is unbound, so the
+  // error should point there — the innermost form being evaluated.
+  const interp = createInterpreter();
+  assert.throws(
+    () => interp.evaluate('(define (f x)\n  (bar x))\n(f 1)'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /unbound symbol: bar/);
+      assert.deepEqual(err.location, { line: 2, col: 3 });
+      return true;
+    }
+  );
+});
+
+test('an arity error points at the call form, not its last argument', () => {
+  // The call form `(f ...)` opens at line 2, col 1; its argument `(+ 1 2)`
+  // is on line 3. The error belongs to the application, so it must report
+  // 2:1 — proof the call form's location is re-stamped after the args run.
+  const interp = createInterpreter();
+  assert.throws(
+    () => interp.evaluate('(define (f x y) x)\n(f\n  (+ 1 2))'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.match(err.message, /expected 2 argument\(s\), got 1/);
+      assert.deepEqual(err.location, { line: 2, col: 1 });
+      return true;
+    }
+  );
+});
+
+test('try/catch exposes the error source location to the handler', () => {
+  // `(oops)` is on line 2, column 3; the handler reads it back as data.
+  assert.equal(run('(try\n  (oops)\n  (catch e (get e :line)))'), 2);
+  assert.equal(run('(try\n  (oops)\n  (catch e (get e :column)))'), 3);
+});
+
+test('a clean evaluation does not leave a stale location on a later error', () => {
+  // A bare unbound symbol is an atom (the reader records no location for
+  // atoms), so its error must NOT inherit the previous form's location.
+  const interp = createInterpreter();
+  interp.evaluate('(+ 1 2)'); // a located form runs and succeeds
+  assert.throws(
+    () => interp.evaluate('nope'),
+    (err) => {
+      assert.ok(err instanceof LispError);
+      assert.equal(err.location, null);
+      return true;
+    }
+  );
+});
+
 // --- macros: deliberately non-hygienic (v0) ----------------------------
 
 test('macros are not hygienic — a macro binding captures caller names (v0)', () => {

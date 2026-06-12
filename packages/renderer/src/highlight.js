@@ -59,7 +59,8 @@ const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 export function languageForName(name) {
   if (typeof name !== 'string') return 'plain';
   if (name.endsWith('.lisp')) return 'lisp';
-  if (name.endsWith('.md') || name.endsWith('.jmd')) return 'markdown';
+  if (name.endsWith('.jmd')) return 'jmarkdown';
+  if (name.endsWith('.md')) return 'markdown';
   if (name.endsWith('.tex') || name.endsWith('.latex')) return 'latex';
   if (
     name.endsWith('Makefile') ||
@@ -887,5 +888,9 @@ export function highlightBuffer(text, language) {
   if (language === 'latex') return highlightLatexBuffer(text);
   if (language === 'makefile') return highlightMakefileBuffer(text);
   if (language === 'markdown') return highlightMarkdownBuffer(text);
+  // JMarkdown's real highlighter is the tree-sitter `jmarkdown`
+  // language; if its grammar ever fails to load, plain-markdown
+  // tokenization is the best degraded rendering.
+  if (language === 'jmarkdown') return highlightMarkdownBuffer(text);
   return null;
 }
