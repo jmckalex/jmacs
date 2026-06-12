@@ -49,6 +49,9 @@ importers:
       '@editor/buffer':
         specifier: workspace:*
         version: link:../buffer
+      '@editor/view':
+        specifier: workspace:*
+        version: link:../view
       '@xterm/addon-fit':
         specifier: 0.11.0
         version: 0.11.0

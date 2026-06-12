@@ -4,6 +4,99 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-11 00:41] Renderer view-lifecycle tests (E1-A): `@editor/view` is undeclared in the renderer, blocking `tabline-view` tests
+
+**Context**: Audit ticket E1 part A — adding the renderer view layer's
+first lifecycle unit tests. I added `packages/renderer/test/text-view-lifecycle.test.js`
+(16 tests, green) covering the `<text-view>` wrapper's lifecycle. I then
+wrote a matching `tabline-view-lifecycle.test.js` (add/remove/reorder/
+activate/active-reanchor/tab-close/destroy) but **could not land it**:
+importing `tabline-view.js` fails at module-load with
+`ERR_MODULE_NOT_FOUND: '@editor/view'`.
+
+**Question/blocker**: Should the renderer **declare `@editor/view` as a
+dependency** (and link it in `node_modules`) so its source is importable
+under the package's own resolution? Root cause: `packages/renderer/src/tabline.js`
+has a real runtime `import { viewFilePath } from '@editor/view'`, but the
+renderer's `package.json` lists only `@editor/buffer`, and
+`node_modules/@editor/` symlinks only `buffer`. So `tabline.js` (and
+anything importing it, incl. `tabline-view.js`) is unimportable in the
+renderer test env. It only works in the running app because of how the
+desktop app bundles/serves. This is *why* the view layer has zero
+lifecycle tests — the modules aren't loadable under `node --test`.
+(`view.js` itself is fine: its only `@editor/view` reference is a
+JSDoc `@param {import('@editor/view').View}` type-only annotation, which
+ESM never resolves — hence the text-view test loads cleanly.)
+
+I did **not** make the fix myself: adding a cross-package dependency +
+node_modules link is dependency-management + layering territory, not a
+test change, and a bare local symlink would pass for me but break on a
+fresh `pnpm install` / in CI (a test must pass in the real suite, so I
+won't ship one that depends on an untracked symlink).
+
+**Options considered**:
+- (a) Add `"@editor/view": "workspace:*"` to `packages/renderer/package.json`
+  dependencies and let pnpm link it. Clean layering — `@editor/view`
+  depends only on `@editor/buffer`, so **no cycle**. My lean: this is the
+  right fix; it also unblocks any future `view.js`/`tabline.js` tests.
+  One `pnpm install` needed after.
+- (b) Refactor `tabline.js` to receive `viewFilePath` via injection
+  instead of a static import, so it loads without the dep. More invasive,
+  changes a stable module's API for test convenience — not worth it.
+- (c) Leave `tabline-view` untested for now (current state). The lifecycle
+  logic there (active re-anchoring on remove, single-parent move,
+  tab-close event) is exactly the bug-prone surface worth covering, so
+  I'd rather not.
+
+**State of the work**: branch `renderer-view-lifecycle-tests`. Committed:
+`text-view-lifecycle.test.js` (16 tests, green) + this note. The
+`tabline-view-lifecycle.test.js` I wrote is removed from the tree (it
+can't pass yet); I can re-add it verbatim the moment option (a) lands —
+it drives the real methods against a minimal DOM stub and needs no
+further source change. Full renderer suite green. Tree clean.
+
+**[2026-06-11 — RESOLVED]** Option (a) was taken: `@editor/view` is now
+declared in `packages/renderer/package.json` and `pnpm install` linked it,
+so `tabline-view.js` imports cleanly under `node --test`. Landed
+`packages/renderer/test/tabline-view-lifecycle.test.js` (26 tests, green):
+add/insert/append-out-of-range, remove (active vs non-active, last tab,
+out-of-range guard), active re-anchoring on close, activate (clears
+siblings + focus + out-of-range no-op), reorder (up/down/no-op), the Q9
+single-parent move, `tab-close` dispatch + bubbling (incl. via the strip's
+× button), the edge accessor, and destroy() teardown (DOM removed, nulled,
+idempotent, post-destroy mutations are safe no-ops). The test self-contains
+a compact fake DOM (element tree + attrs/dataset/classList + the one
+`:scope > [active]` selector + bubbling dispatchEvent), installed on
+`globalThis` before the import so `ViewElement` picks up `HTMLElement`.
+Full renderer suite 625 pass / 0 fail (was 599 + 26 new).
+
+**view.js render internals — NOT unit-tested here (deliberate, not a
+blocker).** E1 also asked for `view.js` render-loop tests (line
+virtualization, replaced-range/math-widget mount + cleanup across scroll,
+fold persistence across re-render). I did **not** add them, and recommend
+against forcing them under `node --test`: `createEditorView` is one large
+closure whose render path is driven by real pixel layout
+(`getBoundingClientRect().height` for the line height, `root.scrollTop` /
+`root.clientHeight` for the window, `createTreeWalker`/`createRange` for
+caret measurement), `requestAnimationFrame` batching, `morphdom`, and the
+tree-sitter highlighters. A fake DOM faithful enough to make the
+virtualization window or a widget's measured height come out *right* would
+be simulating layout — the assertions would then be testing the simulation,
+not the renderer (the "no speculative assertions" trap). The genuinely
+pure logic these features rest on is already extracted into siblings with
+their own green tests: line splitting + selection/cursor geometry in
+`projection.js` (`projection.test.js`), the math-widget layout/placement in
+`math-layout.js` (`math-layout.test.js`), and fold ranges + hidden-line
+computation in `folding.js` (`folding.test.js`). The remaining `view.js`
+glue (wiring those into the rAF render against the real viewport) is what
+the smoke arm / live app covers. If you want a unit-level seam, the
+cheapest honest one is to export the ~4-line `firstRow`/`lastRow` window
+arithmetic from the render closure as a pure helper and pin it — flagging
+it rather than doing it, since it's a source change to a hot file other
+sessions are also touching.
+
+---
+
 ## [2026-06-03] LaTeX Phase 5 (latex-nav): "M-return" → "M-enter" binding deviation
 
 **Context**: Built AUCTeX Phase 5 (navigation & niceties) on branch
