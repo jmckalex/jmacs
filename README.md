@@ -300,7 +300,8 @@ text, including its own source.
 - Typing is undone keystroke-by-keystroke (multi-edit *commands* do
   undo as one atomic step); there is no typing-run coalescing yet.
 - Macros are procedural, not hygienic.
-- One window; macOS is the supported platform.
+- One window; builds target macOS, Linux, and Windows, with macOS the
+  most exercised of the three.
 - No LSP integration yet.
 
 **Likely next.** View virtualisation; typing-run undo coalescing;
