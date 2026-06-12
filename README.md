@@ -75,8 +75,9 @@ worth reaching). Both bind to the same buffer API.
   find), `<image-view>`, and `<shell-view>` (xterm.js terminal with
   a real pty backing).
 - **A custom Lisp runtime** — a reader, a tree-walking evaluator,
-  lexical scope, closures, macros, first-class modules with hot reload,
-  `try`/`catch`, ~90 primitives, and self-documentation.
+  lexical scope, closures, proper tail calls, macros, first-class
+  modules with hot reload, `try`/`catch`, over a hundred primitives,
+  and self-documentation.
 - **An embedded REPL** — evaluate Lisp against the editor's live
   buffers; `(insert! "x")` edits the visible document.
 - **Syntax highlighting** — tree-sitter for JavaScript and a growing
@@ -85,12 +86,14 @@ worth reaching). Both bind to the same buffer API.
 - **A real editor surface** — a line-number gutter, current-line
   highlight, matching-bracket outline, a blinking cursor, a modeline,
   folding.
-- **Discoverability** — an `M-x` command palette with fuzzy matching;
-  `C-h k` / `C-h f` / `C-h F` ask the editor what a key, command, or
-  syntax face does.
+- **Discoverability** — an in-app manual (`C-h d`): a TeXinfo-style
+  browsable node tree with a narrative manual, a Lisp programming
+  guide, and a full function reference; an `M-x` command palette with
+  fuzzy matching; `C-h k` / `C-h f` / `C-h F` ask the editor what a
+  key, command, or syntax face does.
 - **Hot reload** — change the editor's own Lisp and reload it live.
 
-Over a thousand unit tests across the workspace, plus an Electron
+Over two thousand unit tests across the workspace, plus an Electron
 smoke test that drives the whole stack in a real window.
 
 ## Quick start
@@ -113,15 +116,17 @@ the buffer above change.
 ## Keybindings
 
 Bindings are defined in Lisp (`packages/stdlib/lisp/keymap.lisp`) and
-can be changed there or from the REPL. `C-` is Ctrl **or** Cmd; `M-` is
-Alt/Option; `S-` is Shift.
+can be changed there or from the REPL. `C-` is Ctrl; `M-` is Cmd
+(Command is Meta, Emacs-on-Mac style); `A-` is Option — an unbound
+`A-` chord falls through to the character Option composes, so curly
+quotes and accented letters still type natively; `S-` is Shift.
 
 ### Movement
 
 | Key | Command |
 |-----|---------|
 | arrows, `C-f` `C-b` `C-n` `C-p` | by character / line |
-| `M-f` `M-b` | by word |
+| `M-f` `M-b`, `M-←` `M-→` / `A-←` `A-→` | by word |
 | `C-a` `C-e` / `Home` `End` | line start / end |
 | `C-←` `C-→` | line start / end |
 | `C-↑` `C-↓` | buffer start / end |
@@ -141,7 +146,7 @@ Alt/Option; `S-` is Shift.
 | `C-x ;` | comment / uncomment the line |
 | `M-r` | replace every occurrence of a string |
 | `Enter` | newline, keeping indentation |
-| `C-z` / `C-S-z` | undo / redo |
+| `C-z` / `C-S-z`, `M-z` / `M-S-z` | undo / redo |
 | `C-x h` | select the whole buffer |
 | `C-g` | cancel a key sequence / clear the selection |
 
@@ -152,8 +157,10 @@ Alt/Option; `S-` is Shift.
 | `C-s` / `C-r` | incremental search forward / backward |
 | `C-x C-f` / `C-x C-s` | open file / save buffer |
 | `C-x b` | switch buffer (fuzzy completion) |
-| `C-x ←` / `C-x →` / `C-x n` | previous / next / new buffer |
+| `C-x ←` / `C-x →` | previous / next buffer |
+| `C-x n` | open a fresh scratch buffer |
 | `M-x` | command palette |
+| `C-h d` | open the manual |
 | `C-h k` / `C-h f` | describe a key / a command |
 | `C-x C-r` | reload the standard library (hot reload) |
 
@@ -181,12 +188,14 @@ JavaScript. The full specification is in
 (define (forward-word) (goto! (word-forward-offset)))
 ```
 
-The language has special forms (`define`, `lambda`, `if`, `let`,
-`cond`, `quasiquote`, `defmacro`, `module`, `import`, `try`, …) and
-roughly 90 primitives — arithmetic, lists, higher-order functions,
-strings, vectors, maps, and introspection. Every procedure carries its
-docstring and source location; `(doc forward-word)` and
-`(describe map)` ask the editor about itself.
+The language has special forms (`define`, `lambda`, `if`, `let` —
+plain and named — `cond`, `quasiquote`, `defmacro`, `module`,
+`import`, `try`, …), loop macros (`while`, `dotimes`, `dolist`), and
+over a hundred primitives — arithmetic, lists, higher-order functions,
+strings, vectors, maps, a stable `sort`, and introspection. Tail calls
+run in constant stack. Every procedure carries its docstring and
+source location; `(doc forward-word)` and `(describe map)` ask the
+editor about itself.
 
 **The REPL** at the foot of the window shares the editor's interpreter
 and buffers. **Hot reload**: re-evaluating a `module` reuses its
@@ -288,15 +297,15 @@ text, including its own source.
   files would render slowly.
 - The Lisp dialect is highlighted by a tokenizer, not a tree-sitter
   grammar (it is a custom, still-evolving dialect).
-- Undo is per-keystroke rather than per-command.
+- Typing is undone keystroke-by-keystroke (multi-edit *commands* do
+  undo as one atomic step); there is no typing-run coalescing yet.
 - Macros are procedural, not hygienic.
 - One window; macOS is the supported platform.
 - No LSP integration yet.
 
-**Likely next.** View virtualisation; command-level undo grouping;
-text properties, overlays, markers and modes at L2; hygienic macros;
-an LSP client; Lisp-to-JavaScript interop. None of these change the
-settled core.
+**Likely next.** View virtualisation; typing-run undo coalescing;
+text properties and overlays at L2; hygienic macros; an LSP client;
+Lisp-to-JavaScript interop. None of these change the settled core.
 
 ## Design principles
 
