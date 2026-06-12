@@ -77,6 +77,26 @@ const PRELUDE = `
   ;; A couple of everyday helpers.
   (define (second lst) (cadr lst))
   (define (third lst) (caddr lst))
+
+  ;; Sequence predicates. Strict booleans (the ? convention), short-
+  ;; circuiting: any? stops at the first truthy result, every? at the
+  ;; first false one. SEQ may be a list or a vector.
+  (define (any? pred seq)
+    "Whether (pred x) is truthy for SOME element of SEQ (#f when empty)."
+    (let loop ((rest (if (vector? seq) (vector->list seq) seq)))
+      (cond
+        ((nil? rest) #f)
+        ((pred (car rest)) #t)
+        (else (loop (cdr rest))))))
+
+  (define (every? pred seq)
+    "Whether (pred x) is truthy for EVERY element of SEQ (vacuously #t
+     when empty)."
+    (let loop ((rest (if (vector? seq) (vector->list seq) seq)))
+      (cond
+        ((nil? rest) #t)
+        ((pred (car rest)) (loop (cdr rest)))
+        (else #f))))
 `;
 
 /**

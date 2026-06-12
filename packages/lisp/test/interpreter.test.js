@@ -367,6 +367,54 @@ test('a macro using quasiquote', () => {
   );
 });
 
+// --- any? / every? --------------------------------------------------------
+
+test('any? is #t when some element satisfies pred, strictly boolean', () => {
+  assert.equal(run('(any? odd? (list 2 4 5))'), true);
+  assert.equal(run('(any? odd? (list 2 4 6))'), false);
+  // The truthy pred result (a number) collapses to the boolean #t.
+  assert.equal(run('(any? (lambda (x) x) (list 7))'), true);
+});
+
+test('every? is #t when all elements satisfy pred, strictly boolean', () => {
+  assert.equal(run('(every? odd? (list 1 3 5))'), true);
+  assert.equal(run('(every? odd? (list 1 2 3))'), false);
+  assert.equal(run('(every? (lambda (x) x) (list 7))'), true);
+});
+
+test('any?/every? on the empty sequence: #f and vacuous #t', () => {
+  assert.equal(run('(any? odd? nil)'), false);
+  assert.equal(run('(every? odd? nil)'), true);
+  assert.equal(run('(any? odd? [])'), false);
+  assert.equal(run('(every? odd? [])'), true);
+});
+
+test('any?/every? accept vectors', () => {
+  assert.equal(run('(any? odd? [2 3 4])'), true);
+  assert.equal(run('(every? positive? [1 2 3])'), true);
+  assert.equal(run('(every? positive? [1 -2 3])'), false);
+});
+
+test('any? short-circuits at the first truthy element', () => {
+  assert.equal(
+    run(`(define calls 0)
+         (define (probe x) (set! calls (+ calls 1)) (odd? x))
+         (any? probe (list 2 3 4 5))
+         calls`),
+    2
+  );
+});
+
+test('every? short-circuits at the first false element', () => {
+  assert.equal(
+    run(`(define calls 0)
+         (define (probe x) (set! calls (+ calls 1)) (odd? x))
+         (every? probe (list 1 2 3 4))
+         calls`),
+    2
+  );
+});
+
 // --- macroexpand ----------------------------------------------------------
 
 test('macroexpand-1 expands a macro use one step, as data', () => {
