@@ -286,6 +286,19 @@ displays, so evaluating them in the REPL edits the visible document:
 This set is a v0 floor. As the standard library grows, the editor's
 commands — and its keymap — will be defined in Lisp on top of it.
 
+**Markers.** `(make-marker offset?)` creates an edit-tracking position
+in the current buffer (default: point) and returns an opaque handle
+that carries its buffer. `(marker-position m)` reads its current
+offset — correct under intervening edits, and readable even when the
+marker's buffer is not current. `(set-marker! m offset)` moves it, but
+only while its buffer is current; `(marker-buffer-current? m)` tests
+that. Markers cost incremental work per edit, so they must be released:
+`(release-marker! m)` detaches one (safe to call twice; every other
+operation on a released marker raises). Lisp code normally reaches
+markers through the editing.lisp macros `with-marker` — which releases
+on every exit — and `save-excursion`, which restores point through a
+marker. Overlays are deferred.
+
 ---
 
 ## Deferred — a single list
