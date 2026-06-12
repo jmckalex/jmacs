@@ -250,3 +250,118 @@ test('set-marker! refuses to move a marker whose buffer is not current', async (
   assert.equal(interpreter.evaluate('(marker-position m)'), 1);
 });
 
+// --- with-marker --------------------------------------------------------------
+
+test('with-marker binds a marker at point (or an offset) and returns the body value', async () => {
+  const { interpreter } = await markerEditor();
+  interpreter.evaluate('(goto! 4)');
+  assert.equal(
+    interpreter.evaluate('(with-marker (m) (marker-position m))'),
+    4
+  );
+  assert.equal(
+    interpreter.evaluate('(with-marker (m 2) (marker-position m))'),
+    2
+  );
+});
+
+test('with-marker releases on normal exit', async () => {
+  const { buffer, interpreter } = await markerEditor();
+  const liveCount = probeMarkers(buffer);
+  interpreter.evaluate('(define probe nil)');
+  interpreter.evaluate('(with-marker (m) (set! probe m))');
+  assert.equal(liveCount(), 0);
+  assert.throws(
+    () => interpreter.evaluate('(marker-position probe)'),
+    /the marker has been released/
+  );
+});
+
+test('with-marker releases when the body raises, and the error propagates', async () => {
+  const { buffer, interpreter } = await markerEditor();
+  const liveCount = probeMarkers(buffer);
+  interpreter.evaluate('(define probe nil)');
+  const message = interpreter.evaluate(
+    '(try (with-marker (m) (set! probe m) (error "boom"))' +
+      ' (catch e (get e :message)))'
+  );
+  assert.equal(message, 'boom');
+  assert.equal(liveCount(), 0);
+  assert.throws(
+    () => interpreter.evaluate('(marker-position probe)'),
+    /the marker has been released/
+  );
+});
+
+test('with-marker tolerates the body releasing the marker itself', async () => {
+  const { interpreter } = await markerEditor();
+  assert.equal(
+    interpreter.evaluate('(with-marker (m) (release-marker! m) 7)'),
+    7
+  );
+});
+
+// --- save-excursion -----------------------------------------------------------
+
+test('save-excursion restores point across an edit before it', async () => {
+  const { interpreter } = await markerEditor('hello world');
+  interpreter.evaluate('(goto! 6)'); // at "world"
+  interpreter.evaluate('(save-excursion (goto! 0) (insert! "say "))');
+  // A plain saved integer would restore 6 — mid-"hello". The marker
+  // rides the insertion, so point is back before "world".
+  assert.equal(interpreter.evaluate('(point)'), 10);
+  assert.equal(
+    interpreter.evaluate('(buffer-substring (point) (+ (point) 5))'),
+    'world'
+  );
+});
+
+test('save-excursion returns the body value', async () => {
+  const { interpreter } = await markerEditor();
+  assert.equal(
+    interpreter.evaluate('(save-excursion (goto! 0) (+ 1 2))'),
+    3
+  );
+});
+
+test('save-excursion restores point when the body raises, propagating the error', async () => {
+  const { interpreter } = await markerEditor('hello world');
+  interpreter.evaluate('(goto! 6)');
+  const message = interpreter.evaluate(
+    '(try (save-excursion (goto! 0) (insert! "xx") (error "bang"))' +
+      ' (catch e (get e :message)))'
+  );
+  assert.equal(message, 'bang');
+  assert.equal(interpreter.evaluate('(point)'), 8);
+});
+
+test('save-excursion does not leak its marker — normal and error exits', async () => {
+  const { buffer, interpreter } = await markerEditor();
+  const liveCount = probeMarkers(buffer);
+  interpreter.evaluate('(save-excursion (insert! "x"))');
+  assert.equal(liveCount(), 0);
+  interpreter.evaluate(
+    '(try (save-excursion (error "boom")) (catch e nil))'
+  );
+  assert.equal(liveCount(), 0);
+});
+
+test('save-excursion leaves the mark alone — saved point, untouched region', async () => {
+  const { interpreter } = await markerEditor('hello world');
+  interpreter.evaluate('(set-mark! 2) (goto! 6)');
+  interpreter.evaluate('(save-excursion (goto! 0))');
+  assert.equal(interpreter.evaluate('(point)'), 6);
+  assert.equal(interpreter.evaluate('(mark)'), 2);
+});
+
+test('save-excursion nests — each level restores its own point', async () => {
+  const { interpreter } = await markerEditor('hello world');
+  interpreter.evaluate('(goto! 6)');
+  interpreter.evaluate('(define inner-point nil)');
+  interpreter.evaluate(
+    '(save-excursion (goto! 3) (save-excursion (goto! 0) (insert! "a"))' +
+      ' (set! inner-point (point)))'
+  );
+  assert.equal(interpreter.evaluate('inner-point'), 4); // 3 shifted by 1
+  assert.equal(interpreter.evaluate('(point)'), 7); // 6 shifted by 1
+});

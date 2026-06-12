@@ -168,6 +168,39 @@
   (list 'call-with-atomic-undo
         (cons 'lambda (cons (list) (cons first rest)))))
 
+;; --- markers and excursions ---------------------------------------------
+;; A marker (make-marker) is an edit-tracking position: its offset rides
+;; insertions and deletions made before it, where a saved integer goes
+;; stale. Markers cost the buffer a little work on every edit, so each
+;; one must be released; `with-marker` scopes one to a body and
+;; guarantees the release, and `save-excursion` uses one to put point
+;; back where it was.
+
+(defmacro with-marker (binding first . rest)
+  "Evaluate the body with a fresh marker in scope:
+   (with-marker (name offset?) body…). NAME is bound to a marker in the
+   current buffer at OFFSET (point when omitted), and released on every
+   exit — normal return or error — so it cannot leak. Returns the
+   body's value."
+  (let ((name (car binding))
+        (init (if (pair? (cdr binding))
+                  (list 'make-marker (cadr binding))
+                  (list 'make-marker))))
+    `(let ((,name ,init))
+       (try (begin ,first ,@rest)
+            (finally (release-marker! ,name))))))
+
+(defmacro save-excursion (first . rest)
+  "Evaluate the body, then restore point to where it was — on normal
+   return and on error alike. The saved place is a marker, not a plain
+   integer, so edits the body makes before point do not shift the
+   restore target. Point only: the mark is deliberately left alone.
+   Returns the body's value."
+  (let ((m (gensym "excursion")))
+    `(with-marker (,m)
+       (try (begin ,first ,@rest)
+            (finally (goto! (marker-position ,m)))))))
+
 (defcommand mark-whole-buffer ()
   "Select the entire buffer."
   (goto! (buffer-length))
