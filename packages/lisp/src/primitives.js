@@ -440,9 +440,13 @@ export function installPrimitives(env, { write }) {
     for (let i = 0; i < a.length; i += 2) m.set(a[i], a[i + 1]);
     return m;
   });
+  // Miss convention: absence is `#f`, so `(if (get m :key) …)` is a
+  // safe bare test (nil is truthy in this Lisp). The three-argument
+  // form returns its fallback unchanged — use it when a stored `#f`
+  // (or any sentinel) must be distinguishable from a missing key.
   def('get', (a) => {
     arity('get', a, 2, 3);
-    const fallback = a.length === 3 ? a[2] : NIL;
+    const fallback = a.length === 3 ? a[2] : false;
     if (a[0] instanceof Map) return a[0].has(a[1]) ? a[0].get(a[1]) : fallback;
     if (Array.isArray(a[0])) {
       return a[1] >= 0 && a[1] < a[0].length ? a[0][a[1]] : fallback;

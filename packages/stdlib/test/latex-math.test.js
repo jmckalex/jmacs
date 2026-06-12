@@ -185,7 +185,8 @@ test('keymap: rebuilds live when the prefix changes via custom-apply!', async ()
     true
   );
   // The old backtick binding is gone (the map is rebuilt from scratch).
-  assert.equal(ev('(nil? (get latex-math-mode-map "`"))'), true);
+  // A missing key is #f under the miss convention, so test with `not`.
+  assert.equal(ev('(not (get latex-math-mode-map "`"))'), true);
   // Restore so nothing leaks (each test gets a fresh interpreter anyway).
   ev('(custom-apply! (quote *latex-math-abbrev-prefix*) "`")');
 });

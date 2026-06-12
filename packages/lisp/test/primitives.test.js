@@ -349,10 +349,23 @@ test('hash-map builds a map; an odd argument count is an error', () => {
 test('get reads maps and vectors, with an optional fallback', () => {
   assert.equal(run('(get (hash-map :a 1) :a)'), 1);
   assert.equal(run('(get (hash-map :a 1) :z 99)'), 99); // fallback
-  assert.equal(show('(get (hash-map :a 1) :z)'), 'nil'); // default fallback
+  assert.equal(run('(get (hash-map :a 1) :z)'), false); // miss -> #f
   assert.equal(run('(get (vector 10 20) 1)'), 20);
-  assert.equal(show('(get (vector 10 20) 5)'), 'nil'); // out of range
+  assert.equal(run('(get (vector 10 20) 5)'), false); // out of range -> #f
   assert.throws(() => run('(get 5 0)'), LispError); // not a map or vector
+});
+
+test('get: absence is #f, so a bare if-test works (miss convention)', () => {
+  // The motivating idiom — nil is truthy here, so the old nil-on-miss
+  // sent this down the wrong branch.
+  assert.equal(show("(if (get (hash-map :a 1) :missing) 'yes 'no)"), 'no');
+  // A key PRESENT with a nil value still yields nil — only a genuine
+  // miss is #f; the 3-arg form discriminates a stored #f.
+  assert.equal(show('(get (hash-map :a nil) :a)'), 'nil');
+  assert.equal(run('(get (hash-map :a #f) :a 99)'), false);
+  // nil? on a miss is #f (a miss is not nil) — callers test with `not`.
+  assert.equal(run('(nil? (get (hash-map) :missing))'), false);
+  assert.equal(run('(not (get (hash-map) :missing))'), true);
 });
 
 test('assoc and dissoc return new maps without mutating the original', () => {
