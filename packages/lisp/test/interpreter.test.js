@@ -520,8 +520,8 @@ test('string-join joins a list with a separator', () => {
 });
 
 test('string-join is iterative — no stack overflow on a long list', () => {
-  // The interpreter has no TCO; a hand-written Lisp join would overflow
-  // here. `string-join` joins in one host pass.
+  // A hand-written Lisp join recurses non-tail (inside `str`), which
+  // TCO does not flatten. `string-join` joins in one host pass.
   assert.equal(
     run('(string-length (string-join (map number->string (range 50000)) ","))') > 0,
     true

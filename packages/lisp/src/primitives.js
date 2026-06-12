@@ -331,9 +331,9 @@ export function installPrimitives(env, { write }) {
   def('string-append', (a) => a.map((x) => str('string-append', x)).join(''));
   // `(string-join LIST [SEP])` — join LIST's elements (each coerced like
   // `str`) with SEP (default ''). Iterative: joins a long list in a
-  // single host pass, where a hand-written Lisp join would recurse once
-  // per element and overflow the stack on large input (the interpreter
-  // has no TCO — see eval.js).
+  // single host pass, where a hand-written Lisp join would recurse
+  // NON-tail (inside `str`) and overflow the stack on large input — the
+  // trampoline only flattens tail calls (see eval.js).
   def('string-join', (a) => {
     arity('string-join', a, 1, 2);
     const items = sequenceToArray('string-join', a[0]);
