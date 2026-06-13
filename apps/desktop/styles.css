@@ -613,7 +613,7 @@ text-view {
   color: var(--fg-dim);
   border: none;
   cursor: pointer;
-  opacity: 0.5;
+  opacity: 0.55;
   /* Inherit the editor's font-size so the marker's `1lh` equals the
      text row height — its `top` is `displayRow * 1lh`, so a 13px
      font here would make `1lh` smaller than a row and the chevrons
@@ -622,6 +622,9 @@ text-view {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Above every pill (including a hover-raised one) so the chevron
+     stays visible, centred in its capsule. */
+  z-index: 12;
 }
 
 /* The caret glyph — sized up because the small ▸/▾ in the editor's
@@ -637,24 +640,28 @@ text-view {
   color: var(--fg);
 }
 
-/* Fold-range pill — a thin rounded vertical bar marking a foldable
-   range, in the rail right of the rule. Faint by default; brightens to
-   the accent when its range is hovered (the bar or its chevron — they
-   share data-fold-start). Nested ranges step toward the content edge
-   via --fold-depth, reading as stacked parallel bars. */
+/* Fold-range pill — a same-width rounded capsule marking a foldable
+   range, in one fixed column (the chevron sits centred in its top, with
+   a couple of px of margin each side). Nested ranges overlap and stack
+   on the z-axis: a child paints on top of its parent (later in the DOM),
+   and `--pill-fill` strengthens with depth, so outer ranges read lighter
+   and inner ranges stronger — concentric brackets, fading outward.
+   Hovering a range (its capsule or chevron — they share data-fold-start)
+   floats it to the front in the accent colour. */
 .editor-fold-pill {
   position: absolute;
-  right: calc(14px - var(--fold-depth, 0) * 4px);
-  width: 3px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--fg-dim) 24%, transparent);
+  right: 5px;
+  width: 18px;
+  border-radius: 7px;
+  background: var(--pill-fill, color-mix(in srgb, var(--fg-dim) 10%, transparent));
   cursor: pointer;
   transition: background 0.1s ease;
 }
 
 .editor-fold-pill:hover,
 .editor-fold-pill.is-range-active {
-  background: var(--accent);
+  background: color-mix(in srgb, var(--accent) 60%, transparent);
+  z-index: 9;
 }
 
 /* The numeric line number. */

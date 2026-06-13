@@ -909,15 +909,18 @@ export function createEditorView(buffer, container, options = {}) {
       lineStartOffset += lines[index].content.length + 1;
     }
 
-    // Fold-range pills — thin vertical bars marking each foldable range,
-    // in the rail right of the rule. Virtualization-safe: positioned in
-    // absolute gutter-row coordinates (top/height in `1lh`), but a pill
-    // element is created only for ranges that intersect the visible
-    // window, so the DOM stays bounded on a big file. A folded range
-    // collapses to its chevron (no pill). Nested ranges step toward the
-    // content edge via `--fold-depth` so they read as stacked bars.
+    // Fold-range pills — same-width rounded capsules marking each
+    // foldable range, in a single fixed column (the chevron sits centred
+    // in the capsule's top). Virtualization-safe: positioned in absolute
+    // gutter-row coordinates (top/height in `1lh`), but an element is
+    // created only for ranges intersecting the visible window, so the
+    // DOM stays bounded on a big file. A folded range collapses to its
+    // chevron (no pill). Nested ranges overlap and stack on the z-axis —
+    // a child always has a higher start line, so it comes later in the
+    // DOM and paints on top of its parent; each pill's fill strengthens
+    // with depth, so outer (further-back) ranges read lighter and inner
+    // ranges read stronger, giving the concentric-bracket look.
     const pillEls = [];
-    const MAX_PILL_DEPTH = 3; // beyond this, pills share the innermost lane
     for (const [startLine, endLineRaw] of foldCache.endByStart) {
       if (folded.has(startLine)) continue; // collapsed → chevron only
       const topRow = displayRowForLine[startLine];
@@ -926,14 +929,18 @@ export function createEditorView(buffer, container, options = {}) {
       const bottomRow = lastVisibleRowForLine[endLine];
       if (bottomRow <= topRow) continue; // nothing visible to span
       if (bottomRow < firstRow || topRow >= lastRow) continue; // offscreen
-      const depth = Math.min(
-        MAX_PILL_DEPTH,
-        foldCache.depthByStart.get(startLine) ?? 0
-      );
+      const depth = foldCache.depthByStart.get(startLine) ?? 0;
       const pill = el('div', 'editor-fold-pill');
       pill.style.top = `calc(${topRow} * 1lh)`;
       pill.style.height = `calc(${bottomRow - topRow + 1} * 1lh)`;
-      pill.style.setProperty('--fold-depth', String(depth));
+      // Depth-graded fill: lighter outside, stronger inside, capped so
+      // very deep nesting doesn't saturate. (Percentage is a literal in
+      // the string, not a var, so it works wherever color-mix does.)
+      const fillPct = Math.min(8 + depth * 6, 32);
+      pill.style.setProperty(
+        '--pill-fill',
+        `color-mix(in srgb, var(--fg-dim) ${fillPct}%, transparent)`
+      );
       pill.dataset.line = String(startLine);
       pill.title = 'Fold';
       pill.addEventListener('mousedown', (ev) => {
