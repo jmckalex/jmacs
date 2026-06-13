@@ -320,7 +320,22 @@ export async function createTreeSitterHighlighter(
     if (foldQuery) {
       const tree = parser.parse(text);
       for (const m of foldQuery.captures(tree.rootNode)) {
-        ranges.push({ start: m.node.startIndex, end: m.node.endIndex });
+        const range = { start: m.node.startIndex, end: m.node.endIndex };
+        // `@fold.inner` opts a delimited construct into column-aware
+        // folding: collapse the *inner* content, leaving the opening and
+        // closing delimiters (`<p>…</p>`, `{…}`). The delimiters are the
+        // node's first and last children; their inner edges become cut
+        // columns in the pure `foldRanges`. A degenerate span (no inner
+        // gap) silently degrades to a plain line-based fold.
+        if (m.name === 'fold.inner') {
+          const open = m.node.firstChild;
+          const close = m.node.lastChild;
+          if (open && close && open !== close && open.endIndex < close.startIndex) {
+            range.innerStart = open.endIndex;
+            range.innerEnd = close.startIndex;
+          }
+        }
+        ranges.push(range);
       }
       tree.delete();
     }

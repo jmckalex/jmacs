@@ -255,6 +255,7 @@ export function createEditorView(buffer, container, options = {}) {
       headers: new Set(),
       endByStart: new Map(),
       depthByStart: new Map(),
+      cutByStart: new Map(),
     };
   }
 
@@ -416,6 +417,43 @@ export function createEditorView(buffer, container, options = {}) {
       if (trimmed === '') continue;
       out.push({ text: trimmed, face: run.face });
       started = true;
+    }
+    return out;
+  }
+
+  /** Keep the run text in columns `[0, col)`, splitting the run that
+   *  straddles `col`. Faces are preserved. Used to render the opening
+   *  delimiter of a column-folded header (`<p>` from `<p>This is…`).
+   *  Operates on plain `{ text, face }` runs (no widget markers). */
+  function sliceRunsToColumn(runs, col) {
+    const out = [];
+    let seen = 0;
+    for (const run of runs) {
+      if (seen >= col) break;
+      const room = col - seen;
+      if (run.text.length <= room) {
+        out.push(run);
+      } else {
+        out.push({ text: run.text.slice(0, room), face: run.face });
+      }
+      seen += run.text.length;
+    }
+    return out;
+  }
+
+  /** Keep the run text from column `col` onward, splitting the straddling
+   *  run. Used to render the closing delimiter of a column-folded header
+   *  (`</p>` from `…mathematics.</p>`). Plain `{ text, face }` runs. */
+  function sliceRunsFromColumn(runs, col) {
+    const out = [];
+    let seen = 0;
+    for (const run of runs) {
+      const end = seen + run.text.length;
+      if (end > col) {
+        const from = Math.max(0, col - seen);
+        out.push(from === 0 ? run : { text: run.text.slice(from), face: run.face });
+      }
+      seen = end;
     }
     return out;
   }
@@ -787,16 +825,26 @@ export function createEditorView(buffer, container, options = {}) {
         let runs = perLine
           ? perLine[index] ?? []
           : highlightLine(lines[index].content, language);
+        // A column-aware (`@fold.inner`) folded header renders as just
+        // its opening delimiter, then `…`, then the closing delimiter
+        // (`<p>…</p>`). Slice the runs to the opening delimiter and skip
+        // the inline/block-math and colour-swatch passes — the cut
+        // content, and anything inside it, is hidden.
+        const foldCut = folded.has(index)
+          ? foldCache.cutByStart.get(index)
+          : undefined;
+        const innerFold = !!(foldCut && foldCut.headerCol !== undefined);
+        if (innerFold) runs = sliceRunsToColumn(runs, foldCut.headerCol);
         // Splice in any inline math widgets that fall on this line,
         // replacing the source characters they cover. Block widgets are
         // emitted as a separate row below (the source lines they span
         // are already hidden).
         const inlinePlacements = mathLayout.inlineByLine.get(index);
-        if (inlinePlacements && inlinePlacements.length > 0) {
+        if (!innerFold && inlinePlacements && inlinePlacements.length > 0) {
           runs = spliceInlineWidgets(runs, inlinePlacements);
         }
         const blockPlacement = mathLayout.blockByStartLine.get(index);
-        if (blockPlacement) {
+        if (blockPlacement && !innerFold) {
           // The start line holds the block's opening delimiter. Show only
           // the source *before* the delimiter (any prefix text on that
           // line), then the widget — so the raw `$$` / `\[` isn't drawn.
@@ -828,7 +876,7 @@ export function createEditorView(buffer, container, options = {}) {
         // Record the inline math widgets mounted on this line (column
         // order matches DOM order), so the cursor/selection/click can
         // position by their measured width rather than source columns.
-        if (inlinePlacements && inlinePlacements.length > 0 && !blockPlacement) {
+        if (!innerFold && inlinePlacements && inlinePlacements.length > 0 && !blockPlacement) {
           const widgetEls = lineEl.querySelectorAll('.math-widget.math-inline');
           const captured = [];
           for (let k = 0; k < inlinePlacements.length && k < widgetEls.length; k += 1) {
@@ -853,24 +901,35 @@ export function createEditorView(buffer, container, options = {}) {
           ellipsis.textContent = '…';
           lineEl.append(ellipsis);
           const endLineNum = foldCache.endByStart.get(index);
-          if (
+          const closeRuns =
             typeof endLineNum === 'number' &&
             endLineNum > index &&
-            endLineNum < lines.length &&
-            isStructuralCloseLine(lines[endLineNum].content)
-          ) {
-            const closeRuns = perLine
-              ? (perLine[endLineNum] ?? null)
-              : highlightLine(lines[endLineNum].content, language);
-            const trimmed = closeRuns ? trimLeadingWhitespaceRuns(closeRuns) : null;
-            if (trimmed && trimmed.length > 0) {
-              const close = el('span', 'editor-fold-close');
-              renderRuns(close, trimmed);
-              lineEl.append(close);
+            endLineNum < lines.length
+              ? (perLine
+                  ? (perLine[endLineNum] ?? null)
+                  : highlightLine(lines[endLineNum].content, language))
+              : null;
+          // A column-aware fold shows the closing delimiter sliced from
+          // the close line (`</p>`); a line-based fold previews the whole
+          // closing line, but only when it is structurally a close.
+          let tail = null;
+          if (closeRuns) {
+            if (innerFold && foldCut.closeCol !== undefined) {
+              tail = sliceRunsFromColumn(closeRuns, foldCut.closeCol);
+            } else if (
+              !innerFold &&
+              isStructuralCloseLine(lines[endLineNum].content)
+            ) {
+              tail = trimLeadingWhitespaceRuns(closeRuns);
             }
           }
+          if (tail && tail.length > 0) {
+            const close = el('span', 'editor-fold-close');
+            renderRuns(close, tail);
+            lineEl.append(close);
+          }
         }
-        if (colourSwatches) {
+        if (!innerFold && colourSwatches) {
           colourSwatches.decorateLine(
             lineEl,
             lines[index].content,

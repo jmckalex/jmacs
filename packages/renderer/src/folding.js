@@ -20,12 +20,23 @@
  * @typedef {object} FoldRange
  * @property {number} startLine - Zero-indexed line of the fold's header.
  * @property {number} endLine - Zero-indexed line where the fold closes.
+ * @property {number} [headerCol] - For a column-aware (inner) fold, the
+ *   column on `startLine` to truncate the header at — the end of the
+ *   opening delimiter (so the view shows `<p>` then `…`). Present only
+ *   when the opening delimiter ends on `startLine`.
+ * @property {number} [closeCol] - For a column-aware fold, the column on
+ *   `endLine` where the closing delimiter begins (so the view shows
+ *   `</p>`). Present only when the closing delimiter starts on `endLine`.
  */
 
 /**
  * @typedef {object} FoldCapture
  * @property {number} start - Absolute character offset of the node's start.
  * @property {number} end - Absolute character offset of the node's end.
+ * @property {number} [innerStart] - For an inner (`@fold.inner`) fold,
+ *   the offset just past the opening delimiter.
+ * @property {number} [innerEnd] - For an inner fold, the offset at which
+ *   the closing delimiter begins.
  */
 
 /**
@@ -47,7 +58,8 @@ export function foldRanges(text, captures) {
   const lineStarts = computeLineStarts(text);
   const lineCount = lineStarts.length;
 
-  /** @type {Map<number, number>} startLine -> max endLine. */
+  /** @type {Map<number, {endLine: number, headerCol?: number, closeCol?: number}>}
+   *  startLine -> the longest range starting there, plus any cut columns. */
   const byStart = new Map();
   for (const cap of captures) {
     const startLine = offsetToLine(lineStarts, cap.start);
@@ -57,14 +69,28 @@ export function foldRanges(text, captures) {
     );
     if (endLine <= startLine) continue;
     const existing = byStart.get(startLine);
-    if (existing === undefined || endLine > existing) {
-      byStart.set(startLine, endLine);
+    if (existing !== undefined && endLine <= existing.endLine) continue;
+    const range = { endLine };
+    // Column-aware (inner) fold: translate the delimiter offsets into a
+    // header cut column and a close resume column, but only when each
+    // delimiter lands on the line we'd render it on (the header line and
+    // the close line). Otherwise the fold stays line-based.
+    if (typeof cap.innerStart === 'number' && typeof cap.innerEnd === 'number') {
+      if (offsetToLine(lineStarts, cap.innerStart) === startLine) {
+        range.headerCol = cap.innerStart - lineStarts[startLine];
+      }
+      if (offsetToLine(lineStarts, cap.innerEnd) === endLine) {
+        range.closeCol = cap.innerEnd - lineStarts[endLine];
+      }
     }
+    byStart.set(startLine, range);
   }
-  const ranges = Array.from(byStart, ([startLine, endLine]) => ({
-    startLine,
-    endLine,
-  }));
+  const ranges = Array.from(byStart, ([startLine, r]) => {
+    const range = { startLine, endLine: r.endLine };
+    if (r.headerCol !== undefined) range.headerCol = r.headerCol;
+    if (r.closeCol !== undefined) range.closeCol = r.closeCol;
+    return range;
+  });
   ranges.sort((a, b) => a.startLine - b.startLine);
   return ranges;
 }
@@ -126,12 +152,20 @@ export function indexFoldRanges(ranges) {
   const headers = new Set();
   const endByStart = new Map();
   const depthByStart = new Map();
+  /** startLine -> { headerCol?, closeCol? } for column-aware folds only. */
+  const cutByStart = new Map();
   /** End lines of ranges still open at the current sweep point, innermost
    *  on top (their ends decrease toward the top under proper nesting). */
   const openEnds = [];
   for (const range of ranges) {
     headers.add(range.startLine);
     endByStart.set(range.startLine, range.endLine);
+    if (range.headerCol !== undefined || range.closeCol !== undefined) {
+      cutByStart.set(range.startLine, {
+        headerCol: range.headerCol,
+        closeCol: range.closeCol,
+      });
+    }
     while (
       openEnds.length > 0 &&
       openEnds[openEnds.length - 1] < range.startLine
@@ -141,7 +175,7 @@ export function indexFoldRanges(ranges) {
     depthByStart.set(range.startLine, openEnds.length);
     openEnds.push(range.endLine);
   }
-  return { headers, endByStart, depthByStart };
+  return { headers, endByStart, depthByStart, cutByStart };
 }
 
 /**
