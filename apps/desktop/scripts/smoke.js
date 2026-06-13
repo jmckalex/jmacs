@@ -410,10 +410,10 @@ app.whenReady().then(() => {
       const palette = await win.webContents.executeJavaScript(`(async () => {
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
-        // The real macOS event: Option composes a character into key,
-        // and code carries the physical key.
+        // Command is Meta now (keyEventToString maps metaKey to M-,
+        // altKey to A-), so M-x is the real macOS Cmd+X event.
         editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: '≈', code: 'KeyX', altKey: true, bubbles: true, cancelable: true,
+          key: 'x', code: 'KeyX', metaKey: true, bubbles: true, cancelable: true,
         }));
         const mb = document.querySelector('.minibuffer-input');
         const panel = document.querySelector('.minibuffer');
@@ -1372,11 +1372,14 @@ app.whenReady().then(() => {
         await frame();
         submit('(open-doc "smoke-doc-fn")');
         for (let i = 0; i < 8; i += 1) await frame();
-        const view = document.querySelector('.utility-panel:not([hidden]) doc-view');
+        // Doc pages open as a pane view now (showDocInPane), so the
+        // page lives in a visible doc-view and the name shows on the
+        // modeline — not in the utility dock.
+        const view = document.querySelector('doc-view:not([style*="display: none"])');
         const shown = !!view;
         const page = view ? view.querySelector('.doc-page') : null;
         const html = page ? page.innerHTML : '';
-        const activeTabEl = document.querySelector('.utility-tab.is-active .utility-tab-label');
+        const modeline = document.getElementById('modeline-name')?.textContent ?? '';
         return {
           shown,
           // marked's rendered output uses these tags for **bold**,
@@ -1385,9 +1388,7 @@ app.whenReady().then(() => {
           hasStrong: /<strong>bold<\\/strong>/.test(html),
           hasEm: /<em>live<\\/em>/.test(html),
           hasList: /<ul>[\\s\\S]*<li>/.test(html),
-          // The doc is a utility tab now (not a pane view), so its name
-          // shows on the active tab, not the modeline.
-          activeTab: activeTabEl ? activeTabEl.textContent : '',
+          modeline,
         };
       })()`);
       console.log('  liveDocs:', JSON.stringify(liveDocs));
@@ -2659,11 +2660,11 @@ app.whenReady().then(() => {
       console.log('  findFile:', JSON.stringify(findFile));
       await rm(ffPath, { force: true });
 
-      // Multi-pane arm (phase 3a of plans/PANES.md): split the editor
-      // area into two panes, assert focus + per-view-point behaviour,
-      // cycle focus with `other-pane`, then collapse back to one pane
-      // and finally drive a splitter drag programmatically. The arm
-      // composes all of commit 4–5's user-visible behaviour.
+      // Multi-pane arm: split the editor area into two panes, assert
+      // the current focus contract (split focuses the NEW placeholder
+      // chooser pane — see splitPaneAtLeaf in src/app.js), fill the
+      // placeholder, cycle focus with `other-pane`, collapse back to
+      // one pane, and finally drive a splitter drag programmatically.
       const paneA = '/tmp/jmacs-smoke-pane-a.txt';
       const paneB = '/tmp/jmacs-smoke-pane-b.txt';
       await writeFile(paneA, 'pane a — left side\nsecond line a', 'utf8');
@@ -2696,51 +2697,44 @@ app.whenReady().then(() => {
         const nameBefore = document.getElementById('modeline-name')
           ?.textContent ?? '';
 
-        // Split horizontally (side-by-side) — bound to C-x 3.
+        // Split horizontally (side-by-side) — bound to C-x 3. Focus
+        // moves to the NEW pane, which holds a placeholder chooser.
         submit('(split-horizontal!)');
         await wait(250);
         const paneCountAfterSplit = countPanes();
         const focusAfterSplit = focusedPaneId();
-        const focusStayed = focusAfterSplit === focusBefore;
+        const focusMoved = !!focusAfterSplit && focusAfterSplit !== focusBefore;
+        const placeholderName = document.getElementById('modeline-name')
+          ?.textContent ?? '';
 
-        // After split, the right pane was given a duplicate view over
-        // the same buffer. Move the *focused* (left) pane's point so
-        // we can verify the two cursors are independent.
-        submit('(goto! 5)');
-        await wait(80);
-        submit('(point)');
-        await wait(80);
-        const leftPointEcho = lastResult();
-
-        // Cycle focus to the other pane (C-x o → other-pane).
-        submit('(other-pane!)');
-        await wait(200);
-        const focusAfterOther = focusedPaneId();
-        const cycled = focusAfterOther && focusAfterOther !== focusBefore;
-        // The right pane holds the duplicate view; its point is the
-        // copied original (0 — we hadn't moved the original cursor
-        // before splitting). Read it.
-        submit('(point)');
-        await wait(80);
-        const rightPointEcho = lastResult();
-
-        // Switch the focused (right) pane to the second test file.
-        // Auto-duplicate doesn't apply (different file); the view list
-        // grows by one and the right pane shows it. The collision rule
-        // doesn't fire because no other pane shows that file.
+        // Fill the placeholder: open the second test file in the new
+        // (focused) pane, then move its point so we can verify the two
+        // panes' cursors are independent.
         submit('(open-file-path! "${paneB}")');
         await wait(350);
         const rightNameAfterOpen = document.getElementById('modeline-name')
           ?.textContent ?? '';
+        submit('(goto! 5)');
+        await wait(80);
+        submit('(point)');
+        await wait(80);
+        const rightPointEcho = lastResult();
 
-        // Cycle back to the left pane and verify its name is still A.
+        // Cycle focus back to the original pane (C-x o → other-pane).
         submit('(other-pane!)');
         await wait(200);
+        const focusAfterOther = focusedPaneId();
+        const cycled = focusAfterOther === focusBefore;
         const leftNameAfterCycle = document.getElementById('modeline-name')
           ?.textContent ?? '';
+        // The original pane's cursor was never moved — its point is
+        // still 0, independent of the other pane's 5.
+        submit('(point)');
+        await wait(80);
+        const leftPointEcho = lastResult();
 
-        // delete-other-panes from the left pane (C-x 1): collapses
-        // back to one pane, with the left pane's view as the survivor.
+        // delete-other-panes from the original pane (C-x 1): collapses
+        // back to one pane, with the original pane's view surviving.
         submit('(delete-other-panes!)');
         await wait(200);
         const paneCountAfterCollapse = countPanes();
@@ -2783,8 +2777,13 @@ app.whenReady().then(() => {
             .getBoundingClientRect().width;
         }
 
-        // Tidy: collapse back so subsequent arms (none in this commit,
-        // but good housekeeping) see a single pane.
+        // Tidy: the second split moved focus to its new placeholder
+        // pane (the current split contract), so cycle back to the
+        // original pane FIRST — collapsing from the placeholder would
+        // keep the placeholder and discard the root tabline (and with
+        // it every later arm's tab behaviour).
+        submit('(other-pane!)');
+        await wait(120);
         submit('(delete-other-panes!)');
         await wait(150);
         const paneCountFinal = countPanes();
@@ -2795,7 +2794,8 @@ app.whenReady().then(() => {
           nameBefore,
           paneCountAfterSplit,
           focusAfterSplit,
-          focusStayed,
+          focusMoved,
+          placeholderName,
           leftPointEcho,
           rightPointEcho,
           cycled,
@@ -2933,17 +2933,14 @@ app.whenReady().then(() => {
         const leaves = editorHost.querySelectorAll('.pane');
         // After split, the originating (left) pane is index 0; the
         // newly-created right pane is index 1. Left keeps its tabline-
-        // pane container; the right pane should NOT carry a tabline-
-        // pane container (the duplicate-of-active is a plain leaf
-        // view, per the brief's commit-5 split-leaves rule).
+        // pane container; the right pane holds the placeholder chooser
+        // — NOT a tabline-pane container.
         const leftHasTabline = leaves[0].querySelector('tabline-view') !== null;
         const rightHasTabline = leaves[1].querySelector('tabline-view') !== null;
 
-        // Focus the right pane (other-pane!) and open a file. The
-        // right pane is a plain leaf; opening a file should swap the
-        // leaf's view to the new file (no new tabline strip).
-        submit('(other-pane!)');
-        await wait(120);
+        // The split moved focus to the new right pane (the current
+        // contract), so open a file straight away: it fills the
+        // placeholder as a plain leaf view — no new tabline strip.
         submit('(open-file-path! "${tablineE}")');
         await wait(250);
         const rightLeafAfterOpen = leaves[1];
@@ -3135,16 +3132,18 @@ app.whenReady().then(() => {
         await wait(150);
 
         // --- (1) C-u flip on split-horizontal -----------------------
+        const hostRect = editorHost.getBoundingClientRect();
         const focusStart = focusedPaneId();
         submit("(split-horizontal! 0.5 'before)");
         await wait(200);
         const flipHCount = countPanes();
         const flipHFocus = focusedPaneId();
         const flipHFocusedRect = focusedRect();
-        // The originating leaf kept focus; with side='before the new
-        // leaf is *first* (left), so the focused (originating) pane
-        // sits at rect.left > 0.
-        const flipHFocusOnRight = !!(flipHFocusedRect && flipHFocusedRect.left > 0);
+        // Focus moves to the NEW pane; with side='before the new leaf
+        // is *first* (left), so the focused pane hugs the host's left
+        // edge.
+        const flipHFocusOnLeft = !!(flipHFocusedRect &&
+          Math.abs(flipHFocusedRect.left - hostRect.left) < 5);
         submit('(delete-other-panes!)');
         await wait(150);
 
@@ -3153,9 +3152,10 @@ app.whenReady().then(() => {
         await wait(200);
         const flipVCount = countPanes();
         const flipVFocusedRect = focusedRect();
-        // side='before puts the new leaf on top; focused (originating)
-        // pane sits at rect.top > 0.
-        const flipVFocusOnBottom = !!(flipVFocusedRect && flipVFocusedRect.top > 0);
+        // side='before puts the new leaf on top; the focused (new)
+        // pane hugs the host's top edge.
+        const flipVFocusOnTop = !!(flipVFocusedRect &&
+          Math.abs(flipVFocusedRect.top - hostRect.top) < 5);
         submit('(delete-other-panes!)');
         await wait(150);
 
@@ -3245,9 +3245,9 @@ app.whenReady().then(() => {
           focusStart,
           flipHCount,
           flipHFocus,
-          flipHFocusOnRight,
+          flipHFocusOnLeft,
           flipVCount,
-          flipVFocusOnBottom,
+          flipVFocusOnTop,
           overlayShown,
           borderTargets,
           splitterTargetsInitial,
@@ -3307,17 +3307,19 @@ app.whenReady().then(() => {
         submit('(open-file-path! "${bug2File}")');
         await wait(300);
 
-        // Split horizontally; right pane becomes B.
+        // Split horizontally; focus moves to the new placeholder
+        // pane B (the current split contract).
         submit('(split-horizontal!)');
         await wait(250);
-        submit('(other-pane!)');
-        await wait(150);
-        submit('(promote-to-tabline!)');
-        await wait(150);
 
-        // Open the same file in pane B — auto-dup should fire.
+        // Open the same file in pane B — auto-dup fires (the file is
+        // visible in pane A), filling the placeholder with a fresh
+        // View over the shared buffer. Then promote B to a tabline so
+        // the file sits in two separate tablines.
         submit('(open-file-path! "${bug2File}")');
         await wait(400);
+        submit('(promote-to-tabline!)');
+        await wait(150);
 
         const tabsBeforeKill = tabsForFile();
         const panesBeforeKill = panesWithFile();
@@ -3400,17 +3402,17 @@ app.whenReady().then(() => {
         submit('(demote-tabline!)');
         await wait(200);
 
-        // Split horizontally to make pane B on the right.
+        // Split horizontally to make pane B on the right; focus moves
+        // to the new placeholder pane (current split contract).
         submit('(split-horizontal!)');
         await wait(250);
-        submit('(other-pane!)');
-        await wait(150);
-        submit('(promote-to-tabline!)');
-        await wait(150);
 
-        // Open the video file in pane B's tabline.
+        // Open the video file in pane B (fills the placeholder), then
+        // promote B to a tabline so the video sits in a tab.
         submit('(open-file-path! "${bug3VideoPath}")');
         await wait(400);
+        submit('(promote-to-tabline!)');
+        await wait(150);
 
         // Snapshot before clicking.
         const before = paneSummary();
@@ -3504,18 +3506,16 @@ app.whenReady().then(() => {
         submit('(open-file-path! "${bug4FileA}")');
         await wait(250);
 
-        // Split horizontally → right pane is a leaf-direct copy of A;
-        // promote it to its own tabline.
+        // Split horizontally → focus moves to the new right
+        // placeholder pane (current split contract). Open B there —
+        // it fills the placeholder — then promote the right pane to
+        // its own tabline. Right tabline = [B].
         submit('(split-horizontal!)');
         await wait(250);
-        submit('(other-pane!)');
-        await wait(150);
-        submit('(promote-to-tabline!)');
-        await wait(150);
-
-        // Open B in right. Right tabline = [dup-A, B].
         submit('(open-file-path! "${bug4FileB}")');
         await wait(250);
+        submit('(promote-to-tabline!)');
+        await wait(150);
 
         // Cross over to left, open D so it lands AFTER B in the
         // global views list. Without this step, the kill in right
@@ -3529,8 +3529,8 @@ app.whenReady().then(() => {
         await wait(250);
 
         // Back to right; open C as its new active tab. Now the
-        // global views list ends with [..., A, dup-A, B, D, C] and
-        // right tabline is [dup-A, B, C].
+        // global views list ends with [..., A, B, D, C] and the
+        // right tabline is [B, C].
         submit('(other-pane!)');
         await wait(150);
         submit('(open-file-path! "${bug4FileC}")');
@@ -3611,8 +3611,10 @@ app.whenReady().then(() => {
         treesitter.mdHeadings > 0 && treesitter.mdInjectsJs > 0 &&
         treesitter.texFunctions > 0 && treesitter.texTypes > 0 &&
         treesitter.texStrings > 0 && treesitter.texTags > 0;
+      // The doc-view modeline shows the page title ("Face at point"),
+      // not the raw *Doc: …* buffer name.
       const faceInfoOk =
-        faceInfo.modeline.includes('*Doc: Face at point*') &&
+        faceInfo.modeline.includes('Face at point') &&
         faceInfo.mentionsKeyword &&
         faceInfo.mentionsTokKeyword;
       const replaceOk = replace.text === 'bar bar bar';
@@ -3696,7 +3698,7 @@ app.whenReady().then(() => {
         liveDocs.hasStrong &&
         liveDocs.hasEm &&
         liveDocs.hasList &&
-        liveDocs.activeTab.includes('smoke-doc-fn');
+        liveDocs.modeline.includes('smoke-doc-fn');
       // Buffer menu arm: header present, both seeded buffers listed,
       // *Buffer List* lists itself, and `d` then `x` removes the
       // marked buffer.
@@ -3882,20 +3884,21 @@ app.whenReady().then(() => {
         findFile.seed.endsWith('/') &&
         findFile.completed === '/tmp/jmacs-smoke-find-file.txt' &&
         findFile.opened2.includes('jmacs-smoke-find-file.txt');
-      // Multi-pane arm: splits land, focus stays on the originating
-      // (left) pane, the right pane gets a duplicate view; other-pane
-      // cycles focus; opening a different file in the right pane
-      // moves only that pane; delete-other-panes collapses back to
-      // one pane on the original; the splitter handle drags.
+      // Multi-pane arm: splits land, focus MOVES to the new
+      // placeholder chooser pane (the current contract); opening a
+      // file fills the placeholder; other-pane cycles focus back;
+      // delete-other-panes collapses back to one pane on the
+      // original; the splitter handle drags.
       const panesOk =
         panes.paneCountBefore === 1 &&
         panes.paneCountAfterSplit === 2 &&
-        panes.focusStayed === true &&
-        // Per-view-point: the left pane's point is 5 (we set it); the
-        // right pane (duplicate view over the same buffer) has its own
-        // point that wasn't touched by the set on the left.
-        panes.leftPointEcho === '5' &&
-        panes.rightPointEcho !== panes.leftPointEcho &&
+        panes.focusMoved === true &&
+        panes.placeholderName.includes('choose a view') &&
+        // Per-view-point: the new (right) pane's point is 5 (we set
+        // it); the original pane's cursor was never moved, so its
+        // point is independent of the right pane's.
+        panes.rightPointEcho === '5' &&
+        panes.leftPointEcho !== panes.rightPointEcho &&
         panes.cycled === true &&
         panes.rightNameAfterOpen.includes('jmacs-smoke-pane-b.txt') &&
         panes.leftNameAfterCycle.includes('jmacs-smoke-pane-a.txt') &&
@@ -3911,9 +3914,10 @@ app.whenReady().then(() => {
 
       // Add-pane arm: C-u flip + the visual add-pane overlay.
       // - `(split-horizontal! 0.5 'before)` puts the new pane on the
-      //   left; the originating (focused) pane sits at x > 0.
-      // - `(split-vertical! 0.5 'before)` puts it above; focused sits
-      //   at y > 0.
+      //   left; focus moves to it, so the focused pane hugs the host's
+      //   left edge.
+      // - `(split-vertical! 0.5 'before)` puts it above; the focused
+      //   (new) pane hugs the host's top edge.
       // - `(enter-add-pane-mode!)` shows .add-pane-overlay with
       //   exactly four border targets and zero splitter targets in
       //   the single-pane case.
@@ -3924,9 +3928,10 @@ app.whenReady().then(() => {
       // - Escape closes the overlay without inserting.
       const addPaneOk =
         addPaneArm.flipHCount === 2 &&
-        addPaneArm.flipHFocusOnRight === true &&
+        addPaneArm.flipHFocus !== addPaneArm.focusStart &&
+        addPaneArm.flipHFocusOnLeft === true &&
         addPaneArm.flipVCount === 2 &&
-        addPaneArm.flipVFocusOnBottom === true &&
+        addPaneArm.flipVFocusOnTop === true &&
         addPaneArm.overlayShown === true &&
         addPaneArm.borderTargets === 4 &&
         addPaneArm.splitterTargetsInitial === 0 &&
