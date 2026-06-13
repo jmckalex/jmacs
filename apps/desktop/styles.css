@@ -569,9 +569,27 @@ text-view {
   user-select: none;
 }
 
+/* Thin vertical rule, just right of the line numbers' ones-place.
+   Everything left of it is line numbers; everything right is the fold
+   rail (chevrons + range pills). One full-height pseudo-element — no
+   per-line cost. */
+.editor-gutter::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 26px;
+  width: 1px;
+  height: 100%;
+  background: color-mix(in srgb, var(--fg-dim) 32%, transparent);
+  pointer-events: none;
+}
+
+/* Line numbers — right-anchored so the ones-place sits at a fixed
+   distance from the gutter's right edge (just left of the rule),
+   whatever the digit count. */
 .editor-line-no {
   position: absolute;
-  right: 14px;
+  right: 32px;
   height: 1lh;
   color: var(--fg-dim);
   opacity: 0.5;
@@ -582,36 +600,64 @@ text-view {
   color: var(--fg);
 }
 
-/* Fold marker: a FontAwesome caret that sits to the left of the line
-   number on foldable lines. Click to toggle the fold. */
+/* Fold chevron — a FontAwesome caret in the gutter's fixed rail column,
+   right of the rule, so every chevron aligns regardless of line-number
+   width. Click toggles the fold. */
 .editor-fold-marker {
   position: absolute;
-  right: 100%;
-  margin-right: 4px;
-  padding: 0 4px;
+  right: 5px;
+  width: 18px;
+  height: 1lh;
+  padding: 0;
   background: transparent;
   color: var(--fg-dim);
   border: none;
   cursor: pointer;
   opacity: 0.5;
+  /* Inherit the editor's font-size so the marker's `1lh` equals the
+     text row height — its `top` is `displayRow * 1lh`, so a 13px
+     font here would make `1lh` smaller than a row and the chevrons
+     would drift down the further you scroll. Size the glyph instead. */
   line-height: 1lh;
-  height: 1lh;
-  /* FA icon sizing — the small ▸/▾ glyphs in the editor's monospace
-     font were almost invisible. Bumping to ~13px gives a clearly
-     clickable target without dominating the gutter. */
-  font-size: 13px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
-.editor-line-no:hover .editor-fold-marker,
-.editor-fold-marker:hover {
+/* The caret glyph — sized up because the small ▸/▾ in the editor's
+   monospace font were almost invisible. ~13px is a clearly clickable
+   target without dominating the gutter. */
+.editor-fold-marker i {
+  font-size: 13px;
+}
+
+.editor-fold-marker:hover,
+.editor-fold-marker.is-range-active {
   opacity: 1;
   color: var(--fg);
 }
 
-/* The numeric line number when a fold marker is also present. */
+/* Fold-range pill — a thin rounded vertical bar marking a foldable
+   range, in the rail right of the rule. Faint by default; brightens to
+   the accent when its range is hovered (the bar or its chevron — they
+   share data-fold-start). Nested ranges step toward the content edge
+   via --fold-depth, reading as stacked parallel bars. */
+.editor-fold-pill {
+  position: absolute;
+  right: calc(14px - var(--fold-depth, 0) * 4px);
+  width: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--fg-dim) 24%, transparent);
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.editor-fold-pill:hover,
+.editor-fold-pill.is-range-active {
+  background: var(--accent);
+}
+
+/* The numeric line number. */
 .editor-line-no-num {
   display: inline-block;
 }

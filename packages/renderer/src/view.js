@@ -242,8 +242,16 @@ export function createEditorView(buffer, container, options = {}) {
   // scroll-only render reuses it.
   let foldCacheText = null;
   let foldCacheLanguage = null;
-  /** @type {{ headers: Set<number>, endByStart: Map<number, number> }} */
-  let foldCache = { headers: new Set(), endByStart: new Map() };
+  /** @type {{ headers: Set<number>, endByStart: Map<number, number>, depthByStart: Map<number, number> }} */
+  let foldCache = emptyFoldCache();
+
+  function emptyFoldCache() {
+    return {
+      headers: new Set(),
+      endByStart: new Map(),
+      depthByStart: new Map(),
+    };
+  }
 
   /** Recompute and cache the fold index for the current buffer text. */
   function refreshFoldIndex() {
@@ -257,10 +265,10 @@ export function createEditorView(buffer, container, options = {}) {
       try {
         foldCache = indexFoldRanges(foldRanges(text, extractor(text)));
       } catch {
-        foldCache = { headers: new Set(), endByStart: new Map() };
+        foldCache = emptyFoldCache();
       }
     } else {
-      foldCache = { headers: new Set(), endByStart: new Map() };
+      foldCache = emptyFoldCache();
     }
     foldCacheText = text;
     foldCacheLanguage = language;
@@ -487,6 +495,12 @@ export function createEditorView(buffer, container, options = {}) {
   // Rebuilt each render.
   /** @type {Int32Array | null} */
   let displayRowForLine = null;
+  // For each buffer line, the bottom-most display row occupied by the last
+  // *visible* line at or before it. Hidden lines carry the previous value.
+  // Lets a fold-range pill find its bottom row in O(1) even when nested
+  // folds hide its end line. Rebuilt alongside `displayRowForLine`.
+  /** @type {Int32Array | null} */
+  let lastVisibleRowForLine = null;
   let displayRowCount = 0;
   /** Visible lines that carry inline math widgets → each widget's source
    *  column span and mounted element. Lets the cursor / selection / click
@@ -644,7 +658,9 @@ export function createEditorView(buffer, container, options = {}) {
     for (const line of mathLayout.hiddenByBlock) hidden.add(line);
 
     displayRowForLine = new Int32Array(lineCount);
+    lastVisibleRowForLine = new Int32Array(lineCount);
     let row = 0;
+    let lastVisibleRow = 0;
     for (let i = 0; i < lineCount; i += 1) {
       if (hidden.has(i)) {
         displayRowForLine[i] = -1;
@@ -655,13 +671,22 @@ export function createEditorView(buffer, container, options = {}) {
         // overflowing onto the next visible line.
         const blk = mathLayout.blockByStartLine.get(i);
         row += blk ? blk.rowSpan : 1;
+        lastVisibleRow = row - 1; // bottom display row this line occupies
       }
+      lastVisibleRowForLine[i] = lastVisibleRow;
     }
     displayRowCount = row;
 
     content.style.height = `calc(${displayRowCount} * 1lh)`;
     gutter.style.height = `calc(${displayRowCount} * 1lh)`;
-    gutter.style.width = `calc(${String(lineCount).length}ch + 48px)`;
+    // Gutter layout, right→left from the gutter's right edge: a small
+    // content gap, the fold rail (chevrons + range pills), the 1px
+    // vertical rule just right of the ones-place, a gap, then the
+    // right-aligned numbers, then left padding. Only the digit count
+    // varies; everything right of the rule is a fixed column so the
+    // chevrons align regardless of line-number width. Offsets live in
+    // CSS (.editor-line-no / .editor-fold-marker / .editor-fold-pill).
+    gutter.style.width = `calc(${String(lineCount).length}ch + 42px)`;
 
     // The visible window in display-row coordinates, with a few lines
     // of overscan each side. `firstRow`/`lastRow` are display rows.
@@ -743,6 +768,10 @@ export function createEditorView(buffer, container, options = {}) {
     const blockMeasure = [];
     const lineEls = [];
     const numberEls = [];
+    // Fold chevrons and range pills live in the gutter's fixed rail
+    // (right of the rule), positioned absolutely — not inside the
+    // per-line number element — so they align across line-number widths.
+    const chevronEls = [];
     let lineStartOffset = 0;
     for (let index = 0; index < lineCount; index += 1) {
       const displayRow = displayRowForLine[index];
@@ -845,13 +874,22 @@ export function createEditorView(buffer, container, options = {}) {
         const numberEl = el('div', 'editor-line-no');
         numberEl.style.top = `calc(${displayRow} * 1lh)`;
         numberEl.dataset.line = String(index);
-        // Fold marker, when this line is foldable. A FontAwesome
-        // caret — sized via CSS so it's clearly clickable, unlike
-        // the small ▸/▾ glyphs in the editor's own monospace font.
+        const num = doc.createElement('span');
+        num.className = 'editor-line-no-num';
+        num.textContent = String(index + 1);
+        numberEl.append(num);
+        numberEls.push(numberEl);
+
+        // Fold chevron, when this line is foldable. A FontAwesome caret
+        // — sized via CSS so it's clearly clickable, unlike the small
+        // ▸/▾ glyphs in the editor's own monospace font. Positioned in
+        // the gutter's fixed rail (not inside numberEl), so every
+        // chevron lands in the same column whatever the line width.
         if (foldCache.headers.has(index)) {
           const marker = el('button', 'editor-fold-marker');
           marker.type = 'button';
           marker.dataset.line = String(index);
+          marker.style.top = `calc(${displayRow} * 1lh)`;
           marker.title = folded.has(index) ? 'Unfold' : 'Fold';
           const icon = doc.createElement('i');
           icon.className = 'fa-solid ' +
@@ -864,18 +902,53 @@ export function createEditorView(buffer, container, options = {}) {
             ev.stopPropagation();
             toggleFoldAt(index);
           });
-          numberEl.append(marker);
+          wireRangeHover(marker, index);
+          chevronEls.push(marker);
         }
-        const num = doc.createElement('span');
-        num.className = 'editor-line-no-num';
-        num.textContent = String(index + 1);
-        numberEl.append(num);
-        numberEls.push(numberEl);
       }
       lineStartOffset += lines[index].content.length + 1;
     }
+
+    // Fold-range pills — thin vertical bars marking each foldable range,
+    // in the rail right of the rule. Virtualization-safe: positioned in
+    // absolute gutter-row coordinates (top/height in `1lh`), but a pill
+    // element is created only for ranges that intersect the visible
+    // window, so the DOM stays bounded on a big file. A folded range
+    // collapses to its chevron (no pill). Nested ranges step toward the
+    // content edge via `--fold-depth` so they read as stacked bars.
+    const pillEls = [];
+    const MAX_PILL_DEPTH = 3; // beyond this, pills share the innermost lane
+    for (const [startLine, endLineRaw] of foldCache.endByStart) {
+      if (folded.has(startLine)) continue; // collapsed → chevron only
+      const topRow = displayRowForLine[startLine];
+      if (topRow === -1) continue; // header hidden inside a parent fold
+      const endLine = Math.min(endLineRaw, lineCount - 1);
+      const bottomRow = lastVisibleRowForLine[endLine];
+      if (bottomRow <= topRow) continue; // nothing visible to span
+      if (bottomRow < firstRow || topRow >= lastRow) continue; // offscreen
+      const depth = Math.min(
+        MAX_PILL_DEPTH,
+        foldCache.depthByStart.get(startLine) ?? 0
+      );
+      const pill = el('div', 'editor-fold-pill');
+      pill.style.top = `calc(${topRow} * 1lh)`;
+      pill.style.height = `calc(${bottomRow - topRow + 1} * 1lh)`;
+      pill.style.setProperty('--fold-depth', String(depth));
+      pill.dataset.line = String(startLine);
+      pill.title = 'Fold';
+      pill.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleFoldAt(startLine);
+      });
+      wireRangeHover(pill, startLine);
+      pillEls.push(pill);
+    }
+
     linesEl.replaceChildren(...lineEls);
-    gutter.replaceChildren(...numberEls);
+    // Pills first, then chevrons on top (a chevron sits at the top of
+    // its pill on the header row and must stay the clickable element).
+    gutter.replaceChildren(...numberEls, ...pillEls, ...chevronEls);
 
     // The block widgets are now laid out: measure each one's real height
     // and remember how many rows it needs (height + the .math-block top/
@@ -1084,7 +1157,9 @@ export function createEditorView(buffer, container, options = {}) {
 
     // Brighten the primary cursor's line number in the gutter. Only the
     // visible numbers are present, so match on the line each carries.
-    for (const numberEl of gutter.children) {
+    // Scope to `.editor-line-no` — the gutter also holds fold chevrons
+    // and range pills (which carry their own `data-line`).
+    for (const numberEl of gutter.querySelectorAll('.editor-line-no')) {
       numberEl.classList.toggle(
         'is-current',
         Number(numberEl.dataset.line) === primaryPos.line
@@ -1340,6 +1415,30 @@ export function createEditorView(buffer, container, options = {}) {
   // The view owns the per-buffer fold state. The host's Lisp keymap
   // routes the `C-c TAB` / `C-c C-,` / `C-c C-.` commands through
   // `toggleFoldAtPoint` / `foldAll` / `unfoldAll`.
+
+  /**
+   * Cross-highlight a fold range's gutter elements. The chevron and the
+   * range pill for the same header both carry `data-fold-start`, so
+   * hovering either one brightens both — "highlight to indicate the
+   * relevant range". Re-wired per render (the gutter is rebuilt each
+   * frame); transient `:hover`-style state, no cleanup needed.
+   *
+   * @param {HTMLElement} elem
+   * @param {number} startLine
+   */
+  function wireRangeHover(elem, startLine) {
+    const key = String(startLine);
+    elem.dataset.foldStart = key;
+    const set = (on) => {
+      for (const sib of gutter.querySelectorAll(
+        `[data-fold-start="${key}"]`
+      )) {
+        sib.classList.toggle('is-range-active', on);
+      }
+    };
+    elem.addEventListener('mouseenter', () => set(true));
+    elem.addEventListener('mouseleave', () => set(false));
+  }
 
   /** Toggle the fold at the header that contains buffer line `line`. */
   function toggleFoldAt(line) {

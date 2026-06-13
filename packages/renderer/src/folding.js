@@ -108,21 +108,40 @@ function offsetToLine(lineStarts, offset) {
  *
  *   - `headers`: `Set<number>` of startLine numbers (foldable headers).
  *   - `endByStart`: `Map<number, number>` mapping startLine -> endLine.
+ *   - `depthByStart`: `Map<number, number>` mapping startLine -> nesting
+ *     depth (0 = outermost). The gutter offsets each fold-range "pill"
+ *     horizontally by this depth so nested ranges read as stacked bars.
  *
  * The view uses `headers` to draw the gutter glyph and `endByStart` to
  * compute what to hide when a header is folded.
  *
+ * Depth is a single stack sweep: `ranges` arrive sorted by `startLine`
+ * (from `foldRanges`) and fold scopes nest properly (or are disjoint), so
+ * the number of still-open ancestors when a range starts is its depth.
+ *
  * @param {FoldRange[]} ranges
- * @returns {{ headers: Set<number>, endByStart: Map<number, number> }}
+ * @returns {{ headers: Set<number>, endByStart: Map<number, number>, depthByStart: Map<number, number> }}
  */
 export function indexFoldRanges(ranges) {
   const headers = new Set();
   const endByStart = new Map();
+  const depthByStart = new Map();
+  /** End lines of ranges still open at the current sweep point, innermost
+   *  on top (their ends decrease toward the top under proper nesting). */
+  const openEnds = [];
   for (const range of ranges) {
     headers.add(range.startLine);
     endByStart.set(range.startLine, range.endLine);
+    while (
+      openEnds.length > 0 &&
+      openEnds[openEnds.length - 1] < range.startLine
+    ) {
+      openEnds.pop();
+    }
+    depthByStart.set(range.startLine, openEnds.length);
+    openEnds.push(range.endLine);
   }
-  return { headers, endByStart };
+  return { headers, endByStart, depthByStart };
 }
 
 /**
