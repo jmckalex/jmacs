@@ -933,13 +933,21 @@ export function createEditorView(buffer, container, options = {}) {
       const pill = el('div', 'editor-fold-pill');
       pill.style.top = `calc(${topRow} * 1lh)`;
       pill.style.height = `calc(${bottomRow - topRow + 1} * 1lh)`;
-      // Depth-graded fill: lighter outside, stronger inside, capped so
-      // very deep nesting doesn't saturate. (Percentage is a literal in
-      // the string, not a var, so it works wherever color-mix does.)
-      const fillPct = Math.min(8 + depth * 6, 32);
+      // Recessed look: a subtle dark body (deeper = a touch darker)
+      // with a border slightly lighter than the body, so each capsule
+      // reads as a quiet groove rather than a bright bar and the pills
+      // don't dominate the gutter. Capped so deep nesting stays calm.
+      // (Percentages are literals in the string, not vars, so they work
+      // wherever color-mix does.)
+      const bodyPct = Math.min(12 + depth * 4, 28);
+      const borderPct = Math.max(2, bodyPct - 8);
       pill.style.setProperty(
         '--pill-fill',
-        `color-mix(in srgb, var(--fg-dim) ${fillPct}%, transparent)`
+        `color-mix(in srgb, #000 ${bodyPct}%, transparent)`
+      );
+      pill.style.setProperty(
+        '--pill-border',
+        `color-mix(in srgb, #000 ${borderPct}%, transparent)`
       );
       pill.dataset.line = String(startLine);
       pill.title = 'Fold';

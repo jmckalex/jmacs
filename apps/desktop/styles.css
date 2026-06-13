@@ -653,14 +653,19 @@ text-view {
   right: 5px;
   width: 18px;
   border-radius: 7px;
-  background: var(--pill-fill, color-mix(in srgb, var(--fg-dim) 10%, transparent));
+  /* Border-box so the 1px border draws inside the 18px / N-row box and
+     doesn't nudge the capsule off its row grid. */
+  box-sizing: border-box;
+  background: var(--pill-fill, color-mix(in srgb, #000 12%, transparent));
+  border: 1px solid var(--pill-border, color-mix(in srgb, #000 4%, transparent));
   cursor: pointer;
-  transition: background 0.1s ease;
+  transition: background 0.1s ease, border-color 0.1s ease;
 }
 
 .editor-fold-pill:hover,
 .editor-fold-pill.is-range-active {
-  background: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 80%, transparent);
   z-index: 9;
 }
 
