@@ -4580,32 +4580,36 @@ const interpreter = createInterpreter({
     },
     // Regexp matching for use by Lisp commands (query-replace,
     // replace-regexp). Returns `(start . end)` for the first match in
-    // the current buffer's text at or after FROM, or nil for no match
-    // or an invalid pattern.
+    // the current buffer's text at or after FROM, or `#f` for no
+    // match (miss convention: absence -> #f, safe as a bare if-test).
+    // An invalid pattern is also `#f` — deliberately the same value
+    // as a miss, because these back incremental search, where a
+    // half-typed regexp ("[a-") simply matches nothing.
     'find-regexp-forward': (args) => {
       const source = String(args[0] ?? '');
       const from = Number(args[1] ?? 0);
       const regexp = compileRegexpSource(source);
-      if (regexp === null) return NIL;
+      if (regexp === null) return false;
       const match = regexpForwardMatch(currentTextBuffer.text, regexp, from);
-      return match === null ? NIL : cons(match.start, match.end);
+      return match === null ? false : cons(match.start, match.end);
     },
     'find-regexp-backward': (args) => {
       const source = String(args[0] ?? '');
       const from = Number(args[1] ?? 0);
       const regexp = compileRegexpSource(source);
-      if (regexp === null) return NIL;
+      if (regexp === null) return false;
       const match = regexpBackwardMatch(currentTextBuffer.text, regexp, from);
-      return match === null ? NIL : cons(match.start, match.end);
+      return match === null ? false : cons(match.start, match.end);
     },
     // Find a plain (non-regexp) string FROM offset onward; used by the
-    // `query-replace` walker (plain string match, per spec).
+    // `query-replace` walker (plain string match, per spec). No match
+    // — including an empty needle — is `#f`.
     'find-string-forward': (args) => {
       const needle = String(args[0] ?? '');
       const from = Number(args[1] ?? 0);
-      if (needle === '') return NIL;
+      if (needle === '') return false;
       const index = currentTextBuffer.text.indexOf(needle, Math.max(0, from));
-      return index < 0 ? NIL : cons(index, index + needle.length);
+      return index < 0 ? false : cons(index, index + needle.length);
     },
     // Replace every regexp match in the current buffer; REPLACEMENT
     // supports the standard JS `$N`, `$&`, `$$` back-references.

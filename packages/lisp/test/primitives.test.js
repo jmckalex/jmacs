@@ -349,10 +349,23 @@ test('hash-map builds a map; an odd argument count is an error', () => {
 test('get reads maps and vectors, with an optional fallback', () => {
   assert.equal(run('(get (hash-map :a 1) :a)'), 1);
   assert.equal(run('(get (hash-map :a 1) :z 99)'), 99); // fallback
-  assert.equal(show('(get (hash-map :a 1) :z)'), 'nil'); // default fallback
+  assert.equal(run('(get (hash-map :a 1) :z)'), false); // miss -> #f
   assert.equal(run('(get (vector 10 20) 1)'), 20);
-  assert.equal(show('(get (vector 10 20) 5)'), 'nil'); // out of range
+  assert.equal(run('(get (vector 10 20) 5)'), false); // out of range -> #f
   assert.throws(() => run('(get 5 0)'), LispError); // not a map or vector
+});
+
+test('get: absence is #f, so a bare if-test works (miss convention)', () => {
+  // The motivating idiom — nil is truthy here, so the old nil-on-miss
+  // sent this down the wrong branch.
+  assert.equal(show("(if (get (hash-map :a 1) :missing) 'yes 'no)"), 'no');
+  // A key PRESENT with a nil value still yields nil — only a genuine
+  // miss is #f; the 3-arg form discriminates a stored #f.
+  assert.equal(show('(get (hash-map :a nil) :a)'), 'nil');
+  assert.equal(run('(get (hash-map :a #f) :a 99)'), false);
+  // nil? on a miss is #f (a miss is not nil) — callers test with `not`.
+  assert.equal(run('(nil? (get (hash-map) :missing))'), false);
+  assert.equal(run('(not (get (hash-map) :missing))'), true);
 });
 
 test('assoc and dissoc return new maps without mutating the original', () => {
@@ -496,10 +509,18 @@ test('type-of reports a keyword for each value type', () => {
   assert.equal(show('(type-of (cons 1 2))'), ':list');
 });
 
-test('doc returns a lambda docstring, nil otherwise', () => {
+test('doc returns a lambda docstring, #f otherwise (miss convention)', () => {
   assert.equal(run('(define (f x) "docs here" x) (doc f)'), 'docs here');
-  assert.equal(show('(define (g x) x) (doc g)'), 'nil'); // no docstring
-  assert.equal(show('(doc +)'), 'nil'); // primitives carry no doc
+  assert.equal(run('(define (g x) x) (doc g)'), false); // no docstring
+  assert.equal(run('(doc +)'), false); // primitives carry no doc
+  // Absence is #f, so a bare if-test takes the right branch.
+  assert.equal(show("(define (g x) x) (if (doc g) 'documented 'bare)"), 'bare');
+});
+
+test('where-defined returns "line:col" for a lambda, #f otherwise', () => {
+  assert.match(run('(define (f x) x) (where-defined f)'), /^\d+:\d+$/);
+  assert.equal(run('(where-defined +)'), false); // primitives: no source
+  assert.equal(run('(where-defined 42)'), false); // not a procedure at all
 });
 
 test('describe summarises a procedure, a primitive and a plain value', () => {

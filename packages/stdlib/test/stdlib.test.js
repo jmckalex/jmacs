@@ -142,31 +142,32 @@ async function editor(initialText = 'hello world', options = {}) {
       },
       // Regexp matching primitives are exercised through the live
       // buffer the test created. They mirror the host's RegExp
-      // semantics in the desktop app.
+      // semantics in the desktop app — including the miss convention:
+      // no match (or an invalid/empty pattern) is `#f`, not nil.
       'find-regexp-forward': (a) => {
         const source = String(a[0] ?? '');
         const from = Number(a[1] ?? 0);
-        if (source === '') return NIL;
+        if (source === '') return false;
         let regexp;
         try {
           regexp = new RegExp(source, 'g');
         } catch {
-          return NIL;
+          return false;
         }
         regexp.lastIndex = Math.max(0, from);
         const match = regexp.exec(buffer.text);
-        if (match === null) return NIL;
+        if (match === null) return false;
         return cons(match.index, match.index + match[0].length);
       },
       'find-regexp-backward': (a) => {
         const source = String(a[0] ?? '');
         const from = Number(a[1] ?? 0);
-        if (source === '') return NIL;
+        if (source === '') return false;
         let regexp;
         try {
           regexp = new RegExp(source, 'g');
         } catch {
-          return NIL;
+          return false;
         }
         const limit = Math.max(0, from);
         let last = null;
@@ -177,14 +178,14 @@ async function editor(initialText = 'hello world', options = {}) {
           last = { start: m.index, end: m.index + m[0].length };
           if (m[0].length === 0) regexp.lastIndex += 1;
         }
-        return last === null ? NIL : cons(last.start, last.end);
+        return last === null ? false : cons(last.start, last.end);
       },
       'find-string-forward': (a) => {
         const needle = String(a[0] ?? '');
         const from = Number(a[1] ?? 0);
-        if (needle === '') return NIL;
+        if (needle === '') return false;
         const i = buffer.text.indexOf(needle, Math.max(0, from));
-        return i < 0 ? NIL : cons(i, i + needle.length);
+        return i < 0 ? false : cons(i, i + needle.length);
       },
       'replace-regexp-all!': (a) => {
         const source = String(a[0] ?? '');
@@ -1331,8 +1332,25 @@ test('mid-chord lookup prefers the mode-local binding when both bind the key', a
   // (A mark of null means add-cursor-next did NOT run.)
   // We can't easily assert save-buffer ran without the harness's
   // fileCalls, but the negative assertion is sufficient.
-  assert.equal(interpreter.evaluate('(nil? (mark))'), true,
+  // An unset mark is #f (miss convention), so test with `not`.
+  assert.equal(interpreter.evaluate('(not (mark))'), true,
     'mode-local C-c d did NOT route to add-cursor-next');
+});
+
+test('mark is #f when unset, the offset once set (miss convention)', async () => {
+  const { interpreter } = await editor('hello');
+  assert.equal(interpreter.evaluate('(mark)'), false);
+  // The bare if-test idiom — and offset 0 stays truthy once set.
+  assert.equal(
+    interpreter.evaluate("(if (mark) 'set 'unset)"),
+    interpreter.evaluate("'unset")
+  );
+  interpreter.evaluate('(set-mark! 0)');
+  assert.equal(interpreter.evaluate('(mark)'), 0);
+  assert.equal(
+    interpreter.evaluate("(if (mark) 'set 'unset)"),
+    interpreter.evaluate("'set")
+  );
 });
 
 // --- mode hooks and minor modes -----------------------------------------
@@ -1600,6 +1618,32 @@ test('defcustom defines a variable and registers the setting', async () => {
     interpreter.evaluate('(custom-registered? (quote *test-opt*))'),
     true
   );
+});
+
+test('custom-entry misses with #f; custom-value stays nil (by design)', async () => {
+  const { interpreter } = await editor();
+  // An unregistered setting is an absence: #f, a safe bare if-test.
+  assert.equal(
+    interpreter.evaluate('(custom-entry (quote *no-such-setting*))'),
+    false
+  );
+  assert.equal(
+    interpreter.evaluate("(if (custom-entry '*no-such-setting*) 'yes 'no)"),
+    sym('no')
+  );
+  // custom-value keeps nil on a miss: a boolean setting's VALUE is
+  // often #f, so the result can never discriminate absence anyway.
+  assert.equal(
+    interpreter.evaluate('(nil? (custom-value (quote *no-such-setting*)))'),
+    true
+  );
+  // The miss-tolerant readers still behave for unknown names.
+  assert.equal(
+    interpreter.evaluate('(custom-state (quote *no-such*))'),
+    sym('standard')
+  );
+  // And custom-apply! on an unknown name stays a no-op (no throw).
+  interpreter.evaluate('(custom-apply! (quote *no-such*) 9)');
 });
 
 test('custom-apply! changes the variable and the registry', async () => {
@@ -3620,15 +3664,16 @@ test('query-replace unknown key re-asks without acting', async () => {
 test('find-regexp-forward exposes capture spans through the primitive', async () => {
   // Sanity check on the primitive itself — the test stub mirrors the
   // host's RegExp semantics, so this also exercises the wire shape
-  // (a (start . end) cons or nil).
+  // (a (start . end) cons or #f).
   const { interpreter } = await editor('foo123 bar45');
   const pair = interpreter.evaluate('(find-regexp-forward "\\\\d+" 0)');
   assert.equal(interpreter.call('car', pair), 3);
   assert.equal(interpreter.call('cdr', pair), 6);
-  // Beyond the matches: nil.
+  // Beyond the matches: #f (miss convention), so a bare if-test works.
+  assert.equal(interpreter.evaluate('(find-regexp-forward "\\\\d+" 99)'), false);
   assert.equal(
-    interpreter.evaluate('(nil? (find-regexp-forward "\\\\d+" 99))'),
-    true
+    interpreter.evaluate('(if (find-regexp-forward "\\\\d+" 99) #t #f)'),
+    false
   );
 });
 
@@ -3978,13 +4023,30 @@ test('C-c C-. runs unfold-all through the host primitive', async () => {
     `expected unfold; got ${JSON.stringify(foldCalls)}`);
 });
 
-test('find-regexp-forward returns nil for an invalid pattern', async () => {
+test('find-regexp-forward returns #f for an invalid pattern', async () => {
   const { interpreter } = await editor('hello');
-  // An unterminated group — JS throws on construction.
+  // An unterminated group — JS throws on construction. An invalid
+  // pattern is deliberately the same value as a plain miss (#f):
+  // these primitives back incremental search, where a half-typed
+  // regexp simply matches nothing.
   assert.equal(
-    interpreter.evaluate('(nil? (find-regexp-forward "(unclosed" 0))'),
-    true
+    interpreter.evaluate('(find-regexp-forward "(unclosed" 0)'),
+    false
   );
+});
+
+test('find-string-forward misses with #f; query-replace finishes cleanly', async () => {
+  const { interpreter } = await editor('aaa bbb');
+  // A genuine miss is #f — the bare if-test idiom.
+  assert.equal(interpreter.evaluate('(find-string-forward "zzz" 0)'), false);
+  assert.equal(
+    interpreter.evaluate("(if (find-string-forward \"zzz\" 0) 'hit 'miss)"),
+    interpreter.evaluate("'miss")
+  );
+  // The query-replace walker's no-match arm (the (not match) test)
+  // takes the finish path rather than dereferencing a #f match.
+  interpreter.evaluate('(query-replace-step "zzz" "y" 0 0)');
+  assert.equal(interpreter.evaluate('(buffer-text)'), 'aaa bbb');
 });
 
 // --- find-file completion ----------------------------------------------

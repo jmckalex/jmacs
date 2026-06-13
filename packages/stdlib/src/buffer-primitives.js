@@ -230,7 +230,9 @@ export function createBufferPrimitives(session) {
       return buffer().name;
     },
     'point': () => buffer().point,
-    'mark': () => (buffer().mark === null ? NIL : buffer().mark),
+    // No mark set is an absence (miss convention) — `#f`, so
+    // `(when (mark) …)` is a safe bare test. Offset 0 is truthy here.
+    'mark': () => (buffer().mark === null ? false : buffer().mark),
     'buffer-substring': (args) =>
       buffer().slice(offset(args[0]), offset(args[1])),
     'line-start': () => buffer().lineAt(buffer().point).from,

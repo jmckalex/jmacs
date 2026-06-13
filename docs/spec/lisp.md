@@ -255,14 +255,25 @@ Naming conventions:
 - Destructive operations end in `!` — `set!`, `insert!`.
 - Module-internal helpers lead with `-` (convention; not enforced).
 
+**Miss convention — absence is `#f`, emptiness is `nil`.** A function
+that looked something up and found *nothing there* returns `#f`, which
+is safe as a bare `if` test (`nil` is truthy here): `get` without a
+fallback, `doc`, `where-defined`, `find-view`, `mark` when unset, the
+`find-string-forward` / `find-regexp-*` search primitives. A function
+that returns *the empty thing* keeps `nil`: `first`/`rest`/`last` of an
+empty list — the rest of nothing is nothing. Optional fields *inside* a
+data record (a `describe` map's `:doc`, a view record's `:file`) also
+report `nil`; the convention governs return-value misses. Don't test a
+miss with `nil?` — `(nil? #f)` is `#f`; test bare or with `not`.
+
 ## 11. Self-documentation
 
 Per the project's "the editor explains itself" principle, every
 procedure defined with `define` keeps its docstring and source
 location:
 
-- `(doc proc)` — the docstring, or `nil`.
-- `(where-defined proc)` — the `"line:col"` it was defined at.
+- `(doc proc)` — the docstring, or `#f` when there is none.
+- `(where-defined proc)` — the `"line:col"` it was defined at, or `#f`.
 - `(describe proc)` — a map of name, parameters, docstring, location.
 
 ## 12. Host integration

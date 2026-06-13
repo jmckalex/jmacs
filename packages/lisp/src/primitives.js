@@ -440,9 +440,13 @@ export function installPrimitives(env, { write }) {
     for (let i = 0; i < a.length; i += 2) m.set(a[i], a[i + 1]);
     return m;
   });
+  // Miss convention: absence is `#f`, so `(if (get m :key) …)` is a
+  // safe bare test (nil is truthy in this Lisp). The three-argument
+  // form returns its fallback unchanged — use it when a stored `#f`
+  // (or any sentinel) must be distinguishable from a missing key.
   def('get', (a) => {
     arity('get', a, 2, 3);
-    const fallback = a.length === 3 ? a[2] : NIL;
+    const fallback = a.length === 3 ? a[2] : false;
     if (a[0] instanceof Map) return a[0].has(a[1]) ? a[0].get(a[1]) : fallback;
     if (Array.isArray(a[0])) {
       return a[1] >= 0 && a[1] < a[0].length ? a[0][a[1]] : fallback;
@@ -515,17 +519,19 @@ export function installPrimitives(env, { write }) {
   // --- introspection ----------------------------------------------------
   def('identity', (a) => a[0]);
   def('type-of', (a) => keyword(typeName(a[0])));
+  // Miss convention: no docstring / no recorded source is an absence,
+  // so both return `#f` — safe as a bare if-test.
   def('doc', (a) => {
     const v = a[0];
-    if (v instanceof Lambda) return v.doc ?? NIL;
-    return NIL;
+    if (v instanceof Lambda) return v.doc ?? false;
+    return false;
   });
   def('where-defined', (a) => {
     const v = a[0];
     if (v instanceof Lambda && v.source) {
       return `${v.source.line}:${v.source.col}`;
     }
-    return NIL;
+    return false;
   });
   def('describe', (a) => {
     const v = a[0];
