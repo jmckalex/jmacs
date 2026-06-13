@@ -1522,6 +1522,47 @@ export function createEditorView(buffer, container, options = {}) {
     elem.addEventListener('mouseleave', () => set(false));
   }
 
+  /** True if the fold headed by `start` hides buffer position
+   *  (`line`, `column`): a line strictly inside the range, or — for an
+   *  inner (column-aware) fold — the header line at or past the opening
+   *  delimiter (where the content collapses behind the `…`). */
+  function foldHidesPoint(start, line, column) {
+    const end = foldCache.endByStart.get(start);
+    if (typeof end !== 'number') return false;
+    if (line > start && line <= end) return true;
+    const cut = foldCache.cutByStart.get(start);
+    return !!(
+      cut &&
+      cut.headerCol !== undefined &&
+      line === start &&
+      column >= cut.headerCol
+    );
+  }
+
+  /** The offset to land point on just past the fold headed by `start` —
+   *  the start of the first line below the range. When the range ends the
+   *  buffer (no line below), fall back to the fold point on the header
+   *  line itself. */
+  function offsetPastFold(start) {
+    const end = foldCache.endByStart.get(start);
+    if (end + 1 <= activeBuffer.lineCount - 1) {
+      return activeBuffer.offsetAt(end + 1, 0);
+    }
+    const cut = foldCache.cutByStart.get(start);
+    return activeBuffer.offsetAt(start, cut?.headerCol ?? 0);
+  }
+
+  /** When a fold closes over point, drop point just after the folded
+   *  element so the caret isn't stranded in (now-hidden) content — the
+   *  editor's chosen behaviour. No-op when point is already outside the
+   *  range. */
+  function escapeFoldedPoint(start) {
+    const { line, column } = activeBuffer.positionAt(getPoint());
+    if (foldHidesPoint(start, line, column)) {
+      activeBuffer.moveTo(offsetPastFold(start));
+    }
+  }
+
   /** Toggle the fold at the header that contains buffer line `line`. */
   function toggleFoldAt(line) {
     refreshFoldIndex();
@@ -1533,6 +1574,7 @@ export function createEditorView(buffer, container, options = {}) {
     }
     if (foldCache.headers.has(line)) {
       folded.add(line);
+      escapeFoldedPoint(line);
       schedule();
       return true;
     }
@@ -1574,7 +1616,22 @@ export function createEditorView(buffer, container, options = {}) {
         changed = true;
       }
     }
-    if (changed) schedule();
+    if (changed) {
+      // Drop point past the outermost fold it now sits in, so the caret
+      // isn't stranded in hidden content.
+      const { line, column } = activeBuffer.positionAt(getPoint());
+      let outerStart = -1;
+      let outerEnd = -1;
+      for (const start of foldCache.headers) {
+        const end = foldCache.endByStart.get(start);
+        if (foldHidesPoint(start, line, column) && end > outerEnd) {
+          outerEnd = end;
+          outerStart = start;
+        }
+      }
+      if (outerStart >= 0) activeBuffer.moveTo(offsetPastFold(outerStart));
+      schedule();
+    }
     return changed;
   }
 
