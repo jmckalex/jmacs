@@ -260,3 +260,32 @@ make a fast test possible — but that's a `src/` change, so I didn't make it.
 No bugs found; all observed behaviour matched the modules' doc comments.
 
 ---
+
+## [2026-06-13] D5 attribution: RESOLVED — citeproc taken under AGPL-3.0 arm
+
+**Decision (Jason)**: take the AGPL arm for `citeproc`.
+
+**Verification**: citeproc's own `LICENSE` text grants "CPAL ... OR ...
+the GNU Affero General Public License (AGPL) ... either version 3 of the
+AGPL, or (at your option) any later version" — i.e. **AGPL-3.0-or-later**.
+The npm `package.json` SPDX field `AGPL-1.0` is inaccurate. AGPL-3.0 is
+GPL-3.0-compatible (section 13 of each permits the combined work), so D5's
+"nothing GPL-incompatible ships" acceptance is now satisfied.
+
+**Landed on main** (not via the stale `attribution` branch, which was 127
+behind with an obsolete 22-line LICENSE stub — main already carries the
+full GPL-3.0 text):
+- `ATTRIBUTION.md` — full inventory; the citeproc flag is replaced with the
+  resolved AGPL-3.0 note (compatibility reasoning, SPDX-metadata caveat,
+  corresponding-source pointer, §13 network-clause non-issue).
+- `licenses/AGPL-3.0.txt` — canonical AGPL v3 text we convey for the
+  citeproc portion.
+- `licenses/citeproc.LICENSE` — citeproc's copyright + dual-license notice,
+  verbatim.
+
+The original 2026-06-10 blocker write-up survives in tag
+`archive/attribution`. ATTRIBUTION.md's dependency inventory reflects the
+2026-06-10 audit; a from-scratch `pnpm licenses list` re-audit before
+release would be a sensible (separate) follow-up.
+
+---
