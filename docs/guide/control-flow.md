@@ -142,14 +142,18 @@ that value, untouched; if all are false it returns `#f`, as is
 ```
 
 Returning the value powers two idioms you will meet constantly. The
-first is *or as default*: `(or requested-title "untitled")` yields
-the fallback when `requested-title` is `#f`, and otherwise passes its
-value through unchanged. Mind the truthiness rule, though — only `#f`
-triggers the fallback. `nil`, `0`, and `""` sail straight through, so
-`(or (get options :indent) 4)` does *not* supply a default: `get`
-signals a missing key by returning `nil`, which is true. The right
-tool there is `get`'s own fallback argument,
-`(get options :indent 4)`.
+first is *or as default*: `(or requested-title "untitled")` yields the
+fallback when `requested-title` is `#f`, and otherwise passes its value
+through unchanged. This works for the library's lookups because they
+report a miss as `#f`: `(or (get options :indent) 4)` does supply `4`
+when the key is absent, since `get` with no fallback returns `#f`. The
+truthiness rule still bites at one edge — only `#f` triggers the
+fallback, so `or` cannot default a value that may legitimately be
+`nil`. An empty list answers `nil` from `first`, which is *true*, so
+`(or (first items) "none")` yields `nil`, not `"none"`, when `items` is
+empty. Guard that case with `nil?` — or, for a map, reach for `get`'s
+own fallback argument, `(get options :indent 4)`, which never leans on
+truthiness at all.
 
 The second idiom is *and as guard* — establish that a value is safe
 to use, then use it, in one expression: `(and (pair? x) (car x))` is

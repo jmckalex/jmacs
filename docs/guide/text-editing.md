@@ -222,7 +222,8 @@ internally, so `M-q` already undoes atomically.
 The interactive search on `C-s` is a host-driven loop — the
 `start-search!` family of primitives opens it for the user but returns
 nothing useful to Lisp. Programmable searching is three pure matchers,
-each returning a `(start . end)` pair of offsets or `nil` for no match:
+each returning a `(start . end)` pair of offsets or `#f` for no match
+(absence is `#f`, so the result is safe as a bare test):
 
 ```lisp
 (find-string-forward "TODO" 0)          ; ⇒ (210 . 214) — first literal match
@@ -231,7 +232,9 @@ each returning a `(start . end)` pair of offsets or `nil` for no match:
 ```
 
 The pattern syntax is JavaScript's regular-expression dialect; an
-invalid pattern yields `nil` rather than an error. Remember that the
+invalid pattern yields `#f` rather than an error — the same value as a
+miss, since these back incremental search, where a half-typed regexp
+matches nothing. Remember that the
 Lisp reader has its own escapes, so a pattern's backslash is written
 doubled: `"\\d+"`. Walking matches is ordinary recursion — search, act,
 search again from the match's end:
@@ -240,9 +243,14 @@ search again from the match's end:
 (define (goto-next-todo)
   "Move point to the next TODO after it, if any."
   (let ((hit (find-string-forward "TODO" (point))))
-    (when (not (nil? hit))
+    (when hit
       (goto! (car hit)))))
 ```
+
+A bare `(when hit …)` is exactly right here: a miss is `#f`, which the
+`when` skips, and a match is a truthy pair. The tempting
+`(when (not (nil? hit)) …)` would be a bug — `(nil? #f)` is `#f`, so
+its guard passes on a miss and `(car #f)` then errors.
 
 Wholesale replacement has dedicated primitives. `(replace-all! from to)`
 replaces every literal occurrence in the buffer and echoes a count to

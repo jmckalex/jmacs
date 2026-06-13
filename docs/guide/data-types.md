@@ -200,10 +200,14 @@ number of forms: `{:a 1 :b 2}`. Insertion order is preserved — it is
 the order entries print, and the order `keys` and `vals` report. Like
 vectors, an unquoted map literal evaluates its contents — both keys
 *and* values. The map operations never mutate: `assoc` and `dissoc`
-return a new map. `hash-map` is the procedural constructor.
+return a new map. `hash-map` is the procedural constructor. A `get` with
+no fallback answers a missing key with `#f` — absence is `#f` here, the
+library's miss convention (set out under `nil`, below) — so supply the
+third argument when a stored `#f` must be told apart from a miss.
 
 ```lisp
 (get {:a 1} :a)        ; ⇒ 1
+(get {:a 1} :c)        ; ⇒ #f — a miss with no fallback is #f, not nil
 (get {:a 1} :c 0)      ; ⇒ 0 — the third argument is the fallback
 (assoc {:a 1} :b 2)    ; ⇒ {:a 1 :b 2} — a copy; the original survives
 (keys {:a 1 :b 2})     ; ⇒ (:a :b)
@@ -220,7 +224,7 @@ a reconstruction of it:
 
 ```lisp
 (define m {(list 1 2) "found"})
-(get m (list 1 2))   ; ⇒ nil — a fresh (1 2) is a different object
+(get m (list 1 2))   ; ⇒ #f — a fresh (1 2) is a different object, so a miss
 (define k (list 1 2))
 (get {k "found"} k)  ; ⇒ "found" — the same object matches
 ```
@@ -268,6 +272,17 @@ never by truthiness.
 (if 0 "zero" "no")       ; ⇒ "zero"
 (if (nil? '()) "empty" "items")  ; ⇒ "empty" — the right test
 ```
+
+The library leans on this rule through one convention worth learning
+once: **absence is `#f`, emptiness is `nil`**. A lookup that finds
+*nothing there* — `get` with no fallback, `member`, `string->number`,
+`doc`, `where-defined`, `find-view`, `mark` when unset, the search
+primitives — returns `#f`, so it is safe as a bare `if`. A function that
+returns *the empty thing* keeps `nil`: `(first '())` is `nil`, because
+the first of nothing is nothing. So test a possible miss bare and a
+possible emptiness with `nil?`; the two are different questions. (One
+corner the rule creates: `(nil? #f)` is `#f`, so `nil?` does *not*
+detect a `#f` miss — *Lisp Style and Pitfalls* recaps that trap.)
 
 ### Three Kinds of Equality
 

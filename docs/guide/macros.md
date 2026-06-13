@@ -71,7 +71,7 @@ forms outrank macros — `(defmacro if …)` will bind the name, but
 worth knowing: a macro's name evaluated as a variable yields the macro
 object itself (it prints as `#<macro name>`; applying it as a procedure
 is an error), and macros cannot carry docstrings — `doc` on a macro
-returns `nil`, so a leading string in a `defmacro` body is convention
+returns `#f`, so a leading string in a `defmacro` body is convention
 for the human reader, nothing more.
 
 ### Expansion Happens Every Time
