@@ -39,31 +39,47 @@ cross-referenced chapter has the full explanation.
 
 #### Nil Is True
 
-Only `#f` is false. `nil`, `0`, and `""` are all true — and several
-lookup primitives signal absence with `nil`:
+Only `#f` is false; `nil`, `0`, and `""` are all true — so a `nil`
+*passes* a bare `if` test. The library keeps that from biting by
+following one convention: **absence is `#f`, emptiness is `nil`**. A
+lookup that found *nothing there* answers `#f`, safe as a bare test —
+`get` with no fallback, `member`, `string->number`, `doc`,
+`where-defined`, `find-view`, `mark` when unset, the
+`find-string-forward`/`find-regexp-*` search primitives:
 
 ```lisp
 (define prefs {:colour "mauve"})
-(get prefs :verbose)        ; ⇒ nil — the key is missing
-(if (get prefs :verbose)
-    "verbose"
-    "quiet")                ; ⇒ "verbose" — nil is true
+(get prefs :verbose)                          ; ⇒ #f — the key is missing
+(if (get prefs :verbose) "verbose" "quiet")   ; ⇒ "quiet" — #f is false
 ```
 
-The convention splits down the middle: `member` and `string->number`
-return `#f` on a miss, safe as a bare `if` test; `get`, `first`,
-`rest`, `last`, `doc`, and `where-defined` return `nil`, which is not.
-When a reference entry says "or `nil`", test with `nil?` — or pass an
-explicit false fallback, `(get prefs :verbose #f)`. Truthiness is laid
-out in *Lisp Data Types*.
+What stays `nil` is *emptiness* — a collection that genuinely is empty,
+where the empty thing is the honest answer: `(first '())`, `(rest '())`,
+and `(last '())` are `nil`, as is an else-less `if` or a fall-through
+`cond`. Those are truthy, so guard them with `nil?`, never with bare
+truth:
+
+```lisp
+(when (first items) (process (first items)))   ; runs on '() too — nil is truthy
+(unless (nil? items) (process (first items)))  ; right — test the emptiness
+```
+
+Optional fields *inside* a data record (a `describe` map's `:doc`, a
+view record's `:file`) report `nil` as well; the `#f` rule governs a
+function's *return-value* miss, not what a record happens to hold. One
+trap when you do test for an absence: `(nil? #f)` is `#f`, so reaching
+for `nil?` to catch a `#f` miss silently never fires — test it bare, or
+with `not`. Truthiness is laid out in full in *Lisp Data Types*.
 
 #### Truthy Ghosts from the Host
 
 Host primitives are JavaScript, but a JS `undefined` or `null` never
 reaches your code raw: the boundary coerces both to `nil` on the way
-out, so a primitive that "returns nothing" returns `nil`. The ghost
-that remains is that `nil` is *truthy* — a primitive's failure or
-nothing-to-report value passes a bare `if` test:
+out, so a primitive that "returns nothing" returns `nil`. This is the
+one place the *absence is `#f`* convention does not reach — a raw host
+primitive that has not adopted it hands a miss back as `nil`, and `nil`
+is *truthy*, so a failure or nothing-to-report value sails through a
+bare `if`:
 
 ```lisp
 (define text (read-file-text! "/no/such/file"))
@@ -71,8 +87,10 @@ nothing-to-report value passes a bare `if` test:
 (when (string? text) (insert! text))  ; right — guard with the type
 ```
 
-The guard idiom: test for the type you intend to use — or for the miss
-itself, with `nil?` — not for bare truth.
+The guard idiom: test for the type you intend to use, not for bare
+truth. (The blessed lookups of the previous entry — `get`, the search
+primitives, and friends — *do* follow the convention and answer `#f`;
+it is the unconverted host edge that still leaks a truthy `nil`.)
 
 #### Identity, Equality, and Map Keys
 
@@ -85,7 +103,7 @@ or vector key never matches a reconstruction of itself:
 
 ```lisp
 (define m {(list 1 2) "found"})
-(get m (list 1 2))    ; ⇒ nil — a fresh list is a new object
+(get m (list 1 2))    ; ⇒ #f — a fresh list is a new object, so a miss
 ```
 
 Key your maps with keywords, symbols, strings, or numbers. The same

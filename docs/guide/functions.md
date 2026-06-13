@@ -407,11 +407,12 @@ Procedures defined with the `define` shorthand carry their own
 documentation and provenance, and three primitives surface them:
 
 - <a href="reference/lisp-core/doc.html" data-jmacs-doc="doc">doc</a> —
-  `(doc f)` — the docstring, or `nil` when there is none; always `nil`
-  for primitives and macros, since only the shorthand attaches one.
+  `(doc f)` — the docstring, or `#f` when there is none; always `#f`
+  for primitives and macros, since only the shorthand attaches one (a
+  missing docstring is an absence — `#f`, by the library's convention).
 - <a href="reference/lisp-core/where-defined.html" data-jmacs-doc="where-defined">where-defined</a> —
   `(where-defined f)` — the definition site as a `"line:col"` string,
-  or `nil`; the position is within whatever source was read — a file's
+  or `#f`; the position is within whatever source was read — a file's
   line for standard-library code, your submission at the REPL.
 - <a href="reference/lisp-core/describe.html" data-jmacs-doc="describe">describe</a> —
   `(describe x)` — a map describing any value:
