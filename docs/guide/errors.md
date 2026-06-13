@@ -5,9 +5,9 @@ type, a file is missing, a precondition fails — it *signals* an error:
 evaluation of the current form stops, and the error travels outward
 until something catches it or it reaches the editor's surface. This
 chapter covers both ends of that journey: raising an error worth
-reading, catching one with `try`, what the mechanism deliberately does
-not do, and where an uncaught error actually shows up in the running
-editor. The looping constructs error-handling code leans on are the
+reading, catching one with `try`, guaranteeing cleanup with `finally`,
+what the mechanism deliberately does not do, and where an uncaught
+error actually shows up in the running editor. The looping constructs error-handling code leans on are the
 territory of *Control Flow and Iteration*; macros that wrap bodies in
 error handling belong to *Writing Macros*.
 
@@ -57,8 +57,9 @@ shape. The common ones, with their exact message texts:
 | Division by zero in `/` or `mod` | `division by zero` · `mod: division by zero` |
 | Malformed source given to `read-string` | `unclosed '(' opened at 1:1` |
 
-Reader errors are the one place a line and column appear, embedded in
-the message text itself. Well-behaved host primitives follow the same
+Reader errors carry their line and column embedded in the message text
+itself; every other error carries its location separately, in the
+condition map of the next section. Well-behaved host primitives follow the same
 `name: what went wrong` convention — an error message usually names the
 function that refused before saying why.
 
@@ -68,11 +69,20 @@ function that refused before saying why.
 not a function:
 
 ```lisp
-(try body… (catch name handler…))
+(try body… (catch name handler…)? (finally cleanup…)?)
 ```
 
-The last clause must literally be `(catch name handler…)` with a symbol
-for `name`. The body forms run in order, like `begin`. If none of them
+Two kinds of clause may close the form: `(catch name handler…)`, with a
+symbol for `name`, handles an error; `(finally cleanup…)` runs cleanup
+on every exit (the next section). The clauses come in that order, each
+is optional, and at least one must be present — `(try 42)` is
+malformed and signals
+`try: the last clause must be (catch name body...) or (finally body...)`.
+A clause out of order or written twice is equally malformed:
+`(try 1 (finally 2) (catch e 3))` signals
+`try: clauses must come last, in the order (catch …) then (finally …)`.
+
+The body forms run in order, like `begin`. If none of them
 signals, the value of the whole `try` is the value of the *last body
 form* and the handler never runs. If any body form signals, the rest of
 the body is skipped, `name` is bound — in a fresh scope visible only to
@@ -84,39 +94,111 @@ whole `try` is then the value of the *last handler form*.
 (try (error "x") (catch e 1 2 3))      ; ⇒ 3
 ```
 
-What the handler's variable holds is a *condition map* with exactly two
-keys: `:message`, the message string, and `:irritants`, a proper list
-of the irritant values (`nil` when there were none). Read it with
+What the handler's variable holds is a *condition map*. Two keys are
+always present: `:message`, the message string, and `:irritants`, a
+proper list of the irritant values (`nil` when there were none). When
+the evaluator can locate the form that failed, two more join them:
+`:line` and `:column`, the form's 1-based position in its source. Read
+them with
 <a href="reference/lisp-core/get.html" data-jmacs-doc="get">get</a>,
 like any other map:
 
 ```lisp
 (try (error "boom" 1 2) (catch e e))
-; ⇒ {:message "boom" :irritants (1 2)}
+; ⇒ {:message "boom" :irritants (1 2) :line 1 :column 6}
 
 (try (foo-unbound)
   (catch e (get e :message)))
 ; ⇒ "unbound symbol: foo-unbound"
 ```
 
+The `:line 1 :column 6` above points at the `(error "boom" 1 2)` form —
+column 6 of the one-line source just submitted. One subtlety deserves
+stating precisely: the position is relative to *the source the
+offending form was read from*, and that is not always the text you just
+evaluated. Call a function defined earlier — in a standard-library
+file, or three REPL entries ago — and an error inside its body reports
+the failing form's line and column *in its defining source*, because
+that is where the form was read. Nothing in the map says which source
+that was; the location is a strong hint, not a full address.
+
 Interpreter-raised errors and explicit `error` calls arrive as the same
-two-key map — the handler cannot tell them apart, and there is no way
+map — the handler cannot tell them apart, and there is no way
 to catch only *some* errors by kind. A handler that should pass certain
 errors along inspects the map and rethrows (an idiom shown below).
 
+### Guaranteed Cleanup with finally
+
+A `(finally cleanup…)` clause makes `try` an unwind protector: the
+cleanup forms run on **every** exit from the form. Four paths leave a
+`try`, and `finally` runs on all of them — normal completion of the
+body, an error caught by the handler (the handler runs first, then the
+cleanup), an error propagating onward uncaught, and even a raw
+JavaScript exception from a host primitive passing through (see *The
+JavaScript Boundary* below). Acquire in the body, release in the
+cleanup, and the release cannot be skipped.
+
+The cleanup runs for effect only. Its values are discarded: the value
+of the whole `try` is still the last body form's (or, when an error was
+caught, the last handler form's).
+
+```lisp
+(try 42 (finally 99))   ; ⇒ 42 — finally's value is discarded
+```
+
+With both clauses present, the handler decides the value and the
+cleanup runs after it:
+
+```lisp
+(define log '())
+(try (error "boom")
+  (catch e (set! log (cons 'handler log)) 'handled)
+  (finally (set! log (cons 'cleanup log))))
+; ⇒ handled
+(reverse log)   ; ⇒ (handler cleanup)
+```
+
+With only a `finally`, nothing is caught — the error continues outward
+— but the cleanup has already run by the time it reaches the next
+handler:
+
+```lisp
+(define flag #f)
+(try (error "boom")
+  (finally (set! flag #t)))
+; error: boom — yet flag is now #t: the cleanup ran on the way out
+```
+
+One sharp edge, inherited deliberately from the JavaScript underneath:
+an error signalled *inside* the cleanup replaces whatever was
+propagating. `(try (error "original") (finally (error "replacement")))`
+reaches the next handler as `replacement`, and the original is gone —
+so keep cleanup forms simple enough not to fail.
+
+The canonical use is pairing a state change with its undoing — the
+standard library's `call-with-atomic-undo` opens an undo group and lets
+`finally` guarantee the close:
+
+```lisp
+(begin-change-group!)
+(try (thunk)
+     (finally (end-change-group!)))
+```
+
+How that becomes the `atomic-change-group` macro is the capstone of
+*Writing Macros*.
+
 ### What try Does Not Provide
 
-`try` has no `finally` clause — cleanup that must run on both paths has
-to be written on both paths (the standard library's
-`atomic-change-group` does exactly this, closing its change group in
-the normal return and in the handler alike). There are no typed
-condition classes: every error is the same two-key map, and dispatching
-on kinds means matching on the message string. There is no restart
+There are no typed condition classes: every error is the same condition
+map, and dispatching on kinds means matching on the message string.
+There is no restart
 system — Common-Lisp-style conditions and restarts are the planned
 future, and `try`/`catch` will remain the everyday surface even then.
-And today the condition map carries no source location: no file, line,
-or stack trace. The message text is the whole story, which is one more
-reason to write messages that name their function.
+And there is no stack trace: `:line` and `:column` point at the form
+that failed, but not at the chain of calls that reached it, and not at
+which source it was read from — which is still a good reason to write
+messages that name their function.
 
 ### The JavaScript Boundary
 
@@ -124,15 +206,20 @@ reason to write messages that name their function.
 which is what `error` and every interpreter fault throw. A raw
 JavaScript exception thrown inside a host primitive — a `TypeError`
 from a bug, a `RangeError` from exhausting the JS stack — is **not**
-catchable: it escapes every Lisp `try` on the way out and surfaces at
+catchable: it escapes every Lisp `catch` on the way out and surfaces at
 the host level, where the editor's own boundary reports it.
 
 Practically: when your code calls host primitives, `try` is not an
 absolute barrier. A handler around a host call catches the errors the
 primitive deliberately signals (well-written primitives wrap their
-failures in `LispError`), but a genuine host bug sails past it — and so
-does your cleanup code, since the handler never runs. Treat an error
-that ignores your `try` as a host-side fault worth reporting, not a
+failures in `LispError`), but a genuine host bug sails past it, and the
+handler never runs. One thing *does* run on that path: a `finally`
+clause. Because `finally` is built on the host's own try/finally, its
+cleanup forms execute even as a raw JS exception unwinds through the
+form — the one piece of Lisp that runs on the boundary path — so an
+undo group or other invariant can be restored even when no handler can
+see the fault. Treat an error
+that ignores your `catch` as a host-side fault worth reporting, not a
 flaw in your handler. Stack overflow from deep non-tail recursion is a
 `RangeError`, so it too escapes every `try`.
 
@@ -170,7 +257,8 @@ condition map and re-signals the rest. The faithful rethrow uses
 
 The shorter `(error (get e :message))` also works when the irritants do
 not matter downstream. The rethrown error is a new condition as far as
-the next handler can tell — there is no provenance chain.
+the next handler can tell — there is no provenance chain, and its
+`:line`/`:column` point at the rethrow, not at the original failure.
 
 #### Validating Arguments Early
 
@@ -207,7 +295,10 @@ to fix, the first tells them to go read your source.
 The body and handler of `try` are evaluated *eagerly* — a `try` form is
 not a tail position, because the interpreter must keep the catching
 frame alive while the body runs (the full story of tail calls is in
-*Functions and Closures*). A tail-recursive loop that carries `try`
+*Functions and Closures*). A `finally` clause is equally eager, and
+changes nothing here: a `try` with only a `finally` pins its frame the
+same way, since the cleanup must run when the body finishes. A
+tail-recursive loop that carries `try`
 inside itself therefore grows the JavaScript stack by one frame per
 iteration, and a long run can overflow:
 
@@ -256,7 +347,9 @@ the boundary and reports it. Where you see it depends on how the code
 was running:
 
 - **The REPL** (`C-x p`, cmd(toggle-repl)) prints the message in its
-  error styling in place of a result. The REPL is also the editor's
+  error styling in place of a result, with the source location
+  appended — `unbound symbol: foo (at line 2:1)` — whenever the
+  evaluator tagged one. The REPL is also the editor's
   error log of record — most of the paths below write here.
 - **Inline evaluation** — `C-RET` (cmd(eval-expression-at-point)) and
   `C-x C-e` (cmd(eval-expression-before-point)) — shows a red pill
@@ -277,9 +370,9 @@ was running:
   one-line minibuffer message, and snapshots unsaved work for recovery.
 
 One forward reference: a multi-edit command wrapped in
-`atomic-change-group` closes its undo group even when the body
-signals, so a failed command never leaves the undo stack half-grouped
-— the full story is in *Editing Text from Lisp*.
+`atomic-change-group` closes its undo group on every exit — it is
+built on `finally`, so even a raw host fault cannot leave the undo
+stack half-grouped — the full story is in *Editing Text from Lisp*.
 
 ### A Worked Example: Refusing Bad Input Gracefully
 

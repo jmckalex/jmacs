@@ -268,6 +268,14 @@ are computed, lambdas bound by `letrec` can call each other:
 `nil`, not an error — bind procedures, which only look their siblings
 up when called.)
 
+`let` — and only `let` — has one more shape: the *named* form,
+`(let name ((var init)…) body…)`, which binds `name`, over the body
+only, to a procedure of the variables and immediately calls it with
+the `init` values — still evaluated in the outer environment, like any
+`let`'s. Calling `name` from the body re-enters it with fresh values,
+which makes the named form the language's idiomatic loop; *Functions
+and Closures* develops it alongside tail calls.
+
 ### Sequencing with begin
 
 ```lisp

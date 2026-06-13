@@ -218,15 +218,44 @@ the error `range: step must not be zero`.
 (range 10 0 -2)   ; ⇒ (10 8 6 4 2)
 ```
 
-That is the whole catalog: there is no `sort`, no `any`/`every`, no
-`vector-map` — what you would reach to those for is usually a short
-`reduce` or `filter` away. The complete inventory of sequence
-primitives is in the core Lisp reference.
+Three more round out the toolkit.
+<a href="reference/lisp-core/sort.html" data-jmacs-doc="sort">sort</a> —
+`(sort seq less?)` —
+returns a sorted copy of a list or vector, leaving the input untouched
+and preserving its type (a vector in, a vector out). The sort is
+*stable* — elements that compare equal keep their input order — and
+the optional `less?` is a Scheme-style strict less-than: `(less? a b)`
+truthy means `a` orders before `b`. Without it, all-numbers and
+all-strings sequences sort by `<`; anything mixed needs the predicate.
+And the two sequence predicates
+<a href="reference/lisp-core/any%3F.html" data-jmacs-doc="any?">any?</a> and
+<a href="reference/lisp-core/every%3F.html" data-jmacs-doc="every?">every?</a>
+ask whether a
+predicate holds for *some* or for *every* element: both return strict
+booleans, both stop at the first deciding element, and on an empty
+sequence `any?` is `#f` while `every?` is vacuously `#t`.
+
+```lisp
+(sort '(3 1 2))                       ; ⇒ (1 2 3)
+(sort ["pear" "fig" "medlar"]
+      (lambda (a b) (< (string-length a) (string-length b))))
+; ⇒ ["fig" "pear" "medlar"]
+
+(any? even? '(1 2 3))                 ; ⇒ #t
+(every? even? '(2 4 5))               ; ⇒ #f
+(every? even? '())                    ; ⇒ #t — vacuously
+```
+
+There is still no `vector-map` — what you would reach to it for is
+usually a `map` (vectors in, list out) or a short `reduce` away. The
+complete inventory of sequence primitives is in the core Lisp
+reference.
 
 ### Tail Calls and Recursion Depth
 
-This Lisp has no loop syntax; iteration is recursion. That is only
-comfortable because the interpreter implements proper tail calls: a
+Iteration in this Lisp is recursion underneath — even the loop macros
+of *Control Flow and Iteration* expand to recursive procedures. That is
+only comfortable because the interpreter implements proper tail calls: a
 call in *tail position* — one whose value becomes the caller's value
 with no further work — is bounced through a trampoline instead of
 growing the JavaScript stack, so a tail-recursive procedure runs at any
@@ -249,8 +278,8 @@ And these positions are **not** constant-stack:
 
 - any argument position — `(+ n (f …))`, `(cons x (f …))`,
   `(str line (f …))` all grow the stack by one frame per call;
-- the `try` body and `catch` handler (the JavaScript `try`/`catch`
-  frame must stay live);
+- the `try` body, `catch` handler, and `finally` cleanup (the
+  JavaScript `try`/`catch`/`finally` frame must stay live);
 - the `module` body;
 - calls routed through `apply`, `map`, `filter`, `reduce`, `for-each`,
   or `eval` — these primitives re-enter the trampoline afresh, so the
@@ -301,11 +330,37 @@ out of your public signature, hide the worker as a local definition:
   (loop n 0))
 ```
 
-Schemers will look for named `let` here — `(let loop ((n n) (acc 0)) …)`
-— and should know it does not exist in this Lisp. The local `define` is
-the honest equivalent, and the standard library's own style: a public
-function with a private `-helper` or local `loop` carrying the
-accumulator.
+Schemers will reach for named `let` here, and it exists:
+
+```lisp
+(let name ((var init)…) body…)
+```
+
+The named form binds `name` — over the body only — to a procedure whose
+parameters are the `var`s, and immediately calls it with the `init`
+values; calling `name` from the body re-enters it with new values. The
+inits are evaluated in the *outer* scope, exactly like an ordinary
+`let`'s — so `(let loop ((n n) …) …)` reads the surrounding `n` — and
+`name` is not visible to them, only to the body. The intuition for why
+all this holds: the evaluator rewrites the form into a `letrec` that
+binds `name` to the lambda and immediately applies it,
+`((letrec ((name (lambda (var…) body…))) name) init…)` — so the inits
+are ordinary argument expressions, the name lives in its own `letrec`
+frame without leaking into the surrounding scope, and a call to `name`
+in tail position is a plain tail call the trampoline runs in constant
+stack. `sum-to` again, as one expression:
+
+```lisp
+(define (sum-to n)
+  "Sum the integers 1..N."
+  (let loop ((n n) (acc 0))
+    (if (= n 0) acc (loop (- n 1) (+ acc n)))))
+```
+
+Named `let` and the local `define` are equivalent; the standard library
+uses both — named `let` when the loop is small enough to read whole
+(the prelude's `any?` and `every?` are one each), a named local
+function when the worker deserves its own docstring or several callers.
 
 The trampoline does not care that a tail call is to a *different*
 procedure. Mutually recursive definitions — most naturally written with

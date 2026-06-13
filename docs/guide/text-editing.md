@@ -185,7 +185,10 @@ Every buffer edit made while the body runs — however many, through
 whatever functions — lands on the undo stack as a single entry, and the
 body's value is returned. The group is closed even when the body raises
 an error: the edits made before the failure still form one undo step,
-and the error propagates on to the caller.
+and the error propagates on to the caller. The guarantee covers even a
+raw JavaScript exception from a faulting host primitive — the wrapper
+is built on `try`'s `finally` clause, which runs on that path too (see
+*Errors and Error Handling*).
 
 The rule of thumb is simple: **any command that makes more than one
 buffer mutation wraps them in `atomic-change-group`.** The standard
@@ -259,40 +262,103 @@ whole. (And since `(buffer-text)` is just a string, the core string
 library — `string-index-of`, `string-contains?` — is often the shorter
 spelling for a one-off check.)
 
-### What the Lisp Does Not Expose
+### Markers: Positions That Survive Edits
 
-Readers arriving from Emacs Lisp will reach for three things that are
-not here. Stating this plainly saves you an evening.
-
-**There is no `save-excursion`.** The idiom — used throughout the
-standard library — is to capture point and restore it yourself:
-`(let ((p (point))) … (goto! p))`. If the middle might fail, restore in
-both arms of a `try` (the form is covered in *Errors and Error
-Handling*):
+An offset is a snapshot, and the obvious idiom for "do something and
+come back" shows the crack. Capture point, restore it in a `finally`
+clause so even a failure puts it back (the form is covered in *Errors
+and Error Handling*):
 
 ```lisp
 (let ((p (point)))
-  (try
-    (begin (risky-edit) (goto! p))
-    (catch err
-      (goto! p)
-      (error (get err :message)))))
+  (try (risky-edit)
+    (finally (goto! p))))
 ```
 
-Be aware of what the idiom does not give you: `p` is a plain number, so
-if the body inserts or deletes text *before* that offset, the restored
-point lands in shifted text. Which leads to the second gap —
+`p` is a plain number, so if `risky-edit` inserts or deletes text
+*before* that offset, the restored point lands in shifted text. A
+*marker* is the durable version: an edit-tracking position in a buffer
+— the same machinery under bookmarks and snippet fields, surfaced to
+Lisp as an opaque handle.
 
-**there is no Lisp-level marker or overlay API.** Markers (positions
-that ride along under edits) and overlays (ranges with metadata) exist
-in the editor's host layer — bookmarks, snippet fields, and the inline
-eval pills are built on them — but Lisp code cannot create one today.
-Features that need a durable position reach them through their own
-primitives, such as `bookmark-set!`.
+`(make-marker)` creates one in the current buffer at point — give it
+an offset to anchor elsewhere — and `(marker-position m)` reads its
+current offset:
+
+```lisp
+(define m (make-marker 5))
+(goto! 0) (insert! "abc")
+(marker-position m)     ; ⇒ 8 — the marker rode the insertion
+```
+
+Edits before the marker shift it — insertions push it along, deletions
+pull it back, and a deletion spanning it collapses it to the edit
+point. Edits after it leave it alone. Undo and redo count too: every
+change to the buffer's text keeps every marker honest.
+`(set-marker! m n)` moves a marker to a new offset, where it resumes
+tracking.
+
+The ownership rules fit in one sentence: **read anywhere, move only at
+home, release or leak.** The handle remembers which buffer it belongs
+to, so `(marker-position m)` answers correctly even when that buffer
+is no longer current; but `(set-marker! m n)` refuses to move a marker
+whose buffer is not current — `(marker-buffer-current? m)` tests for
+that. And each live marker costs the buffer a little work on every
+later edit, so a forgotten one is a slow leak: release it with
+`(release-marker! m)` when you are done. Releasing twice is harmless;
+every *other* operation on a released marker raises a loud error —
+deliberately, because the polite alternative, a `nil` position, is
+*truthy* here and would flow into arithmetic and fail far from the
+bug.
+
+An obligation to release on every exit is exactly the shape `finally`
+was made for, so `editing.lisp` packages it:
+
+```lisp
+(with-marker (m offset?) body…)
+```
+
+binds `m` to a fresh marker — at point, or at the optional offset —
+runs the body, and releases the marker on the way out, whether the
+body returned or raised; the body's value is returned. Reach for it
+instead of a bare `make-marker` unless the marker must outlive the
+form.
+
+One level up sits the form this section opened by hand-rolling:
+
+```lisp
+(save-excursion body…)
+```
+
+evaluates the body and puts point back where it was, on normal return
+and on error alike — through a marker, so edits before the saved spot
+no longer skew the restore — and returns the body's value. Point only:
+an active mark is deliberately left alone.
+
+```lisp
+;; in "hello world", with point at 6 — before "world"
+(save-excursion (goto! 0) (insert! "say "))
+(point)     ; ⇒ 10 — still before "world", not mid-"hello" at 6
+```
+
+Nested excursions restore inside-out, each level through its own
+marker.
+
+### What the Lisp Does Not Expose
+
+Two gaps remain, and readers arriving from Emacs Lisp deserve them
+stated plainly.
+
+**There are no overlays.** Overlays (ranges with metadata) exist in
+the editor's host layer — snippet fields and the inline eval pills are
+built on them — but Lisp code cannot create one today. A feature that
+needs a decorated range reaches it through its own primitives.
 
 **There is no buffer targeting.** Every primitive acts on the current
 buffer; nothing lets a function address another buffer behind the
-scenes.
+scenes. (Markers stretch this the polite distance — reading
+`(marker-position m)` works from anywhere — but moving one, like every
+edit, happens only in the buffer in front of you.)
 
 ### Files and Saving from Lisp
 
@@ -325,10 +391,10 @@ and recovery are user-manual territory — see *Files and buffers*.
 ### A Complete Editing Function
 
 The capstone assembles the chapter: read a region, transform it with
-the string library, and write it back as one atomic edit. (There is no
-`sort` in the core library, so the transformation here is reversing
-the region's lines — the structure is identical for any line-wise
-transform.)
+the string library, and write it back as one atomic edit. The
+transformation here reverses the region's lines, but the structure is
+identical for any line-wise transform — put `sort` where the `reverse`
+is and you have the heart of the standard library's line sorter.
 
 ```lisp
 (define (reverse-region-lines start end)
@@ -352,6 +418,18 @@ wrapped in `atomic-change-group`, so one `C-z` restores the original.
 Try it from the REPL: set the mark, move point down a few lines, then
 evaluate
 `(reverse-region-lines (min (mark) (point)) (max (mark) (point)))`.
+
+The standard library's cmd(sort-lines) command (`line-ops.lisp`; reach
+it as `M-x sort-lines`) is this same shape grown to production. The
+transformation is `(sort …)` instead of `(reverse …)`, and around it
+sit the details a shipped command owes its user: the range is snapped
+*outward* to whole lines — start back to its line's start, end forward
+to its line's end, except that an end at column 0 leaves that line
+alone, the same rule `indent-region` follows — an already-sorted block
+is recognised and left unedited, so no empty step pollutes the undo
+stack, and point lands at the start of the sorted block either way.
+Read it beside `reverse-region-lines` and you can see exactly what a
+chapter example leaves out.
 
 What remains is to make it a first-class citizen: a named command that
 gathers those bounds itself through an `(interactive region)` clause,

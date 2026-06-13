@@ -193,9 +193,10 @@ active snippet.
 
 ### Line operations
 
-Defined in `line-ops.lisp`. Four commands that act on whole lines rather
-than characters; all are ordinary Lisp over the buffer primitives, with
-no host change. The cursor keeps its column and travels with the text.
+Defined in `line-ops.lisp`. Five commands that act on whole lines
+rather than characters; all are ordinary Lisp over the buffer
+primitives, with no host change. In the four movement and copying
+commands the cursor keeps its column and travels with the text.
 
 :::function{name="move-line-up" path="reference/search-and-edit/move-line-up.html"}
 #### `move-line-up`
@@ -230,6 +231,20 @@ Join the next line onto the end of the current one. Bound to `C-x C-j`.
 The intervening newline and the next line's leading whitespace collapse
 to a single space (Emacs-style); the cursor lands at the join. No-op on
 the last line.
+:::
+
+:::function{name="sort-lines" path="reference/search-and-edit/sort-lines.html"}
+#### `sort-lines`
+`(sort-lines start end)`
+
+Sort the lines in `[start, end)` into ascending order — the
+`(interactive region)` clause supplies the active region's bounds, and
+errors without a region. The range is snapped *outward* to whole lines
+— `start` back to its line's start, `end` forward to its line's end —
+except that an `end` at column 0 does not pull in that line (the
+`indent-region` rule). An already-sorted block is left unedited, so no
+empty step lands on the undo stack; either way the cursor lands at the
+start of the block. Unbound; reach it via `M-x`.
 :::
 
 ### The kill ring

@@ -58,12 +58,14 @@ The buffer's length in characters.
 The number of lines in the buffer (always at least 1).
 :::
 
-:::function{name="buffer-name" path="reference/buffer-primitives/buffer-name.html"}
-#### `buffer-name`
-`(buffer-name)`
+:::function{name="view-name" path="reference/buffer-primitives/view-name.html"}
+#### `view-name`
+`(view-name)`
 
-The buffer's name — a string, used by the modeline and by
-`mode-for-name` to choose a major mode.
+The current view's name — the modeline label, a string. Text views
+delegate to their buffer's name (also what `mode-for-name` consults
+to choose a major mode); non-text views supply their own. Formerly
+`buffer-name`.
 :::
 
 :::function{name="point" path="reference/buffer-primitives/point.html"}
@@ -262,6 +264,61 @@ indentation. Does nothing on a blank line. The primitive behind the
 `fill-paragraph` command.
 :::
 
+### Markers
+
+An L2 marker surfaced as an opaque Lisp handle: an edit-tracking
+position in a specific buffer. Text inserted or deleted before a
+marker shifts it — undo and redo included — and a deletion spanning it
+collapses it to the edit point. The handle remembers its buffer:
+`marker-position` reads correctly from anywhere, but `set-marker!`
+works only while the marker's buffer is current. A live marker costs
+the buffer incremental work per edit, so each must be released; Lisp
+code normally reaches these through the `editing.lisp` macros
+`with-marker` and `save-excursion` (`commands.jmd`), which release on
+every exit. Apart from `release-marker!` itself, every operation on a
+released marker raises.
+
+:::function{name="make-marker" path="reference/buffer-primitives/make-marker.html"}
+#### `make-marker`
+`(make-marker [offset])`
+
+Create a marker in the current buffer at `offset` (default: the
+cursor) and return its handle, which prints as
+`#<marker 5 in notes.md>`.
+:::
+
+:::function{name="marker-position" path="reference/buffer-primitives/marker-position.html"}
+#### `marker-position`
+`(marker-position m)`
+
+The marker's current offset — correct under intervening edits, and
+readable even when the marker's buffer is not current.
+:::
+
+:::function{name="set-marker!" path="reference/buffer-primitives/set-marker!.html"}
+#### `set-marker!`
+`(set-marker! m offset)`
+
+Move the marker to `offset`, from which it resumes tracking. Raises
+unless the marker's buffer is current.
+:::
+
+:::function{name="marker-buffer-current?" path="reference/buffer-primitives/marker-buffer-current%3F.html"}
+#### `marker-buffer-current?`
+`(marker-buffer-current? m)`
+
+Whether the marker's buffer is the current buffer — that is, whether
+`set-marker!` would be allowed.
+:::
+
+:::function{name="release-marker!" path="reference/buffer-primitives/release-marker!.html"}
+#### `release-marker!`
+`(release-marker! m)`
+
+Detach the marker, so it stops costing the buffer work. Safe to call
+twice; every other operation on a released marker raises.
+:::
+
 ### History
 
 :::function{name="undo!" path="reference/buffer-primitives/undo!.html"}
@@ -310,6 +367,7 @@ The current buffer's minor modes — the value last stored, or `nil`.
 `(set-minor-modes! modes)`
 
 Set the current buffer's minor modes to `modes` (a list).
+:::
 
 ---
 
@@ -320,7 +378,6 @@ own machinery — file dialogs, the minibuffer, the buffer list. Each
 returns `nil`; the interactive ones (`start-…!`) hand control to a
 minibuffer loop and return at once. They are the primitives the
 file, search, buffer and system commands wrap.
-:::
 
 ### Files
 

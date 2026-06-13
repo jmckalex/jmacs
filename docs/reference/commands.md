@@ -348,6 +348,54 @@ Undo the last change. Bound to `C-z`.
 Redo the last undone change. Bound to `C-S-z`.
 :::
 
+### Atomic undo
+
+Defined in `editing.lisp`. The undo-grouping macro every multi-edit
+command wraps its mutations in.
+
+:::function{name="atomic-change-group" path="reference/commands/atomic-change-group.html"}
+#### `atomic-change-group`
+`(atomic-change-group body…)`
+
+Evaluate the body with every buffer edit it makes — however many,
+through whatever functions — grouped into a single undo step, and
+return the body's value. The group closes on every exit: normal
+return, a Lisp error, even a raw JS exception from a host primitive
+(it is built on `try`/`finally`). Nested groups fold into the
+outermost one; `undo!` and `redo!` are no-ops while a group is open.
+The rule of thumb: any command making more than one buffer mutation
+wraps them.
+:::
+
+### Markers and excursions
+
+Defined in `editing.lisp`, over the marker primitives
+(`buffer-primitives.jmd`). A marker is an edit-tracking position that
+must be released when done with; these two macros own that lifecycle,
+releasing on every exit — normal return and error alike — so the
+marker cannot leak.
+
+:::function{name="with-marker" path="reference/commands/with-marker.html"}
+#### `with-marker`
+`(with-marker (m [offset]) body…)` — *macro*
+
+Evaluate `body` with `m` bound to a fresh marker in the current buffer
+at `offset` (the cursor when omitted), releasing it on every exit.
+Returns the body's value. The body releasing the marker itself is
+harmless.
+:::
+
+:::function{name="save-excursion" path="reference/commands/save-excursion.html"}
+#### `save-excursion`
+`(save-excursion body…)` — *macro*
+
+Evaluate `body`, then restore the cursor to where it was — on normal
+return and on error alike. The saved place is a marker, not a plain
+integer, so edits the body makes before the cursor do not shift the
+restore target. Point only: the mark is deliberately left alone.
+Returns the body's value.
+:::
+
 ### The kill ring
 
 Defined in `kill.lisp`. Killed text — cut or copied — is pushed onto the
