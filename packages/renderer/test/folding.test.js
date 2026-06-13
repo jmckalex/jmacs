@@ -14,6 +14,7 @@ import {
   foldRanges,
   indexFoldRanges,
   hiddenLines,
+  isStructuralCloseLine,
 } from '../src/folding.js';
 
 test('foldRanges returns line spans for multi-line captures', () => {
@@ -138,6 +139,26 @@ test('nested folds: the inner range is already in the outer fold', () => {
 test('hiddenLines with no folded entries returns an empty set', () => {
   const endByStart = new Map([[0, 5]]);
   assert.deepEqual([...hiddenLines([], endByStart)], []);
+});
+
+test('isStructuralCloseLine: bare closing delimiters preview, content lines do not', () => {
+  // Structural closes — previewable after the `…`.
+  assert.equal(isStructuralCloseLine('</head>'), true);
+  assert.equal(isStructuralCloseLine('  </script>'), true); // leading indent
+  assert.equal(isStructuralCloseLine('</p>'), true);
+  assert.equal(isStructuralCloseLine('}'), true);
+  assert.equal(isStructuralCloseLine('});'), true);
+  assert.equal(isStructuralCloseLine(')'), true);
+  assert.equal(isStructuralCloseLine('end'), true); // short keyword close
+  // The bug case: a content line that merely ends with `</p>` must NOT
+  // preview — that re-shows the whole line and hides nothing.
+  assert.equal(
+    isStructuralCloseLine('And some <span class="math">x</span> as well.</p>'),
+    false
+  );
+  assert.equal(isStructuralCloseLine('   <p>opening, not a close'), false);
+  assert.equal(isStructuralCloseLine(''), false);
+  assert.equal(isStructuralCloseLine('   '), false);
 });
 
 test('foldRanges handles a CRLF-free buffer with trailing newline', () => {

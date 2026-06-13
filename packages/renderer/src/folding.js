@@ -166,3 +166,28 @@ export function hiddenLines(foldedStartLines, endByStart) {
   }
   return hidden;
 }
+
+/**
+ * Should a folded header preview its range's *closing* line after the
+ * `…`? Only when that line is structurally a close — a bare closing
+ * delimiter (`</tag>`, `}`, `)`, `]`) or a short keyword close (`end`,
+ * `done`) — so the preview shows `<head>…</head>` but never re-shows a
+ * content line that merely happens to end with `</p>`.
+ *
+ * Without this guard, folding a two-line `<p>…content…</p>` whose `</p>`
+ * shares its line with text would append that whole line back after the
+ * `…`, hiding nothing. A view-display concern, but pure and fold-shaped,
+ * so it lives here with the rest of the fold logic.
+ *
+ * @param {string} text - The raw (untrimmed) closing-line text.
+ * @returns {boolean}
+ */
+export function isStructuralCloseLine(text) {
+  if (typeof text !== 'string') return false;
+  const t = text.trim();
+  if (t.length === 0) return false;
+  // An XML/HTML end tag, a line opening with a bracket close, or a short
+  // bare keyword close. A content line (`And some <span>…</p>`) matches
+  // none of these.
+  return t.startsWith('</') || /^[)\]}]/.test(t) || t.length <= 5;
+}

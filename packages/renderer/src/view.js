@@ -25,7 +25,12 @@ import { keyEventToString, altComposedInsert } from './keymap.js';
 import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
 import { matchingBracket } from './brackets.js';
 import { createColourSwatches } from './colour-swatches.js';
-import { foldRanges, indexFoldRanges, hiddenLines } from './folding.js';
+import {
+  foldRanges,
+  indexFoldRanges,
+  hiddenLines,
+  isStructuralCloseLine,
+} from './folding.js';
 import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
 
 /** Keys that are only modifiers — never a keystroke on their own. */
@@ -839,8 +844,10 @@ export function createEditorView(buffer, container, options = {}) {
         // SYNTAX-HIGHLIGHTED text on the end so the user sees both
         // ends of the collapsed structure at a glance with proper
         // colours — e.g. `<script>…</script>` with `</script>`
-        // rendered in tag face. Falls back gracefully when the fold
-        // range doesn't have a useful closing line.
+        // rendered in tag face. Only when that closing line is
+        // *structurally a close* (`</tag>`, `}`, …); a content line that
+        // merely ends with `</p>` is left hidden, so folding it actually
+        // collapses the content rather than re-showing the whole line.
         if (folded.has(index)) {
           const ellipsis = el('span', 'editor-fold-ellipsis');
           ellipsis.textContent = '…';
@@ -849,7 +856,8 @@ export function createEditorView(buffer, container, options = {}) {
           if (
             typeof endLineNum === 'number' &&
             endLineNum > index &&
-            endLineNum < lines.length
+            endLineNum < lines.length &&
+            isStructuralCloseLine(lines[endLineNum].content)
           ) {
             const closeRuns = perLine
               ? (perLine[endLineNum] ?? null)
