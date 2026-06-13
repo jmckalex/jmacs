@@ -84,6 +84,25 @@ test('indexFoldRanges separates headers from end lookups', () => {
   assert.equal(endByStart.get(2), 3);
 });
 
+test('indexFoldRanges computes nesting depth per range start', () => {
+  // 0..20 outer; 2..8 and 10..18 are siblings inside it; 12..15 nests
+  // inside the second sibling; 30..32 is disjoint (back to depth 0).
+  // (Pre-sorted by startLine, as foldRanges guarantees.)
+  const ranges = [
+    { startLine: 0, endLine: 20 },
+    { startLine: 2, endLine: 8 },
+    { startLine: 10, endLine: 18 },
+    { startLine: 12, endLine: 15 },
+    { startLine: 30, endLine: 32 },
+  ];
+  const { depthByStart } = indexFoldRanges(ranges);
+  assert.equal(depthByStart.get(0), 0); // outermost
+  assert.equal(depthByStart.get(2), 1); // inside 0
+  assert.equal(depthByStart.get(10), 1); // sibling of 2, still inside 0
+  assert.equal(depthByStart.get(12), 2); // inside 0 and 10
+  assert.equal(depthByStart.get(30), 0); // disjoint — 0's range closed at 20
+});
+
 test('hiddenLines includes every line strictly between a folded header and its end', () => {
   const endByStart = new Map([
     [1, 5],
