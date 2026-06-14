@@ -806,6 +806,33 @@ mjx-assistive-mml[display='block'] {
   z-index: 4;
 }
 
+/* Indent guides — thin vertical lines behind the text marking each
+   indentation level. The layer shares the text's ch/lh space; each
+   `.editor-indent-guide` is positioned absolutely within it. Kept subtle
+   so it reads as structure, not clutter. */
+.editor-indent-guides {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.editor-indent-guide {
+  position: absolute;
+  width: 1px;
+  background: color-mix(in srgb, var(--fg-dim) 22%, transparent);
+}
+
+/* Rainbow guides — one hue per nesting level, cycling every six. Kept at
+   a low alpha so they mark depth without shouting over the code. */
+.editor-indent-guide-c0 { background: color-mix(in srgb, #e06c75 40%, transparent); }
+.editor-indent-guide-c1 { background: color-mix(in srgb, #e5c07b 40%, transparent); }
+.editor-indent-guide-c2 { background: color-mix(in srgb, #98c379 40%, transparent); }
+.editor-indent-guide-c3 { background: color-mix(in srgb, #56b6c2 40%, transparent); }
+.editor-indent-guide-c4 { background: color-mix(in srgb, #61afef 40%, transparent); }
+.editor-indent-guide-c5 { background: color-mix(in srgb, #c678dd 40%, transparent); }
+
 /* A subtle band behind the line the cursor is on. */
 .editor-current-line {
   position: absolute;

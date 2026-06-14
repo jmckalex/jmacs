@@ -31,6 +31,7 @@ import {
   hiddenLines,
   isStructuralCloseLine,
 } from './folding.js';
+import { lineIndentColumns, computeIndentGuides } from './indent-guides.js';
 import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
 
 /** Keys that are only modifiers — never a keystroke on their own. */
@@ -290,6 +291,8 @@ export function createEditorView(buffer, container, options = {}) {
   // text, overlayLayer in front of it. Both share the text's ch/lh
   // coordinate space and span the whole document.
   const backgroundLayer = el('div', 'editor-background');
+  // Vertical indent guides, behind the text. Filled by `renderLines`.
+  const indentGuideLayer = el('div', 'editor-indent-guides');
   const currentLineEl = el('div', 'editor-current-line');
   // Face-tagged decoration boxes (snippet fields + mirrors) sit behind
   // the selection so an active field shows its face tint with the
@@ -316,6 +319,7 @@ export function createEditorView(buffer, container, options = {}) {
   input.tabIndex = -1;
   content.append(
     backgroundLayer,
+    indentGuideLayer,
     currentLineEl,
     decorationLayer,
     selectionLayer,
@@ -815,10 +819,18 @@ export function createEditorView(buffer, container, options = {}) {
     // (right of the rule), positioned absolutely — not inside the
     // per-line number element — so they align across line-number widths.
     const chevronEls = [];
+    // Indentation (in columns) of each visible display row, for the indent
+    // guides; `null` for a blank line (bridged in `computeIndentGuides`).
+    const tabWidth = getTabWidth();
+    const visibleIndents = new Array(Math.max(0, lastRow - firstRow)).fill(null);
     let lineStartOffset = 0;
     for (let index = 0; index < lineCount; index += 1) {
       const displayRow = displayRowForLine[index];
       if (displayRow !== -1 && displayRow >= firstRow && displayRow < lastRow) {
+        visibleIndents[displayRow - firstRow] = lineIndentColumns(
+          lines[index].content,
+          tabWidth
+        );
         const lineEl = el('div', 'editor-line');
         lineEl.dataset.line = String(index);
         lineEl.style.top = `calc(${displayRow} * 1lh)`;
@@ -1014,6 +1026,23 @@ export function createEditorView(buffer, container, options = {}) {
     }
 
     linesEl.replaceChildren(...lineEls);
+
+    // Indent guides — a thin vertical line behind the text at each
+    // indentation level it crosses, over the visible window. Positioned
+    // in the shared ch/lh space, so they scroll with the text.
+    const guideEls = [];
+    for (const g of computeIndentGuides(visibleIndents, tabWidth)) {
+      const guide = el('div', 'editor-indent-guide');
+      // Rainbow by nesting level (col / tabWidth), cycling every 6 — the
+      // colours live in CSS so the palette stays themeable.
+      const level = Math.max(1, Math.round(g.col / tabWidth));
+      guide.classList.add(`editor-indent-guide-c${(level - 1) % 6}`);
+      guide.style.left = `${g.col}ch`;
+      guide.style.top = `calc(${firstRow + g.start} * 1lh)`;
+      guide.style.height = `calc(${g.end - g.start + 1} * 1lh)`;
+      guideEls.push(guide);
+    }
+    indentGuideLayer.replaceChildren(...guideEls);
     // Pills first, then chevrons on top (a chevron sits at the top of
     // its pill on the header row and must stay the clickable element).
     gutter.replaceChildren(...numberEls, ...pillEls, ...chevronEls);
