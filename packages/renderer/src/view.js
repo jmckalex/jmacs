@@ -996,26 +996,12 @@ export function createEditorView(buffer, container, options = {}) {
       const bottomRow = lastVisibleRowForLine[endLine];
       if (bottomRow <= topRow) continue; // nothing visible to span
       if (bottomRow < firstRow || topRow >= lastRow) continue; // offscreen
-      const depth = foldCache.depthByStart.get(startLine) ?? 0;
       const pill = el('div', 'editor-fold-pill');
       pill.style.top = `calc(${topRow} * 1lh)`;
       pill.style.height = `calc(${bottomRow - topRow + 1} * 1lh)`;
-      // Recessed look: a subtle dark body (deeper = a touch darker)
-      // with a border slightly lighter than the body, so each capsule
-      // reads as a quiet groove rather than a bright bar and the pills
-      // don't dominate the gutter. Capped so deep nesting stays calm.
-      // (Percentages are literals in the string, not vars, so they work
-      // wherever color-mix does.)
-      const bodyPct = Math.min(12 + depth * 4, 28);
-      const borderPct = Math.max(2, bodyPct - 8);
-      pill.style.setProperty(
-        '--pill-fill',
-        `color-mix(in srgb, #000 ${bodyPct}%, transparent)`
-      );
-      pill.style.setProperty(
-        '--pill-border',
-        `color-mix(in srgb, #000 ${borderPct}%, transparent)`
-      );
+      // Every bar is the same fixed-width rectangle (perfect overlap, set
+      // in CSS); nesting reads from each scope's dark-bordered rounded
+      // caps, not from any width difference.
       pill.dataset.line = String(startLine);
       pill.title = 'Fold';
       pill.addEventListener('mousedown', (ev) => {
