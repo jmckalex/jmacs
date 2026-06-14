@@ -307,35 +307,48 @@ export async function createTreeSitterHighlighter(
 
   /**
    * Collect foldable scopes over `text` as absolute character offsets:
-   * the fold query's `@fold` captures (when a query was given) plus the
-   * fold provider's ranges (when one was given). Single-line captures
-   * are kept here; the pure `foldRanges` consumer drops them.
+   * the fold query's `@fold` captures (when a query was given), the fold
+   * provider's ranges (when one was given), and — crucially — the folds
+   * of any *injected* regions, recursively, offset-adjusted into this
+   * text's coordinates. That last part is what lets a PHP buffer fold its
+   * embedded HTML elements and an HTML buffer fold the JS inside a
+   * `<script>`. Single-line captures are kept here; the pure `foldRanges`
+   * consumer drops them.
    *
    * @param {string} text
+   * @param {number} [depth] - Injection nesting depth; outermost is 0.
    * @returns {import('./folding.js').FoldCapture[]}
    */
-  function foldCaptures(text) {
+  function foldCaptures(text, depth = 0) {
     /** @type {import('./folding.js').FoldCapture[]} */
     const ranges = [];
-    if (foldQuery) {
+    /** @type {{ start: number, end: number, language: string }[]} */
+    const injections = [];
+    // One parse serves both the fold query and injection collection.
+    if (foldQuery || injectionQuery) {
       const tree = parser.parse(text);
-      for (const m of foldQuery.captures(tree.rootNode)) {
-        const range = { start: m.node.startIndex, end: m.node.endIndex };
-        // `@fold.inner` opts a delimited construct into column-aware
-        // folding: collapse the *inner* content, leaving the opening and
-        // closing delimiters (`<p>…</p>`, `{…}`). The delimiters are the
-        // node's first and last children; their inner edges become cut
-        // columns in the pure `foldRanges`. A degenerate span (no inner
-        // gap) silently degrades to a plain line-based fold.
-        if (m.name === 'fold.inner') {
-          const open = m.node.firstChild;
-          const close = m.node.lastChild;
-          if (open && close && open !== close && open.endIndex < close.startIndex) {
-            range.innerStart = open.endIndex;
-            range.innerEnd = close.startIndex;
+      if (foldQuery) {
+        for (const m of foldQuery.captures(tree.rootNode)) {
+          const range = { start: m.node.startIndex, end: m.node.endIndex };
+          // `@fold.inner` opts a delimited construct into column-aware
+          // folding: collapse the *inner* content, leaving the opening
+          // and closing delimiters (`<p>…</p>`, `{…}`). The delimiters
+          // are the node's first and last children; their inner edges
+          // become cut columns in the pure `foldRanges`. A degenerate
+          // span (no inner gap) silently degrades to a line-based fold.
+          if (m.name === 'fold.inner') {
+            const open = m.node.firstChild;
+            const close = m.node.lastChild;
+            if (open && close && open !== close && open.endIndex < close.startIndex) {
+              range.innerStart = open.endIndex;
+              range.innerEnd = close.startIndex;
+            }
           }
+          ranges.push(range);
         }
-        ranges.push(range);
+      }
+      if (injectionQuery) {
+        injections.push(...collectInjections(injectionQuery, tree.rootNode));
       }
       tree.delete();
     }
@@ -344,7 +357,10 @@ export async function createTreeSitterHighlighter(
         ranges.push({ start: r.start, end: r.end });
       }
     }
-    return ranges;
+    if (injectionProvider) {
+      for (const inj of injectionProvider(text)) injections.push(inj);
+    }
+    return mergeInjectedFolds(text, ranges, injections, getHighlighter, depth);
   }
 
   /** @type {Highlighter} */
@@ -355,7 +371,16 @@ export async function createTreeSitterHighlighter(
     captures,
     nodeAtPoint,
   };
-  if (foldQuery || foldProvider) highlighter.foldCaptures = foldCaptures;
+  // Publish `foldCaptures` when the language can produce folds: its own
+  // (query/provider) OR folds reachable through an injection (so a PHP
+  // buffer with no PHP-level fold query still folds its embedded HTML).
+  if (
+    foldQuery ||
+    foldProvider ||
+    ((injectionQuery || injectionProvider) && getHighlighter)
+  ) {
+    highlighter.foldCaptures = foldCaptures;
+  }
   return highlighter;
 }
 
@@ -486,6 +511,59 @@ export function spliceInjections(
     clipRangeAgainstRegions(r, liveInjections)
   );
   return clippedOuter.concat(innerRanges);
+}
+
+/**
+ * Merge the folds of injected regions into an outer fold list. For each
+ * injection whose inner highlighter exposes `foldCaptures`, recurse into
+ * the region, offset-adjust every fold (its `start`/`end` and the
+ * optional inner-fold cut offsets `innerStart`/`innerEnd`) back into the
+ * outer text's coordinates, and append. This is what lets a PHP buffer
+ * fold its embedded HTML and an HTML buffer fold the JS inside a
+ * `<script>`. The pure analog of {@link spliceInjections} for folding —
+ * exported so it can be tested with stub highlighters, no grammar load.
+ *
+ * Unlike highlight splicing, folds need no clipping: the pure
+ * `foldRanges` / `indexFoldRanges` already sort, dedup by start line and
+ * nest by containment, so overlapping outer/inner folds resolve cleanly.
+ * Recursion stops at {@link MAX_INJECTION_DEPTH}; at the cap the outer
+ * folds are returned unchanged.
+ *
+ * @param {string} text - The text the outer folds are over.
+ * @param {import('./folding.js').FoldCapture[]} outerFolds
+ * @param {{ start: number, end: number, language: string }[]} injections
+ * @param {((tag: string) => { foldCaptures?: Function } | undefined) | undefined} getHighlighter
+ * @param {number} depth - Outer call is 0; recursive call is parent + 1.
+ * @returns {import('./folding.js').FoldCapture[]}
+ */
+export function mergeInjectedFolds(text, outerFolds, injections, getHighlighter, depth) {
+  if (
+    !getHighlighter ||
+    injections.length === 0 ||
+    depth >= MAX_INJECTION_DEPTH
+  ) {
+    return outerFolds;
+  }
+  const merged = outerFolds.slice();
+  for (const injection of injections) {
+    const inner = getHighlighter(injection.language);
+    if (!inner || typeof inner.foldCaptures !== 'function') continue;
+    const sliced = text.slice(injection.start, injection.end);
+    for (const f of inner.foldCaptures(sliced, depth + 1)) {
+      const adjusted = {
+        start: f.start + injection.start,
+        end: f.end + injection.start,
+      };
+      if (typeof f.innerStart === 'number') {
+        adjusted.innerStart = f.innerStart + injection.start;
+      }
+      if (typeof f.innerEnd === 'number') {
+        adjusted.innerEnd = f.innerEnd + injection.start;
+      }
+      merged.push(adjusted);
+    }
+  }
+  return merged;
 }
 
 /**
