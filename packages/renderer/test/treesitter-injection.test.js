@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import {
   MAX_INJECTION_DEPTH,
   spliceInjections,
+  mergeInjectedFolds,
 } from '../src/treesitter.js';
 
 /**
@@ -285,4 +286,83 @@ test('non-overlapping injections are unaffected by the later-wins rule', () => {
     { start: 0, end: 10, face: 'fa' },
     { start: 20, end: 30, face: 'fb' },
   ]);
+});
+
+// --- mergeInjectedFolds: injection-aware code folding -------------------
+// The fold analog of spliceInjections — pulls each injected region's
+// folds up into outer coordinates so a PHP buffer folds its embedded
+// HTML, an HTML buffer folds its `<script>` JS, etc.
+
+/** Stub highlighter exposing `foldCaptures` returning fixed folds
+ *  (offsets relative to the slice). Records call depths if given. */
+function fakeFoldHighlighter(folds, callLog) {
+  return {
+    highlight: () => [],
+    captures: () => [],
+    foldCaptures: (_text, depth) => {
+      if (callLog) callLog.push(depth);
+      return folds.map((f) => ({ ...f }));
+    },
+  };
+}
+
+test('mergeInjectedFolds offsets inner folds into outer coordinates', () => {
+  const text = 'x'.repeat(20) + 'y'.repeat(40); // injected HTML at [20, 60)
+  const outer = [{ start: 0, end: 10 }];
+  const injections = [{ start: 20, end: 60, language: 'html' }];
+  // A line-based fold and an inner (column-aware) fold, slice-local.
+  const inner = fakeFoldHighlighter([
+    { start: 2, end: 18 },
+    { start: 3, end: 30, innerStart: 7, innerEnd: 25 },
+  ]);
+  const result = mergeInjectedFolds(text, outer, injections, () => inner, 0);
+  assert.deepEqual(result, [
+    { start: 0, end: 10 }, // outer untouched
+    { start: 22, end: 38 }, // 2,18 -> +20
+    { start: 23, end: 50, innerStart: 27, innerEnd: 45 }, // +20 incl. inner cuts
+  ]);
+});
+
+test('mergeInjectedFolds stops recursing at the depth cap', () => {
+  const injections = [{ start: 0, end: 10, language: 'html' }];
+  const atCapLog = [];
+  const atCap = mergeInjectedFolds(
+    'xxxxxxxxxx', [], injections,
+    () => fakeFoldHighlighter([{ start: 0, end: 5 }], atCapLog),
+    MAX_INJECTION_DEPTH
+  );
+  assert.deepEqual(atCap, []); // outer (empty) unchanged
+  assert.deepEqual(atCapLog, []); // inner never called
+
+  const belowLog = [];
+  const below = mergeInjectedFolds(
+    'xxxxxxxxxx', [], injections,
+    () => fakeFoldHighlighter([{ start: 0, end: 5 }], belowLog),
+    MAX_INJECTION_DEPTH - 1
+  );
+  assert.deepEqual(below, [{ start: 0, end: 5 }]);
+  assert.deepEqual(belowLog, [MAX_INJECTION_DEPTH]); // called at depth + 1
+});
+
+test('mergeInjectedFolds skips an injected language that has no folds', () => {
+  const plain = { highlight: () => [], captures: () => [] }; // no foldCaptures
+  const outer = [{ start: 0, end: 3 }];
+  const result = mergeInjectedFolds(
+    'xxxxxxxxxx', outer,
+    [{ start: 0, end: 10, language: 'plaintext' }],
+    () => plain, 0
+  );
+  assert.deepEqual(result, outer);
+});
+
+test('mergeInjectedFolds returns outer folds when there is nothing to inject', () => {
+  const outer = [{ start: 0, end: 5 }];
+  assert.deepEqual(
+    mergeInjectedFolds('xxxxx', outer, [], () => undefined, 0),
+    outer
+  );
+  assert.deepEqual(
+    mergeInjectedFolds('xxxxx', outer, [{ start: 0, end: 5, language: 'html' }], undefined, 0),
+    outer
+  );
 });

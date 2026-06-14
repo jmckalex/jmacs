@@ -49,10 +49,29 @@ const INJECTION_QUERY = `
   ((text) @injection.content (#set! injection.language "html"))
 `;
 
+// Foldable PHP scopes. Brace-delimited bodies collapse to `{…}` via
+// `@fold.inner`; the alternative-syntax control structures
+// (`if (…): … endif;`, `foreach (…): … endforeach;`, etc.) are matched
+// by their `colon_block` body and fold line-based — and because the PHP
+// grammar is the outer one, those nodes *span the embedded HTML*, so a
+// loop or conditional wrapping a chunk of template markup folds as a
+// unit. (HTML element folds arrive separately, through the injection.)
+const FOLD_QUERY = `
+  (compound_statement) @fold.inner
+  (declaration_list) @fold.inner
+  (enum_declaration_list) @fold.inner
+  (match_block) @fold.inner
+  (if_statement body: (colon_block)) @fold
+  (foreach_statement body: (colon_block)) @fold
+  (while_statement body: (colon_block)) @fold
+  (switch_statement body: (switch_block)) @fold
+`;
+
 registerLanguage({
   tag: 'php',
   grammar: 'tree-sitter-php.wasm',
   query: QUERY,
   suffixes: ['.php', '.phtml'],
   injectionQuery: INJECTION_QUERY,
+  foldQuery: FOLD_QUERY,
 });

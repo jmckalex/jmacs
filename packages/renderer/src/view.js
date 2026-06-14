@@ -25,7 +25,13 @@ import { keyEventToString, altComposedInsert } from './keymap.js';
 import { highlightBuffer, highlightLine, languageForName } from './highlight.js';
 import { matchingBracket } from './brackets.js';
 import { createColourSwatches } from './colour-swatches.js';
-import { foldRanges, indexFoldRanges, hiddenLines } from './folding.js';
+import {
+  foldRanges,
+  indexFoldRanges,
+  hiddenLines,
+  isStructuralCloseLine,
+} from './folding.js';
+import { lineIndentColumns, computeIndentGuides } from './indent-guides.js';
 import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
 
 /** Keys that are only modifiers — never a keystroke on their own. */
@@ -250,6 +256,7 @@ export function createEditorView(buffer, container, options = {}) {
       headers: new Set(),
       endByStart: new Map(),
       depthByStart: new Map(),
+      cutByStart: new Map(),
     };
   }
 
@@ -284,6 +291,8 @@ export function createEditorView(buffer, container, options = {}) {
   // text, overlayLayer in front of it. Both share the text's ch/lh
   // coordinate space and span the whole document.
   const backgroundLayer = el('div', 'editor-background');
+  // Vertical indent guides, behind the text. Filled by `renderLines`.
+  const indentGuideLayer = el('div', 'editor-indent-guides');
   const currentLineEl = el('div', 'editor-current-line');
   // Face-tagged decoration boxes (snippet fields + mirrors) sit behind
   // the selection so an active field shows its face tint with the
@@ -310,6 +319,7 @@ export function createEditorView(buffer, container, options = {}) {
   input.tabIndex = -1;
   content.append(
     backgroundLayer,
+    indentGuideLayer,
     currentLineEl,
     decorationLayer,
     selectionLayer,
@@ -411,6 +421,43 @@ export function createEditorView(buffer, container, options = {}) {
       if (trimmed === '') continue;
       out.push({ text: trimmed, face: run.face });
       started = true;
+    }
+    return out;
+  }
+
+  /** Keep the run text in columns `[0, col)`, splitting the run that
+   *  straddles `col`. Faces are preserved. Used to render the opening
+   *  delimiter of a column-folded header (`<p>` from `<p>This is…`).
+   *  Operates on plain `{ text, face }` runs (no widget markers). */
+  function sliceRunsToColumn(runs, col) {
+    const out = [];
+    let seen = 0;
+    for (const run of runs) {
+      if (seen >= col) break;
+      const room = col - seen;
+      if (run.text.length <= room) {
+        out.push(run);
+      } else {
+        out.push({ text: run.text.slice(0, room), face: run.face });
+      }
+      seen += run.text.length;
+    }
+    return out;
+  }
+
+  /** Keep the run text from column `col` onward, splitting the straddling
+   *  run. Used to render the closing delimiter of a column-folded header
+   *  (`</p>` from `…mathematics.</p>`). Plain `{ text, face }` runs. */
+  function sliceRunsFromColumn(runs, col) {
+    const out = [];
+    let seen = 0;
+    for (const run of runs) {
+      const end = seen + run.text.length;
+      if (end > col) {
+        const from = Math.max(0, col - seen);
+        out.push(from === 0 ? run : { text: run.text.slice(from), face: run.face });
+      }
+      seen = end;
     }
     return out;
   }
@@ -772,26 +819,44 @@ export function createEditorView(buffer, container, options = {}) {
     // (right of the rule), positioned absolutely — not inside the
     // per-line number element — so they align across line-number widths.
     const chevronEls = [];
+    // Indentation (in columns) of each visible display row, for the indent
+    // guides; `null` for a blank line (bridged in `computeIndentGuides`).
+    const tabWidth = getTabWidth();
+    const visibleIndents = new Array(Math.max(0, lastRow - firstRow)).fill(null);
     let lineStartOffset = 0;
     for (let index = 0; index < lineCount; index += 1) {
       const displayRow = displayRowForLine[index];
       if (displayRow !== -1 && displayRow >= firstRow && displayRow < lastRow) {
+        visibleIndents[displayRow - firstRow] = lineIndentColumns(
+          lines[index].content,
+          tabWidth
+        );
         const lineEl = el('div', 'editor-line');
         lineEl.dataset.line = String(index);
         lineEl.style.top = `calc(${displayRow} * 1lh)`;
         let runs = perLine
           ? perLine[index] ?? []
           : highlightLine(lines[index].content, language);
+        // A column-aware (`@fold.inner`) folded header renders as just
+        // its opening delimiter, then `…`, then the closing delimiter
+        // (`<p>…</p>`). Slice the runs to the opening delimiter and skip
+        // the inline/block-math and colour-swatch passes — the cut
+        // content, and anything inside it, is hidden.
+        const foldCut = folded.has(index)
+          ? foldCache.cutByStart.get(index)
+          : undefined;
+        const innerFold = !!(foldCut && foldCut.headerCol !== undefined);
+        if (innerFold) runs = sliceRunsToColumn(runs, foldCut.headerCol);
         // Splice in any inline math widgets that fall on this line,
         // replacing the source characters they cover. Block widgets are
         // emitted as a separate row below (the source lines they span
         // are already hidden).
         const inlinePlacements = mathLayout.inlineByLine.get(index);
-        if (inlinePlacements && inlinePlacements.length > 0) {
+        if (!innerFold && inlinePlacements && inlinePlacements.length > 0) {
           runs = spliceInlineWidgets(runs, inlinePlacements);
         }
         const blockPlacement = mathLayout.blockByStartLine.get(index);
-        if (blockPlacement) {
+        if (blockPlacement && !innerFold) {
           // The start line holds the block's opening delimiter. Show only
           // the source *before* the delimiter (any prefix text on that
           // line), then the widget — so the raw `$$` / `\[` isn't drawn.
@@ -823,7 +888,7 @@ export function createEditorView(buffer, container, options = {}) {
         // Record the inline math widgets mounted on this line (column
         // order matches DOM order), so the cursor/selection/click can
         // position by their measured width rather than source columns.
-        if (inlinePlacements && inlinePlacements.length > 0 && !blockPlacement) {
+        if (!innerFold && inlinePlacements && inlinePlacements.length > 0 && !blockPlacement) {
           const widgetEls = lineEl.querySelectorAll('.math-widget.math-inline');
           const captured = [];
           for (let k = 0; k < inlinePlacements.length && k < widgetEls.length; k += 1) {
@@ -839,30 +904,44 @@ export function createEditorView(buffer, container, options = {}) {
         // SYNTAX-HIGHLIGHTED text on the end so the user sees both
         // ends of the collapsed structure at a glance with proper
         // colours — e.g. `<script>…</script>` with `</script>`
-        // rendered in tag face. Falls back gracefully when the fold
-        // range doesn't have a useful closing line.
+        // rendered in tag face. Only when that closing line is
+        // *structurally a close* (`</tag>`, `}`, …); a content line that
+        // merely ends with `</p>` is left hidden, so folding it actually
+        // collapses the content rather than re-showing the whole line.
         if (folded.has(index)) {
           const ellipsis = el('span', 'editor-fold-ellipsis');
           ellipsis.textContent = '…';
           lineEl.append(ellipsis);
           const endLineNum = foldCache.endByStart.get(index);
-          if (
+          const closeRuns =
             typeof endLineNum === 'number' &&
             endLineNum > index &&
             endLineNum < lines.length
-          ) {
-            const closeRuns = perLine
-              ? (perLine[endLineNum] ?? null)
-              : highlightLine(lines[endLineNum].content, language);
-            const trimmed = closeRuns ? trimLeadingWhitespaceRuns(closeRuns) : null;
-            if (trimmed && trimmed.length > 0) {
-              const close = el('span', 'editor-fold-close');
-              renderRuns(close, trimmed);
-              lineEl.append(close);
+              ? (perLine
+                  ? (perLine[endLineNum] ?? null)
+                  : highlightLine(lines[endLineNum].content, language))
+              : null;
+          // A column-aware fold shows the closing delimiter sliced from
+          // the close line (`</p>`); a line-based fold previews the whole
+          // closing line, but only when it is structurally a close.
+          let tail = null;
+          if (closeRuns) {
+            if (innerFold && foldCut.closeCol !== undefined) {
+              tail = sliceRunsFromColumn(closeRuns, foldCut.closeCol);
+            } else if (
+              !innerFold &&
+              isStructuralCloseLine(lines[endLineNum].content)
+            ) {
+              tail = trimLeadingWhitespaceRuns(closeRuns);
             }
           }
+          if (tail && tail.length > 0) {
+            const close = el('span', 'editor-fold-close');
+            renderRuns(close, tail);
+            lineEl.append(close);
+          }
         }
-        if (colourSwatches) {
+        if (!innerFold && colourSwatches) {
           colourSwatches.decorateLine(
             lineEl,
             lines[index].content,
@@ -929,26 +1008,12 @@ export function createEditorView(buffer, container, options = {}) {
       const bottomRow = lastVisibleRowForLine[endLine];
       if (bottomRow <= topRow) continue; // nothing visible to span
       if (bottomRow < firstRow || topRow >= lastRow) continue; // offscreen
-      const depth = foldCache.depthByStart.get(startLine) ?? 0;
       const pill = el('div', 'editor-fold-pill');
       pill.style.top = `calc(${topRow} * 1lh)`;
       pill.style.height = `calc(${bottomRow - topRow + 1} * 1lh)`;
-      // Recessed look: a subtle dark body (deeper = a touch darker)
-      // with a border slightly lighter than the body, so each capsule
-      // reads as a quiet groove rather than a bright bar and the pills
-      // don't dominate the gutter. Capped so deep nesting stays calm.
-      // (Percentages are literals in the string, not vars, so they work
-      // wherever color-mix does.)
-      const bodyPct = Math.min(12 + depth * 4, 28);
-      const borderPct = Math.max(2, bodyPct - 8);
-      pill.style.setProperty(
-        '--pill-fill',
-        `color-mix(in srgb, #000 ${bodyPct}%, transparent)`
-      );
-      pill.style.setProperty(
-        '--pill-border',
-        `color-mix(in srgb, #000 ${borderPct}%, transparent)`
-      );
+      // Every bar is the same fixed-width rectangle (perfect overlap, set
+      // in CSS); nesting reads from each scope's dark-bordered rounded
+      // caps, not from any width difference.
       pill.dataset.line = String(startLine);
       pill.title = 'Fold';
       pill.addEventListener('mousedown', (ev) => {
@@ -961,6 +1026,23 @@ export function createEditorView(buffer, container, options = {}) {
     }
 
     linesEl.replaceChildren(...lineEls);
+
+    // Indent guides — a thin vertical line behind the text at each
+    // indentation level it crosses, over the visible window. Positioned
+    // in the shared ch/lh space, so they scroll with the text.
+    const guideEls = [];
+    for (const g of computeIndentGuides(visibleIndents, tabWidth)) {
+      const guide = el('div', 'editor-indent-guide');
+      // Rainbow by nesting level (col / tabWidth), cycling every 6 — the
+      // colours live in CSS so the palette stays themeable.
+      const level = Math.max(1, Math.round(g.col / tabWidth));
+      guide.classList.add(`editor-indent-guide-c${(level - 1) % 6}`);
+      guide.style.left = `${g.col}ch`;
+      guide.style.top = `calc(${firstRow + g.start} * 1lh)`;
+      guide.style.height = `calc(${g.end - g.start + 1} * 1lh)`;
+      guideEls.push(guide);
+    }
+    indentGuideLayer.replaceChildren(...guideEls);
     // Pills first, then chevrons on top (a chevron sits at the top of
     // its pill on the header row and must stay the clickable element).
     gutter.replaceChildren(...numberEls, ...pillEls, ...chevronEls);
@@ -1455,6 +1537,47 @@ export function createEditorView(buffer, container, options = {}) {
     elem.addEventListener('mouseleave', () => set(false));
   }
 
+  /** True if the fold headed by `start` hides buffer position
+   *  (`line`, `column`): a line strictly inside the range, or — for an
+   *  inner (column-aware) fold — the header line at or past the opening
+   *  delimiter (where the content collapses behind the `…`). */
+  function foldHidesPoint(start, line, column) {
+    const end = foldCache.endByStart.get(start);
+    if (typeof end !== 'number') return false;
+    if (line > start && line <= end) return true;
+    const cut = foldCache.cutByStart.get(start);
+    return !!(
+      cut &&
+      cut.headerCol !== undefined &&
+      line === start &&
+      column >= cut.headerCol
+    );
+  }
+
+  /** The offset to land point on just past the fold headed by `start` —
+   *  the start of the first line below the range. When the range ends the
+   *  buffer (no line below), fall back to the fold point on the header
+   *  line itself. */
+  function offsetPastFold(start) {
+    const end = foldCache.endByStart.get(start);
+    if (end + 1 <= activeBuffer.lineCount - 1) {
+      return activeBuffer.offsetAt(end + 1, 0);
+    }
+    const cut = foldCache.cutByStart.get(start);
+    return activeBuffer.offsetAt(start, cut?.headerCol ?? 0);
+  }
+
+  /** When a fold closes over point, drop point just after the folded
+   *  element so the caret isn't stranded in (now-hidden) content — the
+   *  editor's chosen behaviour. No-op when point is already outside the
+   *  range. */
+  function escapeFoldedPoint(start) {
+    const { line, column } = activeBuffer.positionAt(getPoint());
+    if (foldHidesPoint(start, line, column)) {
+      activeBuffer.moveTo(offsetPastFold(start));
+    }
+  }
+
   /** Toggle the fold at the header that contains buffer line `line`. */
   function toggleFoldAt(line) {
     refreshFoldIndex();
@@ -1466,6 +1589,7 @@ export function createEditorView(buffer, container, options = {}) {
     }
     if (foldCache.headers.has(line)) {
       folded.add(line);
+      escapeFoldedPoint(line);
       schedule();
       return true;
     }
@@ -1507,7 +1631,22 @@ export function createEditorView(buffer, container, options = {}) {
         changed = true;
       }
     }
-    if (changed) schedule();
+    if (changed) {
+      // Drop point past the outermost fold it now sits in, so the caret
+      // isn't stranded in hidden content.
+      const { line, column } = activeBuffer.positionAt(getPoint());
+      let outerStart = -1;
+      let outerEnd = -1;
+      for (const start of foldCache.headers) {
+        const end = foldCache.endByStart.get(start);
+        if (foldHidesPoint(start, line, column) && end > outerEnd) {
+          outerEnd = end;
+          outerStart = start;
+        }
+      }
+      if (outerStart >= 0) activeBuffer.moveTo(offsetPastFold(outerStart));
+      schedule();
+    }
     return changed;
   }
 

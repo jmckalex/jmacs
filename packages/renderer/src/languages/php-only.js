@@ -40,9 +40,24 @@ const QUERY = `
   (named_type (name) @type)
 `;
 
+// Foldable PHP scopes — same set as the mixed grammar (`./php.js`).
+// Brace-delimited bodies collapse to `{…}`; the alternative-syntax
+// control structures fold line-based via their `colon_block` body.
+const FOLD_QUERY = `
+  (compound_statement) @fold.inner
+  (declaration_list) @fold.inner
+  (enum_declaration_list) @fold.inner
+  (match_block) @fold.inner
+  (if_statement body: (colon_block)) @fold
+  (foreach_statement body: (colon_block)) @fold
+  (while_statement body: (colon_block)) @fold
+  (switch_statement body: (switch_block)) @fold
+`;
+
 registerLanguage({
   tag: 'php_only',
   grammar: 'tree-sitter-php_only.wasm',
   query: QUERY,
   suffixes: ['.phps'],
+  foldQuery: FOLD_QUERY,
 });

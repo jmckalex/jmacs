@@ -605,15 +605,17 @@ text-view {
    width. Click toggles the fold. */
 .editor-fold-marker {
   position: absolute;
-  right: 5px;
-  width: 18px;
+  right: 7px;
+  width: 14px;
   height: 1lh;
   padding: 0;
   background: transparent;
-  color: var(--fg-dim);
+  /* A light glyph against the medium-grey bar it sits on — `--fg-dim`
+     blended into that bar before was nearly invisible. */
+  color: var(--fg);
   border: none;
   cursor: pointer;
-  opacity: 0.55;
+  opacity: 0.78;
   /* Inherit the editor's font-size so the marker's `1lh` equals the
      text row height — its `top` is `displayRow * 1lh`, so a 13px
      font here would make `1lh` smaller than a row and the chevrons
@@ -627,11 +629,11 @@ text-view {
   z-index: 12;
 }
 
-/* The caret glyph — sized up because the small ▸/▾ in the editor's
-   monospace font were almost invisible. ~13px is a clearly clickable
-   target without dominating the gutter. */
+/* The caret glyph — sized to sit *inside* the fold bar with a little
+   margin each side. (Bigger than the editor's own ▸/▾ monospace glyphs,
+   which were almost invisible; smaller than the bar that frames it.) */
 .editor-fold-marker i {
-  font-size: 13px;
+  font-size: 10px;
 }
 
 .editor-fold-marker:hover,
@@ -640,32 +642,39 @@ text-view {
   color: var(--fg);
 }
 
-/* Fold-range pill — a same-width rounded capsule marking a foldable
-   range, in one fixed column (the chevron sits centred in its top, with
-   a couple of px of margin each side). Nested ranges overlap and stack
-   on the z-axis: a child paints on top of its parent (later in the DOM),
-   and `--pill-fill` strengthens with depth, so outer ranges read lighter
-   and inner ranges stronger — concentric brackets, fading outward.
-   Hovering a range (its capsule or chevron — they share data-fold-start)
-   floats it to the front in the accent colour. */
+/* Fold-range bar — a clearly-visible medium-grey scope indicator, Nova
+   style. Every bar shares a left edge (right + width is constant), and
+   `--fold-depth` widens it slightly per nesting level, so each deeper
+   scope reaches a little further toward the content and its rounded
+   corners step out as a bracket — the union reads as one grey bar whose
+   right edge brackets in and out at each fold's start and end. Hovering a
+   range (its bar or chevron — they share data-fold-start) floats it to
+   the front in the accent colour. */
 .editor-fold-pill {
   position: absolute;
-  right: 5px;
-  width: 18px;
-  border-radius: 7px;
-  /* Border-box so the 1px border draws inside the 18px / N-row box and
-     doesn't nudge the capsule off its row grid. */
+  /* Every bar is the same rectangle — nested scopes overlap perfectly.
+     The bar is wide enough to frame the chevron with a little margin; the
+     dark border outlines it against the gutter, and each nested scope's
+     rounded top/bottom caps (with that border) read as bracket notches
+     where folds begin and end. */
+  right: 8px;
+  width: 12px;
+  border-radius: 4px;
   box-sizing: border-box;
-  background: var(--pill-fill, color-mix(in srgb, #000 12%, transparent));
-  border: 1px solid var(--pill-border, color-mix(in srgb, #000 4%, transparent));
+  background: color-mix(in srgb, var(--fg-dim) 30%, transparent);
+  border: 1px solid color-mix(in srgb, #000 38%, transparent);
+  /* Thicker top/bottom caps so each fold's start and end read clearly —
+     that boundary matters more than the bar's sides, which stay 1px. */
+  border-top-width: 2px;
+  border-bottom-width: 2px;
   cursor: pointer;
   transition: background 0.1s ease, border-color 0.1s ease;
 }
 
 .editor-fold-pill:hover,
 .editor-fold-pill.is-range-active {
-  background: color-mix(in srgb, var(--accent) 55%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 80%, transparent);
+  background: var(--accent);
+  border-color: color-mix(in srgb, #000 45%, transparent);
   z-index: 9;
 }
 
@@ -796,6 +805,33 @@ mjx-assistive-mml[display='block'] {
 .editor-overlay {
   z-index: 4;
 }
+
+/* Indent guides — thin vertical lines behind the text marking each
+   indentation level. The layer shares the text's ch/lh space; each
+   `.editor-indent-guide` is positioned absolutely within it. Kept subtle
+   so it reads as structure, not clutter. */
+.editor-indent-guides {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.editor-indent-guide {
+  position: absolute;
+  width: 1px;
+  background: color-mix(in srgb, var(--fg-dim) 22%, transparent);
+}
+
+/* Rainbow guides — one hue per nesting level, cycling every six. Kept at
+   a low alpha so they mark depth without shouting over the code. */
+.editor-indent-guide-c0 { background: color-mix(in srgb, #e06c75 40%, transparent); }
+.editor-indent-guide-c1 { background: color-mix(in srgb, #e5c07b 40%, transparent); }
+.editor-indent-guide-c2 { background: color-mix(in srgb, #98c379 40%, transparent); }
+.editor-indent-guide-c3 { background: color-mix(in srgb, #56b6c2 40%, transparent); }
+.editor-indent-guide-c4 { background: color-mix(in srgb, #61afef 40%, transparent); }
+.editor-indent-guide-c5 { background: color-mix(in srgb, #c678dd 40%, transparent); }
 
 /* A subtle band behind the line the cursor is on. */
 .editor-current-line {

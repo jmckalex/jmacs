@@ -54,10 +54,15 @@ const INJECTION_QUERY = `
 // applies to `script_element` and `style_element` (always paired in
 // practice, but the explicit child match keeps the query
 // self-documenting and robust to grammar updates).
+// `@fold.inner` (not `@fold`) opts these tag-delimited elements into
+// column-aware folding: a folded `<p>This is text…\n…well.</p>` collapses
+// to `<p>…</p>` instead of leaving the start-tag line's content visible.
+// The opening `(start_tag)` and closing `(end_tag)` are the node's first
+// and last children, which the fold pipeline reads as the cut columns.
 const FOLD_QUERY = `
-  (element (start_tag) (end_tag)) @fold
-  (script_element (start_tag) (end_tag)) @fold
-  (style_element (start_tag) (end_tag)) @fold
+  (element (start_tag) (end_tag)) @fold.inner
+  (script_element (start_tag) (end_tag)) @fold.inner
+  (style_element (start_tag) (end_tag)) @fold.inner
 `;
 
 registerLanguage({
