@@ -109,6 +109,7 @@ import {
   mathPreviewProviderForMode,
   TextView,
   TablineView,
+  ElementView,
 } from '@editor/renderer';
 import {
   createBufferPrimitives,
@@ -127,6 +128,7 @@ import {
   jsonToLispHighlightRules,
 } from './face-overrides.js';
 import { applyFaceStyles, BASE_FACE_NAME } from './face-styles.js';
+import { resolveElementModuleUrl } from './element-spec.js';
 import {
   isMathPreviewActive,
   bufferMajorModeName,
@@ -1736,6 +1738,7 @@ function hideInactiveSingletons() {
   hideInactiveBrowsers();
   hideInactiveDocs();
   hideInactivePlaceholders();
+  hideInactiveElementHosts();
 }
 
 /** Switch to the view at INDEX: dispatch through mountKindView to
@@ -3333,6 +3336,45 @@ const interpreter = createInterpreter({
       const filePath = expandTilde(String(args[0] ?? ''));
       if (filePath === '') return NIL;
       openFileByPath(filePath);
+      return NIL;
+    },
+    // `(open-element-view! SPEC)` — open a generic element-view from a
+    // Lisp spec hash-map (:tag :module :attrs :keyboard :title :on-ready).
+    // The single `element` kind hosts any custom element; the spec says
+    // which one. The Lisp `define-element-view` macro drives this. See
+    // plans/ELEMENT-VIEWS.md.
+    'open-element-view!': (args) => {
+      const spec = args[0];
+      if (!(spec instanceof Map)) {
+        throw new LispError('open-element-view!: expected a spec hash-map');
+      }
+      const field = (name) => spec.get(keyword(name));
+      const tag = lispText(field('tag'));
+      if (tag === '') {
+        throw new LispError('open-element-view!: spec needs a :tag');
+      }
+      const keyboardRaw = field('keyboard');
+      const onReadyRaw = field('on-ready');
+      const titleRaw = field('title');
+      const extras = {
+        tag,
+        moduleUrl: resolveElementModuleUrl(lispText(field('module'))),
+        attrs: parseElementAttrs(field('attrs')),
+        keyboard:
+          keyboardRaw === undefined || keyboardRaw === null || keyboardRaw === NIL
+            ? 'grab'
+            : lispText(keyboardRaw),
+        onReady:
+          onReadyRaw === undefined || onReadyRaw === null || onReadyRaw === NIL
+            ? null
+            : onReadyRaw,
+      };
+      const name =
+        titleRaw === undefined || titleRaw === null || titleRaw === NIL
+          ? tag
+          : lispText(titleRaw);
+      views.push(createView({ kind: 'element', name, extras }));
+      switchToViewIndex(views.length - 1);
       return NIL;
     },
     // `(find-file-new! PATH)` — visit a path that does NOT exist yet:
@@ -6515,6 +6557,104 @@ function disposeBrowserElementForView(view) {
   browserElementByView.delete(view);
 }
 
+// --- generic element-host views (per-instance, mirrors the browser) -----
+// `<element-view>` hosts an arbitrary third-party custom element described
+// entirely by the view's `extras` (tag / moduleUrl / attrs / keyboard /
+// onReady), set by the `open-element-view!` primitive from a Lisp spec.
+// One `element` kind backs every component a user registers with
+// `define-element-view` — no new JS kind per component. See
+// plans/ELEMENT-VIEWS.md.
+const elementHostByView = new Map();
+
+/** Render a Lisp value (a Sym, a Keyword, or a string) as plain text. */
+function lispText(value) {
+  if (typeof value === 'string') return value;
+  if (value && typeof value.name === 'string') return value.name;
+  if (value === undefined || value === null || value === NIL) return '';
+  return String(value);
+}
+
+/** Parse a spec's `:attrs` — a Lisp list whose entries are a bare symbol
+ *  (a boolean attribute) or a list `(name value)` — into `[name, value]`
+ *  pairs (`value` is `true` for boolean attributes). */
+function parseElementAttrs(list) {
+  if (list === undefined || list === null || list === NIL) return [];
+  const out = [];
+  for (const entry of listToArray(list)) {
+    if (typeof entry === 'string' || entry instanceof Sym) {
+      const name = lispText(entry);
+      if (name !== '') out.push([name, true]);
+      continue;
+    }
+    const parts = listToArray(entry);
+    if (parts.length === 0) continue;
+    const name = lispText(parts[0]);
+    if (name === '') continue;
+    let value = true;
+    if (parts.length > 1) {
+      const v = parts[1];
+      value = (v === true || v === false || typeof v === 'number')
+        ? v
+        : lispText(v);
+    }
+    out.push([name, value]);
+  }
+  return out;
+}
+
+function configureElementView() {
+  return {
+    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // Lets the hosted element run a Lisp `:on-ready` callback (its arg is
+    // the embedded element instance).
+    deliver: (callback, callArgs) =>
+      deliverLispCallback(callback, callArgs, 'element-view'),
+  };
+}
+
+/** The <element-view> element for VIEW — created (configured + mounted in
+ *  PANE-EL) on first use, then reused. Like the browser, each element-host
+ *  view owns its element and is never moved between panes. */
+function ensureElementHostForView(view, paneEl) {
+  let el = elementHostByView.get(view);
+  if (el) {
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    el.setBuffer(view);
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('element-view'));
+  el.configure(configureElementView());
+  el.setBuffer(view); // spec read on connectedCallback
+  if (paneEl) paneEl.append(el); // triggers boot → import module + create tag
+  elementHostByView.set(view, el);
+  return el;
+}
+
+/** Show every element-host whose view is a leaf-direct active view; hide
+ *  the rest. Called from `hideInactiveSingletons`. */
+function hideInactiveElementHosts() {
+  const active = new Set();
+  for (const leaf of leafPanes(rootPane)) {
+    if (!isTablineView(leaf.view) && leaf.view && leaf.view.kind === 'element') {
+      active.add(leaf.view);
+    }
+  }
+  for (const [view, el] of elementHostByView) {
+    el.style.display = active.has(view) ? '' : 'none';
+  }
+}
+
+/** Tear down the element-host bound to VIEW (on kill) — removes the
+ *  embedded element, firing its own teardown (`destroy()` /
+ *  `disconnectedCallback`). */
+function disposeElementHostForView(view) {
+  const el = elementHostByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ }
+  el.remove();
+  elementHostByView.delete(view);
+}
+
 // --- documentation as a pane view (per-instance, mirrors the browser) ---
 // A `doc`-kind view shows the navigable manual in a pane (bigger than the
 // utility dock). Each doc view owns its own <doc-view> element so two doc
@@ -7530,6 +7670,15 @@ function mountKindView(view, context) {
     el.focus();
     return;
   }
+  if (view.kind === 'element') {
+    // Per-instance, like browser: mount THIS view's own element-host.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = leaf ? paneElements.get(leaf.id) : null;
+    const el = ensureElementHostForView(view, paneEl);
+    el.style.display = '';
+    el.focus();
+    return;
+  }
   const el = singletonElementForKind(view.kind);
   if (el) {
     // Re-parent the singleton into THIS view's pane element so it
@@ -7572,6 +7721,12 @@ function disposeKindView(view, context) {
   if (view.kind === 'placeholder') {
     // Per-instance: reap this placeholder's own element.
     disposePlaceholderElementForView(view);
+    return;
+  }
+  if (view.kind === 'element') {
+    // Per-instance: reap this view's element-host (removes the embedded
+    // element, firing its own teardown).
+    disposeElementHostForView(view);
     return;
   }
   if (view.kind === 'shell') {
@@ -7817,6 +7972,7 @@ function perKindConfigureFactory(kind) {
     case 'video':             return configureVideoView;
     case 'pdf':               return configurePdfView;
     case 'browser':           return configureBrowserView;
+    case 'element':           return configureElementView;
     case 'doc':               return configureDocView;
     // Placeholders are leaf-direct only (a split's new pane); the
     // leaf-direct mount path (`ensurePlaceholderElementForView`) binds
@@ -8042,6 +8198,9 @@ function elementForViewInstance(view) {
   }
   if (view.kind === 'doc' && docElementByView.has(view)) {
     return docElementByView.get(view);
+  }
+  if (view.kind === 'element' && elementHostByView.has(view)) {
+    return elementHostByView.get(view);
   }
   return singletonElementForKind(view.kind);
 }

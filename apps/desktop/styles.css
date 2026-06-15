@@ -2948,6 +2948,26 @@ browser-view,
   overflow: hidden;
 }
 
+/* Generic element-host view — fills the pane and lets the embedded
+   custom element size itself within. See plans/ELEMENT-VIEWS.md. */
+element-view,
+.element-view {
+  display: block;
+  height: 100%;
+  width: 100%;
+  outline: none;
+  background: var(--bg-editor);
+  overflow: auto;
+}
+
+.element-view-error {
+  padding: 14px 16px;
+  color: var(--error, #ec5f67);
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
 .browser-toolbar {
   flex: 0 0 36px;
   display: flex;

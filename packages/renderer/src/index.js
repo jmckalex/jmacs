@@ -58,6 +58,7 @@ export {
 export { AudioView, formatDuration } from './audio-view.js';
 export { VideoView } from './video-view.js';
 export { BrowserView, normaliseUrl } from './browser-view.js';
+export { ElementView } from './element-view.js';
 export { BookmarkView } from './bookmark-view.js';
 export {
   DirectoryTreeView,
