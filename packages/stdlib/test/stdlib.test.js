@@ -4265,6 +4265,7 @@ test('define-element-view registers a spec with the given fields', async () => {
       :module "apps/desktop/vendor/stella/stella-element.js"
       :tag "stella-emulator"
       :attrs '((controls))
+      :fit 'fill
       :keyboard 'grab)
   `);
   assert.equal(
@@ -4283,6 +4284,9 @@ test('define-element-view registers a spec with the given fields', async () => {
     `(car (car (get (element-view-spec 'test-atari) :attrs nil)))`
   );
   assert.equal(attr && attr.name, 'controls');
+  // :fit rides through the spec as a symbol (the host normalises it).
+  const fit = interpreter.evaluate(`(get (element-view-spec 'test-atari) :fit nil)`);
+  assert.equal(fit && fit.name, 'fill');
 });
 
 test('define-element-view defines a command named for the kind', async () => {

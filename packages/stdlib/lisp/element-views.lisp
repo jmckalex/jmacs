@@ -46,6 +46,9 @@
 ;;   :tag       the custom-element tag the module registers
 ;;   :attrs     a list of attributes — a bare symbol is a boolean attr, a
 ;;              list (name value) is a valued one: '((controls) (width "480px"))
+;;   :fit       how the element sits in the pane: 'center (natural size,
+;;              centred — the default), 'fill (stretch to the pane), or
+;;              'top (natural size, top-aligned, scrolls)
 ;;   :keyboard  'grab (the element owns the keyboard while focused — the
 ;;              default), 'share (let C-/M-/A- chords through), or 'off
 ;;   :on-ready  optional (lambda (el) …) run once the element is created

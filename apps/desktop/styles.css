@@ -2948,20 +2948,44 @@ browser-view,
   overflow: hidden;
 }
 
-/* Generic element-host view — fills the pane and centres the embedded
-   custom element within it (vertically + horizontally). `safe` keeps the
-   top reachable if the element is taller than the pane (it falls back to
-   start-aligned + scroll rather than clipping). See plans/ELEMENT-VIEWS.md. */
+/* Generic element-host view — fills the pane; the `:fit` spec keyword
+   (reflected as `data-fit`) decides how the embedded element sits within
+   it. `safe` keeps the top reachable if the element is taller than the
+   pane (it falls back to start-aligned + scroll, not clipping). See
+   plans/ELEMENT-VIEWS.md. */
 element-view,
 .element-view {
   display: flex;
-  align-items: safe center;
-  justify-content: safe center;
   height: 100%;
   width: 100%;
   outline: none;
   background: var(--bg-editor);
   overflow: auto;
+}
+
+/* center (default): natural size, centred both axes. */
+element-view[data-fit="center"],
+.element-view[data-fit="center"] {
+  align-items: safe center;
+  justify-content: safe center;
+}
+
+/* top: natural size, pinned to the top, centred horizontally, scrolls. */
+element-view[data-fit="top"],
+.element-view[data-fit="top"] {
+  align-items: safe flex-start;
+  justify-content: safe center;
+}
+
+/* fill: the embedded element stretches to the whole pane. */
+element-view[data-fit="fill"],
+.element-view[data-fit="fill"] {
+  align-items: stretch;
+}
+element-view[data-fit="fill"] > *,
+.element-view[data-fit="fill"] > * {
+  width: 100%;
+  height: 100%;
 }
 
 .element-view-error {

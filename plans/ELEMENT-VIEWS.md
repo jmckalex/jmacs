@@ -78,6 +78,11 @@ and expands to a `defcommand` (itself a macro, so this composes) whose body
 calls `(open-element-view! (hash-map …))`. The whole user surface is this one
 form. `:command` defaults to the kind symbol.
 
+Spec keywords: `:title`, `:module`, `:tag`, `:attrs`, `:keyboard`
+(`grab`/`share`/`off`), `:fit` (how the element sits in the pane —
+`center` default / `fill` / `top`, reflected as the host's `data-fit` that
+`styles.css` keys off), `:on-ready`.
+
 ## Part 4 — asset serving
 
 `serve.js` already serves the `app://editor` origin from the repo with

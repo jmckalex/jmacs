@@ -128,7 +128,7 @@ import {
   jsonToLispHighlightRules,
 } from './face-overrides.js';
 import { applyFaceStyles, BASE_FACE_NAME } from './face-styles.js';
-import { resolveElementModuleUrl } from './element-spec.js';
+import { resolveElementModuleUrl, normalizeFit } from './element-spec.js';
 import {
   isMathPreviewActive,
   bufferMajorModeName,
@@ -3360,6 +3360,7 @@ const interpreter = createInterpreter({
         tag,
         moduleUrl: resolveElementModuleUrl(lispText(field('module'))),
         attrs: parseElementAttrs(field('attrs')),
+        fit: normalizeFit(lispText(field('fit'))),
         keyboard:
           keyboardRaw === undefined || keyboardRaw === null || keyboardRaw === NIL
             ? 'grab'

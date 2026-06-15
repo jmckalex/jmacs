@@ -27,3 +27,21 @@ export function resolveElementModuleUrl(moduleSpec) {
   if (/^(app|https?|media):/i.test(spec)) return spec;
   return 'app://editor/' + spec.replace(/^\/+/, '');
 }
+
+/** How the embedded element sits in its pane:
+ *  - `center` — natural size, centred both axes (the default).
+ *  - `fill`   — stretched to the whole pane.
+ *  - `top`    — natural size, top-aligned, scrolls on overflow.
+ *  Reflected onto the host as `data-fit`, which `styles.css` keys off. */
+const FIT_MODES = new Set(['center', 'fill', 'top']);
+
+/**
+ * Normalise an element-view spec's `:fit` to a known mode, defaulting to
+ * `center` for anything missing or unrecognised.
+ *
+ * @param {string} fit
+ * @returns {'center' | 'fill' | 'top'}
+ */
+export function normalizeFit(fit) {
+  return FIT_MODES.has(fit) ? fit : 'center';
+}

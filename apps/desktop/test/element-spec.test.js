@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveElementModuleUrl } from '../src/element-spec.js';
+import { resolveElementModuleUrl, normalizeFit } from '../src/element-spec.js';
 
 test('a repo-relative path is served from the app://editor origin', () => {
   assert.equal(
@@ -33,4 +33,16 @@ test('empty / non-string yields the empty string (no module to load)', () => {
   assert.equal(resolveElementModuleUrl(''), '');
   assert.equal(resolveElementModuleUrl(null), '');
   assert.equal(resolveElementModuleUrl(undefined), '');
+});
+
+test('normalizeFit passes known modes through', () => {
+  assert.equal(normalizeFit('center'), 'center');
+  assert.equal(normalizeFit('fill'), 'fill');
+  assert.equal(normalizeFit('top'), 'top');
+});
+
+test('normalizeFit defaults unknown / empty to center', () => {
+  assert.equal(normalizeFit(''), 'center');
+  assert.equal(normalizeFit('sideways'), 'center');
+  assert.equal(normalizeFit(undefined), 'center');
 });

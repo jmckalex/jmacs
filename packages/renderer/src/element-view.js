@@ -142,6 +142,9 @@ export class ElementView extends ViewElement {
     // record (so it's `view.tag`, not `view.extras.tag`) — the same shape
     // image-view/browser-view read (`view.src`, `view.url`).
     const view = this._view || {};
+    // How the element sits in the pane (center/fill/top) — set before the
+    // async import so styles.css positions it with no layout flash.
+    this.dataset.fit = view.fit || 'center';
     const tag = view.tag;
     if (typeof tag !== 'string' || tag === '') {
       this._fail('element-view: spec has no element tag');
