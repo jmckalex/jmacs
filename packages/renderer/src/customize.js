@@ -229,46 +229,65 @@ function createCustomizeView(container, options = {}) {
     docEl.textContent = face.doc;
 
     // Live swatch — a span styled with the .tok-NAME class so the
-    // user can see the current face applied to text.
+    // user can see the current face applied to text. The base face has
+    // no .tok- rule, so we preview its typography inline.
     const preview = doc.createElement('div');
     preview.className = 'customize-face-preview';
     const swatch = doc.createElement('span');
     swatch.className = `tok-${face.name}`;
     swatch.textContent = 'Aa Bb Cc 0123';
+    if (face.isBase) {
+      if (face.size !== '' && face.size != null) {
+        swatch.style.fontSize = `${face.size}px`;
+      }
+      if (face.family) swatch.style.fontFamily = face.family;
+    }
     preview.append(swatch);
 
     const grid = doc.createElement('div');
     grid.className = 'customize-face-grid';
 
-    // Foreground colour.
-    grid.append(
-      faceColourField(face.name, 'foreground', 'Foreground', face.foreground),
-    );
-    // Background colour.
-    grid.append(
-      faceColourField(face.name, 'background', 'Background', face.background),
-    );
-    // Weight dropdown.
-    grid.append(
-      faceChoiceField(face.name, 'weight', 'Weight', face.weight, [
-        'normal', 'bold',
-      ]),
-    );
-    // Slant dropdown.
-    grid.append(
-      faceChoiceField(face.name, 'slant', 'Slant', face.slant, [
-        'normal', 'italic',
-      ]),
-    );
-    // Underline / strike-through checkboxes.
-    grid.append(
-      faceBooleanField(face.name, 'underline', 'Underline', face.underline),
-    );
-    grid.append(
-      faceBooleanField(
-        face.name, 'strike-through', 'Strike-through', face.strikeThrough,
-      ),
-    );
+    if (face.isBase) {
+      // The base face owns the editor's base typography only — size and
+      // family. Every other face inherits these; colours are theme-owned
+      // and not set here, so it shows no colour/weight widgets.
+      grid.append(
+        faceNumberField(face.name, 'size', 'Size (px)', face.size),
+      );
+      grid.append(
+        faceTextField(face.name, 'family', 'Font family', face.family),
+      );
+    } else {
+      // Foreground colour.
+      grid.append(
+        faceColourField(face.name, 'foreground', 'Foreground', face.foreground),
+      );
+      // Background colour.
+      grid.append(
+        faceColourField(face.name, 'background', 'Background', face.background),
+      );
+      // Weight dropdown.
+      grid.append(
+        faceChoiceField(face.name, 'weight', 'Weight', face.weight, [
+          'normal', 'bold',
+        ]),
+      );
+      // Slant dropdown.
+      grid.append(
+        faceChoiceField(face.name, 'slant', 'Slant', face.slant, [
+          'normal', 'italic',
+        ]),
+      );
+      // Underline / strike-through checkboxes.
+      grid.append(
+        faceBooleanField(face.name, 'underline', 'Underline', face.underline),
+      );
+      grid.append(
+        faceBooleanField(
+          face.name, 'strike-through', 'Strike-through', face.strikeThrough,
+        ),
+      );
+    }
 
     const reset = doc.createElement('button');
     reset.className = 'customize-reset';
@@ -342,6 +361,48 @@ function createCustomizeView(container, options = {}) {
     const labelEl = doc.createElement('span');
     labelEl.textContent = label;
     field.append(input, labelEl);
+    return field;
+  }
+
+  /** A labelled numeric input (e.g. font size in px). An empty value is
+   *  left as inherit — no override is committed; use Reset to clear an
+   *  existing override. A number commits immediately (faces are live). */
+  function faceNumberField(faceName, attr, label, value) {
+    const field = doc.createElement('label');
+    field.className = 'customize-face-field customize-face-number';
+    const labelEl = doc.createElement('span');
+    labelEl.textContent = label;
+    const input = doc.createElement('input');
+    input.type = 'number';
+    input.min = '6';
+    input.max = '48';
+    input.step = '1';
+    input.value = value === '' || value == null ? '' : String(value);
+    input.addEventListener('change', () => {
+      const v = input.value.trim();
+      if (v === '') return; // inherit; Reset clears an override
+      setFaceAttribute(faceName, attr, v);
+      render();
+    });
+    field.append(labelEl, input);
+    return field;
+  }
+
+  /** A labelled text input (e.g. a CSS font-family stack). Empty commits
+   *  as an empty override, which falls back to the inherited value. */
+  function faceTextField(faceName, attr, label, value) {
+    const field = doc.createElement('label');
+    field.className = 'customize-face-field customize-face-text';
+    const labelEl = doc.createElement('span');
+    labelEl.textContent = label;
+    const input = doc.createElement('input');
+    input.type = 'text';
+    input.value = value ?? '';
+    input.addEventListener('change', () => {
+      setFaceAttribute(faceName, attr, input.value);
+      render();
+    });
+    field.append(labelEl, input);
     return field;
   }
 

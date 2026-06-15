@@ -2,9 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  BASE_FACE_NAME,
   FACE_STYLE_ELEMENT_ID,
   applyFaceStyles,
   facesFromAlist,
+  generateBaseFaceCss,
   generateFaceCss,
   generateModeFaceCss,
   modeFacesFromAlist,
@@ -126,6 +128,61 @@ test('generateFaceCss accepts a keyword for weight/slant', () => {
   const css = generateFaceCss(faces);
   assert.match(css, /font-weight: bold;/);
   assert.match(css, /font-style: italic;/);
+});
+
+// --- size / family + the base face ------------------------------------
+
+test('a bare numeric :size becomes px; a unit/keyword passes through', () => {
+  const faces = new Map();
+  faces.set('a', new Map([['size', 16]]));
+  faces.set('b', new Map([['size', '1.2em']]));
+  faces.set('c', new Map([['family', '"Fira Code", monospace']]));
+  const css = generateFaceCss(faces);
+  assert.match(css, /\.tok-a\s*\{[^}]*font-size: 16px;[^}]*\}/);
+  assert.match(css, /\.tok-b\s*\{[^}]*font-size: 1\.2em;[^}]*\}/);
+  assert.match(css, /\.tok-c\s*\{[^}]*font-family: "Fira Code", monospace;[^}]*\}/);
+});
+
+test('generateFaceCss never emits a .tok- rule for the base face', () => {
+  const faces = new Map();
+  faces.set(BASE_FACE_NAME, new Map([['size', 14], ['family', 'Menlo']]));
+  faces.set('keyword', new Map([['foreground', '#fff']]));
+  const css = generateFaceCss(faces);
+  assert.doesNotMatch(css, /\.tok-default/);
+  assert.match(css, /\.tok-keyword/);
+});
+
+test('generateBaseFaceCss drives --font-size and --font-mono from the base face', () => {
+  const faces = new Map();
+  faces.set(BASE_FACE_NAME, new Map([
+    ['size', 13],
+    ['family', '"JetBrains Mono", monospace'],
+  ]));
+  const css = generateBaseFaceCss(faces);
+  assert.match(css, /:root\s*\{[^}]*--font-size: 13px;[^}]*\}/);
+  assert.match(css, /:root\s*\{[^}]*--font-mono: "JetBrains Mono", monospace;[^}]*\}/);
+});
+
+test('generateBaseFaceCss is empty when there is no base face', () => {
+  const faces = new Map();
+  faces.set('keyword', new Map([['foreground', '#fff']]));
+  assert.equal(generateBaseFaceCss(faces), '');
+});
+
+test('applyFaceStyles writes the base :root rule before the token rules', () => {
+  const doc = makeDoc();
+  const alist = [
+    cons(sym(BASE_FACE_NAME), list(cons(sym('size'), 13))),
+    cons(sym('keyword'), list(cons(sym('foreground'), '#ff0000'))),
+  ];
+  applyFaceStyles(doc, alist, listToArray);
+  const css = doc.getElementById(FACE_STYLE_ELEMENT_ID).textContent;
+  const root = css.indexOf(':root');
+  const tok = css.indexOf('.tok-keyword');
+  assert.ok(root >= 0 && tok >= 0);
+  assert.ok(root < tok, 'base :root rule must come before token rules');
+  assert.match(css, /--font-size: 13px;/);
+  assert.doesNotMatch(css, /\.tok-default/);
 });
 
 // --- facesFromAlist ---------------------------------------------------

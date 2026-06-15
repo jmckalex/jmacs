@@ -328,3 +328,43 @@ test('a face declared without `from` still works (no regression)', async () => {
   const slant = lisp.evaluate(`(face-attribute 'comment :slant :theme 'dark)`);
   assert.equal(slant && slant.name, 'italic');
 });
+
+// --- the base `default` face — editor typography ----------------------
+
+test('the base `default` face ships with size and family', async () => {
+  const lisp = await makeInterpreter();
+  assert.equal(lisp.evaluate(`(face-registered? 'default)`), true);
+  assert.equal(lisp.evaluate(`(face-attribute 'default :size :theme 'dark)`), 14);
+  const fam = lisp.evaluate(`(face-attribute 'default :family :theme 'dark)`);
+  assert.equal(typeof fam, 'string');
+  assert.ok(fam.includes('JetBrains Mono'));
+  // It owns no colour — those stay theme-owned.
+  assert.equal(lisp.evaluate(`(face-attribute 'default :foreground :theme 'dark)`), NIL);
+});
+
+test('face-row carries size and family before the state field', async () => {
+  const lisp = await makeInterpreter();
+  // (name doc fg bg weight slant underline strike size family state)
+  assert.equal(lisp.evaluate(`(nth (face-row 'default) 8)`), 14);
+  const fam = lisp.evaluate(`(nth (face-row 'default) 9)`);
+  assert.equal(typeof fam, 'string');
+  // A face that doesn't set size/family reports "" in those slots.
+  assert.equal(lisp.evaluate(`(nth (face-row 'comment) 8)`), '');
+  assert.equal(lisp.evaluate(`(nth (face-row 'comment) 9)`), '');
+});
+
+test('set-face-attribute-by-strings coerces a size string to a number', async () => {
+  const lisp = await makeInterpreter();
+  lisp.evaluate(`(set-face-attribute-by-strings "default" "size" "13")`);
+  const size = lisp.evaluate(`(face-attribute 'default :size :theme 'dark)`);
+  assert.equal(size, 13);
+  assert.equal(typeof size, 'number');
+});
+
+test('a per-face size override resolves over the base face', async () => {
+  const lisp = await makeInterpreter();
+  lisp.evaluate(`(set-face-attribute 'keyword :size 18)`);
+  assert.equal(lisp.evaluate(`(face-attribute 'keyword :size :theme 'dark)`), 18);
+  // The base face is untouched by a per-face override.
+  assert.equal(lisp.evaluate(`(face-attribute 'default :size :theme 'dark)`), 14);
+});

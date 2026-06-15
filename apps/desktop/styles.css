@@ -2139,6 +2139,21 @@ textarea.customize-widget {
   justify-content: flex-end;
 }
 
+/* The base face's typography fields: a compact size spinner and a wide
+   font-family stack that takes the whole grid row. */
+.customize-face-number input[type='number'] {
+  width: 64px;
+}
+
+.customize-face-text {
+  grid-column: 1 / -1;
+}
+
+.customize-face-text input[type='text'] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* The image view — the view an `image`-kind buffer is shown through.
    Fit-to-window by default; the toolbar toggles to actual size. */
 

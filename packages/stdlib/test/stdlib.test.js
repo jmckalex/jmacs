@@ -2848,8 +2848,8 @@ test('attributes not overridden fall back to the default', async () => {
 test('face-row returns a flat list of values for the customize view', async () => {
   const { interpreter } = await editor();
   const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
-  // (name doc foreground background weight slant underline strike state)
-  assert.equal(row.length, 9);
+  // (name doc fg bg weight slant underline strike size family state)
+  assert.equal(row.length, 11);
   assert.equal(row[0], 'keyword');
   assert.equal(typeof row[1], 'string');
   assert.equal(typeof row[2], 'string'); // foreground is a colour string
@@ -2858,7 +2858,9 @@ test('face-row returns a flat list of values for the customize view', async () =
   assert.equal(row[5], 'normal');
   assert.equal(typeof row[6], 'boolean');
   assert.equal(typeof row[7], 'boolean');
-  assert.equal(row[8], 'standard'); // no overrides yet
+  assert.equal(row[8], ''); // size unset on a token face (inherits base)
+  assert.equal(row[9], ''); // family unset on a token face
+  assert.equal(row[10], 'standard'); // no overrides yet
 });
 
 test('face-row reports state \"set\" after an override', async () => {
@@ -2866,7 +2868,7 @@ test('face-row reports state \"set\" after an override', async () => {
   interpreter.evaluate("(set-face-attribute 'keyword :foreground \"#abc\")");
   const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
   assert.equal(row[2], '#abc');
-  assert.equal(row[8], 'set');
+  assert.equal(row[10], 'set');
 });
 
 test('face-row reports state \"set\" after a per-theme override', async () => {
@@ -2875,7 +2877,7 @@ test('face-row reports state \"set\" after a per-theme override', async () => {
     "(set-face-attribute 'keyword :foreground \"#abc\" :theme 'dark)"
   );
   const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
-  assert.equal(row[8], 'set');
+  assert.equal(row[10], 'set');
 });
 
 test('faces-group-model returns the model the customize view consumes', async () => {
@@ -2915,7 +2917,7 @@ test('reset-face-by-string drops the global override', async () => {
   );
   interpreter.evaluate('(reset-face-by-string "keyword")');
   const row = listToArray(interpreter.evaluate("(face-row 'keyword)"));
-  assert.equal(row[8], 'standard');
+  assert.equal(row[10], 'standard');
 });
 
 test('faces is a registered customize group under jmacs', async () => {
