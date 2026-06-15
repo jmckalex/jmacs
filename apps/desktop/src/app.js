@@ -817,6 +817,19 @@ function focusPaneFromEvent(event) {
 editorHostEl.addEventListener('mousedown', focusPaneFromEvent, true);
 editorHostEl.addEventListener('click', focusPaneFromEvent, true);
 
+/** True when pane PANEID holds a view that opted out of focus
+ *  (`:no-focus`) — a helper/satellite panel (e.g. the bibliography view)
+ *  whose whole purpose is to act on the *active* view. Interacting with
+ *  it must not make it the active pane, or "insert into the active view"
+ *  would target the panel itself. Peels through a tabline to the visible
+ *  child. */
+function isNoFocusPane(paneId) {
+  const leaf = leafPanes(rootPane).find((l) => l.id === paneId);
+  if (!leaf) return false;
+  const view = peelTabline(leaf.view);
+  return !!(view && view.noFocus);
+}
+
 /** Set the currently-focused pane id and refresh derived state:
  *  the focus indicator, the cursor binding for the new focused
  *  text view's buffer, the `editorView` pointer the legacy callsites
@@ -826,6 +839,9 @@ editorHostEl.addEventListener('click', focusPaneFromEvent, true);
  *  what gives the active view its own cursor on focus change. */
 function setCurrentPaneId(nextId) {
   if (typeof nextId !== 'string' || nextId === currentPaneId) return;
+  // `:no-focus` views never become the active pane — every focus path
+  // (click, C-x o, restore) routes through here, so the guard is central.
+  if (isNoFocusPane(nextId)) return;
   currentPaneId = nextId;
   refreshPaneFocusIndicators();
   const leaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
@@ -3361,6 +3377,9 @@ const interpreter = createInterpreter({
         moduleUrl: resolveElementModuleUrl(lispText(field('module'))),
         attrs: parseElementAttrs(field('attrs')),
         fit: normalizeFit(lispText(field('fit'))),
+        // A helper/satellite view (e.g. a bibliography panel) that acts on
+        // the *active* view and must never become the focused pane itself.
+        noFocus: field('no-focus') === true,
         keyboard:
           keyboardRaw === undefined || keyboardRaw === null || keyboardRaw === NIL
             ? 'grab'

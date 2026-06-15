@@ -4266,6 +4266,7 @@ test('define-element-view registers a spec with the given fields', async () => {
       :tag "stella-emulator"
       :attrs '((controls))
       :fit 'fill
+      :no-focus #t
       :keyboard 'grab)
   `);
   assert.equal(
@@ -4287,6 +4288,11 @@ test('define-element-view registers a spec with the given fields', async () => {
   // :fit rides through the spec as a symbol (the host normalises it).
   const fit = interpreter.evaluate(`(get (element-view-spec 'test-atari) :fit nil)`);
   assert.equal(fit && fit.name, 'fill');
+  // :no-focus rides through as a boolean (the host reads it === true).
+  assert.equal(
+    interpreter.evaluate(`(get (element-view-spec 'test-atari) :no-focus nil)`),
+    true
+  );
 });
 
 test('define-element-view defines a command named for the kind', async () => {
