@@ -10,7 +10,11 @@ Licenses seen here — MIT, Apache-2.0, BSD-2/3-Clause, ISC, CC BY 4.0, SIL
 OFL 1.1 — are all permissive or weak-copyleft and compatible with a
 GPL-3.0 combined work. One component, the `citeproc` CSL formatter, is
 **strong copyleft**; it is taken under its **AGPL-3.0-or-later** arm,
-which *is* GPL-3.0-compatible — see the note immediately below.
+which *is* GPL-3.0-compatible — see the note immediately below. A second
+copyleft component, the **Stella** Atari 2600 core (GPL-2.0) behind the
+*optional* `atari` element-view, carries an unresolved GPLv2↔GPL-3.0
+compatibility question — see its note below; it is excludable from a
+build and does not affect the rest of the editor.
 
 > ℹ️ **`citeproc` — taken under AGPL-3.0-or-later (GPL-3.0-compatible).**
 > The CSL bibliography formatter bundled inside `citation-js` (see
@@ -33,6 +37,36 @@ which *is* GPL-3.0-compatible — see the note immediately below.
 > from the published npm package `citeproc@2.4.63`; its source is that
 > package and its upstream repository,
 > <https://github.com/juris-m/citeproc-js>.
+
+> ⚠️ **Stella (Atari 2600 core) — GPL-2.0; GPLv2↔GPL-3.0 compatibility is
+> UNRESOLVED. Confirm before a distributed build.**
+> The `<stella-emulator>` web component vendored at
+> `apps/desktop/vendor/stella/` embeds the
+> [Stella](https://stella-emu.github.io/) emulator core compiled to
+> WebAssembly. It backs the *optional* `atari` element-view (`M-x atari`).
+> Stella is released under the **GNU GPL, version 2**
+> (`licenses/Stella-GPLv2.txt`); *corresponding source* is the upstream
+> project at <https://github.com/stella-emu/stella> (the vendored `.wasm`
+> is an unmodified build of that source).
+>
+> This editor is **GPL-3.0-or-later**. GPLv2 combines cleanly into a
+> GPL-3.0 work **only if** Stella is offered as "GPLv2 *or later*"; a
+> strict **GPLv2-only** grant is *incompatible* with GPL-3.0 in a single
+> combined work. Stella conveys the GPLv2 text without an explicit
+> project-wide "or later" statement, so this is **not settled here**. Two
+> clean resolutions: **(a)** confirm Stella's "or later" intent — then it
+> is taken under GPLv3 and is fully compatible; or **(b)** treat the
+> emulator as a **separately aggregated program** — it is a self-contained
+> WASM module loaded dynamically and interfaced only across the DOM
+> custom-element boundary, not linked into the editor's GPL-3.0 code —
+> which keeps the licenses from combining. Until decided, the `atari`
+> view is **excluded** by removing `element-view-atari.lisp` from
+> `STDLIB_FILES` and deleting `apps/desktop/vendor/stella/`; the
+> element-view *mechanism* is licence-neutral and unaffected.
+>
+> The bundled demo ROM **Oystron** (© 1997 Piero Cavina) is **freeware**,
+> redistributable together with its documentation — kept paired at
+> `apps/desktop/vendor/stella/oystron.{bin,txt}`.
 
 ---
 
@@ -57,6 +91,8 @@ Vendored bundles of the last three live at
 |-----------|---------|---------|------|
 | [Font Awesome Free](https://fontawesome.com/) | 7.2.0 | Icons **CC BY 4.0**, Fonts **SIL OFL 1.1**, Code **MIT** | `apps/desktop/vendor/fontawesome/` |
 | [MathJax](https://www.mathjax.org/) (`tex-svg`) | 3.2.2 | Apache-2.0 | `apps/desktop/vendor/mathjax/` |
+| [Stella](https://stella-emu.github.io/) — Atari 2600 core (WebAssembly) behind the optional `atari` element-view ⚠️ *see the Stella note above* | vendored bundle | **GPL-2.0** | `apps/desktop/vendor/stella/` |
+| Oystron © 1997 Piero Cavina — freeware demo ROM (ship paired with its `.txt`) | — | Freeware | `apps/desktop/vendor/stella/oystron.{bin,txt}` |
 | [web-tree-sitter](https://tree-sitter.github.io/tree-sitter/) — the tree-sitter runtime + its wasm | 0.26.9 | MIT | `packages/renderer/vendor/web-tree-sitter.*` |
 
 ## Syntax grammars (tree-sitter `.wasm`, in `packages/renderer/vendor/`)
@@ -94,6 +130,9 @@ Full license texts for the copyleft components we convey live in
   the `citeproc` portion of the vendored `citation-js` bundle.
 - `licenses/citeproc.LICENSE` — `citeproc`'s own copyright and dual-license
   notice, verbatim.
+- `licenses/Stella-GPLv2.txt` — the GNU GPL v2, for the vendored Stella
+  Atari 2600 core (`apps/desktop/vendor/stella/`) behind the `atari`
+  element-view. See the ⚠️ Stella note above on GPLv2↔GPL-3.0.
 
 The editor's own GPL-3.0-or-later license is in `LICENSE`.
 

@@ -41,6 +41,14 @@ export const STDLIB_FILES = Object.freeze([
   'indent.lisp',
   'files.lisp',
   'views.lisp',
+  // element-views: register a view backed by an arbitrary custom element
+  // (define-element-view). Needs `defcommand` (commands.lisp, loaded
+  // first); the host supplies `open-element-view!`.
+  'element-views.lisp',
+  // A built-in element-view: the Atari 2600 emulator (M-x atari). Loads
+  // after the mechanism above. Remove this line + apps/desktop/vendor/stella
+  // to exclude it (e.g. a build that doesn't ship the GPLv2 core).
+  'element-view-atari.lisp',
   'panes.lisp',
   'tabline.lisp',
   'search.lisp',

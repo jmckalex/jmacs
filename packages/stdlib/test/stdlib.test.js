@@ -4255,3 +4255,61 @@ test('typing inserts at every cursor', async () => {
   assert.equal(buffer.text, 'X beta X');
 });
 
+// --- element-views (define-element-view) ------------------------------
+
+test('define-element-view registers a spec with the given fields', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(`
+    (define-element-view test-atari
+      :title "Atari 2600"
+      :module "apps/desktop/vendor/stella/stella-element.js"
+      :tag "stella-emulator"
+      :attrs '((controls))
+      :fit 'fill
+      :keyboard 'grab)
+  `);
+  assert.equal(
+    interpreter.evaluate(`(get (element-view-spec 'test-atari) :tag nil)`),
+    'stella-emulator'
+  );
+  assert.equal(
+    interpreter.evaluate(`(get (element-view-spec 'test-atari) :title nil)`),
+    'Atari 2600'
+  );
+  // :keyboard is a symbol; :attrs is a list whose first entry names a
+  // boolean attribute.
+  const kb = interpreter.evaluate(`(get (element-view-spec 'test-atari) :keyboard nil)`);
+  assert.equal(kb && kb.name, 'grab');
+  const attr = interpreter.evaluate(
+    `(car (car (get (element-view-spec 'test-atari) :attrs nil)))`
+  );
+  assert.equal(attr && attr.name, 'controls');
+  // :fit rides through the spec as a symbol (the host normalises it).
+  const fit = interpreter.evaluate(`(get (element-view-spec 'test-atari) :fit nil)`);
+  assert.equal(fit && fit.name, 'fill');
+});
+
+test('define-element-view defines a command named for the kind', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(`(define-element-view test-foo :tag "x-foo")`);
+  assert.equal(interpreter.evaluate(`(contains? *commands* 'test-foo)`), true);
+  // The command's opener resolves to a procedure (not invoked here — that
+  // would need the host's open-element-view! primitive).
+  assert.equal(interpreter.evaluate(`(procedure? test-foo)`), true);
+});
+
+test('define-element-view :title defaults to the tag', async () => {
+  const { interpreter } = await editor();
+  interpreter.evaluate(`(define-element-view test-bar :tag "x-bar")`);
+  // No :title given — the host primitive falls back to the tag; the spec
+  // itself simply omits :title.
+  assert.equal(
+    interpreter.evaluate(`(get (element-view-spec 'test-bar) :title nil)`),
+    NIL
+  );
+  assert.equal(
+    interpreter.evaluate(`(get (element-view-spec 'test-bar) :tag nil)`),
+    'x-bar'
+  );
+});
+
