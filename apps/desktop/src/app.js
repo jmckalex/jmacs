@@ -126,7 +126,7 @@ import {
   jsonToLispUserFaces,
   jsonToLispHighlightRules,
 } from './face-overrides.js';
-import { applyFaceStyles } from './face-styles.js';
+import { applyFaceStyles, BASE_FACE_NAME } from './face-styles.js';
 import {
   isMathPreviewActive,
   bufferMajorModeName,
@@ -5947,8 +5947,9 @@ function fieldToSetting(field) {
 /** Turn a `face-row` Lisp list into a plain face object. */
 function rowToFace(row) {
   const r = listToArray(row);
+  const name = String(r[0]);
   return {
-    name: String(r[0]),
+    name,
     doc: String(r[1] ?? ''),
     foreground: typeof r[2] === 'string' ? r[2] : '',
     background: typeof r[3] === 'string' ? r[3] : '',
@@ -5956,7 +5957,12 @@ function rowToFace(row) {
     slant: String(r[5] ?? 'normal'),
     underline: r[6] === true,
     strikeThrough: r[7] === true,
-    state: String(r[8] ?? 'standard'),
+    // Typography: size is a number (or '' when unset), family a string.
+    // The base face owns these; on other faces they are blank (inherit).
+    size: typeof r[8] === 'number' ? r[8] : '',
+    family: typeof r[9] === 'string' ? r[9] : '',
+    isBase: name === BASE_FACE_NAME,
+    state: String(r[10] ?? 'standard'),
   };
 }
 

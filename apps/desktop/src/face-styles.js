@@ -5,10 +5,16 @@
  * The Lisp side hands us an alist (face-name . ((:attr . value) …)).
  * We translate it into one CSS rule per face on `.tok-NAME`, setting
  * `color`, `background-color`, `font-weight`, `font-style`,
- * `text-decoration` from the attributes that are present. Attributes
- * the face does not specify are omitted — never written as empty.
+ * `text-decoration`, and (when a face overrides them) `font-size` /
+ * `font-family` from the attributes that are present. Attributes the
+ * face does not specify are omitted — never written as empty.
  *
- * The full element is rewritten on every change; with thirteen faces
+ * The one exception is the base face (`default`): it is not painted as a
+ * `.tok-` rule but as a `:root` rule driving the `--font-size` /
+ * `--font-mono` variables, so every other face inherits the editor's
+ * base typography through the cascade (see `generateBaseFaceCss`).
+ *
+ * The full element is rewritten on every change; with a handful of faces
  * the cost is negligible, and the alternative (per-rule editing) is
  * fragile across hot reloads of the stdlib.
  */
@@ -16,6 +22,12 @@
 /** Element id used for the generated style block. Stable so we can
  *  find and rewrite it. */
 export const FACE_STYLE_ELEMENT_ID = 'face-overrides';
+
+/** The base face. Unlike the token faces it is NOT painted as a
+ *  `.tok-NAME` rule; its typography (`:size`, `:family`) is written to
+ *  the editor surface via the `--font-size` / `--font-mono` CSS
+ *  variables, so every other face inherits it through the cascade. */
+export const BASE_FACE_NAME = 'default';
 
 /** The CSS attribute names emitted for each face descriptor key. */
 const ATTR_CSS_PROPERTY = {
@@ -62,6 +74,15 @@ function cssSlant(value) {
   return v;
 }
 
+/** The CSS `font-size` for a face's `:size` value. A bare number (14,
+ *  13.5) is treated as pixels; a value that already carries a unit or a
+ *  keyword (`1.2em`, `larger`) passes through unchanged. */
+function cssSize(value) {
+  const v = valueToString(value);
+  if (v === null) return null;
+  return /^\d+(\.\d+)?$/.test(v) ? `${v}px` : v;
+}
+
 /** Build the `text-decoration` rule from underline + strike-through
  *  truthiness. Returns null when neither is set, so the property is
  *  omitted entirely (rather than written as an empty string). */
@@ -106,6 +127,12 @@ function faceDeclarations(attrs) {
     attrs.get('strike-through')
   );
   if (decoration !== null) decls.push(`text-decoration: ${decoration};`);
+  // Typography overrides: a face may set its own size/family, overriding
+  // what it would otherwise inherit from the base `default` face.
+  const size = cssSize(attrs.get('size'));
+  if (size !== null) decls.push(`font-size: ${size};`);
+  const family = valueToString(attrs.get('family'));
+  if (family !== null) decls.push(`font-family: ${family};`);
   return decls;
 }
 
@@ -130,11 +157,36 @@ export function generateFaceCss(faces) {
   // Sort face names for stable, diffable output.
   const names = [...faces.keys()].sort();
   for (const name of names) {
+    // The base face paints the editor surface (see generateBaseFaceCss),
+    // not a `.tok-` rule — every face inherits it through the cascade.
+    if (name === BASE_FACE_NAME) continue;
     const decls = faceDeclarations(faces.get(name));
     if (decls.length === 0) continue;
     lines.push(`.tok-${name} { ${decls.join(' ')} }`);
   }
   return lines.join('\n');
+}
+
+/**
+ * Generate the `:root` rule that carries the base face's typography —
+ * its `:size` → `--font-size`, its `:family` → `--font-mono`. These CSS
+ * variables are what `styles.css` reads for the editor font, so writing
+ * them here (the face-overrides block loads after `styles.css`) lets the
+ * base face drive the editor's base typography live. Returns `''` when
+ * there is no base face or it declares no typography.
+ *
+ * @param {Map<string, Map<string, *>>} faces - face-name → attr-map
+ * @returns {string}
+ */
+export function generateBaseFaceCss(faces) {
+  const base = faces.get(BASE_FACE_NAME);
+  if (!(base instanceof Map)) return '';
+  const decls = [];
+  const size = cssSize(base.get('size'));
+  if (size !== null) decls.push(`--font-size: ${size};`);
+  const family = valueToString(base.get('family'));
+  if (family !== null) decls.push(`--font-mono: ${family};`);
+  return decls.length === 0 ? '' : `:root { ${decls.join(' ')} }`;
 }
 
 /**
@@ -257,7 +309,11 @@ export function writeFaceStyleElement(doc, css) {
  */
 export function applyFaceStyles(doc, alist, listToArray, modeAlist) {
   const faces = facesFromAlist(alist, listToArray);
+  // The base-face `:root` rule comes first, then the per-token `.tok-`
+  // rules, then any per-mode overrides.
+  const base = generateBaseFaceCss(faces);
   let css = generateFaceCss(faces);
+  if (base !== '') css = css === '' ? base : `${base}\n${css}`;
   if (Array.isArray(modeAlist) && modeAlist.length > 0) {
     const perMode = modeFacesFromAlist(modeAlist, listToArray);
     const modeCss = generateModeFaceCss(perMode);

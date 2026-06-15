@@ -186,9 +186,33 @@
    "--ansi-bright-cyan"    "#56d4dd"
    "--ansi-bright-white"   "#f0f6fc"))
 
+;; --- the base face — editor typography all faces fall back to ----------
+;; `default` is the root face: it owns the editor's base *typography*
+;; (font size and family) — the two properties the theme system
+;; deliberately leaves alone. Unlike the token faces it is NOT painted as
+;; a `.tok-default` rule; the host paints its `:size`/`:family` onto the
+;; editor surface (the `--font-size` / `--font-mono` CSS variables), so
+;; every token face — and all plain unhighlighted text — inherits it
+;; through the normal CSS cascade. Individual faces may override `:size`
+;; or `:family` in their own rule, as needed. Colours stay theme-owned;
+;; the base face does not set them. The same typography seeds every theme
+;; (size and family are not theme-dependent), but the per-theme blocks
+;; keep the door open to differing later.
+(define *base-font-family*
+  "\"JetBrains Mono\", \"SF Mono\", \"Fira Code\", Menlo, Consolas, monospace")
+
+(defface 'default
+  :doc "The editor's base face. Its font size and family set the editor
+        surface; every other face inherits them unless it overrides.
+        Colours are theme-owned and not set here."
+  :default-light    (face :size 14 :family *base-font-family*)
+  :default-dark     (face :size 14 :family *base-font-family*)
+  :default-bright   (face :size 14 :family *base-font-family*)
+  :default-midnight (face :size 14 :family *base-font-family*))
+
 ;; --- face defaults — one defface per token face ------------------------
-;; The 14 built-in token faces, each with three per-theme defaults.
-;; @comment is italicised in all three themes (Sublime/VSCode convention).
+;; The 14 built-in token faces, each with four per-theme defaults.
+;; @comment is italicised in every theme (Sublime/VSCode convention).
 
 (defface 'comment
   :doc "Source comments — slash-slash, hash, percent — italicised."

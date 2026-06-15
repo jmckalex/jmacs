@@ -564,8 +564,11 @@
 
 (define (face-row name)
   "A face's data for the customize view: a list
-   (name doc foreground background weight slant underline strike state)
-   with each value as a string / boolean / nil, ready for widgets."
+   (name doc foreground background weight slant underline strike
+    size family state) with each value as a string / number / boolean /
+   nil, ready for widgets. `size` is a number (or \"\" when unset) and
+   `family` a CSS font-family string (or \"\"); these are meaningful on
+   the base `default` face and are an optional override elsewhere."
   (let ((entry (face-entry name)))
     (list (symbol->string name)
           (get entry :doc "")
@@ -575,6 +578,8 @@
           (-symbol-or-default (face-attribute name :slant) "normal")
           (-truthy? (face-attribute name :underline))
           (-truthy? (face-attribute name :strike-through))
+          (-attr-or-empty name :size)
+          (-attr-or-empty name :family)
           (symbol->string (-face-state name)))))
 
 (define (-symbol-or-default value default)
@@ -593,6 +598,14 @@
     ((nil? value) false)
     ((eq? value false) false)
     (else true)))
+
+(define (-attr-or-empty name attr)
+  "Face attribute ATTR of NAME, or the empty string when unset. Unlike
+   `(or … \"\")`, this normalises a *nil* result to \"\" (nil is truthy
+   here, so `or` would pass it through) — the widgets want a clean empty
+   value to mean \"inherit\"."
+  (let ((v (face-attribute name attr)))
+    (if (nil? v) "" v)))
 
 (define (face-rows)
   "The data the customize view's Faces group renders: one face-row
@@ -627,11 +640,16 @@
 
 (define (-coerce-attr-value attr value)
   "Translate a value that arrived from the renderer's widget into
-   the canonical Lisp form: weight/slant become keywords; underline /
-   strike-through stay boolean; colours stay strings."
+   the canonical Lisp form: weight/slant become keywords; size becomes a
+   number; underline / strike-through stay boolean; colours and the font
+   family stay strings."
   (cond
     ((or (string=? attr "weight") (string=? attr "slant"))
      (if (string? value) (string->keyword value) value))
+    ((string=? attr "size")
+     (if (and (string? value) (not (string=? value "")))
+         (string->number value)
+         value))
     (else value)))
 
 (define (reset-face-by-string face-str)
