@@ -120,9 +120,16 @@ same-origin `fetch`, and `AudioWorklet`. Three tiers:
   mechanism itself is licence-neutral.
 - **Keyboard default**: `'grab'` (game owns all keys while focused) vs
   `'share'` (let `C-`/`M-` chords through). Default `'grab'`.
-- **AudioWorklet under `app://`**: CSP/origin say yes; confirm in the Phase 3
-  live smoke. *(One window-level caveat: the keyboard-grab assumes Godot's key
-  router is bubble-phase at `window`; verify if grab leaks.)*
+- **AudioWorklet under `app://`**: ✅ confirmed working live (Pitfall!/Oystron
+  play with sound). Keyboard-grab also confirmed (bubble-phase at `window`).
+- **Autoplay policy (resolved):** Godot now sets
+  `autoplayPolicy: 'document-user-activation-required'` (main.js webPreferences).
+  Electron's default (`'no-user-gesture-required'`) let a media component's
+  `AudioContext` run before any gesture, defeating its resume-time buffer flush
+  and standing ~0.5s of audio latency (seen with Stella). The new policy starts
+  contexts suspended until the first window interaction — matching the browser
+  environment such components are tuned for — and is the right fit since Godot
+  is entirely user-driven. Global to all media (benign: media is user-opened).
 
 ## Future work (ideas, not yet scheduled)
 

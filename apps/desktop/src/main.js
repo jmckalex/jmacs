@@ -77,6 +77,17 @@ function createWindow() {
       // the same pattern. The webview itself remains sandboxed — this
       // flag just allows the tag to mount.
       webviewTag: true,
+      // Godot is a desktop app — everything is user-driven, so the
+      // browser autoplay safeguards don't fit. Match the browser
+      // environment audio components are built for: an AudioContext
+      // starts suspended until the first interaction with the window,
+      // then plays in sync. Electron's default ('no-user-gesture-
+      // required') instead lets a context run before any gesture, which
+      // defeats a component's resume-time buffer flush and leaves audio
+      // standing ~0.5s behind video (seen with the Stella emulator). One
+      // interaction anywhere unlocks audio app-wide. See
+      // plans/ELEMENT-VIEWS.md.
+      autoplayPolicy: 'document-user-activation-required',
     },
   });
   mainWindow = win;
