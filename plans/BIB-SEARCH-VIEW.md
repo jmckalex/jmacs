@@ -1,7 +1,11 @@
 # bib-search — an always-open bibliography search that inserts `\cite{…}`
 
-**Status:** building. Branch `bib-search-view`, on top of `element-views`.
-**Origin:** Jason's `<bib-search>` web component (used on iPad via BTT Mobile).
+**Status:** BUILT on branch `bib-search-view` (awaiting live smoke). `M-x
+bib-search`. Origin: Jason's `<bib-search>` web component (used on iPad via BTT
+Mobile). Godot side: `:no-focus` + the `insert-text` channel (both generic). The
+element (`apps/desktop/vendor/bib-search/bib-search.js`) is self-contained —
+bundles citation.js (sibling `citation-js.esm.js`), ingests any format, inserts
+`\cite{…}`. Registered in 7 lines (`element-view-bib-search.lisp`).
 
 ## The vision (precise scope)
 
