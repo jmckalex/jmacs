@@ -41,7 +41,8 @@ export class ElementView extends ViewElement {
     super();
     /** @type {ElementViewOptions | null} */
     this._options = null;
-    /** The view record; its `extras` carries the spec. */
+    /** The view record; its spec fields (tag / moduleUrl / attrs /
+     *  keyboard / onReady) are spread directly onto it by `createView`. */
     this._view = null;
     /** The embedded custom element, once created. @type {HTMLElement|null} */
     this._inner = null;
@@ -69,9 +70,10 @@ export class ElementView extends ViewElement {
   }
 
   /**
-   * Bind the view whose `extras` describes the element to host. The spec
-   * is immutable, so this only records the view; the element is built on
-   * connection. Safe to call before connection.
+   * Bind the view describing the element to host (its `tag` / `moduleUrl`
+   * / `attrs` / `keyboard` / `onReady` fields, spread on by `createView`).
+   * The spec is immutable, so this only records the view; the element is
+   * built on connection. Safe to call before connection.
    *
    * @param {object | null} view
    */
@@ -136,13 +138,16 @@ export class ElementView extends ViewElement {
   async _boot() {
     if (this._inner !== null) return;
     this.classList.add('element-view');
-    const extras = (this._view && this._view.extras) || {};
-    const tag = extras.tag;
+    // `createView` spreads the spec's `extras` directly onto the view
+    // record (so it's `view.tag`, not `view.extras.tag`) — the same shape
+    // image-view/browser-view read (`view.src`, `view.url`).
+    const view = this._view || {};
+    const tag = view.tag;
     if (typeof tag !== 'string' || tag === '') {
       this._fail('element-view: spec has no element tag');
       return;
     }
-    const moduleUrl = extras.moduleUrl;
+    const moduleUrl = view.moduleUrl;
     if (typeof moduleUrl === 'string' && moduleUrl !== '') {
       try {
         await import(/* @vite-ignore */ moduleUrl);
@@ -162,7 +167,7 @@ export class ElementView extends ViewElement {
     if (this._destroyed || !this.isConnected) return;
 
     const inner = this.ownerDocument.createElement(tag);
-    const attrs = Array.isArray(extras.attrs) ? extras.attrs : [];
+    const attrs = Array.isArray(view.attrs) ? view.attrs : [];
     for (const [name, value] of attrs) {
       if (value === true) inner.setAttribute(name, '');
       else if (value !== false && value != null) {
@@ -171,9 +176,9 @@ export class ElementView extends ViewElement {
     }
     this._inner = inner;
     this.append(inner);
-    this._installKeyGrab(extras.keyboard ?? 'grab');
+    this._installKeyGrab(view.keyboard ?? 'grab');
 
-    const onReady = extras.onReady;
+    const onReady = view.onReady;
     if (onReady && this._options && typeof this._options.deliver === 'function') {
       this._options.deliver(onReady, [inner]);
     }
