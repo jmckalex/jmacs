@@ -1,140 +1,93 @@
-# bib-search — a self-contained bibliography view that inserts into the active buffer
+# bib-search — an always-open bibliography search that inserts `\cite{…}`
 
-**Status:** spec. Building on `element-views` (merged). Branch `bib-search-view`.
-**Motivating client / origin:** Jason's `<bib-search>` web component (used on
-iPad via BetterTouchTool Mobile) + his `biblify` citation.js renderer.
+**Status:** building. Branch `bib-search-view`, on top of `element-views`.
+**Origin:** Jason's `<bib-search>` web component (used on iPad via BTT Mobile).
 
-## Goal
+## The vision (precise scope)
 
-A **Bibliography** panel you keep open beside your prose: type a query, pick
-references, and they're inserted **into the document you're editing** — the
-panel never steals the editor's focus. Feed it a bibliography in **any format
-citation.js handles** (BibTeX, BibLaTeX, CSL-JSON, RIS, …); it does the parse +
-render + search itself. "Self-contained" is a hard requirement (Jason: avoid
-DLL-hell — spend program space to buy dependency robustness).
+A **dumb** agent: a fancy search engine over a bibliography that inserts
+`\cite{…}` keys into the active buffer. That's it. Think a nicer **RefTeX** that
+can stay **always open in a pane** beside your prose. It does not format
+references, manage citations, or know anything about Godot.
 
-## What the source material actually is (verified)
+Two halves, and the split is the whole point:
 
-- **`<bib-search>`** (`~/Sites/jmckalex/software/components/bib-search`, v1.0.0,
-  **MIT**, rollup-built) is a *consumer* of **pandoc/CSL-rendered HTML** — its
-  `parser.js` reads `.csl-entry` divs keyed `ref-<bibKey>`. It does **not** parse
-  BibTeX. It exposes `el.onAction = (entries, mode) => …` (entries =
-  `[{html,text,bibKey,markdown}]`, mode = `full|markdown|bibkey`) and dispatches
-  `bib-loaded` / `selection-change` / `bib-error` CustomEvents.
-- **`biblify`** (`~/Sites/jmckalex/software/biblify`) is the citation.js engine:
-  `require('citation-js')` → `new Cite(bib).format('bibliography', …)` →
-  the CSL-HTML that bib-search consumes.
-- The **BTT Mobile** preset (`…/PresetBundles/D8B2B1BE-…Default/`) wires
-  `<bib-search src="test-bib.html">` at a **pre-rendered** HTML bibliography (no
-  citation.js in the bundle); `onAction` is the insert hook (on iPad it
-  types/pastes into the active app — the iOS analog of "insert into active
-  view").
+- **The element is self-contained and does all the work** — exactly like
+  `<stella-emulator>`. It bundles **citation.js**, ingests a bibliography in
+  **any format citation.js handles** (BibTeX, BibLaTeX, CSL-JSON, RIS…),
+  provides the search/select UI, and on pick **emits the citation text**. It
+  owes Godot nothing.
+- **Godot just hosts it** in 6–8 lines of `define-element-view`, with
+  `:no-focus` (keep the cursor in the document) and the generic insert channel.
+  **No bib-specific Godot code.**
 
-So today bib-search needs a separate pre-render step. The new capability is to
-**fold biblify's citation.js step into the element** so it ingests any format
-directly.
+The real work is **writing the new element**. The Godot side is two small,
+bib-agnostic generic features (both done) + a declarative registration.
 
-## Why Godot makes this easy
+## Why the element can't be *fully* self-contained — and how that's still clean
 
-Godot already vendors **`@citation-js`** (`+ plugin-bibtex + plugin-csl`,
-`packages/renderer/vendor/citation-js.esm.js`; the renderer exports
-`parseCitations` / `formatBibliography` for `cite.lisp`/RefTeX). citation.js
-**auto-detects input format** (`new Cite(text)`), so the self-contained element
-is just the MIT search UI + a `new Cite(...).format('bibliography',{format:'html'})`
-step on its data path. We bundle citation.js *into* the element (Jason's
-`citation.min.js`) so the artifact stays portable — the same upgraded element
-also improves his BTT Mobile setup (drop the pandoc pre-render there too).
+The element can produce `\cite{…}` but can't reach into Godot's buffer to place
+it — just as on iPad it hands the text to **BTT**, which pastes it. Same shape
+here: the element says "insert this text," and the **host** drops it in. That
+channel is **generic and bib-agnostic** — a property of *element-views*, not of
+bib-search:
 
-## Architecture — three building blocks, then Lisp
+> Any hosted element may dispatch an `insert-text` CustomEvent
+> (`detail: { text }`, composed + bubbling); the `<element-view>` host inserts
+> it into the active view via `(insert!)`. Set-and-forget, like `:no-focus`.
 
-### 1. `:no-focus` (generic view-focus feature — the foundation)
+So the bib element fires `insert-text` with `\cite{k1,k2}` and is done. Zero
+bib-specific Lisp or host code.
 
-A view flagged `noFocus` **never becomes the active pane**. Precise semantics:
-*decouple DOM focus from Godot's `currentPaneId`/`currentView`.* The panel's
-search box can hold DOM focus (so you type into it), while the editor's active
-view stays on your document — so `insert!` targets your prose.
+## Godot side — DONE (both generic, reusable)
 
-Mechanism: `setCurrentPaneId` (the single focus entry point, `app.js`) refuses a
-pane whose peeled view has `noFocus` (helper: `isNoFocusPane`). Every focus path
-(`focusPaneFromEvent` capture-phase click, `other-pane`, restore) goes through
-it, so all respect it. Clicking the panel still reaches its controls (no
-`preventDefault`/`stopPropagation`), so its inputs work. Opt in from Lisp with
-`:no-focus #t`.
+1. **`:no-focus`** (commit `6b511f9`) — a `noFocus` view never becomes the active
+   pane (`setCurrentPaneId` guard), so a panel acts on the document without
+   stealing the editing focus. DOM focus untouched, so the panel's own search
+   box still types. Opt in: `:no-focus #t`.
+2. **`insert-text` channel** — `<element-view>` listens for the `insert-text`
+   event and calls the host's `insertText` service → `(insert! text)` into the
+   current buffer (the document, thanks to `:no-focus`). Shares undo/markers.
 
-Generalizes to any HUD / inspector / control-surface helper view.
-
-### 2. `element-on` (element-views Phase 4 — the callback bridge)
-
-A host primitive to wire an element's events/callbacks to a Lisp handler
-(delivered via the existing `deliverLispCallback`). bib-search forces it (Atari
-forced the base mechanism). Since we control the (MIT) element, it will dispatch
-a `bib-action` **CustomEvent** (`detail = { entries, mode }`) — cleaner for
-`addEventListener` than the `onAction` property. `element-on el "bib-action" fn`.
-
-### 3. The insert bridge (mode-aware, reuse cite/RefTeX)
-
-The Lisp handler receives `(entries mode)` and inserts at point in the **active**
-view (the document, thanks to `:no-focus`) via `insert!`:
-- `bibkey` → a cite macro over the keys, **per major mode**: LaTeX `\cite{k1,k2}`
-  (reuse `reftex-cite.lisp`'s cite-format menu), Markdown/jmd `[@k1; @k2]` /
-  Biblify `\cite{}`.
-- `full`/`markdown` → the formatted reference (the entry's `markdown`).
-
-### Then the view is Lisp
+## The registration (the whole Godot integration)
 
 ```lisp
 (define-element-view bib-search
   :title    "Bibliography"
   :module   "apps/desktop/vendor/bib-search/bib-search.js"  ; self-contained: UI + citation.js
   :tag      "bib-search"
-  :attrs    '((src "app://editor/__host__/…/bibliography.bib"))  ; ANY citation.js format
+  :attrs    '((src "app://editor/__host__/…/bibliography.bib"))  ; any citation.js format
   :no-focus #t
-  :on-ready (lambda (el)
-              (element-on el "bib-action"
-                (lambda (entries mode) (bib-insert-into-active! entries mode)))))
+  :fit      'fill)
 ```
 
-## Data flow
+## The real work — the new `<bib-search>` element (self-contained)
 
-`.bib` (or CSL-JSON/RIS) served via `app://` (repo or `__host__`) → the element
-`fetch`es it → `new Cite(text)` (auto-detect) → `.format('bibliography',
-{format:'html'})` → its existing `.csl-entry` search UI → `bib-action` →
-`bib-insert-into-active!` → `insert!` into the document. Bibliography path is a
-`defcustom` (e.g. `*bib-search-source*`) or the spec's `:src`.
+A from-scratch (adapting Jason's MIT component) custom element, bundled with
+citation.js, that:
 
-## Where it lives
+1. **Ingests any format** — `src` (or an attribute/property) points at a
+   bibliography; `new Cite(text)` auto-detects BibTeX/BibLaTeX/CSL-JSON/RIS and
+   yields structured entries (key, author, year, title…).
+2. **Searches** — fast incremental filter over author/title/year/key, the nice
+   scholarly UI from the existing component.
+3. **Selects** — multi-select (it's a `\cite{a,b,c}` after all).
+4. **Inserts** — on the action (button / Enter / double-click), dispatches
+   `insert-text` with the formatted macro. Default `\cite{keys}`; a small
+   control can switch the macro (`\citep`/`\citet`/`[@key]` for pandoc/jmd) —
+   the element owns that choice, not Godot.
 
-A persistent **right-side split** beside the document is best for search-as-you-
-write (the utility dock is an alternative; the RefTeX cite picker already lives
-there). A `:no-focus` view should **open in its own pane**, not replace the
-focused one — so `open-element-view!` for a `:no-focus` view splits (e.g. right)
-and leaves focus on the original pane. *(Deferred to the view-assembly phase; the
-`:no-focus` guard lands first.)*
+Bundled (`apps/desktop/vendor/bib-search/`): the element module + citation.js
+(Jason's `citation.min.js`). Served via `app://`; loads like the Stella bundle.
 
-## Phasing
+## Open forks (Jason's call — element-level, not Godot)
 
-1. **`:no-focus`** — the focus guard + spec threading (`:no-focus #t` →
-   `view.noFocus`). *(This branch. Foundation; live-demoed once a no-focus view
-   exists.)*
-2. **`element-on`** — the element-views callback/event bridge to Lisp.
-3. **The self-contained element** — vendor `<bib-search>` extended with
-   citation.js inside (bundle `citation.min.js`); ingest any format; emit
-   `bib-action`. Under `apps/desktop/vendor/bib-search/`.
-4. **Open-in-split for `:no-focus` views** + the `bib-insert-into-active!`
-   handler (mode-aware, reuse cite/RefTeX) + the `define-element-view`
-   registration + a `*bib-search-source*` defcustom.
-
-## Open forks (Jason's call)
-
-- **Insert format mapping** — cite-key macro vs formatted reference, and which
-  cite macro per mode (reuse RefTeX's `*reftex-cite-format*` menu?).
-- **Bibliography source** — a single `*bib-search-source*` defcustom, or
-  per-project / follow the buffer's `\bibliography{}` / `*citation-bib-path*`
-  (RefTeX already tracks this).
-- **Where it lives** — right-side split vs utility-dock tab.
+- **Default cite macro & the per-macro switch** — `\cite` only, or a
+  `\cite`/`\citep`/`\citet`/`[@key]` selector in the element's UI.
+- **Bibliography source** — a fixed `:src`, or have the element discover the
+  buffer's `\bibliography{}` (Godot could pass it as an attribute on open).
 
 ## Licensing
 
-`<bib-search>` is **MIT** (clean). citation.js bundled in is the same
-`@citation-js` family already vendored (MIT; see ATTRIBUTION.md). No new
-copyleft concern (unlike the Atari/Stella GPLv2 question).
+`<bib-search>` is **MIT**; bundled citation.js is the same `@citation-js` family
+already vendored (MIT). No copyleft concern (unlike Atari/Stella GPLv2).

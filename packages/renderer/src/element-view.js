@@ -34,6 +34,9 @@ import { ViewElement, defineViewElement } from './view-elements.js';
  * @property {(form: *) => void} [onKey] - The host key dispatcher
  *   (unused while `keyboard` is `'grab'`; reserved for non-grabbing
  *   embeds).
+ * @property {(text: string) => void} [insertText] - Insert text into the
+ *   active view. Backs the generic `insert-text` channel (a hosted
+ *   element asks the editor to drop text into the document).
  */
 
 export class ElementView extends ViewElement {
@@ -48,6 +51,8 @@ export class ElementView extends ViewElement {
     this._inner = null;
     /** Bubble-phase key handler installed for `keyboard: 'grab'/'share'`. */
     this._keyHandler = null;
+    /** Listener for the generic `insert-text` channel (see _boot). */
+    this._onInsertText = null;
     this._booting = false;
     this._destroyed = false;
   }
@@ -115,6 +120,10 @@ export class ElementView extends ViewElement {
       this.removeEventListener('keyup', this._keyHandler);
       this._keyHandler = null;
     }
+    if (this._onInsertText !== null) {
+      this.removeEventListener('insert-text', this._onInsertText);
+      this._onInsertText = null;
+    }
     if (this._inner !== null) {
       try { this._inner.remove(); } catch { /* already detached */ }
       this._inner = null;
@@ -180,11 +189,33 @@ export class ElementView extends ViewElement {
     this._inner = inner;
     this.append(inner);
     this._installKeyGrab(view.keyboard ?? 'grab');
+    this._installInsertChannel();
 
     const onReady = view.onReady;
     if (onReady && this._options && typeof this._options.deliver === 'function') {
       this._options.deliver(onReady, [inner]);
     }
+  }
+
+  /**
+   * Generic insert-text channel. A hosted element can ask the editor to
+   * insert text into the ACTIVE view by dispatching an `insert-text`
+   * CustomEvent with `detail: { text }` (composed + bubbling, so it
+   * crosses the element's shadow boundary and reaches this wrapper). The
+   * host's `insertText` service drops it into the current buffer.
+   *
+   * Combined with `:no-focus`, the text lands in the *document*, not the
+   * panel — e.g. the bibliography view inserts `\cite{…}` while the
+   * cursor stays in the prose. Bib-agnostic: any element can use it.
+   */
+  _installInsertChannel() {
+    const insert = this._options && this._options.insertText;
+    if (typeof insert !== 'function') return;
+    this._onInsertText = (event) => {
+      const text = event && event.detail && event.detail.text;
+      if (typeof text === 'string' && text !== '') insert(text);
+    };
+    this.addEventListener('insert-text', this._onInsertText);
   }
 
   /**

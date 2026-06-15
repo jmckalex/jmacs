@@ -6629,6 +6629,21 @@ function configureElementView() {
     // the embedded element instance).
     deliver: (callback, callArgs) =>
       deliverLispCallback(callback, callArgs, 'element-view'),
+    // The generic insert-text channel: drop the element's text into the
+    // ACTIVE view (the document — a :no-focus panel keeps focus there).
+    // Routes through `(insert!)` so it shares undo / markers / watchers
+    // with normal edits. Bib-agnostic — the bibliography panel uses it to
+    // insert `\cite{…}`.
+    insertText: (text) => {
+      if (typeof text !== 'string' || text === '') return;
+      try {
+        interpreter.evaluate(`(insert! ${writeString(text)})`);
+      } catch (error) {
+        repl.appendError(
+          `element-view insert-text: ${error.lispMessage ?? error.message ?? error}`
+        );
+      }
+    },
   };
 }
 
