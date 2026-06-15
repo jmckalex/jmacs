@@ -2948,11 +2948,15 @@ browser-view,
   overflow: hidden;
 }
 
-/* Generic element-host view — fills the pane and lets the embedded
-   custom element size itself within. See plans/ELEMENT-VIEWS.md. */
+/* Generic element-host view — fills the pane and centres the embedded
+   custom element within it (vertically + horizontally). `safe` keeps the
+   top reachable if the element is taller than the pane (it falls back to
+   start-aligned + scroll rather than clipping). See plans/ELEMENT-VIEWS.md. */
 element-view,
 .element-view {
-  display: block;
+  display: flex;
+  align-items: safe center;
+  justify-content: safe center;
   height: 100%;
   width: 100%;
   outline: none;
