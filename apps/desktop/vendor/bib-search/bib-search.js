@@ -42,8 +42,17 @@ const STYLES = `
   border: 1px solid #d4d0c8;
   background: #fff;
 }
-.search-bar { padding: 0.6rem; background: #f5f4f2; border-bottom: 1px solid #d4d0c8; }
-.search-wrapper { position: relative; display: flex; align-items: center; }
+.search-bar {
+  padding: 0.6rem; background: #f5f4f2; border-bottom: 1px solid #d4d0c8;
+  display: flex; gap: 0.5rem; align-items: center;
+}
+.search-wrapper { flex: 1; position: relative; display: flex; align-items: center; }
+.regex-toggle {
+  flex: 0 0 auto; padding: 0.5rem 0.55rem; font-size: 0.8rem;
+  background: transparent; color: #8b7355;
+}
+.regex-toggle.active { background: #8b7355; color: #fff; }
+.search-input.invalid { border-color: #a85454; box-shadow: 0 0 0 2px rgba(168,84,84,.15); }
 .search-input {
   width: 100%; padding: 0.5rem 2rem 0.5rem 0.7rem; font-family: inherit; font-size: 1rem;
   border: 1px solid #c8c4bc; background: #fff; outline: none;
@@ -114,12 +123,18 @@ button.secondary:hover:not(:disabled) { background: rgba(139,115,85,.1); }
 .entry-list::-webkit-scrollbar-thumb { background: #c8c4bc; border-radius: 4px; }
 `;
 
-/** Build a display/search record from one CSL-JSON entry (citation.js `.data`). */
+/** Build a display/search record from one CSL-JSON entry (citation.js `.data`).
+ *  The full CSL entry is kept on `.csl` so the list can render it in
+ *  Chicago author-date style; `.authorStr`/`.year`/`.title` are the simple
+ *  fallback fields used when there is no CSL (a loosely-parsed entry). */
 function entryFromCsl(e, index) {
   const names = e.author || e.editor || [];
   const family = names
     .map((a) => a.family || a.literal || a.given || '')
     .filter(Boolean);
+  const allNames = names
+    .map((a) => `${a.given || ''} ${a.family || a.literal || ''}`)
+    .join(' ');
   const authorStr =
     family.length === 0 ? '' :
     family.length === 1 ? family[0] :
@@ -128,15 +143,71 @@ function entryFromCsl(e, index) {
   const parts = e.issued && e.issued['date-parts'];
   const year = (parts && parts[0] && parts[0][0]) ? String(parts[0][0]) : '';
   const title = e.title || '';
+  const container = e['container-title'] || '';
   const key = e.id || '';
   return {
     index,
     key,
+    csl: e,
     authorStr,
     year,
     title,
-    search: `${key} ${family.join(' ')} ${year} ${title}`.toLowerCase(),
+    search: `${key} ${allNames} ${year} ${title} ${container}`.toLowerCase(),
   };
+}
+
+/** Chicago author-date name list: first author inverted ("Family, Given"),
+ *  the rest natural, "and" before the last; 4+ authors → "First et al." */
+function chicagoAuthors(names) {
+  if (!names || names.length === 0) return '';
+  const inv = (a) => {
+    const f = a.family || a.literal || '';
+    const g = a.given || '';
+    return f ? (g ? `${f}, ${g}` : f) : (a.literal || '');
+  };
+  const nat = (a) => {
+    const f = a.family || a.literal || '';
+    const g = a.given || '';
+    return f ? (g ? `${g} ${f}` : f) : (a.literal || '');
+  };
+  if (names.length === 1) return inv(names[0]);
+  if (names.length > 3) return `${inv(names[0])} et al.`;
+  const parts = names.map((a, i) => (i === 0 ? inv(a) : nat(a)));
+  return parts.length === 2
+    ? `${parts[0]}, and ${parts[1]}`
+    : `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}`;
+}
+
+/** Render one CSL-JSON entry as a Chicago author-date reference (HTML).
+ *  Journal titles and books are italicised; article titles quoted. */
+function formatChicago(e) {
+  const auth = chicagoAuthors(e.author || e.editor || []);
+  const dp = e.issued && e.issued['date-parts'];
+  const year = (dp && dp[0] && dp[0][0]) ? String(dp[0][0]) : 'n.d.';
+  const title = (e.title || '').replace(/\.\s*$/, '');
+  const titlePunct = /[?!]$/.test(title) ? '' : '.'; // keep "Title?" as-is
+  const container = e['container-title'] || '';
+  const isBook = !container && (e.type === 'book' || e.publisher || e['publisher-place']);
+  const bits = [];
+  // Avoid a doubled period after a name ending in an initial ("Thomas C.").
+  if (auth) bits.push(escapeHtml(auth.endsWith('.') ? auth : `${auth}.`));
+  bits.push(`${escapeHtml(year)}.`);
+  if (title) {
+    bits.push(isBook
+      ? `<i>${escapeHtml(title)}</i>${titlePunct}`
+      : `&ldquo;${escapeHtml(title)}${titlePunct}&rdquo;`);
+  }
+  if (container) {
+    let t = `<i>${escapeHtml(container)}</i>`;
+    if (e.volume) t += ` ${escapeHtml(String(e.volume))}`;
+    if (e.issue) t += ` (${escapeHtml(String(e.issue))})`;
+    if (e.page) t += `: ${escapeHtml(String(e.page).replace(/-+/g, '–'))}`;
+    bits.push(`${t}.`);
+  } else if (e.publisher || e['publisher-place']) {
+    const place = e['publisher-place'] ? `${escapeHtml(e['publisher-place'])}: ` : '';
+    bits.push(`${place}${escapeHtml(e.publisher || '')}.`);
+  }
+  return bits.join(' ');
 }
 
 /** Split BibTeX TEXT into `{type, source}` entries, brace-balanced so a
@@ -283,6 +354,7 @@ class BibSearch extends HTMLElement {
     this.filtered = [];
     this.selected = new Set();   // selected bib keys (stable across filtering)
     this._loose = 0;             // entries salvaged loosely (citation.js couldn't parse)
+    this._regex = false;         // regex search mode (toggle); default substring
     this._debounce = null;
   }
 
@@ -309,11 +381,15 @@ class BibSearch extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>${STYLES}</style>
       <div class="container">
-        <div class="search-bar"><div class="search-wrapper">
-          <input type="text" class="search-input" placeholder="${escapeHtml(placeholder)}"
-                 aria-label="Search bibliography">
-          <button class="clear-btn" type="button" title="Clear" aria-label="Clear">×</button>
-        </div></div>
+        <div class="search-bar">
+          <div class="search-wrapper">
+            <input type="text" class="search-input" placeholder="${escapeHtml(placeholder)}"
+                   aria-label="Search bibliography">
+            <button class="clear-btn" type="button" title="Clear" aria-label="Clear">×</button>
+          </div>
+          <button class="regex-toggle" type="button" aria-pressed="false"
+                  title="Regular-expression search">.*</button>
+        </div>
         <div class="toolbar">
           <span class="status">Loading…</span>
           <div class="selection-controls">
@@ -339,6 +415,20 @@ class BibSearch extends HTMLElement {
     this._action = $('.action-btn');
     this._macroSel = $('.macro-select');
     this._macroSel.value = this.macro;
+    this._regexBtn = $('.regex-toggle');
+    this._regexBtn.classList.toggle('active', this._regex);
+    this._regexBtn.setAttribute('aria-pressed', this._regex ? 'true' : 'false');
+
+    this._regexBtn.addEventListener('click', () => {
+      this._regex = !this._regex;
+      this._regexBtn.classList.toggle('active', this._regex);
+      this._regexBtn.setAttribute('aria-pressed', this._regex ? 'true' : 'false');
+      this._input.placeholder = this._regex
+        ? 'Regex (e.g. ^smith, conv.*tion, 19[89]\\d)…'
+        : (this.getAttribute('placeholder') || 'Search author, title, year, key…');
+      this._applyFilter();
+      this._input.focus();
+    });
 
     this._input.addEventListener('input', () => {
       this._clear.classList.toggle('visible', this._input.value !== '');
@@ -396,9 +486,33 @@ class BibSearch extends HTMLElement {
     }
   }
 
+  /** A predicate for QUERY: a case-insensitive RegExp in regex mode (with a
+   *  literal fallback on an invalid pattern, flagged on the input), else
+   *  whitespace-separated AND substring matching. */
+  _matcher(q) {
+    const query = q.trim();
+    if (this._input) this._input.classList.remove('invalid');
+    if (query === '') return () => true;
+    if (this._regex) {
+      try {
+        const re = new RegExp(query, 'i');
+        return (e) => re.test(e.search);
+      } catch {
+        // Pattern still being typed / malformed — match literally so the
+        // list doesn't blank out, and flag the input.
+        if (this._input) this._input.classList.add('invalid');
+        const lit = query.toLowerCase();
+        return (e) => e.search.includes(lit);
+      }
+    }
+    const terms = query.toLowerCase().split(/\s+/);
+    return (e) => terms.every((t) => e.search.includes(t));
+  }
+
   _applyFilter() {
     const q = this._input ? this._input.value : '';
-    this.filtered = this.entries.filter((e) => entryMatches(e, q));
+    const match = this._matcher(q);
+    this.filtered = this.entries.filter(match);
     this._renderList();
     if (this._status && this.entries.length) {
       const loose = this._loose ? ` (${this._loose} loose)` : '';
@@ -421,13 +535,18 @@ class BibSearch extends HTMLElement {
       row.dataset.key = e.key;
       row.setAttribute('role', 'option');
       const checked = this.selected.has(e.key) ? ' checked' : '';
+      // Chicago author-date from the CSL entry; loosely-parsed entries (no
+      // CSL) fall back to the simple author/year/title fields.
+      const reference = e.csl
+        ? formatChicago(e.csl)
+        : (e.authorStr ? `${escapeHtml(e.authorStr)} ` : '') +
+          (e.year ? `${escapeHtml(e.year)}. ` : '') +
+          (e.title ? `<i>${escapeHtml(e.title)}</i>` : '');
       row.innerHTML =
         `<span class="checkbox${checked}" aria-hidden="true"></span>` +
         `<span class="entry-content">` +
         `<span class="cite-key">${escapeHtml(e.key)}</span>` +
-        (e.authorStr ? `<span class="ref-author">${escapeHtml(e.authorStr)}</span> ` : '') +
-        (e.year ? `<span class="ref-year">(${escapeHtml(e.year)})</span>. ` : '') +
-        (e.title ? `<span class="ref-title">${escapeHtml(e.title)}</span>` : '') +
+        `<span class="ref">${reference}</span>` +
         `</span>`;
       frag.appendChild(row);
     }
