@@ -23,7 +23,7 @@
 
 ;; --- user-facing settings ---------------------------------------------
 
-(defgroup 'latex 'jmacs "LaTeX authoring: the compile / view loop.")
+(defgroup 'latex 'godot "LaTeX authoring: the compile / view loop.")
 
 ;; The build command is a LIST of strings: program followed by flags.
 ;; `run-process!` spawns with NO shell, so this must be a token list, not

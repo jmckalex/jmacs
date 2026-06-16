@@ -31,6 +31,14 @@ import { registerGnuplotHandlers } from './gnuplot.js';
 // disabled transform.)
 app.commandLine.appendSwitch('force-color-profile', 'srgb');
 
+// The product name. Drives the macOS app menu / About / Hide / Quit labels
+// (the menu uses `role: 'appMenu'`, which reads `app.getName()`) and the
+// userData directory (`app.getPath('userData')` → …/Application Support/Godot)
+// — the same location the packaged build resolves from its productName, so
+// dev and release share one config home. Must be set before the app is ready
+// (and before any `getPath('userData')`), hence here at load.
+app.setName('Godot');
+
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
 
 // §3a: a main-process throw or unhandled rejection should log, not kill

@@ -8,7 +8,7 @@
 
 ;; --- settings ----------------------------------------------------------
 
-(defgroup 'views 'jmacs "Open views: persistence and switching.")
+(defgroup 'views 'godot "Open views: persistence and switching.")
 
 ;; PDF views are ephemeral by default — a transient texdoc / consult doc
 ;; the user opened to read, gone on relaunch. Set this to #t to make

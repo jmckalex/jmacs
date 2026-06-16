@@ -20,7 +20,7 @@
 ;; for users who want JMarkdown or pandoc features). Change it
 ;; through the customisation UI, or directly:
 ;;   (custom-apply! '*markdown-interpreter* "pandoc -f markdown -t html")
-(defgroup 'sticky-notes 'jmacs "Sticky notes overlaid on the buffer.")
+(defgroup 'sticky-notes 'godot "Sticky notes overlaid on the buffer.")
 
 (defcustom *markdown-interpreter* "marked" :string
   :group 'sticky-notes

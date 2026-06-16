@@ -33,7 +33,7 @@
 ;; Settings and faces
 ;; ----------------------------------------------------------------------
 
-(defgroup 'snippets 'jmacs
+(defgroup 'snippets 'godot
   "Snippet expansion — yasnippet-style templates with tab stops.")
 
 (defcustom *snippet-directories* nil :list

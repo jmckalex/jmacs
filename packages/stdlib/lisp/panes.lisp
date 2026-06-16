@@ -18,7 +18,7 @@
 ;; should hold: open a file (o), clone the previous view (c), start a new
 ;; file (s), or run a command (r). Enter performs the default action,
 ;; which this setting controls.
-(defgroup 'panes 'jmacs "Pane splitting and the split placeholder.")
+(defgroup 'panes 'godot "Pane splitting and the split placeholder.")
 (defcustom *placeholder-default-action* 'clone :choice
   :group 'panes
   :options '(open clone new command none)

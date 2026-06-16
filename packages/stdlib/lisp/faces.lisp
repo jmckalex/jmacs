@@ -669,7 +669,7 @@
          foreground colour, optional background, weight, slant,
          underline and strike-through. Changes are live and persist
          across restarts."
-        "jmacs"
+        "godot"
         '()
         (face-rows)))
 
@@ -684,5 +684,5 @@
 
 ;; Register a 'faces' customize group so it shows up in the top-level
 ;; customize buffer as a link the user can click into.
-(defgroup 'faces 'jmacs
+(defgroup 'faces 'godot
   "Per-token font faces — colours, weight, slant, decoration.")

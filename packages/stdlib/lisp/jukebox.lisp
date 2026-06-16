@@ -43,7 +43,7 @@
 ;;; Missing fields render as the empty string; an untagged or
 ;;; unsupported file falls back to the bare filename.
 
-(defgroup 'jukebox 'jmacs "Jukebox view: how audio files are listed.")
+(defgroup 'jukebox 'godot "Jukebox view: how audio files are listed.")
 
 (defcustom *jukebox-track-format* "\"{title}\", {artist}, {album}" :string
   :group 'jukebox

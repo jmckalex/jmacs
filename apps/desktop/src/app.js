@@ -210,10 +210,10 @@ const CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
 `;
 
 /** The commented init.lisp written into the config directory on first run. */
-const INIT_TEMPLATE = `;;; init.lisp — your jmacs configuration.
+const INIT_TEMPLATE = `;;; init.lisp — your Godot configuration.
 ;;;
 ;;; This file is evaluated at startup, after the standard library and
-;;; your saved customisations. It is the jmacs equivalent of .emacs:
+;;; your saved customisations. It is the Godot equivalent of .emacs:
 ;;; ordinary Lisp, so anything goes — set variables, define commands,
 ;;; bind keys.
 ;;;
@@ -513,7 +513,7 @@ function updateModeline() {
     const label = shown.name || '(choose a view)';
     nameEl.textContent = label;
     positionEl.textContent = '';
-    document.title = `${label} — editor`;
+    document.title = `${label} — Godot`;
     return;
   }
   // The user-visible count excludes placeholders, and the index is the
@@ -531,7 +531,7 @@ function updateModeline() {
   if (shown && shown.kind !== 'text') {
     nameEl.textContent = shown.name + count;
     positionEl.textContent = '';
-    document.title = `${shown.name} — editor`;
+    document.title = `${shown.name} — Godot`;
     return;
   }
   const buffer = currentTextBuffer;
@@ -550,7 +550,7 @@ function updateModeline() {
   const { line, column } = buffer.positionAt(buffer.point);
   positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
   // Reflect the current view in the OS window title.
-  document.title = `${mark}${buffer.name} — editor`;
+  document.title = `${mark}${buffer.name} — Godot`;
 }
 
 /** Make BUFFER the current text buffer AND re-point the dirty / autosave
@@ -4895,7 +4895,7 @@ const interpreter = createInterpreter({
     },
     // Open (or switch to) a customisation buffer.
     'open-customize!': () => {
-      openCustomize('*Customize*', { group: 'jmacs' });
+      openCustomize('*Customize*', { group: 'godot' });
       return NIL;
     },
     'open-customize-group!': (args) => {

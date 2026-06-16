@@ -34,7 +34,7 @@
 
 ;; --- user-facing settings ---------------------------------------------
 
-(defgroup 'reftex 'jmacs "RefTeX: multi-file references, labels, TOC.")
+(defgroup 'reftex 'godot "RefTeX: multi-file references, labels, TOC.")
 
 ;; Explicit master-file override. Empty string = auto-detect via the
 ;; ladder in `reftex-master`. A relative path is resolved against the
