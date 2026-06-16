@@ -73,7 +73,11 @@ button.secondary:hover:not(:disabled) { background: rgba(139,115,85,.1); }
   padding: 0.4rem 0.6rem; background: #faf9f7; border-bottom: 1px solid #e8e5e0; font-size: 0.85rem;
 }
 .status { color: #666; font-style: italic; }
-.selection-controls { display: flex; gap: 0.5rem; }
+.selection-controls { display: flex; gap: 0.5rem; align-items: center; }
+.sort-select {
+  font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 0.7rem;
+  padding: 0.15rem 0.3rem; border: 1px solid #c8c4bc; background: #fff; color: #2c2c2c;
+}
 .selection-controls button { padding: 0.2rem 0.5rem; font-size: 0.68rem; }
 .entry-list { flex: 1; min-height: 0; overflow-y: auto; }
 .entry {
@@ -144,6 +148,9 @@ function entryFromCsl(e, index) {
     authorStr,
     year,
     title,
+    sortAuthor: (family[0] || '').toLowerCase(),
+    sortYear: parseInt(year, 10) || 0,
+    sortTitle: title.toLowerCase().replace(/^(the|a|an)\s+/, ''),
     search: `${key} ${allNames} ${year} ${title} ${container}`.toLowerCase(),
   };
 }
@@ -276,6 +283,9 @@ function fallbackEntry(source, index) {
     authorStr: author,
     year,
     title,
+    sortAuthor: author.toLowerCase(),
+    sortYear: parseInt(year, 10) || 0,
+    sortTitle: title.toLowerCase().replace(/^(the|a|an)\s+/, ''),
     search: `${km[1]} ${cleanTeX(authorRaw)} ${year} ${title}`.toLowerCase(),
   };
 }
@@ -346,6 +356,7 @@ class BibSearch extends HTMLElement {
     this.filtered = [];
     this.selected = new Set();   // selected bib keys (stable across filtering)
     this._loose = 0;             // entries salvaged loosely (citation.js couldn't parse)
+    this._sort = 'author';       // sort order (author / year / title / file)
     this._debounce = null;
   }
 
@@ -381,6 +392,13 @@ class BibSearch extends HTMLElement {
         <div class="toolbar">
           <span class="status">Loading…</span>
           <div class="selection-controls">
+            <select class="sort-select" aria-label="Sort order" title="Sort">
+              <option value="author">Author</option>
+              <option value="year-desc">Year ↓</option>
+              <option value="year-asc">Year ↑</option>
+              <option value="title">Title</option>
+              <option value="file">File order</option>
+            </select>
             <button class="secondary select-none" type="button">Clear</button>
           </div>
         </div>
@@ -403,6 +421,13 @@ class BibSearch extends HTMLElement {
     this._action = $('.action-btn');
     this._macroSel = $('.macro-select');
     this._macroSel.value = this.macro;
+    this._sortSel = $('.sort-select');
+    this._sortSel.value = this._sort;
+    this._sortSel.addEventListener('change', () => {
+      this._sort = this._sortSel.value;
+      this._sortEntries();
+      this._applyFilter();
+    });
 
     this._input.addEventListener('input', () => {
       this._clear.classList.toggle('visible', this._input.value !== '');
@@ -446,6 +471,7 @@ class BibSearch extends HTMLElement {
       this.entries = entries;
       this._loose = loose;
       this.selected.clear();
+      this._sortEntries();
       this._applyFilter();
       this.dispatchEvent(new CustomEvent('bib-loaded', {
         detail: { count: entries.length, loose }, bubbles: true, composed: true,
@@ -483,6 +509,24 @@ class BibSearch extends HTMLElement {
     });
     if (invalid && this._input) this._input.classList.add('invalid');
     return (e) => tests.every((re) => re.test(e.search));
+  }
+
+  /** Sort `this.entries` in place by the current `_sort` mode. Missing
+   *  author/title sort to the end; ties break by author then year. */
+  _sortEntries() {
+    const cmp = (a, b) => a.localeCompare(b);
+    const byAuthor = (a, b) =>
+      cmp(a.sortAuthor || '￿', b.sortAuthor || '￿') ||
+      (a.sortYear - b.sortYear) ||
+      cmp(a.sortTitle || '', b.sortTitle || '');
+    const comparators = {
+      author: byAuthor,
+      'year-desc': (a, b) => (b.sortYear || 0) - (a.sortYear || 0) || byAuthor(a, b),
+      'year-asc': (a, b) => (a.sortYear || 0) - (b.sortYear || 0) || byAuthor(a, b),
+      title: (a, b) => cmp(a.sortTitle || '￿', b.sortTitle || '￿') || byAuthor(a, b),
+      file: (a, b) => a.index - b.index,
+    };
+    this.entries.sort(comparators[this._sort] || comparators.author);
   }
 
   _applyFilter() {
