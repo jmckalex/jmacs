@@ -3450,6 +3450,17 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.length - 1);
       return NIL;
     },
+    // `(host-file-url ABS-PATH)` — turn an absolute host path into an
+    // `app://editor/__host__/…` URL the renderer can fetch. bib-search uses
+    // it to load the active document's .bib. The path's directory must be
+    // allowlisted; opening the document allowlisted its dir and the bib
+    // resolves under it, so this covers the common case. Returns "" for a
+    // non-absolute / empty path.
+    'host-file-url': (args) => {
+      const path = String(args[0] ?? '');
+      if (path === '' || !path.startsWith('/')) return '';
+      return hostFileUrl(path);
+    },
     // `(find-file-new! PATH)` — visit a path that does NOT exist yet:
     // open an empty text buffer whose file is PATH, so the next
     // `save-buffer` (C-x C-s) creates it. Emacs's find-file-on-a-missing-

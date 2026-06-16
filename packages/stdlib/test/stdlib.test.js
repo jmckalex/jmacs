@@ -4319,3 +4319,24 @@ test('define-element-view :title defaults to the tag', async () => {
   );
 });
 
+test('bib-search reads a `Bibliography:` metadata-header line', async () => {
+  const { interpreter } = await editor();
+  // A header line names the document's bibliography (value trimmed).
+  assert.equal(
+    interpreter.evaluate(
+      `(-bib-search-scan-lines (list "Title: Foo" "Bibliography: refs/main.bib" "" "body") 0)`
+    ),
+    'refs/main.bib'
+  );
+  // The key is case-insensitive; surrounding whitespace is trimmed.
+  assert.equal(
+    interpreter.evaluate(`(-bib-search-scan-lines (list "bibliography:   x.bib  ") 0)`),
+    'x.bib'
+  );
+  // No such header → nil (caller falls back to *citation-bib-path* / sample).
+  assert.equal(
+    interpreter.evaluate(`(-bib-search-scan-lines (list "no" "header here") 0)`),
+    NIL
+  );
+});
+

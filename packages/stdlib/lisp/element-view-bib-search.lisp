@@ -6,16 +6,17 @@
 ;;; keep open in a pane. The element bundles citation.js and ingests any
 ;;; format it auto-detects (BibTeX, BibLaTeX, CSL-JSON, RIS, …).
 ;;;
-;;; The whole Godot integration is this one form — no bib-specific host code:
-;;;   - :no-focus keeps the cursor in the document when you use the panel;
-;;;   - the element fires `insert-text`, and the generic element-view channel
-;;;     drops it into the active buffer via `insert!`.
+;;; Godot stays bib-agnostic: `:no-focus` opens it beside the document and
+;;; keeps the cursor there; the element fires `insert-text`, and the generic
+;;; element-view channel drops it into the active buffer via `insert!`.
 ;;;
 ;;;   M-x bib-search
 ;;;
-;;; Point :src at your own bibliography (a repo path, or an
-;;; `app://editor/__host__/<abs path>` URL for a file outside the repo). The
-;;; default is the bundled sample. See plans/BIB-SEARCH-VIEW.md.
+;;; `bib-search` auto-loads the ACTIVE document's bibliography:
+;;;   - LaTeX/TeX: its \bibliography / \addbibresource (via RefTeX);
+;;;   - markdown/jmarkdown: a `Bibliography: path` metadata-header line;
+;;;   - else `*citation-bib-path*`, else the bundled sample.
+;;; See plans/BIB-SEARCH-VIEW.md.
 
 (define-element-view bib-search
   :title    "Bibliography"
@@ -25,3 +26,80 @@
   :no-focus #t
   :fit      'fill
   :keyboard 'grab)
+
+(define *bib-search-sample*
+  "app://editor/apps/desktop/vendor/bib-search/sample.bib")
+
+;; --- detect the active document's bibliography -------------------------
+
+(define (-bib-search-latex-path)
+  "The first bib path of the active LaTeX document (its \\bibliography /
+   \\addbibresource, resolved to an absolute path by RefTeX), or nil."
+  (let ((db (reftex-document)))
+    (if (nil? db)
+        nil
+        (let ((paths (-reftex-bib-abs-paths db)))
+          (if (or (nil? paths) (= (length paths) 0))
+              nil
+              (car paths))))))
+
+(define (-bib-search-scan-lines lines n)
+  "Walk header LINES (cap 60) for a `Bibliography: VALUE` line
+   (case-insensitive); return VALUE trimmed, or nil."
+  (cond
+    ((nil? lines) nil)
+    ((>= n 60) nil)
+    (else
+     (let ((trimmed (string-trim (car lines))))
+       (if (string-prefix? "bibliography:" (string-downcase trimmed))
+           (string-trim (substring trimmed 13))
+           (-bib-search-scan-lines (cdr lines) (+ n 1)))))))
+
+(define (-bib-search-metadata-path)
+  "The bib path from a markdown/jmarkdown `Bibliography: path` metadata
+   header, resolved against the document's directory, or nil."
+  (let ((decl (-bib-search-scan-lines (string-split (buffer-text) "\n") 0)))
+    (if (or (nil? decl) (string=? decl ""))
+        nil
+        (path-resolve (view-directory (current-view)) decl))))
+
+(define (-bib-search-document-path)
+  "The active document's bibliography path (absolute), or nil — LaTeX via
+   RefTeX, markdown/jmarkdown via the `Bibliography:` header, else
+   `*citation-bib-path*`."
+  (let* ((mode (major-mode-name))
+         (from-doc
+          (cond
+            ((string-contains? mode "TeX") (-bib-search-latex-path))
+            ((string-contains? (string-downcase mode) "markdown")
+             (-bib-search-metadata-path))
+            (else nil))))
+    (cond
+      ((and from-doc (not (string=? from-doc ""))) from-doc)
+      ((and (string? *citation-bib-path*)
+            (not (string=? *citation-bib-path* "")))
+       *citation-bib-path*)
+      (else nil))))
+
+(define (-bib-search-source)
+  "A src URL for the panel: the active document's bibliography as an
+   `app://…/__host__` URL if one can be found, else the bundled sample."
+  (let ((path (-bib-search-document-path)))
+    (if (and (string? path) (not (string=? path "")) (string-prefix? "/" path))
+        (let ((url (host-file-url path)))
+          (if (string=? url "") *bib-search-sample* url))
+        *bib-search-sample*)))
+
+;; The smart open: shadows the command `define-element-view` generated above,
+;; adding the document's bibliography as the panel's `:src`. (Re-running while
+;; the panel is already open is a no-op; use the View menu to load a different
+;; bibliography — see the host's per-mode menu wiring.)
+(defcommand bib-search ()
+  "Open the bibliography search panel beside the document, auto-loading the
+   active document's bibliography (LaTeX \\bibliography / \\addbibresource,
+   or a markdown/jmarkdown `Bibliography:` metadata header), falling back to
+   `*citation-bib-path*` then the bundled sample. Search, then click an
+   entry (or its checkbox) and Insert to drop `\\cite{…}` into the document."
+  (open-element-view!
+    (assoc (element-view-spec 'bib-search)
+           :attrs (list (list 'src (-bib-search-source))))))
