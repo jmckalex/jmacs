@@ -42,16 +42,8 @@ const STYLES = `
   border: 1px solid #d4d0c8;
   background: #fff;
 }
-.search-bar {
-  padding: 0.6rem; background: #f5f4f2; border-bottom: 1px solid #d4d0c8;
-  display: flex; gap: 0.5rem; align-items: center;
-}
-.search-wrapper { flex: 1; position: relative; display: flex; align-items: center; }
-.regex-toggle {
-  flex: 0 0 auto; padding: 0.5rem 0.55rem; font-size: 0.8rem;
-  background: transparent; color: #8b7355;
-}
-.regex-toggle.active { background: #8b7355; color: #fff; }
+.search-bar { padding: 0.6rem; background: #f5f4f2; border-bottom: 1px solid #d4d0c8; }
+.search-wrapper { position: relative; display: flex; align-items: center; }
 .search-input.invalid { border-color: #a85454; box-shadow: 0 0 0 2px rgba(168,84,84,.15); }
 .search-input {
   width: 100%; padding: 0.5rem 2rem 0.5rem 0.7rem; font-family: inherit; font-size: 1rem;
@@ -354,7 +346,6 @@ class BibSearch extends HTMLElement {
     this.filtered = [];
     this.selected = new Set();   // selected bib keys (stable across filtering)
     this._loose = 0;             // entries salvaged loosely (citation.js couldn't parse)
-    this._regex = false;         // regex search mode (toggle); default substring
     this._debounce = null;
   }
 
@@ -377,19 +368,16 @@ class BibSearch extends HTMLElement {
   get macro() { return this.getAttribute('macro') || 'cite'; }
 
   _render() {
-    const placeholder = this.getAttribute('placeholder') || 'Search author, title, year, key…';
+    const placeholder = this.getAttribute('placeholder')
+      || 'Search — regex ok (e.g. ale|br, ^smith, 19[89]\\d)…';
     this.shadowRoot.innerHTML = `
       <style>${STYLES}</style>
       <div class="container">
-        <div class="search-bar">
-          <div class="search-wrapper">
-            <input type="text" class="search-input" placeholder="${escapeHtml(placeholder)}"
-                   aria-label="Search bibliography">
-            <button class="clear-btn" type="button" title="Clear" aria-label="Clear">×</button>
-          </div>
-          <button class="regex-toggle" type="button" aria-pressed="false"
-                  title="Regular-expression search">.*</button>
-        </div>
+        <div class="search-bar"><div class="search-wrapper">
+          <input type="text" class="search-input" placeholder="${escapeHtml(placeholder)}"
+                 aria-label="Search bibliography">
+          <button class="clear-btn" type="button" title="Clear" aria-label="Clear">×</button>
+        </div></div>
         <div class="toolbar">
           <span class="status">Loading…</span>
           <div class="selection-controls">
@@ -415,20 +403,6 @@ class BibSearch extends HTMLElement {
     this._action = $('.action-btn');
     this._macroSel = $('.macro-select');
     this._macroSel.value = this.macro;
-    this._regexBtn = $('.regex-toggle');
-    this._regexBtn.classList.toggle('active', this._regex);
-    this._regexBtn.setAttribute('aria-pressed', this._regex ? 'true' : 'false');
-
-    this._regexBtn.addEventListener('click', () => {
-      this._regex = !this._regex;
-      this._regexBtn.classList.toggle('active', this._regex);
-      this._regexBtn.setAttribute('aria-pressed', this._regex ? 'true' : 'false');
-      this._input.placeholder = this._regex
-        ? 'Regex (e.g. ^smith, conv.*tion, 19[89]\\d)…'
-        : (this.getAttribute('placeholder') || 'Search author, title, year, key…');
-      this._applyFilter();
-      this._input.focus();
-    });
 
     this._input.addEventListener('input', () => {
       this._clear.classList.toggle('visible', this._input.value !== '');
@@ -486,27 +460,29 @@ class BibSearch extends HTMLElement {
     }
   }
 
-  /** A predicate for QUERY: a case-insensitive RegExp in regex mode (with a
-   *  literal fallback on an invalid pattern, flagged on the input), else
-   *  whitespace-separated AND substring matching. */
+  /** A predicate for QUERY. Each whitespace-separated term is a
+   *  case-insensitive RegExp (a plain word is itself a valid regex, so
+   *  substring search still "just works"); ALL terms must match (AND). So
+   *  `ale|br` matches "ale" OR "br", `skyrms 2019` is two ANDed terms, and
+   *  `^smith` anchors. A half-typed / malformed pattern falls back to a
+   *  literal match for that term and flags the input, so the list never
+   *  blanks out mid-keystroke. */
   _matcher(q) {
     const query = q.trim();
     if (this._input) this._input.classList.remove('invalid');
     if (query === '') return () => true;
-    if (this._regex) {
+    let invalid = false;
+    const tests = query.split(/\s+/).map((term) => {
       try {
-        const re = new RegExp(query, 'i');
-        return (e) => re.test(e.search);
+        return new RegExp(term, 'i');
       } catch {
-        // Pattern still being typed / malformed — match literally so the
-        // list doesn't blank out, and flag the input.
-        if (this._input) this._input.classList.add('invalid');
-        const lit = query.toLowerCase();
-        return (e) => e.search.includes(lit);
+        invalid = true;
+        const lit = term.toLowerCase();
+        return { test: (s) => s.includes(lit) };
       }
-    }
-    const terms = query.toLowerCase().split(/\s+/);
-    return (e) => terms.every((t) => e.search.includes(t));
+    });
+    if (invalid && this._input) this._input.classList.add('invalid');
+    return (e) => tests.every((re) => re.test(e.search));
   }
 
   _applyFilter() {
