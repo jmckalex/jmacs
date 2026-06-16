@@ -32,7 +32,7 @@ const changeTracker = createChangeTracker();
 import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
-import { hostFileUrl, allowHostDir } from './serve.js';
+import { hostFileUrl, allowHostDir, allowHostFile } from './serve.js';
 import {
   metadataPath,
   legacyMetadataPath,
@@ -495,6 +495,19 @@ export function registerFileHandlers() {
       event.returnValue = nodeReadFileSync(target, 'utf8');
     } catch {
       event.returnValue = null;
+    }
+  });
+
+  // Vouch for a specific file the renderer is about to fetch over the
+  // `__host__` route (e.g. bib-search loading a document's bibliography),
+  // allowing its real directory so a symlink to a shared `.bib` outside
+  // the document's folder is reachable. The path is tilde-expanded.
+  ipcMain.on('host:allow-file-sync', (event, payload) => {
+    try {
+      allowHostFile(expandTilde(payload?.path));
+      event.returnValue = true;
+    } catch {
+      event.returnValue = false;
     }
   });
 

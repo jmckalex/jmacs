@@ -3459,6 +3459,15 @@ const interpreter = createInterpreter({
     'host-file-url': (args) => {
       const path = String(args[0] ?? '');
       if (path === '' || !path.startsWith('/')) return '';
+      // Vouch for this specific file's real directory so the __host__
+      // route serves it even when it (or a symlink to it) lives outside a
+      // folder the user opened — e.g. a bibliography symlinked to a shared
+      // .bib. Best-effort; the fetch still 403s gracefully if it fails.
+      try {
+        if (window.host && typeof window.host.allowHostFile === 'function') {
+          window.host.allowHostFile(path);
+        }
+      } catch { /* ignore — fall through to the URL */ }
       return hostFileUrl(path);
     },
     // `(find-file-new! PATH)` — visit a path that does NOT exist yet:

@@ -12,8 +12,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { allowHostDir, hostPathAllowed } from './host-allowlist.js';
-export { allowHostDir };
+import { allowHostDir, allowHostFile, hostPathAllowed } from './host-allowlist.js';
+export { allowHostDir, allowHostFile };
 
 // apps/desktop/src -> repository root.
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');

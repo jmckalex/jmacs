@@ -14,6 +14,7 @@
  */
 
 import { realpathSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 /** Real-path directories the route may serve from. */
 const hostRoots = new Set();
@@ -30,6 +31,28 @@ export function allowHostDir(dir) {
   if (typeof dir !== 'string' || dir === '') return;
   try {
     hostRoots.add(realpathSync(dir));
+  } catch {
+    // Unreadable / nonexistent — nothing to allow.
+  }
+}
+
+/**
+ * Permit the route to serve FILEPATH specifically, by allowing its real
+ * directory (symlinks resolved). For a file the user has explicitly
+ * pointed the editor at whose *real* location lies outside any folder
+ * they opened — e.g. bib-search loading a document's bibliography that is
+ * a symlink to a shared `.bib` elsewhere. Referencing it is the user's
+ * vouch; this is the file-level analogue of "opening a file vouches for
+ * its folder". Note allowing the symlink's *containing* dir would not
+ * help — `hostPathAllowed` resolves the symlink and checks the target,
+ * so we must allow the target's real dir. Main-process only.
+ *
+ * @param {string} filePath
+ */
+export function allowHostFile(filePath) {
+  if (typeof filePath !== 'string' || filePath === '') return;
+  try {
+    allowHostDir(dirname(realpathSync(filePath)));
   } catch {
     // Unreadable / nonexistent — nothing to allow.
   }
