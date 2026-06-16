@@ -6717,6 +6717,34 @@ function configureElementView() {
         );
       }
     },
+    // The generic open-external channel: a hosted element asks the host to
+    // open a resource in an OS app. bib-search uses it to open an entry's
+    // PDF — `detail.bdsk` is a BibDesk `Bdsk-File-N` value (base64),
+    // `detail.bibPath` the .bib's path (anchors the relativePath fallback).
+    // The element gets a `pdf-opened` / `pdf-error` event back so it can
+    // show feedback.
+    openExternal: (detail) => {
+      const bdsk = detail && detail.bdsk;
+      if (typeof bdsk !== 'string' || bdsk === '') return;
+      const reply = (type, info) => {
+        const el = detail && detail.source;
+        if (el && typeof el.dispatchEvent === 'function') {
+          el.dispatchEvent(new CustomEvent(type, { detail: info }));
+        }
+      };
+      if (!window.host || typeof window.host.bdskOpen !== 'function') {
+        reply('pdf-error', { error: 'unavailable' });
+        return;
+      }
+      Promise.resolve(
+        window.host.bdskOpen({ bdsk, bibPath: detail.bibPath })
+      ).then((result) => {
+        if (result && result.ok) reply('pdf-opened', { path: result.path });
+        else reply('pdf-error', { error: (result && result.error) || 'failed' });
+      }).catch((error) => {
+        reply('pdf-error', { error: error?.message ?? String(error) });
+      });
+    },
   };
 }
 

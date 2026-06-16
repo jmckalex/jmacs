@@ -91,15 +91,27 @@
         *bib-search-sample*)))
 
 ;; The smart open: shadows the command `define-element-view` generated above,
-;; adding the document's bibliography as the panel's `:src`. (Re-running while
-;; the panel is already open is a no-op; use the View menu to load a different
+;; adding the document's bibliography as the panel's `:src` and `:bib-path`.
+;; `:src` is the URL the panel fetches; `:bib-path` is the bib's absolute
+;; host path, which the panel hands back when opening a BibDesk PDF so the
+;; host can anchor the relative-path fallback. (Re-running while the panel is
+;; already open is a no-op; use the View menu to load a different
 ;; bibliography — see the host's per-mode menu wiring.)
 (defcommand bib-search ()
   "Open the bibliography search panel beside the document, auto-loading the
    active document's bibliography (LaTeX \\bibliography / \\addbibresource,
    or a markdown/jmarkdown `Bibliography:` metadata header), falling back to
    `*citation-bib-path*` then the bundled sample. Search, then click an
-   entry (or its checkbox) and Insert to drop `\\cite{…}` into the document."
-  (open-element-view!
-    (assoc (element-view-spec 'bib-search)
-           :attrs (list (list 'src (-bib-search-source))))))
+   entry (or its checkbox) and Insert to drop `\\cite{…}` into the document.
+   Where an entry carries a BibDesk PDF alias, its title links to the PDF."
+  (let* ((path (-bib-search-document-path))
+         (abs  (and (string? path) (not (string=? path "")) (string-prefix? "/" path) path))
+         (src  (if abs
+                   (let ((url (host-file-url abs)))
+                     (if (string=? url "") *bib-search-sample* url))
+                   *bib-search-sample*))
+         (attrs (if abs
+                    (list (list 'src src) (list 'bib-path abs))
+                    (list (list 'src src)))))
+    (open-element-view!
+      (assoc (element-view-spec 'bib-search) :attrs attrs))))

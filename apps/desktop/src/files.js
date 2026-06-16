@@ -33,6 +33,7 @@ import { extractAlbumArt } from './audio-art.js';
 import { extractMetadata, extractMetadataSync } from './audio-metadata.js';
 import { writeMetadataSync as writeAudioMetadataSync } from './audio-metadata-write.js';
 import { hostFileUrl, allowHostDir, allowHostFile } from './serve.js';
+import { resolveBdskFile } from './bdsk-file.js';
 import {
   metadataPath,
   legacyMetadataPath,
@@ -915,5 +916,29 @@ export function registerFileHandlers() {
     const target = payload?.path;
     if (typeof target !== 'string' || target === '') return;
     shell.showItemInFolder(target);
+  });
+
+  // Resolve a BibDesk `Bdsk-File-N` value (base64) to its real PDF path and
+  // open it in the OS default app. bib-search uses this to make an entry's
+  // title a "click to open the PDF" link. The bookmark is resolved natively
+  // (inode-tracked, survives moves) with the plist's `relativePath` as
+  // fallback, anchored to `bibPath`'s real directory. Returns
+  // `{ ok, path?, error? }`.
+  ipcMain.handle('bdsk:open', async (_event, payload) => {
+    const bdsk = payload?.bdsk;
+    const bibPath = payload?.bibPath;
+    if (typeof bdsk !== 'string' || bdsk === '') {
+      return { ok: false, error: 'no attachment' };
+    }
+    let path = null;
+    try {
+      path = await resolveBdskFile(bdsk, typeof bibPath === 'string' ? bibPath : undefined);
+    } catch (error) {
+      return { ok: false, error: error?.message ?? String(error) };
+    }
+    if (!path) return { ok: false, error: 'file not found' };
+    const failure = await shell.openPath(path); // '' on success
+    if (failure) return { ok: false, path, error: failure };
+    return { ok: true, path };
   });
 }

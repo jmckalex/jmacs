@@ -17,11 +17,19 @@
 //   src          URL of a bibliography in any citation.js format
 //   macro        default cite macro: cite | citep | citet | @  (default: cite)
 //   placeholder  search box placeholder
+//   bib-path     host path of the .bib (anchors the BibDesk PDF fallback)
 //
 // Events:
-//   insert-text  detail { text } — the cite macro to insert (composed+bubbling)
-//   bib-loaded   detail { count }
-//   bib-error    detail { error }
+//   insert-text   detail { text } — the cite macro to insert (composed+bubbling)
+//   open-external detail { bdsk, bibPath, source } — open a BibDesk PDF
+//   bib-loaded    detail { count }
+//   bib-error     detail { error }
+//
+// BibDesk PDFs: a BibTeX entry with a `bdsk-file-1` field (a base64 macOS
+// alias BibDesk writes) gets its title rendered as a link; clicking it
+// dispatches `open-external` so the host can resolve the alias and open the
+// PDF in the default reader. The host knows how to resolve it (native macOS
+// bookmark API); the element just carries the opaque value.
 
 import { Cite } from './citation-js.esm.js';
 
@@ -104,6 +112,11 @@ button.secondary:hover:not(:disabled) { background: rgba(139,115,85,.1); }
 .ref-author { font-variant: small-caps; }
 .ref-year { color: #6d5a43; }
 .ref-title { font-style: italic; }
+.pdf-link {
+  color: inherit; text-decoration: none; cursor: pointer;
+  border-bottom: 1px dotted #b08968; transition: color .12s, background-color .12s;
+}
+.pdf-link:hover { color: #6d5a43; border-bottom-color: #6d5a43; background: rgba(139,115,85,.10); }
 .empty, .error { padding: 2rem; text-align: center; color: #888; font-style: italic; }
 .error { color: #a85454; background: #fdf6f6; }
 .action-bar {
@@ -177,9 +190,17 @@ function chicagoAuthors(names) {
     : `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}`;
 }
 
+/** Wrap a title's HTML in a "click to open the PDF" link when `link` is on. */
+function pdfLink(inner, link) {
+  return link
+    ? `<a class="pdf-link" role="link" tabindex="0" title="Open PDF">${inner}</a>`
+    : inner;
+}
+
 /** Render one CSL-JSON entry as a Chicago author-date reference (HTML).
- *  Journal titles and books are italicised; article titles quoted. */
-function formatChicago(e) {
+ *  Journal titles and books are italicised; article titles quoted. When
+ *  `opts.link` is set, the title becomes a PDF link (a BibDesk attachment). */
+function formatChicago(e, opts = {}) {
   const auth = chicagoAuthors(e.author || e.editor || []);
   const dp = e.issued && e.issued['date-parts'];
   const year = (dp && dp[0] && dp[0][0]) ? String(dp[0][0]) : 'n.d.';
@@ -192,9 +213,11 @@ function formatChicago(e) {
   if (auth) bits.push(escapeHtml(auth.endsWith('.') ? auth : `${auth}.`));
   bits.push(`${escapeHtml(year)}.`);
   if (title) {
+    const inner = isBook ? `<i>${escapeHtml(title)}</i>` : escapeHtml(title);
+    const linked = pdfLink(inner, opts.link);
     bits.push(isBook
-      ? `<i>${escapeHtml(title)}</i>${titlePunct}`
-      : `&ldquo;${escapeHtml(title)}${titlePunct}&rdquo;`);
+      ? `${linked}${titlePunct}`
+      : `&ldquo;${linked}${titlePunct}&rdquo;`);
   }
   if (container) {
     let t = `<i>${escapeHtml(container)}</i>`;
@@ -290,6 +313,21 @@ function fallbackEntry(source, index) {
   };
 }
 
+/** Map each cite key to its BibDesk `bdsk-file-1` value (a base64 macOS
+ *  alias), for the entries that carry one. citation.js drops the field, so
+ *  we read it straight from the raw BibTeX. Whitespace inside the base64
+ *  (BibDesk may wrap it across lines) is stripped so it decodes cleanly. */
+function bdskFilesByKey(text) {
+  const map = new Map();
+  for (const { source } of splitBibEntries(text)) {
+    const km = source.match(/@\w+\s*\{\s*([^,\s}]+)/);
+    if (!km) continue;
+    const val = bibField(source, 'bdsk-file-1');
+    if (val) map.set(km[1], val.replace(/\s+/g, ''));
+  }
+  return map;
+}
+
 /** Parse a bibliography (any citation.js format) into display/search
  *  records, TOLERANT of entries citation.js can't handle. Fast path: the
  *  whole file at once. On failure: parse each BibTeX entry alone (with
@@ -357,6 +395,7 @@ class BibSearch extends HTMLElement {
     this.selected = new Set();   // selected bib keys (stable across filtering)
     this._loose = 0;             // entries salvaged loosely (citation.js couldn't parse)
     this._sort = 'author';       // sort order (author / year / title / file)
+    this._bdskByKey = new Map(); // cite key → BibDesk PDF alias (base64)
     this._debounce = null;
   }
 
@@ -448,12 +487,28 @@ class BibSearch extends HTMLElement {
     this._macroSel.addEventListener('change', () => this._syncAction());
     this._action.addEventListener('click', () => this._insert());
     this._list.addEventListener('click', (e) => {
+      // A title that links to a BibDesk PDF: open it, don't toggle selection.
+      const link = e.target.closest('.pdf-link');
+      if (link) {
+        e.preventDefault();
+        const linkRow = link.closest('.entry');
+        if (linkRow) this._openPdf(linkRow.dataset.key);
+        return;
+      }
       const row = e.target.closest('.entry');
       if (row) this._toggle(row.dataset.key);
     });
     this._list.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.pdf-link')) return; // PDF link, not a pick
       const row = e.target.closest('.entry');
       if (row) { this.selected = new Set([row.dataset.key]); this._insert(); }
+    });
+    // The host answers an open-external request with one of these.
+    this.addEventListener('pdf-opened', () => this._setCountStatus());
+    this.addEventListener('pdf-error', (e) => {
+      const msg = (e.detail && e.detail.error) || 'could not open';
+      if (this._status) this._status.textContent = `PDF: ${msg}`;
+      setTimeout(() => this._setCountStatus(), 2500);
     });
   }
 
@@ -468,6 +523,11 @@ class BibSearch extends HTMLElement {
       // Tolerant parse: one malformed entry must not lose the whole file,
       // and every entry stays citable even if citation.js can't read it.
       const { entries, loose } = parseBibliography(text);
+      // BibDesk PDF aliases (by cite key) — the raw field citation.js drops.
+      // Attach the opaque value to each entry so its title can link to the PDF.
+      const pdfs = bdskFilesByKey(text);
+      this._bdskByKey = pdfs;
+      for (const e of entries) e.pdf = pdfs.get(e.key) || null;
       this.entries = entries;
       this._loose = loose;
       this.selected.clear();
@@ -534,13 +594,36 @@ class BibSearch extends HTMLElement {
     const match = this._matcher(q);
     this.filtered = this.entries.filter(match);
     this._renderList();
-    if (this._status && this.entries.length) {
-      const loose = this._loose ? ` (${this._loose} loose)` : '';
-      this._status.textContent = q.trim()
-        ? `${this.filtered.length} / ${this.entries.length}`
-        : `${this.entries.length} entries${loose}`;
-    }
+    this._setCountStatus();
     this._syncAction();
+  }
+
+  /** Set the toolbar status to the entry/match count (the resting state). */
+  _setCountStatus() {
+    if (!this._status || !this.entries || !this.entries.length) return;
+    const q = this._input ? this._input.value.trim() : '';
+    const loose = this._loose ? ` (${this._loose} loose)` : '';
+    this._status.textContent = q
+      ? `${this.filtered.length} / ${this.entries.length}`
+      : `${this.entries.length} entries${loose}`;
+  }
+
+  /** Ask the host to open the BibDesk PDF attached to the entry KEY. The
+   *  host resolves the opaque alias (native macOS bookmark) and opens it in
+   *  the default reader, then answers with `pdf-opened` / `pdf-error`. */
+  _openPdf(key) {
+    const bdsk = key && this._bdskByKey.get(key);
+    if (!bdsk) return;
+    if (this._status) this._status.textContent = 'Opening PDF…';
+    this.dispatchEvent(new CustomEvent('open-external', {
+      detail: {
+        bdsk,
+        bibPath: this.getAttribute('bib-path') || undefined,
+        source: this,
+      },
+      bubbles: true,
+      composed: true,
+    }));
   }
 
   _renderList() {
@@ -558,10 +641,10 @@ class BibSearch extends HTMLElement {
       // Chicago author-date from the CSL entry; loosely-parsed entries (no
       // CSL) fall back to the simple author/year/title fields.
       const reference = e.csl
-        ? formatChicago(e.csl)
+        ? formatChicago(e.csl, { link: !!e.pdf })
         : (e.authorStr ? `${escapeHtml(e.authorStr)} ` : '') +
           (e.year ? `${escapeHtml(e.year)}. ` : '') +
-          (e.title ? `<i>${escapeHtml(e.title)}</i>` : '');
+          (e.title ? pdfLink(`<i>${escapeHtml(e.title)}</i>`, !!e.pdf) : '');
       row.innerHTML =
         `<span class="checkbox${checked}" aria-hidden="true"></span>` +
         `<span class="entry-content">` +
