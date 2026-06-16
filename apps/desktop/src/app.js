@@ -817,6 +817,19 @@ function focusPaneFromEvent(event) {
 editorHostEl.addEventListener('mousedown', focusPaneFromEvent, true);
 editorHostEl.addEventListener('click', focusPaneFromEvent, true);
 
+/** True when pane PANEID holds a view that opted out of focus
+ *  (`:no-focus`) — a helper/satellite panel (e.g. the bibliography view)
+ *  whose whole purpose is to act on the *active* view. Interacting with
+ *  it must not make it the active pane, or "insert into the active view"
+ *  would target the panel itself. Peels through a tabline to the visible
+ *  child. */
+function isNoFocusPane(paneId) {
+  const leaf = leafPanes(rootPane).find((l) => l.id === paneId);
+  if (!leaf) return false;
+  const view = peelTabline(leaf.view);
+  return !!(view && view.noFocus);
+}
+
 /** Set the currently-focused pane id and refresh derived state:
  *  the focus indicator, the cursor binding for the new focused
  *  text view's buffer, the `editorView` pointer the legacy callsites
@@ -826,6 +839,9 @@ editorHostEl.addEventListener('click', focusPaneFromEvent, true);
  *  what gives the active view its own cursor on focus change. */
 function setCurrentPaneId(nextId) {
   if (typeof nextId !== 'string' || nextId === currentPaneId) return;
+  // `:no-focus` views never become the active pane — every focus path
+  // (click, C-x o, restore) routes through here, so the guard is central.
+  if (isNoFocusPane(nextId)) return;
   currentPaneId = nextId;
   refreshPaneFocusIndicators();
   const leaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
@@ -1160,6 +1176,45 @@ function splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, view) {
   refreshSplitterHandles();
   scheduleRelayout();
   return { first, second };
+}
+
+/** Open VIEW (a `:no-focus` helper panel — bib-search, a HUD, …) in a new
+ *  split beside the focused pane, WITHOUT moving the editing focus or
+ *  touching the document's visibility. Unlike `splitPaneAtLeafWith` this
+ *  deliberately skips `setCurrentPaneId` (the panel is :no-focus, so the
+ *  document keeps Godot's currentView) and `hideInactiveRendererViews`
+ *  (which would blank the still-focused document's leaf-direct text-view —
+ *  the VIEWS.md hazard). The panel mounts to the document's right; the
+ *  document keeps its DOM focus too (we don't focus the panel). */
+function openNoFocusViewInSplit(view) {
+  const focused = currentPane();
+  if (!focused || focused.kind !== 'leaf') {
+    // No leaf to split against (e.g. a bare tabline root) — fall back to a
+    // plain switch so the panel at least opens somewhere.
+    const idx = views.indexOf(view);
+    if (idx >= 0) switchToViewIndex(idx);
+    return;
+  }
+  const targetLeaf = focused;
+  const newLeaf = createLeafPane({ view });
+  // Side-by-side: the document (first child) keeps the larger share; the
+  // panel (second child) sits narrower on the right.
+  const split = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.64,
+    first: targetLeaf,
+    second: newLeaf,
+  });
+  rootPane = replacePane(rootPane, targetLeaf, split);
+  syncPaneElements();
+  // Mount the panel's element in its new pane — but do NOT focus it, so the
+  // document keeps DOM focus (currentPaneId is untouched → currentView too).
+  const paneEl = paneElements.get(newLeaf.id);
+  const el = ensureElementHostForView(view, paneEl);
+  if (el) el.style.display = '';
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
 }
 
 /** Common implementation of split-horizontal! / split-vertical!.
@@ -3361,6 +3416,9 @@ const interpreter = createInterpreter({
         moduleUrl: resolveElementModuleUrl(lispText(field('module'))),
         attrs: parseElementAttrs(field('attrs')),
         fit: normalizeFit(lispText(field('fit'))),
+        // A helper/satellite view (e.g. a bibliography panel) that acts on
+        // the *active* view and must never become the focused pane itself.
+        noFocus: field('no-focus') === true,
         keyboard:
           keyboardRaw === undefined || keyboardRaw === null || keyboardRaw === NIL
             ? 'grab'
@@ -3374,9 +3432,43 @@ const interpreter = createInterpreter({
         titleRaw === undefined || titleRaw === null || titleRaw === NIL
           ? tag
           : lispText(titleRaw);
+      // A :no-focus panel (e.g. bib-search) opens BESIDE the document in
+      // its own split, keeping the editing focus on the document — and
+      // reuses an already-open instance of the same tag rather than
+      // stacking splits. A normal element-view replaces the focused pane.
+      if (extras.noFocus) {
+        const open = views.find((v) =>
+          v && v.kind === 'element' && v.tag === extras.tag &&
+          leafPanes(rootPane).some((l) => l.view === v));
+        if (open) return NIL; // already showing
+        const view = createView({ kind: 'element', name, extras });
+        views.push(view);
+        openNoFocusViewInSplit(view);
+        return NIL;
+      }
       views.push(createView({ kind: 'element', name, extras }));
       switchToViewIndex(views.length - 1);
       return NIL;
+    },
+    // `(host-file-url ABS-PATH)` — turn an absolute host path into an
+    // `app://editor/__host__/…` URL the renderer can fetch. bib-search uses
+    // it to load the active document's .bib. The path's directory must be
+    // allowlisted; opening the document allowlisted its dir and the bib
+    // resolves under it, so this covers the common case. Returns "" for a
+    // non-absolute / empty path.
+    'host-file-url': (args) => {
+      const path = String(args[0] ?? '');
+      if (path === '' || !path.startsWith('/')) return '';
+      // Vouch for this specific file's real directory so the __host__
+      // route serves it even when it (or a symlink to it) lives outside a
+      // folder the user opened — e.g. a bibliography symlinked to a shared
+      // .bib. Best-effort; the fetch still 403s gracefully if it fails.
+      try {
+        if (window.host && typeof window.host.allowHostFile === 'function') {
+          window.host.allowHostFile(path);
+        }
+      } catch { /* ignore — fall through to the URL */ }
+      return hostFileUrl(path);
     },
     // `(find-file-new! PATH)` — visit a path that does NOT exist yet:
     // open an empty text buffer whose file is PATH, so the next
@@ -6610,6 +6702,49 @@ function configureElementView() {
     // the embedded element instance).
     deliver: (callback, callArgs) =>
       deliverLispCallback(callback, callArgs, 'element-view'),
+    // The generic insert-text channel: drop the element's text into the
+    // ACTIVE view (the document — a :no-focus panel keeps focus there).
+    // Routes through `(insert!)` so it shares undo / markers / watchers
+    // with normal edits. Bib-agnostic — the bibliography panel uses it to
+    // insert `\cite{…}`.
+    insertText: (text) => {
+      if (typeof text !== 'string' || text === '') return;
+      try {
+        interpreter.evaluate(`(insert! ${writeString(text)})`);
+      } catch (error) {
+        repl.appendError(
+          `element-view insert-text: ${error.lispMessage ?? error.message ?? error}`
+        );
+      }
+    },
+    // The generic open-external channel: a hosted element asks the host to
+    // open a resource in an OS app. bib-search uses it to open an entry's
+    // PDF — `detail.bdsk` is a BibDesk `Bdsk-File-N` value (base64),
+    // `detail.bibPath` the .bib's path (anchors the relativePath fallback).
+    // The element gets a `pdf-opened` / `pdf-error` event back so it can
+    // show feedback.
+    openExternal: (detail) => {
+      const bdsk = detail && detail.bdsk;
+      if (typeof bdsk !== 'string' || bdsk === '') return;
+      const reply = (type, info) => {
+        const el = detail && detail.source;
+        if (el && typeof el.dispatchEvent === 'function') {
+          el.dispatchEvent(new CustomEvent(type, { detail: info }));
+        }
+      };
+      if (!window.host || typeof window.host.bdskOpen !== 'function') {
+        reply('pdf-error', { error: 'unavailable' });
+        return;
+      }
+      Promise.resolve(
+        window.host.bdskOpen({ bdsk, bibPath: detail.bibPath })
+      ).then((result) => {
+        if (result && result.ok) reply('pdf-opened', { path: result.path });
+        else reply('pdf-error', { error: (result && result.error) || 'failed' });
+      }).catch((error) => {
+        reply('pdf-error', { error: error?.message ?? String(error) });
+      });
+    },
   };
 }
 

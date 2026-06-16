@@ -49,6 +49,9 @@ export const STDLIB_FILES = Object.freeze([
   // after the mechanism above. Remove this line + apps/desktop/vendor/stella
   // to exclude it (e.g. a build that doesn't ship the GPLv2 core).
   'element-view-atari.lisp',
+  // A built-in element-view: the bibliography search panel (M-x bib-search) —
+  // a self-contained <bib-search> (bundles citation.js) that inserts \cite{…}.
+  'element-view-bib-search.lisp',
   'panes.lisp',
   'tabline.lisp',
   'search.lisp',

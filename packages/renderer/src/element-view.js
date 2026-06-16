@@ -34,6 +34,13 @@ import { ViewElement, defineViewElement } from './view-elements.js';
  * @property {(form: *) => void} [onKey] - The host key dispatcher
  *   (unused while `keyboard` is `'grab'`; reserved for non-grabbing
  *   embeds).
+ * @property {(text: string) => void} [insertText] - Insert text into the
+ *   active view. Backs the generic `insert-text` channel (a hosted
+ *   element asks the editor to drop text into the document).
+ * @property {(detail: object) => void} [openExternal] - Open something in
+ *   an OS app (e.g. a PDF in the default reader). Backs the generic
+ *   `open-external` channel (a hosted element asks the host to open a
+ *   resource it can't reach itself — file system, default app).
  */
 
 export class ElementView extends ViewElement {
@@ -48,6 +55,10 @@ export class ElementView extends ViewElement {
     this._inner = null;
     /** Bubble-phase key handler installed for `keyboard: 'grab'/'share'`. */
     this._keyHandler = null;
+    /** Listener for the generic `insert-text` channel (see _boot). */
+    this._onInsertText = null;
+    /** Listener for the generic `open-external` channel (see _boot). */
+    this._onOpenExternal = null;
     this._booting = false;
     this._destroyed = false;
   }
@@ -115,6 +126,14 @@ export class ElementView extends ViewElement {
       this.removeEventListener('keyup', this._keyHandler);
       this._keyHandler = null;
     }
+    if (this._onInsertText !== null) {
+      this.removeEventListener('insert-text', this._onInsertText);
+      this._onInsertText = null;
+    }
+    if (this._onOpenExternal !== null) {
+      this.removeEventListener('open-external', this._onOpenExternal);
+      this._onOpenExternal = null;
+    }
     if (this._inner !== null) {
       try { this._inner.remove(); } catch { /* already detached */ }
       this._inner = null;
@@ -180,11 +199,53 @@ export class ElementView extends ViewElement {
     this._inner = inner;
     this.append(inner);
     this._installKeyGrab(view.keyboard ?? 'grab');
+    this._installInsertChannel();
+    this._installOpenExternalChannel();
 
     const onReady = view.onReady;
     if (onReady && this._options && typeof this._options.deliver === 'function') {
       this._options.deliver(onReady, [inner]);
     }
+  }
+
+  /**
+   * Generic insert-text channel. A hosted element can ask the editor to
+   * insert text into the ACTIVE view by dispatching an `insert-text`
+   * CustomEvent with `detail: { text }` (composed + bubbling, so it
+   * crosses the element's shadow boundary and reaches this wrapper). The
+   * host's `insertText` service drops it into the current buffer.
+   *
+   * Combined with `:no-focus`, the text lands in the *document*, not the
+   * panel — e.g. the bibliography view inserts `\cite{…}` while the
+   * cursor stays in the prose. Bib-agnostic: any element can use it.
+   */
+  _installInsertChannel() {
+    const insert = this._options && this._options.insertText;
+    if (typeof insert !== 'function') return;
+    this._onInsertText = (event) => {
+      const text = event && event.detail && event.detail.text;
+      if (typeof text === 'string' && text !== '') insert(text);
+    };
+    this.addEventListener('insert-text', this._onInsertText);
+  }
+
+  /**
+   * Generic open-external channel. A hosted element can ask the host to
+   * open a resource it can't reach from the renderer sandbox — a file in
+   * its OS default app, say — by dispatching an `open-external`
+   * CustomEvent whose `detail` describes what to open (composed +
+   * bubbling, so it crosses the shadow boundary and reaches this
+   * wrapper). The host's `openExternal` service decides what to do with
+   * it. bib-search uses this to open an entry's PDF on a title click.
+   */
+  _installOpenExternalChannel() {
+    const open = this._options && this._options.openExternal;
+    if (typeof open !== 'function') return;
+    this._onOpenExternal = (event) => {
+      const detail = event && event.detail;
+      if (detail && typeof detail === 'object') open(detail);
+    };
+    this.addEventListener('open-external', this._onOpenExternal);
   }
 
   /**

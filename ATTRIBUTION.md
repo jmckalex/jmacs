@@ -83,7 +83,11 @@ build and does not affect the rest of the editor.
 | [citation-js](https://citation.js.org/) — `@citation-js/core` + `plugin-bibtex` + `plugin-csl`; BibTeX/BibLaTeX/CSL-JSON parsing and CSL formatting | 0.7.22 | MIT — **bundles `citeproc` (CPAL-1.0 OR AGPL-3.0-or-later; taken under the AGPL-3.0 arm — see the note above and `licenses/`)** |
 
 Vendored bundles of the last three live at
-`packages/renderer/vendor/{marked,morphdom,citation-js}.esm.js`.
+`packages/renderer/vendor/{marked,morphdom,citation-js}.esm.js`. A second
+copy of the `citation-js` bundle is co-located with the bib-search element
+at `apps/desktop/vendor/bib-search/citation-js.esm.js` (the element is
+self-contained — it bundles its own citation.js); same library, same
+license.
 
 ## Vendored UI assets
 
@@ -93,6 +97,7 @@ Vendored bundles of the last three live at
 | [MathJax](https://www.mathjax.org/) (`tex-svg`) | 3.2.2 | Apache-2.0 | `apps/desktop/vendor/mathjax/` |
 | [Stella](https://stella-emu.github.io/) — Atari 2600 core (WebAssembly) behind the optional `atari` element-view ⚠️ *see the Stella note above* | vendored bundle | **GPL-2.0** | `apps/desktop/vendor/stella/` |
 | Oystron © 1997 Piero Cavina — freeware demo ROM (ship paired with its `.txt`) | — | Freeware | `apps/desktop/vendor/stella/oystron.{bin,txt}` |
+| `bib-search` — the bibliography search panel (`M-x bib-search`); adapted from J. McKenzie Alexander's component, self-contained (bundles citation.js — see *Application libraries*) | — | MIT | `apps/desktop/vendor/bib-search/` |
 | [web-tree-sitter](https://tree-sitter.github.io/tree-sitter/) — the tree-sitter runtime + its wasm | 0.26.9 | MIT | `packages/renderer/vendor/web-tree-sitter.*` |
 
 ## Syntax grammars (tree-sitter `.wasm`, in `packages/renderer/vendor/`)

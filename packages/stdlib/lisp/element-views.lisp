@@ -51,6 +51,10 @@
 ;;              'top (natural size, top-aligned, scrolls)
 ;;   :keyboard  'grab (the element owns the keyboard while focused — the
 ;;              default), 'share (let C-/M-/A- chords through), or 'off
+;;   :no-focus  #t makes this a helper view that never grabs the editor's
+;;              focus when interacted with — its purpose is to act on the
+;;              *active* view (e.g. a bibliography panel that inserts into
+;;              the document). Default #f.
 ;;   :on-ready  optional (lambda (el) …) run once the element is created
 ;;
 ;; Expands to a `register-element-view!` plus a `defcommand` whose body

@@ -149,6 +149,28 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.sendSync('file:read-text-sync', { path }),
 
   /**
+   * Vouch for a specific file so the `__host__` route will serve it,
+   * allowing its real directory (symlinks resolved). Used before fetching
+   * a file the editor was explicitly pointed at whose real location lies
+   * outside an already-opened folder (e.g. bib-search's symlinked
+   * bibliography). Returns true.
+   * @param {string} path
+   * @returns {boolean}
+   */
+  allowHostFile: (path) =>
+    ipcRenderer.sendSync('host:allow-file-sync', { path }),
+
+  /**
+   * Resolve a BibDesk `Bdsk-File-N` value (base64) to its real attachment
+   * and open it in the OS default app. The bookmark is resolved natively
+   * (macOS only); `bibPath` anchors the `relativePath` fallback. Used by
+   * bib-search to open an entry's PDF on a title click.
+   * @param {{ bdsk: string, bibPath?: string }} payload
+   * @returns {Promise<{ ok: boolean, path?: string, error?: string }>}
+   */
+  bdskOpen: (payload) => ipcRenderer.invoke('bdsk:open', payload),
+
+  /**
    * Synchronous existence check. Returns `true` when `path` (tilde-
    * expanded host-side) names an existing file or directory, `false`
    * otherwise. The Lisp interpreter is synchronous, so the

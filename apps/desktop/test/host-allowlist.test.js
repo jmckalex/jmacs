@@ -13,6 +13,7 @@ import { join } from 'node:path';
 
 import {
   allowHostDir,
+  allowHostFile,
   hostPathAllowed,
   pathUnderAnyRoot,
   resetHostRootsForTest,
@@ -95,4 +96,38 @@ test('a missing path is refused', async () => {
     allowHostDir(dir);
     assert.equal(hostPathAllowed(join(dir, 'nope.txt')), false);
   });
+});
+
+test('allowHostFile reaches a symlink whose real target is outside an allowed dir', async () => {
+  // The bib-search case: a document folder holds `bibliography.bib`, a
+  // symlink to a shared `.bib` in a never-opened folder. By default the
+  // symlink escapes (refused); allowHostFile vouches for that one file.
+  resetHostRootsForTest();
+  const docDir = realpathSync(await mkdtemp(join(tmpdir(), 'jmacs-doc-')));
+  const extDir = realpathSync(await mkdtemp(join(tmpdir(), 'jmacs-ext-')));
+  try {
+    await writeFile(join(extDir, 'refs.bib'), '@book{a,title={X}}');
+    const link = join(docDir, 'bibliography.bib');
+    try {
+      await symlink(join(extDir, 'refs.bib'), link);
+    } catch {
+      return; // symlink unsupported here — skip
+    }
+    allowHostDir(docDir);
+    // Baseline: the symlink's real path is outside docDir → refused.
+    assert.equal(hostPathAllowed(link), false, 'symlink-out blocked by default');
+    // Vouch for the file → its real dir is allowed → now served.
+    allowHostFile(link);
+    assert.equal(hostPathAllowed(link), true, 'allowHostFile reaches the target');
+    // The security default still holds for an unrelated escape.
+    const evil = join(docDir, 'evil');
+    try {
+      await symlink('/etc/passwd', evil);
+      assert.equal(hostPathAllowed(evil), false, 'other escapes still blocked');
+    } catch { /* symlink unsupported — the main assertions already ran */ }
+  } finally {
+    resetHostRootsForTest();
+    await rm(docDir, { recursive: true, force: true });
+    await rm(extDir, { recursive: true, force: true });
+  }
 });

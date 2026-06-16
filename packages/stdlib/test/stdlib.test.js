@@ -4266,6 +4266,7 @@ test('define-element-view registers a spec with the given fields', async () => {
       :tag "stella-emulator"
       :attrs '((controls))
       :fit 'fill
+      :no-focus #t
       :keyboard 'grab)
   `);
   assert.equal(
@@ -4287,6 +4288,11 @@ test('define-element-view registers a spec with the given fields', async () => {
   // :fit rides through the spec as a symbol (the host normalises it).
   const fit = interpreter.evaluate(`(get (element-view-spec 'test-atari) :fit nil)`);
   assert.equal(fit && fit.name, 'fill');
+  // :no-focus rides through as a boolean (the host reads it === true).
+  assert.equal(
+    interpreter.evaluate(`(get (element-view-spec 'test-atari) :no-focus nil)`),
+    true
+  );
 });
 
 test('define-element-view defines a command named for the kind', async () => {
@@ -4310,6 +4316,27 @@ test('define-element-view :title defaults to the tag', async () => {
   assert.equal(
     interpreter.evaluate(`(get (element-view-spec 'test-bar) :tag nil)`),
     'x-bar'
+  );
+});
+
+test('bib-search reads a `Bibliography:` metadata-header line', async () => {
+  const { interpreter } = await editor();
+  // A header line names the document's bibliography (value trimmed).
+  assert.equal(
+    interpreter.evaluate(
+      `(-bib-search-scan-lines (list "Title: Foo" "Bibliography: refs/main.bib" "" "body") 0)`
+    ),
+    'refs/main.bib'
+  );
+  // The key is case-insensitive; surrounding whitespace is trimmed.
+  assert.equal(
+    interpreter.evaluate(`(-bib-search-scan-lines (list "bibliography:   x.bib  ") 0)`),
+    'x.bib'
+  );
+  // No such header → nil (caller falls back to *citation-bib-path* / sample).
+  assert.equal(
+    interpreter.evaluate(`(-bib-search-scan-lines (list "no" "header here") 0)`),
+    NIL
   );
 });
 
