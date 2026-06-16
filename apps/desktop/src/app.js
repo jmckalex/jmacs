@@ -1178,6 +1178,45 @@ function splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, view) {
   return { first, second };
 }
 
+/** Open VIEW (a `:no-focus` helper panel — bib-search, a HUD, …) in a new
+ *  split beside the focused pane, WITHOUT moving the editing focus or
+ *  touching the document's visibility. Unlike `splitPaneAtLeafWith` this
+ *  deliberately skips `setCurrentPaneId` (the panel is :no-focus, so the
+ *  document keeps Godot's currentView) and `hideInactiveRendererViews`
+ *  (which would blank the still-focused document's leaf-direct text-view —
+ *  the VIEWS.md hazard). The panel mounts to the document's right; the
+ *  document keeps its DOM focus too (we don't focus the panel). */
+function openNoFocusViewInSplit(view) {
+  const focused = currentPane();
+  if (!focused || focused.kind !== 'leaf') {
+    // No leaf to split against (e.g. a bare tabline root) — fall back to a
+    // plain switch so the panel at least opens somewhere.
+    const idx = views.indexOf(view);
+    if (idx >= 0) switchToViewIndex(idx);
+    return;
+  }
+  const targetLeaf = focused;
+  const newLeaf = createLeafPane({ view });
+  // Side-by-side: the document (first child) keeps the larger share; the
+  // panel (second child) sits narrower on the right.
+  const split = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: 0.64,
+    first: targetLeaf,
+    second: newLeaf,
+  });
+  rootPane = replacePane(rootPane, targetLeaf, split);
+  syncPaneElements();
+  // Mount the panel's element in its new pane — but do NOT focus it, so the
+  // document keeps DOM focus (currentPaneId is untouched → currentView too).
+  const paneEl = paneElements.get(newLeaf.id);
+  const el = ensureElementHostForView(view, paneEl);
+  if (el) el.style.display = '';
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+}
+
 /** Common implementation of split-horizontal! / split-vertical!.
  *  Replaces TARGET (a leaf) with a split node; a freshly-created leaf
  *  is its sibling, holding a *placeholder* chooser. With SIDE =
@@ -3393,6 +3432,20 @@ const interpreter = createInterpreter({
         titleRaw === undefined || titleRaw === null || titleRaw === NIL
           ? tag
           : lispText(titleRaw);
+      // A :no-focus panel (e.g. bib-search) opens BESIDE the document in
+      // its own split, keeping the editing focus on the document — and
+      // reuses an already-open instance of the same tag rather than
+      // stacking splits. A normal element-view replaces the focused pane.
+      if (extras.noFocus) {
+        const open = views.find((v) =>
+          v && v.kind === 'element' && v.tag === extras.tag &&
+          leafPanes(rootPane).some((l) => l.view === v));
+        if (open) return NIL; // already showing
+        const view = createView({ kind: 'element', name, extras });
+        views.push(view);
+        openNoFocusViewInSplit(view);
+        return NIL;
+      }
       views.push(createView({ kind: 'element', name, extras }));
       switchToViewIndex(views.length - 1);
       return NIL;
