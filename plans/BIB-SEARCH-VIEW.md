@@ -43,6 +43,28 @@ bib-search:
 So the bib element fires `insert-text` with `\cite{k1,k2}` and is done. Zero
 bib-specific Lisp or host code.
 
+## Progress (branch `bib-search-view`)
+
+- ✅ **Element + registration** (`4267e39`) — self-contained `<bib-search>`,
+  citation.js bundled, inserts `\cite{…}`.
+- ✅ **Part 1 — open-in-split** (`fcf7729`) — `:no-focus` views open beside the
+  document (`openNoFocusViewInSplit`), cursor stays put; reuse, no stacking.
+- ✅ **Part 2 — auto-load the document's bibliography** (`063e8b2`) — LaTeX via
+  RefTeX (`reftex-document` + `-reftex-bib-abs-paths`); markdown/jmarkdown via a
+  `Bibliography: path` metadata-header line; else `*citation-bib-path*` / sample.
+  New `host-file-url` primitive serves the `.bib` (under the doc's allowlisted
+  dir); a custom `bib-search` command shadows the generated one.
+- ⏳ **Part 3 — "Load a different bibliography"** (not built). Two pieces:
+  - *Command* `bib-search-load` (renderer-side, testable): `minibuffer-read` a
+    `.bib` path → `host-file-url` → set the open panel's `src`. Needs a small
+    `ElementView.setInnerAttribute` + a host primitive `element-view-set-attr!`
+    (find the open view of a tag, set its inner element's attribute).
+  - *View-menu submenu* (main-process, relaunch-only): a "Load Bibliography…"
+    item present only when a bib-search view exists. `menu.js`'s `buildAppMenu`
+    gains a conditional View item; the renderer must re-push the menu on view
+    changes (`notifyViewsChanged`) carrying a "bib-search present" flag. This is
+    the fragile, native-menu part — worth its own focused pass.
+
 ## Godot side — DONE (both generic, reusable)
 
 1. **`:no-focus`** (commit `6b511f9`) — a `noFocus` view never becomes the active
