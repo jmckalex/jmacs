@@ -139,6 +139,121 @@ function entryFromCsl(e, index) {
   };
 }
 
+/** Split BibTeX TEXT into `{type, source}` entries, brace-balanced so a
+ *  `{…}` field value doesn't end the entry early. (Mirrors Godot's
+ *  citation.js `splitBibtexEntries`.) */
+function splitBibEntries(text) {
+  const out = [];
+  if (typeof text !== 'string') return out;
+  const re = /@(\w+)\s*\{/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const type = m[1].toLowerCase();
+    let depth = 0;
+    let i = re.lastIndex - 1; // on the opening brace
+    for (; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') { depth -= 1; if (depth === 0) { i += 1; break; } }
+    }
+    out.push({ type, source: text.slice(m.index, i) });
+    re.lastIndex = i;
+  }
+  return out;
+}
+
+/** One BibTeX field's raw value (brace- or quote-delimited, nesting-aware),
+ *  or '' if absent. */
+function bibField(source, name) {
+  const m = new RegExp(name + '\\s*=\\s*', 'i').exec(source);
+  if (!m) return '';
+  let i = m.index + m[0].length;
+  const open = source[i];
+  if (open === '{') {
+    let depth = 0;
+    const start = i + 1;
+    for (; i < source.length; i += 1) {
+      if (source[i] === '{') depth += 1;
+      else if (source[i] === '}') { depth -= 1; if (depth === 0) break; }
+    }
+    return source.slice(start, i);
+  }
+  if (open === '"') {
+    const start = i + 1;
+    const end = source.indexOf('"', start);
+    return end < 0 ? '' : source.slice(start, end);
+  }
+  const bare = /^[^,}\n]+/.exec(source.slice(i));
+  return bare ? bare[0].trim() : '';
+}
+
+/** Strip TeX commands/braces for plain-text display: `Fran{\c}ois` →
+ *  `Franois`, `{\"O}strom` → `Ostrom`. Imperfect, but readable. */
+function cleanTeX(s) {
+  return String(s)
+    .replace(/\\[a-zA-Z]+/g, '')
+    .replace(/[{}\\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Best-effort record for a BibTeX entry citation.js could not parse (e.g.
+ *  a malformed accent). The cite KEY is always recovered so the entry stays
+ *  searchable and citable; author/title/year are cleaned raw fields. */
+function fallbackEntry(source, index) {
+  const km = source.match(/@\w+\s*\{\s*([^,\s}]+)/);
+  if (!km) return null;
+  const authorRaw = bibField(source, 'author') || bibField(source, 'editor');
+  const author = cleanTeX(authorRaw).split(/\s+and\s+/i)[0] || '';
+  const title = cleanTeX(bibField(source, 'title'));
+  const year = (bibField(source, 'year').match(/\d{4}/) || [''])[0];
+  return {
+    index,
+    key: km[1],
+    authorStr: author,
+    year,
+    title,
+    search: `${km[1]} ${cleanTeX(authorRaw)} ${year} ${title}`.toLowerCase(),
+  };
+}
+
+/** Parse a bibliography (any citation.js format) into display/search
+ *  records, TOLERANT of entries citation.js can't handle. Fast path: the
+ *  whole file at once. On failure: parse each BibTeX entry alone (with
+ *  `@string`/`@preamble` macros prepended), and for entries that still
+ *  fail, keep the cite key via `fallbackEntry` so nothing becomes
+ *  un-citable. Returns the records and how many were salvaged loosely. */
+function parseBibliography(text) {
+  try {
+    return { entries: new Cite(text).data.map(entryFromCsl), loose: 0 };
+  } catch {
+    // one bad entry took down the whole file — fall back to entry-by-entry
+  }
+  const raw = splitBibEntries(text);
+  const headers = raw
+    .filter((e) => e.type === 'string' || e.type === 'preamble')
+    .map((e) => e.source)
+    .join('\n');
+  const entries = [];
+  let loose = 0;
+  let index = 0;
+  for (const e of raw) {
+    if (e.type === 'string' || e.type === 'preamble' || e.type === 'comment') {
+      continue;
+    }
+    try {
+      for (const d of new Cite(`${headers}\n${e.source}`).data) {
+        entries.push(entryFromCsl(d, index));
+        index += 1;
+      }
+    } catch {
+      const fb = fallbackEntry(e.source, index);
+      if (fb) { entries.push(fb); index += 1; loose += 1; }
+    }
+  }
+  return { entries, loose };
+}
+
 /** The text to insert for MACRO over KEYS. `@` is pandoc/jmd `[@a; @b]`; the
  *  rest are LaTeX `\macro{a,b}`. */
 export function citeString(macro, keys) {
@@ -167,6 +282,7 @@ class BibSearch extends HTMLElement {
     this.entries = [];
     this.filtered = [];
     this.selected = new Set();   // selected bib keys (stable across filtering)
+    this._loose = 0;             // entries salvaged loosely (citation.js couldn't parse)
     this._debounce = null;
   }
 
@@ -260,13 +376,15 @@ class BibSearch extends HTMLElement {
       const resp = await fetch(src);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const text = await resp.text();
-      const data = new Cite(text).data;            // citation.js auto-detects the format
-      this.entries = data.map(entryFromCsl);
+      // Tolerant parse: one malformed entry must not lose the whole file,
+      // and every entry stays citable even if citation.js can't read it.
+      const { entries, loose } = parseBibliography(text);
+      this.entries = entries;
+      this._loose = loose;
       this.selected.clear();
       this._applyFilter();
-      this._status.textContent = `${this.entries.length} entries`;
       this.dispatchEvent(new CustomEvent('bib-loaded', {
-        detail: { count: this.entries.length }, bubbles: true, composed: true,
+        detail: { count: entries.length, loose }, bubbles: true, composed: true,
       }));
     } catch (error) {
       const msg = error && error.message ? error.message : String(error);
@@ -283,9 +401,10 @@ class BibSearch extends HTMLElement {
     this.filtered = this.entries.filter((e) => entryMatches(e, q));
     this._renderList();
     if (this._status && this.entries.length) {
+      const loose = this._loose ? ` (${this._loose} loose)` : '';
       this._status.textContent = q.trim()
         ? `${this.filtered.length} / ${this.entries.length}`
-        : `${this.entries.length} entries`;
+        : `${this.entries.length} entries${loose}`;
     }
     this._syncAction();
   }
