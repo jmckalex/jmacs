@@ -43,6 +43,16 @@ const ZOOM_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 /** Gap (px) between adjacent page placeholders inside the viewport. */
 const PAGE_GAP = 12;
 
+/** Multiply an element's pixel `width`/`height` styles by `ratio`. Used for
+ *  live pinch-zoom feedback: the existing bitmap is CSS-stretched as the
+ *  gesture moves, then a crisp re-rasterise replaces it when it settles. */
+function scalePxSize(el, ratio) {
+  const w = Number.parseFloat(el.style.width);
+  const h = Number.parseFloat(el.style.height);
+  if (w) el.style.width = `${w * ratio}px`;
+  if (h) el.style.height = `${h * ratio}px`;
+}
+
 /**
  * Whether NAME names a file the host should open as a PDF buffer. The
  * suffix check mirrors `mediaKindFor` in `apps/desktop/src/files.js`;
@@ -168,6 +178,8 @@ export class PdfView extends ViewElement {
     this._currentPage = 1;
     /** Re-resolve scale on window resize when in a fit mode. */
     this._resizeObserver = null;
+    /** Debounce token for the crisp re-rasterise after a pinch-zoom. */
+    this._pinchTimer = null;
     /** Debounce token for find input. */
     this._findDebounce = 0;
     /** `<mark>` elements currently highlighting find matches on the
@@ -448,6 +460,18 @@ export class PdfView extends ViewElement {
     });
 
     viewport.addEventListener('scroll', () => this._updateCurrentPageFromScroll());
+
+    // Trackpad pinch-to-zoom. Chromium reports a pinch as a `wheel` event
+    // with `ctrlKey` set (the user isn't holding Ctrl — the browser
+    // synthesises it). `passive: false` so the `preventDefault` in
+    // `_onPinch` can suppress Chromium's own page-zoom.
+    viewport.addEventListener(
+      'wheel',
+      (event) => {
+        if (event.ctrlKey) this._onPinch(event);
+      },
+      { passive: false },
+    );
 
     // Outer keydown: forward chord keys through onKey unless the find
     // input or page input has focus (typing into them must not fire
@@ -844,6 +868,68 @@ export class PdfView extends ViewElement {
       const rect = entry.container.getBoundingClientRect();
       const vRect = /** @type {HTMLDivElement} */ (this._viewport).getBoundingClientRect();
       if (rect.bottom >= vRect.top - 200 && rect.top <= vRect.bottom + 200) {
+        this._renderPage(entry);
+      }
+    }
+  }
+
+  /** Continuous, cursor-anchored pinch-zoom. Each pinch `wheel` event
+   *  CSS-stretches every page (and its rendered canvas/text layer) by the
+   *  incremental ratio for instant feedback, anchors the point under the
+   *  cursor, and schedules a crisp re-rasterise once the gesture settles.
+   *  Reuses the existing render path — no layout restructuring. */
+  _onPinch(event) {
+    event.preventDefault();
+    if (this._pdfDoc === null || this._pages.length === 0) return;
+
+    const prev = this._scale || 1;
+    // Exponential mapping → zoom feels proportional regardless of pinch
+    // speed; clamp to a sane range (a bit beyond the preset extremes).
+    const factor = Math.exp(-event.deltaY * 0.01);
+    const next = Math.max(0.2, Math.min(8, prev * factor));
+    const ratio = next / prev;
+    if (Math.abs(ratio - 1) < 1e-4) return;
+
+    this._scale = next;
+    this._fitMode = next;
+
+    // Live feedback: stretch the existing (old-scale) bitmaps.
+    for (const entry of this._pages) {
+      scalePxSize(entry.container, ratio);
+      if (entry.canvas !== null) scalePxSize(entry.canvas, ratio);
+      if (entry.textLayer !== null) {
+        scalePxSize(entry.textLayer, ratio);
+        entry.textLayer.style.setProperty('--scale-factor', String(next));
+      }
+    }
+
+    // Keep the document point under the cursor fixed (scrollHeight has
+    // already grown/shrunk from the size writes above).
+    const viewport = /** @type {HTMLDivElement} */ (this._viewport);
+    const rect = viewport.getBoundingClientRect();
+    const fx = event.clientX - rect.left;
+    const fy = event.clientY - rect.top;
+    viewport.scrollTop = (viewport.scrollTop + fy) * ratio - fy;
+    viewport.scrollLeft = (viewport.scrollLeft + fx) * ratio - fx;
+
+    clearTimeout(this._pinchTimer);
+    this._pinchTimer = /** @type {*} */ (setTimeout(() => this._settlePinch(), 140));
+  }
+
+  /** After a pinch settles: re-rasterise the visible pages crisply at the
+   *  final scale, and reflect it in the toolbar + persisted state. */
+  _settlePinch() {
+    this._pinchTimer = null;
+    // Mark every page dirty so it re-renders at the new scale (visible now,
+    // off-screen pages lazily as they scroll in).
+    for (const entry of this._pages) entry.scale = 0;
+    this._syncZoomSelect();
+    this._persistBufferState();
+    const viewport = /** @type {HTMLDivElement} */ (this._viewport);
+    const vRect = viewport.getBoundingClientRect();
+    for (const entry of this._pages) {
+      const r = entry.container.getBoundingClientRect();
+      if (r.bottom >= vRect.top - 200 && r.top <= vRect.bottom + 200) {
         this._renderPage(entry);
       }
     }
