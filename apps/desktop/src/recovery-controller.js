@@ -81,6 +81,18 @@ export function createRecovery({
 }) {
   const keyFor = makeKeyer();
   let timer = null;
+  // The tail of the snapshot-pass promise chain. `clear()` awaits it so it
+  // never removes the recovery dir while an atomic write into that dir is
+  // still mid-flight — the clear-vs-write race that left a torn `rename`
+  // (ENOENT) on a clean quit. `closed` latches on `clear()`: a clean quit
+  // discards snapshots, so no pass may write after it (and an in-flight
+  // pass stops at its next buffer). `running` is true while a pass is
+  // actually writing — it lets writeAll() run synchronously when idle
+  // (so the leading-edge snapshot still hits disk in the same tick) yet
+  // chain when a pass is already in flight.
+  let inFlight = Promise.resolve();
+  let closed = false;
+  let running = false;
 
   /** The recovery record for one buffer. */
   function recordFor(buffer) {
@@ -99,22 +111,43 @@ export function createRecovery({
     };
   }
 
-  /** Snapshot every dirty buffer. A no-op when autosave is disabled.
-   *  Per-buffer failures are non-fatal — the next tick (or flush)
-   *  retries. */
-  async function writeAll() {
-    // NB: timer management lives in save()/flush()/the trailing callback,
-    // NOT here — clearing `timer` from writeAll would clobber the timer
-    // a leading-edge save() just set, making every edit look like a new
-    // burst.
-    if (!isEnabled()) return;
-    for (const buffer of [...getDirtyBuffers()]) {
-      try {
-        await host.writeRecovery(recordFor(buffer));
-      } catch {
-        // A failed snapshot write must never break editing.
+  /** Snapshot every dirty buffer once. A no-op when autosave is disabled
+   *  or the controller is closed (a clean quit). Per-buffer failures are
+   *  non-fatal — the next tick (or flush) retries. */
+  async function snapshotDirty() {
+    if (!isEnabled() || closed) return;
+    running = true;
+    try {
+      for (const buffer of [...getDirtyBuffers()]) {
+        // A clear() (clean quit) can land mid-loop: stop the moment it
+        // does, so we never re-create a snapshot the quit is in the act of
+        // discarding (which would resurface as a spurious *Recover* offer).
+        if (closed) return;
+        try {
+          await host.writeRecovery(recordFor(buffer));
+        } catch {
+          // A failed snapshot write must never break editing.
+        }
       }
+    } finally {
+      running = false;
     }
+  }
+
+  /** Run a snapshot pass and record it as the in-flight one (so `clear()`
+   *  can await it). When idle, run synchronously — the leading-edge
+   *  snapshot must reach the host in the same tick, before any crash. When
+   *  a pass is already running, chain after it so passes never interleave
+   *  and `clear()` only has to await this single tail. Returns that promise.
+   *
+   *  NB: timer management lives in save()/flush()/the trailing callback,
+   *  NOT here — clearing `timer` here would clobber the timer a
+   *  leading-edge save() just set, making every edit look like a new burst. */
+  function writeAll() {
+    inFlight = running
+      ? inFlight.catch(() => {}).then(snapshotDirty)
+      : snapshotDirty();
+    return inFlight;
   }
 
   /** Note an edit. **Leading + trailing**: the first edit of a burst
@@ -125,7 +158,7 @@ export function createRecovery({
    *  coalesce into one trailing write of the final state when it settles.
    *  A no-op when autosave is disabled. */
   function save() {
-    if (!isEnabled()) return;
+    if (!isEnabled() || closed) return;
     const burstStart = timer === null;
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(() => {
@@ -157,11 +190,22 @@ export function createRecovery({
   }
 
   /** Remove every snapshot (on a clean confirmed quit — no crash, so
-   *  nothing to recover). Cancels any pending debounced write first. */
+   *  nothing to recover). Latches `closed` so no further (and no in-
+   *  flight) snapshot pass writes after this, cancels any pending
+   *  debounce, then **waits for any in-flight write to finish its atomic
+   *  rename** before clearing — so `clearRecovery()`'s recursive `rm` can
+   *  never delete the recovery dir out from under a live write (the
+   *  quit-time ENOENT race). */
   async function clear() {
+    closed = true;
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
+    }
+    try {
+      await inFlight;
+    } catch {
+      // A failed in-flight write is non-fatal — we're discarding anyway.
     }
     try {
       await host.clearRecovery();
