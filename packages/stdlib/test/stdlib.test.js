@@ -4340,3 +4340,20 @@ test('bib-search reads a `Bibliography:` metadata-header line', async () => {
   );
 });
 
+test('directory-tree and directory-columns are registered M-x commands', async () => {
+  // Regression: these were defined as plain `(define (name path) …)`
+  // functions, so they opened from the REPL but never appeared in M-x.
+  // They are now `defcommand`s and must be in the command registry.
+  const { interpreter } = await editor();
+  assert.equal(
+    interpreter.evaluate("(command-registered? 'directory-tree)"),
+    true,
+    'directory-tree is M-x accessible'
+  );
+  assert.equal(
+    interpreter.evaluate("(command-registered? 'directory-columns)"),
+    true,
+    'directory-columns is M-x accessible'
+  );
+});
+
