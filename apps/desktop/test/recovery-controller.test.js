@@ -167,3 +167,67 @@ test('a write failure is swallowed — editing is never broken', async () => {
   });
   await assert.doesNotReject(rec.flush());
 });
+
+test('clear() waits for an in-flight write before wiping (no clear-vs-write race)', async () => {
+  // Reproduces the quit-time ENOENT: a snapshot write is mid-flight (as an
+  // atomic write is between its tmp-write and rename) when a clean quit
+  // fires clear(). clear() must NOT remove the recovery dir until that
+  // write has finished — otherwise the rename lands on a deleted dir.
+  const order = [];
+  let releaseWrite;
+  const host = {
+    writeRecovery: () => {
+      order.push('write:start');
+      return new Promise((resolve) => {
+        releaseWrite = () => {
+          order.push('write:end');
+          resolve();
+        };
+      });
+    },
+    deleteRecovery: async () => {},
+    clearRecovery: async () => {
+      order.push('clear');
+    },
+  };
+  const rec = createRecovery({
+    getDirtyBuffers: () => new Set([buf({ text: 'x', filePath: '/x/a', name: 'a' })]),
+    host,
+    now: () => 1,
+  });
+  rec.flush(); // starts a write that hangs mid-flight
+  await wait(0);
+  assert.deepEqual(order, ['write:start'], 'a snapshot write is in flight');
+  const cleared = rec.clear(); // clean quit clears while the write is live
+  await wait(0);
+  assert.deepEqual(
+    order,
+    ['write:start'],
+    'clear() waits — no clearRecovery while the write is mid-flight'
+  );
+  releaseWrite(); // the write finishes its rename
+  await cleared;
+  assert.deepEqual(
+    order,
+    ['write:start', 'write:end', 'clear'],
+    'the in-flight write completes, then clear wipes'
+  );
+});
+
+test('no snapshot is written after a clean-quit clear() (nothing resurfaces)', async () => {
+  const host = fakeHost();
+  const rec = createRecovery({
+    getDirtyBuffers: () => new Set([buf({ text: 'x' })]),
+    host,
+    now: () => 1,
+    debounceMs: 5,
+  });
+  await rec.clear();
+  assert.equal(host.cleared(), 1);
+  // A late save/flush (e.g. a blur racing teardown) must be a no-op, so a
+  // discarded snapshot can't reappear and trigger a spurious *Recover*.
+  rec.save();
+  await rec.flush();
+  await wait(20);
+  assert.equal(host.writes.length, 0, 'a closed controller writes nothing further');
+});
