@@ -1,0 +1,59 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a444f"/>
+      <stop offset="0.55" stop-color="#303841"/>
+      <stop offset="1" stop-color="#212830"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.44" r="0.6">
+      <stop offset="0" stop-color="#fac863" stop-opacity="0.34"/>
+      <stop offset="0.5" stop-color="#f99157" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#f99157" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="tree" gradientUnits="userSpaceOnUse" x1="0" y1="850" x2="0" y2="350">
+      <stop offset="0" stop-color="#f47b48"/>
+      <stop offset="0.5" stop-color="#fac863"/>
+      <stop offset="1" stop-color="#ffe7b0"/>
+    </linearGradient>
+    <radialGradient id="moon" cx="0.45" cy="0.4" r="0.7">
+      <stop offset="0" stop-color="#fff6dd"/>
+      <stop offset="1" stop-color="#f7c45e"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#glow)"/>
+
+  <!-- moon -->
+  <circle cx="726" cy="296" r="58" fill="url(#moon)" opacity="0.95"/>
+
+  <!-- horizon / the country road -->
+  <path d="M196 840 H828" stroke="#fac863" stroke-opacity="0.32" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- the bare tree -->
+  <g stroke="url(#tree)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- trunk: flat (butt) base so it sits ON the road, no drip -->
+    <path d="M500 840 C492 762 508 700 500 628" stroke-width="36" stroke-linecap="butt"/>
+    <!-- left limb -->
+    <path d="M500 640 C456 582 432 542 404 488" stroke-width="22"/>
+    <path d="M414 502 C390 472 372 452 350 430" stroke-width="13"/>
+    <path d="M404 490 C405 454 401 432 392 402" stroke-width="12"/>
+    <!-- right limb -->
+    <path d="M502 638 C548 590 578 558 612 508" stroke-width="22"/>
+    <path d="M600 522 C636 500 660 488 690 472" stroke-width="13"/>
+    <path d="M612 508 C616 472 612 450 606 420" stroke-width="12"/>
+    <!-- centre limb -->
+    <path d="M501 628 C505 562 500 522 498 472" stroke-width="17"/>
+    <path d="M498 474 C476 444 462 428 444 406" stroke-width="11"/>
+    <path d="M500 480 C522 450 540 434 560 416" stroke-width="11"/>
+    <!-- fine tips -->
+    <g stroke-width="7">
+      <path d="M350 430 C340 416 332 406 322 396"/>
+      <path d="M392 402 C387 388 384 378 379 368"/>
+      <path d="M690 472 C708 458 718 450 732 440"/>
+      <path d="M606 420 C604 404 602 394 599 382"/>
+      <path d="M444 406 C434 392 428 382 421 372"/>
+      <path d="M560 416 C572 400 580 390 589 380"/>
+    </g>
+  </g>
+</svg>

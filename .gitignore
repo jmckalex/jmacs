@@ -10,6 +10,9 @@ node_modules/
 # Build outputs
 dist/
 build/
+# …but apps/desktop/build/ holds electron-builder *resources* (the app
+# icon, entitlements) — tracked, not generated output.
+!apps/desktop/build/
 out/
 .vite/
 

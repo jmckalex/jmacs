@@ -1,0 +1,23 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a444f"/>
+      <stop offset="1" stop-color="#222931"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="200" fill="url(#bg)"/>
+
+  <!-- bold moon, no glow — survives downscaling -->
+  <circle cx="726" cy="286" r="96" fill="#ffd877"/>
+
+  <!-- chunky bare tree: trunk + four bold limbs, no fine twigs -->
+  <g stroke="#f7a24a" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M500 858 L500 560" stroke-width="78" stroke-linecap="butt"/>
+    <path d="M500 596 L356 426" stroke-width="56"/>
+    <path d="M500 596 L646 452" stroke-width="56"/>
+    <path d="M500 560 L500 388" stroke-width="50"/>
+    <path d="M438 520 L362 600" stroke-width="40"/>
+    <path d="M566 512 L648 590" stroke-width="40"/>
+  </g>
+</svg>
