@@ -19,7 +19,7 @@
 ;; --- find-file settings ------------------------------------------------
 
 (defcustom *find-file-case-sensitive* #f :boolean
-  :group 'jmacs
+  :group 'godot
   :doc "When #t, find-file's TAB completion matches filenames with
         case taken into account; when #f (the default), the prefix
         matches regardless of case. Completion always uses the

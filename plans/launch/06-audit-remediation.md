@@ -30,7 +30,11 @@ Sibling plans: [01 Packaging](01-packaging-and-first-run.md) ·
 ### Decision gates still open (need the architect, don't block Phase A)
 1. Recovery-file location (recommend `userData`) and native Save/Don't-Save/Cancel dialog vs the current renderer `window.confirm` (Plan 03 / branch).
 2. Is `github.com/jmckalex/jmacs` already public? Governs urgency of license/governance gaps (Plan 05).
-3. Final `appId` reverse-DNS string for "Godot" (e.g. `dev.jmckalex.godot`) — needed before C4.
+3. ✅ **RESOLVED 2026-06-16** — `appId` is **`com.godot.editor`**, mirroring the
+   sibling app Folio's `com.<product>.<descriptor>` structure (`com.folio.taskmanager`).
+   Distinct from the Godot game engine's `org.godotengine.godot`. Folio also keeps
+   electron-builder config **inline in `package.json`** under a `build` key (no separate
+   `electron-builder.yml`) — adopt that convention in C3, and set `productName: "Godot"`.
 4. Maintainer model for surge survival (Plan 05).
 5. Launch channel/scope (Plan 04).
 
@@ -203,14 +207,15 @@ Required for Developer ID signing + notarization (B-path chosen).
 - **Acceptance:** Developer ID Application certificate available to the CI signing step.
 
 ### C1 — Rename to "Godot" + product identity *(new on critical path from decision)*
-**P0 · 1 day · branch: `rename-godot` · Plan 01/05**
+**P0 · 1 day · branch: `rename-godot` · Plan 01/05 · ⏳ BUILT — pending live-test + merge (2026-06-16)**
 The rename was deferred; it is now committed and gates the first signed
 build (appId is locked at release).
 - Files: `package.json` + `apps/desktop/package.json` (name/productName), window title (`document.title = "… — editor"`), `INIT_TEMPLATE` comment in `app.js`, `menu.js` branding, an About dialog, `electron-builder` `appId`/`productName`. Keep the `.godot-metadata` sidecar (already on-brand).
 - **Acceptance:** running app shows "Godot" in title bar, About dialog, and OS app menu; `appId` is the finalised reverse-DNS string (decision gate #3); no user-facing "editor"/"jmacs" strings remain (internal `@editor/*` package names may stay).
+- **Done on `rename-godot`:** title bar (`index.html` `<title>` + `.titlebar-name`, `app.js` 3× `document.title`), `INIT_TEMPLATE` ("Godot configuration" / "Godot equivalent of .emacs"), root `package.json` name `jmacs`→`godot`, **`app.setName('Godot')`** in `main.js` (drives the `role:'appMenu'` About/Hide/Quit labels *and* relocates userData → `…/Application Support/Godot`; the dev `init.lisp` was migrated). `appId` (`com.godot.editor`) + `productName` deferred to C3's packaging config (no `electron-builder` config on `main` yet) — recorded in decision gate #3. Internal-only strings deliberately left: `serve.js` `app://editor/` scheme host, `@editor/*` package names, `data-jmacs-doc` doc attrs, `.jmacs-metadata` *legacy* migration path, gnuplot protocol markers.
 
 ### C2 — Version bump
-**P0 · 5 min · branch: `rename-godot` (same) · Plan 01**
+**P0 · 5 min · branch: `rename-godot` (same) · Plan 01 · ✅ DONE on `rename-godot`**
 - Files: root + `apps/desktop` `package.json` `0.0.0` → `0.1.0`.
 - **Acceptance:** built artifacts are named `Godot-0.1.0.*`.
 

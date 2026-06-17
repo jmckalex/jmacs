@@ -91,7 +91,7 @@
 ;; side (packages/renderer/src/math-preview-providers.js).
 
 (defcustom *jmarkdown-math-preview-default* #f :boolean
-  :group 'jmacs
+  :group 'godot
   :doc "When #t, typeset math inline automatically for JMarkdown buffers.
    Off by default — opt in per-buffer with `toggle-jmarkdown-math-preview`,
    or set this in your init / customisation to default it on.")

@@ -2885,7 +2885,7 @@ test('faces-group-model returns the model the customize view consumes', async ()
   const model = listToArray(interpreter.call('faces-group-model'));
   // (title doc parent subgroups face-rows)
   assert.equal(model[0], 'faces');
-  assert.equal(model[2], 'jmacs');
+  assert.equal(model[2], 'godot');
   const rows = listToArray(model[4]);
   assert.ok(rows.length >= 13);
 });
@@ -2920,22 +2920,22 @@ test('reset-face-by-string drops the global override', async () => {
   assert.equal(row[10], 'standard');
 });
 
-test('faces is a registered customize group under jmacs', async () => {
+test('faces is a registered customize group under godot', async () => {
   const { interpreter } = await editor();
   const parent = interpreter.evaluate(
     "(get (get *custom-groups* 'faces {}) :parent nil)"
   );
-  assert.equal(parent && parent.name, 'jmacs');
+  assert.equal(parent && parent.name, 'godot');
 });
 
-test('editing is a registered customize group under jmacs', async () => {
+test('editing is a registered customize group under godot', async () => {
   // Six stdlib settings (indent, system, cite) file under 'editing;
   // without this registration they are invisible to top-down browsing.
   const { interpreter } = await editor();
   const parent = interpreter.evaluate(
     "(get (get *custom-groups* 'editing {}) :parent nil)"
   );
-  assert.equal(parent && parent.name, 'jmacs');
+  assert.equal(parent && parent.name, 'godot');
 });
 
 test('set-face-attribute triggers the saver hook', async () => {

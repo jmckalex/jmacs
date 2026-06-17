@@ -319,7 +319,7 @@
 
 ;; --- the user-facing setting -------------------------------------------
 
-(defgroup 'appearance 'jmacs "Editor appearance.")
+(defgroup 'appearance 'godot "Editor appearance.")
 
 (defcustom *theme* 'dark :choice
   :group 'appearance

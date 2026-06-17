@@ -15,7 +15,7 @@
 ;; --- the setting -------------------------------------------------------
 
 (defcustom *auto-pair* #t :boolean
-  :group 'jmacs
+  :group 'godot
   :doc "Insert the matching bracket or quote when an opener is typed.")
 
 ;; --- the pair table ----------------------------------------------------

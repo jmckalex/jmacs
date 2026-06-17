@@ -72,7 +72,7 @@
 ;; a LaTeX buffer and the LaTeX provider scans it as before.
 
 (defcustom *latex-math-preview-default* #f :boolean
-  :group 'jmacs
+  :group 'godot
   :doc "When #t, typeset math inline automatically for LaTeX buffers.
    Off by default — opt in per-buffer with `toggle-latex-math-preview`,
    or set this in your init / customisation to default it on.")

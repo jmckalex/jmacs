@@ -91,7 +91,7 @@
 (define *markdown-preview-css* (list))
 
 (defcustom *markdown-preview-default-style* #t :boolean
-  :group 'jmacs
+  :group 'godot
   :doc "Link the built-in Markdown-preview stylesheet in the preview iframe. Turn off to let your own *markdown-preview-css* fully control the preview's appearance.")
 
 ;; --- live inline math preview -----------------------------------------
@@ -103,7 +103,7 @@
 ;; (C-c C-p), or globally via the defcustom below.
 
 (defcustom *markdown-math-preview-default* #f :boolean
-  :group 'jmacs
+  :group 'godot
   :doc "When #t, typeset math inline automatically for Markdown buffers.
    Off by default — opt in per-buffer with `toggle-markdown-math-preview`,
    or set this in your init / customisation to default it on.")

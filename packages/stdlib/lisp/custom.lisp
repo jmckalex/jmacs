@@ -26,11 +26,11 @@
         (assoc *custom-groups* name
                (hash-map :name name :parent parent :doc doc))))
 
-(defgroup 'jmacs nil "All jmacs customisation.")
+(defgroup 'godot nil "All Godot customisation.")
 
 ;; Registered here rather than beside its settings because they span
 ;; three files (indent.lisp, system.lisp, cite.lisp), all loaded later.
-(defgroup 'editing 'jmacs "Editing behaviour: indentation, citations, system integration.")
+(defgroup 'editing 'godot "Editing behaviour: indentation, citations, system integration.")
 
 ;; --- the registry ------------------------------------------------------
 
@@ -62,7 +62,7 @@
                              :default default
                              :value value
                              :type type
-                             :group (get opts :group 'jmacs)
+                             :group (get opts :group 'godot)
                              :doc (get opts :doc "")
                              :options (get opts :options nil)
                              :on-change (get opts :on-change nil)))))))
