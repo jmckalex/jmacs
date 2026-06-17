@@ -144,6 +144,10 @@ export class PdfView extends ViewElement {
     this._zoomInBtn = null;
     /** @type {HTMLSelectElement | null} */
     this._zoomSelect = null;
+    /** A transient `<option>` showing the exact percentage at a custom
+     *  (non-preset) zoom — e.g. after a pinch. Removed when a preset/fit
+     *  mode is active. @type {HTMLOptionElement | null} */
+    this._dynamicZoomOption = null;
     /** @type {HTMLInputElement | null} */
     this._findInput = null;
     /** @type {HTMLDivElement | null} */
@@ -835,10 +839,38 @@ export class PdfView extends ViewElement {
     const select = /** @type {HTMLSelectElement} */ (this._zoomSelect);
     if (this._fitMode === 'fit' || this._fitMode === 'width') {
       select.value = this._fitMode;
-    } else {
-      const match = ZOOM_PRESETS.find((s) => Math.abs(s - this._fitMode) < 1e-6);
-      select.value = match !== undefined ? String(match) : String(this._fitMode);
+      this._setDynamicZoomOption(null);
+      return;
     }
+    const match = ZOOM_PRESETS.find((s) => Math.abs(s - this._fitMode) < 1e-6);
+    if (match !== undefined) {
+      this._setDynamicZoomOption(null);
+      select.value = String(match);
+    } else {
+      // A custom scale with no matching preset (e.g. after a pinch): show
+      // its rounded percentage via a transient option so the box isn't blank.
+      this._setDynamicZoomOption(/** @type {number} */ (this._fitMode));
+    }
+  }
+
+  /** Show (or, with `null`, remove) the transient exact-percentage option
+   *  in the zoom select, and select it. Reuses one `<option>` element. */
+  _setDynamicZoomOption(scale) {
+    const select = /** @type {HTMLSelectElement} */ (this._zoomSelect);
+    if (scale === null) {
+      if (this._dynamicZoomOption !== null) {
+        this._dynamicZoomOption.remove();
+        this._dynamicZoomOption = null;
+      }
+      return;
+    }
+    if (this._dynamicZoomOption === null) {
+      this._dynamicZoomOption = this.ownerDocument.createElement('option');
+      select.append(this._dynamicZoomOption);
+    }
+    this._dynamicZoomOption.value = String(scale);
+    this._dynamicZoomOption.textContent = `${Math.round(scale * 100)}%`;
+    select.value = this._dynamicZoomOption.value;
   }
 
   async _relayout() {
@@ -892,6 +924,7 @@ export class PdfView extends ViewElement {
 
     this._scale = next;
     this._fitMode = next;
+    this._syncZoomSelect(); // live percentage in the toolbar as you pinch
 
     // Live feedback: stretch the existing (old-scale) bitmaps.
     for (const entry of this._pages) {
