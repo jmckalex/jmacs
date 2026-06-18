@@ -1919,7 +1919,7 @@ customize-view,
 .customize-back {
   margin-bottom: 10px;
   padding: 2px 8px;
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 4px;
   background: transparent;
   color: var(--accent);
@@ -1938,9 +1938,9 @@ customize-view,
 .customize-group-link {
   text-align: left;
   padding: 6px 10px;
-  border: 1px solid #ffffff14;
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   border-radius: 5px;
-  background: #ffffff08;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
@@ -1948,15 +1948,15 @@ customize-view,
 }
 
 .customize-group-link:hover {
-  background: #ffffff14;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .customize-row {
   margin: 14px 0;
   padding: 12px 14px;
-  border: 1px solid #ffffff12;
+  border: 1px solid color-mix(in srgb, var(--fg) 7%, transparent);
   border-radius: 6px;
-  background: #ffffff06;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
 }
 
 .customize-row-head {
@@ -1977,7 +1977,7 @@ customize-view,
   letter-spacing: 0.04em;
   padding: 1px 6px;
   border-radius: 3px;
-  background: #ffffff14;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
   color: var(--fg-dim);
 }
 
@@ -2013,7 +2013,7 @@ customize-view,
   font-size: 13px;
   color: var(--fg);
   background: var(--bg);
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 4px;
   padding: 3px 6px;
 }
@@ -2042,7 +2042,7 @@ textarea.customize-widget {
 
 .customize-reset {
   padding: 3px 9px;
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 4px;
   background: transparent;
   color: var(--fg-dim);
@@ -2060,14 +2060,14 @@ textarea.customize-widget {
   gap: 8px;
   margin-top: 20px;
   padding-top: 14px;
-  border-top: 1px solid #ffffff14;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .customize-footer button {
   padding: 5px 14px;
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 5px;
-  background: #ffffff0c;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
@@ -2075,7 +2075,7 @@ textarea.customize-widget {
 }
 
 .customize-footer button:hover {
-  background: #ffffff1a;
+  background: color-mix(in srgb, var(--fg) 11%, transparent);
 }
 
 /* --- customize: face rows --------------------------------------------- */
@@ -2084,7 +2084,7 @@ textarea.customize-widget {
  * grid below the live preview span. */
 
 .customize-face-row {
-  border-left: 2px solid #ffffff14;
+  border-left: 2px solid color-mix(in srgb, var(--fg) 8%, transparent);
   padding-left: 10px;
 }
 
@@ -2120,8 +2120,8 @@ textarea.customize-widget {
 .customize-face-field select {
   font: inherit;
   font-size: 12px;
-  background: #ffffff08;
-  border: 1px solid #ffffff22;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 3px;
   padding: 3px 6px;
   color: var(--fg);
