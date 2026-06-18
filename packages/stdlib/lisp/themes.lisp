@@ -101,12 +101,12 @@
    "--bg-editor"    "#fdf6e3"
    "--bg-editor-focused" "#fdf6e3"
    "--bg-repl"      "#eee8d5"
-   "--fg"           "#586e75"
-   "--fg-dim"       "#93a1a1"
-   "--accent"       "#268bd2"
-   "--result"       "#859900"
+   "--fg"           "#073642"
+   "--fg-dim"       "#586e75"
+   "--accent"       "#2076b2"
+   "--result"       "#687800"
    "--error"        "#dc322f"
-   "--selection"    "rgba(38, 139, 210, 0.20)"
+   "--selection"    "rgba(38, 139, 210, 0.30)"
    ;; ANSI palette — Solarized's accent colours, tuned for a light bg.
    "--ansi-black"          "#073642"
    "--ansi-red"            "#dc322f"
@@ -209,12 +209,12 @@
    "--bg-editor"    "#002b36"
    "--bg-editor-focused" "#002b36"
    "--bg-repl"      "#073642"
-   "--fg"           "#839496"
-   "--fg-dim"       "#586e75"
-   "--accent"       "#268bd2"
+   "--fg"           "#93a1a1"
+   "--fg-dim"       "#657b83"
+   "--accent"       "#3094da"
    "--result"       "#859900"
-   "--error"        "#dc322f"
-   "--selection"    "rgba(38, 139, 210, 0.20)"
+   "--error"        "#e56663"
+   "--selection"    "rgba(38, 139, 210, 0.30)"
    ;; ANSI palette — identical accents to `solarized-light`; only the
    ;; ground differs (Solarized's whole premise).
    "--ansi-black"          "#073642"
@@ -344,17 +344,17 @@
 
 (defface 'comment
   :doc "Source comments — slash-slash, hash, percent — italicised."
-  :default-solarized-light (face :foreground "#93a1a1" :slant :italic)
+  :default-solarized-light (face :foreground "#586e75" :slant :italic)
   :default-dark            (face :foreground "#7c8f9e" :slant :italic)
   :default-bright          (face :foreground "#8aa0b3" :slant :italic)
   :default-midnight        (face :foreground "#8b949e" :slant :italic)
-  :default-solarized-dark  (face :foreground "#586e75" :slant :italic)
+  :default-solarized-dark  (face :foreground "#657b83" :slant :italic)
   :default-emacs           (face :foreground "#cd5c5c" :slant :italic)
   :default-nova            (face :foreground "#729abb" :slant :italic))
 
 (defface 'string
   :doc "String literals: double, single, backtick."
-  :default-solarized-light (face :foreground "#859900")
+  :default-solarized-light (face :foreground "#687800")
   :default-dark            (face :foreground "#99c794")
   :default-bright          (face :foreground "#a3d977")
   :default-midnight        (face :foreground "#a5d6ff")
@@ -364,17 +364,17 @@
 
 (defface 'number
   :doc "Numeric literals — integers, floats, hex, etc."
-  :default-solarized-light (face :foreground "#cb4b16")
+  :default-solarized-light (face :foreground "#c44815")
   :default-dark            (face :foreground "#f9ae58")
   :default-bright          (face :foreground "#ffb86c")
   :default-midnight        (face :foreground "#79c0ff")
-  :default-solarized-dark  (face :foreground "#d33682")
+  :default-solarized-dark  (face :foreground "#dd629d")
   :default-emacs           (face :foreground "#ffa07a")
   :default-nova            (face :foreground "#efd282"))
 
 (defface 'keyword
   :doc "Language keywords (if, return, def, let, lambda, …)."
-  :default-solarized-light (face :foreground "#859900")
+  :default-solarized-light (face :foreground "#687800")
   :default-dark            (face :foreground "#c594c5")
   :default-bright          (face :foreground "#d56bff")
   :default-midnight        (face :foreground "#ff7b72")
@@ -384,21 +384,21 @@
 
 (defface 'constant
   :doc "True, false, nil and other named constants."
-  :default-solarized-light (face :foreground "#b58900")
+  :default-solarized-light (face :foreground "#8f6c00")
   :default-dark            (face :foreground "#5fb4b4")
   :default-bright          (face :foreground "#56e0e0")
   :default-midnight        (face :foreground "#79c0ff")
-  :default-solarized-dark  (face :foreground "#6c71c4")
+  :default-solarized-dark  (face :foreground "#8488cd")
   :default-emacs           (face :foreground "#7fffd4")
   :default-nova            (face :foreground "#ca9fea"))
 
 (defface 'function
   :doc "Function names — definitions and calls."
-  :default-solarized-light (face :foreground "#268bd2")
+  :default-solarized-light (face :foreground "#2076b2")
   :default-dark            (face :foreground "#6699cc")
   :default-bright          (face :foreground "#82aaff")
   :default-midnight        (face :foreground "#d2a8ff")
-  :default-solarized-dark  (face :foreground "#268bd2")
+  :default-solarized-dark  (face :foreground "#3094da")
   :default-emacs           (face :foreground "#87cefa")
   :default-nova            (face :foreground "#30e8ab"))
 
@@ -406,7 +406,7 @@
   :doc "Variable names in declaration position — function parameters,
         catch bindings, and similar. Sublime-style: only declarations
         get a face; references in the body read as default text."
-  :default-solarized-light (face :foreground "#b07d3c")
+  :default-solarized-light (face :foreground "#936932")
   :default-dark            (face :foreground "#e8a87c")
   :default-bright          (face :foreground "#f9a872")
   :default-midnight        (face :foreground "#ffcb6b")
@@ -416,60 +416,62 @@
 
 (defface 'type
   :doc "Type names, class names, type-position identifiers."
-  :default-solarized-light (face :foreground "#b58900")
+  :default-solarized-light (face :foreground "#8f6c00")
   :default-dark            (face :foreground "#fac863")
   :default-bright          (face :foreground "#ffd866")
   :default-midnight        (face :foreground "#ffa657")
-  :default-solarized-dark  (face :foreground "#cb4b16")
+  :default-solarized-dark  (face :foreground "#e8652e")
   :default-emacs           (face :foreground "#98fb98")
   :default-nova            (face :foreground "#00e9db"))
 
 (defface 'tag
   :doc "HTML / XML tags and similar markup tags."
-  :default-solarized-light (face :foreground "#dc322f")
+  :default-solarized-light (face :foreground "#da2825")
   :default-dark            (face :foreground "#ec5f67")
   :default-bright          (face :foreground "#ff5370")
   :default-midnight        (face :foreground "#7ee787")
-  :default-solarized-dark  (face :foreground "#dc322f")
+  :default-solarized-dark  (face :foreground "#e56663")
   :default-emacs           (face :foreground "#f08080")
   :default-nova            (face :foreground "#30e8ab"))
 
 (defface 'operator
   :doc "Operators (+ - * / && || == …). Contrast-bumped to a clear
         teal/cyan accent the rest of the palette avoids — without it,
-        operators in tree-sitter-highlit code read as default text."
-  :default-solarized-light (face :foreground "#2aa198")
+        operators in tree-sitter-highlit code read as default text.
+        (Solarized keeps operators a neutral structural tone — one notch
+        off body text — as Schoonover's palette intends.)"
+  :default-solarized-light (face :foreground "#586e75")
   :default-dark            (face :foreground "#62b3b2")
   :default-bright          (face :foreground "#82eaff")
   :default-midnight        (face :foreground "#56d4dd")
-  :default-solarized-dark  (face :foreground "#93a1a1")
+  :default-solarized-dark  (face :foreground "#839496")
   :default-emacs           (face :foreground "#b0c4de")
   :default-nova            (face :foreground "#92b3cf"))
 
 (defface 'paren
   :doc "Punctuation: parentheses, brackets, braces. Pushed distinctly
         dimmer than text so paren-soup reads as structure, not noise."
-  :default-solarized-light (face :foreground "#b8c4c4")
+  :default-solarized-light (face :foreground "#657b83")
   :default-dark            (face :foreground "#6b7785")
   :default-bright          (face :foreground "#8b9aab")
   :default-midnight        (face :foreground "#6e7681")
-  :default-solarized-dark  (face :foreground "#586e75")
+  :default-solarized-dark  (face :foreground "#657b83")
   :default-emacs           (face :foreground "#8fbc8f")
   :default-nova            (face :foreground "#92b3cf"))
 
 (defface 'heading
   :doc "Markup headings (Markdown #, HTML h1, …)."
-  :default-solarized-light (face :foreground "#268bd2" :weight :bold)
+  :default-solarized-light (face :foreground "#2076b2" :weight :bold)
   :default-dark            (face :foreground "#fac863" :weight :bold)
   :default-bright          (face :foreground "#ffd866" :weight :bold)
   :default-midnight        (face :foreground "#ffa657" :weight :bold)
-  :default-solarized-dark  (face :foreground "#268bd2" :weight :bold)
+  :default-solarized-dark  (face :foreground "#3094da" :weight :bold)
   :default-emacs           (face :foreground "#ffd700" :weight :bold)
   :default-nova            (face :foreground "#ffa956" :weight :bold))
 
 (defface 'code
   :doc "Inline code spans in prose markup."
-  :default-solarized-light (face :foreground "#2aa198")
+  :default-solarized-light (face :foreground "#217d76")
   :default-dark            (face :foreground "#99c794")
   :default-bright          (face :foreground "#a3d977")
   :default-midnight        (face :foreground "#a5d6ff")
@@ -479,11 +481,11 @@
 
 (defface 'link
   :doc "Hyperlinks in prose markup."
-  :default-solarized-light (face :foreground "#268bd2" :underline #t)
+  :default-solarized-light (face :foreground "#2076b2" :underline #t)
   :default-dark            (face :foreground "#6699cc" :underline #t)
   :default-bright          (face :foreground "#82aaff" :underline #t)
   :default-midnight        (face :foreground "#58a6ff" :underline #t)
-  :default-solarized-dark  (face :foreground "#268bd2" :underline #t)
+  :default-solarized-dark  (face :foreground "#3094da" :underline #t)
   :default-emacs           (face :foreground "#87cefa" :underline #t)
   :default-nova            (face :foreground "#6ac1ff" :underline #t))
 
