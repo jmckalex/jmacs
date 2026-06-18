@@ -2231,7 +2231,10 @@ image-view,
 }
 
 .image-stage.is-actual {
-  /* Actual size: do not centre, let the image overflow and scroll. */
+  /* Zoomed / actual size: align to the start so an overflowing image
+     scrolls from the top-left without clipping. The image's own
+     `margin: auto` re-centres it when it is smaller than the viewport
+     (centring via justify-content would clip the overflow when larger). */
   align-items: flex-start;
   justify-content: flex-start;
 }
@@ -2245,6 +2248,10 @@ image-view,
 .image-content.is-actual {
   max-width: none;
   max-height: none;
+  /* Centre in the viewport when smaller than it; the auto margins
+     collapse to 0 when the image overflows, so it then scrolls from the
+     top-left (see `.image-stage.is-actual`). */
+  margin: auto;
 }
 
 /* --- jukebox view ----------------------------------------------------- */

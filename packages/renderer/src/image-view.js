@@ -80,6 +80,29 @@ export function isImageName(name) {
   return mimeTypeForImage(name) !== null;
 }
 
+/** Continuous-zoom bounds — the factor relative to the image's natural
+ *  size (0.1 = 10%, 32 = 3200%). */
+export const MIN_ZOOM = 0.1;
+export const MAX_ZOOM = 32;
+
+/**
+ * The new zoom factor for one pinch step. Chromium delivers a trackpad
+ * pinch as a ctrl+`wheel` event whose `deltaY` is negative when the
+ * fingers spread (zoom in). The exponential mapping makes the zoom feel
+ * proportional regardless of pinch speed (and regardless of the current
+ * scale); the result is clamped to [`min`, `max`].
+ *
+ * @param {number} prev - The current zoom factor (must be > 0).
+ * @param {number} deltaY - The wheel event's `deltaY`.
+ * @param {number} [min] - Lower clamp (default `MIN_ZOOM`).
+ * @param {number} [max] - Upper clamp (default `MAX_ZOOM`).
+ * @returns {number} The clamped next factor.
+ */
+export function pinchZoomFactor(prev, deltaY, min = MIN_ZOOM, max = MAX_ZOOM) {
+  const factor = Math.exp(-deltaY * 0.01);
+  return Math.max(min, Math.min(max, prev * factor));
+}
+
 /**
  * @typedef {object} ImageViewOptions
  * @property {(key: string) => boolean} [onKey] - Key dispatcher. Called
@@ -105,8 +128,14 @@ export class ImageView extends ViewElement {
     this._img = null;
     /** The image buffer currently shown — `{name, src}` or null. */
     this._buffer = null;
-    /** `'fit'` (fit-to-window) or `'actual'` (100%). */
+    /** Zoom mode: `'fit'` (object-fit; auto-resizes with the window) or
+     *  `'zoom'` (an explicit factor in `_zoom`, the image sized in
+     *  natural-px × factor and the stage scrollable). 'Actual size' is
+     *  just `'zoom'` at factor 1. */
     this._mode = 'fit';
+    /** Continuous zoom factor relative to natural size (1 = 100%); only
+     *  meaningful in `'zoom'` mode. */
+    this._zoom = 1;
   }
 
   /**
@@ -137,6 +166,7 @@ export class ImageView extends ViewElement {
   setBuffer(next) {
     this._buffer = next;
     this._mode = 'fit';
+    this._zoom = 1;
     if (this._img !== null) this._paint();
   }
 
@@ -203,9 +233,29 @@ export class ImageView extends ViewElement {
     this.append(this._toolbar, this._stage);
 
     this._zoomButton.addEventListener('click', () => {
-      this._mode = this._mode === 'fit' ? 'actual' : 'fit';
+      // fit → actual size (zoom at 1) → fit. A pinch leaves the view in
+      // 'zoom' mode, so the button then reads "Fit to window".
+      if (this._mode === 'fit') {
+        this._mode = 'zoom';
+        this._zoom = 1;
+      } else {
+        this._mode = 'fit';
+      }
       this._applyMode();
+      this._showInfo();
     });
+
+    // Trackpad pinch-to-zoom. Chromium reports a pinch as a `wheel` event
+    // with `ctrlKey` set (synthesised — the user isn't holding Ctrl).
+    // `passive: false` lets `_onPinch` preventDefault and suppress
+    // Chromium's own page-zoom.
+    this._stage.addEventListener(
+      'wheel',
+      (event) => {
+        if (event.ctrlKey) this._onPinch(event);
+      },
+      { passive: false },
+    );
 
     this.addEventListener('keydown', (event) => {
       if (MODIFIERS.has(event.key)) return;
@@ -225,14 +275,69 @@ export class ImageView extends ViewElement {
     });
   }
 
-  /** Apply the current zoom mode to the image and the toggle button. */
+  /** Apply the current zoom mode to the image, stage and toggle button.
+   *  `'fit'` uses the object-fit CSS (auto-resizes with the window);
+   *  `'zoom'` sizes the image explicitly (natural-px × `_zoom`) so the
+   *  stage scrolls. */
   _applyMode() {
     if (this._img === null) return;
-    this._img.classList.toggle('is-fit', this._mode === 'fit');
-    this._img.classList.toggle('is-actual', this._mode === 'actual');
-    this._stage.classList.toggle('is-actual', this._mode === 'actual');
+    const zoomed = this._mode === 'zoom';
+    this._img.classList.toggle('is-fit', !zoomed);
+    this._img.classList.toggle('is-actual', zoomed);
+    this._stage.classList.toggle('is-actual', zoomed);
+    if (zoomed && this._img.naturalWidth > 0) {
+      this._img.style.width = `${this._img.naturalWidth * this._zoom}px`;
+      this._img.style.height = `${this._img.naturalHeight * this._zoom}px`;
+    } else {
+      this._img.style.removeProperty('width');
+      this._img.style.removeProperty('height');
+    }
     this._zoomButton.textContent =
-      this._mode === 'fit' ? 'Actual size (100%)' : 'Fit to window';
+      zoomed ? 'Fit to window' : 'Actual size (100%)';
+  }
+
+  /** Continuous, cursor-anchored pinch-zoom. Maps the ctrl+`wheel` delta
+   *  to a multiplicative zoom factor, sizes the image explicitly, and
+   *  adjusts the stage scroll so the image point under the cursor stays
+   *  put. Mirrors the PDF view's gesture. */
+  _onPinch(event) {
+    event.preventDefault();
+    if (this._img === null || this._img.naturalWidth === 0) return;
+
+    // The current displayed scale: the explicit factor when already
+    // zooming, else the ratio the browser renders the fit image at.
+    const prev =
+      this._mode === 'zoom'
+        ? this._zoom
+        : this._img.clientWidth / this._img.naturalWidth;
+    if (!(prev > 0)) return;
+    const next = pinchZoomFactor(prev, event.deltaY);
+    if (Math.abs(next / prev - 1) < 1e-4) return;
+
+    // Where the cursor sits within the image, as a fraction of its
+    // displayed size — captured before the resize.
+    const before = this._img.getBoundingClientRect();
+    const fx = (event.clientX - before.left) / before.width;
+    const fy = (event.clientY - before.top) / before.height;
+
+    this._mode = 'zoom';
+    this._zoom = next;
+    this._applyMode(); // writes the explicit size (and forces the reflow read below)
+
+    // Re-anchor: put the same image fraction back under the cursor. Read
+    // the post-resize geometry so this stays correct across the fit→zoom
+    // (centred → scrollable) transition too.
+    const stage = /** @type {HTMLElement} */ (this._stage);
+    const stageRect = stage.getBoundingClientRect();
+    const after = this._img.getBoundingClientRect();
+    const imgLeftInContent = after.left - stageRect.left + stage.scrollLeft;
+    const imgTopInContent = after.top - stageRect.top + stage.scrollTop;
+    stage.scrollLeft =
+      imgLeftInContent + fx * after.width - (event.clientX - stageRect.left);
+    stage.scrollTop =
+      imgTopInContent + fy * after.height - (event.clientY - stageRect.top);
+
+    this._showInfo();
   }
 
   /** Render the toolbar's info line for the current buffer. */
@@ -246,7 +351,9 @@ export class ImageView extends ViewElement {
       this._img !== null && this._img.naturalWidth > 0
         ? `  —  ${this._img.naturalWidth}×${this._img.naturalHeight}`
         : '';
-    this._info.textContent = (this._buffer.name ?? 'image') + dims;
+    const zoom =
+      this._mode === 'zoom' ? `  —  ${Math.round(this._zoom * 100)}%` : '';
+    this._info.textContent = (this._buffer.name ?? 'image') + dims + zoom;
   }
 
   /** Paint the current buffer onto the inner DOM. Called from
