@@ -20,6 +20,13 @@
   --error: #ec5f67;
   --selection: rgba(102, 153, 204, 0.27);
 
+  /* Derived chrome tones — NOT theme-owned (themes.lisp doesn't set
+     these). They compute from the active theme's vars so consumers (the
+     PDF and browser toolbars, dividers and field outlines) adapt to light
+     and dark alike, instead of pinning to the old dark-only fallbacks. */
+  --bg-status: var(--bg-chrome);
+  --border: color-mix(in srgb, var(--fg) 18%, transparent);
+
   /* Syntax-highlight palette. The hand-tokenizer and the tree-sitter
      pipeline both emit `.tok-<face>` spans; these vars carry their
      colours so a theme can swap them. */
@@ -2838,7 +2845,10 @@ pdf-view,
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: #1a1d24;
+  /* The page mat: a notch deeper than the chrome surface so white pages
+     read as documents on a desk — in light themes a soft grey, in dark
+     themes a deep slate. Derived so it tracks the active theme. */
+  background: color-mix(in srgb, var(--bg-chrome) 85%, #000000);
 }
 
 /* A page placeholder. The container's pixel size is set inline by the
