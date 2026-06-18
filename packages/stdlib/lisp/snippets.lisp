@@ -79,7 +79,7 @@
 
 (defface 'snippet-active-face
   :doc "The snippet field the cursor is currently on."
-  :default-light   (face :background "#cfe8ff")
+  :default-solarized-light (face :background "#cfe8ff")
   :default-dark    (face :background "#244a63")
   ;; `bright` is a DARK-background theme with a light syntax palette, so
   ;; its pill must be dark too — a light fill leaves the light text
@@ -91,7 +91,7 @@
   :doc "Forthcoming snippet fields the cursor has not yet reached. Tinted
         amber so the upcoming tab stops read as 'pending', distinct from
         the blue active field and the purple mirrors."
-  :default-light   (face :background "#fdeecb")
+  :default-solarized-light (face :background "#fdeecb")
   :default-dark    (face :background "#4a3f24")
   ;; Dark amber for the dark-background `bright` theme (see active-face).
   :default-bright  (face :background "#514321")
@@ -99,7 +99,7 @@
 
 (defface 'snippet-mirror-face
   :doc "Mirror occurrences of the active field (live-updating echoes)."
-  :default-light   (face :background "#e6dcff")
+  :default-solarized-light (face :background "#e6dcff")
   :default-dark    (face :background "#3a2c5a")
   ;; Dark purple for the dark-background `bright` theme (see active-face).
   :default-bright  (face :background "#3c2c62")
@@ -107,7 +107,7 @@
 
 (defface 'snippet-exit-face
   :doc "The snippet exit marker ($0)."
-  :default-light   (face :background "#f0f0f0")
+  :default-solarized-light (face :background "#f0f0f0")
   :default-dark    (face :background "#333a40")
   ;; Dark grey for the dark-background `bright` theme (see active-face).
   :default-bright  (face :background "#2b333b")

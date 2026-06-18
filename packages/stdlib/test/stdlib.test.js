@@ -2595,18 +2595,21 @@ test('expand-region keeps growing around the original anchor, not point', async 
 
 // --- themes -----------------------------------------------------------
 
-test('four themes are registered with distinct palettes', async () => {
+test('the shipped themes are registered with distinct palettes', async () => {
   const { interpreter } = await editor();
   const names = listToArray(interpreter.call('registered-themes'))
     .map((s) => s.name).sort();
-  assert.deepEqual(names, ['bright', 'dark', 'light', 'midnight']);
-  // Each theme defines a --bg value; all should differ. `bright` and
-  // `dark` deliberately share most chrome but diverge on --bg-editor;
-  // we relax the strict-uniqueness check to "at least three distinct".
+  assert.deepEqual(names, [
+    'bright', 'dark', 'emacs', 'midnight', 'nova',
+    'solarized-dark', 'solarized-light',
+  ]);
+  // Each theme defines a --bg value. `bright` and `dark` deliberately
+  // share --bg (they diverge on --bg-editor), so the seven themes carry
+  // six distinct --bg grounds.
   const bgs = names.map(
     (n) => interpreter.evaluate(`(get (theme-vars (quote ${n})) "--bg" "")`)
   );
-  assert.ok(new Set(bgs).size >= 3);
+  assert.ok(new Set(bgs).size >= 6);
 });
 
 test('the *theme* setting defaults to dark and is a :choice', async () => {
@@ -2618,7 +2621,10 @@ test('the *theme* setting defaults to dark and is a :choice', async () => {
   // field = (name type value default doc state options)
   assert.equal(String(field[1]), ':choice');
   const options = listToArray(field[6]).map((s) => s.name);
-  assert.deepEqual(options.sort(), ['bright', 'dark', 'light', 'midnight']);
+  assert.deepEqual(options.sort(), [
+    'bright', 'dark', 'emacs', 'midnight', 'nova',
+    'solarized-dark', 'solarized-light',
+  ]);
 });
 
 test('custom-apply! coerces a :choice string to the option symbol', async () => {
@@ -2656,11 +2662,65 @@ test('current-theme-css-vars switches with *theme*', async () => {
     return '';
   };
   const dark = bgFor('dark');
-  const light = bgFor('light');
+  const solarizedLight = bgFor('solarized-light');
   const midnight = bgFor('midnight');
-  assert.notEqual(dark, light);
+  const nova = bgFor('nova');
+  assert.notEqual(dark, solarizedLight);
   assert.notEqual(dark, midnight);
-  assert.notEqual(light, midnight);
+  assert.notEqual(solarizedLight, midnight);
+  assert.notEqual(dark, nova);
+});
+
+test('the new themes resolve their own token palettes, not the dark fallback', async () => {
+  const { interpreter } = await editor();
+  const fg = (face, theme) =>
+    interpreter.evaluate(
+      `(get (face-default '${face} '${theme}) :foreground nil)`
+    );
+  // Each new theme ships explicit blocks for the token faces — the
+  // dynamic `:default-<theme>` lookup must find them rather than falling
+  // back to `:default-dark`.
+  assert.equal(fg('string', 'solarized-dark'), '#2aa198');
+  assert.equal(fg('keyword', 'solarized-dark'), '#859900');
+  assert.equal(fg('string', 'emacs'), '#bc8f8f'); // rosybrown
+  assert.equal(fg('keyword', 'nova'), '#83afe5'); // blue
+  // …and they differ from the dark default for the same face.
+  const darkString = fg('string', 'dark');
+  assert.notEqual(fg('string', 'solarized-dark'), darkString);
+  assert.notEqual(fg('string', 'emacs'), darkString);
+  assert.notEqual(fg('string', 'nova'), darkString);
+});
+
+test('a theme with no block for a face falls back to the dark default', async () => {
+  const { interpreter } = await editor();
+  // The base `default` face ships only solarized-light + dark blocks; under
+  // a new theme it must fall back to the dark block (same size/family),
+  // not resolve to empty.
+  const novaSize = interpreter.evaluate(
+    "(get (face-default 'default 'nova) :size nil)"
+  );
+  const darkSize = interpreter.evaluate(
+    "(get (face-default 'default 'dark) :size nil)"
+  );
+  assert.equal(novaSize, darkSize);
+  assert.equal(novaSize, 14);
+});
+
+test('-migrate-stale-theme! rewrites a persisted `light` to `solarized-light`', async () => {
+  const { interpreter } = await editor();
+  // Simulate a custom.lisp saved before the `light` → `solarized-light`
+  // rename: the symbol passes through uncoerced and selects a gone theme.
+  interpreter.evaluate('(custom-apply! (quote *theme*) (quote light))');
+  assert.equal(interpreter.evaluate('*theme*').name, 'light');
+  interpreter.call('-migrate-stale-theme!');
+  assert.equal(
+    interpreter.evaluate('*theme*').name,
+    'solarized-light',
+    'stale `light` is rewritten to `solarized-light`'
+  );
+  // Idempotent: a second run on the migrated value is a no-op.
+  interpreter.call('-migrate-stale-theme!');
+  assert.equal(interpreter.evaluate('*theme*').name, 'solarized-light');
 });
 
 // --- faces ------------------------------------------------------------
@@ -2688,22 +2748,25 @@ test('defface stores per-theme defaults that face-default returns', async () => 
   const dark = interpreter.evaluate(
     "(get (face-default 'keyword 'dark) :foreground nil)"
   );
-  const light = interpreter.evaluate(
-    "(get (face-default 'keyword 'light) :foreground nil)"
+  const solarizedLight = interpreter.evaluate(
+    "(get (face-default 'keyword 'solarized-light) :foreground nil)"
   );
   const midnight = interpreter.evaluate(
     "(get (face-default 'keyword 'midnight) :foreground nil)"
   );
   assert.equal(typeof dark, 'string');
-  assert.equal(typeof light, 'string');
+  assert.equal(typeof solarizedLight, 'string');
   assert.equal(typeof midnight, 'string');
-  assert.notEqual(dark, light);
+  assert.notEqual(dark, solarizedLight);
   assert.notEqual(dark, midnight);
 });
 
 test('comment is italic by default in every shipped theme', async () => {
   const { interpreter } = await editor();
-  for (const theme of ['light', 'dark', 'midnight']) {
+  for (const theme of [
+    'solarized-light', 'dark', 'bright', 'midnight',
+    'solarized-dark', 'emacs', 'nova',
+  ]) {
     const slant = interpreter.evaluate(
       `(get (face-default 'comment '${theme}) :slant nil)`
     );
@@ -2722,7 +2785,7 @@ test('face-attribute on an unset attribute returns nil', async () => {
 
 test('face-attribute reads the active theme by default', async () => {
   const { interpreter } = await editor();
-  interpreter.evaluate("(custom-apply! (quote *theme*) (quote light))");
+  interpreter.evaluate("(custom-apply! (quote *theme*) (quote solarized-light))");
   const light = interpreter.evaluate("(face-attribute 'keyword :foreground)");
   interpreter.evaluate("(custom-apply! (quote *theme*) (quote dark))");
   const dark = interpreter.evaluate("(face-attribute 'keyword :foreground)");
@@ -2771,7 +2834,7 @@ test('a per-theme override beats the global override', async () => {
     '#00ff00'
   );
   // And the global remains visible under a different theme.
-  interpreter.evaluate("(custom-apply! (quote *theme*) (quote light))");
+  interpreter.evaluate("(custom-apply! (quote *theme*) (quote solarized-light))");
   assert.equal(
     interpreter.evaluate("(face-attribute 'keyword :foreground)"),
     '#ff0000'
