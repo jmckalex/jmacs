@@ -271,38 +271,40 @@
    "--ansi-bright-white"   "#fffaf0"))
 
 (define-theme 'nova
-  "Nova — Trevor Davis's calm, desaturated dark scheme: a blue-grey
-   #3c4c55 ground (the look behind Godot's Nova gutter scope bars) with
-   muted pastel accents."
+  "Nova — the built-in \"Dark\" theme from Panic's Nova editor: a
+   near-black charcoal ground (#1b1d1f) under cool blue keywords, mint
+   functions, salmon strings, gold numbers and purple identifiers.
+   Colours are converted from the theme's Display-P3 source to sRGB (the
+   editor's forced colour profile)."
   (hash-map
-   "--bg"           "#3c4c55"
-   "--bg-chrome"    "#303c42"
-   "--bg-editor"    "#3c4c55"
-   "--bg-editor-focused" "#3c4c55"
-   "--bg-repl"      "#303c42"
-   "--fg"           "#c5d4dd"
-   "--fg-dim"       "#899ba6"
-   "--accent"       "#83afe5"
-   "--result"       "#a8ce93"
-   "--error"        "#df8c8c"
-   "--selection"    "rgba(131, 175, 229, 0.22)"
-   ;; ANSI palette — Nova's documented terminal colours.
-   "--ansi-black"          "#3c4c55"
-   "--ansi-red"            "#df8c8c"
-   "--ansi-green"          "#a8ce93"
-   "--ansi-yellow"         "#dada93"
-   "--ansi-blue"           "#83afe5"
-   "--ansi-magenta"        "#9a93e1"
-   "--ansi-cyan"           "#7fc1ca"
-   "--ansi-white"          "#c5d4dd"
-   "--ansi-bright-black"   "#899ba6"
-   "--ansi-bright-red"     "#df8c8c"
-   "--ansi-bright-green"   "#a8ce93"
-   "--ansi-bright-yellow"  "#f2c38f"
-   "--ansi-bright-blue"    "#83afe5"
-   "--ansi-bright-magenta" "#d18ec2"
-   "--ansi-bright-cyan"    "#7fc1ca"
-   "--ansi-bright-white"   "#ffffff"))
+   "--bg"           "#1b1d1f"
+   "--bg-chrome"    "#17181a"
+   "--bg-editor"    "#1b1d1f"
+   "--bg-editor-focused" "#1b1d1f"
+   "--bg-repl"      "#17181a"
+   "--fg"           "#ccdae7"
+   "--fg-dim"       "#747b80"
+   "--accent"       "#6ac1ff"
+   "--result"       "#30e8ab"
+   "--error"        "#ff5b4b"
+   "--selection"    "rgba(96, 174, 235, 0.22)"
+   ;; ANSI palette — derived from Nova Dark's syntax accents.
+   "--ansi-black"          "#222526"
+   "--ansi-red"            "#ff5b4b"
+   "--ansi-green"          "#30e8ab"
+   "--ansi-yellow"         "#efd282"
+   "--ansi-blue"           "#60aeeb"
+   "--ansi-magenta"        "#eb9dea"
+   "--ansi-cyan"           "#00e9db"
+   "--ansi-white"          "#ccdae7"
+   "--ansi-bright-black"   "#5b6167"
+   "--ansi-bright-red"     "#ff8f84"
+   "--ansi-bright-green"   "#71ffcc"
+   "--ansi-bright-yellow"  "#ffc373"
+   "--ansi-bright-blue"    "#8aceff"
+   "--ansi-bright-magenta" "#fed3fd"
+   "--ansi-bright-cyan"    "#79f5eb"
+   "--ansi-bright-white"   "#f1f9ff"))
 
 ;; --- the base face — editor typography all faces fall back to ----------
 ;; `default` is the root face: it owns the editor's base *typography*
@@ -348,7 +350,7 @@
   :default-midnight        (face :foreground "#8b949e" :slant :italic)
   :default-solarized-dark  (face :foreground "#586e75" :slant :italic)
   :default-emacs           (face :foreground "#cd5c5c" :slant :italic)
-  :default-nova            (face :foreground "#6a7d89" :slant :italic))
+  :default-nova            (face :foreground "#729abb" :slant :italic))
 
 (defface 'string
   :doc "String literals: double, single, backtick."
@@ -358,7 +360,7 @@
   :default-midnight        (face :foreground "#a5d6ff")
   :default-solarized-dark  (face :foreground "#2aa198")
   :default-emacs           (face :foreground "#bc8f8f")
-  :default-nova            (face :foreground "#a8ce93"))
+  :default-nova            (face :foreground "#ff8f84"))
 
 (defface 'number
   :doc "Numeric literals — integers, floats, hex, etc."
@@ -368,7 +370,7 @@
   :default-midnight        (face :foreground "#79c0ff")
   :default-solarized-dark  (face :foreground "#d33682")
   :default-emacs           (face :foreground "#ffa07a")
-  :default-nova            (face :foreground "#f2c38f"))
+  :default-nova            (face :foreground "#efd282"))
 
 (defface 'keyword
   :doc "Language keywords (if, return, def, let, lambda, …)."
@@ -378,7 +380,7 @@
   :default-midnight        (face :foreground "#ff7b72")
   :default-solarized-dark  (face :foreground "#859900")
   :default-emacs           (face :foreground "#00ced1")
-  :default-nova            (face :foreground "#83afe5"))
+  :default-nova            (face :foreground "#60aeeb"))
 
 (defface 'constant
   :doc "True, false, nil and other named constants."
@@ -388,7 +390,7 @@
   :default-midnight        (face :foreground "#79c0ff")
   :default-solarized-dark  (face :foreground "#6c71c4")
   :default-emacs           (face :foreground "#7fffd4")
-  :default-nova            (face :foreground "#d18ec2"))
+  :default-nova            (face :foreground "#ca9fea"))
 
 (defface 'function
   :doc "Function names — definitions and calls."
@@ -398,7 +400,7 @@
   :default-midnight        (face :foreground "#d2a8ff")
   :default-solarized-dark  (face :foreground "#268bd2")
   :default-emacs           (face :foreground "#87cefa")
-  :default-nova            (face :foreground "#dada93"))
+  :default-nova            (face :foreground "#30e8ab"))
 
 (defface 'variable
   :doc "Variable names in declaration position — function parameters,
@@ -410,7 +412,7 @@
   :default-midnight        (face :foreground "#ffcb6b")
   :default-solarized-dark  (face :foreground "#b58900")
   :default-emacs           (face :foreground "#eedd82")
-  :default-nova            (face :foreground "#7fc1ca"))
+  :default-nova            (face :foreground "#eb9dea"))
 
 (defface 'type
   :doc "Type names, class names, type-position identifiers."
@@ -420,7 +422,7 @@
   :default-midnight        (face :foreground "#ffa657")
   :default-solarized-dark  (face :foreground "#cb4b16")
   :default-emacs           (face :foreground "#98fb98")
-  :default-nova            (face :foreground "#9a93e1"))
+  :default-nova            (face :foreground "#00e9db"))
 
 (defface 'tag
   :doc "HTML / XML tags and similar markup tags."
@@ -430,7 +432,7 @@
   :default-midnight        (face :foreground "#7ee787")
   :default-solarized-dark  (face :foreground "#dc322f")
   :default-emacs           (face :foreground "#f08080")
-  :default-nova            (face :foreground "#df8c8c"))
+  :default-nova            (face :foreground "#30e8ab"))
 
 (defface 'operator
   :doc "Operators (+ - * / && || == …). Contrast-bumped to a clear
@@ -442,7 +444,7 @@
   :default-midnight        (face :foreground "#56d4dd")
   :default-solarized-dark  (face :foreground "#93a1a1")
   :default-emacs           (face :foreground "#b0c4de")
-  :default-nova            (face :foreground "#d18ec2"))
+  :default-nova            (face :foreground "#92b3cf"))
 
 (defface 'paren
   :doc "Punctuation: parentheses, brackets, braces. Pushed distinctly
@@ -453,7 +455,7 @@
   :default-midnight        (face :foreground "#6e7681")
   :default-solarized-dark  (face :foreground "#586e75")
   :default-emacs           (face :foreground "#8fbc8f")
-  :default-nova            (face :foreground "#6a7d89"))
+  :default-nova            (face :foreground "#92b3cf"))
 
 (defface 'heading
   :doc "Markup headings (Markdown #, HTML h1, …)."
@@ -463,7 +465,7 @@
   :default-midnight        (face :foreground "#ffa657" :weight :bold)
   :default-solarized-dark  (face :foreground "#268bd2" :weight :bold)
   :default-emacs           (face :foreground "#ffd700" :weight :bold)
-  :default-nova            (face :foreground "#83afe5" :weight :bold))
+  :default-nova            (face :foreground "#ffa956" :weight :bold))
 
 (defface 'code
   :doc "Inline code spans in prose markup."
@@ -473,7 +475,7 @@
   :default-midnight        (face :foreground "#a5d6ff")
   :default-solarized-dark  (face :foreground "#2aa198")
   :default-emacs           (face :foreground "#98fb98")
-  :default-nova            (face :foreground "#a8ce93"))
+  :default-nova            (face :foreground "#30e8ab"))
 
 (defface 'link
   :doc "Hyperlinks in prose markup."
@@ -483,7 +485,7 @@
   :default-midnight        (face :foreground "#58a6ff" :underline #t)
   :default-solarized-dark  (face :foreground "#268bd2" :underline #t)
   :default-emacs           (face :foreground "#87cefa" :underline #t)
-  :default-nova            (face :foreground "#7fc1ca" :underline #t))
+  :default-nova            (face :foreground "#6ac1ff" :underline #t))
 
 ;; --- the user-facing setting -------------------------------------------
 
