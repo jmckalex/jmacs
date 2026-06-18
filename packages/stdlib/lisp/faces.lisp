@@ -22,11 +22,14 @@
 ;;; `<style id="face-overrides">` element. No CSS variables for tokens.
 
 ;; face-name (a symbol) -> face descriptor map. A descriptor:
-;;   {:name :doc :parent :default-light :default-dark :default-midnight}
-;; Each :default-<theme> is itself a face map: a hash-map of attribute
-;; symbols (e.g. :foreground) to values. `:parent` is either nil or a
-;; symbol naming another registered face — used by the resolver to layer
-;; the parent's resolved face under the child's own attributes.
+;;   {:name :doc :parent :default-<theme> …}
+;; carries one `:default-<theme>` block per theme the face supplies (e.g.
+;; :default-dark, :default-solarized-light, :default-nova) — added theme
+;; by theme, not a fixed set, so a new theme needs no change here. Each
+;; block is a face map: a hash-map of attribute symbols (e.g. :foreground)
+;; to values. `:parent` is either nil or a symbol naming another
+;; registered face — used by the resolver to layer the parent's resolved
+;; face under the child's own attributes.
 (define *face-registry* {})
 
 ;; In-memory overrides. The structure mirrors faces.json:
@@ -57,21 +60,18 @@
 
 (define (-defface-impl name parent options)
   "Underlying registration routine. NAME (a symbol), PARENT (nil or a
-   symbol naming another face), and OPTIONS (a list of keyword pairs:
-   :doc string, :default-light face, :default-dark face,
-   :default-bright face, :default-midnight face). On a hot reload the
-   existing overrides survive — only the registry entry is rewritten."
+   symbol naming another face), and OPTIONS (a list of keyword pairs):
+   :doc plus any number of per-theme blocks keyed `:default-<theme>` —
+   e.g. :default-dark, :default-solarized-light, :default-nova. Whatever
+   per-theme blocks the caller supplies are stored verbatim; resolution
+   (`-face-own-default`) looks one up dynamically by theme name and falls
+   back to :default-dark for a theme with no block, so adding a theme
+   needs no edit here. On a hot reload the existing overrides survive —
+   only the registry entry is rewritten."
   (let ((opts (apply hash-map options)))
     (set! *face-registry*
           (assoc *face-registry* name
-                 (hash-map
-                  :name name
-                  :doc (get opts :doc "")
-                  :parent parent
-                  :default-light    (get opts :default-light {})
-                  :default-dark     (get opts :default-dark {})
-                  :default-bright   (get opts :default-bright {})
-                  :default-midnight (get opts :default-midnight {}))))))
+                 (assoc (assoc opts :name name) :parent parent)))))
 
 ;; defface — register a face with optional `from PARENT` inheritance.
 ;;
@@ -183,16 +183,24 @@
 ;; --- resolution -------------------------------------------------------
 
 (define (-face-own-default name theme)
-  "The face's OWN per-theme default attributes (no inheritance),
-   straight from the registry. Empty map for an unknown face."
+  "The face's OWN per-theme default attributes (no inheritance), straight
+   from the registry. The per-theme block is keyed `:default-<theme>`
+   (theme `solarized-dark` → `:default-solarized-dark`), built from the
+   theme name so a new theme resolves with no change here. A face with no
+   block for THEME falls back to its `:default-dark` block — which is why
+   user faces (seeded identically across themes) and partially-themed
+   faces still resolve sensibly under any theme. Empty map for an unknown
+   face."
   (let ((entry (face-entry name)))
-    (cond
-      ((nil? entry) {})
-      ((eq? theme 'light)    (get entry :default-light    {}))
-      ((eq? theme 'dark)     (get entry :default-dark     {}))
-      ((eq? theme 'bright)   (get entry :default-bright   {}))
-      ((eq? theme 'midnight) (get entry :default-midnight {}))
-      (else                  (get entry :default-dark     {})))))
+    (if (nil? entry)
+        {}
+        (let ((own (get entry
+                        (string->keyword
+                         (string-append "default-" (symbol->string theme)))
+                        nil)))
+          (if (nil? own)
+              (get entry :default-dark {})
+              own)))))
 
 (define (face-parent name)
   "The parent face NAME inherits from, or nil. Unknown faces return nil."

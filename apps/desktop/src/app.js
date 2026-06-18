@@ -5255,6 +5255,14 @@ async function loadUserConfig() {
   } catch (error) {
     repl.appendError(`custom.lisp: ${error.lispMessage ?? error.message}`);
   }
+  // One-time: a custom.lisp saved before the `light` → `solarized-light`
+  // theme rename selects a now-gone theme; rewrite and re-save it. A no-op
+  // once migrated, and for any other persisted theme value.
+  try {
+    interpreter.call('-migrate-stale-theme!');
+  } catch (error) {
+    repl.appendError(`theme migration: ${error.lispMessage ?? error.message}`);
+  }
   try {
     const initSrc = await window.host.readConfigFile('init.lisp');
     if (initSrc === null) {

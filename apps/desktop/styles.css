@@ -20,6 +20,13 @@
   --error: #ec5f67;
   --selection: rgba(102, 153, 204, 0.27);
 
+  /* Derived chrome tones — NOT theme-owned (themes.lisp doesn't set
+     these). They compute from the active theme's vars so consumers (the
+     PDF and browser toolbars, dividers and field outlines) adapt to light
+     and dark alike, instead of pinning to the old dark-only fallbacks. */
+  --bg-status: var(--bg-chrome);
+  --border: color-mix(in srgb, var(--fg) 18%, transparent);
+
   /* Syntax-highlight palette. The hand-tokenizer and the tree-sitter
      pipeline both emit `.tok-<face>` spans; these vars carry their
      colours so a theme can swap them. */
@@ -1919,7 +1926,7 @@ customize-view,
 .customize-back {
   margin-bottom: 10px;
   padding: 2px 8px;
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 4px;
   background: transparent;
   color: var(--accent);
@@ -1938,9 +1945,9 @@ customize-view,
 .customize-group-link {
   text-align: left;
   padding: 6px 10px;
-  border: 1px solid #ffffff14;
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   border-radius: 5px;
-  background: #ffffff08;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
@@ -1948,15 +1955,15 @@ customize-view,
 }
 
 .customize-group-link:hover {
-  background: #ffffff14;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .customize-row {
   margin: 14px 0;
   padding: 12px 14px;
-  border: 1px solid #ffffff12;
+  border: 1px solid color-mix(in srgb, var(--fg) 7%, transparent);
   border-radius: 6px;
-  background: #ffffff06;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
 }
 
 .customize-row-head {
@@ -1977,7 +1984,7 @@ customize-view,
   letter-spacing: 0.04em;
   padding: 1px 6px;
   border-radius: 3px;
-  background: #ffffff14;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
   color: var(--fg-dim);
 }
 
@@ -2013,7 +2020,7 @@ customize-view,
   font-size: 13px;
   color: var(--fg);
   background: var(--bg);
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 4px;
   padding: 3px 6px;
 }
@@ -2042,7 +2049,7 @@ textarea.customize-widget {
 
 .customize-reset {
   padding: 3px 9px;
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 4px;
   background: transparent;
   color: var(--fg-dim);
@@ -2060,14 +2067,14 @@ textarea.customize-widget {
   gap: 8px;
   margin-top: 20px;
   padding-top: 14px;
-  border-top: 1px solid #ffffff14;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .customize-footer button {
   padding: 5px 14px;
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 5px;
-  background: #ffffff0c;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
@@ -2075,7 +2082,7 @@ textarea.customize-widget {
 }
 
 .customize-footer button:hover {
-  background: #ffffff1a;
+  background: color-mix(in srgb, var(--fg) 11%, transparent);
 }
 
 /* --- customize: face rows --------------------------------------------- */
@@ -2084,7 +2091,7 @@ textarea.customize-widget {
  * grid below the live preview span. */
 
 .customize-face-row {
-  border-left: 2px solid #ffffff14;
+  border-left: 2px solid color-mix(in srgb, var(--fg) 8%, transparent);
   padding-left: 10px;
 }
 
@@ -2120,8 +2127,8 @@ textarea.customize-widget {
 .customize-face-field select {
   font: inherit;
   font-size: 12px;
-  background: #ffffff08;
-  border: 1px solid #ffffff22;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 3px;
   padding: 3px 6px;
   color: var(--fg);
@@ -2178,7 +2185,7 @@ image-view,
   gap: 12px;
   flex: 0 0 auto;
   padding: 8px 14px;
-  border-bottom: 1px solid #ffffff14;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .image-info {
@@ -2189,9 +2196,9 @@ image-view,
 .image-zoom-toggle {
   margin-left: auto;
   padding: 4px 12px;
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 5px;
-  background: #ffffff0c;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg);
   font: inherit;
   font-size: 12.5px;
@@ -2199,7 +2206,7 @@ image-view,
 }
 
 .image-zoom-toggle:hover {
-  background: #ffffff1a;
+  background: color-mix(in srgb, var(--fg) 11%, transparent);
 }
 
 .image-stage {
@@ -2210,13 +2217,15 @@ image-view,
   min-height: 0;
   overflow: auto;
   padding: 20px;
-  /* A checkerboard so transparent images read clearly. */
-  background-color: #00000022;
+  /* A page mat (a notch deeper than the chrome) with a checkerboard so
+     transparent images read clearly. Both derive from the theme: a soft
+     grey on light themes, a deep slate on dark. */
+  background-color: color-mix(in srgb, var(--bg-chrome) 85%, #000000);
   background-image:
-    linear-gradient(45deg, #ffffff0a 25%, transparent 25%),
-    linear-gradient(-45deg, #ffffff0a 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #ffffff0a 75%),
-    linear-gradient(-45deg, transparent 75%, #ffffff0a 75%);
+    linear-gradient(45deg, color-mix(in srgb, var(--fg) 7%, transparent) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in srgb, var(--fg) 7%, transparent) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--fg) 7%, transparent) 75%),
+    linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--fg) 7%, transparent) 75%);
   background-size: 20px 20px;
   background-position: 0 0, 0 10px, 10px -10px, -10px 0;
 }
@@ -2277,8 +2286,8 @@ jukebox-view,
   justify-content: center;
   width: 100%;
   aspect-ratio: 1 / 1;
-  background: #00000033;
-  border: 1px solid #ffffff14;
+  background: color-mix(in srgb, var(--bg-chrome) 85%, #000000);
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -2312,9 +2321,9 @@ jukebox-view,
 
 .jukebox-button {
   padding: 4px 10px;
-  border: 1px solid #ffffff22;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 4px;
-  background: #ffffff08;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
   color: var(--fg);
   font: inherit;
   font-size: 12.5px;
@@ -2322,7 +2331,7 @@ jukebox-view,
 }
 
 .jukebox-button:hover {
-  background: #ffffff14;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .jukebox-shuffle.is-on {
@@ -2354,13 +2363,13 @@ jukebox-view,
   overflow: auto;
   flex: 1 1 auto;
   min-height: 0;
-  border: 1px solid #ffffff14;
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   border-radius: 6px;
-  background: #ffffff04;
+  background: color-mix(in srgb, var(--fg) 2%, transparent);
 }
 
 .jukebox-track {
-  border-bottom: 1px solid #ffffff0a;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 4%, transparent);
 }
 
 .jukebox-track:last-child {
@@ -2384,7 +2393,7 @@ jukebox-view,
 }
 
 .jukebox-track-button:hover {
-  background: #ffffff10;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
 
 .jukebox-track.is-current .jukebox-track-button:hover {
@@ -2838,7 +2847,10 @@ pdf-view,
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: #1a1d24;
+  /* The page mat: a notch deeper than the chrome surface so white pages
+     read as documents on a desk — in light themes a soft grey, in dark
+     themes a deep slate. Derived so it tracks the active theme. */
+  background: color-mix(in srgb, var(--bg-chrome) 85%, #000000);
 }
 
 /* A page placeholder. The container's pixel size is set inline by the
