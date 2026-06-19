@@ -1466,39 +1466,101 @@ export function createEditorView(buffer, container, options = {}) {
   root.addEventListener('scroll', schedule);
   // Mouse: click to place the cursor, drag to select.
   //
-  // A pixel point maps to a buffer offset directly through the
-  // monospace grid — the line from the y, the column from the x. This
-  // covers every case (mid-line, an empty line, past a line's end) and
-  // needs no DOM hit-testing, so it stays fast whatever is drawn behind
-  // the text.
+  // The row comes from the y through the line grid (folding-aware). The
+  // column comes from the x: when the line's rendered DOM mirrors its
+  // source text exactly, the browser's own caret hit-testing
+  // (`columnFromCaret`) maps the click precisely for any glyph width —
+  // proportional fallback glyphs (IPA, emoji), wide CJK, tabs. Otherwise
+  // (a math widget, a folded preview, or no native caret API) it falls
+  // back to the monospace `charWidth()` grid.
   function offsetFromPoint(clientX, clientY) {
     const box = content.getBoundingClientRect();
     const lineHeight = cursorEl.getBoundingClientRect().height || 22;
     const row = Math.max(0, Math.floor((clientY - box.top) / lineHeight));
     const line = lineForDisplayRow(row);
-    // x → visual column, visual column → character index. Tabs span
-    // multiple visual columns, so clicking past a tab needs the
-    // inverse-tab-stop math (charIndexAtVisualColumn) to land on the
-    // right insertion point.
     const px = clientX - box.left;
-    let column;
     if (inlineWidgetsByLine.has(line)) {
       // On a line with inline math widgets, invert the measured layout so
       // a click past the (narrow) typeset math lands on the right offset.
-      column = xPxToColumn(line, px);
-    } else {
-      const visCol = Math.max(0, Math.round(px / charWidth()));
-      const tabW = getTabWidth();
-      column = visCol;
-      if (tabW > 0) {
-        const lineMeta = activeBuffer.lineAt(activeBuffer.offsetAt(line, 0));
-        const lineText = typeof lineMeta.text === 'string'
-          ? lineMeta.text
-          : activeBuffer.slice(lineMeta.from, lineMeta.to);
-        column = charIndexAtVisualColumn(lineText, visCol, tabW);
-      }
+      return activeBuffer.offsetAt(line, xPxToColumn(line, px));
+    }
+    // Precise path: hit-test against the actual rendered glyphs. Exact
+    // where the fixed-width grid drifts (a proportional fallback glyph
+    // mid-line skews the global `charWidth()` average, landing point in
+    // the wrong column — the reported `<p class='fragment'>` bug).
+    const caretCol = columnFromCaret(line, clientX);
+    if (caretCol !== null) return activeBuffer.offsetAt(line, caretCol);
+    // Fallback: the monospace grid. x → visual column, visual column →
+    // character index. Tabs span multiple visual columns, so clicking
+    // past a tab needs the inverse-tab-stop math (charIndexAtVisualColumn)
+    // to land on the right insertion point.
+    const visCol = Math.max(0, Math.round(px / charWidth()));
+    const tabW = getTabWidth();
+    let column = visCol;
+    if (tabW > 0) {
+      const lineMeta = activeBuffer.lineAt(activeBuffer.offsetAt(line, 0));
+      const lineText = typeof lineMeta.text === 'string'
+        ? lineMeta.text
+        : activeBuffer.slice(lineMeta.from, lineMeta.to);
+      column = charIndexAtVisualColumn(lineText, visCol, tabW);
     }
     return activeBuffer.offsetAt(line, column);
+  }
+
+  /**
+   * Map a click x on buffer LINE to a source column via the browser's
+   * native caret hit-testing — exact for any glyph width. Guarded: only
+   * fires when the rendered line element's `textContent` equals the
+   * buffer line text, so a math-widget line or a folded-header preview
+   * (whose DOM deliberately differs from the source) falls through to
+   * the grid estimate instead. Returns the column, or `null` to mean
+   * "fall back": line element absent, DOM differs from source, no native
+   * caret API, or the resolved caret lands outside the line.
+   *
+   * @param {number} line
+   * @param {number} clientX
+   * @returns {number | null}
+   */
+  function columnFromCaret(line, clientX) {
+    const lineEl = linesEl.querySelector(
+      `.editor-line[data-line="${line}"]`
+    );
+    if (!lineEl || lineEl.querySelector('.math-widget')) return null;
+    const lineMeta = activeBuffer.lineAt(activeBuffer.offsetAt(line, 0));
+    const lineText = typeof lineMeta.text === 'string'
+      ? lineMeta.text
+      : activeBuffer.slice(lineMeta.from, lineMeta.to);
+    if (lineEl.textContent !== lineText) return null;
+    const rect = lineEl.getBoundingClientRect();
+    // Probe at the line's vertical centre: the row is already fixed from
+    // y, so only x should steer the hit-test — this keeps the native
+    // resolution on THIS line even if y sat near a row boundary.
+    const caret = caretPositionAt(clientX, rect.top + rect.height / 2);
+    if (!caret || !lineEl.contains(caret.node)) return null;
+    const range = doc.createRange();
+    range.selectNodeContents(lineEl);
+    try {
+      range.setEnd(caret.node, caret.offset);
+    } catch {
+      return null;
+    }
+    return range.toString().length;
+  }
+
+  /** Native caret hit-test, normalised across the two browser APIs to
+   *  `{ node, offset }` (or null). Electron/Chromium has the legacy
+   *  `caretRangeFromPoint`; `caretPositionFromPoint` is the standard
+   *  spelling, kept as a fallback. */
+  function caretPositionAt(x, y) {
+    if (typeof doc.caretRangeFromPoint === 'function') {
+      const r = doc.caretRangeFromPoint(x, y);
+      if (r) return { node: r.startContainer, offset: r.startOffset };
+    }
+    if (typeof doc.caretPositionFromPoint === 'function') {
+      const p = doc.caretPositionFromPoint(x, y);
+      if (p) return { node: p.offsetNode, offset: p.offset };
+    }
+    return null;
   }
 
   /**
