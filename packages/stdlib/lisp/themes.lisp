@@ -446,7 +446,11 @@
   :default-bright          (face :foreground "#ff5370")
   :default-midnight        (face :foreground "#7ee787")
   :default-solarized-dark  (face :foreground "#e56663")
-  :default-emacs           (face :foreground "#d1b897")
+  ;; Classic Emacs renders HTML tag names in font-lock-function-name-face,
+  ;; which on a dark bg is LightSkyBlue — a cool accent the all-green/wheat
+  ;; DarkSlateGray palette otherwise lacks, and distinct from the mint
+  ;; attribute names (@constant) and teal values (@string).
+  :default-emacs           (face :foreground "#87cefa")
   :default-nova            (face :foreground "#30e8ab"))
 
 (defface 'operator
