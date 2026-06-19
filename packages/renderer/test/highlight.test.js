@@ -61,6 +61,22 @@ test('Lisp: an ordinary symbol has no face', () => {
   assert.deepEqual(runs, [{ text: 'my-symbol', face: null }]);
 });
 
+test('Lisp: a list head is a function; operators are operators', () => {
+  // The first bare symbol after `(` is the call head.
+  assert.equal(faced('(my-func a b)', 'lisp', 'function').text, 'my-func');
+  // `(define (sq x) …)` — define stays keyword, the inner head sq is faced.
+  assert.equal(faced('(define (sq x) (* x x))', 'lisp', 'function').text, 'sq');
+  assert.equal(faced('(define (sq x) (* x x))', 'lisp', 'keyword').text, 'define');
+  // Arithmetic / comparison symbols read as operators, not heads.
+  assert.equal(faced('(+ 1 2)', 'lisp', 'operator').text, '+');
+  assert.equal(faced('(<= a b)', 'lisp', 'operator').text, '<=');
+});
+
+test('Lisp: a quoted list is data — its head is not faced a function', () => {
+  const runs = highlightLine("'(alpha beta)", 'lisp');
+  assert.equal(runs.find((r) => r.text === 'alpha').face, null);
+});
+
 test('JavaScript: keywords, strings, comments, numbers', () => {
   assert.equal(faced('const a = 1', 'javascript', 'keyword').text, 'const');
   assert.equal(faced('"hello"', 'javascript', 'string').text, '"hello"');
