@@ -26,12 +26,28 @@ import {
 /** A maximal stretch of a line sharing one highlight face. */
 /** @typedef {{ text: string, face: string | null }} Run */
 
-/** Lisp special forms and core macros, shown as keywords. */
+/** Lisp special forms and core macros, shown as keywords. The defined
+ *  NAME and a list's call head are faced separately (see `tokenizeLisp`);
+ *  this set is only the syntactic forms that read as keywords. */
 const LISP_KEYWORDS = new Set([
-  'define', 'lambda', 'fn', 'if', 'cond', 'let', 'let*', 'letrec', 'set!',
-  'begin', 'quote', 'quasiquote', 'and', 'or', 'when', 'unless', 'defmacro',
-  'module', 'import', 'export', 'try', 'catch',
+  // Special forms (the interpreter's SPECIAL_FORMS).
+  'quote', 'quasiquote', 'unquote', 'if', 'cond', 'and', 'or',
+  'define', 'lambda', 'fn', 'defmacro', 'set!', 'begin',
+  'let', 'let*', 'letrec', 'try', 'catch', 'finally',
+  'module', 'import', 'export',
+  // Core control macros (stdlib).
+  'when', 'unless', 'while', 'dotimes', 'dolist',
+  // Definition / scoping macros.
+  'defcommand', 'defcustom', 'defface', 'define-mode',
+  'define-element-view', 'save-excursion', 'with-marker',
+  'atomic-change-group',
 ]);
+
+/** A bare symbol made entirely of arithmetic / comparison characters
+ *  (`+`, `-`, `*`, `/`, `<`, `>`, `=`) — an operator. Name-internal `!`
+ *  and `?` (`set!`, `null?`) are deliberately excluded, so only true
+ *  operator symbols match. */
+const LISP_OPERATOR = /^[-+*/<>=]+$/;
 
 /** JavaScript reserved words and common literals, shown as keywords. */
 const JS_KEYWORDS = new Set([
@@ -80,6 +96,7 @@ function classifyLispToken(token) {
   if (token === '#t' || token === '#f') return 'constant';
   if (NUMBER.test(token)) return 'number';
   if (LISP_KEYWORDS.has(token)) return 'keyword';
+  if (LISP_OPERATOR.test(token)) return 'operator';
   return null;
 }
 
@@ -92,6 +109,13 @@ function tokenizeLisp(line) {
   };
 
   let i = 0;
+  // The first bare symbol after an opening `(` is a call head — face it
+  // `@function` (Nova-style density). `quoted` suppresses that for a
+  // list opened right after a quote/quasiquote (`'(a b c)` is data, not a
+  // call). Whitespace leaves both flags untouched, so `( foo` still heads.
+  let expectHead = false;
+  let quoted = false;
+
   while (i < line.length) {
     const ch = line[i];
 
@@ -106,6 +130,8 @@ function tokenizeLisp(line) {
       }
       j = Math.min(j + 1, line.length);
       push(line.slice(i, j), 'string');
+      expectHead = false;
+      quoted = false;
       i = j;
     } else if (/\s/.test(ch)) {
       let j = i;
@@ -114,15 +140,25 @@ function tokenizeLisp(line) {
       i = j;
     } else if ('()[]{}'.includes(ch)) {
       push(ch, 'paren');
+      // Only a `(` opens a call form; a quoted `(` opens data.
+      expectHead = ch === '(' && !quoted;
+      quoted = false;
       i += 1;
     } else if ("'`,".includes(ch)) {
       push(ch, 'operator');
+      // A following `(` is a data list after quote/quasiquote, not unquote.
+      quoted = ch === "'" || ch === '`';
       i += 1;
     } else {
       let j = i;
       while (j < line.length && !LISP_DELIMITER.test(line[j])) j += 1;
       const token = line.slice(i, j);
-      push(token, classifyLispToken(token));
+      let face = classifyLispToken(token);
+      // A plain symbol heading a list is a function call/definition.
+      if (expectHead && face === null) face = 'function';
+      push(token, face);
+      expectHead = false;
+      quoted = false;
       i = j;
     }
   }
