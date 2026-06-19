@@ -93,6 +93,33 @@
          (str (home-directory) (substring path 1 (string-length path))))
         (else path)))
 
+(define (-last-substring-index/loop haystack needle from last)
+  (let ((i (string-index-of haystack needle from)))
+    (if (< i 0) last (-last-substring-index/loop haystack needle (+ i 1) i))))
+
+(define (-last-substring-index haystack needle)
+  "The 0-based index of the last occurrence of NEEDLE in HAYSTACK, or -1."
+  (-last-substring-index/loop haystack needle 0 -1))
+
+(define (-substitute-in-path path)
+  "Emacs minibuffer path semantics (`substitute-in-file-name`): an embedded
+   '/~' restarts the path at the home directory and '//' restarts it at
+   root — the rightmost restart wins, discarding everything before it — then
+   a leading '~' expands to the home directory. Lets the user reset a long
+   typed path by appending '~/…' (or '//…') and hitting TAB, rather than
+   backtracking to edit the prefix."
+  (let* ((tilde (-last-substring-index path "/~"))
+         (root (-last-substring-index path "//"))
+         ;; The restart begins at the char AFTER the leading '/': the '~'
+         ;; for "/~", the second '/' for "//". 0 means "no restart found".
+         (tcut (if (< tilde 0) 0 (+ tilde 1)))
+         (rcut (if (< root 0) 0 (+ root 1)))
+         (cut (if (> tcut rcut) tcut rcut)))
+    (-expand-tilde
+      (if (> cut 0)
+          (substring path cut (string-length path))
+          path))))
+
 (define (-prefix-match? prefix name)
   "Whether NAME starts with PREFIX, under the active find-file
    case-sensitivity setting."
@@ -128,8 +155,13 @@
    candidates in the scrollable completions panel and returns CURRENT
    unchanged. Every branch that makes progress (or finds nothing)
    removes any open completions panel via `clear-completions!`, so the
-   panel only lingers while the choice is genuinely ambiguous."
-  (let* ((parts (-split-path current))
+   panel only lingers while the choice is genuinely ambiguous.
+
+   CURRENT is first run through `-substitute-in-path`, so typing '~/…' (or
+   '//…') anywhere in the field and pressing TAB resets the path to the home
+   directory (or root) — Emacs's minibuffer behaviour."
+  (let* ((current (-substitute-in-path current))
+         (parts (-split-path current))
          (directory (car parts))
          (basename (cdr parts))
          (matches (-matching-entries
@@ -178,14 +210,15 @@
         (car (-split-path path)))))
 
 (define (-find-file-deliver path)
-  "The submit handler — open PATH if non-empty, after tilde expansion. A
-   path that names no existing file opens an empty buffer visiting it
-   (Emacs's find-file behaviour: the file is created on the first save),
-   via `find-file-new!`."
+  "The submit handler — open PATH if non-empty, after path substitution
+   (an embedded '/~' or '//' resets to home/root; a leading '~' expands) so
+   Enter honours the same reset as TAB. A path that names no existing file
+   opens an empty buffer visiting it (Emacs's find-file behaviour: the file
+   is created on the first save), via `find-file-new!`."
   (cond ((nil? path) nil)
         ((equal? path "") nil)
         (else
-         (let ((p (-expand-tilde path)))
+         (let ((p (-substitute-in-path path)))
            (if (file-exists? p)
                (open-file-path! p)
                (find-file-new! p))))))
