@@ -33,13 +33,16 @@ const QUERY = `
     "require_once" "return" "static" "switch" "throw" "trait" "try"
     "use" "while" "xor" "yield"
   ] @keyword
-  (variable_name) @constant
+  (variable_name) @variable
   (function_definition name: (name) @function)
   (method_declaration name: (name) @function)
   (function_call_expression
     function: [ (name) (qualified_name (name)) ] @function)
   (member_call_expression name: (name) @function)
   (scoped_call_expression name: (name) @function)
+  ;; Member properties read off an instance ($obj->prop) — coloured like
+  ;; Nova's Panic Dark (pink), distinct from method calls above.
+  (member_access_expression name: (name) @property)
   (primitive_type) @type
   (cast_type) @type
   (named_type (name) @type)

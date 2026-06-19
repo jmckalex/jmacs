@@ -390,7 +390,8 @@
   :default-midnight        (face :foreground "#79c0ff")
   :default-solarized-dark  (face :foreground "#8488cd")
   :default-emacs           (face :foreground "#7fffd4")
-  :default-nova            (face :foreground "#ca9fea"))
+  ;; Panic Dark: booleans/null share the keyword blue (value.boolean).
+  :default-nova            (face :foreground "#60aeeb"))
 
 (defface 'function
   :doc "Function names — definitions and calls."
@@ -412,7 +413,16 @@
   :default-midnight        (face :foreground "#ffcb6b")
   :default-solarized-dark  (face :foreground "#b58900")
   :default-emacs           (face :foreground "#eedd82")
-  :default-nova            (face :foreground "#eb9dea"))
+  ;; Panic Dark: identifier.variable is purple.
+  :default-nova            (face :foreground "#ca9fea"))
+
+(defface 'property
+  :doc "Object / member properties read off an instance (obj.prop,
+        $obj->prop, record.field). Nova-style denser highlighting: most
+        themes leave these as default text; Nova paints them pink."
+  :default-solarized-light (face :foreground "#a3398f")
+  :default-dark            (face :foreground "#d9a0c9")
+  :default-nova            (face :foreground "#f29dd1"))
 
 (defface 'type
   :doc "Type names, class names, type-position identifiers."
