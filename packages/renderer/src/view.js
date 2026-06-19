@@ -29,6 +29,7 @@ import {
   foldRanges,
   indexFoldRanges,
   hiddenLines,
+  foldsHidingLine,
   isStructuralCloseLine,
 } from './folding.js';
 import { lineIndentColumns, computeIndentGuides } from './indent-guides.js';
@@ -662,6 +663,9 @@ export function createEditorView(buffer, container, options = {}) {
     for (const start of folded) {
       if (!foldCache.endByStart.has(start)) folded.delete(start);
     }
+    // Navigating the cursor into a collapsed region auto-unfolds it, so the
+    // caret lands where you moved it rather than being clamped to the header.
+    revealFoldsAtPoint(folded);
     const hidden = hiddenLines(folded, foldCache.endByStart, foldCache.blockByStart);
 
     // Replaced-range widget layout (math preview). Build the line-offset
@@ -1600,6 +1604,27 @@ export function createEditorView(buffer, container, options = {}) {
     if (foldHidesPoint(start, line, column)) {
       activeBuffer.moveTo(offsetPastFold(start));
     }
+  }
+
+  /** Auto-unfold any fold whose collapsed interior a cursor has moved into,
+   *  so navigating into a folded region opens it instead of stranding the
+   *  caret on the header. Mutates the `folded` set in place; returns whether
+   *  it changed anything. Called from renderLines before the hidden set is
+   *  computed, so the same render shows the revealed lines. (Folding leaves
+   *  point on the line past the fold — escapeFoldedPoint / offsetPastFold —
+   *  so collapsing never trips this and instantly re-opens.) */
+  function revealFoldsAtPoint(folded) {
+    if (folded.size === 0) return false;
+    let changed = false;
+    for (const cursor of getCursors()) {
+      const { line } = activeBuffer.positionAt(cursor.point);
+      for (const start of foldsHidingLine(
+        line, folded, foldCache.endByStart, foldCache.blockByStart
+      )) {
+        if (folded.delete(start)) changed = true;
+      }
+    }
+    return changed;
   }
 
   /** Toggle the fold at the header that contains buffer line `line`. */

@@ -217,6 +217,30 @@ export function hiddenLines(foldedStartLines, endByStart, blockByStart) {
 }
 
 /**
+ * The folded headers whose collapsed interior contains `line` — i.e. the
+ * folds that navigating the cursor onto that line should auto-open, so the
+ * caret lands where the user moved it instead of being clamped to the
+ * header. A block fold keeps its closing-delimiter line visible, so a `line`
+ * sitting on that end line is NOT inside it.
+ *
+ * @param {number} line
+ * @param {Iterable<number>} foldedStartLines
+ * @param {Map<number, number>} endByStart
+ * @param {Set<number>} [blockByStart]
+ * @returns {number[]} the matching fold header start lines
+ */
+export function foldsHidingLine(line, foldedStartLines, endByStart, blockByStart) {
+  const out = [];
+  for (const start of foldedStartLines) {
+    const end = endByStart.get(start);
+    if (end === undefined) continue;
+    const last = blockByStart && blockByStart.has(start) ? end - 1 : end;
+    if (line > start && line <= last) out.push(start);
+  }
+  return out;
+}
+
+/**
  * Should a folded header preview its range's *closing* line after the
  * `…`? Only when that line is structurally a close — a bare closing
  * delimiter (`</tag>`, `}`, `)`, `]`) or a short keyword close (`end`,
