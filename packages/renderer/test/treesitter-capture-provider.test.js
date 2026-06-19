@@ -12,8 +12,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyCaptureProvider } from '../src/treesitter.js';
+import { applyCaptureProvider, normalizeProviderFold } from '../src/treesitter.js';
 import { flattenInnermost } from '../src/runs.js';
+
+test('normalizeProviderFold preserves block + inner-fold flags, not just start/end', () => {
+  // The seam where a scanner's fold flavours used to be dropped on the way to
+  // the view (jmarkdown @begin/@end folded, but the @end line vanished).
+  assert.deepEqual(
+    normalizeProviderFold({ start: 0, end: 40, block: true }),
+    { start: 0, end: 40, block: true }
+  );
+  assert.deepEqual(
+    normalizeProviderFold({ start: 0, end: 20, innerStart: 3, innerEnd: 16 }),
+    { start: 0, end: 20, innerStart: 3, innerEnd: 16 }
+  );
+  // A plain fold stays plain (no spurious flags).
+  assert.deepEqual(normalizeProviderFold({ start: 5, end: 9 }), { start: 5, end: 9 });
+});
 
 test('no provider output passes ranges through unchanged', () => {
   const ranges = [{ start: 0, end: 5, face: 'a' }];
