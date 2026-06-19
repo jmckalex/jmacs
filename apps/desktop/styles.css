@@ -48,7 +48,9 @@
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas,
     monospace;
   --font-size: 14px;
-  --line-height: 1.65;
+  /* Fallback before the *line-height* defcustom paints --line-height at
+     startup; keep it equal to that defcustom's default (1.35). */
+  --line-height: 1.35;
 
   /* Pane sizes — written live by the splitters (see splitter.js) and
      restored from disk at startup. Stay in pixels so the splitter

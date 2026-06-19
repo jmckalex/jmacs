@@ -504,6 +504,14 @@
    solarized-dark, midnight (a near-black dark), emacs (classic
    wheat-on-darkslategray) and nova (Trevor Davis's blue-grey).")
 
+(defcustom *line-height* 1.35 :number
+  :group 'appearance
+  :on-change (lambda (name value) (set-css-line-height! value))
+  :doc "The editor's line spacing, as a multiple of the font size (the
+   surface's CSS line-height). 1.0 is tight; the default 1.35 is comfortable
+   for code. Applied to the editor via the `--line-height` CSS variable —
+   live on Apply, and re-applied on startup. Clamped to a sane range.")
+
 ;; --- one-time migration: `light` → `solarized-light` -------------------
 ;; The Solarized Light theme was originally registered as `light`; it is
 ;; now `solarized-light` (to pair with `solarized-dark`). A custom.lisp
