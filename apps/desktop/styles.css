@@ -102,7 +102,13 @@ body {
      JetBrains Mono's ligatures preserve the monospace advance width,
      so the ch/lh grid the editor lays out on is unaffected. */
   font-variant-ligatures: contextual;
-  -webkit-font-smoothing: antialiased;
+  /* Render text the way native macOS apps (Nova, Sublime via CoreText)
+     do: font-smoothing ON, so strokes get the contrast/weight boost that
+     reads as crisp. The trendy `antialiased` value DISABLES that boost
+     (grayscale AA, no smoothing) → thinner, lighter strokes that look
+     "washed out" beside a native editor in the same font. `auto` lets the
+     platform apply its smoothing. */
+  -webkit-font-smoothing: auto;
   cursor: default;
   user-select: none;
 }
