@@ -27,6 +27,10 @@
  * @property {number} [closeCol] - For a column-aware fold, the column on
  *   `endLine` where the closing delimiter begins (so the view shows
  *   `</p>`). Present only when the closing delimiter starts on `endLine`.
+ * @property {boolean} [block] - A *block* fold keeps BOTH delimiter lines
+ *   visible when collapsed (the view draws a vertical ellipsis on its own
+ *   row between them) instead of hiding the closing line. Used for
+ *   jmarkdown `@begin(…)`/`@end(…)` environments.
  */
 
 /**
@@ -37,6 +41,7 @@
  *   the offset just past the opening delimiter.
  * @property {number} [innerEnd] - For an inner fold, the offset at which
  *   the closing delimiter begins.
+ * @property {boolean} [block] - See FoldRange.block.
  */
 
 /**
@@ -71,6 +76,7 @@ export function foldRanges(text, captures) {
     const existing = byStart.get(startLine);
     if (existing !== undefined && endLine <= existing.endLine) continue;
     const range = { endLine };
+    if (cap.block) range.block = true;
     // Column-aware (inner) fold: translate the delimiter offsets into a
     // header cut column and a close resume column, but only when each
     // delimiter lands on the line we'd render it on (the header line and
@@ -89,6 +95,7 @@ export function foldRanges(text, captures) {
     const range = { startLine, endLine: r.endLine };
     if (r.headerCol !== undefined) range.headerCol = r.headerCol;
     if (r.closeCol !== undefined) range.closeCol = r.closeCol;
+    if (r.block) range.block = true;
     return range;
   });
   ranges.sort((a, b) => a.startLine - b.startLine);
@@ -154,6 +161,8 @@ export function indexFoldRanges(ranges) {
   const depthByStart = new Map();
   /** startLine -> { headerCol?, closeCol? } for column-aware folds only. */
   const cutByStart = new Map();
+  /** startLine numbers of *block* folds (both delimiter lines kept). */
+  const blockByStart = new Set();
   /** End lines of ranges still open at the current sweep point, innermost
    *  on top (their ends decrease toward the top under proper nesting). */
   const openEnds = [];
@@ -166,6 +175,7 @@ export function indexFoldRanges(ranges) {
         closeCol: range.closeCol,
       });
     }
+    if (range.block) blockByStart.add(range.startLine);
     while (
       openEnds.length > 0 &&
       openEnds[openEnds.length - 1] < range.startLine
@@ -175,7 +185,7 @@ export function indexFoldRanges(ranges) {
     depthByStart.set(range.startLine, openEnds.length);
     openEnds.push(range.endLine);
   }
-  return { headers, endByStart, depthByStart, cutByStart };
+  return { headers, endByStart, depthByStart, cutByStart, blockByStart };
 }
 
 /**
@@ -189,16 +199,45 @@ export function indexFoldRanges(ranges) {
  *
  * @param {Iterable<number>} foldedStartLines
  * @param {Map<number, number>} endByStart
+ * @param {Set<number>} [blockByStart] - Block-fold start lines, whose
+ *   closing-delimiter line stays visible (only the interior is hidden).
  * @returns {Set<number>}
  */
-export function hiddenLines(foldedStartLines, endByStart) {
+export function hiddenLines(foldedStartLines, endByStart, blockByStart) {
   const hidden = new Set();
   for (const start of foldedStartLines) {
     const end = endByStart.get(start);
     if (end === undefined) continue;
-    for (let line = start + 1; line <= end; line += 1) hidden.add(line);
+    // A block fold keeps its closing-delimiter line visible, so hide only
+    // the interior (`start+1 … end-1`); a normal fold hides through `end`.
+    const last = blockByStart && blockByStart.has(start) ? end - 1 : end;
+    for (let line = start + 1; line <= last; line += 1) hidden.add(line);
   }
   return hidden;
+}
+
+/**
+ * The folded headers whose collapsed interior contains `line` — i.e. the
+ * folds that navigating the cursor onto that line should auto-open, so the
+ * caret lands where the user moved it instead of being clamped to the
+ * header. A block fold keeps its closing-delimiter line visible, so a `line`
+ * sitting on that end line is NOT inside it.
+ *
+ * @param {number} line
+ * @param {Iterable<number>} foldedStartLines
+ * @param {Map<number, number>} endByStart
+ * @param {Set<number>} [blockByStart]
+ * @returns {number[]} the matching fold header start lines
+ */
+export function foldsHidingLine(line, foldedStartLines, endByStart, blockByStart) {
+  const out = [];
+  for (const start of foldedStartLines) {
+    const end = endByStart.get(start);
+    if (end === undefined) continue;
+    const last = blockByStart && blockByStart.has(start) ? end - 1 : end;
+    if (line > start && line <= last) out.push(start);
+  }
+  return out;
 }
 
 /**

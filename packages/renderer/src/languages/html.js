@@ -35,7 +35,11 @@ const QUERY = `
   (quoted_attribute_value) @string
 
   ; --- structural punctuation -----------------------------------------
-  [ "<" ">" "</" "/>" "<!" ] @paren
+  ; Element-tag delimiters take the tag face (not @paren) so a tag reads as
+  ; one unit -- the angle brackets share the tag-name colour rather than the
+  ; bracket colour around a coloured name. The doctype open stays neutral.
+  [ "<" ">" "</" "/>" ] @tag
+  "<!" @paren
   "=" @operator
 `;
 

@@ -146,6 +146,24 @@ function initRuntime() {
 }
 
 /**
+ * Copy a fold capture produced by a `foldProvider` (a custom scanner such as
+ * jmarkdown's), preserving the optional fold flavours — inner-fold delimiter
+ * offsets and the `block` marker (jmarkdown @begin/@end) — not just
+ * `start`/`end`. Pure; the regression guard for the bug where these flags were
+ * dropped on the way from the scanner to the view.
+ *
+ * @param {import('./folding.js').FoldCapture} r
+ * @returns {import('./folding.js').FoldCapture}
+ */
+export function normalizeProviderFold(r) {
+  const range = { start: r.start, end: r.end };
+  if (typeof r.innerStart === 'number') range.innerStart = r.innerStart;
+  if (typeof r.innerEnd === 'number') range.innerEnd = r.innerEnd;
+  if (r.block) range.block = true;
+  return range;
+}
+
+/**
  * Create a tree-sitter highlighter from a vendored grammar and a query.
  * Asynchronous: it loads the runtime and the grammar.
  *
@@ -353,9 +371,10 @@ export async function createTreeSitterHighlighter(
       tree.delete();
     }
     if (foldProvider) {
-      for (const r of foldProvider(text)) {
-        ranges.push({ start: r.start, end: r.end });
-      }
+      // Carry the optional fold flavours a scanner can set (inner-fold
+      // delimiter offsets, the `block` marker) — not just start/end, or the
+      // view never sees them.
+      for (const r of foldProvider(text)) ranges.push(normalizeProviderFold(r));
     }
     if (injectionProvider) {
       for (const inj of injectionProvider(text)) injections.push(inj);

@@ -235,40 +235,43 @@
    "--ansi-bright-white"   "#fdf6e3"))
 
 (define-theme 'emacs
-  "Classic Emacs — the wheat-on-darkslategray look (`(set-background-color
-   \"darkslategray\")` / `(set-foreground-color \"wheat\")`) with the
-   default font-lock accents: rosybrown strings, cyan keywords, sky-blue
-   functions, palegreen types."
+  "DarkSlateGray — a deep teal-slate ground (#062329) under wheat body
+   text (#d1b897), with green comments, teal strings, mint types, aqua
+   numbers and white keywords. Modelled on the VS Code \"DarkSlateGray\"
+   theme — a richer, darker take on Emacs's classic wheat-on-darkslategray
+   than the literal X11 colours. Most identifiers (functions, tags,
+   properties) read as plain wheat by design; only comments, strings,
+   types, numbers and keywords carry an accent."
   (hash-map
-   "--bg"           "#2f4f4f"
-   "--bg-chrome"    "#293f3f"
-   "--bg-editor"    "#2f4f4f"
-   "--bg-editor-focused" "#2f4f4f"
-   "--bg-repl"      "#293f3f"
-   "--fg"           "#f5deb3"
-   "--fg-dim"       "#8fbc8f"
-   "--accent"       "#87cefa"
-   "--result"       "#98fb98"
-   "--error"        "#f08080"
-   "--selection"    "rgba(70, 130, 180, 0.35)"
-   ;; ANSI palette — classic terminal hues warmed toward the wheat/slate
-   ;; ground so a coloured prompt sits in the same world as the chrome.
-   "--ansi-black"          "#1c2e2e"
-   "--ansi-red"            "#cd5c5c"
-   "--ansi-green"          "#98fb98"
-   "--ansi-yellow"         "#eedd82"
-   "--ansi-blue"           "#87cefa"
-   "--ansi-magenta"        "#dda0dd"
-   "--ansi-cyan"           "#40e0d0"
-   "--ansi-white"          "#f5deb3"
-   "--ansi-bright-black"   "#5c7c7c"
-   "--ansi-bright-red"     "#f08080"
-   "--ansi-bright-green"   "#b4f8b4"
-   "--ansi-bright-yellow"  "#f5e6a3"
-   "--ansi-bright-blue"    "#a5d8ff"
-   "--ansi-bright-magenta" "#eabfea"
-   "--ansi-bright-cyan"    "#7fffd4"
-   "--ansi-bright-white"   "#fffaf0"))
+   "--bg"           "#062329"
+   "--bg-chrome"    "#1e383e"
+   "--bg-editor"    "#062329"
+   "--bg-editor-focused" "#062329"
+   "--bg-repl"      "#122e34"
+   "--fg"           "#d1b897"
+   "--fg-dim"       "#83735e"
+   "--accent"       "#8cde94"
+   "--result"       "#8cde94"
+   "--error"        "#a45a74"
+   "--selection"    "rgba(122, 208, 198, 0.25)"
+   ;; ANSI palette — DarkSlateGray hues mapped onto the standard slots so a
+   ;; coloured prompt sits in the same teal/wheat world as the chrome.
+   "--ansi-black"          "#0c282e"
+   "--ansi-red"            "#d2738a"
+   "--ansi-green"          "#44b340"
+   "--ansi-yellow"         "#d1b897"
+   "--ansi-blue"           "#7ad0c6"
+   "--ansi-magenta"        "#a45a74"
+   "--ansi-cyan"           "#2ec09c"
+   "--ansi-white"          "#d1b897"
+   "--ansi-bright-black"   "#5b6a5e"
+   "--ansi-bright-red"     "#e08a9c"
+   "--ansi-bright-green"   "#8cde94"
+   "--ansi-bright-yellow"  "#e6d4af"
+   "--ansi-bright-blue"    "#a8d8d0"
+   "--ansi-bright-magenta" "#c98aa0"
+   "--ansi-bright-cyan"    "#7ad0c6"
+   "--ansi-bright-white"   "#f0e6d0"))
 
 (define-theme 'nova
   "Nova — the built-in \"Dark\" theme from Panic's Nova editor: a
@@ -349,7 +352,7 @@
   :default-bright          (face :foreground "#8aa0b3" :slant :italic)
   :default-midnight        (face :foreground "#8b949e" :slant :italic)
   :default-solarized-dark  (face :foreground "#657b83" :slant :italic)
-  :default-emacs           (face :foreground "#cd5c5c" :slant :italic)
+  :default-emacs           (face :foreground "#44b340" :slant :italic)
   :default-nova            (face :foreground "#729abb" :slant :italic))
 
 (defface 'string
@@ -359,7 +362,7 @@
   :default-bright          (face :foreground "#a3d977")
   :default-midnight        (face :foreground "#a5d6ff")
   :default-solarized-dark  (face :foreground "#2aa198")
-  :default-emacs           (face :foreground "#bc8f8f")
+  :default-emacs           (face :foreground "#2ec09c")
   :default-nova            (face :foreground "#ff8f84"))
 
 (defface 'number
@@ -369,7 +372,7 @@
   :default-bright          (face :foreground "#ffb86c")
   :default-midnight        (face :foreground "#79c0ff")
   :default-solarized-dark  (face :foreground "#dd629d")
-  :default-emacs           (face :foreground "#ffa07a")
+  :default-emacs           (face :foreground "#7ad0c6")
   :default-nova            (face :foreground "#efd282"))
 
 (defface 'keyword
@@ -379,7 +382,7 @@
   :default-bright          (face :foreground "#d56bff")
   :default-midnight        (face :foreground "#ff7b72")
   :default-solarized-dark  (face :foreground "#859900")
-  :default-emacs           (face :foreground "#00ced1")
+  :default-emacs           (face :foreground "#ffffff")
   :default-nova            (face :foreground "#60aeeb"))
 
 (defface 'constant
@@ -389,8 +392,9 @@
   :default-bright          (face :foreground "#56e0e0")
   :default-midnight        (face :foreground "#79c0ff")
   :default-solarized-dark  (face :foreground "#8488cd")
-  :default-emacs           (face :foreground "#7fffd4")
-  :default-nova            (face :foreground "#ca9fea"))
+  :default-emacs           (face :foreground "#8cde94")
+  ;; Panic Dark: booleans/null share the keyword blue (value.boolean).
+  :default-nova            (face :foreground "#60aeeb"))
 
 (defface 'function
   :doc "Function names — definitions and calls."
@@ -399,7 +403,7 @@
   :default-bright          (face :foreground "#82aaff")
   :default-midnight        (face :foreground "#d2a8ff")
   :default-solarized-dark  (face :foreground "#3094da")
-  :default-emacs           (face :foreground "#87cefa")
+  :default-emacs           (face :foreground "#d1b897")
   :default-nova            (face :foreground "#30e8ab"))
 
 (defface 'variable
@@ -411,8 +415,19 @@
   :default-bright          (face :foreground "#f9a872")
   :default-midnight        (face :foreground "#ffcb6b")
   :default-solarized-dark  (face :foreground "#b58900")
-  :default-emacs           (face :foreground "#eedd82")
-  :default-nova            (face :foreground "#eb9dea"))
+  :default-emacs           (face :foreground "#c1d1e3")
+  ;; Panic Dark: identifier.variable is purple.
+  :default-nova            (face :foreground "#ca9fea"))
+
+(defface 'property
+  :doc "Object / member properties read off an instance (obj.prop,
+        $obj->prop, record.field). Nova-style denser highlighting: most
+        themes leave these as default text; Nova paints them pink."
+  :default-solarized-light (face :foreground "#a3398f")
+  :default-dark            (face :foreground "#d9a0c9")
+  ;; DarkSlateGray: properties read as plain wheat (support.variable.property).
+  :default-emacs           (face :foreground "#d1b897")
+  :default-nova            (face :foreground "#f29dd1"))
 
 (defface 'type
   :doc "Type names, class names, type-position identifiers."
@@ -421,7 +436,7 @@
   :default-bright          (face :foreground "#ffd866")
   :default-midnight        (face :foreground "#ffa657")
   :default-solarized-dark  (face :foreground "#e8652e")
-  :default-emacs           (face :foreground "#98fb98")
+  :default-emacs           (face :foreground "#8cde94")
   :default-nova            (face :foreground "#00e9db"))
 
 (defface 'tag
@@ -431,7 +446,11 @@
   :default-bright          (face :foreground "#ff5370")
   :default-midnight        (face :foreground "#7ee787")
   :default-solarized-dark  (face :foreground "#e56663")
-  :default-emacs           (face :foreground "#f08080")
+  ;; Classic Emacs renders HTML tag names in font-lock-function-name-face,
+  ;; which on a dark bg is LightSkyBlue — a cool accent the all-green/wheat
+  ;; DarkSlateGray palette otherwise lacks, and distinct from the mint
+  ;; attribute names (@constant) and teal values (@string).
+  :default-emacs           (face :foreground "#87cefa")
   :default-nova            (face :foreground "#30e8ab"))
 
 (defface 'operator
@@ -445,7 +464,7 @@
   :default-bright          (face :foreground "#82eaff")
   :default-midnight        (face :foreground "#56d4dd")
   :default-solarized-dark  (face :foreground "#839496")
-  :default-emacs           (face :foreground "#b0c4de")
+  :default-emacs           (face :foreground "#a08c73")
   :default-nova            (face :foreground "#92b3cf"))
 
 (defface 'paren
@@ -456,7 +475,7 @@
   :default-bright          (face :foreground "#8b9aab")
   :default-midnight        (face :foreground "#6e7681")
   :default-solarized-dark  (face :foreground "#657b83")
-  :default-emacs           (face :foreground "#8fbc8f")
+  :default-emacs           (face :foreground "#a99479")
   :default-nova            (face :foreground "#92b3cf"))
 
 (defface 'heading
@@ -466,7 +485,7 @@
   :default-bright          (face :foreground "#ffd866" :weight :bold)
   :default-midnight        (face :foreground "#ffa657" :weight :bold)
   :default-solarized-dark  (face :foreground "#3094da" :weight :bold)
-  :default-emacs           (face :foreground "#ffd700" :weight :bold)
+  :default-emacs           (face :foreground "#d1b897" :weight :bold)
   :default-nova            (face :foreground "#ffa956" :weight :bold))
 
 (defface 'code
@@ -476,7 +495,7 @@
   :default-bright          (face :foreground "#a3d977")
   :default-midnight        (face :foreground "#a5d6ff")
   :default-solarized-dark  (face :foreground "#2aa198")
-  :default-emacs           (face :foreground "#98fb98")
+  :default-emacs           (face :foreground "#7ad0c6")
   :default-nova            (face :foreground "#30e8ab"))
 
 (defface 'link
@@ -486,7 +505,7 @@
   :default-bright          (face :foreground "#82aaff" :underline #t)
   :default-midnight        (face :foreground "#58a6ff" :underline #t)
   :default-solarized-dark  (face :foreground "#3094da" :underline #t)
-  :default-emacs           (face :foreground "#87cefa" :underline #t)
+  :default-emacs           (face :foreground "#d2738a" :underline #t)
   :default-nova            (face :foreground "#6ac1ff" :underline #t))
 
 ;; --- the user-facing setting -------------------------------------------
@@ -503,6 +522,14 @@
    bright (dark chrome with a punchier syntax palette), solarized-light,
    solarized-dark, midnight (a near-black dark), emacs (classic
    wheat-on-darkslategray) and nova (Trevor Davis's blue-grey).")
+
+(defcustom *line-height* 1.35 :number
+  :group 'appearance
+  :on-change (lambda (name value) (set-css-line-height! value))
+  :doc "The editor's line spacing, as a multiple of the font size (the
+   surface's CSS line-height). 1.0 is tight; the default 1.35 is comfortable
+   for code. Applied to the editor via the `--line-height` CSS variable —
+   live on Apply, and re-applied on startup. Clamped to a sane range.")
 
 ;; --- one-time migration: `light` → `solarized-light` -------------------
 ;; The Solarized Light theme was originally registered as `light`; it is

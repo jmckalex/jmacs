@@ -168,6 +168,9 @@ test('@begin/@end: keyword, parens, name zones and a fold', () => {
   // Markdown body is neither owned nor blanked.
   assert.ok(!owned(scan, text, 'infinitely'));
   assert.equal(scan.folds.length, 1);
+  // A block fold: collapsing keeps both @begin and @end lines (a vertical
+  // ellipsis between them), rather than swallowing the closing line.
+  assert.equal(scan.folds[0].block, true);
 });
 
 test('@begin(equation*) bodies inject latex', () => {

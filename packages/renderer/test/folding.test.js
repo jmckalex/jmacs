@@ -14,6 +14,7 @@ import {
   foldRanges,
   indexFoldRanges,
   hiddenLines,
+  foldsHidingLine,
   isStructuralCloseLine,
 } from '../src/folding.js';
 
@@ -140,6 +141,52 @@ test('hiddenLines includes every line strictly between a folded header and its e
   const hidden = hiddenLines([1], endByStart);
   // Lines 2, 3, 4, 5 — header (1) stays visible.
   assert.deepEqual([...hidden].sort((a, b) => a - b), [2, 3, 4, 5]);
+});
+
+test('foldRanges carries the block flag through to the range', () => {
+  const text = 'a\nb\nc\nd';
+  const [range] = foldRanges(text, [{ start: 0, end: 6, block: true }]);
+  assert.equal(range.startLine, 0);
+  assert.equal(range.block, true);
+});
+
+test('indexFoldRanges records block folds in blockByStart', () => {
+  const { blockByStart } = indexFoldRanges([
+    { startLine: 0, endLine: 5, block: true },
+    { startLine: 8, endLine: 9 }, // plain
+  ]);
+  assert.equal(blockByStart.has(0), true);
+  assert.equal(blockByStart.has(8), false);
+});
+
+test('hiddenLines keeps a block fold\'s closing line visible (interior only)', () => {
+  const endByStart = new Map([[1, 5]]);
+  // Plain: 2,3,4,5 hidden. Block: only 2,3,4 — the @end line (5) stays shown.
+  const block = hiddenLines([1], endByStart, new Set([1]));
+  assert.deepEqual([...block].sort((a, b) => a - b), [2, 3, 4]);
+});
+
+test('foldsHidingLine: interior reveals the fold; header / past it do not', () => {
+  const endByStart = new Map([[1, 5]]);
+  assert.deepEqual(foldsHidingLine(3, [1], endByStart), [1]); // interior
+  assert.deepEqual(foldsHidingLine(1, [1], endByStart), []); // on the header
+  assert.deepEqual(foldsHidingLine(6, [1], endByStart), []); // past the fold
+});
+
+test('foldsHidingLine: a block fold\'s visible end line does not reveal it', () => {
+  const endByStart = new Map([[1, 5]]);
+  const block = new Set([1]);
+  assert.deepEqual(foldsHidingLine(4, [1], endByStart, block), [1]); // interior
+  assert.deepEqual(foldsHidingLine(5, [1], endByStart, block), []); // the @end line
+});
+
+test('foldsHidingLine: returns every nested fold whose interior holds the line', () => {
+  // 0..20 outer, 2..8 inner; line 5 sits inside both.
+  const endByStart = new Map([[0, 20], [2, 8]]);
+  assert.deepEqual(
+    foldsHidingLine(5, [0, 2], endByStart).sort((a, b) => a - b),
+    [0, 2]
+  );
 });
 
 test('hiddenLines ignores folded entries that are not known headers', () => {

@@ -3616,6 +3616,17 @@ const interpreter = createInterpreter({
       currentTabWidth = width;
       return NIL;
     },
+    // Paint the editor's line spacing onto the `--line-height` CSS var, which
+    // `.editor { line-height: var(--line-height) }` reads — so every line's
+    // `1lh`-based position reflows in step (no re-render needed). Driven by
+    // the *line-height* defcustom: once on startup, then on its on-change.
+    // Clamped to a sane multiple so a fat-fingered value can't break layout.
+    'set-css-line-height!': (args) => {
+      const value = Number(args[0]);
+      const lh = Number.isFinite(value) && value >= 1 && value <= 3 ? value : 1.35;
+      document.documentElement.style.setProperty('--line-height', String(lh));
+      return NIL;
+    },
     'clear-status!': () => {
       minibuffer.clearStatus();
       return NIL;
@@ -5440,6 +5451,13 @@ if (keymapReady) {
   } catch (error) {
     repl.appendError(`tab-width sync failed: ${error.lispMessage ?? error.message}`);
   }
+}
+// Sync the editor line-height CSS var from *line-height* on startup; the
+// defcustom's on-change keeps it current after customise edits.
+if (keymapReady) {
+  try {
+    interpreter.call('set-css-line-height!', interpreter.evaluate('*line-height*'));
+  } catch { /* an old config without the setting — the CSS default stands */ }
 }
 if (keymapReady) applyCurrentTheme();
 if (keymapReady) applyCurrentFaceStyles();

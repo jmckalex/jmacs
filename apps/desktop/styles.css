@@ -48,7 +48,9 @@
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Menlo, Consolas,
     monospace;
   --font-size: 14px;
-  --line-height: 1.65;
+  /* Fallback before the *line-height* defcustom paints --line-height at
+     startup; keep it equal to that defcustom's default (1.35). */
+  --line-height: 1.35;
 
   /* Pane sizes — written live by the splitters (see splitter.js) and
      restored from disk at startup. Stay in pixels so the splitter
@@ -715,6 +717,25 @@ text-view {
 .editor-fold-close {
   display: inline;
   margin-left: 0.2ch;
+}
+
+/* A *block* fold (jmarkdown @begin/@end) keeps both delimiter lines and
+   draws a vertical ellipsis on its own reserved row between them, indented
+   to the collapsed body (`left` set inline, in ch columns). The @begin
+   line's height is set to 2lh so this absolutely-positioned row fits. Yellow
+   like the inline fold ellipsis (borrows --tok-type from the theme), and
+   carried on a tinted-gold pill so the thin glyph reads at a glance on an
+   otherwise-blank row. The tint is `color-mix`ed from the theme colour (not
+   a dark-only #ffffffXX overlay) so it holds up on light themes too. */
+.editor-fold-vellipsis {
+  position: absolute;
+  top: 1lh;
+  color: var(--tok-type);
+  font-weight: 700;
+  padding: 0 0.6ch;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--tok-type) 24%, transparent);
+  pointer-events: none;
 }
 
 /* --- LaTeX math preview widgets ---------------------------------------

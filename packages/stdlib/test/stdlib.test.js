@@ -2682,7 +2682,7 @@ test('the new themes resolve their own token palettes, not the dark fallback', a
   // back to `:default-dark`.
   assert.equal(fg('string', 'solarized-dark'), '#2aa198');
   assert.equal(fg('keyword', 'solarized-dark'), '#859900');
-  assert.equal(fg('string', 'emacs'), '#bc8f8f'); // rosybrown
+  assert.equal(fg('string', 'emacs'), '#2ec09c'); // DarkSlateGray teal
   assert.equal(fg('keyword', 'nova'), '#60aeeb'); // Nova Dark blue
   // …and they differ from the dark default for the same face.
   const darkString = fg('string', 'dark');
