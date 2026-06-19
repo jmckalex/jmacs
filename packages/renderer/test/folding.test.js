@@ -142,6 +142,29 @@ test('hiddenLines includes every line strictly between a folded header and its e
   assert.deepEqual([...hidden].sort((a, b) => a - b), [2, 3, 4, 5]);
 });
 
+test('foldRanges carries the block flag through to the range', () => {
+  const text = 'a\nb\nc\nd';
+  const [range] = foldRanges(text, [{ start: 0, end: 6, block: true }]);
+  assert.equal(range.startLine, 0);
+  assert.equal(range.block, true);
+});
+
+test('indexFoldRanges records block folds in blockByStart', () => {
+  const { blockByStart } = indexFoldRanges([
+    { startLine: 0, endLine: 5, block: true },
+    { startLine: 8, endLine: 9 }, // plain
+  ]);
+  assert.equal(blockByStart.has(0), true);
+  assert.equal(blockByStart.has(8), false);
+});
+
+test('hiddenLines keeps a block fold\'s closing line visible (interior only)', () => {
+  const endByStart = new Map([[1, 5]]);
+  // Plain: 2,3,4,5 hidden. Block: only 2,3,4 — the @end line (5) stays shown.
+  const block = hiddenLines([1], endByStart, new Set([1]));
+  assert.deepEqual([...block].sort((a, b) => a - b), [2, 3, 4]);
+});
+
 test('hiddenLines ignores folded entries that are not known headers', () => {
   // The user folded line 1, then the buffer edited and line 1 no
   // longer names a fold. The view drops stale entries; the pure

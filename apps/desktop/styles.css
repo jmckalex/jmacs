@@ -711,6 +711,19 @@ text-view {
   margin-left: 0.2ch;
 }
 
+/* A *block* fold (jmarkdown @begin/@end) keeps both delimiter lines and
+   draws a vertical ellipsis on its own reserved row between them, indented
+   to the collapsed body (`left` set inline, in ch columns). The @begin
+   line's height is set to 2lh so this absolutely-positioned row fits. Yellow
+   like the inline fold ellipsis (borrows --tok-type from the theme). */
+.editor-fold-vellipsis {
+  position: absolute;
+  top: 1lh;
+  color: var(--tok-type);
+  font-weight: 700;
+  pointer-events: none;
+}
+
 /* --- LaTeX math preview widgets ---------------------------------------
    A replaced-range widget: typeset MathJax SVG shown in place of the
    source. Inline widgets sit in the text line; block widgets are their

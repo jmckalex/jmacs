@@ -385,7 +385,12 @@ function scanBlocks(ctx, from) {
       const end = environmentZones(ctx, k, m);
       const open = envStack.pop();
       if (open !== undefined) {
-        ctx.out.folds.push({ start: open, end: lineEnd(ctx, k) });
+        // A *block* fold: collapsing keeps both the `@begin(…)` and the
+        // `@end(…)` lines visible, with a vertical ellipsis between them —
+        // rather than swallowing the closing line (`@end(…)` is not a
+        // structural close the line-based preview would re-show). See
+        // folding.js / view.js.
+        ctx.out.folds.push({ start: open, end: lineEnd(ctx, k), block: true });
       }
       region(ctx, ls, end);
       blank(ctx.buf, ls, end);

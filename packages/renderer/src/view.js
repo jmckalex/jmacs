@@ -257,6 +257,7 @@ export function createEditorView(buffer, container, options = {}) {
       endByStart: new Map(),
       depthByStart: new Map(),
       cutByStart: new Map(),
+      blockByStart: new Set(),
     };
   }
 
@@ -661,7 +662,7 @@ export function createEditorView(buffer, container, options = {}) {
     for (const start of folded) {
       if (!foldCache.endByStart.has(start)) folded.delete(start);
     }
-    const hidden = hiddenLines(folded, foldCache.endByStart);
+    const hidden = hiddenLines(folded, foldCache.endByStart, foldCache.blockByStart);
 
     // Replaced-range widget layout (math preview). Build the line-offset
     // model the layout needs, gather the cursor offsets that drive the
@@ -715,9 +716,12 @@ export function createEditorView(buffer, container, options = {}) {
         displayRowForLine[i] = row;
         // A block-math start line reserves the rows its source spanned, so
         // a tall typeset equation keeps its footprint instead of
-        // overflowing onto the next visible line.
+        // overflowing onto the next visible line. A *folded block fold*
+        // (@begin/@end) reserves a second row for its vertical ellipsis,
+        // drawn between the kept @begin and @end lines.
         const blk = mathLayout.blockByStartLine.get(i);
-        row += blk ? blk.rowSpan : 1;
+        const foldedBlock = folded.has(i) && foldCache.blockByStart.has(i);
+        row += blk ? blk.rowSpan : (foldedBlock ? 2 : 1);
         lastVisibleRow = row - 1; // bottom display row this line occupies
       }
       lastVisibleRowForLine[i] = lastVisibleRow;
@@ -908,7 +912,27 @@ export function createEditorView(buffer, container, options = {}) {
         // *structurally a close* (`</tag>`, `}`, …); a content line that
         // merely ends with `</p>` is left hidden, so folding it actually
         // collapses the content rather than re-showing the whole line.
-        if (folded.has(index)) {
+        if (folded.has(index) && foldCache.blockByStart.has(index)) {
+          // Block fold (jmarkdown @begin/@end): keep the @begin line whole
+          // and the @end line visible below (hiddenLines leaves it shown);
+          // reserve a second row (see the row-span loop) and draw an
+          // indented vertical ellipsis on it to mark the collapsed body.
+          lineEl.style.height = 'calc(2 * 1lh)';
+          const vEllipsis = el('span', 'editor-fold-vellipsis');
+          vEllipsis.textContent = '⋮';
+          // Indent the ellipsis to the collapsed body — the first non-blank
+          // interior line's indent, else one level past the header.
+          const endLine = foldCache.endByStart.get(index);
+          let indentCols = lineIndentColumns(lines[index].content, tabWidth) + tabWidth;
+          for (let b = index + 1; b < endLine && b < lines.length; b += 1) {
+            if (lines[b].content.trim().length > 0) {
+              indentCols = lineIndentColumns(lines[b].content, tabWidth);
+              break;
+            }
+          }
+          vEllipsis.style.left = `calc(${indentCols} * 1ch)`;
+          lineEl.append(vEllipsis);
+        } else if (folded.has(index)) {
           const ellipsis = el('span', 'editor-fold-ellipsis');
           ellipsis.textContent = '…';
           lineEl.append(ellipsis);
