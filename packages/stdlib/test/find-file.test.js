@@ -70,6 +70,30 @@ test('-find-file-deliver ignores empty / nil input', async () => {
   assert.deepEqual(calls, []);
 });
 
+// --- substitute-in-path: Emacs-style '/~' and '//' resets --------------
+
+test('-substitute-in-path resets at an embedded ~ (home) / // (root)', async () => {
+  const { ev } = await findFileEditor([]);
+  // '/~' anywhere discards the prefix and restarts at the home directory.
+  assert.equal(ev('(-substitute-in-path "/long/typed/path/~/foo")'), '/home/u/foo');
+  assert.equal(ev('(-substitute-in-path "/long/typed/path/~")'), '/home/u');
+  // '//' restarts at root.
+  assert.equal(ev('(-substitute-in-path "/a/b//etc/hosts")'), '/etc/hosts');
+  // The rightmost reset wins.
+  assert.equal(ev('(-substitute-in-path "/a/~/b/~/c")'), '/home/u/c');
+  // A leading '~' still expands; an ordinary path is unchanged.
+  assert.equal(ev('(-substitute-in-path "~/foo")'), '/home/u/foo');
+  assert.equal(ev('(-substitute-in-path "/normal/path")'), '/normal/path');
+  // A '~' mid-component (not after '/') is NOT a reset.
+  assert.equal(ev('(-substitute-in-path "/a/b~c")'), '/a/b~c');
+});
+
+test('-find-file-deliver honours an embedded ~ reset on submit', async () => {
+  const { ev, calls } = await findFileEditor([]);
+  ev('(-find-file-deliver "/long/typed/path/~/new.txt")');
+  assert.deepEqual(calls, [['new', '/home/u/new.txt']]);
+});
+
 // --- the find-file seed: current file's directory, else home -----------
 
 test('the prompt seeds with the current file\'s directory', async () => {
