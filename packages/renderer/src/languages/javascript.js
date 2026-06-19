@@ -69,6 +69,14 @@ const QUERY = `
   ; --- punctuation -----------------------------------------------------
   [ "(" ")" "[" "]" "{" "}" ] @paren
 
+  ; --- member properties (Nova-style densification) -------------------
+  ; obj.prop / this.x read as @property. Placed BEFORE the function/call
+  ; rules so a method CALL (obj.method()) — matched by both this and the
+  ; call rule below — resolves to @function: equal-span ties go to the
+  ; LATER query pattern (see runs.js flattenInnermost).
+  (member_expression property: (property_identifier) @property)
+  (member_expression property: (private_property_identifier) @property)
+
   ; --- functions -------------------------------------------------------
   ; Declarations and named expressions.
   (function_declaration name: (identifier) @function)
