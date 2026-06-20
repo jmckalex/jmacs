@@ -1842,6 +1842,15 @@ export function createEditorView(buffer, container, options = {}) {
     backgroundLayer,
     overlayLayer,
 
+    /** The whole-buffer per-line highlight runs (`Run[][]`) currently
+     *  cached, or null when none is built (degraded render). Exposed so a
+     *  companion view (the minimap) can reuse the exact token colouring the
+     *  editor computed — including tree-sitter languages — instead of
+     *  re-tokenising. Read-only; the cache is owned by `renderLines`. */
+    lineRuns() {
+      return highlightCache;
+    },
+
     /** Scroll so the cursor's line sits in the middle of the viewport.
      *  Deferred to the next render so it reads the cursor's *new* row
      *  after a preceding buffer move (e.g. `goto-line!`), and wins over

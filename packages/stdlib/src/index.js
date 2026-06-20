@@ -54,6 +54,7 @@ export const STDLIB_FILES = Object.freeze([
   'element-view-bib-search.lisp',
   'panes.lisp',
   'tabline.lisp',
+  'minimap.lisp',
   'search.lisp',
   'regex-search.lisp',
   'kill.lisp',

@@ -254,6 +254,21 @@ export class TextView extends ViewElement {
     return this._editor !== null ? this._editor.overlayLayer : null;
   }
 
+  /** The scroll root (the `.editor` element) — read-only, for a companion
+   *  view (e.g. the minimap) to observe scroll and read geometry without
+   *  reaching into `createEditorView`'s closures. */
+  get scrollElement() {
+    return this._editor !== null ? this._editor.element : null;
+  }
+
+  /** The editor's whole-buffer per-line highlight runs (`Run[][]`), or null
+   *  if it hasn't highlighted yet / is degraded. Shared with the minimap so
+   *  it paints accurate token colours (tree-sitter languages included)
+   *  without re-tokenising. */
+  lineRuns() {
+    return this._editor !== null ? this._editor.lineRuns() : null;
+  }
+
   /** Toggle the fold whose header contains the cursor. */
   toggleFoldAtPoint() {
     if (this._editor !== null) this._editor.toggleFoldAtPoint();

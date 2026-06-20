@@ -100,6 +100,15 @@ export {
 } from './reftex-cite-panel.js';
 export { PlaceholderView } from './placeholder-view.js';
 export {
+  MinimapView,
+  thumbRect,
+  clickToScrollFraction,
+  runToRect,
+  parseRgb,
+  scrollTopToContentFraction,
+  contentFractionToScrollTop,
+} from './minimap-view.js';
+export {
   PLACEHOLDER_ACTIONS,
   DEFAULT_PLACEHOLDER_ACTION,
   resolvePlaceholderAction,

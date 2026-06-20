@@ -65,6 +65,25 @@ export function createViewPrimitives(viewHost) {
     },
     // `(view-list)` — every open view, in display order.
     'view-list': () => arrayToList(viewHost.viewList()),
+
+    // `(toggle-minimap! side width-fraction)` — toggle a minimap companion
+    // pane beside the focused leaf. SIDE is 'left / 'right (symbol, keyword,
+    // or string); WIDTH-FRACTION an optional number. The `toggle-minimap`
+    // command reads the `*minimap-*` defcustoms and passes them through.
+    'toggle-minimap!': (args) => {
+      const sideArg = args[0];
+      const sideName =
+        sideArg && typeof sideArg === 'object' && typeof sideArg.name === 'string'
+          ? sideArg.name
+          : typeof sideArg === 'string'
+            ? sideArg
+            : 'right';
+      const width = typeof args[1] === 'number' ? args[1] : undefined;
+      if (typeof viewHost.toggleMinimap === 'function') {
+        viewHost.toggleMinimap(sideName === 'left' ? 'left' : 'right', width);
+      }
+      return NIL;
+    },
     // `(view-kind v)` — the view's kind as a string.
     'view-kind': (args) => {
       const view = args[0];
