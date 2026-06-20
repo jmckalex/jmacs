@@ -158,17 +158,13 @@ export function parseRgb(str) {
 }
 
 /**
- * The drawn rect for one highlight run, advancing the running column.
- * Leading whitespace is skipped (preserving indentation as an x offset);
- * trailing whitespace doesn't extend the rect. Tabs count as MM_TAB_W
- * columns. The line's drawn width is clamped at `maxCols`.
+ * The leading-whitespace width of a line, in columns (tabs count as
+ * `tabW`), summed across its runs — i.e. its indentation. Returns the full
+ * width for an all-whitespace line.
  *
- * @param {{text:string, face:(string|null)}} run
- * @param {number} startCol - the column this run begins at
- * @param {number} charW - pixels per column
- * @param {number} maxCols - column clamp
+ * @param {Array<{text:string, face:(string|null)}>} runs
  * @param {number} tabW - tab width in columns
- * @returns {{ x:number, w:number, nextCol:number, draw:boolean }}
+ * @returns {number}
  */
 export function leadingIndentCols(runs, tabW) {
   if (!Array.isArray(runs)) return 0;
@@ -257,6 +253,18 @@ export class MinimapView extends ViewElement {
     this._unsubs = [];
     /** @type {Map<string, string>} - face name → cached fill color. */
     this._colorCache = new Map();
+    /** @type {Map<string, {canvas: HTMLCanvasElement, cols: number}>} -
+     *  `${color} ${char}` → a downscaled, pre-tinted glyph cell (the
+     *  charsheet). Lazily filled as characters are drawn; cleared on a
+     *  colour / font / DPR change. */
+    this._cellCache = new Map();
+    this._cellDpr = 0;
+    this._dpr = 1;
+    /** @type {string|null} - the editor's mono font, resolved once. */
+    this._monoFont = null;
+    /** @type {HTMLCanvasElement|null} - reused scratch for glyph rasterising. */
+    this._scratch = null;
+    this._unitAdvance = 0; // width of one Latin column at the render size
     /** @type {Array<Array<{text:string, face:(string|null)}>> | null} */
     this._runsCache = null;
     this._mounted = false;
@@ -342,9 +350,14 @@ export class MinimapView extends ViewElement {
     this._scheduleFull();
   }
 
-  /** Drop the cached face→color map and repaint (theme / face change). */
+  /** Drop the cached colours + glyph charsheet and repaint. A theme/face
+   *  change recolours; a font change reshapes — both invalidate the cells,
+   *  and the mono font is re-resolved lazily. */
   invalidateColors() {
     this._colorCache.clear();
+    this._cellCache.clear();
+    this._monoFont = null;
+    this._unitAdvance = 0;
     if (this._mounted && this._adapter) this._scheduleFull();
   }
 
@@ -381,6 +394,8 @@ export class MinimapView extends ViewElement {
     this._adapter = null;
     this._buffer = null;
     this._runsCache = null;
+    this._cellCache.clear();
+    this._scratch = null;
   }
 
   // --- internal: mount -----------------------------------------------
@@ -686,6 +701,13 @@ export class MinimapView extends ViewElement {
     if (!metrics || cssW <= 0 || cssH <= 0) return;
 
     const dpr = window.devicePixelRatio || 1;
+    if (dpr !== this._cellDpr) {
+      // Glyph cells are baked at device resolution — rebuild on a DPR change
+      // (e.g. dragging the window between displays).
+      this._cellCache.clear();
+      this._cellDpr = dpr;
+    }
+    this._dpr = dpr;
     if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
       canvas.width = Math.round(cssW * dpr);
       canvas.height = Math.round(cssH * dpr);
@@ -720,36 +742,98 @@ export class MinimapView extends ViewElement {
     // panel for content; content then advances at full per-column width.
     const indentCols = leadingIndentCols(runs, MM_TAB_W);
     const startCol = compressIndent(indentCols, INDENT_SCALE, MAX_INDENT_COLS);
-    const h = Math.max(1, MM_LINE_H - 1);
     let col = 0;          // expanded column from the line start
     let contentCol = 0;   // column since the end of the leading indent
-    let curFace; // last face whose colour is set as fillStyle
     for (const run of runs) {
       const text = run.text || '';
       const face = run.face ?? null;
       for (let k = 0; k < text.length; k += 1) {
         const ch = text[k];
-        const adv = ch === '\t' ? MM_TAB_W : 1;
-        if (col >= indentCols) {
-          const drawCol = startCol + contentCol;
-          if (drawCol >= MM_MAX_COLS) { ctx.globalAlpha = 1; return; }
+        if (col < indentCols) { col += ch === '\t' ? MM_TAB_W : 1; continue; }
+        const drawCol = startCol + contentCol;
+        if (drawCol >= MM_MAX_COLS) { ctx.globalAlpha = 1; return; }
+        if (ch === '\t') { contentCol += MM_TAB_W; col += MM_TAB_W; continue; }
+        if (ch === ' ') { contentCol += 1; col += 1; continue; }
+        const color = this._colorFor(face);
+        const cell = this._ensureCell(ch, color);
+        if (cell && cell.canvas) {
+          // Charsheet path: blit the pre-tinted glyph cell. The ctx carries
+          // the DPR transform, so the cell's device pixels map 1:1.
+          ctx.globalAlpha = face ? 1 : 0.72;
+          ctx.drawImage(cell.canvas, drawCol * MM_CHAR_W, y, cell.cols * MM_CHAR_W, MM_LINE_H);
+          contentCol += cell.cols;
+          col += cell.cols;
+        } else {
+          // Fallback (no canvas / headless): a coverage-alpha block.
           const cov = charCoverage(ch);
-          if (cov > 0) {
-            if (face !== curFace) {
-              ctx.fillStyle = this._colorFor(face);
-              curFace = face;
-            }
-            // Floor the alpha so even sparse glyphs stay visible; faceless
-            // (default) text is drawn dimmer so syntax accents read.
-            ctx.globalAlpha = (face ? 0.95 : 0.6) * (0.45 + 0.55 * cov);
-            ctx.fillRect(drawCol * MM_CHAR_W, y, MM_CHAR_W, h);
-          }
-          contentCol += adv;
+          ctx.fillStyle = color;
+          ctx.globalAlpha = (face ? 0.95 : 0.6) * (0.45 + 0.55 * cov);
+          ctx.fillRect(drawCol * MM_CHAR_W, y, MM_CHAR_W, Math.max(1, MM_LINE_H - 1));
+          contentCol += 1;
+          col += 1;
         }
-        col += adv;
       }
     }
     ctx.globalAlpha = 1; // reset for the thumb / next line
+  }
+
+  /** The editor's mono font as a CSS `font` value at PX (resolved once). */
+  _monoFontString(px) {
+    if (!this._monoFont) {
+      const v = (typeof getComputedStyle === 'function'
+        ? getComputedStyle(this.ownerDocument.documentElement)
+          .getPropertyValue('--font-mono')
+        : '').trim();
+      this._monoFont = v || 'monospace';
+    }
+    return `${px}px ${this._monoFont}`;
+  }
+
+  /**
+   * The charsheet cell for (CHAR, COLOR): the glyph rasterised in COLOR and
+   * downscaled to a `cols × 1`-column minimap cell, cached. Column count
+   * comes from the font's own advance (so a full-width CJK glyph is 2
+   * columns), which is what makes this faithful for non-Latin scripts.
+   * Returns null if the platform has no canvas (Node tests → fillRect path).
+   */
+  _ensureCell(char, color) {
+    const key = `${color} ${char}`;
+    const cached = this._cellCache.get(key);
+    if (cached) return cached;
+    const doc = this.ownerDocument;
+    let scratch = this._scratch;
+    if (!scratch) {
+      scratch = doc.createElement('canvas');
+      this._scratch = scratch;
+    }
+    const sctx = scratch.getContext('2d');
+    if (!sctx) return null;
+    const RENDER_PX = 16; // supersample size for a clean downscale
+    sctx.font = this._monoFontString(RENDER_PX);
+    if (!this._unitAdvance) this._unitAdvance = sctx.measureText('n').width || RENDER_PX * 0.6;
+    const adv = sctx.measureText(char).width || this._unitAdvance;
+    const cols = Math.max(1, Math.min(2, Math.round(adv / this._unitAdvance)));
+    const rw = Math.max(1, Math.ceil(adv));
+    const rh = Math.ceil(RENDER_PX * 1.3);
+    scratch.width = rw;
+    scratch.height = rh; // resizing clears the context — re-set state below
+    sctx.font = this._monoFontString(RENDER_PX);
+    sctx.textBaseline = 'alphabetic';
+    sctx.fillStyle = color;
+    sctx.fillText(char, 0, RENDER_PX);
+    const dpr = this._dpr || 1;
+    const cw = Math.max(1, Math.round(MM_CHAR_W * cols * dpr));
+    const ch = Math.max(1, Math.round(MM_LINE_H * dpr));
+    const cell = doc.createElement('canvas');
+    cell.width = cw;
+    cell.height = ch;
+    const cctx = cell.getContext('2d');
+    if (!cctx) return null;
+    cctx.imageSmoothingEnabled = true;
+    cctx.drawImage(scratch, 0, 0, rw, rh, 0, 0, cw, ch);
+    const entry = { canvas: cell, cols };
+    this._cellCache.set(key, entry);
+    return entry;
   }
 
   // --- internal: teardown --------------------------------------------
