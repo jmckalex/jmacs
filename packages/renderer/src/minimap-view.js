@@ -44,7 +44,9 @@ import { highlightLine, languageForName } from './highlight.js';
 
 /** Pixels per source line in the minimap (the fixed Nova-style density). */
 const MM_LINE_H = 3;
-/** Pixels per character column when drawing token segments. */
+/** Pixels per character column. Each character is drawn as a 1-column mark
+ *  whose fill alpha tracks the character's ink density (see charCoverage),
+ *  so the row reads as text-like variation rather than a flat token bar. */
 const MM_CHAR_W = 1;
 /** Columns past which a line's drawn width is clamped (long lines don't
  *  blow out the minimap horizontally). */
@@ -52,6 +54,12 @@ const MM_MAX_COLS = 140;
 /** Tab width in columns for indentation (minimap is approximate; the editor
  *  owns the real `tab-width`). */
 const MM_TAB_W = 4;
+/** Indentation is *compressed* (not removed) so deeply-nested code — HTML,
+ *  say — doesn't waste the panel on leading whitespace. Each indent column
+ *  costs INDENT_SCALE of a column, capped at MAX_INDENT_COLS, so nesting
+ *  stays monotonic (deeper = further right) without the runaway. */
+const INDENT_SCALE = 0.4;
+const MAX_INDENT_COLS = 14;
 /** Debounce for repainting the document bitmap after an edit. */
 const EDIT_DEBOUNCE_MS = 60;
 /** Minimum thumb height so it stays grabbable on huge files. */
@@ -162,29 +170,55 @@ export function parseRgb(str) {
  * @param {number} tabW - tab width in columns
  * @returns {{ x:number, w:number, nextCol:number, draw:boolean }}
  */
-export function runToRect(run, startCol, charW, maxCols, tabW) {
-  const text = (run && run.text) || '';
-  let col = startCol;
-  let i = 0;
-  while (i < text.length && (text[i] === ' ' || text[i] === '\t')) {
-    col += text[i] === '\t' ? tabW : 1;
-    i += 1;
+export function leadingIndentCols(runs, tabW) {
+  if (!Array.isArray(runs)) return 0;
+  let cols = 0;
+  for (const run of runs) {
+    const text = (run && run.text) || '';
+    for (const ch of text) {
+      if (ch === ' ') cols += 1;
+      else if (ch === '\t') cols += tabW;
+      else return cols;
+    }
   }
-  const drawStart = col;
-  let lastNonSpace = -1;
-  let c = col;
-  for (let j = i; j < text.length; j += 1) {
-    const ch = text[j];
-    if (ch !== ' ' && ch !== '\t') lastNonSpace = c;
-    c += ch === '\t' ? tabW : 1;
-  }
-  const nextCol = c;
-  const draw = lastNonSpace >= 0;
-  const clampedStart = Math.min(drawStart, maxCols);
-  const endCol = Math.min(lastNonSpace + 1, maxCols);
-  const x = clampedStart * charW;
-  const w = draw ? Math.max(charW, (endCol - clampedStart) * charW) : 0;
-  return { x, w, nextCol, draw };
+  return cols; // an all-whitespace line
+}
+
+/**
+ * Compress an indent of INDENTCOLS columns to a (possibly fractional)
+ * starting column: `min(maxCols, indentCols * scale)`. Monotonic, so
+ * deeper nesting still starts further right — it just costs less, and is
+ * capped so extreme depth can't push content off-panel. Zero stays zero.
+ *
+ * @param {number} indentCols
+ * @param {number} scale - fraction of a column per indent column (0..1)
+ * @param {number} maxCols - cap on the compressed indent
+ * @returns {number}
+ */
+export function compressIndent(indentCols, scale, maxCols) {
+  if (!(indentCols > 0)) return 0;
+  return Math.min(maxCols, indentCols * scale);
+}
+
+/**
+ * A character's ink density in [0, 1] — how much of a cell it fills.
+ * Whitespace is 0; sparse glyphs (`.`, `i`, `|`) are low; dense ones
+ * (`M`, `@`, `#`) are high. Used to modulate each character's fill alpha so
+ * the minimap row varies like real text instead of a flat bar (the
+ * "pixelated charsheet" trick, reduced to a single coverage value per
+ * char — enough at 1px width).
+ *
+ * @param {string} ch - a single character
+ * @returns {number}
+ */
+export function charCoverage(ch) {
+  if (ch === ' ' || ch === '\t' || ch === '' || ch === undefined) return 0;
+  if (ch.charCodeAt(0) < 33) return 0; // control chars
+  if ('@#$%&MWBNQRGHmw8'.includes(ch)) return 1;
+  if (/[A-Z0-9]/.test(ch)) return 0.85;
+  if ('.,\'`:;'.includes(ch)) return 0.3;
+  if ('ilI|!()[]{}-_'.includes(ch)) return 0.45;
+  return 0.65; // most lowercase + punctuation
 }
 
 /**
@@ -623,20 +657,18 @@ export class MinimapView extends ViewElement {
     return this._runsPerLine().length;
   }
 
+  /** The solid fill colour for a face (alpha is applied per character via
+   *  globalAlpha in `_drawLine`). Resolved once via the probe, then cached. */
   _colorFor(face) {
     const key = face || '';
     const cached = this._colorCache.get(key);
     if (cached) return cached;
     const probe = this._probe;
-    let color = 'rgba(150,150,150,0.6)';
+    let color = 'rgb(150,150,150)';
     if (probe) {
       probe.className = face ? `minimap-probe tok-${face}` : 'minimap-probe';
       const rgb = parseRgb(getComputedStyle(probe).color);
-      if (rgb) {
-        // Default (unfaced) text is drawn dimmer so syntax accents read.
-        const alpha = face ? 0.92 : 0.5;
-        color = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
-      }
+      if (rgb) color = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
     }
     this._colorCache.set(key, color);
     return color;
@@ -684,16 +716,40 @@ export class MinimapView extends ViewElement {
 
   _drawLine(ctx, runs, y) {
     if (!Array.isArray(runs)) return;
-    let col = 0;
+    // Leading indentation is compressed so deeply-nested code still uses the
+    // panel for content; content then advances at full per-column width.
+    const indentCols = leadingIndentCols(runs, MM_TAB_W);
+    const startCol = compressIndent(indentCols, INDENT_SCALE, MAX_INDENT_COLS);
+    const h = Math.max(1, MM_LINE_H - 1);
+    let col = 0;          // expanded column from the line start
+    let contentCol = 0;   // column since the end of the leading indent
+    let curFace; // last face whose colour is set as fillStyle
     for (const run of runs) {
-      const { x, w, nextCol, draw } = runToRect(run, col, MM_CHAR_W, MM_MAX_COLS, MM_TAB_W);
-      if (draw && w > 0) {
-        ctx.fillStyle = this._colorFor(run.face);
-        ctx.fillRect(x, y, w, Math.max(1, MM_LINE_H - 1));
+      const text = run.text || '';
+      const face = run.face ?? null;
+      for (let k = 0; k < text.length; k += 1) {
+        const ch = text[k];
+        const adv = ch === '\t' ? MM_TAB_W : 1;
+        if (col >= indentCols) {
+          const drawCol = startCol + contentCol;
+          if (drawCol >= MM_MAX_COLS) { ctx.globalAlpha = 1; return; }
+          const cov = charCoverage(ch);
+          if (cov > 0) {
+            if (face !== curFace) {
+              ctx.fillStyle = this._colorFor(face);
+              curFace = face;
+            }
+            // Floor the alpha so even sparse glyphs stay visible; faceless
+            // (default) text is drawn dimmer so syntax accents read.
+            ctx.globalAlpha = (face ? 0.95 : 0.6) * (0.45 + 0.55 * cov);
+            ctx.fillRect(drawCol * MM_CHAR_W, y, MM_CHAR_W, h);
+          }
+          contentCol += adv;
+        }
+        col += adv;
       }
-      col = nextCol;
-      if (col >= MM_MAX_COLS) break;
     }
+    ctx.globalAlpha = 1; // reset for the thumb / next line
   }
 
   // --- internal: teardown --------------------------------------------

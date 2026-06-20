@@ -18,7 +18,9 @@ import {
   thumbRect,
   clickToScrollFraction,
   parseRgb,
-  runToRect,
+  leadingIndentCols,
+  compressIndent,
+  charCoverage,
   enclosingScope,
 } from './minimap-view.js';
 
@@ -99,40 +101,42 @@ test('parseRgb parses rgb()/rgba(), rejects non-rgb', () => {
   assert.equal(parseRgb(null), null);
 });
 
-test('runToRect: leading whitespace becomes an x offset, trailing is ignored', () => {
-  const r = runToRect({ text: '  foo  ', face: 'kw' }, 0, 1, 140, 4);
-  assert.equal(r.x, 2); // 2 leading spaces
-  assert.equal(r.w, 3); // "foo"
-  assert.equal(r.nextCol, 7); // full text length advances the column
-  assert.equal(r.draw, true);
+test('leadingIndentCols: counts leading whitespace, tabs as tab width', () => {
+  assert.equal(leadingIndentCols([{ text: '  foo', face: null }], 4), 2);
+  assert.equal(leadingIndentCols([{ text: '\tx', face: null }], 4), 4);
+  assert.equal(leadingIndentCols([{ text: '\t  x', face: null }], 4), 6); // tab + 2 spaces
+  assert.equal(leadingIndentCols([{ text: 'x', face: null }], 4), 0); // no indent
 });
 
-test('runToRect: a tab counts as the tab width in columns', () => {
-  const r = runToRect({ text: '\tx', face: null }, 0, 1, 140, 4);
-  assert.equal(r.x, 4); // one tab = 4 columns
-  assert.equal(r.w, 1); // "x"
-  assert.equal(r.nextCol, 5);
+test('leadingIndentCols: spans runs and handles an all-whitespace line', () => {
+  // Indent split across runs: a whitespace run then a content run.
+  assert.equal(
+    leadingIndentCols([{ text: '   ', face: null }, { text: 'foo', face: 'kw' }], 4),
+    3
+  );
+  assert.equal(leadingIndentCols([{ text: '    ', face: null }], 4), 4); // all blank
 });
 
-test('runToRect: an all-whitespace run draws nothing but advances', () => {
-  const r = runToRect({ text: '   ', face: null }, 5, 1, 140, 4);
-  assert.equal(r.draw, false);
-  assert.equal(r.w, 0);
-  assert.equal(r.nextCol, 8);
+test('compressIndent: monotonic, capped, and zero stays zero', () => {
+  assert.equal(compressIndent(0, 0.4, 14), 0);
+  assert.equal(compressIndent(10, 0.4, 14), 4); // 10 * 0.4
+  assert.equal(compressIndent(20, 0.4, 14), 8);
+  assert.equal(compressIndent(40, 0.4, 14), 14); // capped
+  // Monotonic: deeper indent never compresses to less.
+  assert.ok(compressIndent(8, 0.4, 14) < compressIndent(16, 0.4, 14));
 });
 
-test('runToRect: a long run is clamped at maxCols', () => {
-  const r = runToRect({ text: 'x'.repeat(200), face: 's' }, 0, 1, 140, 4);
-  assert.equal(r.x, 0);
-  assert.equal(r.w, 140); // clamped to maxCols * charW
-});
-
-test('runToRect: chained runs preserve column alignment', () => {
-  const a = runToRect({ text: 'const ', face: 'kw' }, 0, 1, 140, 4);
-  const b = runToRect({ text: 'x', face: 'var' }, a.nextCol, 1, 140, 4);
-  assert.equal(a.nextCol, 6);
-  assert.equal(b.x, 6); // 'x' sits right after 'const '
-  assert.equal(b.w, 1);
+test('charCoverage: whitespace 0, sparse low, dense high', () => {
+  assert.equal(charCoverage(' '), 0);
+  assert.equal(charCoverage('\t'), 0);
+  assert.equal(charCoverage(''), 0);
+  assert.equal(charCoverage('M'), 1); // dense
+  assert.equal(charCoverage('@'), 1);
+  assert.equal(charCoverage('A'), 0.85); // uppercase / digit
+  assert.equal(charCoverage('7'), 0.85);
+  assert.equal(charCoverage('.'), 0.3); // sparse punctuation
+  assert.equal(charCoverage('i'), 0.45); // thin glyph
+  assert.equal(charCoverage('a'), 0.65); // ordinary lowercase
 });
 
 test('enclosingScope picks the innermost scope containing the line', () => {
