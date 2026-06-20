@@ -241,6 +241,32 @@ export function foldsHidingLine(line, foldedStartLines, endByStart, blockByStart
 }
 
 /**
+ * The fold ranges that enclose LINE — every header whose scope strictly
+ * contains it (`startLine < line <= endLine`), returned outermost-first
+ * (ascending by `startLine`). This is the chain of still-open structural
+ * elements at a given line: the data a "sticky scroll" / code-structure
+ * header panel pins at the top of the viewport. The strict `<` means a
+ * header is never its own ancestor, so it pins only once the viewport has
+ * scrolled past it.
+ *
+ * Pure and O(headers); the header count on screen is tiny, so a linear
+ * scan of `endByStart` is cheaper than maintaining another index.
+ *
+ * @param {number} line - The (visible) buffer line at the viewport top.
+ * @param {Map<number, number>} endByStart - `startLine -> endLine`, from
+ *   {@link indexFoldRanges}.
+ * @returns {Array<{startLine: number, endLine: number}>}
+ */
+export function enclosingFolds(line, endByStart) {
+  const out = [];
+  for (const [startLine, endLine] of endByStart) {
+    if (startLine < line && line <= endLine) out.push({ startLine, endLine });
+  }
+  out.sort((a, b) => a.startLine - b.startLine);
+  return out;
+}
+
+/**
  * Should a folded header preview its range's *closing* line after the
  * `…`? Only when that line is structurally a close — a bare closing
  * delimiter (`</tag>`, `}`, `)`, `]`) or a short keyword close (`end`,

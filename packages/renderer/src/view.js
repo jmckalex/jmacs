@@ -31,6 +31,7 @@ import {
   hiddenLines,
   foldsHidingLine,
   isStructuralCloseLine,
+  enclosingFolds,
 } from './folding.js';
 import { lineIndentColumns, computeIndentGuides } from './indent-guides.js';
 import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
@@ -225,6 +226,19 @@ export function createEditorView(buffer, container, options = {}) {
       ? options.foldCaptures
       : {};
 
+  // Languages that get "sticky" code-structure headers — the chain of
+  // open enclosing elements pinned at the top of the viewport as you
+  // scroll into nested markup (VS Code's sticky scroll / Nova's structure
+  // headers). Default to HTML + PHP, where nesting runs deepest; a host
+  // can widen or disable it. The pinned set is computed from the same
+  // fold ranges the gutter folds use, so a language with no fold captures
+  // simply shows nothing.
+  const stickyHeaderLanguages = new Set(
+    Array.isArray(options.stickyHeaderLanguages)
+      ? options.stickyHeaderLanguages
+      : ['html', 'php']
+  );
+
   /**
    * Per-buffer fold state: maps a buffer object to the set of
    * `startLine` numbers that are currently folded. A WeakMap so the
@@ -305,6 +319,13 @@ export function createEditorView(buffer, container, options = {}) {
   const linesEl = el('div', 'editor-lines');
   const cursorEl = el('div', 'editor-cursor');
   const overlayLayer = el('div', 'editor-overlay');
+  // Sticky code-structure headers (HTML/PHP): two browser-pinned anchors,
+  // each `position: sticky; top: 0; height: 0` (see styles.css), so the
+  // browser keeps them at the viewport top with no per-frame JS. Their
+  // rows are positioned absolutely within. The gutter anchor carries the
+  // pinned line numbers; the content anchor carries the header rows.
+  const contentStickyLayer = el('div', 'editor-sticky');
+  const gutterStickyLayer = el('div', 'editor-gutter-sticky');
   // The IME input sink. A custom, div-rendered editor has no natural
   // editable element, so IME composition (CJK input, dead keys, accents)
   // has nowhere to happen. A focused, visually-hidden <textarea> gives it
@@ -329,7 +350,8 @@ export function createEditorView(buffer, container, options = {}) {
     linesEl,
     cursorEl,
     input,
-    overlayLayer
+    overlayLayer,
+    contentStickyLayer
   );
 
   /** True while an IME composition is in progress — key dispatch is
@@ -362,6 +384,7 @@ export function createEditorView(buffer, container, options = {}) {
   function focusInput() {
     input.focus({ preventScroll: true });
   }
+  gutter.append(gutterStickyLayer);
   root.append(gutter, content);
   container.append(root);
 
@@ -1368,6 +1391,14 @@ export function createEditorView(buffer, container, options = {}) {
       }
       renderDegraded = false;
     }
+    // Sticky code-structure headers — reuses the fold index and highlight
+    // cache `renderLines` just refreshed. Isolated so a throw here can't
+    // stop the cursor from tracking.
+    try {
+      renderStickyHeaders();
+    } catch (error) {
+      reportRenderError(error);
+    }
     // Snippet field / mirror decorations — a main-side pass the branch
     // predates. Isolated like the passes below so a bad decoration can't
     // stop the cursor from tracking.
@@ -1596,6 +1627,105 @@ export function createEditorView(buffer, container, options = {}) {
     let l = line;
     while (l > 0 && displayRowForLine[l] === -1) l -= 1;
     return l;
+  }
+
+  // --- sticky code-structure headers ------------------------------------
+
+  /**
+   * Pin the chain of open enclosing elements at the top of the viewport
+   * (sticky scroll). Runs after `renderLines`, reusing the fold index and
+   * highlight cache it just refreshed. For an enabled language, the buffer
+   * line at the viewport top determines its enclosing fold ranges
+   * (`enclosingFolds`); each range's header line is drawn as a pinned row
+   * — its line number in the gutter anchor, its highlighted text in the
+   * content anchor — stacked outermost-first. Both anchors are
+   * `position: sticky; top: 0` so the browser holds them in place; this
+   * pass only rebuilds *which* lines they show, on scroll and on edit.
+   */
+  function renderStickyHeaders() {
+    // The backing strip behind each anchor is sized to this many rows.
+    const setCount = (n) => {
+      contentStickyLayer.style.setProperty('--sticky-count', String(n));
+      gutterStickyLayer.style.setProperty('--sticky-count', String(n));
+    };
+    const clearSticky = () => {
+      setCount(0);
+      if (contentStickyLayer.firstChild) contentStickyLayer.replaceChildren();
+      if (gutterStickyLayer.firstChild) gutterStickyLayer.replaceChildren();
+    };
+    const language = languageForName(activeBuffer.name);
+    if (!stickyHeaderLanguages.has(language) || !displayRowForLine) {
+      clearSticky();
+      return;
+    }
+    const lineHeight = cursorEl.getBoundingClientRect().height || 22;
+    const topRow = Math.floor(root.scrollTop / lineHeight);
+    const topLine = lineForDisplayRow(topRow);
+    const scopes = enclosingFolds(topLine, foldCache.endByStart);
+    if (scopes.length === 0) {
+      clearSticky();
+      return;
+    }
+    setCount(scopes.length);
+    const lines = toLines(activeBuffer.text);
+    // The highlight cache holds per-line runs for the languages sticky
+    // headers serve (HTML/PHP are tree-sitter, parsed whole). Fall back to
+    // a per-line tokenise if it is somehow absent (e.g. a degraded frame).
+    const perLine = highlightCache;
+    const rows = doc.createDocumentFragment();
+    const numbers = doc.createDocumentFragment();
+    scopes.forEach((scope, i) => {
+      const bufLine = scope.startLine;
+      const top = `calc(${i} * 1lh)`;
+
+      const numberEl = el('div', 'editor-line-no');
+      numberEl.style.top = top;
+      numberEl.textContent = String(bufLine + 1);
+      numbers.append(numberEl);
+
+      const rowEl = el('div', 'editor-line editor-sticky-line');
+      rowEl.style.top = top;
+      rowEl.dataset.line = String(bufLine);
+      if (i === scopes.length - 1) rowEl.classList.add('is-deepest');
+      const text = lines[bufLine] ? lines[bufLine].content : '';
+      const runs =
+        perLine && perLine[bufLine] ? perLine[bufLine] : highlightLine(text, language);
+      renderRuns(rowEl, runs);
+      // Click a header to jump to it (mousedown, so it beats the editor's
+      // own click-to-place-point on the obscured line beneath).
+      rowEl.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        jumpToStickyHeader(bufLine);
+      });
+      rows.append(rowEl);
+    });
+    contentStickyLayer.replaceChildren(rows);
+    gutterStickyLayer.replaceChildren(numbers);
+  }
+
+  /**
+   * Scroll a clicked sticky header into view, landing it just below its
+   * own pinned ancestors (so the line you clicked is the first one not
+   * covered by the remaining stack), and reveal it if it sits inside a
+   * collapsed fold.
+   *
+   * @param {number} bufLine
+   */
+  function jumpToStickyHeader(bufLine) {
+    const folded = foldsFor(activeBuffer);
+    for (const start of foldsHidingLine(
+      bufLine,
+      folded,
+      foldCache.endByStart,
+      foldCache.blockByStart
+    )) {
+      folded.delete(start);
+    }
+    const lineHeight = cursorEl.getBoundingClientRect().height || 22;
+    const ancestors = enclosingFolds(bufLine, foldCache.endByStart).length;
+    root.scrollTop = Math.max(0, (rowOf(bufLine) - ancestors) * lineHeight);
+    schedule();
   }
 
   // --- folding controls -------------------------------------------------

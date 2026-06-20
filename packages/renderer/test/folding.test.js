@@ -16,6 +16,7 @@ import {
   hiddenLines,
   foldsHidingLine,
   isStructuralCloseLine,
+  enclosingFolds,
 } from '../src/folding.js';
 
 test('foldRanges returns line spans for multi-line captures', () => {
@@ -283,4 +284,42 @@ test('smoke: folding a 3-line function hides 2 lines (header stays)', () => {
   assert.ok(hiddenAfter.has(1));
   assert.ok(hiddenAfter.has(2));
   assert.ok(!hiddenAfter.has(0)); // header stays
+});
+
+test('enclosingFolds returns the nesting chain, outermost first', () => {
+  // 0..20 outer, 2..18 middle, 5..9 inner. Line 7 sits inside all three.
+  const endByStart = new Map([[0, 20], [2, 18], [5, 9]]);
+  assert.deepEqual(enclosingFolds(7, endByStart), [
+    { startLine: 0, endLine: 20 },
+    { startLine: 2, endLine: 18 },
+    { startLine: 5, endLine: 9 },
+  ]);
+});
+
+test('enclosingFolds excludes a header from its own chain (strict start)', () => {
+  const endByStart = new Map([[0, 20], [5, 9]]);
+  // On the inner header line (5): only the outer scope encloses it; the
+  // inner one starts here, so it is not yet pinned.
+  assert.deepEqual(enclosingFolds(5, endByStart), [
+    { startLine: 0, endLine: 20 },
+  ]);
+});
+
+test('enclosingFolds includes a scope through its end line, not past it', () => {
+  const endByStart = new Map([[2, 8]]);
+  assert.deepEqual(enclosingFolds(8, endByStart), [{ startLine: 2, endLine: 8 }]);
+  assert.deepEqual(enclosingFolds(9, endByStart), []);
+});
+
+test('enclosingFolds drops scopes that ended above the line', () => {
+  // Two disjoint siblings; line 12 is inside the second only.
+  const endByStart = new Map([[0, 5], [10, 15]]);
+  assert.deepEqual(enclosingFolds(12, endByStart), [
+    { startLine: 10, endLine: 15 },
+  ]);
+});
+
+test('enclosingFolds at the top of the document has no ancestors', () => {
+  const endByStart = new Map([[3, 9]]);
+  assert.deepEqual(enclosingFolds(0, endByStart), []);
 });
