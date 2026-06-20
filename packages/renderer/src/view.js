@@ -32,6 +32,7 @@ import {
   foldsHidingLine,
   isStructuralCloseLine,
   enclosingFolds,
+  stickyHeaderRows,
 } from './folding.js';
 import { lineIndentColumns, computeIndentGuides } from './indent-guides.js';
 import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
@@ -236,7 +237,7 @@ export function createEditorView(buffer, container, options = {}) {
   const stickyHeaderLanguages = new Set(
     Array.isArray(options.stickyHeaderLanguages)
       ? options.stickyHeaderLanguages
-      : ['html', 'php']
+      : ['html', 'php', 'javascript', 'typescript', 'python', 'jmarkdown', 'latex']
   );
 
   /**
@@ -1643,13 +1644,7 @@ export function createEditorView(buffer, container, options = {}) {
    * pass only rebuilds *which* lines they show, on scroll and on edit.
    */
   function renderStickyHeaders() {
-    // The backing strip behind each anchor is sized to this many rows.
-    const setCount = (n) => {
-      contentStickyLayer.style.setProperty('--sticky-count', String(n));
-      gutterStickyLayer.style.setProperty('--sticky-count', String(n));
-    };
     const clearSticky = () => {
-      setCount(0);
       if (contentStickyLayer.firstChild) contentStickyLayer.replaceChildren();
       if (gutterStickyLayer.firstChild) gutterStickyLayer.replaceChildren();
     };
@@ -1659,34 +1654,48 @@ export function createEditorView(buffer, container, options = {}) {
       return;
     }
     const lineHeight = cursorEl.getBoundingClientRect().height || 22;
-    const topRow = Math.floor(root.scrollTop / lineHeight);
-    const topLine = lineForDisplayRow(topRow);
-    const scopes = enclosingFolds(topLine, foldCache.endByStart);
-    if (scopes.length === 0) {
+    const scrollTop = root.scrollTop;
+    const topLine = lineForDisplayRow(Math.floor(scrollTop / lineHeight));
+    // The enclosing fold chain at the viewport top, each tagged with its
+    // end's *display* row, then laid out: `stickyHeaderRows` trims scopes
+    // whose content has scrolled fully behind the panel (the fix for the
+    // wrong-header bug) and slides the deepest header out as its scope ends.
+    const scopes = enclosingFolds(topLine, foldCache.endByStart).map((s) => ({
+      startLine: s.startLine,
+      endRow: rowOf(s.endLine),
+    }));
+    const layout = stickyHeaderRows(scopes, scrollTop, lineHeight);
+    if (layout.length === 0) {
       clearSticky();
       return;
     }
-    setCount(scopes.length);
     const lines = toLines(activeBuffer.text);
-    // The highlight cache holds per-line runs for the languages sticky
-    // headers serve (HTML/PHP are tree-sitter, parsed whole). Fall back to
-    // a per-line tokenise if it is somehow absent (e.g. a degraded frame).
+    // The highlight cache holds per-line runs for these (tree-sitter) modes;
+    // fall back to a per-line tokenise if it is somehow absent (e.g. a
+    // degraded frame, or a hand-tokenised language like latex/jmarkdown).
     const perLine = highlightCache;
     const rows = doc.createDocumentFragment();
     const numbers = doc.createDocumentFragment();
-    scopes.forEach((scope, i) => {
-      const bufLine = scope.startLine;
-      const top = `calc(${i} * 1lh)`;
+    const n = layout.length;
+    layout.forEach(({ startLine: bufLine, y }, i) => {
+      const top = `${y}px`;
+      // Outer headers paint above inner ones, so the deepest header tucks
+      // *behind* its ancestors as it slides up and out.
+      const z = String(n - i);
 
+      const numberRow = el('div', 'editor-gutter-sticky-row');
+      numberRow.style.top = top;
+      numberRow.style.zIndex = z;
       const numberEl = el('div', 'editor-line-no');
-      numberEl.style.top = top;
       numberEl.textContent = String(bufLine + 1);
-      numbers.append(numberEl);
+      numberRow.append(numberEl);
+      numbers.append(numberRow);
 
       const rowEl = el('div', 'editor-line editor-sticky-line');
       rowEl.style.top = top;
+      rowEl.style.zIndex = z;
       rowEl.dataset.line = String(bufLine);
-      if (i === scopes.length - 1) rowEl.classList.add('is-deepest');
+      if (i === n - 1) rowEl.classList.add('is-deepest');
       const text = lines[bufLine] ? lines[bufLine].content : '';
       const runs =
         perLine && perLine[bufLine] ? perLine[bufLine] : highlightLine(text, language);

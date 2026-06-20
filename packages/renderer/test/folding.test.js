@@ -17,6 +17,7 @@ import {
   foldsHidingLine,
   isStructuralCloseLine,
   enclosingFolds,
+  stickyHeaderRows,
 } from '../src/folding.js';
 
 test('foldRanges returns line spans for multi-line captures', () => {
@@ -322,4 +323,66 @@ test('enclosingFolds drops scopes that ended above the line', () => {
 test('enclosingFolds at the top of the document has no ancestors', () => {
   const endByStart = new Map([[3, 9]]);
   assert.deepEqual(enclosingFolds(0, endByStart), []);
+});
+
+// --- stickyHeaderRows: trim (the fixed point) + smooth slide ------------
+
+test('stickyHeaderRows pins every scope while their content is on screen', () => {
+  // lh=20. Scrolled to row 15. Three nested scopes, all ending well below.
+  const scopes = [
+    { startLine: 5, endRow: 100 },
+    { startLine: 8, endRow: 30 },
+    { startLine: 12, endRow: 18 },
+  ];
+  assert.deepEqual(stickyHeaderRows(scopes, 15 * 20, 20), [
+    { startLine: 5, y: 0 },
+    { startLine: 8, y: 20 },
+    { startLine: 12, y: 40 },
+  ]);
+});
+
+test('stickyHeaderRows DROPS a scope whose content is fully behind the panel', () => {
+  // The wrong-header bug: at row 16 the innermost scope (ends row 18) has
+  // its content under the 3-row panel (bottom at row 16+3=19 > 18), so it
+  // must NOT be pinned — the user is already looking past it.
+  const scopes = [
+    { startLine: 5, endRow: 100 },
+    { startLine: 8, endRow: 30 },
+    { startLine: 12, endRow: 18 },
+  ];
+  assert.deepEqual(stickyHeaderRows(scopes, 16 * 20, 20), [
+    { startLine: 5, y: 0 },
+    { startLine: 8, y: 20 },
+  ]);
+});
+
+test('stickyHeaderRows slides the deepest header up as its scope ends', () => {
+  const scopes = [
+    { startLine: 5, endRow: 100 },
+    { startLine: 8, endRow: 30 },
+    { startLine: 12, endRow: 18 },
+  ];
+  // Half a row past row 15: the innermost (slot 2, y=40) slides up by 0.5lh.
+  const rows = stickyHeaderRows(scopes, 15.5 * 20, 20);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[2].startLine, 12);
+  assert.equal(rows[2].y, 30); // 40 - 0.5*20
+});
+
+test('stickyHeaderRows slide reaches the slot above just before the drop', () => {
+  const scopes = [
+    { startLine: 5, endRow: 100 },
+    { startLine: 8, endRow: 30 },
+    { startLine: 12, endRow: 18 },
+  ];
+  // Almost a full row past 15: innermost has slid nearly to slot 1's y (20),
+  // so when row 16 drops it the header above (line 8) takes its place with
+  // no visible jump.
+  const rows = stickyHeaderRows(scopes, 15.99 * 20, 20);
+  assert.ok(rows[2].y > 20 && rows[2].y < 20.5, `expected ~20.2, got ${rows[2].y}`);
+});
+
+test('stickyHeaderRows returns nothing with no scopes or a zero line height', () => {
+  assert.deepEqual(stickyHeaderRows([], 100, 20), []);
+  assert.deepEqual(stickyHeaderRows([{ startLine: 1, endRow: 9 }], 40, 0), []);
 });

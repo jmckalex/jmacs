@@ -58,6 +58,7 @@
  */
 
 import { registerLanguage } from '../language-registry.js';
+import { latexFolds } from '../latex-folds.js';
 
 // Greek letters, accents and named math symbols that Sublime's JMarkdown
 // palette renders purple (the @latex-symbol face). `command_name` text
@@ -187,6 +188,11 @@ registerLanguage({
   tag: 'latex',
   grammar: 'tree-sitter-latex.wasm',
   query: QUERY,
+  // Folds come from a pure line scanner, not the grammar: `.tex` editing is
+  // hand-tokenised, so there is no tree to query, and the fold path is
+  // independent of highlighting anyway. Drives the gutter fold rail and the
+  // sticky structure headers (section breadcrumb + environments).
+  foldProvider: latexFolds,
   suffixes: ['.tex', '.latex'],
   aliases: ['tex', 'latex'],
 });

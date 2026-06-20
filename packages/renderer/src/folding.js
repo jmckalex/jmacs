@@ -267,6 +267,60 @@ export function enclosingFolds(line, endByStart) {
 }
 
 /**
+ * Lay out the sticky code-structure header rows: which enclosing scopes to
+ * pin, and the y (in px, relative to the viewport top) of each, with the
+ * deepest header sliding smoothly out as its scope ends.
+ *
+ * `scopes` is the enclosing chain of the line at the viewport top, outermost
+ * first (from {@link enclosingFolds}), each carrying its fold *end*'s display
+ * row. Properly-nested scopes end in non-increasing display-row order (an
+ * outer scope ends at or after every scope it contains), which this relies
+ * on for the trim below.
+ *
+ * Two things make the headers correct rather than naive:
+ *
+ *  1. **Trim (the fixed point).** The panel overlays the top `count` rows, so
+ *     the first line the user actually *sees* is `count` rows below the
+ *     geometric top. A scope is only pinned while its end is still at or
+ *     below the panel's bottom (`baseRow + i + 1`); once its content is
+ *     entirely behind the panel it is dropped — otherwise a scope you have
+ *     already scolled past keeps showing its (now wrong) header.
+ *  2. **Slide.** The deepest pinned header slides up out of the panel as its
+ *     scope's end crosses the panel bottom, so it leaves in sync with the
+ *     content instead of popping.
+ *
+ * @param {Array<{startLine: number, endRow: number}>} scopes - Outermost
+ *   first; `endRow` is the display row of the scope's last line.
+ * @param {number} scrollTop - The scroll container's scrollTop, in px.
+ * @param {number} lineHeight - Display-row height, in px.
+ * @returns {Array<{startLine: number, y: number}>} Rows to pin, top to bottom.
+ */
+export function stickyHeaderRows(scopes, scrollTop, lineHeight) {
+  if (!Array.isArray(scopes) || scopes.length === 0 || lineHeight <= 0) return [];
+  const baseRow = Math.floor(scrollTop / lineHeight);
+  const scrollRows = scrollTop / lineHeight;
+  // How many scopes still have content at or below the bottom of the panel
+  // they would form. Deeper scopes end sooner, so the first miss ends it.
+  let count = 0;
+  for (let i = 0; i < scopes.length; i += 1) {
+    if (scopes[i].endRow >= baseRow + i + 1) count = i + 1;
+    else break;
+  }
+  const rows = [];
+  for (let i = 0; i < count; i += 1) {
+    let y = i * lineHeight;
+    if (i === count - 1) {
+      // The deepest pinned header: push it up as its scope's end rises into
+      // the panel, so it slides out exactly as the trim is about to drop it.
+      const overshoot = scrollRows + count - scopes[i].endRow;
+      if (overshoot > 0) y = Math.max(0, y - overshoot * lineHeight);
+    }
+    rows.push({ startLine: scopes[i].startLine, y });
+  }
+  return rows;
+}
+
+/**
  * Should a folded header preview its range's *closing* line after the
  * `…`? Only when that line is structurally a close — a bare closing
  * delimiter (`</tag>`, `}`, `)`, `]`) or a short keyword close (`end`,
