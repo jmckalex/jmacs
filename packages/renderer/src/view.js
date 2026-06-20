@@ -43,6 +43,17 @@ const MODIFIER_KEYS = new Set([
 ]);
 
 /**
+ * How many rows below the viewport top to consider when gathering sticky
+ * header candidates. A scope sticks up to `slot` rows before its header
+ * reaches the geometric top (it slots in at the bottom of the stack), so the
+ * look-ahead only needs to exceed the deepest slot a panel will ever show;
+ * this is comfortably above any real nesting depth. (It also bounds the
+ * per-frame gather — the cost is the same linear scan of the fold index the
+ * old enclosing-chain lookup did.)
+ */
+const STICKY_LOOKAHEAD = 64;
+
+/**
  * @typedef {object} EditorView
  * @property {HTMLElement} element - The view's root element.
  * @property {HTMLElement} backgroundLayer - An empty layer behind the
@@ -1097,7 +1108,11 @@ export function createEditorView(buffer, container, options = {}) {
     indentGuideLayer.replaceChildren(...guideEls);
     // Pills first, then chevrons on top (a chevron sits at the top of
     // its pill on the header row and must stay the clickable element).
-    gutter.replaceChildren(...numberEls, ...pillEls, ...chevronEls);
+    // Keep `gutterStickyLayer` in the list: it is a `position: sticky`
+    // sibling that holds the pinned sticky-header line numbers, and
+    // omitting it here would detach it (so the numbers would scroll away
+    // with the rest of the gutter instead of staying pinned).
+    gutter.replaceChildren(...numberEls, ...pillEls, ...chevronEls, gutterStickyLayer);
 
     // The block widgets are now laid out: measure each one's real height
     // and remember how many rows it needs (height + the .math-block top/
@@ -1655,15 +1670,22 @@ export function createEditorView(buffer, container, options = {}) {
     }
     const lineHeight = cursorEl.getBoundingClientRect().height || 22;
     const scrollTop = root.scrollTop;
-    const topLine = lineForDisplayRow(Math.floor(scrollTop / lineHeight));
-    // The enclosing fold chain at the viewport top, each tagged with its
-    // end's *display* row, then laid out: `stickyHeaderRows` trims scopes
-    // whose content has scrolled fully behind the panel (the fix for the
-    // wrong-header bug) and slides the deepest header out as its scope ends.
-    const scopes = enclosingFolds(topLine, foldCache.endByStart).map((s) => ({
-      startLine: s.startLine,
-      endRow: rowOf(s.endLine),
-    }));
+    const topRow = Math.floor(scrollTop / lineHeight);
+    // Candidate scopes for the panel, in display-row space: every fold still
+    // open at the viewport top (its end at or below the top) whose header is
+    // at or just below the top. The small look-ahead below the top lets a
+    // scope stick the instant its header meets the bottom of the stack rather
+    // than a row after it has slid behind the panel; `stickyHeaderRows` makes
+    // the final per-slot call. Folded-away headers (display row -1) drop out.
+    const scopes = [];
+    for (const [startLine, endLine] of foldCache.endByStart) {
+      const startRow = rowOf(startLine);
+      const endRow = rowOf(endLine);
+      if (startRow < 0 || endRow < topRow) continue;
+      if (startRow > topRow + STICKY_LOOKAHEAD) continue;
+      scopes.push({ startLine, startRow, endRow });
+    }
+    scopes.sort((a, b) => a.startRow - b.startRow || a.startLine - b.startLine);
     const layout = stickyHeaderRows(scopes, scrollTop, lineHeight);
     if (layout.length === 0) {
       clearSticky();

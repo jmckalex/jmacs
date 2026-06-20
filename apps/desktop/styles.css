@@ -981,6 +981,41 @@ mjx-assistive-mml[display='block'] {
   opacity: 1;
 }
 
+/* Hairline between stacked headers. The pinned lines are non-contiguous
+   source lines (there is usually a gap between e.g. `<body>` and a `<div>`
+   far below it), so a thin rule between them signals they are not a run of
+   consecutive code. Drawn as a top-edge pseudo on every row but the first
+   (the topmost header has nothing above it), across both the gutter and the
+   content halves so it reads as one continuous line; absolutely positioned so
+   it adds no height and leaves the deepest row's drop-shadow intact. */
+.editor-sticky-line:not(:first-child)::before,
+.editor-gutter-sticky-row:not(:first-child)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+/* Close the stack with a hairline on the bottom edge of the deepest (last)
+   row too, so the panel reads as a bounded block above the scrolling code
+   (it sits just over the deepest row's drop-shadow). As the deepest slides
+   out and is dropped, the next row becomes `:last-child` and the hairline
+   lands at the same y — so the bottom edge tracks the panel seamlessly. */
+.editor-sticky-line:last-child::after,
+.editor-gutter-sticky-row:last-child::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+
 /* --- cursor ------------------------------------------------------------ */
 
 .editor-cursor {
