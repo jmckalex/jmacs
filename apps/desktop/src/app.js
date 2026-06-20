@@ -6754,6 +6754,8 @@ function buildMinimapAdapter(buffer, textViewEl) {
     buffer,
     getLineRuns: () =>
       typeof textViewEl.lineRuns === 'function' ? textViewEl.lineRuns() : null,
+    getFoldScopes: () =>
+      typeof textViewEl.foldScopes === 'function' ? textViewEl.foldScopes() : [],
     getMetrics: () => metricsFrom(textViewEl.scrollElement),
     onScroll: (cb) => {
       const root = textViewEl.scrollElement;

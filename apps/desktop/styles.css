@@ -4150,6 +4150,56 @@ minimap-view,
   visibility: hidden;
   pointer-events: none;
 }
+/* Hover scope-extent band — the line range of the construct under the
+   pointer, tinted with the accent so it reads against the segments. */
+.minimap-hover-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* Hover code-preview flyout — a readable, syntax-highlighted slice of the
+   source at the pointer, popped beside the minimap (lives in <body>, fixed
+   position). The `.tok-*` spans inside inherit the editor's face colours. */
+.minimap-flyout {
+  position: fixed;
+  z-index: 50;
+  max-width: 64ch;
+  max-height: 60vh;
+  overflow: hidden;
+  padding: 6px 9px;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px -6px color-mix(in srgb, #000 55%, transparent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg);
+  pointer-events: none;
+}
+.minimap-flyout-line {
+  display: flex;
+  min-height: 1.45em;
+}
+.minimap-flyout-line.is-current {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.minimap-flyout-no {
+  flex: 0 0 auto;
+  min-width: 3.5ch;
+  margin-right: 9px;
+  text-align: right;
+  color: var(--fg-dim);
+  opacity: 0.6;
+  user-select: none;
+}
+.minimap-flyout-code {
+  white-space: pre;
+}
 
 /* --- placeholder-view ------------------------------------------------- */
 /* The chooser a freshly-split pane shows until the user decides what it

@@ -269,6 +269,12 @@ export class TextView extends ViewElement {
     return this._editor !== null ? this._editor.lineRuns() : null;
   }
 
+  /** The structural fold scopes (`{startLine, endLine}[]`) of the current
+   *  buffer — for the minimap's hover scope-extent highlight. */
+  foldScopes() {
+    return this._editor !== null ? this._editor.foldScopes() : [];
+  }
+
   /** Toggle the fold whose header contains the cursor. */
   toggleFoldAtPoint() {
     if (this._editor !== null) this._editor.toggleFoldAtPoint();

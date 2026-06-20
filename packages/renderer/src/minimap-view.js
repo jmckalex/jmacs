@@ -187,6 +187,29 @@ export function runToRect(run, startCol, charW, maxCols, tabW) {
   return { x, w, nextCol, draw };
 }
 
+/**
+ * The innermost fold scope containing LINE — the smallest `{startLine,
+ * endLine}` with `startLine <= line <= endLine`. Null when none contains it.
+ * This is the "relevant construct" whose extent the hover highlights.
+ *
+ * @param {number} line
+ * @param {Array<{startLine:number, endLine:number}>} scopes
+ * @returns {{startLine:number, endLine:number} | null}
+ */
+export function enclosingScope(line, scopes) {
+  if (!Array.isArray(scopes)) return null;
+  let best = null;
+  for (const s of scopes) {
+    if (s.startLine <= line && line <= s.endLine) {
+      if (!best || s.endLine - s.startLine < best.endLine - best.startLine) best = s;
+    }
+  }
+  return best;
+}
+
+/** Lines above/below the hovered line shown in the code-preview flyout. */
+const FLYOUT_RADIUS = 6;
+
 // --- the custom element ------------------------------------------------
 
 export class MinimapView extends ViewElement {
@@ -210,6 +233,13 @@ export class MinimapView extends ViewElement {
     this._canvas = null;
     /** @type {HTMLElement | null} */
     this._thumb = null;
+    /** @type {HTMLElement | null} - the hover scope-extent band. */
+    this._band = null;
+    /** @type {HTMLElement | null} - the hover code-preview flyout (in body). */
+    this._flyout = null;
+    /** Last hovered source line, so we rebuild the band/flyout only on a
+     *  line change rather than every pointer pixel. -1 = not hovering. */
+    this._lastHoverLine = -1;
     /** @type {HTMLElement | null} */
     this._message = null;
     /** @type {HTMLElement | null} */
@@ -260,6 +290,7 @@ export class MinimapView extends ViewElement {
     this._teardownSubs();
     this._adapter = adapter ?? null;
     this._runsCache = null;
+    this._hideHover(); // a new target's scopes/lines differ — recompute on hover
     if (!this._mounted) return; // painted on connectedCallback
     if (!this._adapter) {
       this._showMessage(true);
@@ -307,6 +338,10 @@ export class MinimapView extends ViewElement {
     }
     if (this._raf) cancelAnimationFrame(this._raf);
     if (this._editTimer) clearTimeout(this._editTimer);
+    if (this._flyout) {
+      try { this._flyout.remove(); } catch { /* already gone */ }
+      this._flyout = null;
+    }
     this._raf = 0;
     this._editTimer = 0;
     this._adapter = null;
@@ -329,6 +364,12 @@ export class MinimapView extends ViewElement {
     thumb.className = 'minimap-thumb';
     this._thumb = thumb;
 
+    // The hover scope-extent band — covers the enclosing construct's lines.
+    const band = doc.createElement('div');
+    band.className = 'minimap-hover-band';
+    band.style.display = 'none';
+    this._band = band;
+
     const message = doc.createElement('div');
     message.className = 'minimap-message';
     message.textContent = 'Minimap not supported for this view';
@@ -340,7 +381,7 @@ export class MinimapView extends ViewElement {
     probe.className = 'minimap-probe';
     this._probe = probe;
 
-    this.append(canvas, thumb, message, probe);
+    this.append(canvas, thumb, band, message, probe);
     this._wireEvents();
 
     if (typeof ResizeObserver !== 'undefined') {
@@ -368,12 +409,15 @@ export class MinimapView extends ViewElement {
     canvas.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       this._dragging = true;
+      this._hideHover(); // the preview is noise while scrubbing
       try { canvas.setPointerCapture(event.pointerId); } catch { /* ok */ }
       navigate(event);
     });
     canvas.addEventListener('pointermove', (event) => {
       if (this._dragging) navigate(event);
+      else this._onHover(event);
     });
+    canvas.addEventListener('pointerleave', () => this._hideHover());
     const endDrag = () => { this._dragging = false; };
     canvas.addEventListener('pointerup', endDrag);
     canvas.addEventListener('pointercancel', endDrag);
@@ -383,6 +427,125 @@ export class MinimapView extends ViewElement {
     if (this._message) this._message.style.display = show ? '' : 'none';
     if (this._canvas) this._canvas.style.display = show ? 'none' : '';
     if (this._thumb) this._thumb.style.display = show ? 'none' : '';
+    if (show) this._hideHover();
+  }
+
+  // --- internal: hover (scope-extent band + code-preview flyout) ------
+
+  _onHover(event) {
+    if (this._dragging || !this._adapter) return;
+    const canvas = /** @type {HTMLCanvasElement} */ (this._canvas);
+    const rect = canvas.getBoundingClientRect();
+    if (rect.height <= 0) return;
+    const metrics = this._safeMetrics();
+    if (!metrics) return;
+    const runsPerLine = this._runsPerLine();
+    const lineCount = runsPerLine.length;
+    if (lineCount === 0) return;
+    const mmContentH = lineCount * MM_LINE_H;
+    const { mmScrollTop } = thumbRect(metrics, mmContentH, rect.height);
+    const y = event.clientY - rect.top;
+    const line = Math.max(0, Math.min(lineCount - 1,
+      Math.floor((y + mmScrollTop) / MM_LINE_H)));
+    if (line === this._lastHoverLine) {
+      // Same line: just let the flyout track the cursor vertically.
+      if (this._flyout && this._flyout.style.display !== 'none') {
+        this._positionFlyout(this._flyout, event.clientY);
+      }
+      return;
+    }
+    this._lastHoverLine = line;
+    // Scope-extent band over the enclosing construct.
+    let scopes = [];
+    try {
+      scopes = typeof this._adapter.getFoldScopes === 'function'
+        ? this._adapter.getFoldScopes()
+        : [];
+    } catch { scopes = []; }
+    const scope = enclosingScope(line, scopes);
+    if (this._band) {
+      if (scope) {
+        this._band.style.top = `${scope.startLine * MM_LINE_H - mmScrollTop}px`;
+        this._band.style.height =
+          `${(scope.endLine - scope.startLine + 1) * MM_LINE_H}px`;
+        this._band.style.display = '';
+      } else {
+        this._band.style.display = 'none';
+      }
+    }
+    this._renderFlyout(line, runsPerLine, event.clientY);
+  }
+
+  /** Build the code-preview flyout: a readable, syntax-highlighted slice of
+   *  the lines around CENTERLINE, reusing the same `.tok-*` face classes the
+   *  editor uses (so the theme colours it). */
+  _renderFlyout(centerLine, runsPerLine, clientY) {
+    const total = runsPerLine.length;
+    if (total === 0) { this._hideFlyout(); return; }
+    const doc = this.ownerDocument;
+    const first = Math.max(0, centerLine - FLYOUT_RADIUS);
+    const last = Math.min(total - 1, centerLine + FLYOUT_RADIUS);
+    const frag = doc.createDocumentFragment();
+    for (let i = first; i <= last; i += 1) {
+      const lineEl = doc.createElement('div');
+      lineEl.className =
+        i === centerLine ? 'minimap-flyout-line is-current' : 'minimap-flyout-line';
+      const no = doc.createElement('span');
+      no.className = 'minimap-flyout-no';
+      no.textContent = String(i + 1);
+      const code = doc.createElement('span');
+      code.className = 'minimap-flyout-code';
+      const runs = runsPerLine[i];
+      if (Array.isArray(runs) && runs.length > 0) {
+        for (const run of runs) {
+          const span = doc.createElement('span');
+          if (run.face) span.className = `tok-${run.face}`;
+          span.textContent = run.text;
+          code.append(span);
+        }
+      }
+      lineEl.append(no, code);
+      frag.append(lineEl);
+    }
+    const flyout = this._ensureFlyout();
+    flyout.replaceChildren(frag);
+    flyout.style.display = '';
+    this._positionFlyout(flyout, clientY);
+  }
+
+  _positionFlyout(flyout, clientY) {
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    const rect = /** @type {HTMLCanvasElement} */ (this._canvas).getBoundingClientRect();
+    const fw = flyout.offsetWidth;
+    const fh = flyout.offsetHeight;
+    // Put the flyout on the roomier side of the minimap.
+    let left = rect.left > winW / 2 ? rect.left - 8 - fw : rect.right + 8;
+    left = Math.max(8, Math.min(left, winW - fw - 8));
+    let top = clientY - fh / 2;
+    top = Math.max(8, Math.min(top, winH - fh - 8));
+    flyout.style.left = `${left}px`;
+    flyout.style.top = `${top}px`;
+  }
+
+  _ensureFlyout() {
+    if (this._flyout) return this._flyout;
+    const doc = this.ownerDocument;
+    const flyout = doc.createElement('div');
+    flyout.className = 'minimap-flyout';
+    (doc.body || this).append(flyout);
+    this._flyout = flyout;
+    return flyout;
+  }
+
+  _hideFlyout() {
+    if (this._flyout) this._flyout.style.display = 'none';
+  }
+
+  _hideHover() {
+    this._lastHoverLine = -1;
+    if (this._band) this._band.style.display = 'none';
+    this._hideFlyout();
   }
 
   // --- internal: scheduling ------------------------------------------

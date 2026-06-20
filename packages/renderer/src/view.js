@@ -1851,6 +1851,18 @@ export function createEditorView(buffer, container, options = {}) {
       return highlightCache;
     },
 
+    /** The structural fold scopes — `{ startLine, endLine }` per foldable
+     *  construct (function / block / section / element). Exposed so the
+     *  minimap can highlight the extent of the construct under the pointer.
+     *  Read-only snapshot of the current fold index. */
+    foldScopes() {
+      if (!foldCache || !foldCache.endByStart) return [];
+      return [...foldCache.endByStart].map(([startLine, endLine]) => ({
+        startLine,
+        endLine,
+      }));
+    },
+
     /** Scroll so the cursor's line sits in the middle of the viewport.
      *  Deferred to the next render so it reads the cursor's *new* row
      *  after a preceding buffer move (e.g. `goto-line!`), and wins over

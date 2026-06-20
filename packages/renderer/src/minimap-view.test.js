@@ -19,6 +19,7 @@ import {
   clickToScrollFraction,
   parseRgb,
   runToRect,
+  enclosingScope,
 } from './minimap-view.js';
 
 test('clamp01 clamps into [0,1]', () => {
@@ -132,4 +133,29 @@ test('runToRect: chained runs preserve column alignment', () => {
   assert.equal(a.nextCol, 6);
   assert.equal(b.x, 6); // 'x' sits right after 'const '
   assert.equal(b.w, 1);
+});
+
+test('enclosingScope picks the innermost scope containing the line', () => {
+  const scopes = [
+    { startLine: 0, endLine: 100 }, // outer
+    { startLine: 10, endLine: 40 }, // middle
+    { startLine: 20, endLine: 30 }, // inner
+  ];
+  assert.deepEqual(enclosingScope(25, scopes), { startLine: 20, endLine: 30 });
+  assert.deepEqual(enclosingScope(35, scopes), { startLine: 10, endLine: 40 });
+  assert.deepEqual(enclosingScope(5, scopes), { startLine: 0, endLine: 100 });
+});
+
+test('enclosingScope is inclusive of the scope boundary lines', () => {
+  const scopes = [{ startLine: 10, endLine: 20 }];
+  assert.deepEqual(enclosingScope(10, scopes), { startLine: 10, endLine: 20 });
+  assert.deepEqual(enclosingScope(20, scopes), { startLine: 10, endLine: 20 });
+});
+
+test('enclosingScope returns null when nothing contains the line', () => {
+  const scopes = [{ startLine: 10, endLine: 20 }];
+  assert.equal(enclosingScope(5, scopes), null);
+  assert.equal(enclosingScope(25, scopes), null);
+  assert.equal(enclosingScope(3, []), null);
+  assert.equal(enclosingScope(3, null), null);
 });

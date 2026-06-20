@@ -107,6 +107,7 @@ export {
   parseRgb,
   scrollTopToContentFraction,
   contentFractionToScrollTop,
+  enclosingScope,
 } from './minimap-view.js';
 export {
   PLACEHOLDER_ACTIONS,
