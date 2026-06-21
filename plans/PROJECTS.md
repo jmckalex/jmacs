@@ -71,7 +71,8 @@ interactive (click a file in the tree, click a bookmark to jump).
   picker), `find-project` (completing minibuffer, find-file-style filesystem
   TAB completion — mirrors `directory-tree`), `close-project`. Primitives in
   app.js: `open-project!`, `open-project-at!`, `close-project!`,
-  `current-project`. Unbound — `M-x` for now. `openProject` guards against a
+  `current-project`. `find-project` is bound to **`C-x C-p`** (keymap.lisp);
+  `open-project` / `close-project` are `M-x` for now. `openProject` guards against a
   non-directory path (the minibuffer / `open-project-at!` can yield one):
   `listDirectorySync` is an array only for a real directory, else the status
   line reports it and the open is declined.
