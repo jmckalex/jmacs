@@ -94,6 +94,7 @@ license.
 | Component | Version | License | Path |
 |-----------|---------|---------|------|
 | [Font Awesome Free](https://fontawesome.com/) | 7.2.0 | Icons **CC BY 4.0**, Fonts **SIL OFL 1.1**, Code **MIT** | `apps/desktop/vendor/fontawesome/` |
+| [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme) — the colour file/folder icons in the directory tree | 5.35.0 | MIT (bundled `LICENSE`) | `apps/desktop/vendor/material-icons/` |
 | [MathJax](https://www.mathjax.org/) (`tex-svg`) | 3.2.2 | Apache-2.0 | `apps/desktop/vendor/mathjax/` |
 | [Stella](https://stella-emu.github.io/) — Atari 2600 core (WebAssembly) behind the optional `atari` element-view ⚠️ *see the Stella note above* | vendored bundle | **GPL-2.0** | `apps/desktop/vendor/stella/` |
 | Oystron © 1997 Piero Cavina — freeware demo ROM (ship paired with its `.txt`) | — | Freeware | `apps/desktop/vendor/stella/oystron.{bin,txt}` |

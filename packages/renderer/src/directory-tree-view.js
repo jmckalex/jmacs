@@ -213,6 +213,11 @@ export function joinPath(parent, child) {
  *   to the global Lisp keymap, like the other custom views.
  * @param {() => void} [options.closeBuffer] - Called when the user
  *   presses `q` to dismiss the buffer.
+ * @param {(name: string, isDirectory: boolean, expanded: boolean) =>
+ *   (string | null)} [options.iconUrlFor] - The URL of a colour icon
+ *   (Material) for a directory entry, or null to fall back to the built-in
+ *   FontAwesome glyph. The host supplies this; the element stays
+ *   icon-source-agnostic.
  * @returns {{element: HTMLElement, setBuffer: (buffer: object | null)
  *   => void, focus: () => void}}
  */
@@ -225,11 +230,63 @@ function createDirectoryTreeView(container, options = {}) {
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
   const closeBuffer =
     typeof options.closeBuffer === 'function' ? options.closeBuffer : null;
+  const iconUrlFor =
+    typeof options.iconUrlFor === 'function' ? options.iconUrlFor : null;
 
   const root = doc.createElement('div');
   root.className = 'directory-tree-view';
   root.tabIndex = 0;
   container.append(root);
+
+  // Cache fetched Material SVG markup by URL so re-renders don't re-fetch
+  // (app:// is served no-store) and icons don't flicker on expand/scroll.
+  const svgIconCache = new Map();
+  function injectSvgIcon(span, url) {
+    const cached = svgIconCache.get(url);
+    if (typeof cached === 'string') {
+      span.innerHTML = cached;
+      return;
+    }
+    if (typeof fetch !== 'function') return;
+    fetch(url)
+      .then((r) => (r.ok ? r.text() : ''))
+      .then((txt) => {
+        if (!txt) return;
+        svgIconCache.set(url, txt); // trusted, vendored SVG markup
+        if (span.isConnected) span.innerHTML = txt;
+      })
+      .catch(() => {});
+  }
+
+  /** The icon element for ENTRY: a colour Material SVG when the host provides
+   *  a URL (`iconUrlFor`), else the built-in FontAwesome glyph. */
+  function buildEntryIcon(entry, isOpen) {
+    let url = null;
+    if (iconUrlFor && entry.kind !== 'other') {
+      try {
+        url = iconUrlFor(entry.name, entry.kind === 'directory', isOpen);
+      } catch {
+        url = null;
+      }
+    }
+    if (url) {
+      const span = doc.createElement('span');
+      span.className = 'directory-tree-icon directory-tree-icon-svg';
+      injectSvgIcon(span, url);
+      return span;
+    }
+    const baseIconClass =
+      entry.kind === 'directory'
+        ? isOpen
+          ? 'fa-folder-open'
+          : 'fa-folder'
+        : entry.kind === 'other'
+          ? 'fa-file-circle-question'
+          : iconClassForFile(entry.name);
+    const icon = doc.createElement('i');
+    icon.className = `directory-tree-icon fa-solid ${baseIconClass}`;
+    return icon;
+  }
 
   const header = doc.createElement('div');
   header.className = 'directory-tree-header';
@@ -331,28 +388,19 @@ function createDirectoryTreeView(container, options = {}) {
     if (isOpen) chevron.classList.add('is-open');
     row.append(chevron);
 
-    const baseIconClass = entry.kind === 'directory'
-      ? (isOpen ? 'fa-folder-open' : 'fa-folder')
-      : entry.kind === 'other'
-        ? 'fa-file-circle-question'
-        : iconClassForFile(entry.name);
-
+    const iconEl = buildEntryIcon(entry, isOpen);
     if (entry.isSymlink) {
-      // Stack: the target's icon as the base, an SVG circle-arrow
-      // badge stamped in the bottom-right corner. The wrapper takes
-      // the same horizontal slot as the standalone .directory-tree-icon,
-      // so symlink rows align with non-symlink rows.
+      // Stack: the target's icon as the base, an SVG circle-arrow badge
+      // stamped in the bottom-right corner. The wrapper takes the same
+      // horizontal slot as a standalone .directory-tree-icon, so symlink
+      // rows align with non-symlink rows.
       const stack = doc.createElement('span');
       stack.className = 'directory-tree-icon-stack';
-      const base = doc.createElement('i');
-      base.className = `directory-tree-icon fa-solid ${baseIconClass}`;
-      stack.append(base);
+      stack.append(iconEl);
       stack.append(createSymlinkBadge(doc, 'directory-tree-symlink'));
       row.append(stack);
     } else {
-      const icon = doc.createElement('i');
-      icon.className = `directory-tree-icon fa-solid ${baseIconClass}`;
-      row.append(icon);
+      row.append(iconEl);
     }
 
     const label = doc.createElement('span');
