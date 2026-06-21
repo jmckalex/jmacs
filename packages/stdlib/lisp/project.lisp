@@ -26,6 +26,25 @@
    first."
   (open-project!))
 
+(define (-open-project-deliver path)
+  "Minibuffer submit handler for `find-project`: open PATH as a project,
+   after tilde expansion. Empty input (cancel) is a no-op. A non-directory
+   path is reported on the status line by the host (`open-project-at!`)."
+  (cond ((nil? path) nil)
+        ((equal? path "") nil)
+        (else (open-project-at! (-expand-tilde path)))))
+
+(defcommand find-project ()
+  "Open a project workspace, choosing the directory in the minibuffer with
+   find-file-style TAB completion against the filesystem (seeded at the
+   current directory). The keyboard counterpart to `open-project`, which
+   pops the native directory picker."
+  ;; `-initial-find-file-value` (files.lisp) seeds the prompt with the
+  ;; current buffer's directory and a trailing '/', home as a fallback —
+  ;; so TAB immediately lists that directory's entries.
+  (open-completing-minibuffer! "Open project: " (-initial-find-file-value))
+  (set! *minibuffer-reader* -open-project-deliver))
+
 (defcommand close-project ()
   "Close the open project — saving its open-file layout to
    `<root>/.godot/project.json` — and return to the home session. A no-op

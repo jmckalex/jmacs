@@ -10327,6 +10327,15 @@ async function openProject(root) {
   const cleanRoot = expandTilde(String(root ?? '')).replace(/\/+$/, '');
   if (cleanRoot === '') return;
   if (cleanRoot === activeProjectPath) return;
+  // The native picker always yields a directory, but the minibuffer route
+  // (find-project) and open-project-at! can hand us a file or a missing
+  // path — rooting a project there would fail messily (the .godot/ mkdir
+  // lands under a file). listDirectorySync returns an array for a
+  // directory (even an empty one), null otherwise.
+  if (!Array.isArray(window.host.listDirectorySync(cleanRoot))) {
+    minibuffer.setStatus(`Not a directory: ${cleanRoot}`);
+    return;
+  }
   // Persist whatever workspace is live now before switching away from it.
   try {
     await activeSession().flush();
