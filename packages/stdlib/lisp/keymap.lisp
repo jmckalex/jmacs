@@ -38,6 +38,8 @@
    "n"     'scratch-buffer
    "k"     'kill-view
    "p"     'toggle-repl
+   ;; C-x m — toggle the minimap companion pane (packages/stdlib/lisp/minimap.lisp).
+   "m"     'toggle-minimap
    "h"     'mark-whole-buffer
    ";"     'comment-line
    "C-d"   'duplicate-line
