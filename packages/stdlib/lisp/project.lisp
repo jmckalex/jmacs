@@ -50,3 +50,10 @@
    `<root>/.godot/project.json` — and return to the home session. A no-op
    when no project is open."
   (close-project!))
+
+(defcommand project-chooser ()
+  "Open the Project Chooser — a Nova-style launcher showing a grid of known
+   projects (each a thumbnail or a generated letter tile) with a search
+   field and Open Folder / Add Project actions. Click a tile (or select with
+   the arrow keys and press Enter) to open that project; Escape dismisses."
+  (open-project-chooser!))

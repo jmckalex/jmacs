@@ -137,7 +137,12 @@ import { buildModeMenuItems } from './mode-menu-build.js';
 import { createRecovery } from './recovery-controller.js';
 import { hashText } from './recovery.js';
 import { createSession } from './session.js';
-import { upsertProject, projectNameFromRoot } from './project-index.js';
+import {
+  upsertProject,
+  projectNameFromRoot,
+  setProjectThumbnail,
+} from './project-index.js';
+import { openProjectChooser } from './project-chooser.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 import { createBookmarks } from './bookmarks.js';
@@ -4186,6 +4191,12 @@ const interpreter = createInterpreter({
     // The open project's absolute root, or nil in the home session. A data
     // accessor (no `!`) — the chooser and modeline can read it.
     'current-project': () => (activeProjectPath === null ? NIL : activeProjectPath),
+    // Open the Project Chooser launcher modal — a grid of known projects
+    // (thumbnails + search) to pick from, plus Open Folder / Add Project.
+    'open-project-chooser!': () => {
+      showProjectChooser();
+      return NIL;
+    },
     // Open the *View List* — a clickable HTML table of every open view
     // (the replacement for the old text *Buffer List*). There is one
     // such view; this finds or creates it, switches the current pane to
@@ -10300,23 +10311,84 @@ async function restoreInto(ctrl) {
   return rootPane !== before;
 }
 
-/** Record ROOT at the front of the central project index (most-recently
- *  opened first). Best-effort: a read/write failure is non-fatal. */
-async function rememberProject(root) {
+/** Read the central project index → array of `{path, name, thumbnail?}`
+ *  entries (most-recently-opened first). Best-effort: returns [] on error. */
+async function readProjectList() {
   let index = null;
   try {
     index = await window.host.readProjectIndex();
   } catch {
     index = null;
   }
-  const list = index && Array.isArray(index.projects) ? index.projects : [];
-  const next = upsertProject(list, root, projectNameFromRoot(root));
+  return index && Array.isArray(index.projects) ? index.projects : [];
+}
+
+/** Write LIST back to the central project index. Best-effort: a write
+ *  failure is non-fatal (the index is a convenience catalogue). */
+async function writeProjectList(list) {
   try {
-    await window.host.writeProjectIndex({ projects: next });
+    await window.host.writeProjectIndex({ projects: list });
   } catch {
-    // The index is a convenience catalogue for the future chooser; a
-    // write failure must not break opening the project.
+    // The index is a convenience catalogue for the chooser; a write
+    // failure must not break opening a project.
   }
+}
+
+/** Record ROOT at the front of the central project index (most-recently
+ *  opened first). Best-effort. */
+async function rememberProject(root) {
+  const list = await readProjectList();
+  await writeProjectList(upsertProject(list, root, projectNameFromRoot(root)));
+}
+
+/** Open the Project Chooser launcher modal — read the known projects, then
+ *  show the grid. All of the chooser's side effects (open / add / set
+ *  thumbnail / remove / read a thumbnail image) are wired to the host here;
+ *  `list` is the shared, mutable catalogue the actions return updated. */
+function showProjectChooser() {
+  const reportErr = (error) =>
+    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+  readProjectList()
+    .then((initial) => {
+      let list = initial;
+      openProjectChooser({
+        getProjects: () => list,
+        openProject: (path) => {
+          openProject(path).catch(reportErr);
+        },
+        // Pick a folder and open it immediately (the chooser closes first).
+        openFolder: () => {
+          window.host
+            .openDirectory()
+            .then((path) => (path ? openProject(path) : undefined))
+            .catch(reportErr);
+        },
+        // Pick a folder and add it to the catalogue WITHOUT opening.
+        addProject: async () => {
+          const path = await window.host.openDirectory();
+          if (!path) return null;
+          list = upsertProject(list, path);
+          await writeProjectList(list);
+          return list;
+        },
+        // Choose a custom thumbnail image for a project tile.
+        pickThumbnail: async (root) => {
+          const img = await window.host.pickProjectImage();
+          if (!img) return null;
+          list = setProjectThumbnail(list, root, img);
+          await writeProjectList(list);
+          return list;
+        },
+        // Drop a project from the catalogue (does not touch its files).
+        removeProject: async (root) => {
+          list = list.filter((p) => p && p.path !== root);
+          await writeProjectList(list);
+          return list;
+        },
+        loadThumbnail: (imagePath) => window.host.readProjectThumbnail(imagePath),
+      });
+    })
+    .catch(reportErr);
 }
 
 /** Open ROOT as a project workspace. Saves the current workspace (home or
