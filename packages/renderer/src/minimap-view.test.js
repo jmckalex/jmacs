@@ -17,6 +17,7 @@ import {
   contentFractionToScrollTop,
   thumbRect,
   clickToScrollFraction,
+  wheelToScrollTop,
   parseRgb,
   leadingIndentCols,
   compressIndent,
@@ -93,6 +94,27 @@ test('clickToScrollFraction clamps at the ends and when unscrollable', () => {
   assert.equal(clickToScrollFraction(300, 0, 300, metrics), 1); // bottom
   // Unscrollable (content fits): always 0.
   assert.equal(clickToScrollFraction(50, 0, 300, { contentHeight: 80, viewportHeight: 500 }), 0);
+});
+
+test('wheelToScrollTop scales the swipe by the minimap compression', () => {
+  // Long file: editor content 10000px, minimap content 1500px → scale ≈ 6.67.
+  const metrics = { scrollTop: 1000, viewportHeight: 500, contentHeight: 10000 };
+  const next = wheelToScrollTop(30, metrics, 1500);
+  assert.ok(Math.abs(next - (1000 + 30 * (10000 / 1500))) < 1e-9, `got ${next}`);
+  assert.ok(next > 1000); // scrolled down
+});
+
+test('wheelToScrollTop clamps to the scrollable range', () => {
+  const metrics = { scrollTop: 9400, viewportHeight: 500, contentHeight: 10000 };
+  // range = 9500; a big down-swipe can't overshoot it.
+  assert.equal(wheelToScrollTop(10000, metrics, 1500), 9500);
+  // A big up-swipe can't go below 0.
+  assert.equal(wheelToScrollTop(-10000, { ...metrics, scrollTop: 100 }, 1500), 0);
+});
+
+test('wheelToScrollTop is a no-op when the document fits', () => {
+  const metrics = { scrollTop: 0, viewportHeight: 500, contentHeight: 300 };
+  assert.equal(wheelToScrollTop(50, metrics, 200), 0);
 });
 
 test('parseRgb parses rgb()/rgba(), rejects non-rgb', () => {

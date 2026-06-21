@@ -143,6 +143,28 @@ export function clickToScrollFraction(clickY, mmScrollTop, mmContentH, metrics) 
 }
 
 /**
+ * A wheel (two-finger swipe) by DELTAY px over the minimap → the editor
+ * scrollTop it should move to. The delta is scaled by the minimap's
+ * compression (editor px per minimap px = `contentHeight / mmContentH`) so a
+ * swipe moves the minimap content by roughly the swipe distance — which makes
+ * a long file (where the minimap itself scrolls) navigable from the minimap.
+ * Clamped to the editor's scrollable range.
+ *
+ * @param {number} deltaY - wheel delta in CSS px (deltaMode already normalised)
+ * @param {{scrollTop:number, viewportHeight:number, contentHeight:number}} metrics
+ * @param {number} mmContentH - total minimap document height (lineCount * MM_LINE_H)
+ * @returns {number} the new editor scrollTop
+ */
+export function wheelToScrollTop(deltaY, metrics, mmContentH) {
+  const { scrollTop, viewportHeight, contentHeight } = metrics;
+  const range = contentHeight - viewportHeight;
+  if (range <= 0) return scrollTop;
+  const scale = mmContentH > 0 ? contentHeight / mmContentH : 1;
+  const next = scrollTop + deltaY * scale;
+  return Math.max(0, Math.min(range, next));
+}
+
+/**
  * Parse a CSS `rgb(...)` / `rgba(...)` color string into `[r, g, b]`
  * (0–255), or null if it doesn't look like one. Tolerant of spaces and an
  * alpha component.
@@ -532,6 +554,28 @@ export class MinimapView extends ViewElement {
     const endDrag = () => { this._dragging = false; };
     canvas.addEventListener('pointerup', endDrag);
     canvas.addEventListener('pointercancel', endDrag);
+
+    // Two-finger swipe / wheel over the minimap scrolls the editor (and the
+    // minimap follows): for a long file the minimap content itself scrolls,
+    // so a swipe pans it. Scaled by the minimap's compression so the content
+    // moves by ~the swipe distance. preventDefault stops the pane scrolling.
+    canvas.addEventListener('wheel', (event) => {
+      if (!this._adapter || typeof this._adapter.scrollToContentFraction !== 'function') {
+        return;
+      }
+      const metrics = this._safeMetrics();
+      if (!metrics) return;
+      const range = metrics.contentHeight - metrics.viewportHeight;
+      if (range <= 0) return; // the document fits — nothing to scroll
+      event.preventDefault();
+      // Normalise non-pixel wheel deltas (mouse wheels report lines/pages).
+      let dy = event.deltaY;
+      if (event.deltaMode === 1) dy *= metrics.lineHeight || 16;
+      else if (event.deltaMode === 2) dy *= metrics.viewportHeight;
+      const mmContentH = this._lineCount() * MM_LINE_H;
+      const next = wheelToScrollTop(dy, metrics, mmContentH);
+      this._adapter.scrollToContentFraction(next / range);
+    }, { passive: false });
   }
 
   _showMessage(show) {
