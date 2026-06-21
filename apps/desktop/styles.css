@@ -4167,7 +4167,10 @@ minimap-view,
 .minimap-flyout {
   position: fixed;
   z-index: 50;
-  max-width: 64ch;
+  /* Fixed width (not shrink-to-fit) so the panel doesn't jump around as the
+     hovered lines' lengths change — short lines just leave space on the
+     right; long lines clip (overflow: hidden). */
+  width: 64ch;
   max-height: 60vh;
   overflow: hidden;
   padding: 6px 9px;
