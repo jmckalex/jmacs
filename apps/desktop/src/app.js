@@ -143,6 +143,7 @@ import {
   setProjectThumbnail,
 } from './project-index.js';
 import { openProjectChooser } from './project-chooser.js';
+import { pickEditingLeaf } from './tree-open.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 import { createBookmarks } from './bookmarks.js';
@@ -4129,6 +4130,17 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.indexOf(view));
       return NIL;
     },
+    // Open a file double-clicked in a directory tree-view, routing it to
+    // the pane chosen by TARGET (`*directory-tree-open-target*`): 'editing-
+    // pane (the main editing area, default), 'other-pane, or 'this-pane.
+    // The tree-view's `directory-tree-open-file` Lisp function calls this.
+    'open-file-from-tree!': (args) => {
+      const path = String(args[0] ?? '');
+      if (path === '') return NIL;
+      const target = symbolNameOf(args[1]) || 'editing-pane';
+      openFileFromTree(path, target);
+      return NIL;
+    },
     // Open the bookmark outline for the current text buffer (C-x r l) in
     // a narrow pane to the RIGHT of the focused pane — a navigator, so the
     // source buffer stays visible (jump from the outline moves it). If the
@@ -7183,6 +7195,18 @@ function configureDirectoryTreeView() {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     openPath: (path) => {
+      // Route through the `directory-tree-open-file` Lisp function so the
+      // target honours `*directory-tree-open-target*` and stays user-
+      // overridable. Fall back to the focused-pane open if the stdlib
+      // routing isn't available yet.
+      if (keymapReady) {
+        try {
+          interpreter.call('directory-tree-open-file', path);
+          return;
+        } catch {
+          /* fall through to the default */
+        }
+      }
       openFileInTabAdjacent(path);
     },
     closeBuffer: () => {
@@ -9578,6 +9602,62 @@ function refreshBookmarkOutline() {
  *  directory view with the opened file's view — losing the user's
  *  navigation context. Now the column / tree stays put and the file
  *  appears alongside it. */
+/**
+ * Open FILEPATH from a directory tree-view, honouring TARGET (the value of
+ * `*directory-tree-open-target*`). Unlike `openFileInTabAdjacent` — which
+ * opens in the *focused* pane and so lands the file in the tree's own pane
+ * when you double-click there — this routes the file to the main editing
+ * area (a tabline / text pane that isn't the tree or another sidebar), so a
+ * project's left-sidebar tree opens files in its middle tabline.
+ *
+ * - `this-pane`     → the old behaviour (the tree's own pane).
+ * - `editing-pane`  → the main editing pane (default).
+ * - `other-pane`    → the next editing pane after the tree.
+ * When no editing pane exists, the file opens in a split beside the tree.
+ */
+async function openFileFromTree(filePath, target) {
+  if (target === 'this-pane') {
+    await openFileInTabAdjacent(filePath);
+    return;
+  }
+  const sourcePane = currentPane(); // the tree's pane (the double-click focused it)
+  const opened = await openFileByPath(filePath, { switch: false });
+  if (!opened) return;
+  const leaves = leafPanes(rootPane);
+  const descriptors = leaves.map((leaf) => ({
+    id: leaf.id,
+    kind: isTablineView(leaf.view) ? 'tabline' : leaf.view ? leaf.view.kind : null,
+    isTabline: isTablineView(leaf.view),
+  }));
+  const targetId = pickEditingLeaf(descriptors, sourcePane?.id ?? null, target);
+  const targetLeaf = targetId ? leaves.find((leaf) => leaf.id === targetId) : null;
+  if (!targetLeaf) {
+    // No suitable editing pane (e.g. the tree is the only pane): open the
+    // file beside the tree in a new split rather than inside it.
+    if (sourcePane && sourcePane.kind === 'leaf') {
+      splitPaneAtLeafWith(sourcePane, SPLIT_HORIZONTAL, 0.3, 'after', opened);
+    } else {
+      switchToViewIndex(views.indexOf(opened));
+    }
+    return;
+  }
+  // Promote the target to a tabline if needed, add the file as a tab, focus
+  // the editing pane, and activate the new tab.
+  const tlv = isTablineView(targetLeaf.view)
+    ? targetLeaf.view
+    : promoteToTablineOnPane(targetLeaf);
+  if (!tlv) {
+    switchToViewIndex(views.indexOf(opened));
+    return;
+  }
+  if (!tlv.tabs.includes(opened)) {
+    addTabToTabline(tlv, opened, tlv.tabs.length);
+  }
+  setCurrentPaneId(targetLeaf.id);
+  const idx = tlv.tabs.indexOf(opened);
+  if (idx >= 0) activateTabInTabline(tlv, idx);
+}
+
 async function openFileInTabAdjacent(filePath) {
   const pane = currentPane();
   if (!pane) {

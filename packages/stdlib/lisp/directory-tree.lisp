@@ -10,6 +10,28 @@
 ;;; the Lisp surface for invoking it. The path-taking opener is the
 ;;; `open-directory-tree!` host primitive.
 
+(defgroup 'directory-tree 'godot "The directory tree-view sidebar.")
+
+(defcustom *directory-tree-open-target* 'editing-pane :choice
+  :group 'directory-tree
+  :options '(editing-pane other-pane this-pane)
+  :doc "Where a file opens when double-clicked (or Enter-activated) in a
+   directory tree-view:
+     'editing-pane — the main editing area: a tabline / text pane that
+        isn't the tree or another sidebar. For a project this is the
+        middle tabline. The default.
+     'other-pane   — the next editing pane after the tree.
+     'this-pane    — the tree's own pane (promoted to a tabline); the
+        original behaviour.")
+
+(define (directory-tree-open-file path)
+  "Open PATH from a directory tree-view, honouring
+   `*directory-tree-open-target*`. The tree-view calls this when a file is
+   double-clicked or Enter-activated; redefine it to customise the routing
+   entirely (it's the policy layer over the `open-file-from-tree!` host
+   primitive)."
+  (open-file-from-tree! path *directory-tree-open-target*))
+
 (define (-directory-tree-deliver path)
   "Minibuffer submit handler: open a tree-view rooted at PATH, after
    tilde expansion. Empty input (cancel) is a no-op."
