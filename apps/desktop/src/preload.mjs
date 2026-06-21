@@ -5,7 +5,7 @@
  * functions and nothing else — no `require`, no `fs`.
  */
 
-import { contextBridge, ipcRenderer, clipboard } from 'electron';
+import { contextBridge, ipcRenderer, clipboard, webUtils } from 'electron';
 import { homedir } from 'node:os';
 
 contextBridge.exposeInMainWorld('host', {
@@ -299,6 +299,62 @@ contextBridge.exposeInMainWorld('host', {
    * @param {object} data - The shape produced by `serialise`.
    */
   writeSession: (data) => ipcRenderer.invoke('session:write', { data }),
+
+  /**
+   * Read a project's save-state from `<root>/.godot/project.json`. Same
+   * v2 pane-tree shape as the global session; null when the project has
+   * no saved state yet.
+   * @param {string} root - The project's absolute root directory.
+   * @returns {Promise<object | null>}
+   */
+  readProject: (root) => ipcRenderer.invoke('project:read', { root }),
+
+  /**
+   * Write a project's save-state to `<root>/.godot/project.json`.
+   * @param {string} root - The project's absolute root directory.
+   * @param {object} data - The v2 pane-tree blob from `serialiseTree`.
+   */
+  writeProject: (root, data) =>
+    ipcRenderer.invoke('project:write', { root, data }),
+
+  /**
+   * Read the central project index (`{ projects: [{ path, name }] }`),
+   * or null when no project has been opened yet.
+   * @returns {Promise<object | null>}
+   */
+  readProjectIndex: () => ipcRenderer.invoke('project:index-read'),
+
+  /**
+   * Write the central project index.
+   * @param {object} data - `{ projects: [{ path, name, thumbnail? }] }`.
+   */
+  writeProjectIndex: (data) =>
+    ipcRenderer.invoke('project:index-write', { data }),
+
+  /**
+   * Show an image picker for a project's chooser thumbnail. Resolves to the
+   * chosen absolute path, or null when cancelled.
+   * @returns {Promise<string | null>}
+   */
+  pickProjectImage: () => ipcRenderer.invoke('project:pick-image'),
+
+  /**
+   * Read a project thumbnail image as a data: URL for the chooser tile, or
+   * null when the path isn't a readable image (or is too large).
+   * @param {string} path - Absolute image path.
+   * @returns {Promise<string | null>}
+   */
+  readProjectThumbnail: (path) =>
+    ipcRenderer.invoke('project:thumbnail', { path }),
+
+  /**
+   * The absolute filesystem path of a dropped/selected `File`. Electron 32+
+   * removed `File.path`; `webUtils.getPathForFile` is the supported route.
+   * Used by the Project Chooser's drag-and-drop thumbnail target.
+   * @param {File} file
+   * @returns {string}
+   */
+  getPathForFile: (file) => webUtils.getPathForFile(file),
 
   /**
    * Write a crash-recovery snapshot for one dirty buffer. `record` is

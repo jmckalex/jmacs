@@ -27,6 +27,25 @@
    default), 'new (a fresh *scratch* view), 'command (drop into the
    run-command input), or 'none (Enter does nothing).")
 
+;; --- pane focus border -------------------------------------------------
+;; Whether the active pane draws a focus border. In a custom UI where one
+;; pane always has focus (e.g. a project: passive sidebars + one editing
+;; tabline) the border is just noise, so 'auto hides it unless there's a
+;; real choice of focusable pane.
+(defcustom *pane-focus-border* 'auto :choice
+  :group 'panes
+  :options '(auto on off)
+  :doc "When to draw the focus border on the active pane:
+     'auto — only when more than one pane is focusable, so a single
+        editing surface (a project with passive sidebars, an unsplit
+        window) shows none. The default.
+     'on   — always draw it.
+     'off  — never draw it.")
+
+;; Read by the host (the focus-indicator refresh) on demand; redefine to
+;; override the policy entirely.
+(define (pane-focus-border-setting) *pane-focus-border*)
+
 (defcommand add-pane ()
   "Enter the visual add-pane macro. An overlay over the editor area
    highlights every splitter and the four outer borders; click one to

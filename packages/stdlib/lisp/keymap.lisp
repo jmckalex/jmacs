@@ -38,6 +38,10 @@
    "n"     'scratch-buffer
    "k"     'kill-view
    "p"     'toggle-repl
+   ;; C-x C-p — open a project workspace by choosing a directory in the
+   ;; minibuffer (find-file-style completion). The native-picker counterpart
+   ;; is M-x open-project. See packages/stdlib/lisp/project.lisp.
+   "C-p"   'find-project
    ;; C-x m — toggle the minimap companion pane (packages/stdlib/lisp/minimap.lisp).
    "m"     'toggle-minimap
    "h"     'mark-whole-buffer

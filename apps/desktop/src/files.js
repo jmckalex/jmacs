@@ -207,6 +207,31 @@ function recoveryDir() {
   return join(app.getPath('userData'), RECOVERY_DIR_NAME);
 }
 
+/** Refuse to base64 an image larger than this into the renderer as a
+ *  project thumbnail — a sanity cap, not a meaningful image limit. */
+const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024;
+
+/** A project's per-directory save-state file. Unlike session.json (which
+ *  is global, in userData), a project's state travels with the project:
+ *  it lives in a `.godot/` folder inside the project root, so moving or
+ *  copying the directory carries the open-file layout with it. ROOT must
+ *  be a non-empty absolute path; anything else returns null and the
+ *  caller treats the project as having no saved state. */
+function projectStatePath(root) {
+  if (typeof root !== 'string' || root === '' || !root.startsWith('/')) {
+    return null;
+  }
+  return join(root, '.godot', 'project.json');
+}
+
+/** The central index of known projects — a small JSON file in the
+ *  per-user data directory, listing each project's path + display name
+ *  (most-recently-opened first). It holds no project state itself; it is
+ *  the future Project Chooser's catalogue. */
+function projectIndexPath() {
+  return join(app.getPath('userData'), 'projects-index.json');
+}
+
 /**
  * Read PATH and shape it for whichever buffer kind the renderer should
  * mount. Returns:
@@ -694,6 +719,92 @@ export function registerFileHandlers() {
     const data = payload?.data ?? { buffers: [], currentPath: null };
     await atomicWrite(target, JSON.stringify(data, null, 2), 'utf8');
     return { path: target };
+  });
+
+  // Per-project save-state: read <root>/.godot/project.json. Returns the
+  // parsed object, or null when the project has never been saved (its
+  // first open) or the file is unreadable. Same shape as session.json
+  // (a v2 pane-tree blob) — the renderer reuses the session serialiser.
+  ipcMain.handle('project:read', async (_event, payload) => {
+    const target = projectStatePath(payload?.root);
+    if (target === null) return null;
+    try {
+      const content = await readFile(target, 'utf8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  });
+
+  // Per-project save-state: write <root>/.godot/project.json. Creates the
+  // `.godot/` folder if absent; the write is atomic (temp + fsync +
+  // rename) so a crash mid-write can't corrupt the project's layout.
+  ipcMain.handle('project:write', async (_event, payload) => {
+    const target = projectStatePath(payload?.root);
+    if (target === null) throw new Error('project:write needs an absolute root');
+    await mkdir(dirname(target), { recursive: true });
+    const data = payload?.data ?? {};
+    await atomicWrite(target, JSON.stringify(data, null, 2), 'utf8');
+    return { path: target };
+  });
+
+  // Central project index: read the catalogue of known projects. Returns
+  // the parsed object (`{ projects: [{ path, name }] }`) or null when no
+  // project has been opened yet.
+  ipcMain.handle('project:index-read', async () => {
+    try {
+      const content = await readFile(projectIndexPath(), 'utf8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  });
+
+  // Central project index: write the catalogue. Overwritten in full so
+  // the shape stays predictable; the renderer passes the whole object.
+  ipcMain.handle('project:index-write', async (_event, payload) => {
+    const data = payload?.data ?? { projects: [] };
+    await atomicWrite(projectIndexPath(), JSON.stringify(data, null, 2), 'utf8');
+    return { path: projectIndexPath() };
+  });
+
+  // Choose a custom thumbnail image for a project tile in the chooser.
+  // Returns the chosen absolute path, or null when cancelled.
+  ipcMain.handle('project:pick-image', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose a project thumbnail',
+      properties: ['openFile'],
+      filters: [
+        // Mirror IMAGE_MIME_TYPES — only formats project:thumbnail can read
+        // back as a data URL (others would silently fall back to a letter
+        // tile after the user picked them).
+        {
+          name: 'Images',
+          extensions: ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'],
+        },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  // Read a project thumbnail image as a data: URL for the chooser's tile.
+  // Thumbnails are small, so a base64 data URL (no serve-route allowlisting)
+  // is the simplest fit. Returns null when the path isn't a readable image,
+  // or is implausibly large for a thumbnail (guards against base64-ing a
+  // huge file into the renderer).
+  ipcMain.handle('project:thumbnail', async (_event, payload) => {
+    const path = payload?.path;
+    if (typeof path !== 'string' || path === '') return null;
+    const mime = imageMimeType(path);
+    if (mime === null) return null;
+    try {
+      const st = statSync(path, { throwIfNoEntry: false });
+      if (!st || !st.isFile() || st.size > MAX_THUMBNAIL_BYTES) return null;
+      return await readImageDataUrl(path, mime);
+    } catch {
+      return null;
+    }
   });
 
   // Crash-recovery snapshots — one JSON file per dirty buffer, written

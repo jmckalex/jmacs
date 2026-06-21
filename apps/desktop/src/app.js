@@ -137,6 +137,14 @@ import { buildModeMenuItems } from './mode-menu-build.js';
 import { createRecovery } from './recovery-controller.js';
 import { hashText } from './recovery.js';
 import { createSession } from './session.js';
+import {
+  upsertProject,
+  projectNameFromRoot,
+  setProjectThumbnail,
+} from './project-index.js';
+import { openProjectChooser } from './project-chooser.js';
+import { pickEditingLeaf } from './tree-open.js';
+import { shouldDrawFocusBorder } from './pane-focus.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 import { createBookmarks } from './bookmarks.js';
@@ -752,6 +760,20 @@ queueMicrotask(relayoutPanes);
 const editorHostResizeObserver = new ResizeObserver(() => scheduleRelayout());
 editorHostResizeObserver.observe(editorHostEl);
 
+// Module state read by the pane-focus machinery below. These are hoisted
+// here because the initial focus paint (further down) calls into
+// `refreshPaneFocusIndicators` / `isNoFocusPane`, which read `keymapReady`
+// and `activeProjectPath` — declaring those at their original (much later)
+// positions left them in the temporal dead zone at first paint, throwing a
+// ReferenceError that aborted the whole boot. They are reassigned later
+// where they're used (stdlib-load sets keymapReady; openProject sets the
+// project pointers).
+let keymapReady = false;
+/** Absolute root of the open project, or null when in the home session. */
+let activeProjectPath = null;
+/** The per-project session controller while a project is open, else null. */
+let projectSession = null;
+
 // --- pane focus ---------------------------------------------------------
 //
 // Each pane has a focus state (plans/PANES.md, "Focus indication").
@@ -776,12 +798,36 @@ function currentPane() {
   return null;
 }
 
+/** The `*pane-focus-border*` setting ('auto | 'on | 'off), read from Lisp
+ *  on demand. Falls back to 'auto before the stdlib is loaded, or if the
+ *  read fails. */
+function paneFocusBorderMode() {
+  if (!keymapReady) return 'auto';
+  try {
+    return symbolNameOf(interpreter.call('pane-focus-border-setting')) || 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+/** How many panes are focusable — the 'auto focus-border mode draws the
+ *  border only when this is > 1 (a lone editing surface needs no marker). */
+function countFocusablePanes() {
+  return leafPanes(rootPane).filter((l) => !isNoFocusPane(l.id)).length;
+}
+
 /** Apply the `.pane--focused` CSS class to the focused leaf's div and
  *  remove it from every other pane. Called whenever `currentPaneId`
- *  changes. With one pane this toggles the class on the only pane. */
+ *  changes. Honours `*pane-focus-border*`: in 'auto, the border is hidden
+ *  when there's only one focusable pane (e.g. a project, where the
+ *  sidebars are passive and the tabline always has focus). */
 function refreshPaneFocusIndicators() {
+  const drawBorder = shouldDrawFocusBorder(
+    paneFocusBorderMode(),
+    countFocusablePanes()
+  );
   for (const [id, el] of paneElements) {
-    el.classList.toggle('pane--focused', id === currentPaneId);
+    el.classList.toggle('pane--focused', drawBorder && id === currentPaneId);
   }
 }
 
@@ -817,17 +863,45 @@ function focusPaneFromEvent(event) {
 editorHostEl.addEventListener('mousedown', focusPaneFromEvent, true);
 editorHostEl.addEventListener('click', focusPaneFromEvent, true);
 
-/** True when pane PANEID holds a view that opted out of focus
- *  (`:no-focus`) — a helper/satellite panel (e.g. the bibliography view)
- *  whose whole purpose is to act on the *active* view. Interacting with
- *  it must not make it the active pane, or "insert into the active view"
- *  would target the panel itself. Peels through a tabline to the visible
- *  child. */
+/** Per-pane focusability set from Lisp (`set-pane-focusable!`): leaf id →
+ *  boolean (true = focusable, false = not). An explicit entry overrides
+ *  the defaults below. Lets users design custom UIs (passive sidebars,
+ *  etc.) without persisting across restart (re-derived for projects). */
+const paneFocusOverride = new Map();
+
+/** View kinds that are passive sidebars when shown in a project: like
+ *  Nova's, they don't become the active pane (so focus stays in the
+ *  editing tabline). The minimap / bib-search opt out via `view.noFocus`
+ *  instead; these are kinds that are normally focusable on their own but
+ *  passive inside a project. */
+const PROJECT_SIDEBAR_KINDS = new Set([
+  'directory-tree',
+  'directory-columns',
+  'bookmark',
+]);
+
+/** True when pane PANEID is non-focusable — it never becomes the active
+ *  pane (clicking still works; the view acts on the active pane). Sources,
+ *  in priority order: an explicit `set-pane-focusable!` override; a view
+ *  that opted out of focus (`:no-focus` — the minimap, bib-search); or, in
+ *  a project, a passive sidebar kind (the tree / bookmark, so focus stays
+ *  in the middle tabline like a normal Nova window). Peels a tabline to the
+ *  visible child. */
 function isNoFocusPane(paneId) {
+  const override = paneFocusOverride.get(paneId);
+  if (override !== undefined) return override === false;
   const leaf = leafPanes(rootPane).find((l) => l.id === paneId);
   if (!leaf) return false;
   const view = peelTabline(leaf.view);
-  return !!(view && view.noFocus);
+  if (view && view.noFocus) return true;
+  if (
+    activeProjectPath !== null &&
+    view &&
+    PROJECT_SIDEBAR_KINDS.has(view.kind)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /** Set the currently-focused pane id and refresh derived state:
@@ -1294,7 +1368,7 @@ async function splitAndOpenFile(filePath, orientation, side = 'after', persist =
   const view = newLeaf.view;
   if (view && persist === true && view.kind === 'pdf') {
     view.persist = true;
-    sessionController.save();
+    activeSession().save();
   }
   return view;
 }
@@ -1483,9 +1557,17 @@ function focusNextPane() {
   const leaves = leafPanes(rootPane);
   if (leaves.length <= 1) return currentPane();
   const i = leaves.findIndex((l) => l.id === currentPaneId);
-  const next = leaves[(i < 0 ? 0 : i + 1) % leaves.length];
-  setCurrentPaneId(next.id);
-  return next;
+  const start = i < 0 ? 0 : i;
+  // Cycle to the next *focusable* pane — skip passive sidebars (the tree /
+  // bookmark in a project, the minimap, …) so C-x o stays among editing panes.
+  for (let step = 1; step <= leaves.length; step += 1) {
+    const cand = leaves[(start + step) % leaves.length];
+    if (cand.id === currentPaneId) continue;
+    if (isNoFocusPane(cand.id)) continue;
+    setCurrentPaneId(cand.id);
+    return cand;
+  }
+  return currentPane();
 }
 
 /** Focus a *specific* leaf pane by its handle (the absolute counterpart
@@ -3912,7 +3994,7 @@ const interpreter = createInterpreter({
       const on = args[1] !== false;
       if (view && typeof view === 'object' && 'kind' in view) {
         view.persist = on;
-        sessionController.save();
+        activeSession().save();
       }
       return on;
     },
@@ -4123,6 +4205,56 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.indexOf(view));
       return NIL;
     },
+    // Open a file double-clicked in a directory tree-view, routing it to
+    // the pane chosen by TARGET (`*directory-tree-open-target*`): 'editing-
+    // pane (the main editing area, default), 'other-pane, or 'this-pane.
+    // The tree-view's `directory-tree-open-file` Lisp function calls this.
+    'open-file-from-tree!': (args) => {
+      const path = String(args[0] ?? '');
+      if (path === '') return NIL;
+      // TARGET is either a pane id (a string — an explicit wired leaf) or a
+      // symbol ('editing-pane / 'other-pane / 'this-pane — the heuristic).
+      const raw = args[1];
+      const target =
+        typeof raw === 'string' && raw !== ''
+          ? raw
+          : symbolNameOf(raw) || 'editing-pane';
+      openFileFromTree(path, target);
+      return NIL;
+    },
+    // The pane id the current dir-tree opens files into (wired by the
+    // project), or nil — read by the `directory-tree-open-file` Lisp fn.
+    'current-directory-tree-target': () => {
+      const treeView = projectDirTreeView();
+      const id = treeView && treeView.openTargetPaneId;
+      return typeof id === 'string' && id !== '' ? id : NIL;
+    },
+    // Wire the current dir-tree to open files into pane PANE-ID (a leaf id),
+    // or clear it with nil. Lets Lisp point a tree at a specific pane.
+    'set-directory-tree-target!': (args) => {
+      const treeView = projectDirTreeView();
+      if (!treeView) return NIL;
+      const raw = args[0];
+      treeView.openTargetPaneId =
+        raw == null || raw === NIL || raw === '' ? null : String(raw);
+      return NIL;
+    },
+    // Mark the current pane focusable (#t) or passive (#f). A passive pane
+    // never becomes the active pane — clicking still works (the view acts
+    // on the active pane), but focus stays in the editing area. This is how
+    // Lisp builds Nova-style sidebars. Making the current pane passive moves
+    // focus to the next focusable pane.
+    'set-pane-focusable!': (args) => {
+      if (currentPaneId === null) return NIL;
+      const focusable = args[0] !== false; // only an explicit #f is passive
+      paneFocusOverride.set(currentPaneId, focusable);
+      if (!focusable) focusNextPane();
+      refreshPaneFocusIndicators();
+      return NIL;
+    },
+    // #t when the current pane is focusable, #f when it's passive.
+    'pane-focusable?': () =>
+      currentPaneId !== null && !isNoFocusPane(currentPaneId),
     // Open the bookmark outline for the current text buffer (C-x r l) in
     // a narrow pane to the RIGHT of the focused pane — a navigator, so the
     // source buffer stays visible (jump from the outline moves it). If the
@@ -4147,6 +4279,48 @@ const interpreter = createInterpreter({
       } else {
         switchToViewIndex(views.indexOf(view));
       }
+      return NIL;
+    },
+    // Show the directory picker; on confirm, open the chosen directory as
+    // a project workspace. Returns immediately — the workspace is built
+    // when the dialog resolves (mirrors `prompt-directory!`).
+    'open-project!': () => {
+      window.host
+        .openDirectory()
+        .then((path) => {
+          if (path === null) return;
+          return openProject(path);
+        })
+        .catch((error) => {
+          repl.appendError(error.lispMessage ?? error.message ?? String(error));
+        });
+      return NIL;
+    },
+    // Open a specific directory as a project, no picker — for scripting
+    // and tests. `(open-project-at! "~/Source/btt")`.
+    'open-project-at!': (args) => {
+      const root = String(args[0] ?? '');
+      if (root === '') return NIL;
+      openProject(root).catch((error) => {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      });
+      return NIL;
+    },
+    // Close the open project and return to the home session. A no-op when
+    // no project is open.
+    'close-project!': () => {
+      closeProject().catch((error) => {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      });
+      return NIL;
+    },
+    // The open project's absolute root, or nil in the home session. A data
+    // accessor (no `!`) — the chooser and modeline can read it.
+    'current-project': () => (activeProjectPath === null ? NIL : activeProjectPath),
+    // Open the Project Chooser launcher modal — a grid of known projects
+    // (thumbnails + search) to pick from, plus Open Folder / Add Project.
+    'open-project-chooser!': () => {
+      showProjectChooser();
       return NIL;
     },
     // Open the *View List* — a clickable HTML table of every open view
@@ -5394,7 +5568,9 @@ function installHighlightRules() {
  *  declaration runs. */
 const themeListeners = new Set();
 
-let keymapReady = false;
+// `keymapReady` is declared near the top of the module (the pane-focus
+// machinery reads it during the initial paint); set it here once the
+// stdlib has loaded.
 try {
   // Per-file isolation: a single broken stdlib file is reported and
   // skipped, not allowed to abort the load and leave the editor with no
@@ -7135,6 +7311,18 @@ function configureDirectoryTreeView() {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     openPath: (path) => {
+      // Route through the `directory-tree-open-file` Lisp function so the
+      // target honours `*directory-tree-open-target*` and stays user-
+      // overridable. Fall back to the focused-pane open if the stdlib
+      // routing isn't available yet.
+      if (keymapReady) {
+        try {
+          interpreter.call('directory-tree-open-file', path);
+          return;
+        } catch {
+          /* fall through to the default */
+        }
+      }
       openFileInTabAdjacent(path);
     },
     closeBuffer: () => {
@@ -8342,7 +8530,7 @@ function attachTablineResizerDrag(resizerEl, view) {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       // Persist the new width via the debounced session save.
-      sessionController.save();
+      activeSession().save();
     };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
@@ -9530,6 +9718,77 @@ function refreshBookmarkOutline() {
  *  directory view with the opened file's view — losing the user's
  *  navigation context. Now the column / tree stays put and the file
  *  appears alongside it. */
+/**
+ * Open FILEPATH from a directory tree-view, honouring TARGET (the value of
+ * `*directory-tree-open-target*`). Unlike `openFileInTabAdjacent` — which
+ * opens in the *focused* pane and so lands the file in the tree's own pane
+ * when you double-click there — this routes the file to the main editing
+ * area (a tabline / text pane that isn't the tree or another sidebar), so a
+ * project's left-sidebar tree opens files in its middle tabline.
+ *
+ * - `this-pane`     → the old behaviour (the tree's own pane).
+ * - `editing-pane`  → the main editing pane (default).
+ * - `other-pane`    → the next editing pane after the tree.
+ * When no editing pane exists, the file opens in a split beside the tree.
+ */
+async function openFileFromTree(filePath, target) {
+  if (target === 'this-pane') {
+    await openFileInTabAdjacent(filePath);
+    return;
+  }
+  const opened = await openFileByPath(filePath, { switch: false });
+  if (!opened) return;
+  const leaves = leafPanes(rootPane);
+  let targetLeaf = null;
+  // An explicit pane-id target (a leaf id wired into the dir-tree by the
+  // project — see reapplyProjectDirTreeTarget) wins: no guessing which pane
+  // is "the editing area", and it's robust to focus / sidebar passivity.
+  if (target !== 'editing-pane' && target !== 'other-pane') {
+    targetLeaf = leaves.find((leaf) => leaf.id === target) ?? null;
+  }
+  // Otherwise — or when the wired pane no longer exists — fall back to the
+  // symbolic heuristic (a standalone M-x directory-tree has no wired target).
+  if (!targetLeaf) {
+    const descriptors = leaves.map((leaf) => {
+      const peeled = peelTabline(leaf.view);
+      return {
+        id: leaf.id,
+        kind: peeled ? peeled.kind : null,
+        isTabline: isTablineView(leaf.view),
+      };
+    });
+    const symbolic = target === 'other-pane' ? 'other-pane' : 'editing-pane';
+    const targetId = pickEditingLeaf(descriptors, currentPane()?.id ?? null, symbolic);
+    targetLeaf = targetId ? leaves.find((leaf) => leaf.id === targetId) : null;
+  }
+  if (!targetLeaf) {
+    // No suitable editing pane (e.g. the tree is the only pane): open the
+    // file beside the current pane in a new split rather than inside a sidebar.
+    const here = currentPane();
+    if (here && here.kind === 'leaf') {
+      splitPaneAtLeafWith(here, SPLIT_HORIZONTAL, 0.3, 'after', opened);
+    } else {
+      switchToViewIndex(views.indexOf(opened));
+    }
+    return;
+  }
+  // Promote the target to a tabline if needed, add the file as a tab, focus
+  // the editing pane, and activate the new tab.
+  const tlv = isTablineView(targetLeaf.view)
+    ? targetLeaf.view
+    : promoteToTablineOnPane(targetLeaf);
+  if (!tlv) {
+    switchToViewIndex(views.indexOf(opened));
+    return;
+  }
+  if (!tlv.tabs.includes(opened)) {
+    addTabToTabline(tlv, opened, tlv.tabs.length);
+  }
+  setCurrentPaneId(targetLeaf.id);
+  const idx = tlv.tabs.indexOf(opened);
+  if (idx >= 0) activateTabInTabline(tlv, idx);
+}
+
 async function openFileInTabAdjacent(filePath) {
   const pane = currentPane();
   if (!pane) {
@@ -9636,10 +9895,14 @@ function materialiseRestoredView(blob, handlesByBlob) {
       }
     }
     void tabs; // silence — kept for the comment-block clarity above.
-    const active = tabsClean.length === 0
-      ? 0
-      : Math.max(0, Math.min(blob.active ?? 0, tabsClean.length - 1));
-    const extras = { tabs: tabsClean, active, edge: blob.edge ?? 'top' };
+    // An empty editing tabline (e.g. a project whose middle pane had no
+    // open files at quit) restores with a fresh *scratch* so the pane isn't
+    // left blank (and focus doesn't land on a tab-less tabline).
+    const finalTabs = tabsClean.length === 0
+      ? [buildScratchTextView()]
+      : tabsClean;
+    const active = Math.max(0, Math.min(blob.active ?? 0, finalTabs.length - 1));
+    const extras = { tabs: finalTabs, active, edge: blob.edge ?? 'top' };
     if (typeof blob.width === 'number' && Number.isFinite(blob.width) && blob.width > 0) {
       extras.width = blob.width;
     }
@@ -9711,10 +9974,23 @@ function installRootPane(newRoot, savedCurrentPaneId) {
   // Update the focused pane id, falling back to the first leaf when
   // the saved id doesn't match any leaf in the new tree.
   const leaves = leafPanes(rootPane);
+  // Drop per-pane focus overrides for panes that no longer exist (e.g. a
+  // workspace switch installs a whole new tree), so the map can't grow
+  // unbounded or collide with a reused id.
+  const liveLeafIds = new Set(leaves.map((l) => l.id));
+  for (const id of [...paneFocusOverride.keys()]) {
+    if (!liveLeafIds.has(id)) paneFocusOverride.delete(id);
+  }
   const matching = leaves.find((l) => l.id === savedCurrentPaneId);
   currentPaneId = matching
     ? matching.id
     : (leaves[0]?.id ?? null);
+  // Never land focus on a passive pane (e.g. a restored project whose saved
+  // focus was a sidebar): fall back to the first focusable leaf.
+  if (currentPaneId !== null && isNoFocusPane(currentPaneId)) {
+    const focusable = leaves.find((l) => !isNoFocusPane(l.id));
+    if (focusable) currentPaneId = focusable.id;
+  }
   // Rebuild the pane DOM around the new tree, then mount each leaf's
   // view through mountKindView. Tabline-view leaves cause the
   // registry to construct fresh per-pane editor instances for each
@@ -10098,7 +10374,7 @@ function setTablineEdgeOnTabline(tlv, edge) {
 // `buffers` for backwards compatibility with session.json files saved
 // before the view/buffer split.
 
-const sessionController = createSession({
+const sessionOptions = {
   getRootPane: () => rootPane,
   getCurrentPaneId: () => currentPaneId,
   openByPath: async (path, entry) => {
@@ -10155,8 +10431,289 @@ const sessionController = createSession({
     const runtimeRoot = buildRestoredPaneTree(rootBlob, handlesByBlob);
     if (runtimeRoot) installRootPane(runtimeRoot, savedCurrentPaneId);
   },
-  host: window.host,
-});
+};
+
+// The global "home" session controller, writing <userData>/session.json.
+// When a project is open, saves route to a per-project controller instead
+// (see `activeSession`); the global one captures the home state at the
+// moment a project is opened, and is restored when the project is closed.
+const sessionController = createSession({ ...sessionOptions, host: window.host });
+
+// --- Projects -----------------------------------------------------------
+// A project is a directory opened as a workspace: a 3-column layout
+// (directory-tree | editing tabline | bookmark outline) whose open files
+// are saved to <root>/.godot/project.json and restored on reopen. The
+// model is *additive* — the global session is the "home" state; opening a
+// project switches into it (saving home first) and closing returns to it.
+// Boot always lands on home (see the restore at the bottom of this file).
+
+// `activeProjectPath` / `projectSession` are declared near the top of the
+// module (the pane-focus machinery reads activeProjectPath during the
+// initial paint); they're assigned by openProject / closeProject below.
+
+/** A host shim that routes a session controller's reads/writes to ROOT's
+ *  per-project state file instead of the global session.json. */
+function projectStateHost(root) {
+  return {
+    readSession: () => window.host.readProject(root),
+    writeSession: (data) => window.host.writeProject(root, data),
+  };
+}
+
+/** The session controller saves should target right now: the open
+ *  project's, or the global home one. All debounced saves and the
+ *  pagehide flush go through this so the right file gets written. */
+function activeSession() {
+  return projectSession ?? sessionController;
+}
+
+// Project layout ratios. Left sidebar takes ~18% of the window; within
+// the remaining 82%, the editing tabline takes ~78% and the bookmark
+// outline ~22% — so the two sidebars end up roughly symmetric (~18% each)
+// with a ~64% editing pane between them.
+const PROJECT_SIDEBAR_RATIO = 0.18;
+const PROJECT_MIDDLE_RATIO = 0.78;
+
+/** Build the canonical 3-column project layout — directory-tree (left) |
+ *  editing tabline (middle) | bookmark outline (right) — rooted at ROOT,
+ *  and install it. Used on a project's FIRST open (no saved state yet);
+ *  later opens restore the saved tree instead, which may carry extra
+ *  splits the user made inside. The middle tabline starts on a fresh
+ *  *scratch* so the editing pane is never empty. */
+function buildCanonicalProjectLayout(root) {
+  const dirTree = ensureDirectoryTreeViewForPath(root);
+  const bookmarks = ensureBookmarkView();
+  const scratch = freshScratchView();
+  views.push(scratch);
+  const tabline = createView({
+    kind: 'tabline',
+    extras: { tabs: [scratch], active: 0, edge: 'top' },
+  });
+  const leftLeaf = createLeafPane({ view: dirTree });
+  const middleLeaf = createLeafPane({ view: tabline });
+  const rightLeaf = createLeafPane({ view: bookmarks });
+  const innerSplit = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: PROJECT_MIDDLE_RATIO,
+    first: middleLeaf,
+    second: rightLeaf,
+  });
+  const newRoot = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: PROJECT_SIDEBAR_RATIO,
+    first: leftLeaf,
+    second: innerSplit,
+  });
+  installRootPane(newRoot, middleLeaf.id);
+  // Point the bookmark outline at the editing pane's buffer so the right
+  // panel isn't blank; it auto-follows focus from here on.
+  retargetBookmarkView(scratch.buffer);
+}
+
+/** Install a minimal single-tabline scratch workspace. The fallback for
+ *  closing a project when the home session has no saved tree (rare — the
+ *  home state is captured on project open, so it normally exists). */
+function buildScratchWorkspace() {
+  const scratch = freshScratchView();
+  views.push(scratch);
+  const tabline = createView({
+    kind: 'tabline',
+    extras: { tabs: [scratch], active: 0, edge: 'top' },
+  });
+  const leaf = createLeafPane({ view: tabline });
+  installRootPane(leaf, leaf.id);
+}
+
+/** Restore the controller CTRL's saved tree, returning whether it
+ *  installed one (detected, as the boot path does, by a change of
+ *  rootPane identity). Suppresses session saves during the restore. */
+async function restoreInto(ctrl) {
+  const before = rootPane;
+  restoring = true;
+  try {
+    await ctrl.restore();
+  } finally {
+    restoring = false;
+  }
+  return rootPane !== before;
+}
+
+/** Read the central project index → array of `{path, name, thumbnail?}`
+ *  entries (most-recently-opened first). Best-effort: returns [] on error. */
+async function readProjectList() {
+  let index = null;
+  try {
+    index = await window.host.readProjectIndex();
+  } catch {
+    index = null;
+  }
+  return index && Array.isArray(index.projects) ? index.projects : [];
+}
+
+/** Write LIST back to the central project index. Best-effort: a write
+ *  failure is non-fatal (the index is a convenience catalogue). */
+async function writeProjectList(list) {
+  try {
+    await window.host.writeProjectIndex({ projects: list });
+  } catch {
+    // The index is a convenience catalogue for the chooser; a write
+    // failure must not break opening a project.
+  }
+}
+
+/** Record ROOT at the front of the central project index (most-recently
+ *  opened first). Best-effort. */
+async function rememberProject(root) {
+  const list = await readProjectList();
+  await writeProjectList(upsertProject(list, root, projectNameFromRoot(root)));
+}
+
+/** Open the Project Chooser launcher modal — read the known projects, then
+ *  show the grid. All of the chooser's side effects (open / add / set
+ *  thumbnail / remove / read a thumbnail image) are wired to the host here;
+ *  `list` is the shared, mutable catalogue the actions return updated. */
+function showProjectChooser() {
+  const reportErr = (error) =>
+    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+  readProjectList()
+    .then((initial) => {
+      let list = initial;
+      openProjectChooser({
+        getProjects: () => list,
+        openProject: (path) => {
+          openProject(path).catch(reportErr);
+        },
+        // Pick a folder and open it immediately (the chooser closes first).
+        openFolder: () => {
+          window.host
+            .openDirectory()
+            .then((path) => (path ? openProject(path) : undefined))
+            .catch(reportErr);
+        },
+        // Pick a folder and add it to the catalogue WITHOUT opening.
+        addProject: async () => {
+          const path = await window.host.openDirectory();
+          if (!path) return null;
+          list = upsertProject(list, path);
+          await writeProjectList(list);
+          return list;
+        },
+        // Choose a custom thumbnail image for a project tile.
+        pickThumbnail: async (root) => {
+          const img = await window.host.pickProjectImage();
+          if (!img) return null;
+          list = setProjectThumbnail(list, root, img);
+          await writeProjectList(list);
+          return list;
+        },
+        // Drop a project from the catalogue (does not touch its files).
+        removeProject: async (root) => {
+          list = list.filter((p) => p && p.path !== root);
+          await writeProjectList(list);
+          return list;
+        },
+        loadThumbnail: (imagePath) => window.host.readProjectThumbnail(imagePath),
+        // Drag-and-drop an image file onto a tile to set its thumbnail.
+        getPathForFile: (file) => window.host.getPathForFile(file),
+        dropThumbnail: async (root, imagePath) => {
+          // Validate by actually reading it as a thumbnail (the single source
+          // of truth for "displayable image"); only store the path if so.
+          const dataUrl = await window.host.readProjectThumbnail(imagePath);
+          if (!dataUrl) return null;
+          list = setProjectThumbnail(list, root, imagePath);
+          await writeProjectList(list);
+          return list;
+        },
+      });
+    })
+    .catch(reportErr);
+}
+
+/** Open ROOT as a project workspace. Saves the current workspace (home or
+ *  another project) first, then either restores ROOT's saved layout or
+ *  builds the canonical 3-column one. A no-op when ROOT is already the
+ *  open project. */
+async function openProject(root) {
+  const cleanRoot = expandTilde(String(root ?? '')).replace(/\/+$/, '');
+  if (cleanRoot === '') return;
+  if (cleanRoot === activeProjectPath) return;
+  // The native picker always yields a directory, but the minibuffer route
+  // (find-project) and open-project-at! can hand us a file or a missing
+  // path — rooting a project there would fail messily (the .godot/ mkdir
+  // lands under a file). listDirectorySync returns an array for a
+  // directory (even an empty one), null otherwise.
+  if (!Array.isArray(window.host.listDirectorySync(cleanRoot))) {
+    minibuffer.setStatus(`Not a directory: ${cleanRoot}`);
+    return;
+  }
+  // Persist whatever workspace is live now before switching away from it.
+  try {
+    await activeSession().flush();
+  } catch {
+    // A flush failure shouldn't block the switch; the prior state's last
+    // debounced save is the fallback.
+  }
+  activeProjectPath = cleanRoot;
+  projectSession = createSession({
+    ...sessionOptions,
+    host: projectStateHost(cleanRoot),
+  });
+  const installed = await restoreInto(projectSession);
+  if (!installed) buildCanonicalProjectLayout(cleanRoot);
+  // Wire the project's dir-tree to open files into the editing tabline (by
+  // leaf id) — bulletproof against focus / sidebar passivity, and re-derived
+  // here for both the freshly-built and the restored layout.
+  reapplyProjectDirTreeTarget();
+  rememberProject(cleanRoot);
+  // Persist the freshly-installed project layout to its own state file.
+  activeSession().save();
+}
+
+/** The directory-tree view shown in the current layout, or null. (A project
+ *  has exactly one; a standalone M-x directory-tree may add another.) */
+function projectDirTreeView() {
+  const leaf = leafPanes(rootPane).find((l) => {
+    const v = peelTabline(l.view);
+    return !!(v && v.kind === 'directory-tree');
+  });
+  return leaf ? peelTabline(leaf.view) : null;
+}
+
+/** Wire the project's dir-tree to open files into the editing tabline's leaf,
+ *  computed deterministically (the non-sidebar tabline — the middle column).
+ *  Stored as `openTargetPaneId` on the dir-tree view; honoured first by
+ *  openFileFromTree. A no-op when there's no dir-tree. */
+function reapplyProjectDirTreeTarget() {
+  const treeView = projectDirTreeView();
+  if (!treeView) return;
+  const leaves = leafPanes(rootPane);
+  const descriptors = leaves.map((leaf) => {
+    const peeled = peelTabline(leaf.view);
+    return {
+      id: leaf.id,
+      kind: peeled ? peeled.kind : null,
+      isTabline: isTablineView(leaf.view),
+    };
+  });
+  const targetId = pickEditingLeaf(descriptors, null, 'editing-pane');
+  if (targetId) treeView.openTargetPaneId = targetId;
+}
+
+/** Close the open project and return to the home session. A no-op when no
+ *  project is open. */
+async function closeProject() {
+  if (projectSession === null) return;
+  try {
+    await projectSession.flush();
+  } catch {
+    // Non-fatal — the project's last debounced save stands.
+  }
+  projectSession = null;
+  activeProjectPath = null;
+  const installed = await restoreInto(sessionController);
+  if (!installed) buildScratchWorkspace();
+  activeSession().save();
+}
 
 // Wire the change hook: every list / index change refreshes every
 // per-pane tabline strip and queues a session save. `restoring` is
@@ -10170,7 +10727,7 @@ onViewsChanged = () => {
   // Keep the *View List* table live: opening, killing, renaming or
   // switching a view changes what the list should show.
   viewListView.refresh();
-  if (!restoring) sessionController.save();
+  if (!restoring) activeSession().save();
 };
 
 // Flush the session synchronously-ish on page unload. The pagehide
@@ -10178,7 +10735,7 @@ onViewsChanged = () => {
 // navigation); ipcRenderer.invoke returns a Promise the host will
 // process even after pagehide returns.
 window.addEventListener('pagehide', () => {
-  sessionController.flush();
+  activeSession().flush();
   // Capture the latest unsaved edits before a reload/navigation teardown.
   // Skip it on a clean quit — quitInteractive already cleared the
   // snapshots, and re-writing them here would resurrect discarded work.
@@ -10258,7 +10815,7 @@ if (sessionInstalledTree) {
 // freshly-wrapped tabline renders on first paint and the new pane-tree
 // shape lands in the on-disk session under schema v2.
 refreshPaneTabStrips();
-sessionController.save();
+activeSession().save();
 
 // Offer back any crash-recovery snapshots a previous run left behind.
 // Session restore only reopens files from disk — it can't bring back
@@ -10271,3 +10828,13 @@ try {
 } catch {
   // Recovery is best-effort; never block startup on it.
 }
+
+// Boot reached the end successfully — stand the boot error boundary down
+// (boot-guard.js). Any error after this is the app's normal nets' job, not
+// a fatal-startup overlay.
+try {
+  window.__bootGuard?.markBooted();
+} catch {
+  /* the guard is best-effort */
+}
+

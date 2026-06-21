@@ -111,6 +111,9 @@ export const STDLIB_FILES = Object.freeze([
   'jukebox.lisp',
   'directory-tree.lisp',
   'directory-columns.lisp',
+  // Projects — Nova-style directory workspaces. Loads after the views it
+  // composes (directory-tree, bookmarks) so its commands resolve.
+  'project.lisp',
   'shell.lisp',
   'gnuplot.lisp',
   'notebook.lisp',
