@@ -207,6 +207,10 @@ function recoveryDir() {
   return join(app.getPath('userData'), RECOVERY_DIR_NAME);
 }
 
+/** Refuse to base64 an image larger than this into the renderer as a
+ *  project thumbnail — a sanity cap, not a meaningful image limit. */
+const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024;
+
 /** A project's per-directory save-state file. Unlike session.json (which
  *  is global, in userData), a project's state travels with the project:
  *  it lives in a `.godot/` folder inside the project root, so moving or
@@ -762,6 +766,42 @@ export function registerFileHandlers() {
     const data = payload?.data ?? { projects: [] };
     await atomicWrite(projectIndexPath(), JSON.stringify(data, null, 2), 'utf8');
     return { path: projectIndexPath() };
+  });
+
+  // Choose a custom thumbnail image for a project tile in the chooser.
+  // Returns the chosen absolute path, or null when cancelled.
+  ipcMain.handle('project:pick-image', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose a project thumbnail',
+      properties: ['openFile'],
+      filters: [
+        {
+          name: 'Images',
+          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'],
+        },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  // Read a project thumbnail image as a data: URL for the chooser's tile.
+  // Thumbnails are small, so a base64 data URL (no serve-route allowlisting)
+  // is the simplest fit. Returns null when the path isn't a readable image,
+  // or is implausibly large for a thumbnail (guards against base64-ing a
+  // huge file into the renderer).
+  ipcMain.handle('project:thumbnail', async (_event, payload) => {
+    const path = payload?.path;
+    if (typeof path !== 'string' || path === '') return null;
+    const mime = imageMimeType(path);
+    if (mime === null) return null;
+    try {
+      const st = statSync(path, { throwIfNoEntry: false });
+      if (!st || !st.isFile() || st.size > MAX_THUMBNAIL_BYTES) return null;
+      return await readImageDataUrl(path, mime);
+    } catch {
+      return null;
+    }
   });
 
   // Crash-recovery snapshots — one JSON file per dirty buffer, written

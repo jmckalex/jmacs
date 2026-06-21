@@ -326,10 +326,26 @@ contextBridge.exposeInMainWorld('host', {
 
   /**
    * Write the central project index.
-   * @param {object} data - `{ projects: [{ path, name }] }`.
+   * @param {object} data - `{ projects: [{ path, name, thumbnail? }] }`.
    */
   writeProjectIndex: (data) =>
     ipcRenderer.invoke('project:index-write', { data }),
+
+  /**
+   * Show an image picker for a project's chooser thumbnail. Resolves to the
+   * chosen absolute path, or null when cancelled.
+   * @returns {Promise<string | null>}
+   */
+  pickProjectImage: () => ipcRenderer.invoke('project:pick-image'),
+
+  /**
+   * Read a project thumbnail image as a data: URL for the chooser tile, or
+   * null when the path isn't a readable image (or is too large).
+   * @param {string} path - Absolute image path.
+   * @returns {Promise<string | null>}
+   */
+  readProjectThumbnail: (path) =>
+    ipcRenderer.invoke('project:thumbnail', { path }),
 
   /**
    * Write a crash-recovery snapshot for one dirty buffer. `record` is
