@@ -301,6 +301,37 @@ contextBridge.exposeInMainWorld('host', {
   writeSession: (data) => ipcRenderer.invoke('session:write', { data }),
 
   /**
+   * Read a project's save-state from `<root>/.godot/project.json`. Same
+   * v2 pane-tree shape as the global session; null when the project has
+   * no saved state yet.
+   * @param {string} root - The project's absolute root directory.
+   * @returns {Promise<object | null>}
+   */
+  readProject: (root) => ipcRenderer.invoke('project:read', { root }),
+
+  /**
+   * Write a project's save-state to `<root>/.godot/project.json`.
+   * @param {string} root - The project's absolute root directory.
+   * @param {object} data - The v2 pane-tree blob from `serialiseTree`.
+   */
+  writeProject: (root, data) =>
+    ipcRenderer.invoke('project:write', { root, data }),
+
+  /**
+   * Read the central project index (`{ projects: [{ path, name }] }`),
+   * or null when no project has been opened yet.
+   * @returns {Promise<object | null>}
+   */
+  readProjectIndex: () => ipcRenderer.invoke('project:index-read'),
+
+  /**
+   * Write the central project index.
+   * @param {object} data - `{ projects: [{ path, name }] }`.
+   */
+  writeProjectIndex: (data) =>
+    ipcRenderer.invoke('project:index-write', { data }),
+
+  /**
    * Write a crash-recovery snapshot for one dirty buffer. `record` is
    * `{ key, path, name, text, savedAt, hash }`; `key` identifies the
    * buffer (its abs path, or an id for a path-less buffer).
