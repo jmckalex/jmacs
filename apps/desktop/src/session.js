@@ -233,6 +233,12 @@ function serialiseView(view) {
 function serialisePane(pane) {
   if (!pane || typeof pane !== 'object') return null;
   if (pane.kind === 'leaf') {
+    // A minimap is a transient companion pane bound to a sibling text view;
+    // it has nothing to restore. Drop the whole leaf (return null) so the
+    // enclosing split collapses to the surviving sibling on restore — a
+    // bare `view: null` would otherwise be re-materialised as a scratch
+    // buffer (see `materialiseRestoredView`).
+    if (pane.view && pane.view.kind === 'minimap') return null;
     return {
       kind: 'leaf',
       id: typeof pane.id === 'string' ? pane.id : 'pane-leaf',

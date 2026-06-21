@@ -1404,6 +1404,10 @@ function deletePaneInTree(targetLeaf) {
   refreshSplitterHandles();
   scheduleRelayout();
   updateModeline();
+  // If the removed leaf was a minimap's target, the reconcile drops the now
+  // orphaned minimap; otherwise it just rebinds survivors. Deferred, so it
+  // runs after this deletion's tree surgery is complete.
+  scheduleMinimapReconcile();
 }
 
 /** Implementation of `delete-other-panes!`. Makes TARGET fill the
@@ -1814,6 +1818,7 @@ function switchToViewIndex(index) {
   if (index < 0 || index >= views.length) return null;
   dismissSplash();
   currentViewIndex = index;
+  scheduleMinimapReconcile(); // a leaf-direct view swap re-targets its minimap
   const view = views[index];
   const focused = currentPane();
   if (focused && isTablineView(focused.view)) {
@@ -3258,6 +3263,11 @@ const viewHost = {
     return views[currentViewIndex] ?? null;
   },
   viewList: () => views.slice(),
+  // Toggle a minimap companion beside the focused leaf. SIDE ('left'|'right')
+  // and WIDTHFRACTION come from the `*minimap-*` defcustoms (the command
+  // reads them and passes them through).
+  toggleMinimap: (side, widthFraction) =>
+    toggleMinimapForFocusedLeaf(side, widthFraction),
   switchToView: (target) => switchToView(target),
   newView: (name) => {
     const finalName = name ?? `untitled-${views.length + 1}`;
@@ -6262,6 +6272,8 @@ function rerenderAllEditors() {
       } catch { /* tolerant */ }
     }
   }
+  // A highlight-rule / face change recolours the minimap's segments too.
+  forEachMinimapElement((el) => el.invalidateColors());
 }
 
 /** Apply a setting for the session — a value, quote-wrapped to survive
@@ -6674,6 +6686,196 @@ function disposeBrowserElementForView(view) {
   try { el.destroy(); } catch { /* already gone */ }
   el.remove();
   browserElementByView.delete(view);
+}
+
+// --- minimap companion views (per-instance, mirrors the browser) --------
+// A `<minimap-view>` is a narrow companion pane bound to a *target leaf*
+// (the editor pane it sits beside). It mirrors whatever text that leaf
+// currently presents — a bare text-view, or the active text tab of a
+// tabline — and follows tab switches / promotion / demotion, because we
+// re-resolve the active content on every reconcile rather than caching it.
+// The element is a dumb renderer driven by a host-built adapter; only the
+// host knows the pane tree + the live editor instances, so the adapter
+// (and its rebinding) lives here. See the minimap plan + docs/VIEWS.md.
+const minimapElementByView = new Map();   // minimap view object -> element
+const minimapByTargetLeafId = new Map();  // target leaf id -> minimap view object
+let minimapReconcileScheduled = false;
+
+/** The `<minimap-view>` element for minimap VIEW — created + mounted in
+ *  PANE-EL on first use, then reused (mirrors `ensureBrowserElementForView`). */
+function ensureMinimapElementForView(view, paneEl) {
+  let el = minimapElementByView.get(view);
+  if (el) {
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    el.setBuffer(view);
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('minimap-view'));
+  el.configure({});
+  el.setBuffer(view);
+  if (paneEl) paneEl.append(el);
+  minimapElementByView.set(view, el);
+  return el;
+}
+
+/** Tear down the minimap element bound to VIEW. */
+function disposeMinimapElementForView(view) {
+  const el = minimapElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ }
+  el.remove();
+  minimapElementByView.delete(view);
+}
+
+/** Run FN over every live minimap element (theme/face invalidation).
+ *  Tolerant of an early call before the registry's TDZ clears. */
+function forEachMinimapElement(fn) {
+  try {
+    for (const el of minimapElementByView.values()) fn(el);
+  } catch { /* registry not yet initialised */ }
+}
+
+/** Build the target adapter bridging a minimap to a live `<text-view>`
+ *  element (its scroll root + buffer). Kept here because only the host can
+ *  reach the editor instance; the element stays a dumb renderer. */
+function buildMinimapAdapter(buffer, textViewEl) {
+  const metricsFrom = (root) => {
+    if (!root) return { scrollTop: 0, viewportHeight: 0, contentHeight: 0, lineHeight: 0 };
+    const cursor = root.querySelector('.editor-cursor');
+    const lineHeight = (cursor && cursor.getBoundingClientRect().height) || 22;
+    return {
+      scrollTop: root.scrollTop,
+      viewportHeight: root.clientHeight,
+      contentHeight: root.scrollHeight,
+      lineHeight,
+    };
+  };
+  return {
+    buffer,
+    getLineRuns: () =>
+      typeof textViewEl.lineRuns === 'function' ? textViewEl.lineRuns() : null,
+    getFoldScopes: () =>
+      typeof textViewEl.foldScopes === 'function' ? textViewEl.foldScopes() : [],
+    getMetrics: () => metricsFrom(textViewEl.scrollElement),
+    onScroll: (cb) => {
+      const root = textViewEl.scrollElement;
+      if (!root) return () => {};
+      root.addEventListener('scroll', cb, { passive: true });
+      return () => root.removeEventListener('scroll', cb);
+    },
+    onChange: (cb) =>
+      buffer && typeof buffer.onChange === 'function' ? buffer.onChange(cb) : () => {},
+    scrollToContentFraction: (f) => {
+      const root = textViewEl.scrollElement;
+      if (!root) return;
+      root.scrollTop = f * Math.max(0, root.scrollHeight - root.clientHeight);
+    },
+  };
+}
+
+/** Resolve the target leaf's *current* active text content + its live
+ *  editor element and (re)bind the minimap. If the active content isn't a
+ *  text view → bind null ("not supported"). If the target leaf is gone →
+ *  remove the minimap. Uniform across bare-leaf text and tabline-wrapped
+ *  text (the editor-instance source differs; `peelTabline` unifies content). */
+function rebindMinimapForLeaf(targetLeafId) {
+  const view = minimapByTargetLeafId.get(targetLeafId);
+  if (!view) return;
+  const el = minimapElementByView.get(view);
+  if (!el) return;
+  const leaf = leafPanes(rootPane).find((l) => l.id === targetLeafId);
+  if (!leaf) { removeMinimapForLeaf(targetLeafId); return; }
+  const content = peelTabline(leaf.view);
+  if (!content || content.kind !== 'text' || !content.buffer) {
+    el.bindTarget(null);
+    return;
+  }
+  const textViewEl = isTablineView(leaf.view)
+    ? (tablineStateByView.get(leaf.view)?.activeEditor ?? null)
+    : ensureEditorViewForLeaf(leaf);
+  if (!textViewEl || typeof textViewEl.scrollElement === 'undefined') {
+    el.bindTarget(null);
+    return;
+  }
+  el.bindTarget(buildMinimapAdapter(content.buffer, textViewEl));
+}
+
+/** Coalesced, deferred reconcile: after any structural change settles
+ *  (a microtask, so the pane tree is stable), rebind every minimap to its
+ *  target's current content — and drop minimaps whose target leaf is gone.
+ *  Tolerant of an early call before the registries' TDZ clears, mirroring
+ *  `rerenderAllEditors`. */
+function scheduleMinimapReconcile() {
+  try {
+    if (minimapByTargetLeafId.size === 0 || minimapReconcileScheduled) return;
+  } catch { return; }
+  minimapReconcileScheduled = true;
+  queueMicrotask(() => {
+    minimapReconcileScheduled = false;
+    for (const [leafId] of [...minimapByTargetLeafId]) rebindMinimapForLeaf(leafId);
+  });
+}
+
+/** Remove the minimap bound to TARGETLEAFID: dispose its element and
+ *  collapse its pane. Map entry cleared first so the reconcile loop / the
+ *  pane-delete don't re-enter. */
+function removeMinimapForLeaf(targetLeafId) {
+  const view = minimapByTargetLeafId.get(targetLeafId);
+  if (!view) return;
+  minimapByTargetLeafId.delete(targetLeafId);
+  const minimapLeaf = leafPanes(rootPane).find((l) => l.view === view);
+  disposeMinimapElementForView(view);
+  if (minimapLeaf) deletePaneInTree(minimapLeaf);
+}
+
+/** Attach a minimap pane beside TARGETLEAF, on SIDE ('left'|'right'), with
+ *  WIDTHFRACTION the minimap's share (clamped). Models `openNoFocusViewInSplit`
+ *  — it deliberately does NOT move focus or call `hideInactiveRendererViews`,
+ *  so the editor keeps the keyboard and its text-view stays visible. */
+function attachMinimapBesideLeaf(targetLeaf, side, widthFraction) {
+  if (!targetLeaf || targetLeaf.kind !== 'leaf') return null;
+  if (minimapByTargetLeafId.has(targetLeaf.id)) return null; // already has one
+  const onLeft = side === 'left';
+  const frac = Math.max(0.05, Math.min(0.45,
+    Number.isFinite(widthFraction) ? widthFraction : 0.16));
+  const minimapView = createView({
+    kind: 'minimap',
+    name: 'Minimap',
+    // `:no-focus` — clicking the minimap navigates the editor; it must never
+    // become the active pane (or "act on the active view" would target the
+    // minimap). isNoFocusPane / setCurrentPaneId honour this flag centrally.
+    extras: { side: onLeft ? 'left' : 'right', noFocus: true },
+  });
+  const minimapLeaf = createLeafPane({ view: minimapView });
+  const split = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: onLeft ? frac : 1 - frac,
+    first: onLeft ? minimapLeaf : targetLeaf,
+    second: onLeft ? targetLeaf : minimapLeaf,
+  });
+  rootPane = replacePane(rootPane, targetLeaf, split);
+  minimapByTargetLeafId.set(targetLeaf.id, minimapView);
+  syncPaneElements();
+  ensureMinimapElementForView(minimapView, paneElements.get(minimapLeaf.id));
+  refreshPaneFocusIndicators();
+  refreshSplitterHandles();
+  scheduleRelayout();
+  rebindMinimapForLeaf(targetLeaf.id);
+  return minimapLeaf;
+}
+
+/** Toggle the minimap for the focused leaf. SIDE / WIDTHFRACTION come from
+ *  the Lisp defcustoms via the command. */
+function toggleMinimapForFocusedLeaf(side, widthFraction) {
+  const leaf = currentPane();
+  if (!leaf || leaf.kind !== 'leaf' || !leaf.view) return;
+  if (leaf.view.kind === 'minimap') return; // never minimap a minimap
+  if (minimapByTargetLeafId.has(leaf.id)) {
+    removeMinimapForLeaf(leaf.id);
+    scheduleRelayout();
+    return;
+  }
+  attachMinimapBesideLeaf(leaf, side, widthFraction);
 }
 
 // --- generic element-host views (per-instance, mirrors the browser) -----
@@ -7565,6 +7767,9 @@ shellView.style.display = 'none';
 // xterm.js reads CSS variables once, at terminal construction. Pump
 // any later theme change into it.
 themeListeners.add(() => shellView.applyTheme());
+// A theme switch changes every face colour — drop each minimap's cached
+// palette so it repaints with the new colours.
+themeListeners.add(() => forEachMinimapElement((el) => el.invalidateColors()));
 
 // The gnuplot view — a notebook REPL over a long-lived gnuplot child.
 // Like shell-view it's a hide-not-kill custom element; the factory is
@@ -7841,6 +8046,17 @@ function mountKindView(view, context) {
     el.focus();
     return;
   }
+  if (view.kind === 'minimap') {
+    // Per-instance companion: mount THIS minimap's element in its pane, but
+    // do NOT focus it — clicks navigate the editor and the keyboard stays
+    // with the document. Its content is bound via the (deferred) reconcile.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = leaf ? paneElements.get(leaf.id) : null;
+    const el = ensureMinimapElementForView(view, paneEl);
+    el.style.display = '';
+    scheduleMinimapReconcile();
+    return;
+  }
   const el = singletonElementForKind(view.kind);
   if (el) {
     // Re-parent the singleton into THIS view's pane element so it
@@ -7889,6 +8105,17 @@ function disposeKindView(view, context) {
     // Per-instance: reap this view's element-host (removes the embedded
     // element, firing its own teardown).
     disposeElementHostForView(view);
+    return;
+  }
+  if (view.kind === 'minimap') {
+    // Per-instance: reap this minimap's element (its destroy() drops the
+    // adapter subscriptions + ResizeObserver). The target-leaf registry is
+    // cleared by removeMinimapForLeaf; clear it here too for the rare path
+    // where the minimap view is disposed directly.
+    for (const [leafId, v] of [...minimapByTargetLeafId]) {
+      if (v === view) minimapByTargetLeafId.delete(leafId);
+    }
+    disposeMinimapElementForView(view);
     return;
   }
   if (view.kind === 'shell') {
@@ -8241,6 +8468,9 @@ function ensureTabElement(state, child) {
 function mountTablineActiveChild(tablineView) {
   const state = tablineStateByView.get(tablineView);
   if (!state) return;
+  // A tab switch / close / activation changes what a minimap on this leaf
+  // mirrors — reconcile after the mount settles (deferred microtask).
+  scheduleMinimapReconcile();
 
   // Eager creation for non-text tabs: each one gets its element built
   // up-front so a session restore with N tabs comes up with N elements
@@ -9635,6 +9865,7 @@ function promoteToTablineOnPane(pane) {
   if (paneEl) mountKindView(tabline, { paneEl });
   refreshPaneTabStrips();
   updateModeline();
+  scheduleMinimapReconcile(); // promotion changed the leaf's view shape
   return tabline;
 }
 
@@ -9695,6 +9926,7 @@ function demoteTablineView(tlv) {
     mountKindView(survivor);
   }
   updateModeline();
+  scheduleMinimapReconcile(); // demotion changed the leaf's view shape
   return survivor;
 }
 

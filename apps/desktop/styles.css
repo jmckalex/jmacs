@@ -4092,6 +4092,123 @@ reftex-select-view,
   font-size: 11px;
 }
 
+/* --- minimap-view ----------------------------------------------------- */
+/* A narrow companion pane: a zoomed-out canvas rendering of the sibling
+   editor's text, with a draggable viewport thumb. A non-text target shows
+   the centred not-supported message instead of the canvas. */
+minimap-view,
+.minimap-view {
+  position: relative;
+  display: block;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-editor);
+  user-select: none;
+}
+.minimap-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: pointer;
+}
+/* The viewport indicator — a translucent band over the visible region.
+   Its top/height are set per-frame by the element; theme-adaptive tint
+   (color-mix off --fg) so it reads on dark and light backgrounds alike. */
+.minimap-thumb {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--fg) 13%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--fg) 22%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 22%, transparent);
+}
+.minimap-message {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+/* Off-screen probe used to resolve `.tok-*` face colours via
+   getComputedStyle — kept rendered (not display:none) so colour computes. */
+.minimap-probe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+/* Hover scope-extent band — the line range of the construct under the
+   pointer, tinted with the accent so it reads against the segments. */
+.minimap-hover-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* Hover code-preview flyout — a readable, syntax-highlighted slice of the
+   source at the pointer, popped beside the minimap (lives in <body>, fixed
+   position). The `.tok-*` spans inside inherit the editor's face colours. */
+.minimap-flyout {
+  position: fixed;
+  z-index: 50;
+  /* Fixed width (not shrink-to-fit) so the panel doesn't jump around as the
+     hovered lines' lengths change — short lines just leave space on the
+     right; long lines clip (overflow: hidden). */
+  width: 64ch;
+  max-height: 60vh;
+  overflow: hidden;
+  padding: 6px 9px;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px -6px color-mix(in srgb, #000 55%, transparent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg);
+  pointer-events: none;
+}
+.minimap-flyout-line {
+  display: flex;
+  min-height: 1.45em;
+}
+.minimap-flyout-line.is-current {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.minimap-flyout-no {
+  flex: 0 0 auto;
+  min-width: 3.5ch;
+  margin-right: 9px;
+  text-align: right;
+  color: var(--fg-dim);
+  opacity: 0.6;
+  user-select: none;
+}
+.minimap-flyout-code {
+  white-space: pre;
+  /* Render literal tabs at the editor's width, not the CSS default (8), so
+     the preview's indentation matches the editor's (the flyout lives in
+     <body>, which doesn't carry .editor-line's tab-size). */
+  tab-size: var(--tab-width, 4);
+  -moz-tab-size: var(--tab-width, 4);
+}
+
 /* --- placeholder-view ------------------------------------------------- */
 /* The chooser a freshly-split pane shows until the user decides what it
    should hold. A centred prompt with o/c/s/r accelerator chips, an Enter
