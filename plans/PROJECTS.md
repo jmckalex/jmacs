@@ -95,6 +95,14 @@ Other notes: each project root gets its own `directory-tree` view handle (kept
 across opens); the `bookmark` view is a true singleton, retargeted per
 workspace. `.godot/` is visible in the dir-tree (like Nova's `.nova`).
 
+**Dir-tree open routing (fixed 2026-06-21):** double-clicking a file in the
+sidebar tree was opening it in the *tree's own* pane (`openFileInTabAdjacent`
+promotes the focused pane). Now routed through `*directory-tree-open-target*`
+(`:choice` defcustom — `editing-pane` default / `other-pane` / `this-pane`)
+via the overridable Lisp `directory-tree-open-file` → `open-file-from-tree!`
+primitive; `editing-pane` opens in the main editing area (the middle tabline
+in a project) and focuses it. Pure pane pick in `tree-open.js` (`pickEditingLeaf`).
+
 ## Increment 2 — the Project Chooser (this session's "Phase 5")
 
 A Nova-style launcher **modal** (not a view/pane — it's transient and never
