@@ -144,6 +144,7 @@ import {
 } from './project-index.js';
 import { openProjectChooser } from './project-chooser.js';
 import { pickEditingLeaf } from './tree-open.js';
+import { shouldDrawFocusBorder } from './pane-focus.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 import { createBookmarks } from './bookmarks.js';
@@ -783,12 +784,36 @@ function currentPane() {
   return null;
 }
 
+/** The `*pane-focus-border*` setting ('auto | 'on | 'off), read from Lisp
+ *  on demand. Falls back to 'auto before the stdlib is loaded, or if the
+ *  read fails. */
+function paneFocusBorderMode() {
+  if (!keymapReady) return 'auto';
+  try {
+    return symbolNameOf(interpreter.call('pane-focus-border-setting')) || 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+/** How many panes are focusable — the 'auto focus-border mode draws the
+ *  border only when this is > 1 (a lone editing surface needs no marker). */
+function countFocusablePanes() {
+  return leafPanes(rootPane).filter((l) => !isNoFocusPane(l.id)).length;
+}
+
 /** Apply the `.pane--focused` CSS class to the focused leaf's div and
  *  remove it from every other pane. Called whenever `currentPaneId`
- *  changes. With one pane this toggles the class on the only pane. */
+ *  changes. Honours `*pane-focus-border*`: in 'auto, the border is hidden
+ *  when there's only one focusable pane (e.g. a project, where the
+ *  sidebars are passive and the tabline always has focus). */
 function refreshPaneFocusIndicators() {
+  const drawBorder = shouldDrawFocusBorder(
+    paneFocusBorderMode(),
+    countFocusablePanes()
+  );
   for (const [id, el] of paneElements) {
-    el.classList.toggle('pane--focused', id === currentPaneId);
+    el.classList.toggle('pane--focused', drawBorder && id === currentPaneId);
   }
 }
 
@@ -824,17 +849,45 @@ function focusPaneFromEvent(event) {
 editorHostEl.addEventListener('mousedown', focusPaneFromEvent, true);
 editorHostEl.addEventListener('click', focusPaneFromEvent, true);
 
-/** True when pane PANEID holds a view that opted out of focus
- *  (`:no-focus`) — a helper/satellite panel (e.g. the bibliography view)
- *  whose whole purpose is to act on the *active* view. Interacting with
- *  it must not make it the active pane, or "insert into the active view"
- *  would target the panel itself. Peels through a tabline to the visible
- *  child. */
+/** Per-pane focusability set from Lisp (`set-pane-focusable!`): leaf id →
+ *  boolean (true = focusable, false = not). An explicit entry overrides
+ *  the defaults below. Lets users design custom UIs (passive sidebars,
+ *  etc.) without persisting across restart (re-derived for projects). */
+const paneFocusOverride = new Map();
+
+/** View kinds that are passive sidebars when shown in a project: like
+ *  Nova's, they don't become the active pane (so focus stays in the
+ *  editing tabline). The minimap / bib-search opt out via `view.noFocus`
+ *  instead; these are kinds that are normally focusable on their own but
+ *  passive inside a project. */
+const PROJECT_SIDEBAR_KINDS = new Set([
+  'directory-tree',
+  'directory-columns',
+  'bookmark',
+]);
+
+/** True when pane PANEID is non-focusable — it never becomes the active
+ *  pane (clicking still works; the view acts on the active pane). Sources,
+ *  in priority order: an explicit `set-pane-focusable!` override; a view
+ *  that opted out of focus (`:no-focus` — the minimap, bib-search); or, in
+ *  a project, a passive sidebar kind (the tree / bookmark, so focus stays
+ *  in the middle tabline like a normal Nova window). Peels a tabline to the
+ *  visible child. */
 function isNoFocusPane(paneId) {
+  const override = paneFocusOverride.get(paneId);
+  if (override !== undefined) return override === false;
   const leaf = leafPanes(rootPane).find((l) => l.id === paneId);
   if (!leaf) return false;
   const view = peelTabline(leaf.view);
-  return !!(view && view.noFocus);
+  if (view && view.noFocus) return true;
+  if (
+    activeProjectPath !== null &&
+    view &&
+    PROJECT_SIDEBAR_KINDS.has(view.kind)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /** Set the currently-focused pane id and refresh derived state:
@@ -1490,9 +1543,17 @@ function focusNextPane() {
   const leaves = leafPanes(rootPane);
   if (leaves.length <= 1) return currentPane();
   const i = leaves.findIndex((l) => l.id === currentPaneId);
-  const next = leaves[(i < 0 ? 0 : i + 1) % leaves.length];
-  setCurrentPaneId(next.id);
-  return next;
+  const start = i < 0 ? 0 : i;
+  // Cycle to the next *focusable* pane — skip passive sidebars (the tree /
+  // bookmark in a project, the minimap, …) so C-x o stays among editing panes.
+  for (let step = 1; step <= leaves.length; step += 1) {
+    const cand = leaves[(start + step) % leaves.length];
+    if (cand.id === currentPaneId) continue;
+    if (isNoFocusPane(cand.id)) continue;
+    setCurrentPaneId(cand.id);
+    return cand;
+  }
+  return currentPane();
 }
 
 /** Focus a *specific* leaf pane by its handle (the absolute counterpart
@@ -4141,6 +4202,22 @@ const interpreter = createInterpreter({
       openFileFromTree(path, target);
       return NIL;
     },
+    // Mark the current pane focusable (#t) or passive (#f). A passive pane
+    // never becomes the active pane — clicking still works (the view acts
+    // on the active pane), but focus stays in the editing area. This is how
+    // Lisp builds Nova-style sidebars. Making the current pane passive moves
+    // focus to the next focusable pane.
+    'set-pane-focusable!': (args) => {
+      if (currentPaneId === null) return NIL;
+      const focusable = args[0] !== false; // only an explicit #f is passive
+      paneFocusOverride.set(currentPaneId, focusable);
+      if (!focusable) focusNextPane();
+      refreshPaneFocusIndicators();
+      return NIL;
+    },
+    // #t when the current pane is focusable, #f when it's passive.
+    'pane-focusable?': () =>
+      currentPaneId !== null && !isNoFocusPane(currentPaneId),
     // Open the bookmark outline for the current text buffer (C-x r l) in
     // a narrow pane to the RIGHT of the focused pane — a navigator, so the
     // source buffer stays visible (jump from the outline moves it). If the
@@ -9839,10 +9916,23 @@ function installRootPane(newRoot, savedCurrentPaneId) {
   // Update the focused pane id, falling back to the first leaf when
   // the saved id doesn't match any leaf in the new tree.
   const leaves = leafPanes(rootPane);
+  // Drop per-pane focus overrides for panes that no longer exist (e.g. a
+  // workspace switch installs a whole new tree), so the map can't grow
+  // unbounded or collide with a reused id.
+  const liveLeafIds = new Set(leaves.map((l) => l.id));
+  for (const id of [...paneFocusOverride.keys()]) {
+    if (!liveLeafIds.has(id)) paneFocusOverride.delete(id);
+  }
   const matching = leaves.find((l) => l.id === savedCurrentPaneId);
   currentPaneId = matching
     ? matching.id
     : (leaves[0]?.id ?? null);
+  // Never land focus on a passive pane (e.g. a restored project whose saved
+  // focus was a sidebar): fall back to the first focusable leaf.
+  if (currentPaneId !== null && isNoFocusPane(currentPaneId)) {
+    const focusable = leaves.find((l) => !isNoFocusPane(l.id));
+    if (focusable) currentPaneId = focusable.id;
+  }
   // Rebuild the pane DOM around the new tree, then mount each leaf's
   // view through mountKindView. Tabline-view leaves cause the
   // registry to construct fresh per-pane editor instances for each
