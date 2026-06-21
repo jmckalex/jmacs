@@ -5864,3 +5864,195 @@ notebook-view,
   color: var(--error, #e06c75);
   opacity: 1;
 }
+
+/* --- Project Chooser (Nova-style launcher modal) --------------------- */
+
+.project-chooser-overlay {
+  position: fixed;
+  inset: 0;
+  background: #00000088;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+}
+
+.project-chooser {
+  width: min(880px, 86vw);
+  max-height: 80vh;
+  padding: 18px 20px 20px;
+  background: var(--bg-panel, #1c2530);
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 16px 44px #000000aa;
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.project-chooser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.project-chooser-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.project-chooser-close {
+  border: none;
+  background: transparent;
+  color: var(--fg-dim, #7c8f9e);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.project-chooser-close:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
+.project-chooser-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.project-chooser-action {
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--fg) 16%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: var(--fg);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+.project-chooser-action:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: var(--accent);
+}
+
+.project-chooser-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, var(--fg) 16%, transparent);
+  border-radius: 6px;
+  background: var(--bg-editor, #303841);
+  color: var(--fg);
+  font-size: 13px;
+  outline: none;
+}
+.project-chooser-search:focus {
+  border-color: var(--accent);
+}
+
+.project-chooser-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 14px;
+  padding: 2px;
+}
+
+.project-chooser-empty {
+  grid-column: 1 / -1;
+  padding: 40px 10px;
+  text-align: center;
+  color: var(--fg-dim, #7c8f9e);
+}
+
+.project-chooser-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+.project-chooser-card:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.project-chooser-card.is-selected {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+}
+
+.project-chooser-tile {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px #ffffff14, 0 2px 6px #00000040;
+  user-select: none;
+}
+.project-chooser-tile.has-image {
+  box-shadow: inset 0 0 0 1px #ffffff14, 0 2px 8px #00000055;
+}
+
+.project-chooser-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.project-chooser-card-tools {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.project-chooser-card:hover .project-chooser-card-tools {
+  opacity: 1;
+}
+
+.project-chooser-tool {
+  border: none;
+  border-radius: 5px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  background: #00000099;
+  color: #ffffff;
+}
+.project-chooser-tool:hover {
+  background: #000000cc;
+}
+
+.project-chooser-name {
+  max-width: 100%;
+  font-size: 12px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
