@@ -145,6 +145,7 @@ import {
 import { openProjectChooser } from './project-chooser.js';
 import { pickEditingLeaf } from './tree-open.js';
 import { shouldDrawFocusBorder } from './pane-focus.js';
+import { materialIconUrlForEntry } from './material-icons.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 import { createBookmarks } from './bookmarks.js';
@@ -7310,6 +7311,9 @@ function configureDirectoryTreeView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
+    // Colour file/folder icons from the vendored Material Icon Theme set.
+    iconUrlFor: (name, isDirectory, expanded) =>
+      materialIconUrlForEntry(name, isDirectory, expanded),
     openPath: (path) => {
       // Route through the `directory-tree-open-file` Lisp function so the
       // target honours `*directory-tree-open-target*` and stays user-
@@ -10837,4 +10841,5 @@ try {
 } catch {
   /* the guard is best-effort */
 }
+
 

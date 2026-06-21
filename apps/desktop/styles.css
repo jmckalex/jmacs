@@ -3459,6 +3459,21 @@ directory-tree-view,
   color: var(--fg);
 }
 
+/* Material colour SVG icons (vendored material-icon-theme). The span takes
+   the same 16px slot as a FontAwesome glyph; the injected <svg> fills it. */
+.directory-tree-icon-svg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  line-height: 0;
+}
+.directory-tree-icon-svg svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
 /* Symlink stack — the target's icon as the base, a tiny arrow badge
    in the bottom-left corner (the macOS alias / Nova convention). The
    wrapper takes the same 16px horizontal slot as a standalone
