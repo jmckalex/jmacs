@@ -9857,10 +9857,14 @@ function materialiseRestoredView(blob, handlesByBlob) {
       }
     }
     void tabs; // silence — kept for the comment-block clarity above.
-    const active = tabsClean.length === 0
-      ? 0
-      : Math.max(0, Math.min(blob.active ?? 0, tabsClean.length - 1));
-    const extras = { tabs: tabsClean, active, edge: blob.edge ?? 'top' };
+    // An empty editing tabline (e.g. a project whose middle pane had no
+    // open files at quit) restores with a fresh *scratch* so the pane isn't
+    // left blank (and focus doesn't land on a tab-less tabline).
+    const finalTabs = tabsClean.length === 0
+      ? [buildScratchTextView()]
+      : tabsClean;
+    const active = Math.max(0, Math.min(blob.active ?? 0, finalTabs.length - 1));
+    const extras = { tabs: finalTabs, active, edge: blob.edge ?? 'top' };
     if (typeof blob.width === 'number' && Number.isFinite(blob.width) && blob.width > 0) {
       extras.width = blob.width;
     }
