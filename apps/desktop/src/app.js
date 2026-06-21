@@ -760,6 +760,20 @@ queueMicrotask(relayoutPanes);
 const editorHostResizeObserver = new ResizeObserver(() => scheduleRelayout());
 editorHostResizeObserver.observe(editorHostEl);
 
+// Module state read by the pane-focus machinery below. These are hoisted
+// here because the initial focus paint (further down) calls into
+// `refreshPaneFocusIndicators` / `isNoFocusPane`, which read `keymapReady`
+// and `activeProjectPath` — declaring those at their original (much later)
+// positions left them in the temporal dead zone at first paint, throwing a
+// ReferenceError that aborted the whole boot. They are reassigned later
+// where they're used (stdlib-load sets keymapReady; openProject sets the
+// project pointers).
+let keymapReady = false;
+/** Absolute root of the open project, or null when in the home session. */
+let activeProjectPath = null;
+/** The per-project session controller while a project is open, else null. */
+let projectSession = null;
+
 // --- pane focus ---------------------------------------------------------
 //
 // Each pane has a focus state (plans/PANES.md, "Focus indication").
@@ -5531,7 +5545,9 @@ function installHighlightRules() {
  *  declaration runs. */
 const themeListeners = new Set();
 
-let keymapReady = false;
+// `keymapReady` is declared near the top of the module (the pane-focus
+// machinery reads it during the initial paint); set it here once the
+// stdlib has loaded.
 try {
   // Per-file isolation: a single broken stdlib file is reported and
   // skipped, not allowed to abort the load and leave the editor with no
@@ -10389,10 +10405,9 @@ const sessionController = createSession({ ...sessionOptions, host: window.host }
 // project switches into it (saving home first) and closing returns to it.
 // Boot always lands on home (see the restore at the bottom of this file).
 
-/** Absolute root of the open project, or null when in the home session. */
-let activeProjectPath = null;
-/** The per-project session controller while a project is open, else null. */
-let projectSession = null;
+// `activeProjectPath` / `projectSession` are declared near the top of the
+// module (the pane-focus machinery reads activeProjectPath during the
+// initial paint); they're assigned by openProject / closeProject below.
 
 /** A host shim that routes a session controller's reads/writes to ROOT's
  *  per-project state file instead of the global session.json. */
