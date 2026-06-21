@@ -67,9 +67,14 @@ interactive (click a file in the tree, click a bookmark to jump).
   saved tree (detected by a rootPane-identity change, same as boot).
 - **Pure module** (`apps/desktop/src/project-index.js` + test):
   `upsertProject` (move-to-front + dedupe by path), `projectNameFromRoot`.
-- **Lisp** (`packages/stdlib/lisp/project.lisp`): `open-project` (picker),
-  `close-project`. Primitives in app.js: `open-project!`, `open-project-at!`,
-  `close-project!`, `current-project`. Unbound — `M-x` for now.
+- **Lisp** (`packages/stdlib/lisp/project.lisp`): `open-project` (native
+  picker), `find-project` (completing minibuffer, find-file-style filesystem
+  TAB completion — mirrors `directory-tree`), `close-project`. Primitives in
+  app.js: `open-project!`, `open-project-at!`, `close-project!`,
+  `current-project`. Unbound — `M-x` for now. `openProject` guards against a
+  non-directory path (the minibuffer / `open-project-at!` can yield one):
+  `listDirectorySync` is an array only for a real directory, else the status
+  line reports it and the open is declined.
 
 ## Known limitation (accepted for increment 1)
 
