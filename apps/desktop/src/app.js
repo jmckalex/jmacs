@@ -137,6 +137,7 @@ import { buildModeMenuItems } from './mode-menu-build.js';
 import { createRecovery } from './recovery-controller.js';
 import { hashText } from './recovery.js';
 import { createSession } from './session.js';
+import { upsertProject, projectNameFromRoot } from './project-index.js';
 import { createSplash } from './splash.js';
 import { createStickyNotes } from './sticky-notes.js';
 import { createBookmarks } from './bookmarks.js';
@@ -1294,7 +1295,7 @@ async function splitAndOpenFile(filePath, orientation, side = 'after', persist =
   const view = newLeaf.view;
   if (view && persist === true && view.kind === 'pdf') {
     view.persist = true;
-    sessionController.save();
+    activeSession().save();
   }
   return view;
 }
@@ -3912,7 +3913,7 @@ const interpreter = createInterpreter({
       const on = args[1] !== false;
       if (view && typeof view === 'object' && 'kind' in view) {
         view.persist = on;
-        sessionController.save();
+        activeSession().save();
       }
       return on;
     },
@@ -4149,6 +4150,42 @@ const interpreter = createInterpreter({
       }
       return NIL;
     },
+    // Show the directory picker; on confirm, open the chosen directory as
+    // a project workspace. Returns immediately — the workspace is built
+    // when the dialog resolves (mirrors `prompt-directory!`).
+    'open-project!': () => {
+      window.host
+        .openDirectory()
+        .then((path) => {
+          if (path === null) return;
+          return openProject(path);
+        })
+        .catch((error) => {
+          repl.appendError(error.lispMessage ?? error.message ?? String(error));
+        });
+      return NIL;
+    },
+    // Open a specific directory as a project, no picker — for scripting
+    // and tests. `(open-project-at! "~/Source/btt")`.
+    'open-project-at!': (args) => {
+      const root = String(args[0] ?? '');
+      if (root === '') return NIL;
+      openProject(root).catch((error) => {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      });
+      return NIL;
+    },
+    // Close the open project and return to the home session. A no-op when
+    // no project is open.
+    'close-project!': () => {
+      closeProject().catch((error) => {
+        repl.appendError(error.lispMessage ?? error.message ?? String(error));
+      });
+      return NIL;
+    },
+    // The open project's absolute root, or nil in the home session. A data
+    // accessor (no `!`) — the chooser and modeline can read it.
+    'current-project': () => (activeProjectPath === null ? NIL : activeProjectPath),
     // Open the *View List* — a clickable HTML table of every open view
     // (the replacement for the old text *Buffer List*). There is one
     // such view; this finds or creates it, switches the current pane to
@@ -8342,7 +8379,7 @@ function attachTablineResizerDrag(resizerEl, view) {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       // Persist the new width via the debounced session save.
-      sessionController.save();
+      activeSession().save();
     };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
@@ -10098,7 +10135,7 @@ function setTablineEdgeOnTabline(tlv, edge) {
 // `buffers` for backwards compatibility with session.json files saved
 // before the view/buffer split.
 
-const sessionController = createSession({
+const sessionOptions = {
   getRootPane: () => rootPane,
   getCurrentPaneId: () => currentPaneId,
   openByPath: async (path, entry) => {
@@ -10155,8 +10192,175 @@ const sessionController = createSession({
     const runtimeRoot = buildRestoredPaneTree(rootBlob, handlesByBlob);
     if (runtimeRoot) installRootPane(runtimeRoot, savedCurrentPaneId);
   },
-  host: window.host,
-});
+};
+
+// The global "home" session controller, writing <userData>/session.json.
+// When a project is open, saves route to a per-project controller instead
+// (see `activeSession`); the global one captures the home state at the
+// moment a project is opened, and is restored when the project is closed.
+const sessionController = createSession({ ...sessionOptions, host: window.host });
+
+// --- Projects -----------------------------------------------------------
+// A project is a directory opened as a workspace: a 3-column layout
+// (directory-tree | editing tabline | bookmark outline) whose open files
+// are saved to <root>/.godot/project.json and restored on reopen. The
+// model is *additive* — the global session is the "home" state; opening a
+// project switches into it (saving home first) and closing returns to it.
+// Boot always lands on home (see the restore at the bottom of this file).
+
+/** Absolute root of the open project, or null when in the home session. */
+let activeProjectPath = null;
+/** The per-project session controller while a project is open, else null. */
+let projectSession = null;
+
+/** A host shim that routes a session controller's reads/writes to ROOT's
+ *  per-project state file instead of the global session.json. */
+function projectStateHost(root) {
+  return {
+    readSession: () => window.host.readProject(root),
+    writeSession: (data) => window.host.writeProject(root, data),
+  };
+}
+
+/** The session controller saves should target right now: the open
+ *  project's, or the global home one. All debounced saves and the
+ *  pagehide flush go through this so the right file gets written. */
+function activeSession() {
+  return projectSession ?? sessionController;
+}
+
+// Project layout ratios. Left sidebar takes ~18% of the window; within
+// the remaining 82%, the editing tabline takes ~78% and the bookmark
+// outline ~22% — so the two sidebars end up roughly symmetric (~18% each)
+// with a ~64% editing pane between them.
+const PROJECT_SIDEBAR_RATIO = 0.18;
+const PROJECT_MIDDLE_RATIO = 0.78;
+
+/** Build the canonical 3-column project layout — directory-tree (left) |
+ *  editing tabline (middle) | bookmark outline (right) — rooted at ROOT,
+ *  and install it. Used on a project's FIRST open (no saved state yet);
+ *  later opens restore the saved tree instead, which may carry extra
+ *  splits the user made inside. The middle tabline starts on a fresh
+ *  *scratch* so the editing pane is never empty. */
+function buildCanonicalProjectLayout(root) {
+  const dirTree = ensureDirectoryTreeViewForPath(root);
+  const bookmarks = ensureBookmarkView();
+  const scratch = freshScratchView();
+  views.push(scratch);
+  const tabline = createView({
+    kind: 'tabline',
+    extras: { tabs: [scratch], active: 0, edge: 'top' },
+  });
+  const leftLeaf = createLeafPane({ view: dirTree });
+  const middleLeaf = createLeafPane({ view: tabline });
+  const rightLeaf = createLeafPane({ view: bookmarks });
+  const innerSplit = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: PROJECT_MIDDLE_RATIO,
+    first: middleLeaf,
+    second: rightLeaf,
+  });
+  const newRoot = createSplitPane({
+    orientation: SPLIT_HORIZONTAL,
+    ratio: PROJECT_SIDEBAR_RATIO,
+    first: leftLeaf,
+    second: innerSplit,
+  });
+  installRootPane(newRoot, middleLeaf.id);
+  // Point the bookmark outline at the editing pane's buffer so the right
+  // panel isn't blank; it auto-follows focus from here on.
+  retargetBookmarkView(scratch.buffer);
+}
+
+/** Install a minimal single-tabline scratch workspace. The fallback for
+ *  closing a project when the home session has no saved tree (rare — the
+ *  home state is captured on project open, so it normally exists). */
+function buildScratchWorkspace() {
+  const scratch = freshScratchView();
+  views.push(scratch);
+  const tabline = createView({
+    kind: 'tabline',
+    extras: { tabs: [scratch], active: 0, edge: 'top' },
+  });
+  const leaf = createLeafPane({ view: tabline });
+  installRootPane(leaf, leaf.id);
+}
+
+/** Restore the controller CTRL's saved tree, returning whether it
+ *  installed one (detected, as the boot path does, by a change of
+ *  rootPane identity). Suppresses session saves during the restore. */
+async function restoreInto(ctrl) {
+  const before = rootPane;
+  restoring = true;
+  try {
+    await ctrl.restore();
+  } finally {
+    restoring = false;
+  }
+  return rootPane !== before;
+}
+
+/** Record ROOT at the front of the central project index (most-recently
+ *  opened first). Best-effort: a read/write failure is non-fatal. */
+async function rememberProject(root) {
+  let index = null;
+  try {
+    index = await window.host.readProjectIndex();
+  } catch {
+    index = null;
+  }
+  const list = index && Array.isArray(index.projects) ? index.projects : [];
+  const next = upsertProject(list, root, projectNameFromRoot(root));
+  try {
+    await window.host.writeProjectIndex({ projects: next });
+  } catch {
+    // The index is a convenience catalogue for the future chooser; a
+    // write failure must not break opening the project.
+  }
+}
+
+/** Open ROOT as a project workspace. Saves the current workspace (home or
+ *  another project) first, then either restores ROOT's saved layout or
+ *  builds the canonical 3-column one. A no-op when ROOT is already the
+ *  open project. */
+async function openProject(root) {
+  const cleanRoot = expandTilde(String(root ?? '')).replace(/\/+$/, '');
+  if (cleanRoot === '') return;
+  if (cleanRoot === activeProjectPath) return;
+  // Persist whatever workspace is live now before switching away from it.
+  try {
+    await activeSession().flush();
+  } catch {
+    // A flush failure shouldn't block the switch; the prior state's last
+    // debounced save is the fallback.
+  }
+  activeProjectPath = cleanRoot;
+  projectSession = createSession({
+    ...sessionOptions,
+    host: projectStateHost(cleanRoot),
+  });
+  const installed = await restoreInto(projectSession);
+  if (!installed) buildCanonicalProjectLayout(cleanRoot);
+  rememberProject(cleanRoot);
+  // Persist the freshly-installed project layout to its own state file.
+  activeSession().save();
+}
+
+/** Close the open project and return to the home session. A no-op when no
+ *  project is open. */
+async function closeProject() {
+  if (projectSession === null) return;
+  try {
+    await projectSession.flush();
+  } catch {
+    // Non-fatal — the project's last debounced save stands.
+  }
+  projectSession = null;
+  activeProjectPath = null;
+  const installed = await restoreInto(sessionController);
+  if (!installed) buildScratchWorkspace();
+  activeSession().save();
+}
 
 // Wire the change hook: every list / index change refreshes every
 // per-pane tabline strip and queues a session save. `restoring` is
@@ -10170,7 +10374,7 @@ onViewsChanged = () => {
   // Keep the *View List* table live: opening, killing, renaming or
   // switching a view changes what the list should show.
   viewListView.refresh();
-  if (!restoring) sessionController.save();
+  if (!restoring) activeSession().save();
 };
 
 // Flush the session synchronously-ish on page unload. The pagehide
@@ -10178,7 +10382,7 @@ onViewsChanged = () => {
 // navigation); ipcRenderer.invoke returns a Promise the host will
 // process even after pagehide returns.
 window.addEventListener('pagehide', () => {
-  sessionController.flush();
+  activeSession().flush();
   // Capture the latest unsaved edits before a reload/navigation teardown.
   // Skip it on a clean quit — quitInteractive already cleared the
   // snapshots, and re-writing them here would resurrect discarded work.
@@ -10258,7 +10462,7 @@ if (sessionInstalledTree) {
 // freshly-wrapped tabline renders on first paint and the new pane-tree
 // shape lands in the on-disk session under schema v2.
 refreshPaneTabStrips();
-sessionController.save();
+activeSession().save();
 
 // Offer back any crash-recovery snapshots a previous run left behind.
 // Session restore only reopens files from disk — it can't bring back
