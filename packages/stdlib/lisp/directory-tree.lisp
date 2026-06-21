@@ -25,12 +25,16 @@
         original behaviour.")
 
 (define (directory-tree-open-file path)
-  "Open PATH from a directory tree-view, honouring
-   `*directory-tree-open-target*`. The tree-view calls this when a file is
-   double-clicked or Enter-activated; redefine it to customise the routing
-   entirely (it's the policy layer over the `open-file-from-tree!` host
-   primitive)."
-  (open-file-from-tree! path *directory-tree-open-target*))
+  "Open PATH from a directory tree-view. Prefers the dir-tree's wired target
+   pane — a leaf id `open-project` sets so files land in the project's editing
+   tabline (bulletproof: no guessing which pane is the editing area). Falls
+   back to `*directory-tree-open-target*` when no pane is wired (a standalone
+   `directory-tree`). The tree-view calls this on a file double-click / Enter;
+   redefine it to customise the routing entirely."
+  (let ((wired (current-directory-tree-target)))
+    (open-file-from-tree!
+     path
+     (if (nil? wired) *directory-tree-open-target* wired))))
 
 (define (-directory-tree-deliver path)
   "Minibuffer submit handler: open a tree-view rooted at PATH, after

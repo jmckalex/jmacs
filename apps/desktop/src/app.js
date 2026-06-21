@@ -4212,8 +4212,31 @@ const interpreter = createInterpreter({
     'open-file-from-tree!': (args) => {
       const path = String(args[0] ?? '');
       if (path === '') return NIL;
-      const target = symbolNameOf(args[1]) || 'editing-pane';
+      // TARGET is either a pane id (a string — an explicit wired leaf) or a
+      // symbol ('editing-pane / 'other-pane / 'this-pane — the heuristic).
+      const raw = args[1];
+      const target =
+        typeof raw === 'string' && raw !== ''
+          ? raw
+          : symbolNameOf(raw) || 'editing-pane';
       openFileFromTree(path, target);
+      return NIL;
+    },
+    // The pane id the current dir-tree opens files into (wired by the
+    // project), or nil — read by the `directory-tree-open-file` Lisp fn.
+    'current-directory-tree-target': () => {
+      const treeView = projectDirTreeView();
+      const id = treeView && treeView.openTargetPaneId;
+      return typeof id === 'string' && id !== '' ? id : NIL;
+    },
+    // Wire the current dir-tree to open files into pane PANE-ID (a leaf id),
+    // or clear it with nil. Lets Lisp point a tree at a specific pane.
+    'set-directory-tree-target!': (args) => {
+      const treeView = projectDirTreeView();
+      if (!treeView) return NIL;
+      const raw = args[0];
+      treeView.openTargetPaneId =
+        raw == null || raw === NIL || raw === '' ? null : String(raw);
       return NIL;
     },
     // Mark the current pane focusable (#t) or passive (#f). A passive pane
@@ -9713,22 +9736,37 @@ async function openFileFromTree(filePath, target) {
     await openFileInTabAdjacent(filePath);
     return;
   }
-  const sourcePane = currentPane(); // the tree's pane (the double-click focused it)
   const opened = await openFileByPath(filePath, { switch: false });
   if (!opened) return;
   const leaves = leafPanes(rootPane);
-  const descriptors = leaves.map((leaf) => ({
-    id: leaf.id,
-    kind: isTablineView(leaf.view) ? 'tabline' : leaf.view ? leaf.view.kind : null,
-    isTabline: isTablineView(leaf.view),
-  }));
-  const targetId = pickEditingLeaf(descriptors, sourcePane?.id ?? null, target);
-  const targetLeaf = targetId ? leaves.find((leaf) => leaf.id === targetId) : null;
+  let targetLeaf = null;
+  // An explicit pane-id target (a leaf id wired into the dir-tree by the
+  // project — see reapplyProjectDirTreeTarget) wins: no guessing which pane
+  // is "the editing area", and it's robust to focus / sidebar passivity.
+  if (target !== 'editing-pane' && target !== 'other-pane') {
+    targetLeaf = leaves.find((leaf) => leaf.id === target) ?? null;
+  }
+  // Otherwise — or when the wired pane no longer exists — fall back to the
+  // symbolic heuristic (a standalone M-x directory-tree has no wired target).
+  if (!targetLeaf) {
+    const descriptors = leaves.map((leaf) => {
+      const peeled = peelTabline(leaf.view);
+      return {
+        id: leaf.id,
+        kind: peeled ? peeled.kind : null,
+        isTabline: isTablineView(leaf.view),
+      };
+    });
+    const symbolic = target === 'other-pane' ? 'other-pane' : 'editing-pane';
+    const targetId = pickEditingLeaf(descriptors, currentPane()?.id ?? null, symbolic);
+    targetLeaf = targetId ? leaves.find((leaf) => leaf.id === targetId) : null;
+  }
   if (!targetLeaf) {
     // No suitable editing pane (e.g. the tree is the only pane): open the
-    // file beside the tree in a new split rather than inside it.
-    if (sourcePane && sourcePane.kind === 'leaf') {
-      splitPaneAtLeafWith(sourcePane, SPLIT_HORIZONTAL, 0.3, 'after', opened);
+    // file beside the current pane in a new split rather than inside a sidebar.
+    const here = currentPane();
+    if (here && here.kind === 'leaf') {
+      splitPaneAtLeafWith(here, SPLIT_HORIZONTAL, 0.3, 'after', opened);
     } else {
       switchToViewIndex(views.indexOf(opened));
     }
@@ -10622,9 +10660,43 @@ async function openProject(root) {
   });
   const installed = await restoreInto(projectSession);
   if (!installed) buildCanonicalProjectLayout(cleanRoot);
+  // Wire the project's dir-tree to open files into the editing tabline (by
+  // leaf id) — bulletproof against focus / sidebar passivity, and re-derived
+  // here for both the freshly-built and the restored layout.
+  reapplyProjectDirTreeTarget();
   rememberProject(cleanRoot);
   // Persist the freshly-installed project layout to its own state file.
   activeSession().save();
+}
+
+/** The directory-tree view shown in the current layout, or null. (A project
+ *  has exactly one; a standalone M-x directory-tree may add another.) */
+function projectDirTreeView() {
+  const leaf = leafPanes(rootPane).find((l) => {
+    const v = peelTabline(l.view);
+    return !!(v && v.kind === 'directory-tree');
+  });
+  return leaf ? peelTabline(leaf.view) : null;
+}
+
+/** Wire the project's dir-tree to open files into the editing tabline's leaf,
+ *  computed deterministically (the non-sidebar tabline — the middle column).
+ *  Stored as `openTargetPaneId` on the dir-tree view; honoured first by
+ *  openFileFromTree. A no-op when there's no dir-tree. */
+function reapplyProjectDirTreeTarget() {
+  const treeView = projectDirTreeView();
+  if (!treeView) return;
+  const leaves = leafPanes(rootPane);
+  const descriptors = leaves.map((leaf) => {
+    const peeled = peelTabline(leaf.view);
+    return {
+      id: leaf.id,
+      kind: peeled ? peeled.kind : null,
+      isTabline: isTablineView(leaf.view),
+    };
+  });
+  const targetId = pickEditingLeaf(descriptors, null, 'editing-pane');
+  if (targetId) treeView.openTargetPaneId = targetId;
 }
 
 /** Close the open project and return to the home session. A no-op when no
@@ -10765,3 +10837,4 @@ try {
 } catch {
   /* the guard is best-effort */
 }
+
