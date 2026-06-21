@@ -922,6 +922,100 @@ mjx-assistive-mml[display='block'] {
   right: 0;
 }
 
+/* --- sticky code-structure headers ------------------------------------- */
+/* The chain of open enclosing elements, pinned at the top of the viewport
+   as you scroll into nested code (VS Code "sticky scroll" / Nova's
+   structure headers). Two browser-pinned anchors: the header rows live in
+   `.editor-content`, their line numbers in `.editor-gutter`. Each is a
+   zero-height `position: sticky; top: 0` box — it adds no scroll height,
+   and the browser keeps it at the top with no per-frame JS; the render
+   pass positions each row absolutely within it (the view does the slide
+   math). Per-row opaque backgrounds mask the content scrolling beneath, so
+   the deepest header reveals it smoothly as it slides out. */
+.editor-sticky,
+.editor-gutter-sticky {
+  position: sticky;
+  top: 0;
+  height: 0;
+  pointer-events: none; /* the header rows re-enable it for the click */
+}
+.editor-sticky {
+  left: 0;
+  right: 0;
+  z-index: 6; /* above the text (2), cursor (3) and overlay (4) layers */
+}
+.editor-gutter-sticky {
+  z-index: 13; /* above the scrolling line numbers and fold chevrons (12) */
+}
+
+/* A pinned content header — reuses `.editor-line` for byte-identical text +
+   highlighting; the opaque background masks the code scrolling beneath it,
+   and `right: 0` stretches the row (otherwise shrink-to-fit) so the whole
+   width is a click target and a clean mask. */
+.editor-sticky-line {
+  right: 0;
+  background: var(--bg-editor);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.editor-sticky-line:hover {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-editor));
+}
+/* The deepest header carries the drop shadow that separates the pinned
+   stack from the scrolling content — it tracks the bottom as it slides. */
+.editor-sticky-line.is-deepest {
+  box-shadow: 0 5px 8px -5px color-mix(in srgb, #000 45%, transparent);
+}
+
+/* A pinned line-number row — a full-gutter-width opaque strip (so it masks
+   both the scrolling numbers and the fold rail behind it) carrying the
+   right-anchored number at full strength (the scrolling numbers are dim). */
+.editor-gutter-sticky-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1lh;
+  background: var(--bg-editor);
+}
+.editor-gutter-sticky-row .editor-line-no {
+  opacity: 1;
+}
+
+/* Hairline between stacked headers. The pinned lines are non-contiguous
+   source lines (there is usually a gap between e.g. `<body>` and a `<div>`
+   far below it), so a thin rule between them signals they are not a run of
+   consecutive code. Drawn as a top-edge pseudo on every row but the first
+   (the topmost header has nothing above it), across both the gutter and the
+   content halves so it reads as one continuous line; absolutely positioned so
+   it adds no height and leaves the deepest row's drop-shadow intact. */
+.editor-sticky-line:not(:first-child)::before,
+.editor-gutter-sticky-row:not(:first-child)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+/* Close the stack with a hairline on the bottom edge of the deepest (last)
+   row too, so the panel reads as a bounded block above the scrolling code
+   (it sits just over the deepest row's drop-shadow). As the deepest slides
+   out and is dropped, the next row becomes `:last-child` and the hairline
+   lands at the same y — so the bottom edge tracks the panel seamlessly. */
+.editor-sticky-line:last-child::after,
+.editor-gutter-sticky-row:last-child::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+
 /* --- cursor ------------------------------------------------------------ */
 
 .editor-cursor {

@@ -16,6 +16,8 @@ import {
   hiddenLines,
   foldsHidingLine,
   isStructuralCloseLine,
+  enclosingFolds,
+  stickyHeaderRows,
 } from '../src/folding.js';
 
 test('foldRanges returns line spans for multi-line captures', () => {
@@ -283,4 +285,150 @@ test('smoke: folding a 3-line function hides 2 lines (header stays)', () => {
   assert.ok(hiddenAfter.has(1));
   assert.ok(hiddenAfter.has(2));
   assert.ok(!hiddenAfter.has(0)); // header stays
+});
+
+test('enclosingFolds returns the nesting chain, outermost first', () => {
+  // 0..20 outer, 2..18 middle, 5..9 inner. Line 7 sits inside all three.
+  const endByStart = new Map([[0, 20], [2, 18], [5, 9]]);
+  assert.deepEqual(enclosingFolds(7, endByStart), [
+    { startLine: 0, endLine: 20 },
+    { startLine: 2, endLine: 18 },
+    { startLine: 5, endLine: 9 },
+  ]);
+});
+
+test('enclosingFolds excludes a header from its own chain (strict start)', () => {
+  const endByStart = new Map([[0, 20], [5, 9]]);
+  // On the inner header line (5): only the outer scope encloses it; the
+  // inner one starts here, so it is not yet pinned.
+  assert.deepEqual(enclosingFolds(5, endByStart), [
+    { startLine: 0, endLine: 20 },
+  ]);
+});
+
+test('enclosingFolds includes a scope through its end line, not past it', () => {
+  const endByStart = new Map([[2, 8]]);
+  assert.deepEqual(enclosingFolds(8, endByStart), [{ startLine: 2, endLine: 8 }]);
+  assert.deepEqual(enclosingFolds(9, endByStart), []);
+});
+
+test('enclosingFolds drops scopes that ended above the line', () => {
+  // Two disjoint siblings; line 12 is inside the second only.
+  const endByStart = new Map([[0, 5], [10, 15]]);
+  assert.deepEqual(enclosingFolds(12, endByStart), [
+    { startLine: 10, endLine: 15 },
+  ]);
+});
+
+test('enclosingFolds at the top of the document has no ancestors', () => {
+  const endByStart = new Map([[3, 9]]);
+  assert.deepEqual(enclosingFolds(0, endByStart), []);
+});
+
+// --- stickyHeaderRows: slot-aware appearance + smooth slide -------------
+
+test('stickyHeaderRows pins every scope while their content is on screen', () => {
+  // lh=20. Scrolled to row 15. Three nested scopes, all ending well below.
+  const scopes = [
+    { startLine: 5, startRow: 5, endRow: 100 },
+    { startLine: 8, startRow: 8, endRow: 30 },
+    { startLine: 12, startRow: 12, endRow: 18 },
+  ];
+  assert.deepEqual(stickyHeaderRows(scopes, 15 * 20, 20), [
+    { startLine: 5, y: 0 },
+    { startLine: 8, y: 20 },
+    { startLine: 12, y: 40 },
+  ]);
+});
+
+test('stickyHeaderRows: a scope sticks the instant its header reaches the top', () => {
+  // The bug this fixes: the header must not vanish behind the panel for a row
+  // before re-appearing pinned. The outermost scope (slot 0) pins exactly when
+  // its header reaches the very top — not a row later.
+  const scopes = [{ startLine: 5, startRow: 5, endRow: 100 }];
+  // A hair before: still a normal scrolling line, nothing pinned.
+  assert.deepEqual(stickyHeaderRows(scopes, 4.99 * 20, 20), []);
+  // The instant the header reaches the top: pinned at y=0, no gap.
+  assert.deepEqual(stickyHeaderRows(scopes, 5 * 20, 20), [{ startLine: 5, y: 0 }]);
+});
+
+test('stickyHeaderRows: a nested scope sticks when its top meets the bottom of the stack', () => {
+  // Ancestor pinned at slot 0; the child (slot 1) must stick the moment its
+  // header reaches the bottom of the one header above it — i.e. one row before
+  // its header would reach the geometric top.
+  const scopes = [
+    { startLine: 2, startRow: 2, endRow: 200 },
+    { startLine: 10, startRow: 10, endRow: 50 },
+  ];
+  // A hair before slot 1: child not yet stuck, only the ancestor shows.
+  assert.deepEqual(stickyHeaderRows(scopes, 8.99 * 20, 20), [{ startLine: 2, y: 0 }]);
+  // At row 9 the child's header sits at slot 1 (one row below the top): stuck.
+  assert.deepEqual(stickyHeaderRows(scopes, 9 * 20, 20), [
+    { startLine: 2, y: 0 },
+    { startLine: 10, y: 20 },
+  ]);
+});
+
+test('stickyHeaderRows DROPS a scope whose content is fully behind the panel', () => {
+  // At row 16 the innermost scope (ends row 18) has slid a full row behind its
+  // ancestor, so it is dropped — the user is already looking past it.
+  const scopes = [
+    { startLine: 5, startRow: 5, endRow: 100 },
+    { startLine: 8, startRow: 8, endRow: 30 },
+    { startLine: 12, startRow: 12, endRow: 18 },
+  ];
+  assert.deepEqual(stickyHeaderRows(scopes, 16 * 20, 20), [
+    { startLine: 5, y: 0 },
+    { startLine: 8, y: 20 },
+  ]);
+});
+
+test('stickyHeaderRows slides the deepest header up as its scope ends', () => {
+  const scopes = [
+    { startLine: 5, startRow: 5, endRow: 100 },
+    { startLine: 8, startRow: 8, endRow: 30 },
+    { startLine: 12, startRow: 12, endRow: 18 },
+  ];
+  // Half a row past row 15: the innermost (slot 2, y=40) slides up by 0.5lh.
+  const rows = stickyHeaderRows(scopes, 15.5 * 20, 20);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[2].startLine, 12);
+  assert.equal(rows[2].y, 30); // 40 - 0.5*20
+});
+
+test('stickyHeaderRows slide reaches the slot above just before the drop', () => {
+  const scopes = [
+    { startLine: 5, startRow: 5, endRow: 100 },
+    { startLine: 8, startRow: 8, endRow: 30 },
+    { startLine: 12, startRow: 12, endRow: 18 },
+  ];
+  // Almost a full row past 15: innermost has slid nearly to slot 1's y (20),
+  // so when row 16 drops it the header above (line 8) takes its place with
+  // no visible jump.
+  const rows = stickyHeaderRows(scopes, 15.99 * 20, 20);
+  assert.ok(rows[2].y > 20 && rows[2].y < 20.5, `expected ~20.2, got ${rows[2].y}`);
+});
+
+test('stickyHeaderRows: a vacated slot is reused by the next scope (sibling swap)', () => {
+  // Under a common ancestor A (slot 0), inner sibling B ends and its successor
+  // C opens. Once B has slid out of slot 1, C takes that slot — not slot 2.
+  const scopes = [
+    { startLine: 0, startRow: 0, endRow: 100 }, // ancestor, slot 0
+    { startLine: 5, startRow: 5, endRow: 12 }, // inner sibling, ending
+    { startLine: 13, startRow: 13, endRow: 40 }, // its successor
+  ];
+  // Row 12: B (ends row 12) is fully behind the panel and dropped; C's header
+  // has descended to slot 1's row, so it pins there.
+  assert.deepEqual(stickyHeaderRows(scopes, 12 * 20, 20), [
+    { startLine: 0, y: 0 },
+    { startLine: 13, y: 20 },
+  ]);
+});
+
+test('stickyHeaderRows returns nothing with no scopes or a zero line height', () => {
+  assert.deepEqual(stickyHeaderRows([], 100, 20), []);
+  assert.deepEqual(
+    stickyHeaderRows([{ startLine: 1, startRow: 1, endRow: 9 }], 40, 0),
+    []
+  );
 });

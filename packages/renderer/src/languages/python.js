@@ -76,8 +76,21 @@ const QUERY = `
 // Python folds at indented blocks — every `def`, `class`, `if`, `for`,
 // `while`, `try`, `with`, `match` opens a `block` child. Capturing the
 // block keeps the header line ("def foo():") visible.
+// Fold the compound statements, not the bare `(block)`: a `block` node
+// starts at the first *body* line, so folding it (and pinning it as a
+// sticky header) would show the body rather than the `def` / `class` / `if`
+// line that introduces it. These nodes start at their keyword, so the fold
+// header — in the gutter and in the sticky structure panel — is the
+// definition line, and folding keeps `def foo():` visible with its body
+// collapsed.
 const FOLD_QUERY = `
-  (block) @fold
+  (function_definition) @fold
+  (class_definition) @fold
+  (if_statement) @fold
+  (for_statement) @fold
+  (while_statement) @fold
+  (with_statement) @fold
+  (try_statement) @fold
 `;
 
 registerLanguage({

@@ -241,6 +241,89 @@ export function foldsHidingLine(line, foldedStartLines, endByStart, blockByStart
 }
 
 /**
+ * The fold ranges that enclose LINE — every header whose scope strictly
+ * contains it (`startLine < line <= endLine`), returned outermost-first
+ * (ascending by `startLine`). This is the chain of still-open structural
+ * elements at a given line: the data a "sticky scroll" / code-structure
+ * header panel pins at the top of the viewport. The strict `<` means a
+ * header is never its own ancestor, so it pins only once the viewport has
+ * scrolled past it.
+ *
+ * Pure and O(headers); the header count on screen is tiny, so a linear
+ * scan of `endByStart` is cheaper than maintaining another index.
+ *
+ * @param {number} line - The (visible) buffer line at the viewport top.
+ * @param {Map<number, number>} endByStart - `startLine -> endLine`, from
+ *   {@link indexFoldRanges}.
+ * @returns {Array<{startLine: number, endLine: number}>}
+ */
+export function enclosingFolds(line, endByStart) {
+  const out = [];
+  for (const [startLine, endLine] of endByStart) {
+    if (startLine < line && line <= endLine) out.push({ startLine, endLine });
+  }
+  out.sort((a, b) => a.startLine - b.startLine);
+  return out;
+}
+
+/**
+ * Lay out the sticky code-structure header rows: which scopes to pin and the
+ * y (in px, relative to the viewport top) of each.
+ *
+ * Everything is in **display rows** (`scrollTop / lineHeight`), so folds above
+ * the viewport are already accounted for. `scopes` is the candidate chain,
+ * outermost first, each carrying the display row of its header (`startRow`)
+ * and of its last line (`endRow`). It may include a scope whose header has not
+ * *quite* reached the top yet (it sits a few rows below) so this pass can stick
+ * it the instant its top meets the bottom of the stack. Properly-nested scopes
+ * end in non-increasing `endRow` order (an outer scope ends at or after every
+ * scope it contains).
+ *
+ * A scope occupies slot `i` — the i-th still-stuck scope — drawn at `y = i*lh`.
+ * Two rules shape the result:
+ *
+ *  1. **Appearance.** A scope sticks as soon as its header has scrolled up to
+ *     its slot: `scrollRows >= startRow - slot`. The outermost (slot 0) sticks
+ *     the moment its header reaches the very top; a nested scope (slot i)
+ *     sticks the moment its header reaches the bottom of the `i` headers
+ *     already pinned above it. Until then it is still a normal scrolling line
+ *     just below the panel — so there is no flicker where the header vanishes
+ *     behind the panel a row before it re-appears pinned.
+ *  2. **Slide-out.** As a scope's end rises into the panel its header is pushed
+ *     up (tucking behind its ancestors via z-order) and, once it has slid a
+ *     full row, dropped — so it leaves in sync with its content. The vacated
+ *     slot is taken by the next scope in the chain.
+ *
+ * @param {Array<{startLine: number, startRow: number, endRow: number}>} scopes
+ *   Outermost first; `startRow`/`endRow` are the display rows of the scope's
+ *   header and last line.
+ * @param {number} scrollTop - The scroll container's scrollTop, in px.
+ * @param {number} lineHeight - Display-row height, in px.
+ * @returns {Array<{startLine: number, y: number}>} Rows to pin, top to bottom.
+ */
+export function stickyHeaderRows(scopes, scrollTop, lineHeight) {
+  if (!Array.isArray(scopes) || scopes.length === 0 || lineHeight <= 0) return [];
+  const scrollRows = scrollTop / lineHeight;
+  const rows = [];
+  for (const scope of scopes) {
+    const slot = rows.length;
+    // Not stuck yet: the header is still below its slot, scrolling normally.
+    if (scrollRows < scope.startRow - slot) continue;
+    let y = slot * lineHeight;
+    // Slide out as the scope ends. `overshoot` is how far (in rows) the
+    // scope's end has risen past the bottom of this slot; at a full row the
+    // header sits entirely behind its ancestor, so drop it (and, by proper
+    // nesting, the deeper scopes that end even sooner). Their slot is then
+    // reused by whatever comes next in the chain.
+    const overshoot = slot + 1 - (scope.endRow - scrollRows);
+    if (overshoot >= 1) continue;
+    if (overshoot > 0) y -= overshoot * lineHeight;
+    rows.push({ startLine: scope.startLine, y });
+  }
+  return rows;
+}
+
+/**
  * Should a folded header preview its range's *closing* line after the
  * `…`? Only when that line is structurally a close — a bare closing
  * delimiter (`</tag>`, `}`, `)`, `]`) or a short keyword close (`end`,
