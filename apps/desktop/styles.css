@@ -4199,6 +4199,11 @@ minimap-view,
 }
 .minimap-flyout-code {
   white-space: pre;
+  /* Render literal tabs at the editor's width, not the CSS default (8), so
+     the preview's indentation matches the editor's (the flyout lives in
+     <body>, which doesn't carry .editor-line's tab-size). */
+  tab-size: var(--tab-width, 4);
+  -moz-tab-size: var(--tab-width, 4);
 }
 
 /* --- placeholder-view ------------------------------------------------- */

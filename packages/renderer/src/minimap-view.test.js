@@ -22,6 +22,9 @@ import {
   compressIndent,
   charCoverage,
   enclosingScope,
+  leadingWhitespace,
+  commonIndent,
+  dropLeadingChars,
 } from './minimap-view.js';
 
 test('clamp01 clamps into [0,1]', () => {
@@ -162,4 +165,59 @@ test('enclosingScope returns null when nothing contains the line', () => {
   assert.equal(enclosingScope(25, scopes), null);
   assert.equal(enclosingScope(3, []), null);
   assert.equal(enclosingScope(3, null), null);
+});
+
+test('leadingWhitespace returns the spaces/tabs prefix only', () => {
+  assert.equal(leadingWhitespace('\t\t<div>'), '\t\t');
+  assert.equal(leadingWhitespace('  x  y'), '  ');
+  assert.equal(leadingWhitespace('no-indent'), '');
+  assert.equal(leadingWhitespace('   '), '   '); // all whitespace
+  assert.equal(leadingWhitespace(null), '');
+});
+
+test('commonIndent: longest shared leading-whitespace prefix', () => {
+  // All lines share three tabs; the deepest keeps its relative extra.
+  assert.equal(commonIndent(['\t\t\ta', '\t\t\t\tb', '\t\t\tc']), '\t\t\t');
+  // No shared indent → ''.
+  assert.equal(commonIndent(['a', '\tb']), '');
+  // Spaces work the same way.
+  assert.equal(commonIndent(['    a', '      b']), '    ');
+});
+
+test('commonIndent: blank/whitespace-only lines do not constrain it', () => {
+  // The empty middle line must not collapse the common indent to ''.
+  assert.equal(commonIndent(['\t\ta', '', '\t\tb']), '\t\t');
+  assert.equal(commonIndent(['\t\ta', '\t', '\t\tb']), '\t\t');
+  // No non-blank line at all → ''.
+  assert.equal(commonIndent(['', '  ', '\t']), '');
+  assert.equal(commonIndent([]), '');
+});
+
+test('commonIndent: a mixed tab/space prefix shrinks to the agreed part', () => {
+  // First line is two tabs; second is tab+spaces — only the first tab agrees.
+  assert.equal(commonIndent(['\t\tx', '\t  y']), '\t');
+});
+
+test('dropLeadingChars: trims runs by a character count, preserving faces', () => {
+  const runs = [{ text: '\t\t', face: null }, { text: '<div>', face: 'tag' }];
+  // Drop both indent tabs: the whitespace run vanishes, content survives.
+  assert.deepEqual(dropLeadingChars(runs, 2), [{ text: '<div>', face: 'tag' }]);
+  // Drop one tab: the whitespace run is trimmed, not removed.
+  assert.deepEqual(dropLeadingChars(runs, 1), [
+    { text: '\t', face: null },
+    { text: '<div>', face: 'tag' },
+  ]);
+});
+
+test('dropLeadingChars: splits across a run boundary and keeps later runs whole', () => {
+  const runs = [{ text: 'ab', face: 'a' }, { text: 'cd', face: 'b' }];
+  assert.deepEqual(dropLeadingChars(runs, 3), [{ text: 'd', face: 'b' }]);
+});
+
+test('dropLeadingChars: n<=0 returns a copy; non-array returns []', () => {
+  const runs = [{ text: 'x', face: null }];
+  const copy = dropLeadingChars(runs, 0);
+  assert.deepEqual(copy, runs);
+  assert.notEqual(copy, runs); // a fresh array
+  assert.deepEqual(dropLeadingChars(null, 2), []);
 });

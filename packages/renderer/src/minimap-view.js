@@ -237,6 +237,68 @@ export function enclosingScope(line, scopes) {
   return best;
 }
 
+/**
+ * The leading-whitespace prefix of a string (spaces and tabs only).
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function leadingWhitespace(text) {
+  const m = /^[ \t]*/.exec(typeof text === 'string' ? text : '');
+  return m ? m[0] : '';
+}
+
+/**
+ * The longest leading-whitespace prefix common to every non-blank line — the
+ * amount a code excerpt can be dedented without disturbing its *relative*
+ * indentation. Blank / whitespace-only lines don't constrain it (they're
+ * ignored). Returns '' when there's no shared indent (or no non-blank line).
+ *
+ * @param {string[]} lines
+ * @returns {string}
+ */
+export function commonIndent(lines) {
+  if (!Array.isArray(lines)) return '';
+  let prefix = null;
+  for (const line of lines) {
+    const text = typeof line === 'string' ? line : '';
+    if (!/\S/.test(text)) continue; // blank/whitespace-only: no constraint
+    const lead = leadingWhitespace(text);
+    if (prefix === null) { prefix = lead; continue; }
+    let i = 0;
+    const max = Math.min(prefix.length, lead.length);
+    while (i < max && prefix[i] === lead[i]) i += 1;
+    prefix = prefix.slice(0, i);
+    if (prefix === '') break;
+  }
+  return prefix || '';
+}
+
+/**
+ * Drop the first N characters from a list of `{text, face}` runs, returning a
+ * new list. Runs wholly inside the dropped prefix vanish; the one straddling
+ * the boundary is trimmed. Used to dedent a flyout line by an excerpt's
+ * common indent while keeping each surviving run's face.
+ *
+ * @param {Array<{text:string, face:(string|null)}>} runs
+ * @param {number} n - characters to drop from the line start
+ * @returns {Array<{text:string, face:(string|null)}>}
+ */
+export function dropLeadingChars(runs, n) {
+  if (!Array.isArray(runs)) return [];
+  if (!(n > 0)) return runs.slice();
+  let remaining = n;
+  const out = [];
+  for (const run of runs) {
+    if (remaining <= 0) { out.push(run); continue; }
+    const text = (run && run.text) || '';
+    if (text.length <= remaining) { remaining -= text.length; continue; }
+    out.push({ ...run, text: text.slice(remaining) });
+    remaining = 0;
+  }
+  return out;
+}
+
 /** Lines above/below the hovered line shown in the code-preview flyout. */
 const FLYOUT_RADIUS = 6;
 
@@ -534,6 +596,19 @@ export class MinimapView extends ViewElement {
     const doc = this.ownerDocument;
     const first = Math.max(0, centerLine - FLYOUT_RADIUS);
     const last = Math.min(total - 1, centerLine + FLYOUT_RADIUS);
+    // The preview is narrow where the editor is wide, so dedent the excerpt by
+    // its common leading indentation: deeply-nested code then spends the
+    // flyout's width on content, not shared whitespace, while relative nesting
+    // (and the editor's tab-width, via `.minimap-flyout-code`'s tab-size) is
+    // preserved.
+    const sliceTexts = [];
+    for (let i = first; i <= last; i += 1) {
+      const runs = runsPerLine[i];
+      sliceTexts.push(
+        Array.isArray(runs) ? runs.map((r) => (r && r.text) || '').join('') : ''
+      );
+    }
+    const dedent = commonIndent(sliceTexts).length;
     const frag = doc.createDocumentFragment();
     for (let i = first; i <= last; i += 1) {
       const lineEl = doc.createElement('div');
@@ -544,8 +619,8 @@ export class MinimapView extends ViewElement {
       no.textContent = String(i + 1);
       const code = doc.createElement('span');
       code.className = 'minimap-flyout-code';
-      const runs = runsPerLine[i];
-      if (Array.isArray(runs) && runs.length > 0) {
+      const runs = dropLeadingChars(runsPerLine[i], dedent);
+      if (runs.length > 0) {
         for (const run of runs) {
           const span = doc.createElement('span');
           if (run.face) span.className = `tok-${run.face}`;
