@@ -1,8 +1,11 @@
 # Projects — Nova-style directory workspaces
 
-Status: **Increment 1 built** on branch `project-workspace` (2026-06-21),
-suite green (2,562 / 0), **awaiting live test** (main-process change — needs
-**quit + relaunch**, not reload). Not yet merged.
+Status: **Increments 1 + 2 built** on branch `project-workspace`
+(2026-06-21), suite green (~2,578 / 0), **awaiting live test** (main-process
+change — needs **quit + relaunch**, not reload). Not yet merged.
+Increment 1 = the workspace (open/find/close-project, 3-column layout,
+per-project save-state). Increment 2 = the **Project Chooser** (this
+session's "Phase 5"): the Nova-style launcher modal + custom thumbnails.
 
 A *project* is a directory opened as a workspace, modelled on Nova's project
 windows. Opening one reconfigures the window into a three-column layout and
@@ -92,19 +95,60 @@ Other notes: each project root gets its own `directory-tree` view handle (kept
 across opens); the `bookmark` view is a true singleton, retargeted per
 workspace. `.godot/` is visible in the dir-tree (like Nova's `.nova`).
 
+## Increment 2 — the Project Chooser (this session's "Phase 5")
+
+A Nova-style launcher **modal** (not a view/pane — it's transient and never
+part of a saved workspace). `M-x project-chooser` → `open-project-chooser!`.
+
+- **Presentation** — a fixed-position centered dialog appended to `<body>`
+  with a dark backdrop, modelled on the `directory-columns-modal` /
+  `colour-picker` pattern: capture-phase keydown (so the editor's global
+  dispatcher doesn't interfere), backdrop-click / Escape / × to dismiss.
+  `apps/desktop/src/project-chooser.js` (`openProjectChooser(options)`),
+  alongside `add-pane-mode.js` / `move-view-mode.js`.
+- **Tiles** — each project shows a custom thumbnail (an image path stored on
+  its index entry) **or** a generated colored letter tile
+  (`projectTileAppearance`, deterministic from the name — Nova-style).
+- **Thumbnails** — host channels `project:pick-image` (image-filtered dialog,
+  formats limited to what `imageMimeType` reads back) and `project:thumbnail`
+  (read an image path → data URL, 8 MB cap). The index entry's `thumbnail` is
+  preserved across re-opens (`upsertProject` merges existing fields).
+- **Actions** — *Open Folder…* (picker → open immediately), *Add Project…*
+  (picker → add to the index without opening), per-card 📷 set-thumbnail and ✕
+  remove-from-list. Search filter (`filterProjects`), arrow-key + Enter nav.
+- **Wiring** — `showProjectChooser()` in app.js reads the index
+  (`readProjectList`/`writeProjectList`) and supplies all side-effect
+  callbacks; the chooser stays host-agnostic. Pure helpers in
+  `project-index.js`; fake-DOM smoke test in `test/project-chooser.test.js`.
+- **Unbound** — `M-x project-chooser` only; no keybinding chosen (see notes).
+
+## Known limitations / notes
+
+- **Orphaned views** (increment 1, unchanged) — see above; pruning still TODO.
+- **Open Folder… closes the chooser before the native picker opens**, so
+  cancelling the picker leaves you in the editor (re-invoke the chooser). This
+  is deliberate: `openProject` rebuilds the window, and the body-level overlay
+  must be gone first. Add/Set-thumbnail do *not* close (no window rebuild).
+- **Clicking a stale tile** (project dir since deleted) closes the chooser,
+  then `openProject`'s guard reports "Not a directory" on the status line and
+  declines. Stale entries aren't auto-pruned — use the ✕ to remove one.
+
 ## Deferred — later increments
 
-- **Project Chooser** — the visual dialog (the screenshot Jason shared):
-  a grid of known projects (from the index), search, New/Open/Add.
-- **Custom thumbnail images** per project (vs Nova's letter tiles) — store the
-  thumbnail path/data in the project's `.godot/` and surface it in the index.
-- **Orphaned-view pruning** (the limitation above).
+- **Show the chooser on startup** when there's no project (Nova does). A
+  boot-behaviour change — intentionally NOT done autonomously; Jason's call.
+- **Orphaned-view pruning** (the increment-1 limitation).
 - **Window title** reflecting the open project.
-- **`close-project` keybinding / a `current-project` modeline segment.**
+- **Keybindings** — a project prefix map vs single binds (the `C-x p` question
+  is still open); a `current-project` modeline segment.
+- **New Document / Clone** actions from Nova's chooser — out of scope (Clone =
+  git; New Document = a plain new buffer).
 - **True multi-window** (a project per OS window) — the larger refactor.
 
 ## Recovery
 
-Branch `project-workspace` off `main` @ `b2ead59`. Commits: host IPC + index
-(`9bba905`), workspace + Lisp (`5917fe7`), this doc. Pre-merge tag to add
+Branch `project-workspace` off `main` @ `b2ead59`. Increment-1 commits: host
+IPC + index (`9bba905`), workspace + Lisp (`5917fe7`), find-project +
+`C-x C-p`. Increment-2 (chooser) commits: index helpers, thumbnail IPC,
+chooser modal + styles, wiring + command, smoke test. Pre-merge tag to add
 before any `--no-ff` merge: `pre-project-workspace`.

@@ -4,6 +4,71 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-21] Projects "Phase 5" — Project Chooser: built autonomously, needs your review on 3 UX calls
+
+**Context**: You asked me to build the Nova-style Project Chooser (the
+screenshot) completely autonomously while away. Done — it's all on branch
+`project-workspace` (now 11 commits ahead of `main`), suite **green (~2,578 /
+0)**, **not merged**. It builds on increment 1 (open/find/close-project +
+3-column layout) from earlier this session. Full design is in
+`plans/PROJECTS.md` ("Increment 2"). **Main-process code changed → needs a
+full quit + relaunch to live-test, not a reload.**
+
+**What it is**: `M-x project-chooser` opens a Nova-style launcher **modal** —
+a centered dialog over a dark backdrop with a grid of project tiles (custom
+thumbnail image, or a generated deterministic color+initials tile), a search
+field, *Open Folder…* / *Add Project…* actions, and per-card 📷 set-thumbnail
++ ✕ remove. Click a tile (or arrow-select + Enter) to open; Escape / backdrop
+/ × to dismiss.
+
+**Decisions I made (flagging for your review, can change any):**
+1. **Modal, not a view/pane.** The chooser is transient (invoke → pick →
+   gone) so it shouldn't live in the pane tree or persist in a session. Built
+   on the `directory-columns-modal` / `colour-picker` pattern.
+2. **Thumbnails = data URLs** (host reads the image path → base64, 8 MB cap),
+   stored as an absolute path on the index entry. No serve-route/allowlisting
+   needed for small thumbs. Picker is limited to png/jpg/jpeg/gif/svg/webp
+   (the formats the reader supports).
+3. **No keybinding** for `project-chooser` — left it `M-x` only. I didn't want
+   to clobber a key autonomously after the `C-x p` conflict earlier. **Your
+   call**: a natural fit is a project prefix (Emacs `C-x p ...`), but that
+   collides with `toggle-repl` — same open question as before.
+4. **No startup change.** Nova shows the chooser on launch when no project is
+   open. That's a boot-behaviour change I won't make autonomously — it'd
+   change how you normally start into your home session. Deferred; easy to add
+   (`open-project-chooser!` on first boot when `activeProjectPath` is null).
+5. **Skipped Nova's New Document + Clone** actions (New Document = a plain new
+   buffer; Clone = git) as out of scope for a chooser.
+
+**Two UX behaviours worth a look (both deliberate, see PROJECTS.md):**
+- *Open Folder…* closes the chooser **before** the native picker opens (the
+  body-level overlay must be gone before `openProject` rebuilds the window).
+  So cancelling that picker drops you back to the editor — re-invoke to retry.
+  (Add/Set-thumbnail don't close, since they don't rebuild the window.)
+- Clicking a **stale** tile (project dir since deleted) closes the chooser,
+  then the open is declined with a "Not a directory" status line. Stale
+  entries aren't auto-pruned — the ✕ removes one manually.
+
+**Still open from increment 1** (unchanged): orphaned views accumulate in the
+global `views` list across workspace switches — clutter in `C-x b`, not a
+functional break. Pruning is a documented follow-up.
+
+**How to live-test** (quit + relaunch first):
+1. `M-x project-chooser` — empty state first run (Open Folder / Add Project).
+2. *Add Project…* a couple of dirs → tiles appear (letter tiles).
+3. Hover a tile → 📷 set a thumbnail image; ✕ removes from the list.
+4. Type in search to filter; arrow-keys + Enter to open; Escape to dismiss.
+5. Click a tile → it opens as a project (3-column layout). Re-open the chooser
+   and confirm the just-opened project is now first.
+
+**State of the work**: all committed on `project-workspace`, tests green,
+nothing on `main`. Tag `pre-project-workspace` before any `--no-ff` merge.
+Files: `apps/desktop/src/{project-chooser.js,project-index.js,files.js,
+preload.mjs,app.js}`, `styles.css`, `packages/stdlib/lisp/project.lisp`,
+tests `test/project-{index,chooser}.test.js`.
+
+---
+
 ## [2026-06-11 00:41] Renderer view-lifecycle tests (E1-A): `@editor/view` is undeclared in the renderer, blocking `tabline-view` tests
 
 **Context**: Audit ticket E1 part A — adding the renderer view layer's
