@@ -775,9 +775,12 @@ export function registerFileHandlers() {
       title: 'Choose a project thumbnail',
       properties: ['openFile'],
       filters: [
+        // Mirror IMAGE_MIME_TYPES — only formats project:thumbnail can read
+        // back as a data URL (others would silently fall back to a letter
+        // tile after the user picked them).
         {
           name: 'Images',
-          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'],
+          extensions: ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'],
         },
       ],
     });
