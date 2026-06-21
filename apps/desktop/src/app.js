@@ -10756,3 +10756,12 @@ try {
 } catch {
   // Recovery is best-effort; never block startup on it.
 }
+
+// Boot reached the end successfully — stand the boot error boundary down
+// (boot-guard.js). Any error after this is the app's normal nets' job, not
+// a fatal-startup overlay.
+try {
+  window.__bootGuard?.markBooted();
+} catch {
+  /* the guard is best-effort */
+}

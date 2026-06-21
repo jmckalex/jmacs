@@ -107,6 +107,11 @@
       <span id="modeline-position" class="modeline-position"></span>
     </footer>
 
+    <!-- Boot error boundary — must load before app.js so its global error
+         handlers are registered first and can catch a fatal error during
+         app.js boot (incl. a module-evaluation throw), showing a recovery
+         overlay instead of a frozen, unrecoverable window. -->
+    <script type="module" src="./src/boot-guard.js"></script>
     <script type="module" src="./src/app.js"></script>
   </body>
 </html>
