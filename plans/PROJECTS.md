@@ -109,10 +109,15 @@ part of a saved workspace). `M-x project-chooser` → `open-project-chooser!`.
 - **Tiles** — each project shows a custom thumbnail (an image path stored on
   its index entry) **or** a generated colored letter tile
   (`projectTileAppearance`, deterministic from the name — Nova-style).
-- **Thumbnails** — host channels `project:pick-image` (image-filtered dialog,
-  formats limited to what `imageMimeType` reads back) and `project:thumbnail`
-  (read an image path → data URL, 8 MB cap). The index entry's `thumbnail` is
-  preserved across re-opens (`upsertProject` merges existing fields).
+- **Thumbnails** — set via the per-card 📷 picker **or by dragging an image
+  file from Finder onto the tile** (the tile is a drop target; a drop path
+  comes from `webUtils.getPathForFile`, since Electron 42 removed `File.path`,
+  exposed as `host.getPathForFile`). Host channels `project:pick-image`
+  (image-filtered dialog, formats limited to what `imageMimeType` reads back)
+  and `project:thumbnail` (read an image path → data URL, 8 MB cap); a dropped
+  file is validated through `project:thumbnail` before it's stored, so a
+  non-image drop is a silent no-op. The index entry's `thumbnail` is preserved
+  across re-opens (`upsertProject` merges existing fields).
 - **Actions** — *Open Folder…* (picker → open immediately), *Add Project…*
   (picker → add to the index without opening), per-card 📷 set-thumbnail and ✕
   remove-from-list. Search filter (`filterProjects`), arrow-key + Enter nav.

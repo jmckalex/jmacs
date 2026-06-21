@@ -21,6 +21,13 @@ field, *Open Folder…* / *Add Project…* actions, and per-card 📷 set-thumbn
 + ✕ remove. Click a tile (or arrow-select + Enter) to open; Escape / backdrop
 / × to dismiss.
 
+**Update (same session)**: per your follow-up, tiles are now **drag-and-drop
+targets** — drag an image from Finder onto a tile to set its thumbnail (the
+quick alternative to 📷). The dropped path comes from
+`webUtils.getPathForFile` (Electron 42 removed `File.path`), exposed via
+preload as `host.getPathForFile`. A dropped file is validated as a readable
+image before it's stored, so a non-image drop is a silent no-op.
+
 **Decisions I made (flagging for your review, can change any):**
 1. **Modal, not a view/pane.** The chooser is transient (invoke → pick →
    gone) so it shouldn't live in the pane tree or persist in a session. Built
