@@ -10386,6 +10386,17 @@ function showProjectChooser() {
           return list;
         },
         loadThumbnail: (imagePath) => window.host.readProjectThumbnail(imagePath),
+        // Drag-and-drop an image file onto a tile to set its thumbnail.
+        getPathForFile: (file) => window.host.getPathForFile(file),
+        dropThumbnail: async (root, imagePath) => {
+          // Validate by actually reading it as a thumbnail (the single source
+          // of truth for "displayable image"); only store the path if so.
+          const dataUrl = await window.host.readProjectThumbnail(imagePath);
+          if (!dataUrl) return null;
+          list = setProjectThumbnail(list, root, imagePath);
+          await writeProjectList(list);
+          return list;
+        },
       });
     })
     .catch(reportErr);

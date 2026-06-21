@@ -269,3 +269,44 @@ test('empty catalogue shows the empty state, no cards', () => {
     dom.restore();
   }
 });
+
+test('dropping an image on a tile sets that project thumbnail via the host', () => {
+  const dom = installFakeDom();
+  try {
+    const calls = [];
+    let resolvedFile = null;
+    openProjectChooser({
+      getProjects: () => SAMPLE,
+      openProject: () => {},
+      getPathForFile: (file) => {
+        resolvedFile = file;
+        return '/img/' + file.name;
+      },
+      dropThumbnail: (root, imagePath) => {
+        calls.push([root, imagePath]);
+        return Promise.resolve(null);
+      },
+    });
+    const tiles = find(dom.body, 'project-chooser-tile');
+    const fakeFile = { name: 'pic.png' };
+    fire(tiles[1], 'drop', { dataTransfer: { files: [fakeFile] } });
+    assert.equal(resolvedFile, fakeFile);
+    assert.deepEqual(calls, [['/src/btt', '/img/pic.png']]);
+  } finally {
+    dom.restore();
+  }
+});
+
+test('tiles have no drop listener when drop is not wired (no throw)', () => {
+  const dom = installFakeDom();
+  try {
+    openProjectChooser({ getProjects: () => SAMPLE, openProject: () => {} });
+    const tiles = find(dom.body, 'project-chooser-tile');
+    // No getPathForFile/dropThumbnail supplied → firing a drop is inert.
+    assert.doesNotThrow(() =>
+      fire(tiles[0], 'drop', { dataTransfer: { files: [{ name: 'x.png' }] } })
+    );
+  } finally {
+    dom.restore();
+  }
+});

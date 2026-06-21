@@ -5,7 +5,7 @@
  * functions and nothing else — no `require`, no `fs`.
  */
 
-import { contextBridge, ipcRenderer, clipboard } from 'electron';
+import { contextBridge, ipcRenderer, clipboard, webUtils } from 'electron';
 import { homedir } from 'node:os';
 
 contextBridge.exposeInMainWorld('host', {
@@ -346,6 +346,15 @@ contextBridge.exposeInMainWorld('host', {
    */
   readProjectThumbnail: (path) =>
     ipcRenderer.invoke('project:thumbnail', { path }),
+
+  /**
+   * The absolute filesystem path of a dropped/selected `File`. Electron 32+
+   * removed `File.path`; `webUtils.getPathForFile` is the supported route.
+   * Used by the Project Chooser's drag-and-drop thumbnail target.
+   * @param {File} file
+   * @returns {string}
+   */
+  getPathForFile: (file) => webUtils.getPathForFile(file),
 
   /**
    * Write a crash-recovery snapshot for one dirty buffer. `record` is

@@ -6010,6 +6010,17 @@ notebook-view,
 .project-chooser-tile.has-image {
   box-shadow: inset 0 0 0 1px #ffffff14, 0 2px 8px #00000055;
 }
+.project-chooser-tile.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+}
+.project-chooser-tile.is-drop-target::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  pointer-events: none;
+}
 
 .project-chooser-thumb {
   width: 100%;

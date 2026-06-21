@@ -43,6 +43,14 @@ let current = null;
  *   project from the index; resolve to the updated list.
  * @param {(imagePath: string) => Promise<string|null>} [options.loadThumbnail]
  *   - Read a thumbnail image path as a displayable data URL (or null).
+ * @param {(file: File) => string} [options.getPathForFile] - The absolute
+ *   path of a dropped File (Electron `webUtils.getPathForFile`). Enables the
+ *   drag-an-image-onto-a-tile thumbnail shortcut when paired with
+ *   `dropThumbnail`.
+ * @param {(path: string, imagePath: string) => Promise<Array|null>}
+ *   [options.dropThumbnail] - Set a dropped image as a project's thumbnail
+ *   (the host validates it's a readable image); resolve to the updated list,
+ *   or null when the drop wasn't a usable image.
  * @returns {{ close: () => void }}
  */
 export function openProjectChooser(options = {}) {
@@ -63,6 +71,11 @@ export function openProjectChooser(options = {}) {
     typeof options.removeProject === 'function' ? options.removeProject : null;
   const loadThumbnail =
     typeof options.loadThumbnail === 'function' ? options.loadThumbnail : null;
+  const getPathForFile =
+    typeof options.getPathForFile === 'function' ? options.getPathForFile : null;
+  const dropThumbnail =
+    typeof options.dropThumbnail === 'function' ? options.dropThumbnail : null;
+  const dropEnabled = getPathForFile !== null && dropThumbnail !== null;
 
   /** @type {Array<object>} live project list (updated by actions). */
   let projects = (getProjects() || []).filter(
@@ -233,6 +246,38 @@ export function openProjectChooser(options = {}) {
       }
       tile.append(tools);
 
+      // Drag an image file from Finder onto the tile to set its thumbnail —
+      // the quick alternative to the 📷 picker button.
+      if (dropEnabled) {
+        tile.title = 'Drop an image here to set the thumbnail';
+        tile.addEventListener('dragover', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+          tile.classList.add('is-drop-target');
+        });
+        tile.addEventListener('dragleave', () => {
+          tile.classList.remove('is-drop-target');
+        });
+        tile.addEventListener('drop', async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          tile.classList.remove('is-drop-target');
+          const file =
+            ev.dataTransfer && ev.dataTransfer.files
+              ? ev.dataTransfer.files[0]
+              : null;
+          if (!file) return;
+          const imagePath = getPathForFile(file);
+          if (!imagePath) return;
+          const next = await dropThumbnail(proj.path, imagePath);
+          if (next) {
+            projects = next.filter((p) => p && typeof p.path === 'string');
+            applyFilter();
+          }
+        });
+      }
+
       const name = doc.createElement('div');
       name.className = 'project-chooser-name';
       name.textContent = proj.name ?? '';
@@ -330,6 +375,11 @@ export function openProjectChooser(options = {}) {
     if (ev.target === overlay) close();
   });
   closeBtn.addEventListener('click', () => close());
+
+  // Swallow any drop that misses a tile so the window never navigates to the
+  // dropped file (the default Electron behaviour for a file drop on a page).
+  overlay.addEventListener('dragover', (ev) => ev.preventDefault());
+  overlay.addEventListener('drop', (ev) => ev.preventDefault());
 
   // --- teardown ---------------------------------------------------------
 
