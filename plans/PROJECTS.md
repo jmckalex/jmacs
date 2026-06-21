@@ -103,6 +103,21 @@ via the overridable Lisp `directory-tree-open-file` → `open-file-from-tree!`
 primitive; `editing-pane` opens in the main editing area (the middle tabline
 in a project) and focuses it. Pure pane pick in `tree-open.js` (`pickEditingLeaf`).
 
+**Pane focusability + focus border (2026-06-21):** generalised the minimap's
+`:no-focus` into per-pane focusability so projects feel like Nova. In a
+project the sidebar kinds (`directory-tree` / `directory-columns` /
+`bookmark`) are **passive** — clicking works but they never become the active
+pane, so focus stays in the middle tabline (`isNoFocusPane` auto-derives this
+from `activeProjectPath`; `C-x o` skips them; `installRootPane` won't land
+focus on one). Lisp control: `(set-pane-focusable! #f/#t)` / `(pane-focusable?)`
+for custom UIs (re-derived for projects, not persisted). New defcustom
+`*pane-focus-border*` (`auto` default / `on` / `off`): `auto` hides the
+active-pane border when only one pane is focusable — so a project shows none.
+Pure policy in `pane-focus.js` (`shouldDrawFocusBorder`). **Keyboard-nav
+caveat:** a passive sidebar is mouse-driven (it isn't the active pane, so it
+doesn't receive editor keystrokes) — verify the tree's own arrow-nav in the
+running app.
+
 ## Increment 2 — the Project Chooser (this session's "Phase 5")
 
 A Nova-style launcher **modal** (not a view/pane — it's transient and never
