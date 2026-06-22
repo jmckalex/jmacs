@@ -129,6 +129,16 @@ function createWindow(n) {
         app.exit(message.includes('PASS') ? 0 : 1);
       }, 100);
     }
+    // The multi-buffer self-test: a window opens a 2nd buffer + switches
+    // between buffers; with MWB_CLIENTS=2 a 2nd window views a different
+    // buffer and the same-buffer lockstep still holds. See view-client.js
+    // runMultiBufferSelfTest.
+    if (message.startsWith('[mwb-multibuffer-selftest-done]')) {
+      setTimeout(() => {
+        if (server) server.kill();
+        app.exit(message.includes('PASS') ? 0 : 1);
+      }, 100);
+    }
     if (message.startsWith('[mwb-autobench-done]')) {
       const json = message.slice('[mwb-autobench-done]'.length).trim();
       console.error('\n===== MWB Phase 0 latency (ms) =====');

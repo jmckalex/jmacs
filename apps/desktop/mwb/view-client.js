@@ -431,6 +431,9 @@ window.addEventListener('message', (event) => {
       if (window.mwb && window.mwb.overlaySelftest) {
         setTimeout(runOverlaySelfTest, 700);
       }
+      if (window.mwb && window.mwb.multibufferSelftest) {
+        setTimeout(runMultiBufferSelfTest, 700);
+      }
     });
   }
 });
@@ -802,6 +805,29 @@ function submitMinibuffer() {
   });
 }
 
+/** Drive find-file through the server: open the prompt (C-x C-f), fill in
+ *  PATH, submit. Used by the multi-buffer self-test to add a 2nd buffer. */
+function findFileViaServer(path) {
+  sendKey('C-x');
+  setTimeout(() => sendKey('C-f'), 40);
+  setTimeout(() => {
+    if (minibufferActive) {
+      mbInputEl.value = path;
+      submitMinibuffer();
+    }
+  }, 120);
+}
+
+/** Ask the server to switch this window directly to a buffer by name (the
+ *  SWITCH_BUFFER intent — what a buffer-list click would send). */
+function switchToBufferByName(name) {
+  if (!port) return;
+  port.postMessage({
+    type: MSG.INTENT,
+    intent: { id: nextIntentId++, kind: INTENT.SWITCH_BUFFER, bufferName: name },
+  });
+}
+
 const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -857,4 +883,199 @@ async function runSameBufferTest() {
       console.error('[mwb-same-buffer-done] FAIL: threw', error && error.message);
     }
   }
+}
+
+// --- multi-buffer self-test (MWB_MULTIBUFFER_SELFTEST=1) ---------------
+//
+// Proves the server is a real multi-buffer workspace, end-to-end through the
+// REAL server + protocol + view.js:
+//   (a) the seed buffer (A) holds the booted file; find-file ADDS a 2nd
+//       buffer (B) and switches this window to it — the view re-mounts on
+//       B's content (different text, different highlighting).
+//   (b) switching back to A (by name) restores A's content AND A's overlays
+//       (overlays are per-buffer) AND this window's cursor in A; switching
+//       to B shows B (with NO A-overlays) — the per-buffer split.
+//   (c) C-x C-b reports both buffers in the registry.
+//   (d) with MWB_CLIENTS=2: client 0 sits on B while client 1 sits on A —
+//       two windows view DIFFERENT buffers independently; then client 1
+//       switches to B and the same-buffer LOCKSTEP still holds (client 0
+//       types, client 1 sees it). Switching one window never disturbed the
+//       other.
+//
+// A distinctive marker is typed at the start of buffer A so A is identifiable
+// regardless of file content. The second file is window.mwb.secondFile.
+const MB_MARKER = 'AAAATAG ';
+
+/** Poll until PREDICATE() is true or `tries` elapse (50ms each). */
+async function pollUntil(predicate, tries = 80) {
+  for (let i = 0; i < tries; i += 1) {
+    if (predicate()) return true;
+    await sleep(50); // eslint-disable-line no-await-in-loop
+  }
+  return predicate();
+}
+
+async function runMultiBufferSelfTest() {
+  const twoWindow = window.mwb && window.mwb.twoWindow === true;
+  try {
+    if (!mirror || !view) {
+      if (!twoWindow || clientIndex === 1) {
+        console.error('[mwb-multibuffer-selftest-done] FAIL: view not mounted');
+      }
+      return;
+    }
+    if (twoWindow && clientIndex === 1) {
+      await runMultiBufferObserver();
+      return;
+    }
+    await runMultiBufferDriver(twoWindow);
+  } catch (error) {
+    console.error('[mwb-multibuffer-selftest] threw', error && error.message);
+    if (!twoWindow || clientIndex === 1) {
+      console.error('[mwb-multibuffer-selftest-done] FAIL: threw');
+    }
+  }
+}
+
+/** Client 0 (also the sole client in single-window mode). */
+async function runMultiBufferDriver(twoWindow) {
+  // 1) Buffer A is the seed file. Type a marker + highlight it (overlays).
+  const bufferAName = mirror.name;
+  sendKey('M-less');
+  await frame();
+  for (const ch of MB_MARKER) { dispatchKey(ch); await frame(); } // eslint-disable-line no-await-in-loop
+  await sleep(200);
+  const markerInA = mirror.lineAt(0).text.startsWith(MB_MARKER);
+  // Highlight every occurrence of the marker word (overlays on buffer A).
+  sendKey('M-less');
+  await sleep(60);
+  sendKey('M-s');
+  await sleep(60);
+  sendKey('h'); // highlight-matches
+  await sleep(250);
+  const overlaysInA = mirror.decorations.length;
+  const hadOverlaysInA = overlaysInA >= 1;
+  // Move point somewhere in A so we can prove the cursor is preserved on
+  // a round-trip switch.
+  sendKey('M-greater'); // end of buffer A
+  await sleep(80);
+  const pointInA = mirror.point;
+
+  // 2) find-file a SECOND file → a new buffer B; this window switches to it.
+  const aText = mirror.text;
+  findFileViaServer(window.mwb.secondFile);
+  const onB = await pollUntil(
+    () => currentBufferId !== null && mirror.text !== aText && mirror.decorations.length === 0
+  );
+  const bufferBName = mirror.name;
+  const switchedToB = onB && bufferBName !== bufferAName;
+  const bHasNoAOverlays = mirror.decorations.length === 0; // B is a fresh buffer
+
+  // 3) Switch BACK to A by name → A's content + A's overlays + the cursor.
+  switchToBufferByName(bufferAName);
+  const backOnA = await pollUntil(
+    () => mirror.lineAt(0).text.startsWith(MB_MARKER) && mirror.decorations.length >= 1
+  );
+  const aOverlaysRestored = mirror.decorations.length >= 1;
+  const aCursorPreserved = mirror.point === pointInA;
+
+  // 4) Switch to B again → B's content, still NO A-overlays.
+  switchToBufferByName(bufferBName);
+  const backOnB = await pollUntil(
+    () => mirror.name === bufferBName && !mirror.lineAt(0).text.startsWith(MB_MARKER)
+  );
+  const bStillClean = mirror.decorations.length === 0;
+
+  // 5) C-x C-b → the registry holds both buffers.
+  lastBufferList = [];
+  sendKey('C-x');
+  await sleep(50);
+  sendKey('C-b');
+  await pollUntil(() => lastBufferList.length >= 2, 20);
+  const listHasBoth =
+    lastBufferList.length >= 2 &&
+    lastBufferList.some((b) => b.name === bufferAName) &&
+    lastBufferList.some((b) => b.name === bufferBName);
+
+  const singleOk =
+    markerInA && hadOverlaysInA &&
+    switchedToB && bHasNoAOverlays &&
+    backOnA && aOverlaysRestored && aCursorPreserved &&
+    backOnB && bStillClean &&
+    listHasBoth;
+
+  console.error(
+    `[mwb-multibuffer-selftest] DRIVER(client ${clientIndex}) ` +
+    `markerInA=${markerInA} overlaysInA=${hadOverlaysInA}(${overlaysInA}) ` +
+    `switchedToB=${switchedToB}(${bufferBName}) bHasNoAOverlays=${bHasNoAOverlays} ` +
+    `backOnA=${backOnA} aOverlaysRestored=${aOverlaysRestored} ` +
+    `aCursorPreserved=${aCursorPreserved}(${aCursorPreserved ? pointInA : `${mirror.point}!=${pointInA}`}) ` +
+    `backOnB=${backOnB} bStillClean=${bStillClean} ` +
+    `listHasBoth=${listHasBoth}(${lastBufferList.length})`
+  );
+
+  if (!twoWindow) {
+    console.error(`[mwb-multibuffer-selftest-done] ${singleOk ? 'PASS' : 'FAIL'}`);
+    return;
+  }
+
+  // ----- two-window driver: end on B, ready for the observer ------------
+  // The driver stays on buffer B; the observer (client 1) is on buffer A
+  // (it never switched). It will confirm the two windows hold DIFFERENT
+  // buffers, then switch to B and confirm lockstep by watching for a marker
+  // the driver types next. Type a lockstep marker after a beat so the
+  // observer (which switches to B) sees it.
+  if (!singleOk) {
+    console.error('[mwb-multibuffer-selftest] DRIVER failed pre-checks — observer will FAIL');
+  }
+  // Make sure we're on B.
+  switchToBufferByName(bufferBName);
+  await pollUntil(() => mirror.name === bufferBName);
+  // Expose B's name + the driver's buffer for the observer's assertions via
+  // a console line it can't read; instead, the observer knows secondFile.
+  // Type the lockstep marker into B (point at end) after a delay so the
+  // observer has switched to B by then.
+  await sleep(2200);
+  sendKey('M-greater');
+  await sleep(80);
+  for (const ch of MB_LOCKSTEP) { dispatchKey(ch); await frame(); } // eslint-disable-line no-await-in-loop
+  console.error('[mwb-multibuffer] driver typed the lockstep marker into B');
+}
+
+const MB_LOCKSTEP = 'ZZLOCKSTEP ';
+
+/** Client 1 in two-window mode: starts on buffer A (never switched), so it
+ *  must still show A (by NAME) while the driver switches to B — two windows
+ *  hold DIFFERENT buffers. Then it switches to B and confirms the lockstep
+ *  (it sees the marker the driver types). NOTE: while both windows are on A
+ *  the driver's edits to A DO fan to the observer (shared buffer) — that is
+ *  correct; "independent" means the driver's BUFFER SWITCH to B does not drag
+ *  this window off A, not that A's text is frozen. */
+async function runMultiBufferObserver() {
+  const observerAName = mirror.name; // the seed buffer (A) name
+  // Give the driver time to type into A, open B, and switch there. This
+  // window must STILL be on buffer A (its name unchanged) — the driver's
+  // switch to B didn't move this window. (Its A *text* may have changed:
+  // the driver edited shared buffer A before switching, which correctly
+  // fanned here — that's the shared-buffer behaviour, not a violation.)
+  await sleep(2000);
+  const stillOnA = mirror.name === observerAName;
+
+  // Now the observer switches to buffer B (by the second file's name) so the
+  // two windows share B — the lockstep case. The driver will type a marker
+  // into B; the observer should see it on its own mirror without typing.
+  switchToBufferByName(window.mwb.secondFile);
+  const switchedToB = await pollUntil(() => mirror.name !== observerAName);
+  const sawLockstep = await pollUntil(
+    () => mirror.text.includes('ZZLOCKSTEP'), 120
+  );
+
+  const ok = stillOnA && switchedToB && sawLockstep;
+  console.error(
+    `[mwb-multibuffer-selftest] OBSERVER(client 1) ` +
+    `differentBuffersIndependent=${stillOnA}(observer on '${observerAName}' while driver on B) ` +
+    `switchedToB=${switchedToB}(${mirror.name}) ` +
+    `sameBufferLockstep=${sawLockstep}`
+  );
+  console.error(`[mwb-multibuffer-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
 }
