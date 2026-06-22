@@ -1409,3 +1409,34 @@ doesn't.
 try/catch — an uncaught throw in the MAIN process pops an Electron error dialog
 on the architect's screen. Prefer `node --test` / caught failures over raw
 electron probes.
+
+## [2026-06-22] G0a (pane model) — COMPLETE; geometry cost BOUNDED (clean separation)
+
+(Reconstructed from the committed, green work — the building agent stalled on a
+network watchdog one step before writing its own finding; everything below is
+committed + tested, not speculative.)
+
+**Built (5 commits, dd9beb8 / 236f9a7 / 8223a0c / 159b28d + the client render):**
+- Server-side per-window **pane tree** reusing `@editor/pane` (binary split tree;
+  leaves hold a buffer + per-pane view-state; two leaves may share a buffer).
+- Protocol: **`PANE_TREE`** down (layout + which buffer + view-state + focus per
+  leaf) and **`PANE_INTENT`** up (split / focus-other / delete).
+- The real `panes.lisp` commands run server-side: **C-x 2 / C-x 3 / C-x o /
+  C-x 0 / C-x 1** drive the server's pane tree (loaded verbatim via the
+  primitive-split).
+- **Multi-pane client render** (`pane-view-client.js` + `pane-client-layout.js`):
+  lays out `PANE_TREE` as nested split containers, each leaf a real
+  `createEditorView` on its buffer mirror with the leaf's focus/view-state.
+
+**Geometry-cost verdict (the deliverable):** the logical pane tree (server) and
+the pixel split layout (client) **separate cleanly** — the server owns the tree,
+which-buffer-where, and focus; the client lays out the splits from `PANE_TREE`
+and renders each leaf with the unchanged `view.js`. This **bounds the graduation
+plan's #1 risk**: pane geometry is a clean server/client cut, not entangled.
+**Residual (small, already in the plan):** a `VIEWPORT` up-message so the server
+knows each pane's pixel size for scroll-by-screenful/recenter — a client→server
+message, not a blocker.
+
+**Tests:** desktop suite **649/0** (+56 from panes; `pane-client-layout` 10/10).
+**view.js: unchanged.** A flag-gated `MWB_PANES_SELFTEST` electron self-test is
+committed for the architect to run by hand.
