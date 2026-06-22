@@ -4,6 +4,134 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22 11:50] Model-B/command-spine: the prototype is a usable editor THROUGH the server — and two windows share one buffer
+
+**Context**: The next slice after render-from-mirror. Phase 0 answered
+latency (sub-ms); the render slice proved view.js renders from a mirror
+with ZERO view.js changes. The open cost was the **model/command half**.
+This slice pays down the thinnest real slice of it: make the prototype a
+genuinely usable single-window editor *through the server* — and (stretch,
+reached) stand a second client on the same buffer. All on branch
+`multi-window-b` in worktree `godot-mw-b`, isolated under
+`apps/desktop/mwb/` behind the `MWB_*` flags; production
+app.js/view.js/main.js untouched; existing suite green throughout.
+
+**What now works THROUGH the server (the command surface reached)**:
+- **The whole command machinery runs server-side, REAL, not re-implemented.**
+  `mwb/spine.js` (`createSpine`) stands up a real L2 buffer in a real
+  `@editor/view`, the real `createBufferPrimitives` surface, and loads
+  `commands.lisp` + `editing.lisp` **verbatim from disk** — so it's the
+  real `defcommand`/`run-command`/interactive-gatherer + the real
+  motion/editing commands. A focused `handle-key` keymap (same shape as
+  keymap.lisp: prefix chords, self-insert fallthrough) drives `run-command`.
+- **Routing**: the client's `onKey` forwards normalised key-strings up. A
+  bare printable self-inserts with **local echo** (instant) + a SELF_INSERT
+  intent the server confirms via a delta; **every other key** — Enter,
+  Backspace, motion, chords, M-x, C-x C-f — is a pure KEY intent the server
+  resolves through the real keymap. Buffer mutations come back as DELTAs
+  (proven); non-text effects as a new **VIEW** message.
+- **The view-update protocol** (`protocol.js`, `MSG.VIEW`): cursor/mark, the
+  modeline string (pure `renderModeline` helper, tested), the echo-area
+  status, and minibuffer state — plus a down-channel `scroll` request for
+  recenter (the easy direction of the §5d measurement conversation: server
+  decides the line, client does the pixels).
+- **M-x**: opens the minibuffer (real `(interactive (string "M-x "))`),
+  client shows it, server completes against the **real command registry**
+  and runs the chosen command.
+- **find-file**: prompts, the server (a Node child) reads the file directly,
+  swaps the canonical buffer, re-snapshots the client — which renders it via
+  the mirror with real highlighting.
+- **The minibuffer round-trip**: prompt server-side (open-minibuffer! →
+  VIEW), display + input client-side, submit/cancel back up; the server
+  resumes the suspended command's continuation (`minibuffer-delivered`).
+  Single AND chained prompts work (goto-line; replace-string's two prompts).
+
+**The stretch — REACHED: two clients, one shared buffer (the Model-B payoff).**
+`MWB_CLIENTS=2` opens a second window with its own MessageChannel to the
+server. The spine holds **N views over one shared buffer** — each client its
+own point/mark, the text shared. A text delta fans to EVERY client (only the
+originator gets the echoId, to reconcile its optimistic edit); a motion
+touches only its client. Headless `MWB_SAME_BUFFER=1` verified: client 0
+types "SHARED99 ", **client 1 (the observer) sees it on its own mirror
+without typing it** (`sawMarker=true changed=true`). This is the thing Model
+A can't cheaply do, working.
+
+**Verification (headless, no screen)**:
+- Pure helpers: `node --test mwb/protocol.test.js mwb/spine.test.js
+  mwb/client-buffer.test.js` — 55 cases (incl. 22 spine: self-insert,
+  motion, editing, chords, the real registry, set-mark, the minibuffer
+  round-trip, find-file swap, recenter scroll, M-x abort-then-run, +3
+  multi-client: shared text / separate cursors / cross-client edits).
+- Single-window spine self-test (real view.js on the real 90k-char view.js):
+  `MWB_VIEW=1 MWB_VIEW_SELFTEST=1 electron mwb/launch.js …` → PASS —
+  `grew line0Changed serverConfirmed reRendered pointMovedByCommand
+  modeline minibufferWorks` all true (typing not scrambled; a motion command
+  moves point server-side; the modeline updates; the M-x→goto-line round
+  trip works). Local echo paints same-frame; round-trip sub-frame.
+- Two-window same-buffer: `MWB_VIEW=1 MWB_SAME_BUFFER=1 MWB_CLIENTS=2
+  electron mwb/launch.js …` → `[mwb-same-buffer-done] PASS`.
+- Full desktop suite green: **478** (was 450; +28 mwb spine/protocol/
+  multi-client tests). `MWB_FILE=<abs>` renders a different file/language;
+  drop the SELFTEST flags to drive by hand (open the window, type, M-x,
+  C-x C-f).
+
+**One real bug found + fixed (worth knowing — it WILL recur)**: under rapid
+local-echo typing the marker came out scrambled ("MWBxyz" → "MWByz x"). Cause:
+the echoed self-insert delta in `client-buffer.js applyDelta({echoed})` was
+**adopting the server's `delta.point`**, which LAGS the client's optimistic
+point when several predictions are in flight — rewinding the cursor so the
+next predicted char inserted at the wrong offset. Fix: during echo the local
+prediction is authoritative for point; an echoed delta no longer touches it
+(the server point matters only for non-echoed, command-driven moves). The
+client also guards VIEW-message cursor reconciliation behind "no predictions
+in flight" for the same reason. **If typing scrambles again, look here first,
+not at the protocol.**
+
+**What's hard / deferred (honest — NOT built, costs real work later)**:
+- The spine loads a **deliberately small stdlib subset** (commands.lisp +
+  editing.lisp). The full stdlib pulls in panes/tabline/faces/themes/
+  languages + dozens of renderer-only primitives the server has no business
+  owning yet. The command SURFACE is proven real; the full port is a
+  file-by-file effort (each stdlib file's primitives need a server home or a
+  client round-trip).
+- **Markers/overlays/multi-cursor over the wire** (snippets, bookmarks,
+  decorations), **undo policy** (server-side, shared), and **interruption**
+  (§7.2, the C-g step-budget — mandatory before living in the shared model)
+  are all still unbuilt. The mirror drives only the primary cursor.
+- The **scroll/measurement conversation** is built only in the easy
+  direction (recenter: server→client line). The fiddly direction
+  (scroll-by-screenful needs the client's viewport geometry UP) is unbuilt.
+- Multi-client lifecycle is a slice, not robust: no client detach/respawn,
+  the minibuffer is one-prompt-global (fine for now), and the second client
+  reuses the same window-state reset on find-file. Phase 2/3 polish.
+
+**Feasibility read (updated, for the A-vs-B decision)**: Model B's two
+scariest risks were latency (retired Phase 0) and the render refactor
+(retired by render-from-mirror). This slice retires the third fear — that
+the command/keymap/minibuffer port is a metastasizing rewrite: **it isn't.**
+The real command system loaded verbatim and ran server-side against the real
+buffer with a small host-primitive shim; M-x, find-file, the minibuffer and
+the keymap all work through the wire; and the payoff feature (one buffer in
+two windows) fell out almost for free once the spine existed. The residual
+cost is real but **legible and incremental** (port stdlib file-by-file; build
+interruption + shared undo + markers-over-wire), not a landmine. My honest
+call: if you have appetite for that incremental port + interruption, Model B
+is viable and its integration ceiling (shared world, same-buffer-free, live
+global customization) is genuinely higher than A's. If you want
+shippable-soon at lowest risk, A is still the safe answer — but every
+existential objection to B has now been retired with working code.
+
+**State of the work**: branch `multi-window-b`, clean, suite green (478).
+New commits on top of the render slice:
+- `feat(mwb): add the view-update protocol (modeline, status, minibuffer)`
+- `feat(mwb): server-side command spine (real defcommand/keymap/minibuffer)`
+- `feat(mwb): wire the command spine through the server (usable single window)`
+- `feat(mwb): two clients on one shared buffer (the Model-B payoff)`
+NOT merged. Everything isolated under `apps/desktop/mwb/` behind `MWB_*`
+flags; no production code touched.
+
+---
+
 ## [2026-06-22 11:00] Model-B/render-from-mirror: the REAL view.js renders + edits from a mirror — COST IS LOW (view.js: ZERO changes)
 
 **Context**: The Phase-0 spike answered the *latency* question (~0.3 ms
