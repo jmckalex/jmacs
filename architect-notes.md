@@ -4,6 +4,92 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22 ~17:30] Model-B/undo-redo: undo/redo through the server — shared, per-buffer history, ● agrees
+
+**Context**: The next core editing capability after real-save. The server's
+canonical L2 buffer holds the undo history; this slice makes undo/redo run
+there and reflect to every client viewing the buffer. All on `multi-window-b`
+in worktree `godot-mw-b`, isolated under `apps/desktop/mwb/` behind `MWB_*`
+flags; production app.js/view.js/main.js + `packages/*` untouched; suite green.
+
+**What undo/redo now does (proven headless)**:
+- **The real L2 undo, unchanged.** editing.lisp's `undo`/`redo` commands +
+  the `undo!`/`redo!` buffer primitives already loaded verbatim in the spine —
+  only the KEYMAP entries were missing. Bound: **undo → C-/ (`C-slash`), C-x u,
+  C-S-minus**; **redo → C-S-/ (`C-S-slash`), M-S-z**. (On a US layout the `/`
+  key's `event.code` is `Slash`, so C-/ normalises to `C-slash`; Emacs's literal
+  C-_ is Shift+Minus → `C-S-minus`.) Undo runs through the same real
+  `run-command` as every other command.
+- **Text + point.** The L2 `undo()` reverts the edit, **restores point to the
+  changed region**, clears the mark, and emits a change event — which fans out
+  as the normal **delta** (carrying the restored point) to every client on that
+  buffer. No new render path; the existing delta/cursor wire carries it.
+- **Shared, per-buffer history (the Model-B payoff).** The undo stack lives
+  with the canonical buffer, so an undo in window A reverts the buffer **both**
+  windows see. Proven in a two-client integration test: edit in one client,
+  undo from the OTHER, both mirrors revert; redo likewise; interleaved
+  edits+undos from both windows never diverge. Scoped per-buffer (the delta /
+  resync only reaches clients viewing the edited buffer).
+- **● dirty flag agrees with undo, for free.** `isModified` is a pure
+  text-vs-saved-baseline diff (the save wave's logic), so undoing back to the
+  saved baseline clears ● and redoing past it sets it again with no extra code.
+  Tested against both the seed baseline AND a mid-stream SAVED baseline
+  (undo-to-saved is clean; undo-BEFORE-the-save is dirty).
+
+**The one correctness point — a CHANGE-GROUP undo is lossy as a single delta,
+so undo/redo RESYNCs.** A change group (join-line, fill-paragraph, snippet
+expansion) is several L1 edits in one undo step. Asymmetry on the wire,
+discovered + pinned by tests:
+- The **forward** grouped edit emits one L2 change event PER inner edit, so the
+  server's `fanDelta` (which fires on each L2 onChange) replicates it faithfully
+  by fanning them all — no special handling needed.
+- The grouped **undo** emits a **SINGLE** L2 delta for several inverse edits
+  (the L2 `undo()` calls L1 `storage.undo()` once + emits once at the end), which
+  is **lossy** — applying that one delta to a mirror leaves a stray character.
+So the spine flags an undo/redo (`consumeHistoryOp()`, read-and-cleared per
+intent so a no-op undo can't leak forward), and the server (`applyIntent`)
+folds it into the existing multi-cursor `needsResync` branch: an undo/redo
+**RESYNCs** the canonical text + each client's cursor set instead of fanning the
+lossy delta. A regression test drives a grouped undo through the single-delta
+path and asserts it DESYNCs — proving the resync is load-bearing.
+
+**view.js change: ZERO (again).** Undo is a server-side command + the existing
+delta/resync/cursor wire; the renderer's mirror just adopts the text + point.
+
+**Verification (headless, no screen — `node --test`)**:
+- Suite green: **593** (was 581; +12). Spine tests (spine.test.js, +7): C-/ and
+  C-x u undo with point restore, C-S-/ redo, the history flag, ● vs undo against
+  seed + saved baselines, bottom-of-stack no-op. Integration
+  (`undo-integration.test.js`, +5): real spine ⇄ two real client mirrors,
+  cross-window undo/redo, change-group edit+undo fidelity, the desync
+  regression guard, interleaved non-divergence.
+- Flag-gated **`MWB_UNDO_SELFTEST=1`** end-to-end self-test through the real
+  Electron server (I could not launch the GUI here — permission-blocked — but
+  the `node --test` path exercises the identical spine; the self-test asserts
+  text+point+dirty and posts PASS/FAIL, launch.js exits on it). To run:
+  `cd apps/desktop && MWB_VIEW=1 MWB_UNDO_SELFTEST=1 ./node_modules/.bin/electron mwb/launch.js --user-data-dir=/tmp/godot-mw-b-userdata --enable-logging=stderr`
+  (expect `[mwb-undo-selftest-done] PASS` + exit 0).
+
+**Deferred (honest)**:
+- **Undo grouping / keystroke coalescing.** Plain typing is one undo step PER
+  character (each self-insert is its own L1 change — no coalescing of a run of
+  keystrokes into one undo). Emacs/Sublime coalesce; production does not appear
+  to either at the L1 level. Out of scope for this slice; the per-char undo is
+  correct, just finer-grained than some editors.
+- **Multi-cursor undo.** Not specifically exercised. An undo collapses the
+  cursor set to the primary (L2 `undo()` calls `collapseInPlace`), and the
+  edit-region point is single. A multi-caret edit's undo would revert the text
+  (via the resync) but not restore the secondary carets — acceptable and matches
+  the L2 contract, but untested here.
+
+**State of the work**: branch `multi-window-b`, clean, suite green (593). Two
+new commits on top of the save slice:
+- `feat(mwb): undo/redo through the server (shared per-buffer history)`
+- `test(mwb): undo/redo proof — spine + two-client integration (headless)`
+NOT merged. All isolated under `apps/desktop/mwb/` behind `MWB_*` flags.
+
+---
+
 ## [2026-06-22 ~16:00] Model-B/save+data-safety: REAL save-to-disk (atomic) + dirty tracking + server-side autosave/recovery
 
 **Context**: The glaring gap for a usable editor — `save-buffer` was a status
