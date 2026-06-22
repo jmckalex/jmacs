@@ -49,14 +49,43 @@ const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
 
 /**
- * The standard-library files the spine loads. A deliberately small subset
- * of the full STDLIB_FILES: just the command system and the editing
- * commands. The full stdlib pulls in panes/tabline/faces/themes/languages
- * + dozens of renderer-only primitives the server has no business owning
- * yet (those are later phases). This subset is enough to prove the command
- * surface runs server-side against the real machinery.
+ * The standard-library files the spine loads, in dependency order.
+ *
+ * Beyond the original command core (`commands.lisp` + `editing.lisp`),
+ * this is the **model-heavy slice** the primitive-split proves out (see
+ * `mwb/PRIMITIVE-SPLIT.md`): the customisation registry, indent settings,
+ * the mode machinery, the kill ring / yank, line operations, the search
+ * command stubs, and a real major mode (Markdown). Every file here is
+ * loaded **verbatim from disk** — the same source the production editor
+ * runs — and depends only on model-side primitives (provided directly
+ * below) plus a handful of render-side primitives that the spine
+ * routes to a view-update or stubs.
+ *
+ * NOT yet loaded: the pane/tabline/faces/themes/languages/preview files,
+ * which pull in renderer-only primitives (the pane tree, DOM measurement,
+ * MathJax, element views) that are render-side slices of their own. See
+ * PRIMITIVE-SPLIT.md for the full categorisation.
+ *
+ * Order matches the relevant prefix of the production STDLIB_FILES:
+ * commands → editing → custom → indent → modes → math-preview →
+ * kill → yank-pop → line-ops → search → markdown. (`modes.lisp` must
+ * precede the mode files; `custom.lisp` must precede `defcustom` users;
+ * `math-preview.lisp` defines `math-preview-mode` before `markdown.lisp`
+ * references it.)
  */
-const SPINE_STDLIB = Object.freeze(['commands.lisp', 'editing.lisp']);
+const SPINE_STDLIB = Object.freeze([
+  'commands.lisp',
+  'editing.lisp',
+  'custom.lisp',
+  'indent.lisp',
+  'modes.lisp',
+  'math-preview.lisp',
+  'kill.lisp',
+  'yank-pop.lisp',
+  'line-ops.lisp',
+  'search.lisp',
+  'markdown.lisp',
+]);
 
 /**
  * The keymap: a key-string → command-name table, in the same spirit as
@@ -91,6 +120,22 @@ const KEYMAP = Object.freeze({
   // selection
   'C-space': 'set-mark-command',
   'C-g': 'keyboard-quit',
+  // --- kill ring / yank (kill.lisp + yank-pop.lisp) ------------------
+  'C-w': 'kill-region',
+  'M-w': 'copy-region',
+  'C-k': 'kill-line',
+  'C-y': 'yank',
+  'M-y': 'yank-pop',
+  'M-d': 'kill-word',
+  'M-backspace': 'backward-kill-word',
+  // --- line operations (line-ops.lisp) ------------------------------
+  'M-up': 'move-line-up',
+  'M-down': 'move-line-down',
+  'M-bracketright': 'indent-region', // M-]
+  'M-bracketleft': 'outdent-region', // M-[
+  // --- search (search.lisp — commands resolve; loop is a host stub) -
+  'C-s': 'isearch-forward',
+  'C-r': 'isearch-backward',
   // command spine entry points
   'M-x': 'execute-extended-command',
 });
@@ -104,6 +149,8 @@ const KEYMAP = Object.freeze({
 const CX_MAP = Object.freeze({
   'C-f': 'find-file',
   'C-s': 'save-buffer',
+  'C-d': 'duplicate-line', // line-ops.lisp (production binds C-x C-d here)
+  'C-j': 'join-line', // line-ops.lisp
   k: 'kill-this-buffer-noop',
 });
 
@@ -183,6 +230,13 @@ export function createSpine(options, effects = {}) {
   // The buffer's text differs from what was last loaded/saved.
   let savedText = options.initialText ?? '';
 
+  // --- the server-local clipboard (kill.lisp's interprogram edge) ------
+  // STUB: an in-memory clipboard, so the kill ring round-trips fully
+  // without an OS clipboard (which a headless Node child lacks). See
+  // PRIMITIVE-SPLIT.md "Kill ring".
+  let clipboardText = '';
+
+
   // --- the interpreter --------------------------------------------------
   const interpreter = createInterpreter({
     write: () => {}, // discard print output in the spine
@@ -251,6 +305,69 @@ export function createSpine(options, effects = {}) {
         return NIL;
       },
 
+      // --- system clipboard (kill.lisp) — STUB (server-local) ----------
+      // The kill ring's *internal* state is real shared interpreter state
+      // (the `*kill-ring*` list); the clipboard mirror is the system-
+      // integration edge. The server is a headless Node child with no
+      // Electron `clipboard`, so it keeps an IN-MEMORY clipboard: the ring
+      // works fully + round-trips (copy here, yank here), but true
+      // cross-application paste is deferred (a future clipboard
+      // render-message both ways). See PRIMITIVE-SPLIT.md "Kill ring".
+      'clipboard-set-text!': (args) => {
+        clipboardText = String(args[0] ?? '');
+        return NIL;
+      },
+      'clipboard-text': () => clipboardText,
+
+      // --- customisation openers (custom.lisp) — STUB ------------------
+      // These open a render-side customize view. The `customize` command
+      // resolves; the panel itself is a render-side slice, deferred. None
+      // is called at load time, so loading custom.lisp is unaffected.
+      'open-customize!': () => NIL,
+      'open-customize-group!': () => NIL,
+      'open-customize-variable!': () => NIL,
+      'write-custom-file!': () => NIL,
+
+      // --- search (search.lisp) — STUB (the isearch loop is host-owned) -
+      // `isearch-forward`/`isearch-backward` just BEGIN an incremental
+      // search; the per-keystroke match + highlight + minibuffer loop
+      // lives in the host. Server-side that is a render-message slice of
+      // its own (a server search state machine + a client overlay). For
+      // now the commands resolve and surface a status so the wiring is
+      // visible, then no-op. See PRIMITIVE-SPLIT.md "Search".
+      'start-search!': () => {
+        statusText = 'I-search: (spine stub — interactive loop is host-side)';
+        onStatus(statusText);
+        return NIL;
+      },
+      'start-search-backward!': () => {
+        statusText = 'I-search backward: (spine stub — interactive loop is host-side)';
+        onStatus(statusText);
+        return NIL;
+      },
+
+      // --- live preview (markdown.lisp) — STUB -------------------------
+      // markdown-preview! / math-preview! drive render-side iframes /
+      // MathJax. The toggle commands resolve; the visual effect is a
+      // render-message to build later. See PRIMITIVE-SPLIT.md "preview".
+      'markdown-preview!': () => {
+        statusText = 'markdown-preview: (spine stub — preview pane is render-side)';
+        onStatus(statusText);
+        return NIL;
+      },
+      'math-preview!': () => NIL,
+
+      // --- register-mode-menu! consumes (math-preview/modes) -----------
+      // `register-mode-menu!` is defined in menus.lisp (not loaded), but
+      // markdown.lisp calls it at load to register its grouped menu. The
+      // registry it writes is shared model state; the *rendering* of the
+      // menu is render-side. Provide a model-side recorder so the load
+      // succeeds and the registration is queryable, without pulling in
+      // the whole of menus.lisp (which is render-heavy). See
+      // PRIMITIVE-SPLIT.md "Modes".
+      // (No host primitive needed — register-mode-menu! is pure Lisp; we
+      // define a minimal version in the spine prelude below.)
+
       // `string-repeat` is in the prelude? No — it's a stdlib helper used
       // by `insert-tab`. Provide it so insert-tab works. (Pure; mirrors
       // the stdlib's own definition closely enough for the spine.)
@@ -258,7 +375,28 @@ export function createSpine(options, effects = {}) {
     },
   });
 
-  // Load the real command system + editing commands verbatim.
+  // --- spine prelude: model-side shims for two procedures that live in
+  // render-heavy files we deliberately DON'T load (menus.lisp) but that a
+  // loaded file references at load time. Both are pure model state (a
+  // registry); only the RENDERING of what they record is render-side, and
+  // that's deferred. Defining them here as pure Lisp lets markdown.lisp
+  // load verbatim without pulling in menus.lisp. See PRIMITIVE-SPLIT.md.
+  interpreter.evaluate(`
+    ;; register-mode-menu! — the structured-menu registry (menus.lisp).
+    ;; markdown.lisp calls this at load. The registry is shared model
+    ;; state; the menu's rendering is render-side (deferred).
+    (define *mode-menu-sections* {})
+    (define (register-mode-menu! mode-name sections)
+      (set! *mode-menu-sections*
+            (assoc *mode-menu-sections* mode-name sections))
+      sections)
+    (define (mode-menu-sections-for mode-name)
+      (get *mode-menu-sections* mode-name nil))
+  `);
+
+  // Load the real command system + editing commands + the model-heavy
+  // slice (see SPINE_STDLIB) verbatim from disk — the same source the
+  // production editor runs.
   for (const file of SPINE_STDLIB) {
     const source = readFileSync(join(STDLIB_DIR, file), 'utf8');
     interpreter.evaluate(source);
@@ -296,6 +434,78 @@ export function createSpine(options, effects = {}) {
       (show-status! "Mark set"))
   `);
 
+  // --- the mode-keymap resolver (the meaningful spine extension) -------
+  //
+  // For a mode's bindings (Markdown's C-c b, the math-symbol minor mode's
+  // \`) to dispatch server-side, handleKey must consult the active
+  // buffer's mode-keymap chain — exactly what production keymap.lisp does
+  // via `lookup-in-chain (keymap-chain)`. modes.lisp (now loaded) provides
+  // `minor-mode-keymaps` + `major-mode-keymap`; this resolver reuses them.
+  //
+  // It is written in Lisp (so it walks the real Lisp hash-maps) but is
+  // STATELESS toward JS: it returns a tagged plain value JS can branch on
+  // without holding a Lisp object —
+  //   - a command name (string)  → JS runs it through run-command;
+  //   - the symbol 'prefix       → JS knows a chord started (the resolver
+  //                                stashed the map in `-spine-chord-map`);
+  //   - nil                      → not bound in the mode chain (JS falls
+  //                                through to its own global KEYMAP).
+  // The chord state lives in `-spine-chord-map`; a follow-up key resolves
+  // against it. resetMode() clears it (C-g, an unbound mid-chord key).
+  interpreter.evaluate(`
+    (define -spine-chord-map nil)
+
+    (define (-spine-mode-chain)
+      "The mode keymaps for the current buffer, highest precedence first:
+       minor-mode maps, then the major-mode map. (No global map — the JS
+       KEYMAP is the spine's global layer.)"
+      (append (minor-mode-keymaps) (list (major-mode-keymap))))
+
+    (define (-spine-lookup key maps)
+      "First non-nil binding of KEY among MAPS (skipping nil maps)."
+      (cond
+        ((nil? maps) nil)
+        ((nil? (car maps)) (-spine-lookup key (cdr maps)))
+        (else (let ((b (get (car maps) key nil)))
+                (if (nil? b) (-spine-lookup key (cdr maps)) b)))))
+
+    (define (-spine-resolve key)
+      "Resolve KEY through the mode chain (or the active chord map). Returns
+       a command name (string), 'prefix (a chord began — map stashed), or
+       nil (unbound in the mode chain)."
+      (let ((b (if (nil? -spine-chord-map)
+                   (-spine-lookup key (-spine-mode-chain))
+                   (get -spine-chord-map key nil))))
+        (cond
+          ((nil? b) (set! -spine-chord-map nil) nil)
+          ((map? b) (set! -spine-chord-map b) 'prefix)
+          ((symbol? b) (set! -spine-chord-map nil) (symbol->string b))
+          (else (set! -spine-chord-map nil) nil))))
+
+    (define (-spine-reset-chord) (set! -spine-chord-map nil))
+    (define (-spine-chord-active?) (not (nil? -spine-chord-map)))
+
+    ;; Choose the major mode from the current view's name (modes.lisp's
+    ;; choose-major-mode! turns on default minor modes too — none here yet).
+    (define (-spine-choose-major-mode) (choose-major-mode!) nil)
+
+    ;; read-next-key support: route the next keystroke to a callback
+    ;; instead of the keymaps (keymap.lisp's mechanism; the math-symbol
+    ;; minor mode's \` uses it). Defined here because keymap.lisp (which
+    ;; owns the production version) is render-heavy and not loaded.
+    (define *spine-key-reader* nil)
+    (define (read-next-key callback) (set! *spine-key-reader* callback) nil)
+    (define (-spine-key-reader-pending?) (not (nil? *spine-key-reader*)))
+    (define (-spine-take-key-reader key)
+      "If a key-reader is pending, consume it with KEY and return #t."
+      (if (nil? *spine-key-reader*)
+          #f
+          (let ((reader *spine-key-reader*))
+            (set! *spine-key-reader* nil)
+            (reader key)
+            #t)))
+  `);
+
   // --- M-x: a real command-name read --------------------------------
   // execute-extended-command's interactive (string "M-x ") opens the
   // minibuffer; the host (server) completes against the real command
@@ -317,6 +527,12 @@ export function createSpine(options, effects = {}) {
       (interactive (string "Find file: "))
       (lambda (path) path))
   `);
+
+  // Now that the stdlib + the mode machinery are loaded, choose the major
+  // mode for the initial buffer from its name (e.g. a `.md` file gets
+  // markdown-mode, so Markdown's C-c bindings dispatch). bindCursor is
+  // already in place, so choose-major-mode! operates on the live view.
+  interpreter.call('-spine-choose-major-mode');
 
   /**
    * Visit a file: read it (via the openFile effect) and swap the canonical
@@ -345,6 +561,9 @@ export function createSpine(options, effects = {}) {
     }
     view = clientViews[0];
     buffer.bindCursor(view);
+    // Re-derive the major mode for the new buffer's name (so a visited
+    // .md gets markdown-mode, etc., and its mode keymap dispatches).
+    interpreter.call('-spine-choose-major-mode');
     savedText = result.text;
     statusText = '';
     onStatus('');
@@ -376,6 +595,18 @@ export function createSpine(options, effects = {}) {
     buffer.bindCursor(view);
   }
 
+  /** The current buffer's major-mode display name (e.g. "Markdown"),
+   *  for the modeline. Model-side: the server chose the mode from the
+   *  buffer name (choose-major-mode!), so it owns this. */
+  function majorModeName() {
+    try {
+      const name = interpreter.call('major-mode-name');
+      return typeof name === 'string' ? name : '';
+    } catch {
+      return '';
+    }
+  }
+
   /** The view-state of a specific client (its own point/mark over the
    *  shared buffer text). */
   function viewStateOf(index) {
@@ -388,6 +619,7 @@ export function createSpine(options, effects = {}) {
       name: buffer.name,
       modeline: renderModeline({
         name: buffer.name, modified, line: line + 1, column,
+        mode: majorModeName(),
       }),
       status: statusText,
       modified,
@@ -404,7 +636,7 @@ export function createSpine(options, effects = {}) {
   // client handles minibuffer input itself, so the server only sees the
   // resolved submit/cancel — handle-key is not called during a prompt).
 
-  /** The active prefix map (a chord is in progress), or null. */
+  /** The active JS prefix map (a global chord is in progress), or null. */
   let activeMap = null;
   let chordPrefix = '';
 
@@ -417,40 +649,114 @@ export function createSpine(options, effects = {}) {
     }
   }
 
+  /** Is a Lisp key-reader pending (read-next-key, e.g. the math-symbol `)? */
+  function keyReaderPending() {
+    return interpreter.call('-spine-key-reader-pending?') === true;
+  }
+
+  /** Resolve a key through the mode chain (or the active mode-chord). One
+   *  of: a command name (string), the boolean-ish marker 'prefix', or
+   *  false/nil. Re-entry while a mode-chord is active resolves against it. */
+  function resolveMode(key) {
+    const result = interpreter.call('-spine-resolve', key);
+    if (typeof result === 'string') return result;
+    if (result && typeof result === 'object' && result.name === 'prefix') {
+      return 'prefix';
+    }
+    return null; // nil / unbound
+  }
+
+  /** Is a mode-chord (e.g. after C-c) in progress? */
+  function modeChordActive() {
+    return interpreter.call('-spine-chord-active?') === true;
+  }
+
   /**
    * Dispatch a key. Returns true when the key was handled. Mirrors
-   * keymap.lisp: prefix → start a chord; command → run it; bare char →
-   * self-insert; unbound mid-chord → reset.
+   * keymap.lisp's resolution order: a pending key-reader first, then the
+   * active chord (mode or global), then — at rest — the buffer's
+   * mode-keymap chain, then the spine's global KEYMAP; a bare printable
+   * self-inserts.
    *
    * @param {string} key - A normalised key string (keyEventToString name).
    * @returns {boolean}
    */
   function handleKey(key) {
-    const map = activeMap ?? KEYMAP;
-    let binding = map[key];
-    // C-x is the one prefix the spine knows.
-    if (activeMap === null && key === 'C-x') binding = CX_MAP;
+    // 1. A pending key-reader (read-next-key) steals the key.
+    if (keyReaderPending()) {
+      interpreter.call('-spine-take-key-reader', key);
+      return true;
+    }
 
+    // 2. Mid mode-chord (e.g. C-c then b): resolve against the stashed map.
+    if (modeChordActive()) {
+      const r = resolveMode(key);
+      if (r === 'prefix') {
+        chordPrefix = `${chordPrefix} ${key}`;
+        statusText = `${chordPrefix}-`;
+        onStatus(statusText);
+        return true;
+      }
+      // Either a command or unbound — the chord ends.
+      if (statusText.endsWith('-')) { statusText = ''; onStatus(''); }
+      chordPrefix = '';
+      if (typeof r === 'string') runCommand(r);
+      return true;
+    }
+
+    // 3. Mid global chord (e.g. C-x then C-f).
+    if (activeMap !== null) {
+      const binding = activeMap[key];
+      if (binding && typeof binding === 'object') {
+        activeMap = binding;
+        chordPrefix = `${chordPrefix} ${key}`;
+        statusText = `${chordPrefix}-`;
+        onStatus(statusText);
+        return true;
+      }
+      if (typeof binding === 'string') {
+        resetChord();
+        runCommand(binding);
+        return true;
+      }
+      resetChord(); // unbound mid-chord: abort cleanly
+      return true;
+    }
+
+    // 4. At rest — try the buffer's mode-keymap chain first (so a mode's
+    //    bindings, e.g. Markdown C-c b, win over the global table).
+    const modeResult = resolveMode(key);
+    if (modeResult === 'prefix') {
+      chordPrefix = key;
+      statusText = `${chordPrefix}-`;
+      onStatus(statusText);
+      return true;
+    }
+    if (typeof modeResult === 'string') {
+      runCommand(modeResult);
+      return true;
+    }
+
+    // 5. The spine's global KEYMAP (motion / editing / kill-yank / …).
+    let binding = KEYMAP[key];
+    if (key === 'C-x') binding = CX_MAP;
     if (binding && typeof binding === 'object') {
-      // A prefix: start / extend the chord.
       activeMap = binding;
-      chordPrefix = chordPrefix ? `${chordPrefix} ${key}` : key;
+      chordPrefix = key;
       statusText = `${chordPrefix}-`;
       onStatus(statusText);
       return true;
     }
     if (typeof binding === 'string') {
-      resetChord();
       runCommand(binding);
       return true;
     }
-    if (activeMap !== null) {
-      // Mid-chord, nothing bound: abort the sequence.
-      resetChord();
-      return true;
-    }
-    // At rest: self-insert a bare printable.
+
+    // 6. At rest, unbound: self-insert a bare printable. Route the
+    //    *last-command* update through it too (the yank-pop subtlety —
+    //    see PRIMITIVE-SPLIT.md): typing must invalidate a pending yank.
     if (typeof key === 'string' && [...key].length === 1) {
+      interpreter.evaluate("(set! *last-command* 'self-insert)");
       buffer.insert(key);
       return true;
     }
@@ -509,7 +815,9 @@ export function createSpine(options, effects = {}) {
       point: buffer.point,
       mark: buffer.mark,
       name: buffer.name,
-      modeline: renderModeline({ name: buffer.name, modified, line, column }),
+      modeline: renderModeline({
+        name: buffer.name, modified, line, column, mode: majorModeName(),
+      }),
       status: statusText,
       modified,
     };

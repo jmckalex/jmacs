@@ -280,3 +280,190 @@ test('viewState reports point, mark, name, modeline and modified flag', () => {
   assert.equal(vs.modified, true);
   assert.match(vs.modeline, /^\*\*/);
 });
+
+// --- the richer server-side stdlib slice (PRIMITIVE-SPLIT.md) -----------
+//
+// These prove that the model-heavy stdlib files loaded by the spine
+// (kill.lisp, yank-pop.lisp, line-ops.lisp, modes.lisp, markdown.lisp,
+// search.lisp, custom.lisp, indent.lisp) run real, server-side, through
+// the real command machinery — kill/yank, line operations, a mode's
+// bindings dispatching via the mode-keymap chain, and the stubbed/loaded
+// search commands.
+
+test('the model-heavy stdlib loaded: its commands are in the REAL registry', () => {
+  const { spine } = makeSpine('');
+  const names = spine.commandNames();
+  for (const name of [
+    'kill-region', 'copy-region', 'kill-line', 'yank', 'yank-pop',
+    'kill-word', 'backward-kill-word', 'move-line-up', 'move-line-down',
+    'duplicate-line', 'join-line', 'indent-region', 'outdent-region',
+    'sort-lines', 'markdown-bold', 'markdown-heading-1', 'isearch-forward',
+    'toggle-math-mode', 'customize',
+  ]) {
+    assert.ok(names.includes(name), `${name} registered server-side`);
+  }
+});
+
+// --- kill ring / yank ---------------------------------------------------
+
+test('copy-region + yank: M-w copies the region, C-y yanks it at point', () => {
+  const { spine } = makeSpine('hello world');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-space'); // set mark
+  for (let i = 0; i < 5; i += 1) spine.handleKey('right'); // select "hello"
+  spine.handleKey('M-w'); // copy-region
+  spine.buffer.moveTo(spine.buffer.text.length);
+  spine.handleKey('C-y'); // yank
+  assert.equal(spine.buffer.text, 'hello worldhello');
+});
+
+test('kill-region: C-w cuts the selection to the ring', () => {
+  const { spine } = makeSpine('abcdef');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-space');
+  for (let i = 0; i < 3; i += 1) spine.handleKey('right'); // select "abc"
+  spine.handleKey('C-w'); // kill-region
+  assert.equal(spine.buffer.text, 'def');
+  // The cut text yanks back.
+  spine.buffer.moveTo(spine.buffer.text.length);
+  spine.handleKey('C-y');
+  assert.equal(spine.buffer.text, 'defabc');
+});
+
+test('kill-line: C-k kills to end of line', () => {
+  const { spine } = makeSpine('abc def\nxyz');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-k');
+  assert.equal(spine.buffer.text, '\nxyz');
+});
+
+test('yank-pop: M-y after a yank cycles to the previous kill', () => {
+  const { spine } = makeSpine('AAA BBB');
+  // Copy AAA then BBB (BBB ends up most-recent on the ring).
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-space');
+  for (let i = 0; i < 3; i += 1) spine.handleKey('right');
+  spine.handleKey('M-w'); // copy AAA
+  spine.buffer.moveTo(4);
+  spine.handleKey('C-space');
+  for (let i = 0; i < 3; i += 1) spine.handleKey('right');
+  spine.handleKey('M-w'); // copy BBB
+  spine.buffer.moveTo(spine.buffer.text.length);
+  spine.handleKey('C-y'); // yank BBB
+  assert.equal(spine.buffer.text, 'AAA BBBBBB');
+  spine.handleKey('M-y'); // yank-pop → AAA
+  assert.equal(spine.buffer.text, 'AAA BBBAAA');
+});
+
+test('yank-pop is rejected when the previous command was not a yank', () => {
+  // The *last-command* subtlety: typing must invalidate a pending yank.
+  const { spine } = makeSpine('seed');
+  spine.handleKey('z'); // self-insert → *last-command* = self-insert
+  const before = spine.buffer.text;
+  spine.handleKey('M-y'); // yank-pop after typing → no-op on the buffer
+  assert.equal(spine.buffer.text, before);
+});
+
+// --- line operations ----------------------------------------------------
+
+test('move-line-down: M-down swaps the line with the one below', () => {
+  const { spine } = makeSpine('one\ntwo\nthree');
+  spine.buffer.moveTo(0);
+  spine.handleKey('M-down');
+  assert.equal(spine.buffer.text, 'two\none\nthree');
+});
+
+test('duplicate-line: C-x C-d copies the current line below', () => {
+  const { spine } = makeSpine('row');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-x');
+  spine.handleKey('C-d');
+  assert.equal(spine.buffer.text, 'row\nrow');
+});
+
+test('sort-lines: an interactive region command sorts the selected lines', () => {
+  const { spine } = makeSpine('banana\napple\ncherry');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-space');
+  spine.handleKey('M-greater'); // select to end of buffer
+  spine.runCommand('sort-lines'); // interactive region → uses the selection
+  assert.equal(spine.buffer.text, 'apple\nbanana\ncherry');
+});
+
+// --- a real major mode through the server (markdown.lisp) ---------------
+
+test('a .md buffer gets markdown-mode server-side', () => {
+  const { spine } = makeSpine('text', 'doc.md');
+  assert.equal(spine.interpreter.call('major-mode-name'), 'Markdown');
+});
+
+test('Markdown C-c b dispatches markdown-bold via the mode-keymap chain', () => {
+  const { spine } = makeSpine('word', 'doc.md');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-space');
+  for (let i = 0; i < 4; i += 1) spine.handleKey('right'); // select "word"
+  spine.handleKey('C-c'); // markdown prefix (a mode-chord)
+  spine.handleKey('b'); // markdown-bold
+  assert.equal(spine.buffer.text, '*word*');
+});
+
+test('Markdown C-c 1 makes the line a level-1 heading', () => {
+  const { spine } = makeSpine('Title', 'doc.md');
+  spine.buffer.moveTo(2);
+  spine.handleKey('C-c');
+  spine.handleKey('1');
+  assert.equal(spine.buffer.text, '# Title');
+});
+
+test('a fundamental-mode buffer has no C-c map; C-c falls through cleanly', () => {
+  // In a plain .txt buffer C-c is unbound — it must not crash or swallow
+  // the next key as a chord.
+  const { spine } = makeSpine('plain', 'note.txt');
+  spine.buffer.moveTo(spine.buffer.text.length);
+  spine.handleKey('C-c'); // unbound prefix in fundamental mode
+  spine.handleKey('z'); // should self-insert (chord aborted)
+  assert.equal(spine.buffer.text, 'plainz');
+});
+
+test('the math-symbol minor mode: C-c m on, ` then a key inserts a LaTeX symbol', () => {
+  const { spine } = makeSpine('', 'doc.md');
+  spine.handleKey('C-c');
+  spine.handleKey('m'); // toggle-math-mode → math minor mode on
+  spine.handleKey('`'); // math-insert-symbol reads the next key
+  spine.handleKey('a'); // "a" → \alpha
+  assert.equal(spine.buffer.text, '\\alpha');
+});
+
+test('the math-symbol minor mode: ` then an unmapped key inserts that key', () => {
+  const { spine } = makeSpine('', 'doc.md');
+  spine.handleKey('C-c');
+  spine.handleKey('m');
+  spine.handleKey('`');
+  spine.handleKey('j'); // "j" is unmapped → literal j
+  assert.equal(spine.buffer.text, 'j');
+});
+
+// --- search commands load + resolve (the loop is a documented stub) -----
+
+test('isearch-forward resolves and surfaces a stub status (loop is host-side)', () => {
+  const { spine, log } = makeSpine('find me', 'note.txt');
+  spine.handleKey('C-s'); // isearch-forward
+  assert.ok(
+    log.status.some((s) => s.toLowerCase().includes('search')),
+    `expected an I-search status, got ${JSON.stringify(log.status)}`
+  );
+  // The buffer is untouched — it's only the start of a (stubbed) search.
+  assert.equal(spine.buffer.text, 'find me');
+});
+
+// --- customisation registry loaded server-side --------------------------
+
+test('custom.lisp loaded: *tab-width* is a registered, readable setting', () => {
+  const { spine } = makeSpine('');
+  // The defcustom registered the setting AND defined the variable.
+  assert.equal(
+    spine.interpreter.evaluate("(custom-registered? '*tab-width*)"),
+    true
+  );
+  assert.equal(Number(spine.interpreter.evaluate('*tab-width*')), 4);
+});
