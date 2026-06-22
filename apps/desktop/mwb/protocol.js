@@ -58,6 +58,19 @@ export const MSG = Object.freeze({
   // list. This is the multi-buffer counterpart of the production
   // *View List* — the server holds the buffers, so it owns the records.
   BUFFER_LIST: 'buffer-list',
+  // --- the pane/window structural channel (G0a) ----------------------
+  // The server owns each window's LOGICAL pane tree (the binary split
+  // structure + which buffer + view-state per leaf + which leaf is
+  // focused). The client owns the PIXELS (how wide each split is, where
+  // the splitter handle sits). PANE_TREE is the server pushing the
+  // window's current layout DOWN; the client renders nested split
+  // containers and mounts one real view.js per leaf. Sent on HELLO and
+  // whenever the layout or focus changes (split / delete / other-window).
+  // The wire shape is a plain serialisation of the tree — no pixels, only
+  // the structure + ratios (the *intended* relative sizes; the client may
+  // honour them or impose its own and echo a resize back). See
+  // serializePaneTree below for the exact node shape.
+  PANE_TREE: 'pane-tree',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -80,6 +93,31 @@ export const INTENT = Object.freeze({
   // minibuffer prompt. The server switches this client and re-snapshots it
   // onto the target buffer. `bufferId` or `bufferName` identifies the target.
   SWITCH_BUFFER: 'switch-buffer',
+});
+
+/**
+ * Pane intents the client sends UP. The server owns the logical pane tree;
+ * the client requests a structural change (split / focus / delete) and the
+ * server mutates the tree and replies with a fresh `PANE_TREE`. The client
+ * never edits the tree itself — it only renders the latest one and forwards
+ * intents, exactly as it forwards key/edit intents (never edits).
+ *
+ * The `op` distinguishes the structural operation; a `ratio` (for resize) or
+ * a `paneId` (to target a specific leaf rather than the focused one) ride as
+ * needed. Most map 1:1 onto the real `panes.lisp` commands run server-side.
+ */
+export const PANE_INTENT = Object.freeze({
+  SPLIT_BELOW: 'split-below', // C-x 2 — split the focused leaf top/bottom
+  SPLIT_RIGHT: 'split-right', // C-x 3 — split the focused leaf left/right
+  OTHER_WINDOW: 'other-window', // C-x o — cycle focus to the next leaf
+  DELETE_WINDOW: 'delete-window', // C-x 0 — delete the focused leaf
+  DELETE_OTHER_WINDOWS: 'delete-other-windows', // C-x 1 — focused fills all
+  FOCUS_PANE: 'focus-pane', // click — focus a specific leaf by id
+  // A resize the client chose by dragging a splitter. The client owns the
+  // pixels; it echoes the new ratio UP so the server's logical tree (and the
+  // session it persists) records the user's chosen split. paneId names the
+  // SPLIT node whose ratio changed; ratio is the first child's new fraction.
+  RESIZE: 'resize',
 });
 
 /**
@@ -295,4 +333,126 @@ export function normaliseCursors(cursors) {
     const mark = c && Number.isFinite(c.mark) ? Math.floor(c.mark) : null;
     return { point: Math.max(0, point), mark: mark === null ? null : Math.max(0, mark) };
   });
+}
+
+// --- the pane tree over the wire (G0a) --------------------------------
+//
+// The server owns each window's LOGICAL pane tree. To render it, the client
+// needs ONLY its structure — never pixels. These pure helpers serialise the
+// `@editor/pane` tree to a plain-data wire node and walk a wire node, so the
+// PANE_TREE message is unit-testable + DOM-free and the client can rebuild
+// the nesting without holding a real pane object.
+//
+// The deliberate omission is the headline of the geometry finding: a wire
+// node carries the split orientation + ratio (the *intended* relative size,
+// a fraction, NOT a pixel count) and, for a leaf, which buffer it shows + the
+// per-pane view-state (point/scroll). It carries NO `left/top/width/height` —
+// the client computes those from its own host rectangle (the same
+// `computeRects` math `@editor/pane` already exposes). So the only thing that
+// must cross the wire for layout is one float per split; everything pixel is
+// derived client-side.
+
+/**
+ * A serialised pane-tree node, as it travels the wire.
+ *
+ * @typedef {object} WirePaneNode
+ * @property {'leaf'|'split'} kind
+ * @property {string} id - The pane's stable id (mirrors the @editor/pane id).
+ * For a SPLIT:
+ * @property {'horizontal'|'vertical'} [orientation]
+ * @property {number} [ratio] - The first child's fraction in (0,1).
+ * @property {WirePaneNode} [first]
+ * @property {WirePaneNode} [second]
+ * For a LEAF:
+ * @property {string|null} [bufferId] - The buffer this leaf shows, or null.
+ * @property {string} [name] - The buffer/view name (modeline label).
+ * @property {number} [point] - The leaf's view-state point (per-pane cursor).
+ * @property {number|null} [mark] - The leaf's view-state mark.
+ * @property {number} [scrollLine] - The leaf's saved first-visible line.
+ * @property {boolean} [focused] - Whether this leaf is the window's focus.
+ */
+
+/**
+ * Serialise a server pane tree to a wire node. The leaf-data resolver
+ * (`leafData`) is injected so this helper stays free of the buffer registry:
+ * the server passes a function turning a leaf pane into `{ bufferId, name,
+ * point, mark, scrollLine }`. `focusedId` marks the focused leaf. Pure.
+ *
+ * @param {import('../../../packages/pane/src/pane.js').Pane} pane
+ * @param {string|null} focusedId - The focused leaf's id.
+ * @param {(leaf: object) => { bufferId: string|null, name?: string, point?: number, mark?: number|null, scrollLine?: number }} leafData
+ * @returns {WirePaneNode}
+ */
+export function serializePaneTree(pane, focusedId, leafData) {
+  if (!pane || typeof pane !== 'object') {
+    return { kind: 'leaf', id: 'pane-empty', bufferId: null, focused: true };
+  }
+  if (pane.kind === 'split') {
+    return {
+      kind: 'split',
+      id: pane.id,
+      orientation: pane.orientation,
+      ratio: pane.ratio,
+      first: serializePaneTree(pane.first, focusedId, leafData),
+      second: serializePaneTree(pane.second, focusedId, leafData),
+    };
+  }
+  // A leaf: attach the buffer + view-state the client needs to mount a view.
+  const data = (typeof leafData === 'function' ? leafData(pane) : null) || {};
+  const node = {
+    kind: 'leaf',
+    id: pane.id,
+    bufferId: data.bufferId ?? null,
+    focused: pane.id === focusedId,
+  };
+  if (typeof data.name === 'string') node.name = data.name;
+  if (Number.isFinite(data.point)) node.point = Math.max(0, Math.floor(data.point));
+  if (data.mark === null || Number.isFinite(data.mark)) {
+    node.mark = data.mark === null ? null : Math.max(0, Math.floor(data.mark));
+  }
+  if (Number.isFinite(data.scrollLine)) {
+    node.scrollLine = Math.max(0, Math.floor(data.scrollLine));
+  }
+  return node;
+}
+
+/**
+ * Walk a wire pane node depth-first, yielding every LEAF in display order
+ * (first-then-second), the same order `@editor/pane`'s `leafPanes` yields.
+ * Lets the client iterate leaves to mount/diff views without re-implementing
+ * the tree walk. Pure.
+ *
+ * @param {WirePaneNode} node
+ * @returns {WirePaneNode[]} The leaf nodes, in display order.
+ */
+export function wireLeaves(node) {
+  const out = [];
+  walkWire(node, out);
+  return out;
+}
+
+function walkWire(node, out) {
+  if (!node || typeof node !== 'object') return;
+  if (node.kind === 'leaf') {
+    out.push(node);
+    return;
+  }
+  if (node.kind === 'split') {
+    walkWire(node.first, out);
+    walkWire(node.second, out);
+  }
+}
+
+/**
+ * The id of the focused leaf in a wire pane node, or null if none is marked.
+ * Pure.
+ *
+ * @param {WirePaneNode} node
+ * @returns {string|null}
+ */
+export function wireFocusedLeafId(node) {
+  for (const leaf of wireLeaves(node)) {
+    if (leaf.focused) return leaf.id;
+  }
+  return null;
 }
