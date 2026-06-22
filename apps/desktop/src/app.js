@@ -152,6 +152,10 @@ import { createBookmarks } from './bookmarks.js';
 import { enterAddPaneMode } from './add-pane-mode.js';
 import { enterMoveViewsMode } from './move-view-mode.js';
 import { createTabline } from '@editor/renderer';
+// G2 (plans/MWB-GRADUATION.md): the server-view client core. Imported
+// unconditionally (it has no top-level effects), but only CONSTRUCTED behind
+// the GODOT_SERVER flag in the late boot — so flag-off is byte-for-byte today.
+import { createServerViewClient } from './server-view-client.js';
 
 /**
  * Build a Lisp hash-map (a JS `Map` with interned-keyword keys) from a
@@ -403,16 +407,22 @@ window.addEventListener('unhandledrejection', (event) => {
   reportRendererFault('unhandled rejection', event.reason);
 });
 
-// G1 (plans/MWB-GRADUATION.md): when GODOT_SERVER=1, main forks the Model-B
+// G1/G2 (plans/MWB-GRADUATION.md): when GODOT_SERVER=1, main forks the Model-B
 // server and transfers a MessagePort to this renderer (re-dispatched by the
-// preload as a `godot:server-port` window message). Stash it for G2, which will
-// route a window's editing through it; G1 only proves the port connects. With
-// the flag off (`host.serverMode` false), this listener is never registered, so
-// the renderer is byte-for-byte unchanged. The block reads only `window.host`
-// (always present) and a module-global, so it is safe at module-init time.
+// preload as a `godot:server-port` window message). G1 stashed the port; G2
+// routes ONE real editor view through it (see the server-view boot near the
+// end of this file). With the flag off (`host.serverMode` false), this listener
+// is never registered, so the renderer is byte-for-byte unchanged. The block
+// reads only `window.host` (always present) and module-globals, so it is safe
+// at module-init time.
 //
 // @type {MessagePort | null} — the connected server port in server mode, else null.
-var godotServerPort = null; // eslint-disable-line no-var -- hoisted; set from a window-message listener registered at init, read by future (G2) code.
+var godotServerPort = null; // eslint-disable-line no-var -- hoisted; set from a window-message listener registered at init.
+// @type {(() => void) | null} — the G2 boot hook, defined late once the
+// highlighters + key normaliser exist. The port may connect before or after
+// that, so whichever runs second fires it. Hoisted so the init-time listener
+// can reference it before the boot assigns it (it's null until then).
+var bootServerViewClient = null; // eslint-disable-line no-var -- hoisted; assigned in the async boot, called from here.
 if (window.host && window.host.serverMode) {
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -421,10 +431,10 @@ if (window.host && window.host.serverMode) {
     const [port] = event.ports;
     if (!port) return;
     godotServerPort = port;
-    port.start();
-    // G1 stops here: the port is connected, but editing still runs through the
-    // in-renderer interpreter. G2 wires this port to a client-buffer mirror.
     console.info('[godot] Model-B server port connected (GODOT_SERVER=1)');
+    // If the boot already ran (highlighters ready), wire the G2 client now;
+    // otherwise the boot will call us once it's ready (it checks the port).
+    if (typeof bootServerViewClient === 'function') bootServerViewClient();
   });
 }
 
@@ -5726,6 +5736,81 @@ const { highlighters, foldCaptures } = await loadLanguageHighlighters(
   highlightOverrideStore
 );
 document.body.dataset.treesitter = Object.keys(highlighters).join(',');
+
+// --- G2: route ONE real view through the Model-B server -----------------
+//
+// plans/MWB-GRADUATION.md §G2. With GODOT_SERVER=1, mount ONE REAL editor
+// view (the real `<text-view>` / `createEditorView`, the real highlighters
+// loaded just above, the real `keyEventToString`) as a CLIENT of the server:
+// it opens the server's seed buffer through a HELLO/SNAPSHOT, builds a
+// ClientBuffer mirror, renders FROM the mirror, and routes its keystrokes to
+// the server (onKey → intent → delta/view-update → mirror → re-render), with
+// local echo for self-insert. Everything else stays in-renderer for now (G2
+// is ONE window/buffer; broad coverage is G3/G4).
+//
+// ‼ FLAG-OFF IS BYTE-FOR-FOR-TODAY: this whole block is gated on
+// `window.host.serverMode` (the G1 gate, false by default). When false,
+// `serverViewClient` stays null, no container is created, no view mounts, and
+// the in-renderer interpreter drives everything exactly as today. The G2 view
+// is a SELF-CONTAINED overlay over a dedicated container — it deliberately does
+// NOT touch the entangled in-renderer pane tree / `ensureEditorViewForLeaf` /
+// `dispatchKey` seams, so there is zero risk to the flag-off path.
+let serverViewClient = null;
+if (window.host && window.host.serverMode) {
+  // A dedicated full-bleed container the G2 view mounts into, layered over the
+  // editor host. The in-renderer editor sits behind it, untouched and idle.
+  const g2HostEl = document.createElement('div');
+  g2HostEl.id = 'godot-server-view-host';
+  g2HostEl.style.cssText =
+    'position:absolute; inset:0; z-index:5; display:flex; ' +
+    'flex-direction:column; background:var(--bg-editor, #2e3842);';
+  // The container only appears once a view actually mounts (on the first
+  // SNAPSHOT), so a connect-with-no-snapshot leaves the normal editor visible.
+
+  /** The `mountView` collaborator: build a REAL `<text-view>`, configure it
+   *  with the client's onKey + mirror-reading closures, bind the mirror, and
+   *  reveal the container. Returns the element (its `setView`/`focus`/
+   *  `destroy`/`recenter` satisfy the client's contract). */
+  function mountServerView(mirror, options) {
+    const el = /** @type {*} */ (document.createElement('text-view'));
+    el.style.cssText = 'flex:1 1 auto; min-height:0;';
+    el.configure({
+      onKey: options.onKey,
+      highlighters,
+      foldCaptures,
+      getPoint: options.getPoint,
+      getMark: options.getMark,
+      getCursors: options.getCursors,
+      getDecorations: options.getDecorations,
+      getTabWidth: () => currentTabWidth,
+      getMajorModeName: options.getMajorModeName,
+      getOverrideGeneration: () => highlightOverrideStore.generation(),
+      onRenderError: (error) => reportRendererFault('g2 render error', error),
+    });
+    el.setBuffer(mirror);          // populates the pending buffer
+    g2HostEl.append(el);            // triggers connectedCallback → mount
+    if (!g2HostEl.isConnected) editorHostEl.append(g2HostEl);
+    return el;
+  }
+
+  // Define the boot hook the init-time port listener calls (or that we call
+  // here, whichever runs second — the highlighters are ready now, so if the
+  // port already connected we boot immediately below).
+  bootServerViewClient = () => {
+    if (serverViewClient || !godotServerPort) return;
+    serverViewClient = createServerViewClient({
+      port: godotServerPort,
+      mountView: mountServerView,
+      highlighters,
+      foldCaptures,
+      keyEventToString,
+    });
+    serverViewClient.connect();
+    console.info('[godot] G2: real view routed through the server');
+  };
+  // If the port beat the boot, wire it now.
+  if (godotServerPort) bootServerViewClient();
+}
 
 // Install the persisted user highlight rules now that the override store
 // and the highlighters exist. (The faces.json read above already filled
