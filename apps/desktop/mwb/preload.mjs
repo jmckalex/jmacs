@@ -39,4 +39,15 @@ contextBridge.exposeInMainWorld('mwb', {
   // (C-c b) through the real server+protocol+view.js path and asserts the
   // client mirror reflects each. Use with MWB_FILE=<a .md file>.
   commandsSelftest: process.env.MWB_COMMANDS_SELFTEST === '1',
+  // Headless self-test for the OVERLAY + MULTI-CURSOR sync slice: drives
+  // select-all-matches (C-c D) and highlight-matches (M-s h) through the
+  // real server, then asserts (a) the synced cursor set + overlays reached
+  // the client MIRROR, (b) the real view.js PAINTED them (secondary caret
+  // DOM + decoration DOM), and (c) with MWB_CLIENTS=2 an overlay change
+  // PROPAGATES to the second window. See view-client.js runOverlaySelfTest.
+  overlaySelftest: process.env.MWB_OVERLAY_SELFTEST === '1',
+  // Whether a SECOND client window exists (MWB_CLIENTS=2). The overlay
+  // self-test uses this to pick driver vs observer roles + decide which
+  // window ends the run.
+  twoWindow: (Number(process.env.MWB_CLIENTS) || 1) >= 2,
 });

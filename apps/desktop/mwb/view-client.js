@@ -399,6 +399,9 @@ window.addEventListener('message', (event) => {
       if (window.mwb && window.mwb.commandsSelftest) {
         setTimeout(runCommandsSelfTest, 700);
       }
+      if (window.mwb && window.mwb.overlaySelftest) {
+        setTimeout(runOverlaySelfTest, 700);
+      }
     });
   }
 });
@@ -555,6 +558,194 @@ async function runCommandsSelfTest() {
 
 function finishCommandsTest(ok) {
   console.error(`[mwb-commands-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
+}
+
+// --- overlay + multi-cursor self-test (MWB_OVERLAY_SELFTEST=1) ---------
+//
+// Proves the overlay + multi-cursor sync end-to-end through the REAL
+// server + protocol + view.js:
+//   (a) a server-side select-all-matches (C-c D) syncs the full cursor SET
+//       to this client's mirror, and highlight-matches (M-s h) syncs the
+//       overlay SET; both reach mirror.cursors / mirror.decorations.
+//   (b) the REAL view.js PAINTS them: a secondary caret per extra cursor
+//       (.editor-cursor.is-secondary) and a decoration box per overlay
+//       (.editor-decoration.tok-search-match).
+//   (c) with MWB_CLIENTS=2 an overlay change PROPAGATES to the second
+//       window: client 0 drives, client 1 (the observer) sees the overlays
+//       appear on its OWN mirror + DOM, having highlighted nothing itself.
+//
+// A distinctive word with 3 occurrences is typed at buffer start so the
+// test is deterministic regardless of the underlying file content. Run on
+// the default file (view.js) or any buffer whose major mode does NOT bind
+// the C-c prefix — in markdown-mode C-c is the Markdown chord, so C-c D
+// would resolve there instead of the global multi-cursor map. The default
+// MWB_FILE (a .js file, fundamental mode in the spine) leaves C-c as the
+// global multi-cursor prefix and M-s as the search prefix, which is what
+// this test drives. (Overlays + cursors are mode-independent once invoked;
+// only the KEY BINDING used to invoke them depends on the mode.)
+const OVERLAY_WORD = 'ztag';
+const OVERLAY_LINE = `${OVERLAY_WORD} ${OVERLAY_WORD} ${OVERLAY_WORD} `; // 3 matches
+
+/** Count painted secondary-cursor carets in the real view DOM. */
+function paintedSecondaryCursors() {
+  return editorEl.querySelectorAll('.editor-cursor.is-secondary').length;
+}
+/** Count painted search-match decoration boxes in the real view DOM. */
+function paintedSearchDecorations() {
+  return editorEl.querySelectorAll(
+    '.editor-decoration.tok-search-match'
+  ).length;
+}
+
+async function runOverlaySelfTest() {
+  try {
+    if (!mirror || !view) {
+      // Only the run-ending client logs the done line (the observer in
+      // 2-window mode, the sole client otherwise), so a non-mounted window
+      // doesn't end the run early.
+      const twoWindow = window.mwb && window.mwb.twoWindow === true;
+      if ((twoWindow && clientIndex === 1) || !twoWindow) {
+        console.error('[mwb-overlay-selftest-done] FAIL: view not mounted');
+      }
+      return;
+    }
+
+    // ----- the OBSERVER path (client 1, two-window mode) ----------------
+    // It typed nothing and ran no command; it should SEE the overlays the
+    // OTHER window created appear on its own mirror + get painted by its
+    // own view.js. (Overlays are shared buffer state; multi-cursor is
+    // per-client, so the observer does NOT get the driver's secondary
+    // cursors — exactly the model-B per-window vs per-buffer split.)
+    if (clientIndex === 1) {
+      let mirrorOverlays = 0;
+      let paintedDecos = 0;
+      for (let i = 0; i < 80; i += 1) {
+        // eslint-disable-next-line no-await-in-loop -- polling for propagation
+        await sleep(50);
+        mirrorOverlays = mirror.decorations.length;
+        paintedDecos = paintedSearchDecorations();
+        if (mirrorOverlays >= 3 && paintedDecos >= 3) break;
+      }
+      const reachedMirror = mirrorOverlays >= 3;
+      const painted = paintedDecos >= 3;
+      // The observer must NOT have adopted the driver's secondary cursors
+      // (those are per-client window state); its caret set stays primary-only.
+      const noForeignCursors = mirror.cursors.length === 1;
+      const ok = reachedMirror && painted && noForeignCursors;
+      console.error(
+        `[mwb-overlay-selftest] OBSERVER(client 1) ` +
+        `overlaysReachedMirror=${reachedMirror}(${mirrorOverlays}) ` +
+        `viewPainted=${painted}(${paintedDecos}) ` +
+        `noForeignSecondaryCursors=${noForeignCursors}(${mirror.cursors.length})`
+      );
+      console.error(`[mwb-overlay-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
+      return;
+    }
+
+    // ----- the DRIVER path (client 0; also the sole client in 1-window) -
+
+    // 1) Type the repeated word at buffer start (3 occurrences of the word).
+    sendKey('M-less'); // beginning-of-buffer
+    await frame();
+    for (const ch of OVERLAY_LINE) { dispatchKey(ch); await frame(); } // eslint-disable-line no-await-in-loop
+    await sleep(250);
+    const lineHasWord = mirror.lineAt(0).text.startsWith(OVERLAY_LINE);
+
+    // 2) Multi-cursor: put point on the first occurrence, select all matches
+    //    (C-c D → select-all-matches). The server builds a cursor at every
+    //    match and syncs the full set to this client's mirror.
+    sendKey('M-less'); // back to buffer start (on the first word)
+    await sleep(80);
+    sendKey('C-c'); // the global multi-cursor prefix (fundamental mode)
+    await sleep(60);
+    sendKey('D'); // select-all-matches
+    await sleep(250);
+
+    const mirrorCursorCount = mirror.cursors.length;
+    const cursorsReachedMirror = mirrorCursorCount >= 3;
+    // The renderer paints (count − 1) secondary carets for the extra cursors.
+    const paintedSecondaries = paintedSecondaryCursors();
+    const cursorsPainted = paintedSecondaries >= 2;
+
+    // 3) Collapse the multi-cursor set (C-g → keyboard-quit) so the overlay
+    //    phase starts from a single cursor (cleaner, and exercises collapse).
+    sendKey('C-g');
+    await sleep(150);
+    const collapsed = mirror.cursors.length === 1;
+
+    // 4) Overlays: highlight every occurrence of the word (M-s h →
+    //    highlight-matches). The server creates a search overlay at each
+    //    match (its endpoints are L2 markers) and broadcasts the set.
+    sendKey('M-less'); // point on the first word again
+    await sleep(80);
+    sendKey('M-s'); // the search prefix
+    await sleep(60);
+    sendKey('h'); // highlight-matches
+    await sleep(250);
+
+    const mirrorOverlayCount = mirror.decorations.length;
+    const overlaysReachedMirror = mirrorOverlayCount >= 3;
+    // Every synced overlay is a { start, end, face: 'search-match' } decoration.
+    const overlaysAreSearchMatch = mirror.decorations.every(
+      (d) => d.face === 'search-match'
+    );
+    const paintedDecorations = paintedSearchDecorations();
+    const overlaysPainted = paintedDecorations >= 3;
+
+    // 5) Confirm overlays clear cleanly (M-s u → unhighlight-all), so the
+    //    sync isn't a one-way write.
+    sendKey('M-s');
+    await sleep(60);
+    sendKey('u'); // unhighlight-all
+    await sleep(200);
+    const overlaysCleared =
+      mirror.decorations.length === 0 && paintedSearchDecorations() === 0;
+    // Re-create them so a two-window observer (if any) has overlays to see,
+    // and so the DOM ends in the highlighted state for an eyeballed run.
+    sendKey('M-less');
+    await sleep(60);
+    sendKey('M-s');
+    await sleep(60);
+    sendKey('h');
+    await sleep(250);
+
+    const isTwoWindow = window.mwb && window.mwb.twoWindow === true;
+    const ok =
+      lineHasWord &&
+      cursorsReachedMirror && cursorsPainted &&
+      collapsed &&
+      overlaysReachedMirror && overlaysAreSearchMatch && overlaysPainted &&
+      overlaysCleared;
+
+    console.error(
+      `[mwb-overlay-selftest] DRIVER(client 0) ` +
+      `lineHasWord=${lineHasWord} ` +
+      `cursorsReachedMirror=${cursorsReachedMirror}(${mirrorCursorCount}) ` +
+      `cursorsPainted=${cursorsPainted}(${paintedSecondaries} secondaries) ` +
+      `collapsed=${collapsed} ` +
+      `overlaysReachedMirror=${overlaysReachedMirror}(${mirrorOverlayCount}) ` +
+      `overlaysAreSearchMatch=${overlaysAreSearchMatch} ` +
+      `overlaysPainted=${overlaysPainted}(${paintedDecorations} boxes) ` +
+      `overlaysCleared=${overlaysCleared}`
+    );
+
+    // In single-window mode the driver IS the run-ender. In two-window mode
+    // the OBSERVER (client 1) ends the run after confirming propagation; the
+    // driver only reports its own result (and must still PASS for the run to
+    // be meaningful — its failure is logged, the observer would then FAIL too
+    // since no overlays propagated).
+    if (!isTwoWindow) {
+      console.error(`[mwb-overlay-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
+    } else if (!ok) {
+      console.error('[mwb-overlay-selftest] DRIVER produced no overlays — observer will FAIL');
+    }
+  } catch (error) {
+    console.error('[mwb-overlay-selftest] threw', error && error.message);
+    // End the run on a throw so the harness doesn't hang.
+    if (clientIndex === 1 || !(window.mwb && window.mwb.twoWindow === true)) {
+      console.error('[mwb-overlay-selftest-done] FAIL: threw');
+    }
+  }
 }
 
 /** Drive an M-x command through the server (open M-x, type, submit). The

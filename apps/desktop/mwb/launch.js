@@ -119,6 +119,16 @@ function createWindow(n) {
         app.exit(message.includes('PASS') ? 0 : 1);
       }, 100);
     }
+    // The overlay + multi-cursor self-test (select-all-matches +
+    // highlight-matches through the real server + view.js; with
+    // MWB_CLIENTS=2 the second window's observer logs the done line once it
+    // has seen the overlay propagate). See view-client.js runOverlaySelfTest.
+    if (message.startsWith('[mwb-overlay-selftest-done]')) {
+      setTimeout(() => {
+        if (server) server.kill();
+        app.exit(message.includes('PASS') ? 0 : 1);
+      }, 100);
+    }
     if (message.startsWith('[mwb-autobench-done]')) {
       const json = message.slice('[mwb-autobench-done]'.length).trim();
       console.error('\n===== MWB Phase 0 latency (ms) =====');

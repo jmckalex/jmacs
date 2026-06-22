@@ -4,6 +4,95 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22 14:10] Model-B/overlay-sync: overlay + multi-cursor sync PROVEN end-to-end through the REAL view.js AND across two windows
+
+**Context**: The prior overlay slice (commits 1d5d19d + 8fc3a35) added the
+overlay/multi-cursor wire + mirror + spine commands and was unit-tested
+(suite green 528), but had no end-to-end proof through the real renderer
+and no architect note. This solidifies the foundation: a headless
+`MWB_OVERLAY_SELFTEST` that drives the real server + protocol + production
+`view.js` and asserts the synced state both reached the mirror AND got
+painted, single-window and across two windows. All on branch
+`multi-window-b` in worktree `godot-mw-b`, isolated under
+`apps/desktop/mwb/` behind `MWB_*` flags; production view.js/app.js/main.js
++ `packages/*` untouched.
+
+**What the self-test proves (headless, no screen)**:
+- **Multi-cursor → mirror → painted.** Type a word with 3 occurrences at
+  buffer start, then `select-all-matches` (C-c D) server-side → the full
+  3-cursor set syncs to `mirror.cursors` (CURSORS message) AND the real
+  view.js paints 2 `.editor-cursor.is-secondary` carets (the existing
+  `getCursors()` seam). `C-g` (keyboard-quit) collapses back to 1 cursor.
+- **Search-highlight overlays → mirror → painted.** `highlight-matches`
+  (M-s h) server-side → 3 search overlays (each endpoint an L2 marker, so
+  they ride edits) sync to `mirror.decorations` (OVERLAYS message, in the
+  renderer's `{start,end,face}` shape) AND view.js paints 3
+  `.editor-decoration.tok-search-match` boxes (the existing
+  `getDecorations()` seam). `unhighlight-all` (M-s u) clears them — mirror
+  empties + DOM boxes disappear (the sync is two-way, not a one-way write).
+- **Cross-window propagation (MWB_CLIENTS=2).** Client 0 drives;
+  client 1 (the observer, which highlighted nothing) sees the 3 overlays
+  appear on its OWN mirror + its OWN view.js paints all 3 boxes — overlays
+  are SHARED buffer state, broadcast to every client. The observer
+  correctly does NOT adopt the driver's secondary cursors
+  (`noForeignSecondaryCursors=true`, mirror.cursors.length stays 1):
+  multi-cursor is PER-CLIENT window state, overlays are PER-BUFFER — the
+  Model-B per-window/per-buffer split, working.
+
+**view.js change needed: ZERO.** The `getCursors()` / `getDecorations()`
+options of `createEditorView` ARE the seam; the mirror presents the exact
+interface they expect (cursors as `[{point,mark}]`, decorations as
+`{start,end,face}`), so secondary carets + overlay boxes render with no
+renderer change. The only mwb-side render asset is one `tok-search-match`
+CSS face in `view-harness.html` (production styles.css has no search face —
+host isearch uses the selection); production styles.css is untouched.
+
+**One sharp edge worth knowing (it bit the first run)**: the multi-cursor
+keys are `C-c D` / `C-c d` and the search keys `M-s h` / `M-s u`, which
+resolve through the MODE-KEYMAP CHAIN first. In a **markdown** buffer
+(README.md) `C-c` is the Markdown chord prefix, so `C-c D` resolves THERE
+(unbound → aborts) instead of the global multi-cursor map — the cursor sync
+silently produced 1 cursor. The fix is just to run the test on a buffer
+whose major mode doesn't claim `C-c`: the default MWB_FILE (view.js, a
+`.js` file = fundamental mode in the spine) leaves `C-c`/`M-s` as the
+global prefixes. Overlays + cursors themselves are mode-independent once a
+command runs; only the KEY used to invoke them is mode-sensitive. The test
+documents this; run it WITHOUT MWB_FILE (or with a non-markdown file).
+
+**Verification (reproduce)**:
+- Single window:
+  `cd apps/desktop && MWB_VIEW=1 MWB_OVERLAY_SELFTEST=1 ./node_modules/.bin/electron mwb/launch.js --user-data-dir=/tmp/godot-mw-b-userdata --enable-logging=stderr`
+  → `[mwb-overlay-selftest-done] PASS` (DRIVER: cursorsReachedMirror=3,
+  cursorsPainted=2 secondaries, collapsed, overlaysReachedMirror=3,
+  overlaysAreSearchMatch, overlaysPainted=3 boxes, overlaysCleared).
+- Two windows (add `MWB_CLIENTS=2`) → `[mwb-overlay-selftest-done] PASS`
+  (OBSERVER client 1: overlaysReachedMirror=3, viewPainted=3,
+  noForeignSecondaryCursors=1).
+- The prior `MWB_VIEW_SELFTEST`, `MWB_SAME_BUFFER` (2 clients) and
+  `MWB_COMMANDS_SELFTEST` self-tests all still **PASS** unchanged.
+- Full desktop suite green: **528** (unchanged — the new self-test is a
+  flag-gated harness driver, not a unit test; the overlay/cursor PURE
+  helpers were already unit-tested by 1d5d19d/8fc3a35: +25 protocol, +29
+  client-buffer, +12 spine cases).
+
+**What's deferred (honest)**:
+- The overlay set the spine exposes is the search-highlight feature; the
+  general overlay surface (snippets, bookmarks, arbitrary faces) is the
+  same wire + mirror path but those features' stdlib files aren't ported.
+- Multi-cursor SELF-INSERT across the wire (typing at every caret) works
+  server-side (spine test `a multi-cursor self-insert edits at every
+  caret`) and resyncs via RESYNC; the overlay self-test exercises the
+  cursor SET sync + paint, not multi-caret typing through the real view
+  (that's the same RESYNC path the spine tests cover).
+
+**State of the work**: branch `multi-window-b`, clean, suite green (528).
+One new commit on top of the overlay slice:
+- `test(mwb): headless overlay + multi-cursor sync proof through real view.js`
+NOT merged. Changes confined to `apps/desktop/mwb/` (preload.mjs, launch.js,
+view-client.js); production untouched.
+
+---
+
 ## [2026-06-22 13:30] Model-B/primitive-split: the model/render split is documented + proven on a real stdlib slice (kill/yank, line-ops, a major mode) running server-side
 
 **Context**: The spine loaded only `commands.lisp` + `editing.lisp`.
