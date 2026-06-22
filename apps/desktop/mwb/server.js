@@ -30,7 +30,7 @@ import { dirname, join, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
-import { MSG, INTENT, MINIBUFFER_IDLE } from './protocol.js';
+import { MSG, INTENT, MINIBUFFER_IDLE, PANE_INTENT } from './protocol.js';
 import { createSpine } from './spine.js';
 // The crash-safe atomic writer (temp file + fsync + rename) and the
 // recovery-snapshot pure helpers are standalone production modules; the
@@ -132,6 +132,10 @@ const spine = createSpine(
     onBufferSwitched: () => onKillReHome(),
     // list-buffers (C-x C-b): send the active client its buffer-list records.
     onBufferList: () => { if (activeClient) sendBufferListTo(activeClient); },
+    // A window's pane layout/focus changed (split / other-window / delete):
+    // push that client a fresh PANE_TREE (the structure + per-leaf buffer/
+    // view-state + the focused leaf; no pixels).
+    onPaneTree: (index) => sendPaneTreeToIndex(index),
     openFile: readFileForVisit,
     // save-buffer / write-file: atomic disk write (temp + fsync + rename).
     saveFile: writeFileForSave,
@@ -258,6 +262,20 @@ function sendBufferListTo(client) {
     buffers: spine.bufferListRecords(client.index),
     seq,
   });
+}
+
+/** Send a client its window's PANE_TREE (the layout: split structure +
+ *  per-leaf buffer/view-state + the focused leaf; NO pixels — the client
+ *  derives those). Sent on HELLO and whenever the layout/focus changes. */
+function sendPaneTreeTo(client) {
+  const tree = spine.paneSnapshot(client.index);
+  if (tree) client.port.postMessage({ type: MSG.PANE_TREE, tree, seq });
+}
+
+/** Push a fresh PANE_TREE to the client at INDEX (the onPaneTree effect). */
+function sendPaneTreeToIndex(index) {
+  const client = clients.find((c) => c.index === index);
+  if (client) sendPaneTreeTo(client);
 }
 
 /** Open the minibuffer for the active client (the one that ran the
@@ -545,9 +563,31 @@ function onClientMessage(client, event) {
       // or multi-cursor active on the same buffer).
       sendOverlaysTo(client);
       sendCursorsTo(client);
+      // The window's pane layout (a single leaf on first connect, or its
+      // restored split tree on reconnect).
+      sendPaneTreeTo(client);
       break;
     case MSG.INTENT:
       applyIntent(client, msg.intent);
+      break;
+    case MSG.PANE: {
+      // A pane structural request: mutate this window's logical tree via the
+      // REAL panes.lisp command (the model's onChange pushes the fresh
+      // PANE_TREE). A split/other/delete may move which buffer the focused
+      // pane edits, so re-sync this client onto its focused buffer too.
+      activeClient = client;
+      const before = spine.currentBufferIdOf(client.index);
+      spine.applyPaneIntent(client.index, msg.intent || {});
+      const after = spine.currentBufferIdOf(client.index);
+      if (after !== before) resyncClientToCurrentBuffer(client);
+      else { sendViewTo(client); sendCursorsTo(client); }
+      activeClient = null;
+      break;
+    }
+    case MSG.PANE_VIEWPORT:
+      // The client's editor-area pixel rectangle, for spatial pane nav. The
+      // ONLY pixel report the pane model needs (everything else is pixel-free).
+      spine.setPaneHostRect(client.index, msg.rect || {});
       break;
     default:
       break;
@@ -759,6 +799,91 @@ function runUndoSelfTest() {
 
 if (process.env.MWB_UNDO_SELFTEST === '1') {
   setTimeout(runUndoSelfTest, 300);
+}
+
+// --- headless pane/window self-test (MWB_PANES_SELFTEST=1) -------------
+//
+// Drives the REAL panes.lisp commands through the spine — split (C-x 2),
+// other-window (C-x o), delete-window (C-x 0) — and asserts the LOGICAL pane
+// tree, which leaf/buffer is focused, and the load-bearing claim: an edit
+// lands in the focused pane's buffer while a second pane on the SAME buffer
+// reflects the text with its own point. The verification of record is
+// node --test (spine-panes.test.js, 19 cases); this is the architect-facing
+// in-electron mirror. PASS/FAIL on stderr + parentPort; wrapped so a failure
+// can never crash the main process (the guardrail).
+function runPanesSelfTest() {
+  const checks = {};
+  let detail = '';
+  try {
+    const idx = 0;
+    spine.setActiveClient(idx);
+    // Start: a single leaf.
+    checks.oneLeaf = (spine.paneSnapshot(idx) || {}).kind === 'leaf';
+
+    // C-x 2 → a vertical split of two leaves, focus on the new one.
+    spine.handleKey('C-x');
+    spine.handleKey('2');
+    const snap = spine.paneSnapshot(idx);
+    checks.split = snap.kind === 'split' && snap.orientation === 'vertical';
+    const leaves = []; (function walk(n) {
+      if (!n) return; if (n.kind === 'leaf') leaves.push(n);
+      else { walk(n.first); walk(n.second); }
+    })(snap);
+    checks.twoLeaves = leaves.length === 2;
+    const paneA = snap.first; const paneB = snap.second;
+    checks.focusOnNew = paneB.focused === true;
+    checks.sameBuffer = paneA.bufferId === paneB.bufferId && !!paneA.bufferId;
+
+    // Type in the focused pane (paneB); the shared buffer changes, paneB's
+    // point advances, paneA (same buffer) keeps its own point.
+    const before = spine.buffer.text;
+    for (const ch of 'PANES') spine.handleKey(ch);
+    checks.edited = spine.buffer.text === `${before}PANES` || spine.buffer.text.includes('PANES');
+    const snap2 = spine.paneSnapshot(idx);
+    const b2 = []; (function walk(n) {
+      if (!n) return; if (n.kind === 'leaf') b2.push(n);
+      else { walk(n.first); walk(n.second); }
+    })(snap2);
+    const fa = b2.find((l) => l.id === paneA.id);
+    const fb = b2.find((l) => l.id === paneB.id);
+    checks.focusedPaneMoved = fb && fb.point > 0;
+    checks.otherPaneIndependent = fa && fa.point === 0;
+
+    // C-x o → focus the other pane.
+    spine.handleKey('C-x');
+    spine.handleKey('o');
+    checks.otherWindow = (function () {
+      const s = spine.paneSnapshot(idx);
+      const ls = []; (function walk(n) {
+        if (!n) return; if (n.kind === 'leaf') ls.push(n); else { walk(n.first); walk(n.second); }
+      })(s);
+      const f = ls.find((l) => l.focused);
+      return f && f.id === paneA.id;
+    })();
+
+    // C-x 0 → collapse back to one leaf.
+    spine.handleKey('C-x');
+    spine.handleKey('0');
+    checks.deleteWindow = (spine.paneSnapshot(idx) || {}).kind === 'leaf';
+
+    detail = `text=${JSON.stringify(spine.buffer.text.slice(0, 30))}`;
+  } catch (error) {
+    detail += `threw=${error && error.message}`;
+  }
+  const ok = Object.keys(checks).length > 0 && Object.values(checks).every(Boolean);
+  console.error(
+    `[mwb-panes-selftest] ${Object.entries(checks).map(([k, v]) => `${k}=${v}`).join(' ')} ${detail}`
+  );
+  console.error(`[mwb-panes-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
+  try {
+    process.parentPort.postMessage({ type: 'panes-selftest-done', ok });
+  } catch {
+    // No parent (a bare node run): the stderr line is the result.
+  }
+}
+
+if (process.env.MWB_PANES_SELFTEST === '1') {
+  setTimeout(runPanesSelfTest, 300);
 }
 
 // --- port wiring --------------------------------------------------------

@@ -15,9 +15,13 @@ import {
   normaliseOverlay,
   overlaysToDecorations,
   normaliseCursors,
+  serializePaneTree,
+  wireLeaves,
+  wireFocusedLeafId,
   MINIBUFFER_IDLE,
   MSG,
   INTENT,
+  PANE_INTENT,
 } from './protocol.js';
 
 test('applyDelta inserts at the start', () => {
@@ -202,4 +206,75 @@ test('normaliseCursors floors offsets and nulls a non-finite mark', () => {
     normaliseCursors([{ point: 4.7, mark: undefined }]),
     [{ point: 4, mark: null }]
   );
+});
+
+// --- the pane tree over the wire (G0a) ---------------------------------
+
+/** A tiny stand-in for an @editor/pane tree (the serializer only reads
+ *  kind/id/orientation/ratio/first/second). */
+const leaf = (id) => ({ kind: 'leaf', id });
+const split = (id, orientation, ratio, first, second) => ({
+  kind: 'split', id, orientation, ratio, first, second,
+});
+
+test('serializePaneTree on a single leaf carries buffer + focus, no pixels', () => {
+  const node = serializePaneTree(
+    leaf('pane-leaf-1'),
+    'pane-leaf-1',
+    () => ({ bufferId: 'b1', name: 'x.js', point: 3, mark: null, scrollLine: 2 })
+  );
+  assert.equal(node.kind, 'leaf');
+  assert.equal(node.id, 'pane-leaf-1');
+  assert.equal(node.bufferId, 'b1');
+  assert.equal(node.name, 'x.js');
+  assert.equal(node.point, 3);
+  assert.equal(node.scrollLine, 2);
+  assert.equal(node.focused, true);
+  assert.equal(node.left, undefined); // no pixels cross the wire
+  assert.equal(node.width, undefined);
+});
+
+test('serializePaneTree on a split carries orientation + ratio + subtrees', () => {
+  const tree = split('pane-split-1', 'horizontal', 0.4, leaf('a'), leaf('b'));
+  const node = serializePaneTree(tree, 'b', (l) => ({ bufferId: `buf-${l.id}` }));
+  assert.equal(node.kind, 'split');
+  assert.equal(node.orientation, 'horizontal');
+  assert.equal(node.ratio, 0.4);
+  assert.equal(node.first.bufferId, 'buf-a');
+  assert.equal(node.second.bufferId, 'buf-b');
+  assert.equal(node.first.focused, false);
+  assert.equal(node.second.focused, true);
+});
+
+test('wireLeaves yields leaves in display order (first then second)', () => {
+  const tree = split('s', 'vertical', 0.5,
+    leaf('top'),
+    split('s2', 'horizontal', 0.5, leaf('bl'), leaf('br')));
+  const node = serializePaneTree(tree, 'top', (l) => ({ bufferId: l.id }));
+  const ids = wireLeaves(node).map((l) => l.id);
+  assert.deepEqual(ids, ['top', 'bl', 'br']);
+});
+
+test('wireFocusedLeafId finds the focused leaf, null when none', () => {
+  const tree = split('s', 'horizontal', 0.5, leaf('a'), leaf('b'));
+  const focused = serializePaneTree(tree, 'b', (l) => ({ bufferId: l.id }));
+  assert.equal(wireFocusedLeafId(focused), 'b');
+  const none = serializePaneTree(tree, 'nope', (l) => ({ bufferId: l.id }));
+  assert.equal(wireFocusedLeafId(none), null);
+});
+
+test('PANE_INTENT enumerates the structural ops', () => {
+  assert.equal(PANE_INTENT.SPLIT_BELOW, 'split-below');
+  assert.equal(PANE_INTENT.SPLIT_RIGHT, 'split-right');
+  assert.equal(PANE_INTENT.OTHER_WINDOW, 'other-window');
+  assert.equal(PANE_INTENT.DELETE_WINDOW, 'delete-window');
+  assert.equal(PANE_INTENT.DELETE_OTHER_WINDOWS, 'delete-other-windows');
+  assert.equal(PANE_INTENT.FOCUS_PANE, 'focus-pane');
+  assert.equal(PANE_INTENT.RESIZE, 'resize');
+});
+
+test('MSG includes the pane channel tags', () => {
+  assert.equal(MSG.PANE_TREE, 'pane-tree');
+  assert.equal(MSG.PANE, 'pane');
+  assert.equal(MSG.PANE_VIEWPORT, 'pane-viewport');
 });

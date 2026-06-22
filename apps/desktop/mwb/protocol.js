@@ -26,6 +26,14 @@ export const MSG = Object.freeze({
   // up
   HELLO: 'hello', // client announces itself, asks for an initial snapshot
   INTENT: 'intent', // a key/edit intent (see INTENT below)
+  // up: a pane/window structural request (split/focus/delete/resize). Carries
+  // a `{ op, paneId?, ratio? }` (see PANE_INTENT). The server mutates the
+  // window's logical pane tree and replies with a fresh PANE_TREE.
+  PANE: 'pane',
+  // up: the client's editor-area pixel rectangle (a VIEWPORT-style report).
+  // ONLY spatial pane navigation (focus-pane-left/right/up/down) needs it; the
+  // server keeps the latest per window to compute adjacency. `{ width, height }`.
+  PANE_VIEWPORT: 'pane-viewport',
   // down
   SNAPSHOT: 'snapshot', // full buffer text + cursor (initial sync / resync)
   DELTA: 'delta', // an applied buffer change + resulting cursor
