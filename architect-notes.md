@@ -361,3 +361,115 @@ The original 2026-06-10 blocker write-up survives in tag
 release would be a sensible (separate) follow-up.
 
 ---
+
+## [2026-06-22 10:30] Model-B/Phase-0: server in utilityProcess + one client; latency proven (~0.3 ms round-trip)
+
+**Context**: Phase 0 of `plans/MULTI-WINDOW-MODEL-B.md` — the make-or-break
+feasibility spike for Model B (central Lisp server, windows as clients).
+Goal: stand up the Lisp server in an Electron `utilityProcess`, make ONE
+window a client over a `MessageChannelMain` port, and MEASURE typing
+latency (local-echo + server-confirmed round-trip) vs today's in-renderer
+baseline. No multi-window. Built entirely on branch `multi-window-b` in the
+`godot-mw-b` worktree.
+
+**What the prototype does** (all under `apps/desktop/mwb/`, isolated from
+app.js/view.js so the real editor + its suite are untouched):
+- `server.js` — the authoritative model in a `utilityProcess`. Hosts the
+  REAL `createInterpreter` (@editor/lisp) + a REAL L2 buffer (@editor/buffer).
+  A self-insert intent routes through `interpreter.call(...)` and mutates the
+  buffer; the buffer's `onChange` forwards each L1 change
+  (`{start,removed,inserted}`) to the client as a wire delta. The L1 change
+  shape IS the delta — no new encoding needed.
+- `launch.js` — a STANDALONE Electron entry (NOT the real main.js). Forks the
+  server, opens the harness window, creates ONE `MessageChannelMain`, hands
+  port1 to the server (over `parentPort`) and port2 to the renderer (over
+  `webContents.postMessage`). Client↔server then talk DIRECTLY — no main hop
+  on the hot path.
+- `preload.mjs` — tiny; re-dispatches the transferred `MessagePort` into the
+  page; exposes `MWB_AUTOBENCH`.
+- `harness.html` + `client.js` — a minimal text view rendering from a LOCAL
+  STRING MIRROR (deliberately NOT view.js). Local-echo self-insert paints
+  immediately, sends the intent up, reconciles the server delta. Instruments
+  three latencies via `performance.now()` and a 200-keystroke benchmark.
+- `protocol.js` (+ `.test.js`, 9 cases) — DOM-free message tags + delta-apply
+  / optimistic-prediction helpers.
+
+**The latency numbers** (M-series mac, dev build, 2 stable runs, n=200 each):
+
+| metric      | mean   | p50   | p95   | p99   | max    |
+|-------------|--------|-------|-------|-------|--------|
+| local-echo  | ~8.3ms | 8.3   | 9.1   | 9.4   | 9.4    |
+| round-trip  | ~0.3ms | 0.3   | 0.4   | 0.5–0.6 | 0.6–0.7 |
+| baseline    | ~8.3ms | 8.3   | 9.2   | 9.4   | 9.4    |
+
+- **round-trip** = keydown → intent over the port → server runs the real
+  interpreter + mutates the real buffer → delta back → client reconciles.
+  **~0.3 ms, p99 < 0.6 ms.** This is the decisive number: crossing the
+  `utilityProcess` boundary and back, through the real Lisp machinery, costs
+  ~2% of a single 16 ms frame.
+- **local-echo** (~8.3 ms) and **baseline** (~8.3 ms, server OFF = today's
+  all-local model) are STATISTICALLY INDISTINGUISHABLE — both are gated by the
+  same `requestAnimationFrame`→paint quantum (half a 16.7 ms frame). i.e. the
+  central server adds NO perceptible typing latency: local echo paints on the
+  same frame today's model would, and the server confirms an order of
+  magnitude faster than one frame.
+
+Reproduce:
+`cd apps/desktop && MWB_AUTOBENCH=1 ./node_modules/.bin/electron mwb/launch.js --user-data-dir=/tmp/godot-mw-b-userdata --enable-logging=stderr`
+(prints the table to stderr and quits). Or launch without the env var and
+click "Run 200-keystroke benchmark" in the window.
+
+**Where the model/render split got hard** (the part to weigh against the
+latency win): the latency question is ANSWERED and the answer is good, BUT
+this spike deliberately did NOT attempt the real split. The hard parts the
+plan (§5 "genuinely hard refactor", §8) flags are real and untouched:
+- The spike renders from a trivial `<pre>`+cursor painter. The REAL client
+  must drive the existing `view.js` stack (tree-sitter highlight, folding,
+  measurement, overlays, math preview, minimap, toolbar) from a buffer MIRROR
+  instead of the live buffer. `view.js` reads the buffer SYNCHRONOUSLY in many
+  places; converting it to "render from a replicated mirror + apply deltas" is
+  the largest single refactor in the codebase. My latency number says the
+  PROTOCOL is cheap; it says NOTHING about how long that refactor takes or how
+  many regressions it risks.
+- Measurement conversation (§5d): the spike's server owns the buffer but the
+  spike never needed the client's pixel measurements (wrap, line height,
+  `window-start`). The real server owns scroll DECISIONS while the client owns
+  MEASUREMENT — that round-trip is unbuilt and fiddly.
+- Only self-insert + backspace are wired. The whole `defcommand`/keymap
+  surface, minibuffer state machine, multi-cursor, markers/overlays over the
+  wire, and undo policy (server-side, shared) are unbuilt.
+- Interruption (§7.2, Phase 1) is unbuilt: a `(while #t)` in the shared server
+  hangs the (one) client. Mandatory before living in the shared model, but not
+  needed to answer the latency question.
+
+**Feasibility verdict (for the A-vs-B bake-off)**: Model B PASSES its
+existential test decisively. The plan's stated non-starter condition — "if
+local-echo + round-trip doesn't feel native, Model B is dead" — does not
+trigger: round-trip is sub-millisecond and local-echo is frame-identical to
+today. The `utilityProcess` + `MessageChannelMain` topology works exactly as
+the plan hoped (direct client↔server channel, no main hop, real interpreter
+off the UI thread). So latency is NOT the thing that should kill Model B.
+
+The remaining risk is entirely COST/RISK, not responsiveness: the
+view.js-renders-from-a-mirror refactor (§5) is large and the measurement
+conversation (§5d) is subtle. My honest read: Model B's *integration ceiling*
+(one buffer in N windows for free, shared world, global live customization) is
+genuinely higher than Model A's, and the latency objection is now off the
+table — but the decision should be made on appetite for the model/render
+split, which this spike intentionally did not pay down. If that refactor is
+acceptable, Model B is viable and more powerful; if you want shippable-soon
+with low risk, Model A remains the safe answer. The bake-off is now a cost
+question, not a latency question.
+
+**State of the work**: branch `multi-window-b`, worktree `godot-mw-b`, clean,
+existing suite green (432 desktop tests, +9 spike protocol tests). Four
+commits on top of the plan seed:
+- `feat(mwb): add Model-B Phase-0 wire protocol + delta helpers`
+- `feat(mwb): stand up server (utilityProcess) + one client + latency harness`
+- `feat(mwb): add headless auto-bench (server + baseline passes)`
+- (this note)
+NOT merged. Instrumentation is isolated in `apps/desktop/mwb/` behind the
+harness UI / `MWB_AUTOBENCH` flag; nothing in production app.js/view.js was
+touched.
+
+---
