@@ -65,6 +65,20 @@ function symName(arg) {
   return name.startsWith(':') ? name.slice(1) : name;
 }
 
+/** Coerce a Lisp value to a JS display string: a string passes through, a
+ *  keyword/symbol yields its (colon-stripped) name, NIL/nil/null yields '',
+ *  a number stringifies. Used by the RefTeX picker row converters to read
+ *  Lisp candidate fields (type keywords, context strings) for the wire. */
+function lispString(value) {
+  if (value === NIL || value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  if (value && typeof value === 'object' && typeof value.name === 'string') {
+    return value.name.startsWith(':') ? value.name.slice(1) : value.name;
+  }
+  return '';
+}
+
 // --- regexp / string search helpers (model-side) ----------------------
 //
 // The model halves of regex-search.lisp's host primitives. These are pure
@@ -828,6 +842,62 @@ export function createSpine(options, effects = {}) {
       // RefTeX) is the SAME open-picker! call with a different provider.
       'buffer-list-rows': () => bufferListRows(),
 
+      // --- RefTeX picker ROW-PROVIDERS (cite/ref → the generic PICKER) ---
+      // The RefTeX cite/ref pickers ride the SAME generic open-picker! channel
+      // as the buffer list (architect-notes G0b: "cite rows map onto it; the
+      // panel's row.group/row.detail fields cover RefTeX's type-grouped
+      // headings + cite's author/year second line without a new channel").
+      // Each converter reads the Lisp-side candidate accessor and returns the
+      // opaque JS picker-row array open-picker! wants. The `value` is what the
+      // on-choose Lisp callback receives.
+
+      // reftex-select-rows — the *RefTeX Select* candidates (reftex-refs.lisp's
+      // reftex-select-candidates: a list of (name type macro context)) → rows
+      // { label:name, value:name, group:type, detail:context }. group drives
+      // the type headings; detail is the context line.
+      'reftex-select-rows': () => {
+        const cands = listToArray(interpreter.call('reftex-select-candidates'));
+        return cands.map((row) => {
+          const [name, type, , context] = listToArray(row);
+          const n = String(name ?? '');
+          return {
+            label: n,
+            value: n,
+            group: lispString(type),
+            detail: lispString(context),
+          };
+        });
+      },
+      // reftex-cite-format-rows — the cite FORMAT menu (reftex-cite.lisp's
+      // reftex-cite-formats: a list of (key macro description)) → rows
+      // { label:"macro — description", value:macro, detail:macro }. value is
+      // the LaTeX macro the on-choose callback (reftex-cite-format-chosen)
+      // remembers; the key column is the keystroke (not needed by the picker).
+      'reftex-cite-format-rows': () => {
+        const fmts = listToArray(interpreter.call('reftex-cite-formats'));
+        return fmts.map((row) => {
+          const [, macro, description] = listToArray(row);
+          const m = lispString(macro);
+          const d = lispString(description);
+          return { label: d ? `${m} — ${d}` : m, value: m, detail: m };
+        });
+      },
+      // reftex-cite-index-rows — the cheap cite index (reftex-cite.lisp's
+      // reftex-cite-index: a list of (key plain)) → rows { label:plain or key,
+      // value:key, group:key, detail:plain }. The plain blob is the
+      // substring-filter text (key + author + year + title); the CSL-formatted
+      // HTML is fetched lazily render-side, so the server ships the cheap index
+      // and the client narrows it. value is the bib key (\cite{key}).
+      'reftex-cite-index-rows': () => {
+        const index = listToArray(interpreter.call('reftex-cite-index'));
+        return index.map((row) => {
+          const [key, plain] = listToArray(row);
+          const k = String(key ?? '');
+          const p = lispString(plain);
+          return { label: p || k, value: k, group: k, detail: p };
+        });
+      },
+
       // --- scroll / measurement (plan §5d) ------------------------------
       // recenter! is a Lisp command whose *effect* is a client-pixel
       // scroll. The server decides the target line (it knows point); the
@@ -1002,6 +1072,17 @@ export function createSpine(options, effects = {}) {
       // switches that client to another (the registry refuses to drop the
       // last buffer). The host performs the kill + re-snapshot (killBuffer).
       'kill-current-buffer!': () => { killActiveBuffer(); return NIL; },
+
+      // (open-file-path! PATH) — visit PATH, adding it as a buffer + switching
+      // the active client to it (the server is a Node child, so it reads disk
+      // directly via visitFile). RefTeX's reftex-select-on-peek + the cite/ref
+      // origin-return path use it to surface a label's source file. Returns
+      // nil. A read failure is surfaced by visitFile's status.
+      'open-file-path!': (args) => {
+        const path = String(args[0] ?? '');
+        if (path !== '') visitFile(path);
+        return NIL;
+      },
 
       // --- view-list surface (view-primitives.js) — MODEL --------------
       // Under Model B a "view" maps onto a registry BUFFER: the buffers
@@ -1545,6 +1626,67 @@ export function createSpine(options, effects = {}) {
       "Remove all search-match highlight overlays (M-s u)."
       (clear-overlays! "search")
       (show-status! "Highlights cleared"))
+  `);
+
+  // --- RefTeX picker openers → the generic PICKER channel --------------
+  //
+  // reftex-refs.lisp / reftex-cite.lisp call three render-side openers to
+  // surface their selection UIs — `open-reftex-select!` (the *RefTeX Select*
+  // label picker), `open-reftex-cite-format!` (the cite format menu) and
+  // `open-reftex-cite-select!` (the cite entry picker) — plus `open-file-path!`
+  // (peek/jump). In production these open bespoke bottom-dock panels; under
+  // Model B they ride the SAME generic open-picker! suspend/resume channel as
+  // the buffer list (architect-notes G0b). Each opener reads its candidate
+  // rows from the matching JS row-provider (reftex-select-rows /
+  // -cite-format-rows / -cite-index-rows, which marshal the Lisp candidate
+  // accessors into the picker's wire shape) and resumes the right reftex
+  // callback on the user's choice (or its -on-cancel on a nil cancel). The
+  // commands' bodies (reftex-reference / reftex-citation) are unchanged — they
+  // build the candidate model and call these openers exactly as in production.
+  //
+  // These are defined HERE (after the SPINE_STDLIB chain has loaded, so the
+  // reftex-* accessors/callbacks exist, and after picker-read) so they OVERRIDE
+  // the absence of the production openers; loading the reftex files first left
+  // these symbols unbound, which only matters at command time. See
+  // PRIMITIVE-SPLIT.md "RefTeX".
+  interpreter.evaluate(`
+    ;; The *RefTeX Select* label picker (reftex-reference, C-c )). The rows are
+    ;; grouped by label type (row.group); RET inserts <macro>{name} at the
+    ;; origin (reftex-select-on-select); cancel returns to the origin.
+    ;; (SPC-peek is a render-side affordance of the bespoke panel; the generic
+    ;; picker is choose-or-cancel, so peek is deferred — the choose path is the
+    ;; daily one and is fully wired.)
+    (define (open-reftex-select!)
+      (picker-read "RefTeX: insert reference"
+                   (reftex-select-rows)
+                   (lambda (name)
+                     (if (nil? name)
+                         (reftex-select-on-cancel)
+                         (reftex-select-on-select name)))))
+
+    ;; The cite FORMAT menu (step 1 of reftex-citation, C-c [). Choosing a
+    ;; format remembers the macro and opens the cite picker
+    ;; (reftex-cite-format-chosen → open-reftex-cite-select!); cancel aborts.
+    (define (open-reftex-cite-format!)
+      (picker-read "RefTeX: citation format"
+                   (reftex-cite-format-rows)
+                   (lambda (macro)
+                     (if (nil? macro)
+                         (reftex-cite-on-cancel)
+                         (reftex-cite-format-chosen macro)))))
+
+    ;; The cite ENTRY picker (step 2). The cheap index is shipped + narrowed
+    ;; client-side; RET inserts <macro>{key} at the origin (reftex-cite-insert);
+    ;; cancel returns to the origin. (Marking several entries with \`m\` is a
+    ;; bespoke-panel affordance; the generic picker inserts the single chosen
+    ;; key — the common case — and multi-key marking is deferred.)
+    (define (open-reftex-cite-select!)
+      (picker-read "RefTeX: choose citation"
+                   (reftex-cite-index-rows)
+                   (lambda (key)
+                     (if (nil? key)
+                         (reftex-cite-on-cancel)
+                         (reftex-cite-insert key)))))
   `);
 
   // --- the mode-keymap resolver (the meaningful spine extension) -------
