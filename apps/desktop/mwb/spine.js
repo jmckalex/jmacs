@@ -34,14 +34,14 @@
  * spine.test.js). `server.js` wires those callbacks to the wire.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInterpreter, NIL, cons, listToArray, arrayToList } from '@editor/lisp';
+import { createInterpreter, NIL, cons, listToArray, arrayToList, keyword } from '@editor/lisp';
 import { createBuffer } from '@editor/buffer';
 import { createView } from '@editor/view';
-import { createBufferPrimitives } from '@editor/stdlib';
+import { createBufferPrimitives, createLatexPrimitives } from '@editor/stdlib';
 
 import { renderModeline, screenfulStep } from './protocol.js';
 import { createBufferRegistry } from './buffer-registry.js';
@@ -269,6 +269,37 @@ const SPINE_STDLIB = Object.freeze([
   // expand-region-word-bounds (expand-region.lisp, loaded). See
   // PRIMITIVE-SPLIT.md "Snippets".
   'snippets.lisp',
+  // --- the citation + RefTeX chain (the last model-heavy stdlib family) ---
+  // cite.lisp — citation parsing/formatting wrappers over the citation host
+  // bridge (citation-parse / -format / -keys, provided by createCitation-
+  // Primitives above). Defines load-bibliography / format-bibliography /
+  // format-citation + the *citation-style* / *citation-bib-path* defcustoms.
+  // Needs custom.lisp (loaded). FULLY model-side: the bridge IS the model.
+  'cite.lisp',
+  // reftex.lisp — RefTeX R1 multi-file document model + label/section/cite
+  // DB. Lisp over the pure host primitives latex-scan / path-resolve /
+  // path-dirname / path-basename (createLatexPrimitives) + the impure reads
+  // read-file-text! / file-exists? / list-directory-paths + the view verbs
+  // current-view / view-list / view-file-path / view-buffer / switch-to-view!
+  // (all provided above). It redefines latex-master-file (latex-compile.lisp
+  // is not loaded; reftex's definition is the sole one — it calls reftex-
+  // master). Loads after latex.lisp (latex-mode) + cite.lisp (bib path).
+  'reftex.lisp',
+  // reftex-refs.lisp — RefTeX R2 labels & references (reftex-label C-c (,
+  // reftex-reference C-c ), reftex-reference-minibuffer). Builds the
+  // *RefTeX Select* candidate model and opens it via open-reftex-select!
+  // (bridged to the generic PICKER channel below). Extends latex-c-c-map
+  // (latex.lisp built it) with ( and ); redefines minibuffer-tab-complete
+  // (the spine's pass-through base, defined in the prelude). Loads after
+  // reftex.lisp (R1 DB + type helpers).
+  'reftex-refs.lisp',
+  // reftex-cite.lisp — RefTeX R3 citations (reftex-citation C-c [). The
+  // format-first flow: a format menu (open-reftex-cite-format!) then the
+  // cite picker (open-reftex-cite-select!) — both bridged to the generic
+  // PICKER channel below. Reuses R2's origin bookkeeping + the citation
+  // bridge (citation-parse-lenient / -entries / -format-keys / -register-
+  // style!). Extends latex-c-c-map with [. Loads after reftex-refs.lisp.
+  'reftex-cite.lisp',
 ]);
 
 /**
@@ -717,6 +748,15 @@ export function createSpine(options, effects = {}) {
       // PRIMITIVE-SPLIT.md "RefTeX / citations" + citation-bridge.js.
       ...createCitationPrimitives(),
 
+      // --- the pure LaTeX/RefTeX primitives (latex-primitives.js) -------
+      // latex-scan (the LaTeX source scanner → labels/sections/refs/cites/
+      // index/inputs/bib record lists) + the POSIX path helpers (path-resolve
+      // / path-dirname / path-basename) + parse-latex-log / parse-synctex-*.
+      // All PURE (no fs, no view, no async) — the same source the renderer
+      // runs, so a RefTeX scan resolves identically server-side. The reftex
+      // document model is Lisp over these. See PRIMITIVE-SPLIT.md "RefTeX".
+      ...createLatexPrimitives(),
+
       // --- echo area (the minibuffer's status line) ---------------------
       // keymap.lisp calls these; the spine routes them to the client's
       // echo area via the onStatus effect.
@@ -1000,6 +1040,50 @@ export function createSpine(options, effects = {}) {
         return registry.viewFor(entry.id, activeClientIndex);
       },
 
+      // --- view → file mapping (RefTeX document model) -----------------
+      // The RefTeX R1 document model (reftex.lisp) needs the file path /
+      // buffer / directory of a view to detect the master, resolve \input
+      // chains, and read the current file. Under Model B a "view" is a real
+      // @editor/view bound to a registry buffer; map it back to its registry
+      // entry by buffer identity (view.buffer === entry.buffer) to read the
+      // entry's filePath. A view with no backing file (scratch) → nil.
+      // (view-file-path VIEW) -> absolute path string, or nil.
+      'view-file-path': (args) => {
+        const entry = entryForView(args[0]);
+        return entry && entry.filePath ? entry.filePath : NIL;
+      },
+      // (view-buffer VIEW) -> the view's buffer object, or nil. reftex.lisp
+      // declares it as a dep; the document model reads the CURRENT buffer's
+      // text via buffer-text, so this is rarely hit, but provide it for
+      // completeness (returns the real L2 buffer).
+      'view-buffer': (args) => {
+        const v = args[0];
+        return v && typeof v === 'object' && v.buffer ? v.buffer : NIL;
+      },
+      // (view-directory VIEW) -> the directory of the view's file, or nil.
+      'view-directory': (args) => {
+        const entry = entryForView(args[0]);
+        if (!entry || !entry.filePath) return NIL;
+        const slash = entry.filePath.lastIndexOf('/');
+        return slash <= 0 ? '/' : entry.filePath.slice(0, slash);
+      },
+
+      // --- file existence (RefTeX \input-chain + bib-path resolution) ---
+      // (file-exists? PATH) -> #t when PATH names an existing file/dir, #f
+      // otherwise. Synchronous (the server is a Node child), mirroring
+      // app.js's fileExistsSync wrapper. RefTeX uses it to skip absent
+      // \input targets and to probe bib paths before reading.
+      'file-exists?': (args) => {
+        const p = String(args[0] ?? '');
+        if (p === '') return false;
+        try {
+          statSync(p);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+
       // --- save (real file I/O, atomic) --------------------------------
       // save-buffer! writes the ACTIVE buffer's text to its file path
       // (atomic temp-file + rename, via the saveFile effect) and re-baselines
@@ -1156,11 +1240,27 @@ export function createSpine(options, effects = {}) {
       // (snippet-user-directory) — the user snippet root. None server-side
       // yet (it is an app/render data-path concern), so "" → no user dir.
       'snippet-user-directory': () => '',
-      // (list-directory-paths dir) — (name . :file/:directory) pairs. No
-      // snippet directories are wired server-side, so this returns nil
-      // (the built-in starter set covers the model proof). A future wiring
-      // would read the real fs here.
-      'list-directory-paths': () => NIL,
+      // (list-directory-paths dir) — (name . :file/:directory) pairs for the
+      // entries of DIR, or nil when DIR can't be listed. A REAL disk read
+      // (the server is a Node child), mirroring app.js's
+      // listDirectoryWithTypesSync. RefTeX's master detection
+      // (-reftex-tex-siblings) lists a directory to find a sibling .tex that
+      // \inputs the current file; snippet directory reads would use it too.
+      'list-directory-paths': (args) => {
+        const dir = String(args[0] ?? '');
+        if (dir === '') return NIL;
+        let dirents;
+        try {
+          dirents = readdirSync(dir, { withFileTypes: true });
+        } catch {
+          return NIL;
+        }
+        return arrayToList(
+          dirents.map((d) =>
+            cons(d.name, keyword(d.isDirectory() ? 'directory' : 'file'))
+          )
+        );
+      },
       // (read-file-text! path) — a real disk read (the server is a Node
       // child); nil on any error. Only reached once a snippet directory is
       // wired (the built-ins never touch the fs).
@@ -1755,6 +1855,18 @@ export function createSpine(options, effects = {}) {
   /** The buffer id the FOCUSED leaf of client INDEX shows. */
   function currentBufferIdOf(index) {
     return paneModels.get(index)?.focusedBufferId() ?? initialEntry.id;
+  }
+
+  /** The registry entry backing VIEW (an @editor/view), matched by buffer
+   *  identity (a view minted by registry.viewFor binds entry.buffer), or null
+   *  when VIEW isn't a view / has no backing entry. Used by the RefTeX
+   *  view→file primitives (view-file-path / view-directory). */
+  function entryForView(view) {
+    if (!view || typeof view !== 'object' || !view.buffer) return null;
+    for (const e of registry.list()) {
+      if (e.buffer === view.buffer) return e;
+    }
+    return null;
   }
 
   /** The buffer-list ROW-PROVIDER for the generic picker (G0b): the open
