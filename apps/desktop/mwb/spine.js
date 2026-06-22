@@ -223,6 +223,12 @@ const SPINE_STDLIB = Object.freeze([
   // model-side (delete-region!/goto!/insert!/set!/show-status!). Reuses
   // latex-insert's pure env-stack helpers; loads after latex-nav.lisp.
   'latex-fill.lisp',
+  // makefile.lisp — Makefile editing commands (target / phony / variable /
+  // tab / include + the C-c keymap). FULLY model-side (insert!/goto!/
+  // set-mark!), exactly like latex.lisp: modes.lisp declares makefile-mode
+  // + makefile-mode-map (which this fills). The C-c chord dispatches via
+  // the mode-keymap chain on a Makefile buffer. See PRIMITIVE-SPLIT.md.
+  'makefile.lisp',
   // panes.lisp — the interactive split/other/delete-window commands (C-x 2 /
   // 3 / 0 / 1 / o). Loaded VERBATIM: the same source the production editor
   // runs. Its commands wrap host primitives (split-horizontal!, delete-pane!,
