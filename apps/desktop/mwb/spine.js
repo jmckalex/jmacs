@@ -201,6 +201,28 @@ const SPINE_STDLIB = Object.freeze([
   // spine's mode-keymap chain (resolveMode). Production order: after
   // markdown.lisp. See PRIMITIVE-SPLIT.md "Modes / latex".
   'latex.lisp',
+  // latex-insert.lisp — AUCTeX Phase 2 smart insertion (environment /
+  // macro / section / font). The pure ENV-STACK helpers + the model-side
+  // commands run server-side; the completion-driven inserts route through
+  // the spine's completing-minibuffer (the prompt round-trips; the
+  // candidate LIST is the deferred render half). Its RefTeX label-prefix
+  // reuse is a SOFT dep (try/catch fallback when reftex is absent), so it
+  // loads without reftex. latex-nav + latex-fill reuse its pure env-stack
+  // helpers, so it precedes them.
+  'latex-insert.lisp',
+  // latex-math.lisp — AUCTeX Phase 3 LaTeX-math-mode (math symbol
+  // abbreviations). Model-side symbol insertion; the unknown-key fallback
+  // opens the completing-minibuffer (stubbed prompt). After latex-insert.
+  'latex-math.lisp',
+  // latex-nav.lisp — AUCTeX Phase 5 navigation (section next/prev,
+  // begin/end matching jump, M-RET insert-item, smart quotes). FULLY
+  // model-side (goto!/insert!/set!/show-status!). Reuses latex-insert's
+  // innermost-open-env finder, so it loads after it.
+  'latex-nav.lisp',
+  // latex-fill.lisp — AUCTeX-style LaTeX-fill-paragraph (M-q). FULLY
+  // model-side (delete-region!/goto!/insert!/set!/show-status!). Reuses
+  // latex-insert's pure env-stack helpers; loads after latex-nav.lisp.
+  'latex-fill.lisp',
   // panes.lisp — the interactive split/other/delete-window commands (C-x 2 /
   // 3 / 0 / 1 / o). Loaded VERBATIM: the same source the production editor
   // runs. Its commands wrap host primitives (split-horizontal!, delete-pane!,
@@ -656,6 +678,21 @@ export function createSpine(options, effects = {}) {
       // server shows the prompt; the user's input resolves via
       // `minibuffer-delivered` (called from deliverMinibuffer below).
       'open-minibuffer!': (args) => {
+        activePrompt = String(args[0] ?? '');
+        onMinibufferOpen(activePrompt);
+        return NIL;
+      },
+      // open-completing-minibuffer! — the completion-backed prompt the
+      // LaTeX/RefTeX smart-insertion commands use (latex-insert.lisp,
+      // latex-math.lisp). The COMPLETION tab is render-side, but the
+      // suspend/resume IS the ordinary minibuffer round-trip: a command
+      // calls it, suspends, and resumes via minibuffer-delivered. The spine
+      // routes it through the SAME prompt channel as open-minibuffer! (the
+      // completion candidates are the deferred render half). So a LaTeX
+      // smart-insert command resolves server-side: it prompts, and on submit
+      // the model effect (insert the chosen environment/macro) runs. See
+      // PRIMITIVE-SPLIT.md "Minibuffer / completion".
+      'open-completing-minibuffer!': (args) => {
         activePrompt = String(args[0] ?? '');
         onMinibufferOpen(activePrompt);
         return NIL;
@@ -1151,6 +1188,18 @@ export function createSpine(options, effects = {}) {
             (assoc *face-registry* name
                    (assoc (apply hash-map options) :name name)))
       name)
+
+    ;; minibuffer-tab-complete — the base TAB-completion handler the
+    ;; minibuffer's onTab calls (files.lisp owns it in production; that file
+    ;; is render-heavy and not loaded). latex-insert.lisp / reftex-refs.lisp
+    ;; CAPTURE this at load (\`(define orig minibuffer-tab-complete)\`) to
+    ;; wrap it, so it must exist before they load. TAB completion is a
+    ;; render-side feature (the completions tab + the live candidate list),
+    ;; so the model-side base is a PASS-THROUGH: it returns CURRENT
+    ;; unchanged (no candidates server-side). The wrapping files still load
+    ;; + add their own candidate sources at command time; only the
+    ;; interactive completion UI is deferred. See PRIMITIVE-SPLIT.md.
+    (define (minibuffer-tab-complete current) current)
   `);
 
   // Load the real command system + editing commands + the model-heavy
