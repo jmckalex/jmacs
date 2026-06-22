@@ -28,9 +28,16 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 
 import { MSG, INTENT, MINIBUFFER_IDLE } from './protocol.js';
 import { createSpine } from './spine.js';
+// The crash-safe atomic writer (temp file + fsync + rename) and the
+// recovery-snapshot pure helpers are standalone production modules; the
+// server is a Node child, so it does file I/O DIRECTLY (no IPC), reusing
+// these without touching production app.js/main.js/view.js.
+import { atomicWriteSync } from './atomic-write-sync.js';
+import { createAutosave } from './autosave.js';
 
 // --- the canonical model: a real file in the command spine -------------
 
@@ -64,14 +71,39 @@ let currentEchoId;
 let minibufferState = MINIBUFFER_IDLE;
 let minibufferClient = null;
 
-/** Read a file off disk for find-file (the openFile spine effect). */
+/** Resolve a user-typed find-file/write-file path to an absolute path,
+ *  relative to the server's seed-file directory (its working "cwd"). */
+function resolvePath(path) {
+  return resolve(dirname(filePath), path);
+}
+
+/** Read a file off disk for find-file (the openFile spine effect). Returns
+ *  the text, name, AND the resolved absolute path (so the buffer knows where
+ *  C-x C-s writes back). */
 function readFileForVisit(path) {
   try {
-    const abs = resolve(dirname(filePath), path);
-    return { text: readFileSync(abs, 'utf8'), name: basename(abs) };
+    const abs = resolvePath(path);
+    return { text: readFileSync(abs, 'utf8'), name: basename(abs), path: abs };
   } catch (error) {
     console.error(`[mwb-server] find-file: ${error.message}`);
     return null;
+  }
+}
+
+/** Write a buffer to disk ATOMICALLY (temp file + fsync + rename), the
+ *  saveFile spine effect for save-buffer / write-file. The path is resolved
+ *  relative to the seed-file dir (an absolute path passes through). Returns
+ *  `{ ok }` or `{ ok:false, error }` — never throws (the spine reports the
+ *  failure; an uncaught throw here would risk the server). */
+function writeFileForSave({ path, text }) {
+  try {
+    const abs = resolvePath(String(path ?? ''));
+    atomicWriteSync(abs, String(text ?? ''));
+    console.error(`[mwb-server] wrote ${abs} (${String(text ?? '').length} bytes)`);
+    return { ok: true, path: abs };
+  } catch (error) {
+    console.error(`[mwb-server] save failed: ${error.message}`);
+    return { ok: false, error: error.message };
   }
 }
 
@@ -101,6 +133,8 @@ const spine = createSpine(
     // list-buffers (C-x C-b): send the active client its buffer-list records.
     onBufferList: () => { if (activeClient) sendBufferListTo(activeClient); },
     openFile: readFileForVisit,
+    // save-buffer / write-file: atomic disk write (temp + fsync + rename).
+    saveFile: writeFileForSave,
   }
 );
 
@@ -436,6 +470,15 @@ function handleMinibufferSubmit(value) {
     if (newId && activeClient) resyncClientToCurrentBuffer(activeClient);
     return;
   }
+  if (prompt === 'Write file: ') {
+    spine.abortMinibuffer();
+    // write-file / save-as: write the active buffer to the typed path
+    // (atomic), rebind its path, and clear the dirty flag. Refresh the
+    // modeline so the ● indicator drops on every window on that buffer.
+    spine.writeActiveBufferTo(value);
+    broadcastView();
+    return;
+  }
   if (prompt === 'Switch to buffer: ') {
     spine.abortMinibuffer();
     // Resolve the name (exact, then a substring prefix-match) and switch the
@@ -502,6 +545,70 @@ function onClientMessage(client, event) {
       break;
   }
 }
+
+// --- server-side autosave + crash recovery ----------------------------
+//
+// The buffers' unsaved state lives in THIS process's memory (the registry),
+// shared by every window. A server crash must not lose it — so we snapshot
+// every DIRTY buffer to a recovery directory on disk on a timer, and scan
+// that directory on startup for snapshots worth recovering (data-safety for
+// the shared model; plan §7.1). Mirrors the real app's autosave / *Recover*.
+//
+// The recovery dir is MWB_RECOVERY_DIR, else a stable per-app temp dir. The
+// self-test points it at a /tmp scratch dir so it can assert a snapshot hit
+// disk without touching the repo or the user's data.
+const RECOVERY_DIR = process.env.MWB_RECOVERY_DIR
+  || join(tmpdir(), 'godot-mw-b-recovery');
+
+const autosave = createAutosave({
+  dir: RECOVERY_DIR,
+  getDirty: () => spine.dirtyBufferSnapshots(),
+  intervalMs: Number(process.env.MWB_AUTOSAVE_INTERVAL_MS) || 4000,
+  log: (msg) => console.error(msg),
+});
+
+// Recover-on-startup: scan for snapshots whose on-disk file is older than the
+// snapshot (unsaved edits were lost) or that have no on-disk file (path-less /
+// deleted). For the prototype we LOG the recoverable set + load each as a
+// recovered buffer in the registry (the survivable floor — a server respawn
+// surfaces the unsaved work as buffers). The full *Recover* picker UX (a
+// render-side view + per-snapshot recover/discard) is deferred; the data is
+// here and the wire to render it is the same buffer-list slice. Never throws.
+function recoverOnStartup() {
+  let recoverable;
+  try {
+    recoverable = autosave.scanRecoverable();
+  } catch (error) {
+    console.error(`[mwb-server] recovery scan failed: ${error.message}`);
+    return;
+  }
+  if (!recoverable || recoverable.length === 0) return;
+  console.error(`[mwb-server] crash recovery: ${recoverable.length} snapshot(s) to recover:`);
+  for (const r of recoverable) {
+    console.error(`  - ${r.name || r.key} (saved ${new Date(r.savedAt).toISOString()})`);
+    try {
+      // The on-disk content (if the file still exists) is the recovered
+      // buffer's baseline, so its dirty diff is exactly the lost edits.
+      let diskBaseline;
+      if (r.path) {
+        try {
+          diskBaseline = readFileSync(r.path, 'utf8');
+        } catch {
+          diskBaseline = undefined; // file gone — leave it conservatively dirty.
+        }
+      }
+      // Load the recovered text as a buffer (path bound if it had one) so the
+      // unsaved work is reachable. It is DIRTY relative to disk by
+      // construction (that's why it was recovered), so its ● flag shows.
+      spine.recoverBuffer({ name: r.name, filePath: r.path, text: r.text, diskBaseline });
+    } catch (error) {
+      console.error(`[mwb-server] could not load recovered buffer: ${error.message}`);
+    }
+  }
+}
+
+recoverOnStartup();
+autosave.start();
 
 // --- port wiring --------------------------------------------------------
 //
