@@ -191,6 +191,16 @@ const SPINE_STDLIB = Object.freeze([
   // Loads after search.lisp (production order). See PRIMITIVE-SPLIT.md.
   'regex-search.lisp',
   'markdown.lisp',
+  // latex.lisp — the base LaTeX writing commands (latex-textbf/textit/
+  // emph/math-inline/section/itemize/… + the C-c keymap). FULLY
+  // model-side: latex-surround is pure buffer ops (region-active?,
+  // region-text, insert!, goto!, delete-backward!). Its deps are all
+  // loaded — modes.lisp declares latex-mode + latex-mode-map (which this
+  // file fills), and math-preview.lisp defines math-preview-mode (aliased
+  // as latex-math-preview-mode). The C-c chord dispatches through the
+  // spine's mode-keymap chain (resolveMode). Production order: after
+  // markdown.lisp. See PRIMITIVE-SPLIT.md "Modes / latex".
+  'latex.lisp',
   // panes.lisp — the interactive split/other/delete-window commands (C-x 2 /
   // 3 / 0 / 1 / o). Loaded VERBATIM: the same source the production editor
   // runs. Its commands wrap host primitives (split-horizontal!, delete-pane!,
