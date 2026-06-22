@@ -88,6 +88,10 @@ const spine = createSpine(
     onMinibufferOpen: (prompt) => openMinibuffer(prompt),
     onMinibufferClose: () => closeMinibuffer(),
     onScroll: (req) => sendScrollToActive(req),
+    // Overlays are SHARED buffer state: a highlight added on one window
+    // appears in every window viewing the buffer. Broadcast the fresh
+    // snapshot to all clients whenever it changes.
+    onOverlays: () => broadcastOverlays(),
     openFile: readFileForVisit,
   }
 );
@@ -175,6 +179,28 @@ function broadcastView() {
   for (const c of clients) sendViewTo(c);
 }
 
+/** Send a client its FULL cursor set (primary + every secondary), so the
+ *  renderer paints each caret. Cursors are PER-CLIENT window-state (a
+ *  secondary cursor on client 0 is not on client 1), so this targets one
+ *  client with its own set. */
+function sendCursorsTo(client) {
+  client.port.postMessage({
+    type: MSG.CURSORS,
+    cursors: spine.cursorsOf(client.index),
+    seq,
+  });
+}
+
+/** Broadcast the buffer's overlay set to every client. Overlays are SHARED
+ *  buffer state, so all clients get the same list (a highlight added in one
+ *  window shows in the other). The renderer draws them via getDecorations().*/
+function broadcastOverlays() {
+  const overlays = spine.overlaySnapshot();
+  for (const c of clients) {
+    c.port.postMessage({ type: MSG.OVERLAYS, overlays, seq });
+  }
+}
+
 /** Open the minibuffer for the active client (the one that ran the
  *  command). One prompt at a time in the shared model. */
 function openMinibuffer(prompt) {
@@ -217,6 +243,12 @@ function applyIntent(client, intent) {
   const buffer = spine.buffer;
   const pointBefore = buffer.point;
   const wasSeq = seq;
+  // A multi-cursor edit makes SEVERAL L1 edits but emits ONE change event,
+  // so the single-delta fan-out can't replicate it; we RESYNC instead. The
+  // edit may also COLLAPSE the cursor set (e.g. typing collapses overlapping
+  // carets), so we check the count BEFORE and AFTER and resync if either is
+  // multi.
+  const multiBefore = spine.activeCursorCount() > 1;
   try {
     switch (intent.kind) {
       case INTENT.SELF_INSERT:
@@ -252,9 +284,26 @@ function applyIntent(client, intent) {
   }
 
   const emittedDelta = seq !== wasSeq;
-  // A motion / point-only intent emits no text delta; reconcile the
-  // originating client's window-state with a CURSOR message.
-  if (!emittedDelta && buffer.point !== pointBefore) {
+  const multiAfter = spine.activeCursorCount() > 1;
+  const wasMultiCursorEdit = emittedDelta && (multiBefore || multiAfter);
+
+  if (wasMultiCursorEdit) {
+    // The single forwarded delta is unreliable for a multi-cursor edit;
+    // RESYNC every client with the canonical text + its own cursor set.
+    // (The delta the buffer's onChange already fanned is harmless — the
+    // mirror reconciles to the resync text either way — but the resync is
+    // what makes it correct.)
+    for (const c of clients) {
+      c.port.postMessage({
+        type: MSG.RESYNC,
+        text: spine.buffer.text,
+        cursors: spine.cursorsOf(c.index),
+        seq,
+      });
+    }
+  } else if (!emittedDelta && buffer.point !== pointBefore) {
+    // A motion / point-only intent emits no text delta; reconcile the
+    // originating client's window-state with a CURSOR message.
     client.port.postMessage({
       type: MSG.CURSOR,
       point: buffer.point,
@@ -262,6 +311,13 @@ function applyIntent(client, intent) {
       echoId: intent.id,
     });
   }
+
+  // Always refresh the originating client's full cursor set: a command
+  // (add-cursor-next, collapse via C-g) may have changed the secondary
+  // carets without a text edit. Other clients' cursor sets are their own
+  // and only their own intents change them, so this targets the originator.
+  sendCursorsTo(client);
+
   // Refresh non-text state for every client. A text edit shifts the OTHER
   // clients' cursors (marker semantics under an insert), so they too need a
   // fresh VIEW, not only the originator.
@@ -282,11 +338,13 @@ function handleMinibufferSubmit(value) {
     const ok = spine.visitFile(value);
     if (ok) {
       subscribeToBuffer();
-      // Re-snapshot every client onto the new shared buffer.
+      // Re-snapshot every client onto the new shared buffer (overlays were
+      // cleared by visitFile + already broadcast empty; cursors reset).
       for (const c of clients) {
         spine.setActiveClient(c.index);
         sendSnapshot(c);
         sendViewTo(c);
+        sendCursorsTo(c);
       }
     }
     return;
@@ -311,6 +369,13 @@ function onClientMessage(client, event) {
       spine.setActiveClient(client.index);
       sendSnapshot(client);
       sendViewTo(client);
+      // A late-joining client needs the buffer's current overlays + its
+      // own cursor set (a window can attach while another already has
+      // highlights or multi-cursor active).
+      client.port.postMessage({
+        type: MSG.OVERLAYS, overlays: spine.overlaySnapshot(), seq,
+      });
+      sendCursorsTo(client);
       break;
     case MSG.INTENT:
       applyIntent(client, msg.intent);

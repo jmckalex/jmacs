@@ -239,7 +239,15 @@ function onSnapshot(msg) {
     foldCaptures,
     getPoint: () => mirror.point,
     getMark: () => mirror.mark,
+    // Multi-cursor: the renderer paints a caret for every entry. The mirror
+    // holds the full set synced from the server (the CURSORS message), so a
+    // server-side add-cursor-next shows every secondary caret here.
     getCursors: () => mirror.cursors,
+    // Overlays: the renderer draws each as a styled box behind the text.
+    // The mirror's `decorations` are the synced overlays in the renderer's
+    // { start, end, face } shape, so a server-side highlight-matches paints
+    // here with zero view.js change (the existing getDecorations seam).
+    getDecorations: () => mirror.decorations,
     getMajorModeName: () => null,
     onRenderError: (e) => console.error('[mwb-view] render error:', e),
   });
@@ -268,6 +276,49 @@ function onCursor(msg) {
   }
   mirror.cursors[0].point = msg.point;
   mirror.cursors[0].mark = msg.mark ?? null;
+  if (view) view.setView({ buffer: mirror });
+}
+
+/** A CURSORS message: this client's full cursor set (primary + every
+ *  secondary). The renderer's getCursors() reads mirror.cursors, so
+ *  adopting the set makes every secondary caret appear. We skip the adopt
+ *  while a predicted self-insert is in flight (the local echo is
+ *  authoritative for the primary point during rapid typing — the same
+ *  guard onView uses); a single-cursor set from the server would otherwise
+ *  rewind the optimistic primary. Multi-cursor edits come via RESYNC, which
+ *  carries the cursor set itself, so this guard never drops a real update. */
+function onCursors(cursors) {
+  if (!mirror || !Array.isArray(cursors)) return;
+  const predictionsInFlight = [...pending.values()].some((p) => p.predicted);
+  if (predictionsInFlight && cursors.length <= 1) return;
+  mirror.applyCursors(cursors);
+  if (view) view.setView({ buffer: mirror });
+}
+
+/** An OVERLAYS message: the buffer's overlay set (shared across clients).
+ *  The renderer draws them via getDecorations(); applyOverlays fires the
+ *  mirror's onChange so the view repaints. A highlight created in another
+ *  window arrives here and renders — the two-window overlay proof. */
+function onOverlays(overlays) {
+  if (!mirror) return;
+  mirror.applyOverlays(overlays);
+  if (view) view.setView({ buffer: mirror });
+}
+
+/** A RESYNC message: the canonical text + this client's cursor set, sent
+ *  when a single delta can't replicate the edit (a multi-cursor edit). We
+ *  clear any in-flight predictions (the resync is authoritative) and adopt
+ *  the whole buffer + cursor set. */
+function onResync(msg) {
+  if (!mirror) return;
+  // A resync supersedes any optimistic predictions still pending.
+  for (const [id, p] of pending) {
+    if (p.predicted) {
+      record('roundTrip', performance.now() - p.t0);
+      pending.delete(id);
+    }
+  }
+  mirror.applyResync(msg);
   if (view) view.setView({ buffer: mirror });
 }
 
@@ -330,6 +381,9 @@ window.addEventListener('message', (event) => {
       else if (msg.type === MSG.DELTA) onDelta(msg.delta);
       else if (msg.type === MSG.CURSOR) onCursor(msg);
       else if (msg.type === MSG.VIEW) onView(msg.view);
+      else if (msg.type === MSG.OVERLAYS) onOverlays(msg.overlays);
+      else if (msg.type === MSG.CURSORS) onCursors(msg.cursors);
+      else if (msg.type === MSG.RESYNC) onResync(msg);
     };
     port.start();
     linkEl.textContent = 'connected ✓';

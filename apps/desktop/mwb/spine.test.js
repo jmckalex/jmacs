@@ -415,14 +415,19 @@ test('Markdown C-c 1 makes the line a level-1 heading', () => {
   assert.equal(spine.buffer.text, '# Title');
 });
 
-test('a fundamental-mode buffer has no C-c map; C-c falls through cleanly', () => {
-  // In a plain .txt buffer C-c is unbound — it must not crash or swallow
-  // the next key as a chord.
+test('a fundamental-mode buffer: C-c is the global multi-cursor prefix', () => {
+  // In a plain .txt buffer C-c is the global prefix carrying C-c d / C-c D
+  // (multi-cursor, like production's c-c-keymap). An UNBOUND chord key
+  // (C-c z) must abort cleanly — it does NOT self-insert, matching Emacs:
+  // a key after a live prefix that isn't bound is just unbound, not text.
   const { spine } = makeSpine('plain', 'note.txt');
   spine.buffer.moveTo(spine.buffer.text.length);
-  spine.handleKey('C-c'); // unbound prefix in fundamental mode
-  spine.handleKey('z'); // should self-insert (chord aborted)
-  assert.equal(spine.buffer.text, 'plainz');
+  spine.handleKey('C-c'); // global prefix
+  spine.handleKey('z'); // unbound in the C-c map → chord aborts, no insert
+  assert.equal(spine.buffer.text, 'plain');
+  // And the abort is clean: the next bare key self-inserts normally.
+  spine.handleKey('!');
+  assert.equal(spine.buffer.text, 'plain!');
 });
 
 test('the math-symbol minor mode: C-c m on, ` then a key inserts a LaTeX symbol', () => {
@@ -466,4 +471,146 @@ test('custom.lisp loaded: *tab-width* is a registered, readable setting', () => 
     true
   );
   assert.equal(Number(spine.interpreter.evaluate('*tab-width*')), 4);
+});
+
+// --- multi-cursor over the wire (multi-cursor.lisp, server-side) --------
+
+test('multi-cursor.lisp loaded: add-cursor-next + select-all-matches exist', () => {
+  const { spine } = makeSpine('foo', 'note.txt');
+  const names = spine.commandNames();
+  assert.ok(names.includes('add-cursor-next'), 'add-cursor-next bound');
+  assert.ok(names.includes('select-all-matches'), 'select-all-matches bound');
+});
+
+test('C-c d selects the word at point, then adds a cursor at the next match', () => {
+  const { spine } = makeSpine('foo bar foo baz foo', 'note.txt');
+  spine.buffer.moveTo(0); // inside the first "foo"
+  spine.handleKey('C-c');
+  spine.handleKey('d'); // first press: select "foo" as the primary region
+  assert.equal(spine.activeCursorCount(), 1);
+  assert.deepEqual(spine.cursorsOf(0), [{ point: 3, mark: 0 }]);
+  spine.handleKey('C-c');
+  spine.handleKey('d'); // second press: add a cursor at the next "foo"
+  assert.equal(spine.activeCursorCount(), 2);
+  assert.deepEqual(spine.cursorsOf(0), [
+    { point: 3, mark: 0 },
+    { point: 11, mark: 8 },
+  ]);
+});
+
+test('C-c D selects EVERY match at once (a cursor per occurrence)', () => {
+  const { spine } = makeSpine('foo bar foo baz foo', 'note.txt');
+  spine.buffer.moveTo(1);
+  spine.handleKey('C-c');
+  spine.handleKey('D'); // select-all-matches
+  assert.equal(spine.activeCursorCount(), 3);
+  assert.deepEqual(spine.cursorsOf(0).map((c) => c.point), [3, 11, 19]);
+});
+
+test('a multi-cursor self-insert edits at every caret (the real buffer path)', () => {
+  const { spine } = makeSpine('foo bar foo baz foo', 'note.txt');
+  spine.buffer.moveTo(1);
+  spine.handleKey('C-c');
+  spine.handleKey('D'); // 3 cursors, each selecting a "foo"
+  // Type "X": each selected "foo" is replaced by "X" (multi-cursor insert).
+  spine.handleKey('X');
+  assert.equal(spine.buffer.text, 'X bar X baz X');
+  assert.deepEqual(spine.cursorsOf(0).map((c) => c.point), [1, 7, 13]);
+});
+
+test('C-g (keyboard-quit) collapses the cursor set back to the primary', () => {
+  const { spine } = makeSpine('foo bar foo foo', 'note.txt');
+  spine.buffer.moveTo(1);
+  spine.handleKey('C-c');
+  spine.handleKey('D');
+  assert.ok(spine.activeCursorCount() > 1, 'multi-cursor active');
+  spine.handleKey('C-g'); // keyboard-quit (multi-cursor.lisp wraps it)
+  assert.equal(spine.activeCursorCount(), 1);
+});
+
+test('cursorsOf falls back to a single-cursor list for a fresh buffer', () => {
+  const { spine } = makeSpine('hello', 'note.txt');
+  spine.buffer.moveTo(2);
+  assert.deepEqual(spine.cursorsOf(0), [{ point: 2, mark: null }]);
+});
+
+// --- overlays over the wire (highlight-matches, server-side) ------------
+
+test('highlight-matches overlays every occurrence of the word at point', () => {
+  const { spine, log } = makeSpine('foo bar foo baz foo', 'note.txt');
+  spine.buffer.moveTo(1); // inside the first "foo"
+  spine.runCommand('highlight-matches');
+  const ovs = spine.overlaySnapshot();
+  assert.equal(ovs.length, 3);
+  assert.deepEqual(ovs.map((o) => [o.start, o.end]), [[0, 3], [8, 11], [16, 19]]);
+  assert.ok(ovs.every((o) => o.face === 'search-match' && o.kind === 'search'));
+  assert.ok(
+    log.status.some((s) => s.includes('Highlighted')),
+    'a status reports the match count'
+  );
+});
+
+test('highlight overlays ride edits (their endpoints are L2 markers)', () => {
+  const { spine } = makeSpine('foo bar foo', 'note.txt');
+  spine.buffer.moveTo(8); // inside the SECOND "foo"
+  spine.runCommand('highlight-matches');
+  // Insert text BEFORE the matches; the later overlay should shift right.
+  spine.buffer.moveTo(0);
+  spine.buffer.insert('AB');
+  const ovs = spine.overlaySnapshot();
+  // The second "foo" (was 8..11) rode +2 to 10..13.
+  assert.ok(
+    ovs.some((o) => o.start === 10 && o.end === 13),
+    `expected an overlay at 10..13, got ${JSON.stringify(ovs)}`
+  );
+  assert.equal(spine.buffer.text, 'ABfoo bar foo');
+});
+
+test('unhighlight-all clears the search overlays', () => {
+  const { spine } = makeSpine('foo foo foo', 'note.txt');
+  spine.buffer.moveTo(1);
+  spine.runCommand('highlight-matches');
+  assert.ok(spine.overlaySnapshot().length > 0);
+  spine.runCommand('unhighlight-all');
+  assert.equal(spine.overlaySnapshot().length, 0);
+});
+
+test('overlays clear on a find-file buffer swap', () => {
+  const file = { text: 'alpha beta gamma', name: 'other.txt' };
+  const { spine } = makeSpine('foo foo', 'note.txt', {
+    openFile: () => file,
+  });
+  spine.buffer.moveTo(1);
+  spine.runCommand('highlight-matches');
+  assert.ok(spine.overlaySnapshot().length > 0);
+  spine.visitFile('other.txt');
+  assert.equal(spine.overlaySnapshot().length, 0);
+  assert.equal(spine.buffer.text, 'alpha beta gamma');
+});
+
+test('the onOverlays effect fires when overlays change', () => {
+  let calls = 0;
+  const spine = createSpine(
+    { initialText: 'foo foo foo', name: 'note.txt' },
+    { onOverlays: () => { calls += 1; } }
+  );
+  spine.buffer.moveTo(1);
+  spine.runCommand('highlight-matches'); // clear (no-op) + 3 adds → ≥1 fire
+  assert.ok(calls >= 1, `expected onOverlays to fire, got ${calls}`);
+  const after = calls;
+  spine.runCommand('unhighlight-all'); // clears the 3 → 1 more fire
+  assert.ok(calls > after, 'unhighlight fires onOverlays too');
+});
+
+// --- the M-s h / M-s u keymap entry points ------------------------------
+
+test('M-s h runs highlight-matches; M-s u clears', () => {
+  const { spine } = makeSpine('foo foo foo', 'note.txt');
+  spine.buffer.moveTo(1);
+  spine.handleKey('M-s');
+  spine.handleKey('h'); // highlight-matches
+  assert.equal(spine.overlaySnapshot().length, 3);
+  spine.handleKey('M-s');
+  spine.handleKey('u'); // unhighlight-all
+  assert.equal(spine.overlaySnapshot().length, 0);
 });

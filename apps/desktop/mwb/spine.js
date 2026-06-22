@@ -83,6 +83,14 @@ const SPINE_STDLIB = Object.freeze([
   'kill.lisp',
   'yank-pop.lisp',
   'line-ops.lisp',
+  // expand-region.lisp (pure Lisp; defines expand-region-word-bounds) must
+  // precede multi-cursor.lisp, which uses it to find the word at point.
+  'expand-region.lisp',
+  // multi-cursor.lisp — the C-c d / C-c D word-select-and-add commands,
+  // written against the model-side multi-cursor primitives (add-selection!,
+  // selections, collapse-to-primary!). It rebinds keyboard-quit, so a
+  // minimal keyboard-quit is defined in the spine prelude before it loads.
+  'multi-cursor.lisp',
   'search.lisp',
   'markdown.lisp',
 ]);
@@ -136,8 +144,25 @@ const KEYMAP = Object.freeze({
   // --- search (search.lisp — commands resolve; loop is a host stub) -
   'C-s': 'isearch-forward',
   'C-r': 'isearch-backward',
+  // --- highlight all matches (a REAL overlay feature, server-side) ---
+  // M-s h highlights every occurrence of the word at point / region as
+  // overlays the renderer draws via getDecorations(); M-s u clears them.
+  // (Emacs binds highlight-symbol-at-point under M-s h …; we keep the
+  // mnemonic.) These prove overlay sync end-to-end.
+  'M-s': { h: 'highlight-matches', u: 'unhighlight-all' },
   // command spine entry points
   'M-x': 'execute-extended-command',
+});
+
+/**
+ * The global `C-c` prefix the spine offers when no MAJOR mode claims it.
+ * In a Markdown buffer the mode-keymap chain catches `C-c` first (its
+ * `C-c b` etc.), so these only fire in a plain buffer — exactly where
+ * production's global `c-c-keymap` holds `C-c d` / `C-c D` (multi-cursor).
+ */
+const CC_MAP = Object.freeze({
+  d: 'add-cursor-next', // multi-cursor.lisp — word-select + add next match
+  D: 'select-all-matches', // multi-cursor.lisp — a cursor at every match
 });
 
 /**
@@ -185,6 +210,11 @@ export function createSpine(options, effects = {}) {
   const onMinibufferClose = effects.onMinibufferClose ?? (() => {});
   const onScroll = effects.onScroll ?? (() => {});
   const openFile = effects.openFile ?? (() => null);
+  // Raised whenever the overlay set changes (a command added/cleared a
+  // highlight). The server broadcasts the fresh snapshot to every client
+  // sharing the buffer (overlays are shared state). Called with no args;
+  // the server reads `spine.overlaySnapshot()`.
+  const onOverlays = effects.onOverlays ?? (() => {});
 
   // The canonical buffer + a real view over it. The view owns point/mark
   // (per-client window-state); the buffer owns the text. `bindCursor` (run
@@ -235,6 +265,54 @@ export function createSpine(options, effects = {}) {
   // without an OS clipboard (which a headless Node child lacks). See
   // PRIMITIVE-SPLIT.md "Kill ring".
   let clipboardText = '';
+
+  // --- overlays (shared buffer state) ----------------------------------
+  //
+  // An overlay is a face-tagged range on the CANONICAL buffer — a search
+  // highlight, a snippet field, a secondary-cursor decoration. They are
+  // MODEL state (shared: every client viewing the buffer sees the same
+  // set, so they live here, not per-client), and they must ride edits, so
+  // each overlay's endpoints are real L2 MARKERS (which shift correctly
+  // under inserts/deletes — packages/buffer createMarker). The server reads
+  // their live offsets (`overlaySnapshot`) and broadcasts the set to every
+  // client, whose mirror renders them via the renderer's getDecorations().
+  //
+  // This is the model-side half of the search/snippet/decoration features
+  // PRIMITIVE-SPLIT.md flagged as render-message slices: the OVERLAY STATE
+  // is model-side (shared, edit-tracked); only the PIXELS are client-side
+  // (the renderer already draws getDecorations()). So an overlay needs no
+  // new render protocol — just the offsets on the wire.
+  /** @type {{ id: string, startM: any, endM: any, face: string, kind: string }[]} */
+  let overlayList = [];
+  let overlayId = 0;
+
+  /** Drop every overlay (releasing its markers), or only those of KIND. */
+  function clearOverlays(kind) {
+    const keep = [];
+    for (const o of overlayList) {
+      if (kind === undefined || o.kind === kind) {
+        o.startM.remove();
+        o.endM.remove();
+      } else {
+        keep.push(o);
+      }
+    }
+    overlayList = keep;
+  }
+
+  /** A wire snapshot of the overlays at their CURRENT (edit-tracked)
+   *  offsets: `[{ start, end, face, kind, id }]`. Drops collapsed overlays
+   *  whose markers have crossed (a deletion swallowed the range). */
+  function overlaySnapshot() {
+    const out = [];
+    for (const o of overlayList) {
+      const start = o.startM.offset;
+      const end = o.endM.offset;
+      if (end <= start) continue; // collapsed by an edit — skip
+      out.push({ start, end, face: o.face, kind: o.kind, id: o.id });
+    }
+    return out;
+  }
 
 
   // --- the interpreter --------------------------------------------------
@@ -319,6 +397,44 @@ export function createSpine(options, effects = {}) {
       },
       'clipboard-text': () => clipboardText,
 
+      // --- overlays (model state, edit-tracked via L2 markers) ---------
+      // The model-side surface for face-tagged ranges. `add-overlay!`
+      // pins two markers (so the range rides edits) and returns an id;
+      // `clear-overlays!` drops all overlays or only those of a kind. The
+      // server broadcasts the resulting set (overlaySnapshot) to clients,
+      // whose renderer draws them via getDecorations(). This is what makes
+      // search-match HIGHLIGHTING (every match, not just the selected one)
+      // work over the wire — a real overlay feature proving the sync.
+      // (start end face [kind]) -> id-string
+      'add-overlay!': (args) => {
+        const start = Math.max(0, Math.floor(Number(args[0]) || 0));
+        const end = Math.max(0, Math.floor(Number(args[1]) || 0));
+        const face = String(args[2] ?? 'overlay');
+        const kind = args.length > 3 && args[3] !== NIL ? String(args[3]) : 'overlay';
+        const lo = Math.min(start, end);
+        const hi = Math.max(start, end);
+        const id = `ov${overlayId += 1}`;
+        overlayList.push({
+          id,
+          startM: buffer.createMarker(lo),
+          endM: buffer.createMarker(hi),
+          face,
+          kind,
+        });
+        onOverlays();
+        return id;
+      },
+      // (clear-overlays! [kind]) -> nil. No kind clears all.
+      'clear-overlays!': (args) => {
+        const kind = args.length > 0 && args[0] !== NIL ? String(args[0]) : undefined;
+        const before = overlayList.length;
+        clearOverlays(kind);
+        if (overlayList.length !== before) onOverlays();
+        return NIL;
+      },
+      // (overlay-count) -> integer (the live, non-collapsed count).
+      'overlay-count': () => overlaySnapshot().length,
+
       // --- customisation openers (custom.lisp) — STUB ------------------
       // These open a render-side customize view. The `customize` command
       // resolves; the panel itself is a render-side slice, deferred. None
@@ -396,8 +512,21 @@ export function createSpine(options, effects = {}) {
 
   // Load the real command system + editing commands + the model-heavy
   // slice (see SPINE_STDLIB) verbatim from disk — the same source the
-  // production editor runs.
+  // production editor runs. Just before multi-cursor.lisp (which rebinds
+  // keyboard-quit), define a minimal model-side keyboard-quit: production's
+  // (keymap.lisp, render-heavy, not loaded) also resets the keymap + prefix
+  // arg, but the spine owns chord state in JS (resetChord), so the model
+  // half is just clearing the mark. `defcommand` exists once commands.lisp
+  // (first in the list) has loaded, so this must run mid-loop, not in the
+  // early prelude above.
   for (const file of SPINE_STDLIB) {
+    if (file === 'multi-cursor.lisp') {
+      interpreter.evaluate(`
+        (defcommand keyboard-quit ()
+          "Abort a partial key sequence and clear the selection (C-g)."
+          (clear-mark!))
+      `);
+    }
     const source = readFileSync(join(STDLIB_DIR, file), 'utf8');
     interpreter.evaluate(source);
   }
@@ -432,6 +561,56 @@ export function createSpine(options, effects = {}) {
       "Set the mark at point, starting a selection (C-space)."
       (set-mark!)
       (show-status! "Mark set"))
+
+    ;; --- highlight-matches: a REAL overlay feature, server-side -------
+    ;; Highlight EVERY occurrence of the word at point (or the active
+    ;; region's text) as overlays. Unlike the host's interactive isearch
+    ;; (which selects one match at a time), this paints all matches at
+    ;; once — the natural proof that overlays sync to the client and the
+    ;; real view.js draws them via getDecorations(). The overlays ride
+    ;; edits (their endpoints are L2 markers) and are shared across every
+    ;; window viewing the buffer.
+    (define (-highlight-bounds)
+      "The (start . end) to highlight: the active region, else the word
+       at point. nil when there is neither."
+      (cond
+        ((region-active?)
+         (let ((m (mark)) (p (point)))
+           (cons (min m p) (max m p))))
+        (else (expand-region-word-bounds (buffer-text) (point)))))
+
+    (define (-add-match-overlays text needle n from)
+      "Add a search overlay at every occurrence of NEEDLE (length N) in
+       TEXT at or after FROM. Tail-recursive."
+      (let ((found (string-index-of text needle from)))
+        (cond
+          ((< found 0) nil)
+          (else
+            (add-overlay! found (+ found n) "search-match" "search")
+            (-add-match-overlays text needle n (+ found n))))))
+
+    (defcommand highlight-matches ()
+      "Highlight every occurrence of the word at point (or the region)
+       with search overlays (M-s h)."
+      (clear-overlays! "search")
+      (let ((bounds (-highlight-bounds)))
+        (when (not (nil? bounds))
+          (let* ((start (car bounds))
+                 (end (cdr bounds))
+                 (text (buffer-text))
+                 (needle (substring text start end))
+                 (n (string-length needle)))
+            (when (> n 0)
+              (-add-match-overlays text needle n 0)
+              (show-status!
+                (string-append "Highlighted "
+                               (number->string (overlay-count))
+                               " match(es) of \\"" needle "\\"")))))))
+
+    (defcommand unhighlight-all ()
+      "Remove all search-match highlight overlays (M-s u)."
+      (clear-overlays! "search")
+      (show-status! "Highlights cleared"))
   `);
 
   // --- the mode-keymap resolver (the meaningful spine extension) -------
@@ -549,6 +728,11 @@ export function createSpine(options, effects = {}) {
       onStatus(statusText);
       return false;
     }
+    // Overlays are pinned to the OLD buffer's markers; drop them on a swap
+    // (the new buffer has its own overlay state). onOverlays fires so the
+    // server broadcasts the now-empty set.
+    clearOverlays();
+    onOverlays();
     buffer = createBuffer(result.text, { name: result.name });
     // Rebuild every client's view over the new shared buffer, preserving the
     // number of clients (each keeps its own cursor, reset to start).
@@ -624,6 +808,27 @@ export function createSpine(options, effects = {}) {
       status: statusText,
       modified,
     };
+  }
+
+  /** A client's FULL cursor set (the primary + every secondary), as plain
+   *  `[{point, mark}]` — the shape the renderer's getCursors() returns. The
+   *  multi-cursor commands (add-cursor-next, select-all-matches) build the
+   *  set on the active client's view; this surfaces it for the CURSORS
+   *  message so the renderer paints every caret. */
+  function cursorsOf(index) {
+    const v = clientViews[index] ?? view;
+    const cs = Array.isArray(v.cursors) && v.cursors.length
+      ? v.cursors
+      : [{ point: v.point, mark: v.mark ?? null }];
+    return cs.map((c) => ({ point: c.point, mark: c.mark ?? null }));
+  }
+
+  /** How many cursors the active client's view has (≥1). The server uses
+   *  this to decide a single delta vs a RESYNC after an edit: a
+   *  multi-cursor edit makes several L1 edits but emits one change event,
+   *  so it needs a whole-buffer resync to replicate faithfully. */
+  function activeCursorCount() {
+    return Array.isArray(view.cursors) ? view.cursors.length : 1;
   }
 
   // --- the keymap dispatch ---------------------------------------------
@@ -740,6 +945,9 @@ export function createSpine(options, effects = {}) {
     // 5. The spine's global KEYMAP (motion / editing / kill-yank / …).
     let binding = KEYMAP[key];
     if (key === 'C-x') binding = CX_MAP;
+    // The global C-c prefix (multi-cursor) — only reached when no major
+    // mode claimed C-c above (step 4). In Markdown, the mode map wins.
+    if (key === 'C-c') binding = CC_MAP;
     if (binding && typeof binding === 'object') {
       activeMap = binding;
       chordPrefix = key;
@@ -848,6 +1056,10 @@ export function createSpine(options, effects = {}) {
     addClientView,
     setActiveClient,
     viewStateOf,
+    // overlays + multi-cursor over the wire
+    cursorsOf,
+    activeCursorCount,
+    overlaySnapshot,
     get clientCount() {
       return clientViews.length;
     },

@@ -102,6 +102,21 @@
         font-size: 11px;
         white-space: pre;
       }
+      /* Search-match overlay face. view.js paints a synced overlay as
+         <div class="editor-decoration tok-search-match">; styles.css has
+         no search face (the production isearch uses the selection), so the
+         mwb harness supplies one — a translucent amber wash, like a
+         find-all highlight. (An mwb-only face; production styles.css is
+         untouched, per the MWB isolation rule.) */
+      .editor-decoration.tok-search-match {
+        background: rgba(235, 203, 139, 0.32);
+        border-radius: 2px;
+        box-shadow: 0 0 0 1px rgba(235, 203, 139, 0.55) inset;
+      }
+      .editor-decoration.tok-overlay {
+        background: rgba(136, 192, 208, 0.25);
+        border-radius: 2px;
+      }
     </style>
   </head>
   <body>
