@@ -12,6 +12,9 @@ import {
   predictSelfInsert,
   predictDeleteBackward,
   renderModeline,
+  normaliseOverlay,
+  overlaysToDecorations,
+  normaliseCursors,
   MINIBUFFER_IDLE,
   MSG,
   INTENT,
@@ -122,4 +125,82 @@ test('the protocol declares the VIEW message + minibuffer intents', () => {
   assert.equal(INTENT.MINIBUFFER_SUBMIT, 'minibuffer-submit');
   assert.equal(INTENT.MINIBUFFER_CANCEL, 'minibuffer-cancel');
   assert.equal(INTENT.MINIBUFFER_CHANGE, 'minibuffer-change');
+});
+
+// --- overlays + multi-cursor over the wire ----------------------------
+
+test('the protocol declares the overlay/cursor/resync messages', () => {
+  assert.equal(MSG.OVERLAYS, 'overlays');
+  assert.equal(MSG.CURSORS, 'cursors');
+  assert.equal(MSG.RESYNC, 'resync');
+});
+
+test('normaliseOverlay yields the renderer decoration shape', () => {
+  assert.deepEqual(
+    normaliseOverlay({ start: 3, end: 8, face: 'search-match' }),
+    { start: 3, end: 8, face: 'search-match' }
+  );
+});
+
+test('normaliseOverlay orders start <= end and floors offsets', () => {
+  assert.deepEqual(
+    normaliseOverlay({ start: 8.9, end: 3.2, face: 'x' }),
+    { start: 3, end: 8, face: 'x' }
+  );
+});
+
+test('normaliseOverlay defaults a missing face and carries kind/id', () => {
+  const o = normaliseOverlay({ start: 0, end: 1, kind: 'search', id: 'm3' });
+  assert.equal(o.face, 'overlay');
+  assert.equal(o.kind, 'search');
+  assert.equal(o.id, 'm3');
+});
+
+test('normaliseOverlay drops a malformed overlay (non-numeric range)', () => {
+  assert.equal(normaliseOverlay({ start: 'x', end: 2, face: 'f' }), null);
+  assert.equal(normaliseOverlay(null), null);
+  assert.equal(normaliseOverlay(42), null);
+});
+
+test('overlaysToDecorations normalises a list and drops malformed entries', () => {
+  const decs = overlaysToDecorations([
+    { start: 5, end: 2, face: 'a' }, // reversed → ordered
+    { start: 'bad', end: 1, face: 'b' }, // dropped
+    { start: 10, end: 12, face: 'c', id: 'z' }, // id stripped from a decoration
+  ]);
+  assert.deepEqual(decs, [
+    { start: 2, end: 5, face: 'a' },
+    { start: 10, end: 12, face: 'c' },
+  ]);
+});
+
+test('overlaysToDecorations tolerates a non-array', () => {
+  assert.deepEqual(overlaysToDecorations(undefined), []);
+});
+
+test('normaliseCursors preserves a multi-cursor set', () => {
+  assert.deepEqual(
+    normaliseCursors([
+      { point: 3, mark: 1 },
+      { point: 9, mark: null },
+      { point: 12, mark: 12 },
+    ]),
+    [
+      { point: 3, mark: 1 },
+      { point: 9, mark: null },
+      { point: 12, mark: 12 },
+    ]
+  );
+});
+
+test('normaliseCursors always yields at least the primary', () => {
+  assert.deepEqual(normaliseCursors([]), [{ point: 0, mark: null }]);
+  assert.deepEqual(normaliseCursors(undefined), [{ point: 0, mark: null }]);
+});
+
+test('normaliseCursors floors offsets and nulls a non-finite mark', () => {
+  assert.deepEqual(
+    normaliseCursors([{ point: 4.7, mark: undefined }]),
+    [{ point: 4, mark: null }]
+  );
 });

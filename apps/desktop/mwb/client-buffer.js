@@ -45,6 +45,8 @@
 
 import { createBuffer as createStorage } from '@editor/storage';
 
+import { normaliseCursors, overlaysToDecorations } from './protocol.js';
+
 /**
  * @callback IntentSink
  * @param {object} intent - An edit/motion intent to send to the server.
@@ -78,13 +80,22 @@ export function createClientBuffer(options = {}) {
     : () => {};
   const localEcho = options.localEcho !== false;
 
-  // The cursor is WINDOW STATE: per-client, owned here, not shared. Two
-  // windows over one buffer share the storage but each keep their own
-  // point/mark (plan §4 "per-window vs per-buffer state"). We keep the
-  // same `cursors[]`-with-aliases shape a real view/buffer uses, so the
-  // renderer's multi-cursor reads (`getCursors`) work unchanged — though
-  // this slice drives only the primary cursor.
+  // The cursor SET is WINDOW STATE: per-client, owned here, not shared.
+  // Two windows over one buffer share the storage but each keep their own
+  // point/mark (plan §4 "per-window vs per-buffer state"). We keep the same
+  // `cursors[]`-with-aliases shape a real view/buffer uses, so the
+  // renderer's multi-cursor reads (`getCursors`) work unchanged. Index 0 is
+  // the primary; secondaries (1+) are synced from the server's per-client
+  // cursor set (the `CURSORS` message) so the renderer paints every caret.
   const cursors = [{ point: clampPoint(options.point ?? 0), mark: null }];
+
+  // The buffer's OVERLAYS — face-tagged ranges (search highlights, snippet
+  // fields, …). Unlike cursors, overlays are SHARED buffer state: they live
+  // on the canonical buffer, so every client viewing it sees the same set
+  // (the `OVERLAYS` message broadcasts them). The renderer reads them via
+  // `getDecorations()` (see the `decorations` accessor below).
+  /** @type {import('./protocol.js').WireOverlay[]} */
+  let overlays = [];
 
   /** @type {Set<(event: BufferEvent) => void>} */
   const listeners = new Set();
@@ -157,7 +168,8 @@ export function createClientBuffer(options = {}) {
 
   /**
    * Replace the whole mirror from a server SNAPSHOT (initial sync /
-   * resync after a detected gap). Resets the cursor to the snapshot's.
+   * resync after a detected gap). Resets the cursor to the snapshot's and
+   * clears overlays (a fresh buffer re-broadcasts its own overlays).
    *
    * @param {object} snapshot - `{ text, point, seq, name? }`.
    */
@@ -167,8 +179,63 @@ export function createClientBuffer(options = {}) {
     cursors.length = 1;
     cursors[0].point = clampPoint(snapshot.point ?? 0);
     cursors[0].mark = null;
+    overlays = [];
     lastSeq = typeof snapshot.seq === 'number' ? snapshot.seq : 0;
     emit(lastLowLevelChange);
+  }
+
+  /**
+   * Apply a whole-buffer RESYNC: the canonical text plus this client's full
+   * cursor set. Used when a single forwarded delta cannot faithfully
+   * replicate the edit — chiefly a MULTI-CURSOR insert/delete, which the L2
+   * buffer applies as several L1 edits but reports as one change (see
+   * protocol.js `MSG.RESYNC`). Replacing the whole text + adopting the
+   * server's cursor set is exact; the fast single-cursor delta path is
+   * untouched. Overlays are NOT cleared (a resync is a text/cursor event;
+   * overlays arrive on their own channel and ride the edit server-side).
+   *
+   * @param {object} resync - `{ text, cursors, seq }`.
+   * @returns {boolean} Whether the text changed.
+   */
+  function applyResync(resync) {
+    if (typeof resync.seq === 'number') lastSeq = resync.seq;
+    const before = storage.toString();
+    const next = String(resync.text ?? '');
+    if (next !== before) storage.replace(0, storage.length, next);
+    adoptCursors(resync.cursors);
+    emit(next !== before ? lastLowLevelChange : null);
+    return next !== before;
+  }
+
+  /**
+   * Adopt a full cursor set from the server (the `CURSORS` message or a
+   * resync). Rebuilds the `cursors` array IN PLACE so any reference the
+   * renderer holds (it reads `mirror.cursors` each render) stays live and
+   * index 0 remains the primary. Clamps every offset to the current text.
+   *
+   * @param {Array<{point:number, mark:number|null}>} next
+   */
+  function adoptCursors(next) {
+    const norm = normaliseCursors(next).map((c) => ({
+      point: clampPoint(c.point),
+      mark: c.mark === null ? null : clampPoint(c.mark),
+    }));
+    cursors.length = 0;
+    for (const c of norm) cursors.push(c);
+  }
+
+  /**
+   * Replace the buffer's overlay set from the server (the `OVERLAYS`
+   * message). Overlays are shared buffer state, so every client viewing
+   * this buffer receives the same list. Stored normalised; the renderer
+   * reads them via the `decorations` accessor. Emits a cursor-only change
+   * so the view re-renders and repaints the decoration layer.
+   *
+   * @param {import('./protocol.js').WireOverlay[]} next
+   */
+  function applyOverlays(next) {
+    overlays = Array.isArray(next) ? next.slice() : [];
+    emit(null);
   }
 
   // --- local-echo predictions ------------------------------------------
@@ -214,20 +281,32 @@ export function createClientBuffer(options = {}) {
     positionAt(offset) { return storage.positionAt(offset); },
     offsetAt(line, column) { return storage.offsetAt(line, column); },
 
-    // The mirror has no markers/overlays in this slice; the renderer
-    // tolerates their absence (it only creates markers for snippets/
-    // bookmarks, which this slice does not exercise). createMarker is
-    // provided so a stray call doesn't crash — it returns a static marker.
+    // A marker on the mirror is a STATIC read of an offset. Live markers
+    // (positions that ride edits) are owned by the canonical buffer on the
+    // server — the mirror never needs them, because everything that USES a
+    // marker (an overlay endpoint, a snippet field) is computed server-side
+    // and synced down as a concrete offset (an overlay's `start`/`end`, a
+    // cursor's `point`). So `createMarker` returns a fixed-offset stub: it
+    // keeps any stray renderer call safe without re-implementing gravity.
     createMarker(offset) {
       const pos = clampPoint(offset);
       return { get offset() { return pos; }, remove() {} };
     },
 
-    // --- cursor (window-state) -----------------------------------------
+    // --- cursor set (window-state) -------------------------------------
+    // The renderer's getCursors() reads `cursors` each render and paints a
+    // caret for each — so a synced multi-cursor set draws every secondary.
     get cursors() { return cursors; },
     get point() { return cursors[0].point; },
     get mark() { return cursors[0].mark; },
     get cursorCount() { return cursors.length; },
+
+    // --- overlays (shared buffer state) --------------------------------
+    /** The current overlay list (face-tagged ranges), normalised. */
+    get overlays() { return overlays; },
+    /** The renderer's `getDecorations()` shape: `{ start, end, face }[]`.
+     *  The view paints each as `<div class="editor-decoration tok-FACE">`. */
+    get decorations() { return overlaysToDecorations(overlays); },
 
     // --- mutators (intent-emitting) ------------------------------------
     // These are what `view.js` (and the IME path) call. Instead of
@@ -278,6 +357,9 @@ export function createClientBuffer(options = {}) {
     // --- wire surface (used by the client transport, not the renderer) -
     applyDelta,
     applySnapshot,
+    applyResync,
+    applyCursors: adoptCursors,
+    applyOverlays,
     get lastSeq() { return lastSeq; },
   };
 

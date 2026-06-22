@@ -36,6 +36,22 @@ export const MSG = Object.freeze({
   // prompt state. Sent after any intent that changed view-state. (plan §4:
   // "Down: cursor/selection, modeline, minibuffer state, status messages".)
   VIEW: 'view',
+  // The overlay + multi-cursor sync channel (server → client). These carry
+  // the buffer's OVERLAYS (ranges with a face — search highlights, snippet
+  // fields, secondary-cursor decorations) and a client's full CURSOR SET
+  // (the primary + every secondary cursor). The real `view.js` renders both
+  // from the synced mirror — overlays via its `getDecorations()` option and
+  // multi-cursor via its `getCursors()` option — with no view.js change.
+  OVERLAYS: 'overlays', // the buffer's overlay list (shared across clients)
+  CURSORS: 'cursors', // a client's full cursor set (per-client window-state)
+  // A whole-buffer RESYNC: the text + this client's cursor set, sent when a
+  // single forwarded DELTA cannot faithfully replicate the edit. The L2
+  // buffer applies a MULTI-CURSOR insert/delete as SEVERAL low-level L1
+  // edits but emits only ONE change event (the last sub-edit), so the
+  // single-delta path would diverge the mirror. For a multi-cursor edit the
+  // server therefore sends a RESYNC instead — correct and simple; the fast
+  // single-cursor delta path is untouched (no typing-latency regression).
+  RESYNC: 'resync',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -176,4 +192,90 @@ export function predictDeleteBackward(text, point) {
   if (point <= 0) return null;
   const removed = text.slice(point - 1, point);
   return { start: point - 1, removed, inserted: '', point: point - 1 };
+}
+
+// --- overlays + multi-cursor over the wire ----------------------------
+//
+// Overlays and the multi-cursor set are the next replication layer
+// (architect-notes 2026-06-22 11:50 "markers/overlays/multi-cursor over
+// the wire" — the gap). They are PURE DATA on the wire, so the helpers
+// that normalise them live here, DOM- and Electron-free.
+
+/**
+ * An overlay as it travels the wire and as the renderer consumes it: a
+ * face-tagged buffer range. This is exactly the renderer's `DecorationRange`
+ * shape (`{ start, end, face }`, see packages/renderer/src/projection.js),
+ * so a synced overlay drops straight into `view.js`'s `getDecorations()`
+ * with no translation. An `id` lets the server target one overlay for
+ * removal/update; the renderer ignores it.
+ *
+ * @typedef {object} WireOverlay
+ * @property {number} start - Absolute offset where the overlay opens.
+ * @property {number} end - Absolute offset where the overlay closes.
+ * @property {string} face - The face name (a CSS `tok-<face>` class).
+ * @property {string} [kind] - A grouping tag (e.g. "search"), so a feature
+ *   can replace its own overlays without disturbing another's.
+ * @property {string} [id] - A stable id for one overlay (server-assigned).
+ */
+
+/**
+ * Normalise an overlay to the `{ start, end, face }` the renderer's
+ * `decorationRects` needs, with `start <= end` and integer offsets. Drops
+ * malformed overlays (returns null) so a bad one can't crash the render
+ * pass. Pure.
+ *
+ * @param {object} o - A candidate overlay.
+ * @returns {WireOverlay | null}
+ */
+export function normaliseOverlay(o) {
+  if (!o || typeof o !== 'object') return null;
+  const start = Number(o.start);
+  const end = Number(o.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const face = typeof o.face === 'string' && o.face !== '' ? o.face : 'overlay';
+  const lo = Math.max(0, Math.floor(Math.min(start, end)));
+  const hi = Math.max(0, Math.floor(Math.max(start, end)));
+  const out = { start: lo, end: hi, face };
+  if (typeof o.kind === 'string') out.kind = o.kind;
+  if (typeof o.id === 'string') out.id = o.id;
+  return out;
+}
+
+/**
+ * The decoration list the renderer's `getDecorations()` should return,
+ * derived from a wire overlay list: each normalised, malformed ones
+ * dropped, zero-width ones kept (the renderer paints them as empty boxes,
+ * which is fine for a caret-style marker). Pure.
+ *
+ * @param {WireOverlay[]} overlays
+ * @returns {{ start: number, end: number, face: string }[]}
+ */
+export function overlaysToDecorations(overlays) {
+  if (!Array.isArray(overlays)) return [];
+  const out = [];
+  for (const o of overlays) {
+    const n = normaliseOverlay(o);
+    if (n) out.push({ start: n.start, end: n.end, face: n.face });
+  }
+  return out;
+}
+
+/**
+ * Normalise a cursor set to the `[{ point, mark }]` shape the renderer's
+ * `getCursors()` returns and `cursorPositions` consumes. Always yields a
+ * non-empty array (a text view must have at least the primary cursor): an
+ * empty/invalid input collapses to a single cursor at offset 0. Pure.
+ *
+ * @param {Array<{point:number, mark:number|null}>} cursors
+ * @returns {Array<{point:number, mark:number|null}>}
+ */
+export function normaliseCursors(cursors) {
+  if (!Array.isArray(cursors) || cursors.length === 0) {
+    return [{ point: 0, mark: null }];
+  }
+  return cursors.map((c) => {
+    const point = Number.isFinite(c && c.point) ? Math.floor(c.point) : 0;
+    const mark = c && Number.isFinite(c.mark) ? Math.floor(c.mark) : null;
+    return { point: Math.max(0, point), mark: mark === null ? null : Math.max(0, mark) };
+  });
 }

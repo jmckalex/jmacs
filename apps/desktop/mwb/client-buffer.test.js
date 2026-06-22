@@ -210,3 +210,120 @@ test('points are clamped into [0, length]', () => {
   b.moveTo(-5);
   assert.equal(b.point, 0);
 });
+
+// --- multi-cursor over the wire (the CURSORS message) -----------------
+
+test('applyCursors adopts a full secondary-cursor set the renderer reads', () => {
+  const b = createClientBuffer({ initialText: 'foo bar foo baz foo' });
+  b.applyCursors([
+    { point: 3, mark: 0 },
+    { point: 11, mark: 8 },
+    { point: 19, mark: 16 },
+  ]);
+  assert.equal(b.cursorCount, 3);
+  // The renderer reads `cursors` directly via getCursors().
+  assert.deepEqual(b.cursors, [
+    { point: 3, mark: 0 },
+    { point: 11, mark: 8 },
+    { point: 19, mark: 16 },
+  ]);
+  // The primary (index 0) still backs point/mark.
+  assert.equal(b.point, 3);
+  assert.equal(b.mark, 0);
+});
+
+test('applyCursors rebuilds in place so the renderer keeps a live array', () => {
+  const b = createClientBuffer({ initialText: 'abcdef' });
+  const ref = b.cursors; // the renderer holds this reference across renders
+  b.applyCursors([{ point: 1, mark: null }, { point: 4, mark: null }]);
+  assert.equal(ref, b.cursors, 'cursors array identity preserved');
+  assert.equal(ref.length, 2);
+});
+
+test('applyCursors clamps offsets into the buffer', () => {
+  const b = createClientBuffer({ initialText: 'abc' });
+  b.applyCursors([{ point: 99, mark: -3 }]);
+  assert.deepEqual(b.cursors, [{ point: 3, mark: 0 }]);
+});
+
+test('applyCursors collapses an empty set to the primary', () => {
+  const b = createClientBuffer({ initialText: 'abc' });
+  b.applyCursors([{ point: 2, mark: null }, { point: 1, mark: null }]);
+  assert.equal(b.cursorCount, 2);
+  b.applyCursors([]);
+  assert.deepEqual(b.cursors, [{ point: 0, mark: null }]);
+});
+
+// --- overlays over the wire (the OVERLAYS message) --------------------
+
+test('applyOverlays exposes the renderer decoration shape', () => {
+  const b = createClientBuffer({ initialText: 'one two one two' });
+  b.applyOverlays([
+    { start: 0, end: 3, face: 'search-match', kind: 'search', id: 'm0' },
+    { start: 8, end: 11, face: 'search-match', kind: 'search', id: 'm1' },
+  ]);
+  // The renderer reads getDecorations() → { start, end, face } (id/kind stripped).
+  assert.deepEqual(b.decorations, [
+    { start: 0, end: 3, face: 'search-match' },
+    { start: 8, end: 11, face: 'search-match' },
+  ]);
+});
+
+test('applyOverlays fires onChange so the view repaints decorations', () => {
+  const b = createClientBuffer({ initialText: 'abc' });
+  let calls = 0;
+  b.onChange(() => { calls += 1; });
+  b.applyOverlays([{ start: 0, end: 1, face: 'x' }]);
+  assert.equal(calls, 1);
+});
+
+test('applyOverlays replaces the set and an empty list clears it', () => {
+  const b = createClientBuffer({ initialText: 'abcdef' });
+  b.applyOverlays([{ start: 0, end: 2, face: 'a' }]);
+  assert.equal(b.decorations.length, 1);
+  b.applyOverlays([]);
+  assert.deepEqual(b.decorations, []);
+});
+
+test('a snapshot clears overlays (a fresh buffer re-broadcasts its own)', () => {
+  const b = createClientBuffer({ initialText: 'abc' });
+  b.applyOverlays([{ start: 0, end: 1, face: 'x' }]);
+  b.applySnapshot({ text: 'new text', point: 0, seq: 5 });
+  assert.deepEqual(b.decorations, []);
+});
+
+// --- RESYNC (multi-cursor edit replication) ---------------------------
+
+test('applyResync replaces text and adopts the cursor set', () => {
+  // A multi-cursor insert: "X" typed at three carets in "a a a".
+  const b = createClientBuffer({ initialText: 'a a a' });
+  const changed = b.applyResync({
+    text: 'aX aX aX',
+    cursors: [{ point: 2, mark: null }, { point: 5, mark: null }, { point: 8, mark: null }],
+    seq: 7,
+  });
+  assert.equal(changed, true);
+  assert.equal(b.text, 'aX aX aX');
+  assert.equal(b.cursorCount, 3);
+  assert.deepEqual(b.cursors.map((c) => c.point), [2, 5, 8]);
+  assert.equal(b.lastSeq, 7);
+});
+
+test('applyResync fires onChange when the text changed', () => {
+  const b = createClientBuffer({ initialText: 'abc' });
+  let calls = 0;
+  b.onChange(() => { calls += 1; });
+  b.applyResync({ text: 'abcd', cursors: [{ point: 4, mark: null }], seq: 2 });
+  assert.equal(calls, 1);
+});
+
+test('applyResync with identical text still re-adopts cursors', () => {
+  const b = createClientBuffer({ initialText: 'abc' });
+  const changed = b.applyResync({
+    text: 'abc',
+    cursors: [{ point: 1, mark: null }, { point: 2, mark: null }],
+    seq: 3,
+  });
+  assert.equal(changed, false);
+  assert.equal(b.cursorCount, 2);
+});
