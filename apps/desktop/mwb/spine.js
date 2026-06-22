@@ -46,6 +46,7 @@ import { createBufferPrimitives } from '@editor/stdlib';
 import { renderModeline, screenfulStep } from './protocol.js';
 import { createBufferRegistry } from './buffer-registry.js';
 import { createPaneModel } from './pane-model.js';
+import { createCitationPrimitives } from './citation-bridge.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
@@ -705,6 +706,16 @@ export function createSpine(options, effects = {}) {
       // The real buffer primitives — the entire editing/motion surface the
       // stdlib commands are written against, operating on `session`.
       ...createBufferPrimitives(session),
+
+      // --- the citation host bridge (cite.lisp / RefTeX) ----------------
+      // citation-parse / -format / -format-bibliography / -keys / -entries
+      // / -format-entries / -format-keys / -parse-lenient /
+      // -register-style!, backed by the SAME renderer-side citation.js the
+      // in-renderer app uses (its vendored Citation.js bundle is pure ESM,
+      // so the headless server imports it directly). Model-side: two windows
+      // on one document agree on how a bibliography formats. See
+      // PRIMITIVE-SPLIT.md "RefTeX / citations" + citation-bridge.js.
+      ...createCitationPrimitives(),
 
       // --- echo area (the minibuffer's status line) ---------------------
       // keymap.lisp calls these; the spine routes them to the client's
