@@ -161,6 +161,10 @@ import { createServerViewClient } from './server-view-client.js';
 // focus-independent, so the dual-dispatch undo bell can't ring. No-op flag-off
 // (serverMode false → always returns false → the router runs as today).
 import { shouldGlobalRouterDefer } from './server-router-gate.js';
+// G2 mount invariant: clear any stale <text-view> from the server-view
+// container before re-mounting on a buffer switch (find-file / C-x b /
+// kill-buffer), so dead empty elements don't accumulate. Pure + unit-tested.
+import { clearStaleServerViews } from './server-view-mount.js';
 // G2 chrome: the generic PICKER panel the server-view client renders in
 // server-mode (buffer list / M-x / RefTeX). Imported unconditionally (no
 // top-level effects); only USED inside the serverMode-gated boot below.
@@ -5784,8 +5788,22 @@ if (window.host && window.host.serverMode) {
   /** The `mountView` collaborator: build a REAL `<text-view>`, configure it
    *  with the client's onKey + mirror-reading closures, bind the mirror, and
    *  reveal the container. Returns the element (its `setView`/`focus`/
-   *  `destroy`/`recenter` satisfy the client's contract). */
+   *  `destroy`/`recenter` satisfy the client's contract).
+   *
+   *  Called once for the initial buffer AND again on every server-pushed
+   *  buffer switch (find-file / C-x b / kill-buffer): the client tears down the
+   *  old view (`view.destroy()`) then re-mounts the new buffer's mirror here.
+   *  The inner editor's destroy removes its OWN root but leaves the host
+   *  `<text-view>` element behind, so we must clear any stale `<text-view>`
+   *  from the container before appending the new one — otherwise dead empty
+   *  elements accumulate on each switch and steal layout from the live view. */
   function mountServerView(mirror, options) {
+    // Drop any previously-mounted <text-view> (a buffer switch re-mounts). The
+    // client already called destroy() on the old view (tearing down its inner
+    // editor); this removes the now-empty host element so the new one is the
+    // only child — the prototype reused one persistent container, this is the
+    // custom-element equivalent of that single-live-view invariant.
+    clearStaleServerViews(g2HostEl);
     const el = /** @type {*} */ (document.createElement('text-view'));
     el.style.cssText = 'flex:1 1 auto; min-height:0;';
     el.configure({
@@ -5906,6 +5924,11 @@ if (window.host && window.host.serverMode) {
       },
       isMounted: () => serverViewClient.getView() != null,
       bufferId: () => serverViewClient.currentBufferId(),
+      // The single-live-view invariant probe: how many <text-view> elements
+      // are in the G2 container. Must stay 1 across a buffer switch (find-file
+      // / C-x b / kill-buffer) — the multibuffer self-test asserts it, and the
+      // architect can eyeball it after opening a file.
+      textViewCount: () => g2HostEl.querySelectorAll('text-view').length,
     };
   };
   // If the port beat the boot, wire it now.
