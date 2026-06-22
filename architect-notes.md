@@ -4,6 +4,118 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22] G0b (generic PICKER channel) — COMPLETE; the buffer-list picker proves it; the other pickers map cleanly
+
+**This closes out G0** (both structural prototypes done — G0a pane model +
+G0b picker). The graduation **decision gate** is reached: neither unknown
+turned out worse than the rest of Model B. Recommend proceeding to G1.
+
+**The deliverable: ONE reusable render-side picker channel, modelled on the
+minibuffer round-trip, proven on the buffer list.** Built entirely under
+`apps/desktop/mwb/` behind the existing harness; production `app.js`/`view.js`/
+`main.js` and `packages/*` (incl. `commands.lisp`) **untouched**.
+
+**The channel (4 commits, this branch):**
+- **protocol.js** — `MSG.PICKER` (down) + `INTENT.PICKER_CHOOSE`/`PICKER_CANCEL`
+  (up). The wire request is `{ id, title, rows: [{ label, value, ...meta }],
+  options }`. Pure DOM-free helpers: `normalisePickerRequest`/`normalisePickerRow`
+  (shape the request, drop malformed rows, default options) + `filterPickerRows`
+  (the type-to-narrow filter every client picker shares). 11 helper tests.
+- **spine.js** — the **suspend/resume twin of the minibuffer**. A `picker-read`/
+  `picker-delivered` continuation + `*picker-reader*` slot, defined in the
+  spine's **own** Lisp prelude via `interpreter.evaluate` (NOT production
+  `commands.lisp` — the channel stays inside the mwb slice). Host primitive
+  `open-picker!` mints a picker id, records the request, raises `onPicker`.
+  `deliverPicker(value, pickerId)` / `cancelPicker(pickerId)` resume the
+  suspended command — guarded by the pickerId, so a **stale (superseded)
+  picker** can't resume the wrong command.
+- **server.js** — `onPicker` → `sendPickerTo` (normalised PICKER down, tracking
+  `pickerClient`, the minibuffer's twin). `PICKER_CHOOSE`/`PICKER_CANCEL`
+  intents → `spine.deliverPicker`/`cancelPicker`; a choice that switches buffer
+  re-syncs the client through the existing `onBufferSwitched` path.
+- **picker-panel.js** — ONE client-side picker UI: title, type-to-narrow
+  filter, ↑/↓/PageUp/Down nav, Enter/click to choose, Escape to cancel. Holds
+  **no** buffer/registry knowledge (rows are opaque), so the same panel serves
+  every picker. Pure interaction core (`pickerView` selection + `moveSelection`)
+  is unit-tested (9 cases). `pane-view-client.js` mounts it over a dimmed
+  overlay on a `PICKER` message and reports the outcome up.
+
+**Proven on the buffer list (the first + only real consumer):** `C-x C-b` /
+`list-buffers` now opens a real PICKER over the open buffers (rows from the
+`buffer-list-rows` provider: label=name, value=id, meta="Nl ●/–", current
+marked) → the client renders the interactive list → choosing a row runs
+`switch-to-buffer-id!` and the window switches to that buffer through the
+server. End-to-end. The old `open-buffer-list!` data-only stub is superseded.
+
+**Verification (no screen):**
+- `node --test`: spine.test.js **6** picker cases (open, round-trip-switch,
+  cancel, stale-id drop, C-x C-b chord dispatch) + protocol.test.js **11**
+  helper cases + picker-panel.test.js **9** interaction-core cases. Full suite
+  **674/0** (was 649; +25). `commands.lisp`/`view.js` **unchanged** (stdlib
+  882/0, renderer 800/0).
+- A flag-gated **`MWB_PICKER_SELFTEST`** electron self-test drives the WHOLE
+  round-trip through the REAL server intent path (C-x C-b as KEY intents →
+  PICKER → stale-reply-dropped → choice → switch + re-sync → cancel-stays-put).
+  Probed headlessly (stubbed parentPort): **all 12 checks PASS.**
+
+**THE TEMPLATE MAPPING — how the other render-side pickers ride this channel.**
+Each is "provide rows + an on-choose command"; the channel + panel are reused,
+only the row-provider + the on-choose handler differ:
+
+| Picker | Row-provider (server) | row `{label, value, meta}` | on-choose |
+|---|---|---|---|
+| **Buffer list** (built) | `buffer-list-rows` (registry) | name / buffer-id / "Nl ●/–" | `switch-to-buffer-id!` |
+| **`*Recover*`** | the autosave `scanRecoverable()` set (already server-side) | snapshot name / recovery-key / age + path | `recover-buffer!` (the spine already has `recoverBuffer`) — and a discard variant |
+| **Completions** (find-file TAB / M-x) | the command registry / the dir listing (server owns both) | candidate / the string itself / kind icon | insert the completion / `run-command` it |
+| **RefTeX select** | the RefTeX label DB (pure Lisp over buffers → server) | label / label-name / type + context; uses `row.group` for the type headings | insert `\ref{name}` |
+| **Cite** | the bib DB (server) | key / cite-key / author·year·title in `detail` | insert `\cite{key}` |
+
+All five providers' DATA already lives server-side (the registry, the recovery
+scan, the command/dir lists, the RefTeX/bib DBs). So each is a few lines: a
+provider that emits `{label, value, meta}` rows + an on-choose that does one
+host action. The panel's `row.group`/`row.detail` fields (already in the wire
+shape + normaliser) cover RefTeX's type-grouped headings and cite's
+author/year second line **without** a new channel.
+
+**The one picker that needs MORE than rows-in/choice-out — and how it's
+handled: COMPLETIONS' live re-query.** Find-file TAB / M-x narrow as you type,
+and the candidate SET can change with the query (find-file: typing a `/`
+re-lists a new directory; M-x against the full registry is a fixed set, so it's
+fine). Two tiers, both supported:
+1. **Fixed-set narrowing** (M-x, the buffer list, RefTeX, cite): the full row
+   set ships once in the PICKER message and the **client** narrows locally via
+   `filterPickerRows` — zero extra round-trips, the common case, already built.
+2. **Server-re-queried narrowing** (find-file across directories): when the
+   query crosses a boundary the client needs rows it doesn't have. The channel
+   extends with ONE up-message — `PICKER_QUERY { pickerId, query }` — and the
+   server replies with a fresh `PICKER` (same id) carrying the new rows; the
+   client swaps its row set and keeps its filter box. This is the ONLY addition
+   the five pickers need, it's additive (tier-1 pickers never send it), and
+   it's small. **Not built in G0b** (the buffer list is fixed-set); flagged
+   here so it's designed, not discovered. Everything else is pure row-provider.
+
+**Why this bounds the plan's #2 risk** (the render-side pickers, §8.2): the
+fear was "under-design the channel → grow seven bespoke async UIs." Instead one
+channel + one panel + N tiny providers, with the single genuinely-different
+case (live re-query) reduced to one additive up-message. view.js unchanged; the
+existing five panel DOMs (`reftex-select-panel.js`, `reftex-cite-panel.js`,
+`completions-panel.js`, the buffer list, `recover-view.js`) become render-only
+consumers of `picker-panel.js` at graduation.
+
+**One naming divergence from the plan (§2.2.3):** the plan sketched a single
+up-message `PICKER_RESULT { id, value | cancelled }`. I split it into two
+intents — `PICKER_CHOOSE { value, pickerId }` + `PICKER_CANCEL { pickerId }` —
+to match the existing minibuffer's `MINIBUFFER_SUBMIT`/`MINIBUFFER_CANCEL`
+split (one less "is this a cancel?" branch, consistent with the rest of the
+wire). Trivial to rename if you'd rather keep the plan's exact term.
+
+**Decision-gate read:** G0 is done; both unknowns (pane geometry G0a, picker
+channel G0b) came in as clean cuts, not entanglements. **No reason to re-open
+A-vs-B.** Recommend G1 (stand the server up in real `main.js` behind
+`GODOT_SERVER=1`).
+
+---
+
 ## [2026-06-22 ~18:00] Model-B/graduation: the file-level plan to flip the REAL app — `plans/MWB-GRADUATION.md`
 
 **Context**: An analysis + planning task, not a build. With the prototype
