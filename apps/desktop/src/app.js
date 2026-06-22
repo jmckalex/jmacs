@@ -156,6 +156,10 @@ import { createTabline } from '@editor/renderer';
 // unconditionally (it has no top-level effects), but only CONSTRUCTED behind
 // the GODOT_SERVER flag in the late boot — so flag-off is byte-for-byte today.
 import { createServerViewClient } from './server-view-client.js';
+// G2 chrome: the generic PICKER panel the server-view client renders in
+// server-mode (buffer list / M-x / RefTeX). Imported unconditionally (no
+// top-level effects); only USED inside the serverMode-gated boot below.
+import { createPickerPanel } from '../mwb/picker-panel.js';
 
 /**
  * Build a Lisp hash-map (a JS `Map` with interned-keyword keys) from a
@@ -550,6 +554,11 @@ const nameEl = document.getElementById('modeline-name');
 const positionEl = document.getElementById('modeline-position');
 
 function updateModeline() {
+  // In server-mode the modeline is driven by the server's VIEW message (the
+  // G2 chrome paints nameEl/positionEl from the spine's renderModeline); the
+  // in-renderer editor is idle behind the overlay, so its modeline must stand
+  // down or it would fight the server's. Flag-off this guard is never taken.
+  if (window.host && window.host.serverMode) return;
   const shown = views[currentViewIndex];
   // A placeholder chooser pane shows its label and no count — never a
   // `9/7`-style index (it isn't part of the user-visible view list).
@@ -5796,6 +5805,60 @@ if (window.host && window.host.serverMode) {
   // Define the boot hook the init-time port listener calls (or that we call
   // here, whichever runs second — the highlighters are ready now, so if the
   // port already connected we boot immediately below).
+  // The server-driven DOM chrome (server-mode only): the modeline, the echo
+  // area / pending-prefix, the minibuffer prompt, and the generic picker panel
+  // — all driven from the server's VIEW / PICKER messages. The real editor's
+  // own in-renderer chrome is idle behind the G2 overlay, so these drive the
+  // SAME DOM nodes (modeline footer + minibuffer host) the user already sees.
+  let g2PickerHost = null;
+  let g2PickerPanel = null;
+  function closeServerPicker() {
+    if (g2PickerPanel) { try { g2PickerPanel.destroy(); } catch { /* ignore */ } }
+    if (g2PickerHost && g2PickerHost.parentNode) {
+      g2PickerHost.parentNode.removeChild(g2PickerHost);
+    }
+    g2PickerPanel = null;
+    g2PickerHost = null;
+  }
+  const serverChrome = {
+    // The server bakes the modeline string (renderModeline). Show it whole in
+    // the name slot; the line:col is already inside the string, so the position
+    // slot is cleared (the server is authoritative for it now).
+    setModeline: (modeline) => {
+      nameEl.textContent = modeline;
+      positionEl.textContent = '';
+      document.title = `${modeline} — Godot`;
+    },
+    // The echo area: a mid-chord prefix (e.g. "C-x-") or a one-off status. The
+    // minibuffer component reuses its row as the echo area when no prompt is up.
+    setEcho: (status) => minibuffer.setStatus(status ?? ''),
+    // A server-suspended minibuffer read: open the real minibuffer; its input
+    // routes back up as MINIBUFFER_* intents (the spine resumes the command).
+    openMinibuffer: (prompt, value, cbs) => {
+      minibuffer.prompt(prompt, {
+        initialValue: value ?? '',
+        onChange: (v) => cbs.onChange(v),
+        onSubmit: (v) => cbs.onSubmit(v),
+        onCancel: () => cbs.onCancel(),
+      });
+    },
+    closeMinibuffer: () => minibuffer.close(),
+    // The generic picker (buffer list, M-x, RefTeX, completions): an overlay
+    // panel; the choice/cancel routes back up as PICKER_* intents.
+    openPicker: (request, cbs) => {
+      closeServerPicker(); // one picker at a time
+      g2PickerHost = document.createElement('div');
+      g2PickerHost.className = 'mwb-picker-overlay';
+      document.body.appendChild(g2PickerHost);
+      g2PickerPanel = createPickerPanel(g2PickerHost, {
+        request,
+        onChoose: (v) => { cbs.onChoose(v); closeServerPicker(); },
+        onCancel: () => { cbs.onCancel(); closeServerPicker(); },
+      });
+    },
+    closePicker: closeServerPicker,
+  };
+
   bootServerViewClient = () => {
     if (serverViewClient || !godotServerPort) return;
     serverViewClient = createServerViewClient({
@@ -5804,6 +5867,7 @@ if (window.host && window.host.serverMode) {
       highlighters,
       foldCaptures,
       keyEventToString,
+      chrome: serverChrome,
     });
     serverViewClient.connect();
     console.info('[godot] G2: real view routed through the server');

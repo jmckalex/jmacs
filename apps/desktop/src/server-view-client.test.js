@@ -78,6 +78,42 @@ function connectedClient(snapshotText = 'hello world\n') {
   return { port, mount, client };
 }
 
+/** A fake DOM chrome recording every call + the callbacks it was handed, so a
+ *  test can assert what the server drives + drive input back up. The hooks are
+ *  closures (not `this`-methods) since the client destructures them off the
+ *  object, matching how app.js passes plain functions. */
+function fakeChrome() {
+  const c = {
+    modeline: null,
+    echo: null,
+    minibuffer: null, // { prompt, value, cbs } while open, else null
+    minibufferCloses: 0,
+    picker: null, // { request, cbs } while open, else null
+    pickerCloses: 0,
+  };
+  c.setModeline = (modeline) => { c.modeline = modeline; };
+  c.setEcho = (status) => { c.echo = status; };
+  c.openMinibuffer = (prompt, value, cbs) => { c.minibuffer = { prompt, value, cbs }; };
+  c.closeMinibuffer = () => { c.minibuffer = null; c.minibufferCloses += 1; };
+  c.openPicker = (request, cbs) => { c.picker = { request, cbs }; };
+  c.closePicker = () => { c.picker = null; c.pickerCloses += 1; };
+  return c;
+}
+
+/** A connected client wired to a fake chrome — the Part-2 fixture. */
+function connectedClientWithChrome(snapshotText = 'hi\n') {
+  const port = fakePort();
+  const mount = fakeMount();
+  const chrome = fakeChrome();
+  const client = createServerViewClient({ port, mountView: mount.mountView, chrome });
+  client.connect();
+  port.deliver({
+    type: MSG.SNAPSHOT, text: snapshotText, point: 0,
+    name: 'view.js', bufferId: 'buf-1', seq: 0,
+  });
+  return { port, mount, chrome, client };
+}
+
 // --- isBarePrintable ---------------------------------------------------
 
 test('isBarePrintable is true for a single code point, false for chords/empty', () => {
@@ -314,6 +350,135 @@ test('a RESYNC adopts canonical text + the cursor set (grouped undo / multi-curs
   assert.equal(client.getMirror().cursors.length, 2);
 });
 
+// --- Part 2: the server-driven DOM chrome -----------------------------
+
+test('a VIEW renders the server modeline string into the modeline DOM', () => {
+  const { port, chrome } = connectedClientWithChrome();
+  port.deliver({
+    type: MSG.VIEW,
+    view: { point: 0, modeline: '●  view.js   L1:C0  (javascript)', status: '' },
+  });
+  assert.equal(chrome.modeline, '●  view.js   L1:C0  (javascript)');
+});
+
+test('a VIEW renders the pending-prefix / echo status into the echo area', () => {
+  const { port, chrome } = connectedClientWithChrome();
+  // A chord in progress: the server reports its pending prefix as the status.
+  port.deliver({ type: MSG.VIEW, view: { point: 0, modeline: '–  x', status: 'C-x-' } });
+  assert.equal(chrome.echo, 'C-x-', 'the chord-in-progress is visible');
+  // Resolving the chord clears it.
+  port.deliver({ type: MSG.VIEW, view: { point: 0, modeline: '–  x', status: '' } });
+  assert.equal(chrome.echo, '');
+});
+
+test('an active minibuffer VIEW opens the DOM minibuffer with the prompt', () => {
+  const { port, chrome } = connectedClientWithChrome();
+  port.deliver({
+    type: MSG.VIEW,
+    view: { point: 0, modeline: '–  x', status: '',
+      minibuffer: { active: true, prompt: 'Switch to buffer: ', value: '' } },
+  });
+  assert.ok(chrome.minibuffer, 'the minibuffer opened');
+  assert.equal(chrome.minibuffer.prompt, 'Switch to buffer: ');
+});
+
+test('the minibuffer opens once and closes when the server clears it', () => {
+  const { port, chrome } = connectedClientWithChrome();
+  const open = { active: true, prompt: 'M-x ', value: '' };
+  port.deliver({ type: MSG.VIEW, view: { point: 0, modeline: '–  x', minibuffer: open } });
+  // A second VIEW with the SAME open prompt must NOT re-open (no flicker).
+  port.deliver({ type: MSG.VIEW, view: { point: 0, modeline: '–  x', minibuffer: open } });
+  assert.equal(chrome.minibufferCloses, 0);
+  assert.ok(chrome.minibuffer);
+  // The server resolves the read → minibuffer inactive → close once.
+  port.deliver({
+    type: MSG.VIEW,
+    view: { point: 0, modeline: '–  x', minibuffer: { active: false, prompt: '', value: '' } },
+  });
+  assert.equal(chrome.minibuffer, null);
+  assert.equal(chrome.minibufferCloses, 1);
+});
+
+test('the echo area is not painted while a minibuffer prompt is open (the prompt owns the line)', () => {
+  const { port, chrome } = connectedClientWithChrome();
+  port.deliver({
+    type: MSG.VIEW,
+    view: { point: 0, modeline: '–  x', status: 'stale-status',
+      minibuffer: { active: true, prompt: 'Find file: ', value: '' } },
+  });
+  assert.equal(chrome.echo, null, 'the status did not clobber the open prompt');
+});
+
+test('minibuffer input routes back up as MINIBUFFER_CHANGE / SUBMIT / CANCEL intents', () => {
+  const { port, chrome } = connectedClientWithChrome();
+  port.deliver({
+    type: MSG.VIEW,
+    view: { point: 0, modeline: '–  x',
+      minibuffer: { active: true, prompt: 'M-x ', value: '' } },
+  });
+  const { cbs } = chrome.minibuffer;
+  cbs.onChange('for');
+  cbs.onSubmit('forward-char');
+  // A fresh prompt + cancel.
+  cbs.onCancel();
+  const kinds = port.sent
+    .filter((m) => m.type === MSG.INTENT)
+    .map((m) => m.intent.kind);
+  assert.ok(kinds.includes(INTENT.MINIBUFFER_CHANGE));
+  assert.ok(kinds.includes(INTENT.MINIBUFFER_SUBMIT));
+  assert.ok(kinds.includes(INTENT.MINIBUFFER_CANCEL));
+  const submit = port.sent.find(
+    (m) => m.type === MSG.INTENT && m.intent.kind === INTENT.MINIBUFFER_SUBMIT);
+  assert.equal(submit.intent.value, 'forward-char');
+});
+
+test('a PICKER message opens the picker panel; a choice routes PICKER_CHOOSE with the pickerId', () => {
+  const { port, chrome } = connectedClientWithChrome();
+  port.deliver({
+    type: MSG.PICKER,
+    picker: {
+      id: 'picker-1', title: 'Buffer list',
+      rows: [{ label: 'a.js', value: 'buf-a' }, { label: 'b.js', value: 'buf-b' }],
+      options: { filter: true },
+    },
+  });
+  assert.ok(chrome.picker, 'the picker opened');
+  assert.equal(chrome.picker.request.title, 'Buffer list');
+  chrome.picker.cbs.onChoose('buf-b');
+  const choose = port.sent.find(
+    (m) => m.type === MSG.INTENT && m.intent.kind === INTENT.PICKER_CHOOSE);
+  assert.ok(choose, 'a PICKER_CHOOSE intent went up');
+  assert.equal(choose.intent.value, 'buf-b');
+  assert.equal(choose.intent.pickerId, 'picker-1', 'tagged with the picker id');
+});
+
+test('a picker cancel routes PICKER_CANCEL with the pickerId', () => {
+  const { port, chrome } = connectedClientWithChrome();
+  port.deliver({
+    type: MSG.PICKER,
+    picker: { id: 'picker-7', title: 'M-x', rows: [{ label: 'undo', value: 'undo' }], options: {} },
+  });
+  chrome.picker.cbs.onCancel();
+  const cancel = port.sent.find(
+    (m) => m.type === MSG.INTENT && m.intent.kind === INTENT.PICKER_CANCEL);
+  assert.ok(cancel);
+  assert.equal(cancel.intent.pickerId, 'picker-7');
+});
+
+test('a superseded PICKER (new id) closes the old panel before opening the new', () => {
+  const { port, chrome } = connectedClientWithChrome();
+  port.deliver({
+    type: MSG.PICKER,
+    picker: { id: 'picker-1', title: 'first', rows: [{ label: 'x', value: 'x' }], options: {} },
+  });
+  port.deliver({
+    type: MSG.PICKER,
+    picker: { id: 'picker-2', title: 'second', rows: [{ label: 'y', value: 'y' }], options: {} },
+  });
+  assert.equal(chrome.pickerCloses, 1, 'the first panel was torn down');
+  assert.equal(chrome.picker.request.title, 'second');
+});
+
 // --- teardown ----------------------------------------------------------
 
 test('destroy() tears down the view + drops the port handler', () => {
@@ -323,4 +488,20 @@ test('destroy() tears down the view + drops the port handler', () => {
   assert.equal(client.getMirror(), null);
   assert.equal(client.isConnected(), false);
   assert.equal(port.onmessage, null);
+});
+
+test('destroy() closes an open minibuffer + picker', () => {
+  const { port, chrome, client } = connectedClientWithChrome();
+  port.deliver({
+    type: MSG.VIEW,
+    view: { point: 0, modeline: '–  x',
+      minibuffer: { active: true, prompt: 'M-x ', value: '' } },
+  });
+  port.deliver({
+    type: MSG.PICKER,
+    picker: { id: 'p1', title: 't', rows: [{ label: 'x', value: 'x' }], options: {} },
+  });
+  client.destroy();
+  assert.equal(chrome.minibuffer, null);
+  assert.equal(chrome.picker, null);
 });

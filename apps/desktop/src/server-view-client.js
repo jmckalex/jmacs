@@ -69,6 +69,31 @@ export function isBarePrintable(keyString) {
  *   Normalise a keydown to a key-string (the real renderer's; injected so a
  *   test can drive synthetic events). Optional — only used if the client owns
  *   key capture (it does not in `app.js`, where the view's `onKey` feeds it).
+ * @param {object} [deps.chrome]
+ *   The DOM chrome the server drives in server-mode (injected so it is fakeable
+ *   in tests; `app.js` passes the real modeline / echo-area / minibuffer /
+ *   picker hosts). All optional — a missing hook is a no-op (the G2 cursor/text
+ *   path is unaffected).
+ * @param {(modeline: string, viewState: object) => void} [deps.chrome.setModeline]
+ *   Render the server view's modeline string into the modeline DOM.
+ * @param {(status: string) => void} [deps.chrome.setEcho]
+ *   Render the echo-area / pending-prefix text (e.g. `C-x-`); '' clears it.
+ * @param {(prompt: string, value: string, cbs: {
+ *     onChange: (v: string) => void,
+ *     onSubmit: (v: string) => void,
+ *     onCancel: () => void,
+ *   }) => void} [deps.chrome.openMinibuffer]
+ *   Open the real minibuffer for a server-suspended read; the cbs route input
+ *   back up as MINIBUFFER_CHANGE/SUBMIT/CANCEL intents.
+ * @param {() => void} [deps.chrome.closeMinibuffer]
+ *   Close the minibuffer (the server resolved/cancelled the read).
+ * @param {(request: object, cbs: {
+ *     onChoose: (value: *) => void, onCancel: () => void,
+ *   }) => void} [deps.chrome.openPicker]
+ *   Open the client picker panel for a PICKER request; the cbs route the
+ *   choice/cancel back up as PICKER_CHOOSE/PICKER_CANCEL intents.
+ * @param {() => void} [deps.chrome.closePicker]
+ *   Tear down any open picker panel (a switch / teardown).
  * @param {(msg: string) => void} [deps.log]
  * @returns {{
  *   connect: () => void,
@@ -87,6 +112,7 @@ export function createServerViewClient({
   highlighters = {},
   foldCaptures = {},
   keyEventToString,
+  chrome = {},
   log = (msg) => console.info(msg),
 }) {
   /** @type {ReturnType<typeof createClientBuffer> | null} */
@@ -96,6 +122,23 @@ export function createServerViewClient({
   let connected = false;
   let currentBufferId = null;
   let nextIntentId = 1;
+
+  // --- the server-driven DOM chrome (server-mode only) -----------------
+  // Hooks the caller (app.js) supplies; each missing one is a no-op so the
+  // unit tests + the core text path run without any chrome.
+  const setModelineDom = chrome.setModeline ?? (() => {});
+  const setEchoDom = chrome.setEcho ?? (() => {});
+  const openMinibufferDom = chrome.openMinibuffer ?? (() => {});
+  const closeMinibufferDom = chrome.closeMinibuffer ?? (() => {});
+  const openPickerDom = chrome.openPicker ?? (() => {});
+  const closePickerDom = chrome.closePicker ?? (() => {});
+
+  // Whether a server minibuffer read is currently open in the DOM, and the
+  // id of the picker the client is showing (so a stale reply is dropped and a
+  // superseded picker is torn down). These mirror the server's active-prompt /
+  // active-picker bookkeeping so the client opens/closes in lock-step.
+  let minibufferActive = false;
+  let activePickerId = null;
 
   // Pending intents we sent + await confirmation for, keyed by id. `predicted`
   // is retained on the entry shape for the VIEW-reconcile guard (a stale VIEW
@@ -163,6 +206,81 @@ export function createServerViewClient({
       getMajorModeName: () => null,
       onRenderError: (e) => log(`[godot-g2] render error: ${e && e.message}`),
     };
+  }
+
+  // --- the server-driven chrome (modeline / echo / minibuffer) ----------
+  //
+  // Drive the real app's chrome DOM from the server's VIEW view-state. The
+  // server bakes the modeline string (renderModeline), the echo-area / pending
+  // prefix (`status`, e.g. "C-x-" mid-chord), and the minibuffer prompt state
+  // into every VIEW message after an intent, so the client just paints them.
+
+  /** Open the DOM minibuffer for a server-suspended read, routing the user's
+   *  input back up as MINIBUFFER_* intents. Idempotent on re-open with the same
+   *  prompt (the server re-sends the active prompt on each VIEW). */
+  function openMinibufferPrompt(mb) {
+    openMinibufferDom(mb.prompt ?? '', mb.value ?? '', {
+      onChange: (v) => port.postMessage({
+        type: MSG.INTENT,
+        intent: { id: nextIntentId++, kind: INTENT.MINIBUFFER_CHANGE, value: v },
+      }),
+      onSubmit: (v) => port.postMessage({
+        type: MSG.INTENT,
+        intent: { id: nextIntentId++, kind: INTENT.MINIBUFFER_SUBMIT, value: v },
+      }),
+      onCancel: () => port.postMessage({
+        type: MSG.INTENT,
+        intent: { id: nextIntentId++, kind: INTENT.MINIBUFFER_CANCEL },
+      }),
+    });
+  }
+
+  /** Paint the modeline + echo area + minibuffer from a VIEW's view-state.
+   *  A `scroll`-only VIEW (no view-state) is skipped by the caller. */
+  function renderChrome(v) {
+    if (typeof v.modeline === 'string') setModelineDom(v.modeline, v);
+    // The echo area shows the server's status (a mid-chord prefix like "C-x-",
+    // or a one-off message). Only paint it while no minibuffer prompt is open —
+    // the prompt row owns the line then (the minibuffer component hides the
+    // echo while a prompt is up; this avoids fighting it).
+    const mb = v.minibuffer;
+    const mbActive = !!(mb && mb.active);
+    if (!mbActive && typeof v.status === 'string') setEchoDom(v.status);
+    // Minibuffer open/close transitions, in lock-step with the server.
+    if (mbActive && !minibufferActive) {
+      minibufferActive = true;
+      openMinibufferPrompt(mb);
+    } else if (!mbActive && minibufferActive) {
+      minibufferActive = false;
+      closeMinibufferDom();
+    }
+  }
+
+  /** A PICKER: the server opened a generic picker (buffer list, M-x, RefTeX,
+   *  completions). Render the client picker panel and route the choice/cancel
+   *  back up. A superseded picker (a new id) replaces the old one. */
+  function onPicker(req) {
+    if (!req || typeof req !== 'object') return;
+    if (activePickerId && activePickerId !== req.id) closePickerDom();
+    activePickerId = req.id;
+    openPickerDom(req, {
+      onChoose: (value) => {
+        const id = activePickerId;
+        activePickerId = null;
+        port.postMessage({
+          type: MSG.INTENT,
+          intent: { id: nextIntentId++, kind: INTENT.PICKER_CHOOSE, value, pickerId: id },
+        });
+      },
+      onCancel: () => {
+        const id = activePickerId;
+        activePickerId = null;
+        port.postMessage({
+          type: MSG.INTENT,
+          intent: { id: nextIntentId++, kind: INTENT.PICKER_CANCEL, pickerId: id },
+        });
+      },
+    });
   }
 
   // --- server messages ----------------------------------------------------
@@ -242,11 +360,10 @@ export function createServerViewClient({
   }
 
   /** A VIEW message: non-text render state (modeline / status / minibuffer /
-   *  cursor reconcile / scroll). G2's minimal slice renders the cursor + the
-   *  scroll request; the modeline/status/minibuffer DOM is a later slice (the
-   *  in-renderer chrome is still present under the flag). We DO reconcile the
-   *  cursor (so a command's motion shows) but only when no predicted
-   *  self-insert is in flight (else an older point rewinds the caret). */
+   *  cursor reconcile / scroll). We reconcile the cursor (so a command's motion
+   *  shows) when no predicted self-insert is in flight, AND drive the DOM chrome
+   *  (modeline / echo-area / minibuffer) from the same view-state. A
+   *  `scroll`-only VIEW carries no view-state and just recenters. */
   function onView(v) {
     if (!v) return;
     if (v.scroll) {
@@ -261,6 +378,7 @@ export function createServerViewClient({
       mirror.cursors[0].mark = v.mark ?? null;
       if (view) view.setView({ buffer: mirror });
     }
+    renderChrome(v);
   }
 
   /** Route a single decoded server message. Exposed for the unit tests (they
@@ -275,7 +393,8 @@ export function createServerViewClient({
       case MSG.OVERLAYS: onOverlays(msg.overlays); break;
       case MSG.CURSORS: onCursors(msg.cursors); break;
       case MSG.RESYNC: onResync(msg); break;
-      default: break; // BUFFER_LIST / PICKER / PANE_TREE: not in the G2 slice
+      case MSG.PICKER: onPicker(msg.picker); break;
+      default: break; // BUFFER_LIST / PANE_TREE: not in the G2 slice
     }
   }
 
@@ -289,11 +408,19 @@ export function createServerViewClient({
     log('[godot-g2] connected to server; HELLO sent');
   }
 
-  /** Tear down the mounted view + drop the port handler. */
+  /** Tear down the mounted view + chrome + drop the port handler. */
   function destroy() {
     if (view) {
       try { view.destroy(); } catch { /* ignore */ }
       view = null;
+    }
+    if (minibufferActive) {
+      minibufferActive = false;
+      try { closeMinibufferDom(); } catch { /* ignore */ }
+    }
+    if (activePickerId) {
+      activePickerId = null;
+      try { closePickerDom(); } catch { /* ignore */ }
     }
     mirror = null;
     connected = false;
