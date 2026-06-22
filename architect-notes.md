@@ -1883,3 +1883,69 @@ through the server: motion (arrows / C-f/b/n/p / C-a/e / M-f/b), editing
    → "no further undo" → ding (the dual-router), i.e. the global router isn't
    fully standing down under server-mode. Resolve with the server-mode router
    branch (part of the leaf-flip). Confirm it's the bell source.
+
+---
+
+## [2026-06-22 night] Key routing + chrome wired to the server — auto-pair / chords / minibuffer / picker now usable through GODOT_SERVER=1
+
+Two-part usability chunk on `multi-window-b` (4 commits, tip `a1276ab`, NOT
+merged). Suite **759/0** (was 747; +12 new client tests). Flag-OFF
+byte-for-byte: every change is additive + gated on `host.serverMode`.
+
+**Part 1 — every key now routes through the server's keymap** (`fix bd135b1`).
+`server-view-client.js` `dispatchKey` no longer local-echoes a bare printable
+as `SELF_INSERT` (that bypassed `handle-key`/`the-keymap`). It now sends EVERY
+keystroke up as a `KEY` intent, so the server's `handle-key` resolves it: `(`
+`[` `{` `"` auto-pair, `C-x`/`C-c` start a prefix, a plain printable falls
+through to self-insert. The mirror reconciles via the server's echoed DELTA
+(no prediction; fresh-apply is always correct). This is the SAME root as the
+chord-eating bug, so it fixes both. New tests: `(` round-trips to `()`; `C-x`
+then `b` reaches the server as two bare KEY intents.
+
+**Part 2 — the server's chrome drives the DOM** (`feat cb0b060` + focus fix
+`298cf7d`). The client takes an injected `chrome` (fakeable in tests); `app.js`
+passes the real nodes behind the serverMode gate:
+- **Modeline** — paints the spine's `renderModeline` string (VIEW.modeline)
+  into the real `#modeline-name`; clears `#modeline-position` (line:col is
+  baked into the string). `updateModeline()` now stands down under serverMode
+  so the idle in-renderer modeline can't fight it.
+- **Echo area / pending prefix** — paints VIEW.status (e.g. `C-x-` mid-chord)
+  via `minibuffer.setStatus`; suppressed while a prompt is open.
+- **Minibuffer** — a server-suspended read opens the REAL minibuffer; input
+  routes back up as MINIBUFFER_CHANGE/SUBMIT/CANCEL; opens once (no flicker),
+  closes in lock-step when the server clears it. Focus returns to the view on
+  close (else the next key goes nowhere).
+- **Picker** — a PICKER message renders the generic `createPickerPanel` overlay
+  (choice/cancel → PICKER_CHOOSE/CANCEL, tagged with pickerId; supersede tears
+  down the old). Ported the `.mwb-picker` CSS into `styles.css`
+  (theme-variable + color-mix, light-theme safe).
+
+**⚠ ARCHITECT — verify live in the morning (GODOT_SERVER=1):**
+1. **Auto-pair** — typing `(` `[` `{` `"` inserts the PAIR with point between;
+   typing the close steps over; backspace in an empty pair deletes both.
+2. **`C-x b`** ("Switch to buffer:") — the minibuffer opens, type a name +
+   Enter switches the buffer; Esc cancels; focus returns to the view after.
+3. **`M-x`** — the prompt opens, a command name + Enter runs it.
+4. **find-file (`C-x C-f`)** — the prompt opens, a path + Enter visits it.
+5. **Prefix-in-echo-area** — pressing `C-x` shows `C-x-` in the echo area
+   until the next key; a complete chord clears it.
+6. **Modeline** — shows the server's `● name  L:C (mode)` and tracks the
+   point/dirty flag as you type (it's the server's, not the in-renderer one).
+7. **Picker** (if a command opens one, e.g. C-x C-b buffer list) — the overlay
+   renders styled, type-to-narrow + Enter/click chooses, Esc cancels.
+   NB: a picker only appears for commands that call open-picker!; C-x b uses
+   the minibuffer round-trip, not the picker.
+
+**Should now be auto-corrected from the prior live test:** auto-pair (bug 1)
+and the chord-eating bug are both fixed by Part 1. Undo's bell (bug 2) is the
+in-renderer global router still processing C-/ — that's the **leaf-flip's
+server-mode router branch**, NOT touched here (left for you per the brief).
+
+**Deferred / NOT done (ran the chunk, not the leaf-flip):** the global
+key-router still co-exists under serverMode (bug 2's bell; the dual-router);
+C-v/M-v screenful scroll still needs the VIEWPORT up-message; C-o open-line
+needs the fuller keymap. All flagged in the prior note as leaf-flip work.
+
+**Commits (multi-window-b, unmerged):** bd135b1 (Part 1 key routing), cb0b060
+(Part 2 chrome), 298cf7d (focus return), a1276ab (header doc). Tree clean,
+759/0 green. No merge per the brief.
