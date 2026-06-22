@@ -16,19 +16,44 @@
  * client; multi-client is Phase 2.)
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, join, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { createInterpreter, NIL } from '@editor/lisp';
 import { createBuffer } from '@editor/buffer';
 
 import { MSG, INTENT } from './protocol.js';
 
 // --- the authoritative model -------------------------------------------
+//
+// The server holds ONE canonical L2 buffer. In the render-from-mirror
+// slice it loads a REAL FILE so the client renders real source with real
+// tree-sitter highlighting + folding off its mirror. The file is chosen
+// by MWB_FILE (an absolute path) or defaults to view.js — a large, real,
+// heavily-highlighted JavaScript file, exactly the stress the render path
+// should face. A utilityProcess is a Node child, so the server reads the
+// file directly off disk (plan §3 (i): file I/O becomes direct server-side).
 
-// One buffer, seeded with a little text so the client has something to
-// render and a cursor that isn't at 0.
-const buffer = createBuffer('Type here. The server owns this buffer.\n', {
-  name: 'mwb-scratch',
-});
-buffer.moveBufferEnd();
+const here = dirname(fileURLToPath(import.meta.url));
+const DEFAULT_FILE = join(
+  here, '..', '..', '..', 'packages', 'renderer', 'src', 'view.js'
+);
+const filePath = process.env.MWB_FILE || DEFAULT_FILE;
+
+let initialText;
+let bufferName;
+try {
+  initialText = readFileSync(filePath, 'utf8');
+  bufferName = basename(filePath);
+} catch (error) {
+  console.error(`[mwb-server] could not read ${filePath}: ${error.message}`);
+  initialText = '; could not load file — type here.\n';
+  bufferName = 'mwb-scratch.lisp';
+}
+
+const buffer = createBuffer(initialText, { name: bufferName });
+buffer.moveBufferStart();
 
 // A monotonic delta sequence number, so the client can order deltas and
 // detect gaps (plan §4 — correctness of replication).
@@ -82,6 +107,19 @@ const interpreter = createInterpreter({
       buffer.deleteBackward(1);
       return NIL;
     },
+    // (move-point! OFFSET) — set the canonical cursor (window-state sync).
+    // Point is per-client window-state; the server tracks it so a
+    // self-insert lands where the client's cursor is.
+    'move-point!': (args) => {
+      buffer.moveTo(Number(args[0]) || 0);
+      return NIL;
+    },
+    // Named character/line motions (left/right/up/down), so a real arrow
+    // key routes through the interpreter and the buffer, server-side.
+    'move-left!': () => { buffer.moveLeft(); return NIL; },
+    'move-right!': () => { buffer.moveRight(); return NIL; },
+    'move-up!': () => { buffer.moveUp(); return NIL; },
+    'move-down!': () => { buffer.moveDown(); return NIL; },
     'buffer-text': () => buffer.text,
     'buffer-point': () => buffer.point,
   },
@@ -93,6 +131,10 @@ interpreter.evaluate(`
   (define (handle-key key)
     (cond
       ((equal? key "backspace") (delete-backward!) #t)
+      ((equal? key "left") (move-left!) #t)
+      ((equal? key "right") (move-right!) #t)
+      ((equal? key "up") (move-up!) #t)
+      ((equal? key "down") (move-down!) #t)
       (else #f)))
 `);
 
@@ -100,9 +142,16 @@ interpreter.evaluate(`
 
 /** Apply one client intent. Each intent runs through the real
  *  interpreter / buffer; the resulting L1 change fans out as a delta via
- *  the buffer.onChange subscription above. */
+ *  the buffer.onChange subscription above. A point/motion intent moves the
+ *  canonical cursor (no text delta) and the server replies with a CURSOR
+ *  message so the client's window-state can reconcile. */
 function applyIntent(intent) {
   currentEchoId = intent.id;
+  const pointBefore = buffer.point;
+  let emittedDelta = false;
+  // Track whether this intent produced a text change, so we know whether
+  // to send a CURSOR follow-up (point-only) instead.
+  const wasSeq = seq;
   try {
     switch (intent.kind) {
       case INTENT.SELF_INSERT:
@@ -112,6 +161,11 @@ function applyIntent(intent) {
         break;
       case INTENT.DELETE_BACKWARD:
         interpreter.call('handle-key', 'backspace');
+        break;
+      case INTENT.POINT:
+        // Point is per-client window-state; the server tracks it so a
+        // self-insert lands at the client's cursor. No text delta.
+        interpreter.call('move-point!', Number(intent.point) || 0);
         break;
       case INTENT.KEY:
         interpreter.call('handle-key', String(intent.key ?? ''));
@@ -123,6 +177,18 @@ function applyIntent(intent) {
   } finally {
     currentEchoId = undefined;
   }
+  emittedDelta = seq !== wasSeq;
+  // If the intent moved the cursor but produced no text delta (a motion or
+  // a point set), tell the client the authoritative point so it reconciles
+  // its window-state. Self-insert/backspace already carry point in the delta.
+  if (!emittedDelta && buffer.point !== pointBefore && clientPort !== null) {
+    clientPort.postMessage({
+      type: MSG.CURSOR,
+      point: buffer.point,
+      mark: buffer.mark,
+      echoId: intent.id,
+    });
+  }
 }
 
 /** Send the client a full snapshot (initial sync / resync). */
@@ -132,6 +198,7 @@ function sendSnapshot() {
     type: MSG.SNAPSHOT,
     text: buffer.text,
     point: buffer.point,
+    name: buffer.name, // the client picks the tree-sitter language from this
     seq,
   });
 }

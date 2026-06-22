@@ -39,7 +39,12 @@ import { serveAppFile } from '../src/serve.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const PRELOAD = join(here, 'preload.mjs');
 const SERVER_MODULE = join(here, 'server.js');
-const HARNESS_URL = 'app://editor/apps/desktop/mwb/harness.html';
+// MWB_VIEW=1 opens the render-from-mirror harness (the REAL view.js driven
+// by a mirror); otherwise the Phase-0 latency harness (trivial painter).
+const VIEW_MODE = process.env.MWB_VIEW === '1';
+const HARNESS_URL = VIEW_MODE
+  ? 'app://editor/apps/desktop/mwb/view-harness.html'
+  : 'app://editor/apps/desktop/mwb/harness.html';
 
 /** @type {Electron.UtilityProcess | null} */
 let server = null;
@@ -78,6 +83,14 @@ function createWindow() {
   // (and the autobench-done line) are visible from a headless launch.
   win.webContents.on('console-message', (_e, _level, message) => {
     console.error('[renderer]', message);
+    // The render-from-mirror self-test logs this line when done; quit so a
+    // headless `MWB_VIEW=1 MWB_VIEW_SELFTEST=1` run terminates cleanly.
+    if (message.startsWith('[mwb-view-selftest-done]')) {
+      setTimeout(() => {
+        if (server) server.kill();
+        app.exit(message.includes('PASS') ? 0 : 1);
+      }, 100);
+    }
     // In autobench mode, the page logs this line when both passes are
     // done; we read the JSON, print a clean summary, and quit.
     if (message.startsWith('[mwb-autobench-done]')) {

@@ -29,6 +29,7 @@ export const MSG = Object.freeze({
   // down
   SNAPSHOT: 'snapshot', // full buffer text + cursor (initial sync / resync)
   DELTA: 'delta', // an applied buffer change + resulting cursor
+  CURSOR: 'cursor', // a point/mark update with no text change (motion)
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -36,6 +37,7 @@ export const MSG = Object.freeze({
 export const INTENT = Object.freeze({
   SELF_INSERT: 'self-insert', // insert a printable string at point
   DELETE_BACKWARD: 'delete-backward', // backspace
+  POINT: 'point', // set the cursor offset (window-state)
   KEY: 'key', // a named key string routed through the Lisp keymap
 });
 

@@ -26,4 +26,8 @@ ipcRenderer.on('mwb:port', (event) => {
 contextBridge.exposeInMainWorld('mwb', {
   ready: true,
   autobench: process.env.MWB_AUTOBENCH === '1',
+  // Headless self-test for the render-from-mirror view harness: drive a
+  // handful of edits through the mirror→server→delta→re-render path and
+  // log the outcome to stderr, so the slice is verifiable without a screen.
+  selftest: process.env.MWB_VIEW_SELFTEST === '1',
 });
