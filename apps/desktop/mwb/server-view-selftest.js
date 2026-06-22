@@ -30,6 +30,7 @@
  * Expected on stderr:
  *   [g2-selftest] mounted-through-server: PASS
  *   [g2-selftest] char-round-trips: PASS
+ *   [g2-selftest] buffer-switch-remirrors: PASS
  *   [g2-selftest-done] PASS
  *
  * It exits 0 on PASS, 1 on FAIL or a 20s timeout, and never lets a throw escape
@@ -57,7 +58,7 @@ if (process.env.GODOT_SERVER !== '1') {
 const PRELOAD = new URL('../src/preload.mjs', import.meta.url).pathname;
 const MARKER = 'G2OK';
 
-const results = { mounted: false, roundTrip: false };
+const results = { mounted: false, roundTrip: false, bufferSwitch: false };
 let finished = false;
 
 function finish(ok) {
@@ -65,6 +66,7 @@ function finish(ok) {
   finished = true;
   console.error(`[g2-selftest] mounted-through-server: ${results.mounted ? 'PASS' : 'FAIL'}`);
   console.error(`[g2-selftest] char-round-trips: ${results.roundTrip ? 'PASS' : 'FAIL'}`);
+  console.error(`[g2-selftest] buffer-switch-remirrors: ${results.bufferSwitch ? 'PASS' : 'FAIL'}`);
   console.error(`[g2-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
   setTimeout(() => app.exit(ok ? 0 : 1), 100);
 }
@@ -121,6 +123,46 @@ async function driveAndCheck(win) {
   return after.includes(MARKER) && after.length === before.length + MARKER.length;
 }
 
+/** Drive a SERVER-PUSHED buffer switch through the REAL app path and assert the
+ *  client re-mirrors the new buffer AND the container holds exactly ONE live
+ *  <text-view> (the single-live-view invariant — the bug this slice fixed: a
+ *  dead empty view used to accumulate per switch). We feed a synthetic SNAPSHOT
+ *  for a DIFFERENT bufferId through the serverMode-only __godotG2.simulateSwitch
+ *  hook (the same message the server sends on find-file / C-x b), so the real
+ *  onSnapshot → mountServerView → clearStaleServerViews path runs. No backticks
+ *  in executeJavaScript (the known crash trap); build with JSON.stringify. */
+async function driveBufferSwitch(win) {
+  const SWITCHED = 'SWITCHED-BUFFER-CONTENT\n';
+  const before = await win.webContents.executeJavaScript(
+    'window.__godotG2.textViewCount()'
+  ).catch(() => null);
+  // The seed buffer must be the lone live view before we switch.
+  if (before !== 1) return false;
+
+  await win.webContents.executeJavaScript(
+    'window.__godotG2.simulateSwitch(' +
+      JSON.stringify(SWITCHED) + ', ' + JSON.stringify('switched.txt') + ', ' +
+      JSON.stringify('buf-switch-1') + ')'
+  ).catch(() => {});
+  await sleep(200); // let the re-mount settle
+
+  const after = await win.webContents.executeJavaScript(
+    'JSON.stringify({ count: window.__godotG2.textViewCount(), ' +
+      'text: window.__godotG2.mirrorText(), id: window.__godotG2.bufferId() })'
+  ).catch(() => null);
+  if (typeof after !== 'string') return false;
+  let parsed;
+  try { parsed = JSON.parse(after); } catch { return false; }
+
+  // The mirror swapped to the new buffer's content, the bufferId advanced, and
+  // the container still holds exactly ONE live <text-view> (no stale leak).
+  return (
+    parsed.count === 1 &&
+    parsed.text === SWITCHED &&
+    parsed.id === 'buf-switch-1'
+  );
+}
+
 app.whenReady().then(async () => {
   try {
     protocol.handle('app', serveAppFile);
@@ -159,9 +201,10 @@ app.whenReady().then(async () => {
     results.mounted = await waitForMount(win);
     if (results.mounted) {
       results.roundTrip = await driveAndCheck(win);
+      results.bufferSwitch = await driveBufferSwitch(win);
     }
     clearTimeout(guard);
-    finish(results.mounted && results.roundTrip);
+    finish(results.mounted && results.roundTrip && results.bufferSwitch);
   } catch (error) {
     // A throw here would pop a main-process dialog; catch + fail cleanly.
     console.error(`[g2-selftest] threw: ${error && error.message}`);

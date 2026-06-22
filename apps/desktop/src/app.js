@@ -156,6 +156,9 @@ import { createTabline } from '@editor/renderer';
 // unconditionally (it has no top-level effects), but only CONSTRUCTED behind
 // the GODOT_SERVER flag in the late boot — so flag-off is byte-for-byte today.
 import { createServerViewClient } from './server-view-client.js';
+// The wire-protocol message tags (no side effects). Used only by the
+// serverMode-only __godotG2 test hook below to feed a synthetic SNAPSHOT.
+import { MSG } from '../mwb/protocol.js';
 // G2 router gate: a pure predicate the global key router consults so it stands
 // down (defers to the server) in server-mode once the server view is mounted —
 // focus-independent, so the dual-dispatch undo bell can't ring. No-op flag-off
@@ -5929,6 +5932,22 @@ if (window.host && window.host.serverMode) {
       // / C-x b / kill-buffer) — the multibuffer self-test asserts it, and the
       // architect can eyeball it after opening a file.
       textViewCount: () => g2HostEl.querySelectorAll('text-view').length,
+      // Feed a synthetic SNAPSHOT for a DIFFERENT buffer through the real
+      // client → onSnapshot → mountServerView → clearStaleServerViews path, so
+      // the self-test can prove the real-app buffer switch re-mirrors + keeps
+      // exactly one live view WITHOUT driving the minibuffer DOM. This is the
+      // same message the server sends on find-file/switch; only the bufferId
+      // differs from the seed, so onSnapshot treats it as a switch.
+      simulateSwitch: (text, name, bufferId) => {
+        serverViewClient.handleMessage({
+          type: MSG.SNAPSHOT,
+          text: String(text ?? ''),
+          point: 0,
+          name: String(name ?? 'scratch'),
+          bufferId: String(bufferId ?? 'sim-switch'),
+          seq: 0,
+        });
+      },
     };
   };
   // If the port beat the boot, wire it now.
