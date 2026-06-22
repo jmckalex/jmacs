@@ -34,4 +34,9 @@ contextBridge.exposeInMainWorld('mwb', {
   // types a marker; client 1 (the observer) confirms it sees the edit on
   // its own mirror without having originated it — the Model-B payoff.
   sameBuffer: process.env.MWB_SAME_BUFFER === '1',
+  // Headless self-test for the RICHER server-side stdlib slice
+  // (PRIMITIVE-SPLIT.md): drives copy/yank and a Markdown mode binding
+  // (C-c b) through the real server+protocol+view.js path and asserts the
+  // client mirror reflects each. Use with MWB_FILE=<a .md file>.
+  commandsSelftest: process.env.MWB_COMMANDS_SELFTEST === '1',
 });

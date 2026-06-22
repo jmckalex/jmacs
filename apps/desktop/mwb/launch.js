@@ -111,6 +111,14 @@ function createWindow(n) {
         app.exit(message.includes('PASS') ? 0 : 1);
       }, 100);
     }
+    // The richer-stdlib self-test (kill/yank + a Markdown binding through
+    // the real server + view.js). See view-client.js runCommandsSelfTest.
+    if (message.startsWith('[mwb-commands-selftest-done]')) {
+      setTimeout(() => {
+        if (server) server.kill();
+        app.exit(message.includes('PASS') ? 0 : 1);
+      }, 100);
+    }
     if (message.startsWith('[mwb-autobench-done]')) {
       const json = message.slice('[mwb-autobench-done]'.length).trim();
       console.error('\n===== MWB Phase 0 latency (ms) =====');

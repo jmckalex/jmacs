@@ -342,6 +342,9 @@ window.addEventListener('message', (event) => {
       if (window.mwb && window.mwb.sameBuffer) {
         setTimeout(runSameBufferTest, 800);
       }
+      if (window.mwb && window.mwb.commandsSelftest) {
+        setTimeout(runCommandsSelfTest, 700);
+      }
     });
   }
 });
@@ -422,6 +425,82 @@ async function runSelfTest() {
     console.error('[mwb-view-selftest] FAIL: threw', error && error.message);
     finishSelfTest(false);
   }
+}
+
+// --- richer-stdlib self-test (MWB_COMMANDS_SELFTEST=1) ----------------
+//
+// Proves the model-heavy server-side slice (PRIMITIVE-SPLIT.md) works
+// end-to-end through the REAL server + protocol + view.js: kill-ring copy
+// + yank, and a Markdown major-mode binding (C-c b) dispatching via the
+// server's mode-keymap chain. Asserts the CLIENT MIRROR reflects each
+// (the server mutated the canonical buffer; the delta re-rendered the
+// real view). Run with MWB_FILE pointing at a .md file so markdown-mode
+// is chosen server-side.
+async function runCommandsSelfTest() {
+  try {
+    if (!mirror || !view) {
+      console.error('[mwb-commands-selftest] FAIL: view not mounted');
+      return finishCommandsTest(false);
+    }
+
+    // The modeline carries the server-chosen major mode; a .md file →
+    // "Markdown". (renderModeline appends "  (Mode)" — see protocol.js.)
+    const modelineMode = modelineEl.textContent;
+
+    // 1) Type a known word at buffer start, select it, copy (M-w), then
+    //    yank it (C-y) at end of buffer — the kill ring round-trip.
+    sendKey('M-less');
+    await frame();
+    const word = 'YANKME';
+    for (const ch of word) { dispatchKey(ch); await frame(); } // eslint-disable-line no-await-in-loop
+    await sleep(200);
+    // Select the word: mark at start, move right len times.
+    sendKey('M-less');
+    await sleep(60);
+    sendKey('C-space');
+    await sleep(40);
+    for (let i = 0; i < word.length; i += 1) { sendKey('right'); await sleep(20); } // eslint-disable-line no-await-in-loop
+    sendKey('M-w'); // copy-region
+    await sleep(120);
+    sendKey('M-greater'); // end of buffer
+    await sleep(80);
+    const beforeYank = mirror.text.length;
+    sendKey('C-y'); // yank
+    await sleep(200);
+    const yankWorked =
+      mirror.text.length === beforeYank + word.length &&
+      mirror.text.endsWith(word);
+
+    // 2) A Markdown mode binding: select the leading word again and bold
+    //    it with C-c b (dispatches through the server's mode-keymap chain).
+    sendKey('M-less');
+    await sleep(60);
+    sendKey('C-space');
+    await sleep(40);
+    for (let i = 0; i < word.length; i += 1) { sendKey('right'); await sleep(20); } // eslint-disable-line no-await-in-loop
+    sendKey('C-c'); // markdown prefix (a mode-chord, server-side)
+    await sleep(60);
+    sendKey('b'); // markdown-bold
+    await sleep(200);
+    const boldWorked = mirror.text.startsWith(`*${word}*`);
+
+    const modeOk = /Markdown/.test(modelineMode) || /Markdown/.test(modelineEl.textContent);
+    const ok = yankWorked && boldWorked && modeOk;
+    console.error(
+      `[mwb-commands-selftest] modeOk=${modeOk} ` +
+      `yankWorked=${yankWorked} boldWorked=${boldWorked} ` +
+      `modeline='${modelineEl.textContent.slice(0, 36)}' ` +
+      `line0='${mirror.lineAt(0).text.slice(0, 28)}'`
+    );
+    finishCommandsTest(ok);
+  } catch (error) {
+    console.error('[mwb-commands-selftest] FAIL: threw', error && error.message);
+    finishCommandsTest(false);
+  }
+}
+
+function finishCommandsTest(ok) {
+  console.error(`[mwb-commands-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
 }
 
 /** Drive an M-x command through the server (open M-x, type, submit). The
