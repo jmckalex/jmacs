@@ -128,18 +128,36 @@ cleanly now" case the brief allows: search's value is the *interactive
 loop*, which is render-side, so loading `search.lisp` only gives you two
 commands that point at an unbuilt loop. Documented, deferred.
 
-### View / pane addressing — **render-message** / deferred
+### View / pane addressing — split: BUFFER LIST built, pane geometry deferred
 
-`view-primitives.js` (`current-view`, `view-list`, `switch-to-view!`,
-`new-view!`, `kill-view!`, `toggle-minimap!`, …) and
-`pane-primitives.js` (splits, the pane tree, `swap-panes!`) are about the
-**window's pane tree and which view is focused** — inherently per-client
-render state. Under Model B these become a negotiated conversation
-between the server (which can own a logical view list) and each client
-(which owns its pane geometry). Out of scope for this slice; the files
-that need them (`views.lisp`, `panes.lisp`, `tabline.lisp`, `minimap.lisp`,
-`directory-tree.lisp`, …) are **not** ported. Stubbed where a loaded file
-references one incidentally.
+This family has two halves, and Model B splits them cleanly:
+
+- **The buffer list — the server owns it, BUILT.** "Which buffers exist,
+  what is each window viewing, switch/kill a buffer" is *model* state: the
+  buffers live in the server (`buffer-registry.js`), and each client tracks
+  which one it views (the server's `clientBuffers` map). This is now
+  implemented (architect-notes 2026-06-22, multi-buffer slice):
+  `switch-to-buffer` (C-x b, a host-completed name read), `list-buffers`
+  (C-x C-b → a `BUFFER_LIST` down-message), `kill-buffer` (C-x k), and
+  find-file ADD a buffer. Two windows can view different buffers
+  independently; two windows on one buffer still lockstep. The litmus test
+  resolves to *model*: "which buffer is this window on" is per-client, but
+  "which buffers exist + their text/overlays" is shared model state the
+  server is authoritative for. `view-primitives.js`'s logical surface
+  (`view-list`, `switch-to-view!`, `new-view!`, `kill-view!`, `find-view`)
+  maps onto this registry; the spine exposes the same operations under the
+  buffer names (`switchClientToBuffer`, `bufferListRecords`,
+  `killActiveBuffer`).
+
+- **The pane GEOMETRY — per-client render state, DEFERRED.**
+  `pane-primitives.js` (splits, the pane tree, `swap-panes!`,
+  `toggle-minimap!`) and the on-screen tabline are about *how a window
+  arranges its views in pixels* — inherently per-client render state. These
+  stay a negotiated conversation between the server (logical view list) and
+  each client (its own pane geometry), and are **not** ported. The files
+  that need them beyond the buffer list (`panes.lisp`, `tabline.lisp`,
+  `minimap.lisp`, `directory-tree.lisp`, …) are out of scope; stubbed where
+  a loaded file references one incidentally.
 
 ### Live preview / MathJax / element views — **render-message**, deferred
 
@@ -172,11 +190,21 @@ isearch loop, the pane/view negotiation, MathJax/preview, the
 measurement conversation's *hard* direction (§5d). Those are slices, not
 table rows. Everything model-side is now mechanical.
 
-## Ported so far (this slice)
+## Ported so far
 
-See `architect-notes.md` for the running record. As of this slice, loaded
-server-side verbatim on top of `commands.lisp` + `editing.lisp`:
-`custom.lisp`, `indent.lisp`, `modes.lisp`, `math-preview.lisp`,
-`kill.lisp`, `yank-pop.lisp`, `line-ops.lisp`, `search.lisp` (commands
-only; loop stubbed), `markdown.lisp` (a real major mode through the
-server). Each driven headlessly through the spine.
+See `architect-notes.md` for the running record. Loaded server-side
+verbatim on top of `commands.lisp` + `editing.lisp`: `custom.lisp`,
+`indent.lisp`, `modes.lisp`, `math-preview.lisp`, `kill.lisp`,
+`yank-pop.lisp`, `line-ops.lisp`, `expand-region.lisp`,
+`multi-cursor.lisp`, `search.lisp` (commands only; loop stubbed),
+`markdown.lisp` (a real major mode through the server). Each driven
+headlessly through the spine.
+
+**Multi-buffer (2026-06-22):** the server now holds MANY buffers
+(`buffer-registry.js`), each with its own text / per-client views /
+overlays. find-file adds a buffer; `switch-to-buffer` (C-x b),
+`list-buffers` (C-x C-b), and `kill-buffer` (C-x k) work through the
+server. Two windows can view different buffers, or one buffer in lockstep.
+Deltas / overlays / multi-cursor resyncs are scoped to the edited buffer
+(no longer broadcast). Proven headlessly through the real view.js
+(`MWB_MULTIBUFFER_SELFTEST`, 1- and 2-window).

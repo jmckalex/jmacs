@@ -302,6 +302,11 @@ function applyIntent(client, intent) {
   const buffer = spine.buffer;
   const pointBefore = buffer.point;
   const wasSeq = seq;
+  // The buffer this client is on BEFORE the intent. If the intent switches
+  // its buffer (find-file, switch-to-buffer via the minibuffer), the
+  // switch handler fully re-syncs the client onto the new buffer, so the
+  // stale-`buffer`-based reconciliation below must be skipped.
+  const bufferIdBefore = spine.currentBufferIdOf(client.index);
   // A multi-cursor edit makes SEVERAL L1 edits but emits ONE change event,
   // so the single-delta fan-out can't replicate it; we RESYNC instead. The
   // edit may also COLLAPSE the cursor set (e.g. typing collapses overlapping
@@ -354,9 +359,26 @@ function applyIntent(client, intent) {
     currentEchoId = undefined;
   }
 
+  // A buffer switch during the intent (find-file / switch-to-buffer through
+  // the minibuffer) already re-synced this client onto its NEW buffer; the
+  // `buffer`/`pointBefore` captured above refer to the OLD buffer, so skip
+  // the reconciliation below (it would message stale state). Still refresh
+  // the other clients' view-state.
+  const switchedBuffer = spine.currentBufferIdOf(client.index) !== bufferIdBefore;
   const emittedDelta = seq !== wasSeq;
   const multiAfter = spine.activeCursorCount() > 1;
-  const wasMultiCursorEdit = emittedDelta && (multiBefore || multiAfter);
+  const wasMultiCursorEdit = !switchedBuffer && emittedDelta && (multiBefore || multiAfter);
+
+  if (switchedBuffer) {
+    // The switch handler re-synced the originating client; just refresh the
+    // others' view-state (their cursors/modeline are unaffected, but a fresh
+    // VIEW is cheap and keeps everyone consistent).
+    for (const c of clients) {
+      if (c !== client) sendViewTo(c);
+    }
+    activeClient = null;
+    return;
+  }
 
   if (wasMultiCursorEdit) {
     // The single forwarded delta is unreliable for a multi-cursor edit;
