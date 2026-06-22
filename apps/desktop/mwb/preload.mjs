@@ -20,5 +20,10 @@ ipcRenderer.on('mwb:port', (event) => {
   }
 });
 
-// A trivial bridge so the page knows the preload ran.
-contextBridge.exposeInMainWorld('mwb', { ready: true });
+// A trivial bridge so the page knows the preload ran. `autobench` is set
+// from the MWB_AUTOBENCH env var so a headless launch can run the
+// benchmark with no human in the loop (see launch.js).
+contextBridge.exposeInMainWorld('mwb', {
+  ready: true,
+  autobench: process.env.MWB_AUTOBENCH === '1',
+});

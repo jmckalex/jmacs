@@ -73,6 +73,35 @@ function createWindow() {
     },
   });
   win.loadURL(HARNESS_URL);
+
+  // Surface the renderer's console to our stderr so the latency numbers
+  // (and the autobench-done line) are visible from a headless launch.
+  win.webContents.on('console-message', (_e, _level, message) => {
+    console.error('[renderer]', message);
+    // In autobench mode, the page logs this line when both passes are
+    // done; we read the JSON, print a clean summary, and quit.
+    if (message.startsWith('[mwb-autobench-done]')) {
+      const json = message.slice('[mwb-autobench-done]'.length).trim();
+      console.error('\n===== MWB Phase 0 latency (ms) =====');
+      try {
+        const r = JSON.parse(json);
+        const row = (name, s) =>
+          s
+            ? `${name.padEnd(11)} n=${s.n}  mean=${s.mean}  p50=${s.p50}  p95=${s.p95}  p99=${s.p99}  max=${s.max}`
+            : `${name.padEnd(11)} (no samples)`;
+        console.error(row('local-echo', r.localEcho));
+        console.error(row('round-trip', r.roundTrip));
+        console.error(row('baseline', r.baseline));
+      } catch {
+        console.error(json);
+      }
+      console.error('====================================\n');
+      setTimeout(() => {
+        if (server) server.kill();
+        app.exit(0);
+      }, 100);
+    }
+  });
 }
 
 /** Create the channel and transfer the two ends. The server must be up

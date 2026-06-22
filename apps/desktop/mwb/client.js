@@ -274,6 +274,36 @@ async function runBenchmark(n = 200) {
   };
   console.log('[mwb-bench]', JSON.stringify(summary));
 }
+
+/**
+ * Auto-bench: run the Model-B benchmark (server on) AND a baseline pass
+ * (server off, today's all-local model) back to back, so a headless
+ * launch produces both numbers to stderr with no human in the loop. Used
+ * by launch.js when MWB_AUTOBENCH is set; it quits the app on the
+ * `[mwb-autobench-done]` line.
+ */
+async function runAutoBench() {
+  // Reset, then a server-on pass.
+  samples.localEcho.length = 0;
+  samples.roundTrip.length = 0;
+  samples.baseline.length = 0;
+  modeServerEl.checked = true;
+  echoEl.checked = true;
+  await runBenchmark(200);
+  const serverPass = {
+    localEcho: summarize(samples.localEcho),
+    roundTrip: summarize(samples.roundTrip),
+  };
+  // Now a baseline pass with the server OFF — the "today's app" model.
+  samples.baseline.length = 0;
+  modeServerEl.checked = false;
+  await runBenchmark(200);
+  const baselinePass = { baseline: summarize(samples.baseline) };
+  console.log(
+    '[mwb-autobench-done]',
+    JSON.stringify({ ...serverPass, ...baselinePass })
+  );
+}
 function summarize(arr) {
   return {
     n: arr.length,
@@ -312,6 +342,11 @@ window.addEventListener('message', (event) => {
     linkEl.className = 'good';
     requestSnapshot();
     editorEl.focus();
+    // Headless auto-bench (launch.js sets window.mwb.autobench from an env
+    // flag). Give the snapshot a beat to land, then run both passes.
+    if (window.mwb && window.mwb.autobench) {
+      setTimeout(runAutoBench, 300);
+    }
   }
 });
 
