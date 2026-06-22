@@ -58,10 +58,19 @@
  *   - Mint an L2 buffer (the spine passes @editor/buffer's createBuffer).
  * @param {(spec: { kind: string, buffer: object, name: string }) => View} deps.createView
  *   - Mint a view over a buffer (the spine passes @editor/view's createView).
+ * @param {(bufferId: string, change: object, buffer: object) => void} [deps.onBufferChange]
+ *   - Called for every text change on ANY registry buffer, tagged with the
+ *   buffer's id. The server uses this to fan a delta only to the clients
+ *   viewing THAT buffer (multi-buffer: different windows hold different
+ *   buffers, so a delta is no longer a broadcast). Cursor-only changes
+ *   (change === null) are skipped — the server reconciles those per client.
  * @returns {BufferRegistry}
  */
 export function createBufferRegistry(deps) {
   const { createBuffer, createView } = deps;
+  const onBufferChange = typeof deps.onBufferChange === 'function'
+    ? deps.onBufferChange
+    : null;
 
   /** @type {Map<string, BufferEntry>} insertion-ordered (Map preserves it). */
   const entries = new Map();
@@ -109,6 +118,14 @@ export function createBufferRegistry(deps) {
       savedText: text ?? '',
     };
     entries.set(id, entry);
+    // Tag this buffer's text changes with its id so the server can fan the
+    // delta only to the clients viewing it (multi-buffer: deltas are no
+    // longer broadcast). Each buffer keeps its own subscription for life.
+    if (onBufferChange && typeof buffer.onChange === 'function') {
+      buffer.onChange((event) => {
+        if (event && event.change !== null) onBufferChange(id, event, buffer);
+      });
+    }
     return entry;
   }
 

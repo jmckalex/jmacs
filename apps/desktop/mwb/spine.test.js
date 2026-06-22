@@ -160,24 +160,31 @@ test('recenter! emits a down-channel scroll request with the target line', () =>
   assert.equal(log.scrolls[0].line, 3);
 });
 
-test('find-file: visitFile swaps the canonical buffer to the read file', () => {
+test('find-file: visitFile ADDS a buffer and switches the active client to it', () => {
   const files = { '/tmp/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
   const { spine } = makeSpine('scratch', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
   });
-  const ok = spine.visitFile('/tmp/x.js');
-  assert.equal(ok, true);
+  assert.equal(spine.bufferCount, 1);
+  const id = spine.visitFile('/tmp/x.js');
+  // Multi-buffer: find-file no longer replaces — it adds a 2nd buffer and
+  // switches the active client onto it (returns the new buffer's id).
+  assert.equal(typeof id, 'string');
+  assert.equal(spine.bufferCount, 2);
   assert.equal(spine.buffer.text, 'const x = 1;\n');
   assert.equal(spine.buffer.name, 'x.js');
   assert.equal(spine.buffer.point, 0);
+  // The original scratch buffer is still in the registry, switchable back.
+  assert.ok(spine.bufferIdByName('scratch.txt'));
 });
 
-test('find-file on a missing file reports and keeps the old buffer', () => {
+test('find-file on a missing file reports and keeps the current buffer', () => {
   const { spine, log } = makeSpine('keep me', 'scratch.txt', {
     openFile: () => null,
   });
-  const ok = spine.visitFile('/nope');
-  assert.equal(ok, false);
+  const id = spine.visitFile('/nope');
+  assert.equal(id, null); // failure → no new buffer
+  assert.equal(spine.bufferCount, 1);
   assert.equal(spine.buffer.text, 'keep me'); // unchanged
   assert.ok(log.status.some((s) => s.includes('cannot open')));
 });
@@ -575,7 +582,7 @@ test('unhighlight-all clears the search overlays', () => {
   assert.equal(spine.overlaySnapshot().length, 0);
 });
 
-test('overlays clear on a find-file buffer swap', () => {
+test('overlays are per-buffer: a new find-file buffer shows none', () => {
   const file = { text: 'alpha beta gamma', name: 'other.txt' };
   const { spine } = makeSpine('foo foo', 'note.txt', {
     openFile: () => file,
@@ -583,9 +590,14 @@ test('overlays clear on a find-file buffer swap', () => {
   spine.buffer.moveTo(1);
   spine.runCommand('highlight-matches');
   assert.ok(spine.overlaySnapshot().length > 0);
-  spine.visitFile('other.txt');
-  assert.equal(spine.overlaySnapshot().length, 0);
+  const firstId = spine.currentBufferIdOf(0);
+  spine.visitFile('other.txt'); // adds + switches to a new buffer
+  assert.equal(spine.overlaySnapshot().length, 0); // new buffer has none
   assert.equal(spine.buffer.text, 'alpha beta gamma');
+  // The original buffer KEEPS its overlays (per-buffer state): switching
+  // back shows them again.
+  spine.switchClientToBuffer(0, firstId);
+  assert.ok(spine.overlaySnapshot().length > 0);
 });
 
 test('the onOverlays effect fires when overlays change', () => {

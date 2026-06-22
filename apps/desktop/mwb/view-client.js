@@ -52,6 +52,11 @@ let minibufferActive = false;
  *  the snapshot; used by the same-buffer self-test to pick typer vs observer. */
 let clientIndex = 0;
 
+/** The buffer id this window is currently mirroring (set from each SNAPSHOT).
+ *  A SNAPSHOT carrying a NEW id is a buffer switch — the mirror is torn down
+ *  and rebuilt for the new buffer (onSnapshot already does this). */
+let currentBufferId = null;
+
 /** Instrumentation: keydown→server-delta round-trip. */
 const pending = new Map();
 const samples = { localEcho: [], roundTrip: [] };
@@ -226,6 +231,15 @@ mbInputEl.addEventListener('keydown', (event) => {
 
 function onSnapshot(msg) {
   if (typeof msg.clientIndex === 'number') clientIndex = msg.clientIndex;
+  const isSwitch = currentBufferId !== null && msg.bufferId !== currentBufferId;
+  if (typeof msg.bufferId === 'string') currentBufferId = msg.bufferId;
+  // A buffer switch discards any in-flight predictions for the OLD buffer
+  // (they belong to a mirror we're about to throw away). Clearing prevents a
+  // stale echo from a now-dead buffer reconciling against the new mirror.
+  if (isSwitch) pending.clear();
+  // Building a fresh ClientBuffer + a fresh view IS the "tear down the old
+  // mirror, build a new one for the new buffer" the multi-buffer switch
+  // needs — the same path used for the initial sync and find-file.
   mirror = createClientBuffer({
     initialText: msg.text,
     name: msg.name || 'mwb.js',
@@ -303,6 +317,20 @@ function onOverlays(overlays) {
   if (!mirror) return;
   mirror.applyOverlays(overlays);
   if (view) view.setView({ buffer: mirror });
+}
+
+/** A BUFFER_LIST message: the server-held buffers (C-x C-b). For the
+ *  headless prototype we just stash them + log; a real client would render a
+ *  buffer-list view (the production *View List*). The self-test reads
+ *  `lastBufferList` to assert the registry holds the expected buffers. */
+let lastBufferList = [];
+function onBufferList(buffers) {
+  lastBufferList = Array.isArray(buffers) ? buffers : [];
+  const names = lastBufferList
+    .map((b) => `${b.current ? '*' : ' '}${b.name}`)
+    .join(' | ');
+  console.error(`[mwb-view] buffer-list (${lastBufferList.length}): ${names}`);
+  if (mbHintEl) mbHintEl.textContent = `Buffers: ${names}`;
 }
 
 /** A RESYNC message: the canonical text + this client's cursor set, sent
@@ -384,6 +412,7 @@ window.addEventListener('message', (event) => {
       else if (msg.type === MSG.OVERLAYS) onOverlays(msg.overlays);
       else if (msg.type === MSG.CURSORS) onCursors(msg.cursors);
       else if (msg.type === MSG.RESYNC) onResync(msg);
+      else if (msg.type === MSG.BUFFER_LIST) onBufferList(msg.buffers);
     };
     port.start();
     linkEl.textContent = 'connected ✓';

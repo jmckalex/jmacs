@@ -52,6 +52,12 @@ export const MSG = Object.freeze({
   // server therefore sends a RESYNC instead — correct and simple; the fast
   // single-cursor delta path is untouched (no typing-latency regression).
   RESYNC: 'resync',
+  // The buffer-list channel (server → client): a plain-data record per
+  // server-held buffer (id, name, lineCount, modified, current), sent when
+  // a client runs list-buffers (C-x C-b). The client renders the buffer
+  // list. This is the multi-buffer counterpart of the production
+  // *View List* — the server holds the buffers, so it owns the records.
+  BUFFER_LIST: 'buffer-list',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -69,6 +75,11 @@ export const INTENT = Object.freeze({
   MINIBUFFER_CHANGE: 'minibuffer-change', // the value being typed changed
   MINIBUFFER_SUBMIT: 'minibuffer-submit', // RET — deliver the value
   MINIBUFFER_CANCEL: 'minibuffer-cancel', // C-g / Esc — cancel the prompt
+  // Multi-buffer: a client asks to switch its window to another buffer,
+  // directly (clicking a buffer-list row) rather than via the C-x b
+  // minibuffer prompt. The server switches this client and re-snapshots it
+  // onto the target buffer. `bufferId` or `bufferName` identifies the target.
+  SWITCH_BUFFER: 'switch-buffer',
 });
 
 /**

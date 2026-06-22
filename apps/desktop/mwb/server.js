@@ -88,10 +88,18 @@ const spine = createSpine(
     onMinibufferOpen: (prompt) => openMinibuffer(prompt),
     onMinibufferClose: () => closeMinibuffer(),
     onScroll: (req) => sendScrollToActive(req),
-    // Overlays are SHARED buffer state: a highlight added on one window
-    // appears in every window viewing the buffer. Broadcast the fresh
-    // snapshot to all clients whenever it changes.
-    onOverlays: () => broadcastOverlays(),
+    // Overlays are PER-BUFFER, SHARED state: a highlight added on one window
+    // appears in every window viewing the SAME buffer. Broadcast the active
+    // buffer's fresh snapshot to all clients on that buffer when it changes.
+    onOverlays: () => broadcastOverlaysForActiveBuffer(),
+    // A text change on a buffer (tagged with its id): fan the delta only to
+    // the clients viewing THAT buffer (multi-buffer — not a broadcast).
+    onBufferChange: (id, event) => fanDelta(id, event),
+    // A kill-buffer switched a client to a new buffer: re-snapshot every
+    // client now viewing the active buffer (the kill re-homed them).
+    onBufferSwitched: () => onKillReHome(),
+    // list-buffers (C-x C-b): send the active client its buffer-list records.
+    onBufferList: () => { if (activeClient) sendBufferListTo(activeClient); },
     openFile: readFileForVisit,
   }
 );
@@ -125,39 +133,32 @@ function registerClient(port) {
   );
 }
 
-// --- delta fan-out -----------------------------------------------------
+// --- delta fan-out (per-buffer) ----------------------------------------
 //
-// A text change fans out to EVERY client (shared buffer). The buffer can be
-// swapped by find-file, so we re-subscribe on a swap.
+// A text change on a buffer fans out only to the clients VIEWING that
+// buffer (multi-buffer: different windows hold different buffers, so a
+// delta is no longer a broadcast). The registry tags each change with the
+// buffer's id (onBufferChange → fanDelta); we match clients by their
+// current buffer.
 
-let subscribedBuffer = null;
-let unsubscribe = null;
-
-function subscribeToBuffer() {
-  const buf = spine.buffer;
-  if (buf === subscribedBuffer) return;
-  if (typeof unsubscribe === 'function') unsubscribe();
-  subscribedBuffer = buf;
-  unsubscribe = buf.onChange((event) => {
-    if (event.change === null) return; // cursor-only move: no text delta
-    seq += 1;
-    const delta = {
-      start: event.change.start,
-      removed: event.change.removed,
-      inserted: event.change.inserted,
-      point: event.point,
-      seq,
-    };
-    // Fan the text delta to every client. Only the originating client gets
-    // the echoId (so it reconciles its optimistic edit); the others apply
-    // the delta fresh to their mirror (they didn't predict it).
-    for (const c of clients) {
-      const echoId = c === activeClient ? currentEchoId : undefined;
-      c.port.postMessage({ type: MSG.DELTA, delta: { ...delta, echoId } });
-    }
-  });
+/** Fan a buffer's text change to the clients viewing that buffer. */
+function fanDelta(bufferId, event) {
+  seq += 1;
+  const delta = {
+    start: event.change.start,
+    removed: event.change.removed,
+    inserted: event.change.inserted,
+    point: event.point,
+    seq,
+  };
+  for (const c of clients) {
+    if (spine.currentBufferIdOf(c.index) !== bufferId) continue;
+    // Only the originating client gets the echoId (to reconcile its
+    // optimistic edit); the others apply the delta fresh to their mirror.
+    const echoId = c === activeClient ? currentEchoId : undefined;
+    c.port.postMessage({ type: MSG.DELTA, delta: { ...delta, echoId } });
+  }
 }
-subscribeToBuffer();
 
 // --- down-channel senders ---------------------------------------------
 
@@ -191,14 +192,38 @@ function sendCursorsTo(client) {
   });
 }
 
-/** Broadcast the buffer's overlay set to every client. Overlays are SHARED
- *  buffer state, so all clients get the same list (a highlight added in one
- *  window shows in the other). The renderer draws them via getDecorations().*/
-function broadcastOverlays() {
-  const overlays = spine.overlaySnapshot();
+/** Broadcast the ACTIVE buffer's overlay set to the clients viewing THAT
+ *  buffer. Overlays are per-buffer shared state, so a highlight added in one
+ *  window shows in every window on the same buffer — but NOT in a window
+ *  viewing a different buffer. */
+function broadcastOverlaysForActiveBuffer() {
+  const activeId = activeClient
+    ? spine.currentBufferIdOf(activeClient.index)
+    : spine.currentBufferIdOf(0);
+  const overlays = spine.overlaySnapshotOf(activeId);
   for (const c of clients) {
+    if (spine.currentBufferIdOf(c.index) !== activeId) continue;
     c.port.postMessage({ type: MSG.OVERLAYS, overlays, seq });
   }
+}
+
+/** Send one client its current buffer's overlay set (on a switch / HELLO). */
+function sendOverlaysTo(client) {
+  client.port.postMessage({
+    type: MSG.OVERLAYS,
+    overlays: spine.overlaySnapshotOf(spine.currentBufferIdOf(client.index)),
+    seq,
+  });
+}
+
+/** Send a client the buffer-list records (C-x C-b), each flagged with
+ *  whether it is that client's current buffer. */
+function sendBufferListTo(client) {
+  client.port.postMessage({
+    type: MSG.BUFFER_LIST,
+    buffers: spine.bufferListRecords(client.index),
+    seq,
+  });
 }
 
 /** Open the minibuffer for the active client (the one that ran the
@@ -221,7 +246,9 @@ function sendScrollToActive(req) {
   if (activeClient) activeClient.port.postMessage({ type: MSG.VIEW, view: { scroll: req } });
 }
 
-/** Send one client a full snapshot (initial sync / a buffer swap). */
+/** Send one client a full snapshot of ITS CURRENT buffer (initial sync /
+ *  a buffer switch). The snapshot carries the buffer id so the client knows
+ *  which buffer it is now mirroring. */
 function sendSnapshot(client) {
   spine.setActiveClient(client.index);
   client.port.postMessage({
@@ -229,9 +256,41 @@ function sendSnapshot(client) {
     text: spine.buffer.text,
     point: spine.viewStateOf(client.index).point,
     name: spine.buffer.name,
+    bufferId: spine.currentBufferIdOf(client.index),
     clientIndex: client.index, // so a client knows whether it's the typer
     seq,
   });
+}
+
+/** Fully re-sync a client onto its current buffer: snapshot + view-state +
+ *  its own cursor set + that buffer's overlays. Used after a buffer switch
+ *  (the client must tear down its old mirror and build a fresh one). */
+function resyncClientToCurrentBuffer(client) {
+  spine.setActiveClient(client.index);
+  sendSnapshot(client);
+  sendViewTo(client);
+  sendCursorsTo(client);
+  sendOverlaysTo(client);
+}
+
+/** Switch a client to a buffer (by id) and re-sync it onto the new buffer.
+ *  The other clients are untouched (multi-buffer: switching one window's
+ *  buffer must not disturb another window). Returns true on success. */
+function switchClientToBuffer(client, bufferId) {
+  if (!bufferId) return false;
+  const ok = spine.switchClientToBuffer(client.index, bufferId);
+  if (ok) resyncClientToCurrentBuffer(client);
+  return ok;
+}
+
+/** After a kill-buffer re-homed clients onto a survivor buffer, re-sync
+ *  every client whose current buffer is now the active client's buffer (the
+ *  ones the kill moved). Simpler + safe: re-sync ALL clients — a no-op for a
+ *  client whose buffer didn't change is just an extra snapshot. */
+function onKillReHome() {
+  for (const c of clients) resyncClientToCurrentBuffer(c);
+  // Restore the active client binding (the loop left it on the last client).
+  if (activeClient) spine.setActiveClient(activeClient.index);
 }
 
 // --- intent handling ----------------------------------------------------
@@ -274,6 +333,18 @@ function applyIntent(client, intent) {
           minibufferState = { ...minibufferState, value: String(intent.value ?? '') };
         }
         break;
+      case INTENT.SWITCH_BUFFER: {
+        // A direct buffer switch (clicking a buffer-list row): resolve by id
+        // or name, switch this client, and re-sync it onto the new buffer.
+        const id = intent.bufferId
+          || (intent.bufferName ? spine.bufferIdByName(String(intent.bufferName)) : null);
+        if (id) {
+          switchClientToBuffer(client, id);
+          activeClient = null;
+          return; // the switch fully re-synced the client; skip the edit path
+        }
+        break;
+      }
       default:
         break;
     }
@@ -289,11 +360,12 @@ function applyIntent(client, intent) {
 
   if (wasMultiCursorEdit) {
     // The single forwarded delta is unreliable for a multi-cursor edit;
-    // RESYNC every client with the canonical text + its own cursor set.
-    // (The delta the buffer's onChange already fanned is harmless — the
-    // mirror reconciles to the resync text either way — but the resync is
-    // what makes it correct.)
+    // RESYNC the clients ON THIS BUFFER with the canonical text + their own
+    // cursor set. A client viewing a DIFFERENT buffer must not be resynced
+    // with this buffer's text — that would corrupt its mirror.
+    const editedBufferId = spine.currentBufferIdOf(client.index);
     for (const c of clients) {
+      if (spine.currentBufferIdOf(c.index) !== editedBufferId) continue;
       c.port.postMessage({
         type: MSG.RESYNC,
         text: spine.buffer.text,
@@ -335,21 +407,47 @@ function handleMinibufferSubmit(value) {
   }
   if (prompt === 'Find file: ') {
     spine.abortMinibuffer();
-    const ok = spine.visitFile(value);
-    if (ok) {
-      subscribeToBuffer();
-      // Re-snapshot every client onto the new shared buffer (overlays were
-      // cleared by visitFile + already broadcast empty; cursors reset).
-      for (const c of clients) {
-        spine.setActiveClient(c.index);
-        sendSnapshot(c);
-        sendViewTo(c);
-        sendCursorsTo(c);
-      }
+    // Multi-buffer: visitFile ADDS a buffer and switches the ACTIVE client
+    // onto it (other clients stay on their own buffers). Re-sync only the
+    // active client onto the new buffer; the others are undisturbed.
+    const newId = spine.visitFile(value);
+    if (newId && activeClient) resyncClientToCurrentBuffer(activeClient);
+    return;
+  }
+  if (prompt === 'Switch to buffer: ') {
+    spine.abortMinibuffer();
+    // Resolve the name (exact, then a substring prefix-match) and switch the
+    // active client to it. Only that window changes buffer.
+    const id = resolveBufferName(value);
+    if (id && activeClient) {
+      switchClientToBuffer(activeClient, id);
+    } else if (activeClient) {
+      // No match: surface a status so the user sees the miss.
+      sendStatusTo(activeClient, `No buffer named "${value.trim()}"`);
     }
     return;
   }
   spine.deliverMinibuffer(value);
+}
+
+/** Resolve a buffer NAME the user typed at the C-x b prompt to a buffer id:
+ *  an exact name match first, else the shortest buffer name containing the
+ *  typed text (a lenient substring complete, like the command completer). */
+function resolveBufferName(value) {
+  const v = value.trim();
+  if (v === '') return null;
+  const exact = spine.bufferIdByName(v);
+  if (exact) return exact;
+  const matches = spine.bufferListRecords(activeClient ? activeClient.index : 0)
+    .filter((r) => r.name.includes(v))
+    .sort((a, b) => a.name.length - b.name.length);
+  return matches.length ? matches[0].id : null;
+}
+
+/** Surface a one-off echo-area status on a client (no command involved). */
+function sendStatusTo(client, status) {
+  const vs = spine.viewStateOf(client.index);
+  client.port.postMessage({ type: MSG.VIEW, view: { ...vs, status, seq } });
 }
 
 function bestCommandMatch(value) {
@@ -369,12 +467,10 @@ function onClientMessage(client, event) {
       spine.setActiveClient(client.index);
       sendSnapshot(client);
       sendViewTo(client);
-      // A late-joining client needs the buffer's current overlays + its
-      // own cursor set (a window can attach while another already has
-      // highlights or multi-cursor active).
-      client.port.postMessage({
-        type: MSG.OVERLAYS, overlays: spine.overlaySnapshot(), seq,
-      });
+      // A late-joining client needs its current buffer's overlays + its own
+      // cursor set (a window can attach while another already has highlights
+      // or multi-cursor active on the same buffer).
+      sendOverlaysTo(client);
       sendCursorsTo(client);
       break;
     case MSG.INTENT:

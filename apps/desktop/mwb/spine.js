@@ -44,6 +44,7 @@ import { createView } from '@editor/view';
 import { createBufferPrimitives } from '@editor/stdlib';
 
 import { renderModeline } from './protocol.js';
+import { createBufferRegistry } from './buffer-registry.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
@@ -176,7 +177,12 @@ const CX_MAP = Object.freeze({
   'C-s': 'save-buffer',
   'C-d': 'duplicate-line', // line-ops.lisp (production binds C-x C-d here)
   'C-j': 'join-line', // line-ops.lisp
-  k: 'kill-this-buffer-noop',
+  // Multi-buffer (production keymap.lisp): C-x b switches buffer (a
+  // minibuffer name read, host-completed), C-x C-b lists buffers, C-x k
+  // kills the current buffer.
+  b: 'switch-to-buffer',
+  'C-b': 'list-buffers',
+  k: 'kill-buffer',
 });
 
 /**
@@ -215,34 +221,82 @@ export function createSpine(options, effects = {}) {
   // sharing the buffer (overlays are shared state). Called with no args;
   // the server reads `spine.overlaySnapshot()`.
   const onOverlays = effects.onOverlays ?? (() => {});
+  // Raised when the active client runs list-buffers (C-x C-b). The server
+  // sends that client the buffer-list records (`spine.bufferListRecords`).
+  const onBufferList = effects.onBufferList ?? (() => {});
+  // Raised when a kill-buffer switched the active client to a different
+  // buffer (the killed buffer is gone). The server re-snapshots that client
+  // onto its new buffer. Called with the active client's new bufferId.
+  const onBufferSwitched = effects.onBufferSwitched ?? (() => {});
+  // Raised for every text change on ANY held buffer, tagged with its id.
+  // The server fans a delta only to the clients viewing THAT buffer (a delta
+  // is no longer a broadcast — different windows hold different buffers).
+  // Signature: (bufferId, { change, point }, buffer).
+  const onBufferChange = effects.onBufferChange ?? (() => {});
 
-  // The canonical buffer + a real view over it. The view owns point/mark
-  // (per-client window-state); the buffer owns the text. `bindCursor` (run
-  // inside the buffer primitives) routes the buffer's point/mark through
-  // the view's cursors. This is exactly production's session shape.
-  let buffer = createBuffer(options.initialText ?? '', {
-    name: options.name ?? 'mwb-scratch',
+  // --- the buffer registry (multi-buffer) ------------------------------
+  //
+  // The server holds MANY buffers at once (a buffer list, keyed by id). Each
+  // registry entry owns its text, its per-client views (each window keeps
+  // its own point/mark over the shared text — the per-window vs per-buffer
+  // split, plan §4), and its overlay state. find-file ADDS a buffer rather
+  // than replacing the current one; a client switches between them.
+  const registry = createBufferRegistry({
+    createBuffer,
+    createView,
+    onBufferChange: (id, event) => onBufferChange(id, event),
   });
-  let view = createView({ kind: 'text', buffer, name: buffer.name });
-  buffer.bindCursor(view);
-  view.point = 0;
 
-  // Every client's view over the SHARED buffer. Index 0 is the default
-  // (single-client) view. Two windows on one buffer share the text but each
-  // keep their own point/mark (plan §4 "per-window vs per-buffer state").
-  // `bindCursor` swaps which view's cursors the buffer reads/writes, so
-  // before processing a client's intent the server makes that client's view
-  // active (setActiveClientView), and motion/edits land on its cursor.
-  const clientViews = [view];
+  // The seed buffer (the file the server booted with). Every client starts
+  // viewing it; further buffers join via find-file.
+  const initialEntry = registry.add(options.initialText ?? '', options.name ?? 'mwb-scratch');
+
+  // Which buffer each client is currently viewing: clientIndex → bufferId.
+  // Client 0 starts on the seed buffer; further clients default to it too
+  // (addClientView). Switching one client's buffer leaves the others put.
+  /** @type {Map<number, string>} */
+  const clientBuffers = new Map([[0, initialEntry.id]]);
+
+  // The set of known client indices (so a buffer-wide refresh / a kill can
+  // re-home every client). Index 0 is always present (the default view).
+  const clientIndices = new Set([0]);
+
+  // The ACTIVE (buffer, view) the interpreter operates against right now —
+  // resolved from the active client by setActiveClient before each intent.
+  // `bindCursor` (run inside the buffer primitives) routes the active
+  // buffer's point/mark through the active view's cursors; the session's
+  // `currentView` getter returns the active view. This is exactly
+  // production's session shape, but the active buffer/view now varies with
+  // which client (and which of its buffers) the server is serving.
+  let activeEntry = initialEntry;
+  let view = registry.viewFor(initialEntry.id, 0);
+  let buffer = initialEntry.buffer;
+  buffer.bindCursor(view);
 
   /** The session the buffer primitives operate against. A getter for
-   *  `currentView` so a find-file can swap the buffer/view underneath and a
-   *  multi-client server can swap the active client's view. */
+   *  `currentView` so a buffer/client switch swaps the active view
+   *  underneath without re-creating the primitives. */
   const session = {
     get currentView() {
       return view;
     },
   };
+
+  /**
+   * Make (the active client's view of) buffer ENTRY active: the interpreter's
+   * `buffer`, `view`, and `session.currentView` now point at it, and the
+   * buffer's cursor reads/writes the given view's point/mark. Every command
+   * dispatch + overlay primitive runs against whatever this last set.
+   *
+   * @param {object} entry - A registry buffer entry.
+   * @param {object} v - That entry's view for the active client.
+   */
+  function bindActive(entry, v) {
+    activeEntry = entry;
+    buffer = entry.buffer;
+    view = v;
+    buffer.bindCursor(view);
+  }
 
   // --- the echo area (status line) -------------------------------------
   let statusText = '';
@@ -257,8 +311,8 @@ export function createSpine(options, effects = {}) {
   let activePrompt = null;
 
   // --- the modeline modified flag --------------------------------------
-  // The buffer's text differs from what was last loaded/saved.
-  let savedText = options.initialText ?? '';
+  // The "last saved" baseline is now per-buffer (registry entry.savedText),
+  // so a buffer is modified when its text differs from ITS own baseline.
 
   // --- the server-local clipboard (kill.lisp's interprogram edge) ------
   // STUB: an in-memory clipboard, so the kill ring round-trips fully
@@ -282,36 +336,29 @@ export function createSpine(options, effects = {}) {
   // is model-side (shared, edit-tracked); only the PIXELS are client-side
   // (the renderer already draws getDecorations()). So an overlay needs no
   // new render protocol — just the offsets on the wire.
-  /** @type {{ id: string, startM: any, endM: any, face: string, kind: string }[]} */
-  let overlayList = [];
-  let overlayId = 0;
+  //
+  // Overlays now live ON THE BUFFER ENTRY (registry), not in the spine: a
+  // highlight is a property of a buffer, so switching buffers must show that
+  // buffer's overlays. These helpers operate on the ACTIVE entry (the
+  // commands run against whatever client the server is serving). The wire
+  // snapshot for a SPECIFIC buffer is `overlaySnapshotOf(id)` (used to send
+  // a switching client its new buffer's overlays).
 
-  /** Drop every overlay (releasing its markers), or only those of KIND. */
+  /** Drop the active buffer's overlays (releasing markers), or only KIND. */
   function clearOverlays(kind) {
-    const keep = [];
-    for (const o of overlayList) {
-      if (kind === undefined || o.kind === kind) {
-        o.startM.remove();
-        o.endM.remove();
-      } else {
-        keep.push(o);
-      }
-    }
-    overlayList = keep;
+    registry.clearOverlays(activeEntry, kind);
   }
 
-  /** A wire snapshot of the overlays at their CURRENT (edit-tracked)
-   *  offsets: `[{ start, end, face, kind, id }]`. Drops collapsed overlays
-   *  whose markers have crossed (a deletion swallowed the range). */
+  /** A wire snapshot of the ACTIVE buffer's overlays at their current
+   *  (edit-tracked) offsets. Drops overlays a deletion has collapsed. */
   function overlaySnapshot() {
-    const out = [];
-    for (const o of overlayList) {
-      const start = o.startM.offset;
-      const end = o.endM.offset;
-      if (end <= start) continue; // collapsed by an edit — skip
-      out.push({ start, end, face: o.face, kind: o.kind, id: o.id });
-    }
-    return out;
+    return registry.overlaySnapshot(activeEntry);
+  }
+
+  /** A wire snapshot of a SPECIFIC buffer's overlays (for a switch). */
+  function overlaySnapshotOf(id) {
+    const entry = registry.get(id);
+    return entry ? registry.overlaySnapshot(entry) : [];
   }
 
 
@@ -411,29 +458,29 @@ export function createSpine(options, effects = {}) {
         const end = Math.max(0, Math.floor(Number(args[1]) || 0));
         const face = String(args[2] ?? 'overlay');
         const kind = args.length > 3 && args[3] !== NIL ? String(args[3]) : 'overlay';
-        const lo = Math.min(start, end);
-        const hi = Math.max(start, end);
-        const id = `ov${overlayId += 1}`;
-        overlayList.push({
-          id,
-          startM: buffer.createMarker(lo),
-          endM: buffer.createMarker(hi),
-          face,
-          kind,
-        });
+        const id = registry.addOverlay(activeEntry, start, end, face, kind);
         onOverlays();
         return id;
       },
       // (clear-overlays! [kind]) -> nil. No kind clears all.
       'clear-overlays!': (args) => {
         const kind = args.length > 0 && args[0] !== NIL ? String(args[0]) : undefined;
-        const before = overlayList.length;
-        clearOverlays(kind);
-        if (overlayList.length !== before) onOverlays();
+        const removed = registry.clearOverlays(activeEntry, kind);
+        if (removed > 0) onOverlays();
         return NIL;
       },
       // (overlay-count) -> integer (the live, non-collapsed count).
       'overlay-count': () => overlaySnapshot().length,
+
+      // --- multi-buffer host helpers -----------------------------------
+      // open-buffer-list! signals the host to send the active client the
+      // buffer-list records (C-x C-b). The host (server.js) owns the
+      // registry, so it packs + sends the list; this just raises the effect.
+      'open-buffer-list!': () => { onBufferList(); return NIL; },
+      // kill-current-buffer! removes the active client's current buffer and
+      // switches that client to another (the registry refuses to drop the
+      // last buffer). The host performs the kill + re-snapshot (killBuffer).
+      'kill-current-buffer!': () => { killActiveBuffer(); return NIL; },
 
       // --- customisation openers (custom.lisp) — STUB ------------------
       // These open a render-side customize view. The `customize` command
@@ -546,9 +593,30 @@ export function createSpine(options, effects = {}) {
       ;; The argument IS the chosen command name (the host resolved it).
       (lambda (name) name))
 
-    ;; A no-op so the C-x k binding resolves without a real buffer-kill.
-    (defcommand kill-this-buffer-noop ()
-      "Placeholder for C-x k in the spine (no buffer list yet).")
+    ;; --- multi-buffer commands (C-x b / C-x C-b / C-x k) -------------
+    ;; switch-to-buffer prompts for a buffer name; the host completes
+    ;; against the live buffer list and, on submit, switches the active
+    ;; client to that buffer (sending it the new buffer's snapshot +
+    ;; overlays). Like M-x/find-file, the body is a host-fulfilled
+    ;; placeholder — the host acts on submit (server.js).
+    (defcommand switch-to-buffer ()
+      "Switch the current window to another buffer by name (C-x b)."
+      (interactive (string "Switch to buffer: "))
+      (lambda (name) name))
+
+    ;; list-buffers opens the buffer-list view client-side. The host owns
+    ;; the buffer records (it holds the registry), so this command just
+    ;; signals the host to send the list; the body is a host marker.
+    (defcommand list-buffers ()
+      "Show the buffer list (C-x C-b)."
+      (open-buffer-list!))
+
+    ;; kill-buffer removes the current buffer from the registry and
+    ;; switches the window to another (the registry refuses to drop the
+    ;; last buffer). The host performs the kill + re-snapshot on dispatch.
+    (defcommand kill-buffer ()
+      "Kill the current buffer and switch to another (C-x k)."
+      (kill-current-buffer!))
 
     ;; save-buffer: the spine has no file path wired for the scratch
     ;; buffer; report it rather than silently doing nothing.
@@ -714,72 +782,141 @@ export function createSpine(options, effects = {}) {
   interpreter.call('-spine-choose-major-mode');
 
   /**
-   * Visit a file: read it (via the openFile effect) and swap the canonical
-   * buffer + view to it. The server fans a fresh SNAPSHOT to the client
-   * after this. Returns true on success.
+   * Visit a file: read it (via the openFile effect) and ADD it as a NEW
+   * buffer in the registry (multi-buffer: find-file no longer replaces the
+   * current buffer), then switch the ACTIVE client to it. Returns the new
+   * buffer's id on success, or null on failure. The server re-snapshots the
+   * active client onto the new buffer after this.
    *
    * @param {string} path - An absolute path.
-   * @returns {boolean}
+   * @returns {string | null} The new buffer id, or null.
    */
   function visitFile(path) {
     const result = openFile(path);
     if (!result) {
       statusText = `find-file: cannot open ${path}`;
       onStatus(statusText);
-      return false;
+      return null;
     }
-    // Overlays are pinned to the OLD buffer's markers; drop them on a swap
-    // (the new buffer has its own overlay state). onOverlays fires so the
-    // server broadcasts the now-empty set.
-    clearOverlays();
-    onOverlays();
-    buffer = createBuffer(result.text, { name: result.name });
-    // Rebuild every client's view over the new shared buffer, preserving the
-    // number of clients (each keeps its own cursor, reset to start).
-    const n = clientViews.length;
-    clientViews.length = 0;
-    for (let i = 0; i < n; i += 1) {
-      const v = createView({ kind: 'text', buffer, name: buffer.name });
-      v.point = 0;
-      clientViews.push(v);
-    }
-    view = clientViews[0];
-    buffer.bindCursor(view);
-    // Re-derive the major mode for the new buffer's name (so a visited
-    // .md gets markdown-mode, etc., and its mode keymap dispatches).
-    interpreter.call('-spine-choose-major-mode');
-    savedText = result.text;
+    const entry = registry.add(result.text, result.name);
+    entry.savedText = result.text;
+    // Switch the active client to the new buffer (mints its view, derives
+    // the major mode, leaves the buffer's own overlays — none yet — intact).
+    switchClientToBuffer(activeClientIndex, entry.id);
     statusText = '';
     onStatus('');
+    return entry.id;
+  }
+
+  // --- multi-buffer / multi-client window-state (the Model-B payoff) ----
+  //
+  // The server holds N buffers and serves N clients. Each (client, buffer)
+  // pair has its own view (its own point/mark/selection) — registry.viewFor.
+  // A client views ONE buffer at a time (clientBuffers); switching its
+  // buffer leaves the others put. Before processing a client's intent the
+  // server makes that client active (setActiveClient), which binds the
+  // interpreter to that client's current buffer + its view of it.
+
+  /** The client index the server is currently serving (so a command's effect
+   *  — kill-buffer, list-buffers — targets the right window). */
+  let activeClientIndex = 0;
+
+  /** Register a new client. It starts on the SAME buffer client 0 booted on
+   *  (the seed buffer), with its own fresh view. Returns its index. */
+  function addClientView() {
+    const index = clientIndices.size; // next free index (0,1,2,…)
+    clientIndices.add(index);
+    const startId = clientBuffers.get(0) ?? initialEntry.id;
+    clientBuffers.set(index, startId);
+    registry.viewFor(startId, index); // mint its view eagerly
+    return index;
+  }
+
+  /** The buffer entry a client is currently viewing (defaults to the seed
+   *  buffer if somehow unset). */
+  function entryForClient(index) {
+    const id = clientBuffers.get(index) ?? initialEntry.id;
+    return registry.get(id) ?? initialEntry;
+  }
+
+  /** Make client INDEX active: bind the interpreter to that client's current
+   *  buffer + its view of it. Subsequent handleKey/runCommand/overlay
+   *  primitives operate on this client's window + buffer. */
+  function setActiveClient(index) {
+    if (!clientIndices.has(index)) return;
+    activeClientIndex = index;
+    const entry = entryForClient(index);
+    const v = registry.viewFor(entry.id, index);
+    bindActive(entry, v);
+    // The major mode is a property of the buffer; re-derive it so the
+    // mode-keymap chain resolves against THIS buffer's mode (a markdown
+    // buffer's C-c, a .js buffer's global C-c, …).
+    interpreter.call('-spine-choose-major-mode');
+  }
+
+  /**
+   * Switch a client to buffer ID. Mints the client's view of it if needed,
+   * binds the interpreter (if this is the active client), re-derives the
+   * major mode, and raises onBufferSwitched so the server re-snapshots the
+   * client onto its new buffer. Returns true on success.
+   *
+   * @param {number} index - The client to switch.
+   * @param {string} id - The target buffer id.
+   * @returns {boolean}
+   */
+  function switchClientToBuffer(index, id) {
+    if (!registry.has(id)) return false;
+    clientBuffers.set(index, id);
+    if (index === activeClientIndex) {
+      const entry = registry.get(id);
+      const v = registry.viewFor(id, index);
+      bindActive(entry, v);
+      interpreter.call('-spine-choose-major-mode');
+    } else {
+      registry.viewFor(id, index); // mint the view for a non-active client
+    }
+    onBufferSwitched(id);
     return true;
   }
 
-  // --- multi-client window-state (the Model-B payoff) -------------------
-  //
-  // Each client gets its OWN view over the shared buffer (its own
-  // point/mark/selection); the buffer text is shared. Before processing a
-  // client's intent the server makes that client's view active, so motion
-  // and edits land on its cursor while every viewer sees the shared text.
-
-  /** Register a new client view over the shared buffer. Returns its index,
-   *  used by the server as a client handle. */
-  function addClientView() {
-    const v = createView({ kind: 'text', buffer, name: buffer.name });
-    v.point = 0;
-    clientViews.push(v);
-    return clientViews.length - 1;
+  /** Resolve a buffer NAME to its id (the C-x b switch path), or null. */
+  function bufferIdByName(name) {
+    const entry = registry.findByName(name);
+    return entry ? entry.id : null;
   }
 
-  /** Make client INDEX's view the active one: the buffer's cursor now reads
-   *  and writes that client's point/mark. Subsequent handleKey/runCommand
-   *  operate on this client's window-state. */
-  function setActiveClient(index) {
-    if (index < 0 || index >= clientViews.length) return;
-    view = clientViews[index];
-    buffer.bindCursor(view);
+  /** The buffer id a client is currently viewing. */
+  function currentBufferIdOf(index) {
+    return clientBuffers.get(index) ?? initialEntry.id;
   }
 
-  /** The current buffer's major-mode display name (e.g. "Markdown"),
+  /** Kill the ACTIVE client's current buffer, switching it (and any other
+   *  client that was also viewing the killed buffer) to another buffer.
+   *  Refuses to kill the last buffer (the registry guard). Called by the
+   *  kill-current-buffer! primitive (the kill-buffer command). */
+  function killActiveBuffer() {
+    const index = activeClientIndex;
+    const killedId = clientBuffers.get(index) ?? initialEntry.id;
+    if (registry.count() <= 1) {
+      statusText = 'kill-buffer: refusing to kill the only buffer';
+      onStatus(statusText);
+      return;
+    }
+    // Pick a survivor buffer (any other than the one being killed).
+    const survivor = registry.list().find((e) => e.id !== killedId);
+    if (!survivor) return;
+    // Re-home EVERY client that was viewing the killed buffer onto the
+    // survivor (a kill must not leave a window pointed at a dead buffer).
+    const affected = [...clientBuffers.entries()]
+      .filter(([, id]) => id === killedId)
+      .map(([ci]) => ci);
+    registry.remove(killedId);
+    for (const ci of affected) switchClientToBuffer(ci, survivor.id);
+    statusText = `Killed buffer; switched to ${survivor.buffer.name}`;
+    onStatus(statusText);
+  }
+
+  /** The current (active) buffer's major-mode display name (e.g. "Markdown"),
    *  for the modeline. Model-side: the server chose the mode from the
    *  buffer name (choose-major-mode!), so it owns this. */
   function majorModeName() {
@@ -791,18 +928,21 @@ export function createSpine(options, effects = {}) {
     }
   }
 
-  /** The view-state of a specific client (its own point/mark over the
-   *  shared buffer text). */
+  /** The view-state of a specific client (its own point/mark over ITS OWN
+   *  current buffer). Reads the client's buffer entry, not the active one,
+   *  so two clients on different buffers report different modelines. */
   function viewStateOf(index) {
-    const v = clientViews[index] ?? view;
-    const { line, column } = buffer.positionAt(v.point);
-    const modified = buffer.text !== savedText;
+    const entry = entryForClient(index);
+    const buf = entry.buffer;
+    const v = registry.viewFor(entry.id, index) ?? view;
+    const { line, column } = buf.positionAt(v.point);
+    const modified = buf.text !== entry.savedText;
     return {
       point: v.point,
       mark: v.mark,
-      name: buffer.name,
+      name: buf.name,
       modeline: renderModeline({
-        name: buffer.name, modified, line: line + 1, column,
+        name: buf.name, modified, line: line + 1, column,
         mode: majorModeName(),
       }),
       status: statusText,
@@ -816,7 +956,8 @@ export function createSpine(options, effects = {}) {
    *  set on the active client's view; this surfaces it for the CURSORS
    *  message so the renderer paints every caret. */
   function cursorsOf(index) {
-    const v = clientViews[index] ?? view;
+    const entry = entryForClient(index);
+    const v = registry.viewFor(entry.id, index) ?? view;
     const cs = Array.isArray(v.cursors) && v.cursors.length
       ? v.cursors
       : [{ point: v.point, mark: v.mark ?? null }];
@@ -1013,12 +1154,12 @@ export function createSpine(options, effects = {}) {
     return { line: line + 1, column };
   }
 
-  /** A fresh view-state object (protocol ViewState) for the client. The
-   *  modeline is rendered by the shared pure helper in protocol.js, so the
-   *  server and any future client agree on its shape. */
+  /** A fresh view-state object (protocol ViewState) for the active client.
+   *  The modeline is rendered by the shared pure helper in protocol.js, so
+   *  the server and any future client agree on its shape. */
   function viewState() {
     const { line, column } = pointPosition();
-    const modified = buffer.text !== savedText;
+    const modified = buffer.text !== activeEntry.savedText;
     return {
       point: buffer.point,
       mark: buffer.mark,
@@ -1052,16 +1193,31 @@ export function createSpine(options, effects = {}) {
     visitFile,
     viewState,
     pointPosition,
-    // multi-client window-state (shared buffer, per-client cursor)
+    // multi-client window-state (per-client buffer + cursor)
     addClientView,
     setActiveClient,
     viewStateOf,
+    // multi-buffer registry surface
+    switchClientToBuffer,
+    bufferIdByName,
+    currentBufferIdOf,
+    killActiveBuffer,
+    /** Plain-data buffer-list records (C-x C-b), each tagged with whether
+     *  it is the CURRENT buffer of the given client. */
+    bufferListRecords(clientIndex) {
+      const currentId = currentBufferIdOf(clientIndex);
+      return registry.listRecords().map((r) => ({ ...r, current: r.id === currentId }));
+    },
+    get bufferCount() {
+      return registry.count();
+    },
     // overlays + multi-cursor over the wire
     cursorsOf,
     activeCursorCount,
     overlaySnapshot,
+    overlaySnapshotOf,
     get clientCount() {
-      return clientViews.length;
+      return clientIndices.size;
     },
     /** The active minibuffer prompt label, or null. */
     get activePrompt() {
