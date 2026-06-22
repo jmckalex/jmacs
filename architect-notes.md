@@ -4,6 +4,96 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-23] Citations + RefTeX online server-side — the last big model-heavy stdlib family, the one you write with. Gated, flag-off byte-for-byte.
+
+**Done + committed on `multi-window-b` (NOT merged). Suite GREEN 816 desktop**
+(was 797; +10 citation-bridge, +9 reftex-flow), full root suite green (storage
+63 / lisp 254 / buffer 70 / view 48 / renderer 800 / stdlib 882 / desktop 816).
+All work is under `apps/desktop/mwb/` (server-side, only runs under
+`GODOT_SERVER=1`) — flag-off untouched.
+
+**The prior network-stalled attempt's one obstacle — module resolution — is
+resolved.** The citation host primitives are NOT re-implemented against
+`@citation-js/*` from `/tmp`. The renderer's OWN `citation.js`
+(`packages/renderer/src/citation.js`) + its vendored bundle
+(`packages/renderer/vendor/citation-js.esm.js`) are **pure ESM, no
+DOM/Electron**, so the headless server imports the SAME module the renderer
+uses — a fixed relative path into the repo, resolving against the repo's
+installed/vendored modules exactly like the renderer. Verified: a real BibTeX
+entry APA-formats to the exact `Smith, J. (2020). A Study of Things. Journal of
+Testing, 7, 1–10.` server-side under bare `node`. (The `@citation-js/*` node
+modules DO also resolve from `apps/desktop` — confirmed — but reusing the
+production `citation.js` is more faithful + simpler, so that's the path taken.)
+
+**What now works server-side (the daily LaTeX-with-citations workflow):**
+- **The citation bridge** (`citation-bridge.js`): `citation-parse` /
+  `-parse-lenient` / `-format` / `-format-bibliography` / `-keys` / `-entries`
+  / `-format-entries` / `-format-keys` / `-register-style!`, bodies mirroring
+  app.js's (same `apa`/`text`/`en-US` defaults + absence convention). 10
+  `node --test` cases (parse, exact APA string, keys, entries projection,
+  subset formatting, lenient).
+- **cite.lisp + the full RefTeX R1–R3 chain** (`reftex.lisp` /
+  `reftex-refs.lisp` / `reftex-cite.lisp`) load verbatim via the
+  primitive-split. New host primitives backing them: the PURE
+  `createLatexPrimitives` (latex-scan / path-*), real `file-exists?`
+  (statSync), real `list-directory-paths` (readdirSync, was a NIL stub), the
+  view→file mapping (`view-file-path` / `view-buffer` / `view-directory` via
+  `entryForView`, matched by buffer identity), `open-file-path!` (visitFile).
+  reftex's `latex-master-file` redefinition is the sole one — latex-compile.lisp
+  (run-process!/PDF/SyncTeX/utility-dock) is deliberately NOT loaded.
+- **The cite/ref pickers ride the generic G0b PICKER channel** (as the G0b
+  note predicted). The three bespoke openers (`open-reftex-select!` /
+  `open-reftex-cite-format!` / `open-reftex-cite-select!`) are `picker-read`
+  calls over JS row-providers that marshal the Lisp candidate accessors into
+  the `{label, value, group, detail}` wire shape; a choice resumes the
+  matching reftex callback, a nil cancel its `-on-cancel`. The command bodies
+  are UNCHANGED.
+
+**Proven end-to-end headless** (`reftex-flow.test.js`, 9 cases, a real
+`doc.tex` + `refs.bib` in a temp dir, through the REAL run-command):
+- **C-c [** `reftex-citation` → format-menu PICKER → `\cite`/`\citep` choice →
+  cite-entry PICKER (rows from the REAL CSL pipeline — the filter blob carries
+  "Jones"/"Big Book", proving citation.js actually parsed the bib) → inserts
+  `\cite{smith2020}` / `\citep{jones2018}` at the origin. Cancel inserts nothing.
+- **C-c )** `reftex-reference` → label PICKER (names + type groups) → inserts
+  the type-aware macro: `\eqref{eq:einstein}` for the equation, `\ref{sec:intro}`
+  for the section. Cancel inserts nothing.
+- **C-c (** `reftex-label` → minibuffer → `\label{my:newlabel}`.
+- `reftex-reparse` scans 1 file, 2 labels.
+
+**Commits (4, this branch, NOT merged):**
+- `b2f0b1f feat(mwb): server-side citation host bridge (cite/RefTeX foundation)`
+- `7ae2b9f feat(mwb): load cite.lisp + the RefTeX R1-R3 chain server-side`
+- `e558a95 feat(mwb): bridge the RefTeX cite/ref pickers to the generic PICKER channel`
+- `7031d46 test(mwb): prove reftex-citation / -reference / -label flows server-side`
+- (this notes + PRIMITIVE-SPLIT.md update commit)
+
+**Deferred (honest — bespoke-panel affordances, not the daily path):**
+- **SPC-peek** in the label picker + **`m` multi-key marking** in the cite
+  picker. The generic PICKER is choose-or-cancel, so the SINGLE-choice path
+  (the common case — cite one key, ref one label) is fully wired; multi-mark
+  inserting `\cite{k1,k2,…}` and peek-without-dismiss are render-side
+  follow-ups (the channel would need the additive multi-select the G0b note
+  already sketches).
+- **The bottom-dock LIVE cite preview panel** (the formatted-reference panel
+  the bespoke `open-reftex-cite-select!` paints) — render-side; the server
+  ships the cheap index + formats the shown subset on demand, but the panel's
+  DOM is a render slice.
+- **latex-compile.lisp + latex-synctex.lisp + latex-menu.lisp** — the
+  compile/view loop (`run-process!`, PDF view, SyncTeX) is a process/render
+  slice of its own; reftex doesn't need it (its `latex-master-file` stands
+  alone), so it's out of scope here.
+
+**YOU VERIFY LIVE** (GUI launch is permission-blocked for the agent): with
+`GODOT_SERVER=1`, open a `.tex` with a `\bibliography`, put point where you'd
+write, **C-c [** → pick a format → pick an entry → `\cite{key}` lands; **C-c )**
+→ pick a label → `\ref`/`\eqref` lands; **C-c (** → `\label{...}`. (The
+PICKER channel is already wired into the real server-view per the prior
+slice, so the cite/ref rows surface in the same panel as C-x C-b.) Flag-off:
+no change.
+
+---
+
 ## [2026-06-23] Server-view usability layer: multi-file in the REAL server-view (open/switch re-mirrors) + more of the keymap. Gated, flag-off byte-for-byte.
 
 **Both done + committed on `multi-window-b` (NOT merged). Suite GREEN 797

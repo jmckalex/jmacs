@@ -239,15 +239,51 @@ server-side would only resolve commands against unbuilt engines. These are
 slices of their own (a server-side bookmark marker store, a sticky-note
 overlay protocol), **not table-rows** — deferred.
 
-### RefTeX (reftex.lisp + reftex-refs/reftex-cite) — **deferred** (citation chain)
+### Citations (cite.lisp) — **model** (the citation bridge IS the model)
 
-The label/section/cite DB logic is model-heavy and largely written against
-provided primitives (`list-directory-paths`, `read-file-text!`,
-`show-status!`), but the load chain pulls in **cite.lisp**
-(`*citation-bib-path*`, the `citation-parse` host bridge) and
-`latex-master-file` (latex-compile.lisp). A coherent next slice once the
-citation bridge is decided — not forced in this batch. (The cite picker
-rows already map onto the G0b PICKER channel.)
+| Primitive | Category | Note |
+|---|---|---|
+| `citation-parse` / `citation-parse-lenient` / `citation-format` / `citation-format-bibliography` / `citation-keys` / `citation-entries` / `citation-format-entries` / `citation-format-keys` / `citation-register-style!` | model | The citation host bridge (`citation-bridge.js`). Backed by the renderer's OWN `citation.js` + its vendored Citation.js bundle (`packages/renderer/vendor/citation-js.esm.js`) — pure ESM, no DOM/Electron, so the headless server imports the SAME module the renderer uses (a fixed relative path into `packages/renderer/src`, NOT a `/tmp` resolution). The bodies mirror app.js's (same `apa`/`text`/`en-US` defaults, same absence convention), so a bib parses + formats to the SAME CSL string in both worlds. Two windows on one document agree on how a bibliography formats → shared model state. `cite.lisp` (`load-bibliography` / `format-bibliography` / `format-citation` + `*citation-style*` / `*citation-bib-path*`) loads verbatim on top of it. |
+
+### RefTeX (reftex.lisp + reftex-refs/reftex-cite) — **model** (BUILT)
+
+The full RefTeX R1–R3 chain now loads + runs server-side. The label/section/
+cite DB is Lisp over the **pure** primitives `latex-scan` / `path-resolve` /
+`path-dirname` / `path-basename` (`createLatexPrimitives`, spread once like
+`createBufferPrimitives`) + the impure reads `read-file-text!` / `file-exists?`
+(real `statSync`) / `list-directory-paths` (real `readdirSync`, upgraded from
+the NIL stub) + the view verbs `current-view` / `view-list` / `view-file-path`
+/ `view-buffer` / `view-directory` / `switch-to-view!`. `view-file-path` /
+`view-directory` map a view back to its registry entry by buffer identity
+(`entryForView`), so the entry's `filePath` drives `reftex-master` /
+bib-path resolution.
+
+`reftex.lisp` redefines `latex-master-file` — `latex-compile.lisp` is NOT
+loaded (it pulls in `run-process!` / `pdf-reload!` / `open-file-in-split!` /
+the utility dock — render/process-side), so reftex's `latex-master-file`
+(which calls `reftex-master`) is the sole definition.
+
+**The cite/ref pickers ride the generic PICKER channel (G0b).** The three
+bespoke openers — `open-reftex-select!` (label picker), `open-reftex-cite-
+format!` (cite format menu), `open-reftex-cite-select!` (cite entry picker)
+— are defined server-side as `picker-read` calls over JS row-providers
+(`reftex-select-rows` / `reftex-cite-format-rows` / `reftex-cite-index-rows`,
+which marshal the Lisp candidate accessors into the picker's `{label, value,
+group, detail}` wire shape). A choice resumes the matching reftex callback
+(`reftex-select-on-select` / `reftex-cite-format-chosen` / `reftex-cite-
+insert`); a nil cancel resumes its `-on-cancel`. The command bodies
+(`reftex-reference` / `reftex-citation`) are unchanged. Proven end-to-end
+in `reftex-flow.test.js` (a real `.tex` + `.bib` in a temp dir): C-c [ →
+format PICKER → cite PICKER → `\cite{key}`; C-c ) → label PICKER →
+`\eqref`/`\ref`; C-c ( → minibuffer → `\label{...}`.
+
+**Deferred** (bespoke-panel affordances, not the daily path): SPC-peek in
+the label picker and `m` multi-key marking in the cite picker — the generic
+picker is choose-or-cancel, so the single-choice path (the common case) is
+fully wired; multi-mark + peek + the bottom-dock LIVE preview panel are
+render-side follow-ups. Also deferred: `latex-compile.lisp`'s compile/view
+loop (`run-process!` / SyncTeX / the PDF view) — a process/render slice of
+its own, and `latex-synctex.lisp` / `latex-menu.lisp` which sit on top of it.
 
 ## What this means for the remaining port
 
@@ -283,7 +319,11 @@ AUCTeX commands; completion-driven inserts round-trip through the
 completing-minibuffer), `makefile.lisp`, `panes.lisp` (G0a),
 `auto-pair.lisp` (auto-pairs end-to-end on a keystroke via `the-keymap`),
 `snippets-parser.lisp` (pure), `snippets.lisp` (the full engine —
-expansion, field nav, mirrors-as-multicursors). Each driven headlessly
+expansion, field nav, mirrors-as-multicursors), `cite.lisp` (citation
+parse/format over the `citation-bridge.js` host bridge), `reftex.lisp` +
+`reftex-refs.lisp` + `reftex-cite.lisp` (the RefTeX R1–R3 chain — multi-file
+DB, label/section/cite scan, `reftex-citation`/`reftex-reference`/
+`reftex-label` through the generic PICKER channel). Each driven headlessly
 through the spine (one `node --test` per file/chain).
 
 **G3 batch (2026-06-22):** ~26 of ~70 STDLIB_FILES now load server-side.
