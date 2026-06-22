@@ -165,6 +165,12 @@ const SPINE_STDLIB = Object.freeze([
   'kill.lisp',
   'yank-pop.lisp',
   'line-ops.lisp',
+  // occur.lisp — M-s o: list every line matching a literal substring in a
+  // fresh *Occur: PATTERN* buffer. Pure Lisp over buffer-text + new-view! +
+  // insert! — under Model B new-view! mints a registry buffer and switches
+  // the active client onto it, so the results land in a real server buffer
+  // the window sees. Fully model-side. (Production order: after line-ops.)
+  'occur.lisp',
   // expand-region.lisp (pure Lisp; defines expand-region-word-bounds) must
   // precede multi-cursor.lisp, which uses it to find the word at point.
   'expand-region.lisp',
@@ -809,6 +815,43 @@ export function createSpine(options, effects = {}) {
       // switches that client to another (the registry refuses to drop the
       // last buffer). The host performs the kill + re-snapshot (killBuffer).
       'kill-current-buffer!': () => { killActiveBuffer(); return NIL; },
+
+      // --- view-list surface (view-primitives.js) — MODEL --------------
+      // Under Model B a "view" maps onto a registry BUFFER: the buffers
+      // are shared server state, and each client tracks which it views
+      // (PRIMITIVE-SPLIT.md "View / pane addressing — the buffer list").
+      // So new-view! mints a fresh empty buffer and switches the ACTIVE
+      // client's focused leaf onto it (subsequent insert!s land there) —
+      // exactly what occur.lisp expects (`(new-view! name)` then
+      // `(insert! result)`). Returns the new buffer's view for the active
+      // client (a real @editor/view object, like production's newView).
+      // (name) -> view
+      'new-view!': (args) => {
+        const name = args.length > 0 && args[0] !== NIL ? String(args[0]) : 'scratch';
+        const entry = registry.add('', name);
+        switchClientToBuffer(activeClientIndex, entry.id);
+        return registry.viewFor(entry.id, activeClientIndex);
+      },
+      // find-view — a by-name buffer lookup. A miss is `#f` (absence
+      // convention), so `(if (find-view n) …)` works. Returns the active
+      // client's view of that buffer, or #f.
+      'find-view': (args) => {
+        const entry = registry.findByName(String(args[0] ?? ''));
+        return entry ? registry.viewFor(entry.id, activeClientIndex) : false;
+      },
+      // switch-to-view! — switch the active client to a buffer by name or
+      // by a view handle. Returns the resulting view, or nil on a miss.
+      'switch-to-view!': (args) => {
+        const arg = args[0];
+        let entry = null;
+        if (typeof arg === 'string') entry = registry.findByName(arg);
+        else if (arg && typeof arg === 'object' && typeof arg.name === 'string') {
+          entry = registry.findByName(arg.name);
+        }
+        if (!entry) return NIL;
+        switchClientToBuffer(activeClientIndex, entry.id);
+        return registry.viewFor(entry.id, activeClientIndex);
+      },
 
       // --- save (real file I/O, atomic) --------------------------------
       // save-buffer! writes the ACTIVE buffer's text to its file path
