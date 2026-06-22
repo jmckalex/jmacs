@@ -175,6 +175,7 @@ const CC_MAP = Object.freeze({
 const CX_MAP = Object.freeze({
   'C-f': 'find-file',
   'C-s': 'save-buffer',
+  'C-w': 'write-file', // save-as: write the buffer to a new path (prompts)
   'C-d': 'duplicate-line', // line-ops.lisp (production binds C-x C-d here)
   'C-j': 'join-line', // line-ops.lisp
   // Multi-buffer (production keymap.lisp): C-x b switches buffer (a
@@ -204,10 +205,15 @@ const CX_MAP = Object.freeze({
  * @param {(req: object) => void} [effects.onScroll] - A scroll/centering
  *   request the client must execute in pixels (e.g. recenter). The server
  *   decides the line; the client does the pixels (plan §5d).
- * @param {(path: string) => { text: string, name: string } | null} [effects.openFile]
- *   - Read a file off disk for find-file. Returns the text + name, or null
+ * @param {(path: string) => { text: string, name: string, path?: string } | null} [effects.openFile]
+ *   - Read a file off disk for find-file. Returns the text + name (+ the
+ *   resolved absolute path, so the buffer knows where to save back), or null
  *   on failure. (The server is a Node child, so file I/O is direct —
  *   plan §3 (i).)
+ * @param {(req: { path: string, text: string }) => { ok: boolean, error?: string }} [effects.saveFile]
+ *   - Write a buffer's text to disk ATOMICALLY (temp file + rename), for
+ *   save-buffer / write-file. Returns `{ ok }` or `{ ok:false, error }`. The
+ *   spine re-baselines the saved text on success (the dirty flag clears).
  * @returns {Spine}
  */
 export function createSpine(options, effects = {}) {
@@ -216,6 +222,10 @@ export function createSpine(options, effects = {}) {
   const onMinibufferClose = effects.onMinibufferClose ?? (() => {});
   const onScroll = effects.onScroll ?? (() => {});
   const openFile = effects.openFile ?? (() => null);
+  // Write a buffer to disk (atomic). Default to a failure so a save with no
+  // host wired reports cleanly rather than silently claiming success.
+  const saveFile = effects.saveFile
+    ?? (() => ({ ok: false, error: 'no save handler wired' }));
   // Raised whenever the overlay set changes (a command added/cleared a
   // highlight). The server broadcasts the fresh snapshot to every client
   // sharing the buffer (overlays are shared state). Called with no args;
@@ -482,6 +492,19 @@ export function createSpine(options, effects = {}) {
       // last buffer). The host performs the kill + re-snapshot (killBuffer).
       'kill-current-buffer!': () => { killActiveBuffer(); return NIL; },
 
+      // --- save (real file I/O, atomic) --------------------------------
+      // save-buffer! writes the ACTIVE buffer's text to its file path
+      // (atomic temp-file + rename, via the saveFile effect) and re-baselines
+      // the saved text so the ● dirty flag clears. A path-less buffer can't
+      // save here: the primitive returns 'no-path so the command opens a
+      // write-file prompt instead (host-completed, like find-file). Returns
+      // a status STRING the command branches on: "ok" | "no-path" | "error".
+      'save-buffer!': () => saveActiveBuffer(),
+      // write-file! writes the active buffer to PATH, rebinds the buffer's
+      // path to it (subsequent C-x C-s saves there), and re-baselines.
+      // (path) -> "ok" | "error".
+      'write-file!': (args) => writeActiveBufferTo(String(args[0] ?? '')),
+
       // --- customisation openers (custom.lisp) — STUB ------------------
       // These open a render-side customize view. The `customize` command
       // resolves; the panel itself is a render-side slice, deferred. None
@@ -618,11 +641,27 @@ export function createSpine(options, effects = {}) {
       "Kill the current buffer and switch to another (C-x k)."
       (kill-current-buffer!))
 
-    ;; save-buffer: the spine has no file path wired for the scratch
-    ;; buffer; report it rather than silently doing nothing.
+    ;; save-buffer (C-x C-s): write the current buffer to its file path
+    ;; (atomic, host-side). The host primitive returns a status string:
+    ;;   "ok"      — saved; show a confirmation.
+    ;;   "no-path" — a path-less buffer; fall back to write-file (prompt for
+    ;;               a path), exactly like Emacs's C-x C-s on a new buffer.
+    ;;   "error"   — the disk write failed; surface it.
     (defcommand save-buffer ()
-      "Save the current buffer (spine stub: reports, does not write)."
-      (show-status! "save-buffer: (spine stub — no path)"))
+      "Save the current buffer to its file (C-x C-s)."
+      (let ((result (save-buffer!)))
+        (cond
+          ((equal? result "ok") (show-status! "Saved"))
+          ((equal? result "no-path") (run-command 'write-file))
+          (else (show-status! "save-buffer: write failed")))))
+
+    ;; write-file / save-as (C-x C-w): prompt for a path, write the buffer
+    ;; there, and rebind the buffer's path to it. The host fulfils the prompt
+    ;; (like find-file): on submit server.js calls write-file! with the path.
+    (defcommand write-file ()
+      "Write the current buffer to a named file (C-x C-w)."
+      (interactive (string "Write file: "))
+      (lambda (path) path))
 
     ;; set-mark-command: start a selection at point.
     (defcommand set-mark-command ()
@@ -798,7 +837,12 @@ export function createSpine(options, effects = {}) {
       onStatus(statusText);
       return null;
     }
-    const entry = registry.add(result.text, result.name);
+    // Record the resolved absolute path so save-buffer (C-x C-s) writes back
+    // to the right file. openFile returns it; fall back to the typed path.
+    const absPath = typeof result.path === 'string' && result.path !== ''
+      ? result.path
+      : path;
+    const entry = registry.add(result.text, result.name, absPath);
     entry.savedText = result.text;
     // Switch the active client to the new buffer (mints its view, derives
     // the major mode, leaves the buffer's own overlays — none yet — intact).
@@ -806,6 +850,94 @@ export function createSpine(options, effects = {}) {
     statusText = '';
     onStatus('');
     return entry.id;
+  }
+
+  /**
+   * Load a CRASH-RECOVERED buffer into the registry (recover-on-startup).
+   * The recovered text is the buffer's unsaved state at crash time; it must
+   * present as DIRTY relative to disk so the user knows it needs saving — so
+   * the saved-text baseline is set to the on-disk content (the recovered text
+   * differs from it by exactly the lost edits), via the optional
+   * `diskBaseline`. When the on-disk content is unknown, the baseline is left
+   * differing (empty) so the buffer is conservatively marked modified. Does
+   * NOT switch any client; the server lists/surfaces recovered buffers. Returns
+   * the new buffer id.
+   *
+   * @param {{ name?: string, filePath?: string|null, text: string, diskBaseline?: string }} rec
+   * @returns {string}
+   */
+  function recoverBuffer(rec) {
+    const text = String(rec.text ?? '');
+    const name = rec.name || 'recovered';
+    const filePath = typeof rec.filePath === 'string' && rec.filePath !== ''
+      ? rec.filePath
+      : null;
+    const entry = registry.add(text, name, filePath);
+    // Baseline = on-disk content when known, else a value that differs from
+    // the recovered text (so the buffer reads as modified / shows ●).
+    if (typeof rec.diskBaseline === 'string') {
+      entry.savedText = rec.diskBaseline;
+    } else {
+      entry.savedText = text === '' ? ' ' : '';
+    }
+    return entry.id;
+  }
+
+  // --- save (real disk write, atomic) -----------------------------------
+  //
+  // save-buffer writes the ACTIVE buffer's text to its file path via the
+  // saveFile effect (the server does the atomic temp-file + rename); on
+  // success the saved-text baseline is re-set so the ● dirty flag clears.
+
+  /**
+   * Save the active buffer to its file path. Returns a status string the
+   * Lisp command branches on:
+   *   - "no-path" — the buffer has no path (a new/scratch buffer); the
+   *     command falls back to write-file (prompt for a path).
+   *   - "ok"      — the bytes were written and the baseline re-set (clean).
+   *   - "error"   — the disk write failed (the error is surfaced as status).
+   *
+   * @returns {"ok" | "no-path" | "error"}
+   */
+  function saveActiveBuffer() {
+    if (!activeEntry.filePath) return 'no-path';
+    return writeActiveBufferTo(activeEntry.filePath);
+  }
+
+  /**
+   * Write the active buffer's text to PATH (atomic), rebind the buffer's
+   * file path to it, and re-baseline the saved text. Used by save-buffer
+   * (to the existing path) and write-file / save-as (to a new path).
+   *
+   * @param {string} path - The destination path.
+   * @returns {"ok" | "error"}
+   */
+  function writeActiveBufferTo(path) {
+    const target = String(path ?? '').trim();
+    if (target === '') {
+      statusText = 'write-file: no path given';
+      onStatus(statusText);
+      return 'error';
+    }
+    const text = buffer.text;
+    let result;
+    try {
+      result = saveFile({ path: target, text });
+    } catch (error) {
+      result = { ok: false, error: error && error.message };
+    }
+    if (!result || !result.ok) {
+      statusText = `Save failed: ${(result && result.error) || 'unknown error'}`;
+      onStatus(statusText);
+      return 'error';
+    }
+    // The disk now matches the buffer: bind the path + re-baseline so the
+    // dirty flag clears, mirroring the real app's saved-baseline reset.
+    registry.setFilePath(activeEntry, target);
+    registry.markSaved(activeEntry);
+    statusText = `Wrote ${activeEntry.buffer.name}`;
+    onStatus(statusText);
+    return 'ok';
   }
 
   // --- multi-buffer / multi-client window-state (the Model-B payoff) ----
@@ -1214,6 +1346,29 @@ export function createSpine(options, effects = {}) {
     deliverMinibuffer,
     abortMinibuffer,
     visitFile,
+    recoverBuffer,
+    // save (real disk write) — the server wires saveFile to atomicWrite.
+    saveActiveBuffer,
+    writeActiveBufferTo,
+    /** The active buffer's file path (where C-x C-s writes), or null. */
+    get activeFilePath() {
+      return activeEntry.filePath;
+    },
+    /** Whether the active buffer has unsaved edits (drives the ● flag). */
+    get activeModified() {
+      return registry.isModified(activeEntry);
+    },
+    /** Plain snapshots of every buffer with unsaved edits, for autosave:
+     *  `[{ id, name, filePath, text }]`. Pure data (no L2 objects), so the
+     *  server can write each to a recovery file without holding the buffer. */
+    dirtyBufferSnapshots() {
+      return registry.dirtyEntries().map((e) => ({
+        id: e.id,
+        name: e.buffer.name,
+        filePath: e.filePath,
+        text: e.buffer.text,
+      }));
+    },
     viewState,
     pointPosition,
     // multi-client window-state (per-client buffer + cursor)

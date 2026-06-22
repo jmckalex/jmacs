@@ -122,6 +122,11 @@ export const MINIBUFFER_IDLE = Object.freeze({
  * line:column, and the major mode. Pure — a function of its inputs only, so
  * it is unit-testable and identical on server and (if needed) client.
  *
+ * The "modified" flag is a single `●` (a filled bullet) when the buffer has
+ * unsaved edits and a `–` (en-dash) when it is clean — the dirty indicator the
+ * client paints in the modeline. `save-buffer` clears it (re-baselines the
+ * saved text); an edit sets it (the buffer's text diverges from its baseline).
+ *
  * @param {object} parts
  * @param {string} parts.name - The buffer/view name.
  * @param {boolean} [parts.modified=false] - Unsaved changes?
@@ -131,7 +136,8 @@ export const MINIBUFFER_IDLE = Object.freeze({
  * @returns {string} The modeline string.
  */
 export function renderModeline(parts) {
-  const flag = parts.modified ? '**' : '--';
+  // A single-glyph dirty indicator: ● = unsaved edits, – = saved/clean.
+  const flag = parts.modified ? '●' : '–';
   const name = parts.name || 'untitled';
   const line = Number.isFinite(parts.line) ? parts.line : 1;
   const column = Number.isFinite(parts.column) ? parts.column : 0;

@@ -19,6 +19,9 @@
  *                  client. Each overlay's endpoints are L2 markers so the
  *                  range rides edits.
  *   - `savedText`— the text last loaded/saved, for the modeline modified flag.
+ *   - `filePath` — the absolute disk path this buffer writes back to (set by
+ *                  find-file / write-file), or null for a path-less buffer
+ *                  (the seed *scratch* or a buffer never visited from a file).
  *
  * The registry is deliberately split out from spine.js so it is small,
  * DOM-free, Electron-free, and unit-testable under `node --test`
@@ -48,6 +51,7 @@
  * @property {Map<number, View>} views - clientIndex → that client's view.
  * @property {{ id: string, startM: object, endM: object, face: string, kind: string }[]} overlays
  * @property {string} savedText - Text last loaded/saved (modified flag).
+ * @property {string | null} filePath - Absolute disk path, or null (path-less).
  */
 
 /**
@@ -104,9 +108,11 @@ export function createBufferRegistry(deps) {
    *
    * @param {string} text - The buffer's seed text.
    * @param {string} name - The desired buffer/view name.
+   * @param {string | null} [filePath=null] - The absolute disk path this
+   *   buffer writes back to, or null for a path-less buffer.
    * @returns {BufferEntry}
    */
-  function add(text, name) {
+  function add(text, name, filePath = null) {
     const id = freshId();
     const buffer = createBuffer(text ?? '', { name: uniqueName(name ?? 'scratch') });
     /** @type {BufferEntry} */
@@ -116,6 +122,7 @@ export function createBufferRegistry(deps) {
       views: new Map(),
       overlays: [],
       savedText: text ?? '',
+      filePath: typeof filePath === 'string' && filePath !== '' ? filePath : null,
     };
     entries.set(id, entry);
     // Tag this buffer's text changes with its id so the server can fan the
@@ -161,6 +168,48 @@ export function createBufferRegistry(deps) {
       if (e.buffer.name === name) return e;
     }
     return null;
+  }
+
+  // --- dirty tracking + the disk path (the save story) ------------------
+
+  /**
+   * Whether ENTRY has unsaved edits: its live text diverges from the text it
+   * was last loaded/saved at (the saved-baseline approach the real app uses).
+   * Pure (no I/O), so the dirty flag is cheap to read on every keystroke.
+   *
+   * @param {BufferEntry} entry
+   * @returns {boolean}
+   */
+  function isModified(entry) {
+    return !!entry && entry.buffer.text !== entry.savedText;
+  }
+
+  /**
+   * Re-baseline ENTRY to its current text (call after a successful save): the
+   * saved text now equals the on-disk text, so the buffer is clean again and
+   * the modeline drops its ● dirty indicator.
+   *
+   * @param {BufferEntry} entry
+   */
+  function markSaved(entry) {
+    if (entry) entry.savedText = entry.buffer.text;
+  }
+
+  /**
+   * Set (or clear) the absolute disk path ENTRY writes back to. write-file /
+   * save-as binds a new path here; null makes the buffer path-less again.
+   *
+   * @param {BufferEntry} entry
+   * @param {string | null} filePath
+   */
+  function setFilePath(entry, filePath) {
+    if (!entry) return;
+    entry.filePath = typeof filePath === 'string' && filePath !== '' ? filePath : null;
+  }
+
+  /** Every entry that currently has unsaved edits (for autosave snapshots). */
+  function dirtyEntries() {
+    return [...entries.values()].filter(isModified);
   }
 
   /**
@@ -293,14 +342,15 @@ export function createBufferRegistry(deps) {
    * client renders these. `current` is filled by the caller (it knows which
    * buffer a given client is on); here we report buffer-intrinsic facts.
    *
-   * @returns {{ id:string, name:string, lineCount:number, modified:boolean }[]}
+   * @returns {{ id:string, name:string, lineCount:number, modified:boolean, filePath:string|null }[]}
    */
   function listRecords() {
     return [...entries.values()].map((e) => ({
       id: e.id,
       name: e.buffer.name,
       lineCount: e.buffer.lineCount,
-      modified: e.buffer.text !== e.savedText,
+      modified: isModified(e),
+      filePath: e.filePath,
     }));
   }
 
@@ -313,6 +363,10 @@ export function createBufferRegistry(deps) {
     count,
     first,
     findByName,
+    isModified,
+    markSaved,
+    setFilePath,
+    dirtyEntries,
     viewFor,
     remove,
     dropClient,

@@ -94,19 +94,18 @@ test('predictDeleteBackward is a no-op at the start of the buffer', () => {
 test('renderModeline shows clean flag, name, position and mode', () => {
   assert.equal(
     renderModeline({ name: 'app.js', modified: false, line: 12, column: 4, mode: 'js' }),
-    '--  app.js   L12:C4  (js)'
+    '–  app.js   L12:C4  (js)'
   );
 });
 
-test('renderModeline shows the modified flag', () => {
-  assert.equal(
-    renderModeline({ name: 'notes.txt', modified: true, line: 1, column: 0 }),
-    '**  notes.txt   L1:C0'
-  );
+test('renderModeline shows the ● dirty indicator when modified', () => {
+  const s = renderModeline({ name: 'notes.txt', modified: true, line: 1, column: 0 });
+  assert.equal(s, '●  notes.txt   L1:C0');
+  assert.ok(s.includes('●'), 'a modified buffer shows the ● dirty bullet');
 });
 
 test('renderModeline defaults a missing name and position', () => {
-  assert.equal(renderModeline({}), '--  untitled   L1:C0');
+  assert.equal(renderModeline({}), '–  untitled   L1:C0');
 });
 
 test('renderModeline omits the mode parenthetical when there is no mode', () => {

@@ -253,3 +253,56 @@ test('listRecords reports name/lineCount/modified per buffer', () => {
   a.buffer._splice(0, 0, 'z');
   assert.equal(r.listRecords()[0].modified, true);
 });
+
+// --- dirty tracking + the disk path (the save story) ------------------
+
+test('add records a file path; default is path-less', () => {
+  const r = makeRegistry();
+  const withPath = r.add('hi', 'a.js', '/abs/a.js');
+  const pathless = r.add('hi', 'b.js');
+  assert.equal(withPath.filePath, '/abs/a.js');
+  assert.equal(pathless.filePath, null);
+  // An empty-string path is treated as path-less.
+  assert.equal(r.add('', 'c.js', '').filePath, null);
+});
+
+test('isModified is the buffer-vs-baseline diff; markSaved re-baselines', () => {
+  const r = makeRegistry();
+  const a = r.add('hello', 'a.js', '/abs/a.js');
+  assert.equal(r.isModified(a), false); // fresh: text == savedText
+  a.buffer._splice(5, 0, '!'); // edit → dirty
+  assert.equal(r.isModified(a), true);
+  r.markSaved(a); // baseline now equals current text → clean
+  assert.equal(r.isModified(a), false);
+  assert.equal(a.savedText, 'hello!');
+});
+
+test('setFilePath binds / clears the disk path', () => {
+  const r = makeRegistry();
+  const a = r.add('x', 'a.js');
+  assert.equal(a.filePath, null);
+  r.setFilePath(a, '/abs/a.js');
+  assert.equal(a.filePath, '/abs/a.js');
+  r.setFilePath(a, ''); // empty → path-less again
+  assert.equal(a.filePath, null);
+});
+
+test('dirtyEntries returns only buffers with unsaved edits', () => {
+  const r = makeRegistry();
+  const a = r.add('aaa', 'a.js', '/abs/a.js');
+  const b = r.add('bbb', 'b.js', '/abs/b.js');
+  assert.deepEqual(r.dirtyEntries(), []);
+  a.buffer._splice(0, 0, 'z'); // only A is dirty
+  assert.deepEqual(r.dirtyEntries().map((e) => e.id), [a.id]);
+  b.buffer._splice(0, 0, 'q'); // now both
+  assert.deepEqual(new Set(r.dirtyEntries().map((e) => e.id)), new Set([a.id, b.id]));
+});
+
+test('listRecords carries the file path', () => {
+  const r = makeRegistry();
+  r.add('x', 'a.js', '/abs/a.js');
+  r.add('y', 'b.js'); // path-less
+  const recs = r.listRecords();
+  assert.equal(recs[0].filePath, '/abs/a.js');
+  assert.equal(recs[1].filePath, null);
+});

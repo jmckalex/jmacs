@@ -17,7 +17,9 @@ import { createSpine } from './spine.js';
 
 /** A spine with recording effects, for assertions. */
 function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
-  const log = { status: [], minibufferOpens: [], minibufferCloses: 0, scrolls: [] };
+  const log = {
+    status: [], minibufferOpens: [], minibufferCloses: 0, scrolls: [], saves: [],
+  };
   const spine = createSpine(
     { initialText, name },
     {
@@ -26,6 +28,10 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
       onMinibufferClose: () => { log.minibufferCloses += 1; },
       onScroll: (r) => log.scrolls.push(r),
       openFile: extra.openFile,
+      // A recording save: capture the {path, text} the spine would write, and
+      // return success unless the test injects a failure. Lets save-buffer /
+      // write-file be exercised without real disk I/O.
+      saveFile: extra.saveFile ?? ((req) => { log.saves.push(req); return { ok: true }; }),
     }
   );
   return { spine, log };
@@ -74,15 +80,17 @@ test('M-< / M-> jump to buffer start/end via real commands', () => {
 });
 
 test('a prefix chord (C-x C-s) resolves to a command, not self-insert', () => {
+  // On a PATH-LESS buffer C-x C-s falls back to write-file (opens a prompt),
+  // exactly like Emacs's C-x C-s on a new buffer.
   const { spine, log } = makeSpine('');
   const handled1 = spine.handleKey('C-x');
   assert.equal(handled1, true);
   assert.equal(spine.buffer.text, ''); // C-x did not insert
-  const handled2 = spine.handleKey('C-s'); // save-buffer (spine stub)
+  const handled2 = spine.handleKey('C-s'); // save-buffer → write-file prompt
   assert.equal(handled2, true);
   assert.ok(
-    log.status.some((s) => s.includes('save-buffer')),
-    `expected a save-buffer status, got ${JSON.stringify(log.status)}`
+    log.minibufferOpens.includes('Write file: '),
+    `expected the write-file prompt, got ${JSON.stringify(log.minibufferOpens)}`
   );
 });
 
@@ -281,11 +289,11 @@ test('viewState reports point, mark, name, modeline and modified flag', () => {
   assert.equal(vs.mark, null);
   assert.equal(vs.name, 'note.txt');
   assert.equal(vs.modified, false);
-  assert.match(vs.modeline, /^--\s+note\.txt/);
+  assert.match(vs.modeline, /^–\s+note\.txt/);
   spine.handleKey('x'); // edit → modified
   vs = spine.viewState();
   assert.equal(vs.modified, true);
-  assert.match(vs.modeline, /^\*\*/);
+  assert.match(vs.modeline, /^●/);
 });
 
 // --- multi-buffer: the registry, switching, kill-buffer ----------------
@@ -747,4 +755,98 @@ test('M-s h runs highlight-matches; M-s u clears', () => {
   spine.handleKey('M-s');
   spine.handleKey('u'); // unhighlight-all
   assert.equal(spine.overlaySnapshot().length, 0);
+});
+
+// --- save-buffer / write-file (real disk write, atomic) -----------------
+
+test('save-buffer on a path-backed buffer writes via saveFile and clears dirty', () => {
+  const files = { '/a/note.txt': { text: 'hello\n', name: 'note.txt', path: '/a/note.txt' } };
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  // Visit a file so the active buffer has a path.
+  spine.visitFile('/a/note.txt');
+  assert.equal(spine.activeFilePath, '/a/note.txt');
+  assert.equal(spine.activeModified, false);
+  // Edit it → dirty.
+  spine.handleKey('x');
+  assert.equal(spine.activeModified, true);
+  // C-x C-s saves to the existing path (no prompt) and re-baselines.
+  spine.handleKey('C-x');
+  spine.handleKey('C-s');
+  assert.equal(log.saves.length, 1);
+  assert.equal(log.saves[0].path, '/a/note.txt');
+  assert.equal(log.saves[0].text, spine.buffer.text);
+  assert.equal(spine.activeModified, false); // dirty flag cleared
+  assert.match(spine.viewState().modeline, /^–/); // ● gone after save
+});
+
+test('write-file binds a new path and re-baselines; save targets it', () => {
+  const { spine, log } = makeSpine('content', 'scratch.txt');
+  assert.equal(spine.activeFilePath, null); // path-less
+  // write-file to a new path.
+  assert.equal(spine.writeActiveBufferTo('/new/out.txt'), 'ok');
+  assert.equal(log.saves[0].path, '/new/out.txt');
+  assert.equal(spine.activeFilePath, '/new/out.txt'); // path bound
+  assert.equal(spine.activeModified, false);
+  // A subsequent edit + save now targets the bound path (no prompt).
+  spine.handleKey('z');
+  assert.equal(spine.saveActiveBuffer(), 'ok');
+  assert.equal(log.saves[1].path, '/new/out.txt');
+});
+
+test('save-buffer on a path-less buffer returns no-path (write-file fallback)', () => {
+  const { spine } = makeSpine('x', 'scratch.txt');
+  // The JS surface: a path-less buffer cannot save directly.
+  assert.equal(spine.saveActiveBuffer(), 'no-path');
+});
+
+test('save reports an error and stays dirty when the disk write fails', () => {
+  const { spine } = makeSpine('x', 'scratch.txt', {
+    saveFile: () => ({ ok: false, error: 'EACCES' }),
+  });
+  assert.equal(spine.writeActiveBufferTo('/no/perm.txt'), 'error');
+  assert.equal(spine.activeFilePath, null); // path not bound on failure
+});
+
+test('an empty path is rejected without calling saveFile', () => {
+  const { spine, log } = makeSpine('x', 'scratch.txt');
+  assert.equal(spine.writeActiveBufferTo('   '), 'error');
+  assert.equal(log.saves.length, 0);
+});
+
+test('visitFile records the resolved absolute path for save-back', () => {
+  const files = { '/a/b.md': { text: '# h\n', name: 'b.md', path: '/abs/a/b.md' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  spine.visitFile('/a/b.md');
+  assert.equal(spine.activeFilePath, '/abs/a/b.md');
+});
+
+// --- recover-on-startup -------------------------------------------------
+
+test('recoverBuffer loads a buffer that is dirty relative to its disk baseline', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const before = spine.bufferCount;
+  const id = spine.recoverBuffer({
+    name: 'lost.txt',
+    filePath: '/a/lost.txt',
+    text: 'edited but never saved\n',
+    diskBaseline: 'original on disk\n',
+  });
+  assert.equal(spine.bufferCount, before + 1);
+  // The recovered buffer is in the registry, path-bound, and DIRTY (its text
+  // differs from the on-disk baseline by exactly the lost edits).
+  const rec = spine.bufferListRecords(0).find((r) => r.id === id);
+  assert.ok(rec);
+  assert.equal(rec.filePath, '/a/lost.txt');
+  assert.equal(rec.modified, true);
+});
+
+test('a recovered buffer with no disk baseline is conservatively dirty', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const id = spine.recoverBuffer({ name: 'nopath', filePath: null, text: 'work\n' });
+  const rec = spine.bufferListRecords(0).find((r) => r.id === id);
+  assert.equal(rec.modified, true);
 });
