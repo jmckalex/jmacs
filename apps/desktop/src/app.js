@@ -5807,6 +5807,19 @@ if (window.host && window.host.serverMode) {
     });
     serverViewClient.connect();
     console.info('[godot] G2: real view routed through the server');
+    // A tiny, serverMode-only test hook so the flag-gated electron self-test
+    // (mwb/server-view-selftest.js) can drive a key into the server-routed
+    // view and read the mirror back — no production code reads this. It is
+    // never defined flag-off (this whole block is gated on serverMode).
+    window.__godotG2 = {
+      dispatchKey: (k) => serverViewClient.dispatchKey(k),
+      mirrorText: () => {
+        const m = serverViewClient.getMirror();
+        return m ? m.text : null;
+      },
+      isMounted: () => serverViewClient.getView() != null,
+      bufferId: () => serverViewClient.currentBufferId(),
+    };
   };
   // If the port beat the boot, wire it now.
   if (godotServerPort) bootServerViewClient();
