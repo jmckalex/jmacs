@@ -4,6 +4,80 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22] G1 — server stood up inside the REAL main.js behind GODOT_SERVER=1; flag-OFF is byte-for-byte today
+
+**This is the first production change of the graduation** (G0 was prototype-only).
+The Model-B server now forks from the real `apps/desktop/src/main.js` and a
+MessagePort connects to the renderer — **but only when `GODOT_SERVER=1`**, and
+**no editing is routed through it yet** (that's G2). With the flag unset (the
+default), the app is unchanged.
+
+**What G1 wired (3 commits on `multi-window-b`, tip was `54df3f3`):**
+- `f982f71 feat(g1): testable server bridge behind GODOT_SERVER flag` — new
+  `src/server-bridge.js`: the wire-up extracted into pure functions + an
+  injection-based factory so `node --test` covers it with NO real Electron.
+  `isServerMode(env)` is the **single gate** (`GODOT_SERVER === '1'`).
+  `serverModulePath()` reuses the prototype's `mwb/server.js` verbatim (plan
+  §4.1 — it graduates to `src/server/` in a later phase). `createServerBridge`
+  forks the server `utilityProcess` and exposes `attachWindow(webContents)`
+  (per-window `MessageChannelMain` port transfer — the exact `mwb/launch.js`
+  dance) + `dispose()`. Everything wrapped so it can never throw in main. 13 tests.
+- `f7fb27f feat(g1): fork the Model-B server + plumb a port behind GODOT_SERVER` —
+  the production wiring:
+  - **main.js**: behind `isServerMode()`, fork the server (construction in a
+    try/catch so a fork failure logs, doesn't crash the host); in `createWindow`,
+    `if (serverBridge) serverBridge.attachWindow(win.webContents)`; `will-quit`
+    disposes the server. With the flag off `serverBridge` stays `null` and all
+    three references are guarded no-ops.
+  - **preload.mjs**: `host.serverMode` (the single gate the renderer reads) +,
+    only under `GODOT_SERVER=1`, a `godot:server-port` listener that re-dispatches
+    the transferred port to the page as a window message.
+  - **app.js**: only when `host.serverMode`, a window-message listener that
+    stashes the connected port in `godotServerPort` for G2. **Editing is NOT
+    routed through it** — G1 just proves the port connects (logs `[godot] Model-B
+    server port connected`). TDZ-safe (hoisted `var`, reads only `window.host`).
+- `7564d9f test(g1): flag-gated electron self-test for the live spawn + handshake`
+  — `mwb/server-bridge-selftest.{js,html}` (see "VERIFY LIVE" below).
+
+**Flag-OFF is provably the old path (the ironclad rule):**
+- Full `pnpm test` **GREEN: 687/0** (674 baseline + 13 new bridge tests) — the
+  flag-off tripwire. The suite exercises the flag-off path and is untouched.
+- Every server entry point is gated by one of `if (isServerMode())` /
+  `if (serverBridge)` (null when off) / `process.env.GODOT_SERVER === '1'` /
+  `window.host.serverMode` (grep in the commit confirms — no ungated path).
+  Flag-off: no `utilityProcess` forked, no port plumbed, no listener registered,
+  `host.serverMode` is just a new `false` field.
+- Verified the **server module itself loads + initializes cleanly under bare
+  `node`** (interpreter + model + autosave stand up) — strong evidence the
+  `utilityProcess` fork will boot. (Couldn't actually fork it: GUI/Electron
+  launch is permission-blocked in the agent sandbox.)
+
+**WHAT YOU (Jason) MUST VERIFY LIVE** — I cannot launch GUI Electron:
+1. **The spawn + handshake** (the G1 exit criteria), via the committed self-test:
+   ```
+   cd apps/desktop && GODOT_SERVER=1 ./node_modules/.bin/electron \
+       mwb/server-bridge-selftest.js --user-data-dir=/tmp/godot-g1-selftest \
+       --enable-logging=stderr
+   ```
+   Expect: `[g1-selftest] server-ready: PASS`, `[g1-selftest] port-handshake:
+   PASS`, `[g1-selftest-done] PASS` (exits 0). It exercises the REAL bridge + REAL
+   preload re-dispatch. NOTE: `GODOT_SERVER=1` must be **prefixed on the launch**
+   (the preload reads the launch-time env, not a runtime mutation) — the self-test
+   bails loudly if it's missing.
+2. **The real app, flag ON**: `cd apps/desktop && GODOT_SERVER=1 ./node_modules/.bin/electron .`
+   — confirm it boots and edits **exactly as today** (the server is merely
+   *present*; nothing routes through it). Look for `[main] GODOT_SERVER=1:
+   Model-B server forked` + a renderer console `[godot] Model-B server port
+   connected`. A `godot-server` process should appear (and die on quit).
+3. **The real app, flag OFF**: `cd apps/desktop && ./node_modules/.bin/electron .`
+   — confirm no `godot-server` process spawns and behaviour is identical to today.
+
+**Not done (correctly — it's G2):** no `view.js` mounts on a mirror, no `KEY`
+intents are sent, the in-renderer interpreter still drives everything. The port
+is connected and idle. NOT merged — hand back for G2.
+
+---
+
 ## [2026-06-22] G0b (generic PICKER channel) — COMPLETE; the buffer-list picker proves it; the other pickers map cleanly
 
 **This closes out G0** (both structural prototypes done — G0a pane model +
