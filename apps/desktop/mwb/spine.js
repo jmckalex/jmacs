@@ -216,6 +216,20 @@ const SPINE_STDLIB = Object.freeze([
   // parse-snippet-body run unchanged server-side. snippets.lisp (below)
   // builds the expansion engine on top of it.
   'snippets-parser.lisp',
+  // snippets.lisp — the snippet engine: store, expansion, field nav. The
+  // ENGINE is fully model-side: -expand-record! / -select-field! /
+  // snippet-next-field run over insert!/goto!/set-mark!/add-selection!/
+  // collapse-to-primary! (all provided), and mirrors install as a real
+  // multi-cursor set (Policy A) — proving multi-cursor + overlays end to
+  // end. Its load-time deps are defgroup/defcustom (custom.lisp) + a
+  // model-side defface/face shim (prelude). The directory-store reads
+  // (snippet-user-directory / list-directory-paths / read-file-text!) are
+  // host file-I/O, stubbed to safe empties — but the built-in starter set
+  // (*snippet-builtins*, defined in Lisp) still loads, so snippet-insert /
+  // snippet-expand work server-side out of the box. Needs
+  // expand-region-word-bounds (expand-region.lisp, loaded). See
+  // PRIMITIVE-SPLIT.md "Snippets".
+  'snippets.lisp',
 ]);
 
 /**
@@ -998,6 +1012,51 @@ export function createSpine(options, effects = {}) {
       },
       'math-preview!': () => NIL,
 
+      // --- snippets.lisp host primitives -------------------------------
+      // The snippet engine (expansion, fields, mirrors-as-multicursors) is
+      // entirely MODEL-side — it runs over insert!/goto!/set-mark!/
+      // add-selection!/collapse-to-primary!, all provided. The remaining
+      // host primitives are: a date formatter (model, deterministic from
+      // the clock — mirrors app.js) and three FILE-system reads for the
+      // user/disk snippet directories. The spine has no user snippet
+      // directory yet, so the directory reads return safe empties; the
+      // built-in starter set (*snippet-builtins*, defined in Lisp) still
+      // loads, so snippet-insert / snippet-expand work fully server-side.
+      // read-file-text! does a real disk read (the server is a Node child)
+      // for the day a snippet directory is wired. See PRIMITIVE-SPLIT.md.
+
+      // (snippet-date-string kind) — "date" | "datetime" | "year". Mirrors
+      // app.js byte-for-byte so a `date`/`year` snippet expands identically.
+      'snippet-date-string': (args) => {
+        const kind = String(args[0] ?? 'date');
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const ymd = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+        if (kind === 'year') return String(now.getFullYear());
+        if (kind === 'datetime') return `${ymd} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+        return ymd;
+      },
+      // (snippet-user-directory) — the user snippet root. None server-side
+      // yet (it is an app/render data-path concern), so "" → no user dir.
+      'snippet-user-directory': () => '',
+      // (list-directory-paths dir) — (name . :file/:directory) pairs. No
+      // snippet directories are wired server-side, so this returns nil
+      // (the built-in starter set covers the model proof). A future wiring
+      // would read the real fs here.
+      'list-directory-paths': () => NIL,
+      // (read-file-text! path) — a real disk read (the server is a Node
+      // child); nil on any error. Only reached once a snippet directory is
+      // wired (the built-ins never touch the fs).
+      'read-file-text!': (args) => {
+        const p = String(args[0] ?? '');
+        if (p === '') return NIL;
+        try {
+          return readFileSync(p, 'utf8');
+        } catch {
+          return NIL;
+        }
+      },
+
       // --- register-mode-menu! consumes (math-preview/modes) -----------
       // `register-mode-menu!` is defined in menus.lisp (not loaded), but
       // markdown.lisp calls it at load to register its grouped menu. The
@@ -1055,6 +1114,33 @@ export function createSpine(options, effects = {}) {
        handle-key's printable path so auto-pair's character bindings fire."
       (let ((binding (get the-keymap key nil)))
         (if (nil? binding) #f binding)))
+
+    ;; defface / face — the face registry (faces.lisp owns these in
+    ;; production; that file is render-heavy and not loaded). snippets.lisp
+    ;; (and other feature files) register their faces at load via defface.
+    ;; The face REGISTRY is shared model state — two windows agree on what a
+    ;; face is — so the spine records it; only the *rendering* (the
+    ;; <style id="face-overrides"> the host writes) is render-side, deferred.
+    ;; A minimal model-side version: the face constructor builds a
+    ;; descriptor hash-map; defface stores it under its name. snippets.lisp
+    ;; (and the other feature files the spine loads) call defface with an
+    ;; EXPLICIT quote on the name — (defface 'snippet-active-face :doc …
+    ;; :default-dark (face …)) — and evaluated (face …) blocks, so a plain
+    ;; function (not a macro)
+    ;; suffices: NAME arrives already as a symbol, the option values already
+    ;; evaluated. The (from 'parent) inheritance form is unused here. See
+    ;; PRIMITIVE-SPLIT.md "Live preview / faces".
+    (define *face-registry* {})
+    (define (face . pairs)
+      "Build a face descriptor (a hash-map) from keyword-value pairs."
+      (apply hash-map pairs))
+    (define (defface name . options)
+      "Register face NAME (a symbol) with OPTIONS (keyword/value pairs).
+       Model-side: records the descriptor; the rendering is deferred."
+      (set! *face-registry*
+            (assoc *face-registry* name
+                   (assoc (apply hash-map options) :name name)))
+      name)
   `);
 
   // Load the real command system + editing commands + the model-heavy
