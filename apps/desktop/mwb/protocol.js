@@ -30,6 +30,12 @@ export const MSG = Object.freeze({
   SNAPSHOT: 'snapshot', // full buffer text + cursor (initial sync / resync)
   DELTA: 'delta', // an applied buffer change + resulting cursor
   CURSOR: 'cursor', // a point/mark update with no text change (motion)
+  // The command-spine view-update channel (server → client): the non-text
+  // render state a command can change without editing the buffer — the
+  // cursor, the modeline string, the echo-area status, and the minibuffer
+  // prompt state. Sent after any intent that changed view-state. (plan §4:
+  // "Down: cursor/selection, modeline, minibuffer state, status messages".)
+  VIEW: 'view',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -39,7 +45,73 @@ export const INTENT = Object.freeze({
   DELETE_BACKWARD: 'delete-backward', // backspace
   POINT: 'point', // set the cursor offset (window-state)
   KEY: 'key', // a named key string routed through the Lisp keymap
+  // Minibuffer round-trip (the command spine). When a server-side command
+  // prompts (e.g. M-x, find-file), the server sends a VIEW message whose
+  // `minibuffer` is active; the client shows the prompt and the user's
+  // input/submit/cancel come back up as these intents. The server resumes
+  // the suspended command's continuation (`minibuffer-delivered`).
+  MINIBUFFER_CHANGE: 'minibuffer-change', // the value being typed changed
+  MINIBUFFER_SUBMIT: 'minibuffer-submit', // RET — deliver the value
+  MINIBUFFER_CANCEL: 'minibuffer-cancel', // C-g / Esc — cancel the prompt
 });
+
+/**
+ * The view-state a `VIEW` message carries — everything the renderer needs
+ * that is NOT buffer text. Pure data, no behaviour; the server computes it
+ * after applying an intent and the client renders it.
+ *
+ * @typedef {object} ViewState
+ * @property {number} point - The primary cursor offset.
+ * @property {number | null} mark - The selection anchor, or null.
+ * @property {string} name - The view/buffer name (the modeline label).
+ * @property {string} modeline - The fully-rendered modeline string.
+ * @property {string} status - The echo-area message (show-status!), or ''.
+ * @property {MinibufferState} minibuffer - The minibuffer prompt state.
+ * @property {number} [seq] - The buffer seq this view-state reflects, so a
+ *   client can tell whether a VIEW predates a DELTA it has not yet applied.
+ */
+
+/**
+ * The minibuffer's state, sent down so the client can render the prompt.
+ *
+ * @typedef {object} MinibufferState
+ * @property {boolean} active - Whether a prompt is open.
+ * @property {string} prompt - The prompt label (e.g. "M-x ", "Find file: ").
+ * @property {string} value - The server's authoritative value (usually the
+ *   client echoes its own; the server may seed/override it, e.g. find-file's
+ *   default directory).
+ */
+
+/** An inactive minibuffer — the common case. */
+export const MINIBUFFER_IDLE = Object.freeze({
+  active: false,
+  prompt: '',
+  value: '',
+});
+
+/**
+ * Render a modeline string from view-state, the way Emacs's default
+ * mode-line-format does in miniature: a modified flag, the buffer name, the
+ * line:column, and the major mode. Pure — a function of its inputs only, so
+ * it is unit-testable and identical on server and (if needed) client.
+ *
+ * @param {object} parts
+ * @param {string} parts.name - The buffer/view name.
+ * @param {boolean} [parts.modified=false] - Unsaved changes?
+ * @param {number} [parts.line=1] - 1-based line of point.
+ * @param {number} [parts.column=0] - 0-based column of point.
+ * @param {string} [parts.mode=''] - The major-mode label.
+ * @returns {string} The modeline string.
+ */
+export function renderModeline(parts) {
+  const flag = parts.modified ? '**' : '--';
+  const name = parts.name || 'untitled';
+  const line = Number.isFinite(parts.line) ? parts.line : 1;
+  const column = Number.isFinite(parts.column) ? parts.column : 0;
+  const pos = `L${line}:C${column}`;
+  const mode = parts.mode ? `  (${parts.mode})` : '';
+  return `${flag}  ${name}   ${pos}${mode}`;
+}
 
 /**
  * A buffer delta: a single Layer-1 change plus the cursor after it.
