@@ -156,6 +156,11 @@ import { createTabline } from '@editor/renderer';
 // unconditionally (it has no top-level effects), but only CONSTRUCTED behind
 // the GODOT_SERVER flag in the late boot — so flag-off is byte-for-byte today.
 import { createServerViewClient } from './server-view-client.js';
+// G2 router gate: a pure predicate the global key router consults so it stands
+// down (defers to the server) in server-mode once the server view is mounted —
+// focus-independent, so the dual-dispatch undo bell can't ring. No-op flag-off
+// (serverMode false → always returns false → the router runs as today).
+import { shouldGlobalRouterDefer } from './server-router-gate.js';
 // G2 chrome: the generic PICKER panel the server-view client renders in
 // server-mode (buffer list / M-x / RefTeX). Imported unconditionally (no
 // top-level effects); only USED inside the serverMode-gated boot below.
@@ -5989,6 +5994,22 @@ function targetOwnsKeys(el) {
 // <webview> delivers keydown to the guest page, which never reaches us.
 window.addEventListener('keydown', (event) => {
   if (!keymapReady) return;
+  // Server-mode (Model B): once the server view is mounted it is the sole
+  // dispatcher — every key routes to the server's keymap. The global router
+  // must stand down regardless of which DOM element holds focus, or a key
+  // that reaches <body> (focus drifted after a minibuffer/picker closed) gets
+  // dispatched server-side AND re-run here against the idle in-renderer buffer
+  // (the dual-dispatch `C-/` undo bell). This is focus-independent — it does
+  // NOT rely on the overlay's `preventDefault` (which only fires when the
+  // overlay is focused). Flag-off this is always false (the router runs as
+  // today). The server-driven minibuffer/picker still routes through the
+  // native inputs `targetOwnsKeys` covers below, which the server reads.
+  if (shouldGlobalRouterDefer(
+    !!(window.host && window.host.serverMode),
+    !!(serverViewClient && serverViewClient.getView())
+  )) {
+    return;
+  }
   // A deeper listener already claimed it (focused view, modal, input).
   if (event.defaultPrevented) return;
   // A bare modifier press is not a keystroke in its own right.
@@ -6033,6 +6054,14 @@ window.addEventListener('keydown', (event) => {
 // through the clipboard-aware `yank`. Native inputs keep their own paste.
 window.addEventListener('paste', (event) => {
   if (!keymapReady) return;
+  // Same server-mode stand-down as the key router: the in-renderer `yank`
+  // would mutate the idle editor, not the server's buffer. (Flag-off: false.)
+  if (shouldGlobalRouterDefer(
+    !!(window.host && window.host.serverMode),
+    !!(serverViewClient && serverViewClient.getView())
+  )) {
+    return;
+  }
   if (targetOwnsKeys(event.target)) return;
   const current = views[currentViewIndex];
   if (!current || current.kind !== 'text') return;
