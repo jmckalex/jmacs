@@ -39,12 +39,17 @@ import { serveAppFile } from '../src/serve.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const PRELOAD = join(here, 'preload.mjs');
 const SERVER_MODULE = join(here, 'server.js');
-// MWB_VIEW=1 opens the render-from-mirror harness (the REAL view.js driven
-// by a mirror); otherwise the Phase-0 latency harness (trivial painter).
+// MWB_PANES=1 opens the MULTI-PANE harness (the server's PANE_TREE rendered as
+// several real view.js panes laid out by the client's own pixels — G0a).
+// MWB_VIEW=1 opens the single-pane render-from-mirror harness (the REAL view.js
+// driven by a mirror); otherwise the Phase-0 latency harness (trivial painter).
+const PANES_MODE = process.env.MWB_PANES === '1';
 const VIEW_MODE = process.env.MWB_VIEW === '1';
-const HARNESS_URL = VIEW_MODE
-  ? 'app://editor/apps/desktop/mwb/view-harness.html'
-  : 'app://editor/apps/desktop/mwb/harness.html';
+const HARNESS_URL = PANES_MODE
+  ? 'app://editor/apps/desktop/mwb/pane-harness.html'
+  : VIEW_MODE
+    ? 'app://editor/apps/desktop/mwb/view-harness.html'
+    : 'app://editor/apps/desktop/mwb/harness.html';
 
 // How many client windows to open. MWB_CLIENTS=2 stands up a SECOND client
 // attached to the same server, viewing the same buffer — the Model-B killer

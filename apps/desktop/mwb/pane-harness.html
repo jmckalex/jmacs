@@ -1,0 +1,96 @@
+<!doctype html>
+<!--
+  Model-B MULTI-PANE harness (G0a) — render a window's PANE_TREE as several
+  real view.js instances, laid out by the client's OWN pixels.
+
+  The server owns the logical pane tree; this page receives a PANE_TREE
+  (structure + ratios + per-leaf buffer/view-state + focus, NO pixels), lays
+  it out with the pure computeRects math fed by THIS window's editor-area
+  rectangle, and mounts one createEditorView per leaf. C-x 2 / C-x 3 split,
+  C-x o cycles focus, C-x 0 deletes a pane, C-x 1 = delete-other-windows —
+  all run the REAL panes.lisp commands server-side. Click in and try them.
+
+  This page is loaded only behind the MWB pane harness; production is
+  untouched. The verification of record is node --test (pane-client-layout +
+  the spine pane integration tests); this is the architect's eyes-on demo.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Model B — multi-pane: the server's PANE_TREE, the client's pixels</title>
+    <link rel="stylesheet" href="../styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "@editor/storage": "../../../packages/storage/src/index.js",
+          "@editor/buffer": "../../../packages/buffer/src/index.js",
+          "@editor/view": "../../../packages/view/src/index.js",
+          "@editor/pane": "../../../packages/pane/src/index.js",
+          "@editor/lisp": "../../../packages/lisp/src/index.js",
+          "@editor/renderer": "../../../packages/renderer/src/index.js",
+          "@editor/stdlib": "../../../packages/stdlib/src/index.js"
+        }
+      }
+    </script>
+    <style>
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: var(--bg-editor, #303841);
+        color: var(--fg, #d8dee9);
+        display: flex;
+        flex-direction: column;
+        font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+      }
+      header {
+        padding: 8px 14px;
+        background: var(--bg, #2b333b);
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        font-size: 12px;
+        flex: 0 0 auto;
+      }
+      header b { color: #88c0d0; }
+      .good { color: #a3be8c; }
+      .warn { color: #ebcb8b; }
+      /* The pane host: leaf elements are absolute-positioned inside it at the
+         client-computed rects (computeRects over this rect). */
+      #panes {
+        flex: 1 1 auto;
+        position: relative;
+        overflow: hidden;
+        min-height: 0;
+      }
+      /* Each leaf: a host for one createEditorView, framed so the splits are
+         visible. The focused leaf gets a brighter border (the focus indicator
+         the logical tree's `focused` flag drives). */
+      .mwb-pane {
+        box-sizing: border-box;
+        border: 1px solid rgba(255,255,255,0.10);
+        overflow: hidden;
+      }
+      .mwb-pane--focused {
+        border-color: #88c0d0;
+        box-shadow: 0 0 0 1px #88c0d0 inset;
+      }
+      #status {
+        flex: 0 0 auto;
+        padding: 6px 14px;
+        background: var(--bg, #2b333b);
+        border-top: 1px solid rgba(255,255,255,0.08);
+        font-size: 11px;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <b>Model B — multi-pane.</b>
+      The server owns the logical pane tree; this window renders it as real
+      view.js panes laid out by its OWN pixels.
+      <b>C-x 2</b>/<b>3</b> split, <b>C-x o</b> cycle focus, <b>C-x 0</b>
+      delete, <b>C-x 1</b> sole. <span id="link" class="warn">connecting…</span>
+    </header>
+    <div id="panes"></div>
+    <div id="status">loading…</div>
+    <script type="module" src="./pane-view-client.js"></script>
+  </body>
+</html>
