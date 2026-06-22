@@ -32,6 +32,7 @@ import { keyEventToString } from '../../../packages/renderer/src/keymap.js';
 import { MSG, INTENT } from './protocol.js';
 import { createClientBuffer } from './client-buffer.js';
 import { layoutPaneTree, diffPaneLeaves } from './pane-client-layout.js';
+import { createPickerPanel } from './picker-panel.js';
 
 const hostEl = document.getElementById('panes');
 const statusEl = document.getElementById('status');
@@ -90,6 +91,9 @@ function dispatchKey(key) {
 }
 
 window.addEventListener('keydown', (event) => {
+  // While a generic picker is open it owns the keyboard (its own listener
+  // handles nav/choose/cancel); don't forward keys to the editor underneath.
+  if (activePicker) return;
   // Let the focused leaf's view handle its own editing keys via its onKey
   // (which calls dispatchKey); this top-level listener only catches keys when
   // no view is focused (e.g. right after a layout change).
@@ -230,6 +234,59 @@ function findLeaf(node, id) {
   return findLeaf(node.first, id) || findLeaf(node.second, id);
 }
 
+// --- the generic PICKER channel (G0b) ---------------------------------
+//
+// The server sends a PICKER request (a command suspended on it); we mount the
+// reusable picker panel over an overlay host, and report the choice/cancel UP
+// as a PICKER intent (tagged with the picker id so a stale reply is dropped).
+// The same panel serves every picker — only the rows differ.
+
+/** The mounted picker panel + its overlay host, or null. */
+let activePicker = null;
+
+/** Tear down the open picker (on a choice, a cancel, or a buffer switch that
+ *  superseded it) and return focus to the editor. */
+function dismissPicker() {
+  if (!activePicker) return;
+  try { activePicker.panel.destroy(); } catch { /* ignore */ }
+  if (activePicker.host && activePicker.host.parentNode) {
+    activePicker.host.parentNode.removeChild(activePicker.host);
+  }
+  activePicker = null;
+  relayout(); // restore editor focus
+}
+
+/** Render an incoming PICKER request as an interactive overlay panel. */
+function onPicker(picker) {
+  dismissPicker(); // one picker at a time
+  const host = document.createElement('div');
+  host.className = 'mwb-picker-overlay';
+  document.body.appendChild(host);
+  const panel = createPickerPanel(host, {
+    request: picker,
+    onChoose: (value) => {
+      if (port) {
+        port.postMessage({
+          type: MSG.INTENT,
+          intent: { id: nextIntentId++, kind: INTENT.PICKER_CHOOSE, value, pickerId: picker.id },
+        });
+      }
+      dismissPicker();
+    },
+    onCancel: () => {
+      if (port) {
+        port.postMessage({
+          type: MSG.INTENT,
+          intent: { id: nextIntentId++, kind: INTENT.PICKER_CANCEL, pickerId: picker.id },
+        });
+      }
+      dismissPicker();
+    },
+  });
+  activePicker = { panel, host };
+  setStatus(`${picker.title}: type to narrow, ↑/↓ to move, Enter to choose, Esc to cancel`);
+}
+
 /** A per-buffer delta from the server: apply it to that buffer's mirror; every
  *  pane on the buffer re-renders (they share the mirror). */
 function onDelta(delta) {
@@ -248,9 +305,15 @@ function onMessage(event) {
   const msg = event.data;
   if (!msg || typeof msg !== 'object') return;
   switch (msg.type) {
-    case MSG.SNAPSHOT: onSnapshot(msg); break;
+    case MSG.SNAPSHOT:
+      // A snapshot (HELLO / a buffer switch) supersedes any open picker — the
+      // picker that triggered the switch is done; tear it down.
+      dismissPicker();
+      onSnapshot(msg);
+      break;
     case MSG.PANE_TREE: onPaneTree(msg.tree); break;
     case MSG.DELTA: onDelta(msg.delta); break;
+    case MSG.PICKER: onPicker(msg.picker); break;
     case MSG.VIEW: /* per-pane modeline render deferred in the harness */ break;
     default: break;
   }

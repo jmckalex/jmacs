@@ -30,7 +30,9 @@ import { dirname, join, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
-import { MSG, INTENT, MINIBUFFER_IDLE, PANE_INTENT } from './protocol.js';
+import {
+  MSG, INTENT, MINIBUFFER_IDLE, PANE_INTENT, normalisePickerRequest,
+} from './protocol.js';
 import { createSpine } from './spine.js';
 // The crash-safe atomic writer (temp file + fsync + rename) and the
 // recovery-snapshot pure helpers are standalone production modules; the
@@ -132,6 +134,10 @@ const spine = createSpine(
     onBufferSwitched: () => onKillReHome(),
     // list-buffers (C-x C-b): send the active client its buffer-list records.
     onBufferList: () => { if (activeClient) sendBufferListTo(activeClient); },
+    // A command opened a generic PICKER (G0b): send the active client the
+    // request `{ id, title, rows, options }`. The client renders the
+    // interactive list; the choice/cancel comes back as a PICKER intent.
+    onPicker: (req) => { if (activeClient) sendPickerTo(activeClient, req); },
     // A window's pane layout/focus changed (split / other-window / delete):
     // push that client a fresh PANE_TREE (the structure + per-leaf buffer/
     // view-state + the focused leaf; no pixels).
@@ -264,6 +270,21 @@ function sendBufferListTo(client) {
   });
 }
 
+/** The client that owns the open generic picker, or null. One picker at a
+ *  time in the shared model (the minibuffer's twin) — the choice/cancel comes
+ *  back from this client and resumes the suspended command. */
+let pickerClient = null;
+
+/** Send a client a generic PICKER request (the G0b channel): the wire shape
+ *  `{ id, title, rows, options }`, normalised so a malformed row can't crash
+ *  the render. The client renders the interactive list and replies with a
+ *  PICKER_CHOOSE (the chosen row's value) or PICKER_CANCEL. */
+function sendPickerTo(client, req) {
+  pickerClient = client;
+  const picker = normalisePickerRequest(req);
+  client.port.postMessage({ type: MSG.PICKER, picker, seq });
+}
+
 /** Send a client its window's PANE_TREE (the layout: split structure +
  *  per-leaf buffer/view-state + the focused leaf; NO pixels — the client
  *  derives those). Sent on HELLO and whenever the layout/focus changes. */
@@ -390,6 +411,24 @@ function applyIntent(client, intent) {
           minibufferState = { ...minibufferState, value: String(intent.value ?? '') };
         }
         break;
+      case INTENT.PICKER_CHOOSE:
+        // A generic-picker choice (G0b): resume the suspended command with the
+        // chosen row's value, guarded by the pickerId (a stale reply is
+        // dropped). The continuation may switch the buffer (the buffer-list
+        // picker does), which re-syncs the client via onBufferSwitched; close
+        // the picker tracking and refresh the other clients' view-state.
+        pickerClient = null;
+        spine.deliverPicker(intent.value, intent.pickerId);
+        broadcastView();
+        activeClient = null;
+        return;
+      case INTENT.PICKER_CANCEL:
+        // Escape / C-g: resume the command with nil (it does nothing) + close.
+        pickerClient = null;
+        spine.cancelPicker(intent.pickerId);
+        sendViewTo(client);
+        activeClient = null;
+        return;
       case INTENT.SWITCH_BUFFER: {
         // A direct buffer switch (clicking a buffer-list row): resolve by id
         // or name, switch this client, and re-sync it onto the new buffer.
