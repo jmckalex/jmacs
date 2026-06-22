@@ -34,6 +34,11 @@ export const MSG = Object.freeze({
   // ONLY spatial pane navigation (focus-pane-left/right/up/down) needs it; the
   // server keeps the latest per window to compute adjacency. `{ width, height }`.
   PANE_VIEWPORT: 'pane-viewport',
+  // up: the client's visible LINE count for the focused server-view (plan §5d,
+  // the measurement conversation's hard direction — only the client knows how
+  // many text lines fit). Sent on mount + on resize. The server stores it per
+  // client and uses it for screenful scroll (C-v/M-v) + recenter. `{ lines }`.
+  VIEWPORT: 'viewport',
   // down
   SNAPSHOT: 'snapshot', // full buffer text + cursor (initial sync / resync)
   DELTA: 'delta', // an applied buffer change + resulting cursor
@@ -618,4 +623,53 @@ export function filterPickerRows(rows, query) {
     const meta = row && row.meta ? String(row.meta).toLowerCase() : '';
     return meta.includes(needle);
   });
+}
+
+/**
+ * The size of ONE screenful in text lines — the step `scroll-up`/`scroll-down`
+ * (C-v / M-v) move point by. Mirrors Emacs: a screenful is the visible line
+ * count minus a small overlap (`contextLines`, Emacs's
+ * `next-screen-context-lines`, default 2) so the line at the screen edge stays
+ * on screen and the eye keeps its place. The visible LINE count is supplied by
+ * the client (only it knows how many lines fit — plan §5d).
+ *
+ * A non-positive or non-finite viewport (not measured yet, e.g. before the
+ * first VIEWPORT report) falls back to a single-line step so the command is
+ * never a silent no-op.
+ *
+ * @param {number} viewportLines - The number of text lines visible in the pane.
+ * @param {number} [contextLines=2] - Lines of overlap kept across the scroll.
+ * @returns {number} The screenful step, an integer >= 1.
+ */
+export function screenfulStep(viewportLines, contextLines = 2) {
+  const usable = Math.floor(viewportLines) - Math.max(0, Math.floor(contextLines));
+  return Number.isFinite(usable) && usable >= 1 ? usable : 1;
+}
+
+/**
+ * The screenful-scroll math (C-v / M-v), pure so it is unit-testable and
+ * identical wherever it runs. A page-down (`direction` +1) moves point DOWN by
+ * one {@link screenfulStep}; a page-up (-1) moves it UP. The result is CLAMPED
+ * to the buffer's line range. Operates on 0-based line numbers (what
+ * `buffer.positionAt` returns); the caller maps line↔offset.
+ *
+ * @param {number} pointLine - The current 0-based line of point.
+ * @param {number} lineCount - The buffer's total line count (>= 1).
+ * @param {number} viewportLines - The number of text lines visible in the pane.
+ * @param {1 | -1} direction - +1 for page-down (C-v), -1 for page-up (M-v).
+ * @param {number} [contextLines=2] - Lines of overlap kept across the scroll.
+ * @returns {number} The new 0-based line for point, clamped to [0, lineCount-1].
+ */
+export function screenfulScrollLine(
+  pointLine,
+  lineCount,
+  viewportLines,
+  direction,
+  contextLines = 2
+) {
+  const lastLine = Math.max(0, Math.floor(lineCount) - 1);
+  const here = Math.min(lastLine, Math.max(0, Math.floor(pointLine) || 0));
+  const dir = direction < 0 ? -1 : 1;
+  const target = here + dir * screenfulStep(viewportLines, contextLines);
+  return Math.min(lastLine, Math.max(0, target));
 }

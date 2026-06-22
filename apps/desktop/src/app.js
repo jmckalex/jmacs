@@ -5884,6 +5884,13 @@ if (window.host && window.host.serverMode) {
       foldCaptures,
       keyEventToString,
       chrome: serverChrome,
+      // Re-report the viewport line count when the window resizes (the dock
+      // hiding/showing, an OS resize), so a screenful (C-v/M-v) tracks the
+      // live pane height. Returns an unsubscribe the client calls on destroy.
+      subscribeResize: (report) => {
+        window.addEventListener('resize', report);
+        return () => window.removeEventListener('resize', report);
+      },
     });
     serverViewClient.connect();
     console.info('[godot] G2: real view routed through the server');

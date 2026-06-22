@@ -633,6 +633,13 @@ function onClientMessage(client, event) {
       // ONLY pixel report the pane model needs (everything else is pixel-free).
       spine.setPaneHostRect(client.index, msg.rect || {});
       break;
+    case MSG.VIEWPORT:
+      // The client's visible text-LINE count for its server-view (plan §5d).
+      // Stored per client; screenful scroll (C-v/M-v via `page-lines`) reads
+      // it. Sent on mount + resize; a stale/zero report is ignored by the
+      // spine (keeps the last good value).
+      spine.setViewport(client.index, msg.lines);
+      break;
     default:
       break;
   }

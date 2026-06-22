@@ -171,6 +171,63 @@ test('recenter! emits a down-channel scroll request with the target line', () =>
   assert.equal(log.scrolls[0].line, 3);
 });
 
+// --- screenful scroll (C-v / M-v) — the VIEWPORT-sized page step ----------
+
+/** A buffer with N short lines "l0".."l{N-1}", for scroll tests. */
+function linesBuffer(n) {
+  return Array.from({ length: n }, (_, i) => `l${i}`).join('\n');
+}
+
+test('setViewport records the client viewport; viewportOf reads it back', () => {
+  const { spine } = makeSpine('');
+  assert.equal(spine.viewportOf(0), 0); // unmeasured at boot
+  spine.setViewport(0, 40);
+  assert.equal(spine.viewportOf(0), 40);
+  // A non-positive / non-finite report is ignored (keeps the last good value).
+  spine.setViewport(0, 0);
+  spine.setViewport(0, -5);
+  spine.setViewport(0, NaN);
+  assert.equal(spine.viewportOf(0), 40);
+});
+
+test('C-v (scroll-up) moves point DOWN by ~one screenful (viewport - context)', () => {
+  const { spine } = makeSpine(linesBuffer(100));
+  spine.setViewport(0, 40); // 40 visible lines → step = 40 - 2 = 38
+  spine.buffer.moveTo(0); // line 0
+  spine.handleKey('C-v');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 38);
+  spine.handleKey('C-v');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 76);
+});
+
+test('M-v (scroll-down) moves point UP by ~one screenful', () => {
+  const { spine } = makeSpine(linesBuffer(100));
+  spine.setViewport(0, 40); // step = 38
+  spine.buffer.moveTo(spine.buffer.offsetAt(76, 0));
+  spine.handleKey('M-v');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 38);
+  spine.handleKey('M-v');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 0);
+});
+
+test('screenful scroll clamps at the buffer ends (no overshoot)', () => {
+  const { spine } = makeSpine(linesBuffer(20));
+  spine.setViewport(0, 40); // step 38 > buffer → clamps
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-v');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 19); // last line
+  spine.handleKey('M-v');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 0); // first line
+});
+
+test('screenful scroll without a VIEWPORT report falls back to a one-line step', () => {
+  const { spine } = makeSpine(linesBuffer(10));
+  // No setViewport → unmeasured → page-lines is the 1-line fallback.
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-v');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 1);
+});
+
 test('find-file: visitFile ADDS a buffer and switches the active client to it', () => {
   const files = { '/tmp/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
   const { spine } = makeSpine('scratch', 'scratch.txt', {

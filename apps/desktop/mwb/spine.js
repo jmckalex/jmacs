@@ -43,7 +43,7 @@ import { createBuffer } from '@editor/buffer';
 import { createView } from '@editor/view';
 import { createBufferPrimitives } from '@editor/stdlib';
 
-import { renderModeline } from './protocol.js';
+import { renderModeline, screenfulStep } from './protocol.js';
 import { createBufferRegistry } from './buffer-registry.js';
 import { createPaneModel } from './pane-model.js';
 
@@ -295,6 +295,12 @@ const KEYMAP = Object.freeze({
   'M-b': 'backward-word',
   'M-less': 'beginning-of-buffer',
   'M-greater': 'end-of-buffer',
+  // Screenful scroll (editing.lisp scroll-up/scroll-down, loaded verbatim):
+  // C-v page-down, M-v page-up. They step point by `(page-lines)` — the host
+  // primitive that reads this client's reported VIEWPORT (only the client
+  // knows how many lines fit). Moving point makes the client follow-scroll.
+  'C-v': 'scroll-up',
+  'M-v': 'scroll-down',
   // editing
   enter: 'newline',
   backspace: 'delete-backward',
@@ -532,6 +538,18 @@ export function createSpine(options, effects = {}) {
   // re-home every client). Index 0 is always present (the default view).
   const clientIndices = new Set([0]);
 
+  // Per-client viewport height in VISIBLE TEXT LINES, reported by the client
+  // (only it knows how many lines fit — plan §5d). Screenful scroll (C-v/M-v)
+  // reads the ACTIVE client's value. 0 means "not measured yet"; the scroll
+  // math falls back to a one-line nudge so the command is never a silent
+  // no-op until the first VIEWPORT report lands (on mount).
+  const clientViewports = new Map([[0, 0]]);
+
+  /** The active client's reported viewport height in lines (0 = unmeasured). */
+  function activeViewportLines() {
+    return clientViewports.get(activeClientIndex) ?? 0;
+  }
+
   // The ACTIVE (buffer, view) the interpreter operates against right now —
   // resolved from the active client by setActiveClient before each intent.
   // `bindCursor` (run inside the buffer primitives) routes the active
@@ -745,6 +763,17 @@ export function createSpine(options, effects = {}) {
         onScroll({ kind: 'recenter', line });
         return NIL;
       },
+
+      // (page-lines) — the visible TEXT-LINE count of the active client's
+      // pane, the screenful the verbatim `editing.lisp` scroll-up/scroll-down
+      // step point by (production wires this to the renderer's
+      // editorView.pageLines(); the server reads the client's VIEWPORT report
+      // instead — only the client knows how many lines fit, plan §5d). Moving
+      // point by a screenful makes the client follow-scroll on the resulting
+      // CURSOR update, so C-v/M-v scroll with no new down-channel message. A
+      // single-line fallback (computed pure in screenfulStep) keeps the
+      // command from being a no-op before the first VIEWPORT report lands.
+      'page-lines': () => screenfulStep(activeViewportLines()),
 
       // --- editing commands' host helpers (mirrors of app.js) -----------
       'goto-line!': (args) => {
@@ -2238,6 +2267,20 @@ export function createSpine(options, effects = {}) {
      *  onPaneTree, so the server re-pushes the fresh PANE_TREE. */
     applyPaneIntent(index, intent) {
       return applyPaneIntent(index, intent);
+    },
+    /** Record client INDEX's viewport height in VISIBLE TEXT LINES (a VIEWPORT
+     *  report — the client measures it on mount + resize). Screenful scroll
+     *  (C-v/M-v via `page-lines`) reads the active client's value. A
+     *  non-positive/non-finite report is ignored (keeps the last good value).
+     *  Idempotent; safe to call before/after the client is otherwise known. */
+    setViewport(index, lines) {
+      const n = Math.floor(Number(lines));
+      if (Number.isFinite(n) && n > 0) clientViewports.set(index, n);
+    },
+    /** The recorded viewport line count for client INDEX (0 = unmeasured).
+     *  Introspection for the server + tests. */
+    viewportOf(index) {
+      return clientViewports.get(index) ?? 0;
     },
     /** Save the focused leaf's first-visible line for client INDEX (a scroll
      *  report). Per-pane scroll is window-state the leaf owns. */

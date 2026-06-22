@@ -21,6 +21,8 @@ import {
   normalisePickerRequest,
   normalisePickerRow,
   filterPickerRows,
+  screenfulStep,
+  screenfulScrollLine,
   MINIBUFFER_IDLE,
   MSG,
   INTENT,
@@ -372,4 +374,43 @@ test('filterPickerRows also matches the meta field', () => {
   ];
   // The ● flag (in meta) narrows to the modified buffer.
   assert.deepEqual(filterPickerRows(rows, '●').map((r) => r.value), [1]);
+});
+
+// --- screenful scroll math (C-v / M-v) -----------------------------------
+
+test('screenfulStep is the visible lines minus the context overlap', () => {
+  assert.equal(screenfulStep(40), 38); // default context 2
+  assert.equal(screenfulStep(40, 0), 40);
+  assert.equal(screenfulStep(10, 3), 7);
+});
+
+test('screenfulStep falls back to 1 for an unmeasured / tiny viewport', () => {
+  assert.equal(screenfulStep(0), 1); // not measured yet
+  assert.equal(screenfulStep(2), 1); // 2 - 2 = 0 → clamp to 1
+  assert.equal(screenfulStep(NaN), 1);
+  assert.equal(screenfulStep(Infinity), 1);
+  assert.equal(screenfulStep(-10), 1);
+});
+
+test('screenfulScrollLine: page-down moves point down by a screenful', () => {
+  // 40-line viewport (step 38), 100-line buffer, point at line 0.
+  assert.equal(screenfulScrollLine(0, 100, 40, 1), 38);
+  assert.equal(screenfulScrollLine(38, 100, 40, 1), 76);
+});
+
+test('screenfulScrollLine: page-up moves point up by a screenful', () => {
+  assert.equal(screenfulScrollLine(76, 100, 40, -1), 38);
+  assert.equal(screenfulScrollLine(38, 100, 40, -1), 0);
+});
+
+test('screenfulScrollLine clamps to the buffer line range', () => {
+  // Step (38) overshoots a 20-line buffer → clamp to the last line (19).
+  assert.equal(screenfulScrollLine(0, 20, 40, 1), 19);
+  // And never below 0.
+  assert.equal(screenfulScrollLine(5, 20, 40, -1), 0);
+});
+
+test('screenfulScrollLine with no viewport nudges one line (never a no-op)', () => {
+  assert.equal(screenfulScrollLine(3, 100, 0, 1), 4);
+  assert.equal(screenfulScrollLine(3, 100, 0, -1), 2);
 });

@@ -120,6 +120,11 @@ export function createServerViewClient({
   foldCaptures = {},
   keyEventToString,
   chrome = {},
+  // Subscribe to viewport-size changes (the window/pane resizing). Called with
+  // the report callback; returns an unsubscribe fn. Injected so the client is
+  // unit-testable with no DOM — `app.js` wires it to the real `window` resize.
+  // Default: a no-op subscription (tests drive `reportViewport` directly).
+  subscribeResize = () => () => {},
   log = (msg) => console.info(msg),
 }) {
   /** @type {ReturnType<typeof createClientBuffer> | null} */
@@ -172,6 +177,20 @@ export function createServerViewClient({
     const id = nextIntentId++;
     pending.set(id, { predicted: false });
     port.postMessage({ type: MSG.INTENT, intent: { id, kind: INTENT.KEY, key } });
+  }
+
+  /** Measure the mounted view's visible text-line count and report it UP as a
+   *  VIEWPORT message, so the server can size a screenful (C-v/M-v scroll, plan
+   *  §5d — only the client knows how many lines fit). Called on mount + on
+   *  resize. A no-op until a view is mounted, or when the measurement is not a
+   *  positive finite number (e.g. a 0-height view before its first layout) —
+   *  the server keeps its last good value. */
+  function reportViewport() {
+    if (!view || typeof view.pageLines !== 'function') return;
+    let lines;
+    try { lines = view.pageLines(); } catch { return; }
+    if (!Number.isFinite(lines) || lines <= 0) return;
+    port.postMessage({ type: MSG.VIEWPORT, lines: Math.floor(lines) });
   }
 
   /**
@@ -310,6 +329,14 @@ export function createServerViewClient({
     if (view) view.destroy();
     view = mountView(mirror, buildMountOptions());
     if (typeof view.focus === 'function') view.focus();
+    // Report the freshly-mounted view's visible line count so screenful scroll
+    // (C-v/M-v) is sized correctly from the first keystroke. A frame later the
+    // real layout has settled, so re-measure then too (the first pageLines()
+    // can read a transient 0-height before the reveal paints).
+    reportViewport();
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(reportViewport);
+    }
     log(
       `[godot-g2] mounted real view on '${msg.name}' ` +
       `(${(msg.text || '').length} chars) through the server`
@@ -405,12 +432,18 @@ export function createServerViewClient({
     }
   }
 
+  /** Drop the resize subscription, when one is active. */
+  let unsubscribeResize = null;
+
   /** Wire the port + say HELLO to pull the initial snapshot (which mounts the
    *  view). Idempotent-ish: calling twice re-says HELLO. */
   function connect() {
     port.onmessage = (e) => handleMessage(e.data);
     if (typeof port.start === 'function') port.start();
     connected = true;
+    // Re-report the viewport when the window/pane resizes, so a screenful
+    // tracks the live height. Injected (a no-op in tests).
+    if (!unsubscribeResize) unsubscribeResize = subscribeResize(reportViewport);
     port.postMessage({ type: MSG.HELLO });
     log('[godot-g2] connected to server; HELLO sent');
   }
@@ -429,6 +462,10 @@ export function createServerViewClient({
       activePickerId = null;
       try { closePickerDom(); } catch { /* ignore */ }
     }
+    if (unsubscribeResize) {
+      try { unsubscribeResize(); } catch { /* ignore */ }
+      unsubscribeResize = null;
+    }
     mirror = null;
     connected = false;
     try { port.onmessage = null; } catch { /* ignore */ }
@@ -442,6 +479,10 @@ export function createServerViewClient({
     getView: () => view,
     isConnected: () => connected,
     currentBufferId: () => currentBufferId,
+    // Measure + report the visible line count UP (VIEWPORT). Exposed so the
+    // unit tests can drive it directly (no DOM resize event needed) and so
+    // app.js can re-report on demand.
+    reportViewport,
     // Exposed so app.js can route a normalised keydown if it owns capture.
     keyEventToString,
     destroy,

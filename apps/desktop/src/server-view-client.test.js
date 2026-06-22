@@ -505,3 +505,86 @@ test('destroy() closes an open minibuffer + picker', () => {
   assert.equal(chrome.minibuffer, null);
   assert.equal(chrome.picker, null);
 });
+
+// --- VIEWPORT report (the C-v/M-v screenful measurement, plan §5d) --------
+
+/** A mountView whose instance exposes a measurable pageLines() (the real
+ *  <text-view> delegates pageLines to the inner editor). */
+function fakeMountWithPageLines(lines) {
+  const calls = [];
+  let measured = lines;
+  function mountView(buffer, options) {
+    const instance = {
+      buffer, options,
+      setView() {}, focus() {}, destroy() {}, recenter() {},
+      pageLines() { return measured; },
+      setMeasured(n) { measured = n; },
+    };
+    calls.push(instance);
+    return instance;
+  }
+  return { mountView, calls };
+}
+
+/** A recording resize subscription: the test triggers a resize by calling
+ *  `fire()`, and can assert it was unsubscribed on destroy. */
+function fakeResize() {
+  let cb = null;
+  let unsubscribed = false;
+  return {
+    subscribe(fn) { cb = fn; return () => { unsubscribed = true; cb = null; }; },
+    fire() { if (cb) cb(); },
+    get unsubscribed() { return unsubscribed; },
+  };
+}
+
+test('the client reports its viewport line count UP on mount (VIEWPORT)', () => {
+  const port = fakePort();
+  const mount = fakeMountWithPageLines(40);
+  const client = createServerViewClient({
+    port, mountView: mount.mountView,
+  });
+  client.connect();
+  port.deliver({ type: MSG.SNAPSHOT, text: 'a\nb\n', point: 0, name: 'v', bufferId: 'b', seq: 0 });
+  const viewports = port.sent.filter((m) => m.type === MSG.VIEWPORT);
+  assert.ok(viewports.length >= 1, 'a VIEWPORT was reported on mount');
+  assert.equal(viewports[viewports.length - 1].lines, 40);
+});
+
+test('a window resize re-reports the (new) viewport line count', () => {
+  const port = fakePort();
+  const mount = fakeMountWithPageLines(40);
+  const resize = fakeResize();
+  const client = createServerViewClient({
+    port, mountView: mount.mountView, subscribeResize: resize.subscribe,
+  });
+  client.connect();
+  port.deliver({ type: MSG.SNAPSHOT, text: 'a\n', point: 0, name: 'v', bufferId: 'b', seq: 0 });
+  // Grow the pane, then fire a resize: a fresh VIEWPORT with the new count.
+  mount.calls[0].setMeasured(72);
+  resize.fire();
+  const last = port.sent.filter((m) => m.type === MSG.VIEWPORT).pop();
+  assert.equal(last.lines, 72);
+});
+
+test('a zero / non-finite measurement is NOT reported (server keeps last good)', () => {
+  const port = fakePort();
+  const mount = fakeMountWithPageLines(0); // a 0-height view before first layout
+  const client = createServerViewClient({ port, mountView: mount.mountView });
+  client.connect();
+  port.deliver({ type: MSG.SNAPSHOT, text: 'a\n', point: 0, name: 'v', bufferId: 'b', seq: 0 });
+  assert.equal(port.sent.filter((m) => m.type === MSG.VIEWPORT).length, 0);
+});
+
+test('destroy() unsubscribes the resize listener', () => {
+  const port = fakePort();
+  const mount = fakeMountWithPageLines(40);
+  const resize = fakeResize();
+  const client = createServerViewClient({
+    port, mountView: mount.mountView, subscribeResize: resize.subscribe,
+  });
+  client.connect();
+  assert.equal(resize.unsubscribed, false);
+  client.destroy();
+  assert.equal(resize.unsubscribed, true);
+});
