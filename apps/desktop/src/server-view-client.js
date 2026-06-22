@@ -15,11 +15,18 @@
  *     handshake → open-buffer → mirror → key-routing wiring is unit-testable
  *     under `node --test` with no Electron (see `server-view-client.test.js`).
  *
- * The split (plan §4, §5) is unchanged from the prototype:
+ * The split (plan §4, §5):
  *   - input capture + normalisation (→ a key-string) is client-side;
- *   - local echo for a bare self-insert is client-side (instant typing);
- *   - everything else (which command a key runs, motion, M-x, the minibuffer)
- *     is server-side; the client renders the view-state the server sends down.
+ *   - EVERY key — a bare printable included — routes to the server as a KEY
+ *     intent so the server's `handle-key`/keymap decides the effect (this is
+ *     what makes auto-pair, electric keys, and prefix chords fire). The earlier
+ *     local-echo short-circuit for a bare self-insert was dropped: it bypassed
+ *     the keymap, and Phase-0 showed the round-trip isn't perceptibly slower.
+ *   - the client renders the view-state the server sends down — the text mirror
+ *     (DELTA/RESYNC), the cursor set (CURSOR/CURSORS), the overlays (OVERLAYS),
+ *     and (in server-mode) the DOM chrome: the modeline / echo-area / pending
+ *     prefix (VIEW), the minibuffer prompt (VIEW.minibuffer), and the generic
+ *     picker (PICKER). The chrome hooks are injected (fakeable in tests).
  *
  * ‼ THE IRONCLAD RULE (flag-off identical): nothing in this module runs unless
  * the caller constructs the client, and the caller in `app.js` only does so
