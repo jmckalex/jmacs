@@ -1033,3 +1033,35 @@ confined entirely to `packages/lisp` (`values.js`, `eval.js`, `interpreter.js`,
 `index.js`, new `test/interrupt.test.js`); nothing in `apps/desktop/mwb/` touched.
 
 ---
+
+## [2026-06-22 ~14:00] mwb-c-g/SAB finding: SharedArrayBuffer does NOT cross the utilityProcess boundary
+
+**Empirical result (probed, then discarded):** `utilityProcess.postMessage(sab)`
+throws **"An object could not be cloned"** — Electron's structured clone rejects
+a `SharedArrayBuffer` across the utilityProcess (separate OS process) boundary.
+A Worker-thread probe was also explored. So the planned cross-process interrupt
+flag (client `Atomics.store`, server `Atomics.load`) is **not viable as-is**
+between the renderer/main and the server utilityProcess.
+
+**Why this is NOT a blocker — the safety floor is already covered.**
+`setStepBudget(n)` (Wave 1, in the interpreter) bounds runaway / infinite
+computation with **no external flag** — an infinite loop throws `LispInterrupt`
+after N trampoline bounces. So Model B cannot *permanently* hang on a runaway
+command today; the safety-critical case is handled.
+
+**Interactive C-g (abort a long-but-finite command) — the path, DEFERRED.**
+Run the interpreter on a **Worker thread inside the server process**: SAB shares
+across threads in one process, so the server's main thread (free, because eval
+runs on the worker) receives the C-g message, sets the SAB flag, and the
+worker's eval polls it via the existing `setInterruptCheck`. This is a real
+refactor (eval → worker thread) and is a refinement, not on the critical path.
+
+**Recommendation:** ship the step-budget as the v1 safety mechanism; treat
+interactive cross-process C-g as a follow-on (Worker-thread eval). Do not spend
+more time trying to make SAB cross the utilityProcess boundary directly — it
+doesn't.
+
+**Operational note:** probe scripts must wrap process-boundary experiments in
+try/catch — an uncaught throw in the MAIN process pops an Electron error dialog
+on the architect's screen. Prefer `node --test` / caught failures over raw
+electron probes.
