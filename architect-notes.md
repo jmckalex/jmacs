@@ -4,6 +4,158 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22 11:00] Model-B/render-from-mirror: the REAL view.js renders + edits from a mirror — COST IS LOW (view.js: ZERO changes)
+
+**Context**: The Phase-0 spike answered the *latency* question (~0.3 ms
+round-trip, frame-identical local echo) but rendered from a trivial
+`<pre>`+cursor painter, not `view.js`. The decisive remaining bake-off
+question (plan §5b, §10 "the decision is now a *cost* question"): **how
+expensive is it to drive the real `view.js` rendering stack — tree-sitter
+highlighting, folding, measurement — from a replicated buffer mirror +
+server deltas instead of the live buffer?** I built the thinnest REAL
+slice to find out. All on branch `multi-window-b` in worktree
+`godot-mw-b`, isolated under `apps/desktop/mwb/`; production app.js/view.js
+were NOT touched; existing suite green throughout (450 desktop tests).
+
+**What I built (the working slice)**:
+- `mwb/client-buffer.js` (`createClientBuffer`) — the **mirror**. It
+  presents the same read interface `view.js` consumes off an L2 buffer,
+  but is driven by server deltas instead of local commands. It **reuses
+  `@editor/storage` (L1) verbatim** for the entire read surface
+  (`text/lineAt/positionAt/offsetAt/slice/lineCount`) — the subtle
+  line/column/surrogate math we get for free — and only re-homes two
+  things: the **cursor becomes per-client window-state** the mirror owns,
+  and the **mutators become intent-emitters** (local-echo a prediction +
+  send the edit UP). `applyDelta`/`applySnapshot` drive it from the wire.
+  18 `node --test` cases.
+- `mwb/server.js` (extended) — loads a **real file** (view.js by default,
+  `MWB_FILE` to override) directly off disk (utilityProcess = Node child,
+  plan §3 (i)), and routes self-insert/backspace/point/arrow-motion
+  intents through the real interpreter + L2 buffer. Text edits fan out as
+  deltas; a motion that yields no text delta replies with a CURSOR message
+  so the client reconciles its per-window cursor.
+- `mwb/view-harness.html` + `mwb/view-client.js` — load the app's real
+  `styles.css` + **all ~70 language grammars** (the exact app.js recipe)
+  and mount the **production `createEditorView`** on the mirror. Keystrokes
+  route via `onKey` → mirror mutators (local echo) + intents.
+- `mwb/launch.js` (extended) — `MWB_VIEW=1` opens this harness;
+  `MWB_VIEW_SELFTEST=1` drives a **headless** edit-through-the-server
+  self-test and quits PASS/FAIL (no screen needed).
+
+**Headless verification** (real view.js mounted on the real `view.js`,
+90,725 chars / 2,111 lines, AND on `editing.lisp` via the Scheme grammar):
+- Mounted with **zero render errors**; full tree-sitter highlighting +
+  folding active, computed entirely client-side off the mirror text.
+- Typing a marker at buffer start → `grew=true line0Changed=true
+  serverConfirmed=7/7 reRendered=8`, i.e. every keystroke round-tripped
+  through the server's canonical buffer AND the real view re-rendered +
+  re-highlighted. Round-trip **mean 0.53 ms, p95 0.60–0.70 ms** — matches
+  Phase 0; local echo paints on the same frame.
+
+**THE COST FINDING (the bake-off input)**:
+
+1. **`view.js` required ZERO changes.** Its buffer-read surface is small
+   (exactly **12 members**: `text, name, lineCount, slice, lineAt,
+   positionAt, offsetAt, onChange, point, mark, insert, moveTo`),
+   synchronous, and cleanly separable from editing. The mirror implements
+   all 12; the renderer never knew it wasn't reading a live buffer. I did
+   **not** fork view.js or add a seam to it — the *existing* `buffer`
+   parameter of `createEditorView` IS the seam. **This is the single most
+   important result**: the plan called this "the largest single refactor in
+   the codebase" and feared a "long half-working middle"; for the
+   *rendering* half, that fear does not materialise. Render-from-mirror is
+   a drop-in.
+
+2. **Highlighting + folding are pure functions of the mirror text** and
+   ran completely unchanged. This is the crux of the replicated-client
+   tractability argument (plan §4) and it holds in practice: don't rewrite
+   rendering, replicate state.
+
+3. **The genuinely useful discovery — the keystroke path needs no view.js
+   mutation hook at all.** With an `onKey` dispatcher supplied (which the
+   real app already does, to hand its Lisp keymap the keys), `view.js`
+   does NOT call `buffer.insert` for keystrokes — it delegates 100% to
+   `onKey(keyString)`. So routing edits to the server is purely a matter of
+   what `onKey` does; the renderer is already decoupled from "who applies
+   the edit." The only direct `buffer.insert`/`moveTo` calls left in
+   view.js are the IME `compositionend` path and mouse cursor-placement —
+   both handled by the mirror's mutators (echo + intent), no view.js touch.
+
+**Where it bites (honest — the cost that ISN'T zero)**:
+- **The measurement conversation (§5d) is real but narrow.** view.js owns
+  ALL pixel measurement + scroll geometry client-side (`scrollTop`,
+  `clientHeight`, `getBoundingClientRect().height` for line height, the
+  `firstRow`/`lastRow` virtualization window, `scrollIntoView` for
+  follow-cursor/recenter). In my slice this is a **non-issue for basic
+  editing** — the view scrolls itself, the server is never consulted for
+  pixels. It bites in exactly one place: when a **server-side Lisp command**
+  must make a scroll decision needing this client's pixels. Concretely,
+  `recenter` is `(defcommand recenter () (recenter!))` → `editorView
+  .recenter()` — a Lisp command whose *effect* is a client-pixel scroll.
+  Under Model B that becomes a **down-channel message** ("recenter your
+  view" / "scroll to window-start line L"): the server decides the line
+  (it knows point), the client executes the pixel scroll. That direction
+  is easy. The fiddly direction is commands like `scroll-up`/`page-down`
+  that advance window-start by "one screenful" — a quantity only the
+  client knows — which needs the client to report viewport geometry UP.
+  **Bounded and well-understood, not a metastasis risk; I did not build it
+  (the brief said I need not).**
+- **What this slice did NOT exercise** (and would still cost real work in
+  the full port — these are NOT in the rendering half, so item 1's "zero"
+  doesn't cover them): markers + overlays over the wire (snippets,
+  bookmarks, decorations — the mirror stubs `createMarker`), multi-cursor
+  replication (the mirror drives only the primary cursor), the whole
+  `defcommand`/keymap + minibuffer state machine moving server-side, undo
+  policy (server-side, shared), and interruption (Phase 1, mandatory before
+  living in the shared model). The latency + render proofs say nothing
+  about how long *that* surface takes — but none of it is the
+  "view.js-reads-buffer-synchronously is everywhere" landmine the plan
+  most feared, which is now **defused**.
+
+**Feasibility verdict (Model B vs A — updated)**: Both existential gates
+Model B had to clear are now **cleared with margin**. Phase 0 killed the
+latency objection (sub-ms round-trip, frame-identical echo). This slice
+kills the second one — the fear that driving the real renderer from a
+mirror is a huge, regression-prone refactor: **the rendering half is a
+drop-in, zero changes to view.js, real highlighting/folding for free.**
+The remaining Model-B cost is concentrated in the **model/command half**
+(commands + keymap + minibuffer + markers/overlays/multi-cursor + undo +
+interruption moving server-side and replicating correctly), plus the
+narrow, bounded §5d measurement conversation — NOT in the render path.
+
+My honest read for the A-vs-B decision: Model B's integration ceiling
+(one buffer in N windows for free, shared world, instant global
+customization) is genuinely higher, the two scariest risks (latency, the
+render refactor) are now retired, and the residual cost is real but
+*localized and legible* rather than pervasive. If you have appetite for
+the model/command-half port (commands server-side + interruption), Model B
+is viable and more powerful than I'd have bet before this slice. If you
+want shippable-soon with the lowest risk, Model A is still the safe
+answer — but the gap narrowed: "the render refactor is enormous" was the
+strongest cost argument for A, and it didn't survive contact with the real
+renderer.
+
+**Reproduce**:
+- Read surface tests: `cd apps/desktop && node --test mwb/client-buffer.test.js`
+- The slice, headless self-test:
+  `cd apps/desktop && MWB_VIEW=1 MWB_VIEW_SELFTEST=1 ./node_modules/.bin/electron mwb/launch.js --user-data-dir=/tmp/godot-mw-b-userdata --enable-logging=stderr`
+  (loads the real renderer on a real file, types through the server,
+  prints `[mwb-view-selftest-done] PASS`, quits). `MWB_FILE=<abs path>` to
+  render a different file/language; drop `MWB_VIEW_SELFTEST` to leave the
+  window open and type by hand.
+
+**State of the work**: branch `multi-window-b`, clean, existing suite
+green (450 desktop tests = 432 baseline + 18 ClientBuffer). Two new
+commits on top of the Phase-0 work:
+- `feat(mwb): add ClientBuffer mirror for render-from-mirror slice`
+- `feat(mwb): render the REAL view.js from a server-fed mirror`
+NOT merged. Declared `@editor/storage` as a desktop dep (it was already
+transitive via `@editor/buffer`) so the mirror's L1 import resolves under
+`node --test`. Everything is isolated under `apps/desktop/mwb/` behind the
+`MWB_VIEW` flag; production app.js/view.js untouched.
+
+---
+
 ## [2026-06-21] Projects "Phase 5" — Project Chooser: built autonomously, needs your review on 3 UX calls
 
 **Context**: You asked me to build the Nova-style Project Chooser (the
