@@ -18,6 +18,9 @@ import {
   serializePaneTree,
   wireLeaves,
   wireFocusedLeafId,
+  normalisePickerRequest,
+  normalisePickerRow,
+  filterPickerRows,
   MINIBUFFER_IDLE,
   MSG,
   INTENT,
@@ -277,4 +280,96 @@ test('MSG includes the pane channel tags', () => {
   assert.equal(MSG.PANE_TREE, 'pane-tree');
   assert.equal(MSG.PANE, 'pane');
   assert.equal(MSG.PANE_VIEWPORT, 'pane-viewport');
+});
+
+// --- the generic picker channel (G0b) ---------------------------------
+
+test('the protocol declares the PICKER message + choose/cancel intents', () => {
+  assert.equal(MSG.PICKER, 'picker');
+  assert.equal(INTENT.PICKER_CHOOSE, 'picker-choose');
+  assert.equal(INTENT.PICKER_CANCEL, 'picker-cancel');
+});
+
+test('normalisePickerRequest shapes a well-formed request, defaulting options', () => {
+  const req = normalisePickerRequest({
+    id: 'picker-1',
+    title: 'Buffer list',
+    rows: [{ label: 'a.js', value: 'b1', meta: '3L –' }],
+  });
+  assert.equal(req.id, 'picker-1');
+  assert.equal(req.title, 'Buffer list');
+  assert.equal(req.rows.length, 1);
+  assert.deepEqual(req.rows[0], { label: 'a.js', value: 'b1', meta: '3L –' });
+  assert.equal(req.options.filter, true); // default on
+});
+
+test('normalisePickerRequest defaults a missing id/title and empty rows', () => {
+  const req = normalisePickerRequest({});
+  assert.equal(req.id, 'picker');
+  assert.equal(req.title, '');
+  assert.deepEqual(req.rows, []);
+  assert.equal(req.options.filter, true);
+});
+
+test('normalisePickerRequest honours filter:false and carries kind/placeholder', () => {
+  const req = normalisePickerRequest({
+    id: 'p', title: 't', rows: [],
+    options: { filter: false, kind: 'recover', placeholder: 'type…' },
+  });
+  assert.equal(req.options.filter, false);
+  assert.equal(req.options.kind, 'recover');
+  assert.equal(req.options.placeholder, 'type…');
+});
+
+test('normalisePickerRequest drops malformed rows but keeps the good ones', () => {
+  const req = normalisePickerRequest({
+    id: 'p', title: 't',
+    rows: [{ label: 'good', value: 1 }, { value: 2 }, null, 42, 'bare'],
+  });
+  // The labelled row + the bare-string row survive; the label-less ones drop.
+  assert.deepEqual(req.rows.map((r) => r.label), ['good', 'bare']);
+});
+
+test('normalisePickerRow: a bare string becomes a label==value row', () => {
+  assert.deepEqual(normalisePickerRow('hello'), { label: 'hello', value: 'hello' });
+});
+
+test('normalisePickerRow defaults value to the label and carries meta/detail/group/current', () => {
+  assert.deepEqual(
+    normalisePickerRow({ label: 'x', meta: 'm', detail: 'd', group: 'g', current: true }),
+    { label: 'x', value: 'x', meta: 'm', detail: 'd', group: 'g', current: true }
+  );
+});
+
+test('normalisePickerRow rejects a row with no label', () => {
+  assert.equal(normalisePickerRow({ value: 'v' }), null);
+  assert.equal(normalisePickerRow(null), null);
+  assert.equal(normalisePickerRow(42), null);
+});
+
+test('filterPickerRows narrows by label, case-insensitively, preserving order', () => {
+  const rows = [
+    { label: 'alpha.js', value: 1 },
+    { label: 'Beta.md', value: 2 },
+    { label: 'gamma.txt', value: 3 },
+  ];
+  assert.deepEqual(filterPickerRows(rows, 'a').map((r) => r.value), [1, 2, 3]);
+  assert.deepEqual(filterPickerRows(rows, 'BET').map((r) => r.value), [2]);
+  assert.deepEqual(filterPickerRows(rows, '.md').map((r) => r.value), [2]);
+});
+
+test('filterPickerRows: an empty query keeps every row (a fresh copy)', () => {
+  const rows = [{ label: 'a', value: 1 }];
+  const out = filterPickerRows(rows, '   ');
+  assert.deepEqual(out, rows);
+  assert.notEqual(out, rows); // a copy, not the same array
+});
+
+test('filterPickerRows also matches the meta field', () => {
+  const rows = [
+    { label: 'scratch', value: 1, meta: '120L ●' },
+    { label: 'notes', value: 2, meta: '5L –' },
+  ];
+  // The ● flag (in meta) narrows to the modified buffer.
+  assert.deepEqual(filterPickerRows(rows, '●').map((r) => r.value), [1]);
 });

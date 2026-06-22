@@ -280,6 +280,12 @@ export function createSpine(options, effects = {}) {
   // Raised when the active client runs list-buffers (C-x C-b). The server
   // sends that client the buffer-list records (`spine.bufferListRecords`).
   const onBufferList = effects.onBufferList ?? (() => {});
+  // Raised when a command opens a generic PICKER (open-picker! — the G0b
+  // channel). The server sends the active client a PICKER down-message with
+  // the request `{ id, title, rows, options }`; the client renders the
+  // interactive list and the user's choice/cancel comes back up, resolved
+  // via `deliverPicker`. Mirrors onMinibufferOpen.
+  const onPicker = effects.onPicker ?? (() => {});
   // Raised when a kill-buffer switched the active client to a different
   // buffer (the killed buffer is gone). The server re-snapshots that client
   // onto its new buffer. Called with the active client's new bufferId.
@@ -439,6 +445,15 @@ export function createSpine(options, effects = {}) {
   // the file itself (see server.js).
   let activePrompt = null;
 
+  // --- the active picker request (G0b) ---------------------------------
+  // The wire request `{ id, title, rows, options }` of the currently-open
+  // generic picker, or null. The server reads it on a PICKER_CHOOSE/CANCEL
+  // to match the reply to the suspended command (a reply whose pickerId no
+  // longer matches the active picker is stale and dropped). A fresh id is
+  // minted per open so a superseded picker can't resume the wrong command.
+  let activePicker = null;
+  let pickerSeq = 0;
+
   // --- the modeline modified flag --------------------------------------
   // The "last saved" baseline is now per-buffer (registry entry.savedText),
   // so a buffer is modified when its text differs from ITS own baseline.
@@ -523,6 +538,37 @@ export function createSpine(options, effects = {}) {
         onMinibufferOpen(activePrompt);
         return NIL;
       },
+
+      // --- the generic picker (G0b) -------------------------------------
+      // `open-picker!` is the render half of the picker channel: a command
+      // (via picker-read, defined below) calls it to open an interactive
+      // list client-side. ARGS are (title rows options?): TITLE is the
+      // header label; ROWS is an opaque JS array of `{ label, value, ...
+      // meta }` (the host row-provider built it — Lisp passes it through
+      // verbatim, never inspecting it, exactly as it passes a pane handle);
+      // OPTIONS is an optional opaque JS options bag. The spine mints a
+      // fresh picker id, records the request, and raises onPicker so the
+      // server sends a PICKER message. The user's choice resolves via
+      // `deliverPicker` (→ picker-delivered), the minibuffer's twin.
+      'open-picker!': (args) => {
+        const title = String(args[0] ?? '');
+        const rows = Array.isArray(args[1]) ? args[1] : [];
+        const options = args[2] && typeof args[2] === 'object' && !Array.isArray(args[2])
+          ? args[2] : {};
+        pickerSeq += 1;
+        const id = `picker-${pickerSeq}`;
+        activePicker = { id, title, rows, options };
+        onPicker(activePicker);
+        return NIL;
+      },
+      // `buffer-list-rows` is the buffer-list ROW-PROVIDER: it returns the
+      // open buffers as picker rows (an opaque JS array) for the active
+      // client — each row's label is the buffer name, its value the buffer
+      // id (what an on-choose switch needs), with line-count + a ●/– flag as
+      // meta and the current buffer pre-marked. This is the one concrete
+      // provider G0b builds; every other picker (completions, *Recover*,
+      // RefTeX) is the SAME open-picker! call with a different provider.
+      'buffer-list-rows': () => bufferListRows(),
 
       // --- scroll / measurement (plan §5d) ------------------------------
       // recenter! is a Lisp command whose *effect* is a client-pixel
@@ -675,6 +721,14 @@ export function createSpine(options, effects = {}) {
       // buffer-list records (C-x C-b). The host (server.js) owns the
       // registry, so it packs + sends the list; this just raises the effect.
       'open-buffer-list!': () => { onBufferList(); return NIL; },
+      // switch-to-buffer-id! switches the ACTIVE client's window to buffer ID
+      // (the on-choose action of the C-x C-b picker). Re-points the focused
+      // leaf onto the buffer and raises onBufferSwitched so the server re-syncs
+      // the client onto its new buffer. (id) -> #t on success, #f if no such id.
+      'switch-to-buffer-id!': (args) => {
+        const id = String(args[0] ?? '');
+        return switchClientToBuffer(activeClientIndex, id);
+      },
       // kill-current-buffer! removes the active client's current buffer and
       // switches that client to another (the registry refuses to drop the
       // last buffer). The host performs the kill + re-snapshot (killBuffer).
@@ -800,6 +854,30 @@ export function createSpine(options, effects = {}) {
   // through the same `run-command`/`defcommand` machinery as everything
   // else — they are real commands, not host shims.
   interpreter.evaluate(`
+    ;; --- the generic picker round-trip (G0b) ----------------------------
+    ;; The SAME suspend/resume shape as the minibuffer (commands.lisp's
+    ;; minibuffer-read / minibuffer-delivered), for a render-side PICKER: a
+    ;; command opens an interactive list (open-picker!), SUSPENDS, and resumes
+    ;; in a callback when the user picks a row (or cancels). The buffer list,
+    ;; *Recover*, completions, RefTeX select + cite are ALL this one shape —
+    ;; rows in, one choice out — so they share this one mechanism + a per-
+    ;; picker row-provider. This lives in the spine (not production
+    ;; commands.lisp) so the channel stays inside the mwb slice.
+    (define *picker-reader* nil)
+
+    (define (picker-read title rows callback)
+      "Open a render-side picker titled TITLE over ROWS (the host's opaque
+       row array); CALLBACK receives the chosen row's value, or nil on cancel."
+      (set! *picker-reader* callback)
+      (open-picker! title rows))
+
+    (define (picker-delivered result)
+      "Called by the host when an open picker resolves. RESULT is the chosen
+       row's value, or nil on cancel. Resumes the suspended continuation."
+      (let ((reader *picker-reader*))
+        (set! *picker-reader* nil)
+        (if (not (nil? reader)) (reader result))))
+
     ;; M-x — prompt for a command name, then run it. The host completes
     ;; the prompt (it has the command list); on submit the host calls
     ;; (run-command (quote NAME)) directly, so this command's body just
@@ -821,12 +899,23 @@ export function createSpine(options, effects = {}) {
       (interactive (string "Switch to buffer: "))
       (lambda (name) name))
 
-    ;; list-buffers opens the buffer-list view client-side. The host owns
-    ;; the buffer records (it holds the registry), so this command just
-    ;; signals the host to send the list; the body is a host marker.
+    ;; list-buffers (C-x C-b) — the FIRST consumer of the generic picker
+    ;; (G0b). It opens an interactive PICKER over the open buffers (rows from
+    ;; the host's buffer-list-rows provider) and, on a choice, switches this
+    ;; window to the chosen buffer. This is the round-trip in miniature: the
+    ;; command suspends in picker-read; the client renders the list, narrows,
+    ;; navigates, picks; the host resumes the continuation with the chosen
+    ;; buffer's id; the body switches to it. switch-to-buffer-id! is host-side
+    ;; (it re-syncs the client onto the new buffer). A cancel resumes with nil
+    ;; → the cond's else does nothing (the window stays put).
     (defcommand list-buffers ()
-      "Show the buffer list (C-x C-b)."
-      (open-buffer-list!))
+      "Pick a buffer to switch to (C-x C-b)."
+      (picker-read "Buffer list"
+                   (buffer-list-rows)
+                   (lambda (id)
+                     (cond
+                       ((nil? id) nil)            ;; cancelled — stay put
+                       (else (switch-to-buffer-id! id))))))
 
     ;; kill-buffer removes the current buffer from the registry and
     ;; switches the window to another (the registry refuses to drop the
@@ -1224,6 +1313,21 @@ export function createSpine(options, effects = {}) {
     return paneModels.get(index)?.focusedBufferId() ?? initialEntry.id;
   }
 
+  /** The buffer-list ROW-PROVIDER for the generic picker (G0b): the open
+   *  buffers as picker rows for the ACTIVE client. Each row's `value` is the
+   *  buffer id (what an on-choose switch needs); `label` the name; `meta` a
+   *  "Nl ●/–" line-count + dirty flag; `current` marks the window's buffer.
+   *  Pure data, no L2 objects — the wire shape `normalisePickerRequest` wants. */
+  function bufferListRows() {
+    const currentId = currentBufferIdOf(activeClientIndex);
+    return registry.listRecords().map((r) => ({
+      label: r.name,
+      value: r.id,
+      meta: `${r.lineCount}L ${r.modified ? '●' : '–'}`,
+      current: r.id === currentId,
+    }));
+  }
+
   /** Every buffer id any leaf of client INDEX shows (a window may have several
    *  panes on different buffers). Used by the kill-buffer re-home: a window is
    *  "affected" if ANY of its panes shows the killed buffer. */
@@ -1602,6 +1706,37 @@ export function createSpine(options, effects = {}) {
     interpreter.evaluate('(set! *minibuffer-reader* nil)');
   }
 
+  /** Deliver a generic-picker choice to the suspended command (the spine's
+   *  `picker-delivered`, defined in Lisp above), the minibuffer's twin. VALUE
+   *  is the chosen row's value (a string/number/boolean — a buffer id, a
+   *  command name, a recovery key, …); pass null to CANCEL (the continuation
+   *  resumes with nil, so the command does nothing). PICKERID guards against a
+   *  stale reply: a choice whose id no longer matches the open picker is
+   *  dropped (the picker was superseded by another). Returns whether the reply
+   *  was applied. */
+  function deliverPicker(value, pickerId) {
+    // A reply for a picker that is no longer open (or a different one) is
+    // stale — ignore it so it can't resume the wrong command.
+    if (!activePicker) return false;
+    if (pickerId != null && pickerId !== activePicker.id) return false;
+    activePicker = null;
+    if (value === null || value === undefined) {
+      interpreter.evaluate('(picker-delivered nil)');
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+      interpreter.evaluate(`(picker-delivered ${JSON.stringify(value)})`);
+    } else {
+      interpreter.evaluate(`(picker-delivered ${JSON.stringify(String(value))})`);
+    }
+    return true;
+  }
+
+  /** Cancel the open picker WITHOUT a choice: resume the suspended command's
+   *  continuation with nil (so it does nothing) and clear the active picker.
+   *  The Escape / C-g path. PICKERID guards against a stale cancel. */
+  function cancelPicker(pickerId) {
+    return deliverPicker(null, pickerId);
+  }
+
   // --- view-state snapshot ---------------------------------------------
   /** The current point's 1-based line and 0-based column. */
   function pointPosition() {
@@ -1646,6 +1781,9 @@ export function createSpine(options, effects = {}) {
     commandNames,
     deliverMinibuffer,
     abortMinibuffer,
+    // the generic picker round-trip (G0b): resolve / cancel the open picker.
+    deliverPicker,
+    cancelPicker,
     visitFile,
     recoverBuffer,
     // save (real disk write) — the server wires saveFile to atomicWrite.
@@ -1739,6 +1877,12 @@ export function createSpine(options, effects = {}) {
     /** The active minibuffer prompt label, or null. */
     get activePrompt() {
       return activePrompt;
+    },
+    /** The open generic-picker request `{ id, title, rows, options }`, or null.
+     *  The server reads it on a PICKER_CHOOSE/CANCEL to match the reply (the
+     *  pickerId) and to know which client owns the picker. */
+    get activePicker() {
+      return activePicker;
     },
     get statusText() {
       return statusText;

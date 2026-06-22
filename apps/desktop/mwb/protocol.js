@@ -79,6 +79,22 @@ export const MSG = Object.freeze({
   // honour them or impose its own and echo a resize back). See
   // serializePaneTree below for the exact node shape.
   PANE_TREE: 'pane-tree',
+  // --- the generic render-side picker channel (G0b) ------------------
+  // A server command SUSPENDS and asks the client to pick a row from a
+  // list — the buffer list, *Recover*, completions, RefTeX select, cite:
+  // all the same shape (the server holds rows of data; the client renders
+  // an interactive list; one selection comes back up). This is the SINGLE
+  // reusable channel that collapses five bespoke picker slices into one
+  // mechanism + five row-providers (plan §2.2.3). It is modelled on the
+  // minibuffer round-trip — a Lisp continuation suspends, the host shows
+  // the UI, a choice resumes it (commands.lisp `picker-read`/
+  // `picker-delivered`). PICKER is the server pushing the request DOWN;
+  // PICKER_CHOOSE / PICKER_CANCEL come back UP (see INTENT). The wire shape
+  // is `{ id, title, rows: [{ label, ...rowData }], options }` — see
+  // normalisePickerRequest below. The client owns ALL of the picker's
+  // interaction (type-to-narrow, keyboard nav, click) and sends back only
+  // the chosen row's `value` (or a cancel).
+  PICKER: 'picker',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -101,6 +117,18 @@ export const INTENT = Object.freeze({
   // minibuffer prompt. The server switches this client and re-snapshots it
   // onto the target buffer. `bufferId` or `bufferName` identifies the target.
   SWITCH_BUFFER: 'switch-buffer',
+  // Generic picker round-trip (the command spine, G0b). When a server-side
+  // command suspends on a PICKER (open-picker! → a PICKER down-message),
+  // the client renders the interactive list and the user's choice/cancel
+  // comes back up as these. The server resumes the suspended command's
+  // continuation (commands.lisp `picker-delivered`). PICKER_CHOOSE carries
+  // the chosen row's `value` (the opaque token the row-provider attached);
+  // PICKER_CANCEL resumes with nil (the command does nothing). Both carry
+  // the picker `pickerId` so a stale reply (the picker was superseded) is
+  // dropped. This is the exact parallel of MINIBUFFER_SUBMIT/CANCEL — one
+  // round-trip, rows-in / choice-out.
+  PICKER_CHOOSE: 'picker-choose', // Enter / click — deliver the chosen value
+  PICKER_CANCEL: 'picker-cancel', // Escape / C-g — cancel the picker
 });
 
 /**
@@ -463,4 +491,131 @@ export function wireFocusedLeafId(node) {
     if (leaf.focused) return leaf.id;
   }
   return null;
+}
+
+// --- the generic picker channel (G0b) ---------------------------------
+//
+// A PICKER request is the wire shape EVERY render-side picker shares: a
+// title, a list of rows (each a `{ label, value, ...meta }`), and a bag of
+// display options. The server's row-PROVIDER is whatever produces the rows
+// (the buffer registry for the buffer list, the recovery scan for
+// *Recover*, the command registry for completions, the RefTeX DB for
+// select/cite) — the channel itself is provider-agnostic. These helpers
+// keep the request well-formed + DOM-free so both ends agree on its shape
+// and the client's narrowing logic is unit-testable.
+
+/**
+ * A single picker row as it travels the wire and as the client renders it.
+ *
+ * @typedef {object} PickerRow
+ * @property {string} label - The text the client shows + filters on.
+ * @property {*} value - The opaque token the server gets back on a choice
+ *   (a buffer id, a recovery key, a command name, a label name — whatever
+ *   the row-provider's on-choose handler needs). The client never inspects
+ *   it; it just echoes the chosen row's value up.
+ * @property {string} [meta] - A secondary, dimmed label (line count,
+ *   modified flag, a path, an age) shown after the main label.
+ * @property {string} [detail] - A longer description shown on a second line
+ *   (e.g. a command's docstring, a cite entry's author/year).
+ * @property {string} [group] - A grouping key; the client may render rows
+ *   under group headings (RefTeX groups labels by type).
+ * @property {boolean} [current] - Whether this row is the "current" one
+ *   (the buffer the window is on); the client may pre-select / mark it.
+ */
+
+/**
+ * The display/behaviour options a PICKER request carries.
+ *
+ * @typedef {object} PickerOptions
+ * @property {boolean} [filter=true] - Whether type-to-narrow is on (off for
+ *   a small fixed list like a yes/no or a *Recover* with action keys).
+ * @property {string} [placeholder] - Ghost text for the filter input.
+ * @property {string} [kind] - A tag the client can use to choose a styling/
+ *   layout variant ('buffer-list', 'completions', 'recover', 'reftex', …).
+ *   Purely cosmetic; the channel treats every picker identically.
+ */
+
+/**
+ * A picker request as it travels the wire (the PICKER down-message body).
+ *
+ * @typedef {object} PickerRequest
+ * @property {string} id - The picker's id (the server matches a reply to
+ *   the suspended command; a reply with a stale id is dropped).
+ * @property {string} title - The header label ("Buffer list", "M-x", …).
+ * @property {PickerRow[]} rows - The selectable rows.
+ * @property {PickerOptions} options - Display/behaviour options.
+ */
+
+/**
+ * Normalise a raw picker request to the wire shape the client renders, with
+ * every row reduced to a safe `{ label, value, meta?, detail?, group?,
+ * current? }` and the options defaulted. Drops malformed rows (so one bad
+ * row can't crash the render pass) and never throws. Pure.
+ *
+ * @param {object} req - `{ id, title, rows, options }` (loosely shaped).
+ * @returns {PickerRequest}
+ */
+export function normalisePickerRequest(req) {
+  const r = req && typeof req === 'object' ? req : {};
+  const id = typeof r.id === 'string' && r.id !== '' ? r.id : 'picker';
+  const title = typeof r.title === 'string' ? r.title : '';
+  const rawRows = Array.isArray(r.rows) ? r.rows : [];
+  const rows = [];
+  for (const row of rawRows) {
+    const n = normalisePickerRow(row);
+    if (n) rows.push(n);
+  }
+  const o = r.options && typeof r.options === 'object' ? r.options : {};
+  const options = {
+    filter: o.filter !== false, // default on
+  };
+  if (typeof o.placeholder === 'string') options.placeholder = o.placeholder;
+  if (typeof o.kind === 'string') options.kind = o.kind;
+  return { id, title, rows, options };
+}
+
+/**
+ * Normalise one picker row. A row MUST have a label (the thing the user
+ * sees + filters on); its value defaults to the label when absent (a plain
+ * string list). Returns null for a row with no usable label. Pure.
+ *
+ * @param {object} row
+ * @returns {PickerRow | null}
+ */
+export function normalisePickerRow(row) {
+  if (row == null) return null;
+  // A bare string is a label-only row whose value is the string itself.
+  if (typeof row === 'string') return { label: row, value: row };
+  if (typeof row !== 'object') return null;
+  const label = typeof row.label === 'string' ? row.label : '';
+  if (label === '') return null;
+  const out = { label, value: 'value' in row ? row.value : label };
+  if (typeof row.meta === 'string') out.meta = row.meta;
+  if (typeof row.detail === 'string') out.detail = row.detail;
+  if (typeof row.group === 'string') out.group = row.group;
+  if (row.current === true) out.current = true;
+  return out;
+}
+
+/**
+ * The type-to-narrow filter every client picker runs: keep the rows whose
+ * label (or meta) contains the query, case-insensitively, preserving order.
+ * An empty/blank query keeps everything. This is the SAME narrowing the real
+ * pickers do (completions, RefTeX select), factored out so it is pure +
+ * unit-tested and identical across every picker the channel serves.
+ *
+ * @param {PickerRow[]} rows
+ * @param {string} query
+ * @returns {PickerRow[]}
+ */
+export function filterPickerRows(rows, query) {
+  if (!Array.isArray(rows)) return [];
+  const needle = String(query ?? '').trim().toLowerCase();
+  if (needle === '') return rows.slice();
+  return rows.filter((row) => {
+    const label = (row && row.label ? String(row.label) : '').toLowerCase();
+    if (label.includes(needle)) return true;
+    const meta = row && row.meta ? String(row.meta).toLowerCase() : '';
+    return meta.includes(needle);
+  });
 }

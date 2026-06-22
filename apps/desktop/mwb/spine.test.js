@@ -19,6 +19,8 @@ import { createSpine } from './spine.js';
 function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
   const log = {
     status: [], minibufferOpens: [], minibufferCloses: 0, scrolls: [], saves: [],
+    // Each open generic-picker request (the G0b channel), as the server sees it.
+    pickerOpens: [],
   };
   const spine = createSpine(
     { initialText, name },
@@ -27,6 +29,7 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
       onMinibufferOpen: (p) => log.minibufferOpens.push(p),
       onMinibufferClose: () => { log.minibufferCloses += 1; },
       onScroll: (r) => log.scrolls.push(r),
+      onPicker: (req) => log.pickerOpens.push(req),
       openFile: extra.openFile,
       // A recording save: capture the {path, text} the spine would write, and
       // return success unless the test injects a failure. Lets save-buffer /
@@ -344,6 +347,109 @@ test('bufferListRecords flags the current buffer per client', () => {
   assert.equal(recs0.find((r) => r.id === xId).current, true);
   assert.equal(recs1.find((r) => r.id === xId).current, false);
   assert.ok(recs1.find((r) => r.name === 'scratch.txt').current);
+});
+
+// --- the generic PICKER channel (G0b) ---------------------------------
+//
+// The buffer-list picker is the FIRST consumer of the reusable channel. These
+// cases drive the SAME suspend/resume the minibuffer round-trip uses: a
+// command opens a picker (the spine suspends in picker-read), the host sees a
+// PICKER request, a simulated choice resumes the command, and the window's
+// buffer switches. A cancel resumes with nil and leaves the window put. The
+// channel itself is provider-agnostic — these prove it on buffers, and the
+// stale-id guard proves the round-trip is robust to a superseded picker.
+
+test('list-buffers opens a generic PICKER over the open buffers', () => {
+  const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
+  const { spine, log } = makeSpine('alpha', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  spine.visitFile('/x.js'); // now two buffers; active client on x.js
+  spine.runCommand('list-buffers');
+  // The command suspended on a PICKER (not the minibuffer): one open request.
+  assert.equal(log.pickerOpens.length, 1);
+  assert.equal(log.minibufferOpens.length, 0);
+  const req = log.pickerOpens[0];
+  assert.equal(req.title, 'Buffer list');
+  assert.ok(typeof req.id === 'string' && req.id.startsWith('picker-'));
+  // The rows are the open buffers, value = id, current marks the active one.
+  const labels = req.rows.map((r) => r.label).sort();
+  assert.deepEqual(labels, ['scratch.txt', 'x.js']);
+  assert.ok(req.rows.every((r) => typeof r.value === 'string'));
+  const cur = req.rows.find((r) => r.current);
+  assert.equal(cur.label, 'x.js'); // the active client is on x.js
+  // The spine exposes the open request to the server for reply-matching.
+  assert.equal(spine.activePicker.id, req.id);
+});
+
+test('PICKER round-trip: choosing a buffer row switches the window to it', () => {
+  const files = { '/x.js': { text: 'XBODY\n', name: 'x.js' } };
+  const { spine, log } = makeSpine('SEED', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  const seedId = spine.currentBufferIdOf(0);
+  spine.visitFile('/x.js'); // active client now on x.js
+  assert.equal(spine.buffer.name, 'x.js');
+  // Open the picker, then deliver a choice of the SEED buffer's id.
+  spine.runCommand('list-buffers');
+  const req = log.pickerOpens[0];
+  const seedRow = req.rows.find((r) => r.value === seedId);
+  assert.ok(seedRow, 'the seed buffer is a row');
+  const applied = spine.deliverPicker(seedRow.value, req.id);
+  assert.equal(applied, true);
+  // The window switched to the chosen buffer.
+  assert.equal(spine.buffer.name, 'scratch.txt');
+  assert.equal(spine.buffer.text, 'SEED');
+  // The picker is closed (a second delivery is a no-op).
+  assert.equal(spine.activePicker, null);
+  assert.equal(spine.deliverPicker(seedRow.value, req.id), false);
+});
+
+test('PICKER cancel resumes the command with nil and leaves the window put', () => {
+  const files = { '/x.js': { text: 'XBODY\n', name: 'x.js' } };
+  const { spine, log } = makeSpine('SEED', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  spine.visitFile('/x.js');
+  assert.equal(spine.buffer.name, 'x.js');
+  spine.runCommand('list-buffers');
+  const req = log.pickerOpens[0];
+  const cancelled = spine.cancelPicker(req.id);
+  assert.equal(cancelled, true);
+  // The window did NOT change buffer (the cond's else only fires on a choice).
+  assert.equal(spine.buffer.name, 'x.js');
+  assert.equal(spine.activePicker, null);
+});
+
+test('a stale PICKER reply (wrong id) is dropped, not resumed', () => {
+  const files = { '/x.js': { text: 'XBODY\n', name: 'x.js' } };
+  const { spine, log } = makeSpine('SEED', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  const seedId = spine.currentBufferIdOf(0);
+  spine.visitFile('/x.js');
+  spine.runCommand('list-buffers');
+  const req = log.pickerOpens[0];
+  // A reply tagged with a DIFFERENT (stale) picker id must be ignored.
+  assert.equal(spine.deliverPicker(seedId, 'picker-999'), false);
+  assert.equal(spine.buffer.name, 'x.js', 'stale reply did not switch');
+  assert.equal(spine.activePicker.id, req.id, 'the real picker is still open');
+  // The correctly-tagged reply still works.
+  assert.equal(spine.deliverPicker(seedId, req.id), true);
+  assert.equal(spine.buffer.name, 'scratch.txt');
+});
+
+test('C-x C-b dispatches the buffer-list picker through the real keymap', () => {
+  const files = { '/x.js': { text: 'XBODY\n', name: 'x.js' } };
+  const { spine, log } = makeSpine('SEED', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  spine.visitFile('/x.js');
+  // The chord (not runCommand) — proving the binding resolves to the picker.
+  spine.handleKey('C-x');
+  spine.handleKey('C-b');
+  assert.equal(log.pickerOpens.length, 1);
+  assert.equal(log.pickerOpens[0].title, 'Buffer list');
 });
 
 test('two clients can view different buffers independently', () => {
