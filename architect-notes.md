@@ -753,3 +753,76 @@ harness UI / `MWB_AUTOBENCH` flag; nothing in production app.js/view.js was
 touched.
 
 ---
+
+## [2026-06-22 12:30] mwb-interrupt: cooperative C-g interrupt + step budget on the Lisp trampoline
+
+**Context**: Model B §7.2 calls the step-budget/`C-g` interrupt *mandatory before
+living in a shared model* — one runaway command must not hang every window. Built
+it on the interpreter in `packages/lisp` (worktree `godot-mw-b-interrupt`, branch
+`mwb-interrupt` off `multi-window-b`). Scoped to the interpreter only; the server
+wiring (`apps/desktop/mwb/`) is deliberately untouched — that's a later step.
+
+**What was built (the API)**:
+- `LispInterrupt` (in `values.js`) — a subclass of `LispError`. Raised when an
+  interrupt-check fires or the step budget is crossed. Being a LispError, it
+  unwinds through `try`/`catch`/`finally` exactly like any error (cleanup runs)
+  and a Lisp `(catch e …)` *can* catch it; JS callers tell it apart with
+  `instanceof LispInterrupt` or the `.interrupt === true` flag (so the server can
+  distinguish "user quit" from "program failed" — e.g. don't surface a quit as a
+  red error in the minibuffer).
+- `interpreter.setInterruptCheck(fn | null)` — installs a cooperative check. The
+  eval trampoline calls `fn()` roughly every 4096 bounces; a truthy return aborts
+  the running evaluation with `LispInterrupt('quit')`. `null` (default) removes it.
+  `fn` is arbitrary — exactly what the server needs.
+- `interpreter.setStepBudget(n | Infinity)` — a per-top-level-form bounce ceiling;
+  exceeding it throws `LispInterrupt('step budget exceeded (n steps)')`. `Infinity`
+  (default) = no limit. Bounds runaway computation even with no external signal,
+  and bounds deep *non-tail* recursion before it can stack-overflow.
+- Also exported from `@editor/lisp`: `setInterruptCheck`, `setStepBudget`,
+  `resetStepCounter`, and `LispInterrupt` (via the values re-export).
+
+**How it works / how to drive it**: state lives as module-level vars in `eval.js`
+(like the existing `currentLocation`): an interrupt-check (default null), a step
+budget (default Infinity), a step counter. The `evaluate` trampoline does
+`stepCount += 1; if ((stepCount & 4095) === 0) interruptPoint();` at the top of
+every bounce — one add + a masked test on the hot path; the actual function call
+(`interruptPoint`) runs only every 4096 bounces. The counter resets per top-level
+`evaluate(source)` and per `call(name, …)` (the keystroke path), so the budget is
+per-command, not lifetime. `createInterpreter` resets check→null, budget→Infinity,
+so one interpreter's state can't leak into the next (a respawned server starts clean).
+
+**Defaults are a true no-op**: with no check and no budget, results are identical
+and there are no spurious interrupts (tested: a 1,000,000-iteration loop — far more
+than the 4096 check interval — completes unchanged). The existing 238 lisp tests
+and the full `pnpm test` (incl. 478 desktop) stay green; +16 new interrupt tests.
+
+**How the later server wiring should set the check (the SAB/Atomics plan)**:
+The server (utilityProcess) owns the single interpreter. The client sets a flag on
+`C-g` that the server's trampoline reads with zero IPC latency via a shared
+`SharedArrayBuffer`:
+1. Allocate `const sab = new SharedArrayBuffer(4); const flag = new Int32Array(sab);`
+   in the server; pass `sab` to each client (it's transferable across
+   `MessagePort`/`postMessage`; a `utilityProcess` can share it).
+2. Server: `interpreter.setInterruptCheck(() => Atomics.load(flag, 0) !== 0)`.
+3. Client `C-g`: `Atomics.store(flag, 0, 1)` (set from the renderer/preload).
+4. Server, *after* catching a `LispInterrupt` from a command (and before running the
+   next), clears it: `Atomics.store(flag, 0, 0)`. Clearing belongs on the server
+   side, right where it resets per-command state, so a stale quit can't abort the
+   next command. (Per-client quit could use one slot per client, or a single shared
+   slot if any C-g aborts the in-flight command — pick when wiring; the API doesn't
+   constrain it.)
+   Also call `interpreter.setStepBudget(N)` with a generous N as a backstop so a
+   runaway with no C-g still terminates.
+   Note: SAB needs cross-origin isolation in a renderer (COOP/COEP); in a
+   utilityProcess server (Node context) it's unconstrained — another point for the
+   §3(i) utilityProcess placement.
+
+**State of the work**: branch `mwb-interrupt`, worktree `godot-mw-b-interrupt`,
+working tree clean, suites green (254 lisp, full `pnpm test` green). One commit on
+top of the `multi-window-b` tip:
+- `feat(lisp): cooperative interrupt + step budget on the trampoline`
+NOT merged — the orchestrator merges `mwb-interrupt` into `multi-window-b`. Changes
+confined entirely to `packages/lisp` (`values.js`, `eval.js`, `interpreter.js`,
+`index.js`, new `test/interrupt.test.js`); nothing in `apps/desktop/mwb/` touched.
+
+---
