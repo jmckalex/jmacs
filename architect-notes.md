@@ -4,6 +4,76 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22 ~16:00] Model-B/save+data-safety: REAL save-to-disk (atomic) + dirty tracking + server-side autosave/recovery
+
+**Context**: The glaring gap for a usable editor — `save-buffer` was a status
+stub that wrote nothing. This slice makes the server actually write files
+(crash-safe) and adds the data-safety story the SHARED model requires (unsaved
+state lives in the server's memory → a server crash must not lose work). All on
+`multi-window-b` in worktree `godot-mw-b`, isolated under `apps/desktop/mwb/`
+behind `MWB_*` flags; production app.js/view.js/main.js + `packages/*` untouched.
+
+**Real save (the must-have — solid)**:
+- **save-buffer (C-x C-s)** writes the canonical buffer's text to its file path
+  with an **atomic write** (temp file + fsync + rename), mirroring production
+  `files.js`. The writer is `mwb/atomic-write-sync.js` — a SYNCHRONOUS variant of
+  production's async `atomicWrite` (the save runs inside the synchronous Lisp
+  command, so it can't suspend on a Promise). Production's writer is untouched.
+- **write-file / save-as (C-x C-w)** prompts for a path, writes there, and binds
+  the path (subsequent C-x C-s saves to it). A **path-less buffer's C-x C-s falls
+  back to write-file** (prompts), exactly like Emacs's C-x C-s on a new buffer.
+- **Dirty tracking**: each registry entry now carries a `filePath` + a saved-text
+  baseline; `isModified` = text≠baseline (the real app's saved-baseline approach).
+  An edit sets dirty; a successful save re-baselines (clears it). find-file records
+  the resolved absolute path so save-back targets the right file.
+- **The ● dirty indicator** is now the modeline's leading glyph (`renderModeline`):
+  `●` = unsaved, `–` = clean. It clears on save (the view-update broadcast refreshes
+  every window on that buffer).
+
+**Server-side autosave + recovery (the data-safety deliverable)**:
+- `mwb/autosave.js`: a **periodic timer** snapshots every DIRTY buffer to a
+  recovery dir on disk (atomic, one JSON file per buffer, keyed `file:<path>` /
+  `buf:<id>`), and a **recover-on-startup** scan finds snapshots worth restoring
+  and **loads them back as dirty buffers**. The pure pieces reuse production
+  `src/recovery.js` VERBATIM (`hashText`, `recoveryFileName`, `parseRecoveryRecord`)
+  and the **which-to-recover predicate is the EXACT one `app.js scanForRecovery`
+  uses** (newer-than-disk OR no-disk-file). Recovery dir = `MWB_RECOVERY_DIR` else
+  a stable per-app temp dir; cadence = `MWB_AUTOSAVE_INTERVAL_MS` (default 4s).
+- **What's DEFERRED** (documented, not built): the full `*Recover*` PICKER UX (a
+  render-side view with per-snapshot recover/discard). The data + the wire to
+  surface it are here (recovered buffers land in the registry, listable via the
+  existing buffer-list slice); rendering the picker is the same render slice the
+  buffer-list view stub is. Also deferred: full server respawn/reconnect UX (the
+  recover-on-startup path runs on every server boot, which IS the respawn path).
+
+**view.js change: ZERO.** Save is pure server-side I/O + the existing modeline
+view-update; the renderer just shows the ● the modeline string already carries.
+
+**Verification (headless, no screen)**:
+- `pnpm test` green: **581** (was 552; +29). New: registry dirty/path (5),
+  spine save/write-file/recover (8), autosave pure+temp-dir (10), the sync
+  atomic writer (3), and an **end-to-end disk integration test**
+  (`save-integration.test.js`, 3) that wires the spine's saveFile to the REAL
+  atomic writer + a real temp recovery dir, drives save-buffer / write-file, and
+  **reads the bytes back off disk** — proving bytes hit disk (atomic), ● toggles,
+  and a dirty buffer's autosave snapshot lands on disk + is recoverable.
+- A committed **server-side `MWB_SAVE_SELFTEST=1`** self-test does the same end-to-end
+  through Electron + the real server (it owns fs, so it does the read-back). I could
+  NOT run the Electron launch myself (the GUI launch is permission-blocked here);
+  the `node --test` integration test exercises the identical path headlessly and
+  is green. To run the Electron one interactively:
+  `! cd apps/desktop && MWB_VIEW=1 MWB_SAVE_SELFTEST=1 MWB_SAVE_TARGET=/tmp/godot-mw-b-save-scratch.txt MWB_RECOVERY_DIR=/tmp/godot-mw-b-recovery-selftest ./node_modules/.bin/electron mwb/launch.js --user-data-dir=/tmp/godot-mw-b-userdata --enable-logging=stderr`
+  (expect `[mwb-save-selftest-done] PASS` + exit 0).
+
+**State of the work**: branch `multi-window-b`, clean, suite green (581). Three
+new commits on top of the multi-buffer slice:
+- `feat(mwb): real save-buffer + write-file (atomic) with ● dirty tracking`
+- `feat(mwb): server-side autosave + crash-recovery snapshots`
+- `test(mwb): headless save + data-safety proof (node --test + self-test)`
+NOT merged. All isolated under `apps/desktop/mwb/` behind `MWB_*` flags.
+
+---
+
 ## [2026-06-22 14:40] Model-B/multi-buffer: the server is now a real multi-buffer workspace — N buffers, clients switch between them (C-x b / C-x C-b / C-x k)
 
 **Context**: The foundation after overlays/multi-cursor. The spine held ONE
