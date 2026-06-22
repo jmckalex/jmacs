@@ -161,6 +161,15 @@ export function createSpine(options, effects = {}) {
   // --- the echo area (status line) -------------------------------------
   let statusText = '';
 
+  // --- the active minibuffer prompt ------------------------------------
+  // The prompt label of an open minibuffer read, or null. The server reads
+  // this on submit to decide HOW to resolve: an ordinary argument prompt
+  // (goto-line, replace-string) resumes the suspended command via
+  // `deliverMinibuffer`; the M-x / find-file prompts are special — their
+  // command body is a no-op and the host runs the chosen command / visits
+  // the file itself (see server.js).
+  let activePrompt = null;
+
   // --- the modeline modified flag --------------------------------------
   // The buffer's text differs from what was last loaded/saved.
   let savedText = options.initialText ?? '';
@@ -193,7 +202,8 @@ export function createSpine(options, effects = {}) {
       // server shows the prompt; the user's input resolves via
       // `minibuffer-delivered` (called from deliverMinibuffer below).
       'open-minibuffer!': (args) => {
-        onMinibufferOpen(String(args[0] ?? ''));
+        activePrompt = String(args[0] ?? '');
+        onMinibufferOpen(activePrompt);
         return NIL;
       },
 
@@ -395,8 +405,11 @@ export function createSpine(options, effects = {}) {
   }
 
   /** Deliver a minibuffer result to the suspended command (commands.lisp's
-   *  `minibuffer-delivered`). Pass null to cancel. */
+   *  `minibuffer-delivered`). Pass null to cancel. Resumes the command's
+   *  continuation, which may itself open the next prompt (a chained
+   *  interactive spec, e.g. replace-string). */
   function deliverMinibuffer(value) {
+    activePrompt = null;
     onMinibufferClose();
     if (value === null) {
       interpreter.evaluate('(minibuffer-delivered nil)');
@@ -405,6 +418,18 @@ export function createSpine(options, effects = {}) {
         `(minibuffer-delivered ${JSON.stringify(String(value))})`
       );
     }
+  }
+
+  /** Abort the suspended command WITHOUT resuming its body, and close the
+   *  prompt. Used when the host fulfils the prompt itself (M-x, find-file):
+   *  the command's body is a no-op placeholder, so we drop the
+   *  continuation and let the host act. */
+  function abortMinibuffer() {
+    activePrompt = null;
+    onMinibufferClose();
+    // Drop the pending continuation in the interpreter so a later
+    // (minibuffer-delivered …) can't accidentally resume it.
+    interpreter.evaluate('(set! *minibuffer-reader* nil)');
   }
 
   // --- view-state snapshot ---------------------------------------------
@@ -447,9 +472,14 @@ export function createSpine(options, effects = {}) {
     runCommand,
     commandNames,
     deliverMinibuffer,
+    abortMinibuffer,
     visitFile,
     viewState,
     pointPosition,
+    /** The active minibuffer prompt label, or null. */
+    get activePrompt() {
+      return activePrompt;
+    },
     get statusText() {
       return statusText;
     },

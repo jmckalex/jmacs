@@ -182,6 +182,37 @@ test('find-file on a missing file reports and keeps the old buffer', () => {
   assert.ok(log.status.some((s) => s.includes('cannot open')));
 });
 
+test('M-x flow: open the prompt, abort it, then host-run the chosen command', () => {
+  // execute-extended-command opens the "M-x " prompt. The host (server)
+  // recognises that prompt, aborts the placeholder command, then runs the
+  // chosen command itself — here, end-of-buffer.
+  const { spine } = makeSpine('abcdef');
+  spine.handleKey('M-x');
+  assert.equal(spine.activePrompt, 'M-x ');
+  spine.abortMinibuffer();
+  assert.equal(spine.activePrompt, null);
+  spine.runCommand('end-of-buffer');
+  assert.equal(spine.buffer.point, 6);
+});
+
+test('abortMinibuffer drops the continuation so a later deliver is inert', () => {
+  const { spine } = makeSpine('one\ntwo\nthree');
+  const before = spine.buffer.point;
+  spine.runCommand('goto-line'); // opens "Goto line: "
+  spine.abortMinibuffer();
+  spine.deliverMinibuffer('3'); // should NOT resume goto-line
+  assert.equal(spine.buffer.point, before);
+});
+
+test('activePrompt tracks the current prompt and clears on submit', () => {
+  const { spine } = makeSpine('a\nb\nc');
+  assert.equal(spine.activePrompt, null);
+  spine.runCommand('goto-line');
+  assert.equal(spine.activePrompt, 'Goto line: ');
+  spine.deliverMinibuffer('2');
+  assert.equal(spine.activePrompt, null);
+});
+
 test('viewState reports point, mark, name, modeline and modified flag', () => {
   const { spine } = makeSpine('hi', 'note.txt');
   let vs = spine.viewState();

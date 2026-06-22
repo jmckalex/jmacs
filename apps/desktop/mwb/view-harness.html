@@ -56,6 +56,44 @@
         overflow: hidden;
         min-height: 0;
       }
+      /* The modeline: the server-rendered status line under the buffer. */
+      #modeline {
+        flex: 0 0 auto;
+        padding: 3px 14px;
+        background: var(--bg-status, #222a31);
+        color: var(--fg, #d8dee9);
+        border-top: 1px solid rgba(255,255,255,0.10);
+        font-size: 11px;
+        white-space: pre;
+      }
+      /* The echo area / minibuffer: the bottom line. Shows server status
+         and, when a command prompts, an editable prompt. */
+      #minibuffer {
+        flex: 0 0 auto;
+        padding: 4px 14px;
+        background: var(--bg-editor, #303841);
+        color: var(--fg, #d8dee9);
+        border-top: 1px solid rgba(255,255,255,0.08);
+        font-size: 12px;
+        min-height: 1.4em;
+        white-space: pre;
+        display: flex;
+        gap: 4px;
+        align-items: baseline;
+      }
+      #mb-prompt { color: #88c0d0; }
+      #mb-input {
+        flex: 1 1 auto;
+        background: transparent;
+        border: none;
+        color: var(--fg, #d8dee9);
+        font: inherit;
+        outline: none;
+        padding: 0;
+      }
+      #mb-input.hidden { display: none; }
+      #mb-echo { color: #a3be8c; }
+      #mb-hint { color: #ebcb8b; opacity: 0.85; }
       #status {
         flex: 0 0 auto;
         padding: 6px 14px;
@@ -75,6 +113,13 @@
       <span id="link" class="warn">connecting…</span>
     </header>
     <div id="editor"></div>
+    <div id="modeline">—</div>
+    <div id="minibuffer">
+      <span id="mb-prompt"></span>
+      <input id="mb-input" class="hidden" autocomplete="off" spellcheck="false" />
+      <span id="mb-echo"></span>
+      <span id="mb-hint"></span>
+    </div>
     <div id="status">loading…</div>
     <script type="module" src="./view-client.js"></script>
   </body>

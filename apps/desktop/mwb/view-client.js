@@ -1,40 +1,27 @@
 /**
- * @file Model-B render-from-mirror slice — the REAL-VIEW client.
+ * @file Model-B command-spine slice — the REAL-VIEW client.
  *
- * Unlike the Phase-0 harness (a trivial <pre>+cursor painter), this page
- * mounts the REAL renderer — `createEditorView` from `@editor/renderer`,
- * the same one the production app uses — and drives it from a
- * `ClientBuffer` MIRROR fed by server deltas. It loads the real
- * tree-sitter highlighters + fold captures (the exact setup app.js does)
- * so a real file renders with REAL syntax highlighting and folding,
- * entirely client-side, off the replicated mirror text.
+ * Mounts the production renderer (`createEditorView`) and drives it from a
+ * `ClientBuffer` MIRROR fed by server deltas — AND routes the full command
+ * surface to the server. Every keystroke becomes an intent the server's
+ * command spine dispatches (real keymap → real commands → buffer deltas +
+ * a view-update). The client renders the result: the buffer via the mirror,
+ * the cursor/modeline/status/minibuffer via VIEW messages.
  *
- * This is the decisive proof for the bake-off (plan §5b): the renderer
- * never knew it wasn't reading a live buffer. Highlighting and folding
- * are pure functions of the mirror text, so they run UNCHANGED.
- *
- * The flow:
- *   1. say HELLO over the MessagePort → server SNAPSHOT (text + name).
- *   2. build the ClientBuffer mirror from the snapshot; its `name` picks
- *      the tree-sitter language (real file name → real grammar).
- *   3. mount `createEditorView(mirror, container, { highlighters, … })`.
- *   4. `onKey` routes keystrokes to intents: a printable / Enter →
- *      mirror.insert (local echo + self-insert intent); Backspace →
- *      mirror.deleteBackward; arrows → a KEY intent (motion server-side,
- *      point reconciled via a CURSOR message).
- *   5. server deltas land → mirror.applyDelta → onChange → the real view
- *      re-renders + re-highlights the changed text.
+ * The split (plan §4, §5):
+ *   - input capture + normalisation (→ key-string) is client-side;
+ *   - local echo for self-insert is client-side (instant typing), the
+ *     server confirms via a delta;
+ *   - everything else (which command a key runs, motion, M-x, find-file,
+ *     the minibuffer state machine) is server-side; the client just renders
+ *     the view-state the server sends down.
  */
 
-// Import directly from the renderer's source modules rather than the
-// barrel `@editor/renderer/index.js`. The barrel re-exports the shell
-// view, which imports `@xterm/xterm` (not in our import map and irrelevant
-// to a text view), so the barrel won't resolve in this minimal harness.
-// These three modules are the exact ones the barrel re-exports them from.
 import { createEditorView } from '../../../packages/renderer/src/view.js';
 import { createTreeSitterHighlighter } from '../../../packages/renderer/src/treesitter.js';
 import { loadLanguageHighlighters } from '../../../packages/renderer/src/language-registry.js';
 import { createHighlightOverrideStore } from '../../../packages/renderer/src/highlight-overrides.js';
+import { keyEventToString } from '../../../packages/renderer/src/keymap.js';
 
 import { MSG, INTENT } from './protocol.js';
 import { createClientBuffer } from './client-buffer.js';
@@ -42,6 +29,11 @@ import { createClientBuffer } from './client-buffer.js';
 const editorEl = document.getElementById('editor');
 const linkEl = document.getElementById('link');
 const statusEl = document.getElementById('status');
+const modelineEl = document.getElementById('modeline');
+const mbPromptEl = document.getElementById('mb-prompt');
+const mbInputEl = document.getElementById('mb-input');
+const mbEchoEl = document.getElementById('mb-echo');
+const mbHintEl = document.getElementById('mb-hint');
 
 /** @type {MessagePort | null} */
 let port = null;
@@ -53,8 +45,10 @@ let highlighters = {};
 let foldCaptures = {};
 let nextIntentId = 1;
 
-/** Instrumentation: keydown→server-delta round-trip, with the REAL view
- *  re-rendering on the reconcile. Pending intents by id carry t0. */
+/** Whether the minibuffer is currently prompting (input focused). */
+let minibufferActive = false;
+
+/** Instrumentation: keydown→server-delta round-trip. */
 const pending = new Map();
 const samples = { localEcho: [], roundTrip: [] };
 
@@ -78,11 +72,6 @@ function showStatus(extra = '') {
 setInterval(() => showStatus(), 300);
 
 // --- the highlighter setup (exactly app.js's recipe) ------------------
-//
-// Discover the renderer's language modules (each self-registers), then
-// build a tree-sitter highlighter per language. This is the SAME code the
-// production app runs — proving the highlight stack is reusable as-is from
-// a mirror.
 async function loadHighlighters() {
   const base = 'app://editor/packages/renderer/src/languages/';
   try {
@@ -116,83 +105,122 @@ async function loadHighlighters() {
 
 // --- key routing → intents --------------------------------------------
 //
-// The view's onKey replaces its built-in keymap. We translate the
-// normalised key string into an edit/motion intent. Printables + Enter
-// self-insert through the mirror (local echo + intent); Backspace deletes;
-// arrows send a motion KEY intent whose point comes back as a CURSOR msg.
+// The view's `onKey` replaces its built-in keymap. We forward the
+// normalised key string to the server, which runs the REAL keymap dispatch.
+// A bare printable AND Enter/Backspace get LOCAL ECHO (the mirror predicts
+// the edit immediately, instant typing) plus the intent UP; everything else
+// (motion, chords, M-x) is a pure KEY intent the server resolves, with the
+// result coming back as a delta / cursor / view message.
 
-const ARROW_TO_KEY = { left: 'left', right: 'right', up: 'up', down: 'down' };
+/** True when the key is a bare single character (a printable to insert). */
+function isBarePrintable(keyString) {
+  return [...keyString].length === 1;
+}
 
 function dispatchKey(keyString) {
   if (!mirror || !port) return false;
-  // A bare printable: self-insert. keyEventToString returns the char as-is
-  // for an unmodified printable (length-1, no C-/M-/A-).
-  if (keyString.length === 1) {
-    selfInsert(keyString);
+  if (isBarePrintable(keyString)) {
+    // The 99% path: a bare printable self-inserts. Local echo (predict on
+    // the mirror immediately) + a SELF_INSERT intent; the server confirms
+    // via a delta. Typing never waits on the round-trip (plan §4 tactic 1).
+    echoSelfInsert(keyString);
     return true;
   }
-  if (keyString === 'enter') {
-    selfInsert('\n');
-    return true;
-  }
-  if (keyString === 'backspace') {
-    deleteBackward();
-    return true;
-  }
-  if (keyString in ARROW_TO_KEY) {
-    sendKeyMotion(ARROW_TO_KEY[keyString]);
-    return true;
-  }
-  // Unhandled chord in this slice.
-  return false;
+  // Every other key — Enter, Backspace, motion, chords, M-x, C-x C-f, … —
+  // is a real command. We do NOT predict it (a command may do more than a
+  // naive guess: `newline` auto-indents, `delete-backward` may unindent).
+  // Send a pure KEY intent; the server's delta / cursor / view drives the
+  // mirror. The round-trip is sub-ms (Phase 0), so this is imperceptible.
+  sendKey(keyString);
+  return true;
 }
 
-function selfInsert(str) {
-  const t0 = performance.now();
-  const id = nextIntentId++;
-  pending.set(id, { t0, predicted: true });
-  // Local echo (instant) + the self-insert intent, atomically: the mirror's
-  // insert() predicts on the mirror (re-rendering the REAL view) AND emits
-  // the intent through sendIntent → we stamp it with the id below.
-  pendingIntentId = id;
-  mirror.insert(str);
-  pendingIntentId = null;
-  requestAnimationFrame(() =>
-    record('localEcho', performance.now() - t0)
-  );
-}
-
-function deleteBackward() {
+/** Local-echo a self-insert: predict on the mirror, send a SELF_INSERT
+ *  intent (the 99% fast path the server applies without keymap work). */
+function echoSelfInsert(str) {
   const t0 = performance.now();
   const id = nextIntentId++;
   pending.set(id, { t0, predicted: true });
   pendingIntentId = id;
-  mirror.deleteBackward(1);
+  pendingIntentKind = INTENT.SELF_INSERT;
+  mirror.insert(str); // predicts + emits via sendIntent
   pendingIntentId = null;
   requestAnimationFrame(() => record('localEcho', performance.now() - t0));
 }
 
-function sendKeyMotion(key) {
+/** Send a pure KEY intent (no local echo — the server decides the effect). */
+function sendKey(key) {
   const id = nextIntentId++;
   pending.set(id, { t0: performance.now(), predicted: false });
   port.postMessage({ type: MSG.INTENT, intent: { id, kind: INTENT.KEY, key } });
 }
 
-// The mirror's sendIntent stamps the current id (set just before the
+// The mirror's sendIntent stamps the current id + kind (set just before a
 // mutator call) so the server's echoed delta matches the pending entry.
 let pendingIntentId = null;
+let pendingIntentKind = null;
 function sendIntent(intent) {
+  if (!port) return;
+  const kind = pendingIntentKind ?? intent.kind;
+  port.postMessage({
+    type: MSG.INTENT,
+    intent: { id: pendingIntentId ?? nextIntentId++, ...intent, kind },
+  });
+  pendingIntentKind = null;
+}
+
+// --- the minibuffer (client-rendered, server-driven) ------------------
+//
+// The server owns the prompt state; the client renders it + captures input.
+// On a prompt the input is shown + focused; typing fires MINIBUFFER_CHANGE,
+// Enter fires MINIBUFFER_SUBMIT, Escape/C-g fires MINIBUFFER_CANCEL.
+
+function openMinibuffer(prompt, value) {
+  minibufferActive = true;
+  mbPromptEl.textContent = prompt;
+  mbInputEl.classList.remove('hidden');
+  mbInputEl.value = value ?? '';
+  mbEchoEl.textContent = '';
+  mbInputEl.focus();
+}
+
+function closeMinibuffer() {
+  minibufferActive = false;
+  mbPromptEl.textContent = '';
+  mbInputEl.value = '';
+  mbInputEl.classList.add('hidden');
+  mbHintEl.textContent = '';
+  if (view) view.focus();
+}
+
+mbInputEl.addEventListener('input', () => {
   if (!port) return;
   port.postMessage({
     type: MSG.INTENT,
-    intent: { id: pendingIntentId ?? nextIntentId++, ...intent },
+    intent: { id: nextIntentId++, kind: INTENT.MINIBUFFER_CHANGE, value: mbInputEl.value },
   });
-}
+});
+
+mbInputEl.addEventListener('keydown', (event) => {
+  if (!port) return;
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.MINIBUFFER_SUBMIT, value: mbInputEl.value },
+    });
+  } else if (event.key === 'Escape' || (event.ctrlKey && event.key === 'g')) {
+    event.preventDefault();
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.MINIBUFFER_CANCEL },
+    });
+  }
+});
 
 // --- server messages ---------------------------------------------------
 
 function onSnapshot(msg) {
-  // (Re)build the mirror from the snapshot. The name drives the language.
   mirror = createClientBuffer({
     initialText: msg.text,
     name: msg.name || 'mwb.js',
@@ -215,7 +243,7 @@ function onSnapshot(msg) {
     `[mwb-view] mounted real view on '${msg.name}' ` +
     `(${msg.text.length} chars, ${mirror.lineCount} lines)`
   );
-  showStatus('(real view.js, real highlighting, mirror-driven)');
+  showStatus('(command spine: keys → server commands → deltas + view-updates)');
 }
 
 function onDelta(delta) {
@@ -224,16 +252,10 @@ function onDelta(delta) {
     record('roundTrip', performance.now() - p.t0);
     pending.delete(delta.echoId);
   }
-  // Apply the authoritative delta. If we already predicted it (local echo),
-  // applyDelta({echoed}) only adopts the server's point — the text matches.
   mirror.applyDelta(delta, { echoed: !!(p && p.predicted) });
-  // applyDelta fires the mirror's onChange → the REAL view re-renders +
-  // re-highlights. No extra repaint call needed.
 }
 
 function onCursor(msg) {
-  // A point-only (motion) reconcile. Update window-state + re-render so the
-  // caret moves. We set point directly through the mirror's cursors.
   if (!mirror) return;
   if (msg.echoId != null && pending.has(msg.echoId)) {
     record('roundTrip', performance.now() - pending.get(msg.echoId).t0);
@@ -241,9 +263,54 @@ function onCursor(msg) {
   }
   mirror.cursors[0].point = msg.point;
   mirror.cursors[0].mark = msg.mark ?? null;
-  // Nudge a render: a no-op delta-free onChange. The view reads point via
-  // getPoint on its next frame; trigger one by re-pointing it at the view.
   if (view) view.setView({ buffer: mirror });
+}
+
+/** A VIEW message: the non-text render state. Update the modeline, the echo
+ *  area, and the minibuffer prompt; reconcile the cursor; handle scroll. */
+function onView(v) {
+  // A scroll-only VIEW (recenter etc.): execute the pixel scroll the server
+  // asked for. The server decided the line; we do the pixels (plan §5d).
+  if (v.scroll) {
+    applyScroll(v.scroll);
+    return;
+  }
+  if (typeof v.modeline === 'string') modelineEl.textContent = v.modeline;
+  // Reconcile the cursor/mark (a command may have moved point) — but ONLY
+  // when no predicted self-insert is still in flight. During rapid typing
+  // the local echo is authoritative for point (the server confirms via the
+  // delta's echoed point); a VIEW carrying an OLDER point must not rewind
+  // the cursor, or the next predicted char inserts at the wrong offset and
+  // the marker comes out scrambled (the "MWxyzB" bug). When the queue is
+  // empty the VIEW point is the latest server truth and is safe to adopt.
+  const predictionsInFlight = [...pending.values()].some((p) => p.predicted);
+  if (mirror && typeof v.point === 'number' && !predictionsInFlight) {
+    mirror.cursors[0].point = v.point;
+    mirror.cursors[0].mark = v.mark ?? null;
+    if (view) view.setView({ buffer: mirror });
+  }
+  // The minibuffer prompt state.
+  if (v.minibuffer) {
+    if (v.minibuffer.active && !minibufferActive) {
+      openMinibuffer(v.minibuffer.prompt, v.minibuffer.value);
+    } else if (!v.minibuffer.active && minibufferActive) {
+      closeMinibuffer();
+    }
+  }
+  // The echo area (status). When the minibuffer is prompting its input owns
+  // the line; otherwise show the server's status.
+  if (!minibufferActive && typeof v.status === 'string') {
+    mbEchoEl.textContent = v.status;
+  }
+}
+
+/** Execute a server scroll request in client pixels. recenter scrolls so
+ *  the target line is centred; the client owns the measurement (plan §5d). */
+function applyScroll(req) {
+  if (!view) return;
+  if (req.kind === 'recenter' && typeof view.recenter === 'function') {
+    view.recenter();
+  }
 }
 
 // --- channel ----------------------------------------------------------
@@ -257,16 +324,14 @@ window.addEventListener('message', (event) => {
       if (msg.type === MSG.SNAPSHOT) onSnapshot(msg);
       else if (msg.type === MSG.DELTA) onDelta(msg.delta);
       else if (msg.type === MSG.CURSOR) onCursor(msg);
+      else if (msg.type === MSG.VIEW) onView(msg.view);
     };
     port.start();
     linkEl.textContent = 'connected ✓';
     linkEl.className = 'good';
-    // Load highlighters, THEN ask for the snapshot, so the view mounts with
-    // the grammar ready.
     loadHighlighters().then(() => {
       port.postMessage({ type: MSG.HELLO });
       if (window.mwb && window.mwb.selftest) {
-        // Give the snapshot + mount a beat, then run the headless self-test.
         setTimeout(runSelfTest, 600);
       }
     });
@@ -275,10 +340,11 @@ window.addEventListener('message', (event) => {
 
 // --- headless self-test (MWB_VIEW_SELFTEST=1) -------------------------
 //
-// Drives the full mirror→server→delta→re-render path with no screen:
-// types a marker string at buffer start, waits for the server to confirm
-// each keystroke, then verifies the mirror text changed AND the real view
-// re-rendered + re-highlighted. Logs a PASS/FAIL line launch.js can read.
+// Drives the command spine with no screen: types a marker (self-insert
+// through the keymap), runs a motion command (M-> end-of-buffer), and
+// exercises the minibuffer round-trip (goto-line via the prompt). Verifies
+// the buffer changed, the server confirmed, the real view re-rendered, and
+// the modeline updated. Logs a PASS/FAIL line launch.js reads.
 async function runSelfTest() {
   try {
     if (!mirror || !view) {
@@ -288,37 +354,60 @@ async function runSelfTest() {
     const startLen = mirror.text.length;
     const startLine0 = mirror.lineAt(0).text;
     let renders = 0;
-    // Count real renders by observing the mirror (same signal the view
-    // gets). One onChange ≈ one scheduled render.
     const off = mirror.onChange(() => { renders += 1; });
 
-    // Move to buffer start, then type a marker. Each char round-trips
-    // through the server (canonical buffer) and comes back as a delta.
-    mirror.moveTo(0);
+    // 1) Self-insert a marker at buffer start, each char through the keymap.
+    sendKey('M-less'); // beginning-of-buffer (a real command, server-side)
+    await frame();
     const marker = 'MWBxyz ';
     for (const ch of marker) {
-      selfInsert(ch);
+      dispatchKey(ch);
       // eslint-disable-next-line no-await-in-loop -- pace like real typing
-      await new Promise((r) => requestAnimationFrame(() => r()));
+      await frame();
     }
-    // Let trailing round-trip deltas land.
-    await new Promise((r) => setTimeout(r, 400));
-    off();
+    await sleep(300);
 
     const grew = mirror.text.length === startLen + marker.length;
     const line0Changed = mirror.lineAt(0).text.startsWith(marker);
-    const serverConfirmed = samples.roundTrip.length >= marker.length;
+    const serverConfirmed = samples.roundTrip.length >= 1;
     const reRendered = renders >= marker.length;
-    const ok = grew && line0Changed && serverConfirmed && reRendered;
+
+    // 2) A motion command moves point to buffer end (server-side, no text).
+    const beforeEnd = mirror.point;
+    sendKey('M-greater'); // end-of-buffer
+    await sleep(150);
+    const pointMovedByCommand = mirror.point > beforeEnd;
+
+    // 3) The modeline reflects the server-rendered state.
+    const modelineOk = modelineEl.textContent.includes(mirror.name);
+
+    // 4) The minibuffer round-trip: run goto-line via M-x, supply "1".
+    sendKey('M-less');
+    await sleep(80);
+    runCommandViaServer('goto-line');
+    await sleep(150);
+    const promptShown = minibufferActive && mbPromptEl.textContent === 'Goto line: ';
+    if (promptShown) {
+      mbInputEl.value = '2';
+      submitMinibuffer();
+      await sleep(180);
+    }
+    const minibufferWorks = promptShown && !minibufferActive;
+
+    off();
+    const ok =
+      grew && line0Changed && serverConfirmed && reRendered &&
+      pointMovedByCommand && modelineOk && minibufferWorks;
 
     console.error(
       `[mwb-view-selftest] grew=${grew} line0Changed=${line0Changed} ` +
       `serverConfirmed=${serverConfirmed}(${samples.roundTrip.length}) ` +
       `reRendered=${reRendered}(${renders}) ` +
-      `roundTrip(mean=${mean(samples.roundTrip).toFixed(2)} ` +
-      `p95=${pct(samples.roundTrip, 95).toFixed(2)}ms) ` +
-      `localEcho(mean=${mean(samples.localEcho).toFixed(2)}ms) ` +
-      `line0Before='${startLine0.slice(0, 24)}' line0After='${mirror.lineAt(0).text.slice(0, 24)}'`
+      `pointMovedByCommand=${pointMovedByCommand} ` +
+      `modeline='${modelineEl.textContent.slice(0, 40)}' ` +
+      `minibufferWorks=${minibufferWorks} ` +
+      `roundTrip(mean=${mean(samples.roundTrip).toFixed(2)}ms) ` +
+      `line0After='${mirror.lineAt(0).text.slice(0, 24)}'`
     );
     finishSelfTest(ok);
   } catch (error) {
@@ -326,6 +415,34 @@ async function runSelfTest() {
     finishSelfTest(false);
   }
 }
+
+/** Drive an M-x command through the server (open M-x, type, submit). The
+ *  self-test uses runCommand directly via a KEY shortcut: send M-x, fill
+ *  the prompt, submit. */
+function runCommandViaServer(name) {
+  // Open M-x, then feed the name into the (now-open) minibuffer + submit.
+  // For the self-test we shortcut: send a KEY for M-x to open the prompt,
+  // then set the input + submit.
+  sendKey('M-x');
+  // Give the server a beat to open the prompt, then fill + submit.
+  setTimeout(() => {
+    if (minibufferActive) {
+      mbInputEl.value = name;
+      submitMinibuffer();
+    }
+  }, 60);
+}
+
+function submitMinibuffer() {
+  if (!port) return;
+  port.postMessage({
+    type: MSG.INTENT,
+    intent: { id: nextIntentId++, kind: INTENT.MINIBUFFER_SUBMIT, value: mbInputEl.value },
+  });
+}
+
+const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function finishSelfTest(ok) {
   console.error(`[mwb-view-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);

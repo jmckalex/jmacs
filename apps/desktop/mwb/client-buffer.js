@@ -125,9 +125,16 @@ export function createClientBuffer(options = {}) {
   function applyDelta(delta, opts = {}) {
     if (typeof delta.seq === 'number') lastSeq = delta.seq;
     if (opts.echoed) {
-      // The prediction already mutated the storage to the right text; the
-      // server confirmed it. Just trust the authoritative cursor.
-      if (typeof delta.point === 'number') cursors[0].point = clampPoint(delta.point);
+      // The prediction already mutated the storage to the right text AND
+      // advanced the cursor to the correct optimistic offset. We do NOT
+      // adopt the server's `delta.point`: under rapid typing several
+      // predictions are in flight, so the server's point for THIS delta
+      // lags the client's optimistic point (it reflects only the inserts
+      // the server has processed so far). Adopting it would rewind the
+      // cursor and the next predicted char would insert at the wrong offset
+      // — the marker comes out scrambled ("MWBxyz" → "MWByz x"). The local
+      // prediction is authoritative for point during echo; the server's
+      // point matters only for command-driven (non-echoed) moves below.
       return false;
     }
     const start = delta.start;
