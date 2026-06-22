@@ -210,6 +210,12 @@ const SPINE_STDLIB = Object.freeze([
   // after panes.lisp; production order is after keymap/multi-cursor/
   // snippets (it only needs the-keymap + custom.lisp, both present).
   'auto-pair.lisp',
+  // snippets-parser.lisp — the yasnippet file-format reader + body parser.
+  // PURE data-in / data-out (no buffer, no I/O, no host primitives at all),
+  // so it loads verbatim with zero glue and its parse-snippet-file /
+  // parse-snippet-body run unchanged server-side. snippets.lisp (below)
+  // builds the expansion engine on top of it.
+  'snippets-parser.lisp',
 ]);
 
 /**
