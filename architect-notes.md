@@ -4,6 +4,79 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22] Two server-mode usability fixes: global-router stand-down (undo bell) + screenful scroll (C-v/M-v). Both gated, flag-off byte-for-byte.
+
+**Both done + committed on `multi-window-b` (NOT merged). Suite GREEN 779
+desktop** (was 759; +5 Part 1, +15 Part 2), all packages green. Every change is
+additive + gated on `window.host.serverMode` (false by default) — flag-off is
+untouched.
+
+**Commits (2, this branch):**
+- `6d662f4 fix(mwb): global key router stands down in server-mode (kills the undo bell)`
+- `80ad13a feat(mwb): screenful scroll (C-v/M-v) via a client VIEWPORT report`
+
+### Part 1 — the global key-router defers in server-mode (the undo `C-/` bell)
+**The bug:** under `GODOT_SERVER=1` the server-driven `<text-view>` overlay is
+the sole dispatcher, but the legacy window-level global router (app.js ~6010)
+only stood down via `event.defaultPrevented` — a FOCUS-DEPENDENT guard. The
+overlay's keydown listener only fires when the overlay is focused; when DOM
+focus drifts to `<body>` (after a minibuffer/picker closes — `refocusServerView`
+uses a `requestAnimationFrame`, so there's a window where focus is on body; also
+after a DOM rebuild / programmatic switch), the overlay never `preventDefault`s,
+so the global router ALSO runs: `C-/` dispatches server-side AND re-runs against
+the idle in-renderer buffer → its undo on an empty buffer rings the bell.
+
+**The fix:** a pure, focus-INDEPENDENT gate `shouldGlobalRouterDefer(serverMode,
+serverViewMounted)` (new `src/server-router-gate.js`, 5 unit tests). Once the
+server view is mounted, the window keydown router AND the paste handler return
+early — the server owns dispatch, period; no reliance on `preventDefault`.
+Flag-off it is always `false` (serverMode false) → the router runs exactly as
+today. (Gated the paste handler too: same dual-dispatch class — in-renderer
+`yank` would mutate the idle editor.)
+
+**YOU VERIFY LIVE** (I can't launch GUI Electron): with `GODOT_SERVER=1`, the
+**undo bell is gone** — `C-/` (and `C-x u`) undo right after a minibuffer/M-x or
+picker closes no longer rings the bell on the idle in-renderer buffer; undo
+still works (server-side). Flag-off: behaviour identical to today.
+
+### Part 2 — screenful scroll (C-v / M-v)
+A screenful needs the pane's visible line count — only the client knows it
+(plan §5d). Added a **VIEWPORT up-message**: the client measures
+`view.pageLines()` and reports `{ lines }` on mount (+ a rAF re-measure once the
+layout settles) and on window resize; the server stores it per client.
+
+**Server side:** `page-lines` host primitive returns the active client's
+screenful (`screenfulStep` = visible lines − 2 context, min 1, 1-line fallback
+until the first report). The **verbatim `editing.lisp` `scroll-up`/`scroll-down`
+then `(range (page-lines))` cursor-down!/up!** — moving point by a screenful,
+which makes the client follow-scroll on the resulting CURSOR update (so C-v/M-v
+scroll with **no new down-channel message**). Bound `C-v`→scroll-up,
+`M-v`→scroll-down in the spine keymap. This is maximally production-faithful: the
+exact same Lisp commands as the real app, only `page-lines` reads the wire
+instead of `editorView.pageLines()`.
+
+**Files:** `protocol.js` (MSG.VIEWPORT + pure `screenfulStep`/
+`screenfulScrollLine`), `spine.js` (per-client viewport + `setViewport`/
+`viewportOf` + `page-lines` + C-v/M-v binds), `server.js` (VIEWPORT case),
+`server-view-client.js` (`reportViewport` on mount/resize, injected
+`subscribeResize`), `app.js` (wires `subscribeResize` to window resize, inside
+the serverMode boot).
+
+**Tests (node --test):** 6 pure-math (protocol), 5 spine (REAL C-v/M-v move
+point by a screenful, clamp at both ends, 1-line fallback when unmeasured), 4
+client (report on mount, re-report on resize, drop a 0-measure, unsubscribe on
+destroy).
+
+**YOU VERIFY LIVE:** with `GODOT_SERVER=1`, `C-v` pages DOWN one screenful,
+`M-v` pages UP; after resizing the window the page step tracks the new height.
+(The pixel measurement `view.pageLines()` is the part only a live run can
+check.) Flag-off: no VIEWPORT, no page-lines on the wire — unchanged.
+
+**Nothing deferred from the brief.** Both parts fully wired + tested. NOT merged
+— handed back. Next per the brief: more stdlib + the leaf-flip (G3).
+
+---
+
 ## [2026-06-22] G2 — ONE real renderer view now routes through the server behind GODOT_SERVER=1; flag-OFF is byte-for-byte today
 
 **The first moment the REAL renderer is a CLIENT of the server.** With
