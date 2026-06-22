@@ -401,7 +401,14 @@ function applyIntent(client, intent) {
   const switchedBuffer = spine.currentBufferIdOf(client.index) !== bufferIdBefore;
   const emittedDelta = seq !== wasSeq;
   const multiAfter = spine.activeCursorCount() > 1;
-  const wasMultiCursorEdit = !switchedBuffer && emittedDelta && (multiBefore || multiAfter);
+  // Always read-and-clear the history flag so a no-op undo (bottom of the
+  // stack) doesn't leak it into the next intent. A change-group undo emits
+  // several L1 edits but only ONE L2 change event, so the single forwarded
+  // delta desyncs the mirror — treat undo/redo like a multi-cursor edit and
+  // RESYNC the canonical text instead.
+  const wasHistoryOp = spine.consumeHistoryOp();
+  const needsResync =
+    !switchedBuffer && emittedDelta && (multiBefore || multiAfter || wasHistoryOp);
 
   if (switchedBuffer) {
     // The switch handler re-synced the originating client; just refresh the
@@ -414,8 +421,9 @@ function applyIntent(client, intent) {
     return;
   }
 
-  if (wasMultiCursorEdit) {
-    // The single forwarded delta is unreliable for a multi-cursor edit;
+  if (needsResync) {
+    // The single forwarded delta is unreliable for a multi-cursor edit or an
+    // undo/redo (a change-group undo emits one L2 delta for several edits);
     // RESYNC the clients ON THIS BUFFER with the canonical text + their own
     // cursor set. A client viewing a DIFFERENT buffer must not be resynced
     // with this buffer's text — that would corrupt its mirror.
@@ -686,6 +694,71 @@ function runSaveSelfTest() {
 if (process.env.MWB_SAVE_SELFTEST === '1') {
   // Run after a beat so the interpreter + stdlib are fully loaded.
   setTimeout(runSaveSelfTest, 300);
+}
+
+// --- headless undo/redo self-test (MWB_UNDO_SELFTEST=1) ----------------
+//
+// Drives undo/redo through the REAL spine + commands (editing.lisp's
+// undo/redo), asserting: an edit goes dirty (●), undo reverts the text AND
+// restores point AND (back at the saved baseline) clears the dirty flag; redo
+// reapplies + re-sets dirty; C-x u also undoes; the server flags an undo/redo
+// for the cross-window resync (consumeHistoryOp). PASS/FAIL on stderr +
+// parentPort; launch.js exits on it. Never crashes the main process (wrapped).
+function runUndoSelfTest() {
+  const checks = {};
+  let detail = '';
+  try {
+    spine.setActiveClient(0);
+    const baseline = spine.buffer.text;
+    // Edit → dirty (●).
+    spine.handleKey('M-greater'); // end of buffer
+    for (const ch of 'XY') spine.handleKey(ch);
+    checks.edited = spine.buffer.text === `${baseline}XY`;
+    checks.dirty = spine.activeModified === true
+      && spine.viewState().modeline.startsWith('●');
+    const pointAfterEdit = spine.buffer.point;
+
+    // C-/ undo → text reverts one step + point restored to the changed region.
+    spine.handleKey('C-slash');
+    checks.undoText = spine.buffer.text === `${baseline}X`;
+    checks.undoPoint = spine.buffer.point === pointAfterEdit - 1;
+    checks.undoFlagged = spine.consumeHistoryOp() === true;
+
+    // Undo again → back to the saved baseline → CLEAN (● clears).
+    spine.handleKey('C-slash');
+    checks.undoToBaseline = spine.buffer.text === baseline;
+    checks.cleanAtBaseline = spine.activeModified === false
+      && spine.viewState().modeline.startsWith('–');
+
+    // Redo (C-S-/) → reapplies + dirty again.
+    spine.handleKey('C-S-slash');
+    checks.redoText = spine.buffer.text === `${baseline}X`;
+    checks.dirtyAfterRedo = spine.activeModified === true;
+    checks.redoFlagged = spine.consumeHistoryOp() === true;
+
+    // C-x u also undoes.
+    spine.handleKey('C-x');
+    spine.handleKey('u');
+    checks.cxuUndoes = spine.buffer.text === baseline;
+
+    detail = `text=${JSON.stringify(spine.buffer.text)}`;
+  } catch (error) {
+    detail += `threw=${error && error.message}`;
+  }
+  const ok = Object.keys(checks).length > 0 && Object.values(checks).every(Boolean);
+  console.error(
+    `[mwb-undo-selftest] ${Object.entries(checks).map(([k, v]) => `${k}=${v}`).join(' ')} ${detail}`
+  );
+  console.error(`[mwb-undo-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
+  try {
+    process.parentPort.postMessage({ type: 'undo-selftest-done', ok });
+  } catch {
+    // No parent (a bare node run): the stderr line is the result.
+  }
+}
+
+if (process.env.MWB_UNDO_SELFTEST === '1') {
+  setTimeout(runUndoSelfTest, 300);
 }
 
 // --- port wiring --------------------------------------------------------

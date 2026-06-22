@@ -79,6 +79,13 @@ function startServer() {
         app.exit(message.ok ? 0 : 1);
       }, 100);
     }
+    if (message && message.type === 'undo-selftest-done') {
+      console.error(`[mwb] undo self-test ${message.ok ? 'PASS' : 'FAIL'}`);
+      setTimeout(() => {
+        if (server) server.kill();
+        app.exit(message.ok ? 0 : 1);
+      }, 100);
+    }
   });
 }
 

@@ -126,6 +126,17 @@ const KEYMAP = Object.freeze({
   backspace: 'delete-backward',
   'C-d': 'delete-forward',
   'C-l': 'recenter',
+  // --- undo / redo (editing.lisp `undo`/`redo` → `undo!`/`redo!`) -----
+  // The L2 undo stack lives with the canonical buffer, so undo through the
+  // server reverts the buffer BOTH windows on it see (the Model-B payoff).
+  // C-/ is the Emacs undo key; on a US layout `event.code` is `Slash`, so it
+  // normalises to `C-slash` (and Emacs's literal C-_ is Shift+Minus →
+  // `C-S-minus`). C-x u (the other classic undo binding) is in CX_MAP.
+  // Redo: C-S-/ (`C-S-slash`) + M-S-z (`M-S-z`), mirroring keymap.lisp.
+  'C-slash': 'undo',
+  'C-S-minus': 'undo',
+  'C-S-slash': 'redo',
+  'M-S-z': 'redo',
   // selection
   'C-space': 'set-mark-command',
   'C-g': 'keyboard-quit',
@@ -184,6 +195,7 @@ const CX_MAP = Object.freeze({
   b: 'switch-to-buffer',
   'C-b': 'list-buffers',
   k: 'kill-buffer',
+  u: 'undo', // C-x u — the classic Emacs undo binding (alongside C-/)
 });
 
 /**
@@ -1267,11 +1279,29 @@ export function createSpine(options, effects = {}) {
     return false;
   }
 
+  // Did the last dispatched command perform an undo or redo? A change-group
+  // undo emits SEVERAL L1 edits but only ONE L2 change event, so the single
+  // forwarded delta can't replicate it on the client mirror (proven: it
+  // desyncs). The server therefore RESYNCs (full text + cursors) after an
+  // undo/redo, exactly as it does for a multi-cursor edit. This flag tells it
+  // an undo/redo just ran; the server reads-and-clears it via consumeHistoryOp.
+  let lastWasHistoryOp = false;
+
   /** Run a command by name through the REAL run-command. A name that needs
    *  interactive args (a minibuffer prompt) suspends inside run-command;
    *  the prompt is delivered later via deliverMinibuffer. */
   function runCommand(name) {
+    if (name === 'undo' || name === 'redo') lastWasHistoryOp = true;
     interpreter.evaluate(`(run-command (quote ${name}))`);
+  }
+
+  /** Read-and-clear the "last dispatch was an undo/redo" flag. The server
+   *  calls this after each intent to decide whether to RESYNC (a change-group
+   *  undo's single delta is insufficient — see lastWasHistoryOp). */
+  function consumeHistoryOp() {
+    const was = lastWasHistoryOp;
+    lastWasHistoryOp = false;
+    return was;
   }
 
   /** Deliver a minibuffer result to the suspended command (commands.lisp's
@@ -1342,6 +1372,7 @@ export function createSpine(options, effects = {}) {
     },
     handleKey,
     runCommand,
+    consumeHistoryOp,
     commandNames,
     deliverMinibuffer,
     abortMinibuffer,

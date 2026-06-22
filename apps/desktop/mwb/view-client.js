@@ -334,7 +334,8 @@ function onBufferList(buffers) {
 }
 
 /** A RESYNC message: the canonical text + this client's cursor set, sent
- *  when a single delta can't replicate the edit (a multi-cursor edit). We
+ *  when a single delta can't replicate the edit (a multi-cursor edit, or an
+ *  undo/redo — a change-group undo emits one delta for several edits). We
  *  clear any in-flight predictions (the resync is authoritative) and adopt
  *  the whole buffer + cursor set. */
 function onResync(msg) {
