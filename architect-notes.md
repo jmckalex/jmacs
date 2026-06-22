@@ -4,6 +4,82 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22 ~18:00] Model-B/graduation: the file-level plan to flip the REAL app — `plans/MWB-GRADUATION.md`
+
+**Context**: An analysis + planning task, not a build. With the prototype
+having retired every existential objection to Model B (latency, the render
+refactor, the command/keymap/minibuffer port, multi-buffer, save+recovery,
+shared undo, overlays/multi-cursor, the step-budget safety floor — all on
+`multi-window-b`), I wrote the **graduation plan**: a concrete, staged, file-
+level roadmap for flipping the *real* app from its per-window-interpreter
+architecture to the proven server/client model. **Only change: added
+`plans/MWB-GRADUATION.md` (+ this note). No app/prototype code touched. Suite
+unaffected (docs only).**
+
+**What the plan covers** (§ refs are inside the doc):
+- **§1 Target architecture mapped onto real files** — three columns: MOVES to
+  the server (`createInterpreter` `app.js:3467`, L1/L2 buffers, kill ring,
+  `defcommand`/keymap/minibuffer, the logical view/pane model, session/project,
+  file I/O direct in the Node child), STAYS client (`view.js` + all pixel
+  measurement + the render widgets + the mirror + input), and SPLITS (the
+  primitive-split, generalised — per-real-file table of model-half vs
+  render-message-half).
+- **§2 Protocol surface** — what `protocol.js` already defines vs the 5 missing
+  pieces: the §5d measurement conversation's hard direction (`VIEWPORT` up),
+  pane structural messages (`PANE_TREE`/`PANE_INTENT`), a **generic `PICKER`
+  channel** (collapses buffer-list/`*Recover*`/completions/RefTeX/cite into one
+  mechanism — the highest-leverage new piece), the native-dialog/clipboard
+  server→main hop (`HOST_REQUEST`), and lifecycle/reconnect.
+- **§3 Migration order** — G0 two structural prototypes → G1 server in real
+  `main.js` behind `GODOT_SERVER=1` → G2 one window/buffer through it → G3 the
+  long stdlib port wave-by-wave in `STDLIB_FILES` order → G4 multi-window +
+  payoff → G5 flip default + delete the dead in-renderer path. Exit criteria per
+  phase; **the in-renderer path stays the shipping default behind the flag until
+  G5, so the app is never left long-broken.**
+- **§4 Reuse vs rebuild** — `protocol.js`/`client-buffer.js`/`spine.js`/
+  `buffer-registry.js`/`server.js`/`atomic-write-sync.js`/`autosave.js` graduate
+  (reuse near-verbatim); fresh builds = the pane/window negotiation, the generic
+  picker, `HOST_REQUEST`, the `VIEWPORT` measurement, respawn orchestration, the
+  isearch state machine, the `C-g` worker thread.
+- **§6 Per-feature graduation verdicts** — project/session, panes/tabline (the
+  genuinely-hard one), minibuffer/completions, LaTeX/RefTeX (heavy but rides
+  well; process-spawn *simplifies* server-side), bookmarks/snippets/multi-cursor
+  (ride cleanly), utility pane, themes/faces, dir-tree/minimap.
+- **§7 C-g**: step-budget is the done safety floor; interactive C-g is a
+  Worker-thread-eval refinement (the SAB-across-utilityProcess dead-end is
+  recorded). **§8 risks**, **§10 file-level diff map** (`app.js` ~10.8k→~4k,
+  `view.js` no change, stdlib no change), **§11 decision list**.
+
+**The recommendation (the handoff ask)**: **do NOT flip the real app yet —
+build two more structural prototype pieces first (G0):**
+1. **the pane/window model** (server-side `@editor/pane` + `PANE_TREE`/
+   `PANE_INTENT` + a 2-4-pane client), and
+2. **one render-side picker** (the buffer list, as the template for all the
+   others, via the generic `PICKER` channel).
+These are the only two unknowns whose *shape* the prototype hasn't pinned, and
+they're the two with the most structural coupling in today's renderer
+(`app.js:653-1610` interleaves the logical pane tree with pixel layout). Each is
+a days-not-weeks flag-gated `mwb/`-style slice ending in a real decision gate —
+the honest last moment to reconsider A-vs-B, with the in-renderer app still
+100% intact. After G0, the flip is a long-but-legible port with no research
+left.
+
+**Decisions I need (full list in §11)**: G0-first vs flip-soon (my rec:
+G0-first); adopt the single generic PICKER channel (strong rec: yes); the flag
+name + the parity bar before G5 flips the default (proposal: daily-driver for a
+week with no fallback); whether to merge the **`toolbar` branch** before or
+after the flip (it must graduate too — `define-toolbar-*` collectors → server,
+`renderActions`/`renderLens` → client — but it's not visible from this
+worktree, flagged in §8); ship step-budget-only C-g v1 vs build the worker
+thread up front (rec: step-budget v1).
+
+**State of the work**: branch `multi-window-b`, clean, suite green (593,
+unchanged — docs only). One commit:
+- `docs(mwb): file-level graduation plan to flip the real app to Model B`
+NOT merged. Only `plans/MWB-GRADUATION.md` + this note added; no code touched.
+
+---
+
 ## [2026-06-22 ~17:30] Model-B/undo-redo: undo/redo through the server — shared, per-buffer history, ● agrees
 
 **Context**: The next core editing capability after real-save. The server's
