@@ -850,3 +850,101 @@ test('a recovered buffer with no disk baseline is conservatively dirty', () => {
   const rec = spine.bufferListRecords(0).find((r) => r.id === id);
   assert.equal(rec.modified, true);
 });
+
+// --- undo / redo through the server (the real editing.lisp undo/redo) ----
+
+test('C-/ undoes the last edit through the real command (text + point)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.handleKey('M-greater'); // end of buffer
+  for (const ch of 'XY') spine.handleKey(ch);
+  assert.equal(spine.buffer.text, 'seedXY');
+  spine.handleKey('C-slash'); // C-/ → undo
+  assert.equal(spine.buffer.text, 'seedX');
+  // Point is restored to the changed region (just past the surviving edit).
+  assert.equal(spine.buffer.point, 5);
+});
+
+test('C-x u is also bound to undo', () => {
+  const { spine } = makeSpine('ab', 'scratch.txt');
+  spine.handleKey('M-greater');
+  spine.handleKey('c');
+  assert.equal(spine.buffer.text, 'abc');
+  spine.handleKey('C-x');
+  spine.handleKey('u');
+  assert.equal(spine.buffer.text, 'ab');
+});
+
+test('redo (C-S-/) reapplies an undone edit', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.handleKey('M-greater');
+  spine.handleKey('Z');
+  spine.handleKey('C-slash'); // undo → 'seed'
+  assert.equal(spine.buffer.text, 'seed');
+  spine.handleKey('C-S-slash'); // redo → 'seedZ'
+  assert.equal(spine.buffer.text, 'seedZ');
+  assert.equal(spine.buffer.point, 5);
+});
+
+test('undo/redo set the history-op flag (consumeHistoryOp) for the server resync', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.handleKey('M-greater');
+  spine.handleKey('Q');
+  // An ordinary self-insert is NOT a history op.
+  assert.equal(spine.consumeHistoryOp(), false);
+  spine.handleKey('C-slash'); // undo
+  assert.equal(spine.consumeHistoryOp(), true);
+  assert.equal(spine.consumeHistoryOp(), false, 'the flag is read-and-cleared');
+  spine.handleKey('C-S-slash'); // redo
+  assert.equal(spine.consumeHistoryOp(), true);
+});
+
+test('the ● dirty flag agrees with undo against the saved baseline', () => {
+  // Baseline = the seed text (a path-less buffer baselines its initial text).
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  assert.equal(spine.activeModified, false, 'clean at the start');
+  spine.handleKey('M-greater');
+  for (const ch of 'AB') spine.handleKey(ch); // 'seedAB' → dirty
+  assert.equal(spine.activeModified, true);
+  assert.ok(spine.viewState().modeline.startsWith('●'), 'dirty shows ●');
+  spine.handleKey('C-slash'); // → 'seedA' (still dirty)
+  assert.equal(spine.activeModified, true);
+  spine.handleKey('C-slash'); // → 'seed' (back to baseline → CLEAN)
+  assert.equal(spine.buffer.text, 'seed');
+  assert.equal(spine.activeModified, false, 'undo to baseline clears ●');
+  assert.ok(spine.viewState().modeline.startsWith('–'), 'clean drops ●');
+  spine.handleKey('C-S-slash'); // redo past the baseline → dirty again
+  assert.equal(spine.buffer.text, 'seedA');
+  assert.equal(spine.activeModified, true, 'redo past baseline re-sets ●');
+});
+
+test('the ● flag tracks undo against a SAVED baseline (re-baseline on save)', () => {
+  // Save mid-stream re-baselines; undoing back to the SAVED text is clean,
+  // undoing further (before the save) is dirty — the saved-baseline logic.
+  const { spine, log } = makeSpine('', 'scratch.txt');
+  for (const ch of 'one') spine.handleKey(ch);
+  spine.writeActiveBufferTo('/tmp/mwb-undo-baseline-test'); // baseline = 'one'
+  assert.equal(spine.activeModified, false);
+  for (const ch of 'two') spine.handleKey(ch); // 'onetwo' → dirty
+  assert.equal(spine.activeModified, true);
+  // Undo the three 'two' chars back to the saved 'one' → clean.
+  spine.handleKey('C-slash');
+  spine.handleKey('C-slash');
+  spine.handleKey('C-slash');
+  assert.equal(spine.buffer.text, 'one');
+  assert.equal(spine.activeModified, false, 'undo to the SAVED baseline is clean');
+  // Undo once more (before the save) → dirty again (text ≠ saved 'one').
+  spine.handleKey('C-slash');
+  assert.equal(spine.buffer.text, 'on');
+  assert.equal(spine.activeModified, true, 'undo BEFORE the save is dirty');
+  assert.ok(log.saves.length >= 1);
+});
+
+test('undo at the bottom of the stack is a no-op (and clears the history flag)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  // Nothing edited yet: undo does nothing, but the flag still toggles+clears.
+  spine.handleKey('C-slash');
+  assert.equal(spine.buffer.text, 'seed');
+  assert.equal(spine.consumeHistoryOp(), true, 'the command ran (flag set)…');
+  spine.handleKey('right'); // a non-history intent
+  assert.equal(spine.consumeHistoryOp(), false, '…and does not leak forward');
+});
