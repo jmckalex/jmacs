@@ -416,6 +416,17 @@ export function createSpine(options, effects = {}) {
     buffer.bindCursor(view);
   }
 
+  /**
+   * Rebind the interpreter to the ACTIVE client's FOCUSED leaf — its buffer +
+   * that leaf's view — and re-derive the major mode. Called after any pane op
+   * that moves focus (split / other-pane / delete / focus-direction / swap),
+   * so a following command and the next keystroke edit the right pane. This is
+   * just `setActiveClient(activeClientIndex)`, named for intent. (A function
+   * declaration so it's hoisted above the primitive bodies that call it.) */
+  function rebindFocusedPane() {
+    setActiveClient(activeClientIndex);
+  }
+
   // --- the echo area (status line) -------------------------------------
   let statusText = '';
 
@@ -558,27 +569,33 @@ export function createSpine(options, effects = {}) {
       // returns nil (interactive callers ignore the return) and the model's
       // onChange raises onPaneTree so the server re-pushes PANE_TREE.
 
+      // Every focus-changing pane op must REBIND the interpreter to the newly-
+      // focused leaf's buffer + view, so a following command (and the next
+      // keystroke / intent) edits the right pane. A split moves focus to the
+      // new pane; other-pane / delete / focus-direction move it too. Without
+      // this, an edit would land in the previously-bound pane.
+
       // (split-horizontal! ratio side) — split the focused pane side-by-side.
       // SIDE is the symbol 'after (new pane right, default) or 'before (left).
       'split-horizontal!': (args) => {
         currentPaneModel().split('horizontal', Number(args[0]) || 0.5, symName(args[1]) === 'before' ? 'before' : 'after');
+        rebindFocusedPane();
         return NIL;
       },
       // (split-vertical! ratio side) — split the focused pane top/bottom.
       'split-vertical!': (args) => {
         currentPaneModel().split('vertical', Number(args[0]) || 0.5, symName(args[1]) === 'before' ? 'before' : 'after');
+        rebindFocusedPane();
         return NIL;
       },
       // (delete-pane!) — collapse the focused pane into its sibling (C-x 0).
-      'delete-pane!': () => { currentPaneModel().deletePane(); return NIL; },
+      'delete-pane!': () => { currentPaneModel().deletePane(); rebindFocusedPane(); return NIL; },
       // (delete-other-panes!) — the focused pane fills the window (C-x 1).
-      'delete-other-panes!': () => { currentPaneModel().deleteOtherPanes(); return NIL; },
+      'delete-other-panes!': () => { currentPaneModel().deleteOtherPanes(); rebindFocusedPane(); return NIL; },
       // (other-pane!) — cycle focus to the next pane in display order (C-x o).
-      // Re-binds the interpreter to the newly-focused leaf's buffer + view so
-      // a following command (and the next intent) edits the right pane.
       'other-pane!': () => {
         currentPaneModel().otherPane();
-        setActiveClient(activeClientIndex); // rebind to the new focused leaf
+        rebindFocusedPane(); // rebind to the new focused leaf
         return NIL;
       },
       // (balance-panes!) — reset every split ratio to 0.5.
@@ -588,7 +605,7 @@ export function createSpine(options, effects = {}) {
       // symbol 'left/'right/'up/'down. Rebinds after a successful move.
       'focus-pane-direction!': (args) => {
         const moved = currentPaneModel().focusPaneDirection(symName(args[0]));
-        if (moved) setActiveClient(activeClientIndex);
+        if (moved) rebindFocusedPane();
         return NIL;
       },
       // (current-pane) — the focused leaf pane handle (panes.lisp reads its
@@ -603,7 +620,7 @@ export function createSpine(options, effects = {}) {
         const b = args[1];
         if (a && b && typeof a === 'object' && typeof b === 'object') {
           currentPaneModel().swapPanes(a, b);
-          setActiveClient(activeClientIndex);
+          rebindFocusedPane();
         }
         return NIL;
       },
@@ -749,6 +766,12 @@ export function createSpine(options, effects = {}) {
       sections)
     (define (mode-menu-sections-for mode-name)
       (get *mode-menu-sections* mode-name nil))
+
+    ;; *prefix-arg* — the C-u universal-argument state (keymap.lisp owns it in
+    ;; production; that file is render-heavy and not loaded). panes.lisp reads
+    ;; it to decide a split's side ('after with no prefix, 'before with C-u).
+    ;; The spine has no C-u path yet, so it stays nil → splits default 'after.
+    (define *prefix-arg* nil)
   `);
 
   // Load the real command system + editing commands + the model-heavy
