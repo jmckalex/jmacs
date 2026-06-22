@@ -1111,3 +1111,139 @@ test('undo at the bottom of the stack is a no-op (and clears the history flag)',
   spine.handleKey('right'); // a non-history intent
   assert.equal(spine.consumeHistoryOp(), false, '…and does not leak forward');
 });
+
+// --- Part 2: more of the keymap bound server-side ----------------------
+// Each test drives the KEY through handleKey (the real keymap path), proving
+// the BINDING resolves AND the bound command runs through the spine — not just
+// that the command exists.
+
+test('C-o (open-line) inserts a newline after point, leaving point before it', () => {
+  const { spine } = makeSpine('abcd');
+  spine.buffer.moveTo(2); // between "ab" and "cd"
+  spine.handleKey('C-o');
+  assert.equal(spine.buffer.text, 'ab\ncd', 'a line opened after point');
+  assert.equal(spine.buffer.point, 2, 'point stayed before the new line');
+});
+
+test('C-t (transpose-chars) swaps the two characters before point', () => {
+  const { spine } = makeSpine('ab');
+  spine.buffer.moveTo(2);
+  spine.handleKey('C-t');
+  assert.equal(spine.buffer.text, 'ba');
+});
+
+test('M-m (back-to-indentation) moves to the first non-blank of the line', () => {
+  const { spine } = makeSpine('    hello');
+  spine.buffer.moveTo(9); // end of the line
+  spine.handleKey('M-m');
+  assert.equal(spine.buffer.point, 4, 'point at the first non-blank char');
+});
+
+test('M-a / M-e (backward/forward-sentence) move by sentence', () => {
+  const { spine } = makeSpine('One. Two. Three.');
+  spine.buffer.moveTo(0);
+  spine.handleKey('M-e'); // forward to the end of the first sentence
+  const afterFwd = spine.buffer.point;
+  assert.ok(afterFwd > 0, 'forward-sentence advanced point');
+  spine.handleKey('M-a'); // backward to the sentence start
+  assert.ok(spine.buffer.point <= afterFwd, 'backward-sentence moved back');
+});
+
+test('M-k (kill-sentence) kills forward to the sentence end and rings it', () => {
+  const { spine } = makeSpine('Hello there. Bye.');
+  spine.buffer.moveTo(0);
+  spine.handleKey('M-k');
+  assert.ok(
+    !spine.buffer.text.startsWith('Hello there.'),
+    `the first sentence was killed, got ${JSON.stringify(spine.buffer.text)}`
+  );
+  // It went to the kill ring: C-y yanks it back.
+  const afterKill = spine.buffer.text;
+  spine.handleKey('C-y');
+  assert.ok(spine.buffer.text.length > afterKill.length, 'the kill yanked back');
+});
+
+test('M-q (fill-paragraph) is bound and re-wraps without error', () => {
+  // A long single-line paragraph; fill-paragraph! re-wraps to the fill column.
+  const long = 'word '.repeat(40).trim();
+  const { spine } = makeSpine(long);
+  spine.buffer.moveTo(0);
+  spine.handleKey('M-q');
+  // It ran (the binding resolved): the text now contains a newline (wrapped)
+  // and still holds all the words.
+  assert.ok(spine.buffer.text.includes('\n'), 'the paragraph wrapped');
+  assert.equal(
+    spine.buffer.text.split(/\s+/).filter(Boolean).length, 40,
+    'no words lost in the fill'
+  );
+});
+
+test('M-g (goto-line) is bound: it opens the Goto-line prompt', () => {
+  const { spine, log } = makeSpine('one\ntwo\nthree\nfour');
+  spine.handleKey('M-g');
+  assert.deepEqual(log.minibufferOpens, ['Goto line: ']);
+  spine.deliverMinibuffer('3');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, '1-based → line idx 2');
+});
+
+test('M-r (replace-string) is bound: it chains the two replace prompts', () => {
+  const { spine, log } = makeSpine('a cat sat on a cat');
+  spine.handleKey('M-r');
+  assert.deepEqual(log.minibufferOpens, ['Replace: ']);
+  spine.deliverMinibuffer('cat');
+  spine.deliverMinibuffer('dog');
+  assert.equal(spine.buffer.text, 'a dog sat on a dog');
+});
+
+test('C-= (expand-region) grows the selection from a word outward', () => {
+  const { spine } = makeSpine('alpha beta gamma');
+  spine.buffer.moveTo(7); // inside "beta"
+  spine.handleKey('C-equal');
+  assert.ok(spine.buffer.mark !== null, 'a region became active');
+  const firstSpan = Math.abs(spine.buffer.point - spine.buffer.mark);
+  assert.ok(firstSpan > 0, 'the word is selected');
+  // A repeat grows it (the chain stays alive via *last-command*).
+  spine.handleKey('C-equal');
+  const secondSpan = Math.abs(spine.buffer.point - spine.buffer.mark);
+  assert.ok(secondSpan >= firstSpan, 'a second press grows (or holds) the region');
+});
+
+test('C-x C-x (exchange-point-and-mark) swaps point and mark', () => {
+  const { spine } = makeSpine('hello world');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-space'); // set mark at 0
+  spine.handleKey('right');
+  spine.handleKey('right'); // point at 2, mark at 0
+  assert.equal(spine.buffer.point, 2);
+  assert.equal(spine.buffer.mark, 0);
+  spine.handleKey('C-x');
+  spine.handleKey('C-x'); // exchange
+  assert.equal(spine.buffer.point, 0, 'point moved to the old mark');
+  assert.equal(spine.buffer.mark, 2, 'mark moved to the old point');
+});
+
+test('C-x h (mark-whole-buffer) selects the entire buffer', () => {
+  const { spine } = makeSpine('abcde');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-x');
+  spine.handleKey('h');
+  // mark at 0, point at the end → the whole buffer is the region.
+  assert.equal(spine.buffer.mark, 0);
+  assert.equal(spine.buffer.point, 5);
+});
+
+test('C-x ; (comment-line) comments the current line with the mode prefix', () => {
+  // A plain buffer's comment-prefix defaults to ";; " (modes.lisp). Toggling
+  // again removes it — proving the binding + the command both run.
+  const { spine } = makeSpine('code here');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-x');
+  spine.handleKey(';');
+  assert.ok(
+    spine.buffer.text.startsWith(';; '),
+    `the line was commented, got ${JSON.stringify(spine.buffer.text)}`
+  );
+  spine.handleKey('C-x');
+  spine.handleKey(';');
+  assert.equal(spine.buffer.text, 'code here', 'a second toggle uncomments');
+});

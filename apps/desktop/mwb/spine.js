@@ -301,11 +301,31 @@ const KEYMAP = Object.freeze({
   // knows how many lines fit). Moving point makes the client follow-scroll.
   'C-v': 'scroll-up',
   'M-v': 'scroll-down',
+  // more motion (editing.lisp, loaded verbatim — pure goto!-based)
+  'M-m': 'back-to-indentation', // M-m → first non-blank of the line
+  'M-a': 'backward-sentence', // M-a → start of the sentence
+  'M-e': 'forward-sentence', // M-e → end of the sentence
+  'M-g': 'goto-line', // M-g → read a line number (goto-line! is host-wired)
   // editing
   enter: 'newline',
   backspace: 'delete-backward',
   'C-d': 'delete-forward',
   'C-l': 'recenter',
+  // --- more everyday editing (editing.lisp / kill.lisp, loaded verbatim) ---
+  // C-o opens a line (insert "\n", leave point before it); C-t transposes the
+  // two chars before point. Both are pure point/insert!/delete-region! over
+  // the real buffer primitives — no renderer dependency. (keymap.lisp binds
+  // these in the production global-map; they were simply not in the spine's
+  // pared map yet.)
+  'C-o': 'open-line',
+  'C-t': 'transpose-chars',
+  'M-k': 'kill-sentence', // kill.lisp — kill forward to the sentence end
+  'M-q': 'fill-paragraph', // editing.lisp → fill-paragraph! (createBufferPrimitives)
+  'M-r': 'replace-string', // editing.lisp → replace-all! (host-wired); minibuffer read
+  // C-= grows the active region one structural step (word→line→paragraph→
+  // buffer); chains on repeat via *last-command* (which run-command tracks).
+  // The `=` key normalises to `C-equal` (event.code "Equal"), per keymap.lisp.
+  'C-equal': 'expand-region',
   // --- undo / redo (editing.lisp `undo`/`redo` → `undo!`/`redo!`) -----
   // The L2 undo stack lives with the canonical buffer, so undo through the
   // server reverts the buffer BOTH windows on it see (the Model-B payoff).
@@ -369,6 +389,10 @@ const CX_MAP = Object.freeze({
   'C-w': 'write-file', // save-as: write the buffer to a new path (prompts)
   'C-d': 'duplicate-line', // line-ops.lisp (production binds C-x C-d here)
   'C-j': 'join-line', // line-ops.lisp
+  // More of production's C-x map (editing.lisp — pure buffer ops):
+  'C-x': 'exchange-point-and-mark', // C-x C-x — swap point and mark
+  h: 'mark-whole-buffer', // C-x h — select the whole buffer
+  ';': 'comment-line', // C-x ; — comment/uncomment the line (mode comment-prefix)
   // Multi-buffer (production keymap.lisp): C-x b switches buffer (a
   // minibuffer name read, host-completed), C-x C-b lists buffers, C-x k
   // kills the current buffer.
