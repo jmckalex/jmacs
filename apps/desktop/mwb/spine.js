@@ -200,6 +200,16 @@ const SPINE_STDLIB = Object.freeze([
   // only the host primitives differ. Needs custom.lisp (defgroup/defcustom)
   // and commands.lisp (defcommand), both already loaded above.
   'panes.lisp',
+  // auto-pair.lisp — automatic matching-bracket / quote insertion. FULLY
+  // model-side: it works over point / buffer-substring / insert! / goto! /
+  // delete-region! / delete-backward! and a defcustom (*auto-pair*). Its
+  // ONE render-coupled line — binding the bracket characters into
+  // `the-keymap` (keymap.lisp, not loaded) — is satisfied by the spine's
+  // model-side `the-keymap` shim, AND handle-key consults it before
+  // self-insert, so typing "(" auto-pairs server-side end-to-end. Loads
+  // after panes.lisp; production order is after keymap/multi-cursor/
+  // snippets (it only needs the-keymap + custom.lisp, both present).
+  'auto-pair.lisp',
 ]);
 
 /**
@@ -1023,6 +1033,22 @@ export function createSpine(options, effects = {}) {
     ;; it to decide a split's side ('after with no prefix, 'before with C-u).
     ;; The spine has no C-u path yet, so it stays nil → splits default 'after.
     (define *prefix-arg* nil)
+
+    ;; the-keymap — the global key -> command table (keymap.lisp owns it in
+    ;; production; not loaded here). auto-pair.lisp binds the bracket/quote
+    ;; characters into it ((set! the-keymap (assoc the-keymap "(" …))), and
+    ;; the spine's handle-key consults it for a single printable BEFORE
+    ;; self-inserting — so a typed "(" runs auto-pair-open-paren server-side,
+    ;; exactly as production resolves the-keymap before self-insert. It seeds
+    ;; empty (the spine's motion/editing chords live in the JS KEYMAP); only
+    ;; the per-character auto-pair bindings land here. (-spine-the-keymap-get
+    ;; reads it for handle-key; a miss is #f.)
+    (define the-keymap {})
+    (define (-spine-the-keymap-get key)
+      "The command bound to KEY in the-keymap, or #f when unbound. Read by
+       handle-key's printable path so auto-pair's character bindings fire."
+      (let ((binding (get the-keymap key nil)))
+        (if (nil? binding) #f binding)))
   `);
 
   // Load the real command system + editing commands + the model-heavy
@@ -1787,7 +1813,25 @@ export function createSpine(options, effects = {}) {
       return true;
     }
 
-    // 6. At rest, unbound: self-insert a bare printable. Route the
+    // 6. A single printable bound in the-keymap (auto-pair.lisp binds the
+    //    bracket/quote characters there). Production resolves the-keymap
+    //    before self-insert; the spine does the same so a typed "(" runs
+    //    auto-pair-open-paren server-side rather than self-inserting. A miss
+    //    is #f → fall through to plain self-insert below.
+    if (typeof key === 'string' && [...key].length === 1) {
+      const charBinding = interpreter.call('-spine-the-keymap-get', key);
+      if (typeof charBinding === 'string') {
+        runCommand(charBinding);
+        return true;
+      }
+      if (charBinding && typeof charBinding === 'object'
+          && typeof charBinding.name === 'string') {
+        runCommand(charBinding.name); // a bound Sym
+        return true;
+      }
+    }
+
+    // 7. At rest, unbound: self-insert a bare printable. Route the
     //    *last-command* update through it too (the yank-pop subtlety —
     //    see PRIMITIVE-SPLIT.md): typing must invalidate a pending yank.
     if (typeof key === 'string' && [...key].length === 1) {
