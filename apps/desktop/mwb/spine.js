@@ -38,7 +38,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInterpreter, NIL, listToArray, arrayToList } from '@editor/lisp';
+import { createInterpreter, NIL, cons, listToArray, arrayToList } from '@editor/lisp';
 import { createBuffer } from '@editor/buffer';
 import { createView } from '@editor/view';
 import { createBufferPrimitives } from '@editor/stdlib';
@@ -62,6 +62,72 @@ function symName(arg) {
   }
   if (name === null) return null;
   return name.startsWith(':') ? name.slice(1) : name;
+}
+
+// --- regexp / string search helpers (model-side) ----------------------
+//
+// The model halves of regex-search.lisp's host primitives. These are pure
+// functions over a TEXT string (no buffer, no DOM); the spine's
+// `find-regexp-forward` / `find-string-forward` / `replace-regexp-all!`
+// primitives drive them against the active buffer's text. They mirror
+// app.js's identically-named helpers byte-for-byte (the renderer and the
+// server must agree on a match), so a regexp search resolves the SAME way
+// in both worlds. Two windows on one buffer cannot legitimately disagree
+// about where a pattern matches its text → this is model state. See
+// PRIMITIVE-SPLIT.md "Search / regex".
+
+/** A `RegExp` from SOURCE with FLAGS, or null for an empty/invalid source
+ *  (a half-typed pattern is a miss, never an error — see app.js). */
+function compileRegexpSource(source, flags = 'g') {
+  if (source === '') return null;
+  try {
+    return new RegExp(source, flags);
+  } catch {
+    return null;
+  }
+}
+
+/** Expand REPLACEMENT against a regex MATCH array, honouring `$N`, `$&`
+ *  and `$$` (the standard JS String.replace replacement semantics). */
+function expandReplacement(replacement, match) {
+  return replacement.replace(/\$([\d&$])/g, (token, ch) => {
+    if (ch === '$') return '$';
+    if (ch === '&') return match[0];
+    const n = Number(ch);
+    const captured = match[n];
+    return captured === undefined ? '' : captured;
+  });
+}
+
+/** The first regexp match in TEXT at or after FROM as `{ start, end }`, or
+ *  null. REGEXP must carry the `g` flag (we drive `lastIndex`). */
+function regexpForwardMatch(text, regexp, from) {
+  regexp.lastIndex = Math.max(0, from);
+  const match = regexp.exec(text);
+  if (match === null) return null;
+  // Skip zero-length matches at the same position; they would loop.
+  if (match[0].length === 0) {
+    regexp.lastIndex = match.index + 1;
+    const retry = regexp.exec(text);
+    if (retry === null || retry[0].length === 0) return null;
+    return { start: retry.index, end: retry.index + retry[0].length };
+  }
+  return { start: match.index, end: match.index + match[0].length };
+}
+
+/** The last regexp match in TEXT strictly before FROM as `{ start, end }`,
+ *  or null (a backward search past a match advances). */
+function regexpBackwardMatch(text, regexp, from) {
+  regexp.lastIndex = 0;
+  const limit = Math.max(0, from);
+  let last = null;
+  let match;
+  while ((match = regexp.exec(text)) !== null) {
+    if (match.index >= limit) break;
+    last = { start: match.index, end: match.index + match[0].length };
+    if (match[0].length === 0) regexp.lastIndex += 1;
+  }
+  return last;
 }
 
 /**
@@ -108,6 +174,16 @@ const SPINE_STDLIB = Object.freeze([
   // minimal keyboard-quit is defined in the spine prelude before it loads.
   'multi-cursor.lisp',
   'search.lisp',
+  // regex-search.lisp — the regexp / query-replace commands (C-M-s/r,
+  // C-M-%, M-%). The two `isearch-regexp-*` starters are render-side
+  // (the incremental loop, like plain isearch) and STUBBED; but
+  // `replace-regexp` and `query-replace` are FULLY model-side — they
+  // walk the buffer text via the model-side regexp/string search +
+  // replace primitives (find-regexp-forward/-backward, find-string-
+  // forward, replace-regexp-all!, replace-range!), and query-replace's
+  // per-match key loop runs through the spine's read-next-key reader.
+  // Loads after search.lisp (production order). See PRIMITIVE-SPLIT.md.
+  'regex-search.lisp',
   'markdown.lisp',
   // panes.lisp — the interactive split/other/delete-window commands (C-x 2 /
   // 3 / 0 / 1 / o). Loaded VERBATIM: the same source the production editor
@@ -771,6 +847,84 @@ export function createSpine(options, effects = {}) {
       'start-search-backward!': () => {
         statusText = 'I-search backward: (spine stub — interactive loop is host-side)';
         onStatus(statusText);
+        return NIL;
+      },
+
+      // --- regexp isearch starters (regex-search.lisp) — STUB ----------
+      // Like start-search!, these BEGIN an incremental regexp search; the
+      // per-keystroke match + highlight loop is render-side. The commands
+      // (isearch-regexp-forward/backward) resolve + surface a status, then
+      // no-op. See PRIMITIVE-SPLIT.md "Search / regex".
+      'start-regexp-search!': () => {
+        statusText = 'I-search regexp: (spine stub — interactive loop is host-side)';
+        onStatus(statusText);
+        return NIL;
+      },
+      'start-regexp-search-backward!': () => {
+        statusText = 'I-search regexp backward: (spine stub — host-side loop)';
+        onStatus(statusText);
+        return NIL;
+      },
+
+      // --- regexp / string search + replace (regex-search.lisp) — MODEL -
+      // The model halves that back replace-regexp + query-replace. Each
+      // operates on the ACTIVE buffer's text and mirrors app.js exactly
+      // (same match positions in both worlds). A match is `(start . end)`;
+      // a miss — including an invalid/empty pattern — is `#f` (the absence
+      // convention the Lisp tests with a bare `if`). See PRIMITIVE-SPLIT.md.
+      'find-regexp-forward': (args) => {
+        const source = String(args[0] ?? '');
+        const from = Number(args[1] ?? 0);
+        const regexp = compileRegexpSource(source);
+        if (regexp === null) return false;
+        const match = regexpForwardMatch(buffer.text, regexp, from);
+        return match === null ? false : cons(match.start, match.end);
+      },
+      'find-regexp-backward': (args) => {
+        const source = String(args[0] ?? '');
+        const from = Number(args[1] ?? 0);
+        const regexp = compileRegexpSource(source);
+        if (regexp === null) return false;
+        const match = regexpBackwardMatch(buffer.text, regexp, from);
+        return match === null ? false : cons(match.start, match.end);
+      },
+      'find-string-forward': (args) => {
+        const needle = String(args[0] ?? '');
+        const from = Number(args[1] ?? 0);
+        if (needle === '') return false;
+        const index = buffer.text.indexOf(needle, Math.max(0, from));
+        return index < 0 ? false : cons(index, index + needle.length);
+      },
+      // (replace-regexp-all! source replacement) -> count, or -1 for an
+      // invalid pattern. REPLACEMENT honours $N / $& / $$.
+      'replace-regexp-all!': (args) => {
+        const source = String(args[0] ?? '');
+        const replacement = String(args[1] ?? '');
+        const regexp = compileRegexpSource(source);
+        if (regexp === null) return -1;
+        let count = 0;
+        const newText = buffer.text.replace(regexp, (...match) => {
+          count += 1;
+          return expandReplacement(replacement, match);
+        });
+        if (count > 0) buffer.setText(newText);
+        statusText =
+          count > 0
+            ? `replaced ${count} occurrence(s) of /${source}/`
+            : `/${source}/ — no match`;
+        onStatus(statusText);
+        return count;
+      },
+      // (replace-range! start end text) -> nil. One match swapped in a
+      // single edit (query-replace's per-match replace).
+      'replace-range!': (args) => {
+        const start = Number(args[0]);
+        const end = Number(args[1]);
+        const text = String(args[2] ?? '');
+        if (!Number.isInteger(start) || !Number.isInteger(end)) return NIL;
+        buffer.moveTo(Math.min(start, end));
+        buffer.deleteForward(Math.abs(end - start));
+        buffer.insert(text);
         return NIL;
       },
 
