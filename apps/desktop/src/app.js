@@ -5820,6 +5820,16 @@ if (window.host && window.host.serverMode) {
     g2PickerPanel = null;
     g2PickerHost = null;
   }
+  // After a minibuffer/picker closes, keyboard focus must return to the
+  // server-routed view or the next keystroke goes nowhere. The client exposes
+  // the mounted <text-view> via getView(); refocus it on the next tick (after
+  // the close handler finishes blurring the input).
+  function refocusServerView() {
+    const v = serverViewClient && serverViewClient.getView();
+    if (v && typeof v.focus === 'function') {
+      requestAnimationFrame(() => { try { v.focus(); } catch { /* ignore */ } });
+    }
+  }
   const serverChrome = {
     // The server bakes the modeline string (renderModeline). Show it whole in
     // the name slot; the line:col is already inside the string, so the position
@@ -5834,15 +5844,16 @@ if (window.host && window.host.serverMode) {
     setEcho: (status) => minibuffer.setStatus(status ?? ''),
     // A server-suspended minibuffer read: open the real minibuffer; its input
     // routes back up as MINIBUFFER_* intents (the spine resumes the command).
+    // On submit/cancel, return focus to the server view so typing resumes.
     openMinibuffer: (prompt, value, cbs) => {
       minibuffer.prompt(prompt, {
         initialValue: value ?? '',
         onChange: (v) => cbs.onChange(v),
-        onSubmit: (v) => cbs.onSubmit(v),
-        onCancel: () => cbs.onCancel(),
+        onSubmit: (v) => { cbs.onSubmit(v); refocusServerView(); },
+        onCancel: () => { cbs.onCancel(); refocusServerView(); },
       });
     },
-    closeMinibuffer: () => minibuffer.close(),
+    closeMinibuffer: () => { minibuffer.close(); refocusServerView(); },
     // The generic picker (buffer list, M-x, RefTeX, completions): an overlay
     // panel; the choice/cancel routes back up as PICKER_* intents.
     openPicker: (request, cbs) => {
@@ -5852,8 +5863,8 @@ if (window.host && window.host.serverMode) {
       document.body.appendChild(g2PickerHost);
       g2PickerPanel = createPickerPanel(g2PickerHost, {
         request,
-        onChoose: (v) => { cbs.onChoose(v); closeServerPicker(); },
-        onCancel: () => { cbs.onCancel(); closeServerPicker(); },
+        onChoose: (v) => { cbs.onChoose(v); closeServerPicker(); refocusServerView(); },
+        onCancel: () => { cbs.onCancel(); closeServerPicker(); refocusServerView(); },
       });
     },
     closePicker: closeServerPicker,
