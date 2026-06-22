@@ -128,18 +128,20 @@ test('the mounted view is given onKey + the mirror-reading closures', () => {
 
 // --- key routing → intents --------------------------------------------
 
-test('a bare printable self-inserts with local echo + a SELF_INSERT intent', () => {
+test('a bare printable routes as a pure KEY intent (the keymap decides) — no local echo', () => {
   const { port, client } = connectedClient('X\n');
   const before = client.getMirror().text;
   const ok = client.dispatchKey('a');
   assert.equal(ok, true, 'the key was claimed');
-  // Local echo: the mirror predicted the insert immediately (instant typing).
-  assert.equal(client.getMirror().text, `a${before}`);
-  // And exactly one SELF_INSERT intent went up (the HELLO is sent[0]).
+  // NO local prediction: the mirror is untouched until the server's delta.
+  // This is what lets the server's `handle-key`/keymap run first (auto-pair,
+  // electric keys) instead of the client blindly self-inserting.
+  assert.equal(client.getMirror().text, before, 'no optimistic insert');
+  // Exactly one KEY intent went up carrying the raw key.
   const intents = port.sent.filter((m) => m.type === MSG.INTENT);
   assert.equal(intents.length, 1);
-  assert.equal(intents[0].intent.kind, INTENT.SELF_INSERT);
-  assert.equal(intents[0].intent.text, 'a');
+  assert.equal(intents[0].intent.kind, INTENT.KEY);
+  assert.equal(intents[0].intent.key, 'a');
 });
 
 test('a chord/command key sends a pure KEY intent with NO local echo', () => {
@@ -154,6 +156,41 @@ test('a chord/command key sends a pure KEY intent with NO local echo', () => {
   assert.equal(intents[0].intent.key, 'C-x');
 });
 
+test('typing "(" round-trips to an auto-paired "()" via the server keymap', () => {
+  // The CLIENT sends "(" as a KEY intent (it does NOT self-insert "("); the
+  // server's handle-key runs auto-pair-open-paren and echoes back a DELTA that
+  // inserts the PAIR. The client applies that fresh (no prediction to match).
+  const { port, client } = connectedClient('\n');
+  client.dispatchKey('(');
+  // What went UP is a single bare KEY "(" — not a SELF_INSERT of "(".
+  const intents = port.sent.filter((m) => m.type === MSG.INTENT);
+  assert.equal(intents.length, 1);
+  assert.equal(intents[0].intent.kind, INTENT.KEY);
+  assert.equal(intents[0].intent.key, '(');
+  // The server inserts the pair and echoes it down; the mirror applies it fresh.
+  port.deliver({
+    type: MSG.DELTA,
+    delta: { start: 0, removed: '', inserted: '()', point: 1, seq: 1 },
+  });
+  assert.equal(client.getMirror().text, '()\n', 'the pair landed');
+  assert.equal(client.getMirror().point, 1, 'point sits between the pair');
+});
+
+test('a prefix chord (C-x then b) reaches the server as TWO bare KEYs', () => {
+  // The chord-eating bug: a printable AFTER a prefix used to be local-echoed as
+  // a literal "b". Now BOTH keys go up as KEY intents, so the server's prefix
+  // map sees C-x then b → switch-to-buffer (and opens the minibuffer).
+  const { port, client } = connectedClient('text\n');
+  client.dispatchKey('C-x');
+  client.dispatchKey('b');
+  const keys = port.sent
+    .filter((m) => m.type === MSG.INTENT && m.intent.kind === INTENT.KEY)
+    .map((m) => m.intent.key);
+  assert.deepEqual(keys, ['C-x', 'b'], 'C-x then b, both as KEY intents');
+  // And the mirror text is untouched — neither key self-inserted client-side.
+  assert.equal(client.getMirror().text, 'text\n');
+});
+
 test('Enter and Backspace route as KEY intents (commands, not naive guesses)', () => {
   const { port, client } = connectedClient('hi\n');
   client.dispatchKey('enter');
@@ -166,18 +203,19 @@ test('Enter and Backspace route as KEY intents (commands, not naive guesses)', (
 
 // --- reconciliation: deltas round-trip --------------------------------
 
-test('the echoed delta confirms a predicted self-insert (text already matches, no double-apply)', () => {
+test('a typed char produces a KEY intent whose echoed delta applies fresh (no local prediction)', () => {
   const { port, client } = connectedClient('Z\n');
-  client.dispatchKey('q'); // predicts "qZ\n"
+  client.dispatchKey('q'); // sends KEY "q"; the mirror is NOT mutated yet
   const intentId = port.sent.find((m) => m.type === MSG.INTENT).intent.id;
-  assert.equal(client.getMirror().text, 'qZ\n');
-  // The server echoes the delta back, tagged with our intent id.
+  assert.equal(client.getMirror().text, 'Z\n', 'no optimistic insert');
+  // The server's handle-key self-inserts "q" and echoes the delta back, tagged
+  // with our intent id. With no prediction to confirm, the delta applies fresh.
   port.deliver({
     type: MSG.DELTA,
     delta: { start: 0, removed: '', inserted: 'q', point: 1, seq: 1, echoId: intentId },
   });
-  // The text is unchanged (the prediction held — not applied twice).
-  assert.equal(client.getMirror().text, 'qZ\n');
+  assert.equal(client.getMirror().text, 'qZ\n', 'the server delta landed');
+  assert.equal(client.getMirror().point, 1);
 });
 
 test('a server-originated delta (no echoId) applies fresh to the mirror', () => {
@@ -206,13 +244,21 @@ test('a VIEW point reconciles the cursor when no prediction is in flight', () =>
   assert.equal(client.getMirror().point, 4);
 });
 
-test('a VIEW point does NOT rewind the cursor while a self-insert prediction is in flight', () => {
+test('a VIEW point reconciles the cursor after a typed char (server is authoritative)', () => {
+  // With local echo gone, a typed key does NOT move the mirror point on the
+  // client; the server's DELTA/VIEW carries the authoritative point. So a VIEW
+  // reconcile is no longer at risk of "rewinding" an optimistic point — it just
+  // adopts the server's truth.
   const { port, client } = connectedClient('abc\n');
-  client.dispatchKey('x'); // predicts point at 1, prediction pending
-  assert.equal(client.getMirror().point, 1);
-  // A lagging VIEW carrying the OLD point arrives — must be ignored.
-  port.deliver({ type: MSG.VIEW, view: { point: 0 } });
-  assert.equal(client.getMirror().point, 1, 'the optimistic point was preserved');
+  client.dispatchKey('x'); // sends KEY "x"; mirror point unchanged locally
+  assert.equal(client.getMirror().point, 0, 'no optimistic move');
+  // The server self-inserts "x" and reports the new point via VIEW.
+  port.deliver({
+    type: MSG.DELTA,
+    delta: { start: 0, removed: '', inserted: 'x', point: 1, seq: 1 },
+  });
+  port.deliver({ type: MSG.VIEW, view: { point: 1 } });
+  assert.equal(client.getMirror().point, 1, 'adopted the server point');
 });
 
 // --- overlays / multi-cursor sync -------------------------------------

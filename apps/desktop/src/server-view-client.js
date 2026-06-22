@@ -98,38 +98,26 @@ export function createServerViewClient({
   let nextIntentId = 1;
 
   // Pending intents we sent + await confirmation for, keyed by id. `predicted`
-  // marks the optimistic local-echo path (used to guard against a stale VIEW
-  // rewinding the cursor mid-type — the "MWxyzB" bug the prototype documents).
+  // is retained on the entry shape for the VIEW-reconcile guard (a stale VIEW
+  // must not rewind the cursor mid-type), though the local-echo predict path is
+  // gone now that every key routes through the server's keymap (see dispatchKey).
   const pending = new Map();
 
-  // The mirror's `sendIntent` stamps the current id/kind (set just before a
-  // mutator call) so the server's echoed delta matches the pending entry.
-  let pendingIntentId = null;
-  let pendingIntentKind = null;
-
-  /** The mirror's wire-out: stamp + post an intent the server applies. */
+  /** The mirror's wire-out: post an intent the server applies. The mirror only
+   *  calls this from its OWN mutators (a direct mirror edit); the typing path
+   *  no longer mutates the mirror locally (every key goes up as a KEY intent and
+   *  the server's echoed DELTA reconciles), so this is a thin pass-through kept
+   *  to satisfy the ClientBuffer contract. */
   function sendIntent(intent) {
-    const kind = pendingIntentKind ?? intent.kind;
     port.postMessage({
       type: MSG.INTENT,
-      intent: { id: pendingIntentId ?? nextIntentId++, ...intent, kind },
+      intent: { id: nextIntentId++, ...intent },
     });
-    pendingIntentKind = null;
   }
 
-  /** Local-echo a bare self-insert: predict on the mirror immediately (instant
-   *  typing) + send a SELF_INSERT intent; the server confirms via a delta. */
-  function echoSelfInsert(str) {
-    if (!mirror) return;
-    const id = nextIntentId++;
-    pending.set(id, { predicted: true });
-    pendingIntentId = id;
-    pendingIntentKind = INTENT.SELF_INSERT;
-    mirror.insert(str); // predicts + emits via sendIntent (stamped above)
-    pendingIntentId = null;
-  }
-
-  /** Send a pure KEY intent (no local echo — the server decides the effect). */
+  /** Send a pure KEY intent (no local echo — the server's `handle-key`/keymap
+   *  decides the effect). Registers a pending entry (un-predicted) so the
+   *  echoed DELTA reconciles through the mirror's delta path. */
   function sendKey(key) {
     const id = nextIntentId++;
     pending.set(id, { predicted: false });
@@ -137,20 +125,23 @@ export function createServerViewClient({
   }
 
   /**
-   * The view's `onKey` hook in server mode. A bare printable self-inserts with
-   * local echo + an intent; every other key (Enter, Backspace, motion, chords,
-   * M-x) is a pure KEY intent the server resolves. Returns true to claim the
-   * key (we always do, in server mode — the server owns dispatch).
+   * The view's `onKey` hook in server mode. EVERY keystroke — a bare printable
+   * included — is sent up as a pure KEY intent so the server's `handle-key`
+   * resolves it through the real keymap. That is what makes the electric keys
+   * fire: `(`/`[`/`{`/`"` auto-pair, `C-x`/`C-c` start a prefix chord, and a
+   * plain printable falls through `handle-key` to self-insert. Local echo is
+   * deliberately NOT used: the SELF_INSERT short-circuit bypassed the keymap
+   * (so auto-pair never ran and a printable after a prefix ate the chord), and
+   * Phase-0 showed the round-trip (~0.3 ms) is not perceptibly slower — typing
+   * is frame-gated either way. The mirror still reconciles via the echoed
+   * DELTA (sendKey registers a pending entry). Returns true to claim the key
+   * (always, in server mode — the server owns dispatch).
    *
    * @param {string} keyString
    * @returns {boolean}
    */
   function dispatchKey(keyString) {
     if (!mirror) return false;
-    if (isBarePrintable(keyString)) {
-      echoSelfInsert(keyString);
-      return true;
-    }
     sendKey(keyString);
     return true;
   }
