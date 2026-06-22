@@ -60,15 +60,17 @@ import { serializePaneTree } from './protocol.js';
  *
  * @typedef {object} LeafState
  * @property {string|null} bufferId - The registry buffer this leaf shows.
- * @property {number} point - This pane's cursor offset (per-pane window-state).
+ * @property {object|null} view - The real per-leaf view (an @editor/view) the
+ *   buffer's cursor binds to, so this pane keeps its own point/mark over the
+ *   shared text. Minted by the injected `makeView` factory; null in pure
+ *   structural tests (which only assert tree shape). The leaf's point/mark
+ *   read through `view.point`/`view.mark` when a view is present, else the
+ *   plain `point`/`mark` fields below.
+ * @property {number} point - This pane's cursor offset (used when no view is
+ *   bound — the structural-only test path).
  * @property {number|null} mark - This pane's selection anchor, or null.
  * @property {number} scrollLine - This pane's first-visible line (saved scroll).
  */
-
-/** Build a fresh leaf-state record over BUFFERID. */
-function freshState(bufferId) {
-  return { bufferId: bufferId ?? null, point: 0, mark: null, scrollLine: 0 };
-}
 
 /**
  * Create a per-window pane model.
@@ -90,6 +92,55 @@ export function createPaneModel(options = {}, hooks = {}) {
   const nameForBuffer = typeof hooks.nameForBuffer === 'function'
     ? hooks.nameForBuffer
     : (id) => (id == null ? 'scratch' : String(id));
+  // The per-leaf view factory: mint a real @editor/view over BUFFERID so the
+  // buffer's cursor can bind to it (this leaf's own point/mark over shared
+  // text). Injected so the structural-only tests can omit it (and assert tree
+  // shape with the plain point/mark fields). When present, a leaf's point/mark
+  // route through `view.point`/`view.mark`.
+  const makeView = typeof hooks.makeView === 'function' ? hooks.makeView : null;
+
+  // A monotonically-increasing STABLE per-leaf view key. A leaf keeps the
+  // same key for its whole life, so when it switches buffers and switches
+  // back, the view factory can return the SAME view (cursor preserved in that
+  // pane for that buffer — the "switch away and back keeps the cursor" case).
+  let nextViewKey = 0;
+  function freshViewKey() {
+    const k = `vk-${nextViewKey}`;
+    nextViewKey += 1;
+    return k;
+  }
+
+  /** Build a fresh leaf-state over BUFFERID (minting its view if a factory is
+   *  wired). SEED copies point/scroll from a source state (a split). The leaf
+   *  gets a stable `viewKey` the factory keys its view by. */
+  function freshState(bufferId, seed) {
+    const viewKey = freshViewKey();
+    const view = makeView ? makeView(bufferId ?? null, viewKey) : null;
+    const state = {
+      bufferId: bufferId ?? null,
+      viewKey,
+      view,
+      point: 0,
+      mark: null,
+      scrollLine: 0,
+    };
+    if (seed) {
+      state.scrollLine = seed.scrollLine ?? 0;
+      const p = seed.view ? seed.view.point : seed.point;
+      if (view) { view.point = p ?? 0; } else { state.point = p ?? 0; }
+    }
+    return state;
+  }
+
+  /** Read a leaf-state's point (through its view when bound). */
+  function statePoint(s) {
+    return s.view ? s.view.point : s.point;
+  }
+
+  /** Read a leaf-state's mark (through its view when bound). */
+  function stateMark(s) {
+    return s.view ? (s.view.mark ?? null) : s.mark;
+  }
 
   // The leaf-state map: leaf pane id → LeafState. Kept beside the tree (not
   // on the leaf node) so the @editor/pane structural ops — which re-create
@@ -167,11 +218,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     const srcState = stateById.get(target.id);
     // The new leaf shows the same buffer; seed its point/scroll from the
     // source so the split "looks the same" until the user moves (Emacs).
-    const newState = freshState(srcState ? srcState.bufferId : null);
-    if (srcState) {
-      newState.point = srcState.point;
-      newState.scrollLine = srcState.scrollLine;
-    }
+    const newState = freshState(srcState ? srcState.bufferId : null, srcState ?? undefined);
     const newLeaf = makeLeaf(newState.bufferId, newState);
     const r = typeof ratio === 'number' && ratio > 0 && ratio < 1 ? ratio : 0.5;
     const splitNode = side === 'before'
@@ -373,13 +420,21 @@ export function createPaneModel(options = {}, hooks = {}) {
     return focusedState().bufferId;
   }
 
-  /** Point the focused leaf at BUFFERID (a buffer switch in this pane). */
+  /** Point the focused leaf at BUFFERID (a buffer switch in this pane). Re-mints
+   *  the leaf's view over the new buffer (so its cursor binds to fresh text). */
   function setFocusedBuffer(bufferId) {
     const state = focusedState();
     if (state.bufferId === bufferId) return;
     state.bufferId = bufferId ?? null;
-    state.point = 0;
-    state.mark = null;
+    if (makeView) {
+      // Reuse the leaf's STABLE view key so the registry returns the SAME view
+      // this pane last had on this buffer (cursor preserved across a switch
+      // away and back); a never-before-shown buffer gets a fresh view at 0.
+      state.view = makeView(state.bufferId, state.viewKey);
+    } else {
+      state.point = 0;
+      state.mark = null;
+    }
     state.scrollLine = 0;
     onChange();
   }
@@ -387,12 +442,32 @@ export function createPaneModel(options = {}, hooks = {}) {
   /** Read the focused leaf's view-state (point/mark/scroll). */
   function focusedViewState() {
     const s = focusedState();
-    return { bufferId: s.bufferId, point: s.point, mark: s.mark, scrollLine: s.scrollLine };
+    return {
+      bufferId: s.bufferId,
+      view: s.view,
+      point: statePoint(s),
+      mark: stateMark(s),
+      scrollLine: s.scrollLine,
+    };
   }
 
-  /** Write the focused leaf's point/mark (after an edit/motion on it). */
+  /** The focused leaf's bound view (the @editor/view the buffer's cursor binds
+   *  to), or null when no view factory is wired (the structural-test path). */
+  function focusedView() {
+    return focusedState().view;
+  }
+
+  /** Write the focused leaf's point/mark (after an edit/motion on it). Routes
+   *  through the bound view when present. */
   function setFocusedPoint(point, mark) {
     const s = focusedState();
+    if (s.view) {
+      if (Number.isFinite(point)) s.view.point = Math.max(0, Math.floor(point));
+      if (mark === null || Number.isFinite(mark)) {
+        s.view.mark = mark === null ? null : Math.max(0, Math.floor(mark));
+      }
+      return;
+    }
     if (Number.isFinite(point)) s.point = Math.max(0, Math.floor(point));
     if (mark === null || Number.isFinite(mark)) {
       s.mark = mark === null ? null : Math.max(0, Math.floor(mark));
@@ -416,12 +491,13 @@ export function createPaneModel(options = {}, hooks = {}) {
    */
   function snapshot() {
     return serializePaneTree(rootPane, focusedId, (leaf) => {
-      const s = stateById.get(leaf.id) ?? freshState(null);
+      const s = stateById.get(leaf.id);
+      if (!s) return { bufferId: null };
       return {
         bufferId: s.bufferId,
         name: nameForBuffer(s.bufferId),
-        point: s.point,
-        mark: s.mark,
+        point: statePoint(s),
+        mark: stateMark(s),
         scrollLine: s.scrollLine,
       };
     });
@@ -448,6 +524,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     focusedBufferId,
     setFocusedBuffer,
     focusedViewState,
+    focusedView,
     setFocusedPoint,
     setFocusedScroll,
     // introspection (for tests + the server)

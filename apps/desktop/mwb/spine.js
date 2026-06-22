@@ -38,16 +38,31 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInterpreter, NIL, listToArray } from '@editor/lisp';
+import { createInterpreter, NIL, listToArray, arrayToList } from '@editor/lisp';
 import { createBuffer } from '@editor/buffer';
 import { createView } from '@editor/view';
 import { createBufferPrimitives } from '@editor/stdlib';
 
 import { renderModeline } from './protocol.js';
 import { createBufferRegistry } from './buffer-registry.js';
+import { createPaneModel } from './pane-model.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
+
+/** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
+ *  Keyword both carry a `.name`), with any leading `:` stripped, or null when
+ *  ARG isn't symbol-like. The pane primitives read their orientation/side/
+ *  direction args this way (mirrors app.js's `symbolNameOf`). */
+function symName(arg) {
+  let name = null;
+  if (typeof arg === 'string') name = arg;
+  else if (arg && typeof arg === 'object' && typeof arg.name === 'string') {
+    name = arg.name;
+  }
+  if (name === null) return null;
+  return name.startsWith(':') ? name.slice(1) : name;
+}
 
 /**
  * The standard-library files the spine loads, in dependency order.
@@ -94,6 +109,15 @@ const SPINE_STDLIB = Object.freeze([
   'multi-cursor.lisp',
   'search.lisp',
   'markdown.lisp',
+  // panes.lisp — the interactive split/other/delete-window commands (C-x 2 /
+  // 3 / 0 / 1 / o). Loaded VERBATIM: the same source the production editor
+  // runs. Its commands wrap host primitives (split-horizontal!, delete-pane!,
+  // other-pane!, current-pane, …) that the spine provides server-side against
+  // the active client's LOGICAL pane tree (pane-model.js) — no DOM, no pixels.
+  // This is the G0a proof: the pane commands graduate with zero Lisp change;
+  // only the host primitives differ. Needs custom.lisp (defgroup/defcustom)
+  // and commands.lisp (defcommand), both already loaded above.
+  'panes.lisp',
 ]);
 
 /**
@@ -196,6 +220,16 @@ const CX_MAP = Object.freeze({
   'C-b': 'list-buffers',
   k: 'kill-buffer',
   u: 'undo', // C-x u — the classic Emacs undo binding (alongside C-/)
+  // --- pane/window splits (panes.lisp — the Emacs C-x map) -----------
+  // C-x 2 / 3 / 0 / 1 / o drive the REAL panes.lisp commands against the
+  // active window's LOGICAL pane tree (pane-model.js). So a key routed
+  // through handleKey splits/cycles/deletes panes server-side, the same as
+  // a PANE_INTENT does — both paths run the same commands.
+  2: 'split-vertical', // C-x 2 — split top/bottom
+  3: 'split-horizontal', // C-x 3 — split side-by-side
+  0: 'delete-pane', // C-x 0 — delete the focused pane
+  1: 'delete-other-panes', // C-x 1 — the focused pane fills the window
+  o: 'other-pane', // C-x o — cycle focus to the next pane
 });
 
 /**
@@ -273,11 +307,70 @@ export function createSpine(options, effects = {}) {
   // viewing it; further buffers join via find-file.
   const initialEntry = registry.add(options.initialText ?? '', options.name ?? 'mwb-scratch');
 
-  // Which buffer each client is currently viewing: clientIndex → bufferId.
-  // Client 0 starts on the seed buffer; further clients default to it too
-  // (addClientView). Switching one client's buffer leaves the others put.
-  /** @type {Map<number, string>} */
-  const clientBuffers = new Map([[0, initialEntry.id]]);
+  // --- per-window pane trees (G0a) -------------------------------------
+  //
+  // Each client/window owns its OWN logical pane tree (pane-model.js). A
+  // leaf shows a buffer from the registry + its own per-pane view-state
+  // (point/scroll); two leaves can show the SAME buffer (shared text,
+  // independent point) — the same-buffer-two-windows case, but within one
+  // window. The buffer the active client EDITS is its pane model's FOCUSED
+  // leaf's buffer (setActiveClient binds it). A single-pane window behaves
+  // exactly like the pre-pane spine: one leaf, one focused buffer.
+  //
+  // The leaf's view is a REAL @editor/view, minted per leaf (keyed by leaf
+  // id) so the buffer's cursor binds to this pane's own point/mark. The
+  // factory routes through the registry so a leaf's view participates in the
+  // same multi-cursor / overlay machinery as everything else.
+  /** Mint/reuse a real view over BUFFERID for the leaf with stable VIEWKEY,
+   *  keyed by (viewKey, bufferId) so each (pane, buffer) pair keeps its OWN
+   *  persistent point/mark — and so switching a pane away from a buffer and
+   *  back restores that pane's cursor in it. Two panes on the SAME buffer have
+   *  different view keys, so their cursors are independent (the same-buffer-
+   *  two-windows case within one window). */
+  function makeLeafView(bufferId, viewKey) {
+    const id = bufferId ?? initialEntry.id;
+    const key = `${viewKey}:${id}`;
+    return registry.viewFor(id, key) ?? registry.viewFor(initialEntry.id, key);
+  }
+
+  /** @type {Map<number, import('./pane-model.js').PaneModel>} index → pane tree. */
+  const paneModels = new Map();
+
+  /** Raised when a client's pane layout/focus changed (a split / delete /
+   *  other-window). The server re-pushes that client's PANE_TREE. Signature:
+   *  (clientIndex). */
+  const onPaneTree = effects.onPaneTree ?? (() => {});
+
+  /** Create (and remember) the pane model for client INDEX, seeded on the
+   *  client's starting buffer. */
+  function makePaneModel(index, startBufferId) {
+    const model = createPaneModel(
+      { initialBufferId: startBufferId },
+      {
+        onChange: () => onPaneTree(index),
+        nameForBuffer: (id) => {
+          const e = id ? registry.get(id) : null;
+          return e ? e.buffer.name : 'scratch';
+        },
+        // Namespace the leaf view key by the WINDOW (client index) too, so two
+        // windows' leaves — whose per-window viewKey counters both start at 0 —
+        // get distinct registry views (independent cursors per window). Within
+        // a window the viewKey is stable per leaf (cursor survives a buffer
+        // switch away and back).
+        makeView: (bufferId, viewKey) => makeLeafView(bufferId, `c${index}-${viewKey}`),
+      }
+    );
+    paneModels.set(index, model);
+    return model;
+  }
+
+  // Client 0's pane tree starts as a single leaf on the seed buffer.
+  makePaneModel(0, initialEntry.id);
+
+  /** The pane model of the active client (what the pane primitives mutate). */
+  function currentPaneModel() {
+    return paneModels.get(activeClientIndex) ?? paneModels.get(0);
+  }
 
   // The set of known client indices (so a buffer-wide refresh / a kill can
   // re-home every client). Index 0 is always present (the default view).
@@ -291,7 +384,10 @@ export function createSpine(options, effects = {}) {
   // production's session shape, but the active buffer/view now varies with
   // which client (and which of its buffers) the server is serving.
   let activeEntry = initialEntry;
-  let view = registry.viewFor(initialEntry.id, 0);
+  // The initial active view is client 0's FOCUSED leaf view (its pane model
+  // was created above with one leaf on the seed buffer). A single-pane window
+  // thus behaves exactly like the pre-pane spine: one focused leaf, one view.
+  let view = paneModels.get(0).focusedView() ?? registry.viewFor(initialEntry.id, 0);
   let buffer = initialEntry.buffer;
   buffer.bindCursor(view);
 
@@ -451,6 +547,69 @@ export function createSpine(options, effects = {}) {
         }
         return NIL;
       },
+
+      // --- the pane tree (G0a — panes.lisp's host primitives) ----------
+      //
+      // panes.lisp (loaded verbatim) wraps these. They mutate the ACTIVE
+      // client's LOGICAL pane tree (pane-model.js) — no DOM, no pixels. This
+      // is the whole point of G0a: the split/other/delete commands graduate
+      // with zero Lisp change; only these host primitives differ from the
+      // renderer's (which interleave ~1000 lines of pixel plumbing). Each
+      // returns nil (interactive callers ignore the return) and the model's
+      // onChange raises onPaneTree so the server re-pushes PANE_TREE.
+
+      // (split-horizontal! ratio side) — split the focused pane side-by-side.
+      // SIDE is the symbol 'after (new pane right, default) or 'before (left).
+      'split-horizontal!': (args) => {
+        currentPaneModel().split('horizontal', Number(args[0]) || 0.5, symName(args[1]) === 'before' ? 'before' : 'after');
+        return NIL;
+      },
+      // (split-vertical! ratio side) — split the focused pane top/bottom.
+      'split-vertical!': (args) => {
+        currentPaneModel().split('vertical', Number(args[0]) || 0.5, symName(args[1]) === 'before' ? 'before' : 'after');
+        return NIL;
+      },
+      // (delete-pane!) — collapse the focused pane into its sibling (C-x 0).
+      'delete-pane!': () => { currentPaneModel().deletePane(); return NIL; },
+      // (delete-other-panes!) — the focused pane fills the window (C-x 1).
+      'delete-other-panes!': () => { currentPaneModel().deleteOtherPanes(); return NIL; },
+      // (other-pane!) — cycle focus to the next pane in display order (C-x o).
+      // Re-binds the interpreter to the newly-focused leaf's buffer + view so
+      // a following command (and the next intent) edits the right pane.
+      'other-pane!': () => {
+        currentPaneModel().otherPane();
+        setActiveClient(activeClientIndex); // rebind to the new focused leaf
+        return NIL;
+      },
+      // (balance-panes!) — reset every split ratio to 0.5.
+      'balance-panes!': () => { currentPaneModel().balancePanes(); return NIL; },
+      // (focus-pane-direction! dir) — spatial focus move (the one geometry-
+      // coupled command; uses the client's reported host rect). DIR is a
+      // symbol 'left/'right/'up/'down. Rebinds after a successful move.
+      'focus-pane-direction!': (args) => {
+        const moved = currentPaneModel().focusPaneDirection(symName(args[0]));
+        if (moved) setActiveClient(activeClientIndex);
+        return NIL;
+      },
+      // (current-pane) — the focused leaf pane handle (panes.lisp reads its
+      // id via other helpers; here it's the @editor/pane leaf object).
+      'current-pane': () => currentPaneModel().focusedLeaf(),
+      // (current-view) — the focused leaf's view handle. Production routes
+      // current-view through current-pane; the spine returns the leaf's view.
+      'current-view': () => currentPaneModel().focusedView() ?? NIL,
+      // (swap-panes! a b) — swap which buffer two panes show (frames stay).
+      'swap-panes!': (args) => {
+        const a = args[0];
+        const b = args[1];
+        if (a && b && typeof a === 'object' && typeof b === 'object') {
+          currentPaneModel().swapPanes(a, b);
+          setActiveClient(activeClientIndex);
+        }
+        return NIL;
+      },
+      // (panes-in-spiral-order) — the leaves in clockwise-badge order, as a
+      // Lisp list (swap-views/permute-views read its length). Geometry-derived.
+      'panes-in-spiral-order': () => arrayToList(currentPaneModel().panesInSpiralOrder()),
 
       // --- system clipboard (kill.lisp) — STUB (server-local) ----------
       // The kill ring's *internal* state is real shared interpreter state
@@ -952,45 +1111,47 @@ export function createSpine(options, effects = {}) {
     return 'ok';
   }
 
-  // --- multi-buffer / multi-client window-state (the Model-B payoff) ----
+  // --- multi-buffer / multi-window window-state (the Model-B payoff) ----
   //
-  // The server holds N buffers and serves N clients. Each (client, buffer)
-  // pair has its own view (its own point/mark/selection) — registry.viewFor.
-  // A client views ONE buffer at a time (clientBuffers); switching its
-  // buffer leaves the others put. Before processing a client's intent the
-  // server makes that client active (setActiveClient), which binds the
-  // interpreter to that client's current buffer + its view of it.
+  // The server holds N buffers and serves N clients/windows. Each window owns
+  // a PANE TREE (paneModels); the buffer a window currently edits is its
+  // FOCUSED leaf's buffer. A leaf keeps its OWN view (point/mark/scroll) over
+  // the buffer, so two leaves on the same buffer have independent cursors —
+  // and so do two windows. Before processing a client's intent the server
+  // makes that client active (setActiveClient), which binds the interpreter
+  // to the client's focused leaf's buffer + that leaf's view.
 
   /** The client index the server is currently serving (so a command's effect
-   *  — kill-buffer, list-buffers — targets the right window). */
+   *  — kill-buffer, list-buffers, split-window — targets the right window). */
   let activeClientIndex = 0;
 
-  /** Register a new client. It starts on the SAME buffer client 0 booted on
-   *  (the seed buffer), with its own fresh view. Returns its index. */
+  /** Register a new client/window. Its pane tree starts as a single leaf on
+   *  the SAME buffer client 0 booted on (the seed buffer). Returns its index. */
   function addClientView() {
     const index = clientIndices.size; // next free index (0,1,2,…)
     clientIndices.add(index);
-    const startId = clientBuffers.get(0) ?? initialEntry.id;
-    clientBuffers.set(index, startId);
-    registry.viewFor(startId, index); // mint its view eagerly
+    const startId = paneModels.get(0)?.focusedBufferId() ?? initialEntry.id;
+    makePaneModel(index, startId);
     return index;
   }
 
-  /** The buffer entry a client is currently viewing (defaults to the seed
-   *  buffer if somehow unset). */
+  /** The buffer entry the FOCUSED leaf of client INDEX shows (defaults to the
+   *  seed buffer if somehow unset). */
   function entryForClient(index) {
-    const id = clientBuffers.get(index) ?? initialEntry.id;
+    const id = paneModels.get(index)?.focusedBufferId() ?? initialEntry.id;
     return registry.get(id) ?? initialEntry;
   }
 
-  /** Make client INDEX active: bind the interpreter to that client's current
-   *  buffer + its view of it. Subsequent handleKey/runCommand/overlay
-   *  primitives operate on this client's window + buffer. */
+  /** Make client INDEX active: bind the interpreter to its FOCUSED leaf's
+   *  buffer + that leaf's view. Subsequent handleKey/runCommand/overlay/pane
+   *  primitives operate on this window's focused pane + buffer. */
   function setActiveClient(index) {
     if (!clientIndices.has(index)) return;
     activeClientIndex = index;
+    const model = paneModels.get(index);
     const entry = entryForClient(index);
-    const v = registry.viewFor(entry.id, index);
+    // Bind the FOCUSED leaf's own view (its per-pane cursor over the buffer).
+    const v = (model && model.focusedView()) || registry.viewFor(entry.id, index);
     bindActive(entry, v);
     // The major mode is a property of the buffer; re-derive it so the
     // mode-keymap chain resolves against THIS buffer's mode (a markdown
@@ -999,10 +1160,11 @@ export function createSpine(options, effects = {}) {
   }
 
   /**
-   * Switch a client to buffer ID. Mints the client's view of it if needed,
-   * binds the interpreter (if this is the active client), re-derives the
-   * major mode, and raises onBufferSwitched so the server re-snapshots the
-   * client onto its new buffer. Returns true on success.
+   * Switch a client's FOCUSED pane to buffer ID. Re-points the focused leaf
+   * (minting its view over the new buffer), binds the interpreter (if this is
+   * the active client), re-derives the major mode, and raises onBufferSwitched
+   * so the server re-snapshots the client onto its new buffer. Returns true on
+   * success.
    *
    * @param {number} index - The client to switch.
    * @param {string} id - The target buffer id.
@@ -1010,14 +1172,19 @@ export function createSpine(options, effects = {}) {
    */
   function switchClientToBuffer(index, id) {
     if (!registry.has(id)) return false;
-    clientBuffers.set(index, id);
+    const model = paneModels.get(index);
+    if (model) {
+      // Point the focused leaf at the new buffer (re-mints its leaf view).
+      const wasActive = index === activeClientIndex;
+      if (!wasActive) activeClientIndex = index; // setFocusedBuffer affects the focused leaf
+      model.setFocusedBuffer(id);
+      activeClientIndex = wasActive ? index : activeClientIndex;
+    }
     if (index === activeClientIndex) {
       const entry = registry.get(id);
-      const v = registry.viewFor(id, index);
+      const v = (model && model.focusedView()) || registry.viewFor(id, index);
       bindActive(entry, v);
       interpreter.call('-spine-choose-major-mode');
-    } else {
-      registry.viewFor(id, index); // mint the view for a non-active client
     }
     onBufferSwitched(id);
     return true;
@@ -1029,18 +1196,28 @@ export function createSpine(options, effects = {}) {
     return entry ? entry.id : null;
   }
 
-  /** The buffer id a client is currently viewing. */
+  /** The buffer id the FOCUSED leaf of client INDEX shows. */
   function currentBufferIdOf(index) {
-    return clientBuffers.get(index) ?? initialEntry.id;
+    return paneModels.get(index)?.focusedBufferId() ?? initialEntry.id;
   }
 
-  /** Kill the ACTIVE client's current buffer, switching it (and any other
-   *  client that was also viewing the killed buffer) to another buffer.
-   *  Refuses to kill the last buffer (the registry guard). Called by the
-   *  kill-current-buffer! primitive (the kill-buffer command). */
+  /** Every buffer id any leaf of client INDEX shows (a window may have several
+   *  panes on different buffers). Used by the kill-buffer re-home: a window is
+   *  "affected" if ANY of its panes shows the killed buffer. */
+  function buffersShownByClient(index) {
+    const model = paneModels.get(index);
+    if (!model) return [];
+    return model.leaves()
+      .map((l) => model.stateOf(l.id)?.bufferId)
+      .filter((id) => id != null);
+  }
+
+  /** Kill the ACTIVE client's focused buffer, switching every pane (in any
+   *  window) showing it to another buffer. Refuses to kill the last buffer
+   *  (the registry guard). Called by the kill-current-buffer! primitive. */
   function killActiveBuffer() {
     const index = activeClientIndex;
-    const killedId = clientBuffers.get(index) ?? initialEntry.id;
+    const killedId = currentBufferIdOf(index);
     if (registry.count() <= 1) {
       statusText = 'kill-buffer: refusing to kill the only buffer';
       onStatus(statusText);
@@ -1049,13 +1226,18 @@ export function createSpine(options, effects = {}) {
     // Pick a survivor buffer (any other than the one being killed).
     const survivor = registry.list().find((e) => e.id !== killedId);
     if (!survivor) return;
-    // Re-home EVERY client that was viewing the killed buffer onto the
-    // survivor (a kill must not leave a window pointed at a dead buffer).
-    const affected = [...clientBuffers.entries()]
-      .filter(([, id]) => id === killedId)
-      .map(([ci]) => ci);
     registry.remove(killedId);
-    for (const ci of affected) switchClientToBuffer(ci, survivor.id);
+    // Re-home EVERY pane (across all windows) showing the killed buffer onto
+    // the survivor. A window is affected if its focused pane showed it (the
+    // simple, tested re-home path: re-point the focused leaf + re-sync).
+    for (const [ci, model] of paneModels) {
+      for (const leaf of model.leaves()) {
+        if (model.stateOf(leaf.id)?.bufferId === killedId) {
+          model.focusPane(leaf.id);
+          switchClientToBuffer(ci, survivor.id);
+        }
+      }
+    }
     statusText = `Killed buffer; switched to ${survivor.buffer.name}`;
     onStatus(statusText);
   }
@@ -1095,13 +1277,27 @@ export function createSpine(options, effects = {}) {
     }
   }
 
-  /** The view-state of a specific client (its own point/mark over ITS OWN
-   *  current buffer). Reads the client's buffer entry, not the active one,
-   *  so two clients on different buffers report different modelines. */
+  /** The FOCUSED leaf's view of client INDEX — the view its keyboard edits
+   *  (the per-pane cursor over the focused buffer). Falls back to the
+   *  registry/active view if a pane model is somehow missing. */
+  function focusedViewOf(index) {
+    const model = paneModels.get(index);
+    if (model) {
+      const v = model.focusedView();
+      if (v) return v;
+    }
+    const entry = entryForClient(index);
+    return registry.viewFor(entry.id, index) ?? view;
+  }
+
+  /** The view-state of a specific client (the point/mark of its FOCUSED pane
+   *  over that pane's buffer). Reads the focused leaf's buffer + view, so two
+   *  windows — or two panes — on different buffers report different
+   *  modelines. */
   function viewStateOf(index) {
     const entry = entryForClient(index);
     const buf = entry.buffer;
-    const v = registry.viewFor(entry.id, index) ?? view;
+    const v = focusedViewOf(index);
     const { line, column } = buf.positionAt(v.point);
     const modified = buf.text !== entry.savedText;
     return {
@@ -1117,14 +1313,13 @@ export function createSpine(options, effects = {}) {
     };
   }
 
-  /** A client's FULL cursor set (the primary + every secondary), as plain
-   *  `[{point, mark}]` — the shape the renderer's getCursors() returns. The
-   *  multi-cursor commands (add-cursor-next, select-all-matches) build the
-   *  set on the active client's view; this surfaces it for the CURSORS
-   *  message so the renderer paints every caret. */
+  /** A client's FULL cursor set (the primary + every secondary) for its
+   *  FOCUSED pane, as plain `[{point, mark}]` — the shape the renderer's
+   *  getCursors() returns. The multi-cursor commands build the set on the
+   *  active client's view; this surfaces it for the CURSORS message so the
+   *  renderer paints every caret. */
   function cursorsOf(index) {
-    const entry = entryForClient(index);
-    const v = registry.viewFor(entry.id, index) ?? view;
+    const v = focusedViewOf(index);
     const cs = Array.isArray(v.cursors) && v.cursors.length
       ? v.cursors
       : [{ point: v.point, mark: v.mark ?? null }];
@@ -1295,6 +1490,58 @@ export function createSpine(options, effects = {}) {
     interpreter.evaluate(`(run-command (quote ${name}))`);
   }
 
+  /**
+   * Apply a PANE_INTENT from a client: a structural request (split / focus /
+   * delete / resize). Most map 1:1 onto the REAL panes.lisp commands run
+   * through `run-command` against the active window's logical tree — the same
+   * commands C-x 2 / 3 / o / 0 / 1 dispatch — so the wire intent and the key
+   * path share one implementation. FOCUS_PANE / RESIZE are direct model ops
+   * (no Lisp command exists for "focus this exact leaf by id" / "the user
+   * dragged this splitter"). The intent runs against client INDEX's window;
+   * the active client is set first so the pane primitives target it.
+   *
+   * @param {number} index - The client/window the intent targets.
+   * @param {{ op: string, paneId?: string, ratio?: number }} intent
+   * @returns {boolean} Whether the op was recognised.
+   */
+  function applyPaneIntent(index, intent) {
+    if (!intent || typeof intent !== 'object') return false;
+    if (!paneModels.has(index)) return false;
+    setActiveClient(index); // the pane primitives mutate the active window
+    const model = paneModels.get(index);
+    switch (intent.op) {
+      case 'split-below':
+        runCommand('split-vertical');
+        return true;
+      case 'split-right':
+        runCommand('split-horizontal');
+        return true;
+      case 'other-window':
+        runCommand('other-pane');
+        return true;
+      case 'delete-window':
+        runCommand('delete-pane');
+        return true;
+      case 'delete-other-windows':
+        runCommand('delete-other-panes');
+        return true;
+      case 'focus-pane':
+        // A client click: focus a specific leaf by id, then rebind so the
+        // next edit lands in it.
+        if (model.focusPane(String(intent.paneId ?? ''))) {
+          setActiveClient(index);
+          return true;
+        }
+        return false;
+      case 'resize':
+        // The client owns the pixels; it echoes the new ratio up so the
+        // logical tree records the user's chosen split.
+        return model.setSplitRatio(String(intent.paneId ?? ''), Number(intent.ratio));
+      default:
+        return false;
+    }
+  }
+
   /** Read-and-clear the "last dispatch was an undo/redo" flag. The server
    *  calls this after each intent to decide whether to RESYNC (a change-group
    *  undo's single delta is insufficient — see lastWasHistoryOp). */
@@ -1406,6 +1653,44 @@ export function createSpine(options, effects = {}) {
     addClientView,
     setActiveClient,
     viewStateOf,
+    // --- the pane tree (G0a) -------------------------------------------
+    /** The PANE_TREE wire snapshot of client INDEX's window layout (the split
+     *  structure + per-leaf buffer/view-state + the focused leaf; no pixels).
+     *  The server pushes this on HELLO + whenever a window's layout changes. */
+    paneSnapshot(index) {
+      const model = paneModels.get(index);
+      return model ? model.snapshot() : null;
+    },
+    /** The pane model of client INDEX (introspection: tests + the server). */
+    paneModelOf(index) {
+      return paneModels.get(index) ?? null;
+    },
+    /** Record client INDEX's editor-area pixel rectangle (a VIEWPORT-style
+     *  report). Only spatial pane navigation needs it; everything else is
+     *  pixel-free. `{ width, height }`. */
+    setPaneHostRect(index, rect) {
+      const model = paneModels.get(index);
+      if (model) model.setHostRect(rect);
+    },
+    /** Apply a PANE_INTENT from client INDEX: a structural request (split /
+     *  focus / delete / resize) the server fulfils by running the REAL
+     *  panes.lisp command (or a model op) against that window's tree. Returns
+     *  true when the intent was recognised. The model's onChange raises
+     *  onPaneTree, so the server re-pushes the fresh PANE_TREE. */
+    applyPaneIntent(index, intent) {
+      return applyPaneIntent(index, intent);
+    },
+    /** Save the focused leaf's first-visible line for client INDEX (a scroll
+     *  report). Per-pane scroll is window-state the leaf owns. */
+    setPaneScroll(index, line) {
+      const model = paneModels.get(index);
+      if (model) {
+        const wasActive = activeClientIndex;
+        activeClientIndex = index;
+        model.setFocusedScroll(line);
+        activeClientIndex = wasActive;
+      }
+    },
     // multi-buffer registry surface
     switchClientToBuffer,
     bufferIdByName,
