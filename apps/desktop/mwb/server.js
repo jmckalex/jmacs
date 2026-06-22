@@ -25,7 +25,7 @@
  * ports over `process.parentPort` — one per client window.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -609,6 +609,84 @@ function recoverOnStartup() {
 
 recoverOnStartup();
 autosave.start();
+
+// --- headless save + data-safety self-test (MWB_SAVE_SELFTEST=1) -------
+//
+// Proves the WHOLE save story server-side, with direct fs access (the only
+// place that can read the bytes back): find-file a /tmp scratch file, edit it,
+// assert it is dirty (the ● modeline indicator), save it through the REAL
+// save-buffer command, READ THE FILE BACK and assert the edited bytes hit
+// disk, assert the buffer is clean again; then edit once more, force an
+// autosave pass, and assert a recovery snapshot landed on disk. Posts a
+// PASS/FAIL result to main (launch.js exits on it). Writes only to /tmp; the
+// repo and user data are never touched. Wrapped so a failure can never crash
+// the server (the guardrail).
+function runSaveSelfTest() {
+  const target = process.env.MWB_SAVE_TARGET;
+  const checks = {};
+  let detail = '';
+  try {
+    if (!target) throw new Error('MWB_SAVE_TARGET not set');
+    // Seed the scratch file on disk so find-file can open it.
+    writeFileSync(target, 'seed line\n', 'utf8');
+
+    // 1) find-file the scratch file → it becomes the active buffer with a path.
+    const id = spine.visitFile(target);
+    checks.opened = !!id && spine.activeFilePath === target;
+
+    // 2) Edit it (self-insert) → dirty + the ● modeline indicator.
+    const MARK = 'EDITED ';
+    spine.handleKey('M-greater'); // end of buffer
+    for (const ch of MARK) spine.handleKey(ch);
+    checks.dirty = spine.activeModified === true;
+    checks.bullet = spine.viewState().modeline.startsWith('●');
+    const expectedText = spine.buffer.text;
+
+    // 3) Save through the REAL command → atomic write to disk.
+    spine.handleKey('C-x');
+    spine.handleKey('C-s');
+
+    // 4) READ THE FILE BACK: the edited bytes must be on disk.
+    const onDisk = readFileSync(target, 'utf8');
+    checks.bytesOnDisk = onDisk === expectedText && onDisk.includes(MARK);
+    detail += `disk=${JSON.stringify(onDisk.slice(0, 40))} `;
+
+    // 5) The buffer is clean again (baseline re-set; ● gone).
+    checks.cleanAfterSave = spine.activeModified === false;
+    checks.bulletGone = spine.viewState().modeline.startsWith('–');
+
+    // 6) Autosave: edit again (dirty), force a snapshot pass, assert a
+    //    recovery snapshot exists on disk for this file.
+    for (const ch of 'MORE ') spine.handleKey(ch);
+    checks.dirtyAgain = spine.activeModified === true;
+    const written = autosave.snapshotOnce();
+    checks.snapshotWritten = written >= 1;
+    const recoverable = autosave.scanRecoverable();
+    // The snapshot is NEWER than the on-disk file (we just saved, then edited
+    // + snapshotted), so it is offered, and its text holds the unsaved edit.
+    checks.snapshotRecoverable =
+      recoverable.some((r) => r.path === target && r.text.includes('MORE'));
+    detail += `recoverable=${recoverable.length}`;
+  } catch (error) {
+    detail += `threw=${error && error.message}`;
+  }
+
+  const ok = Object.keys(checks).length > 0 && Object.values(checks).every(Boolean);
+  console.error(
+    `[mwb-save-selftest] ${Object.entries(checks).map(([k, v]) => `${k}=${v}`).join(' ')} ${detail}`
+  );
+  console.error(`[mwb-save-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
+  try {
+    process.parentPort.postMessage({ type: 'save-selftest-done', ok });
+  } catch {
+    // No parent (e.g. a bare node run): the stderr line is the result.
+  }
+}
+
+if (process.env.MWB_SAVE_SELFTEST === '1') {
+  // Run after a beat so the interpreter + stdlib are fully loaded.
+  setTimeout(runSaveSelfTest, 300);
+}
 
 // --- port wiring --------------------------------------------------------
 //

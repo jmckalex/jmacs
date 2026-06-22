@@ -53,6 +53,15 @@ contextBridge.exposeInMainWorld('mwb', {
   // buffer while the same-buffer lockstep still holds. See view-client.js
   // runMultiBufferSelfTest.
   multibufferSelftest: process.env.MWB_MULTIBUFFER_SELFTEST === '1',
+  // Headless self-test for REAL SAVE + the data-safety story: find-file a
+  // /tmp scratch file, edit it, assert dirty + the ● modeline indicator,
+  // save it, assert the bytes hit disk (the server reads the file back),
+  // assert dirty cleared; then edit again and assert an autosave recovery
+  // snapshot appears on disk. See view-client.js runSaveSelfTest. Use with a
+  // throwaway /tmp save target so the repo / user data is never touched.
+  saveSelftest: process.env.MWB_SAVE_SELFTEST === '1',
+  // The /tmp scratch file the save self-test find-files + saves to.
+  saveTarget: process.env.MWB_SAVE_TARGET || '',
   // A second file the multi-buffer self-test opens via find-file (relative
   // to the server's seed file dir). Defaults to a sibling stdlib file.
   secondFile: process.env.MWB_SECOND_FILE || 'treesitter.js',

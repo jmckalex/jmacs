@@ -67,6 +67,19 @@ function startServer() {
   server.on('exit', (code) => {
     console.error(`[mwb] server exited (code ${code})`);
   });
+  // The server-side save self-test (MWB_SAVE_SELFTEST=1) posts its result
+  // here when done (it owns fs, so it does the bytes-on-disk + snapshot
+  // assertions itself); exit on it. Other server messages (server-ready) are
+  // ignored — the prototype doesn't gate on them.
+  server.on('message', (message) => {
+    if (message && message.type === 'save-selftest-done') {
+      console.error(`[mwb] save self-test ${message.ok ? 'PASS' : 'FAIL'}`);
+      setTimeout(() => {
+        if (server) server.kill();
+        app.exit(message.ok ? 0 : 1);
+      }, 100);
+    }
+  });
 }
 
 /** Open one client window (index `n`) and wire its own MessageChannel to
