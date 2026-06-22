@@ -4,6 +4,143 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22] G2 — ONE real renderer view now routes through the server behind GODOT_SERVER=1; flag-OFF is byte-for-byte today
+
+**The first moment the REAL renderer is a CLIENT of the server.** With
+`GODOT_SERVER=1`, one real `<text-view>` (the real `createEditorView` + the
+real highlighters + the real `keyEventToString`) mounts on a `ClientBuffer`
+mirror and is driven entirely by the server: it opens the server's seed buffer
+through a HELLO/SNAPSHOT, renders FROM the mirror, and routes its keystrokes to
+the server (key → intent → server command → delta/view-update → mirror →
+re-render), with local echo for self-insert. With the flag unset (the default),
+none of this runs — the in-renderer interpreter drives everything as today.
+
+**What G2 wired (3 commits on `multi-window-b`, base was `7f5cf42`):**
+- `aa8353d feat(g2): testable server-view client core` — new
+  `src/server-view-client.js`: the production graduation of the proven prototype
+  `mwb/view-client.js`. `createServerViewClient` takes ALL collaborators by
+  injection (port, `mountView`, highlighters, `keyEventToString`) so `node --test`
+  covers the whole handshake → open-buffer → mirror → key-routing wiring with NO
+  Electron, against the REAL `ClientBuffer` (real `@editor/storage`). It HELLOs
+  the server, builds the mirror on the SNAPSHOT, mounts a view, and routes keys
+  (bare printable = local-echo SELF_INSERT; every other key = a pure KEY the
+  server resolves). It reconciles echoed vs server-originated deltas, the
+  motion CURSOR, the prediction-in-flight VIEW guard (the "MWxyzB" cursor-rewind
+  bug the prototype documents), overlays + multi-cursor sync, buffer switch, and
+  RESYNC. **17 unit tests.**
+- `efa7c17 feat(g2): mount one real view as a server client behind GODOT_SERVER` —
+  the production wiring in `app.js`, all gated on `window.host.serverMode`:
+  - The G1 port-listener now calls a hoisted `bootServerViewClient` hook (the
+    port can connect before OR after the highlighters are ready; whichever runs
+    second fires the boot).
+  - The late boot (right after the REAL highlighters load) defines
+    `mountServerView` — it builds a REAL `<text-view>`, `configure()`s it with
+    the client's `onKey` + the mirror-reading closures + the real
+    highlighters/foldCaptures/tab-width/override-generation, binds the mirror,
+    and reveals a dedicated full-bleed container (`#godot-server-view-host`,
+    `z-index:5`) layered over the editor host — then constructs the client and
+    `connect()`s it.
+  - **The G2 view is a SELF-CONTAINED overlay**: it deliberately does NOT touch
+    the entangled in-renderer pane tree / `ensureEditorViewForLeaf` /
+    `dispatchKey` seams (see "integration friction" below). The in-renderer
+    editor sits behind it, idle.
+- `1c672f2 test(g2): flag-gated electron self-test for the live round-trip` —
+  `mwb/server-view-selftest.js` (see "VERIFY LIVE").
+
+**Flag-OFF is provably the old path (the ironclad rule):**
+- Full `pnpm test` **GREEN: 704/0 desktop** (687 baseline + 17 new client tests),
+  all packages green — the flag-off tripwire, untouched.
+- Every G2 reference is gated: the init-time port listener and the entire late
+  boot block (incl. `mountServerView`, the `window.__godotG2` test hook, and the
+  `if (godotServerPort) bootServerViewClient()` kick) live inside
+  `if (window.host && window.host.serverMode)` (false by default). The imported
+  `server-view-client.js` has **no top-level effects** (only exported functions).
+  Flag-off: no listener, `bootServerViewClient`/`serverViewClient` stay null, no
+  container, no `<text-view>` mounts, no `__godotG2` — byte-for-byte today.
+- The double-dispatch question is resolved cleanly: the G2 `<text-view>`'s own
+  keydown listener calls its `onKey` (→ server intent), returns true, and
+  `view.js` calls `event.preventDefault()`; the window-level global router
+  (`app.js` ~5840) stands down on `if (event.defaultPrevented) return`. So a key
+  typed into the focused G2 view routes ONLY to the server — the in-renderer
+  `handle-key` is never also called. (This holds as long as focus stays in the
+  G2 view, which it does — `view.focus()` runs on mount.)
+
+**WHAT YOU (Jason) MUST VERIFY LIVE** — I cannot launch GUI Electron:
+1. **The G2 round-trip** (the exit criteria), via the committed self-test:
+   ```
+   cd apps/desktop && GODOT_SERVER=1 ./node_modules/.bin/electron \
+       mwb/server-view-selftest.js --user-data-dir=/tmp/godot-g2-selftest \
+       --enable-logging=stderr
+   ```
+   Expect: `[g2-selftest] mounted-through-server: PASS`,
+   `[g2-selftest] char-round-trips: PASS`, `[g2-selftest-done] PASS` (exits 0).
+   It forks the REAL server, loads the REAL editor page, lets the real G2 boot
+   mount a REAL `<text-view>` through the server, then types a marker and asserts
+   the mirror grew by exactly the marker. (`GODOT_SERVER=1` MUST be prefixed —
+   the preload reads launch-time env. The marker is typed into the seed buffer
+   IN MEMORY; the test does NOT save, so nothing hits disk.)
+2. **The real app, flag ON, by hand**:
+   `cd apps/desktop && GODOT_SERVER=1 ./node_modules/.bin/electron .` —
+   you should see a full-window editor showing the server's seed buffer
+   (`packages/renderer/src/view.js` by default, or set `MWB_FILE`). **Type into
+   it — that's the decisive "does it feel native?" test.** Try: typing
+   (local-echo instant), motion (arrows, `C-a`/`C-e`, `M-<`/`M->`), `M-x`
+   commands, the minibuffer prompt for a command, `C-y` yank, `C-/` undo.
+   Console: `[godot] Model-B server port connected` then `[godot] G2: real view
+   routed through the server`. (Modeline/status/minibuffer DOM CHROME is still
+   the in-renderer one underneath for now — see the G2 scope note — so the
+   *visible* echo-area/modeline may not reflect server state yet; the editing
+   does. The server's modeline/status come down on VIEW messages and are wired
+   in a later slice.)
+3. **The real app, flag OFF**: `./node_modules/.bin/electron .` — identical to
+   today; no `#godot-server-view-host`, no `godot-server` process.
+
+**G2 scope (minimal + safe, as the plan asks):** ONE window/buffer edits through
+the server. The text + cursor + overlays + multi-cursor + scroll all flow; M-x,
+find-file, the minibuffer state machine, save, undo all work server-side (the
+prototype proved them; G2 just routes the real view's keys to them). What is
+DELIBERATELY still in-renderer / a later slice (G3+): the **modeline/status/
+minibuffer-prompt CHROME rendering** (the VIEW message carries them; the G2 view
+doesn't paint that DOM yet — it shares the in-renderer chrome), and everything
+not on this one view (the pane tree, tablines, all other views/panes). Broad
+coverage is G3/G4 per the plan.
+
+**Integration friction found (the honest "here's what fights the client model"
+— flagged for G3 and for your live debugging):**
+- **The real mount path is one layer deeper than the prototype's.** The prototype
+  calls `createEditorView` directly. The real app mounts it via the `<text-view>`
+  custom element (`packages/renderer/src/text-view.js`), and configures it inside
+  `ensureEditorViewForLeaf` (`app.js` ~6190). That function's per-view closures
+  read `instance._boundLeaf.view.buffer/point/cursors` — i.e. a **Lisp View
+  handle**, not a buffer object. To flip an EXISTING in-renderer view to a mirror
+  in place, that leaf's `.view` would have to become mirror-backed AND the
+  in-renderer `handle-key` would have to stop driving it — a deep change to the
+  pane/leaf/Lisp-view coupling. **That is why G2 mounts a SELF-CONTAINED overlay
+  view instead of flipping a leaf** — it proves "the real renderer is a server
+  client" with zero risk to the entangled seams. The G3 question for you: do we
+  (a) teach `ensureEditorViewForLeaf` a server-mode branch where the leaf's
+  buffer is a mirror and the closures read it (then retire the overlay), or (b)
+  keep a parallel server-view surface and grow it? (a) is the real graduation; it
+  needs the leaf/Lisp-view model to admit a mirror-backed view — the biggest
+  app.js seam.
+- **Two key routers coexist under the flag.** The in-renderer global keydown
+  router still runs; it's neutralised only by the G2 view's `preventDefault`
+  (focus-dependent). It's correct today, but G3 should make server-mode the
+  router's explicit branch (forward unclaimed keys as KEY intents) rather than
+  relying on the overlay's focus + preventDefault.
+- **Chrome (modeline/status/minibuffer) is shared, not yet server-driven.** The
+  VIEW message already carries the server's modeline/status/minibuffer; the G2
+  view doesn't render that DOM (it has no minibuffer element of its own). So under
+  the flag the *visible* chrome is the idle in-renderer one. Wiring the server's
+  VIEW chrome into real DOM (or giving the G2 surface its own minibuffer) is the
+  first G3 slice.
+
+**Not done (correctly — later phases):** modeline/status/minibuffer chrome from
+the server, any view beyond the one, the pane negotiation (G0a proved its shape
+but it's unbuilt in production), multi-window (G4). NOT merged — hand back for G3.
+
+---
+
 ## [2026-06-22] G1 — server stood up inside the REAL main.js behind GODOT_SERVER=1; flag-OFF is byte-for-byte today
 
 **This is the first production change of the graduation** (G0 was prototype-only).
