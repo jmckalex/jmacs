@@ -11,6 +11,9 @@ import {
   attachErrorLocation,
   evaluate,
   resetErrorLocation,
+  resetStepCounter,
+  setInterruptCheck,
+  setStepBudget,
 } from './eval.js';
 import { installPrimitives } from './primitives.js';
 import { read } from './reader.js';
@@ -114,6 +117,16 @@ const PRELUDE = `
  * @property {(name: string, ...args: *[]) => *} call - Apply a global
  *   procedure to JavaScript arguments. The host's way into Lisp — used,
  *   for example, to run the keymap's `handle-key` on every keystroke.
+ * @property {(fn: (() => boolean) | null) => void} setInterruptCheck -
+ *   Install (or clear, with `null`) a cooperative interrupt-check. The
+ *   eval trampoline calls it periodically; a truthy return aborts the
+ *   running evaluation with a `LispInterrupt`. In Model B the host passes
+ *   `() => Atomics.load(sab, 0) !== 0` so a client's `C-g` can abort a
+ *   runaway command in the shared server.
+ * @property {(n: number) => void} setStepBudget - Set the per-evaluation
+ *   step ceiling (trampoline bounces); exceeding it throws a
+ *   `LispInterrupt`. `Infinity` (the default) means no limit. Bounds
+ *   runaway computation even with no external interrupt signal.
  */
 
 /**
@@ -129,6 +142,14 @@ const PRELUDE = `
  */
 export function createInterpreter(options = {}) {
   const write = options.write ?? (() => {});
+
+  // The interrupt-check / step-budget live in eval.js as module state (like
+  // `currentLocation`), because the trampoline is a module function and a
+  // deployment has one shared interpreter. Reset them to the no-op defaults
+  // for each fresh interpreter, so one interpreter's budget or check cannot
+  // leak into the next (matters in tests, and for a respawned server).
+  setInterruptCheck(null);
+  setStepBudget(Infinity);
 
   // The base environment holds the primitives, the prelude, host
   // primitives and the module registry. The global environment and
@@ -209,8 +230,10 @@ export function createInterpreter(options = {}) {
       for (const form of read(source)) {
         // Reset per top-level form so an error before any located subform
         // can't inherit a stale location; tag any escaping error with
-        // where it happened (B6).
+        // where it happened (B6). Reset the step counter too, so the step
+        // budget (if any) is measured per top-level form, not cumulatively.
         resetErrorLocation();
+        resetStepCounter();
         try {
           value = evaluate(form, global);
         } catch (error) {
@@ -227,11 +250,21 @@ export function createInterpreter(options = {}) {
     call(name, ...args) {
       // The keystroke / host entry path. Tag an escaping error with the
       // offending form's location too, so handle-key failures report it.
+      // Reset the step counter so a command's budget is measured fresh.
+      resetStepCounter();
       try {
         return applyProcedure(global.lookup(name), args);
       } catch (error) {
         throw attachErrorLocation(error);
       }
+    },
+
+    setInterruptCheck(fn) {
+      setInterruptCheck(fn);
+    },
+
+    setStepBudget(n) {
+      setStepBudget(n);
     },
   };
 }
