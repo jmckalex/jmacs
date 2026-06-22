@@ -4,6 +4,78 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-23] Server-view usability layer: multi-file in the REAL server-view (open/switch re-mirrors) + more of the keymap. Gated, flag-off byte-for-byte.
+
+**Both done + committed on `multi-window-b` (NOT merged). Suite GREEN 797
+desktop** (was 779; +6 Part 1, +12 Part 2). Every change is additive + gated on
+`window.host.serverMode` (false by default) — flag-off untouched.
+
+**What's now usable in the running app (GODOT_SERVER=1):**
+- **Opening / switching files in the server-view works.** find-file (C-x C-f),
+  C-x b switch-to-buffer, C-x k kill-buffer change the server's focused buffer,
+  the server pushes a fresh SNAPSHOT (new bufferId), and the REAL `<text-view>`
+  now re-mirrors + re-renders the new file — you see and edit what you opened.
+- **More everyday keys dispatch server-side** (see Part 2 list): C-o, C-t, M-m,
+  M-a/M-e, M-k, M-q, M-g, M-r, C-=, C-x C-x, C-x h, C-x ;.
+
+### Part 1 — multi-file in the real server-view
+The CLIENT switch logic was already correct + tested: `src/server-view-client.js`
+`onSnapshot` detects a new `bufferId`, rebuilds the `ClientBuffer` mirror, and
+re-mounts the view (test "a SNAPSHOT with a new buffer id rebuilds the mirror +
+re-mounts the view"). The server side was also done: find-file/switch/kill all
+call `resyncClientToCurrentBuffer` → `sendSnapshot` with the new id (server.js).
+
+**The real gap was DOM-side in app.js `mountServerView`:** on a switch the client
+calls `view.destroy()` (the inner editor removes its OWN root) then `mountView()`
+again — but the old `<text-view>` host element was NEVER removed from
+`#godot-server-view-host`. So a dead empty `<text-view>` accumulated per switch
+and stole flex-column layout from the live view (the prototype sidestepped this
+by re-pointing ONE persistent container; the custom-element equivalent is to
+sweep stale views).
+
+**Fix:** new `src/server-view-mount.js` `clearStaleServerViews(hostEl)`
+(dependency-free, 6 unit tests in `test/server-view-mount.test.js`), called from
+`mountServerView` before appending the new view → exactly one live `<text-view>`
+across any number of switches. Per-buffer point is preserved (it rides the
+SNAPSHOT's `point`, applied by the mirror — unchanged).
+
+**Verify live (architect — GUI is permission-blocked for the agent):**
+1. The extended self-test now also proves the real-app switch:
+   ```
+   cd apps/desktop && GODOT_SERVER=1 ./node_modules/.bin/electron \
+     mwb/server-view-selftest.js \
+     --user-data-dir=/tmp/godot-g2-selftest --enable-logging=stderr
+   ```
+   Expect `[g2-selftest] buffer-switch-remirrors: PASS` + `[g2-selftest-done] PASS`.
+2. By hand in the real app: launch with `GODOT_SERVER=1`, `C-x C-f` a file →
+   it should display + be editable; `C-x b` back → the original returns. In
+   DevTools, `window.__godotG2.textViewCount()` must stay `1` after each switch.
+
+### Part 2 — more of the keymap (spine.js)
+Bound the obvious gaps vs production `keymap.lisp`, all loadable through the
+primitive-split (editing.lisp / kill.lisp / expand-region.lisp + the real
+`createBufferPrimitives`), so each resolves + runs through the real run-command:
+- **Top-level KEYMAP:** `C-o` open-line, `C-t` transpose-chars, `M-m`
+  back-to-indentation, `M-a`/`M-e` backward/forward-sentence, `M-k`
+  kill-sentence, `M-q` fill-paragraph, `M-g` goto-line, `M-r` replace-string,
+  `C-=` (`C-equal`) expand-region.
+- **C-x map:** `C-x C-x` exchange-point-and-mark, `C-x h` mark-whole-buffer,
+  `C-x ;` comment-line.
+- 13 `node --test` cases (`mwb/spine.test.js`), each driving the KEY through
+  `handleKey` (the real keymap path), assertions on the buffer.
+
+**Deferred / not done:** `C-x C-o` delete-blank-lines (the command isn't defined
+in any loaded lisp file — NOT loadable, so not bound). The leaf-flip is untouched
+(reserved for the architect's call). `M-d`/`M-backspace` were already bound.
+
+**Commits (4, this branch, NOT merged):**
+- `1a75aca fix(mwb): keep one live <text-view> across a server-pushed buffer switch`
+- `30c4095 test(mwb): self-test the real-app buffer switch re-mirrors + stays one view`
+- `e9f546f feat(mwb): bind more everyday commands in the spine's focused keymap`
+- (this notes commit)
+
+---
+
 ## [2026-06-22] Two server-mode usability fixes: global-router stand-down (undo bell) + screenful scroll (C-v/M-v). Both gated, flag-off byte-for-byte.
 
 **Both done + committed on `multi-window-b` (NOT merged). Suite GREEN 779
