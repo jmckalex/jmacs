@@ -7,11 +7,19 @@
  * runs entirely in the renderer process.
  */
 
-import { app, BrowserWindow, ipcMain, protocol } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  protocol,
+  utilityProcess,
+  MessageChannelMain,
+} from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from './files.js';
+import { isServerMode, createServerBridge } from './server-bridge.js';
 import { renderJMarkdown } from './jmarkdown.js';
 import { buildAppMenu } from './menu.js';
 import { EDITOR_URL, serveAppFile, serveMediaFile, allowHostDir } from './serve.js';
@@ -54,6 +62,20 @@ process.on('unhandledRejection', (reason) => {
 
 /** The editor window — there is only ever one. */
 let mainWindow = null;
+
+/**
+ * G1 (plans/MWB-GRADUATION.md): the Model-B server bridge, or null.
+ *
+ * Non-null ONLY when `GODOT_SERVER=1`. With the flag unset (the default), this
+ * stays null and every reference below is a guarded no-op, so the app's
+ * behaviour is byte-for-byte today: no server process, no port plumbing, no new
+ * code path taken. When the flag is on, a server `utilityProcess` is forked and
+ * a port is connected to the window's renderer — but nothing is routed through
+ * it yet (G2 routes editing). See `server-bridge.js`.
+ *
+ * @type {ReturnType<typeof createServerBridge> | null}
+ */
+let serverBridge = null;
 
 /** True once a quit has been confirmed through the renderer (nothing
  *  unsaved, or the user chose to discard). Lets `before-quit` allow the
@@ -123,6 +145,13 @@ function createWindow() {
   });
 
   win.loadURL(EDITOR_URL);
+
+  // G1: when the server is running (GODOT_SERVER=1), plumb a MessageChannel
+  // port from the server to this window's renderer. `serverBridge` is null with
+  // the flag off, so this is a no-op in the default config — the renderer never
+  // hears of a port and boots exactly as today. With the flag on, the renderer
+  // receives + stashes the port but does NOT route editing through it (G2).
+  if (serverBridge) serverBridge.attachWindow(win.webContents);
 }
 
 app.whenReady().then(() => {
@@ -152,6 +181,21 @@ app.whenReady().then(() => {
   ipcMain.on('menu:set', (_event, modeMenu) => {
     buildAppMenu(modeMenu, dispatchMenuCommand);
   });
+
+  // G1: behind GODOT_SERVER=1 only, fork the Model-B server utilityProcess so a
+  // window can later (G2) be driven by it. Construction is wrapped so a fork
+  // failure logs rather than crashing the host. With the flag off, isServerMode
+  // is false and `serverBridge` stays null — the app is unchanged.
+  if (isServerMode()) {
+    try {
+      serverBridge = createServerBridge({ utilityProcess, MessageChannelMain });
+      console.error('[main] GODOT_SERVER=1: Model-B server forked');
+    } catch (error) {
+      serverBridge = null;
+      console.error('[main] failed to start the Model-B server:', error);
+    }
+  }
+
   createWindow();
 
   app.on('activate', () => {
@@ -162,6 +206,17 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   // macOS apps conventionally stay open with no windows; quit elsewhere.
   if (process.platform !== 'darwin') app.quit();
+});
+
+// G1 lifecycle: kill the server `utilityProcess` when the app is quitting, so
+// no orphaned server outlives the app. `will-quit` fires once the quit is
+// committed (after the renderer's confirm). `dispose` is idempotent and guarded;
+// with the flag off `serverBridge` is null and this is a no-op.
+app.on('will-quit', () => {
+  if (serverBridge) {
+    serverBridge.dispose();
+    serverBridge = null;
+  }
 });
 
 // Whether an exit (a native Quit or a window close) should be held for

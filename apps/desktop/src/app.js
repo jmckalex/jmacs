@@ -403,6 +403,31 @@ window.addEventListener('unhandledrejection', (event) => {
   reportRendererFault('unhandled rejection', event.reason);
 });
 
+// G1 (plans/MWB-GRADUATION.md): when GODOT_SERVER=1, main forks the Model-B
+// server and transfers a MessagePort to this renderer (re-dispatched by the
+// preload as a `godot:server-port` window message). Stash it for G2, which will
+// route a window's editing through it; G1 only proves the port connects. With
+// the flag off (`host.serverMode` false), this listener is never registered, so
+// the renderer is byte-for-byte unchanged. The block reads only `window.host`
+// (always present) and a module-global, so it is safe at module-init time.
+//
+// @type {MessagePort | null} — the connected server port in server mode, else null.
+var godotServerPort = null; // eslint-disable-line no-var -- hoisted; set from a window-message listener registered at init, read by future (G2) code.
+if (window.host && window.host.serverMode) {
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.type !== 'godot:server-port') return;
+    const [port] = event.ports;
+    if (!port) return;
+    godotServerPort = port;
+    port.start();
+    // G1 stops here: the port is connected, but editing still runs through the
+    // in-renderer interpreter. G2 wires this port to a client-buffer mirror.
+    console.info('[godot] Model-B server port connected (GODOT_SERVER=1)');
+  });
+}
+
 /** Monotonic id source for shell-buffer session ids. Each new shell
  *  buffer gets a fresh id; the host keys its child-process table off
  *  this. */

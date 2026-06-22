@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld('host', {
    *  filesystem and `file://` URL scheme will accept. */
   homeDirectory: homedir(),
 
+  /** G1 (plans/MWB-GRADUATION.md): true ONLY when GODOT_SERVER=1. The
+   *  renderer reads this single gate to decide whether to listen for the
+   *  Model-B server port (and, in G2, route editing through it). False (the
+   *  default) means the renderer boots exactly as today. */
+  serverMode: process.env.GODOT_SERVER === '1',
+
   /** The editor's per-user data directory (`app.getPath('userData')`),
    *  resolved once at preload time over a synchronous IPC call. The
    *  snippet engine reads `<userDataDirectory>/snippets`. Empty string
@@ -712,3 +718,18 @@ contextBridge.exposeInMainWorld('host', {
     return () => ipcRenderer.removeListener('gnuplot:exit', handler);
   },
 });
+
+// G1 (plans/MWB-GRADUATION.md): when (and only when) GODOT_SERVER=1, main
+// transfers a MessagePort connected to the Model-B server over the
+// `godot:server-port` IPC channel. ipcRenderer delivers transferred ports on
+// `event.ports`; the page can't touch ipcRenderer across the context bridge, so
+// we re-dispatch the port to the page as a `window` message (transferring it
+// into page-land). The renderer stashes it but does NOT route editing through it
+// yet (G2). With the flag off, this listener is never registered, so the preload
+// — and the renderer — behave exactly as today.
+if (process.env.GODOT_SERVER === '1') {
+  ipcRenderer.on('godot:server-port', (event) => {
+    const [port] = event.ports;
+    if (port) window.postMessage({ type: 'godot:server-port' }, '*', [port]);
+  });
+}
