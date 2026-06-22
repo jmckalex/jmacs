@@ -4,6 +4,124 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22 13:30] Model-B/primitive-split: the model/render split is documented + proven on a real stdlib slice (kill/yank, line-ops, a major mode) running server-side
+
+**Context**: The spine loaded only `commands.lisp` + `editing.lisp`.
+Completing Model B means loading the **rest of the stdlib server-side**,
+but most stdlib files call **renderer-side primitives** the
+utilityProcess server has no business running. This slice (a) establishes
++ documents the **model/render primitive-split pattern** — the key
+deliverable that makes the remaining port mechanical — and (b) proves it
+scales by porting a meaningful **model-heavy slice** verbatim. All on
+branch `multi-window-b` in worktree `godot-mw-b`, isolated under
+`apps/desktop/mwb/` behind `MWB_*` flags; production app.js/view.js/main.js
++ `packages/*` untouched; suite green throughout.
+
+**The split pattern (the deliverable) — `mwb/PRIMITIVE-SPLIT.md`**: every
+host primitive is one of three categories —
+- **model**: pure buffer/interpreter state → the server provides it
+  directly (already does, via `createBufferPrimitives`).
+- **render-message**: a visual effect the client owns → the server turns
+  the call into a `VIEW`/scroll/`SNAPSHOT` message the client executes.
+- **stub**: a visual/system effect not yet wired → no-op for now; the
+  command still loads + dispatches, the effect is a documented gap.
+
+Litmus test: *could two windows on one buffer legitimately disagree about
+the answer?* Yes (scroll, pixel height, focused pane, this window's
+minibuffer) → render-side; no (the text, the kill ring, a major mode, a
+customize value) → model-side. The doc has a per-family table so each
+not-yet-ported file resolves to a recipe: grep its host primitives, look
+them up, provide the model ones, route/stub the rest, load verbatim, add
+a headless test.
+
+**What's now loaded + running server-side, VERBATIM from disk** (on top of
+the command core): `custom.lisp`, `indent.lisp`, `modes.lisp`,
+`math-preview.lisp`, `kill.lisp`, `yank-pop.lisp`, `line-ops.lisp`,
+`search.lisp`, `markdown.lisp`. Working through the server:
+- **kill ring / yank**: `C-w` kill-region, `M-w` copy-region, `C-k`
+  kill-line, `C-y` yank, `M-y` yank-pop (+ its correct rejection when the
+  previous command wasn't a yank), `M-d`/`M-backspace` kill-word. The ring
+  is real shared interpreter state; the system-clipboard mirror is a
+  **server-local in-memory stub** (the ring round-trips fully; true
+  cross-app paste deferred — a future clipboard render-message both ways).
+- **line operations**: `M-up`/`M-down` move-line, `C-x C-d` duplicate-line,
+  `C-x C-j` join-line, `M-]`/`M-[` indent/outdent-region, `sort-lines`
+  (an `interactive region` command). All pure model-side.
+- **a real major mode through the server (markdown.lisp)**: a `.md` buffer
+  gets `markdown-mode` server-side (`choose-major-mode!`); its bindings
+  dispatch via the **mode-keymap chain** (see below): `C-c b` bolds the
+  selection (`*…*`), `C-c 1` makes a heading, `C-c m` toggles the
+  math-symbol minor mode and `` ` a`` inserts `\alpha` (via `read-next-key`).
+
+**The meaningful spine extension — the mode-keymap chain.** For a mode's
+bindings to dispatch server-side, `handleKey` now consults the active
+buffer's mode keymaps (minor + major, via modes.lisp's
+`minor-mode-keymaps`/`major-mode-keymap`) **before** the global table,
+plus a Lisp `*key-reader*` for `read-next-key`. This is the same
+resolution order as production keymap.lisp, reusing the real helpers; the
+chord state lives in Lisp (`-spine-chord-map`) so a `C-c …` chord resolves
+against the live mode map. The modeline now also carries the
+server-chosen major mode (model-side info the server owns).
+
+**One shared-state subtlety found + fixed (it WILL recur in the port)**:
+`yank-pop` is valid only right after `yank`/`yank-pop`, tested via
+`*last-command*` (set by `run-command`). For that to hold server-side ALL
+dispatch must touch `*last-command*` — and bare self-insert didn't (it
+called `buffer.insert` directly). Fixed: self-insert now clears
+`*last-command*`, so typing correctly invalidates a pending yank. This is
+the kind of shared-history-state correctness Model B forces (and it's
+cheap once spotted) — flagging it because the same "does this path update
+shared command state?" question recurs for every command file.
+
+**What's stubbed/deferred (honest)**:
+- **search** (`search.lisp` loaded; `regex-search.lisp` not): the two
+  `isearch-*` commands resolve, but the actual **interactive isearch loop**
+  (per-keystroke match + highlight + minibuffer) is host-owned. Porting it
+  is a render-message slice of its own (a server search state machine + a
+  client highlight overlay), not a table row — the honest "too entangled
+  to port cleanly now" case. `start-search!` surfaces a stub status.
+- **preview / MathJax**: `markdown-preview!`/`math-preview!` stubbed (the
+  toggle commands resolve; the iframe/MathJax is a render-message to build).
+- **customize panel**: the registry (`defcustom`, `*tab-width*`, …) runs
+  model-side; the openers (`open-customize!`, `write-custom-file!`) stub.
+- **pane/view/tabline/themes/faces/languages files**: NOT ported — they
+  need the pane tree + DOM measurement + element views, all render-side
+  slices. See PRIMITIVE-SPLIT.md "View / pane addressing".
+
+**Verification (headless, no screen)**:
+- Pure/spine helpers: `node --test mwb/spine.test.js` — **39** cases (22
+  prior + 17 new: the registry, kill/copy/yank, yank-pop + rejection,
+  move-line/duplicate/sort, .md→markdown-mode, C-c b / C-c 1 via the mode
+  chain, the math-symbol minor mode, the search stub, the custom registry).
+- **End-to-end through the REAL server + protocol + view.js**: new
+  `MWB_COMMANDS_SELFTEST=1` flag drives copy/yank + Markdown `C-c b`
+  through the wire and asserts the client MIRROR reflects each. On
+  `sample-documents/README.md`: `[mwb-commands-selftest-done] PASS`
+  (`modeOk=true yankWorked=true boldWorked=true`, modeline `(Markdown)`).
+  The prior `MWB_VIEW_SELFTEST` and `MWB_SAME_BUFFER` self-tests still
+  **PASS** unchanged (single-window + two-window-same-buffer intact).
+- Full desktop suite green: **495** (was 478; +17 spine).
+
+**Feasibility read (updated)**: this retires the last "is the stdlib port
+a metastasizing rewrite?" worry the prior note flagged. With the split map
+in hand, the model-heavy files port **mechanically** — load verbatim,
+provide the (already-present) model primitives, stub the render ones — and
+a real major mode now works through the server, keymap chain and all. The
+residual cost is concentrated in the **render-message families that need a
+real two-way protocol** (the isearch loop, the pane/view negotiation,
+MathJax/preview, §5d's hard direction) — those are slices, not table rows,
+and are clearly enumerated. Nothing here changes the A-vs-B verdict's
+shape; it just moves more of B's "hard, unknown" column into "mechanical,
+known".
+
+**State of the work**: branch `multi-window-b`, clean, suite green (495).
+Two new commits on top of the command-spine work:
+- `feat(mwb): establish the primitive-split + port a model-heavy stdlib slice`
+- `feat(mwb): headless self-test for the richer stdlib through the real view`
+NOT merged. All isolated under `apps/desktop/mwb/` behind `MWB_*` flags.
+
+---
+
 ## [2026-06-22 11:50] Model-B/command-spine: the prototype is a usable editor THROUGH the server — and two windows share one buffer
 
 **Context**: The next slice after render-from-mirror. Phase 0 answered
