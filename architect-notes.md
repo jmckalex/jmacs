@@ -1763,3 +1763,93 @@ message, not a blocker.
 **Tests:** desktop suite **649/0** (+56 from panes; `pane-client-layout` 10/10).
 **view.js: unchanged.** A flag-gated `MWB_PANES_SELFTEST` electron self-test is
 committed for the architect to run by hand.
+
+## [2026-06-22] G3 — stdlib port wave (8 files + supporting primitives), server-side only
+
+Broadened the server spine's stdlib coverage via the established
+**primitive-split**. Server-side only — no renderer / `app.js` / `view.js`
+touched (the leaf-flip is yours). Each file loaded **verbatim from disk**;
+each driven headlessly through the spine (`node --test`). Desktop suite
+**747/0** (+38 from 709). 8 commits on `multi-window-b` (tip `edc40af`),
+NOT merged.
+
+**Newly server-side (in `SPINE_STDLIB`), with what works:**
+- **regex-search.lisp** — `replace-regexp` (JS back-refs $1/$&/$$) and
+  `query-replace` (the y/n/q/! per-match loop, via the spine's
+  `read-next-key` reader) run FULLY model-side. The two `isearch-regexp-*`
+  starters are stubbed (the incremental loop is render-side). Provided the
+  model-side `find-regexp-forward/-backward`, `find-string-forward`,
+  `replace-regexp-all!`, `replace-range!` (mirror app.js's pure helpers
+  byte-for-byte).
+- **occur.lisp** — `M-s o` lists matching lines in a fresh `*Occur:*`
+  buffer. Provided the model-side `new-view!` / `find-view` /
+  `switch-to-view!` (a "view" maps onto a registry buffer; new-view! mints
+  one + switches the active client onto it).
+- **auto-pair.lisp** — typing `(`/`[`/`{`/`"`/`` ` `` auto-pairs
+  **end-to-end** server-side: `handle-key` now consults a model-side
+  `the-keymap` shim for a single printable before self-insert (exactly as
+  production resolves `the-keymap` first). Pair-insert, step-over a close,
+  self-pairing quotes, backspace-deletes-both, and the `*auto-pair*` off
+  path all work over the wire.
+- **snippets-parser.lisp** — pure data-in/out, zero glue.
+- **snippets.lisp** — the **full snippet engine** server-side: expansion,
+  field navigation, and **mirrors-as-multicursors (Policy A)** — a mirrored
+  `$1` installs a real 2-cursor set through the spine (the snippet +
+  multi-cursor + overlay integration end to end). Built-in starter set
+  loads with no directory I/O. Added a model-side `defface`/`face` shim
+  (the face registry is shared model state; rendering deferred);
+  `snippet-date-string` mirrors app.js; the dir-store file reads are
+  stubbed to safe empties.
+- **latex.lisp** — the base writing commands (textbf/textit/emph/
+  math-inline/section/itemize/…) + the C-c keymap; fully model-side, and
+  **C-c b / C-c s dispatch via the mode-keymap chain** on a `.tex` buffer.
+- **latex-insert / latex-math / latex-nav / latex-fill** — the model-side
+  AUCTeX commands run: font wrappers, close-environment, `\begin/\end`
+  matching, section nav, M-RET `\item`, smart quotes, fill-paragraph (in an
+  env). Completion-driven inserts route through the spine's
+  completing-minibuffer (`open-completing-minibuffer!` → the ordinary
+  prompt round-trip; the candidate LIST is the deferred render half). Added
+  a pass-through `minibuffer-tab-complete` base (latex-insert/reftex-refs
+  CAPTURE it at load; completion is render-side). RefTeX is a soft dep
+  (try/catch fallback) so the chain loads without it.
+- **makefile.lisp** — target/phony/variable/tab/include + C-c chord; fully
+  model-side like latex.lisp.
+
+**Coverage picture:** the spine now loads **~26 of the ~70 STDLIB_FILES**
+verbatim (commands/editing/custom/indent/modes/math-preview/kill/yank-pop/
+line-ops/occur/expand-region/multi-cursor/search/regex-search/markdown/
+latex(+insert/math/nav/fill)/makefile/panes/auto-pair/snippets-parser/
+snippets). The model-side editing/mode/snippet/latex surface is now
+broadly server-ready; what remains is concentrated in the render-message
+slices (isearch loop, preview/MathJax, pane geometry, completion UI) and a
+few render-coupled feature engines.
+
+**Deferred (render-coupled, recorded with reasons in PRIMITIVE-SPLIT.md):**
+- **bookmarks.lisp / sticky-notes.lisp** — their engines (`bookmarks.js`,
+  the sticky-note overlay+JMarkdown-render+metadata) are render/host-side;
+  the commands would only resolve against unbuilt engines. Slices of their
+  own, not table-rows.
+- **reftex.lisp + reftex-refs/reftex-cite** — the DB/label logic is
+  model-heavy, but the load chain pulls in **cite.lisp** (`*citation-bib-
+  path*`, the `citation-parse` host bridge) + `latex-master-file`
+  (latex-compile). A coherent next slice once the citation bridge is
+  decided; not forced here.
+- The jukebox / gnuplot / shell / notebook / project / docs / palette
+  files open render-side views (their externals are all `open-*-buffer!`).
+
+**One pre-existing stdlib bug found (NOT mine, NOT fixed — outside mwb
+territory):** `latex-fill-paragraph` does `(car (-latex-open-env-stack
+text (point)))` which throws `car: expected a pair, got nil` when point is
+in **prose with no enclosing environment** (the stdlib's own
+`latex-fill.test.js` only fills inside an `\begin…\end`, so it never hits
+this). The in-environment path — the real use — works correctly
+server-side (matches the stdlib test's expected output exactly). Flagging
+for a guard in `packages/stdlib/lisp/latex-fill.lisp` (a `(when (and stack
+…))` around line 580).
+
+**Test files added (one per ported file/chain):** `regex-search.test.js`,
+`occur.test.js`, `auto-pair.test.js`, `snippets-parser.test.js`,
+`snippets.test.js`, `latex.test.js`, `latex-extras.test.js`,
+`makefile.test.js` — each drives a representative command (or keystroke
+path) through the spine and asserts the buffer/cursor result. The existing
+spine self-tests still pass unchanged.

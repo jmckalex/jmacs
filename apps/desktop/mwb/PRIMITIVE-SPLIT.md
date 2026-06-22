@@ -171,6 +171,84 @@ are **stubs**; everything else in `markdown.lisp` (the formatting,
 heading, list, surround commands + the math-symbol minor mode) is
 **model**.
 
+### Regexp / string search + replace (regex-search.lisp) — **model** + **stub**
+
+| Primitive | Category | Note |
+|---|---|---|
+| `find-regexp-forward` / `find-regexp-backward` / `find-string-forward` | model | first match `(start . end)` over the active buffer's text; a miss / invalid pattern is `#f` (absence convention). Mirror app.js's pure helpers byte-for-byte so a match resolves the SAME in both worlds. |
+| `replace-regexp-all!` | model | rewrites every match; `$N`/`$&`/`$$` back-refs (the `expandReplacement` helper). |
+| `replace-range!` | model | swap one match in a single edit (query-replace's per-match replace). |
+| `start-regexp-search!` / `start-regexp-search-backward!` | stub | begin an incremental regexp search; the per-keystroke loop is render-side, like plain isearch. The starters surface a status, then no-op. |
+
+`replace-regexp` and `query-replace` are thus FULLY model-side;
+query-replace's y/n/q/! per-match loop runs through the spine's
+`read-next-key` reader (the same suspend/resume the math-symbol `` ` ``
+uses).
+
+### View list (view-primitives.js) — **model** (a "view" = a registry buffer)
+
+| Primitive | Category | Note |
+|---|---|---|
+| `new-view!` | model | mint a fresh empty registry buffer + switch the active client's focused leaf onto it. `occur` writes its results into the buffer this returns. |
+| `find-view` / `switch-to-view!` | model | by-name buffer lookup / switch (a miss is `#f`). |
+
+A "view" maps onto a registry buffer (PRIMITIVE-SPLIT.md "View / pane
+addressing"): which buffer a window shows is per-client, but the buffer
+set is shared model state, so these are model.
+
+### Faces (faces.lisp) — **model** registry, **stub** rendering
+
+| Primitive | Category | Note |
+|---|---|---|
+| `defface` / `face` | model (registry) | the face REGISTRY is shared model state (two windows agree on what a face is). The spine has a minimal `defface`/`face` shim in the prelude so feature files (`snippets.lisp`, …) register their faces at load; the `(from 'parent)` inheritance form is unused by loaded files. |
+| `apply-face-styles!`, the `<style id="face-overrides">` write | stub | the actual painting (CSS overrides) is render-side, deferred. |
+
+### Minibuffer TAB completion (files.lisp / latex-insert / reftex-refs) — **stub** (base) + **model** (commands)
+
+| Primitive | Category | Note |
+|---|---|---|
+| `minibuffer-tab-complete` (base) | stub (pass-through) | the base TAB handler `latex-insert.lisp` / `reftex-refs.lisp` CAPTURE at load to wrap. TAB completion (the completions tab + live candidate list) is render-side, so the model-side base returns its input unchanged. The wrapping files still load + add candidate sources at command time; only the interactive completion UI is deferred. |
+| `open-completing-minibuffer!` | render-message (prompt) | a completion-backed prompt. The suspend/resume IS the ordinary minibuffer round-trip — the spine routes it through the SAME prompt channel as `open-minibuffer!`. The candidate list / completions tab is the deferred render half. So a LaTeX smart-insert command resolves server-side (prompts, then runs its model effect on submit). |
+
+### Snippets (snippets.lisp) — **model** engine, **stub** dir-store I/O
+
+| Primitive | Category | Note |
+|---|---|---|
+| the whole expansion / field-nav engine (`-expand-record!`, `-select-field!`, `snippet-next/prev-field`, `snippet-commit`, mirrors-as-multicursors) | model | runs over `insert!`/`goto!`/`set-mark!`/`add-selection!`/`collapse-to-primary!` — all provided. A mirrored `$N` installs a real multi-cursor set (Policy A). The built-in starter set (`*snippet-builtins*`, pure Lisp) loads with NO directory I/O, so `snippet-insert`/`snippet-expand` work out of the box. |
+| `snippet-date-string` | model | deterministic from the clock; mirrors app.js so a `` `date` `` snippet expands identically. |
+| `snippet-user-directory` / `list-directory-paths` / `read-file-text!` | stub / model | the directory-store reads. No user snippet dir server-side yet → `snippet-user-directory` is `""` and `list-directory-paths` is nil (the built-ins cover the model proof). `read-file-text!` does a real disk read (the server is a Node child) for the day a snippet dir is wired. |
+
+### the-keymap (keymap.lisp) — **model** shim + **handle-key** consults it
+
+`keymap.lisp` is render-heavy and not loaded, but `auto-pair.lisp` binds
+the bracket/quote characters into `the-keymap`. The spine provides a
+model-side `the-keymap` (`{}`) in the prelude, AND `handle-key` consults
+it for a single printable BEFORE self-insert (exactly as production
+resolves `the-keymap` first). So a typed `(` runs `auto-pair-open-paren`
+server-side **end-to-end** — pair insertion, step-over, backspace-deletes-
+both. The spine's motion/editing chords stay in the JS `KEYMAP`; only the
+per-character auto-pair bindings land in `the-keymap`.
+
+### Bookmarks / sticky notes — **deferred** (render-coupled engines)
+
+`bookmark-set!`/`bookmark-jump!`/`open-bookmark-view!` (the `bookmarks.js`
+engine + the outline view) and the `note-*!` family (the sticky-note
+overlay + JMarkdown-render + metadata sidecar) are render/host-side
+engines. The Lisp commands are thin shells over them; loading the files
+server-side would only resolve commands against unbuilt engines. These are
+slices of their own (a server-side bookmark marker store, a sticky-note
+overlay protocol), **not table-rows** — deferred.
+
+### RefTeX (reftex.lisp + reftex-refs/reftex-cite) — **deferred** (citation chain)
+
+The label/section/cite DB logic is model-heavy and largely written against
+provided primitives (`list-directory-paths`, `read-file-text!`,
+`show-status!`), but the load chain pulls in **cite.lisp**
+(`*citation-bib-path*`, the `citation-parse` host bridge) and
+`latex-master-file` (latex-compile.lisp). A coherent next slice once the
+citation bridge is decided — not forced in this batch. (The cite picker
+rows already map onto the G0b PICKER channel.)
+
 ## What this means for the remaining port
 
 With the table above, each not-yet-ported stdlib file resolves to a
@@ -195,10 +273,26 @@ table rows. Everything model-side is now mechanical.
 See `architect-notes.md` for the running record. Loaded server-side
 verbatim on top of `commands.lisp` + `editing.lisp`: `custom.lisp`,
 `indent.lisp`, `modes.lisp`, `math-preview.lisp`, `kill.lisp`,
-`yank-pop.lisp`, `line-ops.lisp`, `expand-region.lisp`,
+`yank-pop.lisp`, `line-ops.lisp`, `occur.lisp`, `expand-region.lisp`,
 `multi-cursor.lisp`, `search.lisp` (commands only; loop stubbed),
-`markdown.lisp` (a real major mode through the server). Each driven
-headlessly through the spine.
+`regex-search.lisp` (replace-regexp + query-replace model-side; the
+isearch-regexp starters stubbed), `markdown.lisp` (a real major mode
+through the server), `latex.lisp` + `latex-insert.lisp` +
+`latex-math.lisp` + `latex-nav.lisp` + `latex-fill.lisp` (the model-side
+AUCTeX commands; completion-driven inserts round-trip through the
+completing-minibuffer), `makefile.lisp`, `panes.lisp` (G0a),
+`auto-pair.lisp` (auto-pairs end-to-end on a keystroke via `the-keymap`),
+`snippets-parser.lisp` (pure), `snippets.lisp` (the full engine —
+expansion, field nav, mirrors-as-multicursors). Each driven headlessly
+through the spine (one `node --test` per file/chain).
+
+**G3 batch (2026-06-22):** ~26 of ~70 STDLIB_FILES now load server-side.
+The model-side editing / mode / snippet / latex surface is broadly
+server-ready. What remains is concentrated in render-message slices
+(isearch loop, preview/MathJax, pane geometry, completion UI) + a few
+render-coupled feature engines (bookmarks, sticky notes, jukebox, shell,
+notebook — all `open-*-view!`) and the reftex chain (needs the citation
+bridge + cite.lisp).
 
 **Multi-buffer (2026-06-22):** the server now holds MANY buffers
 (`buffer-registry.js`), each with its own text / per-client views /
