@@ -91,6 +91,16 @@ function startServer() {
         app.exit(message.ok ? 0 : 1);
       }, 100);
     }
+    // The generic-picker self-test (MWB_PICKER_SELFTEST=1): the server drives
+    // the whole C-x C-b → PICKER → choice round-trip headlessly and posts its
+    // result here. See server.js runPickerSelfTest.
+    if (message && message.type === 'picker-selftest-done') {
+      console.error(`[mwb] picker self-test ${message.ok ? 'PASS' : 'FAIL'}`);
+      setTimeout(() => {
+        if (server) server.kill();
+        app.exit(message.ok ? 0 : 1);
+      }, 100);
+    }
   });
 }
 

@@ -275,6 +275,10 @@ function sendBufferListTo(client) {
  *  back from this client and resumes the suspended command. */
 let pickerClient = null;
 
+/** The last PICKER request the server sent (the wire shape), for the self-test
+ *  to inspect headlessly. Production ignores it. */
+let lastPickerSent = null;
+
 /** Send a client a generic PICKER request (the G0b channel): the wire shape
  *  `{ id, title, rows, options }`, normalised so a malformed row can't crash
  *  the render. The client renders the interactive list and replies with a
@@ -282,7 +286,8 @@ let pickerClient = null;
 function sendPickerTo(client, req) {
   pickerClient = client;
   const picker = normalisePickerRequest(req);
-  client.port.postMessage({ type: MSG.PICKER, picker, seq });
+  lastPickerSent = picker;
+  if (client && client.port) client.port.postMessage({ type: MSG.PICKER, picker, seq });
 }
 
 /** Send a client its window's PANE_TREE (the layout: split structure +
@@ -923,6 +928,101 @@ function runPanesSelfTest() {
 
 if (process.env.MWB_PANES_SELFTEST === '1') {
   setTimeout(runPanesSelfTest, 300);
+}
+
+// --- headless generic-picker self-test (MWB_PICKER_SELFTEST=1) ---------
+//
+// Drives the WHOLE G0b round-trip through the REAL server intent path: open a
+// second buffer, run list-buffers (C-x C-b) so the command SUSPENDS on a
+// PICKER, assert the server emitted a PICKER request carrying the buffer rows,
+// then feed a PICKER_CHOOSE intent (the client's reply) through applyIntent —
+// the production reply path — and assert the suspended command resumed and the
+// window switched to the chosen buffer. Also checks the cancel path leaves the
+// window put and a stale pickerId is dropped. The verification of record is
+// node --test (spine.test.js: 6 picker cases + protocol.test.js: 11 helper
+// cases); this is the architect-facing in-electron mirror. PASS/FAIL on stderr
+// + parentPort, wrapped so a failure can never crash the main process.
+function runPickerSelfTest() {
+  const checks = {};
+  let detail = '';
+  try {
+    // A stub client so the onPicker/onBufferSwitched effects have a target +
+    // capture the messages the server would post to a real window.
+    const posted = [];
+    const stub = { on() {}, start() {}, postMessage: (m) => posted.push(m) };
+    registerClient(stub);
+    const client = clients.find((c) => c.port === stub);
+    activeClient = client;
+    spine.setActiveClient(client.index);
+
+    // Open a SECOND buffer (a /tmp scratch file) so the list has >1 row.
+    const target = join(tmpdir(), `mwb-picker-${process.pid}.txt`);
+    writeFileSync(target, 'SECOND BUFFER BODY\n');
+    const seedName = spine.buffer.name;
+    spine.visitFile(target); // the active client switches to it
+    checks.twoBuffers = spine.bufferCount === 2;
+    checks.onSecond = spine.buffer.name !== seedName;
+    const seedId = spine.bufferIdByName(seedName);
+
+    // C-x C-b → list-buffers suspends on a PICKER. Drive it as KEY intents
+    // through applyIntent (the real wire path), not a direct call.
+    lastPickerSent = null;
+    applyIntent(client, { id: 1, kind: INTENT.KEY, key: 'C-x' });
+    applyIntent(client, { id: 2, kind: INTENT.KEY, key: 'C-b' });
+    checks.pickerEmitted = !!lastPickerSent && lastPickerSent.title === 'Buffer list';
+    checks.pickerHasRows = !!lastPickerSent && lastPickerSent.rows.length === 2;
+    checks.commandSuspended = !!spine.activePicker; // still open, awaiting a choice
+    const pickerId = lastPickerSent ? lastPickerSent.id : null;
+    const seedRow = lastPickerSent
+      ? lastPickerSent.rows.find((r) => r.value === seedId)
+      : null;
+    checks.seedRowPresent = !!seedRow;
+
+    // A STALE reply (wrong pickerId) must be dropped — the window must not move.
+    applyIntent(client, {
+      id: 3, kind: INTENT.PICKER_CHOOSE, value: seedId, pickerId: 'picker-stale',
+    });
+    checks.staleDropped = spine.buffer.name !== seedName && !!spine.activePicker;
+
+    // The real reply: PICKER_CHOOSE the seed buffer → the command resumes and
+    // the window switches back to it.
+    applyIntent(client, {
+      id: 4, kind: INTENT.PICKER_CHOOSE, value: seedId, pickerId,
+    });
+    checks.switchedOnChoose = spine.buffer.name === seedName;
+    checks.pickerClosed = spine.activePicker === null;
+    checks.clientResynced = posted.some((m) => m.type === MSG.SNAPSHOT);
+
+    // The cancel path: open the picker again, cancel it (Escape), and assert
+    // the window stays on whatever buffer it was on (a cancel does nothing).
+    activeClient = client;
+    spine.setActiveClient(client.index);
+    const beforeCancel = spine.buffer.name;
+    applyIntent(client, { id: 5, kind: INTENT.KEY, key: 'C-x' });
+    applyIntent(client, { id: 6, kind: INTENT.KEY, key: 'C-b' });
+    const cancelId = lastPickerSent ? lastPickerSent.id : null;
+    applyIntent(client, { id: 7, kind: INTENT.PICKER_CANCEL, pickerId: cancelId });
+    checks.cancelStaysPut = spine.buffer.name === beforeCancel;
+    checks.cancelClosed = spine.activePicker === null;
+
+    detail = `buffer=${JSON.stringify(spine.buffer.name)}`;
+  } catch (error) {
+    detail += `threw=${error && error.message}`;
+  }
+  const ok = Object.keys(checks).length > 0 && Object.values(checks).every(Boolean);
+  console.error(
+    `[mwb-picker-selftest] ${Object.entries(checks).map(([k, v]) => `${k}=${v}`).join(' ')} ${detail}`
+  );
+  console.error(`[mwb-picker-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
+  try {
+    process.parentPort.postMessage({ type: 'picker-selftest-done', ok });
+  } catch {
+    // No parent (a bare node run): the stderr line is the result.
+  }
+}
+
+if (process.env.MWB_PICKER_SELFTEST === '1') {
+  setTimeout(runPickerSelfTest, 300);
 }
 
 // --- port wiring --------------------------------------------------------
