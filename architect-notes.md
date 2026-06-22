@@ -1853,3 +1853,33 @@ for a guard in `packages/stdlib/lisp/latex-fill.lisp` (a `(when (and stack
 `makefile.test.js` — each drives a representative command (or keystroke
 path) through the spine and asserts the buffer/cursor result. The existing
 spine self-tests still pass unchanged.
+
+## [2026-06-22 night] Live flag-on test (Jason) — findings
+
+Real app, `GODOT_SERVER=1`. Typing native. The single-key editing core works
+through the server: motion (arrows / C-f/b/n/p / C-a/e / M-f/b), editing
+(Return/Backspace/C-d/C-k), kill-ring (C-k/C-y, C-SPC/C-w/M-w), undo (C-/).
+
+**Pipeline (deferred feature — auto-corrects, NOT a bug):**
+- **C-v / M-v** (scroll a screenful) — needs the deferred **VIEWPORT** up-message
+  (the server must know the pane's pixel/line height to scroll by a screenful).
+  Comes with the measurement-conversation wiring.
+- **C-o (open-line)** — not bound in the spine's *focused* keymap subset; comes
+  when we load the full keymap.lisp / bind more. Command exists server-side.
+
+**Genuine bugs (won't fully auto-correct — fix in the key-dispatch / leaf-flip):**
+1. **Auto-pair (and any *electric*/keymap-bound printable) never fires.** Root:
+   the client local-echo path (`echoSelfInsert`, `server-view-client.js`
+   `dispatchKey`) self-inserts a bare printable as `SELF_INSERT`, **bypassing the
+   server's `handle-key`/`the-keymap`** where `(`/`[`/`{`/`"` are bound. SAME root
+   as the chord-eating bug (a printable after a prefix). **Fix:** route printables
+   through `handle-key` — either drop the `SELF_INSERT` special-case entirely
+   (Phase-0 showed local-echo isn't perceptibly faster — both are frame-gated;
+   Jason confirms native feel through the round-trip), OR run `SELF_INSERT`
+   through `handle-key` server-side and let the corrected delta reconcile the
+   optimistic prediction. This single fix also kills the chord-eating bug.
+2. **Undo (C-/) rings the bell each time.** Undo works but chirps. Likely the
+   in-renderer global router *also* processing C-/ on its own (untouched) buffer
+   → "no further undo" → ding (the dual-router), i.e. the global router isn't
+   fully standing down under server-mode. Resolve with the server-mode router
+   branch (part of the leaf-flip). Confirm it's the bell source.
