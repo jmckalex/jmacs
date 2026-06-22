@@ -48,6 +48,10 @@ let nextIntentId = 1;
 /** Whether the minibuffer is currently prompting (input focused). */
 let minibufferActive = false;
 
+/** This client's index in the server (0 = the first/typer client). Set from
+ *  the snapshot; used by the same-buffer self-test to pick typer vs observer. */
+let clientIndex = 0;
+
 /** Instrumentation: keydown→server-delta round-trip. */
 const pending = new Map();
 const samples = { localEcho: [], roundTrip: [] };
@@ -221,6 +225,7 @@ mbInputEl.addEventListener('keydown', (event) => {
 // --- server messages ---------------------------------------------------
 
 function onSnapshot(msg) {
+  if (typeof msg.clientIndex === 'number') clientIndex = msg.clientIndex;
   mirror = createClientBuffer({
     initialText: msg.text,
     name: msg.name || 'mwb.js',
@@ -334,6 +339,9 @@ window.addEventListener('message', (event) => {
       if (window.mwb && window.mwb.selftest) {
         setTimeout(runSelfTest, 600);
       }
+      if (window.mwb && window.mwb.sameBuffer) {
+        setTimeout(runSameBufferTest, 800);
+      }
     });
   }
 });
@@ -446,4 +454,54 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function finishSelfTest(ok) {
   console.error(`[mwb-view-selftest-done] ${ok ? 'PASS' : 'FAIL'}`);
+}
+
+// --- same-buffer (two-client) self-test (MWB_SAME_BUFFER=1) -----------
+//
+// The Model-B payoff: one buffer in two windows. Client 0 (the typer) moves
+// to buffer start and types a distinctive marker. Client 1 (the observer)
+// watches its OWN mirror — it never typed, but should SEE the marker appear
+// because the server fanned client 0's deltas to it. The observer logs the
+// PASS/FAIL line that ends the headless run.
+const SAME_BUFFER_MARKER = 'SHARED99 ';
+
+async function runSameBufferTest() {
+  try {
+    if (!mirror || !view) {
+      if (clientIndex === 1) console.error('[mwb-same-buffer-done] FAIL: not mounted');
+      return;
+    }
+    if (clientIndex === 0) {
+      // The typer. Move to buffer start and type the marker, paced.
+      sendKey('M-less');
+      await frame();
+      for (const ch of SAME_BUFFER_MARKER) {
+        dispatchKey(ch);
+        // eslint-disable-next-line no-await-in-loop -- pace like real typing
+        await frame();
+      }
+      console.error('[mwb-same-buffer] client 0 typed the marker');
+      return;
+    }
+    // The observer (client 1). Poll its own mirror for the marker the OTHER
+    // window typed; it should arrive as fanned-out deltas.
+    const startText = mirror.text;
+    let sawIt = false;
+    for (let i = 0; i < 60; i += 1) {
+      // eslint-disable-next-line no-await-in-loop -- polling loop
+      await sleep(50);
+      if (mirror.text.startsWith(SAME_BUFFER_MARKER)) { sawIt = true; break; }
+    }
+    const changedFromShared = sawIt && startText !== mirror.text;
+    console.error(
+      `[mwb-same-buffer] observer(client 1) sawMarker=${sawIt} ` +
+      `changed=${changedFromShared} ` +
+      `line0='${mirror.lineAt(0).text.slice(0, 24)}'`
+    );
+    console.error(`[mwb-same-buffer-done] ${sawIt ? 'PASS' : 'FAIL'}`);
+  } catch (error) {
+    if (clientIndex === 1) {
+      console.error('[mwb-same-buffer-done] FAIL: threw', error && error.message);
+    }
+  }
 }

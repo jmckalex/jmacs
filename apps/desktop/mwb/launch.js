@@ -46,10 +46,15 @@ const HARNESS_URL = VIEW_MODE
   ? 'app://editor/apps/desktop/mwb/view-harness.html'
   : 'app://editor/apps/desktop/mwb/harness.html';
 
+// How many client windows to open. MWB_CLIENTS=2 stands up a SECOND client
+// attached to the same server, viewing the same buffer — the Model-B killer
+// feature (one buffer in two windows; type in one, watch the other update).
+const CLIENT_COUNT = Math.max(1, Number(process.env.MWB_CLIENTS) || 1);
+
 /** @type {Electron.UtilityProcess | null} */
 let server = null;
-/** @type {BrowserWindow | null} */
-let win = null;
+/** @type {BrowserWindow[]} */
+const windows = [];
 
 function startServer() {
   // The server is a Node ESM module; serviceName shows up in process
@@ -64,12 +69,17 @@ function startServer() {
   });
 }
 
-function createWindow() {
-  win = new BrowserWindow({
+/** Open one client window (index `n`) and wire its own MessageChannel to
+ *  the server. Each window is a separate renderer (its own JS isolation,
+ *  plan §7) sharing the one server buffer. */
+function createWindow(n) {
+  const win = new BrowserWindow({
     width: 900,
     height: 640,
+    x: 60 + n * 60,
+    y: 60 + n * 60,
     backgroundColor: '#1b1b23',
-    title: 'Godot — Model B Phase 0 latency spike',
+    title: `Godot — Model B (client ${n})`,
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,
@@ -77,22 +87,30 @@ function createWindow() {
       sandbox: false,
     },
   });
+  windows.push(win);
   win.loadURL(HARNESS_URL);
 
   // Surface the renderer's console to our stderr so the latency numbers
-  // (and the autobench-done line) are visible from a headless launch.
+  // (and the *-done lines) are visible from a headless launch. Tag each
+  // line with the client index.
   win.webContents.on('console-message', (_e, _level, message) => {
-    console.error('[renderer]', message);
-    // The render-from-mirror self-test logs this line when done; quit so a
-    // headless `MWB_VIEW=1 MWB_VIEW_SELFTEST=1` run terminates cleanly.
+    console.error(`[renderer ${n}]`, message);
+    // The view self-test logs this line when done; quit (only the primary
+    // client runs the self-test).
     if (message.startsWith('[mwb-view-selftest-done]')) {
       setTimeout(() => {
         if (server) server.kill();
         app.exit(message.includes('PASS') ? 0 : 1);
       }, 100);
     }
-    // In autobench mode, the page logs this line when both passes are
-    // done; we read the JSON, print a clean summary, and quit.
+    // The same-buffer self-test (two clients): the primary logs this once it
+    // has confirmed the OTHER window saw its edit.
+    if (message.startsWith('[mwb-same-buffer-done]')) {
+      setTimeout(() => {
+        if (server) server.kill();
+        app.exit(message.includes('PASS') ? 0 : 1);
+      }, 100);
+    }
     if (message.startsWith('[mwb-autobench-done]')) {
       const json = message.slice('[mwb-autobench-done]'.length).trim();
       console.error('\n===== MWB Phase 0 latency (ms) =====');
@@ -115,17 +133,12 @@ function createWindow() {
       }, 100);
     }
   });
-}
 
-/** Create the channel and transfer the two ends. The server must be up
- *  first (it waits for its port on parentPort); the renderer asks for its
- *  port via the preload once the page is ready. */
-function wireChannel() {
+  // Each window gets its OWN MessageChannel to the server. main creates the
+  // channel, posts port1 to the server (a new client) and port2 into the
+  // page once it has loaded.
   const { port1, port2 } = new MessageChannelMain();
-  // Server gets port1.
-  server.postMessage({ type: 'init' }, [port1]);
-  // Renderer gets port2 — delivered into the page over a dedicated IPC
-  // channel the preload listens for.
+  server.postMessage({ type: 'init', client: n }, [port1]);
   win.webContents.once('did-finish-load', () => {
     win.webContents.postMessage('mwb:port', null, [port2]);
   });
@@ -134,8 +147,7 @@ function wireChannel() {
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   startServer();
-  createWindow();
-  wireChannel();
+  for (let n = 0; n < CLIENT_COUNT; n += 1) createWindow(n);
 });
 
 app.on('window-all-closed', () => {

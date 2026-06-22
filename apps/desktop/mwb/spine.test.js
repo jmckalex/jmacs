@@ -213,6 +213,60 @@ test('activePrompt tracks the current prompt and clears on submit', () => {
   assert.equal(spine.activePrompt, null);
 });
 
+// --- multi-client: shared buffer, per-client cursor (the Model-B payoff) -
+
+test('two clients share the buffer text but keep separate cursors', () => {
+  const { spine } = makeSpine('hello world');
+  const c1 = spine.addClientView(); // client 1 (client 0 is the default)
+  assert.equal(spine.clientCount, 2);
+
+  // Client 0 moves to offset 0 and types.
+  spine.setActiveClient(0);
+  spine.buffer.moveTo(0);
+  spine.handleKey('X');
+  assert.equal(spine.buffer.text, 'Xhello world');
+
+  // Client 1's cursor is independent — it was at 0, and an insert before it
+  // by client 0 shifts it (marker semantics), but its identity is its own.
+  spine.setActiveClient(c1);
+  const c1State = spine.viewStateOf(c1);
+  const c0State = spine.viewStateOf(0);
+  // Both see the SAME shared text.
+  assert.equal(c1State.name, c0State.name);
+  assert.equal(spine.buffer.text, 'Xhello world');
+  // The cursors are distinct objects: client 0's point advanced past 'X'.
+  assert.equal(c0State.point, 1);
+});
+
+test('an edit in one client is visible to the other (one buffer, N views)', () => {
+  const { spine } = makeSpine('abc');
+  spine.addClientView();
+
+  spine.setActiveClient(0);
+  spine.buffer.moveTo(3);
+  for (const ch of 'DEF') spine.handleKey(ch);
+
+  // Client 1 reads the same shared buffer — it sees client 0's edit.
+  spine.setActiveClient(1);
+  assert.equal(spine.viewStateOf(1).name, 'scratch.txt');
+  assert.equal(spine.buffer.text, 'abcDEF');
+});
+
+test('each client moves its own point without disturbing the other', () => {
+  const { spine } = makeSpine('one\ntwo\nthree');
+  spine.addClientView();
+
+  spine.setActiveClient(0);
+  spine.buffer.moveTo(0);
+  spine.handleKey('down'); // client 0 → line 1
+
+  spine.setActiveClient(1);
+  spine.buffer.moveTo(0); // client 1 stays on line 0
+
+  assert.equal(spine.buffer.positionAt(spine.viewStateOf(0).point).line, 1);
+  assert.equal(spine.buffer.positionAt(spine.viewStateOf(1).point).line, 0);
+});
+
 test('viewState reports point, mark, name, modeline and modified flag', () => {
   const { spine } = makeSpine('hi', 'note.txt');
   let vs = spine.viewState();

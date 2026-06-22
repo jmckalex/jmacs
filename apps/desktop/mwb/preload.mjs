@@ -30,4 +30,8 @@ contextBridge.exposeInMainWorld('mwb', {
   // handful of edits through the mirror→server→delta→re-render path and
   // log the outcome to stderr, so the slice is verifiable without a screen.
   selftest: process.env.MWB_VIEW_SELFTEST === '1',
+  // Headless self-test for the same-buffer (two-client) feature: client 0
+  // types a marker; client 1 (the observer) confirms it sees the edit on
+  // its own mirror without having originated it — the Model-B payoff.
+  sameBuffer: process.env.MWB_SAME_BUFFER === '1',
 });

@@ -150,8 +150,17 @@ export function createSpine(options, effects = {}) {
   buffer.bindCursor(view);
   view.point = 0;
 
+  // Every client's view over the SHARED buffer. Index 0 is the default
+  // (single-client) view. Two windows on one buffer share the text but each
+  // keep their own point/mark (plan §4 "per-window vs per-buffer state").
+  // `bindCursor` swaps which view's cursors the buffer reads/writes, so
+  // before processing a client's intent the server makes that client's view
+  // active (setActiveClientView), and motion/edits land on its cursor.
+  const clientViews = [view];
+
   /** The session the buffer primitives operate against. A getter for
-   *  `currentView` so a find-file can swap the buffer/view underneath. */
+   *  `currentView` so a find-file can swap the buffer/view underneath and a
+   *  multi-client server can swap the active client's view. */
   const session = {
     get currentView() {
       return view;
@@ -325,13 +334,64 @@ export function createSpine(options, effects = {}) {
       return false;
     }
     buffer = createBuffer(result.text, { name: result.name });
-    view = createView({ kind: 'text', buffer, name: buffer.name });
+    // Rebuild every client's view over the new shared buffer, preserving the
+    // number of clients (each keeps its own cursor, reset to start).
+    const n = clientViews.length;
+    clientViews.length = 0;
+    for (let i = 0; i < n; i += 1) {
+      const v = createView({ kind: 'text', buffer, name: buffer.name });
+      v.point = 0;
+      clientViews.push(v);
+    }
+    view = clientViews[0];
     buffer.bindCursor(view);
-    view.point = 0;
     savedText = result.text;
     statusText = '';
     onStatus('');
     return true;
+  }
+
+  // --- multi-client window-state (the Model-B payoff) -------------------
+  //
+  // Each client gets its OWN view over the shared buffer (its own
+  // point/mark/selection); the buffer text is shared. Before processing a
+  // client's intent the server makes that client's view active, so motion
+  // and edits land on its cursor while every viewer sees the shared text.
+
+  /** Register a new client view over the shared buffer. Returns its index,
+   *  used by the server as a client handle. */
+  function addClientView() {
+    const v = createView({ kind: 'text', buffer, name: buffer.name });
+    v.point = 0;
+    clientViews.push(v);
+    return clientViews.length - 1;
+  }
+
+  /** Make client INDEX's view the active one: the buffer's cursor now reads
+   *  and writes that client's point/mark. Subsequent handleKey/runCommand
+   *  operate on this client's window-state. */
+  function setActiveClient(index) {
+    if (index < 0 || index >= clientViews.length) return;
+    view = clientViews[index];
+    buffer.bindCursor(view);
+  }
+
+  /** The view-state of a specific client (its own point/mark over the
+   *  shared buffer text). */
+  function viewStateOf(index) {
+    const v = clientViews[index] ?? view;
+    const { line, column } = buffer.positionAt(v.point);
+    const modified = buffer.text !== savedText;
+    return {
+      point: v.point,
+      mark: v.mark,
+      name: buffer.name,
+      modeline: renderModeline({
+        name: buffer.name, modified, line: line + 1, column,
+      }),
+      status: statusText,
+      modified,
+    };
   }
 
   // --- the keymap dispatch ---------------------------------------------
@@ -476,6 +536,13 @@ export function createSpine(options, effects = {}) {
     visitFile,
     viewState,
     pointPosition,
+    // multi-client window-state (shared buffer, per-client cursor)
+    addClientView,
+    setActiveClient,
+    viewStateOf,
+    get clientCount() {
+      return clientViews.length;
+    },
     /** The active minibuffer prompt label, or null. */
     get activePrompt() {
       return activePrompt;
