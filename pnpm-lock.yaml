@@ -41,6 +41,9 @@ importers:
       '@editor/stdlib':
         specifier: workspace:*
         version: link:../../packages/stdlib
+      '@editor/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       '@editor/view':
         specifier: workspace:*
         version: link:../../packages/view
