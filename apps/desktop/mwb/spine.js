@@ -928,6 +928,29 @@ export function createSpine(options, effects = {}) {
     }
   }
 
+  /** The major-mode display name a SPECIFIC buffer entry would show. The
+   *  major mode is a property of the buffer (derived from its name), but the
+   *  interpreter only knows the mode of the ACTIVE view — so we briefly bind
+   *  the entry, derive its mode, read the name, then restore the active
+   *  binding. Read-only (no buffer text touched), so the round-trip is safe.
+   *  This keeps a window's modeline mode correct even when another window on
+   *  a different buffer is the active one. */
+  function majorModeNameFor(entry, v) {
+    if (entry === activeEntry) return majorModeName();
+    const savedEntry = activeEntry;
+    const savedView = view;
+    bindActive(entry, v);
+    try {
+      interpreter.call('-spine-choose-major-mode');
+      return majorModeName();
+    } catch {
+      return '';
+    } finally {
+      bindActive(savedEntry, savedView);
+      interpreter.call('-spine-choose-major-mode');
+    }
+  }
+
   /** The view-state of a specific client (its own point/mark over ITS OWN
    *  current buffer). Reads the client's buffer entry, not the active one,
    *  so two clients on different buffers report different modelines. */
@@ -943,7 +966,7 @@ export function createSpine(options, effects = {}) {
       name: buf.name,
       modeline: renderModeline({
         name: buf.name, modified, line: line + 1, column,
-        mode: majorModeName(),
+        mode: majorModeNameFor(entry, v),
       }),
       status: statusText,
       modified,

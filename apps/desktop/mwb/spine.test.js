@@ -288,6 +288,128 @@ test('viewState reports point, mark, name, modeline and modified flag', () => {
   assert.match(vs.modeline, /^\*\*/);
 });
 
+// --- multi-buffer: the registry, switching, kill-buffer ----------------
+
+test('the server starts with one buffer; find-file adds a second', () => {
+  const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  assert.equal(spine.bufferCount, 1);
+  const id = spine.visitFile('/a/b.md');
+  assert.equal(spine.bufferCount, 2);
+  // The active client is now on the new buffer; the old one is still held.
+  assert.equal(spine.currentBufferIdOf(0), id);
+  assert.equal(spine.buffer.name, 'b.md');
+  assert.ok(spine.bufferIdByName('scratch.txt'));
+});
+
+test('switch-to-buffer moves the active client between buffers, keeping cursor', () => {
+  const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
+  const { spine } = makeSpine('alpha beta', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  const seedId = spine.currentBufferIdOf(0);
+  spine.buffer.moveTo(5); // a cursor in the seed buffer
+  const xId = spine.visitFile('/x.js'); // switches to x.js
+  assert.equal(spine.buffer.name, 'x.js');
+  // Switch back to the seed buffer by id → its content + cursor return.
+  assert.equal(spine.switchClientToBuffer(0, seedId), true);
+  assert.equal(spine.buffer.text, 'alpha beta');
+  assert.equal(spine.buffer.point, 5); // the seed cursor was preserved
+  // …and forward to x.js again.
+  assert.equal(spine.switchClientToBuffer(0, xId), true);
+  assert.equal(spine.buffer.text, 'const x = 1;\n');
+});
+
+test('bufferListRecords flags the current buffer per client', () => {
+  const files = { '/x.js': { text: 'x', name: 'x.js' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  spine.addClientView(); // client 1, on the seed buffer
+  const xId = spine.visitFile('/x.js'); // active client (0) switches to x.js
+  const recs0 = spine.bufferListRecords(0);
+  const recs1 = spine.bufferListRecords(1);
+  assert.equal(recs0.length, 2);
+  // Client 0's current buffer is x.js; client 1's is still the seed.
+  assert.equal(recs0.find((r) => r.id === xId).current, true);
+  assert.equal(recs1.find((r) => r.id === xId).current, false);
+  assert.ok(recs1.find((r) => r.name === 'scratch.txt').current);
+});
+
+test('two clients can view different buffers independently', () => {
+  const files = { '/x.js': { text: 'XBUF', name: 'x.js' } };
+  const { spine } = makeSpine('SEEDBUF', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  spine.addClientView(); // client 1
+  // Client 0 visits x.js; client 1 stays on the seed.
+  spine.setActiveClient(0);
+  const xId = spine.visitFile('/x.js');
+  // Each client's view-state reflects ITS OWN buffer.
+  spine.setActiveClient(1);
+  assert.equal(spine.viewStateOf(0).name, 'x.js');
+  assert.equal(spine.viewStateOf(1).name, 'scratch.txt');
+  // An edit by client 1 to the seed must NOT touch x.js.
+  spine.buffer.moveTo(0);
+  spine.handleKey('Z');
+  assert.equal(spine.viewStateOf(1).name, 'scratch.txt');
+  // x.js content is untouched by the seed edit. Make client 0 active so
+  // spine.buffer reads ITS buffer (still x.js), then assert.
+  spine.setActiveClient(0);
+  assert.equal(spine.currentBufferIdOf(0), xId);
+  assert.equal(spine.buffer.text, 'XBUF');
+});
+
+test('two clients on different buffers report different modeline modes', () => {
+  const files = { '/note.md': { text: '# h\n', name: 'note.md' } };
+  const { spine } = makeSpine('let a = 1;\n', 'code.js', {
+    openFile: (p) => files[p] ?? null,
+  });
+  spine.addClientView(); // client 1, on code.js
+  spine.setActiveClient(0);
+  spine.visitFile('/note.md'); // client 0 → markdown
+  // Client 0's modeline carries Markdown; client 1's carries the .js mode.
+  assert.match(spine.viewStateOf(0).modeline, /Markdown/);
+  assert.doesNotMatch(spine.viewStateOf(1).modeline, /Markdown/);
+});
+
+test('kill-buffer removes the active buffer and re-homes the client', () => {
+  const files = { '/x.js': { text: 'x', name: 'x.js' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  spine.visitFile('/x.js'); // now on x.js, 2 buffers
+  assert.equal(spine.bufferCount, 2);
+  spine.setActiveClient(0);
+  spine.killActiveBuffer(); // kill x.js → switch to the survivor (seed)
+  assert.equal(spine.bufferCount, 1);
+  assert.equal(spine.buffer.name, 'scratch.txt');
+});
+
+test('kill-buffer refuses to kill the only buffer', () => {
+  const { spine } = makeSpine('only', 'scratch.txt');
+  spine.setActiveClient(0);
+  spine.killActiveBuffer();
+  assert.equal(spine.bufferCount, 1);
+  assert.equal(spine.buffer.name, 'scratch.txt');
+});
+
+test('switching one client buffer leaves the other client put', () => {
+  const files = { '/x.js': { text: 'x', name: 'x.js' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', {
+    openFile: (p) => files[p] ?? null,
+  });
+  const c1 = spine.addClientView();
+  const seedId = spine.currentBufferIdOf(c1);
+  spine.setActiveClient(0);
+  spine.visitFile('/x.js'); // only client 0 switches
+  // Client 1 is undisturbed — still on the seed buffer.
+  assert.equal(spine.currentBufferIdOf(c1), seedId);
+  assert.equal(spine.currentBufferIdOf(0) !== seedId, true);
+});
+
 // --- the richer server-side stdlib slice (PRIMITIVE-SPLIT.md) -----------
 //
 // These prove that the model-heavy stdlib files loaded by the spine
