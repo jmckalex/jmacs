@@ -4,6 +4,118 @@ Running log for decisions/blockers that need Jason. Newest first.
 
 ---
 
+## [2026-06-22 14:40] Model-B/multi-buffer: the server is now a real multi-buffer workspace — N buffers, clients switch between them (C-x b / C-x C-b / C-x k)
+
+**Context**: The foundation after overlays/multi-cursor. The spine held ONE
+canonical buffer that find-file *replaced*. This slice makes the server a
+real **multi-buffer workspace**: it holds MANY L2 buffers at once (a buffer
+list keyed by id), each with its own text/mode/markers/overlays/point, and
+clients switch between them. All on branch `multi-window-b` in worktree
+`godot-mw-b`, isolated under `apps/desktop/mwb/` behind `MWB_*` flags;
+production app.js/view.js/main.js + `packages/*` untouched; suite green
+throughout.
+
+**What multi-buffer now does (proven end-to-end through the REAL view.js)**:
+- **Server-side buffer registry** (`mwb/buffer-registry.js`, new). The server
+  holds many buffers at once; each registry entry owns its L2 buffer (the
+  shared text), a `Map<clientIndex, view>` (each window keeps its OWN
+  point/mark over that buffer — the per-window vs per-buffer split), its
+  overlay list (edit-tracked via L2 markers, **per-buffer** so a highlight
+  rides with its buffer), and a per-buffer saved-text baseline. Name
+  collisions get an Emacs-style `<n>` suffix. 16 `node --test` cases.
+- **find-file ADDS a buffer** (and switches the active client to it) instead
+  of replacing the current one. The original buffer stays in the list,
+  switchable back — with its overlays and the window's cursor intact.
+- **Per-client current-buffer**: each window tracks which buffer it views
+  (the spine's `clientBuffers` map). `setActiveClient` binds the interpreter
+  to the active client's CURRENT buffer + its view of it (re-deriving the
+  major mode, since the mode is a buffer property). Two windows can view
+  DIFFERENT buffers; switching one window's buffer leaves the other put.
+- **The switch protocol**: a buffer switch sends the client a full SNAPSHOT
+  (text + point) of the new buffer, then its overlays + cursor set. The
+  client's `onSnapshot` (which builds a fresh `ClientBuffer` + a fresh real
+  `view.js`) IS the "tear down the old mirror, build a new one" the brief
+  asked for — the same path used for initial sync and find-file; in-flight
+  predictions for the old buffer are cleared. New wire pieces: a
+  `SWITCH_BUFFER` intent (a direct switch, e.g. a buffer-list click) and a
+  `BUFFER_LIST` down-message; SNAPSHOT now carries a `bufferId`.
+- **Commands**: `switch-to-buffer` (C-x b) — a host-completed name read
+  (exact then shortest-substring match), `list-buffers` (C-x C-b) — sends
+  the buffer records, `kill-buffer` (C-x k) — removes the current buffer and
+  re-homes the window to a survivor (the registry **refuses to kill the last
+  buffer**). All real `defcommand`s, bound in the spine's C-x map exactly as
+  production keymap.lisp binds them.
+
+**The one correctness change that mattered: deltas are no longer a
+broadcast.** With one buffer, every text delta fanned to every client. With
+N buffers, a delta must reach **only the clients viewing the edited buffer**
+— else a window on a different buffer gets corrupted. The registry now tags
+each buffer's `onChange` with its id (`onBufferChange`), and the server
+(`fanDelta`) matches clients by `currentBufferIdOf`. The multi-cursor RESYNC
+and the overlay broadcast are likewise **scoped to the edited buffer**. A
+find-file/switch through the minibuffer changes the active client's buffer
+mid-intent; the switch handler fully re-syncs that client, so `applyIntent`
+detects the buffer change and **skips the stale-buffer reconciliation** (the
+captured `buffer`/`point` refer to the old buffer).
+
+**view.js change needed: ZERO (again).** The whole switch is "build a fresh
+ClientBuffer mirror + a fresh createEditorView on it" — the existing
+snapshot path. The renderer never knew the buffer changed underneath it; the
+mirror is just re-seeded. Three Model-B fears (latency, the render refactor,
+the command/keymap port) were already retired; this adds that **multi-buffer
++ switching is also a drop-in on the render side** — the cost is all in the
+server's bookkeeping (the registry + the per-buffer delta scoping), which is
+mechanical and now done.
+
+**Verification (headless, no screen)**:
+- Pure/registry/spine helpers: `node --test mwb/buffer-registry.test.js`
+  (16 cases) + `mwb/spine.test.js` (now 59: +8 multi-buffer — find-file
+  adds; switch preserves cursor; bufferListRecords flags the current per
+  client; two clients on different buffers independent; different modeline
+  modes; kill-buffer removes+re-homes+refuses-last; switching one client
+  leaves the other put). Desktop suite green: **552** (was 528; +16
+  registry +8 spine).
+- **End-to-end through the REAL server + protocol + view.js**: new
+  `MWB_MULTIBUFFER_SELFTEST=1`. Single window → `[mwb-multibuffer-
+  selftest-done] PASS` (typed a marker into buffer A + highlighted it,
+  find-file'd buffer B → view re-mounted with NO A-overlays, switched back
+  to A → content + overlays + cursor all restored, switched to B again
+  clean, C-x C-b listed both). Two windows (`MWB_CLIENTS=2`) → PASS
+  (`differentBuffersIndependent`: client 0 on B / client 1 on A; then the
+  observer switches to B and the **same-buffer lockstep still holds** —
+  client 0 types into B, client 1 sees it without typing). The prior view /
+  same-buffer / overlay / commands self-tests all still **PASS** unchanged.
+  Reproduce:
+  `cd apps/desktop && MWB_VIEW=1 MWB_MULTIBUFFER_SELFTEST=1 [MWB_CLIENTS=2] ./node_modules/.bin/electron mwb/launch.js --user-data-dir=/tmp/godot-mw-b-userdata --enable-logging=stderr`
+
+**What's deferred (honest)**:
+- **Pane GEOMETRY** stays render-side (splits, the tabline, minimap). The
+  BUFFER-LIST half of `view-primitives.js` is now built (the registry);
+  arranging views in pixels per window is a separate render slice. See the
+  updated PRIMITIVE-SPLIT.md "View / pane addressing" (now split into the
+  built buffer-list half + the deferred geometry half).
+- **The buffer-list VIEW is a stub client-side**: `BUFFER_LIST` reaches the
+  client and the records are correct (the self-test asserts them), but the
+  prototype just logs + stashes them — it does not render the production
+  *View List* table. The data + switch wire are done; the picker UI is a
+  render slice.
+- **save-buffer** is still a status stub (no file write); a buffer's path
+  isn't tracked for writing back. find-file reads; saving is a later slice.
+- **Client detach**: `registry.dropClient` exists + is tested, but the
+  server doesn't yet call it on a window close (no lifecycle teardown in the
+  prototype). Buffers outlive clients correctly; the cleanup hook is unwired.
+
+**State of the work**: branch `multi-window-b`, clean, suite green (552).
+Four new commits on top of the overlay slice:
+- `feat(mwb): add the server-side buffer registry (multi-buffer foundation)`
+- `feat(mwb): multi-buffer through the server (registry + switch + C-x b/C-x C-b/C-x k)`
+- `test(mwb): headless multi-buffer proof through the real view.js`
+- `test(mwb): spine multi-buffer cases + per-buffer modeline mode`
+- `fix(mwb): skip stale reconciliation when an intent switches buffers; doc`
+NOT merged. All isolated under `apps/desktop/mwb/` behind `MWB_*` flags.
+
+---
+
 ## [2026-06-22 14:10] Model-B/overlay-sync: overlay + multi-cursor sync PROVEN end-to-end through the REAL view.js AND across two windows
 
 **Context**: The prior overlay slice (commits 1d5d19d + 8fc3a35) added the
