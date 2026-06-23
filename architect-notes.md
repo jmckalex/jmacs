@@ -2757,3 +2757,49 @@ across a relaunch (server persists window-1's open files only, NOT the pane tree
 per-leaf tabs); UNIFY window 1 (still the old one-big-tabline = `clientBuffers`,
 ignores PANE_TREE — so C-x 2/3 don't visibly split window 1) into the same
 composable model the fresh windows use. Both are sizeable; pick before I build.
+
+## [2026-06-23 unify] Window 1 folded into the composable-pane model (BUILT, awaiting verify)
+
+Retiring the dual model: window 1 was a client-side ONE-BIG-TABLINE that IGNORED
+the PANE_TREE (so C-x 2/3 couldn't split the main window); every other window was
+a composable pane layout. Now EVERY window renders from its PANE_TREE — window 1
+is just SEEDED as a tabline leaf of its restored files. Two commits on
+`multi-window-b` (suite 852→**856**, flag-off byte-for-byte); cleanup of the dead
+machinery is a third commit, DEFERRED until Jason verifies.
+
+- **`95af110` foundation** — `seedFocusedTabline(ids, activeId)` (pane-model: make
+  the focused leaf a tabline with a GIVEN curated tab set; preserves the leaf's
+  cursor when active is unchanged — the restore case; dedupes; default active =
+  first) + `seedClientTabline(index, ids, activeId)` (spine: note the buffers,
+  seed, rebind the interpreter when it's the active client). +4 tests. Not wired.
+- **`d025dbb` functional unify** — every client `windowKind: 'single'`; after
+  `restoreServerSession`, `seedWindow1Tabline(client)` makes window 1's focused
+  leaf a tabline of its open files (active = the session's active). The View-List
+  refresh moved onto the BUFFER_LIST push directly (it used to piggyback on the
+  now-dead one-big-tabline sync). Window 1 now renders via reconcileServerPaneTree
+  like any window.
+
+**HOW IT WORKS:** one render path (reconcileServerPaneTree), two seeds — window 1 =
+a tabline leaf of restored files; fresh windows = a single scratch pane. A
+session-less first boot still gets a 1-tab tabline (the open-set always has the
+boot buffer), matching the pre-unify look. STRUCTURE restore is still just the
+flat file list → a single tabline leaf (restoring SPLITS is the separate deferred
+fork).
+
+**LIVE-VERIFY (Jason) — QUIT + RELAUNCH (server change):**
+1. Window 1 comes up showing its restored files as tabs (as before), highlighted,
+   on the active file.
+2. **C-x 3 / C-x 2 now SPLIT window 1** (the headline — it couldn't before); C-x o
+   moves focus; C-x 0/1 collapse. Edit in a split → live.
+3. Tabs in window 1: open (C-x C-f) adds a tab, click/×/drag-reorder all work.
+4. The View List (and C-x C-b) still track the open set.
+Watch-points: the boot flash (single pane → tabline) is normal; focus after boot;
+× now UN-CURATES a tab (buffer stays in C-x C-b) rather than killing it (the 3c
+semantics — a change from window 1's old × = kill).
+
+**NEXT (deferred):** delete the dead window-1 machinery (serverTablineView,
+ensureServerTabline, syncServerBufferTabs, makeServerLeafAdapter,
+serverFacadeElement window-1, serverTabProxies, the serverWindowKind branch +
+mountServerView 'tabline' branch, the windowKind field) — pure hygiene, after
+verify. Then RESTORE-of-structure (persist the pane tree / per-leaf tabs), then
+G4.3 menu-follows-focus, then G5.
