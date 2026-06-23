@@ -59,6 +59,18 @@ test('snapshot carries text only for a DIFFERENT-buffer leaf (Step 3b)', () => {
   assert.equal(other.text, 'alpha text', 'the different-buffer leaf carries its text');
 });
 
+test('toggleFocusedTabline marks the focused leaf; snapshot carries it (Step 3c)', () => {
+  const { model } = makeModel('b1');
+  let leaves = snapshotLeaves(model.snapshot());
+  assert.equal(leaves[0].tabline, undefined, 'a fresh leaf is a single view');
+  assert.equal(model.toggleFocusedTabline(), true, 'toggled on');
+  leaves = snapshotLeaves(model.snapshot());
+  assert.equal(leaves[0].tabline, true, 'the focused leaf is now a tabline');
+  assert.equal(model.toggleFocusedTabline(), false, 'toggled off');
+  leaves = snapshotLeaves(model.snapshot());
+  assert.equal(leaves[0].tabline, undefined, 'back to a single view (flag omitted)');
+});
+
 test('a fresh model is a single focused leaf on the seed buffer', () => {
   const { model } = makeModel('b1');
   assert.equal(model.leafCount(), 1);

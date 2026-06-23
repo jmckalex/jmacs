@@ -1049,6 +1049,14 @@ export function createSpine(options, effects = {}) {
       },
       // (balance-panes!) — reset every split ratio to 0.5.
       'balance-panes!': () => { currentPaneModel().balancePanes(); return NIL; },
+      // (toggle-tabline!) — Step 3c: flip the focused pane between a single view
+      // and a TABLINE of this window's buffers. The model's onChange re-pushes
+      // PANE_TREE (carrying the leaf's `tabline` flag); the client re-renders it.
+      'toggle-tabline!': () => {
+        const model = currentPaneModel();
+        if (model) model.toggleFocusedTabline();
+        return NIL;
+      },
       // (focus-pane-direction! dir) — spatial focus move (the one geometry-
       // coupled command; uses the client's reported host rect). DIR is a
       // symbol 'left/'right/'up/'down. Rebinds after a successful move.
@@ -1870,6 +1878,11 @@ export function createSpine(options, effects = {}) {
       "Open another editor window onto the shared server (C-x 5 2). The
        window itself is opened by the client's host; this raises the effect."
       (request-new-window!))
+
+    (defcommand toggle-tabline ()
+      "Toggle whether the focused pane is a tabline of this window's buffers
+       (Step 3c) — 'add a tabline-view' to a single pane, or back."
+      (toggle-tabline!))
   `);
 
   // Now that the stdlib + the mode machinery are loaded, choose the major

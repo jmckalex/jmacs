@@ -128,6 +128,10 @@ export function createPaneModel(options = {}, hooks = {}) {
       bufferId: bufferId ?? null,
       viewKey,
       view,
+      // Step 3c: whether this leaf presents as a TABLINE (its window's buffers
+      // as tabs, the leaf's bufferId active) rather than a single view. Toggled
+      // per leaf; the client renders a tabline leaf as a tabline-view.
+      tabline: false,
       point: 0,
       mark: null,
       scrollLine: 0,
@@ -447,6 +451,15 @@ export function createPaneModel(options = {}, hooks = {}) {
     onChange();
   }
 
+  /** Toggle (or set) whether the FOCUSED leaf presents as a tabline (Step 3c).
+   *  Returns the new state. */
+  function toggleFocusedTabline(on) {
+    const state = focusedState();
+    state.tabline = on === undefined ? !state.tabline : !!on;
+    onChange();
+    return state.tabline;
+  }
+
   /** Read the focused leaf's view-state (point/mark/scroll). */
   function focusedViewState() {
     const s = focusedState();
@@ -509,6 +522,7 @@ export function createPaneModel(options = {}, hooks = {}) {
         mark: stateMark(s),
         scrollLine: s.scrollLine,
       };
+      if (s.tabline) data.tabline = true; // Step 3c: render as a tabline-view
       // Carry the TEXT only for a leaf showing a DIFFERENT buffer than the
       // focused one (Step 3b): the client renders those as static panes. A
       // same-buffer (or the focused) leaf uses the live shared mirror, so its
@@ -545,6 +559,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     focusedView,
     setFocusedPoint,
     setFocusedScroll,
+    toggleFocusedTabline,
     // introspection (for tests + the server)
     leaves: () => leafPanes(rootPane),
     leafCount: () => leafPanes(rootPane).length,
