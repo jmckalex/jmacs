@@ -1195,12 +1195,12 @@ export function createSpine(options, effects = {}) {
       // now the commands resolve and surface a status so the wiring is
       // visible, then no-op. See PRIMITIVE-SPLIT.md "Search".
       'start-search!': () => {
-        statusText = 'I-search: (spine stub — interactive loop is host-side)';
+        statusText = 'I-search: temporarily unavailable in server-mode (being rebuilt)';
         onStatus(statusText);
         return NIL;
       },
       'start-search-backward!': () => {
-        statusText = 'I-search backward: (spine stub — interactive loop is host-side)';
+        statusText = 'I-search backward: temporarily unavailable in server-mode (being rebuilt)';
         onStatus(statusText);
         return NIL;
       },
@@ -1211,7 +1211,7 @@ export function createSpine(options, effects = {}) {
       // (isearch-regexp-forward/backward) resolve + surface a status, then
       // no-op. See PRIMITIVE-SPLIT.md "Search / regex".
       'start-regexp-search!': () => {
-        statusText = 'I-search regexp: (spine stub — interactive loop is host-side)';
+        statusText = 'I-search regexp: temporarily unavailable in server-mode (being rebuilt)';
         onStatus(statusText);
         return NIL;
       },
