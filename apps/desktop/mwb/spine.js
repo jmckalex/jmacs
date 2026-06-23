@@ -2302,12 +2302,21 @@ export function createSpine(options, effects = {}) {
    *  Pure data, no L2 objects — the wire shape `normalisePickerRequest` wants. */
   function bufferListRows() {
     const currentId = currentBufferIdOf(activeClientIndex);
-    return registry.listRecords().map((r) => ({
+    const bufRows = registry.listRecords().map((r) => ({
       label: r.name,
       value: r.id,
       meta: `${r.lineCount}L ${r.modified ? '●' : '–'}`,
       current: r.id === currentId,
     }));
+    // Non-text data-sources (media) join the GLOBAL picker too, so C-x C-b can
+    // switch to an open image/video/pdf; the meta shows the kind, not a line count.
+    const dsRows = dataSources.list().map((s) => ({
+      label: s.name,
+      value: s.id,
+      meta: s.kind,
+      current: s.id === currentId,
+    }));
+    return [...bufRows, ...dsRows];
   }
 
   /** Every buffer id any leaf of client INDEX shows (a window may have several
@@ -2897,9 +2906,19 @@ export function createSpine(options, effects = {}) {
     bufferListRecords(clientIndex) {
       const currentId = currentBufferIdOf(clientIndex);
       const open = clientBuffers.get(clientIndex) ?? new Set();
-      return registry.listRecords()
+      const bufRecs = registry.listRecords()
         .filter((r) => open.has(r.id) || r.id === currentId)
         .map((r) => ({ ...r, current: r.id === currentId }));
+      // Non-text data-sources (media) the window has open join its View List /
+      // tabs / session record too (so an image/video/pdf restores + lists). A
+      // media source has no line count and is never modified (immutable).
+      const dsRecs = dataSources.list()
+        .filter((s) => open.has(s.id) || s.id === currentId)
+        .map((s) => ({
+          id: s.id, name: s.name, lineCount: 0, modified: false,
+          filePath: s.filePath, viewKind: s.kind, current: s.id === currentId,
+        }));
+      return [...bufRecs, ...dsRecs];
     },
     get bufferCount() {
       return registry.count();

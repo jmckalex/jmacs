@@ -481,6 +481,15 @@ test('find-file of a MEDIA file creates a data-source leaf (no garbage text buff
 
   // Re-visiting the same media file REUSES the source (no duplicate).
   assert.equal(spine.visitFile('/clip.mp4'), vid, 'media find-file reuse');
+
+  // The media source joins the window's buffer list (View List / C-x C-b /
+  // session record) — with its kind + path, no line count, never modified.
+  const rec = spine.bufferListRecords(0).find((r) => r.id === vid);
+  assert.ok(rec, 'media is in the window buffer list');
+  assert.equal(rec.viewKind, 'video');
+  assert.equal(rec.filePath, '/clip.mp4');
+  assert.equal(rec.modified, false);
+  assert.equal(rec.current, true);
 });
 
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
