@@ -5843,20 +5843,16 @@ if (window.host && window.host.serverMode) {
     return leafPanes(rootPane).find((l) => l.id === serverBoundLeafId) ?? null;
   }
 
-  // The server tabline that IS the bound leaf's view (one tab per server
-  // buffer), and the per-buffer lightweight proxy tabs (everything except the
-  // active buffer, which the shared façade renders). Built lazily on the first
-  // SNAPSHOT; reconciled against each BUFFER_LIST.
-  let serverTablineView = null;
+  // The lightweight proxy tabs (id/name/dirty only, never mounted) a leaf-tabline
+  // shows for its inactive tabs — only the active tab carries content. Keyed by
+  // buffer id, shared across this window's tabline leaves.
   /** @type {Map<string, object>} bufferId -> proxy tab view (label only). */
   const serverTabProxies = new Map();
 
-  // G4 Step 3 — the window's presentation kind (from the snapshot) + the last
-  // pane-layout the server pushed. A 'single' window renders its leaf layout
-  // from the server's PANE_TREE (splits visible); 'tabline' (window 1) ignores
-  // it. The wire tree is `{kind:'split',orientation,ratio,first,second}` /
-  // `{kind:'leaf',id,bufferId,focused,name,point,mark}` (no pixels).
-  let serverWindowKind = 'tabline';
+  // G4 Step 3 — the last pane-layout the server pushed. EVERY window renders its
+  // leaf layout from this PANE_TREE (the unify); the wire tree is
+  // `{kind:'split',orientation,ratio,first,second}` /
+  // `{kind:'leaf',id,bufferId,focused,name,point,mark,tabline?,tabs?}` (no pixels).
   let serverPaneTreeWire = null;
   // Step 3b: per-buffer STATIC mirrors for panes showing a DIFFERENT buffer than
   // the focused/active one. Seeded + refreshed from each PANE_TREE leaf's `text`
@@ -5880,15 +5876,6 @@ if (window.host && window.host.serverMode) {
   /** @type {Map<string, object>} leafId -> stable static active-tab view. */
   const serverLeafActiveTabViews = new Map();
 
-  /** The live `<text-view>` element rendering the active buffer — the façade
-   *  tab's per-tab element inside the server tabline's content area. Null until
-   *  the tabline has mounted. */
-  function serverFacadeElement() {
-    if (!serverTablineView) return null;
-    const state = tablineStateByView.get(serverTablineView);
-    return state ? (state.editorByChild.get(serverFacadeView) ?? null) : null;
-  }
-
   /** Get-or-create the lightweight proxy tab for server buffer B (id/name only;
    *  never mounted — only the active buffer's façade tab has an element). */
   function ensureServerProxy(b) {
@@ -5904,99 +5891,6 @@ if (window.host && window.host.serverMode) {
       p.name = b.name; p._modified = !!b.modified; p.filePath = b.filePath ?? null;
     }
     return p;
-  }
-
-  /** Make LEAF's view the server tabline (creating it on first call) and mount
-   *  it via the real pane render, so the façade tab's `<text-view>` shows the
-   *  current mirror. The tabs themselves are reconciled by syncServerBufferTabs
-   *  on each BUFFER_LIST; before the first list arrives this is a 1-tab strip on
-   *  the seed buffer. */
-  function ensureServerTabline(leaf) {
-    if (!serverTablineView) {
-      serverTablineView = createView({
-        kind: 'tabline',
-        extras: { tabs: [serverFacadeView], active: 0, edge: 'top' },
-      });
-      serverTablineView._serverTabline = true;
-    }
-    if (leaf.view !== serverTablineView) {
-      // The init mount (`ensureEditorViewForLeaf`) left a leaf-direct
-      // `<text-view>` in the pane; the leaf is becoming a tabline, so unlink it
-      // or it sits orphaned BEHIND the tabline (TextView.destroy() nulls the
-      // inner editor but leaves the host element, so remove() it explicitly —
-      // the old overlay's stale-sweep, applied once at the leaf→tabline flip).
-      const stale = editorViewByPaneId.get(leaf.id);
-      if (stale) {
-        try { stale.destroy(); } catch { /* ignore */ }
-        try { stale.remove(); } catch { /* ignore */ }
-        editorViewByPaneId.delete(leaf.id);
-      }
-      leaf.view = serverTablineView;
-    }
-    mountKindView(serverTablineView, { paneEl: paneElements.get(leaf.id) });
-  }
-
-  /** Reconcile the server tabline's tabs against a BUFFER_LIST: one tab per
-   *  server buffer, the ACTIVE buffer rendered by the shared façade (which
-   *  always occupies the active slot) and every other buffer a lightweight
-   *  proxy label. Then re-mount so the strip + active content repaint. A no-op
-   *  until the tabline exists (the first SNAPSHOT builds it). */
-  function syncServerBufferTabs(buffers) {
-    if (!serverTablineView || !Array.isArray(buffers) || buffers.length === 0) return;
-    const activeId = (buffers.find((b) => b.current) ?? buffers[0]).id;
-    // Drop proxies for buffers the server closed.
-    for (const id of [...serverTabProxies.keys()]) {
-      if (!buffers.some((b) => b.id === id)) serverTabProxies.delete(id);
-    }
-    // Tabs in server order: the façade at the active slot, proxies elsewhere.
-    serverTablineView.tabs = buffers.map((b) =>
-      b.id === activeId ? serverFacadeView : ensureServerProxy(b));
-    serverTablineView.active = Math.max(0, buffers.findIndex((b) => b.id === activeId));
-    const leaf = serverBoundLeaf();
-    if (leaf) mountKindView(serverTablineView, { paneEl: paneElements.get(leaf.id) });
-    refreshPaneTabStrips();
-    // Keep the *View List* table in step with the server's buffer set (it reads
-    // viewListRecords, which is server-sourced in server mode). Runs only on a
-    // BUFFER_LIST push (post-boot), so viewListView is defined by now.
-    if (viewListView && typeof viewListView.refresh === 'function') {
-      viewListView.refresh();
-    }
-  }
-
-  /** The view handle the server-view client drives. Its methods act on the
-   *  façade tab's `<text-view>` (the active buffer's element). `destroy` is
-   *  SOFT — a buffer switch re-points the SAME shared element via the server,
-   *  so it must survive. */
-  function makeServerLeafAdapter() {
-    return {
-      setView: () => {
-        const el = serverFacadeElement();
-        if (el) { try { el.setView(serverFacadeView); } catch { /* ignore */ } }
-      },
-      focus: () => {
-        const el = serverFacadeElement();
-        if (el) { try { el.focus(); } catch { /* ignore */ } }
-      },
-      recenter: () => {
-        const el = serverFacadeElement();
-        if (el) { try { el.recenter(); } catch { /* ignore */ } }
-      },
-      pageLines: () => {
-        const el = serverFacadeElement();
-        try { return el ? el.pageLines() : 0; } catch { return 0; }
-      },
-      destroy: () => { /* soft: the shared façade survives a buffer switch */ },
-    };
-  }
-
-  /** A no-op handle, returned when no leaf is available to bind (vanishingly
-   *  rare — the root always has a leaf). Satisfies the client's view contract
-   *  so a stray mount can't throw. */
-  function makeNullServerView() {
-    return {
-      setView: () => {}, focus: () => {}, recenter: () => {},
-      pageLines: () => 0, destroy: () => {},
-    };
   }
 
   /** G4 Step 1 — the single-pane (fresh window) mount. The leaf's OWN
@@ -6312,37 +6206,27 @@ if (window.host && window.host.serverMode) {
     };
   }
 
-  /** A server PANE_TREE push: store it, and (a 'single' window) render the new
-   *  layout — splits appear / collapse. Window 1 ('tabline') ignores it. */
+  /** A server PANE_TREE push: store it and render the new layout — splits appear
+   *  / collapse, a tabline leaf re-renders. Every window renders from its
+   *  PANE_TREE now (the unify); a push before the first mirror is just stored. */
   function applyServerPaneTree(tree) {
     serverPaneTreeWire = tree;
-    if (serverWindowKind === 'single' && serverMirror) renderServerPaneLayout();
+    if (serverMirror) renderServerPaneLayout();
   }
 
   /** The `mountView` collaborator. A SNAPSHOT (re)points the shared mirror; the
-   *  window then presents it per its kind (from the snapshot): a 'single' window
-   *  renders its pane layout from the server's PANE_TREE (splits visible — the
-   *  leaves' own <text-view>s, no tabline); window 1 ('tabline') becomes the
-   *  server tabline whose active tab — the shared façade — renders the mirror. */
-  function mountServerView(mirror, options = {}) {
+   *  window then renders its pane layout from the server's PANE_TREE (the unify:
+   *  EVERY window is a composable pane layout — window 1 a tabline leaf of its
+   *  restored files, fresh windows a single scratch pane; one render path). */
+  function mountServerView(mirror) {
     serverMirror = mirror;
     // The startup splash (the faint Lisp backdrop) is dismissed by an edit /
     // view-switch — none of which fire for a fresh server window, so it lingered
     // behind the empty *scratch* (the "(cond" ghost). The server drives the view
     // now, so retire it. Idempotent.
     dismissSplash();
-    serverWindowKind = options.windowKind === 'single' ? 'single' : 'tabline';
-    if (serverWindowKind === 'single') {
-      renderServerPaneLayout();
-      return makeServerFocusedLeafAdapter();
-    }
-    const leaf = serverBoundLeaf() ?? currentPane() ?? leafPanes(rootPane)[0];
-    if (!leaf) return makeNullServerView();
-    serverBoundLeafId = leaf.id;
-    ensureServerTabline(leaf);
-    const el = serverFacadeElement();
-    if (el) { try { el.setView(serverFacadeView); } catch { /* ignore */ } }
-    return makeServerLeafAdapter();
+    renderServerPaneLayout();
+    return makeServerFocusedLeafAdapter();
   }
 
   // Define the boot hook the init-time port listener calls (or that we call
@@ -6411,14 +6295,11 @@ if (window.host && window.host.serverMode) {
       });
     },
     closePicker: closeServerPicker,
-    // The server's open-buffer set (a BUFFER_LIST push). Keep the *View List*
-    // table in step (it reads server-sourced viewListRecords). The old one-big-
-    // tabline reconcile (syncServerBufferTabs) is dead now that every window —
-    // window 1 included — renders its tabs from the PANE_TREE; it's retired in
-    // the cleanup step. The View-List refresh used to piggyback on it, so do it
-    // here directly or window 1's View List would go stale.
-    setBufferList: (buffers) => {
-      syncServerBufferTabs(buffers);
+    // The server's open-buffer set (a BUFFER_LIST push). Every window renders its
+    // tabs from the PANE_TREE now, so this just keeps the *View List* table in
+    // step (it reads server-sourced viewListRecords); the leaf-tabline strips
+    // refresh on the PANE_TREE reconcile.
+    setBufferList: () => {
       if (viewListView && typeof viewListView.refresh === 'function') viewListView.refresh();
     },
     // C-x C-c: the client resolves the quit chord (the server can't close the
@@ -9345,19 +9226,6 @@ function ensureTablineState(view) {
     edge: view.edge ?? 'top',
     onSelect: (i) => activateTabInTabline(view, i),
     onClose: (i) => {
-      // Server tabline (Model B): the server owns the buffers, so closing a tab
-      // routes to the server (it kills the buffer + re-pushes BUFFER_LIST, which
-      // removes the tab) — never a local removal, which would desync the tabs.
-      // The façade tab's id is the active buffer; a proxy carries its own id.
-      if (view._serverTabline) {
-        const target = view.tabs[i];
-        if (!target || !serverViewClient) return;
-        const id = target === serverFacadeView
-          ? serverViewClient.currentBufferId()
-          : target._serverBufferId;
-        if (id) serverViewClient.closeBuffer(id);
-        return;
-      }
       // A per-leaf server tabline (Step 3c): closing a tab un-curates that buffer
       // from THIS tabline (it lives on in the pool — NOT a global kill). Focus
       // the leaf, then send a close-tab pane intent; the server re-points to a
@@ -9773,18 +9641,6 @@ function deliverLispCallback(callback, callArgs, primName) {
 function activateTabInTabline(tablineView, index) {
   if (!Array.isArray(tablineView.tabs)) return;
   if (index < 0 || index >= tablineView.tabs.length) return;
-  // Server tabline (Model B): the server owns the buffers, so clicking an
-  // INACTIVE buffer's proxy tab routes the switch UP — the server re-syncs
-  // (SNAPSHOT re-points the shared façade; BUFFER_LIST re-marks the active tab
-  // via syncServerBufferTabs). The active tab IS the façade (a no-op); a proxy
-  // is never mounted locally.
-  if (tablineView._serverTabline) {
-    const target = tablineView.tabs[index];
-    if (target && target !== serverFacadeView && target._serverBufferId && serverViewClient) {
-      serverViewClient.switchBuffer(target._serverBufferId);
-    }
-    return;
-  }
   // A per-leaf server tabline (Step 3c): clicking a tab focuses THIS leaf on the
   // server (the click may be in a non-focused pane), then switches its active
   // tab. Both route up; the server re-pushes PANE_TREE and the reconcile
