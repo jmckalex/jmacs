@@ -164,10 +164,10 @@ import { MSG } from '../mwb/protocol.js';
 // focus-independent, so the dual-dispatch undo bell can't ring. No-op flag-off
 // (serverMode false → always returns false → the router runs as today).
 import { shouldGlobalRouterDefer } from './server-router-gate.js';
-// G2 mount invariant: clear any stale <text-view> from the server-view
-// container before re-mounting on a buffer switch (find-file / C-x b /
-// kill-buffer), so dead empty elements don't accumulate. Pure + unit-tested.
-import { clearStaleServerViews } from './server-view-mount.js';
+// (The leaf-flip retired the G2 overlay container, so the stale-<text-view>
+// sweep `clearStaleServerViews` is no longer imported — the bound leaf reuses
+// one instance across buffer switches; nothing accumulates. The module +
+// its tests remain for now as dead code, to delete in a follow-up.)
 // G2 chrome: the generic PICKER panel the server-view client renders in
 // server-mode (buffer list / M-x / RefTeX). Imported unconditionally (no
 // top-level effects); only USED inside the serverMode-gated boot below.
@@ -543,6 +543,18 @@ function peelTabline(view) {
     v = child;
   }
   return v;
+}
+
+/** True when VIEW is the server-backed text view the Model-B leaf-flip
+ *  installs as a leaf's `view` (`GODOT_SERVER=1`). Such a view is a live
+ *  façade over the `ClientBuffer` mirror: its `buffer` IS the mirror and its
+ *  point/mark/cursors read straight off it. Two render seams branch on this —
+ *  the leaf's `onKey` routes to the server's keymap, and its decorations come
+ *  from the mirror (not the in-renderer snippet store). The `_serverBacked`
+ *  marker is ONLY ever set inside the serverMode boot block, so this is always
+ *  false flag-off and every guard keyed on it is a no-op in the normal editor. */
+function isServerBackedView(view) {
+  return !!(view && view._serverBacked === true);
 }
 
 /** The next index in `views` from FROM, stepping by DELTA (+1 / -1) and
@@ -5760,72 +5772,105 @@ document.body.dataset.treesitter = Object.keys(highlighters).join(',');
 
 // --- G2: route ONE real view through the Model-B server -----------------
 //
-// plans/MWB-GRADUATION.md §G2. With GODOT_SERVER=1, mount ONE REAL editor
-// view (the real `<text-view>` / `createEditorView`, the real highlighters
-// loaded just above, the real `keyEventToString`) as a CLIENT of the server:
-// it opens the server's seed buffer through a HELLO/SNAPSHOT, builds a
-// ClientBuffer mirror, renders FROM the mirror, and routes its keystrokes to
-// the server (onKey → intent → delta/view-update → mirror → re-render), with
-// local echo for self-insert. Everything else stays in-renderer for now (G2
-// is ONE window/buffer; broad coverage is G3/G4).
+// plans/MWB-GRADUATION.md §G2 + the leaf-flip. With GODOT_SERVER=1, route the
+// FOCUSED LEAF's own real editor view (the real `<text-view>` / `createEditorView`,
+// the real highlighters loaded just above, the real `keyEventToString`) through
+// the server: it opens the server's seed buffer through a HELLO/SNAPSHOT, builds
+// a ClientBuffer mirror, makes `leaf.view` a live façade over that mirror, and
+// lets the EXISTING pane render show the leaf's `<text-view>` from it. Keystrokes
+// route to the server (onKey → intent → delta/view-update → mirror → re-render).
+// No overlay: the leaf's own view IS the server view (the reverted Step A tried
+// a foreign overlay element and lost to the render loop). Broad coverage (splits,
+// multi-window) is G3/G4; this binds ONE leaf.
 //
-// ‼ FLAG-OFF IS BYTE-FOR-FOR-TODAY: this whole block is gated on
+// ‼ FLAG-OFF IS BYTE-FOR-BYTE TODAY: this whole block is gated on
 // `window.host.serverMode` (the G1 gate, false by default). When false,
-// `serverViewClient` stays null, no container is created, no view mounts, and
-// the in-renderer interpreter drives everything exactly as today. The G2 view
-// is a SELF-CONTAINED overlay over a dedicated container — it deliberately does
-// NOT touch the entangled in-renderer pane tree / `ensureEditorViewForLeaf` /
-// `dispatchKey` seams, so there is zero risk to the flag-off path.
+// `serverViewClient` stays null, no client mounts, `leaf.view` is never
+// re-pointed, and the in-renderer interpreter drives everything exactly as
+// today. The only shared-pipeline touch-points — `serverViewKeyOption` and the
+// `getDecorations` guard in `ensureEditorViewForLeaf` — both short-circuit to
+// their original behaviour when `serverMode` is false, so there is zero risk to
+// the flag-off path.
 let serverViewClient = null;
 if (window.host && window.host.serverMode) {
-  // A dedicated full-bleed container the G2 view mounts into, layered over the
-  // editor host. The in-renderer editor sits behind it, untouched and idle.
-  const g2HostEl = document.createElement('div');
-  g2HostEl.id = 'godot-server-view-host';
-  g2HostEl.style.cssText =
-    'position:absolute; inset:0; z-index:5; display:flex; ' +
-    'flex-direction:column; background:var(--bg-editor, #2e3842);';
-  // The container only appears once a view actually mounts (on the first
-  // SNAPSHOT), so a connect-with-no-snapshot leaves the normal editor visible.
+  // The leaf-flip (plans/MWB-GRADUATION.md): the server drives the focused
+  // leaf's OWN `<text-view>` through the real pane pipeline — NOT a separate
+  // full-bleed overlay. We make `leaf.view` a live façade over the mirror and
+  // let `ensureEditorViewForLeaf` + the existing tabline/warehouse/sync render
+  // show it; panes/splits/tabs/multi-window then inherit server-backing for
+  // free. The id of the leaf this client's mirror is bound to, captured on the
+  // first mount so a buffer switch re-points the SAME leaf.
+  let serverBoundLeafId = null;
 
-  /** The `mountView` collaborator: build a REAL `<text-view>`, configure it
-   *  with the client's onKey + mirror-reading closures, bind the mirror, and
-   *  reveal the container. Returns the element (its `setView`/`focus`/
-   *  `destroy`/`recenter` satisfy the client's contract).
+  /** The live leaf this client is bound to, or null before the first mount /
+   *  if it was deleted. */
+  function serverBoundLeaf() {
+    if (serverBoundLeafId === null) return null;
+    return leafPanes(rootPane).find((l) => l.id === serverBoundLeafId) ?? null;
+  }
+
+  /** The view handle the server-view client drives, backed by the bound leaf's
+   *  REAL `<text-view>` (INSTANCE). The client calls `setView` after every
+   *  cursor/overlay/text message, and `focus`/`recenter`/`pageLines` on
+   *  demand; we forward them onto the leaf's element. `destroy` is deliberately
+   *  SOFT: a buffer switch re-points the SAME leaf/instance, so the element
+   *  must survive — only pane deletion (the leaf pipeline's own path) tears the
+   *  editor down. VIEW is the façade `leaf.view`; re-rendering it picks up the
+   *  mirror's current point/cursors via the façade's live getters. */
+  function makeServerLeafAdapter(instance, view) {
+    return {
+      setView: () => { try { instance.setView(view); } catch { /* ignore */ } },
+      focus: () => { try { instance.focus(); } catch { /* ignore */ } },
+      recenter: () => { try { instance.recenter(); } catch { /* ignore */ } },
+      pageLines: () => { try { return instance.pageLines(); } catch { return 0; } },
+      destroy: () => { /* soft: the leaf keeps its <text-view> across switches */ },
+    };
+  }
+
+  /** A no-op handle, returned when no leaf is available to bind (vanishingly
+   *  rare — the root always has a leaf). Satisfies the client's view contract
+   *  so a stray mount can't throw. */
+  function makeNullServerView() {
+    return {
+      setView: () => {}, focus: () => {}, recenter: () => {},
+      pageLines: () => 0, destroy: () => {},
+    };
+  }
+
+  /** The `mountView` collaborator (the leaf-flip). Bind the server mirror to
+   *  the focused leaf by making `leaf.view` a live FAÇADE over the mirror — its
+   *  `buffer` IS the mirror, and its point/mark/cursors read straight off it
+   *  via getters, so the existing `ensureEditorViewForLeaf` closures paint the
+   *  server cursor with no copying. Then let the REAL render mount the leaf's
+   *  own `<text-view>` from the mirror (no overlay, no fight with the render
+   *  loop — the lesson of the reverted Step A).
    *
-   *  Called once for the initial buffer AND again on every server-pushed
-   *  buffer switch (find-file / C-x b / kill-buffer): the client tears down the
-   *  old view (`view.destroy()`) then re-mounts the new buffer's mirror here.
-   *  The inner editor's destroy removes its OWN root but leaves the host
-   *  `<text-view>` element behind, so we must clear any stale `<text-view>`
-   *  from the container before appending the new one — otherwise dead empty
-   *  elements accumulate on each switch and steal layout from the live view. */
-  function mountServerView(mirror, options) {
-    // Drop any previously-mounted <text-view> (a buffer switch re-mounts). The
-    // client already called destroy() on the old view (tearing down its inner
-    // editor); this removes the now-empty host element so the new one is the
-    // only child — the prototype reused one persistent container, this is the
-    // custom-element equivalent of that single-live-view invariant.
-    clearStaleServerViews(g2HostEl);
-    const el = /** @type {*} */ (document.createElement('text-view'));
-    el.style.cssText = 'flex:1 1 auto; min-height:0;';
-    el.configure({
-      onKey: options.onKey,
-      highlighters,
-      foldCaptures,
-      getPoint: options.getPoint,
-      getMark: options.getMark,
-      getCursors: options.getCursors,
-      getDecorations: options.getDecorations,
-      getTabWidth: () => currentTabWidth,
-      getMajorModeName: options.getMajorModeName,
-      getOverrideGeneration: () => highlightOverrideStore.generation(),
-      onRenderError: (error) => reportRendererFault('g2 render error', error),
-    });
-    el.setBuffer(mirror);          // populates the pending buffer
-    g2HostEl.append(el);            // triggers connectedCallback → mount
-    if (!g2HostEl.isConnected) editorHostEl.append(g2HostEl);
-    return el;
+   *  Called for the initial buffer AND on every server-pushed switch (find-file
+   *  / C-x b / kill-buffer): a switch re-points `leaf.view` to the new mirror's
+   *  façade and re-renders the SAME instance (one live view; nothing
+   *  accumulates, so the old overlay's stale-sweep is gone). The client passes
+   *  its mirror-reading closures as a 2nd arg, but we ignore them now — the
+   *  leaf pipeline supplies the render closures itself, reading the façade. */
+  function mountServerView(mirror) {
+    const leaf = serverBoundLeaf() ?? currentPane() ?? leafPanes(rootPane)[0];
+    if (!leaf) return makeNullServerView();
+    serverBoundLeafId = leaf.id;
+    // The façade: a text view whose buffer is the mirror and whose cursor state
+    // is the mirror's, live. `_serverBacked` routes the leaf's onKey to the
+    // server and its decorations to the mirror (see ensureEditorViewForLeaf).
+    const view = {
+      kind: 'text',
+      _serverBacked: true,
+      buffer: mirror,
+      get name() { return mirror.name; },
+      get point() { return mirror.point; },
+      get mark() { return mirror.mark; },
+      get cursors() { return mirror.cursors; },
+    };
+    leaf.view = view;
+    const instance = ensureEditorViewForLeaf(leaf);
+    if (!instance) return makeNullServerView();
+    return makeServerLeafAdapter(instance, view);
   }
 
   // Define the boot hook the init-time port listener calls (or that we call
@@ -5928,16 +5973,21 @@ if (window.host && window.host.serverMode) {
       isMounted: () => serverViewClient.getView() != null,
       bufferId: () => serverViewClient.currentBufferId(),
       // The single-live-view invariant probe: how many <text-view> elements
-      // are in the G2 container. Must stay 1 across a buffer switch (find-file
-      // / C-x b / kill-buffer) — the multibuffer self-test asserts it, and the
-      // architect can eyeball it after opening a file.
-      textViewCount: () => g2HostEl.querySelectorAll('text-view').length,
+      // sit in the bound leaf's pane. Must stay 1 across a buffer switch
+      // (find-file / C-x b / kill-buffer) — the leaf-flip re-points the SAME
+      // leaf/instance, so the count never grows. The multibuffer self-test
+      // asserts it, and the architect can eyeball it after opening a file.
+      textViewCount: () => {
+        const leaf = serverBoundLeaf();
+        const paneEl = leaf ? paneElements.get(leaf.id) : null;
+        return paneEl ? paneEl.querySelectorAll('text-view').length : 0;
+      },
       // Feed a synthetic SNAPSHOT for a DIFFERENT buffer through the real
-      // client → onSnapshot → mountServerView → clearStaleServerViews path, so
-      // the self-test can prove the real-app buffer switch re-mirrors + keeps
-      // exactly one live view WITHOUT driving the minibuffer DOM. This is the
-      // same message the server sends on find-file/switch; only the bufferId
-      // differs from the seed, so onSnapshot treats it as a switch.
+      // client → onSnapshot → mountServerView path, so the self-test can prove
+      // the real-app buffer switch re-mirrors + keeps exactly one live view
+      // WITHOUT driving the minibuffer DOM. This is the same message the server
+      // sends on find-file/switch; only the bufferId differs from the seed, so
+      // onSnapshot treats it as a switch.
       simulateSwitch: (text, name, bufferId) => {
         serverViewClient.handleMessage({
           type: MSG.SNAPSHOT,
@@ -6430,6 +6480,32 @@ function focusedTextLeafId() {
   return currentPaneId;
 }
 
+/** The `onKey` configure option for a leaf's `<text-view>`.
+ *
+ *  Flag-off (the common case) this is byte-for-byte the original: bind the
+ *  in-renderer `dispatchKey` once the keymap is ready, nothing before.
+ *
+ *  Flag-on (Model B) it installs a per-keystroke router instead, because
+ *  `TextView.configure()` cannot re-run after mount (it throws) yet a leaf may
+ *  become server-backed *after* its element was built. The closure decides live
+ *  on each key: a server-backed leaf sends the key to the server's keymap
+ *  (the leaf-flip — auto-pair / chords / self-insert all resolve server-side);
+ *  any other leaf falls back to the in-renderer dispatch exactly as flag-off. */
+function serverViewKeyOption(instance) {
+  if (!(window.host && window.host.serverMode)) {
+    return keymapReady ? { onKey: dispatchKey } : {};
+  }
+  return {
+    onKey: (key) => {
+      const v = peelTabline(instance._boundLeaf.view);
+      if (isServerBackedView(v) && serverViewClient) {
+        return serverViewClient.dispatchKey(key);
+      }
+      return keymapReady ? dispatchKey(key) : false;
+    },
+  };
+}
+
 /** Create (or reuse) the <text-view> custom element for LEAF, mount it
  *  inside the leaf's pane element, and point it at LEAF.view.
  *
@@ -6468,7 +6544,7 @@ function ensureEditorViewForLeaf(leaf) {
   // on every reuse, rather than capturing `leaf` (a per-update snapshot).
   instance._boundLeaf = leaf;
   instance.configure({
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverViewKeyOption(instance),
     highlighters,
     foldCaptures,
     // Per-view-point: each pane's renderer reads the cursor from
@@ -6505,6 +6581,14 @@ function ensureEditorViewForLeaf(leaf) {
     // every render from live offsets, so they survive edits.
     getDecorations: () => {
       const v = peelTabline(instance._boundLeaf.view);
+      // Server-backed leaf: the decorations (shared overlays / multi-cursor)
+      // are pushed by the server onto the mirror — the in-renderer snippet
+      // store is empty server-side, so read the mirror instead.
+      if (isServerBackedView(v)) {
+        return Array.isArray(v.buffer && v.buffer.decorations)
+          ? v.buffer.decorations
+          : [];
+      }
       const b = v && !isTablineView(v) ? v.buffer : null;
       return snippetDecorationsFor(b);
     },
