@@ -205,6 +205,15 @@ export function createServerViewClient({
     });
   }
 
+  /** Send a PANE intent (Step 3 — e.g. a click focusing a leaf by id, a split,
+   *  a resize): the server mutates THIS window's logical pane tree and re-pushes
+   *  PANE_TREE. Keeps the server's focused leaf in step with the client's UI so
+   *  a server-side command (C-x 3, find-file) acts on the pane the user sees
+   *  focused. */
+  function sendPaneIntent(intent) {
+    port.postMessage({ type: MSG.PANE, intent });
+  }
+
   /** Send a pure KEY intent (no local echo — the server's `handle-key`/keymap
    *  decides the effect). Registers a pending entry (un-predicted) so the
    *  echoed DELTA reconciles through the mirror's delta path. */
@@ -562,6 +571,7 @@ export function createServerViewClient({
   return {
     connect,
     dispatchKey,
+    sendPaneIntent,
     handleMessage,
     getMirror: () => mirror,
     getView: () => view,

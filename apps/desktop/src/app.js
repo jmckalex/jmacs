@@ -927,6 +927,15 @@ function focusPaneFromEvent(event) {
   const paneId = paneEl.dataset.paneId;
   if (typeof paneId !== 'string' || paneId === currentPaneId) return;
   setCurrentPaneId(paneId);
+  // G4 Step 3: in server mode the SERVER owns the focused leaf, so a click must
+  // also move focus there — else a server-side command (C-x 3 split, find-file)
+  // acts on the server's stale focus, not the pane the user just clicked. The
+  // server re-pushes PANE_TREE, which the reconcile reflects. (paneId is the
+  // server's leaf id — buildServerPaneNode reuses it; a non-matching id, e.g. a
+  // window-1 tabline pane, is a harmless no-op server-side.)
+  if (serverViewClient && typeof serverViewClient.sendPaneIntent === 'function') {
+    serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId });
+  }
 }
 // Capture-phase listeners: run *before* the click target's own handlers
 // fire. A tabline-tab's mousedown handler rebuilds the strip (replaces
