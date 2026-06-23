@@ -2415,6 +2415,20 @@ export function createSpine(options, effects = {}) {
    *  windows — or two panes — on different buffers report different
    *  modelines. */
   function viewStateOf(index) {
+    // A media-focused leaf has no text buffer/cursor (the interpreter is bound to
+    // a fallback buffer), so report the DATA-SOURCE's name + kind in the modeline
+    // — what the user actually sees — rather than the fallback buffer's name.
+    const ds = dataSources.get(currentBufferIdOf(index));
+    if (ds) {
+      return {
+        point: 0,
+        mark: null,
+        name: ds.name,
+        modeline: renderModeline({ name: ds.name, modified: false, line: 1, column: 0, mode: ds.kind }),
+        status: statusText,
+        modified: false,
+      };
+    }
     const entry = entryForClient(index);
     const buf = entry.buffer;
     const v = focusedViewOf(index);

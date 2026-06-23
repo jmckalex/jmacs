@@ -490,6 +490,12 @@ test('find-file of a MEDIA file creates a data-source leaf (no garbage text buff
   assert.equal(rec.filePath, '/clip.mp4');
   assert.equal(rec.modified, false);
   assert.equal(rec.current, true);
+
+  // The modeline shows the media name + kind (not the fallback text buffer).
+  const vs = spine.viewStateOf(0);
+  assert.equal(vs.name, 'clip.mp4');
+  assert.equal(vs.modified, false);
+  assert.match(vs.modeline, /clip\.mp4/);
 });
 
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
