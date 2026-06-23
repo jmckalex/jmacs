@@ -2583,3 +2583,53 @@ the big pane-negotiation gap; the client still ignores PANE_TREE today,
    QUESTION for live: does the REPL/utility dock show in a fresh server window?
    If not, it's a follow-up (the utility dock is render-coupled — may be a stub
    in server mode). The must-have for Step 1 is the single scratch pane.
+
+## [2026-06-23 G4 window-model Step 3] Arbitrary pane layouts — LIVE-VERIFIED working
+
+The window-as-composable-pane-layout vision is REAL and live-verified by Jason
+("works great", "works perfectly"). Step 1 (single scratch pane) was verified;
+then Step 3 rendered the server's PANE_TREE so a window holds arbitrary splits
+with different buffers per pane. Commits on `multi-window-b` (UNMERGED, ~120
+ahead), suite 836→837, flag-off byte-for-byte:
+
+- **`34f4c7f`** — dismiss the startup splash in a fresh server window (the
+  faint `(cond` ghost; `dismissSplash()` in mountServerView). Live-verified.
+- **`ade0f74` Step 3a** — the client renders the server's PANE_TREE.
+  `server-view-client` handles PANE_TREE → `chrome.setPaneTree`; `app.js`
+  `reconcileServerPaneTree` rebuilds rootPane from the wire tree (reusing the
+  server's stable leaf ids + the existing split/splitter/layout machinery),
+  mounts each leaf, focuses the server's focused leaf. C-x 2/3/0/1/o became
+  visible. Focused leaf → live `serverFacadeView`; same-buffer panes → live
+  shared mirror. Only a 'single' window reconciles; window 1 keeps its tabline.
+- **`a85fe75` Step 3b** — different buffers per pane. Instead of N live mirrors,
+  a NON-focused DIFFERENT-buffer pane renders from a static snapshot carried in
+  the PANE_TREE leaf (`text`, included only when the leaf's buffer ≠ the focused
+  one; a `textForBuffer` hook from the spine registry). app.js `serverStaticBuffers`
+  caches them. + a server fix: C-x o onto a different-buffer pane re-syncs the
+  originator's live mirror (didn't fire onBufferSwitched → `bufferSwitchEffectFired`
+  guards a double).
+- **`f2be17c`** — a pane CLICK now sends a `focus-pane` PANE intent so the SERVER
+  re-focuses that leaf (the plumbing existed; the client never sent it). Fixes
+  "click the top pane, C-x 3 splits the bottom" — the server's focus is now the
+  source of truth for every pane command. Live-verified.
+- **`d01b962`** — per-window buffer SUBSETS. Files opened in window 2 were
+  leaking into window 1's tabline (Step 1's deny-list only hid scratches).
+  Replaced with a per-window ALLOW-LIST (`clientBuffers`: clientIndex → open
+  buffer ids), maintained on every add path (construction/restore/find-file via
+  switchClientToBuffer, addClientView, recoverBuffer, kill drops it,
+  removeClientView reaps an unused scratch). `bufferListRecords` filters to the
+  window's set (+ its current, defensively); the C-x C-b PICKER stays GLOBAL.
+  Live-verified. **Jason's note: the set is buffer-id-keyed today; it generalises
+  to VIEW ids when buffer-less element-views (jukebox/stella) graduate to the
+  server.**
+
+**THE MODEL-B PAYOFF IS VISIBLY WORKING (Jason, unprompted):** the same buffer
+shown as the ACTIVE view in two real windows updates LIVE in both as you type
+(fanDelta → each client's live mirror). The one remaining non-live case is a
+buffer in a NON-focused split pane (static snapshot, 3b) edited from elsewhere.
+
+**REMAINING (Step 3 polish, all deferred):** 3c — a leaf can BE a tabline with
+its own tab set (multiple tablines per window; the per-window subset becomes
+per-tabline-leaf); live background-pane cursors / full per-buffer mirrors;
+persisted splitter ratios; the fresh-window REPL eval (does it work?). Then
+G4.3 menu-follows-focus polish, then G5 (flip default, delete in-renderer interp).
