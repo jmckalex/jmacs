@@ -1187,21 +1187,22 @@ export function createSpine(options, effects = {}) {
       'open-customize-variable!': () => NIL,
       'write-custom-file!': () => NIL,
 
-      // --- search (search.lisp) — STUB (the isearch loop is host-owned) -
-      // `isearch-forward`/`isearch-backward` just BEGIN an incremental
-      // search; the per-keystroke match + highlight + minibuffer loop
-      // lives in the host. Server-side that is a render-message slice of
-      // its own (a server search state machine + a client overlay). For
-      // now the commands resolve and surface a status so the wiring is
-      // visible, then no-op. See PRIMITIVE-SPLIT.md "Search".
+      // --- search (search.lisp) — REAL incremental search ---------------
+      // `isearch-forward`/`isearch-backward` (C-s/C-r) begin a server-side
+      // incremental search. The per-keystroke match + highlight loop is a
+      // REAL Lisp state machine (`-spine-isearch-start`, defined below)
+      // that drives the SAME machinery as everything else: it moves point
+      // (goto!), highlights every match + the current one distinctly via
+      // OVERLAYS (add-overlay!), prompts in the echo area (show-status!),
+      // and reads each keystroke through read-next-key (so keys route to
+      // the isearch loop while it is active rather than self-inserting).
+      // The starter primitives just kick the Lisp loop in a direction.
       'start-search!': () => {
-        statusText = 'I-search: (spine stub — interactive loop is host-side)';
-        onStatus(statusText);
+        interpreter.evaluate('(-spine-isearch-start 1)');
         return NIL;
       },
       'start-search-backward!': () => {
-        statusText = 'I-search backward: (spine stub — interactive loop is host-side)';
-        onStatus(statusText);
+        interpreter.evaluate('(-spine-isearch-start -1)');
         return NIL;
       },
 
@@ -1626,6 +1627,232 @@ export function createSpine(options, effects = {}) {
       "Remove all search-match highlight overlays (M-s u)."
       (clear-overlays! "search")
       (show-status! "Highlights cleared"))
+
+    ;; --- incremental search (isearch, C-s / C-r) ----------------------
+    ;;
+    ;; A REAL server-side isearch loop. It is the same suspend/resume shape
+    ;; as query-replace (regex-search.lisp): the search state is threaded as
+    ;; explicit arguments through read-next-key, which re-arms itself after
+    ;; each keystroke so the loop owns the keyboard while it is active (a key
+    ;; is routed to the loop, not self-inserted). Each step:
+    ;;   1. find all literal matches of the query (string-index-of);
+    ;;   2. pick the CURRENT match for the direction (next/prev, wrapping);
+    ;;   3. highlight every match (face "search-match") + the current one
+    ;;      distinctly (face "isearch-current") as OVERLAYS;
+    ;;   4. move point to the match end (forward) / start (backward);
+    ;;   5. show the "I-search: <query>" prompt in the echo area;
+    ;;   6. read the next key and dispatch.
+    ;; Keys: a printable extends the query; C-s / C-r repeat forward /
+    ;; backward; backspace shrinks the query; C-g aborts (restoring the
+    ;; origin point); RET (or any other key) exits at the current match.
+    ;; Search is literal + case-sensitive (matching the in-renderer isearch).
+
+    ;; The mutable isearch state (only live while a search is running). Kept
+    ;; in globals rather than threaded args so a re-armed read-next-key
+    ;; callback can be a plain nullary dispatcher — the state survives across
+    ;; keystrokes. -isearch-running guards the starter against re-entry.
+    (define *isearch-query* "")
+    (define *isearch-dir* 1)          ; 1 = forward, -1 = backward
+    (define *isearch-origin* 0)       ; point when the search began
+    (define *isearch-cur* nil)        ; current match start, or nil (no match)
+    (define *isearch-running* #f)
+
+    (define (-isearch-collect text needle from acc)
+      "Every start index of NEEDLE in TEXT at or after FROM, in order
+       (a reversed accumulator built tail-recursively, then reversed)."
+      (let ((found (string-index-of text needle from)))
+        (if (< found 0)
+            (reverse acc)
+            (-isearch-collect text needle (+ found 1) (cons found acc)))))
+
+    (define (-isearch-matches)
+      "The list of match start indices for the current query, or nil when
+       the query is empty (so there is nothing to search for)."
+      (let ((needle *isearch-query*))
+        (if (= (string-length needle) 0)
+            nil
+            (-isearch-collect (buffer-text) needle 0 nil))))
+
+    (define (-isearch-first-at-or-after matches pos)
+      "The first match start in MATCHES at or after POS, or nil."
+      (cond
+        ((nil? matches) nil)
+        ((>= (car matches) pos) (car matches))
+        (else (-isearch-first-at-or-after (cdr matches) pos))))
+
+    (define (-isearch-last-at-or-before matches pos best)
+      "The last match start in MATCHES at or before POS, or BEST (nil seed)."
+      (cond
+        ((nil? matches) best)
+        ((<= (car matches) pos)
+         (-isearch-last-at-or-before (cdr matches) pos (car matches)))
+        (else best)))
+
+    (define (-isearch-highlight matches cur n)
+      "Repaint overlays: every match (face search-match) + CUR distinctly
+       (face isearch-current). N is the query length."
+      (clear-overlays! "search")
+      (-isearch-paint-all matches n)
+      (when (not (nil? cur))
+        (add-overlay! cur (+ cur n) "isearch-current" "search")))
+
+    (define (-isearch-paint-all matches n)
+      "Add a search-match overlay at every match start in MATCHES."
+      (when (not (nil? matches))
+        (add-overlay! (car matches) (+ (car matches) n) "search-match" "search")
+        (-isearch-paint-all (cdr matches) n)))
+
+    (define (-isearch-prompt found)
+      "The echo-area prompt for the current state. FOUND is #t when the
+       query matched, #f for a failing search."
+      (let ((dir (if (= *isearch-dir* 1) "I-search" "I-search backward")))
+        (if found
+            (str dir ": " *isearch-query*)
+            (str "Failing " dir ": " *isearch-query*))))
+
+    (define (-isearch-render)
+      "Recompute the current match for the live query + direction, repaint
+       the overlays, move point, and show the prompt. Sets *isearch-cur*."
+      (let* ((matches (-isearch-matches))
+             (n (string-length *isearch-query*)))
+        (if (nil? matches)
+            (begin
+              ;; No match (empty or failing query): clear highlights, leave
+              ;; point at the origin, show the (possibly failing) prompt.
+              (clear-overlays! "search")
+              (set! *isearch-cur* nil)
+              (goto! *isearch-origin*)
+              (show-status! (-isearch-prompt (= n 0))))
+            (let ((cur (if (= *isearch-dir* 1)
+                           (-isearch-search-forward matches)
+                           (-isearch-search-backward matches))))
+              (set! *isearch-cur* cur)
+              (-isearch-highlight matches cur n)
+              ;; Forward leaves point at the match END, backward at the START
+              ;; (the Emacs convention). A non-nil cur is guaranteed here.
+              (goto! (if (= *isearch-dir* 1) (+ cur n) cur))
+              (show-status! (-isearch-prompt #t))))))
+
+    (define (-isearch-search-forward matches)
+      "The forward current match: the first match at or after the origin,
+       wrapping to the first match when none follows."
+      (let ((at (-isearch-first-at-or-after matches *isearch-origin*)))
+        (if (nil? at) (car matches) at)))
+
+    (define (-isearch-search-backward matches)
+      "The backward current match: the last match at or before the origin,
+       wrapping to the last match when none precedes."
+      (let ((at (-isearch-last-at-or-before matches *isearch-origin* nil)))
+        (if (nil? at) (-isearch-last matches) at)))
+
+    (define (-isearch-last matches)
+      "The last element of the (non-nil) MATCHES list."
+      (if (nil? (cdr matches)) (car matches) (-isearch-last (cdr matches))))
+
+    (define (-isearch-repeat dir)
+      "C-s / C-r: jump to the NEXT match in DIR from the current one,
+       wrapping. With no current match (failing query) this is a no-op
+       beyond re-rendering. Moves the search ORIGIN to the new match so the
+       render finds it, then re-renders."
+      (set! *isearch-dir* dir)
+      (let ((matches (-isearch-matches))
+            (n (string-length *isearch-query*)))
+        (cond
+          ((nil? matches) (-isearch-render))   ; nothing to repeat
+          ((nil? *isearch-cur*)
+           ;; First press with no current match yet: search from the origin.
+           (-isearch-render))
+          (else
+            ;; Advance the origin one step past the current match (forward)
+            ;; or before it (backward), wrapping, then re-render from there.
+            (let ((next (if (= dir 1)
+                            (-isearch-next-after matches (+ *isearch-cur* 1))
+                            (-isearch-prev-before matches (- *isearch-cur* 1)))))
+              (set! *isearch-origin* next)
+              (-isearch-render))))))
+
+    (define (-isearch-next-after matches pos)
+      "The next match start at or after POS, wrapping to the first."
+      (let ((at (-isearch-first-at-or-after matches pos)))
+        (if (nil? at) (car matches) at)))
+
+    (define (-isearch-prev-before matches pos)
+      "The previous match start at or before POS, wrapping to the last."
+      (let ((at (-isearch-last-at-or-before matches pos nil)))
+        (if (nil? at) (-isearch-last matches) at)))
+
+    (define (-isearch-exit)
+      "Finish the search at the current match: drop the highlights, clear
+       the prompt, leave point where it is. The mark is left clear."
+      (clear-overlays! "search")
+      (clear-status!)
+      (set! *isearch-running* #f))
+
+    (define (-isearch-abort)
+      "C-g: abandon the search, restore the origin point, drop highlights."
+      (clear-overlays! "search")
+      (goto! *isearch-origin*)
+      (clear-status!)
+      (set! *isearch-running* #f))
+
+    (define (-isearch-extend ch)
+      "A printable key: append CH to the query and re-render from origin."
+      (set! *isearch-query* (str *isearch-query* ch))
+      (-isearch-render)
+      (-isearch-arm))
+
+    (define (-isearch-backspace)
+      "Backspace: drop the last query char and re-render. With an empty
+       query this is a no-op (stays in the search)."
+      (let ((q *isearch-query*))
+        (when (> (string-length q) 0)
+          (set! *isearch-query* (substring q 0 (- (string-length q) 1)))
+          (-isearch-render)))
+      (-isearch-arm))
+
+    (define (-isearch-printable? key)
+      "Is KEY a single bare printable character (so it extends the query)?
+       Multi-char chords (C-s, M-x, backspace, enter) are not."
+      (= (string-length key) 1))
+
+    (define (-isearch-dispatch key)
+      "Handle one keystroke while a search is active."
+      (cond
+        ((or (eq? key "C-s") (eq? key "C-r"))
+         (-isearch-repeat (if (eq? key "C-s") 1 -1))
+         (-isearch-arm))
+        ((eq? key "backspace") (-isearch-backspace))
+        ((eq? key "C-g") (-isearch-abort))
+        ;; RET / Escape / any other (a command key) exits at the current
+        ;; match. Production exits-and-runs the command; the spine exits
+        ;; cleanly (the key is consumed) — a solid, predictable exit.
+        ((or (eq? key "enter") (eq? key "escape")) (-isearch-exit))
+        ((-isearch-printable? key) (-isearch-extend key))
+        (else (-isearch-exit))))
+
+    (define (-isearch-arm)
+      "Re-arm read-next-key to feed the next keystroke to the dispatcher,
+       as long as the search is still running."
+      (when *isearch-running*
+        (read-next-key (lambda (key) (-isearch-dispatch key)))))
+
+    (define (-isearch-start dir)
+      "Begin an incremental search in direction DIR (1 fwd, -1 back). The
+       origin is the current point; the query starts empty."
+      (set! *isearch-query* "")
+      (set! *isearch-dir* dir)
+      (set! *isearch-origin* (point))
+      (set! *isearch-cur* nil)
+      (set! *isearch-running* #t)
+      (clear-mark!)
+      (clear-overlays! "search")
+      (show-status! (-isearch-prompt #t))
+      (-isearch-arm))
+
+    ;; The starter the host primitives (start-search! / start-search-backward!)
+    ;; call. Named -spine-isearch-start to match the spine's private helpers.
+    (define (-spine-isearch-start dir)
+      (-isearch-start dir))
   `);
 
   // --- RefTeX picker openers → the generic PICKER channel --------------
