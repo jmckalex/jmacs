@@ -5865,6 +5865,13 @@ if (window.host && window.host.serverMode) {
   // shared serverMirror instead. Pruned to the currently-shown set each reconcile.
   /** @type {Map<string, object>} bufferId -> static ClientBuffer. */
   const serverStaticBuffers = new Map();
+  // Step 3c: per-leaf tabline-views, keyed by the server leaf id. A leaf flagged
+  // `tabline` in the PANE_TREE renders as a real tabline-view of its OWN curated
+  // tabs (NOT the window's whole buffer set). Reused across reconciles so its
+  // tablineState / per-tab elements survive a focus-only re-render; disposed when
+  // the leaf vanishes or flips back to a single view.
+  /** @type {Map<string, object>} leafId -> tabline-view. */
+  const serverLeafTablines = new Map();
 
   /** The live `<text-view>` element rendering the active buffer — the façade
    *  tab's per-tab element inside the server tabline's content area. Null until
@@ -6076,9 +6083,60 @@ if (window.host && window.host.serverMode) {
     };
   }
 
+  /** The live `<text-view>` element rendering the FOCUSED leaf — the leaf's own
+   *  editor instance, or (a tabline focused leaf) the façade element in its
+   *  active tab. Null before the first mount. Used by the focused-leaf adapter
+   *  (focus / recenter / pageLines) and the reconcile's focus-restore. */
+  function focusedServerLeafElement() {
+    const leaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
+    if (!leaf) return null;
+    if (isTablineView(leaf.view)) {
+      const st = tablineStateByView.get(leaf.view);
+      return st ? (st.editorByChild.get(serverFacadeView) ?? st.activeEditor ?? null) : null;
+    }
+    return editorViewByPaneId.get(leaf.id) ?? null;
+  }
+
+  /** The content view for a tabline leaf's ACTIVE tab — the live façade when
+   *  the leaf is focused (its cursor tracks the mirror), else a static view over
+   *  the active buffer's own text (3b). The inactive tabs are lightweight
+   *  proxies; only the active tab carries content. */
+  function serverLeafActiveTabView(w) {
+    if (w.focused) return serverFacadeView;
+    return makeServerStaticBufferView(w, serverStaticBufferFor(w));
+  }
+
+  /** Build (or reuse) the tabline-view for a `tabline` leaf (Step 3c): one tab
+   *  per id in the leaf's OWN curated `tabs` list — the active tab is the live
+   *  façade (focused) or a static view (non-focused), every other tab a
+   *  lightweight proxy (label only). Reused by leaf id so its tablineState
+   *  survives a reconcile. Marked `_serverLeafTabline` so the tab click / close
+   *  handlers route through the server (focus-pane + switch / close-tab). */
+  function buildServerLeafTabline(w) {
+    const tabs = Array.isArray(w.tabs) ? w.tabs : [];
+    const activeId = w.bufferId;
+    let tlv = serverLeafTablines.get(w.id);
+    if (!tlv) {
+      tlv = createView({ kind: 'tabline', extras: { tabs: [], active: 0, edge: 'top' } });
+      tlv._serverLeafTabline = true;
+      tlv._serverLeafId = w.id;
+      serverLeafTablines.set(w.id, tlv);
+    }
+    const activeTabView = serverLeafActiveTabView(w);
+    tlv.tabs = tabs.map((t) => (t.bufferId === activeId
+      ? activeTabView
+      : ensureServerProxy({
+          id: t.bufferId, name: t.name, modified: t.modified, filePath: t.filePath,
+        })));
+    const activeIdx = tabs.findIndex((t) => t.bufferId === activeId);
+    tlv.active = activeIdx >= 0 ? activeIdx : 0;
+    return tlv;
+  }
+
   /** Build a client pane node from the server's wire pane-tree, reusing the
    *  server's stable leaf/split ids (so paneElements survive a focus-only
-   *  reconcile). The focused leaf gets the live façade; a same-buffer pane a
+   *  reconcile). A `tabline` leaf becomes a real tabline-view of its own curated
+   *  tabs (3c); else the focused leaf gets the live façade; a same-buffer pane a
    *  static view over the live mirror (3a); a DIFFERENT-buffer pane a static
    *  view over its own buffer seeded from the tree's text (3b). */
   function buildServerPaneNode(wire) {
@@ -6096,7 +6154,9 @@ if (window.host && window.host.serverMode) {
     }
     const w = wire || {};
     let view;
-    if (w.focused) {
+    if (w.tabline) {
+      view = buildServerLeafTabline(w); // 3c: a tabline of this leaf's own tabs
+    } else if (w.focused) {
       view = serverFacadeView; // the live active buffer
     } else if (w.bufferId && w.bufferId !== activeServerBufferId() && typeof w.text === 'string') {
       view = makeServerStaticBufferView(w, serverStaticBufferFor(w)); // 3b: a different buffer
@@ -6116,13 +6176,23 @@ if (window.host && window.host.serverMode) {
     // Prune static buffers no longer shown as a different-buffer pane.
     const activeId = activeServerBufferId();
     const stillStatic = new Set();
+    const tablineLeafIds = new Set();
     forEachWireLeaf(serverPaneTreeWire, (lf) => {
+      if (lf.tabline) tablineLeafIds.add(lf.id);
       if (!lf.focused && lf.bufferId && lf.bufferId !== activeId && typeof lf.text === 'string') {
         stillStatic.add(lf.bufferId);
       }
     });
     for (const id of [...serverStaticBuffers.keys()]) {
       if (!stillStatic.has(id)) serverStaticBuffers.delete(id);
+    }
+    // Dispose tabline-views whose leaf vanished or flipped back to a single view
+    // (toggle-tabline off / delete-pane), so no orphan strip lingers.
+    for (const [id, tlv] of serverLeafTablines) {
+      if (!tablineLeafIds.has(id)) {
+        try { disposeTablineKind(tlv); } catch { /* ignore */ }
+        serverLeafTablines.delete(id);
+      }
     }
     // Tear down editor instances for leaves the new tree no longer has (an
     // unsplit / delete-pane), so nothing renders behind the new layout.
@@ -6139,13 +6209,37 @@ if (window.host && window.host.serverMode) {
     serverBoundLeafId = currentPaneId;
     syncPaneElements();
     for (const leaf of leafPanes(rootPane)) {
-      if (leaf.view && leaf.view.kind === 'text') {
+      if (isTablineView(leaf.view)) {
+        // A leaf that just flipped text→tabline still has its leaf-direct
+        // <text-view> mounted behind the new strip — unlink it (TextView.destroy
+        // nulls the inner editor but leaves the host element), then mount the
+        // tabline via its own pipeline (mountKindView, not the text path).
+        const stale = editorViewByPaneId.get(leaf.id);
+        if (stale) {
+          try { stale.destroy(); } catch { /* ignore */ }
+          try { stale.remove(); } catch { /* ignore */ }
+          editorViewByPaneId.delete(leaf.id);
+        }
+        mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id) });
+      } else if (leaf.view && leaf.view.kind === 'text') {
         const inst = ensureEditorViewForLeaf(leaf);
         if (inst) { try { inst.setView(leaf.view); } catch { /* ignore */ } }
       }
     }
     relayoutPanes();
     refreshPaneFocusIndicators();
+    // A reconcile that REPLACED the focused leaf's element (toggle-tabline
+    // flipping it to/from a tabline destroys the old <text-view>) orphans
+    // keyboard focus to <body>. Restore it to the focused leaf's element — but
+    // ONLY when focus is genuinely orphaned, so an open minibuffer/picker (whose
+    // input holds focus) is never stolen from. A buffer switch re-focuses via the
+    // SNAPSHOT path instead, so this is a no-op there (activeElement is the view).
+    if (document.activeElement === document.body || document.activeElement === null) {
+      const el = focusedServerLeafElement();
+      if (el && typeof el.focus === 'function') {
+        try { el.focus(); } catch { /* ignore */ }
+      }
+    }
   }
 
   /** Single-leaf fallback before the first PANE_TREE arrives (the SNAPSHOT beats
@@ -6172,10 +6266,9 @@ if (window.host && window.host.serverMode) {
    *  focus change rebuilds the tree, but focus/scroll still target the right
    *  pane). */
   function makeServerFocusedLeafAdapter() {
-    const focusedInstance = () => {
-      const leaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
-      return leaf ? editorViewByPaneId.get(leaf.id) : null;
-    };
+    // The focused leaf's live element — a plain leaf's editor instance, or (a
+    // tabline focused leaf) the façade element in its active tab.
+    const focusedInstance = focusedServerLeafElement;
     return {
       setView: () => { const i = focusedInstance(); if (i) { try { i.setView(i.boundView ?? serverFacadeView); } catch { /* ignore */ } } },
       focus: () => { const i = focusedInstance(); if (i) { try { i.focus(); } catch { /* ignore */ } } },
@@ -9224,6 +9317,21 @@ function ensureTablineState(view) {
         if (id) serverViewClient.closeBuffer(id);
         return;
       }
+      // A per-leaf server tabline (Step 3c): closing a tab un-curates that buffer
+      // from THIS tabline (it lives on in the pool — NOT a global kill). Focus
+      // the leaf, then send a close-tab pane intent; the server re-points to a
+      // neighbour if the active tab closed and re-pushes PANE_TREE.
+      if (view._serverLeafTabline) {
+        const target = view.tabs[i];
+        if (!target || !serverViewClient) return;
+        const id = target === serverFacadeView
+          ? serverViewClient.currentBufferId()
+          : target._serverBufferId;
+        if (!id) return;
+        serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId: view._serverLeafId });
+        serverViewClient.sendPaneIntent({ op: 'close-tab', paneId: view._serverLeafId, bufferId: id });
+        return;
+      }
       const target = view.tabs[i];
       if (!target) return;
       const globalIdx = views.indexOf(target);
@@ -9621,6 +9729,21 @@ function activateTabInTabline(tablineView, index) {
     if (target && target !== serverFacadeView && target._serverBufferId && serverViewClient) {
       serverViewClient.switchBuffer(target._serverBufferId);
     }
+    return;
+  }
+  // A per-leaf server tabline (Step 3c): clicking a tab focuses THIS leaf on the
+  // server (the click may be in a non-focused pane), then switches its active
+  // tab. Both route up; the server re-pushes PANE_TREE and the reconcile
+  // re-renders the strip with the new active tab. The active tab IS the façade
+  // (switch is a server no-op); a proxy carries its own id.
+  if (tablineView._serverLeafTabline) {
+    if (!serverViewClient) return;
+    const target = tablineView.tabs[index];
+    const id = target === serverFacadeView
+      ? serverViewClient.currentBufferId()
+      : (target && target._serverBufferId);
+    serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId: tablineView._serverLeafId });
+    if (id) serverViewClient.switchBuffer(id);
     return;
   }
   tablineView.active = index;
