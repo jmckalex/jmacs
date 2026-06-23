@@ -5875,6 +5875,79 @@ if (window.host && window.host.serverMode) {
   // non-focused leaves need an entry here.
   /** @type {Map<string, object>} leafId -> stable static active-tab view. */
   const serverLeafActiveTabViews = new Map();
+  // Non-text DATA-SOURCE views (image/audio/video/pdf), keyed by the server
+  // source id. A media leaf/tab carries `viewKind` + `filePath` on the wire; the
+  // client builds the matching element-view here and loads the bytes itself via
+  // window.host.openFilePath (the server never reads them). Reused across
+  // reconciles (the element survives a focus-only re-render); pruned when the
+  // source is no longer shown.
+  /** @type {Map<string, object>} sourceId -> element-view object. */
+  const serverMediaViews = new Map();
+
+  /** Map a window.host.openFilePath result to createView options for the matching
+   *  element-view — MIRRORS openAsMediaViewIfRecognised's per-kind extras (image
+   *  / audio / video / pdf), without pushing into the global `views` list. Null
+   *  when the result isn't a recognised media shape. */
+  function serverMediaViewSpec(result) {
+    if (!result || typeof result !== 'object') return null;
+    if (typeof result.imageSrc === 'string') {
+      return { kind: 'image', name: result.name, extras: { filePath: result.path, src: result.imageSrc } };
+    }
+    if (result.mediaKind === 'audio') {
+      return { kind: 'audio', name: result.name, extras: {
+        filePath: result.path, src: result.src,
+        ...(result.metadata ? { metadata: result.metadata } : {}),
+        ...(result.albumArtSrc ? { albumArtSrc: result.albumArtSrc } : {}),
+      } };
+    }
+    if (result.mediaKind === 'video') {
+      return { kind: 'video', name: result.name, extras: { filePath: result.path, src: result.src } };
+    }
+    if (result.pdfKind === true) {
+      return { kind: 'pdf', name: result.name, extras: { filePath: result.path, src: result.src, persist: true } };
+    }
+    return null;
+  }
+
+  /** Load a media source's bytes (via the main process) and bind them onto its
+   *  element-view. Async — the view mounts immediately (blank) and repaints when
+   *  the src arrives; an already-mounted element is re-bound, else the next
+   *  reconcile mounts it with the src. Tolerant: a failed load just leaves blank. */
+  async function loadServerMediaSrc(view, filePath) {
+    if (!filePath || !window.host || typeof window.host.openFilePath !== 'function') return;
+    let result;
+    try { result = await window.host.openFilePath(filePath); } catch { return; }
+    const spec = serverMediaViewSpec(result);
+    if (!spec) return;
+    Object.assign(view, spec.extras); // src (+ audio metadata / album art)
+    if (typeof result.name === 'string') view.name = result.name;
+    const el = elementForViewInstance(view);
+    if (el && typeof el.setBuffer === 'function') {
+      try { el.setBuffer(view); } catch { /* ignore */ }
+    } else if (serverPaneTreeWire) {
+      renderServerPaneLayout(); // not mounted yet → reconcile mounts it with the src
+    }
+  }
+
+  /** Build (or reuse) the element-view for a media data-source leaf/tab (Step:
+   *  data-sources). Keyed by the source id so its element survives reconciles;
+   *  the bytes load asynchronously (loadServerMediaSrc). Marked `_serverMedia`
+   *  so the reconcile mounts it via mountKindView (the existing element pipeline). */
+  function buildServerMediaView(w) {
+    let v = serverMediaViews.get(w.bufferId);
+    if (!v) {
+      v = createView({
+        kind: w.viewKind,
+        name: w.name || `*${w.viewKind}*`,
+        extras: { filePath: w.filePath },
+      });
+      v._serverMedia = true;
+      v._serverSourceId = w.bufferId;
+      serverMediaViews.set(w.bufferId, v);
+      loadServerMediaSrc(v, w.filePath);
+    }
+    return v;
+  }
 
   /** Get-or-create the lightweight proxy tab for server buffer B (id/name only;
    *  never mounted — only the active buffer's façade tab has an element). */
@@ -6007,6 +6080,8 @@ if (window.host && window.host.serverMode) {
    *  — both on one buffer, so no `text` on the wire — rendered EMPTY. The
    *  inactive tabs are lightweight proxies; only the active tab carries content. */
   function serverLeafActiveTabView(w) {
+    // The active tab is a non-text DATA-SOURCE (media): mount its element-view.
+    if (w.viewKind && w.viewKind !== 'text') return buildServerMediaView(w);
     if (w.focused) return serverFacadeView;
     let v = serverLeafActiveTabViews.get(w.id);
     if (!v) { v = { kind: 'text', _serverBacked: true }; serverLeafActiveTabViews.set(w.id, v); }
@@ -6072,6 +6147,8 @@ if (window.host && window.host.serverMode) {
     let view;
     if (w.tabline) {
       view = buildServerLeafTabline(w); // 3c: a tabline of this leaf's own tabs
+    } else if (w.viewKind && w.viewKind !== 'text') {
+      view = buildServerMediaView(w); // a bare media pane (image/audio/video/pdf)
     } else if (w.focused) {
       view = serverFacadeView; // the live active buffer
     } else if (w.bufferId && w.bufferId !== activeServerBufferId() && typeof w.text === 'string') {
@@ -6093,14 +6170,22 @@ if (window.host && window.host.serverMode) {
     const activeId = activeServerBufferId();
     const stillStatic = new Set();
     const tablineLeafIds = new Set();
+    const shownMedia = new Set();
     forEachWireLeaf(serverPaneTreeWire, (lf) => {
       if (lf.tabline) tablineLeafIds.add(lf.id);
+      // A leaf whose ACTIVE content is a media source (a bare media pane, or a
+      // tabline leaf whose active tab is media) carries `viewKind`.
+      if (lf.viewKind && lf.viewKind !== 'text') shownMedia.add(lf.bufferId);
       if (!lf.focused && lf.bufferId && lf.bufferId !== activeId && typeof lf.text === 'string') {
         stillStatic.add(lf.bufferId);
       }
     });
     for (const id of [...serverStaticBuffers.keys()]) {
       if (!stillStatic.has(id)) serverStaticBuffers.delete(id);
+    }
+    // Drop element-views for media sources no longer shown as an active view.
+    for (const id of [...serverMediaViews.keys()]) {
+      if (!shownMedia.has(id)) serverMediaViews.delete(id);
     }
     // Dispose tabline-views whose leaf vanished or flipped back to a single view
     // (toggle-tabline off / delete-pane), so no orphan strip lingers.
@@ -6149,6 +6234,17 @@ if (window.host && window.host.serverMode) {
             try { el.setView(activeChild); } catch { /* ignore */ }
           }
         }
+      } else if (leaf.view && leaf.view._serverMedia) {
+        // A bare media pane (image/audio/video/pdf): mount the element-view via
+        // the existing per-kind pipeline (mountKindView). A media tab inside a
+        // tabline is handled by the tabline branch above (per-tab element).
+        const stale = editorViewByPaneId.get(leaf.id);
+        if (stale) {
+          try { stale.destroy(); } catch { /* ignore */ }
+          try { stale.remove(); } catch { /* ignore */ }
+          editorViewByPaneId.delete(leaf.id);
+        }
+        mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id) });
       } else if (leaf.view && leaf.view.kind === 'text') {
         const inst = ensureEditorViewForLeaf(leaf);
         if (inst) { try { inst.setView(leaf.view); } catch { /* ignore */ } }
