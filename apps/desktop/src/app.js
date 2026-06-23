@@ -6568,15 +6568,29 @@ function targetOwnsKeys(el) {
 window.addEventListener('keydown', (event) => {
   if (!keymapReady) return;
   // Server-mode (Model B): once the server view is mounted it is the sole
-  // dispatcher — every key routes to the server's keymap. The global router
-  // must stand down regardless of which DOM element holds focus, or a key
-  // that reaches <body> (focus drifted after a minibuffer/picker closed) gets
-  // dispatched server-side AND re-run here against the idle in-renderer buffer
-  // (the dual-dispatch `C-/` undo bell). This is focus-independent — it does
-  // NOT rely on the overlay's `preventDefault` (which only fires when the
-  // overlay is focused). Flag-off this is always false (the router runs as
-  // today). The server-driven minibuffer/picker still routes through the
-  // native inputs `targetOwnsKeys` covers below, which the server reads.
+  // dispatcher. A focused TEXT view routes its own keys (its onKey →
+  // serverViewClient.dispatchKey), so the global router stands down for it — else
+  // a key reaching <body> (focus drift) would be dispatched twice. BUT a focused
+  // NON-TEXT view (a media / element data-source view) has no such onKey, so a
+  // command CHORD would be lost and could trap the user on, e.g., a video. Route
+  // just those held-modifier chords up to the server here; bare keys
+  // (space=play/pause, arrows=seek) stay with the element. Flag-off
+  // serverViewClient is null, so this whole branch is skipped.
+  if (window.host && window.host.serverMode && serverViewClient && serverViewClient.getView()) {
+    if (event.defaultPrevented) return;            // a deeper listener claimed it
+    if (BARE_MODIFIER_KEYS.has(event.key)) return; // a bare modifier press
+    if (targetOwnsKeys(event.target)) return;      // minibuffer / native input
+    const focusedLeaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
+    const fv = focusedLeaf ? peelTabline(focusedLeaf.view) : null;
+    const isTextFocus = !!fv && !isTablineView(fv)
+      && (fv.kind === 'text' || fv._serverBacked === true);
+    if (isTextFocus) return; // the text-view's own onKey dispatches it
+    if (!(event.metaKey || event.ctrlKey || event.altKey)) return; // bare → the element
+    const chord = keyEventToString(event);
+    if (serverViewClient.dispatchKey(chord)) event.preventDefault();
+    return;
+  }
+  // Flag-off (and the pre-mount window): the router runs exactly as today.
   if (shouldGlobalRouterDefer(
     !!(window.host && window.host.serverMode),
     !!(serverViewClient && serverViewClient.getView())
