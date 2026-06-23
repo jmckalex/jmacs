@@ -10824,10 +10824,24 @@ function projectStateHost(root) {
   };
 }
 
+/** An inert session controller used in server mode. Model B makes the SERVER
+ *  the owner of buffers + the session: the in-renderer `views[]` holds only the
+ *  welcome seed (the real buffers live server-side), so letting the in-renderer
+ *  session persist would overwrite the user's real (flag-off) session.json with
+ *  a near-empty one. Every save/flush/restore therefore routes here and no-ops.
+ *  (Server-side session restore arrives in a later increment.) */
+const NULL_SESSION = {
+  save() {},
+  flush: async () => {},
+  restore: async () => {},
+};
+
 /** The session controller saves should target right now: the open
  *  project's, or the global home one. All debounced saves and the
- *  pagehide flush go through this so the right file gets written. */
+ *  pagehide flush go through this so the right file gets written. In server
+ *  mode it is inert (see NULL_SESSION) so the server owns the session alone. */
 function activeSession() {
+  if (window.host && window.host.serverMode) return NULL_SESSION;
   return projectSession ?? sessionController;
 }
 
@@ -11129,7 +11143,14 @@ document.addEventListener('visibilitychange', () => {
 restoring = true;
 const rootPaneBeforeRestore = rootPane;
 try {
-  await sessionController.restore();
+  // Server mode: the SERVER owns buffers + the session, and the leaf-flip
+  // hands the focused leaf to the server's SNAPSHOT. Skip the in-renderer
+  // restore entirely so it can't re-open files into the leaf and compete
+  // with the server (the boot-time clobber the overlay used to mask).
+  // (Restore-through-the-server is a later increment.)
+  if (!(window.host && window.host.serverMode)) {
+    await sessionController.restore();
+  }
 } finally {
   restoring = false;
 }
@@ -11167,12 +11188,16 @@ if (sessionInstalledTree) {
   if (currentViewIndex >= views.length) {
     currentViewIndex = Math.max(0, views.length - 1);
   }
-} else {
+} else if (!(window.host && window.host.serverMode)) {
   // Phase 3b commit 3: wrap the root pane's view in a tabline-view
   // that contains every restored view (or the welcome / scratch
   // seeds when there was no session). The wrap runs *after* restore
   // so the tabs list is final; the helper is idempotent only by
   // caller discipline (this is the one call site).
+  //
+  // Skipped in server mode: the leaf-flip hands the bare focused leaf to
+  // the server's SNAPSHOT (one live view), so an in-renderer tabline would
+  // just compete. Server-driven tabs arrive with the BUFFER_LIST increment.
   wrapRootInTabline();
 }
 // One trip through the per-pane strip refresh + a session save so the
@@ -11187,10 +11212,16 @@ activeSession().save();
 // crash. Best-effort: a scan failure must never stop the editor coming
 // up. The *Recover* view opens on top of the restored session only when
 // there is something worth recovering.
-try {
-  if ((await scanForRecovery()) > 0) openRecoverView();
-} catch {
-  // Recovery is best-effort; never block startup on it.
+//
+// Skipped in server mode: the SERVER runs its own crash recovery (mwb
+// autosave), so the in-renderer scan would only surface stale in-renderer
+// snapshots and pop a spurious *Recover* over the server-driven leaf.
+if (!(window.host && window.host.serverMode)) {
+  try {
+    if ((await scanForRecovery()) > 0) openRecoverView();
+  } catch {
+    // Recovery is best-effort; never block startup on it.
+  }
 }
 
 // Boot reached the end successfully — stand the boot error boundary down
