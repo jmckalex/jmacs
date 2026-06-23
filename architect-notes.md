@@ -2250,3 +2250,26 @@ mirror `<text-view>` — so the EXISTING tabline/warehouse/sync render shows it
 naturally, no fighting. That's a designed change to the view-resolution system,
 done deliberately (map `elementForViewInstance` + the View-handle shape), NOT a
 live poke. Reverted (`9288f2c` reverts `1a66d88`); the overlay works meanwhile.
+
+## [2026-06-23] Leaf-flip — REFINED design (after reading elementForViewInstance + the render)
+
+`elementForViewInstance` (app.js 9049): tabline children via editorByChild; per-
+instance maps for browser/doc/element; else `singletonElementForKind`. A TEXT
+leaf, though, mounts via `ensureEditorViewForLeaf` (the per-leaf <text-view>),
+whose configure closures read **`instance._boundLeaf.view`** (= leaf.view) for
+point/mark/cursors and `leaf.view.buffer` for content.
+
+So the clean flip is NOT a resolver hack and NOT a foreign append — it's to make
+**`leaf.view` itself a server-backed text view**:
+  leaf.view = { kind:'text', buffer: <the ClientBuffer mirror>, point, mark, cursors }
+- update its point/mark/cursors from each server VIEW message; the mirror IS the buffer.
+- then the EXISTING `ensureEditorViewForLeaf` + render + `elementForViewInstance`
+  drive the leaf's OWN <text-view> from the mirror — no overlay, no fight.
+
+The **server-view-client refactors** from "create + own a <text-view> + closures"
+to "own + update `leaf.view`"; keep `dispatchKey` (keys → KEY intents) + the chrome.
+Watch-points: (1) the tabline — a leaf may hold a tabline-view whose active child is
+the text view; set that child (or give the server leaf a bare text view, no tabline);
+(2) `leaf.view.buffer` must satisfy view.js's 12-member read seam — the ClientBuffer
+mirror already does. GUI-iterative; verify live. **A careful refactor — best started
+with a fresh context budget; this is the next session's first task.**
