@@ -26,13 +26,14 @@
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, basename, resolve } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 
 import {
   MSG, INTENT, MINIBUFFER_IDLE, PANE_INTENT, normalisePickerRequest,
 } from './protocol.js';
+import { resolveUserPath } from './path-resolve.js';
 import { createSpine } from './spine.js';
 // The crash-safe atomic writer (temp file + fsync + rename) and the
 // recovery-snapshot pure helpers are standalone production modules; the
@@ -73,10 +74,12 @@ let currentEchoId;
 let minibufferState = MINIBUFFER_IDLE;
 let minibufferClient = null;
 
-/** Resolve a user-typed find-file/write-file path to an absolute path,
- *  relative to the server's seed-file directory (its working "cwd"). */
+/** Resolve a user-typed find-file/write-file path to an absolute path: a
+ *  leading `~`/`~/…` expands to the home directory, an absolute path passes
+ *  through, and a relative path resolves against the seed-file directory (its
+ *  working "cwd"). See path-resolve.js. */
 function resolvePath(path) {
-  return resolve(dirname(filePath), path);
+  return resolveUserPath(path, dirname(filePath), homedir());
 }
 
 /** Read a file off disk for find-file (the openFile spine effect). Returns
