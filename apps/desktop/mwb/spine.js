@@ -600,14 +600,27 @@ export function createSpine(options, effects = {}) {
   // Client 0's pane tree starts as a single leaf on the seed buffer.
   makePaneModel(0, initialEntry.id);
 
-  /** The pane model of the active client (what the pane primitives mutate). */
+  /** The pane model of the active client (what the pane primitives mutate).
+   *  Falls back to any surviving model — index 0 may have detached — then null
+   *  (only with zero clients, when nothing is being served). */
   function currentPaneModel() {
-    return paneModels.get(activeClientIndex) ?? paneModels.get(0);
+    return (
+      paneModels.get(activeClientIndex)
+      ?? paneModels.get(0)
+      ?? paneModels.values().next().value
+      ?? null
+    );
   }
 
-  // The set of known client indices (so a buffer-wide refresh / a kill can
-  // re-home every client). Index 0 is always present (the default view).
+  // The set of LIVE client indices (so a buffer-wide refresh / a kill can
+  // re-home every client). Index 0 is the bootstrap (default) view; a client
+  // may detach (removeClientView), so 0 is not guaranteed to outlive the run.
   const clientIndices = new Set([0]);
+
+  // The next client index to hand out. Monotonic — NEVER reused, so a detached
+  // window's index can't collide with a later window's (using clientIndices.size
+  // would: drop index 1 of {0,1,2} and size→2 would re-mint an in-use 2).
+  let nextClientIndex = 1;
 
   // Per-client viewport height in VISIBLE TEXT LINES, reported by the client
   // (only it knows how many lines fit — plan §5d). Screenful scroll (C-v/M-v)
@@ -1945,13 +1958,33 @@ export function createSpine(options, effects = {}) {
   let activeClientIndex = 0;
 
   /** Register a new client/window. Its pane tree starts as a single leaf on
-   *  the SAME buffer client 0 booted on (the seed buffer). Returns its index. */
+   *  the ACTIVE client's current buffer (so "new window" mirrors the window it
+   *  was spawned from — make-frame semantics), falling back to any live window
+   *  and finally the seed buffer. Returns a fresh, never-reused index. */
   function addClientView() {
-    const index = clientIndices.size; // next free index (0,1,2,…)
+    const index = nextClientIndex++;
     clientIndices.add(index);
-    const startId = paneModels.get(0)?.focusedBufferId() ?? initialEntry.id;
+    const startId =
+      paneModels.get(activeClientIndex)?.focusedBufferId()
+      ?? paneModels.values().next().value?.focusedBufferId()
+      ?? initialEntry.id;
     makePaneModel(index, startId);
     return index;
+  }
+
+  /** Drop client INDEX's window-state (its window closed). Removes its pane
+   *  tree, viewport, and its per-buffer views across EVERY buffer; the buffers
+   *  themselves outlive the client. Idempotent. If it was the active client,
+   *  the active index falls back to a survivor (the server re-binds via
+   *  setActiveClient before its next intent regardless). */
+  function removeClientView(index) {
+    clientIndices.delete(index);
+    paneModels.delete(index);
+    clientViewports.delete(index);
+    registry.dropClient(index);
+    if (activeClientIndex === index) {
+      activeClientIndex = clientIndices.values().next().value ?? 0;
+    }
   }
 
   /** The buffer entry the FOCUSED leaf of client INDEX shows (defaults to the
@@ -2549,6 +2582,7 @@ export function createSpine(options, effects = {}) {
     pointPosition,
     // multi-client window-state (per-client buffer + cursor)
     addClientView,
+    removeClientView,
     setActiveClient,
     viewStateOf,
     // --- the pane tree (G0a) -------------------------------------------

@@ -327,6 +327,47 @@ test('an edit in one client is visible to the other (one buffer, N views)', () =
   assert.equal(spine.buffer.text, 'abcDEF');
 });
 
+// --- multi-client: detach (G4 — a window closes) -----------------------
+
+test('removeClientView drops a client and never reuses its index', () => {
+  const { spine } = makeSpine('hi');
+  const c1 = spine.addClientView(); // 1
+  const c2 = spine.addClientView(); // 2
+  assert.equal(spine.clientCount, 3);
+  assert.equal(c1, 1);
+  assert.equal(c2, 2);
+
+  // Detach the MIDDLE client. The count drops and its pane model is gone.
+  spine.removeClientView(c1);
+  assert.equal(spine.clientCount, 2);
+  assert.equal(spine.paneModelOf(c1), null);
+
+  // The next client gets a FRESH index (3) — NOT the freed 1, which a
+  // size-based allocator would have re-minted as the still-live 2's neighbour.
+  const c3 = spine.addClientView();
+  assert.equal(c3, 3);
+  assert.notEqual(c3, c1);
+  assert.equal(spine.clientCount, 3);
+});
+
+test('removing the active (or bootstrap) client leaves the spine usable', () => {
+  const { spine } = makeSpine('seed');
+  const c1 = spine.addClientView();
+
+  // Make the bootstrap client active, then detach IT. The active index must
+  // fall back to a survivor and the spine must still serve the other client.
+  spine.setActiveClient(0);
+  spine.removeClientView(0);
+  assert.equal(spine.clientCount, 1);
+  assert.equal(spine.paneModelOf(0), null);
+
+  // The surviving client still edits the shared buffer.
+  spine.setActiveClient(c1);
+  spine.buffer.moveTo(spine.buffer.text.length);
+  spine.handleKey('!');
+  assert.equal(spine.buffer.text, 'seed!');
+});
+
 test('each client moves its own point without disturbing the other', () => {
   const { spine } = makeSpine('one\ntwo\nthree');
   spine.addClientView();

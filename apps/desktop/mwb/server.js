@@ -189,18 +189,53 @@ const clients = [];
  *  effect (status/minibuffer/scroll) targets the right window. */
 let activeClient = null;
 
+// The bootstrap spine view (index 0) is claimed by the FIRST client ever; every
+// client after that gets a fresh view via addClientView(). Crucially this is a
+// ONE-SHOT, not `clients.length === 0`: a window can detach and re-home the
+// count to 0 while the server lives on (macOS), and index 0's pane model is
+// gone once that first client detached — so a reopened window must NOT reclaim
+// 0, it gets a fresh monotonic index.
+let bootstrapClaimed = false;
+
 function registerClient(port) {
-  // Client 0 reuses the spine's default view; later clients get their own.
-  const index = clients.length === 0 ? 0 : spine.addClientView();
+  const index = bootstrapClaimed ? spine.addClientView() : 0;
+  bootstrapClaimed = true;
   const client = { port, index };
   clients.push(client);
   port.on('message', (event) => onClientMessage(client, event));
+  // G4: when the window closes, its renderer's port is closed/GC'd and the
+  // server's end fires 'close'. Reap the client so broadcasts don't post to a
+  // dead port and the spine drops its window-state (the buffers outlive it).
+  port.on('close', () => detachClient(client));
   port.start();
   // The client asks for its snapshot itself via HELLO once its page +
   // highlighters are ready (onClientMessage), so we don't snapshot here —
   // a pre-load snapshot would race the page and be discarded.
   console.error(
     `[mwb-server] client ${index} attached (${clients.length} total)`
+  );
+}
+
+/** A client window closed (G4): drop it from the fan-out set, release any
+ *  transient ownership it held (a send to a dead port would otherwise throw /
+ *  no-op), and tell the spine to drop its window-state. Idempotent. The shared
+ *  buffers — and any unsaved edits in them — live on in the server. */
+function detachClient(client) {
+  const i = clients.indexOf(client);
+  if (i === -1) return; // already detached
+  clients.splice(i, 1);
+  // A command suspended on this client's prompt/picker is simply orphaned (a
+  // closure that never resumes); clear the ownership so no later send targets
+  // the dead port.
+  if (activeClient === client) activeClient = null;
+  if (minibufferClient === client) {
+    minibufferState = MINIBUFFER_IDLE;
+    minibufferClient = null;
+  }
+  if (pickerClient === client) pickerClient = null;
+  spine.removeClientView(client.index);
+  console.error(
+    `[mwb-server] client ${client.index} detached (${clients.length} left)`
   );
 }
 
