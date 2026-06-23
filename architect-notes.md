@@ -2273,3 +2273,86 @@ the text view; set that child (or give the server leaf a bare text view, no tabl
 (2) `leaf.view.buffer` must satisfy view.js's 12-member read seam — the ClientBuffer
 mirror already does. GUI-iterative; verify live. **A careful refactor — best started
 with a fresh context budget; this is the next session's first task.**
+
+## [2026-06-23 afternoon] Leaf-flip SHIPPED + server-mode one-world + Inc2.1 plumbing (live-verified)
+
+The leaf-flip is DONE and **live-verified by Jason** ("It worked!"), plus two
+follow-on increments toward "the server restores the session." All on
+`multi-window-b`, suite green (3028/0; +6 new client tests → apps/desktop 828).
+Three commits: `1e57d3a` (flip), `169c7de` (Inc1 one-world), `d76ca9b` (Inc2.1).
+
+**Leaf-flip (`1e57d3a`).** Retired the G2 overlay. `leaf.view` is now a live
+FAÇADE over the ClientBuffer mirror (`{kind:'text',_serverBacked,buffer:mirror,
+get point/mark/cursors}`); the EXISTING `ensureEditorViewForLeaf` + render show
+the leaf's own `<text-view>` from it. **Scope = Option 1**: `server-view-client.js`
+untouched (the injected `mountView` boundary absorbed the change). Two
+serverMode-gated seams in `ensureEditorViewForLeaf`: `serverViewKeyOption` (a
+server-backed leaf's `onKey` → server keymap, decided PER-KEYSTROKE since
+`configure()` can't re-run post-mount) + `getDecorations` reads the mirror.
+`mountServerView` returns an adapter over the leaf's `<text-view>` (soft destroy;
+a switch re-points the SAME leaf/instance). Flag-off byte-for-byte.
+
+**Live test exposed "two buffer worlds":** the in-renderer home-session restore
+re-opened the user's previous files into the leaf and competed with the server's
+SNAPSHOT → the leaf showed in-renderer buffers while the server's seed (`view.js`,
+HARDCODED at `server.js:49`, recovered from a dirty autosave) was orphaned and
+only drove the modeline (the `view.js L1:C0` mismatch). **The overlay had MASKED
+this** (it was a full-bleed layer hiding the in-renderer editor).
+
+**Increment 1 (`169c7de`) — live-verified.** In server mode the SERVER owns
+buffers + the session, so the in-renderer session machinery stands down (all
+serverMode-gated): `activeSession()` → inert `NULL_SESSION` (every
+save/flush/restore no-ops — ALSO closes a DATA-SAFETY hazard: it would otherwise
+overwrite the user's real flag-off `session.json` with the welcome seed); the boot
+wrap skips `sessionController.restore()` + `wrapRootInTabline`; the in-renderer
+recovery offer is skipped. Result: boot lands on the server seed alone, fully
+server-backed — typing edits the server buffer, find-file routes through the
+server, modeline matches. Jason confirmed (opened a file; modeline matched).
+
+**Open follow-up (task #9): server-side mode coverage.** Server modeline shows
+`(Fundamental)` for `.html` — the server loads only markdown/latex/makefile
+modes, so `choose-major-mode!` has no `html-mode`. Highlighting/folds still work
+(tree-sitter keys off the file EXTENSION, not the major mode). Fix = port
+`html-mode` (+ others) to the server's STDLIB_FILES.
+
+**Increment 2.1 (`d76ca9b`) — the plumbing for server-backed tabs.** Jason chose
+"native tabs" (reuse the in-renderer tabline + `views[]` as a thin proxy over the
+server's buffer set). Server now PUSHES `BUFFER_LIST` on every buffer-set change
+(`sendBufferListTo` added to `resyncClientToCurrentBuffer` + the HELLO handler).
+Client handles `MSG.BUFFER_LIST` (cache + injected `chrome.setBufferList`),
+exposes `getBufferList()` + `switchBuffer(id)` (sends a `SWITCH_BUFFER` intent).
+Records are `[{id,name,lineCount,modified,filePath,current}]`. +6 client tests.
+
+**NEXT — Increment 2.2 (the GUI part, UNBUILT): render the server buffers as
+native tabs.** Design = the **shared-façade-element model** (the client mirrors
+only ONE buffer, so per-tab elements don't fit):
+ - Keep ONE shared `<text-view>` (the façade) bound to the single live mirror =
+   the active buffer. Tabs are LIGHTWEIGHT proxy views (`{id, kind:'text',
+   _serverBacked, _serverBufferId, name, buffer:null}`) — one per server buffer,
+   pure strip labels. Only the active tab is ever mounted, and its content is the
+   shared façade (NOT a per-tab element).
+ - `leaf.view` becomes a tabline-view whose `tabs` are the proxies, `active` =
+   the current buffer's index. A new `syncServerBufferTabs(buffers)` (wired via
+   `serverChrome.setBufferList`) builds/updates the tabline from `BUFFER_LIST`.
+ - `mountTablineActiveChild` (~app.js 9020): a serverMode branch — for a
+   `_serverBacked` active tab, mount/show the shared façade element
+   (`ensureServerFacadeElement`, cached on the tabline state, configured with
+   `serverViewKeyOption` + server `getDecorations`), re-pointed to the mirror.
+ - `activateTabInTabline` (~9180) + the strip `onSelect`/`switchToViewIndex`/`C-x b`:
+   a serverMode branch — switching to a DIFFERENT server buffer calls
+   `serverViewClient.switchBuffer(id)`; DON'T mount locally. The server re-syncs
+   (SNAPSHOT re-mirrors → `mountServerView` updates the shared `serverMirror`;
+   BUFFER_LIST re-marks active → `syncServerBufferTabs` re-activates).
+ - `mountServerView` (~5815) restructures: set a module-level `serverMirror` +
+   re-render the shared façade, instead of `leaf.view = bare façade`. On a switch
+   the SNAPSHOT arrives BEFORE the BUFFER_LIST (server order: resync → snapshot
+   THEN bufferlist).
+ - Deferred polish: the tab dirty-dot (proxies have `buffer:null` → read proxy
+   `_modified` in the strip); the View List (proxies in `views[]` → route
+   View-List clicks to `switchBuffer`); tab-close → server `kill-buffer`.
+ ALL GUI-shaped — verify live; the build side can't launch the GUI.
+
+**Increment 3 (UNBUILT): server-side session persistence** — persist open file
+paths + active; on boot the server re-opens them (fold with crash-recovery). Then
+the user's real files come back through the server as tabs. (server.js has no
+session file today — only crash-recovery autosave.)
