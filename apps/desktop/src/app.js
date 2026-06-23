@@ -172,6 +172,11 @@ import { shouldGlobalRouterDefer } from './server-router-gate.js';
 // server-mode (buffer list / M-x / RefTeX). Imported unconditionally (no
 // top-level effects); only USED inside the serverMode-gated boot below.
 import { createPickerPanel } from '../mwb/picker-panel.js';
+// G4 Step 3b: static panes (a split pane showing a DIFFERENT buffer than the
+// focused one) render from a ClientBuffer seeded with the PANE_TREE leaf's text.
+// Imported unconditionally (pure factory, no top-level effects); used only in
+// the serverMode pane-layout reconcile below.
+import { createClientBuffer } from '../mwb/client-buffer.js';
 
 /**
  * Build a Lisp hash-map (a JS `Map` with interned-keyword keys) from a
@@ -5844,6 +5849,13 @@ if (window.host && window.host.serverMode) {
   // `{kind:'leaf',id,bufferId,focused,name,point,mark}` (no pixels).
   let serverWindowKind = 'tabline';
   let serverPaneTreeWire = null;
+  // Step 3b: per-buffer STATIC mirrors for panes showing a DIFFERENT buffer than
+  // the focused/active one. Seeded + refreshed from each PANE_TREE leaf's `text`
+  // (not live deltas — they update on a structural/focus change, which is when a
+  // background buffer can change in THIS window). Same-buffer panes use the live
+  // shared serverMirror instead. Pruned to the currently-shown set each reconcile.
+  /** @type {Map<string, object>} bufferId -> static ClientBuffer. */
+  const serverStaticBuffers = new Map();
 
   /** The live `<text-view>` element rendering the active buffer — the façade
    *  tab's per-tab element inside the server tabline's content area. Null until
@@ -5998,9 +6010,68 @@ if (window.host && window.host.serverMode) {
     return wireFocusedId(node.first) ?? wireFocusedId(node.second);
   }
 
+  /** Walk every leaf of a wire pane-tree. */
+  function forEachWireLeaf(node, fn) {
+    if (!node || typeof node !== 'object') return;
+    if (node.kind === 'leaf') { fn(node); return; }
+    forEachWireLeaf(node.first, fn);
+    forEachWireLeaf(node.second, fn);
+  }
+
+  /** The id of the active buffer (the focused leaf's buffer = the live mirror),
+   *  or null before the first snapshot. */
+  function activeServerBufferId() {
+    return serverViewClient ? serverViewClient.currentBufferId() : null;
+  }
+
+  /** Get-or-create the STATIC ClientBuffer for a different-buffer leaf, seeding /
+   *  refreshing it from the leaf's wire `text`. The buffer is display-only (its
+   *  text is server-pushed via PANE_TREE, never edited locally); a switch to
+   *  this pane re-binds it to the live mirror. */
+  function serverStaticBufferFor(wire) {
+    const text = typeof wire.text === 'string' ? wire.text : '';
+    let buf = serverStaticBuffers.get(wire.bufferId);
+    if (!buf) {
+      buf = createClientBuffer({
+        initialText: text,
+        name: wire.name || '*buffer*',
+        point: Number.isFinite(wire.point) ? wire.point : 0,
+        sendIntent: () => {}, // display-only; edits route through the server
+      });
+      serverStaticBuffers.set(wire.bufferId, buf);
+    } else if (buf.text !== text) {
+      // Refresh in place (keep the object so mounted views stay subscribed).
+      try {
+        buf.applyResync({
+          text,
+          cursors: [{ point: Number.isFinite(wire.point) ? wire.point : 0, mark: wire.mark ?? null }],
+        });
+      } catch { /* tolerant */ }
+    }
+    return buf;
+  }
+
+  /** A static view over a given buffer (the focused/same-buffer panes use the
+   *  live serverFacadeView / shared mirror; this is for a DIFFERENT buffer). */
+  function makeServerStaticBufferView(wire, buf) {
+    const point = Number.isFinite(wire.point) ? wire.point : 0;
+    const mark = wire.mark === null || Number.isFinite(wire.mark) ? wire.mark : null;
+    return {
+      kind: 'text',
+      _serverBacked: true,
+      buffer: buf,
+      name: typeof wire.name === 'string' ? wire.name : (buf ? buf.name : '*buffer*'),
+      point,
+      mark,
+      cursors: [{ point, mark }],
+    };
+  }
+
   /** Build a client pane node from the server's wire pane-tree, reusing the
    *  server's stable leaf/split ids (so paneElements survive a focus-only
-   *  reconcile). The focused leaf gets the live façade; the rest static views. */
+   *  reconcile). The focused leaf gets the live façade; a same-buffer pane a
+   *  static view over the live mirror (3a); a DIFFERENT-buffer pane a static
+   *  view over its own buffer seeded from the tree's text (3b). */
   function buildServerPaneNode(wire) {
     if (wire && wire.kind === 'split') {
       const ratio =
@@ -6014,10 +6085,16 @@ if (window.host && window.host.serverMode) {
         second: buildServerPaneNode(wire.second),
       });
     }
-    const view = wire && wire.focused
-      ? serverFacadeView
-      : makeServerStaticLeafView(wire || {});
-    return createLeafPane({ id: wire ? wire.id : undefined, view });
+    const w = wire || {};
+    let view;
+    if (w.focused) {
+      view = serverFacadeView; // the live active buffer
+    } else if (w.bufferId && w.bufferId !== activeServerBufferId() && typeof w.text === 'string') {
+      view = makeServerStaticBufferView(w, serverStaticBufferFor(w)); // 3b: a different buffer
+    } else {
+      view = makeServerStaticLeafView(w); // 3a: same buffer, over the live mirror
+    }
+    return createLeafPane({ id: w.id, view });
   }
 
   /** Reconcile the client's pane tree to the server's PANE_TREE: rebuild
@@ -6027,6 +6104,17 @@ if (window.host && window.host.serverMode) {
   function reconcileServerPaneTree() {
     if (!serverPaneTreeWire) return;
     rootPane = buildServerPaneNode(serverPaneTreeWire);
+    // Prune static buffers no longer shown as a different-buffer pane.
+    const activeId = activeServerBufferId();
+    const stillStatic = new Set();
+    forEachWireLeaf(serverPaneTreeWire, (lf) => {
+      if (!lf.focused && lf.bufferId && lf.bufferId !== activeId && typeof lf.text === 'string') {
+        stillStatic.add(lf.bufferId);
+      }
+    });
+    for (const id of [...serverStaticBuffers.keys()]) {
+      if (!stillStatic.has(id)) serverStaticBuffers.delete(id);
+    }
     // Tear down editor instances for leaves the new tree no longer has (an
     // unsplit / delete-pane), so nothing renders behind the new layout.
     const liveIds = new Set(leafPanes(rootPane).map((l) => l.id));

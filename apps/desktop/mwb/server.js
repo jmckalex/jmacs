@@ -158,7 +158,7 @@ const spine = createSpine(
     onBufferChange: (id, event) => fanDelta(id, event),
     // A kill-buffer switched a client to a new buffer: re-snapshot every
     // client now viewing the active buffer (the kill re-homed them).
-    onBufferSwitched: () => onKillReHome(),
+    onBufferSwitched: () => { bufferSwitchEffectFired = true; onKillReHome(); },
     // list-buffers (C-x C-b): send the active client its buffer-list records.
     onBufferList: () => { if (activeClient) sendBufferListTo(activeClient); },
     // A command opened a generic PICKER (G0b): send the active client the
@@ -192,6 +192,13 @@ const clients = [];
 /** The client currently being served (whose intent we're applying), so an
  *  effect (status/minibuffer/scroll) targets the right window. */
 let activeClient = null;
+
+/** Whether the `onBufferSwitched` effect fired during the current intent (a
+ *  switch-to-buffer / find-file / kill re-homed the client, which re-syncs it).
+ *  Step 3b: a focus change (C-x o) onto a pane showing a DIFFERENT buffer also
+ *  changes the client's active buffer, but does NOT go through that effect — so
+ *  applyIntent re-syncs the originator itself when this stayed false. */
+let bufferSwitchEffectFired = false;
 
 // The bootstrap spine view (index 0) is claimed by the FIRST client ever; every
 // client after that gets a fresh view via addClientView(). Crucially this is a
@@ -470,6 +477,7 @@ function applyIntent(client, intent) {
   activeClient = client;
   spine.setActiveClient(client.index); // this client's cursor is now active
   currentEchoId = intent.id;
+  bufferSwitchEffectFired = false; // set by onBufferSwitched if a switch re-homes
   const buffer = spine.buffer;
   const pointBefore = buffer.point;
   const wasSeq = seq;
@@ -566,9 +574,12 @@ function applyIntent(client, intent) {
     !switchedBuffer && emittedDelta && (multiBefore || multiAfter || wasHistoryOp);
 
   if (switchedBuffer) {
-    // The switch handler re-synced the originating client; just refresh the
-    // others' view-state (their cursors/modeline are unaffected, but a fresh
-    // VIEW is cheap and keeps everyone consistent).
+    // A switch-to-buffer / find-file / kill re-synced the originator via
+    // onBufferSwitched. A FOCUS change onto a different-buffer pane (C-x o,
+    // Step 3b) ALSO changed the active buffer but did NOT — so re-sync the
+    // originator here onto its now-focused buffer (its live mirror must follow).
+    if (!bufferSwitchEffectFired) resyncClientToCurrentBuffer(client);
+    // Refresh the other clients' view-state (cheap; keeps everyone consistent).
     for (const c of clients) {
       if (c !== client) sendViewTo(c);
     }

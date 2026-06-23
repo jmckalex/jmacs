@@ -455,6 +455,9 @@ export function serializePaneTree(pane, focusedId, leafData) {
     focused: pane.id === focusedId,
   };
   if (typeof data.name === 'string') node.name = data.name;
+  // Step 3b: a different-buffer leaf carries its text so the client can render
+  // it as a static pane (omitted for the focused / same-buffer leaves).
+  if (typeof data.text === 'string') node.text = data.text;
   if (Number.isFinite(data.point)) node.point = Math.max(0, Math.floor(data.point));
   if (data.mark === null || Number.isFinite(data.mark)) {
     node.mark = data.mark === null ? null : Math.max(0, Math.floor(data.mark));

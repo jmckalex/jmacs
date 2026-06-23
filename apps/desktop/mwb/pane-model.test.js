@@ -28,6 +28,37 @@ function makeModel(initialBufferId = 'b1') {
   return { model, log };
 }
 
+/** Collect every leaf node of a wire snapshot. */
+function snapshotLeaves(node, out = []) {
+  if (!node) return out;
+  if (node.kind === 'leaf') out.push(node);
+  else { snapshotLeaves(node.first, out); snapshotLeaves(node.second, out); }
+  return out;
+}
+
+test('snapshot carries text only for a DIFFERENT-buffer leaf (Step 3b)', () => {
+  const texts = { A: 'alpha text', B: 'beta text' };
+  const model = createPaneModel(
+    { initialBufferId: 'A' },
+    { nameForBuffer: (id) => `name-of-${id}`, textForBuffer: (id) => texts[id] ?? null }
+  );
+
+  // Two leaves, both on A (focus on the new one). Same buffer → no text.
+  model.split('horizontal', 0.5, 'after');
+  let leaves = snapshotLeaves(model.snapshot());
+  assert.ok(leaves.every((l) => l.text === undefined), 'same-buffer split carries no text');
+
+  // Switch the focused leaf to B → the OTHER leaf (A) is now a different buffer.
+  model.setFocusedBuffer('B');
+  leaves = snapshotLeaves(model.snapshot());
+  const focused = leaves.find((l) => l.focused);
+  const other = leaves.find((l) => !l.focused);
+  assert.equal(focused.bufferId, 'B');
+  assert.equal(focused.text, undefined, 'the focused leaf carries no text (uses the live mirror)');
+  assert.equal(other.bufferId, 'A');
+  assert.equal(other.text, 'alpha text', 'the different-buffer leaf carries its text');
+});
+
 test('a fresh model is a single focused leaf on the seed buffer', () => {
   const { model } = makeModel('b1');
   assert.equal(model.leafCount(), 1);

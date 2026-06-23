@@ -99,6 +99,14 @@ export function createPaneModel(options = {}, hooks = {}) {
   // route through `view.point`/`view.mark`.
   const makeView = typeof hooks.makeView === 'function' ? hooks.makeView : null;
 
+  // G4 Step 3b: read a buffer's TEXT (for the wire snapshot). A pane showing a
+  // DIFFERENT buffer than the focused one is rendered by the client as a static
+  // pane from this text (same-buffer panes use the live shared mirror). Injected
+  // from the spine (which owns the registry); absent in structural-only tests.
+  const textForBuffer = typeof hooks.textForBuffer === 'function'
+    ? hooks.textForBuffer
+    : () => null;
+
   // A monotonically-increasing STABLE per-leaf view key. A leaf keeps the
   // same key for its whole life, so when it switches buffers and switches
   // back, the view factory can return the SAME view (cursor preserved in that
@@ -490,16 +498,26 @@ export function createPaneModel(options = {}, hooks = {}) {
    * @returns {import('./protocol.js').WirePaneNode}
    */
   function snapshot() {
+    const focusedBufferId = stateById.get(focusedId)?.bufferId ?? null;
     return serializePaneTree(rootPane, focusedId, (leaf) => {
       const s = stateById.get(leaf.id);
       if (!s) return { bufferId: null };
-      return {
+      const data = {
         bufferId: s.bufferId,
         name: nameForBuffer(s.bufferId),
         point: statePoint(s),
         mark: stateMark(s),
         scrollLine: s.scrollLine,
       };
+      // Carry the TEXT only for a leaf showing a DIFFERENT buffer than the
+      // focused one (Step 3b): the client renders those as static panes. A
+      // same-buffer (or the focused) leaf uses the live shared mirror, so its
+      // text would be redundant payload — omit it.
+      if (s.bufferId != null && s.bufferId !== focusedBufferId) {
+        const text = textForBuffer(s.bufferId);
+        if (typeof text === 'string') data.text = text;
+      }
+      return data;
     });
   }
 

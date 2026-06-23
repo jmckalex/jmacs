@@ -598,6 +598,12 @@ export function createSpine(options, effects = {}) {
           const e = id ? registry.get(id) : null;
           return e ? e.buffer.name : 'scratch';
         },
+        // Step 3b: the text of a non-focused, different-buffer leaf, so the
+        // client can render it as a static pane (it doesn't mirror that buffer).
+        textForBuffer: (id) => {
+          const e = id ? registry.get(id) : null;
+          return e ? e.buffer.text : null;
+        },
         // Namespace the leaf view key by the WINDOW (client index) too, so two
         // windows' leaves — whose per-window viewKey counters both start at 0 —
         // get distinct registry views (independent cursors per window). Within
