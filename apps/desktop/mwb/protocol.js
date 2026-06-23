@@ -419,6 +419,11 @@ export function normaliseCursors(cursors) {
  * @property {number|null} [mark] - The leaf's view-state mark.
  * @property {number} [scrollLine] - The leaf's saved first-visible line.
  * @property {boolean} [focused] - Whether this leaf is the window's focus.
+ * @property {boolean} [tabline] - Whether this leaf presents as a tabline-view
+ *   (Step 3c) of its OWN curated tab set rather than a single view.
+ * @property {{ bufferId: string, name: string, modified: boolean,
+ *   filePath: string|null }[]} [tabs] - For a tabline leaf, its ordered curated
+ *   tab set (the active tab is the leaf's `bufferId`).
  */
 
 /**
@@ -455,8 +460,11 @@ export function serializePaneTree(pane, focusedId, leafData) {
     focused: pane.id === focusedId,
   };
   if (typeof data.name === 'string') node.name = data.name;
-  // Step 3c: the leaf presents as a tabline (its window's buffers as tabs).
+  // Step 3c: the leaf presents as a tabline of its OWN curated tab set; carry
+  // the flag + the ordered tabs (each with display metadata) so the client
+  // renders exactly this leaf's tabs.
   if (data.tabline === true) node.tabline = true;
+  if (Array.isArray(data.tabs)) node.tabs = data.tabs;
   // Step 3b: a different-buffer leaf carries its text so the client can render
   // it as a static pane (omitted for the focused / same-buffer leaves).
   if (typeof data.text === 'string') node.text = data.text;

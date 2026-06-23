@@ -232,6 +232,42 @@ test('an unknown pane intent is rejected', () => {
   assert.equal(spine.applyPaneIntent(0, { op: 'no-such-op' }), false);
 });
 
+// --- Step 3c: a tabline leaf with its OWN curated tabs -----------------
+
+test('toggle-tabline makes the focused leaf a 1-tab tabline; find-file adds a tab', () => {
+  const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const seedId = spine.currentBufferIdOf(0);
+
+  spine.runCommand('toggle-tabline');
+  let leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.tabline, true, 'the focused leaf is now a tabline');
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), [seedId], 'seeded with EXACTLY one tab');
+
+  // find-file WHILE the tabline leaf is focused ADDS a tab and makes it active.
+  const xId = spine.visitFile('/x.js');
+  leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.tabline, true, 'still a tabline');
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), [seedId, xId], 'the open added a tab');
+  assert.equal(leaf.bufferId, xId, 'the new file is the active tab');
+  assert.equal(leaf.tabs.find((t) => t.bufferId === xId).name, 'x.js', 'tab metadata is live');
+});
+
+test('a close-tab pane intent un-curates a tab (buffer survives in the pool) (Step 3c)', () => {
+  const files = { '/x.js': { text: 'x', name: 'x.js' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const seedId = spine.currentBufferIdOf(0);
+  spine.runCommand('toggle-tabline');
+  const xId = spine.visitFile('/x.js'); // tabs: seed, x (x active)
+
+  // Close the non-active seed tab — it leaves THIS tabline but stays in the pool.
+  assert.equal(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: seedId }), true);
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), [xId], 'the seed tab is gone');
+  assert.equal(leaf.bufferId, xId, 'the active tab is unchanged');
+  assert.ok(spine.bufferIdByName('scratch.txt'), 'the closed buffer is still in the pool');
+});
+
 // --- two panes on DIFFERENT buffers within one window ------------------
 
 test('a pane can show a different buffer; the other pane keeps its own', () => {

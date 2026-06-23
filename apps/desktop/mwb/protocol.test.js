@@ -239,6 +239,30 @@ test('serializePaneTree on a single leaf carries buffer + focus, no pixels', () 
   assert.equal(node.width, undefined);
 });
 
+test('serializePaneTree carries a tabline leaf flag + its curated tabs (Step 3c)', () => {
+  const tabs = [
+    { bufferId: 'b1', name: 'a.js', modified: false, filePath: '/a.js' },
+    { bufferId: 'b2', name: 'b.js', modified: true, filePath: null },
+  ];
+  const node = serializePaneTree(
+    leaf('pane-leaf-1'),
+    'pane-leaf-1',
+    () => ({ bufferId: 'b2', name: 'b.js', tabline: true, tabs })
+  );
+  assert.equal(node.tabline, true);
+  assert.deepEqual(node.tabs, tabs, 'the ordered curated tab set crosses the wire verbatim');
+});
+
+test('serializePaneTree omits tabline/tabs for a single-view leaf (Step 3c)', () => {
+  const node = serializePaneTree(
+    leaf('pane-leaf-1'),
+    'pane-leaf-1',
+    () => ({ bufferId: 'b1' })
+  );
+  assert.equal(node.tabline, undefined);
+  assert.equal(node.tabs, undefined);
+});
+
 test('serializePaneTree on a split carries orientation + ratio + subtrees', () => {
   const tree = split('pane-split-1', 'horizontal', 0.4, leaf('a'), leaf('b'));
   const node = serializePaneTree(tree, 'b', (l) => ({ bufferId: `buf-${l.id}` }));

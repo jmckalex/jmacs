@@ -107,6 +107,14 @@ export function createPaneModel(options = {}, hooks = {}) {
     ? hooks.textForBuffer
     : () => null;
 
+  // G4 Step 3c: per-buffer TAB metadata for a tabline leaf's curated tab strip
+  // (the client renders one tab per id with its name + dirty flag + path).
+  // Injected from the spine (the registry); a structural-only test falls back to
+  // the name resolver, no dirty/path.
+  const tabMeta = typeof hooks.tabMeta === 'function'
+    ? hooks.tabMeta
+    : (id) => ({ name: nameForBuffer(id), modified: false, filePath: null });
+
   // A monotonically-increasing STABLE per-leaf view key. A leaf keeps the
   // same key for its whole life, so when it switches buffers and switches
   // back, the view factory can return the SAME view (cursor preserved in that
@@ -128,10 +136,16 @@ export function createPaneModel(options = {}, hooks = {}) {
       bufferId: bufferId ?? null,
       viewKey,
       view,
-      // Step 3c: whether this leaf presents as a TABLINE (its window's buffers
-      // as tabs, the leaf's bufferId active) rather than a single view. Toggled
-      // per leaf; the client renders a tabline leaf as a tabline-view.
+      // Step 3c: whether this leaf presents as a TABLINE — a container of
+      // EXPLICITLY-CURATED tabs (like a flag-off tabline-view's `tabs` array),
+      // NOT "the window's buffer set". A tab joins only because it was restored
+      // here or the user put it here (toggle-tabline seeds one tab = bufferId;
+      // a switch while the leaf is focused adds one). `tabs` is the ordered list
+      // of tab buffer ids (the active one is this leaf's `bufferId`); null when
+      // the leaf is a single view. The client renders a tabline leaf as a
+      // tabline-view of exactly these tabs.
       tabline: false,
+      tabs: null,
       point: 0,
       mark: null,
       scrollLine: 0,
@@ -438,6 +452,13 @@ export function createPaneModel(options = {}, hooks = {}) {
     const state = focusedState();
     if (state.bufferId === bufferId) return;
     state.bufferId = bufferId ?? null;
+    // Step 3c: a switch WHILE the focused leaf is a tabline ADDS a tab to THAT
+    // tabline (and makes it active) — it doesn't replace the leaf's only view.
+    // A find-file in a single-view pane just replaces what it shows (tabs null).
+    if (state.tabline && Array.isArray(state.tabs) && state.bufferId != null
+        && !state.tabs.includes(state.bufferId)) {
+      state.tabs.push(state.bufferId);
+    }
     if (makeView) {
       // Reuse the leaf's STABLE view key so the registry returns the SAME view
       // this pane last had on this buffer (cursor preserved across a switch
@@ -452,12 +473,47 @@ export function createPaneModel(options = {}, hooks = {}) {
   }
 
   /** Toggle (or set) whether the FOCUSED leaf presents as a tabline (Step 3c).
-   *  Returns the new state. */
+   *  Turning ON seeds the curated tab set with EXACTLY the leaf's current buffer
+   *  (one tab); turning OFF drops the tab set (back to a single view on the same
+   *  buffer). Returns the new state. */
   function toggleFocusedTabline(on) {
     const state = focusedState();
     state.tabline = on === undefined ? !state.tabline : !!on;
+    if (state.tabline) {
+      state.tabs = state.bufferId != null ? [state.bufferId] : [];
+    } else {
+      state.tabs = null;
+    }
     onChange();
     return state.tabline;
+  }
+
+  /** Close a tab in the FOCUSED tabline leaf — remove BUFFERID from its curated
+   *  tab set (the buffer itself lives on in the pool; this un-curates it from
+   *  THIS tabline only). Closing the active tab re-points the leaf to a
+   *  neighbour (re-minting its view). Refuses to empty the tabline (a pane must
+   *  always show something), and is a no-op on a non-tabline leaf or an absent
+   *  tab. Returns whether a tab was removed. */
+  function closeFocusedTab(bufferId) {
+    const state = focusedState();
+    if (!state.tabline || !Array.isArray(state.tabs)) return false;
+    const idx = state.tabs.indexOf(bufferId);
+    if (idx < 0) return false;
+    if (state.tabs.length <= 1) return false; // never empty a tabline
+    state.tabs.splice(idx, 1);
+    if (state.bufferId === bufferId) {
+      // The active tab went away — activate the previous tab (or the first).
+      state.bufferId = state.tabs[Math.max(0, idx - 1)] ?? null;
+      if (makeView) {
+        state.view = makeView(state.bufferId, state.viewKey);
+      } else {
+        state.point = 0;
+        state.mark = null;
+      }
+      state.scrollLine = 0;
+    }
+    onChange();
+    return true;
   }
 
   /** Read the focused leaf's view-state (point/mark/scroll). */
@@ -522,7 +578,21 @@ export function createPaneModel(options = {}, hooks = {}) {
         mark: stateMark(s),
         scrollLine: s.scrollLine,
       };
-      if (s.tabline) data.tabline = true; // Step 3c: render as a tabline-view
+      if (s.tabline) {
+        // Step 3c: render as a tabline-view of EXACTLY this leaf's curated tabs.
+        // Carry each tab's display metadata (name / dirty flag / path) so the
+        // client builds the strip without a separate buffer-list round-trip.
+        data.tabline = true;
+        data.tabs = (s.tabs ?? []).map((id) => {
+          const meta = tabMeta(id) || {};
+          return {
+            bufferId: id,
+            name: typeof meta.name === 'string' ? meta.name : nameForBuffer(id),
+            modified: !!meta.modified,
+            filePath: meta.filePath ?? null,
+          };
+        });
+      }
       // Carry the TEXT only for a leaf showing a DIFFERENT buffer than the
       // focused one (Step 3b): the client renders those as static panes. A
       // same-buffer (or the focused) leaf uses the live shared mirror, so its
@@ -560,6 +630,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     setFocusedPoint,
     setFocusedScroll,
     toggleFocusedTabline,
+    closeFocusedTab,
     // introspection (for tests + the server)
     leaves: () => leafPanes(rootPane),
     leafCount: () => leafPanes(rootPane).length,

@@ -71,6 +71,79 @@ test('toggleFocusedTabline marks the focused leaf; snapshot carries it (Step 3c)
   assert.equal(leaves[0].tabline, undefined, 'back to a single view (flag omitted)');
 });
 
+test('a tabline leaf seeds its curated tabs; a switch ADDS a tab (Step 3c)', () => {
+  const { model } = makeModel('b1');
+  model.toggleFocusedTabline(true);
+  let leaf = snapshotLeaves(model.snapshot())[0];
+  assert.equal(leaf.tabline, true);
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b1'],
+    'seeded with EXACTLY the current buffer (one tab)');
+  assert.equal(leaf.bufferId, 'b1', 'the active tab is the leaf buffer');
+  assert.equal(leaf.tabs[0].name, 'name-of-b1', 'each tab carries display metadata');
+
+  // A switch WHILE the tabline is focused ADDS a tab and makes it active.
+  model.setFocusedBuffer('b2');
+  leaf = snapshotLeaves(model.snapshot())[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b1', 'b2'], 'the switch added a tab');
+  assert.equal(leaf.bufferId, 'b2', 'the new tab is active');
+
+  // Switching back to an already-open tab re-activates it without duplicating.
+  model.setFocusedBuffer('b1');
+  leaf = snapshotLeaves(model.snapshot())[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b1', 'b2'], 'no duplicate tab');
+  assert.equal(leaf.bufferId, 'b1', 're-activated the existing tab');
+});
+
+test('setFocusedBuffer on a NON-tabline leaf replaces (no tab set) (Step 3c)', () => {
+  const { model } = makeModel('b1');
+  model.setFocusedBuffer('b2');
+  const leaf = snapshotLeaves(model.snapshot())[0];
+  assert.equal(leaf.tabline, undefined, 'still a single view');
+  assert.equal(leaf.tabs, undefined, 'no tab set');
+  assert.equal(leaf.bufferId, 'b2', 'the single view just shows the new buffer');
+});
+
+test('toggling a tabline OFF drops its curated tabs (Step 3c)', () => {
+  const { model } = makeModel('b1');
+  model.toggleFocusedTabline(true);
+  model.setFocusedBuffer('b2');
+  assert.equal(model.toggleFocusedTabline(false), false, 'toggled off');
+  const leaf = snapshotLeaves(model.snapshot())[0];
+  assert.equal(leaf.tabline, undefined);
+  assert.equal(leaf.tabs, undefined, 'tab set dropped');
+  assert.equal(leaf.bufferId, 'b2', 'still on the last-active buffer as a single view');
+});
+
+test('closeFocusedTab un-curates a tab; refuses to empty a tabline (Step 3c)', () => {
+  const { model } = makeModel('b1');
+  model.toggleFocusedTabline(true);
+  model.setFocusedBuffer('b2');
+  model.setFocusedBuffer('b3'); // tabs: b1, b2, b3 (b3 active)
+
+  // Closing a NON-active tab leaves the active one alone.
+  assert.equal(model.closeFocusedTab('b1'), true);
+  let leaf = snapshotLeaves(model.snapshot())[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b2', 'b3']);
+  assert.equal(leaf.bufferId, 'b3', 'active tab unchanged');
+
+  // Closing the ACTIVE tab activates a neighbour.
+  assert.equal(model.closeFocusedTab('b3'), true);
+  leaf = snapshotLeaves(model.snapshot())[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b2']);
+  assert.equal(leaf.bufferId, 'b2', 'neighbour activated');
+
+  // The tabline never goes empty, and an absent tab is a no-op.
+  assert.equal(model.closeFocusedTab('b2'), false, 'refuses to close the last tab');
+  assert.equal(model.closeFocusedTab('nope'), false, 'absent tab is a no-op');
+  leaf = snapshotLeaves(model.snapshot())[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b2']);
+});
+
+test('closeFocusedTab is a no-op on a single-view leaf (Step 3c)', () => {
+  const { model } = makeModel('b1');
+  assert.equal(model.closeFocusedTab('b1'), false, 'not a tabline → nothing to close');
+});
+
 test('a fresh model is a single focused leaf on the seed buffer', () => {
   const { model } = makeModel('b1');
   assert.equal(model.leafCount(), 1);

@@ -604,6 +604,16 @@ export function createSpine(options, effects = {}) {
           const e = id ? registry.get(id) : null;
           return e ? e.buffer.text : null;
         },
+        // Step 3c: per-buffer tab metadata for a tabline leaf's curated strip.
+        tabMeta: (id) => {
+          const e = id ? registry.get(id) : null;
+          if (!e) return { name: 'scratch', modified: false, filePath: null };
+          return {
+            name: e.buffer.name,
+            modified: registry.isModified(e),
+            filePath: e.filePath ?? null,
+          };
+        },
         // Namespace the leaf view key by the WINDOW (client index) too, so two
         // windows' leaves — whose per-window viewKey counters both start at 0 —
         // get distinct registry views (independent cursors per window). Within
@@ -2537,6 +2547,12 @@ export function createSpine(options, effects = {}) {
           return true;
         }
         return false;
+      case 'close-tab':
+        // Step 3c: close a tab in the focused tabline leaf (un-curate that
+        // buffer from THIS tabline; the buffer lives on in the pool). If the
+        // active tab closed, the model re-points to a neighbour — the server's
+        // MSG.PANE handler sees the focused buffer change and re-syncs.
+        return model.closeFocusedTab(String(intent.bufferId ?? ''));
       case 'resize':
         // The client owns the pixels; it echoes the new ratio up so the
         // logical tree records the user's chosen split.
