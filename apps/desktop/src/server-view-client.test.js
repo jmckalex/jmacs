@@ -91,6 +91,7 @@ function fakeChrome() {
     picker: null, // { request, cbs } while open, else null
     pickerCloses: 0,
     bufferList: null, // the last server BUFFER_LIST pushed, else null
+    quitRequests: 0, // how many times the client asked the host to quit
   };
   c.setModeline = (modeline) => { c.modeline = modeline; };
   c.setEcho = (status) => { c.echo = status; };
@@ -99,6 +100,7 @@ function fakeChrome() {
   c.openPicker = (request, cbs) => { c.picker = { request, cbs }; };
   c.closePicker = () => { c.picker = null; c.pickerCloses += 1; };
   c.setBufferList = (buffers) => { c.bufferList = buffers; };
+  c.requestQuit = () => { c.quitRequests += 1; };
   return c;
 }
 
@@ -643,4 +645,44 @@ test('switchBuffer with a falsy id is a no-op', () => {
   client.switchBuffer('');
   client.switchBuffer(null);
   assert.equal(port.sent.length, before);
+});
+
+test('closeBuffer(id) switches to the buffer then sends C-x k to kill it', () => {
+  const { port, client } = connectedClient();
+  client.closeBuffer('b2');
+  const intents = port.sent.filter((m) => m.type === MSG.INTENT).map((m) => m.intent);
+  // SWITCH_BUFFER b2, then KEY 'C-x', then KEY 'k'.
+  const sw = intents.find((i) => i.kind === INTENT.SWITCH_BUFFER);
+  assert.equal(sw.bufferId, 'b2');
+  const keys = intents.filter((i) => i.kind === INTENT.KEY).map((i) => i.key);
+  assert.deepEqual(keys, ['C-x', 'k']);
+});
+
+// --- C-x C-c quit (client-resolved; the server leaves it unbound) -------
+
+test('C-x then C-c asks the host to quit and does NOT forward C-c as a key', () => {
+  const { port, chrome, client } = connectedClientWithChrome();
+  const before = port.sent.length;
+  assert.equal(client.dispatchKey('C-x'), true); // forwarded (prefix)
+  assert.equal(client.dispatchKey('C-c'), true); // intercepted
+  assert.equal(chrome.quitRequests, 1);
+  // C-x went up as a KEY; C-c did NOT (only one new intent).
+  const newKeys = port.sent.slice(before)
+    .filter((m) => m.type === MSG.INTENT && m.intent.kind === INTENT.KEY)
+    .map((m) => m.intent.key);
+  assert.deepEqual(newKeys, ['C-x']);
+});
+
+test('a key between C-x and C-c resets the chord (no quit)', () => {
+  const { chrome, client } = connectedClientWithChrome();
+  client.dispatchKey('C-x');
+  client.dispatchKey('C-g'); // abort the prefix
+  client.dispatchKey('C-c');
+  assert.equal(chrome.quitRequests, 0);
+});
+
+test('a bare C-c (no preceding C-x) does not quit', () => {
+  const { chrome, client } = connectedClientWithChrome();
+  client.dispatchKey('C-c');
+  assert.equal(chrome.quitRequests, 0);
 });

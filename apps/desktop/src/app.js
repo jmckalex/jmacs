@@ -6036,6 +6036,9 @@ if (window.host && window.host.serverMode) {
     // The server's open-buffer set (a BUFFER_LIST push): reconcile the server
     // tabline's tabs so the in-renderer tabs + active marker track it.
     setBufferList: (buffers) => syncServerBufferTabs(buffers),
+    // C-x C-c: the client resolves the quit chord (the server can't close the
+    // window); run the normal interactive quit (flush + host.quit()).
+    requestQuit: () => quitInteractive(),
   };
 
   bootServerViewClient = () => {
@@ -8917,10 +8920,19 @@ function ensureTablineState(view) {
     edge: view.edge ?? 'top',
     onSelect: (i) => activateTabInTabline(view, i),
     onClose: (i) => {
-      // Server tabline (Model B): the server owns the buffers — closing a tab
-      // must route to the server (kill-buffer), not remove it locally (which
-      // would desync the tabs from the server set). Deferred; a no-op for now.
-      if (view._serverTabline) return;
+      // Server tabline (Model B): the server owns the buffers, so closing a tab
+      // routes to the server (it kills the buffer + re-pushes BUFFER_LIST, which
+      // removes the tab) — never a local removal, which would desync the tabs.
+      // The façade tab's id is the active buffer; a proxy carries its own id.
+      if (view._serverTabline) {
+        const target = view.tabs[i];
+        if (!target || !serverViewClient) return;
+        const id = target === serverFacadeView
+          ? serverViewClient.currentBufferId()
+          : target._serverBufferId;
+        if (id) serverViewClient.closeBuffer(id);
+        return;
+      }
       const target = view.tabs[i];
       if (!target) return;
       const globalIdx = views.indexOf(target);

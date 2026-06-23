@@ -152,6 +152,10 @@ export function createServerViewClient({
   // in-renderer tabs + View List in server mode. A no-op until the host wires
   // it (the core text path is unaffected).
   const setBufferListDom = chrome.setBufferList ?? (() => {});
+  // Quit (C-x C-c): window-lifecycle, not buffer editing — the server can't
+  // close the renderer window, so the client owns the quit chord and asks the
+  // host to quit. A no-op until the host wires it.
+  const requestQuitDom = chrome.requestQuit ?? (() => {});
 
   // Whether a server minibuffer read is currently open in the DOM, and the
   // id of the picker the client is showing (so a stale reply is dropped and a
@@ -164,6 +168,10 @@ export function createServerViewClient({
   // (open / switch / kill) so the host's tabs stay in sync; cached here so a
   // late host wire (or a test) can read the current set.
   let lastBufferList = [];
+  // The previous keystroke, tracked ONLY to catch the C-x C-c quit chord
+  // client-side (the server leaves it unbound — quitting the window is a host
+  // action). Any key between C-x and C-c resets it, so it never misfires.
+  let lastDispatchedKey = null;
 
   // Pending intents we sent + await confirmation for, keyed by id. `predicted`
   // is retained on the entry shape for the VIEW-reconcile guard (a stale VIEW
@@ -224,6 +232,15 @@ export function createServerViewClient({
    */
   function dispatchKey(keyString) {
     if (!mirror) return false;
+    // C-x C-c quits the window. The server keymap leaves this chord unbound
+    // (quitting is a host action it can't perform), so the client resolves it:
+    // `lastDispatchedKey` shadows the server's prefix state for this ONE chord.
+    if (lastDispatchedKey === 'C-x' && keyString === 'C-c') {
+      lastDispatchedKey = null;
+      requestQuitDom();
+      return true;
+    }
+    lastDispatchedKey = keyString;
     sendKey(keyString);
     return true;
   }
@@ -508,6 +525,19 @@ export function createServerViewClient({
     });
   }
 
+  /** Close (kill) the server buffer BUFFERID — a tab `×`. Switch this client to
+   *  it (so it is current), then run the server's kill-buffer via its `C-x k`
+   *  binding; the server re-homes the client onto a survivor buffer and
+   *  re-pushes BUFFER_LIST, so the tab disappears. The server refuses to kill
+   *  the only buffer (a status message). Reuses the existing switch + kill
+   *  machinery — no new server intent. A no-op for a falsy id. */
+  function closeBuffer(bufferId) {
+    if (!bufferId) return;
+    switchBuffer(bufferId);
+    sendKey('C-x');
+    sendKey('k');
+  }
+
   return {
     connect,
     dispatchKey,
@@ -522,6 +552,8 @@ export function createServerViewClient({
     // Ask the server to switch this client's buffer (tab click / C-x b / View
     // List select). The re-sync re-points the façade + re-marks the active tab.
     switchBuffer,
+    // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
+    closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the
     // unit tests can drive it directly (no DOM resize event needed) and so
     // app.js can re-report on demand.
