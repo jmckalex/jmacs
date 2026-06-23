@@ -5778,15 +5778,9 @@ document.body.dataset.treesitter = Object.keys(highlighters).join(',');
 // `dispatchKey` seams, so there is zero risk to the flag-off path.
 let serverViewClient = null;
 if (window.host && window.host.serverMode) {
-  // A dedicated full-bleed container the G2 view mounts into, layered over the
-  // editor host. The in-renderer editor sits behind it, untouched and idle.
-  const g2HostEl = document.createElement('div');
-  g2HostEl.id = 'godot-server-view-host';
-  g2HostEl.style.cssText =
-    'position:absolute; inset:0; z-index:5; display:flex; ' +
-    'flex-direction:column; background:var(--bg-editor, #2e3842);';
-  // The container only appears once a view actually mounts (on the first
-  // SNAPSHOT), so a connect-with-no-snapshot leaves the normal editor visible.
+  // Step A (leaf-flip): the server view mounts directly into the focused leaf's
+  // real pane (mountServerView below) — no stacked overlay. The idle in-renderer
+  // Lisp-view is cleared from the pane as the mirror view takes its place.
 
   /** The `mountView` collaborator: build a REAL `<text-view>`, configure it
    *  with the client's onKey + mirror-reading closures, bind the mirror, and
@@ -5801,13 +5795,17 @@ if (window.host && window.host.serverMode) {
    *  from the container before appending the new one — otherwise dead empty
    *  elements accumulate on each switch and steal layout from the live view. */
   function mountServerView(mirror, options) {
-    // Drop any previously-mounted <text-view> (a buffer switch re-mounts). The
-    // client already called destroy() on the old view (tearing down its inner
-    // editor); this removes the now-empty host element so the new one is the
-    // only child — the prototype reused one persistent container, this is the
-    // custom-element equivalent of that single-live-view invariant.
-    clearStaleServerViews(g2HostEl);
+    // Step A (leaf-flip): the server view IS the focused leaf's real pane, not
+    // a stacked overlay. Clear the pane's existing <text-view> — the idle
+    // in-renderer Lisp-view created at boot, or the prior buffer's mirror view
+    // on a switch — so exactly one live view occupies the pane (the prototype's
+    // single-live-view invariant, now against the real pane element).
+    const paneEl = paneElements.get(currentPaneId) || editorHostEl;
+    clearStaleServerViews(paneEl);
     const el = /** @type {*} */ (document.createElement('text-view'));
+    // Mark this as the server's mirror view: ensureEditorViewForLeaf must never
+    // re-bind a Lisp View onto it (the server drives its point/mark/buffer).
+    el._serverMounted = true;
     el.style.cssText = 'flex:1 1 auto; min-height:0;';
     el.configure({
       onKey: options.onKey,
@@ -5823,8 +5821,12 @@ if (window.host && window.host.serverMode) {
       onRenderError: (error) => reportRendererFault('g2 render error', error),
     });
     el.setBuffer(mirror);          // populates the pending buffer
-    g2HostEl.append(el);            // triggers connectedCallback → mount
-    if (!g2HostEl.isConnected) editorHostEl.append(g2HostEl);
+    paneEl.append(el);             // triggers connectedCallback → mount
+    // The pane's live view is now the server mirror view: point the registry +
+    // the "current view" at it so focus / commands / ensureEditorViewForLeaf
+    // resolve to it, not the discarded Lisp-view.
+    editorViewByPaneId.set(currentPaneId, el);
+    editorView = el;
     return el;
   }
 
@@ -5931,7 +5933,8 @@ if (window.host && window.host.serverMode) {
       // are in the G2 container. Must stay 1 across a buffer switch (find-file
       // / C-x b / kill-buffer) — the multibuffer self-test asserts it, and the
       // architect can eyeball it after opening a file.
-      textViewCount: () => g2HostEl.querySelectorAll('text-view').length,
+      textViewCount: () =>
+        paneElements.get(currentPaneId)?.querySelectorAll(':scope > text-view').length ?? 0,
       // Feed a synthetic SNAPSHOT for a DIFFERENT buffer through the real
       // client → onSnapshot → mountServerView → clearStaleServerViews path, so
       // the self-test can prove the real-app buffer switch re-mirrors + keeps
@@ -6445,6 +6448,11 @@ function ensureEditorViewForLeaf(leaf) {
   if (!paneEl) return null;
   let instance = editorViewByPaneId.get(leaf.id);
   if (instance) {
+    // Server-mode (Step A leaf-flip): this pane is owned by the
+    // server-view-client's mirror-backed <text-view> (mounted by
+    // mountServerView). Never re-bind a Lisp View onto it — the server drives
+    // its point / mark / buffer / cursors.
+    if (instance._serverMounted) return instance;
     // Re-attach if a re-layout detached the element (defensive).
     if (instance.parentNode !== paneEl) {
       paneEl.append(instance);
