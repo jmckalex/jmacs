@@ -286,6 +286,20 @@ test('a close-tab pane intent un-curates a tab (buffer survives in the pool) (St
   assert.ok(spine.bufferIdByName('scratch.txt'), 'the closed buffer is still in the pool');
 });
 
+test('a reorder-tab pane intent reorders the focused tabline (Step 3c)', () => {
+  const files = { '/x.js': { text: 'x', name: 'x.js' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const seedId = spine.currentBufferIdOf(0);
+  spine.runCommand('toggle-tabline');
+  const xId = spine.visitFile('/x.js'); // tabs: seed, x (x active)
+
+  // Drag x (index 1) to the front.
+  assert.equal(spine.applyPaneIntent(0, { op: 'reorder-tab', from: 1, to: 0 }), true);
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), [xId, seedId], 'order changed');
+  assert.equal(leaf.bufferId, xId, 'the active tab is still x');
+});
+
 // --- two panes on DIFFERENT buffers within one window ------------------
 
 test('a pane can show a different buffer; the other pane keeps its own', () => {

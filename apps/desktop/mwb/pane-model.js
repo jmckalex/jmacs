@@ -516,6 +516,22 @@ export function createPaneModel(options = {}, hooks = {}) {
     return true;
   }
 
+  /** Reorder a tab in the FOCUSED tabline leaf — move the tab at FROM to TO
+   *  (drag-reorder). The ACTIVE tab is tracked by buffer id (not index), so its
+   *  identity is unchanged; only the curated order shifts. No-op on a non-tabline
+   *  leaf or out-of-range / equal indices. Returns whether the order changed. */
+  function reorderFocusedTab(from, to) {
+    const state = focusedState();
+    if (!state.tabline || !Array.isArray(state.tabs)) return false;
+    const n = state.tabs.length;
+    if (!Number.isInteger(from) || !Number.isInteger(to)) return false;
+    if (from < 0 || from >= n || to < 0 || to >= n || from === to) return false;
+    const [moved] = state.tabs.splice(from, 1);
+    state.tabs.splice(to, 0, moved);
+    onChange();
+    return true;
+  }
+
   /** Read the focused leaf's view-state (point/mark/scroll). */
   function focusedViewState() {
     const s = focusedState();
@@ -631,6 +647,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     setFocusedScroll,
     toggleFocusedTabline,
     closeFocusedTab,
+    reorderFocusedTab,
     // introspection (for tests + the server)
     leaves: () => leafPanes(rootPane),
     leafCount: () => leafPanes(rootPane).length,

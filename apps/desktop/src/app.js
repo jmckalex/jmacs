@@ -9372,7 +9372,20 @@ function ensureTablineState(view) {
       if (globalIdx >= 0) killViewAtIndex(globalIdx);
       else removeTabInTabline(view, i);
     },
-    onReorder: (from, to) => reorderTabInTabline(view, from, to),
+    onReorder: (from, to) => {
+      // A per-leaf server tabline (Step 3c): the server owns the tab order, so a
+      // drag routes UP (focus the leaf, then reorder its curated tabs); the
+      // re-pushed PANE_TREE re-renders the strip in the new order. A local
+      // splice would be reverted by the next reconcile.
+      if (view._serverLeafTabline) {
+        if (serverViewClient) {
+          serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId: view._serverLeafId });
+          serverViewClient.sendPaneIntent({ op: 'reorder-tab', paneId: view._serverLeafId, from, to });
+        }
+        return;
+      }
+      reorderTabInTabline(view, from, to);
+    },
   });
 
   state = {

@@ -144,6 +144,28 @@ test('closeFocusedTab is a no-op on a single-view leaf (Step 3c)', () => {
   assert.equal(model.closeFocusedTab('b1'), false, 'not a tabline → nothing to close');
 });
 
+test('reorderFocusedTab moves a tab; the active tab (by id) is unchanged (Step 3c)', () => {
+  const { model } = makeModel('b1');
+  model.toggleFocusedTabline(true);
+  model.setFocusedBuffer('b2');
+  model.setFocusedBuffer('b3'); // tabs: b1, b2, b3 (b3 active)
+
+  // Drag b3 (index 2) to the front (index 0).
+  assert.equal(model.reorderFocusedTab(2, 0), true);
+  let leaf = snapshotLeaves(model.snapshot())[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b3', 'b1', 'b2'], 'order changed');
+  assert.equal(leaf.bufferId, 'b3', 'the active tab (by id) is unchanged');
+
+  // Bad / equal indices are no-ops.
+  assert.equal(model.reorderFocusedTab(1, 1), false, 'equal indices');
+  assert.equal(model.reorderFocusedTab(0, 9), false, 'out of range');
+});
+
+test('reorderFocusedTab is a no-op on a single-view leaf (Step 3c)', () => {
+  const { model } = makeModel('b1');
+  assert.equal(model.reorderFocusedTab(0, 0), false, 'not a tabline → nothing to reorder');
+});
+
 test('a fresh model is a single focused leaf on the seed buffer', () => {
   const { model } = makeModel('b1');
   assert.equal(model.leafCount(), 1);

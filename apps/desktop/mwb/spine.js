@@ -2570,6 +2570,12 @@ export function createSpine(options, effects = {}) {
         // active tab closed, the model re-points to a neighbour — the server's
         // MSG.PANE handler sees the focused buffer change and re-syncs.
         return model.closeFocusedTab(String(intent.bufferId ?? ''));
+      case 'reorder-tab':
+        // Step 3c: drag-reorder a tab in the focused tabline leaf. The active
+        // tab is tracked by buffer id, so the order changes but not which tab is
+        // active; the model's onChange re-pushes PANE_TREE and the client
+        // re-renders the strip in the new order.
+        return model.reorderFocusedTab(Number(intent.from), Number(intent.to));
       case 'resize':
         // The client owns the pixels; it echoes the new ratio up so the
         // logical tree records the user's chosen split.
