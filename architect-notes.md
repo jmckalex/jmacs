@@ -2439,3 +2439,33 @@ flag-off byte-for-byte throughout. ~14 commits this session, all live-verified.
 Remaining are polish/coverage: seed-noise, mode-coverage (#9), read-next-key
 (isearch/LaTeX `` ` ``), `*Recover*` UX, View-List kill-row affordance. Then G4
 (multi-window) + G5 (flip default, delete in-renderer interpreter).
+
+## [2026-06-23 night] Seed-noise + mode-coverage — SHIPPED, live-verified
+
+Commit `6aafbc5`. Suite green (832/0). Both live-verified ("That worked!").
+- **Seed-noise:** the spine seeded DEFAULT_FILE (`view.js`) every boot → a stray
+  tab. Now boots on the saved session's ACTIVE file (server's own session, else
+  the renderer's session.json seed). `SESSION_STORE` moved above the spine (read
+  via the hoisted `readServerSession`); `createSpine`/`registry.add` gained
+  `initialPath` so the seed is file-backed (restore then skips it as
+  already-open). Falls back to `view.js` when there is no session.
+- **Mode coverage (task #9 ✓):** load every `languages/*.lisp` (define-mode +
+  register-mode + a few editing commands) TOLERANTLY (one bad file logs + skips,
+  never aborts boot), so `.html`/`.py`/`.css`/`.json`/… get the right major mode
+  + keymap by extension. Skip latex/markdown (richer modes from the root list).
+
+**OPEN — the next slice: find-file TAB-completion in server mode.** The
+completing-minibuffer slice from the original backlog. The engine
+(`minibuffer-tab-complete`) + dir-listing are ALREADY server-side; only the
+TAB→complete→display wire is missing. Do as ONE coherent slice — a
+`MINIBUFFER_COMPLETE` intent (client→server) → the server runs the completer +
+returns candidates → the client renders them (inline completion and/or the
+completions picker). NOT a band-aid. Good first task for a fresh session.
+
+**SESSION CLOSE: the Model-B single-window editor is feature-complete + polished**
+(open/switch/close/quit/tabs/View-List/session-restore/right-modes, all
+server-backed, flag-off byte-for-byte). ~18 commits this session, every step
+live-verified. **Next big phase: G4 (multi-window)** — the server already has
+per-client pane models + PANE_TREE; the client stubs them. Polish backlog:
+find-file completion (next slice), View-List kill-row affordance, read-next-key
+live delivery (isearch + LaTeX `` ` ``), `*Recover*` UX.
