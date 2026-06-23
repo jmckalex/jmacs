@@ -2356,3 +2356,48 @@ only ONE buffer, so per-tab elements don't fit):
 paths + active; on boot the server re-opens them (fold with crash-recovery). Then
 the user's real files come back through the server as tabs. (server.js has no
 session file today — only crash-recovery autosave.)
+
+## [2026-06-23 late pm] Increment 2.2 native tabs + close + quit — SHIPPED, live-verified
+
+Increment 2 is DONE and live-verified by Jason. The focused leaf in server mode
+is a real in-renderer tabline whose tabs ARE the server's buffers; open/switch/
+close/quit all route through the server. Commits `be48f0a` (native tabs),
+`e02c703` (bindCursor fix), `ef9b34c` (close + quit). Suite green (832/0).
+
+**Native tabs (`be48f0a`) — shared-façade-element model, as designed above.**
+`serverFacadeView` (module-level, getters over the single `serverMirror`) always
+occupies the active tab slot; other buffers are lightweight proxies (labels). The
+leaf becomes a server tabline (`ensureServerTabline`, which also unlinks the init
+leaf-direct `<text-view>` so it isn't orphaned behind the tabline);
+`syncServerBufferTabs` (← `serverChrome.setBufferList` ← BUFFER_LIST) reconciles
+tabs + active. `ensureTabElement` + `activateTabInTabline` got serverMode
+branches (façade tab onKey→server / decorations→mirror; a proxy click →
+`switchBuffer`). All `_serverBacked`/`_serverTabline`-gated → flag-off byte-for-byte.
+
+**bindCursor fix (`e02c703`).** The tabline mount path runs
+`applyTextMountSideEffects`, which called `view.buffer.bindCursor()` (an L2
+method the mirror lacks) → threw twice into the REPL on boot. The leaf-flip path
+never reached it. Guarded: for a server-backed view, skip the whole in-renderer
+block (bindCursor / sticky-notes / bookmarks / major-mode / dirty-watch) and just
+point `editorView` at the instance + render + focus.
+
+**Close + quit (`ef9b34c`) — renderer-only, reusing server machinery.**
+- Tab `×` → `client.closeBuffer(id)` = `switchBuffer(id)` then send `C-x` `k`
+  (the server's kill-buffer); the server re-homes + re-pushes BUFFER_LIST so the
+  tab vanishes. Refuses to kill the only buffer. (Closing an INACTIVE tab briefly
+  flashes to it — switch-then-kill; a kill-by-id intent would avoid the flash.)
+- `C-x C-c` → the client resolves the chord (`dispatchKey` shadows the prefix via
+  `lastDispatchedKey`; the server leaves C-x C-c unbound) and calls a
+  `requestQuit` chrome hook → `quitInteractive()`. Split: server owns editing,
+  client owns window lifecycle.
+
+**Observed (not bugs):** boot shows TWO `view.js` tabs — the server's hardcoded
+seed `view.js` + a recovered dirty `view.js` autosave snapshot (the `*Recover*`
+UX item). The modeline still says `(Fundamental)` for `.html` (mode-coverage
+task #9).
+
+**REMAINING (in order):** (a) wire the *View List* to the server buffer set (the
+proxies aren't in `views[]`, so it's empty in server mode); (b) Increment 3 —
+server-side session persistence (the headline want); (c) mode-coverage (task #9);
+(d) `read-next-key` live delivery (isearch + LaTeX `` ` ``); (e) the dup-`view.js`
+/ `*Recover*` UX. All other Increment-2 sub-bits (tabs/switch/close/quit) DONE.
