@@ -390,6 +390,28 @@ test('C-x 5 2 resolves to new-window and raises the onNewWindow effect', () => {
   assert.equal(log.newWindows, 1, 'C-x 2 is split-vertical, not new-window');
 });
 
+test('a fresh window opens on its own private *scratch* (hidden from window 1)', () => {
+  const { spine } = makeSpine('the session file', 'session.txt');
+  const before = spine.bufferCount;
+
+  // A fresh window (G4 Step 1): its own empty *scratch*, NOT the shared buffer.
+  const c1 = spine.addClientView({ freshScratch: true });
+  assert.equal(spine.bufferCount, before + 1, 'a new scratch buffer was created');
+  assert.equal(spine.viewStateOf(c1).name, '*scratch*', 'the fresh window is on it');
+
+  // The scratch is PRIVATE: window 1's tab list excludes it; the fresh window's
+  // includes it. (The deny-list hides only FOREIGN scratches.)
+  const w0 = spine.bufferListRecords(0).map((r) => r.name);
+  const wFresh = spine.bufferListRecords(c1).map((r) => r.name);
+  assert.ok(!w0.includes('*scratch*'), 'window 1 does NOT see the fresh scratch');
+  assert.ok(w0.includes('session.txt'), 'window 1 still sees its own buffers');
+  assert.ok(wFresh.includes('*scratch*'), 'the fresh window sees its own scratch');
+
+  // Detaching the fresh window reaps its (still-empty) scratch from the pool.
+  spine.removeClientView(c1);
+  assert.equal(spine.bufferCount, before, 'the empty scratch is reaped on detach');
+});
+
 test('each client moves its own point without disturbing the other', () => {
   const { spine } = makeSpine('one\ntwo\nthree');
   spine.addClientView();

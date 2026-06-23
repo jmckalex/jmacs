@@ -5956,17 +5956,48 @@ if (window.host && window.host.serverMode) {
     };
   }
 
+  /** G4 Step 1 — the single-pane (fresh window) mount. The leaf's OWN
+   *  `<text-view>` renders the mirror via the shared façade — NO tabline. This
+   *  is the original leaf-flip mount: the façade is a text view, so the real
+   *  pane pipeline mounts it with no fight, and the user composes the window
+   *  from here (open a file / add a tabline-view). A fresh window opens this
+   *  way on its own *scratch*; window 1 keeps the tabline. */
+  function mountServerSingleView(leaf) {
+    leaf.view = serverFacadeView;
+    const instance = ensureEditorViewForLeaf(leaf);
+    if (!instance) return makeNullServerView();
+    try { instance.setView(serverFacadeView); } catch { /* ignore */ }
+    return makeServerSingleLeafAdapter(instance);
+  }
+
+  /** A view handle over a single-pane leaf's own `<text-view>` (the fresh-window
+   *  mount). `destroy` is soft — a buffer switch re-points the same leaf via the
+   *  server, so the element must survive. */
+  function makeServerSingleLeafAdapter(instance) {
+    return {
+      setView: () => { try { instance.setView(serverFacadeView); } catch { /* ignore */ } },
+      focus: () => { try { instance.focus(); } catch { /* ignore */ } },
+      recenter: () => { try { instance.recenter(); } catch { /* ignore */ } },
+      pageLines: () => { try { return instance.pageLines(); } catch { return 0; } },
+      destroy: () => { /* soft: the leaf keeps its <text-view> across switches */ },
+    };
+  }
+
   /** The `mountView` collaborator. A SNAPSHOT (re)points the single shared
-   *  mirror; the focused leaf becomes the server tabline whose active tab — the
-   *  shared façade — renders that mirror. On a buffer switch the server sends a
-   *  fresh SNAPSHOT (here) then a fresh BUFFER_LIST (syncServerBufferTabs), so
-   *  the façade re-renders the new buffer and the active tab re-marks. No
-   *  overlay; the leaf's own tabline IS the server view. */
-  function mountServerView(mirror) {
+   *  mirror; the focused leaf presents it per the window's kind (from the
+   *  snapshot): a 'single' fresh window renders the leaf's own `<text-view>`
+   *  directly (no tabline); window 1 ('tabline') becomes the server tabline
+   *  whose active tab — the shared façade — renders that mirror. On a buffer
+   *  switch the server sends a fresh SNAPSHOT (here) then a fresh BUFFER_LIST
+   *  (syncServerBufferTabs), so the active view re-renders the new buffer. */
+  function mountServerView(mirror, options = {}) {
     serverMirror = mirror;
     const leaf = serverBoundLeaf() ?? currentPane() ?? leafPanes(rootPane)[0];
     if (!leaf) return makeNullServerView();
     serverBoundLeafId = leaf.id;
+    if (options.windowKind === 'single') {
+      return mountServerSingleView(leaf);
+    }
     ensureServerTabline(leaf);
     const el = serverFacadeElement();
     if (el) { try { el.setView(serverFacadeView); } catch { /* ignore */ } }

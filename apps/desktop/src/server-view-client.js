@@ -173,6 +173,11 @@ export function createServerViewClient({
   // (open / switch / kill) so the host's tabs stay in sync; cached here so a
   // late host wire (or a test) can read the current set.
   let lastBufferList = [];
+  // G4 Step 1: how this window presents its root, from the snapshot. 'tabline'
+  // (window 1 — welcome / restored session) or 'single' (a fresh window — one
+  // composable pane on its own *scratch*, no forced tabline). Passed to mountView
+  // so the host mounts the right root. Stable per window; defaults to 'tabline'.
+  let windowKind = 'tabline';
   // The previous keystroke, tracked ONLY to catch the C-x C-c quit chord
   // client-side (the server leaves it unbound — quitting the window is a host
   // action). Any key between C-x and C-c resets it, so it never misfires.
@@ -257,6 +262,10 @@ export function createServerViewClient({
   // change (the proven render-from-mirror seam).
   function buildMountOptions() {
     return {
+      // G4 Step 1: how the host should mount this window's root — 'single' (one
+      // composable pane, a fresh window) or 'tabline' (window 1). The harness /
+      // tests ignore it; app.js's mountServerView branches on it.
+      windowKind,
       onKey: dispatchKey,
       highlighters,
       foldCaptures,
@@ -354,6 +363,7 @@ export function createServerViewClient({
   function onSnapshot(msg) {
     const isSwitch = currentBufferId !== null && msg.bufferId !== currentBufferId;
     if (typeof msg.bufferId === 'string') currentBufferId = msg.bufferId;
+    if (typeof msg.windowKind === 'string') windowKind = msg.windowKind;
     if (isSwitch) pending.clear();
     mirror = createClientBuffer({
       initialText: msg.text,

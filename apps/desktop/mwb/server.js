@@ -202,9 +202,15 @@ let activeClient = null;
 let bootstrapClaimed = false;
 
 function registerClient(port) {
-  const index = bootstrapClaimed ? spine.addClientView() : 0;
+  // The FIRST window claims the bootstrap view (index 0) — it carries the
+  // welcome / restored session and renders as a tabline. Every later window
+  // (G4 Step 1) is a FRESH window: its own empty *scratch* buffer, rendered as
+  // a single composable pane (NOT a tabline of everyone's files). The window
+  // kind rides the snapshot so the client knows how to present its root.
+  const isFresh = bootstrapClaimed;
+  const index = isFresh ? spine.addClientView({ freshScratch: true }) : 0;
   bootstrapClaimed = true;
-  const client = { port, index };
+  const client = { port, index, windowKind: isFresh ? 'single' : 'tabline' };
   clients.push(client);
   port.on('message', (event) => onClientMessage(client, event));
   // G4: when the window closes, its renderer's port is closed/GC'd and the
@@ -411,6 +417,10 @@ function sendSnapshot(client) {
     name: spine.buffer.name,
     bufferId: spine.currentBufferIdOf(client.index),
     clientIndex: client.index, // so a client knows whether it's the typer
+    // G4 Step 1: how this window presents its root — 'tabline' (window 1, the
+    // welcome/restored session) or 'single' (a fresh window: one composable
+    // pane on its own *scratch*, no forced tabline). Stable per window.
+    windowKind: client.windowKind,
     seq,
   });
 }
