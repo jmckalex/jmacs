@@ -8599,6 +8599,18 @@ const SINGLETON_VIEWS = [
  *  instance work and calls this helper afterwards). */
 function applyTextMountSideEffects(view, instance) {
   if (!view || view.kind !== 'text' || !view.buffer) return;
+  // Server-backed (Model B) view: the SERVER owns the buffer, cursor, mode and
+  // overlays. The in-renderer machinery below doesn't apply — and `bindCursor`
+  // (an L2 Buffer method the ClientBuffer mirror lacks) would throw. Just point
+  // the active editor at it and render; everything else is server-driven.
+  if (isServerBackedView(view)) {
+    if (instance) {
+      editorView = instance;
+      instance.setView(view);
+      if (typeof instance.focus === 'function') instance.focus();
+    }
+    return;
+  }
   currentTextBuffer = view.buffer;
   // Per-view-point (plans/PANES.md Q2): bind the buffer's cursor to
   // the view so the buffer's `point`/`mark` API reads and writes the
