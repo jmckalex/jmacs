@@ -685,9 +685,24 @@ function recoverOnStartup() {
     return;
   }
   if (!recoverable || recoverable.length === 0) return;
-  console.error(`[mwb-server] crash recovery: ${recoverable.length} snapshot(s) to recover:`);
+  // Snapshots accumulate across crashes (esp. force-quits), and the buffer-name
+  // uniquifier compounds near-duplicate copies of the SAME logical buffer
+  // (view.js<2><2>…) because a path-less seed keys snapshots by an ephemeral
+  // buffer id. Collapse to the MOST RECENT snapshot per base name (strip the
+  // <n> suffixes) so recovery surfaces ONE buffer per logical file, not a pile.
+  const baseName = (n) => String(n || '').replace(/(<\d+>)+$/, '');
+  const latest = new Map();
   for (const r of recoverable) {
-    console.error(`  - ${r.name || r.key} (saved ${new Date(r.savedAt).toISOString()})`);
+    const key = baseName(r.name) || r.key;
+    const prev = latest.get(key);
+    if (!prev || (r.savedAt ?? 0) > (prev.savedAt ?? 0)) latest.set(key, r);
+  }
+  const deduped = [...latest.values()];
+  console.error(
+    `[mwb-server] crash recovery: ${recoverable.length} snapshot(s) → ${deduped.length} buffer(s):`
+  );
+  for (const r of deduped) {
+    console.error(`  - ${baseName(r.name) || r.key} (saved ${new Date(r.savedAt).toISOString()})`);
     try {
       // The on-disk content (if the file still exists) is the recovered
       // buffer's baseline, so its dirty diff is exactly the lost edits.
@@ -699,14 +714,18 @@ function recoverOnStartup() {
           diskBaseline = undefined; // file gone — leave it conservatively dirty.
         }
       }
-      // Load the recovered text as a buffer (path bound if it had one) so the
-      // unsaved work is reachable. It is DIRTY relative to disk by
-      // construction (that's why it was recovered), so its ● flag shows.
-      spine.recoverBuffer({ name: r.name, filePath: r.path, text: r.text, diskBaseline });
+      // Load the recovered text as a buffer (path bound if it had one), named by
+      // its BASE name so it doesn't carry a compounded <n> suffix. It is DIRTY
+      // relative to disk by construction (why it was recovered), so its ● shows.
+      spine.recoverBuffer({ name: baseName(r.name) || r.name, filePath: r.path, text: r.text, diskBaseline });
     } catch (error) {
       console.error(`[mwb-server] could not load recovered buffer: ${error.message}`);
     }
   }
+  // The snapshots are now loaded into buffers — CONSUME them so they don't
+  // re-recover and pile up next launch (the runaway-accumulation root). Going
+  // forward, autosave re-snapshots only the live dirty buffers.
+  autosave.clear();
 }
 
 recoverOnStartup();
