@@ -2184,3 +2184,28 @@ needs the fuller keymap. All flagged in the prior note as leaf-flip work.
 **Commits (multi-window-b, unmerged):** bd135b1 (Part 1 key routing), cb0b060
 (Part 2 chrome), 298cf7d (focus return), a1276ab (header doc). Tree clean,
 759/0 green. No merge per the brief.
+
+## [2026-06-23 ~02:00] Overnight autonomous build — summary (5 waves; app usable flag-on)
+
+Drove the Model-B graduation from "types through a server" to "an editor you can
+work in." 5 waves, each boot-tested (flag-on mounts clean; flag-off shows no
+server + no errors), flag-off byte-for-byte, suite 779→822:
+- **W1 keys+chrome** — route ALL keys through `handle-key` (fixed auto-pair + the
+  C-x b chord-eating bug, same root) + wire modeline/echo/minibuffer/picker to the DOM.
+- **W2 router+scroll** — focus-independent gate so the in-renderer global router
+  stands down in server-mode (killed the undo `C-/` bell) + `C-v`/`M-v` screenful
+  scroll via a client `VIEWPORT` report.
+- **W3 multi-file+keymap** — find-file / `C-x b` re-mirror (fixed accumulating dead
+  `<text-view>`s; one live view) + a dozen everyday bindings (`C-o`, `C-t`, `M-q`…).
+- **W4 citations+RefTeX** — server-side citation bridge reusing the renderer's
+  pure-ESM `citation.js`; `C-c [`/`)`/`(` cite/ref/label via the generic PICKER channel.
+- **W5 isearch** — real `C-s`/`C-r` incremental search. *Salvaged after a network
+  stall:* the agent's implementation was complete + uncommitted (boot-clean); I wrote
+  the 6 `node --test` cases (fwd/back/wrap/abort/exit/backspace — all green) and committed.
+
+Two network stalls (the watchdog, not logic) cost nothing — frequent commits + the
+isearch salvage. **The leaf-flip stayed untouched** — it's GUI-shaped and best done
+live with Jason driving; risking it autonomously (unverifiable) could break flag-ON.
+Stopped here because the safe, autonomously-verifiable server-side work is done; the
+rest (leaf-flip, multi-window, render-coupled stdlib) needs the live session.
+`MWB-STATE.md` refreshed as the morning test guide. 84 commits ahead, nothing merged.
