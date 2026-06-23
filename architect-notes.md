@@ -2656,3 +2656,63 @@ window 1's tabs become its leaf's set; clientBuffers derives from the pane tree 
 retires. Then the CLIENT renders a tabline leaf as a real tabline-view of EXACTLY
 its `tabs` (proxies via `ensureServerProxy`), mounted via `mountKindView`. Full
 design in repo-root `HANDOVER.md` (the ⚡ NEXT ACTION block).
+
+## [2026-06-23 Step 3c client] Tabline leaves render — a leaf with its OWN curated tabs (BUILT, awaiting live verify)
+
+Step 3c is now end-to-end: a leaf can BE a tabline of its own explicitly-curated
+tabs, and the client renders it. Two commits on `multi-window-b` (UNMERGED, ~123
+ahead of `main`, suite 838→**847**, flag-off byte-for-byte). Build side can't
+launch the GUI — **awaiting Jason's live verify** before any merge.
+
+- **`29a30c7` server** — per-leaf curated tab set. The 4355fec foundation had only
+  a `tabline` boolean; per the corrected model (a tabline = a container of
+  EXPLICITLY-CURATED tabs, not "the window's buffer set") the leaf now has an
+  ordered `tabs: bufferId[]` (active = the leaf's `bufferId`):
+  - `toggleFocusedTabline` ON seeds EXACTLY one tab (the leaf's buffer); OFF drops
+    the set.
+  - `setFocusedBuffer` ADDS a tab when the focused leaf is a tabline (find-file /
+    switch joins THAT tabline, no dup, re-activates an existing tab); a single-view
+    pane just replaces what it shows.
+  - `closeFocusedTab` un-curates a tab (buffer lives on in the pool; never empties
+    the tabline; re-points to a neighbour if the active tab closed) — via a new
+    `close-tab` PANE intent (the server's MSG.PANE handler resyncs when the active
+    buffer changes).
+  - The PANE_TREE wire carries the ordered `tabs` with per-tab display metadata
+    (name/dirty/path) via a new `tabMeta` pane-model hook (wired to the registry).
+  - Tests: pane-model.test.js (+5: seeds/adds/replace/off/close), protocol.test.js
+    (+2: tabs on the wire / omitted for a single view), spine-panes.test.js (+2:
+    toggle-tabline then find-file adds a tab; close-tab un-curates, buffer survives).
+
+- **`6f930b3` client** — render a tabline leaf as a real tabline-view. In a
+  'single' window, `buildServerPaneNode` turns a `tabline` leaf into a tabline-view
+  of EXACTLY that leaf's tabs (reused per leaf id via `serverLeafTablines` so the
+  tablineState / per-tab elements survive a focus-only reconcile): the active tab is
+  the live `serverFacadeView` when the leaf is focused (cursor tracks the mirror),
+  a static buffer view when not; every other tab a `ensureServerProxy` label.
+  `reconcileServerPaneTree` mounts a tabline leaf via `mountKindView` (NOT the
+  text-only `ensureEditorViewForLeaf`), sweeps the stale leaf-direct `<text-view>`
+  on a text→tabline flip, and `disposeTablineKind`s a leaf-tabline that flipped
+  back / vanished. Tab click → `focus-pane` + `switchBuffer`; tab × → `focus-pane`
+  + `close-tab` (both focus THIS leaf first — the click may be in a non-focused
+  pane). `toggle-tabline` destroys the focused leaf's element with NO following
+  SNAPSHOT, so the reconcile restores keyboard focus to the focused leaf's
+  element — but ONLY when focus was orphaned to `<body>` (never steals it from an
+  open minibuffer/picker). New shared `focusedServerLeafElement()` resolves the
+  focused leaf's live element (plain instance or tabline-façade tab) for the
+  focused-leaf adapter + the focus-restore.
+
+**LIVE-VERIFY (Jason):** in a FRESH window (`C-x 5 2`, a 'single' window) —
+1. `M-x toggle-tabline` → the single *scratch* pane grows a 1-tab tabline strip.
+2. `C-x C-f` a file → the tabline gains a 2nd tab, the new file active; typing edits it.
+3. Click the first tab → switches back; click the 2nd → forward. Tab × removes a tab
+   (the buffer stays reachable via C-x C-b). `M-x toggle-tabline` again → back to a
+   single view on the active buffer.
+
+**CLEAN path = a FOCUSED single tabline leaf** (live façade, no element churn).
+**Follow-ons (deferred, as scoped):** non-focused tabline leaves (their static
+active tab re-creates its element each reconcile — a churn/leak), multiple tablines
+per window, RESTORE of tab structure across a relaunch (the server `tabs` set isn't
+persisted yet), reconciling `clientBuffers` with per-leaf tab sets (window 1 is
+still one big tabline = clientBuffers; a 'single' window now has its own per-leaf
+tabs — the two models coexist but aren't unified). Then G4.3 menu-follows-focus,
+then G5.
