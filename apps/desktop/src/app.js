@@ -5912,6 +5912,12 @@ if (window.host && window.host.serverMode) {
     const leaf = serverBoundLeaf();
     if (leaf) mountKindView(serverTablineView, { paneEl: paneElements.get(leaf.id) });
     refreshPaneTabStrips();
+    // Keep the *View List* table in step with the server's buffer set (it reads
+    // viewListRecords, which is server-sourced in server mode). Runs only on a
+    // BUFFER_LIST push (post-boot), so viewListView is defined by now.
+    if (viewListView && typeof viewListView.refresh === 'function') {
+      viewListView.refresh();
+    }
   }
 
   /** The view handle the server-view client drives. Its methods act on the
@@ -7842,6 +7848,23 @@ function panePositionByView() {
  *  id so selection isn't ambiguous when two views share a name. Mirrors
  *  viewHost.listViewRecords (the Lisp `list-views`) but returns JS. */
 function viewListRecords() {
+  // Server mode: the *View List* shows the SERVER's open buffers — the
+  // in-renderer `views[]` holds only the welcome seed (the real buffers live
+  // server-side). Build rows from the last BUFFER_LIST; each row's id IS the
+  // server buffer id, so selectView/killView route it to switch/close.
+  if (window.host && window.host.serverMode && serverViewClient) {
+    return serverViewClient.getBufferList().map((b) => ({
+      id: b.id,
+      name: b.name ?? '',
+      kind: 'text',
+      mode: null, // server-side major mode not surfaced yet (task: mode coverage)
+      lines: typeof b.lineCount === 'number' ? b.lineCount : 0,
+      pane: b.current ? 1 : null,
+      file: b.filePath ?? null,
+      modified: !!b.modified,
+      current: !!b.current,
+    }));
+  }
   const paneByView = panePositionByView();
   const current = session.currentView;
   // Placeholders are transient chooser panes — excluded from the *View
@@ -7873,10 +7896,21 @@ function configureViewListView() {
       keymapReady && interpreter.call('chord-in-progress?') === true,
     getViews: viewListRecords,
     selectView: (id) => {
+      // Server mode: the id is a server buffer id — switch to it (the server
+      // re-syncs + re-pushes BUFFER_LIST, re-marking the active row/tab).
+      if (window.host && window.host.serverMode && serverViewClient) {
+        serverViewClient.switchBuffer(id);
+        return;
+      }
       const view = views.find((v) => v.id === id);
       if (view) switchToView(view);
     },
     killView: (id) => {
+      // Server mode: close the server buffer (kill-buffer via switch + C-x k).
+      if (window.host && window.host.serverMode && serverViewClient) {
+        serverViewClient.closeBuffer(id);
+        return;
+      }
       const idx = views.findIndex((v) => v.id === id);
       if (idx !== -1) killViewAtIndex(idx);
     },
