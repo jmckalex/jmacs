@@ -641,14 +641,25 @@ export function createSpine(options, effects = {}) {
   // would: drop index 1 of {0,1,2} and size→2 would re-mint an in-use 2).
   let nextClientIndex = 1;
 
-  // G4 Step 1 — fresh-window scratch ownership. A new window (2+) opens on its
-  // OWN fresh *scratch* buffer (so it starts as a single pane the user composes,
-  // not a tabline of everyone's files). That scratch is PRIVATE to its window:
-  // bufferListRecords hides a scratch from any OTHER client. A deny-list (hide
-  // only foreign scratches), not an allow-list, so a buffer created by any path
-  // stays visible everywhere by default — the full per-window subset is Step 2.
-  /** @type {Map<string, number>} scratch bufferId -> owning client index. */
-  const scratchOwner = new Map();
+  // G4 — per-window OPEN-SET: the buffers a window shows (its tabline tabs / pane
+  // contents). A window shows ONLY its own buffers, so opening a file in one
+  // window does NOT add it to another window's tabline. The C-x C-b PICKER
+  // (bufferListRows) still reaches the WHOLE pool, so any buffer is one switch
+  // away — and switching ADDS it to this window's set. Keyed by buffer id today;
+  // when buffer-less element-views (jukebox / stella) graduate to the server they
+  // extend the same per-client set (it's "what this window has open", not "all
+  // buffers"). Client 0 (window 1 — the session) is seeded with the boot buffer;
+  // restore + find-file add the rest via switchClientToBuffer.
+  /** @type {Map<number, Set<string>>} clientIndex -> open buffer ids. */
+  const clientBuffers = new Map([[0, new Set([initialEntry.id])]]);
+
+  /** Note that client INDEX now has BUFFERID open (shows it / can tab to it). */
+  function noteClientBuffer(index, bufferId) {
+    if (bufferId == null) return;
+    let set = clientBuffers.get(index);
+    if (!set) { set = new Set(); clientBuffers.set(index, set); }
+    set.add(bufferId);
+  }
 
   // Per-client viewport height in VISIBLE TEXT LINES, reported by the client
   // (only it knows how many lines fit — plan §5d). Screenful scroll (C-v/M-v)
@@ -1920,6 +1931,9 @@ export function createSpine(options, effects = {}) {
       ? rec.filePath
       : null;
     const entry = registry.add(text, name, filePath);
+    // A recovered buffer belongs to window 1 (the session window) — it doesn't
+    // switch any client, so note it explicitly or it'd be in no window's tabline.
+    noteClientBuffer(0, entry.id);
     // Baseline = on-disk content when known, else a value that differs from
     // the recovered text (so the buffer reads as modified / shows ●).
     if (typeof rec.diskBaseline === 'string') {
@@ -2018,7 +2032,6 @@ export function createSpine(options, effects = {}) {
     let startId;
     if (opts.freshScratch) {
       const scratch = registry.add('', '*scratch*', null);
-      scratchOwner.set(scratch.id, index);
       startId = scratch.id;
     } else {
       startId =
@@ -2026,6 +2039,7 @@ export function createSpine(options, effects = {}) {
         ?? paneModels.values().next().value?.focusedBufferId()
         ?? initialEntry.id;
     }
+    clientBuffers.set(index, new Set([startId]));
     makePaneModel(index, startId);
     return index;
   }
@@ -2036,19 +2050,26 @@ export function createSpine(options, effects = {}) {
    *  the active index falls back to a survivor (the server re-binds via
    *  setActiveClient before its next intent regardless). */
   function removeClientView(index) {
+    const set = clientBuffers.get(index);
     clientIndices.delete(index);
     paneModels.delete(index);
     clientViewports.delete(index);
+    clientBuffers.delete(index);
     registry.dropClient(index);
-    // Drop this window's PRIVATE scratch if it's still empty — an unused
-    // fresh-window scratch shouldn't linger in the pool. A scratch the user
-    // typed into is left behind (now ownerless → globally visible, reachable
-    // via C-x C-b), so no edits are lost.
-    const owned = [...scratchOwner].filter(([, o]) => o === index).map(([b]) => b);
-    for (const bufId of owned) {
-      scratchOwner.delete(bufId);
-      const e = registry.get(bufId);
-      if (e && e.buffer.text === '' && registry.count() > 1) registry.remove(bufId);
+    // Reap this window's buffers that NO other window shows AND that are an
+    // empty, path-less scratch (a fresh window's unused scratch shouldn't linger
+    // in the pool). A scratch the user typed into, or any file-backed buffer, is
+    // left behind (reachable via C-x C-b), so no edits are lost.
+    if (set) {
+      const shownElsewhere = new Set();
+      for (const s of clientBuffers.values()) for (const id of s) shownElsewhere.add(id);
+      for (const id of set) {
+        if (shownElsewhere.has(id)) continue;
+        const e = registry.get(id);
+        if (e && !e.filePath && e.buffer.text === '' && registry.count() > 1) {
+          registry.remove(id);
+        }
+      }
     }
     if (activeClientIndex === index) {
       activeClientIndex = clientIndices.values().next().value ?? 0;
@@ -2092,6 +2113,9 @@ export function createSpine(options, effects = {}) {
    */
   function switchClientToBuffer(index, id) {
     if (!registry.has(id)) return false;
+    // The window now has this buffer open (covers find-file / new-view! / the
+    // C-x C-b picker / C-x b — all switch here). It joins this window's tabline.
+    noteClientBuffer(index, id);
     const model = paneModels.get(index);
     if (model) {
       // Point the focused leaf at the new buffer (re-mints its leaf view).
@@ -2174,6 +2198,8 @@ export function createSpine(options, effects = {}) {
     const survivor = registry.list().find((e) => e.id !== killedId);
     if (!survivor) return;
     registry.remove(killedId);
+    // Drop the killed buffer from EVERY window's open-set (it's gone globally).
+    for (const s of clientBuffers.values()) s.delete(killedId);
     // Re-home EVERY pane (across all windows) showing the killed buffer onto
     // the survivor. A window is affected if its focused pane showed it (the
     // simple, tested re-home path: re-point the focused leaf + re-sync).
@@ -2711,17 +2737,17 @@ export function createSpine(options, effects = {}) {
     currentBufferIdOf,
     killActiveBuffer,
     /** Plain-data buffer-list records for client INDEX's TABS / View List, each
-     *  tagged with whether it is that client's CURRENT buffer. Another window's
-     *  private *scratch* is filtered out (G4 Step 1 — a fresh window's scratch
-     *  is its own). NB: the C-x C-b switch PICKER uses `bufferListRows` (the
-     *  whole pool), so any buffer is still reachable from any window. */
+     *  tagged with whether it is that client's CURRENT buffer. Scoped to the
+     *  window's OWN open-set (G4 — a window shows only its own buffers; opening a
+     *  file in one window doesn't add it to another's tabline). The current
+     *  buffer is always included, defensively. NB: the C-x C-b switch PICKER uses
+     *  `bufferListRows` (the whole pool), so any buffer is reachable from any
+     *  window, and switching adds it to that window's set. */
     bufferListRecords(clientIndex) {
       const currentId = currentBufferIdOf(clientIndex);
+      const open = clientBuffers.get(clientIndex) ?? new Set();
       return registry.listRecords()
-        .filter((r) => {
-          const owner = scratchOwner.get(r.id);
-          return owner === undefined || owner === clientIndex;
-        })
+        .filter((r) => open.has(r.id) || r.id === currentId)
         .map((r) => ({ ...r, current: r.id === currentId }));
     },
     get bufferCount() {

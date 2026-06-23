@@ -475,19 +475,22 @@ test('switch-to-buffer moves the active client between buffers, keeping cursor',
   assert.equal(spine.buffer.text, 'const x = 1;\n');
 });
 
-test('bufferListRecords flags the current buffer per client', () => {
+test('bufferListRecords is per-window: a window shows only its OWN buffers', () => {
   const files = { '/x.js': { text: 'x', name: 'x.js' } };
   const { spine } = makeSpine('seed', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
   });
   spine.addClientView(); // client 1, on the seed buffer
-  const xId = spine.visitFile('/x.js'); // active client (0) switches to x.js
+  const xId = spine.visitFile('/x.js'); // active client (0) opens + switches to x.js
   const recs0 = spine.bufferListRecords(0);
   const recs1 = spine.bufferListRecords(1);
+  // Client 0 OPENED x.js → its list has both, with x.js current.
   assert.equal(recs0.length, 2);
-  // Client 0's current buffer is x.js; client 1's is still the seed.
   assert.equal(recs0.find((r) => r.id === xId).current, true);
-  assert.equal(recs1.find((r) => r.id === xId).current, false);
+  // Client 1 never opened x.js → it is NOT in client 1's tabline (G4 per-window
+  // subset: opening a file in one window doesn't leak into another's tabs).
+  assert.equal(recs1.find((r) => r.id === xId), undefined);
+  assert.equal(recs1.length, 1);
   assert.ok(recs1.find((r) => r.name === 'scratch.txt').current);
 });
 
