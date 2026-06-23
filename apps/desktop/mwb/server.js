@@ -352,6 +352,11 @@ function resyncClientToCurrentBuffer(client) {
   sendViewTo(client);
   sendCursorsTo(client);
   sendOverlaysTo(client);
+  // Push the open-buffer set too: a switch/visit/kill changed which buffers
+  // exist or which is current, so the client's tabs + active marker must
+  // follow. (The on-demand C-x C-b path still works; this keeps the tabs live
+  // without a user request.)
+  sendBufferListTo(client);
 }
 
 /** Switch a client to a buffer (by id) and re-sync it onto the new buffer.
@@ -610,6 +615,10 @@ function onClientMessage(client, event) {
       // or multi-cursor active on the same buffer).
       sendOverlaysTo(client);
       sendCursorsTo(client);
+      // The full open-buffer set, so the client renders its tabs + active
+      // marker from the first paint (a reconnect may already have several
+      // buffers open). Re-pushed on every later buffer-set change via resync.
+      sendBufferListTo(client);
       // The window's pane layout (a single leaf on first connect, or its
       // restored split tree on reconnect).
       sendPaneTreeTo(client);

@@ -101,6 +101,10 @@ export function isBarePrintable(keyString) {
  *   choice/cancel back up as PICKER_CHOOSE/PICKER_CANCEL intents.
  * @param {() => void} [deps.chrome.closePicker]
  *   Tear down any open picker panel (a switch / teardown).
+ * @param {(buffers: object[]) => void} [deps.chrome.setBufferList]
+ *   Render the server's open-buffer set (a BUFFER_LIST push) as the in-renderer
+ *   tabs + View List in server mode. Each record is `{ id, name, lineCount,
+ *   modified, filePath, current }`.
  * @param {(msg: string) => void} [deps.log]
  * @returns {{
  *   connect: () => void,
@@ -144,6 +148,10 @@ export function createServerViewClient({
   const closeMinibufferDom = chrome.closeMinibuffer ?? (() => {});
   const openPickerDom = chrome.openPicker ?? (() => {});
   const closePickerDom = chrome.closePicker ?? (() => {});
+  // The server's open-buffer set (BUFFER_LIST): the host renders these as the
+  // in-renderer tabs + View List in server mode. A no-op until the host wires
+  // it (the core text path is unaffected).
+  const setBufferListDom = chrome.setBufferList ?? (() => {});
 
   // Whether a server minibuffer read is currently open in the DOM, and the
   // id of the picker the client is showing (so a stale reply is dropped and a
@@ -151,6 +159,11 @@ export function createServerViewClient({
   // active-picker bookkeeping so the client opens/closes in lock-step.
   let minibufferActive = false;
   let activePickerId = null;
+  // The last buffer-list the server pushed: `[{ id, name, lineCount, modified,
+  // filePath, current }]`. The server re-sends it on every buffer-set change
+  // (open / switch / kill) so the host's tabs stay in sync; cached here so a
+  // late host wire (or a test) can read the current set.
+  let lastBufferList = [];
 
   // Pending intents we sent + await confirmation for, keyed by id. `predicted`
   // is retained on the entry shape for the VIEW-reconcile guard (a stale VIEW
@@ -415,6 +428,17 @@ export function createServerViewClient({
     renderChrome(v);
   }
 
+  /** A BUFFER_LIST: the server's full open-buffer set for THIS client, each
+   *  record flagged `current` for the buffer this client is on. The server
+   *  re-sends it on every buffer-set change (open / switch / kill), so the host
+   *  renders the in-renderer tabs + View List from it (server mode). Cached so
+   *  a late host wire can read the latest set. */
+  function onBufferList(buffers) {
+    if (!Array.isArray(buffers)) return;
+    lastBufferList = buffers;
+    setBufferListDom(buffers);
+  }
+
   /** Route a single decoded server message. Exposed for the unit tests (they
    *  feed messages directly without a real port). */
   function handleMessage(msg) {
@@ -428,7 +452,8 @@ export function createServerViewClient({
       case MSG.CURSORS: onCursors(msg.cursors); break;
       case MSG.RESYNC: onResync(msg); break;
       case MSG.PICKER: onPicker(msg.picker); break;
-      default: break; // BUFFER_LIST / PANE_TREE: not in the G2 slice
+      case MSG.BUFFER_LIST: onBufferList(msg.buffers); break;
+      default: break; // PANE_TREE: not in this slice
     }
   }
 
@@ -471,6 +496,18 @@ export function createServerViewClient({
     try { port.onmessage = null; } catch { /* ignore */ }
   }
 
+  /** Ask the server to switch this client to buffer BUFFERID (a tab click or
+   *  View-List select in server mode). The server switches + re-syncs us with a
+   *  fresh SNAPSHOT (re-points the façade) and a fresh BUFFER_LIST (re-marks the
+   *  active tab). A no-op for a falsy id. */
+  function switchBuffer(bufferId) {
+    if (!bufferId) return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.SWITCH_BUFFER, bufferId },
+    });
+  }
+
   return {
     connect,
     dispatchKey,
@@ -479,6 +516,12 @@ export function createServerViewClient({
     getView: () => view,
     isConnected: () => connected,
     currentBufferId: () => currentBufferId,
+    // The server's open-buffer set (the last BUFFER_LIST). The host reads this
+    // to render the tabs + View List; exposed for tests too.
+    getBufferList: () => lastBufferList,
+    // Ask the server to switch this client's buffer (tab click / C-x b / View
+    // List select). The re-sync re-points the façade + re-marks the active tab.
+    switchBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the
     // unit tests can drive it directly (no DOM resize event needed) and so
     // app.js can re-report on demand.

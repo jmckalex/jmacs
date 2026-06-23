@@ -90,6 +90,7 @@ function fakeChrome() {
     minibufferCloses: 0,
     picker: null, // { request, cbs } while open, else null
     pickerCloses: 0,
+    bufferList: null, // the last server BUFFER_LIST pushed, else null
   };
   c.setModeline = (modeline) => { c.modeline = modeline; };
   c.setEcho = (status) => { c.echo = status; };
@@ -97,6 +98,7 @@ function fakeChrome() {
   c.closeMinibuffer = () => { c.minibuffer = null; c.minibufferCloses += 1; };
   c.openPicker = (request, cbs) => { c.picker = { request, cbs }; };
   c.closePicker = () => { c.picker = null; c.pickerCloses += 1; };
+  c.setBufferList = (buffers) => { c.bufferList = buffers; };
   return c;
 }
 
@@ -587,4 +589,58 @@ test('destroy() unsubscribes the resize listener', () => {
   assert.equal(resize.unsubscribed, false);
   client.destroy();
   assert.equal(resize.unsubscribed, true);
+});
+
+// --- BUFFER_LIST (the server's open-buffer set → tabs / View List) ------
+
+test('getBufferList() is empty before the server pushes a BUFFER_LIST', () => {
+  const { client } = connectedClient();
+  assert.deepEqual(client.getBufferList(), []);
+});
+
+test('a BUFFER_LIST caches the records and drives the chrome setBufferList hook', () => {
+  const { port, chrome, client } = connectedClientWithChrome();
+  const buffers = [
+    { id: 'b1', name: 'view.js', lineCount: 40, modified: false, filePath: '/x/view.js', current: true },
+    { id: 'b2', name: 'foo.html', lineCount: 12, modified: true, filePath: '/x/foo.html', current: false },
+  ];
+  port.deliver({ type: MSG.BUFFER_LIST, buffers, seq: 1 });
+  assert.deepEqual(client.getBufferList(), buffers);
+  assert.deepEqual(chrome.bufferList, buffers);
+});
+
+test('a later BUFFER_LIST supersedes the previous one (a switch re-marks current)', () => {
+  const { port, chrome, client } = connectedClientWithChrome();
+  port.deliver({ type: MSG.BUFFER_LIST, buffers: [{ id: 'b1', name: 'a', current: true }], seq: 1 });
+  port.deliver({ type: MSG.BUFFER_LIST, buffers: [
+    { id: 'b1', name: 'a', current: false },
+    { id: 'b2', name: 'b', current: true },
+  ], seq: 2 });
+  assert.equal(client.getBufferList().length, 2);
+  assert.equal(client.getBufferList().find((b) => b.current).id, 'b2');
+  assert.equal(chrome.bufferList.find((b) => b.current).id, 'b2');
+});
+
+test('a malformed BUFFER_LIST (non-array) is ignored, not crashed', () => {
+  const { port, client } = connectedClient();
+  port.deliver({ type: MSG.BUFFER_LIST, buffers: null, seq: 1 });
+  assert.deepEqual(client.getBufferList(), []);
+});
+
+test('switchBuffer(id) sends a SWITCH_BUFFER intent carrying the buffer id', () => {
+  const { port, client } = connectedClient();
+  client.switchBuffer('b2');
+  const switches = port.sent.filter(
+    (m) => m.type === MSG.INTENT && m.intent.kind === INTENT.SWITCH_BUFFER
+  );
+  assert.equal(switches.length, 1);
+  assert.equal(switches[0].intent.bufferId, 'b2');
+});
+
+test('switchBuffer with a falsy id is a no-op', () => {
+  const { port, client } = connectedClient();
+  const before = port.sent.length;
+  client.switchBuffer('');
+  client.switchBuffer(null);
+  assert.equal(port.sent.length, before);
 });
