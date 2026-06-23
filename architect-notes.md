@@ -2803,3 +2803,58 @@ serverFacadeElement window-1, serverTabProxies, the serverWindowKind branch +
 mountServerView 'tabline' branch, the windowKind field) — pure hygiene, after
 verify. Then RESTORE-of-structure (persist the pane tree / per-leaf tabs), then
 G4.3 menu-follows-focus, then G5.
+
+## [2026-06-23 data-sources] Non-text views graduate to the server — media (image/video/audio/pdf) BUILT, awaiting verify
+
+Overnight autonomous build (Jason asleep, "go as far as you can"). Implements the
+buffer→DATA-SOURCE generalisation Jason framed: a text buffer is the shared
+source-of-truth fanned to its views; that's the general pattern, so a DATA-SOURCE
+is the same for any view kind. MEDIA (image/audio/video/pdf) is the immutable
+case; the mutable-state fan-out seam (stella/jukebox: a loaded ROM/song that syncs
+across duplicate views) is DEFINED but UNUSED. Fixes "open an .mp4 → binary
+garbage": the server read every file as UTF-8. Six commits on `multi-window-b`
+(suite 856→**864**, flag-off byte-for-byte). EXISTING element-views are reused —
+nothing rebuilt. Build side can't launch the GUI — **awaiting Jason's verify.**
+
+- **`25273f7` server foundation** — `mwb/media-kinds.js` (suffix→kind, mirrors
+  files.js) + `mwb/data-source.js` (the registry: `ds`-prefixed ids beside the
+  buffer registry, findByPath reuse, the setState/onStateChange seam). server
+  `readFileForVisit` returns a media descriptor (no byte read) for a media suffix;
+  spine `visitFile` media branch → `dataSources.add` + `switchClientToSource`
+  (focused leaf shows it; a tabline leaf adds a tab) — NO garbage text buffer.
+  `makeLeafView` returns null for a ds (no cursor); the interpreter binds a
+  fallback text buffer (no keys edit a media leaf). PANE_TREE leaf carries
+  `{viewKind, filePath, state}`; nameForBuffer/tabMeta resolve data-sources.
+- **`797525b` client render** — buildServerPaneNode / a tabline's active tab build
+  the EXISTING element-view via createView({kind:viewKind}); bytes load async from
+  `window.host.openFilePath` (serverMediaViewSpec mirrors
+  openAsMediaViewIfRecognised) + bind onto the element (re-setBuffer / re-reconcile
+  when ready). Media never touches the text mirror.
+- **`baa3ce9` lists+restore** — bufferListRecords/bufferListRows include open
+  data-sources, so media is in the View List + C-x C-b, and persistServerSession
+  records its path → restoreServerSession reopens it → seedWindow1Tabline tabs it.
+- **`90fadee` modeline** — a media-focused leaf's modeline shows the source's name
+  + kind (not the fallback buffer).
+- **`b6a8933` global keys** — in server mode the global router now routes
+  held-modifier CHORDS to the server when a NON-TEXT view is focused (it deferred
+  unconditionally before), so C-x C-f / M-x / C-x b work from a media view; bare
+  keys (space=play/pause, arrows=seek) stay with the element.
+
+**LIVE-VERIFY (Jason) — QUIT + RELAUNCH (server changes):**
+`C-x C-c`, then `cd godot-mw-b/apps/desktop && GODOT_SERVER=1 ./node_modules/.bin/electron .`
+1. **C-x C-f an .mp4 / .png / .pdf / .mp3 in window 1** → it opens as a video /
+   image / pdf / audio TAB (NOT binary text); the tab + modeline show its name.
+2. A video plays; space=play/pause, arrows=seek stay with the player; C-x C-f /
+   C-x b still work while it's focused (the chord routes to the server).
+3. C-x b lists the media (meta = its kind); switching back + forth works.
+4. Re-open the same media file → reuses it (no duplicate). Quit + relaunch →
+   the media file reopens as a tab (session restore).
+5. Split a pane and open media in it (a bare media pane uses the per-kind SINGLETON
+   — one such pane at a time; media-as-a-tab is the clean path).
+
+**KNOWN GAPS (note for the next pass, not blockers):** a BARE media pane uses the
+singleton (image/audio/video; pdf may not be a singleton → a bare pdf pane could
+be blank — pdf-as-a-tab works); C-x k on a media leaf re-homes to a text buffer
+but doesn't drop the data-source (leak); the global-key + async-mount + element
+rendering are GUI-shaped (unverifiable here) so watch them in the verify. The
+mutable-source fan-out (stella/jukebox) is the seam's reason for being — unbuilt.
