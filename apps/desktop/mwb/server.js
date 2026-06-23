@@ -357,6 +357,9 @@ function resyncClientToCurrentBuffer(client) {
   // follow. (The on-demand C-x C-b path still works; this keeps the tabs live
   // without a user request.)
   sendBufferListTo(client);
+  // Remember the new open-file set + active across restarts (server-owned
+  // session). Fires on every buffer-set change (open / switch / kill).
+  persistServerSession(client);
 }
 
 /** Switch a client to a buffer (by id) and re-sync it onto the new buffer.
@@ -608,6 +611,16 @@ function onClientMessage(client, event) {
   switch (msg.type) {
     case MSG.HELLO:
       spine.setActiveClient(client.index);
+      // Restore the server's session (the user's open files) onto the FIRST
+      // client to connect — before the snapshot, so it lands on the active file
+      // with every tab present. Once per process; an active client now exists,
+      // so visitFile works. Persist immediately so a session SEEDED from the
+      // renderer's session.json becomes the server's own going forward.
+      if (!sessionRestored) {
+        sessionRestored = true;
+        restoreServerSession(client);
+        persistServerSession(client);
+      }
       sendSnapshot(client);
       sendViewTo(client);
       // A late-joining client needs its current buffer's overlays + its own
@@ -677,6 +690,115 @@ const autosave = createAutosave({
   intervalMs: Number(process.env.MWB_AUTOSAVE_INTERVAL_MS) || 4000,
   log: (msg) => console.error(msg),
 });
+
+// --- session persistence (server-owned) -------------------------------
+//
+// The server remembers the user's OPEN FILES across restarts: a flat list of
+// file paths + which is active, written on every buffer-set change and restored
+// when the first client connects. Distinct from crash-RECOVERY (which preserves
+// UNSAVED edits): graduating Godot onto the server means the SERVER, not the
+// renderer, owns the session. On the FIRST server boot there is no server
+// session yet — MWB_SESSION_SEED (the renderer's session.json, passed by main)
+// seeds the file list once, then the server owns it (Increment 3 step 2).
+const SESSION_STORE = process.env.MWB_SESSION_STORE
+  || join(tmpdir(), 'godot-mw-b-session.json');
+
+/** Whether the server has restored its session yet (once per process, on the
+ *  first client's HELLO — when an active client exists for visitFile). */
+let sessionRestored = false;
+
+/** Persist the open file set + active file to SESSION_STORE. Only file-backed
+ *  buffers are recorded (a path-less scratch can't be reopened); paths are
+ *  de-duped. Tolerant — a write failure must never disturb editing. */
+function persistServerSession(client) {
+  try {
+    const idx = client ? client.index : (activeClient ? activeClient.index : 0);
+    const records = spine.bufferListRecords(idx);
+    const files = [...new Set(records.filter((r) => r.filePath).map((r) => r.filePath))];
+    const activeRec = records.find((r) => r.current);
+    const active = activeRec && activeRec.filePath ? activeRec.filePath : null;
+    atomicWriteSync(SESSION_STORE, JSON.stringify({ files, active }));
+  } catch (error) {
+    console.error(`[mwb-session] persist failed: ${error.message}`);
+  }
+}
+
+/** The persisted session `{ files, active }`, or (step 2) the renderer's
+ *  session seed when the server has none of its own. Null when neither exists. */
+function readServerSession() {
+  const parse = (raw) => {
+    try {
+      const data = JSON.parse(raw);
+      if (data && Array.isArray(data.files)) return data;
+    } catch { /* unreadable */ }
+    return null;
+  };
+  try {
+    return parse(readFileSync(SESSION_STORE, 'utf8'));
+  } catch {
+    // No server session yet — fall back to the renderer's session seed (the
+    // user's existing flag-off session.json), parsed for file paths.
+    return readSessionSeed();
+  }
+}
+
+/** Restore the persisted session onto CLIENT: open each remembered file that
+ *  isn't already open (the seed / a recovered buffer), then switch to the
+ *  active one. Called once from the first HELLO. Tolerant. */
+function restoreServerSession(client) {
+  const session = readServerSession();
+  if (!session || session.files.length === 0) return;
+  try {
+    for (const p of session.files) {
+      const recs = spine.bufferListRecords(client.index);
+      if (recs.some((r) => r.filePath === p)) continue; // already open
+      spine.visitFile(p);
+    }
+    if (session.active) {
+      const recs = spine.bufferListRecords(client.index);
+      const activeRec = recs.find((r) => r.filePath === session.active);
+      if (activeRec) spine.switchClientToBuffer(client.index, activeRec.id);
+    }
+    console.error(`[mwb-session] restored ${session.files.length} file(s)`);
+  } catch (error) {
+    console.error(`[mwb-session] restore failed: ${error.message}`);
+  }
+}
+
+/** Parse the renderer's session.json (its path passed as MWB_SESSION_SEED by
+ *  the main process) for its open TEXT-file paths + the active one, used ONLY to
+ *  seed the server's session on the first boot. The schema is session.js's
+ *  pane-tree blob: `{ rootPane }` where a pane is `{kind:'leaf', view}` or
+ *  `{kind:'split', first, second}`, and a view is `{kind:'text', path}` or
+ *  `{kind:'tabline', tabs:[...]}`. Returns `{ files, active }` or null. */
+function readSessionSeed() {
+  const seedPath = process.env.MWB_SESSION_SEED;
+  if (!seedPath) return null;
+  let blob;
+  try {
+    blob = JSON.parse(readFileSync(seedPath, 'utf8'));
+  } catch {
+    return null; // no session.json yet, or unreadable
+  }
+  const files = [];
+  const addPath = (p) => {
+    if (typeof p === 'string' && p !== '' && !files.includes(p)) files.push(p);
+  };
+  const walkView = (view) => {
+    if (!view || typeof view !== 'object') return;
+    if (view.kind === 'text') addPath(view.path);
+    else if (view.kind === 'tabline' && Array.isArray(view.tabs)) view.tabs.forEach(walkView);
+    // Other view kinds (browser / pdf / bookmark) aren't text files — skip.
+  };
+  const walkPane = (pane) => {
+    if (!pane || typeof pane !== 'object') return;
+    if (pane.kind === 'leaf') walkView(pane.view);
+    else if (pane.kind === 'split') { walkPane(pane.first); walkPane(pane.second); }
+  };
+  walkPane(blob.rootPane);
+  if (files.length === 0) return null;
+  return { files, active: files[files.length - 1] };
+}
 
 // Recover-on-startup: scan for snapshots whose on-disk file is older than the
 // snapshot (unsaved edits were lost) or that have no on-disk file (path-less /

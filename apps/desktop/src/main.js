@@ -188,6 +188,12 @@ app.whenReady().then(() => {
   // is false and `serverBridge` stays null — the app is unchanged.
   if (isServerMode()) {
     try {
+      // Increment 3: let the server SEED its session from the renderer's
+      // session.json on its first boot (so the user's existing open files come
+      // back through the server). The forked utilityProcess inherits
+      // process.env, so set the path here, before the fork. After the first
+      // boot the server owns its own session and ignores this.
+      process.env.MWB_SESSION_SEED = join(app.getPath('userData'), 'session.json');
       serverBridge = createServerBridge({ utilityProcess, MessageChannelMain });
       console.error('[main] GODOT_SERVER=1: Model-B server forked');
     } catch (error) {
