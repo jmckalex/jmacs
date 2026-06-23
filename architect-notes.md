@@ -2209,3 +2209,26 @@ live with Jason driving; risking it autonomously (unverifiable) could break flag
 Stopped here because the safe, autonomously-verifiable server-side work is done; the
 rest (leaf-flip, multi-window, render-coupled stdlib) needs the live session.
 `MWB-STATE.md` refreshed as the morning test guide. 84 commits ahead, nothing merged.
+
+## [2026-06-23 morning] isearch REVERTED — live read-next-key hang (force-quit)
+
+Jason hit a force-quit HANG invoking `C-s` (isearch) flag-on: the prompt showed
+but keystrokes couldn't drive it and `C-g` couldn't escape. **Root cause:** isearch
+drives its loop via `read-next-key`, which needs each keystroke to flow
+view → KEY intent → server → the pending key-reader. That works in the *synchronous*
+spine test (why the 6 tests passed — but it was never LIVE-verified, the known
+salvage risk), but LIVE the keys don't reach the pending key-reader, and W2's
+global-router gate (router stands down in server-mode) removed the fallback, so
+it's stuck with no escape.
+
+This is a `read-next-key` **live-delivery / focus** bug, and it's **shared**: the
+math-symbol `` ` `` (latex-math-mode) uses the same `read-next-key` and almost
+certainly hangs too — so this is a root mechanism to fix, not an isearch quirk.
+
+Reverted the isearch commit (`8ac50e6`) to stop the hang — `C-s`/`C-r` back to the
+safe stub (status, no loop). The `-isearch-*` machinery is CORRECT (node-tested)
+and recoverable from `8ac50e6`. **Redo (live, GUI-verified):** fix `read-next-key`
+live delivery — while a key-reader is pending the view must keep focus + keep
+emitting KEY intents (and/or signal the client that a reader is active so it holds
+focus / the router gate must permit the reader path). Re-arm isearch + math-symbol
+once solid. Suite back to 822, flag-off byte-for-byte.
