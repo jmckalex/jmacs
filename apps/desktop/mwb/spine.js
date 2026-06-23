@@ -456,6 +456,14 @@ const CX_MAP = Object.freeze({
   0: 'delete-pane', // C-x 0 — delete the focused pane
   1: 'delete-other-panes', // C-x 1 — the focused pane fills the window
   o: 'other-pane', // C-x o — cycle focus to the next pane
+  // --- new window (C-x 5 2 — the Emacs make-frame prefix, G4) --------
+  // C-x 5 is the frame-command prefix; the spine offers `2` (make a new
+  // frame). A nested map makes `5` a prefix. The command's effect is
+  // CLIENT-performed (new-window → request-new-window! → WINDOW_NEW →
+  // host.newWindow()), so it's window lifecycle, not a buffer edit. (No
+  // conflict with C-x 2 = split-vertical: that resolves at the C-x level
+  // before this sub-map is entered.)
+  5: Object.freeze({ 2: 'new-window' }),
 });
 
 /**
@@ -573,6 +581,11 @@ export function createSpine(options, effects = {}) {
    *  other-window). The server re-pushes that client's PANE_TREE. Signature:
    *  (clientIndex). */
   const onPaneTree = effects.onPaneTree ?? (() => {});
+
+  /** Raised when the `new-window` command runs (C-x 5 2). The server forwards
+   *  a WINDOW_NEW down-message to the active client, which asks its host to
+   *  open another window (a new client on this shared server). Signature: (). */
+  const onNewWindow = effects.onNewWindow ?? (() => {});
 
   /** Create (and remember) the pane model for client INDEX, seeded on the
    *  client's starting buffer. */
@@ -920,6 +933,17 @@ export function createSpine(options, effects = {}) {
       'recenter!': () => {
         const { line } = buffer.positionAt(buffer.point);
         onScroll({ kind: 'recenter', line });
+        return NIL;
+      },
+
+      // --- window lifecycle (G4) ----------------------------------------
+      // request-new-window! is the `new-window` command's effect (C-x 5 2).
+      // Opening an OS window is the client/host's job — the server has none —
+      // so this raises the onNewWindow effect; the server posts WINDOW_NEW to
+      // the active client, which calls host.newWindow(). The model half (the
+      // keymap binding + the command) is here; the host half is in the client.
+      'request-new-window!': () => {
+        onNewWindow();
         return NIL;
       },
 
@@ -1815,6 +1839,11 @@ export function createSpine(options, effects = {}) {
       "Visit a file (C-x C-f). The host reads the path and swaps buffers."
       (interactive (string "Find file: "))
       (lambda (path) path))
+
+    (defcommand new-window ()
+      "Open another editor window onto the shared server (C-x 5 2). The
+       window itself is opened by the client's host; this raises the effect."
+      (request-new-window!))
   `);
 
   // Now that the stdlib + the mode machinery are loaded, choose the major

@@ -156,6 +156,11 @@ export function createServerViewClient({
   // close the renderer window, so the client owns the quit chord and asks the
   // host to quit. A no-op until the host wires it.
   const requestQuitDom = chrome.requestQuit ?? (() => {});
+  // New Window (G4): the server resolves C-x 5 2 → the new-window command and
+  // sends WINDOW_NEW down; the client asks its host to open another window (a
+  // new client on the shared server). Window lifecycle is the host's job, like
+  // quit. A no-op until the host wires it.
+  const requestNewWindowDom = chrome.requestNewWindow ?? (() => {});
 
   // Whether a server minibuffer read is currently open in the DOM, and the
   // id of the picker the client is showing (so a stale reply is dropped and a
@@ -470,6 +475,7 @@ export function createServerViewClient({
       case MSG.RESYNC: onResync(msg); break;
       case MSG.PICKER: onPicker(msg.picker); break;
       case MSG.BUFFER_LIST: onBufferList(msg.buffers); break;
+      case MSG.WINDOW_NEW: requestNewWindowDom(); break;
       default: break; // PANE_TREE: not in this slice
     }
   }

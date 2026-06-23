@@ -84,6 +84,14 @@ export const MSG = Object.freeze({
   // honour them or impose its own and echo a resize back). See
   // serializePaneTree below for the exact node shape.
   PANE_TREE: 'pane-tree',
+  // --- window lifecycle (G4) -----------------------------------------
+  // The server asks the ACTIVE client to open another window onto the shared
+  // server — the effect of the `new-window` command (the C-x 5 2 chord, which
+  // the server's keymap resolves). The server can't open an OS window; it
+  // emits this and the client asks its host (host.newWindow() → main), which
+  // creates the window + attaches it as a new client. Window lifecycle is the
+  // client/host's half of the split (cf. C-x C-c quit), command-triggered.
+  WINDOW_NEW: 'window-new',
   // --- the generic render-side picker channel (G0b) ------------------
   // A server command SUSPENDS and asks the client to pick a row from a
   // list — the buffer list, *Recover*, completions, RefTeX select, cite:

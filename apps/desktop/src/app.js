@@ -6045,6 +6045,14 @@ if (window.host && window.host.serverMode) {
     // C-x C-c: the client resolves the quit chord (the server can't close the
     // window); run the normal interactive quit (flush + host.quit()).
     requestQuit: () => quitInteractive(),
+    // C-x 5 2: the server resolved the new-window command and asked us to open
+    // another window onto the shared server. host.newWindow() → main creates +
+    // attaches it as a new client. (Guarded: only present in server mode.)
+    requestNewWindow: () => {
+      if (window.host && typeof window.host.newWindow === 'function') {
+        window.host.newWindow();
+      }
+    },
   };
 
   bootServerViewClient = () => {

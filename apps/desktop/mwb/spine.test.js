@@ -21,6 +21,8 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
     status: [], minibufferOpens: [], minibufferCloses: 0, scrolls: [], saves: [],
     // Each open generic-picker request (the G0b channel), as the server sees it.
     pickerOpens: [],
+    // Each new-window request (the C-x 5 2 effect, G4).
+    newWindows: 0,
   };
   const spine = createSpine(
     { initialText, name },
@@ -30,6 +32,7 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
       onMinibufferClose: () => { log.minibufferCloses += 1; },
       onScroll: (r) => log.scrolls.push(r),
       onPicker: (req) => log.pickerOpens.push(req),
+      onNewWindow: () => { log.newWindows += 1; },
       openFile: extra.openFile,
       // A recording save: capture the {path, text} the spine would write, and
       // return success unless the test injects a failure. Lets save-buffer /
@@ -366,6 +369,25 @@ test('removing the active (or bootstrap) client leaves the spine usable', () => 
   spine.buffer.moveTo(spine.buffer.text.length);
   spine.handleKey('!');
   assert.equal(spine.buffer.text, 'seed!');
+});
+
+test('C-x 5 2 resolves to new-window and raises the onNewWindow effect', () => {
+  const { spine, log } = makeSpine('hello');
+
+  spine.handleKey('C-x'); // the C-x prefix
+  spine.handleKey('5');   // C-x 5 — a sub-prefix (no effect yet)
+  assert.equal(log.newWindows, 0, 'no window opens mid-chord');
+  spine.handleKey('2');   // C-x 5 2 — new-window
+  assert.equal(log.newWindows, 1, 'the new-window command fired the effect');
+
+  // The chord did not disturb the buffer text (it is window lifecycle).
+  assert.equal(spine.buffer.text, 'hello');
+
+  // C-x 2 (split) is still reachable at the C-x level — the 5 sub-map does
+  // not shadow it. (Drive it and assert it did NOT open a window.)
+  spine.handleKey('C-x');
+  spine.handleKey('2');
+  assert.equal(log.newWindows, 1, 'C-x 2 is split-vertical, not new-window');
 });
 
 test('each client moves its own point without disturbing the other', () => {

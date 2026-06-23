@@ -169,6 +169,10 @@ const spine = createSpine(
     // push that client a fresh PANE_TREE (the structure + per-leaf buffer/
     // view-state + the focused leaf; no pixels).
     onPaneTree: (index) => sendPaneTreeToIndex(index),
+    // new-window (C-x 5 2): the server can't open an OS window, so it asks the
+    // active client to (host.newWindow() → main creates + attaches it as a new
+    // client on this shared server).
+    onNewWindow: () => sendWindowNewToActiveClient(),
     openFile: readFileForVisit,
     // save-buffer / write-file: atomic disk write (temp + fsync + rename).
     saveFile: writeFileForSave,
@@ -384,6 +388,15 @@ function closeMinibuffer() {
 /** A scroll/centering request the active client must execute in pixels. */
 function sendScrollToActive(req) {
   if (activeClient) activeClient.port.postMessage({ type: MSG.VIEW, view: { scroll: req } });
+}
+
+/** Ask the active client (the window that ran `new-window` via C-x 5 2) to
+ *  open another window onto this shared server. The client calls
+ *  host.newWindow(); main creates the window + attaches it as a new client. */
+function sendWindowNewToActiveClient() {
+  if (activeClient && activeClient.port) {
+    activeClient.port.postMessage({ type: MSG.WINDOW_NEW, seq });
+  }
 }
 
 /** Send one client a full snapshot of ITS CURRENT buffer (initial sync /
