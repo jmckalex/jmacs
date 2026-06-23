@@ -166,6 +166,33 @@ test('reorderFocusedTab is a no-op on a single-view leaf (Step 3c)', () => {
   assert.equal(model.reorderFocusedTab(0, 0), false, 'not a tabline → nothing to reorder');
 });
 
+test('seedFocusedTabline makes the focused leaf a tabline with a given tab set (unify)', () => {
+  const { model } = makeModel('b1');
+  assert.equal(model.seedFocusedTabline(['b1', 'b2', 'b3'], 'b2'), true);
+  const leaf = snapshotLeaves(model.snapshot())[0];
+  assert.equal(leaf.tabline, true);
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b1', 'b2', 'b3'], 'the given order');
+  assert.equal(leaf.bufferId, 'b2', 'the requested active tab');
+});
+
+test('seedFocusedTabline preserves the active leaf cursor when active is unchanged (unify)', () => {
+  const { model } = makeModel('b1');
+  // b1 is already the focused buffer; seeding with b1 active must not reset its
+  // point (the restore case: the leaf is already on the active file).
+  model.setFocusedPoint(7, null);
+  assert.equal(model.seedFocusedTabline(['b1', 'b2'], 'b1'), true);
+  assert.equal(model.focusedViewState().point, 7, 'cursor preserved (no re-mint)');
+});
+
+test('seedFocusedTabline dedupes ids and defaults active to the first (unify)', () => {
+  const { model } = makeModel('b1');
+  assert.equal(model.seedFocusedTabline(['b1', 'b2', 'b1'], 'nope'), true);
+  const leaf = snapshotLeaves(model.snapshot())[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b1', 'b2'], 'deduped');
+  assert.equal(leaf.bufferId, 'b1', 'unknown active → first tab');
+  assert.equal(model.seedFocusedTabline([], 'b1'), false, 'empty list is a no-op');
+});
+
 test('a fresh model is a single focused leaf on the seed buffer', () => {
   const { model } = makeModel('b1');
   assert.equal(model.leafCount(), 1);

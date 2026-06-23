@@ -2174,6 +2174,34 @@ export function createSpine(options, effects = {}) {
     return true;
   }
 
+  /**
+   * Seed client INDEX's focused leaf as a TABLINE with a given curated tab set
+   * (the unify: window 1's restored session presents as a tabline leaf, so it
+   * renders through the same pane pipeline as every window). IDS is the ordered
+   * tab list (each noted in the window's open-set); ACTIVEID the active tab.
+   * Rebinds the interpreter when this is the active client. Returns true when
+   * seeded. The model's onChange re-pushes the PANE_TREE.
+   *
+   * @param {number} index
+   * @param {string[]} ids
+   * @param {string} activeId
+   * @returns {boolean}
+   */
+  function seedClientTabline(index, ids, activeId) {
+    const model = paneModels.get(index);
+    if (!model) return false;
+    const open = Array.isArray(ids) ? ids.filter((id) => registry.has(id)) : [];
+    for (const id of open) noteClientBuffer(index, id);
+    const ok = model.seedFocusedTabline(open, activeId);
+    if (ok && index === activeClientIndex) {
+      const entry = registry.get(model.focusedBufferId()) ?? entryForClient(index);
+      const v = model.focusedView() || registry.viewFor(entry.id, index);
+      bindActive(entry, v);
+      interpreter.call('-spine-choose-major-mode');
+    }
+    return ok;
+  }
+
   /** Resolve a buffer NAME to its id (the C-x b switch path), or null. */
   function bufferIdByName(name) {
     const entry = registry.findByName(name);
@@ -2785,6 +2813,7 @@ export function createSpine(options, effects = {}) {
     },
     // multi-buffer registry surface
     switchClientToBuffer,
+    seedClientTabline,
     bufferIdByName,
     currentBufferIdOf,
     killActiveBuffer,

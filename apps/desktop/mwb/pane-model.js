@@ -516,6 +516,34 @@ export function createPaneModel(options = {}, hooks = {}) {
     return true;
   }
 
+  /** Seed the FOCUSED leaf as a tabline with a GIVEN curated tab set (the unify:
+   *  window 1's restored session becomes a tabline leaf whose tabs are its open
+   *  files, so it renders through the same pane pipeline as every other window).
+   *  BUFFERIDS is the ordered tab list; ACTIVEID the active tab (defaults to the
+   *  first). The active leaf's cursor is preserved when ACTIVEID already matches
+   *  the leaf's buffer (the common restore case). No-op (returns false) on an
+   *  empty list. Returns true when seeded. */
+  function seedFocusedTabline(bufferIds, activeId) {
+    const ids = Array.isArray(bufferIds) ? [...new Set(bufferIds.filter((id) => id != null))] : [];
+    if (ids.length === 0) return false;
+    const state = focusedState();
+    state.tabline = true;
+    state.tabs = ids;
+    const active = ids.includes(activeId) ? activeId : ids[0];
+    if (active !== state.bufferId) {
+      state.bufferId = active;
+      if (makeView) {
+        state.view = makeView(active, state.viewKey);
+      } else {
+        state.point = 0;
+        state.mark = null;
+      }
+      state.scrollLine = 0;
+    }
+    onChange();
+    return true;
+  }
+
   /** Reorder a tab in the FOCUSED tabline leaf — move the tab at FROM to TO
    *  (drag-reorder). The ACTIVE tab is tracked by buffer id (not index), so its
    *  identity is unchanged; only the curated order shifts. No-op on a non-tabline
@@ -648,6 +676,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     toggleFocusedTabline,
     closeFocusedTab,
     reorderFocusedTab,
+    seedFocusedTabline,
     // introspection (for tests + the server)
     leaves: () => leafPanes(rootPane),
     leafCount: () => leafPanes(rootPane).length,

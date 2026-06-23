@@ -286,6 +286,25 @@ test('a close-tab pane intent un-curates a tab (buffer survives in the pool) (St
   assert.ok(spine.bufferIdByName('scratch.txt'), 'the closed buffer is still in the pool');
 });
 
+test('seedClientTabline makes a window a tabline of given buffers (unify window 1)', () => {
+  const files = {
+    '/a.js': { text: 'a', name: 'a.js' },
+    '/b.js': { text: 'b', name: 'b.js' },
+  };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const seedId = spine.currentBufferIdOf(0);
+  const aId = spine.visitFile('/a.js');
+  const bId = spine.visitFile('/b.js'); // active client (0) now on b.js, single leaf
+
+  // Seed window 0 as a tabline of its open files (the restore → tabline path).
+  assert.equal(spine.seedClientTabline(0, [seedId, aId, bId], bId), true);
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.tabline, true, 'the window is now a tabline leaf');
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), [seedId, aId, bId], 'all open files are tabs');
+  assert.equal(leaf.bufferId, bId, 'the active file is the active tab');
+  assert.equal(spine.currentBufferIdOf(0), bId, 'the active buffer is unchanged');
+});
+
 test('a reorder-tab pane intent reorders the focused tabline (Step 3c)', () => {
   const files = { '/x.js': { text: 'x', name: 'x.js' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
