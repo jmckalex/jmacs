@@ -45,6 +45,7 @@ import { createBufferPrimitives, createLatexPrimitives } from '@editor/stdlib';
 
 import { renderModeline, screenfulStep } from './protocol.js';
 import { createBufferRegistry } from './buffer-registry.js';
+import { createDataSourceRegistry } from './data-source.js';
 import { createPaneModel } from './pane-model.js';
 import { createCitationPrimitives } from './citation-bridge.js';
 
@@ -543,6 +544,17 @@ export function createSpine(options, effects = {}) {
     onBufferChange: (id, event) => onBufferChange(id, event),
   });
 
+  // The data-source registry — the source-of-truth analogue of a text buffer for
+  // NON-TEXT views (image/audio/video/pdf today; stella/jukebox later). It sits
+  // beside the buffer registry sharing the id-space (a distinct `ds` prefix), so
+  // the pane model / tabs / open-set treat a data-source id like any view id. A
+  // media source is immutable (kind + path); the onStateChange fan-out seam is
+  // unused until a mutable source (stella/jukebox) graduates, when it'll re-push
+  // the source to every client whose pane shows it.
+  const dataSources = createDataSourceRegistry({
+    onStateChange: (id) => { for (const ci of clientIndices) if (buffersShownByClient(ci).includes(id)) onPaneTree(ci); },
+  });
+
   // The seed buffer (the file the server booted with). Every client starts
   // viewing it; further buffers join via find-file.
   const initialEntry = registry.add(
@@ -569,6 +581,11 @@ export function createSpine(options, effects = {}) {
    *  different view keys, so their cursors are independent (the same-buffer-
    *  two-windows case within one window). */
   function makeLeafView(bufferId, viewKey) {
+    // A data-source leaf (media: image/audio/video/pdf) has no text buffer and
+    // no cursor, so it mints NO view — it renders client-side from the PANE_TREE
+    // descriptor, not the text mirror. (Without this guard, registry.viewFor
+    // would miss and fall back to a text view over the welcome buffer.)
+    if (bufferId != null && dataSources.has(bufferId)) return null;
     const id = bufferId ?? initialEntry.id;
     const key = `${viewKey}:${id}`;
     return registry.viewFor(id, key) ?? registry.viewFor(initialEntry.id, key);
@@ -595,17 +612,29 @@ export function createSpine(options, effects = {}) {
       {
         onChange: () => onPaneTree(index),
         nameForBuffer: (id) => {
+          const ds = id ? dataSources.get(id) : null;
+          if (ds) return ds.name;
           const e = id ? registry.get(id) : null;
           return e ? e.buffer.name : 'scratch';
         },
         // Step 3b: the text of a non-focused, different-buffer leaf, so the
         // client can render it as a static pane (it doesn't mirror that buffer).
+        // A data-source leaf has no text (it renders from its descriptor).
         textForBuffer: (id) => {
           const e = id ? registry.get(id) : null;
           return e ? e.buffer.text : null;
         },
-        // Step 3c: per-buffer tab metadata for a tabline leaf's curated strip.
+        // The non-text DATA-SOURCE descriptor for a leaf (image/audio/video/pdf),
+        // or null for a text buffer. The snapshot carries `viewKind` + `filePath`
+        // so the client mounts the matching element-view (the bytes load
+        // client-side); media never touches the text mirror.
+        mediaForBuffer: (id) => (id ? dataSources.descriptor(id) : null),
+        // Step 3c: per-buffer tab metadata for a tabline leaf's curated strip. A
+        // data-source tab carries its kind (so the client labels/icons it) and is
+        // never "modified" (immutable).
         tabMeta: (id) => {
+          const ds = id ? dataSources.get(id) : null;
+          if (ds) return { name: ds.name, modified: false, filePath: ds.filePath, viewKind: ds.kind };
           const e = id ? registry.get(id) : null;
           if (!e) return { name: 'scratch', modified: false, filePath: null };
           return {
@@ -1931,6 +1960,17 @@ export function createSpine(options, effects = {}) {
     const absPath = typeof result.path === 'string' && result.path !== ''
       ? result.path
       : path;
+    // A MEDIA file (image/audio/video/pdf): create (or reuse) a non-text
+    // DATA-SOURCE and switch the focused leaf to it — the client mounts the
+    // matching element-view and loads the bytes itself (never the text mirror).
+    if (result.media) {
+      const src = dataSources.findByPath(absPath)
+        ?? dataSources.add({ kind: result.kind, name: result.name, filePath: absPath });
+      switchClientToSource(activeClientIndex, src.id);
+      statusText = '';
+      onStatus('');
+      return src.id;
+    }
     // Already open? Switch to the EXISTING buffer (shared across windows; its
     // unsaved edits preserved) instead of adding a duplicate.
     const existing = registry.findByPath(absPath);
@@ -2152,6 +2192,8 @@ export function createSpine(options, effects = {}) {
    * @returns {boolean}
    */
   function switchClientToBuffer(index, id) {
+    // A non-text DATA-SOURCE id (media) routes to the source-switch path.
+    if (dataSources.has(id)) return switchClientToSource(index, id);
     if (!registry.has(id)) return false;
     // The window now has this buffer open (covers find-file / new-view! / the
     // C-x C-b picker / C-x b — all switch here). It joins this window's tabline.
@@ -2170,6 +2212,34 @@ export function createSpine(options, effects = {}) {
       bindActive(entry, v);
       interpreter.call('-spine-choose-major-mode');
     }
+    onBufferSwitched(id);
+    return true;
+  }
+
+  /**
+   * Switch a client's FOCUSED pane to a non-text DATA-SOURCE (media). The leaf
+   * shows the source by id (a tabline leaf adds it as a tab); the source mints NO
+   * text view (makeLeafView returns null), so the interpreter binding falls back
+   * to a real text buffer via setActiveClient (no keys edit a media leaf — the
+   * client mounts an element-view, not a text-view, so nothing routes to
+   * handle-key). Re-syncs via onBufferSwitched; the model's onChange re-pushes
+   * the PANE_TREE that carries the media descriptor the client renders.
+   *
+   * @param {number} index
+   * @param {string} id - A data-source id.
+   * @returns {boolean}
+   */
+  function switchClientToSource(index, id) {
+    if (!dataSources.has(id)) return false;
+    noteClientBuffer(index, id);
+    const model = paneModels.get(index);
+    if (model) {
+      const wasActive = index === activeClientIndex;
+      if (!wasActive) activeClientIndex = index;
+      model.setFocusedBuffer(id);
+      activeClientIndex = wasActive ? index : activeClientIndex;
+    }
+    if (index === activeClientIndex) setActiveClient(index);
     onBufferSwitched(id);
     return true;
   }

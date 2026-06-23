@@ -422,8 +422,15 @@ export function normaliseCursors(cursors) {
  * @property {boolean} [tabline] - Whether this leaf presents as a tabline-view
  *   (Step 3c) of its OWN curated tab set rather than a single view.
  * @property {{ bufferId: string, name: string, modified: boolean,
- *   filePath: string|null }[]} [tabs] - For a tabline leaf, its ordered curated
- *   tab set (the active tab is the leaf's `bufferId`).
+ *   filePath: string|null, viewKind?: string }[]} [tabs] - For a tabline leaf,
+ *   its ordered curated tab set (the active tab is the leaf's `bufferId`); a
+ *   non-text tab carries its `viewKind`.
+ * @property {string} [viewKind] - For a non-text DATA-SOURCE leaf
+ *   (image/audio/video/pdf), the element-view kind the client mounts.
+ * @property {string|null} [filePath] - The data-source's file (the client loads
+ *   its bytes via the main process).
+ * @property {object} [state] - A mutable data-source's shared state (unused by
+ *   immutable media).
  */
 
 /**
@@ -465,6 +472,16 @@ export function serializePaneTree(pane, focusedId, leafData) {
   // renders exactly this leaf's tabs.
   if (data.tabline === true) node.tabline = true;
   if (Array.isArray(data.tabs)) node.tabs = data.tabs;
+  // A non-text DATA-SOURCE leaf (image/audio/video/pdf): the client mounts the
+  // matching element-view from `viewKind` + `filePath` (it loads the bytes via
+  // the main process); `state` carries a mutable source's shared state (unused by
+  // media). No text/cursor for a media leaf.
+  if (typeof data.viewKind === 'string') {
+    node.viewKind = data.viewKind;
+    node.filePath = data.filePath ?? null;
+    if (data.state && typeof data.state === 'object') node.state = data.state;
+    return node;
+  }
   // Step 3b: a different-buffer leaf carries its text so the client can render
   // it as a static pane (omitted for the focused / same-buffer leaves).
   if (typeof data.text === 'string') node.text = data.text;

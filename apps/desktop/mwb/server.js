@@ -34,6 +34,7 @@ import {
   MSG, INTENT, MINIBUFFER_IDLE, PANE_INTENT, normalisePickerRequest,
 } from './protocol.js';
 import { resolveUserPath } from './path-resolve.js';
+import { mediaKindForName } from './media-kinds.js';
 import { createSpine } from './spine.js';
 // The crash-safe atomic writer (temp file + fsync + rename) and the
 // recovery-snapshot pure helpers are standalone production modules; the
@@ -106,12 +107,18 @@ function resolvePath(path) {
   return resolveUserPath(path, dirname(filePath), homedir());
 }
 
-/** Read a file off disk for find-file (the openFile spine effect). Returns
- *  the text, name, AND the resolved absolute path (so the buffer knows where
- *  C-x C-s writes back). */
+/** Read a file off disk for find-file (the openFile spine effect). A MEDIA file
+ *  (image/audio/video/pdf, by suffix) is NOT read as bytes here — the server
+ *  only resolves its path + kind into a data-source descriptor; the client loads
+ *  the bytes via the main process's `openFilePath`. A text file returns its
+ *  UTF-8 text + name + resolved absolute path (so the buffer knows where C-x C-s
+ *  writes back). Returns `{ media:true, kind, name, path }` or `{ text, name,
+ *  path }`, or null on a read error. */
 function readFileForVisit(path) {
   try {
     const abs = resolvePath(path);
+    const kind = mediaKindForName(abs);
+    if (kind) return { media: true, kind, name: basename(abs), path: abs };
     return { text: readFileSync(abs, 'utf8'), name: basename(abs), path: abs };
   } catch (error) {
     console.error(`[mwb-server] find-file: ${error.message}`);

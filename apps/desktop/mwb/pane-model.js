@@ -115,6 +115,15 @@ export function createPaneModel(options = {}, hooks = {}) {
     ? hooks.tabMeta
     : (id) => ({ name: nameForBuffer(id), modified: false, filePath: null });
 
+  // Resolve a leaf's id to a non-text DATA-SOURCE descriptor (image/audio/video/
+  // pdf), or null for a text buffer. When non-null, the snapshot renders the leaf
+  // as that element-view (carrying `viewKind`/`filePath`/`state`) instead of text
+  // — media has no cursor/text, so point/mark/scroll are omitted. Injected from
+  // the spine (which owns the data-source registry); absent in structural tests.
+  const mediaForBuffer = typeof hooks.mediaForBuffer === 'function'
+    ? hooks.mediaForBuffer
+    : () => null;
+
   // A monotonically-increasing STABLE per-leaf view key. A leaf keeps the
   // same key for its whole life, so when it switches buffers and switches
   // back, the view factory can return the SAME view (cursor preserved in that
@@ -624,24 +633,37 @@ export function createPaneModel(options = {}, hooks = {}) {
       };
       if (s.tabline) {
         // Step 3c: render as a tabline-view of EXACTLY this leaf's curated tabs.
-        // Carry each tab's display metadata (name / dirty flag / path) so the
-        // client builds the strip without a separate buffer-list round-trip.
+        // Carry each tab's display metadata (name / dirty flag / path / kind) so
+        // the client builds the strip without a separate buffer-list round-trip.
         data.tabline = true;
         data.tabs = (s.tabs ?? []).map((id) => {
           const meta = tabMeta(id) || {};
-          return {
+          const tab = {
             bufferId: id,
             name: typeof meta.name === 'string' ? meta.name : nameForBuffer(id),
             modified: !!meta.modified,
             filePath: meta.filePath ?? null,
           };
+          // A non-text (data-source) tab carries its kind so the client mounts
+          // the right element-view / icons the tab.
+          if (typeof meta.viewKind === 'string') tab.viewKind = meta.viewKind;
+          return tab;
         });
       }
-      // Carry the TEXT only for a leaf showing a DIFFERENT buffer than the
-      // focused one (Step 3b): the client renders those as static panes. A
-      // same-buffer (or the focused) leaf uses the live shared mirror, so its
-      // text would be redundant payload — omit it.
-      if (s.bufferId != null && s.bufferId !== focusedBufferId) {
+      // A non-text DATA-SOURCE leaf (image/audio/video/pdf): carry its descriptor
+      // (viewKind + filePath + shared state) so the client mounts the matching
+      // element-view and loads the bytes itself. Media has no text/cursor, so the
+      // text/point payload below is skipped for it.
+      const media = mediaForBuffer(s.bufferId);
+      if (media) {
+        data.viewKind = media.viewKind;
+        data.filePath = media.filePath ?? null;
+        if (media.state && Object.keys(media.state).length > 0) data.state = media.state;
+      } else if (s.bufferId != null && s.bufferId !== focusedBufferId) {
+        // Carry the TEXT only for a leaf showing a DIFFERENT buffer than the
+        // focused one (Step 3b): the client renders those as static panes. A
+        // same-buffer (or the focused) leaf uses the live shared mirror, so its
+        // text would be redundant payload — omit it.
         const text = textForBuffer(s.bufferId);
         if (typeof text === 'string') data.text = text;
       }

@@ -14,6 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createSpine } from './spine.js';
+import { wireLeaves } from './protocol.js';
 
 /** A spine with recording effects, for assertions. */
 function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
@@ -455,6 +456,31 @@ test('the server starts with one buffer; find-file adds a second', () => {
   assert.equal(spine.currentBufferIdOf(0), id);
   assert.equal(spine.buffer.name, 'b.md');
   assert.ok(spine.bufferIdByName('scratch.txt'));
+});
+
+test('find-file of a MEDIA file creates a data-source leaf (no garbage text buffer)', () => {
+  // The openFile effect returns a media descriptor for media suffixes (the real
+  // server's readFileForVisit does this via media-kinds); a text file returns text.
+  const files = {
+    '/clip.mp4': { media: true, kind: 'video', name: 'clip.mp4', path: '/clip.mp4' },
+    '/notes.md': { text: '# hi\n', name: 'notes.md', path: '/notes.md' },
+  };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+
+  const vid = spine.visitFile('/clip.mp4');
+  assert.match(vid, /^ds\d+$/, 'a data-source id, not a buffer id');
+  // No garbage text buffer was added (only the seed buffer exists).
+  assert.equal(spine.bufferCount, 1, 'media did NOT add a text buffer');
+  // The focused leaf shows the media source, and the PANE_TREE carries its
+  // descriptor (viewKind + filePath), no text.
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.bufferId, vid);
+  assert.equal(leaf.viewKind, 'video');
+  assert.equal(leaf.filePath, '/clip.mp4');
+  assert.equal(leaf.text, undefined, 'a media leaf carries no text');
+
+  // Re-visiting the same media file REUSES the source (no duplicate).
+  assert.equal(spine.visitFile('/clip.mp4'), vid, 'media find-file reuse');
 });
 
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
