@@ -2716,3 +2716,44 @@ persisted yet), reconciling `clientBuffers` with per-leaf tab sets (window 1 is
 still one big tabline = clientBuffers; a 'single' window now has its own per-leaf
 tabs — the two models coexist but aren't unified). Then G4.3 menu-follows-focus,
 then G5.
+
+## [2026-06-23 Step 3c follow-ups] find-file reuse + non-focused tabline + reorder (BUILT, awaiting live verify)
+
+A live-verify of 3c surfaced a real bug; fixed it + filled two functional gaps.
+Three commits on `multi-window-b` (suite 849→**852**, flag-off byte-for-byte).
+
+- **`9f2cf14` fix — find-file reuses an open buffer (no `name<2>` duplicate).**
+  Jason's repro: `C-x C-f` a file already open in another window's tabline made a
+  SECOND buffer `foobar.html<2>` with NO syntax highlighting. One cause, two
+  symptoms: `visitFile` always `registry.add`ed; the uniquifier appended `<2>`;
+  the client keys highlighting off the extension (`languageForFilename` does
+  `name.endsWith('.html')`), so `foobar.html<2>` matched no language → plain text.
+  Fix = Emacs semantics: new `registry.findByPath(absPath)`; a re-visit SWITCHES
+  to the existing buffer (shared across windows = the Model-B payoff; name stays
+  clean; unsaved edits preserved). **Server change → needs quit+relaunch.**
+- **`ffcdf82` fix — a non-focused tabline leaf renders LIVE (no empty pane after a
+  split).** Splitting a tabline pane (C-x 3) left the original tabline non-focused
+  on the SAME buffer as the new focused leaf → the wire carried no `text` for it
+  (only different-buffer leaves get text) → the client's non-focused tab went to a
+  static buffer seeded from absent text = EMPTY pane. Fix: the tabline path now
+  mirrors `buildServerPaneNode`'s non-focused branches — same buffer → live mirror
+  (3a), different buffer → its snapshot text (3b). The non-focused active-tab view
+  is a STABLE per-leaf object (`serverLeafActiveTabViews`), re-bound in the
+  reconcile, so its element is reused (no churn) and content/cursor stay live.
+- **`78d429a` feat — drag-reorder tabs in a tabline leaf.** Completes the tab bar
+  (open/switch/close already worked). The server owns order: a drag routes up as a
+  `reorder-tab` PANE intent → `reorderFocusedTab(from,to)` splices the leaf's
+  `tabs`; active is tracked by id (unchanged); PANE_TREE re-renders the strip.
+
+**LIVE-VERIFY (Jason) — quit+relaunch first (server changes):**
+1. find-file the same file in two windows → it lands as `foobar.html` (no `<2>`),
+   highlighted; type in one window, it echoes live in the other.
+2. In a fresh window: `M-x toggle-tabline`, open 2-3 files as tabs, then `C-x 3`
+   to split → the split shows the file live (not empty); edit it in either pane.
+3. Drag a tab to reorder it; the order sticks.
+
+**Still deferred (the real forks, need your call):** RESTORE of tab/pane structure
+across a relaunch (server persists window-1's open files only, NOT the pane tree /
+per-leaf tabs); UNIFY window 1 (still the old one-big-tabline = `clientBuffers`,
+ignores PANE_TREE — so C-x 2/3 don't visibly split window 1) into the same
+composable model the fresh windows use. Both are sizeable; pick before I build.
