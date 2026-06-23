@@ -253,6 +253,24 @@ test('toggle-tabline makes the focused leaf a 1-tab tabline; find-file adds a ta
   assert.equal(leaf.tabs.find((t) => t.bufferId === xId).name, 'x.js', 'tab metadata is live');
 });
 
+test('splitting a tabline leaf keeps the original tabline; the new leaf is plain (Step 3c)', () => {
+  const { spine } = makeSpine();
+  spine.runCommand('toggle-tabline');
+  spine.applyPaneIntent(0, { op: 'split-right' });
+  const leaves = wireLeaves(spine.paneSnapshot(0));
+  assert.equal(leaves.length, 2);
+  const tab = leaves.find((l) => l.tabline);
+  const plain = leaves.find((l) => !l.tabline);
+  assert.ok(tab, 'the original leaf is still a tabline (its curated tabs survive)');
+  assert.ok(plain, 'the new leaf is a plain single view');
+  assert.equal(plain.focused, true, 'focus moved to the new plain leaf (Emacs split)');
+  assert.equal(tab.bufferId, plain.bufferId, 'both show the same buffer');
+  // The original tabline is now NON-focused on the SAME buffer as the focused
+  // leaf, so the wire carries no `text` for it — the client must render it from
+  // the live mirror (3a), not an empty static buffer.
+  assert.equal(tab.text, undefined, 'no static text for a same-buffer tabline leaf');
+});
+
 test('a close-tab pane intent un-curates a tab (buffer survives in the pool) (Step 3c)', () => {
   const files = { '/x.js': { text: 'x', name: 'x.js' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });

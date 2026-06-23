@@ -5872,6 +5872,13 @@ if (window.host && window.host.serverMode) {
   // the leaf vanishes or flips back to a single view.
   /** @type {Map<string, object>} leafId -> tabline-view. */
   const serverLeafTablines = new Map();
+  // The STABLE active-tab view for a NON-focused tabline leaf, keyed by leaf id
+  // and updated in place each reconcile — so its per-tab `<text-view>` element is
+  // reused (keyed by view identity in editorByChild) instead of churned/leaked.
+  // A FOCUSED tabline leaf's active tab is the shared serverFacadeView, so only
+  // non-focused leaves need an entry here.
+  /** @type {Map<string, object>} leafId -> stable static active-tab view. */
+  const serverLeafActiveTabViews = new Map();
 
   /** The live `<text-view>` element rendering the active buffer — the façade
    *  tab's per-tab element inside the server tabline's content area. Null until
@@ -6097,13 +6104,28 @@ if (window.host && window.host.serverMode) {
     return editorViewByPaneId.get(leaf.id) ?? null;
   }
 
-  /** The content view for a tabline leaf's ACTIVE tab — the live façade when
-   *  the leaf is focused (its cursor tracks the mirror), else a static view over
-   *  the active buffer's own text (3b). The inactive tabs are lightweight
-   *  proxies; only the active tab carries content. */
+  /** The content view for a tabline leaf's ACTIVE tab. A FOCUSED leaf uses the
+   *  live façade (its cursor tracks the mirror). A NON-focused leaf gets a STABLE
+   *  per-leaf view (so its element is reused, not churned) whose CONTENT mirrors
+   *  buildServerPaneNode's non-focused branches: a buffer DIFFERENT from the
+   *  active one reads its own static text (3b); the SAME buffer reads the live
+   *  shared mirror (3a). Without the 3a case a tabline split off the focused pane
+   *  — both on one buffer, so no `text` on the wire — rendered EMPTY. The
+   *  inactive tabs are lightweight proxies; only the active tab carries content. */
   function serverLeafActiveTabView(w) {
     if (w.focused) return serverFacadeView;
-    return makeServerStaticBufferView(w, serverStaticBufferFor(w));
+    let v = serverLeafActiveTabViews.get(w.id);
+    if (!v) { v = { kind: 'text', _serverBacked: true }; serverLeafActiveTabViews.set(w.id, v); }
+    const point = Number.isFinite(w.point) ? w.point : 0;
+    const mark = w.mark === null || Number.isFinite(w.mark) ? w.mark : null;
+    v.buffer = (w.bufferId && w.bufferId !== activeServerBufferId() && typeof w.text === 'string')
+      ? serverStaticBufferFor(w) // 3b: a different buffer, its own snapshot text
+      : serverMirror;            // 3a: the same buffer as active, the live mirror
+    v.name = typeof w.name === 'string' ? w.name : (v.buffer ? v.buffer.name : '*buffer*');
+    v.point = point;
+    v.mark = mark;
+    v.cursors = [{ point, mark }];
+    return v;
   }
 
   /** Build (or reuse) the tabline-view for a `tabline` leaf (Step 3c): one tab
@@ -6192,6 +6214,7 @@ if (window.host && window.host.serverMode) {
       if (!tablineLeafIds.has(id)) {
         try { disposeTablineKind(tlv); } catch { /* ignore */ }
         serverLeafTablines.delete(id);
+        serverLeafActiveTabViews.delete(id);
       }
     }
     // Tear down editor instances for leaves the new tree no longer has (an
@@ -6221,6 +6244,17 @@ if (window.host && window.host.serverMode) {
           editorViewByPaneId.delete(leaf.id);
         }
         mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id) });
+        // ensureTabElement reuses the active tab's element but doesn't re-bind it;
+        // re-point it at its (in-place-updated) view so a non-focused tab reflects
+        // content/cursor changes — and a 3a→3b (or focus) flip rebinds its buffer.
+        const st = tablineStateByView.get(leaf.view);
+        const activeChild = tablineActiveChild(leaf.view);
+        if (st && activeChild) {
+          const el = st.editorByChild.get(activeChild);
+          if (el && typeof el.setView === 'function') {
+            try { el.setView(activeChild); } catch { /* ignore */ }
+          }
+        }
       } else if (leaf.view && leaf.view.kind === 'text') {
         const inst = ensureEditorViewForLeaf(leaf);
         if (inst) { try { inst.setView(leaf.view); } catch { /* ignore */ } }
