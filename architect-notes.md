@@ -2531,3 +2531,55 @@ sends an explicit detach on window `closed`, mapping window→client); (b) the
 mode (today `menu:set` is whoever-last-sent; minor). Window TITLE already tracks
 per-window (serverChrome.setModeline sets document.title). Then **G5** (flip the
 default + delete the dead in-renderer interpreter path).
+
+**LIVE-VERIFIED (Jason): G4 multi-window works.** "It worked!" The terminal log
+confirmed BOTH unknowns resolved: `port.on('close')` fires (the `client N
+detached` lines come only from detachClient ← port close), and the monotonic
+index works (after clients 0+1 detached, a reopened window got `client 2
+attached`, not a reused 0). Detach + reuse-free indexing are solid.
+
+## [2026-06-23 G4 window-model] A window is NOT a tabline — fresh window = single composable pane (Step 1)
+
+Live feedback reshaped the design. Jason: a window should be a **composable
+pane layout** (Emacs frames over one shared buffer pool), NOT hardcoded as a
+tabline. The Inc2.2 "window = tabline of ALL server buffers" shortcut is too
+rigid — other window types (projects) need other layouts. The agreed model:
+- **Window 1** = welcome (no session) or the restored session (its tabline, as
+  today).
+- **Windows 2+** = a **single composable pane on their own fresh `*scratch*`**
+  (+ REPL), like a normal fresh start — the user then loads a single view OR
+  adds a tabline-view. NOT assumed to be a tabline.
+- **Buffers stay one shared pool**; each window shows a subset.
+
+Staged: **Step 1 (DONE, this commit `f1f355f`)** decouples the window from the
+forced tabline. **Step 2** = full per-window buffer SUBSETS (each window its own
+arbitrary tab set; tab-× = un-display vs C-x k = kill; C-x C-b reaches the
+pool). **Step 3** = client-side `PANE_TREE` rendering (splits within a window —
+the big pane-negotiation gap; the client still ignores PANE_TREE today,
+`server-view-client.js` default case).
+
+**Step 1 mechanics (`f1f355f`, suite 835→836, flag-off byte-for-byte):**
+- `server.js` registerClient: window 1 → `windowKind:'tabline'`; windows 2+ →
+  `windowKind:'single'` on a fresh scratch (`addClientView({freshScratch})`).
+  The kind rides the snapshot.
+- `spine.js`: `addClientView({freshScratch})` mints a PRIVATE `*scratch*` per
+  window (`scratchOwner` map); `bufferListRecords` hides a scratch from OTHER
+  windows (a DENY-list, so any buffer is globally visible by default + C-x C-b
+  reaches the whole pool via `bufferListRows`); `removeClientView` reaps an
+  empty scratch on close.
+- client: `server-view-client.js` stashes `windowKind` from the snapshot →
+  `mountView`; `app.js` `mountServerView` branches — `single` →
+  `mountServerSingleView` (the leaf's own `<text-view>` via the resurrected
+  leaf-flip mount, NO tabline); `tabline` → `ensureServerTabline` (unchanged).
+
+**⚠ ARCHITECT — verify live (GODOT_SERVER=1; quit + relaunch — server changed):**
+1. **Window 1** unchanged: welcome / restored-session tabline.
+2. **New Window (C-x 5 2 / menu)** → opens a **single pane on an empty
+   `*scratch*`**, NO tabline. (This is the visible change.)
+3. The new window's scratch does NOT appear as a tab in window 1.
+4. In the fresh window: `C-x C-f` a file → it loads as a single view (no tabs);
+   `C-x C-b` still reaches ALL buffers (the whole pool).
+5. **REPL** — Jason wanted "a REPL below, like a normal fresh start." OPEN
+   QUESTION for live: does the REPL/utility dock show in a fresh server window?
+   If not, it's a follow-up (the utility dock is render-coupled — may be a stub
+   in server mode). The must-have for Step 1 is the single scratch pane.
