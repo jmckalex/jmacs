@@ -5837,6 +5837,14 @@ if (window.host && window.host.serverMode) {
   /** @type {Map<string, object>} bufferId -> proxy tab view (label only). */
   const serverTabProxies = new Map();
 
+  // G4 Step 3 — the window's presentation kind (from the snapshot) + the last
+  // pane-layout the server pushed. A 'single' window renders its leaf layout
+  // from the server's PANE_TREE (splits visible); 'tabline' (window 1) ignores
+  // it. The wire tree is `{kind:'split',orientation,ratio,first,second}` /
+  // `{kind:'leaf',id,bufferId,focused,name,point,mark}` (no pixels).
+  let serverWindowKind = 'tabline';
+  let serverPaneTreeWire = null;
+
   /** The live `<text-view>` element rendering the active buffer — the façade
    *  tab's per-tab element inside the server tabline's content area. Null until
    *  the tabline has mounted. */
@@ -5962,47 +5970,151 @@ if (window.host && window.host.serverMode) {
    *  pane pipeline mounts it with no fight, and the user composes the window
    *  from here (open a file / add a tabline-view). A fresh window opens this
    *  way on its own *scratch*; window 1 keeps the tabline. */
-  function mountServerSingleView(leaf) {
-    leaf.view = serverFacadeView;
-    const instance = ensureEditorViewForLeaf(leaf);
-    if (!instance) return makeNullServerView();
-    try { instance.setView(serverFacadeView); } catch { /* ignore */ }
-    return makeServerSingleLeafAdapter(instance);
-  }
-
-  /** A view handle over a single-pane leaf's own `<text-view>` (the fresh-window
-   *  mount). `destroy` is soft — a buffer switch re-points the same leaf via the
-   *  server, so the element must survive. */
-  function makeServerSingleLeafAdapter(instance) {
+  /** A STATIC server-backed leaf view — a NON-focused pane in a split. It reads
+   *  the SHARED mirror for text (3a assumes the panes share the active buffer;
+   *  per-buffer mirrors are 3b) but carries its OWN cursor from the server's
+   *  pane-tree leaf data. The FOCUSED leaf instead uses the live serverFacadeView
+   *  (its cursor tracks the mirror as you type). */
+  function makeServerStaticLeafView(wire) {
+    const point = Number.isFinite(wire.point) ? wire.point : 0;
+    const mark = wire.mark === null || Number.isFinite(wire.mark) ? wire.mark : null;
     return {
-      setView: () => { try { instance.setView(serverFacadeView); } catch { /* ignore */ } },
-      focus: () => { try { instance.focus(); } catch { /* ignore */ } },
-      recenter: () => { try { instance.recenter(); } catch { /* ignore */ } },
-      pageLines: () => { try { return instance.pageLines(); } catch { return 0; } },
-      destroy: () => { /* soft: the leaf keeps its <text-view> across switches */ },
+      kind: 'text',
+      _serverBacked: true,
+      buffer: serverMirror,
+      name: typeof wire.name === 'string'
+        ? wire.name
+        : (serverMirror ? serverMirror.name : '*server*'),
+      point,
+      mark,
+      cursors: [{ point, mark }],
     };
   }
 
-  /** The `mountView` collaborator. A SNAPSHOT (re)points the single shared
-   *  mirror; the focused leaf presents it per the window's kind (from the
-   *  snapshot): a 'single' fresh window renders the leaf's own `<text-view>`
-   *  directly (no tabline); window 1 ('tabline') becomes the server tabline
-   *  whose active tab — the shared façade — renders that mirror. On a buffer
-   *  switch the server sends a fresh SNAPSHOT (here) then a fresh BUFFER_LIST
-   *  (syncServerBufferTabs), so the active view re-renders the new buffer. */
+  /** The focused leaf id in a wire pane-tree (the server marks exactly one). */
+  function wireFocusedId(node) {
+    if (!node || typeof node !== 'object') return null;
+    if (node.kind === 'leaf') return node.focused ? node.id : null;
+    return wireFocusedId(node.first) ?? wireFocusedId(node.second);
+  }
+
+  /** Build a client pane node from the server's wire pane-tree, reusing the
+   *  server's stable leaf/split ids (so paneElements survive a focus-only
+   *  reconcile). The focused leaf gets the live façade; the rest static views. */
+  function buildServerPaneNode(wire) {
+    if (wire && wire.kind === 'split') {
+      const ratio =
+        typeof wire.ratio === 'number' && wire.ratio > 0.05 && wire.ratio < 0.95
+          ? wire.ratio : 0.5;
+      return createSplitPane({
+        id: wire.id,
+        orientation: wire.orientation === 'vertical' ? SPLIT_VERTICAL : SPLIT_HORIZONTAL,
+        ratio,
+        first: buildServerPaneNode(wire.first),
+        second: buildServerPaneNode(wire.second),
+      });
+    }
+    const view = wire && wire.focused
+      ? serverFacadeView
+      : makeServerStaticLeafView(wire || {});
+    return createLeafPane({ id: wire ? wire.id : undefined, view });
+  }
+
+  /** Reconcile the client's pane tree to the server's PANE_TREE: rebuild
+   *  rootPane, drop editor instances for leaves that vanished, mount each leaf's
+   *  <text-view>, lay out, and focus the server's focused leaf. Splits become
+   *  visible; C-x 2/3/0/1/o drive the layout through the server. */
+  function reconcileServerPaneTree() {
+    if (!serverPaneTreeWire) return;
+    rootPane = buildServerPaneNode(serverPaneTreeWire);
+    // Tear down editor instances for leaves the new tree no longer has (an
+    // unsplit / delete-pane), so nothing renders behind the new layout.
+    const liveIds = new Set(leafPanes(rootPane).map((l) => l.id));
+    for (const [id, inst] of editorViewByPaneId) {
+      if (!liveIds.has(id)) {
+        try { inst.destroy(); } catch { /* ignore */ }
+        try { inst.remove(); } catch { /* ignore */ }
+        editorViewByPaneId.delete(id);
+      }
+    }
+    currentPaneId = wireFocusedId(serverPaneTreeWire)
+      ?? leafPanes(rootPane)[0]?.id ?? null;
+    serverBoundLeafId = currentPaneId;
+    syncPaneElements();
+    for (const leaf of leafPanes(rootPane)) {
+      if (leaf.view && leaf.view.kind === 'text') {
+        const inst = ensureEditorViewForLeaf(leaf);
+        if (inst) { try { inst.setView(leaf.view); } catch { /* ignore */ } }
+      }
+    }
+    relayoutPanes();
+    refreshPaneFocusIndicators();
+  }
+
+  /** Single-leaf fallback before the first PANE_TREE arrives (the SNAPSHOT beats
+   *  it on HELLO): the leaf's own <text-view> over the façade, no tabline. */
+  function mountServerSingleFallback() {
+    const leaf = serverBoundLeaf() ?? currentPane() ?? leafPanes(rootPane)[0];
+    if (!leaf) return;
+    serverBoundLeafId = leaf.id;
+    currentPaneId = leaf.id;
+    leaf.view = serverFacadeView;
+    const inst = ensureEditorViewForLeaf(leaf);
+    if (inst) { try { inst.setView(serverFacadeView); } catch { /* ignore */ } }
+  }
+
+  /** Render a 'single' window's layout: the server pane-tree if present, else
+   *  the single-leaf fallback. Called on the first mount + each PANE_TREE. */
+  function renderServerPaneLayout() {
+    if (serverPaneTreeWire) reconcileServerPaneTree();
+    else mountServerSingleFallback();
+  }
+
+  /** The mountView adapter for a 'single' window: it always resolves the CURRENT
+   *  focused leaf's <text-view> (dynamic), so it survives a reconcile (a split /
+   *  focus change rebuilds the tree, but focus/scroll still target the right
+   *  pane). */
+  function makeServerFocusedLeafAdapter() {
+    const focusedInstance = () => {
+      const leaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
+      return leaf ? editorViewByPaneId.get(leaf.id) : null;
+    };
+    return {
+      setView: () => { const i = focusedInstance(); if (i) { try { i.setView(i.boundView ?? serverFacadeView); } catch { /* ignore */ } } },
+      focus: () => { const i = focusedInstance(); if (i) { try { i.focus(); } catch { /* ignore */ } } },
+      recenter: () => { const i = focusedInstance(); if (i) { try { i.recenter(); } catch { /* ignore */ } } },
+      pageLines: () => { const i = focusedInstance(); try { return i ? i.pageLines() : 0; } catch { return 0; } },
+      destroy: () => { /* soft */ },
+    };
+  }
+
+  /** A server PANE_TREE push: store it, and (a 'single' window) render the new
+   *  layout — splits appear / collapse. Window 1 ('tabline') ignores it. */
+  function applyServerPaneTree(tree) {
+    serverPaneTreeWire = tree;
+    if (serverWindowKind === 'single' && serverMirror) renderServerPaneLayout();
+  }
+
+  /** The `mountView` collaborator. A SNAPSHOT (re)points the shared mirror; the
+   *  window then presents it per its kind (from the snapshot): a 'single' window
+   *  renders its pane layout from the server's PANE_TREE (splits visible — the
+   *  leaves' own <text-view>s, no tabline); window 1 ('tabline') becomes the
+   *  server tabline whose active tab — the shared façade — renders the mirror. */
   function mountServerView(mirror, options = {}) {
     serverMirror = mirror;
-    // The startup splash (the faint Lisp backdrop on editorView.backgroundLayer)
-    // is dismissed by an edit / view-switch — none of which fire for a fresh
-    // server window, so it lingered behind the empty *scratch* (the "(cond"
-    // ghost). The server is driving the view now, so retire it. Idempotent.
+    // The startup splash (the faint Lisp backdrop) is dismissed by an edit /
+    // view-switch — none of which fire for a fresh server window, so it lingered
+    // behind the empty *scratch* (the "(cond" ghost). The server drives the view
+    // now, so retire it. Idempotent.
     dismissSplash();
+    serverWindowKind = options.windowKind === 'single' ? 'single' : 'tabline';
+    if (serverWindowKind === 'single') {
+      renderServerPaneLayout();
+      return makeServerFocusedLeafAdapter();
+    }
     const leaf = serverBoundLeaf() ?? currentPane() ?? leafPanes(rootPane)[0];
     if (!leaf) return makeNullServerView();
     serverBoundLeafId = leaf.id;
-    if (options.windowKind === 'single') {
-      return mountServerSingleView(leaf);
-    }
     ensureServerTabline(leaf);
     const el = serverFacadeElement();
     if (el) { try { el.setView(serverFacadeView); } catch { /* ignore */ } }
@@ -6089,6 +6201,10 @@ if (window.host && window.host.serverMode) {
         window.host.newWindow();
       }
     },
+    // G4 Step 3: the server pushed this window's pane layout. Render it (splits
+    // become visible). Only a 'single' (fresh / composable) window reflects the
+    // server tree; window 1 keeps its tabline.
+    setPaneTree: (tree) => applyServerPaneTree(tree),
   };
 
   bootServerViewClient = () => {

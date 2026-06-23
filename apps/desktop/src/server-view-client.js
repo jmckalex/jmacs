@@ -161,6 +161,10 @@ export function createServerViewClient({
   // new client on the shared server). Window lifecycle is the host's job, like
   // quit. A no-op until the host wires it.
   const requestNewWindowDom = chrome.requestNewWindow ?? (() => {});
+  // PANE_TREE (G4 Step 3): the server pushes this window's logical pane layout
+  // (split structure + per-leaf buffer/view-state + the focused leaf; no
+  // pixels). The host renders it — splits become visible. A no-op until wired.
+  const setPaneTreeDom = chrome.setPaneTree ?? (() => {});
 
   // Whether a server minibuffer read is currently open in the DOM, and the
   // id of the picker the client is showing (so a stale reply is dropped and a
@@ -486,6 +490,7 @@ export function createServerViewClient({
       case MSG.PICKER: onPicker(msg.picker); break;
       case MSG.BUFFER_LIST: onBufferList(msg.buffers); break;
       case MSG.WINDOW_NEW: requestNewWindowDom(); break;
+      case MSG.PANE_TREE: setPaneTreeDom(msg.tree); break;
       default: break; // PANE_TREE: not in this slice
     }
   }
