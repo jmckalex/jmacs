@@ -54,6 +54,43 @@ those exist, the flip is a long but legible port with no surprises left.
 
 ---
 
+## CURRENT STATUS (2026-06-23) — most of this plan is BUILT; the leaf-flip is the live frontier
+
+§0's "plan only, nothing built" is now historical. Since 2026-06-22:
+- **G0–G3 are done**, plus an overnight build (5 waves) and a morning of fixes.
+  Flag-on (`GODOT_SERVER=1`) is **genuinely usable via the G2 overlay**: typing,
+  auto-pair, prefix chords, the minibuffer (M-x / find-file), `C-x b`, screenful
+  scroll, the full keymap, the LaTeX chain, and citations/RefTeX. Flag-off is
+  byte-for-byte; suite green. See `MWB-STATE.md` (state + test checklist) and
+  `architect-notes.md` (every wave + finding).
+
+**THE LIVE FRONTIER — the leaf-flip (retire the G2 overlay).** G2 routes a window
+via a full-bleed **overlay** (`g2HostEl`) stacked over the idle in-renderer
+editor; the flip makes the real leaf's view BE the server mirror and deletes the
+overlay.
+
+- **Step A FAILED + was reverted** (`1a66d88` → `9288f2c`). Approach: "mount the
+  mirror `<text-view>` into the real pane element." Result: empty editor — the
+  in-renderer pane render loop (`elementForViewInstance` → tabline-view +
+  warehouse; `syncPaneElements` ~`app.js:723`) re-resolves `leaf.view` to its own
+  element and re-mounts it, **evicting the foreign mirror**. A foreign append
+  cannot beat the render loop.
+- **CORRECT APPROACH (do next):** make **`leaf.view` resolve TO the mirror** — a
+  server-backed View handle whose `elementForViewInstance` (`app.js` ~4680)
+  returns the mirror `<text-view>` — so the EXISTING tabline/warehouse/sync render
+  shows it with no fight. A designed change to the view-resolution layer + the
+  View-handle shape, NOT a foreign append. GUI-shaped: verify in the live app
+  (boot-tests only confirm no-crash).
+- After it: **Step B** (splits/multi-pane — each leaf its own mirror off the
+  server pane tree), then **G5** (flip the default + delete the dead in-renderer
+  interpreter path).
+
+Deferred slices (don't block the leaf-flip): `read-next-key` live delivery
+(isearch + math `` ` ``); the completing-minibuffer slice (find-file TAB / M-x
+completion); the \*Recover\* picker UX. See `architect-notes.md`.
+
+---
+
 ## 1. Target architecture, mapped onto the real files
 
 The split is the same one `PRIMITIVE-SPLIT.md` defines, now applied to concrete
