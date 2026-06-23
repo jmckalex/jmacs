@@ -170,6 +170,17 @@ export function createBufferRegistry(deps) {
     return null;
   }
 
+  /** Find an entry by its absolute file PATH (find-file reuses an already-open
+   *  buffer for the same file rather than visiting a duplicate `name<2>`).
+   *  Path-less buffers (scratch, recovered-without-path) never match. */
+  function findByPath(filePath) {
+    if (typeof filePath !== 'string' || filePath === '') return null;
+    for (const e of entries.values()) {
+      if (e.filePath === filePath) return e;
+    }
+    return null;
+  }
+
   // --- dirty tracking + the disk path (the save story) ------------------
 
   /**
@@ -363,6 +374,7 @@ export function createBufferRegistry(deps) {
     count,
     first,
     findByName,
+    findByPath,
     isModified,
     markSaved,
     setFilePath,

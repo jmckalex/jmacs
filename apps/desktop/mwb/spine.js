@@ -1902,14 +1902,22 @@ export function createSpine(options, effects = {}) {
   interpreter.call('-spine-choose-major-mode');
 
   /**
-   * Visit a file: read it (via the openFile effect) and ADD it as a NEW
-   * buffer in the registry (multi-buffer: find-file no longer replaces the
-   * current buffer), then switch the ACTIVE client to it. Returns the new
-   * buffer's id on success, or null on failure. The server re-snapshots the
-   * active client onto the new buffer after this.
+   * Visit a file: read it (via the openFile effect) and, if it isn't already
+   * open, ADD it as a NEW buffer in the registry (multi-buffer: find-file no
+   * longer replaces the current buffer), then switch the ACTIVE client to it.
+   * Returns the buffer's id on success, or null on failure. The server
+   * re-snapshots the active client onto the buffer after this.
+   *
+   * Emacs `find-file` semantics: a second visit of an already-open file
+   * SWITCHES to the existing buffer rather than adding a duplicate. This both
+   * shares one buffer across windows (the Model-B payoff — edit it in lockstep)
+   * and avoids a `name<2>`-suffixed duplicate, whose suffixed name also broke
+   * the client's extension-based syntax highlighting (`foobar.html<2>` doesn't
+   * end in `.html`). Reuse keeps any unsaved edits in the open buffer (Emacs
+   * does not revert from disk on re-visit).
    *
    * @param {string} path - An absolute path.
-   * @returns {string | null} The new buffer id, or null.
+   * @returns {string | null} The buffer id, or null.
    */
   function visitFile(path) {
     const result = openFile(path);
@@ -1923,6 +1931,15 @@ export function createSpine(options, effects = {}) {
     const absPath = typeof result.path === 'string' && result.path !== ''
       ? result.path
       : path;
+    // Already open? Switch to the EXISTING buffer (shared across windows; its
+    // unsaved edits preserved) instead of adding a duplicate.
+    const existing = registry.findByPath(absPath);
+    if (existing) {
+      switchClientToBuffer(activeClientIndex, existing.id);
+      statusText = '';
+      onStatus('');
+      return existing.id;
+    }
     const entry = registry.add(result.text, result.name, absPath);
     entry.savedText = result.text;
     // Switch the active client to the new buffer (mints its view, derives

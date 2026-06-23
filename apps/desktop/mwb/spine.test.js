@@ -457,6 +457,27 @@ test('the server starts with one buffer; find-file adds a second', () => {
   assert.ok(spine.bufferIdByName('scratch.txt'));
 });
 
+test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
+  const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+
+  // Window 0 opens the file.
+  const firstId = spine.visitFile('/a/b.md');
+  assert.equal(spine.bufferCount, 2);
+
+  // A SECOND window (on its own scratch) visits the SAME path → reuses the
+  // existing buffer rather than adding a `b.md<2>` duplicate. The clean name
+  // matters: the client keys syntax highlighting off the extension, so a
+  // `<2>` suffix would silently disable it.
+  spine.addClientView({ freshScratch: true }); // client 1, on its own *scratch*
+  spine.setActiveClient(1);
+  const before = spine.bufferCount;
+  const secondId = spine.visitFile('/a/b.md');
+  assert.equal(secondId, firstId, 'the same buffer is SHARED, not duplicated');
+  assert.equal(spine.bufferCount, before, 'no duplicate buffer was added');
+  assert.equal(spine.currentBufferIdOf(1), firstId, 'the second window shows the shared buffer');
+});
+
 test('switch-to-buffer moves the active client between buffers, keeping cursor', () => {
   const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
   const { spine } = makeSpine('alpha beta', 'scratch.txt', {
