@@ -2401,3 +2401,41 @@ proxies aren't in `views[]`, so it's empty in server mode); (b) Increment 3 —
 server-side session persistence (the headline want); (c) mode-coverage (task #9);
 (d) `read-next-key` live delivery (isearch + LaTeX `` ` ``); (e) the dup-`view.js`
 / `*Recover*` UX. All other Increment-2 sub-bits (tabs/switch/close/quit) DONE.
+
+## [2026-06-23 evening] View List wired + Increment 3 (session restore) — SHIPPED, live-verified
+
+The Model-B graduation arc is COMPLETE for single-window: server mode is now a
+proper, persistent, native-tab editor that restores the user's session. Commits
+`bf9340c` (View List) + `43b5db4` (Inc3). Suite green (832/0).
+
+**View List (`bf9340c`).** In server mode `viewListRecords` is sourced from
+`serverViewClient.getBufferList()` (rows' id = server buffer id); `selectView` →
+`switchBuffer`, `killView` → `closeBuffer`; refreshed on every BUFFER_LIST. (The
+*View List*'s kill-row affordance is hard to find — a small UI follow-up.)
+
+**Increment 3 (`43b5db4`) — server owns the session. LIVE-VERIFIED ("It worked!").**
+The server remembers the user's open files across restarts and restores them
+through the server as tabs:
+ - `persistServerSession()` writes `{files, active}` (file-backed, de-duped) to
+   SESSION_STORE on every buffer-set change (via resyncClientToCurrentBuffer).
+ - `restoreServerSession()` on the FIRST HELLO opens each remembered file (skip
+   already-open) + switches to the active, before the snapshot.
+ - `readSessionSeed()` (first boot only, no server session yet) parses the
+   renderer's session.json (path via `MWB_SESSION_SEED`, set in main.js before
+   the fork) for its text-file paths — so the user's EXISTING flag-off session
+   comes back. Then the server owns its own session.
+ - Self-heals stale paths: a missing file ENOENTs once (logged, no crash), never
+   opens, so it's dropped from the next persist (Jason's `/Users/jalex/tmp/test.md`
+   was gone by the 2nd boot).
+
+**Known wart (deferred): the spine still seeds DEFAULT_FILE (view.js) every boot**,
+so it shows as an extra tab alongside the restored session (and gets persisted as
+a file-backed buffer). Fix = don't seed view.js when a session/seed exists (boot
+the spine on the active session file instead) — a spine-boot change.
+
+**STATE: the Model-B single-window editor is feature-complete + usable.** Open /
+switch / close / quit / multi-tab / View-List / session-restore all server-backed,
+flag-off byte-for-byte throughout. ~14 commits this session, all live-verified.
+Remaining are polish/coverage: seed-noise, mode-coverage (#9), read-next-key
+(isearch/LaTeX `` ` ``), `*Recover*` UX, View-List kill-row affordance. Then G4
+(multi-window) + G5 (flip default, delete in-renderer interpreter).
