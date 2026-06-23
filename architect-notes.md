@@ -2469,3 +2469,65 @@ live-verified. **Next big phase: G4 (multi-window)** — the server already has
 per-client pane models + PANE_TREE; the client stubs them. Polish backlog:
 find-file completion (next slice), View-List kill-row affordance, read-next-key
 live delivery (isearch + LaTeX `` ` ``), `*Recover*` UX.
+
+## [2026-06-23 G4 build] Multi-window — open/close a second window — BUILT, awaiting live verify
+
+The headline finding: **the data layer was ALREADY multi-client** (server
+`clients[]` with per-client views/pane-trees/cursors/viewports; `fanDelta`
+per-buffer fan-out + `broadcastView`; the bridge mints a fresh channel + client
+per `attachWindow`; the client is fully per-renderer). So G4 is mostly the
+missing **window-management shell** in `main.js` + a clean **detach**. Three
+commits on `multi-window-b` (UNMERGED), suite 832→835, flag-off byte-for-byte:
+
+- **`250fc2e` G4.1 — multi-window core.** `main.js`: a `windows` Set replacing
+  the single-window assumption; `createWindow()` is repeatable + each new window
+  is `attachWindow`'d as a new client. In server mode a window **closes freely**
+  (buffers are server-owned + outlive any window — closing loses nothing); only
+  QUITTING (before-quit / C-x C-c, which kills the server) runs the unsaved
+  confirm, now via `focusedWindow()`. `mainWindow` re-points to a survivor on
+  close. `menu.js`: a server-mode-only **File ▸ New Window (C-x 5 2)** item.
+  `preload.mjs`: `host.newWindow()` → `window:new` IPC → main creates+attaches.
+- **`a1471e0` G4.2 — clean detach.** `server.js`: `registerClient` wires
+  `port.on('close')` → `detachClient` (drop from `clients[]`, release any
+  minibuffer/picker/active ownership, `spine.removeClientView`). The index-0
+  assignment is now a ONE-SHOT bootstrap claim (not `clients.length===0`, which
+  breaks after a detach-to-0 on macOS). `spine.js`: `removeClientView` +
+  MONOTONIC index allocation (`nextClientIndex`, never reused — `.size` would
+  re-mint a live index after a middle drop); a new window seeds on the ACTIVE
+  window's current buffer (make-frame semantics). +2 spine tests.
+- **`a9058ab` G4.1b — the C-x 5 2 chord.** A 3-key, NON-terminal sequence, so
+  (unlike the C-x C-c quit shadow) a client-side shadow would leave the server
+  in a dangling `C-x 5` prefix that eats the next key. Instead the SERVER
+  resolves it through its real keymap: `CX_MAP['5'] = {2:'new-window'}` → the
+  `new-window` defcommand → `request-new-window!` primitive → a new
+  `onNewWindow` effect → server posts `WINDOW_NEW` → client `requestNewWindow`
+  chrome → `host.newWindow()`. The model/host split, cleaner than the shadow.
+  +1 spine test (C-x 5 2 fires; C-x 2 stays split-vertical).
+
+**⚠ ARCHITECT — verify live (GODOT_SERVER=1; needs a quit + relaunch, the
+server/main/preload changed):**
+1. **File ▸ New Window** (and **C-x 5 2**) opens a SECOND window showing the
+   same buffer set, focused on the buffer the first window was on.
+2. **Shared editing:** type/open/switch in one window → the other window's tab
+   set + (same-buffer) text track it live. Two windows on ONE buffer = the
+   payoff.
+3. **Close one window** (red traffic-light) while the other is open → only that
+   window closes, the app + the other window live on, no errors in the server
+   stderr (`client N detached (M left)`), buffers preserved. Reopen via New
+   Window works.
+4. **Quit** (Cmd+Q / C-x C-c) from any window → confirms once, tears down all +
+   the server.
+5. **macOS:** close ALL windows → app stays alive (server lives); dock-activate
+   re-opens a window onto the server (lands on the seed buffer — see below).
+6. **Flag-OFF** unchanged: single window, no New Window menu item.
+
+**Unknowns to watch live:** (a) does `port.on('close')` fire reliably when a
+renderer window is destroyed? (the detach hangs off it — fallback if not: main
+sends an explicit detach on window `closed`, mapping window→client); (b) the
+"close all then reopen" reopen lands on the seed buffer, not the last-active
+(all buffers are still in the tab list — acceptable; could seed smarter later).
+
+**REMAINING in G4:** G4.3 polish — the app MENU follows the focused window's
+mode (today `menu:set` is whoever-last-sent; minor). Window TITLE already tracks
+per-window (serverChrome.setModeline sets document.title). Then **G5** (flip the
+default + delete the dead in-renderer interpreter path).
