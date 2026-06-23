@@ -108,6 +108,12 @@ contextBridge.exposeInMainWorld('host', {
   /** Quit the application. */
   quit: () => ipcRenderer.send('app:quit'),
 
+  /** G4 (server mode): open another client window onto the shared server.
+   *  Driven by the server's WINDOW_NEW effect (the C-x 5 2 chord). main
+   *  creates the window and the bridge attaches it as a new client; a no-op
+   *  in the flag-off build (nothing triggers it). */
+  newWindow: () => ipcRenderer.send('window:new'),
+
   /**
    * List a directory's non-hidden entries, sorted alphabetically. Returns
    * null when the path cannot be read.

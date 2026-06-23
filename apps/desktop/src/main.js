@@ -60,8 +60,24 @@ process.on('unhandledRejection', (reason) => {
   console.error('[main] unhandled rejection:', reason);
 });
 
-/** The editor window — there is only ever one. */
+/** The editor window. In the flag-off (default) build there is only ever one,
+ *  and this is it. In server mode (GODOT_SERVER=1, G4 multi-window) it tracks
+ *  the most-recently-created window and is re-pointed at a survivor when a
+ *  window closes; routing that should target the *focused* window uses
+ *  `focusedWindow()` instead. */
 let mainWindow = null;
+
+/** G4 (server mode only): every open client window. Each is a thin client on
+ *  the one shared server; the buffers live in the server and outlive any
+ *  window. Empty + untouched in the flag-off build. */
+const windows = new Set();
+
+/** The window a menu command / quit confirm should target: the focused one,
+ *  falling back to `mainWindow` (e.g. during quit, when nothing is focused).
+ *  Only consulted in server mode. */
+function focusedWindow() {
+  return BrowserWindow.getFocusedWindow() ?? mainWindow;
+}
 
 /**
  * G1 (plans/MWB-GRADUATION.md): the Model-B server bridge, or null.
@@ -82,9 +98,21 @@ let serverBridge = null;
  *  quit through instead of prompting again. */
 let quitConfirmed = false;
 
-/** Send a command chosen from a native menu to the renderer to run. */
+/** Send a command chosen from a native menu to the renderer to run. In server
+ *  mode the menu's "New Window" item is a window-lifecycle action main performs
+ *  directly (the server can't open an OS window); everything else targets the
+ *  focused window. The flag-off path is byte-for-byte today (single window). */
 function dispatchMenuCommand(command) {
-  if (mainWindow) mainWindow.webContents.send('menu:invoke', command);
+  if (!isServerMode()) {
+    if (mainWindow) mainWindow.webContents.send('menu:invoke', command);
+    return;
+  }
+  if (command === 'new-window') {
+    createWindow();
+    return;
+  }
+  const win = focusedWindow();
+  if (win && !win.isDestroyed()) win.webContents.send('menu:invoke', command);
 }
 
 function createWindow() {
@@ -121,6 +149,7 @@ function createWindow() {
     },
   });
   mainWindow = win;
+  if (isServerMode()) windows.add(win);
 
   // The red traffic-light button closes the window directly, which (like
   // a native Quit) would tear down the renderer and drop unsaved edits
@@ -131,10 +160,29 @@ function createWindow() {
   // `app:quit` (which sets quitConfirmed) to let the next close through,
   // or does nothing to cancel and the window stays open.
   win.on('close', (event) => {
+    // G4: in server mode the buffers live in the central server and outlive
+    // any window — closing a window loses nothing (the server-side detach
+    // reaps the client; unsaved edits stay in the server + its autosave). So
+    // a window closes freely; only QUITTING the app (before-quit / C-x C-c),
+    // which kills the server, runs the unsaved-changes confirm.
+    if (isServerMode()) return;
     if (!shouldHoldForConfirm()) return;
     event.preventDefault();
     win.webContents.send('app:confirm-quit');
   });
+
+  // G4: keep the window registry current as windows close, and re-point
+  // `mainWindow` at a survivor so the quit/menu fallbacks never reference a
+  // destroyed window. Flag-off (single window) never adds this listener, so
+  // its lifecycle is unchanged.
+  if (isServerMode()) {
+    win.on('closed', () => {
+      windows.delete(win);
+      if (mainWindow === win) {
+        mainWindow = windows.values().next().value ?? null;
+      }
+    });
+  }
 
   // §3a: the renderer crashing (or being killed) takes the editor down.
   // Log the cause; the user's unsaved work is recoverable on relaunch
@@ -152,6 +200,7 @@ function createWindow() {
   // hears of a port and boots exactly as today. With the flag on, the renderer
   // receives + stashes the port but does NOT route editing through it (G2).
   if (serverBridge) serverBridge.attachWindow(win.webContents);
+  return win;
 }
 
 app.whenReady().then(() => {
@@ -164,13 +213,20 @@ app.whenReady().then(() => {
   registerShellHandlers();
   registerProcessHandlers();
   registerGnuplotHandlers();
-  buildAppMenu(null, dispatchMenuCommand);
+  buildAppMenu(null, dispatchMenuCommand, { canNewWindow: isServerMode() });
   // The renderer calls this (via host.quit) from quitInteractive, after
   // it has confirmed there is nothing unsaved to lose. Mark the quit
   // confirmed so before-quit lets it through, then quit.
   ipcMain.on('app:quit', () => {
     quitConfirmed = true;
     app.quit();
+  });
+  // G4: the renderer asks for another window via host.newWindow() — driven by
+  // the server's WINDOW_NEW effect (the C-x 5 2 chord resolves to a server
+  // `new-window` command). Server mode only; the server can't open an OS
+  // window, so main does it and the bridge attaches it as a new client.
+  ipcMain.on('window:new', () => {
+    if (isServerMode()) createWindow();
   });
   // Render a sticky note's JMarkdown via the user-configured command.
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
@@ -179,7 +235,7 @@ app.whenReady().then(() => {
   // The renderer sends the current buffer's mode menu; rebuild the
   // application menu around it as the buffer's mode changes.
   ipcMain.on('menu:set', (_event, modeMenu) => {
-    buildAppMenu(modeMenu, dispatchMenuCommand);
+    buildAppMenu(modeMenu, dispatchMenuCommand, { canNewWindow: isServerMode() });
   });
 
   // G1: behind GODOT_SERVER=1 only, fork the Model-B server utilityProcess so a
@@ -251,5 +307,16 @@ function shouldHoldForConfirm() {
 app.on('before-quit', (event) => {
   if (!shouldHoldForConfirm()) return;
   event.preventDefault();
-  mainWindow.webContents.send('app:confirm-quit');
+  // G4: in server mode the confirm runs in the focused window (any window can
+  // confirm — the buffers are shared server state); flag-off it is the single
+  // window. quitInteractive there calls back via `app:quit` to proceed.
+  const win = isServerMode() ? focusedWindow() : mainWindow;
+  if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+    win.webContents.send('app:confirm-quit');
+  } else {
+    // No window to confirm with (e.g. all closed in server mode): nothing in
+    // the renderer to lose — the server autosaves — so let the quit proceed.
+    quitConfirmed = true;
+    app.quit();
+  }
 });

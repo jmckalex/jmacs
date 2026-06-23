@@ -57,13 +57,33 @@ import { renderModeMenuItem } from './mode-menu-build.js';
  *   or null when the mode contributes no commands.
  * @param {(command: string) => void} onCommand - Run when a menu item
  *   is chosen; receives the command name to dispatch in the renderer.
+ * @param {object} [options]
+ * @param {boolean} [options.canNewWindow] - When true (server mode / G4),
+ *   include a "New Window" item that opens another client window onto the
+ *   shared server. Omitted in the flag-off single-window build so its menu
+ *   is byte-for-byte today.
  */
-export function buildAppMenu(modeMenu, onCommand) {
+export function buildAppMenu(modeMenu, onCommand, options = {}) {
+  // New Window (G4, server mode only): opens another client window onto the
+  // same central server / shared buffers. The keybinding is the Emacs
+  // make-frame chord C-x 5 2 — a key SEQUENCE, which an Electron accelerator
+  // can't express (see the header note), so it carries no accelerator and the
+  // chord is shown in the label, like the pane items below.
+  const newWindowItems = options.canNewWindow
+    ? [
+        {
+          label: 'New Window  (C-x 5 2)',
+          click: () => onCommand('new-window'),
+        },
+        { type: 'separator' },
+      ]
+    : [];
   const template = [
     { role: 'appMenu' },
     {
       label: 'File',
       submenu: [
+        ...newWindowItems,
         // Open File… runs the same native-dialog flow as the REPL's
         // (open-file!), via the `open-file-dialog` command in
         // `files.lisp`. C-x C-f in the editor uses the minibuffer
