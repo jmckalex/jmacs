@@ -2629,7 +2629,30 @@ shown as the ACTIVE view in two real windows updates LIVE in both as you type
 buffer in a NON-focused split pane (static snapshot, 3b) edited from elsewhere.
 
 **REMAINING (Step 3 polish, all deferred):** 3c — a leaf can BE a tabline with
-its own tab set (multiple tablines per window; the per-window subset becomes
-per-tabline-leaf); live background-pane cursors / full per-buffer mirrors;
+its own tab set; live background-pane cursors / full per-buffer mirrors;
 persisted splitter ratios; the fresh-window REPL eval (does it work?). Then
 G4.3 menu-follows-focus polish, then G5 (flip default, delete in-renderer interp).
+
+## [2026-06-23 Step 3c] Server foundation committed; CORRECTED tabline model
+
+3c SERVER half committed (`4355fec`, suite 838/0): a per-leaf `tabline` flag in
+the pane model + `toggleFocusedTabline` + a `toggle-tabline` command + the flag
+on the PANE_TREE wire. NO visible effect yet (the client ignores it).
+
+**⚠ CORRECTED MODEL (Jason — my first design framing was WRONG).** A tabline-leaf
+is a container of EXPLICITLY-CURATED tabs (like a flag-off `tabline-view`'s `tabs`
+array). A tab is in a tabline ONLY because it was (a) RESTORED there or (b) put
+there by the USER. A tabline shows **only its own tabs** — NOT "the window's
+buffer set" (that phrase was an artifact of window-1 being one big tabline =
+`clientBuffers`; there's no general window-buffer-set a tabline displays).
+- `toggle-tabline` on a single pane → a tabline with EXACTLY ONE tab (its buffer).
+- find-file / switch WHILE A TABLINE LEAF IS FOCUSED → ADD a tab to THAT tabline;
+  find-file in a single-view pane just replaces what it shows.
+
+**So the committed flag is only a START.** The real server model: the tabline-leaf
+needs an explicit ordered **`tabs: bufferId[]`** (+ active), not just the boolean.
+Reconcile `clientBuffers` (the per-window stand-in) with per-tabline-leaf tab sets:
+window 1's tabs become its leaf's set; clientBuffers derives from the pane tree or
+retires. Then the CLIENT renders a tabline leaf as a real tabline-view of EXACTLY
+its `tabs` (proxies via `ensureServerProxy`), mounted via `mountKindView`. Full
+design in repo-root `HANDOVER.md` (the ⚡ NEXT ACTION block).
