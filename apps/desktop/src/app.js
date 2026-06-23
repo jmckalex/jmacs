@@ -5992,6 +5992,11 @@ if (window.host && window.host.serverMode) {
    *  (syncServerBufferTabs), so the active view re-renders the new buffer. */
   function mountServerView(mirror, options = {}) {
     serverMirror = mirror;
+    // The startup splash (the faint Lisp backdrop on editorView.backgroundLayer)
+    // is dismissed by an edit / view-switch — none of which fire for a fresh
+    // server window, so it lingered behind the empty *scratch* (the "(cond"
+    // ghost). The server is driving the view now, so retire it. Idempotent.
+    dismissSplash();
     const leaf = serverBoundLeaf() ?? currentPane() ?? leafPanes(rootPane)[0];
     if (!leaf) return makeNullServerView();
     serverBoundLeafId = leaf.id;
