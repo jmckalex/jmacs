@@ -537,7 +537,8 @@ export function createSpine(options, effects = {}) {
 
   // The seed buffer (the file the server booted with). Every client starts
   // viewing it; further buffers join via find-file.
-  const initialEntry = registry.add(options.initialText ?? '', options.name ?? 'mwb-scratch');
+  const initialEntry = registry.add(
+    options.initialText ?? '', options.name ?? 'mwb-scratch', options.initialPath ?? null);
 
   // --- per-window pane trees (G0a) -------------------------------------
   //
@@ -1472,6 +1473,26 @@ export function createSpine(options, effects = {}) {
     }
     const source = readFileSync(join(STDLIB_DIR, file), 'utf8');
     interpreter.evaluate(source);
+  }
+
+  // Language major modes (`languages/*.lisp`: a `define-mode` + `register-mode`
+  // each, plus a few editing commands using the same primitives the modes above
+  // already provide). Loaded TOLERANTLY — one bad file logs + skips rather than
+  // aborting the boot — so the modeline + mode keymaps get the right mode for
+  // common file types (.html, .py, .css, .json, …) without per-file curation.
+  // Skip latex/markdown: their richer modes load from the list above.
+  try {
+    const langDir = join(STDLIB_DIR, 'languages');
+    for (const f of readdirSync(langDir)) {
+      if (!f.endsWith('.lisp') || f === 'latex.lisp' || f === 'markdown.lisp') continue;
+      try {
+        interpreter.evaluate(readFileSync(join(langDir, f), 'utf8'));
+      } catch (error) {
+        console.error(`[mwb-server] language mode skipped languages/${f}: ${error.message}`);
+      }
+    }
+  } catch (error) {
+    console.error(`[mwb-server] language modes unavailable: ${error.message}`);
   }
 
   // A couple of spine-level commands defined in Lisp on top of the real

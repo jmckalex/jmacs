@@ -50,15 +50,39 @@ const DEFAULT_FILE = join(
 );
 const filePath = process.env.MWB_FILE || DEFAULT_FILE;
 
+// Where the server persists its OWN session (open files + active). Defined here,
+// before the spine, so the seed below can read it via readServerSession (a
+// hoisted function); the persistence functions further down share this const.
+const SESSION_STORE = process.env.MWB_SESSION_STORE
+  || join(tmpdir(), 'godot-mw-b-session.json');
+
+// The spine's seed buffer. When a saved session exists (the server's own, else
+// the renderer's session.json — see readServerSession), boot on its ACTIVE file
+// so there is NO stray demo tab; the rest of the session opens at the first
+// HELLO (restoreServerSession skips the already-open seed). Otherwise fall back
+// to DEFAULT_FILE (view.js).
 let initialText;
 let bufferName;
-try {
-  initialText = readFileSync(filePath, 'utf8');
-  bufferName = basename(filePath);
-} catch (error) {
-  console.error(`[mwb-server] could not read ${filePath}: ${error.message}`);
-  initialText = '; could not load file — type here.\n';
-  bufferName = 'mwb-scratch.lisp';
+let initialPath = null;
+const bootSession = readServerSession();
+if (bootSession && bootSession.active) {
+  try {
+    initialText = readFileSync(bootSession.active, 'utf8');
+    bufferName = basename(bootSession.active);
+    initialPath = bootSession.active;
+  } catch { /* the active file is gone — fall through to the default below */ }
+}
+if (initialText === undefined) {
+  try {
+    initialText = readFileSync(filePath, 'utf8');
+    bufferName = basename(filePath);
+    initialPath = filePath;
+  } catch (error) {
+    console.error(`[mwb-server] could not read ${filePath}: ${error.message}`);
+    initialText = '; could not load file — type here.\n';
+    bufferName = 'mwb-scratch.lisp';
+    initialPath = null;
+  }
 }
 
 // A monotonic delta sequence number, so a client can order deltas and
@@ -115,7 +139,7 @@ function writeFileForSave({ path, text }) {
 // --- the command spine ------------------------------------------------
 
 const spine = createSpine(
-  { initialText, name: bufferName },
+  { initialText, name: bufferName, initialPath },
   {
     // Effects are raised while a specific client's view is active (see
     // applyIntent → setActiveClient), so they refresh that client. We refresh
@@ -700,8 +724,7 @@ const autosave = createAutosave({
 // renderer, owns the session. On the FIRST server boot there is no server
 // session yet — MWB_SESSION_SEED (the renderer's session.json, passed by main)
 // seeds the file list once, then the server owns it (Increment 3 step 2).
-const SESSION_STORE = process.env.MWB_SESSION_STORE
-  || join(tmpdir(), 'godot-mw-b-session.json');
+// (SESSION_STORE is declared up by the seed setup, which reads it too.)
 
 /** Whether the server has restored its session yet (once per process, on the
  *  first client's HELLO — when an active client exists for visitFile). */
