@@ -2232,3 +2232,21 @@ live delivery — while a key-reader is pending the view must keep focus + keep
 emitting KEY intents (and/or signal the client that a reader is active so it holds
 focus / the router gate must permit the reader path). Re-arm isearch + math-symbol
 once solid. Suite back to 822, flag-off byte-for-byte.
+
+## [2026-06-23] Leaf-flip Step A ATTEMPTED + REVERTED — the correct approach found
+
+Tried Step A: retire the g2HostEl overlay, mount the server mirror view into the
+focused leaf's REAL pane element. Boots clean, suite green — but the editor
+renders EMPTY. Diagnostic (settled, 2s post-mount): `mirrorInPane=false`,
+`visibleKids=[tabline-view]`. The in-renderer pane render loop
+(`elementForViewInstance` → the tabline-view/warehouse render, re-run on
+layout/focus) re-resolves `leaf.view` to its OWN element (wrapped in a
+tabline-view) and re-mounts it into the pane, EVICTING the foreign mirror.
+
+**Lesson:** "append a mirror into the pane" fundamentally fights the render
+loop. The CORRECT leaf-flip makes `leaf.view` itself **resolve to** the server
+mirror — a server-backed View handle whose `elementForViewInstance` returns the
+mirror `<text-view>` — so the EXISTING tabline/warehouse/sync render shows it
+naturally, no fighting. That's a designed change to the view-resolution system,
+done deliberately (map `elementForViewInstance` + the View-handle shape), NOT a
+live poke. Reverted (`9288f2c` reverts `1a66d88`); the overlay works meanwhile.
