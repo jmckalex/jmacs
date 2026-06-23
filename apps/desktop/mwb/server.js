@@ -210,14 +210,15 @@ let bootstrapClaimed = false;
 
 function registerClient(port) {
   // The FIRST window claims the bootstrap view (index 0) — it carries the
-  // welcome / restored session and renders as a tabline. Every later window
-  // (G4 Step 1) is a FRESH window: its own empty *scratch* buffer, rendered as
-  // a single composable pane (NOT a tabline of everyone's files). The window
-  // kind rides the snapshot so the client knows how to present its root.
+  // welcome / restored session. Every later window (G4 Step 1) is a FRESH
+  // window: its own empty *scratch* buffer. EVERY window now renders as a
+  // composable pane layout from its PANE_TREE (the unify): window 1 is seeded
+  // as a TABLINE leaf of its restored files (in the HELLO handler), fresh
+  // windows as a single scratch pane — one render path, different seeds.
   const isFresh = bootstrapClaimed;
   const index = isFresh ? spine.addClientView({ freshScratch: true }) : 0;
   bootstrapClaimed = true;
-  const client = { port, index, windowKind: isFresh ? 'single' : 'tabline' };
+  const client = { port, index, windowKind: 'single' };
   clients.push(client);
   port.on('message', (event) => onClientMessage(client, event));
   // G4: when the window closes, its renderer's port is closed/GC'd and the
@@ -713,6 +714,11 @@ function onClientMessage(client, event) {
         sessionRestored = true;
         restoreServerSession(client);
         persistServerSession(client);
+        // Unify: window 1's session presents as a TABLINE leaf — its open files
+        // as curated tabs — so it renders through the same PANE_TREE pipeline as
+        // every window (C-x 2/3 split it; the client's special one-big-tabline
+        // retires). Seed from the window's open-set (always ≥1: the boot buffer).
+        seedWindow1Tabline(client);
       }
       sendSnapshot(client);
       sendViewTo(client);
@@ -855,6 +861,20 @@ function restoreServerSession(client) {
   } catch (error) {
     console.error(`[mwb-session] restore failed: ${error.message}`);
   }
+}
+
+/** Seed window 1 (the bootstrap client) as a TABLINE leaf of its open files (the
+ *  unify): its restored session presents as curated tabs in a composable pane,
+ *  rendered through the same PANE_TREE pipeline as every window. Called once,
+ *  right after the session restore. The open-set always holds ≥1 buffer (the boot
+ *  buffer), so a session-less first boot still gets a 1-tab tabline (matching the
+ *  pre-unify look). The model's onChange re-pushes the PANE_TREE. */
+function seedWindow1Tabline(client) {
+  const recs = spine.bufferListRecords(client.index);
+  const ids = recs.map((r) => r.id);
+  if (ids.length === 0) return;
+  const activeId = (recs.find((r) => r.current) ?? recs[0]).id;
+  spine.seedClientTabline(client.index, ids, activeId);
 }
 
 /** Parse the renderer's session.json (its path passed as MWB_SESSION_SEED by

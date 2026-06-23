@@ -6411,9 +6411,16 @@ if (window.host && window.host.serverMode) {
       });
     },
     closePicker: closeServerPicker,
-    // The server's open-buffer set (a BUFFER_LIST push): reconcile the server
-    // tabline's tabs so the in-renderer tabs + active marker track it.
-    setBufferList: (buffers) => syncServerBufferTabs(buffers),
+    // The server's open-buffer set (a BUFFER_LIST push). Keep the *View List*
+    // table in step (it reads server-sourced viewListRecords). The old one-big-
+    // tabline reconcile (syncServerBufferTabs) is dead now that every window —
+    // window 1 included — renders its tabs from the PANE_TREE; it's retired in
+    // the cleanup step. The View-List refresh used to piggyback on it, so do it
+    // here directly or window 1's View List would go stale.
+    setBufferList: (buffers) => {
+      syncServerBufferTabs(buffers);
+      if (viewListView && typeof viewListView.refresh === 'function') viewListView.refresh();
+    },
     // C-x C-c: the client resolves the quit chord (the server can't close the
     // window); run the normal interactive quit (flush + host.quit()).
     requestQuit: () => quitInteractive(),
