@@ -567,6 +567,25 @@ test('openElementSource holds a renderer-computed element spec as a data-source'
   assert.ok(rec && rec.viewKind === 'element', 'element is in the window buffer list');
 });
 
+test('openJukebox holds a server-scanned listing as a data-source', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const id = spine.openJukebox({ dir: '/music/album', tracks: ['01.mp3', '02.flac'], art: 'cover.jpg' });
+  assert.match(id, /^ds\d+$/, 'a data-source id, not a buffer id');
+  assert.equal(spine.bufferCount, 1, 'a jukebox did NOT add a text buffer');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.bufferId, id);
+  assert.equal(leaf.viewKind, 'jukebox');
+  assert.equal(leaf.state.dir, '/music/album');
+  assert.deepEqual(leaf.state.tracks, ['01.mp3', '02.flac']);
+  assert.equal(leaf.state.art, 'cover.jpg');
+  assert.equal(leaf.text, undefined, 'a jukebox leaf carries no text');
+  // Reuse by directory; a tag-less / dir-less spec is a no-op.
+  assert.equal(spine.openJukebox({ dir: '/music/album' }), id, 're-opening the same dir reveals it');
+  assert.equal(spine.openJukebox({ tracks: [] }), null, 'a dir-less spec is a no-op');
+  const rec = spine.bufferListRecords(0).find((r) => r.id === id);
+  assert.ok(rec && rec.viewKind === 'jukebox', 'jukebox is in the window buffer list');
+});
+
 test('openElementSource with noFocus opens BESIDE the document, keeping focus', () => {
   const { spine } = makeSpine('document text', 'paper.tex');
   const docId = spine.currentBufferIdOf(0);

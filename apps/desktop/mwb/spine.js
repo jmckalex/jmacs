@@ -1926,6 +1926,12 @@ export function createSpine(options, effects = {}) {
       (interactive (string "Directory columns: "))
       (lambda (path) path))
 
+    (defcommand jukebox ()
+      "Open a jukebox for a directory of audio files chosen in the minibuffer.
+       The host scans the directory and opens it as a jukebox DATA-SOURCE."
+      (interactive (string "Jukebox directory: "))
+      (lambda (path) path))
+
     (defcommand new-window ()
       "Open another editor window onto the shared server (C-x 5 2). The
        window itself is opened by the client's host; this raises the effect."
@@ -2115,6 +2121,37 @@ export function createSpine(options, effects = {}) {
     if (docId && registry.has(docId)) switchClientToBuffer(index, docId);
     else onBufferSwitched(model.focusedBufferId());
     return srcId;
+  }
+
+  /**
+   * Open a JUKEBOX DATA-SOURCE for a directory of audio files. SPEC is the
+   * server-scanned listing `{ dir, tracks, art, name }` (the host owns the
+   * filesystem; it scans + filters audio + finds album art). Switches the
+   * active client's focused leaf to it; the client mounts <jukebox-view> and
+   * handles playback / per-track labels / art client-side. Reuses an existing
+   * source for the SAME directory (re-running reveals it). Returns the id.
+   *
+   * @param {{ dir: string, tracks?: string[], art?: string|null, name?: string }} spec
+   * @returns {string | null}
+   */
+  function openJukebox(spec) {
+    const s = spec && typeof spec === 'object' ? spec : {};
+    const dir = typeof s.dir === 'string' ? s.dir : '';
+    if (dir === '') return null;
+    const state = {
+      dir,
+      tracks: Array.isArray(s.tracks) ? s.tracks : [],
+      art: typeof s.art === 'string' ? s.art : null,
+    };
+    const name = typeof s.name === 'string' && s.name !== ''
+      ? s.name : `*Jukebox: ${dir}*`;
+    const existing = dataSources.list()
+      .find((d) => d.kind === 'jukebox' && d.state && d.state.dir === dir);
+    const src = existing ?? dataSources.add({ kind: 'jukebox', name, state });
+    switchClientToSource(activeClientIndex, src.id);
+    statusText = '';
+    onStatus('');
+    return src.id;
   }
 
   /**
@@ -2955,6 +2992,7 @@ export function createSpine(options, effects = {}) {
     visitFile,
     visitDirectory,
     openElementSource,
+    openJukebox,
     recoverBuffer,
     // save (real disk write) — the server wires saveFile to atomicWrite.
     saveActiveBuffer,

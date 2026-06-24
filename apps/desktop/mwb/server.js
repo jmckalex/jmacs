@@ -172,6 +172,30 @@ function isFile(path) {
   }
 }
 
+/** Album-art filenames a jukebox directory may carry (case-insensitive),
+ *  mirroring jukebox-view's ART_FILENAMES. */
+const JUKEBOX_ART = [
+  'cover.jpg', 'cover.jpeg', 'cover.png', 'cover.webp',
+  'folder.jpg', 'folder.png', 'album.jpg', 'album.png',
+];
+
+/** Scan DIRPATH for a jukebox listing: its audio files (by suffix, sorted) and
+ *  an album-art filename. Returns `{ dir, tracks, art, name }` (what the jukebox
+ *  data-source holds), or null when the path isn't a readable directory. The
+ *  client resolves dir+track / dir+art to media:// URLs for playback + art. */
+function scanJukeboxDir(dirPath) {
+  try {
+    const abs = resolvePath(dirPath);
+    if (!isDirectoryPath(abs)) return null;
+    const entries = readdirSync(abs);
+    const tracks = entries.filter((n) => mediaKindForName(n) === 'audio').sort();
+    const art = entries.find((n) => JUKEBOX_ART.includes(n.toLowerCase())) ?? null;
+    return { dir: abs, tracks, art, name: `*Jukebox: ${abs}*` };
+  } catch {
+    return null;
+  }
+}
+
 /** Find a bibliography DECLARATION in document TEXT: a markdown/jmarkdown
  *  `Bibliography: path` metadata header (first ~60 lines), or a LaTeX
  *  `\addbibresource{…}` / `\bibliography{…}` (the first entry, `.bib` appended).
@@ -795,6 +819,19 @@ function handleMinibufferSubmit(value) {
     if (newId && activeClient) resyncClientToCurrentBuffer(activeClient);
     return;
   }
+  if (prompt === 'Jukebox directory: ') {
+    spine.abortMinibuffer();
+    // Scan the chosen directory + open it as a jukebox DATA-SOURCE; the client
+    // mounts <jukebox-view> and plays the tracks.
+    const listing = scanJukeboxDir(value);
+    if (listing) {
+      const id = spine.openJukebox(listing);
+      if (id && activeClient) resyncClientToCurrentBuffer(activeClient);
+    } else if (activeClient) {
+      sendStatusTo(activeClient, `Jukebox: cannot read directory ${value}`);
+    }
+    return;
+  }
   if (prompt === 'Write file: ') {
     spine.abortMinibuffer();
     // write-file / save-as: write the active buffer to the typed path
@@ -948,7 +985,8 @@ function onClientMessage(client, event) {
       // so it replies directly rather than going through applyIntent.
       if (spine.activePrompt === 'Find file: '
           || spine.activePrompt === 'Directory tree: '
-          || spine.activePrompt === 'Directory columns: ') {
+          || spine.activePrompt === 'Directory columns: '
+          || spine.activePrompt === 'Jukebox directory: ') {
         const r = completeFindFilePath(String(msg.value ?? ''));
         client.port.postMessage({
           type: MSG.MINIBUFFER_COMPLETIONS,

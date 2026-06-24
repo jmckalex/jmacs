@@ -5977,6 +5977,7 @@ if (window.host && window.host.serverMode) {
       const directoryKind =
         w.viewKind === 'directory-tree' || w.viewKind === 'directory-columns';
       const elementKind = w.viewKind === 'element';
+      const jukeboxKind = w.viewKind === 'jukebox';
       let extras;
       if (elementKind) {
         const s = (w.state && typeof w.state === 'object') ? w.state : {};
@@ -5990,6 +5991,24 @@ if (window.host && window.host.serverMode) {
         };
       } else if (directoryKind) {
         extras = { rootPath: w.filePath, expanded: new Set() };
+      } else if (jukeboxKind) {
+        // The server lists the directory's audio files + album art; the client
+        // formats per-track labels (the same Lisp helper + audio-metadata IPC as
+        // flag-off) and plays tracks via media:// URLs (jukebox-view).
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        const dir = typeof s.dir === 'string' ? s.dir : '';
+        const tracks = Array.isArray(s.tracks) ? s.tracks : [];
+        extras = {
+          dir,
+          tracks,
+          art: typeof s.art === 'string' ? s.art : null,
+          labels: tracks.map((t) => formatTrackLabel(joinPath(dir, t))),
+          // refresh (g) re-reads the dir — deferred in server mode (v1 is
+          // immutable; the mutable-source seam would re-scan + restate).
+          refresh: () => {},
+          // quit (q) stops playback; the pane itself closes via the tabline ×.
+          quit: () => { try { audio.stop(); } catch { /* ignore */ } },
+        };
       } else {
         extras = { filePath: w.filePath };
       }
@@ -6002,12 +6021,12 @@ if (window.host && window.host.serverMode) {
       v._serverSourceId = w.bufferId;
       // The tab click / close handlers resolve a tab to a server id via
       // `_serverBufferId` (the same field a proxy tab carries), so a media /
-      // directory / element tab is switchable / closable like any other.
+      // directory / element / jukebox tab is switchable / closable like any other.
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
-      // Only media needs an async byte-load; directory + element render
-      // themselves from the spec.
-      if (!directoryKind && !elementKind) loadServerMediaSrc(v, w.filePath);
+      // Only media needs an async byte-load; directory / element / jukebox
+      // render themselves from the spec.
+      if (!directoryKind && !elementKind && !jukeboxKind) loadServerMediaSrc(v, w.filePath);
     }
     return v;
   }
@@ -7617,10 +7636,22 @@ function configureDocView() {
 // Phase 3f: jukebox-view is a custom element now. Factory reused by
 // the tabline mount for per-tab `<jukebox-view>` instances.
 function configureJukeboxView() {
+  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // onKey routes chords to the server's keymap in server mode; flag-off
+    // byte-for-byte. (Jukebox's own SPC/RET/n/p/s keys are handled inside the
+    // view; onKey only forwards the chords it doesn't claim.)
+    ...serverMediaKeyOption(),
     audio,
-    openImage: (path) => openImageByPath(expandTilde(path)),
+    openImage: (path) => {
+      // M-RET on the album art opens it as an image. Server mode: route through
+      // the server's find-file (a media data-source); flag-off: open locally.
+      if (serverMode) {
+        if (serverViewClient) serverViewClient.visitPath(expandTilde(path));
+        return;
+      }
+      openImageByPath(expandTilde(path));
+    },
     report: (message) => repl.appendNote(message),
     // Embedded album-art lookup: the host IPC reads the file's tag
     // and returns `{ mime, dataUrl }` or null. The view shows the
