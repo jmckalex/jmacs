@@ -444,3 +444,85 @@ test('snapshot reflects a 4-pane layout with the right leaf count', () => {
   // Exactly one focused leaf.
   assert.equal(wireLeaves(snap).filter((l) => l.focused).length, 1);
 });
+
+// --- session persistence: serialiseLayout / loadLayout round-trips --------
+
+test('serialiseLayout/loadLayout round-trips structure, buffers, focus, cursor', () => {
+  const toPath = (id) => (id == null ? null : `/p/${id}.txt`);
+  const toId = (path) => {
+    const m = /^\/p\/(.+)\.txt$/.exec(path);
+    return m ? m[1] : null;
+  };
+  // Build  A | (B / C)  — a horizontal split whose 2nd child is split vertically.
+  const src = createPaneModel({ initialBufferId: 'A' }, { nameForBuffer: (id) => `n-${id}` });
+  src.split('horizontal', 0.3, 'after'); // focus → new leaf (still on A)
+  src.setFocusedBuffer('B');             // right leaf shows B
+  src.setFocusedPoint(5, 2);             // B leaf cursor
+  src.split('vertical', 0.6, 'after');   // split B vertically; focus → new leaf (B)
+  src.setFocusedBuffer('C');             // bottom-right shows C (focused)
+  src.setFocusedPoint(9, null);
+
+  const blob = src.serialiseLayout(toPath);
+
+  // Restore into a FRESH model that started on an unrelated buffer.
+  const dst = createPaneModel({ initialBufferId: 'Z' }, { nameForBuffer: (id) => `n-${id}` });
+  assert.equal(dst.loadLayout(blob, toId), true);
+
+  const snap = dst.snapshot();
+  assert.equal(wireLeaves(snap).length, 3, 'the old Z leaf is gone — tree replaced wholesale');
+  // Top split.
+  assert.equal(snap.kind, 'split');
+  assert.equal(snap.orientation, 'horizontal');
+  assert.ok(Math.abs(snap.ratio - 0.3) < 1e-9, 'top ratio preserved');
+  assert.equal(snap.first.bufferId, 'A', 'left leaf is A');
+  // Inner split.
+  assert.equal(snap.second.kind, 'split');
+  assert.equal(snap.second.orientation, 'vertical');
+  assert.ok(Math.abs(snap.second.ratio - 0.6) < 1e-9, 'inner ratio preserved');
+  assert.equal(snap.second.first.bufferId, 'B');
+  assert.equal(snap.second.first.point, 5, 'B leaf cursor preserved');
+  assert.equal(snap.second.first.mark, 2, 'B leaf mark preserved');
+  assert.equal(snap.second.second.bufferId, 'C');
+  assert.equal(snap.second.second.point, 9, 'C leaf cursor preserved');
+  // Focus follows the `focused: true` tag, not the (regenerated) leaf id.
+  assert.equal(wireFocusedLeafId(snap), snap.second.second.id, 'focus restored to C');
+});
+
+test('a path-less leaf serialises to a null view and restores to scratch', () => {
+  const toPath = (id) => (id === 'A' ? '/p/A.txt' : null); // 'S' has no file
+  const toId = (path) => (path === '/p/A.txt' ? 'A' : null);
+  const src = createPaneModel({ initialBufferId: 'S' }, {});
+  src.split('horizontal', 0.5, 'after');
+  src.setFocusedBuffer('A'); // second leaf → A
+  const blob = src.serialiseLayout(toPath);
+  assert.equal(blob.first.view, null, 'the path-less (scratch) leaf has no view-blob');
+  assert.equal(blob.second.view.kind, 'text');
+
+  const dst = createPaneModel({ initialBufferId: 'Z' }, {});
+  assert.equal(dst.loadLayout(blob, toId), true);
+  const snap = dst.snapshot();
+  assert.equal(snap.first.bufferId, null, 'the path-less leaf restored to a scratch');
+  assert.equal(snap.second.bufferId, 'A');
+});
+
+test('a tabline leaf round-trips its tabs + the active tab cursor', () => {
+  const toPath = (id) => (id == null ? null : `/p/${id}`);
+  const toId = (path) => path.replace('/p/', '') || null;
+  const src = createPaneModel({ initialBufferId: 'b1' }, {});
+  src.seedFocusedTabline(['b1', 'b2', 'b3'], 'b2');
+  src.setFocusedPoint(7, null); // the active tab (b2) cursor
+
+  const blob = src.serialiseLayout(toPath);
+  assert.equal(blob.view.kind, 'tabline');
+  assert.deepEqual(blob.view.tabs.map((t) => t.path), ['/p/b1', '/p/b2', '/p/b3']);
+  assert.equal(blob.view.active, 1, 'active index points at b2');
+  assert.equal(blob.view.tabs[1].point, 7, 'the active tab carries the live cursor');
+
+  const dst = createPaneModel({ initialBufferId: 'z' }, {});
+  assert.equal(dst.loadLayout(blob, toId), true);
+  const snap = dst.snapshot();
+  assert.equal(snap.tabline, true);
+  assert.deepEqual(snap.tabs.map((t) => t.bufferId), ['b1', 'b2', 'b3'], 'tab set restored in order');
+  assert.equal(snap.bufferId, 'b2', 'active tab restored');
+  assert.equal(snap.point, 7, 'active cursor restored');
+});

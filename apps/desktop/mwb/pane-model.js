@@ -671,6 +671,169 @@ export function createPaneModel(options = {}, hooks = {}) {
     });
   }
 
+  // --- session persistence (serialise / restore the whole layout) -------
+  //
+  // Distinct from the wire `snapshot()` (which keys leaves by the process-local
+  // `bufferId` the client mounts live): persistence keys every leaf by its
+  // buffer's FILE PATH, the only identity that survives a relaunch. The focused
+  // leaf is marked in-tree (`focused: true`) rather than by id — a reload mints
+  // fresh leaf ids, so the old id is meaningless on the way back in.
+
+  /** Serialise a leaf's view-state to a path-keyed view-blob, or null when it
+   *  can't be reopened (a path-less *scratch*, or every tab unresolved → the
+   *  owning leaf restores to a fresh scratch). RESOLVEPATH maps a buffer id to
+   *  its file path (or null). */
+  function serialiseLeafView(state, resolvePath) {
+    if (!state) return null;
+    if (state.tabline && Array.isArray(state.tabs)) {
+      const tabs = [];
+      let active = 0;
+      for (const id of state.tabs) {
+        const path = resolvePath(id);
+        if (typeof path !== 'string' || path === '') continue; // drop unresolvable tabs
+        const isActive = id === state.bufferId;
+        if (isActive) active = tabs.length;
+        // Only the ACTIVE tab carries a live cursor; background tabs restore at 0
+        // (their per-(leaf,buffer) cursor lives in the registry, not the model).
+        tabs.push({
+          kind: 'text',
+          path,
+          point: isActive ? statePoint(state) : 0,
+          mark: isActive ? stateMark(state) : null,
+        });
+      }
+      if (tabs.length === 0) return null;
+      return { kind: 'tabline', active, tabs };
+    }
+    const path = resolvePath(state.bufferId);
+    if (typeof path !== 'string' || path === '') return null; // path-less scratch
+    return {
+      kind: 'text',
+      path,
+      point: statePoint(state),
+      mark: stateMark(state),
+      scrollLine: state.scrollLine,
+    };
+  }
+
+  /**
+   * Serialise the whole pane tree to a persistence blob (the session's
+   * per-window `rootPane`). Splits carry `orientation` + `ratio`; leaves carry a
+   * path-keyed view-blob (or null → a scratch on restore); the focused leaf is
+   * tagged `focused: true`. Pure given RESOLVEPATH (`bufferId -> filePath|null`).
+   *
+   * @param {(bufferId: string|null) => string|null} resolvePath
+   * @returns {object|null} The root pane-blob, or null for an empty tree.
+   */
+  function serialiseLayout(resolvePath) {
+    const resolve = typeof resolvePath === 'function' ? resolvePath : () => null;
+    function paneBlob(node) {
+      if (!node || typeof node !== 'object') return null;
+      if (node.kind === 'split') {
+        return {
+          kind: 'split',
+          orientation: node.orientation,
+          ratio: typeof node.ratio === 'number' ? node.ratio : 0.5,
+          first: paneBlob(node.first),
+          second: paneBlob(node.second),
+        };
+      }
+      const blob = { kind: 'leaf', view: serialiseLeafView(stateById.get(node.id), resolve) };
+      if (node.id === focusedId) blob.focused = true;
+      return blob;
+    }
+    return paneBlob(rootPane);
+  }
+
+  /**
+   * Rebuild the window's pane tree from a persistence blob (the restore mirror
+   * of `serialiseLayout`). Mints fresh leaves + states; resolves each leaf's
+   * path back to a live buffer id via RESOLVEID (`filePath -> bufferId|null`); a
+   * null/unresolved view becomes a *scratch* leaf. Focus follows the
+   * `focused: true` tag (else the first leaf). Replaces the current tree
+   * wholesale and prunes the orphaned states. Returns true when a tree was
+   * installed.
+   *
+   * @param {object} blob - A root pane-blob from `serialiseLayout`.
+   * @param {(path: string) => string|null} resolveId
+   * @returns {boolean}
+   */
+  function loadLayout(blob, resolveId) {
+    const resolve = typeof resolveId === 'function' ? resolveId : () => null;
+    let nextFocusId = null;
+
+    function buildLeaf(leafBlob) {
+      const view = leafBlob && leafBlob.view;
+      let bufferId = null;
+      let tabline = false;
+      let tabs = null;
+      let point = 0;
+      let mark = null;
+      let scrollLine = 0;
+      if (view && view.kind === 'text') {
+        bufferId = resolve(view.path);
+        point = Number.isFinite(view.point) ? view.point : 0;
+        mark = view.mark == null ? null : (Number.isFinite(view.mark) ? view.mark : null);
+        scrollLine = Number.isFinite(view.scrollLine) ? view.scrollLine : 0;
+      } else if (view && view.kind === 'tabline' && Array.isArray(view.tabs)) {
+        const ids = [];
+        let activeId = null;
+        view.tabs.forEach((tab, i) => {
+          if (!tab || tab.kind !== 'text') return;
+          const id = resolve(tab.path);
+          if (id == null) return;
+          ids.push(id);
+          if (i === view.active) {
+            activeId = id;
+            point = Number.isFinite(tab.point) ? tab.point : 0;
+            mark = tab.mark == null ? null : (Number.isFinite(tab.mark) ? tab.mark : null);
+          }
+        });
+        if (ids.length > 0) {
+          tabline = true;
+          tabs = ids;
+          bufferId = activeId ?? ids[0];
+        }
+      }
+      const state = freshState(bufferId);
+      state.tabline = tabline;
+      state.tabs = tabs;
+      state.scrollLine = scrollLine;
+      if (state.view) {
+        state.view.point = point;
+        state.view.mark = mark;
+      } else {
+        state.point = point;
+        state.mark = mark;
+      }
+      const leaf = makeLeaf(bufferId, state);
+      if (leafBlob && leafBlob.focused) nextFocusId = leaf.id;
+      return leaf;
+    }
+
+    function buildPane(node) {
+      if (!node || typeof node !== 'object') return null;
+      if (node.kind === 'split') {
+        const first = buildPane(node.first);
+        const second = buildPane(node.second);
+        if (!first || !second) return first || second; // defensive: collapse a half-empty split
+        const r = typeof node.ratio === 'number' && node.ratio > 0 && node.ratio < 1 ? node.ratio : 0.5;
+        const orientation = node.orientation === SPLIT_VERTICAL ? SPLIT_VERTICAL : SPLIT_HORIZONTAL;
+        return createSplitPane({ orientation, ratio: r, first, second });
+      }
+      if (node.kind === 'leaf') return buildLeaf(node);
+      return null;
+    }
+
+    const newRoot = buildPane(blob);
+    if (!newRoot) return false;
+    rootPane = newRoot;
+    focusedId = nextFocusId ?? (leafPanes(rootPane)[0]?.id ?? null);
+    pruneOrphanState(); // drop the states of the leaves we replaced
+    onChange();
+    return true;
+  }
+
   /** @typedef {object} PaneModel */
   return {
     // structural ops (the model half of panes.lisp)
@@ -704,6 +867,9 @@ export function createPaneModel(options = {}, hooks = {}) {
     leafCount: () => leafPanes(rootPane).length,
     get root() { return rootPane; },
     snapshot,
+    // session persistence (serialise the layout by path; restore it back)
+    serialiseLayout,
+    loadLayout,
     // expose the state map for a leaf (tests / server)
     stateOf: (id) => stateById.get(id) ?? null,
   };
