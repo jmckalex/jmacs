@@ -1837,6 +1837,14 @@ function attachSplitterDrag(handle) {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
+      // Server mode: report the final ratio so the server stores it. Otherwise the
+      // drag is purely local, and the next reconcile (any PANE_TREE push — e.g. a
+      // bookmark pin toggle) rebuilds the split from the server's stale ratio and
+      // the resize snaps back. The server echoes the fresh PANE_TREE, which the
+      // client rebuilds at this same ratio (a no-op visually).
+      if (window.host && window.host.serverMode && serverViewClient) {
+        serverViewClient.sendPaneIntent({ op: 'resize', paneId: splitId, ratio: splitNode.ratio });
+      }
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
