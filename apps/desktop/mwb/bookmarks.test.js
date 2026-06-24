@@ -127,6 +127,16 @@ test('applyBookmarkOp jump moves the document point + returns true', () => {
   assert.equal(spine.buffer.point, 11, 'point moved to the bookmark');
 });
 
+test('isDataSource distinguishes a bookmark outline from a text buffer', () => {
+  // The server guards the text SNAPSHOT on this: focusing a data-source leaf
+  // (the outline) must NOT snapshot — that rebuilds + scrolls a sibling document.
+  const { spine } = makeSpine({ initialText: 'a\nb\n' });
+  spine.buffer.moveTo(0); spine.interpreter.evaluate('(bookmark-set! "x")');
+  assert.equal(spine.isDataSource(spine.currentBufferIdOf(0)), false, 'a text buffer is not a data-source');
+  spine.interpreter.evaluate('(open-bookmark-view!)');
+  assert.equal(spine.isDataSource(outlineSourceId(spine)), true, 'the bookmark outline is a data-source');
+});
+
 test('a buffer restored WITHOUT find-file still loads its bookmarks (lazy seed)', () => {
   // A session-restored / boot buffer never goes through visitFile's seed; the
   // engine's lazy seed (bookmarksFor) must still restore from the sidecar.

@@ -662,7 +662,16 @@ function sendSnapshot(client) {
  *  (the client must tear down its old mirror and build a fresh one). */
 function resyncClientToCurrentBuffer(client) {
   spine.setActiveClient(client.index);
-  sendSnapshot(client);
+  // A non-text (data-source) focused leaf — a bookmark outline, media, directory,
+  // jukebox, element — renders from the PANE_TREE, not a text snapshot. Sending a
+  // SNAPSHOT here would carry the data-source id with the (stale) active document
+  // text, and onSnapshot DESTROYS + RE-MOUNTS the mirror at that point — which
+  // visibly rebuilds + scrolls a document shown in a SIBLING pane (the bug: focus
+  // the bookmark outline beside a doc → the doc scrolled). Skip the snapshot; the
+  // PANE_TREE (already pushed) is all a data-source leaf needs.
+  if (!spine.isDataSource(spine.currentBufferIdOf(client.index))) {
+    sendSnapshot(client);
+  }
   sendViewTo(client);
   sendCursorsTo(client);
   sendOverlaysTo(client);

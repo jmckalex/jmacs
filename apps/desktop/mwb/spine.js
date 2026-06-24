@@ -3353,6 +3353,11 @@ export function createSpine(options, effects = {}) {
     seedClientTabline,
     bufferIdByName,
     currentBufferIdOf,
+    /** Whether ID names a non-text DATA-SOURCE (media / directory / jukebox /
+     *  element / bookmark) rather than a text buffer. The server uses this to
+     *  skip the text SNAPSHOT when a data-source leaf is focused — that snapshot
+     *  would rebuild + scroll a document shown in a sibling pane. */
+    isDataSource: (id) => dataSources.has(id),
     killActiveBuffer,
     /** Plain-data buffer-list records for client INDEX's TABS / View List, each
      *  tagged with whether it is that client's CURRENT buffer. Scoped to the
