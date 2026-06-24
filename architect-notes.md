@@ -2858,3 +2858,28 @@ be blank — pdf-as-a-tab works); C-x k on a media leaf re-homes to a text buffe
 but doesn't drop the data-source (leak); the global-key + async-mount + element
 rendering are GUI-shaped (unverifiable here) so watch them in the verify. The
 mutable-source fan-out (stella/jukebox) is the seam's reason for being — unbuilt.
+
+## [2026-06-24] Media views LIVE-VERIFIED ("It worked!")
+
+The data-source / media feature is live-verified by Jason after two follow-up
+fixes to the overnight build:
+- **`630a414`** — a bare media pane (a media file in a SECOND / 'single' window)
+  rendered blank: the per-kind SINGLETON mounts via mountKindView's singleton
+  fallback, which doesn't set `display` (the media singletons start
+  `display:none`); the reconcile now calls `hideInactiveSingletons()` to reveal
+  the in-use singleton.
+- **`ceef3d4`** — garbled restore: on boot the server seeded its initial buffer
+  from the session's ACTIVE file via `readFileSync(active,'utf8')` with no media
+  check, so a media active file restored as a garbled TEXT buffer in window 1.
+  Boot now seeds from the first TEXT file when the active is media (restore opens
+  the media active as a data-source + switches to it); self-heals the session.
+
+VERIFIED: open a PNG → it shows; quit + relaunch → it restores as an image tab
+(not garbled text). The buffer→data-source generalisation is real and working.
+
+**Still-open media gaps (small, deferred):** a BARE media pane uses the per-kind
+SINGLETON → only one bare media pane of a given kind at a time (media-as-a-tab is
+unaffected); `C-x k` on a media leaf re-homes but doesn't drop the data-source.
+**Bigger next items:** RESTORE-of-structure (persist the pane tree / per-leaf
+tabs); the MUTABLE data-source fan-out seam (stella/jukebox: a loaded ROM/song
+syncing across duplicate views — the reason the seam exists). Then G4.3 → G5.
