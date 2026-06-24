@@ -230,10 +230,23 @@ export class PdfView extends ViewElement {
    * @param {object | null} next
    */
   setBuffer(next) {
-    if (next === this._buffer) return;
+    // Same reference AND we've already started or finished loading its doc →
+    // nothing to do (a tab-switch re-mount re-points us at the same record;
+    // preserve the loaded doc + page/zoom). We must NOT short-circuit on
+    // reference identity alone: the server media path (app.js
+    // `loadServerMediaSrc`) mounts the view first with only a `filePath`, then
+    // mutates the SAME view object in place to add `src` once the async
+    // `openFilePath` resolves and re-calls us with that same reference. At that
+    // point `_pdfDoc`/`_loadingTask` are still null, so we fall through and load
+    // — without this, the late-arriving `src` would be dropped and the PDF would
+    // never paint (image/audio views re-read on every setBuffer; this matches).
+    const sameRef = next === this._buffer;
+    if (sameRef && (this._pdfDoc !== null || this._loadingTask !== null)) {
+      return;
+    }
     if (typeof console !== 'undefined') {
       console.debug('[pdf-view] setBuffer', {
-        sameAsPrev: false,
+        sameRef,
         prev: this._buffer ? this._buffer.name : null,
         next: next ? {
           name: next.name,
