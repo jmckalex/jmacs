@@ -6387,8 +6387,13 @@ if (window.host && window.host.serverMode) {
       if (!stillStatic.has(id)) serverStaticBuffers.delete(id);
     }
     // Drop element-views for media sources no longer shown as an active view.
+    // A per-instance bookmark outline also disposes its own <bookmark-view>.
     for (const id of [...serverMediaViews.keys()]) {
-      if (!shownMedia.has(id)) serverMediaViews.delete(id);
+      if (!shownMedia.has(id)) {
+        const v = serverMediaViews.get(id);
+        if (v && v.kind === 'bookmark') disposeBookmarkElementForView(v);
+        serverMediaViews.delete(id);
+      }
     }
     // Dispose tabline-views whose leaf vanished or flipped back to a single view
     // (toggle-tabline off / delete-pane), so no orphan strip lingers.
@@ -8372,6 +8377,41 @@ function disposeElementHostForView(view) {
   elementHostByView.delete(view);
 }
 
+// --- bookmark outline as a per-instance pane view (server mode) ----------
+// In server mode each bookmark outline owns its OWN <bookmark-view> element
+// (keyed by its source view object), so two outlines can render in one window —
+// a vertical split with two files, each its own outline. The flag-off app keeps
+// the single shared `bookmarkView` singleton (mounted via the singleton path in
+// mountKindView); only `_serverMedia` bookmark views route to the per-instance
+// path. Mirrors ensureElementHostForView / the browser + doc per-instance views.
+const bookmarkElementByView = new Map();
+
+/** The <bookmark-view> element for a SERVER-mode outline VIEW — created
+ *  (configured + mounted in PANE-EL) on first use, then reused and re-pointed. */
+function ensureBookmarkElementForView(view, paneEl) {
+  let el = bookmarkElementByView.get(view);
+  if (el) {
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    el.setBuffer(view); // re-render with the (possibly re-targeted) records
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('bookmark-view'));
+  el.configure(configureBookmarkView());
+  el.setBuffer(view);
+  if (paneEl) paneEl.append(el);
+  bookmarkElementByView.set(view, el);
+  return el;
+}
+
+/** Tear down the per-instance <bookmark-view> bound to VIEW (its source closed). */
+function disposeBookmarkElementForView(view) {
+  const el = bookmarkElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ }
+  el.remove();
+  bookmarkElementByView.delete(view);
+}
+
 // --- documentation as a pane view (per-instance, mirrors the browser) ---
 // A `doc`-kind view shows the navigable manual in a pane (bigger than the
 // utility dock). Each doc view owns its own <doc-view> element so two doc
@@ -9496,6 +9536,19 @@ function mountKindView(view, context) {
     el.focus();
     return;
   }
+  if (view.kind === 'bookmark' && view._serverMedia) {
+    // Per-instance in SERVER mode (the flag-off outline stays the singleton
+    // below): each outline owns its own <bookmark-view>, so two can coexist in
+    // one window. Honor the focus context — a non-focused outline re-mounting on
+    // a fan-out must not steal focus from the document (same rule as the
+    // singleton path; see the bare-media reconcile branch).
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = (context && context.paneEl) || (leaf ? paneElements.get(leaf.id) : null);
+    const el = ensureBookmarkElementForView(view, paneEl);
+    el.style.display = '';
+    if (!context || context.focus !== false) el.focus();
+    return;
+  }
   if (view.kind === 'minimap') {
     // Per-instance companion: mount THIS minimap's element in its pane, but
     // do NOT focus it — clicks navigate the editor and the keyboard stays
@@ -10087,6 +10140,9 @@ function elementForViewInstance(view) {
   }
   if (view.kind === 'element' && elementHostByView.has(view)) {
     return elementHostByView.get(view);
+  }
+  if (view.kind === 'bookmark' && bookmarkElementByView.has(view)) {
+    return bookmarkElementByView.get(view);
   }
   return singletonElementForKind(view.kind);
 }
