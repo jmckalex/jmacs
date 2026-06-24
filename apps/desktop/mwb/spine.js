@@ -2356,6 +2356,13 @@ export function createSpine(options, effects = {}) {
     const kind = op && typeof op === 'object' ? String(op.op ?? '') : '';
     const recById = (id) => recs.find((b) => b.id === id);
 
+    if (kind === 'refresh') {
+      // `g` in the outline: re-derive the wire from the CURRENT (edit-tracked)
+      // anchors, so line/column reflect source edits made since it last opened
+      // (the engine keeps anchors current; this just re-snapshots + fans out).
+      refreshBookmarkSource(entry);
+      return false;
+    }
     if (kind === 'jump') {
       const rec = recById(op.id) ?? recs.find((b) => b.name === op.name);
       return rec ? bookmarkJump(entry, rec.name) : false;

@@ -5978,8 +5978,20 @@ if (window.host && window.host.serverMode) {
         w.viewKind === 'directory-tree' || w.viewKind === 'directory-columns';
       const elementKind = w.viewKind === 'element';
       const jukeboxKind = w.viewKind === 'jukebox';
+      const bookmarkKind = w.viewKind === 'bookmark';
       let extras;
-      if (elementKind) {
+      if (bookmarkKind) {
+        // The outline of a text buffer's bookmarks. The server holds the records
+        // (each at its edit-tracked offset + line/column); the view renders them
+        // and sends semantic ops back. Refreshed below on every reconcile so a
+        // fanned-out edit re-renders (the mutable-source seam).
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          records: Array.isArray(s.records) ? s.records : [],
+          sourceName: typeof s.sourceName === 'string' ? s.sourceName : '',
+          sourceBufferId: s.sourceBufferId ?? null,
+        };
+      } else if (elementKind) {
         const s = (w.state && typeof w.state === 'object') ? w.state : {};
         extras = {
           tag: s.tag,
@@ -6024,9 +6036,22 @@ if (window.host && window.host.serverMode) {
       // directory / element / jukebox tab is switchable / closable like any other.
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
-      // Only media needs an async byte-load; directory / element / jukebox
-      // render themselves from the spec.
-      if (!directoryKind && !elementKind && !jukeboxKind) loadServerMediaSrc(v, w.filePath);
+      // Only media needs an async byte-load; directory / element / jukebox /
+      // bookmark render themselves from the spec / state.
+      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind) {
+        loadServerMediaSrc(v, w.filePath);
+      }
+    }
+    // The bookmark outline is a MUTABLE data-source: refresh the (possibly
+    // REUSED) view's records from the latest wire state on EVERY reconcile, so a
+    // fanned-out edit (setState → PANE_TREE) re-renders. The reconcile re-mounts
+    // the leaf → mountKindView → el.setBuffer(view), which repaints from these.
+    // This is the mutable-source client seam — lit here first.
+    if (w.viewKind === 'bookmark') {
+      const s = (w.state && typeof w.state === 'object') ? w.state : {};
+      v.records = Array.isArray(s.records) ? s.records : [];
+      v.sourceName = typeof s.sourceName === 'string' ? s.sourceName : '';
+      v.sourceBufferId = s.sourceBufferId ?? null;
     }
     return v;
   }
@@ -6353,7 +6378,12 @@ if (window.host && window.host.serverMode) {
           try { stale.remove(); } catch { /* ignore */ }
           editorViewByPaneId.delete(leaf.id);
         }
-        mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id) });
+        // A bookmark outline re-mounts on EVERY reconcile (its records refresh on
+        // fan-out); only focus it when it is the focused leaf, so a `C-x r m`
+        // from the document — which refreshes the open outline — doesn't yank
+        // focus off the document. Other media keep the old always-focus behaviour.
+        const focus = !(leaf.view.kind === 'bookmark' && leaf.id !== currentPaneId);
+        mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id), focus });
       } else if (leaf.view && leaf.view.kind === 'text') {
         const inst = ensureEditorViewForLeaf(leaf);
         if (inst) { try { inst.setView(leaf.view); } catch { /* ignore */ } }
@@ -8985,6 +9015,27 @@ directoryColumnsView.style.display = 'none';
 // text buffer it annotates) is shown through this outliner. Outline edits
 // write back to the source buffer's metadata.bookmarks via `persist`.
 function configureBookmarkView() {
+  // Server mode: the outline is a MUTABLE 'bookmark' data-source. Its records
+  // come from the server (on the bound view object), and edits are SEMANTIC ops
+  // sent up (jump/rename/delete/indent/outdent/toggle) — the view never mutates
+  // its own copy or touches buffer metadata; it re-renders from the fanned-out
+  // state. Keys route to the SERVER keymap (serverMediaKeyOption), exactly like
+  // the directory-tree / jukebox views; q closes the pane via C-x 0.
+  if (window.host && window.host.serverMode) {
+    return {
+      ...serverMediaKeyOption(),
+      closeBuffer: () => {
+        if (serverViewClient) {
+          serverViewClient.dispatchKey('C-x');
+          serverViewClient.dispatchKey('0');
+        }
+      },
+      // The view passes its bound source id; route the op to the server.
+      emitOp: (sourceId, op) => {
+        if (serverViewClient && sourceId) serverViewClient.bookmarkOp(sourceId, op);
+      },
+    };
+  }
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     // While a chord is mid-flight (C-x just pressed) the outline must
@@ -9394,7 +9445,9 @@ function mountKindView(view, context) {
       (leaf ? paneElements.get(leaf.id) : null);
     if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
     el.setBuffer(view);
-    el.focus();
+    // Callers may suppress the focus (a non-focused bookmark outline re-mounting
+    // on a fan-out must not steal focus from the document). Default: focus.
+    if (!context || context.focus !== false) el.focus();
   }
 }
 

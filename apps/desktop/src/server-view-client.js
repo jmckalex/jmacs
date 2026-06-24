@@ -639,6 +639,20 @@ export function createServerViewClient({
     sendKey('k');
   }
 
+  /** Send an outline edit from the bookmark VIEW to the server (a mutable
+   *  'bookmark' data-source): a semantic op `{ op, id?, name? }` — jump / rename
+   *  / delete / indent / outdent / toggle — tagged with the SOURCEID it acts on.
+   *  The server applies it (authoritative), persists the sidecar, and fans the
+   *  fresh outline back; the view re-renders from that (it never mutates its own
+   *  copy). A no-op for a falsy source id / op. */
+  function bookmarkOp(sourceId, op) {
+    if (!sourceId || !op || typeof op !== 'object') return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.BOOKMARK_OP, sourceId: String(sourceId), op },
+    });
+  }
+
   return {
     connect,
     dispatchKey,
@@ -662,6 +676,8 @@ export function createServerViewClient({
     openElementView,
     // Insert text into the server's active buffer (element-view insert-text).
     insertText,
+    // Send a bookmark-outline edit op (jump/rename/delete/indent/outdent/toggle).
+    bookmarkOp,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the
