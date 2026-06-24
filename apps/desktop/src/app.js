@@ -5900,12 +5900,13 @@ if (window.host && window.host.serverMode) {
   // the leaf vanishes or flips back to a single view.
   /** @type {Map<string, object>} leafId -> tabline-view. */
   const serverLeafTablines = new Map();
-  // The STABLE active-tab view for a NON-focused tabline leaf, keyed by leaf id
-  // and updated in place each reconcile — so its per-tab `<text-view>` element is
-  // reused (keyed by view identity in editorByChild) instead of churned/leaked.
-  // A FOCUSED tabline leaf's active tab is the shared serverFacadeView, so only
-  // non-focused leaves need an entry here.
-  /** @type {Map<string, object>} leafId -> stable static active-tab view. */
+  // The STABLE active-tab view for a tabline leaf, keyed by leaf id and updated
+  // in place each reconcile — so its per-tab `<text-view>` element is reused
+  // (keyed by view identity in editorByChild) instead of churned. ONE object per
+  // leaf serves BOTH focus states (makeLeafTabView flips it LIVE↔STATIC), so a
+  // focus change never swaps the tab between two elements with independent scroll
+  // — the leaf-flip fix (#2). Used for focused AND non-focused tabline leaves.
+  /** @type {Map<string, object>} leafId -> stable active-tab view (live-or-static). */
   const serverLeafActiveTabViews = new Map();
   // Non-text DATA-SOURCE views (image/audio/video/pdf), keyed by the server
   // source id. A media leaf/tab carries `viewKind` + `filePath` on the wire; the
@@ -6173,34 +6174,79 @@ if (window.host && window.host.serverMode) {
     if (!leaf) return null;
     if (isTablineView(leaf.view)) {
       const st = tablineStateByView.get(leaf.view);
-      return st ? (st.editorByChild.get(serverFacadeView) ?? st.activeEditor ?? null) : null;
+      if (!st) return null;
+      // The focused tabline's active text tab is now its per-leaf view object
+      // (makeLeafTabView), not the shared façade — resolve its element via the
+      // active child (st.activeEditor is the same element, kept as a fallback).
+      const active = tablineActiveChild(leaf.view);
+      return st.editorByChild.get(active) ?? st.activeEditor ?? null;
     }
     return editorViewByPaneId.get(leaf.id) ?? null;
   }
 
-  /** The content view for a tabline leaf's ACTIVE tab. A FOCUSED leaf uses the
-   *  live façade (its cursor tracks the mirror). A NON-focused leaf gets a STABLE
-   *  per-leaf view (so its element is reused, not churned) whose CONTENT mirrors
-   *  buildServerPaneNode's non-focused branches: a buffer DIFFERENT from the
-   *  active one reads its own static text (3b); the SAME buffer reads the live
-   *  shared mirror (3a). Without the 3a case a tabline split off the focused pane
-   *  — both on one buffer, so no `text` on the wire — rendered EMPTY. The
-   *  inactive tabs are lightweight proxies; only the active tab carries content. */
+  /** A per-leaf active-tab view object for a server tabline's TEXT tab. ONE of
+   *  these exists per tabline leaf (cached in serverLeafActiveTabViews), so the
+   *  tab's `<text-view>` element is REUSED — and its scrollTop preserved — across
+   *  focus changes. It flips between LIVE (focused: tracks the shared mirror, like
+   *  the old façade, so typing re-renders without a reconcile) and STATIC (not
+   *  focused: a snapshot at the wire point/buffer) via `_live`, but stays the SAME
+   *  object throughout. This is the leaf-flip fix (#2): focus no longer swaps the
+   *  active tab between two elements (the shared façade vs a static view) with
+   *  independent scroll, which had scrolled the document to the top when a
+   *  sibling pane (e.g. the bookmark outline) took focus. */
+  function makeLeafTabView() {
+    return {
+      kind: 'text',
+      _serverBacked: true,
+      _live: false,
+      _staticBuffer: null,
+      _staticPoint: 0,
+      _staticMark: null,
+      _serverBufferId: null,
+      _name: null,
+      // LIVE → the shared mirror (point/cursors track typing); STATIC → the wire
+      // snapshot. Getters so the SAME object serves both without churning.
+      get buffer() { return this._live ? serverMirror : this._staticBuffer; },
+      get name() {
+        const b = this._live ? serverMirror : this._staticBuffer;
+        return this._name ?? (b ? b.name : '*buffer*');
+      },
+      get point() {
+        return this._live ? (serverMirror ? serverMirror.point : 0) : this._staticPoint;
+      },
+      get mark() {
+        return this._live ? (serverMirror ? serverMirror.mark : null) : this._staticMark;
+      },
+      get cursors() {
+        return this._live
+          ? (serverMirror ? serverMirror.cursors : [{ point: 0, mark: null }])
+          : [{ point: this._staticPoint, mark: this._staticMark }];
+      },
+    };
+  }
+
+  /** The content view for a tabline leaf's ACTIVE text tab: the STABLE per-leaf
+   *  object above, bound LIVE when focused (tracks the mirror) or STATIC when not
+   *  (a snapshot mirroring buildServerPaneNode's non-focused branches — a buffer
+   *  DIFFERENT from the active one reads its own static text (3b); the SAME buffer
+   *  reads the live shared mirror (3a), so a tabline split off the focused pane
+   *  isn't empty). The inactive tabs are lightweight proxies; only the active tab
+   *  carries content. A non-text active tab (media) mounts its element-view. */
   function serverLeafActiveTabView(w) {
-    // The active tab is a non-text DATA-SOURCE (media): mount its element-view.
     if (w.viewKind && w.viewKind !== 'text') return buildServerMediaView(w);
-    if (w.focused) return serverFacadeView;
     let v = serverLeafActiveTabViews.get(w.id);
-    if (!v) { v = { kind: 'text', _serverBacked: true }; serverLeafActiveTabViews.set(w.id, v); }
-    const point = Number.isFinite(w.point) ? w.point : 0;
-    const mark = w.mark === null || Number.isFinite(w.mark) ? w.mark : null;
-    v.buffer = (w.bufferId && w.bufferId !== activeServerBufferId() && typeof w.text === 'string')
-      ? serverStaticBufferFor(w) // 3b: a different buffer, its own snapshot text
-      : serverMirror;            // 3a: the same buffer as active, the live mirror
-    v.name = typeof w.name === 'string' ? w.name : (v.buffer ? v.buffer.name : '*buffer*');
-    v.point = point;
-    v.mark = mark;
-    v.cursors = [{ point, mark }];
+    if (!v) { v = makeLeafTabView(); serverLeafActiveTabViews.set(w.id, v); }
+    v._live = !!w.focused;
+    v._serverBufferId = w.bufferId ?? null;
+    v._name = typeof w.name === 'string' ? w.name : null;
+    if (!v._live) {
+      v._staticBuffer =
+        (w.bufferId && w.bufferId !== activeServerBufferId() && typeof w.text === 'string')
+          ? serverStaticBufferFor(w) // 3b: a different buffer, its own snapshot text
+          : serverMirror;            // 3a: the same buffer as active, the live mirror
+      v._staticPoint = Number.isFinite(w.point) ? w.point : 0;
+      v._staticMark = w.mark === null || Number.isFinite(w.mark) ? w.mark : null;
+    }
     return v;
   }
 
