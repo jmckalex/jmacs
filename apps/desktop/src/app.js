@@ -6250,6 +6250,13 @@ if (window.host && window.host.serverMode) {
         if (inst) { try { inst.setView(leaf.view); } catch { /* ignore */ } }
       }
     }
+    // A bare media pane mounts the per-kind SINGLETON (image/audio/video/pdf),
+    // which starts display:none — the singleton mount path doesn't reveal it
+    // (unlike the named-kind branches). hideInactiveSingletons shows whichever
+    // singleton a leaf now displays directly and hides the rest; without it a
+    // media pane (e.g. in a second window) renders blank. A no-op for a text /
+    // tabline-only window (no leaf-direct singleton in use).
+    hideInactiveSingletons();
     relayoutPanes();
     refreshPaneFocusIndicators();
     // A reconcile that REPLACED the focused leaf's element (toggle-tabline
