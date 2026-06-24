@@ -7093,6 +7093,20 @@ function serverViewKeyOption(instance) {
   };
 }
 
+/** The `onKey` for a NON-TEXT element-view (image/audio/video/pdf) that routes to
+ *  the SERVER's keymap in server mode — so a chord (C-x C-f, M-x, C-x b…) typed
+ *  while a media view is focused reaches the server instead of being swallowed by
+ *  the idle in-renderer dispatchKey (which would preventDefault it, so the
+ *  window-level router never sees it either). Flag-off it is exactly the legacy
+ *  `keymapReady ? { onKey: dispatchKey } : {}`. serverViewClient is resolved at
+ *  key-press time (it's null when the singletons are configured at boot). */
+function serverMediaKeyOption() {
+  if (window.host && window.host.serverMode) {
+    return { onKey: (key) => (serverViewClient ? serverViewClient.dispatchKey(key) : false) };
+  }
+  return keymapReady ? { onKey: dispatchKey } : {};
+}
+
 /** Create (or reuse) the <text-view> custom element for LEAF, mount it
  *  inside the leaf's pane element, and point it at LEAF.view.
  *
@@ -7488,7 +7502,7 @@ customizeView.style.display = 'none';
 // configure factory is reused by the tabline mount path so each
 // image tab gets its own `<image-view>` (one per view, not shared).
 function configureImageView() {
-  return { ...(keymapReady ? { onKey: dispatchKey } : {}) };
+  return { ...serverMediaKeyOption() };
 }
 const imageView = /** @type {*} */ (document.createElement('image-view'));
 imageView.configure(configureImageView());
@@ -7663,7 +7677,7 @@ function stripDerivedFields(meta) {
 // instances (one per audio view, not a shared singleton).
 function configureAudioView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     closeBuffer: () => {
       if (!keymapReady) return;
       try {
@@ -7694,7 +7708,7 @@ audioView.style.display = 'none';
 // reused by the tabline mount path.
 function configureVideoView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     closeBuffer: () => {
       if (!keymapReady) return;
       try {
@@ -7720,7 +7734,7 @@ videoView.style.display = 'none';
 // with their state intact.
 function configurePdfView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     // Inverse SyncTeX: an Option-click in the PDF jumps the editor to the
     // source. The pdf-view hands us the 1-based page and the clicked PDF
     // point (SyncTeX convention); `latex-synctex-inverse` runs

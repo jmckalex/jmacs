@@ -2260,7 +2260,11 @@ export function createSpine(options, effects = {}) {
   function seedClientTabline(index, ids, activeId) {
     const model = paneModels.get(index);
     if (!model) return false;
-    const open = Array.isArray(ids) ? ids.filter((id) => registry.has(id)) : [];
+    // Keep TEXT buffers AND non-text DATA-SOURCES (media) — restored media must
+    // become tabs too, not just text files (else they're open-but-hidden).
+    const open = Array.isArray(ids)
+      ? ids.filter((id) => registry.has(id) || dataSources.has(id))
+      : [];
     for (const id of open) noteClientBuffer(index, id);
     const ok = model.seedFocusedTabline(open, activeId);
     if (ok && index === activeClientIndex) {
