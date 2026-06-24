@@ -2308,34 +2308,55 @@ export function createSpine(options, effects = {}) {
     dataSources.setState(src.id, { ...src.state, records: bookmarkRecordsWire(entry) });
   }
 
+  /** The wire state for the bookmark outline pointed at TEXT buffer ENTRY: its
+   *  source id + display name + the document-ordered records. */
+  function bookmarkOutlineState(entry) {
+    return {
+      sourceBufferId: entry.id,
+      sourceName: entry.buffer.name,
+      records: bookmarkRecordsWire(entry),
+    };
+  }
+
   /** Open (or reveal) the bookmark OUTLINE for the active client's current text
-   *  buffer (C-x r l). A mutable 'bookmark' data-source carries the records; it
-   *  opens in a split BESIDE the document with focus ON the outline (you drive
-   *  it: n/p, Enter to jump). Re-running reveals the existing outline. Returns
-   *  the source id, or null when there's no text buffer to annotate. */
+   *  buffer (C-x r l). There is ONE outline (like the in-renderer app): a single
+   *  mutable 'bookmark' data-source that RE-TARGETS to whichever file is focused,
+   *  rather than one pane per file (which also fought over the single
+   *  <bookmark-view> element → an empty second pane). It opens in a split BESIDE
+   *  the document with focus ON the outline (you drive it: n/p, Enter to jump);
+   *  re-running reveals + re-targets it. Returns the source id, or null when
+   *  there's no text buffer to annotate. */
   function openBookmarkView() {
     const entry = activeEntry;
     if (!entry || !registry.has(entry.id)) return null;
     bookmarksFor(entry); // ensure markers + live anchors before snapshotting
-    let src = dataSources.list().find(
-      (s) => s.kind === 'bookmark' && s.state && s.state.sourceBufferId === entry.id);
-    if (src) {
-      dataSources.setState(src.id, { ...src.state, records: bookmarkRecordsWire(entry) });
-    } else {
-      src = dataSources.add({
-        kind: 'bookmark',
-        name: `*Bookmarks: ${entry.buffer.name}*`,
-        state: {
-          sourceBufferId: entry.id,
-          sourceName: entry.buffer.name,
-          records: bookmarkRecordsWire(entry),
-        },
-      });
-    }
+    let src = dataSources.list().find((s) => s.kind === 'bookmark');
+    if (src) dataSources.setState(src.id, bookmarkOutlineState(entry));
+    else src = dataSources.add({ kind: 'bookmark', name: '*Bookmarks*', state: bookmarkOutlineState(entry) });
     openBookmarkBeside(activeClientIndex, src.id);
     statusText = '';
     onStatus('');
     return src.id;
+  }
+
+  /** Re-target the single bookmark OUTLINE (if open) to TEXT buffer ENTRY: update
+   *  its data-source state + fan it out, so the outline follows the focused file.
+   *  A no-op when the outline isn't open or is already on ENTRY. */
+  function retargetBookmarkOutline(entry) {
+    if (!entry || !registry.has(entry.id)) return;
+    const src = dataSources.list().find((s) => s.kind === 'bookmark');
+    if (!src || (src.state && src.state.sourceBufferId === entry.id)) return;
+    bookmarksFor(entry);
+    dataSources.setState(src.id, bookmarkOutlineState(entry));
+  }
+
+  /** Follow focus: re-target the bookmark outline to the active client's FOCUSED
+   *  text buffer. Skips when the focused leaf is a data-source (the outline /
+   *  media) — the outline keeps its last text target. Called after any focus /
+   *  buffer switch. */
+  function followBookmarkOutline() {
+    const focusedId = currentBufferIdOf(activeClientIndex);
+    if (registry.has(focusedId)) retargetBookmarkOutline(registry.get(focusedId));
   }
 
   /** Reveal SRCID in a pane of CLIENT INDEX beside its document, FOCUSING the
@@ -2611,6 +2632,7 @@ export function createSpine(options, effects = {}) {
     // mode-keymap chain resolves against THIS buffer's mode (a markdown
     // buffer's C-c, a .js buffer's global C-c, …).
     interpreter.call('-spine-choose-major-mode');
+    followBookmarkOutline(); // the bookmark outline follows the focused file
   }
 
   /**
@@ -2644,6 +2666,7 @@ export function createSpine(options, effects = {}) {
       const v = (model && model.focusedView()) || registry.viewFor(id, index);
       bindActive(entry, v);
       interpreter.call('-spine-choose-major-mode');
+      followBookmarkOutline(); // the bookmark outline follows the focused file
     }
     onBufferSwitched(id);
     return true;

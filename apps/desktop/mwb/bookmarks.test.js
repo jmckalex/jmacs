@@ -115,6 +115,36 @@ test('applyBookmarkOp: rename / indent / delete mutate + fan out', () => {
   assert.equal(after[0].name, 'first', 'delete removed the record');
 });
 
+test('the bookmark outline follows focus and stays a single pane', () => {
+  // The outline is ONE view that re-targets to the focused file — not one pane
+  // per file (which also fought over the single <bookmark-view> element).
+  const { spine } = makeSpine({
+    initialText: 'aaa\nbbb\nccc\n', name: 'A.txt', initialPath: '/tmp/A.txt',
+    openFile: () => ({ text: 'bee\nstuff\n', name: 'B.txt', path: '/tmp/B.txt' }),
+  });
+  const aId = spine.currentBufferIdOf(0);
+  spine.buffer.moveTo(0);
+  spine.interpreter.evaluate('(bookmark-set! "in-A")');
+  spine.interpreter.evaluate('(open-bookmark-view!)');
+  assert.equal(outlineRecords(spine)[0].name, 'in-A', 'outline opens on A');
+
+  // Re-focus the document pane (the outline opened focused), then open file B in
+  // it — the outline must follow focus to B.
+  const model = spine.paneModelOf(0);
+  const docLeaf = model.leaves().find((l) => model.stateOf(l.id)?.bufferId === aId);
+  spine.applyPaneIntent(0, { op: 'focus-pane', paneId: docLeaf.id });
+  spine.visitFile('/tmp/B.txt');
+  spine.buffer.moveTo(0);
+  spine.interpreter.evaluate('(bookmark-set! "in-B")');
+
+  const recs = outlineRecords(spine);
+  assert.equal(recs.length, 1);
+  assert.equal(recs[0].name, 'in-B', 'the single outline re-targeted to B');
+
+  const sources = spine.bufferListRecords(0).filter((r) => r.viewKind === 'bookmark');
+  assert.equal(sources.length, 1, 'one bookmark outline, not one per file');
+});
+
 test('applyBookmarkOp jump moves the document point + returns true', () => {
   const { spine } = makeSpine({ initialText: 'zero\none\ntwo\nthree\n' });
   spine.buffer.moveTo(11);
