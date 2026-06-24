@@ -37,6 +37,7 @@ import { resolveUserPath } from './path-resolve.js';
 import { mediaKindForName } from './media-kinds.js';
 import { completePath } from './path-complete.js';
 import { createSpine } from './spine.js';
+import { createSessionStore, flatToWindowSession } from './session-store.js';
 // The crash-safe atomic writer (temp file + fsync + rename) and the
 // recovery-snapshot pure helpers are standalone production modules; the
 // server is a Node child, so it does file I/O DIRECTLY (no IPC), reusing
@@ -59,34 +60,45 @@ const DEFAULT_FILE = join(
 );
 const filePath = process.env.MWB_FILE || DEFAULT_FILE;
 
-// Where the server persists its OWN session (open files + active). Defined here,
-// before the spine, so the seed below can read it via readServerSession (a
-// hoisted function); the persistence functions further down share this const.
+// Where the server persists its OWN sessions. Defined here, before the spine, so
+// the store below (and the seed via sessionBootInfo) can read it; the
+// persistence functions further down share this const.
 const SESSION_STORE = process.env.MWB_SESSION_STORE
   || join(tmpdir(), 'godot-mw-b-session.json');
 
-// The spine's seed buffer. When a saved session exists (the server's own, else
-// the renderer's session.json — see readServerSession), boot on its ACTIVE file
-// so there is NO stray demo tab; the rest of the session opens at the first
-// HELLO (restoreServerSession skips the already-open seed). Otherwise fall back
-// to DEFAULT_FILE (view.js).
+// The named-session store (v3): the user's labelled sessions + the always-on
+// `__last__` auto-snapshot, each holding the full multi-window pane structure.
+// load() migrates an existing FLAT { files, active } file into `__last__`, so a
+// returning user's session carries over unchanged. On a brand-new install (no
+// store file AND no named sessions), seed `__last__` once from the renderer's
+// session.json (MWB_SESSION_SEED) — preserving the flag-off → server hand-off.
+const sessionStore = createSessionStore({
+  read: () => readFileSync(SESSION_STORE, 'utf8'),
+  write: (text) => atomicWriteSync(SESSION_STORE, text),
+});
+if (!sessionStore.get('__last__') && sessionStore.list().sessions.length === 0) {
+  const seed = readSessionSeed();
+  const win = seed ? flatToWindowSession(seed) : null;
+  if (win) sessionStore.writeLast(win);
+}
+
+// The spine's seed buffer. When a saved session exists (sessionBootInfo reads
+// the store's `__last__` snapshot), boot on its focused-leaf ACTIVE file so
+// there is NO stray demo tab; the rest of the layout is rebuilt at the first
+// HELLO (restoreWindow1FromSession, which reuses the already-open seed buffer).
+// Otherwise fall back to DEFAULT_FILE (view.js).
 let initialText;
 let bufferName;
 let initialPath = null;
-const bootSession = readServerSession();
+const bootSession = sessionBootInfo();
 if (bootSession && bootSession.active) {
   // The active file is the natural seed — UNLESS it is MEDIA (image/video/audio/
   // pdf), which must NOT be read as UTF-8 (that's the garbled-PNG-on-restore bug).
-  // The spine's seed buffer is fundamentally TEXT, so when the active file is
-  // media we seed from the first readable TEXT file in the session instead;
-  // restoreServerSession then opens the media active as a DATA-SOURCE (visitFile)
-  // and switches to it at the first HELLO. With no text file, fall through to the
-  // default below.
   // The seed buffer is fundamentally TEXT, so the active file seeds it only when
   // it is a readable text file — not media (read as UTF-8 → garbled) and not a
   // DIRECTORY (EISDIR). When the active is media/a directory, seed from the first
-  // text file in the session instead; restoreServerSession then opens the active
-  // as its DATA-SOURCE at the first HELLO.
+  // text file in the session instead; restoreWindow1FromSession then opens the
+  // active as its DATA-SOURCE (via visitFile) when it rebuilds the layout.
   const isTextSeed = (p) => !mediaKindForName(p) && !isDirectoryPath(p);
   const seedCandidates = isTextSeed(bootSession.active)
     ? [bootSession.active]
@@ -680,9 +692,9 @@ function resyncClientToCurrentBuffer(client) {
   // follow. (The on-demand C-x C-b path still works; this keeps the tabs live
   // without a user request.)
   sendBufferListTo(client);
-  // Remember the new open-file set + active across restarts (server-owned
-  // session). Fires on every buffer-set change (open / switch / kill).
-  persistServerSession(client);
+  // Remember the live multi-window pane layout across restarts (the `__last__`
+  // snapshot). Fires on every buffer-set change (open / switch / kill).
+  persistLastSession();
 }
 
 /** Switch a client to a buffer (by id) and re-sync it onto the new buffer.
@@ -1024,13 +1036,13 @@ function onClientMessage(client, event) {
       // renderer's session.json becomes the server's own going forward.
       if (!sessionRestored) {
         sessionRestored = true;
-        restoreServerSession(client);
-        persistServerSession(client);
-        // Unify: window 1's session presents as a TABLINE leaf — its open files
-        // as curated tabs — so it renders through the same PANE_TREE pipeline as
-        // every window (C-x 2/3 split it; the client's special one-big-tabline
-        // retires). Seed from the window's open-set (always ≥1: the boot buffer).
-        seedWindow1Tabline(client);
+        // Slice A: restore window-1's full PANE STRUCTURE (splits + tabs +
+        // cursor) from the `__last__` snapshot, not just a flat tabline. The
+        // OTHER saved windows come back in the next slice; here window[0] lands
+        // on the bootstrap window. Persist immediately so a migrated/seeded
+        // session becomes the store's own going forward.
+        restoreWindow1FromSession(client);
+        persistLastSession();
       }
       sendSnapshot(client);
       sendViewTo(client);
@@ -1064,10 +1076,10 @@ function onClientMessage(client, event) {
       } else {
         sendViewTo(client);
         sendCursorsTo(client);
-        // A pane intent can change the SHOWN set without moving the focused
-        // buffer (e.g. closing a NON-active tab) — re-persist so the closed tab
-        // doesn't return on restart.
-        persistServerSession(client);
+        // A pane intent can change the layout without moving the focused buffer
+        // (e.g. closing a NON-active tab, a split, a resize) — re-persist so the
+        // change is captured in the `__last__` snapshot.
+        persistLastSession();
       }
       activeClient = null;
       break;
@@ -1161,92 +1173,118 @@ const autosave = createAutosave({
  *  first client's HELLO — when an active client exists for visitFile). */
 let sessionRestored = false;
 
-/** The buffer ids actually SHOWN in client INDEX's pane tree, in leaf-then-tab
- *  order, de-duped: each tabline leaf contributes its ordered curated `tabs`,
- *  each single-view leaf its `bufferId`. This — NOT the raw open pool — is what
- *  the session persists, so closing (un-curating) a tab drops it from the
- *  restored set even though its buffer lives on in the pool (reachable via
- *  C-x C-b within the session). Empty when no leaf carries a buffer. */
-function shownBufferIds(idx) {
-  const model = spine.paneModelOf(idx);
-  if (!model) return [];
-  const ids = [];
-  const add = (id) => { if (id != null && !ids.includes(id)) ids.push(id); };
-  for (const leaf of model.leaves()) {
-    const s = model.stateOf(leaf.id);
-    if (!s) continue;
-    if (s.tabline && Array.isArray(s.tabs)) s.tabs.forEach(add);
-    else add(s.bufferId);
-  }
-  return ids;
+/** Every file path referenced by a window-blob's pane tree (text leaves + the
+ *  text tabs of tabline leaves), de-duped in encounter order. Used both to pick
+ *  the boot seed and to open the files before rebuilding a layout. */
+function pathsInWindowBlob(rootPane) {
+  const out = [];
+  const add = (p) => { if (typeof p === 'string' && p !== '' && !out.includes(p)) out.push(p); };
+  const walkView = (v) => {
+    if (!v) return;
+    if (v.kind === 'text') add(v.path);
+    else if (v.kind === 'tabline' && Array.isArray(v.tabs)) {
+      v.tabs.forEach((t) => { if (t && t.kind === 'text') add(t.path); });
+    }
+  };
+  const walkPane = (p) => {
+    if (!p) return;
+    if (p.kind === 'leaf') walkView(p.view);
+    else if (p.kind === 'split') { walkPane(p.first); walkPane(p.second); }
+  };
+  walkPane(rootPane);
+  return out;
 }
 
-/** Persist the SHOWN file set + active file to SESSION_STORE. Records only the
- *  buffers actually shown in the window's pane tree (its curated tabs + single-
- *  view leaves) — NOT the raw open pool — so closing a tab drops it from restore.
- *  Only file-backed buffers are recorded (a path-less scratch can't be reopened);
- *  paths are de-duped. Tolerant — a write failure must never disturb editing. */
-function persistServerSession(client) {
+/** The boot SEED hint `{ files, active }` from the store's `__last__` snapshot:
+ *  the candidate files for the initial TEXT buffer + the focused leaf's active
+ *  file (so the seed buffer is the one the user last had focused). Null when
+ *  there is no saved layout. Reads the active window's blob. */
+function sessionBootInfo() {
+  const last = sessionStore.get('__last__');
+  const windows = last && Array.isArray(last.windows) ? last.windows : [];
+  if (windows.length === 0) return null;
+  const win = windows[last.activeWindow] ?? windows[0];
+  if (!win || !win.rootPane) return null;
+  const files = pathsInWindowBlob(win.rootPane);
+  if (files.length === 0) return null;
+  // The focused leaf's active path is the best seed; else the first file.
+  let active = null;
+  const walkPane = (p) => {
+    if (!p || active) return;
+    if (p.kind === 'leaf') {
+      if (!p.focused || !p.view) return;
+      if (p.view.kind === 'text') active = p.view.path;
+      else if (p.view.kind === 'tabline' && Array.isArray(p.view.tabs)) {
+        const t = p.view.tabs[p.view.active];
+        if (t && t.kind === 'text') active = t.path;
+      }
+    } else if (p.kind === 'split') { walkPane(p.first); walkPane(p.second); }
+  };
+  walkPane(win.rootPane);
+  return { files, active: active ?? files[0] };
+}
+
+/** Snapshot every LIVE window's pane layout (by path) for the session store, in
+ *  stable order (ascending client index). Geometry (bounds/display) is recorded
+ *  as null here — window-frame capture is the next slice; a null-geometry window
+ *  is default-placed on restore. */
+function collectSessionWindows() {
+  const out = [];
+  const ordered = [...clients].sort((a, b) => a.index - b.index);
+  for (const c of ordered) {
+    const rootPane = spine.serializeWindow(c.index);
+    if (!rootPane) continue;
+    out.push({ rootPane, bounds: null, display: null });
+  }
+  return out;
+}
+
+/** The index (into the stable window order) of the active window, for the
+ *  session's `activeWindow`. Defaults to 0. */
+function activeWindowIndex() {
+  if (!activeClient) return 0;
+  const ordered = [...clients].sort((a, b) => a.index - b.index);
+  const i = ordered.findIndex((c) => c.index === activeClient.index);
+  return i < 0 ? 0 : i;
+}
+
+/** Write the `__last__` auto-snapshot — the full multi-window pane structure of
+ *  the live session. Replaces the old flat persist; called on every buffer-set /
+ *  pane-layout change. Tolerant: a write failure must never disturb editing. */
+function persistLastSession() {
   try {
-    const idx = client ? client.index : (activeClient ? activeClient.index : 0);
-    const records = spine.bufferListRecords(idx);
-    const byId = new Map(records.map((r) => [r.id, r]));
-    // Prefer the shown (curated) set; fall back to the raw pool only if the
-    // model exposes nothing (defensive — preserves the pre-fix behaviour).
-    const shown = shownBufferIds(idx);
-    const ids = shown.length > 0 ? shown : records.map((r) => r.id);
-    const files = [];
-    for (const id of ids) {
-      const r = byId.get(id);
-      if (r && r.filePath && !files.includes(r.filePath)) files.push(r.filePath);
-    }
-    const activeRec = byId.get(spine.currentBufferIdOf(idx));
-    const active = activeRec && activeRec.filePath ? activeRec.filePath : null;
-    atomicWriteSync(SESSION_STORE, JSON.stringify({ files, active }));
+    const windows = collectSessionWindows();
+    if (windows.length === 0) return;
+    sessionStore.writeLast({ windows, activeWindow: activeWindowIndex() });
   } catch (error) {
     console.error(`[mwb-session] persist failed: ${error.message}`);
   }
 }
 
-/** The persisted session `{ files, active }`, or (step 2) the renderer's
- *  session seed when the server has none of its own. Null when neither exists. */
-function readServerSession() {
-  const parse = (raw) => {
-    try {
-      const data = JSON.parse(raw);
-      if (data && Array.isArray(data.files)) return data;
-    } catch { /* unreadable */ }
-    return null;
-  };
-  try {
-    return parse(readFileSync(SESSION_STORE, 'utf8'));
-  } catch {
-    // No server session yet — fall back to the renderer's session seed (the
-    // user's existing flag-off session.json), parsed for file paths.
-    return readSessionSeed();
+/** Restore the bootstrap window's PANE STRUCTURE from the `__last__` snapshot:
+ *  open every file the layout references (deduped — the seed file may already be
+ *  open; media/directories open as their data-sources via visitFile), then
+ *  rebuild window-1's tree via loadWindowLayout. Falls back to a 1-tab tabline of
+ *  the boot buffer when there is no saved layout (or it fails to load). Slice A
+ *  restores window[0] only; the other saved windows come back in the next slice.
+ *  Called once, from the first HELLO. Tolerant. */
+function restoreWindow1FromSession(client) {
+  const last = sessionStore.get('__last__');
+  const win0 = last && Array.isArray(last.windows) ? last.windows[0] : null;
+  if (!win0 || !win0.rootPane) {
+    seedWindow1Tabline(client);
+    return;
   }
-}
-
-/** Restore the persisted session onto CLIENT: open each remembered file that
- *  isn't already open (the seed / a recovered buffer), then switch to the
- *  active one. Called once from the first HELLO. Tolerant. */
-function restoreServerSession(client) {
-  const session = readServerSession();
-  if (!session || session.files.length === 0) return;
   try {
-    for (const p of session.files) {
-      const recs = spine.bufferListRecords(client.index);
-      if (recs.some((r) => r.filePath === p)) continue; // already open
-      spine.visitFile(p);
+    for (const p of pathsInWindowBlob(win0.rootPane)) spine.visitFile(p);
+    if (spine.loadWindowLayout(client.index, win0.rootPane)) {
+      console.error('[mwb-session] restored window-1 pane layout');
+    } else {
+      seedWindow1Tabline(client);
     }
-    if (session.active) {
-      const recs = spine.bufferListRecords(client.index);
-      const activeRec = recs.find((r) => r.filePath === session.active);
-      if (activeRec) spine.switchClientToBuffer(client.index, activeRec.id);
-    }
-    console.error(`[mwb-session] restored ${session.files.length} file(s)`);
   } catch (error) {
     console.error(`[mwb-session] restore failed: ${error.message}`);
+    seedWindow1Tabline(client);
   }
 }
 
