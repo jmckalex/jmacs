@@ -2895,3 +2895,40 @@ minibuffer's onTab sends the request, the reply setValue's + reuses the existing
 "Completions" panel (extracted `displayCompletionsPanel`). Server change →
 quit+relaunch. Suite 872. Only the 'Find file: ' prompt is wired (M-x /
 switch-to-buffer completion would be the same shape, not done).
+
+## [2026-06-24] find-file TAB-completion + media-tab fixes — LIVE-VERIFIED
+
+Polishing media views into daily-usable shape. All live-verified by Jason.
+
+- **find-file TAB-completion (`f10d3a2`)** — server-mode find-file had none. New
+  pure `path-complete.js` (CASE-INSENSITIVE prefix completion; preserves the typed
+  partial's casing + the dir prefix; trailing '/' for dirs; 8 tests) + a
+  `MINIBUFFER_COMPLETE`/`MINIBUFFER_COMPLETIONS` round-trip; the reply fills the
+  input + shows the existing "Completions" panel. Wired for the 'Find file:' prompt
+  (M-x / switch-buffer would be the same shape, not done). "Works well."
+- **media reveal (`630a414`)** — a media file in a 2nd window rendered blank: the
+  bare-pane singleton mounts but the reconcile never revealed it → call
+  `hideInactiveSingletons()`.
+- **media boot-seed (`ceef3d4`)** — restore read the session's active MEDIA file as
+  UTF-8 → garbled text buffer; boot now seeds from the first TEXT file when active
+  is media (restore opens the media as a data-source + switches to it).
+- **media-tab fixes (`b442fb5` + `6d4ee0a`)** — opening a 2nd media file while a
+  media view was focused failed. Diagnosed via a temporary MEDIA_TRACE round-trip
+  (since removed, `ec4c4d2`). Two real bugs: (1) restored media were open but
+  HIDDEN (seedClientTabline filtered ids through `registry.has`, excluding
+  data-sources → now keeps text buffers OR data-sources); (2) a focused media
+  element forwarded chords to the IN-RENDERER dispatchKey (+ preventDefault), so
+  C-x C-f was swallowed → new `serverMediaKeyOption()` routes media `onKey` to
+  serverViewClient in server mode (mirrors text views). Also: media views carry
+  `_serverBufferId` (clickable tabs); a media tab uses its element-view whether
+  active or not (no proxy churn); the active-tab re-bind falls back to `setBuffer`
+  for media. "That worked!"
+
+Suite 872 (was 864 + 8 path-complete). Branch ~147 ahead, UNMERGED.
+
+**Media follow-ons still open (small):** a BARE media pane uses the per-kind
+SINGLETON (one at a time; media-as-a-tab is fine); `C-x k` on a media leaf doesn't
+drop the data-source. **Bigger next:** the MUTABLE data-source fan-out seam
+(stella/jukebox), RESTORE-of-structure (pane tree / per-leaf tabs), then G4.3 → G5.
+A MERGE CHECKPOINT to main is worth considering (147 commits unmerged, flag-off
+byte-for-byte).
