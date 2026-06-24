@@ -36,11 +36,6 @@ import {
 import { resolveUserPath } from './path-resolve.js';
 import { mediaKindForName } from './media-kinds.js';
 import { completePath } from './path-complete.js';
-
-// Media round-trip diagnostics (flip off when done). Server traces go to stderr
-// (the terminal running `electron .`); the client's `[media-trace] client` lines
-// go to the renderer devtools console.
-const MEDIA_TRACE = true;
 import { createSpine } from './spine.js';
 // The crash-safe atomic writer (temp file + fsync + rename) and the
 // recovery-snapshot pure helpers are standalone production modules; the
@@ -417,14 +412,7 @@ function sendPickerTo(client, req) {
  *  derives those). Sent on HELLO and whenever the layout/focus changes. */
 function sendPaneTreeTo(client) {
   const tree = spine.paneSnapshot(client.index);
-  if (tree) {
-    if (MEDIA_TRACE) {
-      const leaves = [];
-      (function walk(n) { if (!n) return; if (n.kind === 'leaf') leaves.push({ id: n.id, bufferId: n.bufferId, focused: n.focused, viewKind: n.viewKind, tabline: n.tabline, tabs: (n.tabs || []).map((t) => `${t.bufferId}:${t.viewKind || 'text'}`) }); else { walk(n.first); walk(n.second); } })(tree);
-      console.error(`[media-trace] server PANE_TREE → client ${client.index}`, JSON.stringify(leaves));
-    }
-    client.port.postMessage({ type: MSG.PANE_TREE, tree, seq });
-  }
+  if (tree) client.port.postMessage({ type: MSG.PANE_TREE, tree, seq });
 }
 
 /** Push a fresh PANE_TREE to the client at INDEX (the onPaneTree effect). */
@@ -691,7 +679,6 @@ function handleMinibufferSubmit(value) {
     // onto it (other clients stay on their own buffers). Re-sync only the
     // active client onto the new buffer; the others are undisturbed.
     const newId = spine.visitFile(value);
-    if (MEDIA_TRACE) console.error(`[media-trace] server find-file submit "${value}" → id=${newId} activeClient=${activeClient && activeClient.index}`);
     if (newId && activeClient) resyncClientToCurrentBuffer(activeClient);
     return;
   }
