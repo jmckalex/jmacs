@@ -206,6 +206,15 @@ export function createPickerPanel(container, options = {}) {
         event.preventDefault(); move(1); break;
       case 'ArrowUp':
         event.preventDefault(); move(-1); break;
+      case 'n':
+        // C-n navigates ANY picker (a modifier can't be filter text); bare n
+        // navigates a no-filter MENU picker (the workspace chooser), where there
+        // is no filter input to swallow it.
+        if (event.ctrlKey || !inputEl) { event.preventDefault(); move(1); }
+        break;
+      case 'p':
+        if (event.ctrlKey || !inputEl) { event.preventDefault(); move(-1); }
+        break;
       case 'PageDown':
         event.preventDefault(); move(8); break;
       case 'PageUp':

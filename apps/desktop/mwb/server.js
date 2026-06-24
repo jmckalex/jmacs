@@ -1374,7 +1374,8 @@ function openWorkspaceChooser(client) {
     id: 'workspace-chooser',
     title: 'Restore workspace',
     rows: workspaceChooserRows(),
-    options: { placeholder: 'Choose a workspace to restore…', kind: 'workspace' },
+    // A no-filter MENU (a short list), so bare n/p navigate (+ arrows, + C-n/C-p).
+    options: { placeholder: 'Choose a workspace to restore…', kind: 'workspace', filter: false },
   });
 }
 
