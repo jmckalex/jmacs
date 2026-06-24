@@ -2883,3 +2883,15 @@ unaffected); `C-x k` on a media leaf re-homes but doesn't drop the data-source.
 **Bigger next items:** RESTORE-of-structure (persist the pane tree / per-leaf
 tabs); the MUTABLE data-source fan-out seam (stella/jukebox: a loaded ROM/song
 syncing across duplicate views — the reason the seam exists). Then G4.3 → G5.
+
+## [2026-06-24] find-file TAB-completion in server mode (case-insensitive + list) — awaiting verify
+
+`f10d3a2`. The deferred find-file completion slice (HANDOVER §2), built as scoped:
+a `MINIBUFFER_COMPLETE` query (client→server) → server computes → `MINIBUFFER_COMPLETIONS`
+reply → client fills the input + shows candidates. New pure `path-complete.js`
+(case-insensitive prefix completion, preserves typed casing + dir prefix, trailing
+'/' for dirs; 8 tests); server `completeFindFilePath` wires the fs read; the
+minibuffer's onTab sends the request, the reply setValue's + reuses the existing
+"Completions" panel (extracted `displayCompletionsPanel`). Server change →
+quit+relaunch. Suite 872. Only the 'Find file: ' prompt is wired (M-x /
+switch-to-buffer completion would be the same shape, not done).
