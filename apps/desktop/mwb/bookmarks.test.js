@@ -49,6 +49,19 @@ test('bookmarks.lisp loads server-side (its commands register)', () => {
   assert.ok(spine.commandNames().includes('list-bookmarks'), 'list-bookmarks registered');
 });
 
+test('C-x r m prompts to set a bookmark; C-x r l opens the outline', () => {
+  const { spine } = makeSpine({ initialText: 'alpha\nbeta\n' });
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-x'); spine.handleKey('r'); spine.handleKey('m');
+  assert.equal(spine.activePrompt, 'Set bookmark: ', 'C-x r m opened the set prompt');
+  spine.deliverMinibuffer('kb');
+  assert.equal(spine.interpreter.evaluate('(bookmark-count)'), 1, 'the named bookmark was set');
+  spine.handleKey('C-x'); spine.handleKey('r'); spine.handleKey('l');
+  const leaf = bookmarkLeaf(spine);
+  assert.ok(leaf, 'C-x r l opened the bookmark outline');
+  assert.equal(leaf.state.records[0].name, 'kb');
+});
+
 test('bookmark-set! records a bookmark + persists it to the sidecar', () => {
   const { spine, writes } = makeSpine({ initialText: 'line one\nline two\n' });
   spine.buffer.moveTo(5);

@@ -483,6 +483,15 @@ const CX_MAP = Object.freeze({
   // conflict with C-x 2 = split-vertical: that resolves at the C-x level
   // before this sub-map is entered.)
   5: Object.freeze({ 2: 'new-window' }),
+  // --- bookmarks (C-x r prefix — bookmarks.lisp) ---------------------
+  // C-x r m set · C-x r b jump · C-x r l open the outline. A nested map makes
+  // `r` a prefix (production's keymap.lisp isn't loaded server-side; the spine
+  // inlines the bindings it needs, like the C-x 5 frame prefix above).
+  r: Object.freeze({
+    m: 'bookmark-set',
+    b: 'bookmark-jump',
+    l: 'list-bookmarks',
+  }),
 });
 
 /**
