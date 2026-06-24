@@ -1913,6 +1913,19 @@ export function createSpine(options, effects = {}) {
       (interactive (string "Find file: "))
       (lambda (path) path))
 
+    (defcommand directory-tree ()
+      "Open a directory tree-view rooted at a directory chosen in the
+       minibuffer. The host opens it as a directory-view DATA-SOURCE."
+      (interactive (string "Directory tree: "))
+      (lambda (path) path))
+
+    (defcommand directory-columns ()
+      "Open a directory columns-view (Miller columns) rooted at a directory
+       chosen in the minibuffer. The host opens it as a directory-view
+       DATA-SOURCE."
+      (interactive (string "Directory columns: "))
+      (lambda (path) path))
+
     (defcommand new-window ()
       "Open another editor window onto the shared server (C-x 5 2). The
        window itself is opened by the client's host; this raises the effect."
@@ -1960,6 +1973,12 @@ export function createSpine(options, effects = {}) {
     const absPath = typeof result.path === 'string' && result.path !== ''
       ? result.path
       : path;
+    // A DIRECTORY: open it as a directory-view DATA-SOURCE (default kind from
+    // the host — directory-tree). The client mounts the directory element-view,
+    // which lists the directory itself; no text mirror.
+    if (result.directory) {
+      return openDirectorySource(absPath, result.kind, result.name);
+    }
     // A MEDIA file (image/audio/video/pdf): create (or reuse) a non-text
     // DATA-SOURCE and switch the focused leaf to it — the client mounts the
     // matching element-view and loads the bytes itself (never the text mirror).
@@ -1988,6 +2007,44 @@ export function createSpine(options, effects = {}) {
     statusText = '';
     onStatus('');
     return entry.id;
+  }
+
+  /** Open the directory at ABSPATH as a directory-view DATA-SOURCE of KIND
+   *  (directory-tree / directory-columns) and switch the active client's focused
+   *  leaf to it. Reuses an existing source for the SAME path AND kind (re-opening
+   *  switches rather than duplicates); a different kind on the same path mints a
+   *  new source (tree and columns are distinct views). Returns the source id. */
+  function openDirectorySource(absPath, kind, name) {
+    const existing = dataSources.list()
+      .find((s) => s.filePath === absPath && s.kind === kind);
+    const src = existing ?? dataSources.add({ kind, name, filePath: absPath });
+    switchClientToSource(activeClientIndex, src.id);
+    statusText = '';
+    onStatus('');
+    return src.id;
+  }
+
+  /**
+   * Open a directory as a directory-view DATA-SOURCE of an EXPLICIT kind (the
+   * `directory-tree` / `directory-columns` commands). Validates the path is a
+   * directory via the openFile effect (the host marks it `directory:true`); a
+   * non-directory path surfaces a status and is a no-op.
+   *
+   * @param {string} path
+   * @param {string} kind - 'directory-tree' | 'directory-columns'
+   * @returns {string | null} The data-source id, or null.
+   */
+  function visitDirectory(path, kind) {
+    const result = openFile(path);
+    if (!result || !result.directory) {
+      statusText = `directory: not a directory: ${path}`;
+      onStatus(statusText);
+      return null;
+    }
+    const absPath = typeof result.path === 'string' && result.path !== ''
+      ? result.path
+      : path;
+    return openDirectorySource(absPath, kind, result.name);
   }
 
   /**
@@ -2826,6 +2883,7 @@ export function createSpine(options, effects = {}) {
     deliverPicker,
     cancelPicker,
     visitFile,
+    visitDirectory,
     recoverBuffer,
     // save (real disk write) — the server wires saveFile to atomicWrite.
     saveActiveBuffer,

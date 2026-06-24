@@ -5944,19 +5944,26 @@ if (window.host && window.host.serverMode) {
   function buildServerMediaView(w) {
     let v = serverMediaViews.get(w.bufferId);
     if (!v) {
+      // A DIRECTORY data-source (directory-tree / directory-columns) reads the
+      // filesystem itself from `rootPath` — no bytes to load. A media source
+      // (image/audio/video/pdf) loads its bytes from `filePath` asynchronously.
+      const directoryKind =
+        w.viewKind === 'directory-tree' || w.viewKind === 'directory-columns';
       v = createView({
         kind: w.viewKind,
         name: w.name || `*${w.viewKind}*`,
-        extras: { filePath: w.filePath },
+        extras: directoryKind
+          ? { rootPath: w.filePath, expanded: new Set() }
+          : { filePath: w.filePath },
       });
       v._serverMedia = true;
       v._serverSourceId = w.bufferId;
       // The tab click / close handlers resolve a tab to a server id via
-      // `_serverBufferId` (the same field a proxy tab carries), so a media tab is
-      // switchable / closable like any other.
+      // `_serverBufferId` (the same field a proxy tab carries), so a media /
+      // directory tab is switchable / closable like any other.
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
-      loadServerMediaSrc(v, w.filePath);
+      if (!directoryKind) loadServerMediaSrc(v, w.filePath);
     }
     return v;
   }
@@ -6173,7 +6180,9 @@ if (window.host && window.host.serverMode) {
     if (w.tabline) {
       view = buildServerLeafTabline(w); // 3c: a tabline of this leaf's own tabs
     } else if (w.viewKind && w.viewKind !== 'text') {
-      view = buildServerMediaView(w); // a bare media pane (image/audio/video/pdf)
+      // A bare non-text data-source pane: media (image/audio/video/pdf) or a
+      // directory-view (directory-tree / directory-columns).
+      view = buildServerMediaView(w);
     } else if (w.focused) {
       view = serverFacadeView; // the live active buffer
     } else if (w.bufferId && w.bufferId !== activeServerBufferId() && typeof w.text === 'string') {
@@ -6394,7 +6403,15 @@ if (window.host && window.host.serverMode) {
   function refocusServerView() {
     const v = serverViewClient && serverViewClient.getView();
     if (v && typeof v.focus === 'function') {
-      requestAnimationFrame(() => { try { v.focus(); } catch { /* ignore */ } });
+      requestAnimationFrame(() => {
+        // A CHAINED prompt (M-x → a command that itself prompts, e.g.
+        // directory-tree) closes the M-x prompt and opens a new one in the same
+        // burst: close → schedule this refocus → open + focus the new input.
+        // If that new prompt is up by the time this fires, don't steal its focus
+        // back to the editor (the bug: the chained prompt needed a click).
+        if (minibuffer.isOpen()) return;
+        try { v.focus(); } catch { /* ignore */ }
+      });
     }
   }
   const serverChrome = {
@@ -8233,13 +8250,22 @@ async function openDocInPane(name) {
 // Phase 3g: directory-tree is a custom element now. Factory reused by
 // the tabline mount path for per-tab `<directory-tree-view>` instances.
 function configureDirectoryTreeView() {
+  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // onKey routes chords to the server's keymap in server mode (so C-x C-f /
+    // M-x reach it), else the in-renderer dispatchKey. Flag-off byte-for-byte.
+    ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     // Colour file/folder icons from the vendored Material Icon Theme set.
     iconUrlFor: (name, isDirectory, expanded) =>
       materialIconUrlForEntry(name, isDirectory, expanded),
     openPath: (path) => {
+      // Server mode: open the file by path through the server's find-file
+      // (visitFile), switching the focused leaf onto it.
+      if (serverMode) {
+        if (serverViewClient) serverViewClient.visitPath(path);
+        return;
+      }
       // Route through the `directory-tree-open-file` Lisp function so the
       // target honours `*directory-tree-open-target*` and stays user-
       // overridable. Fall back to the focused-pane open if the stdlib
@@ -8255,6 +8281,9 @@ function configureDirectoryTreeView() {
       openFileInTabAdjacent(path);
     },
     closeBuffer: () => {
+      // Server mode: closing a directory pane isn't wired server-side yet
+      // (follow-on). The pane is replaced when a file is opened from it.
+      if (serverMode) return;
       if (!keymapReady) return;
       try {
         interpreter.call('kill-view');
@@ -8784,14 +8813,21 @@ function disposePlaceholderElementForView(view) {
 // Phase 3g: directory-columns is a custom element now. Factory reused
 // by the tabline mount path for per-tab `<directory-columns-view>` instances.
 function configureDirectoryColumnsView() {
+  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // onKey routes to the server's keymap in server mode; flag-off byte-for-byte.
+    ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     getPreview: (path) => buildColumnPreview(path),
     // Same tree-sitter highlighter registry the editor uses, so the
     // preview pane colourises the file the same way as if it were open.
     highlighters,
     openPath: (path) => {
+      // Server mode: open by path through the server's find-file (visitFile).
+      if (serverMode) {
+        if (serverViewClient) serverViewClient.visitPath(path);
+        return;
+      }
       openFileInTabAdjacent(path);
     },
     onRevealInFolder: (path) => window.host.revealInFolder(path),
@@ -8803,6 +8839,8 @@ function configureDirectoryColumnsView() {
       return window.host.renameFile(path, to);
     },
     closeBuffer: () => {
+      // Server mode: closing a directory pane isn't wired server-side yet.
+      if (serverMode) return;
       if (!keymapReady) return;
       try {
         interpreter.call('kill-view');

@@ -25,7 +25,7 @@
  * ports over `process.parentPort` — one per client window.
  */
 
-import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
@@ -75,9 +75,15 @@ if (bootSession && bootSession.active) {
   // restoreServerSession then opens the media active as a DATA-SOURCE (visitFile)
   // and switches to it at the first HELLO. With no text file, fall through to the
   // default below.
-  const seedCandidates = mediaKindForName(bootSession.active)
-    ? (bootSession.files || []).filter((p) => !mediaKindForName(p))
-    : [bootSession.active];
+  // The seed buffer is fundamentally TEXT, so the active file seeds it only when
+  // it is a readable text file — not media (read as UTF-8 → garbled) and not a
+  // DIRECTORY (EISDIR). When the active is media/a directory, seed from the first
+  // text file in the session instead; restoreServerSession then opens the active
+  // as its DATA-SOURCE at the first HELLO.
+  const isTextSeed = (p) => !mediaKindForName(p) && !isDirectoryPath(p);
+  const seedCandidates = isTextSeed(bootSession.active)
+    ? [bootSession.active]
+    : (bootSession.files || []).filter(isTextSeed);
   for (const p of seedCandidates) {
     try {
       initialText = readFileSync(p, 'utf8');
@@ -131,12 +137,29 @@ function resolvePath(path) {
 function readFileForVisit(path) {
   try {
     const abs = resolvePath(path);
+    // A DIRECTORY routes to a directory-view DATA-SOURCE (directory-tree by
+    // default — the explicit `directory-columns` command overrides the kind via
+    // visitDirectory). The client mounts the matching element-view, which lists
+    // the directory itself; the server only records the path + kind.
+    if (isDirectoryPath(abs)) {
+      return { directory: true, kind: 'directory-tree', name: basename(abs), path: abs };
+    }
     const kind = mediaKindForName(abs);
     if (kind) return { media: true, kind, name: basename(abs), path: abs };
     return { text: readFileSync(abs, 'utf8'), name: basename(abs), path: abs };
   } catch (error) {
     console.error(`[mwb-server] find-file: ${error.message}`);
     return null;
+  }
+}
+
+/** Whether PATH names a directory on disk. Tolerant — a stat failure (no such
+ *  path, permission) is treated as "not a directory" so callers fall through. */
+function isDirectoryPath(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
   }
 }
 
@@ -585,6 +608,19 @@ function applyIntent(client, intent) {
         }
         break;
       }
+      case INTENT.VISIT_FILE: {
+        // Open a file by path directly (no minibuffer) — a file clicked in a
+        // directory-view. Like find-file: visitFile ADDS/switches the active
+        // client onto it and fully re-syncs, so skip the edit path.
+        const path = String(intent.path ?? '');
+        if (path !== '') {
+          const id = spine.visitFile(path);
+          if (id) resyncClientToCurrentBuffer(client);
+          activeClient = null;
+          return;
+        }
+        break;
+      }
       default:
         break;
     }
@@ -679,6 +715,15 @@ function handleMinibufferSubmit(value) {
     // onto it (other clients stay on their own buffers). Re-sync only the
     // active client onto the new buffer; the others are undisturbed.
     const newId = spine.visitFile(value);
+    if (newId && activeClient) resyncClientToCurrentBuffer(activeClient);
+    return;
+  }
+  if (prompt === 'Directory tree: ' || prompt === 'Directory columns: ') {
+    spine.abortMinibuffer();
+    // Open the chosen directory as a directory-view DATA-SOURCE of the kind the
+    // command picked (tree vs columns). Switches the active client onto it.
+    const kind = prompt === 'Directory columns: ' ? 'directory-columns' : 'directory-tree';
+    const newId = spine.visitDirectory(value, kind);
     if (newId && activeClient) resyncClientToCurrentBuffer(activeClient);
     return;
   }
@@ -784,8 +829,16 @@ function onClientMessage(client, event) {
       const before = spine.currentBufferIdOf(client.index);
       spine.applyPaneIntent(client.index, msg.intent || {});
       const after = spine.currentBufferIdOf(client.index);
-      if (after !== before) resyncClientToCurrentBuffer(client);
-      else { sendViewTo(client); sendCursorsTo(client); }
+      if (after !== before) {
+        resyncClientToCurrentBuffer(client); // re-syncs + persists the session
+      } else {
+        sendViewTo(client);
+        sendCursorsTo(client);
+        // A pane intent can change the SHOWN set without moving the focused
+        // buffer (e.g. closing a NON-active tab) — re-persist so the closed tab
+        // doesn't return on restart.
+        persistServerSession(client);
+      }
       activeClient = null;
       break;
     }
@@ -806,7 +859,9 @@ function onClientMessage(client, event) {
       // the client sent its current input. Other prompts (M-x, switch-to-buffer)
       // have their own completion — not wired yet. A read-only query (no edit),
       // so it replies directly rather than going through applyIntent.
-      if (spine.activePrompt === 'Find file: ') {
+      if (spine.activePrompt === 'Find file: '
+          || spine.activePrompt === 'Directory tree: '
+          || spine.activePrompt === 'Directory columns: ') {
         const r = completeFindFilePath(String(msg.value ?? ''));
         client.port.postMessage({
           type: MSG.MINIBUFFER_COMPLETIONS,
@@ -856,15 +911,46 @@ const autosave = createAutosave({
  *  first client's HELLO — when an active client exists for visitFile). */
 let sessionRestored = false;
 
-/** Persist the open file set + active file to SESSION_STORE. Only file-backed
- *  buffers are recorded (a path-less scratch can't be reopened); paths are
- *  de-duped. Tolerant — a write failure must never disturb editing. */
+/** The buffer ids actually SHOWN in client INDEX's pane tree, in leaf-then-tab
+ *  order, de-duped: each tabline leaf contributes its ordered curated `tabs`,
+ *  each single-view leaf its `bufferId`. This — NOT the raw open pool — is what
+ *  the session persists, so closing (un-curating) a tab drops it from the
+ *  restored set even though its buffer lives on in the pool (reachable via
+ *  C-x C-b within the session). Empty when no leaf carries a buffer. */
+function shownBufferIds(idx) {
+  const model = spine.paneModelOf(idx);
+  if (!model) return [];
+  const ids = [];
+  const add = (id) => { if (id != null && !ids.includes(id)) ids.push(id); };
+  for (const leaf of model.leaves()) {
+    const s = model.stateOf(leaf.id);
+    if (!s) continue;
+    if (s.tabline && Array.isArray(s.tabs)) s.tabs.forEach(add);
+    else add(s.bufferId);
+  }
+  return ids;
+}
+
+/** Persist the SHOWN file set + active file to SESSION_STORE. Records only the
+ *  buffers actually shown in the window's pane tree (its curated tabs + single-
+ *  view leaves) — NOT the raw open pool — so closing a tab drops it from restore.
+ *  Only file-backed buffers are recorded (a path-less scratch can't be reopened);
+ *  paths are de-duped. Tolerant — a write failure must never disturb editing. */
 function persistServerSession(client) {
   try {
     const idx = client ? client.index : (activeClient ? activeClient.index : 0);
     const records = spine.bufferListRecords(idx);
-    const files = [...new Set(records.filter((r) => r.filePath).map((r) => r.filePath))];
-    const activeRec = records.find((r) => r.current);
+    const byId = new Map(records.map((r) => [r.id, r]));
+    // Prefer the shown (curated) set; fall back to the raw pool only if the
+    // model exposes nothing (defensive — preserves the pre-fix behaviour).
+    const shown = shownBufferIds(idx);
+    const ids = shown.length > 0 ? shown : records.map((r) => r.id);
+    const files = [];
+    for (const id of ids) {
+      const r = byId.get(id);
+      if (r && r.filePath && !files.includes(r.filePath)) files.push(r.filePath);
+    }
+    const activeRec = byId.get(spine.currentBufferIdOf(idx));
     const active = activeRec && activeRec.filePath ? activeRec.filePath : null;
     atomicWriteSync(SESSION_STORE, JSON.stringify({ files, active }));
   } catch (error) {

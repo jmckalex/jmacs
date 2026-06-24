@@ -141,6 +141,10 @@ export const INTENT = Object.freeze({
   // minibuffer prompt. The server switches this client and re-snapshots it
   // onto the target buffer. `bufferId` or `bufferName` identifies the target.
   SWITCH_BUFFER: 'switch-buffer',
+  // A file opened by PATH directly (no minibuffer) — a file clicked in a
+  // directory-view (directory-tree / directory-columns). The server runs the
+  // same `visitFile` find-file opens use; `path` is the absolute file path.
+  VISIT_FILE: 'visit-file',
   // Generic picker round-trip (the command spine, G0b). When a server-side
   // command suspends on a PICKER (open-picker! → a PICKER down-message),
   // the client renders the interactive list and the user's choice/cancel

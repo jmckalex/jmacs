@@ -569,6 +569,17 @@ export function createServerViewClient({
     port.postMessage({ type: MSG.MINIBUFFER_COMPLETE, value: String(value ?? '') });
   }
 
+  /** Ask the server to open the file at PATH directly (no minibuffer) — a file
+   *  clicked in a directory-view. The server runs the same `visitFile` find-file
+   *  uses, switching this client onto the opened buffer. A no-op for a falsy path. */
+  function visitPath(path) {
+    if (!path) return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.VISIT_FILE, path: String(path) },
+    });
+  }
+
   /** Close (kill) the server buffer BUFFERID — a tab `×`. Switch this client to
    *  it (so it is current), then run the server's kill-buffer via its `C-x k`
    *  binding; the server re-homes the client onto a survivor buffer and
@@ -599,6 +610,8 @@ export function createServerViewClient({
     switchBuffer,
     // Ask the server to TAB-complete the open minibuffer (find-file path).
     requestMinibufferComplete,
+    // Open a file by absolute path (a directory-view file click).
+    visitPath,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the

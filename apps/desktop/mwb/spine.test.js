@@ -498,6 +498,53 @@ test('find-file of a MEDIA file creates a data-source leaf (no garbage text buff
   assert.match(vs.modeline, /clip\.mp4/);
 });
 
+test('find-file of a DIRECTORY creates a directory-tree data-source leaf', () => {
+  // The openFile effect marks a directory (the real server's readFileForVisit
+  // statSyncs the path); a directory carries `directory:true` + a default kind.
+  const files = {
+    '/proj/src': { directory: true, kind: 'directory-tree', name: 'src', path: '/proj/src' },
+    '/proj/readme.md': { text: '# hi\n', name: 'readme.md', path: '/proj/readme.md' },
+  };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+
+  const id = spine.visitFile('/proj/src');
+  assert.match(id, /^ds\d+$/, 'a data-source id, not a buffer id');
+  assert.equal(spine.bufferCount, 1, 'a directory did NOT add a text buffer');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.bufferId, id);
+  assert.equal(leaf.viewKind, 'directory-tree');
+  assert.equal(leaf.filePath, '/proj/src');
+  assert.equal(leaf.text, undefined, 'a directory leaf carries no text');
+  // It joins the window buffer list (View List / session record) by path + kind.
+  const rec = spine.bufferListRecords(0).find((r) => r.id === id);
+  assert.ok(rec, 'directory is in the window buffer list');
+  assert.equal(rec.viewKind, 'directory-tree');
+  assert.equal(rec.filePath, '/proj/src');
+});
+
+test('visitDirectory opens an EXPLICIT kind and dedups by path+kind', () => {
+  const files = {
+    '/proj/src': { directory: true, kind: 'directory-tree', name: 'src', path: '/proj/src' },
+    '/proj/f.txt': { text: 'x', name: 'f.txt', path: '/proj/f.txt' },
+  };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+
+  // The directory-columns command forces the columns kind regardless of the
+  // host's default.
+  const cols = spine.visitDirectory('/proj/src', 'directory-columns');
+  assert.match(cols, /^ds\d+$/);
+  assert.equal(wireLeaves(spine.paneSnapshot(0))[0].viewKind, 'directory-columns');
+
+  // Same path + same kind REUSES; same path + a DIFFERENT kind mints a new one
+  // (tree and columns are distinct views of the directory).
+  assert.equal(spine.visitDirectory('/proj/src', 'directory-columns'), cols, 'reuse path+kind');
+  const tree = spine.visitDirectory('/proj/src', 'directory-tree');
+  assert.notEqual(tree, cols, 'a different kind mints a new source');
+
+  // A NON-directory path is a no-op (null), not a crash.
+  assert.equal(spine.visitDirectory('/proj/f.txt', 'directory-tree'), null);
+});
+
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
