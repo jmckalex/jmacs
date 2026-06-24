@@ -1520,3 +1520,45 @@ test('C-x ; (comment-line) comments the current line with the mode prefix', () =
   spine.handleKey(';');
   assert.equal(spine.buffer.text, 'code here', 'a second toggle uncomments');
 });
+
+// --- session persistence: serializeWindow / loadWindowLayout (spine glue) ---
+
+test('serializeWindow/loadWindowLayout round-trips a window layout by path', () => {
+  const files = {
+    '/tmp/a.js': { text: 'const a = 1;\n', name: 'a.js' },
+    '/tmp/b.js': { text: 'const b = 2;\n', name: 'b.js' },
+  };
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const idA = spine.visitFile('/tmp/a.js');
+  const idB = spine.visitFile('/tmp/b.js');
+  assert.ok(idA && idB);
+
+  // Build  /a.js | /b.js  — a horizontal split, the right (focused) leaf on /b.js.
+  spine.switchClientToBuffer(0, idA); // the single leaf shows /a.js
+  const model = spine.paneModelOf(0);
+  model.split('horizontal', 0.4, 'after'); // new leaf (focus), still /a.js
+  spine.switchClientToBuffer(0, idB); // focused (new) leaf → /b.js
+
+  const blob1 = spine.serializeWindow(0);
+  // The blob is keyed by file PATH (not buffer id) + marks the focused leaf.
+  assert.equal(blob1.kind, 'split');
+  assert.equal(blob1.orientation, 'horizontal');
+  assert.ok(Math.abs(blob1.ratio - 0.4) < 1e-9);
+  assert.equal(blob1.first.view.path, '/tmp/a.js');
+  assert.equal(blob1.second.view.path, '/tmp/b.js');
+  assert.equal(blob1.second.focused, true, 'the /b.js leaf is focused');
+
+  // Restore it back into the same window (the files are still open) → serialise
+  // again → identical blob (no leaf ids leak; the round-trip is stable).
+  assert.equal(spine.loadWindowLayout(0, blob1), true);
+  const blob2 = spine.serializeWindow(0);
+  assert.deepEqual(blob2, blob1, 'serialize ∘ load ∘ serialize is a fixed point');
+
+  // And the LIVE model was rebuilt: two leaves on the right buffers, focus on b.
+  const snap = spine.paneSnapshot(0);
+  const leaves = wireLeaves(snap);
+  assert.equal(leaves.length, 2);
+  assert.equal(leaves[0].bufferId, idA);
+  assert.equal(leaves[1].bufferId, idB);
+  assert.equal(wireFocusedLeafId(snap), leaves[1].id, 'focus restored to /b.js');
+});

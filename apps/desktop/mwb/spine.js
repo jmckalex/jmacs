@@ -2774,6 +2774,60 @@ export function createSpine(options, effects = {}) {
     return ok;
   }
 
+  /** Serialise client INDEX's window layout to a path-keyed persistence blob
+   *  (the session's per-window `rootPane`), or null when the window is gone.
+   *  Each leaf's buffer resolves to its FILE PATH (text via the registry, media
+   *  via the data-sources); a path-less buffer → a null leaf-view (restores to a
+   *  scratch). The geometry (bounds/display) is added by the server, which holds
+   *  the client's reported window frame — the spine knows only the logical tree. */
+  function serializeWindow(index) {
+    const model = paneModels.get(index);
+    if (!model) return null;
+    return model.serialiseLayout((bufferId) => {
+      if (bufferId == null) return null;
+      const e = registry.get(bufferId);
+      if (e && e.filePath) return e.filePath;
+      const ds = dataSources.get(bufferId);
+      return ds && ds.filePath ? ds.filePath : null;
+    });
+  }
+
+  /** Restore client INDEX's window layout from a path-keyed blob (the mirror of
+   *  `serializeWindow`). The referenced files must ALREADY be open in the
+   *  registry (the caller opens them first, deduped); each path resolves to its
+   *  live buffer id, an unresolved path → a scratch leaf. Notes every restored
+   *  buffer in the window's open-set and rebinds the active client. Returns true
+   *  when a layout was installed. */
+  function loadWindowLayout(index, rootBlob) {
+    const model = paneModels.get(index);
+    if (!model || !rootBlob) return false;
+    const resolveId = (path) => {
+      if (typeof path !== 'string' || path === '') return null;
+      const e = registry.findByPath(path);
+      if (e) return e.id;
+      const ds = dataSources.findByPath(path);
+      return ds ? ds.id : null;
+    };
+    const ok = model.loadLayout(rootBlob, resolveId);
+    if (!ok) return false;
+    // Every buffer the restored leaves show is now open in this window (so its
+    // tabs / View List / session record include it).
+    for (const leaf of model.leaves()) {
+      const s = model.stateOf(leaf.id);
+      if (!s) continue;
+      if (s.tabline && Array.isArray(s.tabs)) s.tabs.forEach((id) => noteClientBuffer(index, id));
+      else noteClientBuffer(index, s.bufferId);
+    }
+    if (index === activeClientIndex) {
+      const entry = registry.get(model.focusedBufferId()) ?? entryForClient(index);
+      const v = model.focusedView() || registry.viewFor(entry.id, index);
+      bindActive(entry, v);
+      interpreter.call('-spine-choose-major-mode');
+      followBookmarkOutline();
+    }
+    return true;
+  }
+
   /** Resolve a buffer NAME to its id (the C-x b switch path), or null. */
   function bufferIdByName(name) {
     const entry = registry.findByName(name);
@@ -3373,6 +3427,10 @@ export function createSpine(options, effects = {}) {
     paneModelOf(index) {
       return paneModels.get(index) ?? null;
     },
+    // session persistence: serialise a window's layout by path; restore it back
+    // (the files must already be open). The server adds geometry around these.
+    serializeWindow,
+    loadWindowLayout,
     /** Record client INDEX's editor-area pixel rectangle (a VIEWPORT-style
      *  report). Only spatial pane navigation needs it; everything else is
      *  pixel-free. `{ width, height }`. */
