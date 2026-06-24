@@ -127,6 +127,26 @@ test('applyBookmarkOp jump moves the document point + returns true', () => {
   assert.equal(spine.buffer.point, 11, 'point moved to the bookmark');
 });
 
+test('a buffer restored WITHOUT find-file still loads its bookmarks (lazy seed)', () => {
+  // A session-restored / boot buffer never goes through visitFile's seed; the
+  // engine's lazy seed (bookmarksFor) must still restore from the sidecar.
+  const saved = {
+    version: 1,
+    bookmarks: [{
+      id: 'r9', name: 'boot', anchor: 0, depth: 0, created: 1,
+      frontContext: 'alpha', rearContext: '',
+    }],
+  };
+  const { spine } = makeSpine({
+    initialText: 'alpha\nbeta\n', name: 'doc.txt', initialPath: '/tmp/seed.txt',
+    readMetadata: (p) => (p === '/tmp/seed.txt' ? saved : null),
+  });
+  spine.interpreter.evaluate('(open-bookmark-view!)'); // triggers lazy seed
+  const recs = outlineRecords(spine);
+  assert.equal(recs.length, 1);
+  assert.equal(recs[0].name, 'boot');
+});
+
 test('a visited file restores its bookmarks from the sidecar', () => {
   const text = 'alpha\nbeta\ngamma\n';
   const saved = {

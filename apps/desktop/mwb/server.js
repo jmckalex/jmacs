@@ -304,17 +304,24 @@ function readMetadataForVisit(absPath) {
   return null;
 }
 
-/** Pending debounced sidecar writes, keyed by file path (mirrors the renderer's
- *  scheduleMetadataWrite — a bookmark op shouldn't fsync on every keystroke). */
+/** Pending debounced sidecar writes (mirrors the renderer's scheduleMetadataWrite
+ *  — a bookmark op shouldn't fsync on every keystroke). Two maps keyed by file
+ *  path: the live timer, and the LATEST data to write (so a shutdown flush can
+ *  complete a still-pending write synchronously). */
 const metadataWriteTimers = new Map();
+const pendingMetadata = new Map();
 
-/** Write ABSPATH's companion metadata (DATA — the buffer's whole metadata
+/** Write ABSPATH's pending companion metadata (the buffer's whole metadata
  *  object: bookmarks + notes). Empty data removes the sidecar rather than
  *  leaving a husk; otherwise the versioned JSON is atomic-written and the legacy
  *  sidecar retired — exactly files.js's metadata:write, but sync (the server's
  *  fs is direct). Throws are swallowed (a sidecar write must never crash). */
-function writeMetadataNow(absPath, data) {
+function writeMetadataNow(absPath) {
+  clearTimeout(metadataWriteTimers.get(absPath));
   metadataWriteTimers.delete(absPath);
+  if (!pendingMetadata.has(absPath)) return;
+  const data = pendingMetadata.get(absPath);
+  pendingMetadata.delete(absPath);
   try {
     const target = metadataPath(absPath);
     const legacy = legacyMetadataPath(absPath);
@@ -332,11 +339,21 @@ function writeMetadataNow(absPath, data) {
 }
 
 /** Schedule a debounced sidecar write for ABSPATH (the writeMetadata effect).
- *  A later change to the same path coalesces with the pending write. */
+ *  A later change to the same path coalesces — it replaces the pending data and
+ *  resets the timer. */
 function scheduleMetadataWrite(absPath, data) {
   if (typeof absPath !== 'string' || absPath === '') return;
+  pendingMetadata.set(absPath, data);
   clearTimeout(metadataWriteTimers.get(absPath));
-  metadataWriteTimers.set(absPath, setTimeout(() => writeMetadataNow(absPath, data), 500));
+  metadataWriteTimers.set(absPath, setTimeout(() => writeMetadataNow(absPath), 500));
+}
+
+/** Flush EVERY pending sidecar write synchronously — the server's equivalent of
+ *  the renderer's flushAllMetadata-on-quit. Without it a debounced bookmark
+ *  write is lost when the app quits (will-quit → bridge dispose() SIGTERMs this
+ *  child before the 500ms timer fires). Registered on SIGTERM/SIGINT/exit. */
+function flushPendingMetadataWrites() {
+  for (const absPath of [...pendingMetadata.keys()]) writeMetadataNow(absPath);
 }
 
 // --- the command spine ------------------------------------------------
@@ -1334,6 +1351,18 @@ function recoverOnStartup() {
 
 recoverOnStartup();
 autosave.start();
+
+// Flush pending sidecar writes on shutdown so a debounced bookmark / sticky-note
+// write survives quit. On quit, main's will-quit calls the bridge's dispose(),
+// which SIGTERMs this child; the handler flushes synchronously (atomic writes)
+// before exiting. `exit` is the backstop for any other graceful teardown. Both
+// are idempotent — flushPendingMetadataWrites empties the pending map.
+function shutdownFlushMetadata() {
+  try { flushPendingMetadataWrites(); } catch { /* best effort on the way out */ }
+}
+process.on('SIGTERM', () => { shutdownFlushMetadata(); process.exit(0); });
+process.on('SIGINT', () => { shutdownFlushMetadata(); process.exit(0); });
+process.on('exit', shutdownFlushMetadata);
 
 // --- headless save + data-safety self-test (MWB_SAVE_SELFTEST=1) -------
 //

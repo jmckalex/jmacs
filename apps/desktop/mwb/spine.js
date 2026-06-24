@@ -2258,6 +2258,10 @@ export function createSpine(options, effects = {}) {
   function bookmarksFor(entry) {
     let engine = bookmarkEngines.get(entry.id);
     if (!engine) {
+      // Restore from the sidecar if this entry's metadata wasn't seeded at visit
+      // — a session-restored or boot buffer doesn't go through visitFile's seed,
+      // so without this its saved bookmarks wouldn't load on the next launch.
+      if (entry.filePath && !entry.buffer.metadata) seedMetadata(entry, entry.filePath);
       engine = createBookmarks({ onChange: () => persistMetadata(entry) });
       engine.setBuffer(entry.buffer);
       bookmarkEngines.set(entry.id, engine);
