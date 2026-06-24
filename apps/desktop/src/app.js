@@ -5892,6 +5892,21 @@ if (window.host && window.host.serverMode) {
   /** @type {Map<string, object>} sourceId -> element-view object. */
   const serverMediaViews = new Map();
 
+  // --- media round-trip diagnostics (flip MEDIA_TRACE off when done) --------
+  const MEDIA_TRACE = true;
+  /** Log a `[media-trace] client` step (renderer console). */
+  function mtrace(...args) { if (MEDIA_TRACE) { try { console.log('[media-trace] client', ...args); } catch { /* ignore */ } } }
+  /** A compact summary of a wire pane node (kinds + tabs), for tracing. */
+  function wireSummary(node) {
+    if (!node || typeof node !== 'object') return node;
+    if (node.kind === 'split') return { split: node.orientation, first: wireSummary(node.first), second: wireSummary(node.second) };
+    return {
+      id: node.id, bufferId: node.bufferId, focused: node.focused,
+      tabline: node.tabline, viewKind: node.viewKind, filePath: node.filePath,
+      tabs: Array.isArray(node.tabs) ? node.tabs.map((t) => ({ id: t.bufferId, kind: t.viewKind, name: t.name })) : undefined,
+    };
+  }
+
   /** Map a window.host.openFilePath result to createView options for the matching
    *  element-view — MIRRORS openAsMediaViewIfRecognised's per-kind extras (image
    *  / audio / video / pdf), without pushing into the global `views` list. Null
@@ -5923,15 +5938,18 @@ if (window.host && window.host.serverMode) {
    *  reconcile mounts it with the src. Tolerant: a failed load just leaves blank. */
   async function loadServerMediaSrc(view, filePath) {
     if (!filePath || !window.host || typeof window.host.openFilePath !== 'function') return;
+    mtrace('loadServerMediaSrc: openFilePath', filePath, 'for', view.kind, view._serverBufferId);
     let result;
-    try { result = await window.host.openFilePath(filePath); } catch { return; }
+    try { result = await window.host.openFilePath(filePath); } catch (e) { mtrace('loadServerMediaSrc: openFilePath THREW', filePath, e && e.message); return; }
     const spec = serverMediaViewSpec(result);
+    mtrace('loadServerMediaSrc: result', filePath, 'spec?', !!spec, 'resultKeys', result && Object.keys(result));
     if (!spec) return;
     Object.assign(view, spec.extras); // src (+ audio metadata / album art)
     if (typeof result.name === 'string') view.name = result.name;
     const el = elementForViewInstance(view);
+    mtrace('loadServerMediaSrc: bind', filePath, 'element?', !!el, el && el.tagName);
     if (el && typeof el.setBuffer === 'function') {
-      try { el.setBuffer(view); } catch { /* ignore */ }
+      try { el.setBuffer(view); } catch (e) { mtrace('loadServerMediaSrc: setBuffer THREW', e && e.message); }
     } else if (serverPaneTreeWire) {
       renderServerPaneLayout(); // not mounted yet → reconcile mounts it with the src
     }
@@ -5956,7 +5974,10 @@ if (window.host && window.host.serverMode) {
       // switchable / closable like any other.
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
+      mtrace('buildServerMediaView: CREATE', w.viewKind, w.bufferId, w.name, w.filePath);
       loadServerMediaSrc(v, w.filePath);
+    } else {
+      mtrace('buildServerMediaView: reuse', w.viewKind, w.bufferId);
     }
     return v;
   }
@@ -6146,6 +6167,8 @@ if (window.host && window.host.serverMode) {
     });
     const activeIdx = tabs.findIndex((t) => t.bufferId === activeId);
     tlv.active = activeIdx >= 0 ? activeIdx : 0;
+    mtrace('buildServerLeafTabline: activeId', activeId, 'activeIdx', tlv.active,
+      'tabKinds', tlv.tabs.map((tv) => tv && tv.kind), 'tabIds', tlv.tabs.map((tv) => tv && (tv._serverBufferId || tv.id)));
     return tlv;
   }
 
@@ -6190,6 +6213,7 @@ if (window.host && window.host.serverMode) {
    *  visible; C-x 2/3/0/1/o drive the layout through the server. */
   function reconcileServerPaneTree() {
     if (!serverPaneTreeWire) return;
+    mtrace('reconcile START', wireSummary(serverPaneTreeWire));
     rootPane = buildServerPaneNode(serverPaneTreeWire);
     // Prune static buffers no longer shown as a different-buffer pane.
     const activeId = activeServerBufferId();
@@ -6243,6 +6267,12 @@ if (window.host && window.host.serverMode) {
     serverBoundLeafId = currentPaneId;
     syncPaneElements();
     for (const leaf of leafPanes(rootPane)) {
+     // Wrap each leaf's mount so a throw in one (e.g. a media element) can't
+     // abort the whole reconcile — which would leave the tabline half-rendered.
+     try {
+      mtrace('mount leaf', leaf.id, 'view.kind=', leaf.view && leaf.view.kind,
+        'tabline?', isTablineView(leaf.view), 'media?', !!(leaf.view && leaf.view._serverMedia),
+        isTablineView(leaf.view) ? '(activeChild ' + (tablineActiveChild(leaf.view) && tablineActiveChild(leaf.view).kind) + ')' : '');
       if (isTablineView(leaf.view)) {
         // A leaf that just flipped text→tabline still has its leaf-direct
         // <text-view> mounted behind the new strip — unlink it (TextView.destroy
@@ -6262,13 +6292,14 @@ if (window.host && window.host.serverMode) {
         const activeChild = tablineActiveChild(leaf.view);
         if (st && activeChild) {
           const el = st.editorByChild.get(activeChild);
+          mtrace('  tabline active rebind: child.kind=', activeChild.kind, 'el?', !!el, el && el.tagName);
           // A text tab re-binds via setView; a media tab (image/audio/video/pdf
           // element) has no setView — re-bind it via setBuffer so swapping one
           // media tab in over another actually re-points the element.
           if (el && typeof el.setView === 'function') {
-            try { el.setView(activeChild); } catch { /* ignore */ }
+            try { el.setView(activeChild); } catch (e) { mtrace('  rebind setView THREW', e && e.message); }
           } else if (el && typeof el.setBuffer === 'function') {
-            try { el.setBuffer(activeChild); } catch { /* ignore */ }
+            try { el.setBuffer(activeChild); } catch (e) { mtrace('  rebind setBuffer THREW', e && e.message); }
           }
         }
       } else if (leaf.view && leaf.view._serverMedia) {
@@ -6286,6 +6317,9 @@ if (window.host && window.host.serverMode) {
         const inst = ensureEditorViewForLeaf(leaf);
         if (inst) { try { inst.setView(leaf.view); } catch { /* ignore */ } }
       }
+     } catch (e) {
+       mtrace('mount leaf THREW', leaf.id, e && e.message, '\n', e && e.stack);
+     }
     }
     // A bare media pane mounts the per-kind SINGLETON (image/audio/video/pdf),
     // which starts display:none — the singleton mount path doesn't reveal it
@@ -6350,6 +6384,7 @@ if (window.host && window.host.serverMode) {
    *  / collapse, a tabline leaf re-renders. Every window renders from its
    *  PANE_TREE now (the unify); a push before the first mirror is just stored. */
   function applyServerPaneTree(tree) {
+    mtrace('PANE_TREE in', wireSummary(tree));
     serverPaneTreeWire = tree;
     if (serverMirror) renderServerPaneLayout();
   }
@@ -6359,6 +6394,7 @@ if (window.host && window.host.serverMode) {
    *  EVERY window is a composable pane layout — window 1 a tabline leaf of its
    *  restored files, fresh windows a single scratch pane; one render path). */
   function mountServerView(mirror) {
+    mtrace('SNAPSHOT/mount: mirror name=', mirror && mirror.name, 'currentBufferId=', serverViewClient && serverViewClient.currentBufferId());
     serverMirror = mirror;
     // The startup splash (the faint Lisp backdrop) is dismissed by an edit /
     // view-switch — none of which fire for a fresh server window, so it lingered
