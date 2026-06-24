@@ -5951,6 +5951,10 @@ if (window.host && window.host.serverMode) {
       });
       v._serverMedia = true;
       v._serverSourceId = w.bufferId;
+      // The tab click / close handlers resolve a tab to a server id via
+      // `_serverBufferId` (the same field a proxy tab carries), so a media tab is
+      // switchable / closable like any other.
+      v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
       loadServerMediaSrc(v, w.filePath);
     }
@@ -6121,12 +6125,25 @@ if (window.host && window.host.serverMode) {
       tlv._serverLeafId = w.id;
       serverLeafTablines.set(w.id, tlv);
     }
-    const activeTabView = serverLeafActiveTabView(w);
-    tlv.tabs = tabs.map((t) => (t.bufferId === activeId
-      ? activeTabView
-      : ensureServerProxy({
-          id: t.bufferId, name: t.name, modified: t.modified, filePath: t.filePath,
-        })));
+    const activeTextView = serverLeafActiveTabView(w);
+    tlv.tabs = tabs.map((t) => {
+      // A MEDIA tab uses its element-view whether active or not (like a real
+      // tabline's non-text tabs) — a consistent object across reconciles, so
+      // switching media↔media doesn't churn a proxy in over the view (which left
+      // the new tab unswitchable / unloaded). Only the active tab is shown; the
+      // others mount hidden.
+      if (t.viewKind && t.viewKind !== 'text') {
+        return buildServerMediaView({
+          bufferId: t.bufferId, viewKind: t.viewKind, name: t.name, filePath: t.filePath,
+        });
+      }
+      // A text tab: the active one is the façade/static content; the rest proxies.
+      return t.bufferId === activeId
+        ? activeTextView
+        : ensureServerProxy({
+            id: t.bufferId, name: t.name, modified: t.modified, filePath: t.filePath,
+          });
+    });
     const activeIdx = tabs.findIndex((t) => t.bufferId === activeId);
     tlv.active = activeIdx >= 0 ? activeIdx : 0;
     return tlv;
@@ -6182,8 +6199,15 @@ if (window.host && window.host.serverMode) {
     forEachWireLeaf(serverPaneTreeWire, (lf) => {
       if (lf.tabline) tablineLeafIds.add(lf.id);
       // A leaf whose ACTIVE content is a media source (a bare media pane, or a
-      // tabline leaf whose active tab is media) carries `viewKind`.
+      // tabline leaf whose active tab is media) carries `viewKind`; a tabline's
+      // media TABS (active or not) each keep their element-view, so keep all of
+      // them (their views are reused across reconciles).
       if (lf.viewKind && lf.viewKind !== 'text') shownMedia.add(lf.bufferId);
+      if (Array.isArray(lf.tabs)) {
+        for (const t of lf.tabs) {
+          if (t.viewKind && t.viewKind !== 'text') shownMedia.add(t.bufferId);
+        }
+      }
       if (!lf.focused && lf.bufferId && lf.bufferId !== activeId && typeof lf.text === 'string') {
         stillStatic.add(lf.bufferId);
       }
@@ -6238,8 +6262,13 @@ if (window.host && window.host.serverMode) {
         const activeChild = tablineActiveChild(leaf.view);
         if (st && activeChild) {
           const el = st.editorByChild.get(activeChild);
+          // A text tab re-binds via setView; a media tab (image/audio/video/pdf
+          // element) has no setView — re-bind it via setBuffer so swapping one
+          // media tab in over another actually re-points the element.
           if (el && typeof el.setView === 'function') {
             try { el.setView(activeChild); } catch { /* ignore */ }
+          } else if (el && typeof el.setBuffer === 'function') {
+            try { el.setBuffer(activeChild); } catch { /* ignore */ }
           }
         }
       } else if (leaf.view && leaf.view._serverMedia) {
