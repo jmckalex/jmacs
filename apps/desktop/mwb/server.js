@@ -90,38 +90,46 @@ if (!sessionStore.get('__last__') && sessionStore.list().sessions.length === 0) 
 let initialText;
 let bufferName;
 let initialPath = null;
-const bootSession = sessionBootInfo();
-if (bootSession && bootSession.active) {
-  // The active file is the natural seed — UNLESS it is MEDIA (image/video/audio/
-  // pdf), which must NOT be read as UTF-8 (that's the garbled-PNG-on-restore bug).
-  // The seed buffer is fundamentally TEXT, so the active file seeds it only when
-  // it is a readable text file — not media (read as UTF-8 → garbled) and not a
-  // DIRECTORY (EISDIR). When the active is media/a directory, seed from the first
-  // text file in the session instead; restoreSession then opens the active as its
-  // DATA-SOURCE (via visitFile) when it rebuilds the layout.
-  const isTextSeed = (p) => !mediaKindForName(p) && !isDirectoryPath(p);
-  const seedCandidates = isTextSeed(bootSession.active)
-    ? [bootSession.active]
-    : (bootSession.files || []).filter(isTextSeed);
-  for (const p of seedCandidates) {
-    try {
-      initialText = readFileSync(p, 'utf8');
-      bufferName = basename(p);
-      initialPath = p;
-      break;
-    } catch { /* try the next candidate */ }
+if (hasRestorableWorkspaces()) {
+  // A workspace CHOOSER is shown on the first HELLO (there's something to
+  // restore). Until the user picks — or starts fresh — the window is just a
+  // blank *scratch* backdrop; don't pre-load the last session, since they may
+  // choose a different workspace (or none).
+  initialText = '';
+  bufferName = '*scratch*';
+} else {
+  const bootSession = sessionBootInfo();
+  if (bootSession && bootSession.active) {
+    // The active file is the natural seed — UNLESS it is MEDIA (image/video/
+    // audio/pdf), which must NOT be read as UTF-8 (the garbled-PNG bug). The seed
+    // is fundamentally TEXT, so the active file seeds it only when it is a
+    // readable text file — not media and not a DIRECTORY (EISDIR). When the
+    // active is media/a directory, seed from the first text file instead;
+    // restoreSession then opens the active as its DATA-SOURCE (via visitFile).
+    const isTextSeed = (p) => !mediaKindForName(p) && !isDirectoryPath(p);
+    const seedCandidates = isTextSeed(bootSession.active)
+      ? [bootSession.active]
+      : (bootSession.files || []).filter(isTextSeed);
+    for (const p of seedCandidates) {
+      try {
+        initialText = readFileSync(p, 'utf8');
+        bufferName = basename(p);
+        initialPath = p;
+        break;
+      } catch { /* try the next candidate */ }
+    }
   }
-}
-if (initialText === undefined) {
-  try {
-    initialText = readFileSync(filePath, 'utf8');
-    bufferName = basename(filePath);
-    initialPath = filePath;
-  } catch (error) {
-    console.error(`[mwb-server] could not read ${filePath}: ${error.message}`);
-    initialText = '; could not load file — type here.\n';
-    bufferName = 'mwb-scratch.lisp';
-    initialPath = null;
+  if (initialText === undefined) {
+    try {
+      initialText = readFileSync(filePath, 'utf8');
+      bufferName = basename(filePath);
+      initialPath = filePath;
+    } catch (error) {
+      console.error(`[mwb-server] could not read ${filePath}: ${error.message}`);
+      initialText = '; could not load file — type here.\n';
+      bufferName = 'mwb-scratch.lisp';
+      initialPath = null;
+    }
   }
 }
 
@@ -764,6 +772,17 @@ function applyIntent(client, intent) {
         }
         break;
       case INTENT.PICKER_CHOOSE:
+        // Slice C1: the boot workspace chooser is a SERVER-driven picker (no Lisp
+        // command suspended on it), so intercept its choice by pickerId and route
+        // it to the restore, rather than delivering it to the spine.
+        if (intent.pickerId === 'workspace-chooser') {
+          pickerClient = null;
+          activeClient = client;
+          spine.setActiveClient(client.index);
+          handleWorkspaceChoice(client, intent.value);
+          activeClient = null;
+          return;
+        }
         // A generic-picker choice (G0b): resume the suspended command with the
         // chosen row's value, guarded by the pickerId (a stale reply is
         // dropped). The continuation may switch the buffer (the buffer-list
@@ -775,6 +794,15 @@ function applyIntent(client, intent) {
         activeClient = null;
         return;
       case INTENT.PICKER_CANCEL:
+        // Slice C1: cancelling the boot chooser (Esc / C-g) starts fresh.
+        if (intent.pickerId === 'workspace-chooser') {
+          pickerClient = null;
+          activeClient = client;
+          spine.setActiveClient(client.index);
+          handleWorkspaceChoice(client, '__fresh__');
+          activeClient = null;
+          return;
+        }
         // Escape / C-g: resume the command with nil (it does nothing) + close.
         pickerClient = null;
         spine.cancelPicker(intent.pickerId);
@@ -1036,13 +1064,18 @@ function onClientMessage(client, event) {
       // renderer's session.json becomes the server's own going forward.
       if (!sessionRestored) {
         sessionRestored = true;
-        // Restore the saved session's PANE STRUCTURE (splits + tabs + cursor) —
-        // window[0] onto this bootstrap window, the rest spawned one-by-one.
-        // persistLastSession is guarded mid-restore (it runs here only for a
-        // single-window session; applyNextRestoreWindow persists a multi-window
-        // one once the last window lands).
-        restoreSession(client);
-        persistLastSession();
+        if (hasRestorableWorkspaces()) {
+          // Slice C1: ask the user which workspace to restore (or start fresh)
+          // via the chooser, instead of auto-restoring. The restore happens on
+          // the choice (handleWorkspaceChoice); the snapshot below paints the
+          // *scratch* backdrop + the picker overlay until then.
+          openWorkspaceChooser(client);
+        } else {
+          // Nothing to restore — present the boot buffer as a 1-tab tabline
+          // (today's first-run look).
+          restoreSession(client);
+          persistLastSession();
+        }
       } else if (awaitingRestoreWindow && pendingRestore.length > 0) {
         // A just-spawned restore window: hand it the next saved layout BEFORE the
         // snapshot below, so it paints its restored tree (not the fresh scratch).
@@ -1279,6 +1312,92 @@ function persistLastSession() {
   }
 }
 
+// --- the workspace chooser (slice C1) ---------------------------------
+//
+// On the first HELLO, if there is anything to restore, the server opens a
+// server-driven generic PICKER (reusing the client's picker-panel) listing the
+// saved workspaces + a "start fresh" row, INSTEAD of auto-restoring. The choice
+// is intercepted by pickerId in the PICKER_CHOOSE handler (no Lisp command is
+// suspended on it) and routed to handleWorkspaceChoice.
+
+/** Whether the store holds anything to restore (the `__last__` auto-snapshot or
+ *  any named workspace) — i.e. whether to show the chooser at boot. */
+function hasRestorableWorkspaces() {
+  return !!sessionStore.get('__last__') || sessionStore.list().sessions.length > 0;
+}
+
+/** A short, human relative time for a workspace's `savedAt`. */
+function relativeTime(ts) {
+  if (!Number.isFinite(ts)) return '';
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  try { return new Date(ts).toLocaleDateString(); } catch { return ''; }
+}
+
+/** The chooser's picker rows: the `__last__` snapshot first (if any), then the
+ *  named workspaces (most-recent first), then a "start fresh" row. Each row's
+ *  `value` is the session id to restore (or the `__fresh__` sentinel). */
+function workspaceChooserRows() {
+  const rows = [];
+  const winLabel = (n) => `${n} window${n === 1 ? '' : 's'}`;
+  const last = sessionStore.get('__last__');
+  if (last) {
+    rows.push({
+      label: '⚨  Last workspace',
+      value: '__last__',
+      meta: winLabel(Array.isArray(last.windows) ? last.windows.length : 0),
+      detail: relativeTime(last.savedAt),
+    });
+  }
+  const { sessions } = sessionStore.list();
+  for (const s of [...sessions].sort((a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0))) {
+    rows.push({
+      label: s.label && s.label !== '' ? s.label : '(unnamed workspace)',
+      value: s.id,
+      meta: winLabel(s.windowCount),
+      detail: relativeTime(s.savedAt),
+    });
+  }
+  rows.push({ label: '✨  Start fresh', value: '__fresh__' });
+  return rows;
+}
+
+/** Open the workspace chooser on CLIENT (the first window). The choice is
+ *  intercepted by pickerId in the PICKER_CHOOSE handler. */
+function openWorkspaceChooser(client) {
+  sendPickerTo(client, {
+    id: 'workspace-chooser',
+    title: 'Restore workspace',
+    rows: workspaceChooserRows(),
+    options: { placeholder: 'Choose a workspace to restore…', kind: 'workspace' },
+  });
+}
+
+/** Resolve a workspace-chooser choice: restore the chosen workspace by id, or
+ *  start fresh (`__fresh__`, an empty value, or a cancel). Re-syncs the window
+ *  onto its new content (spawned restore windows sync on their own HELLO). */
+function handleWorkspaceChoice(client, value) {
+  if (value === '__fresh__' || value == null || value === '') {
+    seedWindow1Tabline(client); // the scratch backdrop becomes a 1-tab tabline
+  } else {
+    restoreSession(client, value);
+    // The restored layout becomes `__last__`; self-guards mid multi-window
+    // restore (applyNextRestoreWindow persists once every window has landed).
+    persistLastSession();
+  }
+  sendSnapshot(client);
+  sendViewTo(client);
+  sendOverlaysTo(client);
+  sendCursorsTo(client);
+  sendBufferListTo(client);
+  sendPaneTreeTo(client);
+}
+
 // --- multi-window restore orchestration (slice B) ---------------------
 //
 // The saved session can hold several windows. window[0] lands on the bootstrap
@@ -1323,9 +1442,9 @@ function spawnNextRestoreWindow() {
  *  rest cascade in via applyNextRestoreWindow as each connects). Falls back to a
  *  1-tab tabline when there is no saved layout. Called once, from the first
  *  HELLO. Tolerant. */
-function restoreSession(client) {
+function restoreSession(client, id = '__last__') {
   restoreInProgress = true;
-  const last = sessionStore.get('__last__');
+  const last = sessionStore.get(id);
   const windows = last && Array.isArray(last.windows) ? last.windows : [];
   const win0 = windows[0];
   if (!win0 || !win0.rootPane) {
