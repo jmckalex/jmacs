@@ -5908,6 +5908,12 @@ if (window.host && window.host.serverMode) {
   // — the leaf-flip fix (#2). Used for focused AND non-focused tabline leaves.
   /** @type {Map<string, object>} leafId -> stable active-tab view (live-or-static). */
   const serverLeafActiveTabViews = new Map();
+  // The buffer each server-backed text element last rendered. Lets a reconcile
+  // tell a FOCUS / split / re-layout (same buffer → keep the scroll exactly) from
+  // a BUFFER SWITCH (new buffer → let it reveal its cursor) — so scroll never
+  // changes on focus, even when the cursor sits off-screen. WeakMap: GC'd with
+  // the element.
+  const serverTextElLastBuffer = new WeakMap();
   // Non-text DATA-SOURCE views (image/audio/video/pdf), keyed by the server
   // source id. A media leaf/tab carries `viewKind` + `filePath` on the wire; the
   // client builds the matching element-view here and loads the bytes itself via
@@ -6250,6 +6256,28 @@ if (window.host && window.host.serverMode) {
     return v;
   }
 
+  /** Re-point server-backed text element EL at VIEW during a reconcile,
+   *  PRESERVING its scroll when the bound buffer is UNCHANGED (a focus / split /
+   *  re-layout — not a buffer switch). `setView` forces followCursor (reveal the
+   *  cursor), which is correct when the cursor MOVES or the buffer switches but
+   *  wrong on a focus change: the scroll must stay put even if the cursor is
+   *  off-screen. So for an unchanged buffer we capture + restore scrollTop around
+   *  the re-point (setView renders synchronously, so the followCursor scroll has
+   *  already happened by the time we restore). A changed buffer (a new mirror or
+   *  static snapshot) re-points normally, so the new content reveals its cursor.
+   *  Cursor MOVES don't come through here (they re-point via the focused-leaf
+   *  adapter / buffer onChange), so reveal-on-move is unaffected. */
+  function repointServerTextEl(el, view) {
+    if (!el || typeof el.setView !== 'function') return;
+    const nextBuffer = view ? view.buffer : null;
+    const sameBuffer = nextBuffer != null && serverTextElLastBuffer.get(el) === nextBuffer;
+    const scroller = sameBuffer ? el.scrollElement : null;
+    const savedTop = scroller ? scroller.scrollTop : null;
+    el.setView(view);
+    if (scroller && savedTop != null) scroller.scrollTop = savedTop;
+    serverTextElLastBuffer.set(el, nextBuffer);
+  }
+
   /** Build (or reuse) the tabline-view for a `tabline` leaf (Step 3c): one tab
    *  per id in the leaf's OWN curated `tabs` list — the active tab is the live
    *  façade (focused) or a static view (non-focused), every other tab a
@@ -6409,7 +6437,9 @@ if (window.host && window.host.serverMode) {
           // element) has no setView — re-bind it via setBuffer so swapping one
           // media tab in over another actually re-points the element.
           if (el && typeof el.setView === 'function') {
-            try { el.setView(activeChild); } catch { /* ignore */ }
+            // Preserve scroll on a focus/relayout re-point (only reveal on a
+            // genuine buffer switch) — never scroll the document on focus.
+            try { repointServerTextEl(el, activeChild); } catch { /* ignore */ }
           } else if (el && typeof el.setBuffer === 'function') {
             try { el.setBuffer(activeChild); } catch { /* ignore */ }
           }
@@ -6432,7 +6462,9 @@ if (window.host && window.host.serverMode) {
         mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id), focus });
       } else if (leaf.view && leaf.view.kind === 'text') {
         const inst = ensureEditorViewForLeaf(leaf);
-        if (inst) { try { inst.setView(leaf.view); } catch { /* ignore */ } }
+        // Preserve scroll on a focus/relayout re-point (a plain leaf reuses its
+        // element, so only followCursor could move it); reveal only on a switch.
+        if (inst) { try { repointServerTextEl(inst, leaf.view); } catch { /* ignore */ } }
       }
     }
     // A bare media pane mounts the per-kind SINGLETON (image/audio/video/pdf),
