@@ -163,6 +163,60 @@ function isDirectoryPath(path) {
   }
 }
 
+/** Whether PATH names an existing file on disk (tolerant). */
+function isFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Find a bibliography DECLARATION in document TEXT: a markdown/jmarkdown
+ *  `Bibliography: path` metadata header (first ~60 lines), or a LaTeX
+ *  `\addbibresource{…}` / `\bibliography{…}` (the first entry, `.bib` appended).
+ *  Returns the declared (possibly relative) path, or null. Mirrors the renderer
+ *  bib-search detection so server mode finds the same bib. */
+function detectBibDeclaration(text) {
+  if (typeof text !== 'string' || text === '') return null;
+  const lines = text.split('\n');
+  const cap = Math.min(lines.length, 60);
+  for (let i = 0; i < cap; i += 1) {
+    const m = /^\s*bibliography:\s*(.+?)\s*$/i.exec(lines[i]);
+    if (m && m[1]) return m[1];
+  }
+  const add = /\\addbibresource\s*\{([^}]+)\}/.exec(text);
+  if (add && add[1]) return add[1].trim();
+  const bib = /\\bibliography\s*\{([^}]+)\}/.exec(text);
+  if (bib && bib[1]) {
+    const first = bib[1].split(',')[0].trim();
+    if (first) return /\.bib$/i.test(first) ? first : `${first}.bib`;
+  }
+  return null;
+}
+
+/** The active document's bibliography ABSOLUTE path for CLIENT INDEX, or null —
+ *  the server is authoritative for the active doc (it owns the buffer text +
+ *  file path), so it resolves the bibliography the renderer's inert session
+ *  can't. Detects a bib declaration in the active buffer's text, resolves it
+ *  against the document's directory, and verifies it exists on disk. */
+function activeDocumentBibPath(index) {
+  try {
+    const cur = spine.bufferListRecords(index).find((r) => r.current);
+    // Only a TEXT document has a bibliography (a data-source record carries a
+    // viewKind); it must be file-backed to resolve a relative bib path.
+    if (!cur || cur.viewKind || !cur.filePath) return null;
+    const text = spine.buffer && typeof spine.buffer.text === 'string'
+      ? spine.buffer.text : '';
+    const decl = detectBibDeclaration(text);
+    if (!decl) return null;
+    const abs = decl.startsWith('/') ? decl : join(dirname(cur.filePath), decl);
+    return isFile(abs) ? abs : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Case-insensitive find-file path completion (the TAB-completion handler). The
  *  pure completePath does the matching; this wires the directory read, resolving
  *  the typed dir prefix the same way find-file resolves a path (~, relative to
@@ -706,7 +760,21 @@ function handleMinibufferSubmit(value) {
   if (prompt === 'M-x ') {
     const chosen = bestCommandMatch(value);
     spine.abortMinibuffer();
-    if (chosen) spine.runCommand(chosen);
+    if (chosen && clientCommandNames.has(chosen)) {
+      // A renderer-owned command (an element-view): the client runs it (it
+      // computes the spec) and calls back with OPEN_ELEMENT_SOURCE.
+      sendRunClientCommand(activeClient, chosen);
+    } else if (chosen) {
+      spine.runCommand(chosen);
+    } else {
+      // No server (or known client) command matched. Forward the raw name to
+      // the client as a fallback: the renderer may own it even if its
+      // CLIENT_COMMANDS announcement hadn't arrived yet (boot race) or it was
+      // registered live (a define-element-view eval'd after connect). The
+      // renderer's run-command surfaces an error if it's a genuine typo.
+      const raw = value.trim();
+      if (raw !== '') sendRunClientCommand(activeClient, raw);
+    }
     return;
   }
   if (prompt === 'Find file: ') {
@@ -772,10 +840,29 @@ function sendStatusTo(client, status) {
   client.port.postMessage({ type: MSG.VIEW, view: { ...vs, status, seq } });
 }
 
+// Command names the RENDERER owns (the element-view commands from
+// define-element-view, incl. user-defined ones in init.lisp). Announced once
+// per client via MSG.CLIENT_COMMANDS; merged into M-x so they complete + match,
+// and routed back DOWN via RUN_CLIENT_COMMAND (the renderer computes the spec).
+const clientCommandNames = new Set();
+
+/** Ask CLIENT to run one of its own (renderer) commands by NAME — the M-x
+ *  dispatch of a client-owned command. The renderer runs it (computing the
+ *  spec) and may call back with OPEN_ELEMENT_SOURCE. For bib-search we also
+ *  send the active document's bibliography path (the server resolves it; the
+ *  renderer's inert session can't), so the panel loads the real .bib. */
+function sendRunClientCommand(client, name) {
+  if (!client) return;
+  const bibPath = name === 'bib-search' ? activeDocumentBibPath(client.index) : null;
+  client.port.postMessage({ type: MSG.RUN_CLIENT_COMMAND, name, bibPath });
+}
+
 function bestCommandMatch(value) {
   const v = value.trim();
   if (v === '') return null;
-  const names = spine.commandNames();
+  // Match against the server's commands AND the client-owned (renderer) ones,
+  // so M-x finds an element-view command exactly like a server command.
+  const names = [...spine.commandNames(), ...clientCommandNames];
   if (names.includes(v)) return v;
   const sub = names.filter((n) => n.includes(v)).sort((a, b) => a.length - b.length);
   return sub[0] ?? null;
@@ -868,6 +955,25 @@ function onClientMessage(client, event) {
           value: r.value, items: r.items, directory: r.directory,
         });
       }
+      break;
+    }
+    case MSG.CLIENT_COMMANDS:
+      // The client announces the renderer-owned command names (element-views).
+      // Merge them so M-x completes/matches them and routes them back down.
+      if (Array.isArray(msg.names)) {
+        for (const n of msg.names) {
+          if (typeof n === 'string' && n !== '') clientCommandNames.add(n);
+        }
+      }
+      break;
+    case MSG.OPEN_ELEMENT_SOURCE: {
+      // The renderer computed an element-view spec and asks the server to hold
+      // it as a data-source + switch this client's focused leaf to it (like a
+      // find-file). The PANE_TREE then carries the spec for the client to mount.
+      activeClient = client;
+      const id = spine.openElementSource(msg.spec || {});
+      if (id) resyncClientToCurrentBuffer(client);
+      activeClient = null;
       break;
     }
     default:

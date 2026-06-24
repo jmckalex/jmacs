@@ -922,6 +922,10 @@ function focusPaneFromEvent(event) {
   if (!(target instanceof Element)) return;
   // Splitter handles aren't panes — pressing one focuses nothing.
   if (target.closest('.pane-splitter')) return;
+  // A :no-focus element-view (e.g. bib-search, server mode) must not steal pane
+  // focus — it acts on the active document, which keeps focus. (The clicked
+  // input still takes DOM focus normally; only the server pane-focus is held.)
+  if (target.closest('element-view[data-no-focus="true"]')) return;
   const paneEl = target.closest('.pane');
   if (!paneEl) return;
   const paneId = paneEl.dataset.paneId;
@@ -3634,6 +3638,26 @@ const interpreter = createInterpreter({
         titleRaw === undefined || titleRaw === null || titleRaw === NIL
           ? tag
           : lispText(titleRaw);
+      // Server mode: the renderer computes the spec (here — it owns
+      // define-element-view + host primitives), but the view must live as a
+      // SERVER data-source to get a pane slot + restore. Send the plain spec up;
+      // the server holds it + switches the leaf, and the client mounts
+      // <element-view> from the PANE_TREE. (onReady is a Lisp callback that
+      // can't cross the wire — deferred; noFocus is honoured server-side later.)
+      if (window.host && window.host.serverMode) {
+        if (serverViewClient) {
+          serverViewClient.openElementView({
+            name,
+            tag: extras.tag,
+            moduleUrl: extras.moduleUrl,
+            attrs: extras.attrs,
+            fit: extras.fit,
+            keyboard: extras.keyboard,
+            noFocus: extras.noFocus,
+          });
+        }
+        return NIL;
+      }
       // A :no-focus panel (e.g. bib-search) opens BESIDE the document in
       // its own split, keeping the editing focus on the document — and
       // reuses an already-open instance of the same tag rather than
@@ -5945,25 +5969,45 @@ if (window.host && window.host.serverMode) {
     let v = serverMediaViews.get(w.bufferId);
     if (!v) {
       // A DIRECTORY data-source (directory-tree / directory-columns) reads the
-      // filesystem itself from `rootPath` — no bytes to load. A media source
-      // (image/audio/video/pdf) loads its bytes from `filePath` asynchronously.
+      // filesystem itself from `rootPath` — no bytes to load. An ELEMENT
+      // data-source carries its spec (tag / moduleUrl / attrs / fit / keyboard /
+      // noFocus) on the wire `state`; <element-view> reads those spread onto the
+      // view. A media source (image/audio/video/pdf) loads its bytes from
+      // `filePath` asynchronously.
       const directoryKind =
         w.viewKind === 'directory-tree' || w.viewKind === 'directory-columns';
+      const elementKind = w.viewKind === 'element';
+      let extras;
+      if (elementKind) {
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          tag: s.tag,
+          moduleUrl: s.moduleUrl,
+          attrs: Array.isArray(s.attrs) ? s.attrs : [],
+          fit: s.fit,
+          keyboard: s.keyboard,
+          noFocus: s.noFocus === true,
+        };
+      } else if (directoryKind) {
+        extras = { rootPath: w.filePath, expanded: new Set() };
+      } else {
+        extras = { filePath: w.filePath };
+      }
       v = createView({
         kind: w.viewKind,
         name: w.name || `*${w.viewKind}*`,
-        extras: directoryKind
-          ? { rootPath: w.filePath, expanded: new Set() }
-          : { filePath: w.filePath },
+        extras,
       });
       v._serverMedia = true;
       v._serverSourceId = w.bufferId;
       // The tab click / close handlers resolve a tab to a server id via
       // `_serverBufferId` (the same field a proxy tab carries), so a media /
-      // directory tab is switchable / closable like any other.
+      // directory / element tab is switchable / closable like any other.
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
-      if (!directoryKind) loadServerMediaSrc(v, w.filePath);
+      // Only media needs an async byte-load; directory + element render
+      // themselves from the spec.
+      if (!directoryKind && !elementKind) loadServerMediaSrc(v, w.filePath);
     }
     return v;
   }
@@ -6510,6 +6554,28 @@ if (window.host && window.host.serverMode) {
       subscribeResize: (report) => {
         window.addEventListener('resize', report);
         return () => window.removeEventListener('resize', report);
+      },
+      // The renderer owns element-view commands (define-element-view, incl.
+      // user config): announce their names so the server's M-x routes them
+      // back down (RUN_CLIENT_COMMAND), and run them here when it does.
+      clientCommandNames: elementViewCommandNames,
+      runClientCommand: (name, bibPath) => {
+        try {
+          // bib-search can't see the active document in server mode (the
+          // renderer session is inert), so the server resolved its bibliography
+          // and sent it here. Pin it via the override the command consults; a
+          // null clears any stale pin. Defensive: a missing var (bib-search not
+          // loaded) must not block the command run.
+          const v = typeof bibPath === 'string' && bibPath !== ''
+            ? writeString(bibPath) : 'nil';
+          try { interpreter.evaluate(`(set! *bib-search-doc-override* ${v})`); }
+          catch { /* bib-search lisp not loaded — fine */ }
+          interpreter.evaluate(`(run-command (quote ${name}))`);
+        } catch (error) {
+          repl.appendError(
+            `run ${name}: ${error.lispMessage ?? error.message ?? error}`
+          );
+        }
       },
     });
     serverViewClient.connect();
@@ -8042,9 +8108,25 @@ function parseElementAttrs(list) {
   return out;
 }
 
+/** The command names the renderer owns by registering element-views
+ *  (`define-element-view`) — the `element-views` registry's keys (built-ins +
+ *  any in user config). Server mode announces these so M-x routes them back
+ *  down (RUN_CLIENT_COMMAND). Tolerant: [] before the stdlib registers any. */
+function elementViewCommandNames() {
+  try {
+    const reg = interpreter.call('element-views');
+    if (reg instanceof Map) {
+      return [...reg.keys()].map((k) => lispText(k)).filter((n) => n !== '');
+    }
+  } catch { /* stdlib/registry not ready — element-views just aren't M-x-routable yet */ }
+  return [];
+}
+
 function configureElementView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // onKey routes chords to the server's keymap in server mode; flag-off
+    // byte-for-byte (keymapReady ? dispatchKey : nothing).
+    ...serverMediaKeyOption(),
     // Lets the hosted element run a Lisp `:on-ready` callback (its arg is
     // the embedded element instance).
     deliver: (callback, callArgs) =>
@@ -8056,6 +8138,13 @@ function configureElementView() {
     // insert `\cite{…}`.
     insertText: (text) => {
       if (typeof text !== 'string' || text === '') return;
+      // Server mode: route the insert to the SERVER's active buffer (the
+      // document) — the in-renderer session is inert. The server fans the delta
+      // back so the document updates.
+      if (window.host && window.host.serverMode) {
+        if (serverViewClient) serverViewClient.insertText(text);
+        return;
+      }
       try {
         interpreter.evaluate(`(insert! ${writeString(text)})`);
       } catch (error) {
@@ -8107,6 +8196,12 @@ function ensureElementHostForView(view, paneEl) {
   }
   el = /** @type {*} */ (document.createElement('element-view'));
   el.configure(configureElementView());
+  // Server mode: mark a :no-focus panel (bib-search) so a click on it doesn't
+  // send a focus-pane intent that would move the server's focus off the
+  // document (which must stay active for the panel's insert-text to land).
+  if (window.host && window.host.serverMode && view && view.noFocus) {
+    el.dataset.noFocus = 'true';
+  }
   el.setBuffer(view); // spec read on connectedCallback
   if (paneEl) paneEl.append(el); // triggers boot → import module + create tag
   elementHostByView.set(view, el);

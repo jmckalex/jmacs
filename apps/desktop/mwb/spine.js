@@ -2048,6 +2048,76 @@ export function createSpine(options, effects = {}) {
   }
 
   /**
+   * Open an `element` element-view DATA-SOURCE from a renderer-computed SPEC and
+   * switch the active client's focused leaf to it. The renderer owns spec
+   * computation (define-element-view, host-file-url, user config) and sends the
+   * finished spec — `{ name, tag, moduleUrl, attrs, fit, keyboard, noFocus }` —
+   * which the server holds as a data-source so it gets a pane slot + restore.
+   * The client mounts <element-view> from the spec carried on the PANE_TREE leaf.
+   * Reuses an existing source with the SAME tag (re-running the command reveals
+   * it rather than duplicating). A `noFocus` spec (a helper panel that acts on
+   * the document, e.g. bib-search) opens BESIDE the focused leaf in a split,
+   * keeping focus on the document; a normal one switches the focused leaf.
+   * Returns the source id, or null on a bad spec.
+   *
+   * @param {object} spec
+   * @returns {string | null}
+   */
+  function openElementSource(spec) {
+    const s = spec && typeof spec === 'object' ? spec : {};
+    const tag = typeof s.tag === 'string' ? s.tag : '';
+    if (tag === '') return null;
+    const state = {
+      tag,
+      moduleUrl: typeof s.moduleUrl === 'string' ? s.moduleUrl : '',
+      attrs: Array.isArray(s.attrs) ? s.attrs : [],
+      fit: typeof s.fit === 'string' ? s.fit : 'center',
+      keyboard: typeof s.keyboard === 'string' ? s.keyboard : 'grab',
+      noFocus: s.noFocus === true,
+    };
+    const name = typeof s.name === 'string' && s.name !== '' ? s.name : tag;
+    const existing = dataSources.list()
+      .find((d) => d.kind === 'element' && d.state && d.state.tag === tag);
+    if (existing) {
+      // Already open: a normal element-view switches to it; a no-focus panel is
+      // already beside the document — leave it (no duplicate split).
+      if (!existing.state.noFocus) switchClientToSource(activeClientIndex, existing.id);
+      statusText = '';
+      onStatus('');
+      return existing.id;
+    }
+    const src = dataSources.add({ kind: 'element', name, state });
+    if (state.noFocus) openSourceBesideFocus(activeClientIndex, src.id);
+    else switchClientToSource(activeClientIndex, src.id);
+    statusText = '';
+    onStatus('');
+    return src.id;
+  }
+
+  /** Open data-source SRCID BESIDE the focused (document) leaf of CLIENT INDEX:
+   *  split side-by-side, put the source in the new pane, and restore focus to
+   *  the document — a `:no-focus` helper panel (bib-search) that acts on the
+   *  active document. Falls back to a plain switch if the split can't happen. */
+  function openSourceBesideFocus(index, srcId) {
+    const model = paneModels.get(index);
+    if (!model) return switchClientToSource(index, srcId);
+    const docLeafId = model.focusedId;
+    const docId = model.focusedBufferId();
+    const newLeaf = model.split('horizontal', 0.66, 'after'); // new pane focused
+    if (!newLeaf) return switchClientToSource(index, srcId);
+    model.setFocusedBuffer(srcId);  // the new (focused) pane shows the panel
+    noteClientBuffer(index, srcId); // the panel joins the window's open set
+    model.focusPane(docLeafId);     // focus returns to the document
+    // Re-bind + resync the client onto the (still-focused) document so its live
+    // mirror + interpreter binding follow. A path-less scratch (no docId) or a
+    // non-text doc needs no text re-bind — the onChange above already re-pushed
+    // the PANE_TREE.
+    if (docId && registry.has(docId)) switchClientToBuffer(index, docId);
+    else onBufferSwitched(model.focusedBufferId());
+    return srcId;
+  }
+
+  /**
    * Load a CRASH-RECOVERED buffer into the registry (recover-on-startup).
    * The recovered text is the buffer's unsaved state at crash time; it must
    * present as DIRTY relative to disk so the user knows it needs saving — so
@@ -2884,6 +2954,7 @@ export function createSpine(options, effects = {}) {
     cancelPicker,
     visitFile,
     visitDirectory,
+    openElementSource,
     recoverBuffer,
     // save (real disk write) — the server wires saveFile to atomicWrite.
     saveActiveBuffer,

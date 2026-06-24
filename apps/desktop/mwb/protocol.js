@@ -119,6 +119,22 @@ export const MSG = Object.freeze({
   // interaction (type-to-narrow, keyboard nav, click) and sends back only
   // the chosen row's `value` (or a cancel).
   PICKER: 'picker',
+  // --- client-owned commands + element-views (renderer-driven views) ---
+  // up: the client announces the command names the RENDERER owns — commands
+  // that must run client-side because their spec is computed there (the
+  // element-view commands from `define-element-view`, including user-defined
+  // ones in init.lisp). Sent once after connect. The server merges them into
+  // its M-x command set and routes them back DOWN via RUN_CLIENT_COMMAND.
+  CLIENT_COMMANDS: 'client-commands',
+  // down: the server asks the active client to RUN one of its own (renderer)
+  // commands by name — the M-x dispatch of a client-owned command. The client
+  // runs it in the renderer interpreter (where the spec is computed).
+  RUN_CLIENT_COMMAND: 'run-client-command',
+  // up: the renderer's `open-element-view!` asks the server to create an
+  // `element` DATA-SOURCE from a computed spec ({ tag, moduleUrl, attrs, fit,
+  // keyboard, noFocus, name }). The server holds it like any data-source (a
+  // pane slot + restore); the client mounts <element-view> from the spec.
+  OPEN_ELEMENT_SOURCE: 'open-element-source',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,

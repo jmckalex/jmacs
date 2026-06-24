@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createSpine } from './spine.js';
-import { wireLeaves } from './protocol.js';
+import { wireLeaves, wireFocusedLeafId } from './protocol.js';
 
 /** A spine with recording effects, for assertions. */
 function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
@@ -543,6 +543,63 @@ test('visitDirectory opens an EXPLICIT kind and dedups by path+kind', () => {
 
   // A NON-directory path is a no-op (null), not a crash.
   assert.equal(spine.visitDirectory('/proj/f.txt', 'directory-tree'), null);
+});
+
+test('openElementSource holds a renderer-computed element spec as a data-source', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const spec = {
+    name: 'Atari 2600', tag: 'stella-emulator', moduleUrl: 'app://x/stella.js',
+    attrs: [['controls', true], ['src', 'app://x/oystron.bin']],
+    fit: 'center', keyboard: 'grab', noFocus: false,
+  };
+  const id = spine.openElementSource(spec);
+  assert.match(id, /^ds\d+$/, 'a data-source id, not a buffer id');
+  assert.equal(spine.bufferCount, 1, 'an element-view did NOT add a text buffer');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.bufferId, id);
+  assert.equal(leaf.viewKind, 'element');
+  assert.equal(leaf.name, 'Atari 2600');
+  assert.equal(leaf.state.tag, 'stella-emulator');
+  assert.deepEqual(leaf.state.attrs, [['controls', true], ['src', 'app://x/oystron.bin']]);
+  assert.equal(leaf.text, undefined, 'an element leaf carries no text');
+  // It joins the window buffer list (View List / session record).
+  const rec = spine.bufferListRecords(0).find((r) => r.id === id);
+  assert.ok(rec && rec.viewKind === 'element', 'element is in the window buffer list');
+});
+
+test('openElementSource with noFocus opens BESIDE the document, keeping focus', () => {
+  const { spine } = makeSpine('document text', 'paper.tex');
+  const docId = spine.currentBufferIdOf(0);
+  const id = spine.openElementSource({
+    name: 'Bibliography', tag: 'bib-search', moduleUrl: 'u',
+    attrs: [['src', 'app://x/sample.bib']], noFocus: true,
+  });
+  const snap = spine.paneSnapshot(0);
+  const leaves = wireLeaves(snap);
+  assert.equal(leaves.length, 2, 'a no-focus panel splits beside the doc (2 leaves)');
+  const panel = leaves.find((l) => l.viewKind === 'element');
+  const doc = leaves.find((l) => l.bufferId === docId);
+  assert.ok(panel && panel.state.noFocus, 'the panel leaf carries the element + noFocus');
+  assert.ok(doc, 'the document leaf is still present');
+  // Focus stays on the DOCUMENT (the panel is a helper acting on it).
+  assert.equal(wireFocusedLeafId(snap), doc.id, 'focus stays on the document');
+  assert.equal(spine.currentBufferIdOf(0), docId, 'the active buffer stays the document');
+  // Re-running while open does NOT split again.
+  spine.openElementSource({ name: 'Bibliography', tag: 'bib-search', moduleUrl: 'u', noFocus: true });
+  assert.equal(wireLeaves(spine.paneSnapshot(0)).length, 2, 'no duplicate split on re-run');
+});
+
+test('openElementSource reuses by tag and rejects a tag-less spec', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const atari = spine.openElementSource({ name: 'Atari', tag: 'stella-emulator', moduleUrl: 'u' });
+  assert.equal(
+    spine.openElementSource({ name: 'Atari', tag: 'stella-emulator', moduleUrl: 'u' }),
+    atari,
+    're-running the same tag reveals the existing source (no duplicate)',
+  );
+  const bib = spine.openElementSource({ name: 'Bib', tag: 'bib-search', moduleUrl: 'u', noFocus: true });
+  assert.notEqual(bib, atari, 'a different tag mints a new source');
+  assert.equal(spine.openElementSource({ name: 'x' }), null, 'a tag-less spec is a no-op');
 });
 
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {

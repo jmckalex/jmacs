@@ -129,6 +129,13 @@ export function createServerViewClient({
   // unit-testable with no DOM — `app.js` wires it to the real `window` resize.
   // Default: a no-op subscription (tests drive `reportViewport` directly).
   subscribeResize = () => () => {},
+  // The renderer-owned command names (element-views) announced to the server on
+  // connect, so M-x routes them back down via RUN_CLIENT_COMMAND. A function so
+  // it is read at connect time (the registry is populated as stdlib loads).
+  clientCommandNames = () => [],
+  // Run a renderer-owned command by name (RUN_CLIENT_COMMAND). Injected by
+  // app.js to `(run-command (quote NAME))` in the renderer interpreter.
+  runClientCommand = () => {},
   log = (msg) => console.info(msg),
 }) {
   /** @type {ReturnType<typeof createClientBuffer> | null} */
@@ -503,6 +510,15 @@ export function createServerViewClient({
       case MSG.PICKER: onPicker(msg.picker); break;
       case MSG.BUFFER_LIST: onBufferList(msg.buffers); break;
       case MSG.WINDOW_NEW: requestNewWindowDom(); break;
+      case MSG.RUN_CLIENT_COMMAND:
+        // The server dispatched a renderer-owned command (an element-view): run
+        // it in the renderer, where its spec is computed (it calls back via
+        // openElementView → OPEN_ELEMENT_SOURCE). `bibPath` (when present) is the
+        // active document's bibliography the server resolved for bib-search.
+        if (typeof msg.name === 'string' && msg.name !== '') {
+          try { runClientCommand(msg.name, msg.bibPath ?? null); } catch { /* surfaced by app.js */ }
+        }
+        break;
       case MSG.PANE_TREE: setPaneTreeDom(msg.tree); break;
       case MSG.MINIBUFFER_COMPLETIONS:
         showCompletionsDom({ value: msg.value, items: msg.items, directory: msg.directory });
@@ -524,6 +540,15 @@ export function createServerViewClient({
     // tracks the live height. Injected (a no-op in tests).
     if (!unsubscribeResize) unsubscribeResize = subscribeResize(reportViewport);
     port.postMessage({ type: MSG.HELLO });
+    // Announce the renderer-owned commands (element-views) so the server can
+    // route them back down via RUN_CLIENT_COMMAND. Tolerant of a bad getter.
+    try {
+      const names = typeof clientCommandNames === 'function'
+        ? clientCommandNames() : clientCommandNames;
+      if (Array.isArray(names) && names.length > 0) {
+        port.postMessage({ type: MSG.CLIENT_COMMANDS, names });
+      }
+    } catch { /* ignore — element-views just won't be M-x-routable */ }
     log('[godot-g2] connected to server; HELLO sent');
   }
 
@@ -580,6 +605,27 @@ export function createServerViewClient({
     });
   }
 
+  /** Ask the server to hold a renderer-computed element-view SPEC as a
+   *  data-source + switch this client's focused leaf to it (the renderer's
+   *  `open-element-view!` in server mode). SPEC is plain JSON:
+   *  `{ name, tag, moduleUrl, attrs, fit, keyboard, noFocus }`. */
+  function openElementView(spec) {
+    if (!spec || typeof spec !== 'object') return;
+    port.postMessage({ type: MSG.OPEN_ELEMENT_SOURCE, spec });
+  }
+
+  /** Insert TEXT into the server's active buffer at point — the generic
+   *  element-view `insert-text` channel in server mode (e.g. bib-search drops
+   *  `\cite{…}` into the document, which keeps focus as a :no-focus panel). The
+   *  server fans the resulting delta back, so the document updates. */
+  function insertText(text) {
+    if (typeof text !== 'string' || text === '') return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.SELF_INSERT, text },
+    });
+  }
+
   /** Close (kill) the server buffer BUFFERID — a tab `×`. Switch this client to
    *  it (so it is current), then run the server's kill-buffer via its `C-x k`
    *  binding; the server re-homes the client onto a survivor buffer and
@@ -612,6 +658,10 @@ export function createServerViewClient({
     requestMinibufferComplete,
     // Open a file by absolute path (a directory-view file click).
     visitPath,
+    // Hold a renderer-computed element-view spec as a server data-source.
+    openElementView,
+    // Insert text into the server's active buffer (element-view insert-text).
+    insertText,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the
