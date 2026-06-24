@@ -67,11 +67,24 @@ let bufferName;
 let initialPath = null;
 const bootSession = readServerSession();
 if (bootSession && bootSession.active) {
-  try {
-    initialText = readFileSync(bootSession.active, 'utf8');
-    bufferName = basename(bootSession.active);
-    initialPath = bootSession.active;
-  } catch { /* the active file is gone — fall through to the default below */ }
+  // The active file is the natural seed — UNLESS it is MEDIA (image/video/audio/
+  // pdf), which must NOT be read as UTF-8 (that's the garbled-PNG-on-restore bug).
+  // The spine's seed buffer is fundamentally TEXT, so when the active file is
+  // media we seed from the first readable TEXT file in the session instead;
+  // restoreServerSession then opens the media active as a DATA-SOURCE (visitFile)
+  // and switches to it at the first HELLO. With no text file, fall through to the
+  // default below.
+  const seedCandidates = mediaKindForName(bootSession.active)
+    ? (bootSession.files || []).filter((p) => !mediaKindForName(p))
+    : [bootSession.active];
+  for (const p of seedCandidates) {
+    try {
+      initialText = readFileSync(p, 'utf8');
+      bufferName = basename(p);
+      initialPath = p;
+      break;
+    } catch { /* try the next candidate */ }
+  }
 }
 if (initialText === undefined) {
   try {
