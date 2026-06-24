@@ -3274,6 +3274,31 @@ directory-tree-view,
   white-space: nowrap;
 }
 
+/* The pin thumbtack (server mode): pushed to the header's right edge. Muted
+   while following focus; accented when pinned (frozen to the file). */
+.bookmark-pin {
+  margin-left: auto;
+  flex: 0 0 auto;
+  align-self: center;
+  background: none;
+  border: none;
+  padding: 2px 5px;
+  cursor: pointer;
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 4px;
+}
+
+.bookmark-pin:hover {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  color: var(--fg);
+}
+
+.bookmark-pin.is-pinned {
+  color: var(--accent);
+}
+
 .bookmark-body {
   flex: 1 1 auto;
   min-height: 0;

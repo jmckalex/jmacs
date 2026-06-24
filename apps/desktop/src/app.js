@@ -5997,6 +5997,7 @@ if (window.host && window.host.serverMode) {
           records: Array.isArray(s.records) ? s.records : [],
           sourceName: typeof s.sourceName === 'string' ? s.sourceName : '',
           sourceBufferId: s.sourceBufferId ?? null,
+          pinned: s.pinned === true,
         };
       } else if (elementKind) {
         const s = (w.state && typeof w.state === 'object') ? w.state : {};
@@ -6059,6 +6060,7 @@ if (window.host && window.host.serverMode) {
       v.records = Array.isArray(s.records) ? s.records : [];
       v.sourceName = typeof s.sourceName === 'string' ? s.sourceName : '';
       v.sourceBufferId = s.sourceBufferId ?? null;
+      v.pinned = s.pinned === true; // drives the thumbtack (pinned vs following)
     }
     return v;
   }

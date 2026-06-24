@@ -42,6 +42,21 @@ function bookmarkLeaf(spine) {
 const outlineRecords = (spine) => bookmarkLeaf(spine)?.state?.records ?? null;
 const outlineSourceId = (spine) => { const l = bookmarkLeaf(spine); return l ? (l.bufferId ?? l.id) : null; };
 
+/** Every bookmark outline `{ id, state }` in window INDEX's pane tree. */
+function allOutlineStates(spine, index) {
+  const snap = spine.paneSnapshot(index);
+  const out = [];
+  (function walk(node) {
+    if (!node) return;
+    if (node.kind === 'leaf') {
+      if (node.viewKind === 'bookmark') out.push({ id: node.bufferId ?? node.id, state: node.state });
+      return;
+    }
+    walk(node.first); walk(node.second);
+  })(snap);
+  return out;
+}
+
 /** The bookmark outline's state in a SPECIFIC window's (client INDEX) pane tree. */
 function outlineStateIn(spine, index) {
   const snap = spine.paneSnapshot(index);
@@ -183,6 +198,42 @@ test('per-window: a file switch in one window leaves another window\'s outline a
 
   assert.equal(outlineStateIn(spine, 0).sourceBufferId, cId, 'window 0 outline followed focus to C');
   assert.equal(outlineStateIn(spine, w1).sourceBufferId, scratch1, 'window 1 outline UNCHANGED');
+});
+
+test('pinning freezes an outline to its file; C-x r l then spawns a fresh following one', () => {
+  const { spine } = makeSpine({
+    initialText: 'a-1\na-2\n', name: 'A.txt', initialPath: '/tmp/A.txt',
+    openFile: () => ({ text: 'b-1\nb-2\n', name: 'B.txt', path: '/tmp/B.txt' }),
+  });
+  const aId = spine.currentBufferIdOf(0);
+  spine.buffer.moveTo(0); spine.interpreter.evaluate('(bookmark-set! "in-A")');
+  spine.interpreter.evaluate('(open-bookmark-view!)');
+  const srcA = outlineSourceId(spine);
+
+  // Pin the outline to A.
+  spine.applyBookmarkOp(srcA, { op: 'pin' });
+  assert.equal(allOutlineStates(spine, 0).find((o) => o.id === srcA).state.pinned, true, 'pinned');
+
+  // Focus the doc pane and open file B — the PINNED outline must NOT follow.
+  const m0 = spine.paneModelOf(0);
+  const docLeaf = m0.leaves().find((l) => m0.stateOf(l.id)?.bufferId === aId);
+  spine.applyPaneIntent(0, { op: 'focus-pane', paneId: docLeaf.id });
+  spine.visitFile('/tmp/B.txt');
+  const bId = spine.currentBufferIdOf(0);
+  assert.equal(
+    allOutlineStates(spine, 0).find((o) => o.id === srcA).state.sourceBufferId, aId,
+    'pinned outline stayed on A while focus moved to B');
+
+  // C-x r l now spawns a SECOND, following outline on B (the pinned one isn't reused).
+  spine.interpreter.evaluate('(open-bookmark-view!)');
+  const states = allOutlineStates(spine, 0);
+  assert.equal(states.length, 2, 'two outlines now: one pinned, one following');
+  assert.equal(states.find((o) => o.state.pinned).state.sourceBufferId, aId, 'pinned still on A');
+  assert.equal(states.find((o) => !o.state.pinned).state.sourceBufferId, bId, 'new following outline on B');
+
+  // Unpinning resumes following.
+  spine.applyBookmarkOp(srcA, { op: 'pin' });
+  assert.equal(allOutlineStates(spine, 0).find((o) => o.id === srcA).state.pinned, false, 'unpinned');
 });
 
 test('applyBookmarkOp jump moves the document point + returns true', () => {

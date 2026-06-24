@@ -69,6 +69,23 @@ function createBookmarkView(container, options = {}) {
   const subtitle = doc.createElement('span');
   subtitle.className = 'bookmark-subtitle';
   header.append(title, subtitle);
+  // The pin thumbtack (server mode): shows whether this outline is FROZEN to its
+  // file (fa-thumbtack) or FOLLOWING focus (fa-thumbtack-slash), and toggles it on
+  // click. Mousedown (not click) so it beats the pane's focus-click; preventDefault
+  // keeps the toggle from also moving server focus. The icon updates from the
+  // fanned-out `pinned` state (paintPin, called by paint()).
+  const pin = serverMode ? doc.createElement('button') : null;
+  if (pin) {
+    pin.className = 'bookmark-pin';
+    pin.type = 'button';
+    pin.tabIndex = -1;
+    pin.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      emitOp(serverSourceId(), { op: 'pin' });
+    });
+    header.append(pin);
+  }
   root.append(header);
 
   const body = doc.createElement('div');
@@ -121,8 +138,23 @@ function createBookmarkView(container, options = {}) {
 
   // --- rendering ---------------------------------------------------------
 
+  /** Reflect the current pinned state on the thumbtack (server mode only). */
+  function paintPin() {
+    if (!pin) return;
+    const pinned = !!(view && view.pinned);
+    pin.innerHTML = pinned
+      ? '<i class="fa-solid fa-thumbtack" aria-hidden="true"></i>'
+      : '<i class="fa-solid fa-thumbtack-slash" aria-hidden="true"></i>';
+    pin.classList.toggle('is-pinned', pinned);
+    pin.title = pinned
+      ? 'Pinned to this file — click to follow focus'
+      : 'Following focus — click to pin to this file';
+    pin.setAttribute('aria-label', pin.title);
+  }
+
   function paint() {
     closeMenu();
+    paintPin();
     const recs = records();
     // Keep the outline in document order: sort siblings by position with
     // subtrees kept intact, in place. A bookmark set mid-document then

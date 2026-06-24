@@ -2321,34 +2321,46 @@ export function createSpine(options, effects = {}) {
     };
   }
 
+  /** Whether SRC is a PINNED bookmark outline (frozen to its file — doesn't
+   *  follow focus). The flag rides the wire `state` so the client shows the
+   *  thumbtack. */
+  function isPinnedOutline(src) {
+    return !!(src && src.state && src.state.pinned);
+  }
+
+  /** The wire state for a FOLLOWING bookmark outline pointed at ENTRY (pinned
+   *  cleared — only a following outline is ever re-targeted). */
+  function followingOutlineState(entry) {
+    return { ...bookmarkOutlineState(entry), pinned: false };
+  }
+
   /** The FOLLOWING (unpinned) bookmark outline owned by client INDEX, or null.
-   *  Each window owns its OWN outline (per-window scope, so window A's focus never
-   *  disturbs window B's outline). A PINNED outline (frozen to a file — Phase 2)
-   *  is excluded: it doesn't follow focus and there may be several per window. */
+   *  Each window owns its own outline(s) (per-window scope). A PINNED outline is
+   *  excluded: it's frozen to a file and there may be several per window. */
   function followingOutlineOf(index) {
     return dataSources.list().find(
-      (s) => s.kind === 'bookmark' && s._ownerClient === index && !s._pinned) ?? null;
+      (s) => s.kind === 'bookmark' && s._ownerClient === index && !isPinnedOutline(s)) ?? null;
   }
 
   /** Open (or reveal) the bookmark OUTLINE for the active client's current text
-   *  buffer (C-x r l). Each WINDOW has its own following outline (a mutable
-   *  'bookmark' data-source) that RE-TARGETS to whichever file that window
-   *  focuses — not one pane per file (which fought over the single <bookmark-view>
-   *  element), and not one shared across windows (which leaked focus between
-   *  them). It opens in a split BESIDE the document with focus ON the outline (you
-   *  drive it: n/p, Enter to jump); re-running reveals + re-targets it. Returns
-   *  the source id, or null when there's no text buffer to annotate. */
+   *  buffer (C-x r l). Each WINDOW has its own FOLLOWING outline (a mutable
+   *  'bookmark' data-source) that re-targets to whichever file that window
+   *  focuses. Re-running reveals + re-targets that following outline; but once it
+   *  has been PINNED (frozen to a file via the thumbtack), there's no following
+   *  outline, so this spawns a fresh one — that's how a split ends up with two
+   *  outlines (one pinned per file). Opens in a split BESIDE the document with
+   *  focus on the outline. Returns the source id, or null when there's no text
+   *  buffer to annotate. */
   function openBookmarkView() {
     const entry = activeEntry;
     if (!entry || !registry.has(entry.id)) return null;
     bookmarksFor(entry); // ensure markers + live anchors before snapshotting
     let src = followingOutlineOf(activeClientIndex);
     if (src) {
-      dataSources.setState(src.id, bookmarkOutlineState(entry));
+      dataSources.setState(src.id, followingOutlineState(entry));
     } else {
-      src = dataSources.add({ kind: 'bookmark', name: '*Bookmarks*', state: bookmarkOutlineState(entry) });
+      src = dataSources.add({ kind: 'bookmark', name: '*Bookmarks*', state: followingOutlineState(entry) });
       src._ownerClient = activeClientIndex; // per-window ownership (server-side only)
-      src._pinned = false;                  // follows focus by default (Phase 2 pins it)
     }
     openBookmarkBeside(activeClientIndex, src.id);
     statusText = '';
@@ -2356,25 +2368,24 @@ export function createSpine(options, effects = {}) {
     return src.id;
   }
 
-  /** Re-target the active client's FOLLOWING outline (if open) to TEXT buffer
-   *  ENTRY: update its data-source state + fan it out, so that window's outline
-   *  follows its focused file. A no-op when this window has no following outline
-   *  or it's already on ENTRY. */
-  function retargetBookmarkOutline(entry) {
-    if (!entry || !registry.has(entry.id)) return;
-    const src = followingOutlineOf(activeClientIndex);
-    if (!src || (src.state && src.state.sourceBufferId === entry.id)) return;
-    bookmarksFor(entry);
-    dataSources.setState(src.id, bookmarkOutlineState(entry));
-  }
-
-  /** Follow focus: re-target the active client's following outline to its FOCUSED
-   *  text buffer. Skips when the focused leaf is a data-source (the outline /
-   *  media) — the outline keeps its last text target. Called after any focus /
-   *  buffer switch. */
+  /** Follow focus: re-target the active client's FOLLOWING outline(s) to its
+   *  FOCUSED text buffer. Skips PINNED outlines (they stay on their file) and
+   *  skips entirely when the focused leaf is a data-source (the outline / media) —
+   *  the outlines keep their last text target. Called after any focus / buffer
+   *  switch. (Re-targets ALL of the window's following outlines, so unpinning one
+   *  while another exists never leaves an orphan that follows nothing.) */
   function followBookmarkOutline() {
     const focusedId = currentBufferIdOf(activeClientIndex);
-    if (registry.has(focusedId)) retargetBookmarkOutline(registry.get(focusedId));
+    if (!registry.has(focusedId)) return;
+    const entry = registry.get(focusedId);
+    let prepared = false;
+    for (const src of dataSources.list()) {
+      if (src.kind !== 'bookmark' || src._ownerClient !== activeClientIndex) continue;
+      if (isPinnedOutline(src)) continue;
+      if (src.state && src.state.sourceBufferId === entry.id) continue; // already on it
+      if (!prepared) { bookmarksFor(entry); prepared = true; }
+      dataSources.setState(src.id, followingOutlineState(entry));
+    }
   }
 
   /** Reveal SRCID in a pane of CLIENT INDEX beside its document, FOCUSING the
@@ -2408,6 +2419,14 @@ export function createSpine(options, effects = {}) {
     const kind = op && typeof op === 'object' ? String(op.op ?? '') : '';
     const recById = (id) => recs.find((b) => b.id === id);
 
+    if (kind === 'pin') {
+      // The thumbtack: toggle whether this outline is FROZEN to its file. Pinned
+      // outlines are skipped by follow-focus (they stay put); unpinning lets it
+      // follow again on the next focus change. The flag rides the wire state, so
+      // the fan-out updates the thumbtack icon.
+      dataSources.setState(src.id, { ...src.state, pinned: !isPinnedOutline(src) });
+      return false;
+    }
     if (kind === 'refresh') {
       // `g` in the outline: re-derive the wire from the CURRENT (edit-tracked)
       // anchors, so line/column reflect source edits made since it last opened
