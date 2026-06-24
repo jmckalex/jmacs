@@ -46,6 +46,17 @@ import { createBufferPrimitives, createLatexPrimitives } from '@editor/stdlib';
 import { renderModeline, screenfulStep } from './protocol.js';
 import { createBufferRegistry } from './buffer-registry.js';
 import { createDataSourceRegistry } from './data-source.js';
+// Bookmarks graduate to the server: the SAME engine the in-renderer app runs
+// (pure / Node-safe — markers + context-relocate, no DOM), one instance per
+// buffer entry. The outline's structural ops (indent/outdent) + document-order
+// sort are the renderer view's pure helpers, reused server-side so a port stays
+// byte-identical. See bookmarks.lisp + apps/desktop/src/bookmarks.js.
+import { createBookmarks } from '../src/bookmarks.js';
+import {
+  indent as outlineIndent,
+  outdent as outlineOutdent,
+  sortByDocumentPosition,
+} from '../../../packages/renderer/src/bookmark-outline.js';
 import { createPaneModel } from './pane-model.js';
 import { createCitationPrimitives } from './citation-bridge.js';
 
@@ -284,6 +295,13 @@ const SPINE_STDLIB = Object.freeze([
   // expand-region-word-bounds (expand-region.lisp, loaded). See
   // PRIMITIVE-SPLIT.md "Snippets".
   'snippets.lisp',
+  // bookmarks.lisp — Emacs-style bookmarks (C-x r m/b/l): a bookmark-minor-mode
+  // (default-on in text buffers) + the set / jump / delete / list commands. The
+  // commands wrap the host primitives bookmark-set!/jump!/delete! +
+  // open-bookmark-view! (provided above), which run the SAME bookmarks.js engine
+  // the renderer uses against the server's L2 buffers + markers. Needs modes.lisp
+  // (define-mode + register-default-text-minor-mode) + commands.lisp, both loaded.
+  'bookmarks.lisp',
   // --- the citation + RefTeX chain (the last model-heavy stdlib family) ---
   // cite.lisp — citation parsing/formatting wrappers over the citation host
   // bridge (citation-parse / -format / -keys, provided by createCitation-
@@ -530,6 +548,15 @@ export function createSpine(options, effects = {}) {
   // is no longer a broadcast — different windows hold different buffers).
   // Signature: (bufferId, { change, point }, buffer).
   const onBufferChange = effects.onBufferChange ?? (() => {});
+  // Bookmarks — companion `.godot-metadata` sidecar I/O, server-owned. The
+  // server reads files directly (no main-process IPC), so it owns the sidecar
+  // too. `readMetadata(absPath)` loads a freshly-visited file's sidecar (sticky
+  // notes + bookmarks) so the bookmark engine can restore edit-tracked
+  // positions; `writeMetadata(absPath, metadata)` persists a buffer's metadata
+  // back (the server debounces + atomic-writes it, mirroring files.js's
+  // metadata:write). Both no-op without a host wired (unit tests).
+  const readMetadata = effects.readMetadata ?? (() => null);
+  const writeMetadata = effects.writeMetadata ?? (() => {});
 
   // --- the buffer registry (multi-buffer) ------------------------------
   //
@@ -554,6 +581,11 @@ export function createSpine(options, effects = {}) {
   const dataSources = createDataSourceRegistry({
     onStateChange: (id) => { for (const ci of clientIndices) if (buffersShownByClient(ci).includes(id)) onPaneTree(ci); },
   });
+
+  // Bookmarks are per-buffer (each rides its own buffer's edits), so each buffer
+  // entry owns ONE bookmark engine, created lazily (`bookmarksFor`) on the first
+  // bookmark op / outline open. id (entry) → engine.
+  const bookmarkEngines = new Map();
 
   // The seed buffer (the file the server booted with). Every client starts
   // viewing it; further buffers join via find-file.
@@ -1000,6 +1032,35 @@ export function createSpine(options, effects = {}) {
         onScroll({ kind: 'recenter', line });
         return NIL;
       },
+
+      // --- bookmarks (C-x r m/b/l — bookmarks.lisp) ---------------------
+      // Named, edit-tracked positions: each is an L2 marker on the active
+      // buffer plus a record persisted to the file's `.godot-metadata`
+      // sidecar. The engine (apps/desktop/src/bookmarks.js) is shared
+      // verbatim with the in-renderer app, one instance PER buffer entry
+      // (bookmarksFor). set / delete also re-push an OPEN outline
+      // (refreshBookmarkSource → setState fan-out); jump moves point in the
+      // active buffer (its cursor reconciles like any motion command).
+      'bookmark-set!': (args) => {
+        const name = bookmarksFor(activeEntry).set(String(args[0] ?? ''));
+        if (name === null) return NIL;
+        refreshBookmarkSource(activeEntry);
+        return name;
+      },
+      'bookmark-jump!': (args) => {
+        bookmarksFor(activeEntry).jump(String(args[0] ?? ''));
+        return NIL;
+      },
+      'bookmark-delete!': (args) => {
+        bookmarksFor(activeEntry).remove(String(args[0] ?? ''));
+        refreshBookmarkSource(activeEntry);
+        return NIL;
+      },
+      'bookmark-names': () => arrayToList(bookmarksFor(activeEntry).names()),
+      'bookmark-count': () => bookmarksFor(activeEntry).count(),
+      // open-bookmark-view! (C-x r l) — open/reveal the outline beside the
+      // document as a mutable 'bookmark' data-source.
+      'open-bookmark-view!': () => { openBookmarkView(); return NIL; },
 
       // --- window lifecycle (G4) ----------------------------------------
       // request-new-window! is the `new-window` command's effect (C-x 5 2).
@@ -2007,6 +2068,10 @@ export function createSpine(options, effects = {}) {
     }
     const entry = registry.add(result.text, result.name, absPath);
     entry.savedText = result.text;
+    // Restore the file's companion metadata (sticky notes + bookmarks) from its
+    // `.godot-metadata` sidecar BEFORE any client touches it, so the bookmark
+    // engine relocates from saved context the first time the outline is opened.
+    seedMetadata(entry, absPath);
     // Switch the active client to the new buffer (mints its view, derives
     // the major mode, leaves the buffer's own overlays — none yet — intact).
     switchClientToBuffer(activeClientIndex, entry.id);
@@ -2152,6 +2217,190 @@ export function createSpine(options, effects = {}) {
     statusText = '';
     onStatus('');
     return src.id;
+  }
+
+  // --- bookmarks (server-owned, edit-tracked) --------------------------
+  //
+  // Bookmarks graduate to the server like overlays: each is an L2 MARKER on a
+  // buffer (rides edits) plus a record on `entry.buffer.metadata.bookmarks`,
+  // persisted to the file's `.godot-metadata` sidecar. The engine is the SAME
+  // apps/desktop/src/bookmarks.js the in-renderer app runs (pure / Node-safe),
+  // one instance PER buffer entry, bound to that entry's L2 buffer. The outline
+  // is a MUTABLE 'bookmark' data-source whose `state.records` carry the wire
+  // snapshot; EXPLICIT bookmark ops re-derive + fan it out (setState →
+  // onStateChange → PANE_TREE), while ordinary source edits only PERSIST (the
+  // open outline refreshes on the next explicit op / `g` — the Core-first scope,
+  // so a keystroke in the document doesn't spam every window a fresh PANE_TREE).
+
+  /** Seed ENTRY's buffer metadata from its file's `.godot-metadata` sidecar (so
+   *  restored bookmarks + sticky notes are present before the bookmark engine
+   *  attaches and relocates them). A no-op for a path-less / sidecar-less file. */
+  function seedMetadata(entry, absPath) {
+    if (!entry || typeof absPath !== 'string' || absPath === '') return;
+    const data = readMetadata(absPath);
+    if (data && typeof data === 'object') entry.buffer.metadata = data;
+  }
+
+  /** The bookmark engine for ENTRY, created (and seeded from the buffer's
+   *  restored sidecar metadata) on first use. `setBuffer` relocates each record
+   *  from its stored context and pins a fresh marker, so positions survive edits
+   *  the engine wasn't watching. The engine's onChange persists ONLY (no
+   *  fan-out): a source edit shifts markers + re-baselines the sidecar quietly. */
+  function bookmarksFor(entry) {
+    let engine = bookmarkEngines.get(entry.id);
+    if (!engine) {
+      engine = createBookmarks({ onChange: () => persistMetadata(entry) });
+      engine.setBuffer(entry.buffer);
+      bookmarkEngines.set(entry.id, engine);
+    }
+    return engine;
+  }
+
+  /** Persist ENTRY's companion metadata (bookmarks + any sticky notes) to its
+   *  sidecar via the host effect (the server debounces + atomic-writes it). A
+   *  path-less buffer keeps its bookmarks in memory only — nothing to write. */
+  function persistMetadata(entry) {
+    if (!entry || !entry.filePath) return;
+    writeMetadata(entry.filePath, entry.buffer.metadata ?? {});
+  }
+
+  /** The wire snapshot of ENTRY's bookmarks for the outline view: each record at
+   *  its CURRENT (edit-tracked) offset, plus the line/column the client renders
+   *  (it has no buffer to compute them) and the outline depth/collapsed flag.
+   *  Document-ordered (siblings by position, subtrees intact); the order is also
+   *  PERSISTED by mutating the stored array in place — exactly as the renderer
+   *  view's paint() does, so a bookmark set mid-document lands where it belongs. */
+  function bookmarkRecordsWire(entry) {
+    const recs = entry.buffer.metadata && entry.buffer.metadata.bookmarks;
+    if (!Array.isArray(recs) || recs.length === 0) return [];
+    if (recs.length > 1) recs.splice(0, recs.length, ...sortByDocumentPosition(recs));
+    return recs.map((b) => {
+      const offset = Math.max(0, Math.min(b.anchor ?? 0, entry.buffer.length));
+      const { line, column } = entry.buffer.positionAt(offset);
+      return {
+        id: b.id, name: b.name, anchor: offset, line, column,
+        depth: b.depth ?? 0, collapsed: !!b.collapsed,
+      };
+    });
+  }
+
+  /** Re-push ENTRY's bookmarks to an OPEN outline (if any): re-derive the wire
+   *  records + setState, which fans a fresh PANE_TREE to every client showing
+   *  that bookmark source (the mutable data-source seam). No-op when no outline
+   *  is open for ENTRY. */
+  function refreshBookmarkSource(entry) {
+    const src = dataSources.list().find(
+      (s) => s.kind === 'bookmark' && s.state && s.state.sourceBufferId === entry.id);
+    if (!src) return;
+    dataSources.setState(src.id, { ...src.state, records: bookmarkRecordsWire(entry) });
+  }
+
+  /** Open (or reveal) the bookmark OUTLINE for the active client's current text
+   *  buffer (C-x r l). A mutable 'bookmark' data-source carries the records; it
+   *  opens in a split BESIDE the document with focus ON the outline (you drive
+   *  it: n/p, Enter to jump). Re-running reveals the existing outline. Returns
+   *  the source id, or null when there's no text buffer to annotate. */
+  function openBookmarkView() {
+    const entry = activeEntry;
+    if (!entry || !registry.has(entry.id)) return null;
+    bookmarksFor(entry); // ensure markers + live anchors before snapshotting
+    let src = dataSources.list().find(
+      (s) => s.kind === 'bookmark' && s.state && s.state.sourceBufferId === entry.id);
+    if (src) {
+      dataSources.setState(src.id, { ...src.state, records: bookmarkRecordsWire(entry) });
+    } else {
+      src = dataSources.add({
+        kind: 'bookmark',
+        name: `*Bookmarks: ${entry.buffer.name}*`,
+        state: {
+          sourceBufferId: entry.id,
+          sourceName: entry.buffer.name,
+          records: bookmarkRecordsWire(entry),
+        },
+      });
+    }
+    openBookmarkBeside(activeClientIndex, src.id);
+    statusText = '';
+    onStatus('');
+    return src.id;
+  }
+
+  /** Reveal SRCID in a pane of CLIENT INDEX beside its document, FOCUSING the
+   *  outline (unlike bib-search's no-focus panel — bookmarks are a navigator you
+   *  drive). Reuses a pane already showing it; otherwise splits the focused
+   *  (document) leaf and puts the outline in the new pane. */
+  function openBookmarkBeside(index, srcId) {
+    const model = paneModels.get(index);
+    if (!model) return switchClientToSource(index, srcId);
+    const shown = model.leaves().find((l) => model.stateOf(l.id)?.bufferId === srcId);
+    if (shown) model.focusPane(shown.id);
+    else if (!model.split('horizontal', 0.7, 'after')) {
+      return switchClientToSource(index, srcId);
+    }
+    return switchClientToSource(index, srcId);
+  }
+
+  /** Apply an outline op from the bookmark VIEW to its source buffer's records.
+   *  OP is `{ op, id?, name? }`. EDIT ops (rename / delete / indent / outdent /
+   *  toggle) mutate the records, persist, and fan the fresh outline out. JUMP
+   *  moves the document's point to the bookmark + focuses its pane, returning
+   *  TRUE so the server re-syncs the client onto the document. Every other op
+   *  returns false (the setState fan-out already refreshed the outline). */
+  function applyBookmarkOp(srcId, op) {
+    const src = dataSources.get(srcId);
+    if (!src || src.kind !== 'bookmark') return false;
+    const entry = registry.get(src.state && src.state.sourceBufferId);
+    if (!entry) return false;
+    const engine = bookmarksFor(entry);
+    const recs = (entry.buffer.metadata && entry.buffer.metadata.bookmarks) || [];
+    const kind = op && typeof op === 'object' ? String(op.op ?? '') : '';
+    const recById = (id) => recs.find((b) => b.id === id);
+
+    if (kind === 'jump') {
+      const rec = recById(op.id) ?? recs.find((b) => b.name === op.name);
+      return rec ? bookmarkJump(entry, rec.name) : false;
+    }
+    if (kind === 'delete') {
+      const rec = recById(op.id);
+      if (rec) { engine.remove(rec.name); refreshBookmarkSource(entry); }
+      return false;
+    }
+    if (kind === 'rename') {
+      const rec = recById(op.id);
+      const next = String(op.name ?? '').trim();
+      if (rec && next !== '') { rec.name = next; persistMetadata(entry); refreshBookmarkSource(entry); }
+      return false;
+    }
+    if (kind === 'indent' || kind === 'outdent') {
+      const i = recs.findIndex((b) => b.id === op.id);
+      const fn = kind === 'indent' ? outlineIndent : outlineOutdent;
+      if (i >= 0 && fn(recs, i)) { persistMetadata(entry); refreshBookmarkSource(entry); }
+      return false;
+    }
+    if (kind === 'toggle') {
+      const rec = recById(op.id);
+      if (rec) { rec.collapsed = !rec.collapsed; persistMetadata(entry); refreshBookmarkSource(entry); }
+      return false;
+    }
+    return false;
+  }
+
+  /** Jump the active client to bookmark NAME in source ENTRY: focus the pane
+   *  showing the document (or switch the focused leaf onto it when no pane shows
+   *  it), bind it, move point to the bookmark's live offset, and recenter.
+   *  Returns true so the caller (the BOOKMARK_OP handler) re-syncs the client. */
+  function bookmarkJump(entry, name) {
+    const index = activeClientIndex;
+    const model = paneModels.get(index);
+    const docLeaf = model
+      ? model.leaves().find((l) => model.stateOf(l.id)?.bufferId === entry.id)
+      : null;
+    if (docLeaf) model.focusPane(docLeaf.id);
+    else switchClientToBuffer(index, entry.id);
+    setActiveClient(index); // bind `buffer` = entry.buffer + the doc view's cursor
+    const moved = bookmarksFor(entry).jump(name); // moves entry.buffer.point
+    if (moved) onScroll({ kind: 'recenter', line: entry.buffer.positionAt(entry.buffer.point).line });
+    return true;
   }
 
   /**
@@ -2993,6 +3242,10 @@ export function createSpine(options, effects = {}) {
     visitDirectory,
     openElementSource,
     openJukebox,
+    /** Apply an outline op from a bookmark VIEW (jump / rename / delete / indent
+     *  / outdent / toggle) to its source buffer's records. Returns true when the
+     *  op moved the document's point (jump) so the server re-syncs the client. */
+    applyBookmarkOp,
     recoverBuffer,
     // save (real disk write) — the server wires saveFile to atomicWrite.
     saveActiveBuffer,

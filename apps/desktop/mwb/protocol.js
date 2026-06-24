@@ -173,6 +173,14 @@ export const INTENT = Object.freeze({
   // round-trip, rows-in / choice-out.
   PICKER_CHOOSE: 'picker-choose', // Enter / click — deliver the chosen value
   PICKER_CANCEL: 'picker-cancel', // Escape / C-g — cancel the picker
+  // An outline edit from the bookmark VIEW (a mutable 'bookmark' data-source).
+  // The view sends a semantic op `{ sourceId, op, id?, name? }` — jump / rename
+  // / delete / indent / outdent / toggle — and the server applies it to the
+  // source buffer's records (authoritative), persists the sidecar, and fans the
+  // fresh outline back out (setState → PANE_TREE). `jump` also moves the
+  // document's point + re-syncs the client. The view never mutates its own copy;
+  // it re-renders from the fanned-out state, exactly as it forwards key intents.
+  BOOKMARK_OP: 'bookmark-op',
 });
 
 /**

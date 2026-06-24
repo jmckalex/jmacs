@@ -25,7 +25,7 @@
  * ports over `process.parentPort` — one per client window.
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
@@ -43,6 +43,13 @@ import { createSpine } from './spine.js';
 // these without touching production app.js/main.js/view.js.
 import { atomicWriteSync } from './atomic-write-sync.js';
 import { createAutosave } from './autosave.js';
+// Per-file companion-metadata helpers (the `.godot-metadata` sidecar path
+// scheme + emptiness rule), shared verbatim with files.js's metadata:read /
+// metadata:write IPC — so a sidecar written server-side is byte-identical to
+// one the in-renderer app writes. Bookmarks (+ sticky notes) persist through it.
+import {
+  metadataPath, legacyMetadataPath, isEmptyMetadata, METADATA_VERSION,
+} from '../src/metadata.js';
 
 // --- the canonical model: a real file in the command spine -------------
 
@@ -274,6 +281,64 @@ function writeFileForSave({ path, text }) {
   }
 }
 
+// --- companion-metadata (sidecar) I/O: the bookmarks/notes persistence ---
+//
+// The spine's bookmark engine reads a freshly-visited file's metadata to
+// restore positions and writes it back when a bookmark changes. The server
+// owns the filesystem, so it does this directly (no IPC), mirroring files.js's
+// metadata:read / metadata:write so flag-on and flag-off produce identical
+// sidecars.
+
+/** Read ABSPATH's companion metadata for the spine (the readMetadata effect):
+ *  the hidden `.NAME.godot-metadata`, else the legacy visible sidecar. Returns
+ *  parsed JSON, or null when neither exists / is readable. */
+function readMetadataForVisit(absPath) {
+  if (typeof absPath !== 'string' || absPath === '') return null;
+  for (const target of [metadataPath(absPath), legacyMetadataPath(absPath)]) {
+    try {
+      return JSON.parse(readFileSync(target, 'utf8'));
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+/** Pending debounced sidecar writes, keyed by file path (mirrors the renderer's
+ *  scheduleMetadataWrite — a bookmark op shouldn't fsync on every keystroke). */
+const metadataWriteTimers = new Map();
+
+/** Write ABSPATH's companion metadata (DATA — the buffer's whole metadata
+ *  object: bookmarks + notes). Empty data removes the sidecar rather than
+ *  leaving a husk; otherwise the versioned JSON is atomic-written and the legacy
+ *  sidecar retired — exactly files.js's metadata:write, but sync (the server's
+ *  fs is direct). Throws are swallowed (a sidecar write must never crash). */
+function writeMetadataNow(absPath, data) {
+  metadataWriteTimers.delete(absPath);
+  try {
+    const target = metadataPath(absPath);
+    const legacy = legacyMetadataPath(absPath);
+    const payload = data && typeof data === 'object' ? data : {};
+    if (isEmptyMetadata(payload)) {
+      rmSync(target, { force: true });
+      rmSync(legacy, { force: true });
+      return;
+    }
+    atomicWriteSync(target, JSON.stringify({ version: METADATA_VERSION, ...payload }, null, 2));
+    rmSync(legacy, { force: true });
+  } catch (error) {
+    console.error(`[mwb-server] metadata write failed: ${error.message}`);
+  }
+}
+
+/** Schedule a debounced sidecar write for ABSPATH (the writeMetadata effect).
+ *  A later change to the same path coalesces with the pending write. */
+function scheduleMetadataWrite(absPath, data) {
+  if (typeof absPath !== 'string' || absPath === '') return;
+  clearTimeout(metadataWriteTimers.get(absPath));
+  metadataWriteTimers.set(absPath, setTimeout(() => writeMetadataNow(absPath, data), 500));
+}
+
 // --- the command spine ------------------------------------------------
 
 const spine = createSpine(
@@ -314,6 +379,10 @@ const spine = createSpine(
     openFile: readFileForVisit,
     // save-buffer / write-file: atomic disk write (temp + fsync + rename).
     saveFile: writeFileForSave,
+    // Bookmarks: restore a visited file's `.godot-metadata` sidecar, and
+    // persist it back (debounced + atomic) when a bookmark changes.
+    readMetadata: readMetadataForVisit,
+    writeMetadata: scheduleMetadataWrite,
   }
 );
 
@@ -698,6 +767,17 @@ function applyIntent(client, intent) {
           return;
         }
         break;
+      }
+      case INTENT.BOOKMARK_OP: {
+        // An outline edit from a bookmark VIEW (mutable 'bookmark' data-source):
+        // apply it to the source buffer's records. EDIT ops persist + fan the
+        // fresh outline out via the data-source seam (onPaneTree), so nothing
+        // else is needed here; JUMP moves the document's point + focuses its
+        // pane and returns true, so we re-sync this client onto the document.
+        const jumped = spine.applyBookmarkOp(String(intent.sourceId ?? ''), intent.op || {});
+        if (jumped) resyncClientToCurrentBuffer(client);
+        activeClient = null;
+        return;
       }
       default:
         break;
