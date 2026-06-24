@@ -25,7 +25,7 @@
  * ports over `process.parentPort` — one per client window.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
@@ -35,6 +35,7 @@ import {
 } from './protocol.js';
 import { resolveUserPath } from './path-resolve.js';
 import { mediaKindForName } from './media-kinds.js';
+import { completePath } from './path-complete.js';
 import { createSpine } from './spine.js';
 // The crash-safe atomic writer (temp file + fsync + rename) and the
 // recovery-snapshot pure helpers are standalone production modules; the
@@ -137,6 +138,22 @@ function readFileForVisit(path) {
     console.error(`[mwb-server] find-file: ${error.message}`);
     return null;
   }
+}
+
+/** Case-insensitive find-file path completion (the TAB-completion handler). The
+ *  pure completePath does the matching; this wires the directory read, resolving
+ *  the typed dir prefix the same way find-file resolves a path (~, relative to
+ *  the seed-file dir, absolute). `{ value, items, directory }`. */
+function completeFindFilePath(value) {
+  return completePath(value, (dirPrefix) => {
+    const absDir = dirPrefix === '' ? dirname(filePath) : resolvePath(dirPrefix);
+    try {
+      return readdirSync(absDir, { withFileTypes: true })
+        .map((d) => ({ name: d.name, isDir: d.isDirectory() }));
+    } catch {
+      return null;
+    }
+  });
 }
 
 /** Write a buffer to disk ATOMICALLY (temp file + fsync + rename), the
@@ -784,6 +801,20 @@ function onClientMessage(client, event) {
       // spine (keeps the last good value).
       spine.setViewport(client.index, msg.lines);
       break;
+    case MSG.MINIBUFFER_COMPLETE: {
+      // TAB in the minibuffer. Find-file gets CASE-INSENSITIVE path completion;
+      // the client sent its current input. Other prompts (M-x, switch-to-buffer)
+      // have their own completion — not wired yet. A read-only query (no edit),
+      // so it replies directly rather than going through applyIntent.
+      if (spine.activePrompt === 'Find file: ') {
+        const r = completeFindFilePath(String(msg.value ?? ''));
+        client.port.postMessage({
+          type: MSG.MINIBUFFER_COMPLETIONS,
+          value: r.value, items: r.items, directory: r.directory,
+        });
+      }
+      break;
+    }
     default:
       break;
   }

@@ -3278,6 +3278,33 @@ function completeFromPanel(name) {
   minibuffer.setValue(completionsDirectory + name);
 }
 
+/** Open (or update in place) the transient "Completions" utility-dock tab with
+ *  ITEMS (display strings; a directory carries a trailing '/'), relative to
+ *  DIRECTORY (the typed path prefix, for click-to-complete). Shared by the Lisp
+ *  `show-completions!` primitive (flag-off) and the server-mode completion reply
+ *  (showServerCompletions). `focus:false` keeps the minibuffer focused. */
+function displayCompletionsPanel(items, directory) {
+  completionsDirectory = directory ?? '';
+  const panel = utilityDock.hasTab(COMPLETIONS_TAB_ID)
+    ? utilityDock.getPanel(COMPLETIONS_TAB_ID)
+    : null;
+  if (panel && typeof panel.setItems === 'function') {
+    panel.setItems(items);
+  } else {
+    utilityDock.openUtilityPanel({
+      id: COMPLETIONS_TAB_ID,
+      title: 'Completions',
+      icon: 'fa-solid fa-list-ul',
+      focus: false,
+      makePanel: () => createCompletionsPanel({
+        items,
+        onSelect: completeFromPanel,
+        onActivate: activateFromPanel,
+      }),
+    });
+  }
+}
+
 /** Double-click in the completions panel = activate (file-browser idiom): a
  *  file OPENS (submit the prompt — drops the panel, delivers the path); a
  *  directory is ENTERED — re-running TAB completion so its contents list and
@@ -3816,26 +3843,7 @@ const interpreter = createInterpreter({
     // removed by `clear-completions!` (on TAB progress) or when the
     // completing minibuffer closes (see `open-completing-minibuffer!`).
     'show-completions!': (args) => {
-      const items = listToArray(args[0] ?? NIL).map(String);
-      completionsDirectory = String(args[1] ?? '');
-      const panel = utilityDock.hasTab(COMPLETIONS_TAB_ID)
-        ? utilityDock.getPanel(COMPLETIONS_TAB_ID)
-        : null;
-      if (panel && typeof panel.setItems === 'function') {
-        panel.setItems(items);
-      } else {
-        utilityDock.openUtilityPanel({
-          id: COMPLETIONS_TAB_ID,
-          title: 'Completions',
-          icon: 'fa-solid fa-list-ul',
-          focus: false,
-          makePanel: () => createCompletionsPanel({
-            items,
-            onSelect: completeFromPanel,
-            onActivate: activateFromPanel,
-          }),
-        });
-      }
+      displayCompletionsPanel(listToArray(args[0] ?? NIL).map(String), String(args[1] ?? ''));
       return NIL;
     },
     'clear-completions!': () => {
@@ -6379,11 +6387,30 @@ if (window.host && window.host.serverMode) {
       minibuffer.prompt(prompt, {
         initialValue: value ?? '',
         onChange: (v) => cbs.onChange(v),
-        onSubmit: (v) => { cbs.onSubmit(v); refocusServerView(); },
-        onCancel: () => { cbs.onCancel(); refocusServerView(); },
+        onSubmit: (v) => {
+          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
+          cbs.onSubmit(v); refocusServerView();
+        },
+        onCancel: () => {
+          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
+          cbs.onCancel(); refocusServerView();
+        },
+        // TAB: ask the server to complete the path (find-file, case-insensitive).
+        // The reply (showCompletions below) fills the input + shows candidates;
+        // returning undefined leaves the input unchanged until then.
+        onTab: (v) => { if (serverViewClient) serverViewClient.requestMinibufferComplete(v); },
       });
     },
-    closeMinibuffer: () => { minibuffer.close(); refocusServerView(); },
+    closeMinibuffer: () => {
+      utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
+      minibuffer.close(); refocusServerView();
+    },
+    // The server's TAB-completion reply: fill the minibuffer with the completed
+    // value and show the candidate list (find-file). The minibuffer keeps focus.
+    showCompletions: ({ value, items, directory }) => {
+      if (typeof value === 'string') minibuffer.setValue(value);
+      displayCompletionsPanel(Array.isArray(items) ? items : [], directory ?? '');
+    },
     // The generic picker (buffer list, M-x, RefTeX, completions): an overlay
     // panel; the choice/cancel routes back up as PICKER_* intents.
     openPicker: (request, cbs) => {

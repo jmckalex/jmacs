@@ -165,6 +165,10 @@ export function createServerViewClient({
   // (split structure + per-leaf buffer/view-state + the focused leaf; no
   // pixels). The host renders it — splits become visible. A no-op until wired.
   const setPaneTreeDom = chrome.setPaneTree ?? (() => {});
+  // MINIBUFFER_COMPLETIONS: the server's reply to a TAB-completion request — the
+  // completed value + the candidate list. The host fills the minibuffer + shows
+  // the candidates (find-file). A no-op until wired.
+  const showCompletionsDom = chrome.showCompletions ?? (() => {});
 
   // Whether a server minibuffer read is currently open in the DOM, and the
   // id of the picker the client is showing (so a stale reply is dropped and a
@@ -500,6 +504,9 @@ export function createServerViewClient({
       case MSG.BUFFER_LIST: onBufferList(msg.buffers); break;
       case MSG.WINDOW_NEW: requestNewWindowDom(); break;
       case MSG.PANE_TREE: setPaneTreeDom(msg.tree); break;
+      case MSG.MINIBUFFER_COMPLETIONS:
+        showCompletionsDom({ value: msg.value, items: msg.items, directory: msg.directory });
+        break;
       default: break; // PANE_TREE: not in this slice
     }
   }
@@ -555,6 +562,13 @@ export function createServerViewClient({
     });
   }
 
+  /** Ask the server to TAB-complete the open minibuffer prompt against VALUE (a
+   *  read-only query — find-file path completion). The reply is a
+   *  MINIBUFFER_COMPLETIONS the chrome renders (fill the input + show candidates). */
+  function requestMinibufferComplete(value) {
+    port.postMessage({ type: MSG.MINIBUFFER_COMPLETE, value: String(value ?? '') });
+  }
+
   /** Close (kill) the server buffer BUFFERID — a tab `×`. Switch this client to
    *  it (so it is current), then run the server's kill-buffer via its `C-x k`
    *  binding; the server re-homes the client onto a survivor buffer and
@@ -583,6 +597,8 @@ export function createServerViewClient({
     // Ask the server to switch this client's buffer (tab click / C-x b / View
     // List select). The re-sync re-points the façade + re-marks the active tab.
     switchBuffer,
+    // Ask the server to TAB-complete the open minibuffer (find-file path).
+    requestMinibufferComplete,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the

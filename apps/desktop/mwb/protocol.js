@@ -39,6 +39,11 @@ export const MSG = Object.freeze({
   // many text lines fit). Sent on mount + on resize. The server stores it per
   // client and uses it for screenful scroll (C-v/M-v) + recenter. `{ lines }`.
   VIEWPORT: 'viewport',
+  // up: a TAB-completion request for the open minibuffer prompt. The client
+  // sends the current input `{ value }`; the server (which owns the prompt +
+  // the filesystem) computes the completion and replies with
+  // MINIBUFFER_COMPLETIONS. Used for find-file path completion (case-insensitive).
+  MINIBUFFER_COMPLETE: 'minibuffer-complete',
   // down
   SNAPSHOT: 'snapshot', // full buffer text + cursor (initial sync / resync)
   DELTA: 'delta', // an applied buffer change + resulting cursor
@@ -84,6 +89,12 @@ export const MSG = Object.freeze({
   // honour them or impose its own and echo a resize back). See
   // serializePaneTree below for the exact node shape.
   PANE_TREE: 'pane-tree',
+  // down: the reply to MINIBUFFER_COMPLETE — `{ value, items, directory }`. The
+  // client sets the minibuffer to the completed `value` (the longest common
+  // prefix, or a unique full match) and shows `items` (the candidate display
+  // names, directories with a trailing '/') in the completions panel; `directory`
+  // is the typed path prefix the items are relative to (for click-to-complete).
+  MINIBUFFER_COMPLETIONS: 'minibuffer-completions',
   // --- window lifecycle (G4) -----------------------------------------
   // The server asks the ACTIVE client to open another window onto the shared
   // server — the effect of the `new-window` command (the C-x 5 2 chord, which
