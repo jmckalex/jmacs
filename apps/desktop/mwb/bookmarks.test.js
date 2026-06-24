@@ -42,6 +42,18 @@ function bookmarkLeaf(spine) {
 const outlineRecords = (spine) => bookmarkLeaf(spine)?.state?.records ?? null;
 const outlineSourceId = (spine) => { const l = bookmarkLeaf(spine); return l ? (l.bufferId ?? l.id) : null; };
 
+/** The bookmark outline's state in a SPECIFIC window's (client INDEX) pane tree. */
+function outlineStateIn(spine, index) {
+  const snap = spine.paneSnapshot(index);
+  let st = null;
+  (function walk(node) {
+    if (!node) return;
+    if (node.kind === 'leaf') { if (node.viewKind === 'bookmark') st = node.state; return; }
+    walk(node.first); walk(node.second);
+  })(snap);
+  return st;
+}
+
 test('bookmarks.lisp loads server-side (its commands register)', () => {
   const { spine } = makeSpine();
   assert.ok(spine.commandNames().includes('bookmark-set'), 'bookmark-set registered');
@@ -143,6 +155,34 @@ test('the bookmark outline follows focus and stays a single pane', () => {
 
   const sources = spine.bufferListRecords(0).filter((r) => r.viewKind === 'bookmark');
   assert.equal(sources.length, 1, 'one bookmark outline, not one per file');
+});
+
+test('per-window: a file switch in one window leaves another window\'s outline alone', () => {
+  const { spine } = makeSpine({
+    initialText: 'a-one\na-two\n', name: 'A.txt', initialPath: '/tmp/A.txt',
+    openFile: () => ({ text: 'c-one\nc-two\n', name: 'C.txt', path: '/tmp/C.txt' }),
+  });
+  const aId = spine.currentBufferIdOf(0);
+  spine.buffer.moveTo(0); spine.interpreter.evaluate('(bookmark-set! "in-A")');
+  spine.interpreter.evaluate('(open-bookmark-view!)'); // window 0 outline → A
+
+  // A second window on its own scratch, with its own outline.
+  const w1 = spine.addClientView({ freshScratch: true });
+  spine.setActiveClient(w1);
+  const scratch1 = spine.currentBufferIdOf(w1);
+  spine.interpreter.evaluate('(open-bookmark-view!)'); // window 1 outline → scratch1
+  assert.equal(outlineStateIn(spine, w1).sourceBufferId, scratch1, 'window 1 outline on its own buffer');
+
+  // Back to window 0: focus its document pane and open file C there.
+  spine.setActiveClient(0);
+  const m0 = spine.paneModelOf(0);
+  const docLeaf0 = m0.leaves().find((l) => m0.stateOf(l.id)?.bufferId === aId);
+  spine.applyPaneIntent(0, { op: 'focus-pane', paneId: docLeaf0.id });
+  spine.visitFile('/tmp/C.txt');
+  const cId = spine.currentBufferIdOf(0);
+
+  assert.equal(outlineStateIn(spine, 0).sourceBufferId, cId, 'window 0 outline followed focus to C');
+  assert.equal(outlineStateIn(spine, w1).sourceBufferId, scratch1, 'window 1 outline UNCHANGED');
 });
 
 test('applyBookmarkOp jump moves the document point + returns true', () => {

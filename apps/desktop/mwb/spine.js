@@ -2297,15 +2297,18 @@ export function createSpine(options, effects = {}) {
     });
   }
 
-  /** Re-push ENTRY's bookmarks to an OPEN outline (if any): re-derive the wire
-   *  records + setState, which fans a fresh PANE_TREE to every client showing
-   *  that bookmark source (the mutable data-source seam). No-op when no outline
+  /** Re-push ENTRY's bookmarks to EVERY outline viewing that file (across windows,
+   *  following or pinned): re-derive the wire records + setState, which fans a
+   *  fresh PANE_TREE to each client showing that source (the mutable data-source
+   *  seam). Bookmarks are per-FILE (the records live on the buffer), so a set /
+   *  delete must refresh all outlines on that file, not just one. No-op when none
    *  is open for ENTRY. */
   function refreshBookmarkSource(entry) {
-    const src = dataSources.list().find(
-      (s) => s.kind === 'bookmark' && s.state && s.state.sourceBufferId === entry.id);
-    if (!src) return;
-    dataSources.setState(src.id, { ...src.state, records: bookmarkRecordsWire(entry) });
+    for (const src of dataSources.list()) {
+      if (src.kind === 'bookmark' && src.state && src.state.sourceBufferId === entry.id) {
+        dataSources.setState(src.id, { ...src.state, records: bookmarkRecordsWire(entry) });
+      }
+    }
   }
 
   /** The wire state for the bookmark outline pointed at TEXT buffer ENTRY: its
@@ -2318,39 +2321,54 @@ export function createSpine(options, effects = {}) {
     };
   }
 
+  /** The FOLLOWING (unpinned) bookmark outline owned by client INDEX, or null.
+   *  Each window owns its OWN outline (per-window scope, so window A's focus never
+   *  disturbs window B's outline). A PINNED outline (frozen to a file — Phase 2)
+   *  is excluded: it doesn't follow focus and there may be several per window. */
+  function followingOutlineOf(index) {
+    return dataSources.list().find(
+      (s) => s.kind === 'bookmark' && s._ownerClient === index && !s._pinned) ?? null;
+  }
+
   /** Open (or reveal) the bookmark OUTLINE for the active client's current text
-   *  buffer (C-x r l). There is ONE outline (like the in-renderer app): a single
-   *  mutable 'bookmark' data-source that RE-TARGETS to whichever file is focused,
-   *  rather than one pane per file (which also fought over the single
-   *  <bookmark-view> element → an empty second pane). It opens in a split BESIDE
-   *  the document with focus ON the outline (you drive it: n/p, Enter to jump);
-   *  re-running reveals + re-targets it. Returns the source id, or null when
-   *  there's no text buffer to annotate. */
+   *  buffer (C-x r l). Each WINDOW has its own following outline (a mutable
+   *  'bookmark' data-source) that RE-TARGETS to whichever file that window
+   *  focuses — not one pane per file (which fought over the single <bookmark-view>
+   *  element), and not one shared across windows (which leaked focus between
+   *  them). It opens in a split BESIDE the document with focus ON the outline (you
+   *  drive it: n/p, Enter to jump); re-running reveals + re-targets it. Returns
+   *  the source id, or null when there's no text buffer to annotate. */
   function openBookmarkView() {
     const entry = activeEntry;
     if (!entry || !registry.has(entry.id)) return null;
     bookmarksFor(entry); // ensure markers + live anchors before snapshotting
-    let src = dataSources.list().find((s) => s.kind === 'bookmark');
-    if (src) dataSources.setState(src.id, bookmarkOutlineState(entry));
-    else src = dataSources.add({ kind: 'bookmark', name: '*Bookmarks*', state: bookmarkOutlineState(entry) });
+    let src = followingOutlineOf(activeClientIndex);
+    if (src) {
+      dataSources.setState(src.id, bookmarkOutlineState(entry));
+    } else {
+      src = dataSources.add({ kind: 'bookmark', name: '*Bookmarks*', state: bookmarkOutlineState(entry) });
+      src._ownerClient = activeClientIndex; // per-window ownership (server-side only)
+      src._pinned = false;                  // follows focus by default (Phase 2 pins it)
+    }
     openBookmarkBeside(activeClientIndex, src.id);
     statusText = '';
     onStatus('');
     return src.id;
   }
 
-  /** Re-target the single bookmark OUTLINE (if open) to TEXT buffer ENTRY: update
-   *  its data-source state + fan it out, so the outline follows the focused file.
-   *  A no-op when the outline isn't open or is already on ENTRY. */
+  /** Re-target the active client's FOLLOWING outline (if open) to TEXT buffer
+   *  ENTRY: update its data-source state + fan it out, so that window's outline
+   *  follows its focused file. A no-op when this window has no following outline
+   *  or it's already on ENTRY. */
   function retargetBookmarkOutline(entry) {
     if (!entry || !registry.has(entry.id)) return;
-    const src = dataSources.list().find((s) => s.kind === 'bookmark');
+    const src = followingOutlineOf(activeClientIndex);
     if (!src || (src.state && src.state.sourceBufferId === entry.id)) return;
     bookmarksFor(entry);
     dataSources.setState(src.id, bookmarkOutlineState(entry));
   }
 
-  /** Follow focus: re-target the bookmark outline to the active client's FOCUSED
+  /** Follow focus: re-target the active client's following outline to its FOCUSED
    *  text buffer. Skips when the focused leaf is a data-source (the outline /
    *  media) — the outline keeps its last text target. Called after any focus /
    *  buffer switch. */
@@ -2590,6 +2608,11 @@ export function createSpine(options, effects = {}) {
     clientViewports.delete(index);
     clientBuffers.delete(index);
     registry.dropClient(index);
+    // The bookmark outline(s) are per-window — drop this window's own so they
+    // don't linger after it closes.
+    for (const s of dataSources.list()) {
+      if (s.kind === 'bookmark' && s._ownerClient === index) dataSources.remove(s.id);
+    }
     // Reap this window's buffers that NO other window shows AND that are an
     // empty, path-less scratch (a fresh window's unused scratch shouldn't linger
     // in the pool). A scratch the user typed into, or any file-backed buffer, is
