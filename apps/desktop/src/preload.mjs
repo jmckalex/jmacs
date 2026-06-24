@@ -112,7 +112,19 @@ contextBridge.exposeInMainWorld('host', {
    *  Driven by the server's WINDOW_NEW effect (the C-x 5 2 chord). main
    *  creates the window and the bridge attaches it as a new client; a no-op
    *  in the flag-off build (nothing triggers it). */
-  newWindow: () => ipcRenderer.send('window:new'),
+  newWindow: (geometry) => ipcRenderer.send('window:new', geometry ?? null),
+
+  /** Session restore (B2): this window's frame + display, for the geometry the
+   *  session records. getWindowBounds is a one-shot pull (the client reports it
+   *  on connect); onWindowBounds fires on every move/resize (returns an
+   *  unsubscribe); setWindowBounds applies a saved frame (reconciled in main). */
+  getWindowBounds: () => ipcRenderer.invoke('window:get-bounds'),
+  onWindowBounds: (cb) => {
+    const handler = (_event, descriptor) => cb(descriptor);
+    ipcRenderer.on('window:bounds', handler);
+    return () => ipcRenderer.removeListener('window:bounds', handler);
+  },
+  setWindowBounds: (geometry) => ipcRenderer.send('window:set-bounds', geometry ?? null),
 
   /**
    * List a directory's non-hidden entries, sorted alphabetically. Returns

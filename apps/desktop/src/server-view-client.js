@@ -129,6 +129,12 @@ export function createServerViewClient({
   // unit-testable with no DOM — `app.js` wires it to the real `window` resize.
   // Default: a no-op subscription (tests drive `reportViewport` directly).
   subscribeResize = () => () => {},
+  // Session restore (B2): the window's current frame + display, for the geometry
+  // the session records. `getWindowBounds` is a one-shot pull (reported on
+  // connect); `subscribeWindowBounds` fires on every window move/resize (returns
+  // an unsubscribe). Both injected by app.js from the host; no-ops in tests.
+  getWindowBounds = () => Promise.resolve(null),
+  subscribeWindowBounds = () => () => {},
   // The renderer-owned command names (element-views) announced to the server on
   // connect, so M-x routes them back down via RUN_CLIENT_COMMAND. A function so
   // it is read at connect time (the registry is populated as stdlib loads).
@@ -168,6 +174,10 @@ export function createServerViewClient({
   // new client on the shared server). Window lifecycle is the host's job, like
   // quit. A no-op until the host wires it.
   const requestNewWindowDom = chrome.requestNewWindow ?? (() => {});
+  // Session restore (B2): apply a saved window frame to THIS window (SET_WINDOW_
+  // BOUNDS, sent to window 1 on restore). The host reconciles + resizes; a no-op
+  // until wired.
+  const setWindowBoundsDom = chrome.setWindowBounds ?? (() => {});
   // PANE_TREE (G4 Step 3): the server pushes this window's logical pane layout
   // (split structure + per-leaf buffer/view-state + the focused leaf; no
   // pixels). The host renders it — splits become visible. A no-op until wired.
@@ -246,6 +256,18 @@ export function createServerViewClient({
     try { lines = view.pageLines(); } catch { return; }
     if (!Number.isFinite(lines) || lines <= 0) return;
     port.postMessage({ type: MSG.VIEWPORT, lines: Math.floor(lines) });
+  }
+
+  /** Report this window's frame + display to the server (B2 geometry). The
+   *  descriptor is `{ bounds: {x,y,width,height}, display: {...} }` from the host;
+   *  a null/incomplete descriptor is ignored (the server keeps its last value). */
+  function reportBounds(descriptor) {
+    if (!descriptor || !descriptor.bounds) return;
+    port.postMessage({
+      type: MSG.WINDOW_BOUNDS,
+      bounds: descriptor.bounds,
+      display: descriptor.display ?? null,
+    });
   }
 
   /**
@@ -509,7 +531,8 @@ export function createServerViewClient({
       case MSG.RESYNC: onResync(msg); break;
       case MSG.PICKER: onPicker(msg.picker); break;
       case MSG.BUFFER_LIST: onBufferList(msg.buffers); break;
-      case MSG.WINDOW_NEW: requestNewWindowDom(); break;
+      case MSG.WINDOW_NEW: requestNewWindowDom(msg.geometry); break;
+      case MSG.SET_WINDOW_BOUNDS: setWindowBoundsDom(msg.geometry); break;
       case MSG.RUN_CLIENT_COMMAND:
         // The server dispatched a renderer-owned command (an element-view): run
         // it in the renderer, where its spec is computed (it calls back via
@@ -527,8 +550,9 @@ export function createServerViewClient({
     }
   }
 
-  /** Drop the resize subscription, when one is active. */
+  /** Drop the resize / window-bounds subscriptions, when active. */
   let unsubscribeResize = null;
+  let unsubscribeBounds = null;
 
   /** Wire the port + say HELLO to pull the initial snapshot (which mounts the
    *  view). Idempotent-ish: calling twice re-says HELLO. */
@@ -539,6 +563,10 @@ export function createServerViewClient({
     // Re-report the viewport when the window/pane resizes, so a screenful
     // tracks the live height. Injected (a no-op in tests).
     if (!unsubscribeResize) unsubscribeResize = subscribeResize(reportViewport);
+    // B2: report this window's frame now (a one-shot pull) + on every later
+    // move/resize, so the session snapshot records its geometry.
+    try { Promise.resolve(getWindowBounds()).then(reportBounds).catch(() => {}); } catch { /* no host */ }
+    if (!unsubscribeBounds) unsubscribeBounds = subscribeWindowBounds(reportBounds);
     port.postMessage({ type: MSG.HELLO });
     // Announce the renderer-owned commands (element-views) so the server can
     // route them back down via RUN_CLIENT_COMMAND. Tolerant of a bad getter.
@@ -569,6 +597,10 @@ export function createServerViewClient({
     if (unsubscribeResize) {
       try { unsubscribeResize(); } catch { /* ignore */ }
       unsubscribeResize = null;
+    }
+    if (unsubscribeBounds) {
+      try { unsubscribeBounds(); } catch { /* ignore */ }
+      unsubscribeBounds = null;
     }
     mirror = null;
     connected = false;

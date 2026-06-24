@@ -103,6 +103,14 @@ export const MSG = Object.freeze({
   // creates the window + attaches it as a new client. Window lifecycle is the
   // client/host's half of the split (cf. C-x C-c quit), command-triggered.
   WINDOW_NEW: 'window-new',
+  // Session restore (slice B2) — window geometry. The client reports its window
+  // frame + the display it is on (WINDOW_BOUNDS, up) so the server can record it
+  // in the session snapshot; on restore the server hands a saved frame back down
+  // (SET_WINDOW_BOUNDS) for window 1, and threads it into WINDOW_NEW for spawned
+  // windows. Main reconciles the saved frame against the CURRENT displays
+  // (window-geometry.js) before applying — it owns `screen`, the client doesn't.
+  WINDOW_BOUNDS: 'window-bounds',
+  SET_WINDOW_BOUNDS: 'set-window-bounds',
   // --- the generic render-side picker channel (G0b) ------------------
   // A server command SUSPENDS and asks the client to pick a row from a
   // list — the buffer list, *Recover*, completions, RefTeX select, cite:

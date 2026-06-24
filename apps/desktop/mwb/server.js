@@ -1100,6 +1100,16 @@ function onClientMessage(client, event) {
       // spine (keeps the last good value).
       spine.setViewport(client.index, msg.lines);
       break;
+    case MSG.WINDOW_BOUNDS:
+      // B2: the client reported its window frame + display (on connect + every
+      // move/resize). Stored on the client so the session snapshot records this
+      // window's geometry; main reconciles it against the live displays on
+      // restore. A malformed report is ignored (keeps the last good value).
+      if (msg.bounds && typeof msg.bounds === 'object') {
+        client.bounds = msg.bounds;
+        client.display = msg.display ?? null;
+      }
+      break;
     case MSG.MINIBUFFER_COMPLETE: {
       // TAB in the minibuffer. Find-file gets CASE-INSENSITIVE path completion;
       // the client sent its current input. Other prompts (M-x, switch-to-buffer)
@@ -1229,16 +1239,16 @@ function sessionBootInfo() {
 }
 
 /** Snapshot every LIVE window's pane layout (by path) for the session store, in
- *  stable order (ascending client index). Geometry (bounds/display) is recorded
- *  as null here — window-frame capture is the next slice; a null-geometry window
- *  is default-placed on restore. */
+ *  stable order (ascending client index). Each window carries the geometry the
+ *  client last reported (WINDOW_BOUNDS) — null until it has reported, in which
+ *  case restore default-places it. */
 function collectSessionWindows() {
   const out = [];
   const ordered = [...clients].sort((a, b) => a.index - b.index);
   for (const c of ordered) {
     const rootPane = spine.serializeWindow(c.index);
     if (!rootPane) continue;
-    out.push({ rootPane, bounds: null, display: null });
+    out.push({ rootPane, bounds: c.bounds ?? null, display: c.display ?? null });
   }
   return out;
 }
@@ -1282,20 +1292,28 @@ let pendingRestore = [];
 let awaitingRestoreWindow = false;
 let restoreInProgress = false;
 
-/** Ask a live client to spawn another OS window (main creates it + attaches it
- *  as a new client). Targets the active client, else the bootstrap (clients[0])
- *  — both are connected during a restore, unlike `activeClient`, which may be
- *  null between intents. */
-function requestSpawnWindow() {
-  const target = activeClient ?? clients[0];
-  if (target && target.port) target.port.postMessage({ type: MSG.WINDOW_NEW, seq });
+/** The saved geometry `{ bounds, display }` of a window-blob, or null. */
+function windowGeometry(w) {
+  return w && w.bounds ? { bounds: w.bounds, display: w.display ?? null } : null;
 }
 
-/** Flag that we're awaiting the next restore window, then ask for it. */
+/** Ask a live client to spawn another OS window (main creates it + attaches it
+ *  as a new client, at GEOMETRY's reconciled bounds when given). Targets the
+ *  active client, else the bootstrap (clients[0]) — both are connected during a
+ *  restore, unlike `activeClient`, which may be null between intents. */
+function requestSpawnWindow(geometry) {
+  const target = activeClient ?? clients[0];
+  if (target && target.port) {
+    target.port.postMessage({ type: MSG.WINDOW_NEW, seq, geometry: geometry ?? null });
+  }
+}
+
+/** Flag that we're awaiting the next restore window, then ask for it (carrying
+ *  that window's saved geometry so main can size/place it as it spawns). */
 function spawnNextRestoreWindow() {
   if (pendingRestore.length === 0) return;
   awaitingRestoreWindow = true;
-  requestSpawnWindow();
+  requestSpawnWindow(windowGeometry(pendingRestore[0]));
 }
 
 /** Restore the saved session (`__last__`) at boot. Opens every file across ALL
@@ -1328,6 +1346,14 @@ function restoreSession(client) {
       }
     }
     if (!spine.loadWindowLayout(client.index, win0.rootPane)) seedWindow1Tabline(client);
+    // B2: restore window 1's geometry. Window 1 pre-exists at default bounds (it
+    // booted before the restore), so we send it down for main to reconcile +
+    // resize; spawned windows are instead born at their reconciled bounds via the
+    // WINDOW_NEW payload.
+    const geom0 = windowGeometry(win0);
+    if (geom0 && client.port) {
+      client.port.postMessage({ type: MSG.SET_WINDOW_BOUNDS, geometry: geom0 });
+    }
     console.error(`[mwb-session] restoring ${windows.length} window(s)`);
     pendingRestore = windows.slice(1).filter((w) => w && w.rootPane);
     if (pendingRestore.length > 0) spawnNextRestoreWindow();

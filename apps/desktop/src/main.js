@@ -14,10 +14,12 @@ import {
   protocol,
   utilityProcess,
   MessageChannelMain,
+  screen,
 } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { reconcileBounds } from './window-geometry.js';
 import { registerFileHandlers } from './files.js';
 import { isServerMode, createServerBridge } from './server-bridge.js';
 import { renderJMarkdown } from './jmarkdown.js';
@@ -115,10 +117,35 @@ function dispatchMenuCommand(command) {
   if (win && !win.isDestroyed()) win.webContents.send('menu:invoke', command);
 }
 
-function createWindow() {
+/** A display descriptor for window-geometry reconciliation (the shape
+ *  window-geometry.js expects: id + workArea + scaleFactor). */
+function describeDisplay(display) {
+  if (!display) return null;
+  return { id: display.id, workArea: display.workArea, scaleFactor: display.scaleFactor };
+}
+
+/** This window's current frame + the display it sits on — the geometry the
+ *  session records (sent to the renderer, which reports it to the server). */
+function boundsDescriptor(win) {
+  const bounds = win.getBounds();
+  return { bounds, display: describeDisplay(screen.getDisplayMatching(bounds)) };
+}
+
+/**
+ * Create a browser window. With `opts.geometry` (a saved `{ bounds, display }`
+ * from a session restore), reconcile it against the CURRENT displays — exact
+ * when the display is still present and the frame fits, else a proportional
+ * rescale (window-geometry.js) — and open the window there; otherwise use the
+ * defaults.
+ */
+function createWindow(opts = {}) {
+  const geom = opts.geometry
+    ? reconcileBounds(opts.geometry, screen.getAllDisplays().map(describeDisplay))
+    : null;
   const win = new BrowserWindow({
-    width: 1040,
-    height: 880,
+    width: geom ? geom.width : 1040,
+    height: geom ? geom.height : 880,
+    ...(geom ? { x: geom.x, y: geom.y } : {}),
     minWidth: 480,
     minHeight: 520,
     backgroundColor: '#1b1b23',
@@ -149,7 +176,22 @@ function createWindow() {
     },
   });
   mainWindow = win;
-  if (isServerMode()) windows.add(win);
+  if (isServerMode()) {
+    windows.add(win);
+    // B2: report this window's frame to its renderer on move/resize (debounced),
+    // so the session snapshot records its geometry — the renderer forwards it to
+    // the server. The renderer also pulls once on connect (window:get-bounds).
+    let boundsTimer = null;
+    const scheduleBoundsReport = () => {
+      if (boundsTimer) clearTimeout(boundsTimer);
+      boundsTimer = setTimeout(() => {
+        boundsTimer = null;
+        if (!win.isDestroyed()) win.webContents.send('window:bounds', boundsDescriptor(win));
+      }, 250);
+    };
+    win.on('resize', scheduleBoundsReport);
+    win.on('move', scheduleBoundsReport);
+  }
 
   // The red traffic-light button closes the window directly, which (like
   // a native Quit) would tear down the renderer and drop unsaved edits
@@ -224,9 +266,27 @@ app.whenReady().then(() => {
   // G4: the renderer asks for another window via host.newWindow() — driven by
   // the server's WINDOW_NEW effect (the C-x 5 2 chord resolves to a server
   // `new-window` command). Server mode only; the server can't open an OS
-  // window, so main does it and the bridge attaches it as a new client.
-  ipcMain.on('window:new', () => {
-    if (isServerMode()) createWindow();
+  // window, so main does it and the bridge attaches it as a new client. B2: a
+  // session restore threads the saved window geometry through, so a spawned
+  // window is born at its reconciled size/position.
+  ipcMain.on('window:new', (_event, geometry) => {
+    if (isServerMode()) createWindow({ geometry: geometry ?? null });
+  });
+  // B2: apply a saved frame to an existing window (window 1 on restore — it
+  // pre-exists at default bounds). main owns `screen`, so it reconciles the
+  // saved frame against the live displays here, then resizes.
+  ipcMain.on('window:set-bounds', (event, geometry) => {
+    if (!isServerMode() || !geometry) return;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    const b = reconcileBounds(geometry, screen.getAllDisplays().map(describeDisplay));
+    if (b) win.setBounds(b);
+  });
+  // B2: the renderer pulls its current frame once on connect, to seed the
+  // session's geometry before any move/resize.
+  ipcMain.handle('window:get-bounds', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return win && !win.isDestroyed() ? boundsDescriptor(win) : null;
   });
   // Render a sticky note's JMarkdown via the user-configured command.
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>

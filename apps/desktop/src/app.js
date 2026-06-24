@@ -6670,9 +6670,16 @@ if (window.host && window.host.serverMode) {
     // C-x 5 2: the server resolved the new-window command and asked us to open
     // another window onto the shared server. host.newWindow() → main creates +
     // attaches it as a new client. (Guarded: only present in server mode.)
-    requestNewWindow: () => {
+    requestNewWindow: (geometry) => {
       if (window.host && typeof window.host.newWindow === 'function') {
-        window.host.newWindow();
+        window.host.newWindow(geometry);
+      }
+    },
+    // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
+    // window 1 on restore). main reconciles it against the live displays.
+    setWindowBounds: (geometry) => {
+      if (window.host && typeof window.host.setWindowBounds === 'function') {
+        window.host.setWindowBounds(geometry);
       }
     },
     // G4 Step 3: the server pushed this window's pane layout. Render it (splits
@@ -6696,6 +6703,19 @@ if (window.host && window.host.serverMode) {
       subscribeResize: (report) => {
         window.addEventListener('resize', report);
         return () => window.removeEventListener('resize', report);
+      },
+      // B2: this window's frame + display, for the session's geometry. A one-shot
+      // pull on connect + a subscription to every move/resize (main pushes
+      // window:bounds). Both no-op if the host build lacks the methods.
+      getWindowBounds: () =>
+        (window.host && typeof window.host.getWindowBounds === 'function'
+          ? window.host.getWindowBounds()
+          : Promise.resolve(null)),
+      subscribeWindowBounds: (report) => {
+        if (window.host && typeof window.host.onWindowBounds === 'function') {
+          return window.host.onWindowBounds(report);
+        }
+        return () => {};
       },
       // The renderer owns element-view commands (define-element-view, incl.
       // user config): announce their names so the server's M-x routes them
