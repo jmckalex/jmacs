@@ -2810,8 +2810,12 @@ export function createSpine(options, effects = {}) {
     };
     const ok = model.loadLayout(rootBlob, resolveId);
     if (!ok) return false;
-    // Every buffer the restored leaves show is now open in this window (so its
-    // tabs / View List / session record include it).
+    // The window now shows EXACTLY the restored buffers: reset its open-set
+    // before re-noting them. This drops files that were opened only to seed the
+    // restore (a multi-window restore opens every window's files up front) and a
+    // freshly-spawned window's throwaway scratch — so a window's tabs / View List
+    // reflect only its own restored buffers.
+    clientBuffers.set(index, new Set());
     for (const leaf of model.leaves()) {
       const s = model.stateOf(leaf.id);
       if (!s) continue;

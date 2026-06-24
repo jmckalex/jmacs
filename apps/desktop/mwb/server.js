@@ -85,8 +85,8 @@ if (!sessionStore.get('__last__') && sessionStore.list().sessions.length === 0) 
 // The spine's seed buffer. When a saved session exists (sessionBootInfo reads
 // the store's `__last__` snapshot), boot on its focused-leaf ACTIVE file so
 // there is NO stray demo tab; the rest of the layout is rebuilt at the first
-// HELLO (restoreWindow1FromSession, which reuses the already-open seed buffer).
-// Otherwise fall back to DEFAULT_FILE (view.js).
+// HELLO (restoreSession, which reuses the already-open seed buffer). Otherwise
+// fall back to DEFAULT_FILE (view.js).
 let initialText;
 let bufferName;
 let initialPath = null;
@@ -97,8 +97,8 @@ if (bootSession && bootSession.active) {
   // The seed buffer is fundamentally TEXT, so the active file seeds it only when
   // it is a readable text file — not media (read as UTF-8 → garbled) and not a
   // DIRECTORY (EISDIR). When the active is media/a directory, seed from the first
-  // text file in the session instead; restoreWindow1FromSession then opens the
-  // active as its DATA-SOURCE (via visitFile) when it rebuilds the layout.
+  // text file in the session instead; restoreSession then opens the active as its
+  // DATA-SOURCE (via visitFile) when it rebuilds the layout.
   const isTextSeed = (p) => !mediaKindForName(p) && !isDirectoryPath(p);
   const seedCandidates = isTextSeed(bootSession.active)
     ? [bootSession.active]
@@ -1036,13 +1036,17 @@ function onClientMessage(client, event) {
       // renderer's session.json becomes the server's own going forward.
       if (!sessionRestored) {
         sessionRestored = true;
-        // Slice A: restore window-1's full PANE STRUCTURE (splits + tabs +
-        // cursor) from the `__last__` snapshot, not just a flat tabline. The
-        // OTHER saved windows come back in the next slice; here window[0] lands
-        // on the bootstrap window. Persist immediately so a migrated/seeded
-        // session becomes the store's own going forward.
-        restoreWindow1FromSession(client);
+        // Restore the saved session's PANE STRUCTURE (splits + tabs + cursor) —
+        // window[0] onto this bootstrap window, the rest spawned one-by-one.
+        // persistLastSession is guarded mid-restore (it runs here only for a
+        // single-window session; applyNextRestoreWindow persists a multi-window
+        // one once the last window lands).
+        restoreSession(client);
         persistLastSession();
+      } else if (awaitingRestoreWindow && pendingRestore.length > 0) {
+        // A just-spawned restore window: hand it the next saved layout BEFORE the
+        // snapshot below, so it paints its restored tree (not the fresh scratch).
+        applyNextRestoreWindow(client);
       }
       sendSnapshot(client);
       sendViewTo(client);
@@ -1252,6 +1256,10 @@ function activeWindowIndex() {
  *  the live session. Replaces the old flat persist; called on every buffer-set /
  *  pane-layout change. Tolerant: a write failure must never disturb editing. */
 function persistLastSession() {
+  // Skip mid-restore: only window-1 is live until the spawned windows connect,
+  // so persisting now would clobber the multi-window snapshot we're restoring
+  // FROM. applyNextRestoreWindow persists once the last window has landed.
+  if (restoreInProgress) return;
   try {
     const windows = collectSessionWindows();
     if (windows.length === 0) return;
@@ -1261,30 +1269,89 @@ function persistLastSession() {
   }
 }
 
-/** Restore the bootstrap window's PANE STRUCTURE from the `__last__` snapshot:
- *  open every file the layout references (deduped — the seed file may already be
- *  open; media/directories open as their data-sources via visitFile), then
- *  rebuild window-1's tree via loadWindowLayout. Falls back to a 1-tab tabline of
- *  the boot buffer when there is no saved layout (or it fails to load). Slice A
- *  restores window[0] only; the other saved windows come back in the next slice.
- *  Called once, from the first HELLO. Tolerant. */
-function restoreWindow1FromSession(client) {
+// --- multi-window restore orchestration (slice B) ---------------------
+//
+// The saved session can hold several windows. window[0] lands on the bootstrap
+// client; the rest are spawned ONE AT A TIME — we ask main for the next window
+// only after the current one has connected, so a HELLO is never ambiguous (no
+// out-of-order race, no per-window tagging). `pendingRestore` is the queue of
+// not-yet-restored window-blobs; `awaitingRestoreWindow` marks that the next
+// non-bootstrap HELLO should take the head of the queue; `restoreInProgress`
+// suspends the `__last__` writer until every window is live.
+let pendingRestore = [];
+let awaitingRestoreWindow = false;
+let restoreInProgress = false;
+
+/** Ask a live client to spawn another OS window (main creates it + attaches it
+ *  as a new client). Targets the active client, else the bootstrap (clients[0])
+ *  — both are connected during a restore, unlike `activeClient`, which may be
+ *  null between intents. */
+function requestSpawnWindow() {
+  const target = activeClient ?? clients[0];
+  if (target && target.port) target.port.postMessage({ type: MSG.WINDOW_NEW, seq });
+}
+
+/** Flag that we're awaiting the next restore window, then ask for it. */
+function spawnNextRestoreWindow() {
+  if (pendingRestore.length === 0) return;
+  awaitingRestoreWindow = true;
+  requestSpawnWindow();
+}
+
+/** Restore the saved session (`__last__`) at boot. Opens every file across ALL
+ *  its windows once into the shared registry (a file in two windows is one
+ *  buffer with independent per-window views), rebuilds window[0] onto the
+ *  bootstrap client, then queues the remaining windows and spawns the first (the
+ *  rest cascade in via applyNextRestoreWindow as each connects). Falls back to a
+ *  1-tab tabline when there is no saved layout. Called once, from the first
+ *  HELLO. Tolerant. */
+function restoreSession(client) {
+  restoreInProgress = true;
   const last = sessionStore.get('__last__');
-  const win0 = last && Array.isArray(last.windows) ? last.windows[0] : null;
+  const windows = last && Array.isArray(last.windows) ? last.windows : [];
+  const win0 = windows[0];
   if (!win0 || !win0.rootPane) {
+    restoreInProgress = false;
     seedWindow1Tabline(client);
     return;
   }
   try {
-    for (const p of pathsInWindowBlob(win0.rootPane)) spine.visitFile(p);
-    if (spine.loadWindowLayout(client.index, win0.rootPane)) {
-      console.error('[mwb-session] restored window-1 pane layout');
-    } else {
-      seedWindow1Tabline(client);
+    // Open every file the WHOLE session references, once (spawned windows then
+    // resolve their paths from the shared registry).
+    const opened = new Set();
+    for (const w of windows) {
+      if (!w || !w.rootPane) continue;
+      for (const p of pathsInWindowBlob(w.rootPane)) {
+        if (opened.has(p)) continue;
+        opened.add(p);
+        spine.visitFile(p);
+      }
     }
+    if (!spine.loadWindowLayout(client.index, win0.rootPane)) seedWindow1Tabline(client);
+    console.error(`[mwb-session] restoring ${windows.length} window(s)`);
+    pendingRestore = windows.slice(1).filter((w) => w && w.rootPane);
+    if (pendingRestore.length > 0) spawnNextRestoreWindow();
+    else restoreInProgress = false; // single window — restore complete
   } catch (error) {
+    restoreInProgress = false;
     console.error(`[mwb-session] restore failed: ${error.message}`);
     seedWindow1Tabline(client);
+  }
+}
+
+/** Apply the next queued window layout to a freshly-spawned restore window (its
+ *  files are already open from restoreSession), then spawn the next — until the
+ *  queue drains, at which point the restore is complete and we persist the full
+ *  multi-window snapshot. Called from a non-bootstrap HELLO while awaiting one. */
+function applyNextRestoreWindow(client) {
+  awaitingRestoreWindow = false;
+  const blob = pendingRestore.shift();
+  if (blob && blob.rootPane) spine.loadWindowLayout(client.index, blob.rootPane);
+  if (pendingRestore.length > 0) {
+    spawnNextRestoreWindow();
+  } else {
+    restoreInProgress = false;
+    persistLastSession(); // every window is live — capture the full snapshot
   }
 }
 

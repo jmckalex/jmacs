@@ -1562,3 +1562,23 @@ test('serializeWindow/loadWindowLayout round-trips a window layout by path', () 
   assert.equal(leaves[1].bufferId, idB);
   assert.equal(wireFocusedLeafId(snap), leaves[1].id, 'focus restored to /b.js');
 });
+
+test('loadWindowLayout resets the window open-set to exactly its restored buffers', () => {
+  // A multi-window restore opens EVERY window's files up front; a window must
+  // still show only ITS own restored buffers (not the whole session's files).
+  const files = {
+    '/tmp/a.js': { text: 'a', name: 'a.js' },
+    '/tmp/b.js': { text: 'b', name: 'b.js' },
+    '/tmp/c.js': { text: 'c', name: 'c.js' },
+  };
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const idA = spine.visitFile('/tmp/a.js');
+  spine.visitFile('/tmp/b.js');
+  spine.visitFile('/tmp/c.js'); // all three open + in window 0's open-set
+  // Restore a layout that shows ONLY /a.js.
+  spine.switchClientToBuffer(0, idA);
+  const blob = spine.serializeWindow(0);
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const shownPaths = spine.bufferListRecords(0).map((r) => r.filePath).filter(Boolean);
+  assert.deepEqual(shownPaths, ['/tmp/a.js'], 'only the restored buffer remains in the open-set');
+});
