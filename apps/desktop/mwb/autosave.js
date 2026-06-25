@@ -89,7 +89,14 @@ export function recoveryRecord(snapshot, now) {
  * or that has no on-disk file at all (a path-less or deleted buffer). This is
  * the exact predicate `app.js scanForRecovery` applies. Pure.
  *
- * @param {Array<{text?:string, diskExists?:boolean, diskModified?:number|null, savedAt?:number}>} records
+ * An EMPTY, path-less snapshot (a pristine `*scratch*`) is dropped: it has no
+ * content to recover, and recovering it spawns a duplicate scratch which —
+ * being dirty-by-construction (recoverBuffer baselines empty text to a space so
+ * it shows ●) — re-snapshots itself every tick and reappears on every launch
+ * (the "two `*scratch*` on Start fresh" bug). A path-BOUND emptied buffer is
+ * still recovered (deleting all of a file's text and not saving is a real edit).
+ *
+ * @param {Array<{text?:string, path?:string|null, diskExists?:boolean, diskModified?:number|null, savedAt?:number}>} records
  * @returns {Array} The subset worth recovering.
  */
 export function selectRecoverable(records) {
@@ -98,6 +105,9 @@ export function selectRecoverable(records) {
     (r) =>
       r &&
       typeof r.text === 'string' &&
+      // Skip a pristine path-less scratch (empty text + no file) — nothing to
+      // recover, and it would perpetuate a duplicate scratch every launch.
+      !((r.path == null || r.path === '') && r.text.trim() === '') &&
       (!r.diskExists ||
         (typeof r.diskModified === 'number' && r.savedAt > r.diskModified))
   );

@@ -71,6 +71,23 @@ test('selectRecoverable drops records with no text and tolerates junk', () => {
   );
 });
 
+test('selectRecoverable drops an empty path-less scratch (the duplicate-scratch bug)', () => {
+  const records = [
+    // A pristine *scratch*: empty text + no file → nothing to recover → SKIP
+    // (recovering it spawns a dirty-by-construction duplicate that reappears
+    // every launch — the "two *scratch* on Start fresh" bug).
+    { key: 's', name: '*scratch*', path: null, text: '', diskExists: false, diskModified: null, savedAt: 50 },
+    // A file-BOUND buffer emptied + unsaved → deleting all the text is a real
+    // lost edit → RECOVER.
+    { key: 'f', name: 'notes.txt', path: '/n.txt', text: '', diskExists: false, diskModified: null, savedAt: 60 },
+    // A path-less scratch WITH content the user jotted → RECOVER.
+    { key: 'n', name: '*scratch*', path: null, text: 'jot', diskExists: false, diskModified: null, savedAt: 70 },
+    // Whitespace-only path-less scratch is still "empty" → SKIP.
+    { key: 'w', name: '*scratch*', path: null, text: '  \n ', diskExists: false, diskModified: null, savedAt: 80 },
+  ];
+  assert.deepEqual(selectRecoverable(records).map((r) => r.key), ['f', 'n']);
+});
+
 // --- the controller against a real temp dir ---------------------------
 
 function withTempDir(fn) {
