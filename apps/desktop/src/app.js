@@ -6676,6 +6676,8 @@ if (window.host && window.host.serverMode) {
         request,
         onChoose: (v) => { cbs.onChoose(v); closeServerPicker(); refocusServerView(); },
         onCancel: () => { cbs.onCancel(); closeServerPicker(); refocusServerView(); },
+        // ⌫ on a deletable row (workspace mgmt): the panel stays open.
+        onDelete: typeof cbs.onDelete === 'function' ? cbs.onDelete : undefined,
       });
     },
     closePicker: closeServerPicker,

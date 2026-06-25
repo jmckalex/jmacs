@@ -91,6 +91,7 @@ export function createPickerPanel(container, options = {}) {
   const opts = request.options || {};
   const onChoose = typeof options.onChoose === 'function' ? options.onChoose : () => {};
   const onCancel = typeof options.onCancel === 'function' ? options.onCancel : () => {};
+  const onDelete = typeof options.onDelete === 'function' ? options.onDelete : null;
   const filterEnabled = opts.filter !== false;
 
   // --- mutable interaction state ---
@@ -127,6 +128,15 @@ export function createPickerPanel(container, options = {}) {
   const listEl = doc.createElement('div');
   listEl.className = 'mwb-picker-list';
   root.appendChild(listEl);
+
+  // An optional action hint footer (e.g. "↵ restore   ⌫ delete   esc start fresh").
+  if (typeof opts.hint === 'string' && opts.hint !== '') {
+    const hintEl = doc.createElement('div');
+    hintEl.className = 'mwb-picker-hint';
+    hintEl.textContent = opts.hint;
+    hintEl.style.cssText = 'opacity:0.55;font-size:0.85em;padding:6px 10px;';
+    root.appendChild(hintEl);
+  }
 
   if (container) container.appendChild(root);
 
@@ -199,6 +209,20 @@ export function createPickerPanel(container, options = {}) {
     onChoose(value);
   }
 
+  /** Delete the selected row (only if it's flagged `deletable` — e.g. a named
+   *  workspace, not "Last workspace" / "Start fresh"). Removes it from the list +
+   *  re-renders; the panel stays open so several can be deleted in a row. */
+  function deleteSelected() {
+    if (!onDelete || selected < 0) return;
+    const row = visible[selected];
+    if (!row || row.deletable !== true) return;
+    onDelete(row.value);
+    const i = rows.indexOf(row);
+    if (i >= 0) rows.splice(i, 1);
+    recompute();
+    renderRows();
+  }
+
   // --- keyboard ---
   function onKeyDown(event) {
     switch (event.key) {
@@ -223,6 +247,12 @@ export function createPickerPanel(container, options = {}) {
         event.preventDefault(); choose(); break;
       case 'Escape':
         event.preventDefault(); onCancel(); break;
+      case 'Backspace':
+      case 'Delete':
+        // ⌫ removes a deletable row in a no-filter MENU (where it can't be filter
+        // editing) — workspace management. A no-op for filtered pickers.
+        if (onDelete && !inputEl) { event.preventDefault(); deleteSelected(); }
+        break;
       default:
         break;
     }

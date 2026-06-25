@@ -193,6 +193,7 @@ export const INTENT = Object.freeze({
   // round-trip, rows-in / choice-out.
   PICKER_CHOOSE: 'picker-choose', // Enter / click — deliver the chosen value
   PICKER_CANCEL: 'picker-cancel', // Escape / C-g — cancel the picker
+  PICKER_DELETE: 'picker-delete', // ⌫ on a deletable row — remove it (workspace mgmt)
   // An outline edit from the bookmark VIEW (a mutable 'bookmark' data-source).
   // The view sends a semantic op `{ sourceId, op, id?, name? }` — jump / rename
   // / delete / indent / outdent / toggle — and the server applies it to the
@@ -673,6 +674,7 @@ export function normalisePickerRequest(req) {
   };
   if (typeof o.placeholder === 'string') options.placeholder = o.placeholder;
   if (typeof o.kind === 'string') options.kind = o.kind;
+  if (typeof o.hint === 'string') options.hint = o.hint; // a footer action hint
   return { id, title, rows, options };
 }
 
@@ -696,6 +698,7 @@ export function normalisePickerRow(row) {
   if (typeof row.detail === 'string') out.detail = row.detail;
   if (typeof row.group === 'string') out.group = row.group;
   if (row.current === true) out.current = true;
+  if (row.deletable === true) out.deletable = true; // ⌫ removes it (workspace mgmt)
   return out;
 }
 

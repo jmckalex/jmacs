@@ -809,6 +809,15 @@ function applyIntent(client, intent) {
         sendViewTo(client);
         activeClient = null;
         return;
+      case INTENT.PICKER_DELETE:
+        // ⌫ on a workspace-chooser row: delete that named workspace from the
+        // store. The picker stays OPEN (the client already removed the row);
+        // there's nothing to send back. A no-op for any other picker.
+        if (intent.pickerId === 'workspace-chooser' && typeof intent.value === 'string') {
+          sessionStore.remove(intent.value);
+        }
+        activeClient = null;
+        return;
       case INTENT.SWITCH_BUFFER: {
         // A direct buffer switch (clicking a buffer-list row): resolve by id
         // or name, switch this client, and re-sync it onto the new buffer.
@@ -1399,6 +1408,7 @@ function workspaceChooserRows() {
       value: s.id,
       meta: winLabel(s.windowCount),
       detail: relativeTime(s.savedAt),
+      deletable: true, // ⌫ removes it ("Last workspace" / "Start fresh" are not)
     });
   }
   rows.push({ label: '✨  Start fresh', value: '__fresh__' });
@@ -1413,7 +1423,10 @@ function openWorkspaceChooser(client) {
     title: 'Restore workspace',
     rows: workspaceChooserRows(),
     // A no-filter MENU (a short list), so bare n/p navigate (+ arrows, + C-n/C-p).
-    options: { placeholder: 'Choose a workspace to restore…', kind: 'workspace', filter: false },
+    options: {
+      placeholder: 'Choose a workspace to restore…', kind: 'workspace', filter: false,
+      hint: '↵ restore    ⌫ delete    n/p move    esc start fresh',
+    },
   });
 }
 

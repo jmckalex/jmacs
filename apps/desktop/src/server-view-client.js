@@ -409,6 +409,14 @@ export function createServerViewClient({
           intent: { id: nextIntentId++, kind: INTENT.PICKER_CANCEL, pickerId: id },
         });
       },
+      // A deletable row was removed (⌫) — the panel stays OPEN, so keep
+      // activePickerId; just tell the server to delete that workspace.
+      onDelete: (value) => {
+        port.postMessage({
+          type: MSG.INTENT,
+          intent: { id: nextIntentId++, kind: INTENT.PICKER_DELETE, value, pickerId: activePickerId },
+        });
+      },
     });
   }
 
