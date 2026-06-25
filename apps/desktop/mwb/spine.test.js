@@ -819,6 +819,25 @@ test('two clients on different buffers report different modeline modes', () => {
   assert.doesNotMatch(spine.viewStateOf(1).modeline, /Markdown/);
 });
 
+test('viewState reports the major-mode name + math-preview-active flag', () => {
+  // These ride the VIEW message so a GODOT_SERVER=1 client (whose own
+  // interpreter is inert) can pick the math scanner + decide whether to typeset.
+  const files = { '/note.md': { text: '$x$\n', name: 'note.md' } };
+  const { spine } = makeSpine('let a = 1;\n', 'code.js', {
+    openFile: (p) => files[p] ?? null,
+  });
+  spine.visitFile('/note.md'); // client 0 → Markdown
+  assert.equal(spine.viewStateOf(0).majorModeName, 'Markdown');
+  assert.equal(spine.viewStateOf(0).mathPreviewActive, false);
+
+  spine.runCommand('toggle-math-preview'); // enable on this buffer
+  assert.equal(spine.viewStateOf(0).mathPreviewActive, true,
+    'the server reports math-preview-mode on once toggled');
+
+  spine.runCommand('toggle-math-preview'); // disable again
+  assert.equal(spine.viewStateOf(0).mathPreviewActive, false);
+});
+
 test('kill-buffer removes the active buffer and re-homes the client', () => {
   const files = { '/x.js': { text: 'x', name: 'x.js' } };
   const { spine } = makeSpine('seed', 'scratch.txt', {

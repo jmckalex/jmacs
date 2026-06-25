@@ -97,6 +97,15 @@ export function createClientBuffer(options = {}) {
   /** @type {import('./protocol.js').WireOverlay[]} */
   let overlays = [];
 
+  // Server-pushed mode state (the VIEW message). These are SERVER-owned: under
+  // GODOT_SERVER=1 the renderer's interpreter is inert, so it cannot read this
+  // buffer's major mode or minor-mode list itself. The math-preview host reads
+  // `majorModeName` to choose the scanner provider and `mathPreviewActive` to
+  // decide whether to typeset. They default to off so a flag-off mirror (and a
+  // fresh mirror before its first VIEW) simply never previews.
+  let majorModeName = '';
+  let mathPreviewActive = false;
+
   /** @type {Set<(event: BufferEvent) => void>} */
   const listeners = new Set();
 
@@ -238,6 +247,26 @@ export function createClientBuffer(options = {}) {
     emit(null);
   }
 
+  /**
+   * Adopt the major-mode name + math-preview-active flag from a server VIEW's
+   * view-state. These ride the VIEW message (not a buffer delta) because they
+   * are server-owned (see the field declarations above). Pure state-set, no
+   * emit — the caller (onView) decides whether to re-render, and already does
+   * when the cursor reconciles; this returns whether either value CHANGED so a
+   * mode toggle that moved no cursor can still force one render.
+   *
+   * @param {{ majorModeName?: string, mathPreviewActive?: boolean }} v
+   * @returns {boolean} Whether majorModeName or mathPreviewActive changed.
+   */
+  function applyViewMode(v) {
+    const nextName = typeof v.majorModeName === 'string' ? v.majorModeName : '';
+    const nextActive = v.mathPreviewActive === true;
+    const changed = nextName !== majorModeName || nextActive !== mathPreviewActive;
+    majorModeName = nextName;
+    mathPreviewActive = nextActive;
+    return changed;
+  }
+
   // --- local-echo predictions ------------------------------------------
   //
   // The mutators the renderer/IME call. Each predicts its result on the
@@ -308,6 +337,14 @@ export function createClientBuffer(options = {}) {
      *  The view paints each as `<div class="editor-decoration tok-FACE">`. */
     get decorations() { return overlaysToDecorations(overlays); },
 
+    // --- server-pushed mode state (VIEW message) -----------------------
+    /** The buffer's major-mode display name (e.g. "Markdown"), server-pushed.
+     *  The math-preview host reads it to pick the scanner provider. '' when
+     *  unknown (flag-off, or before the first VIEW). */
+    get majorModeName() { return majorModeName; },
+    /** Whether `math-preview-mode` is on for this buffer (server-pushed). */
+    get mathPreviewActive() { return mathPreviewActive; },
+
     // --- mutators (intent-emitting) ------------------------------------
     // These are what `view.js` (and the IME path) call. Instead of
     // mutating a canonical buffer, they locally-echo + send an intent.
@@ -360,6 +397,7 @@ export function createClientBuffer(options = {}) {
     applyResync,
     applyCursors: adoptCursors,
     applyOverlays,
+    applyViewMode,
     get lastSeq() { return lastSeq; },
   };
 

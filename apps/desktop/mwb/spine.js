@@ -2991,6 +2991,42 @@ export function createSpine(options, effects = {}) {
     }
   }
 
+  // Resolve (once) the general `math-preview-mode` minor-mode map from the
+  // server interpreter (math-preview.lisp is in SPINE_STDLIB). It is the same
+  // map object the stdlib defined; a buffer's minor-mode list holds it by
+  // identity when the mode is on.
+  let mathPreviewModeMap;
+  let mathPreviewModeResolved = false;
+  function resolveMathPreviewModeMap() {
+    if (mathPreviewModeResolved) return mathPreviewModeMap;
+    mathPreviewModeResolved = true;
+    try {
+      mathPreviewModeMap = interpreter.evaluate('math-preview-mode');
+    } catch {
+      mathPreviewModeMap = null;
+    }
+    return mathPreviewModeMap;
+  }
+
+  /** Whether BUFFER has `math-preview-mode` enabled. Walks the buffer's
+   *  minor-mode cons list for the stdlib's mode map by identity — the same
+   *  test the renderer's math-preview-host does, run HERE on the canonical
+   *  buffer so the server can tell each client whether to typeset math (the
+   *  renderer's own interpreter is inert under GODOT_SERVER=1). Tolerant: any
+   *  missing piece yields false, never throws (the view path calls it often). */
+  function bufferHasMathPreview(buffer) {
+    const mode = resolveMathPreviewModeMap();
+    if (!buffer || mode == null) return false;
+    let node = buffer.minorModes;
+    let guard = 0;
+    while (node && typeof node === 'object' && 'head' in node && 'tail' in node) {
+      if (node.head === mode) return true;
+      node = node.tail;
+      if (++guard > 100000) break;
+    }
+    return false;
+  }
+
   /** The FOCUSED leaf's view of client INDEX — the view its keyboard edits
    *  (the per-pane cursor over the focused buffer). Falls back to the
    *  registry/active view if a pane model is somehow missing. */
@@ -3018,6 +3054,9 @@ export function createSpine(options, effects = {}) {
         point: 0,
         mark: null,
         name: ds.name,
+        // A data-source leaf has no text major mode and never typesets math.
+        majorModeName: '',
+        mathPreviewActive: false,
         modeline: renderModeline({ name: ds.name, modified: false, line: 1, column: 0, mode: ds.kind }),
         status: statusText,
         modified: false,
@@ -3028,13 +3067,21 @@ export function createSpine(options, effects = {}) {
     const v = focusedViewOf(index);
     const { line, column } = buf.positionAt(v.point);
     const modified = buf.text !== entry.savedText;
+    // The major-mode display name + whether math-preview-mode is on travel as
+    // their OWN view-state fields (not just baked into the modeline string), so
+    // a client under GODOT_SERVER=1 can pick the math scanner provider + decide
+    // whether to typeset — its own interpreter is inert, so the buffer's
+    // minor-mode/major-mode state is only knowable from the server.
+    const modeName = majorModeNameFor(entry, v);
     return {
       point: v.point,
       mark: v.mark,
       name: buf.name,
+      majorModeName: modeName,
+      mathPreviewActive: bufferHasMathPreview(buf),
       modeline: renderModeline({
         name: buf.name, modified, line: line + 1, column,
-        mode: majorModeNameFor(entry, v),
+        mode: modeName,
       }),
       status: statusText,
       modified,

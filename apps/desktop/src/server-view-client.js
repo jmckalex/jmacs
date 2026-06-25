@@ -518,11 +518,18 @@ export function createServerViewClient({
       }
       return;
     }
+    // Adopt the server's mode state (major-mode name + math-preview-active) so
+    // the math-preview host can pick the scanner + decide whether to typeset.
+    const modeChanged = mirror ? mirror.applyViewMode(v) : false;
     const predictionsInFlight = [...pending.values()].some((p) => p.predicted);
     if (mirror && typeof v.point === 'number' && !predictionsInFlight) {
       mirror.cursors[0].point = v.point;
       mirror.cursors[0].mark = v.mark ?? null;
       if (view) view.setView({ buffer: mirror });
+    } else if (modeChanged && mirror && view) {
+      // A mode toggle (e.g. C-c C-p math-preview) with no cursor motion still
+      // needs one re-render so the typeset widgets appear / disappear.
+      view.setView({ buffer: mirror });
     }
     renderChrome(v);
   }

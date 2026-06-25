@@ -7193,6 +7193,29 @@ function resolveMathPreviewMode() {
   return mathPreviewMode;
 }
 
+/** The major-mode display name for BUFFER. Under GODOT_SERVER=1 the renderer's
+ *  interpreter is inert and the mirror carries no Lisp major-mode map, so the
+ *  server pushes the name onto the mirror (`buffer.majorModeName`); prefer that
+ *  when present, else read the buffer's own major-mode map (the flag-off
+ *  path). The math-preview host feeds the result to mathPreviewProviderForMode. */
+function resolvedMajorModeName(buffer) {
+  if (buffer && typeof buffer.majorModeName === 'string' && buffer.majorModeName) {
+    return buffer.majorModeName;
+  }
+  return bufferMajorModeName(buffer, keyword);
+}
+
+/** Whether math-preview-mode is on for BUFFER. The mirror carries no
+ *  minor-mode list, so in server mode the server pushes a boolean flag
+ *  (`buffer.mathPreviewActive`); prefer it when present, else walk the
+ *  buffer's own minor-mode list (the flag-off path). */
+function resolvedMathPreviewActive(buffer, mode) {
+  if (buffer && typeof buffer.mathPreviewActive === 'boolean') {
+    return buffer.mathPreviewActive;
+  }
+  return isMathPreviewActive(buffer, mode);
+}
+
 /** The math-preview replaced ranges for LEAF's view this render, or an
  *  empty list when the leaf's buffer does not have math-preview-mode on,
  *  its major mode has no math provider, or the feature isn't available.
@@ -7215,14 +7238,14 @@ function getMathReplacedRanges(leaf) {
   const view = peelTabline(leaf.view);
   const isText = view && !isTablineView(view) && view.kind === 'text';
   const buffer = isText ? view.buffer : null;
-  if (!buffer || !isMathPreviewActive(buffer, mode)) {
+  if (!buffer || !resolvedMathPreviewActive(buffer, mode)) {
     // Mode off (or no buffer): drop any idle controller and show source.
     disposeMathPreviewForLeaf(leaf);
     return [];
   }
   // Pick the scanner provider by the buffer's major mode. No provider
   // (a mode without math support) → show source, no controller.
-  const provider = mathPreviewProviderForMode(bufferMajorModeName(buffer, keyword));
+  const provider = mathPreviewProviderForMode(resolvedMajorModeName(buffer));
   if (!provider) {
     disposeMathPreviewForLeaf(leaf);
     return [];
@@ -7263,7 +7286,7 @@ function getMathReplacedRanges(leaf) {
       scan: (text) => {
         const v = peeledTextView();
         const buf = v ? v.buffer : null;
-        const p = mathPreviewProviderForMode(bufferMajorModeName(buf, keyword));
+        const p = mathPreviewProviderForMode(resolvedMajorModeName(buf));
         return p ? p.scan(text) : provider.scan(text);
       },
       // The buffer's own macro definitions (JMarkdown's `Math macros:`
@@ -7272,7 +7295,7 @@ function getMathReplacedRanges(leaf) {
       preamble: (text) => {
         const v = peeledTextView();
         const buf = v ? v.buffer : null;
-        const p = mathPreviewProviderForMode(bufferMajorModeName(buf, keyword));
+        const p = mathPreviewProviderForMode(resolvedMajorModeName(buf));
         const harvest = (p ?? provider).preamble;
         return typeof harvest === 'function' ? harvest(text) : '';
       },
@@ -7446,7 +7469,7 @@ function ensureEditorViewForLeaf(leaf) {
     getMajorModeName: () => {
       const v = peelTabline(instance._boundLeaf.view);
       const buf = v && !isTablineView(v) ? v.buffer : null;
-      return bufferMajorModeName(buf, keyword);
+      return resolvedMajorModeName(buf);
     },
     getOverrideGeneration: () => highlightOverrideStore.generation(),
     onRenderError: (error) => reportRendererFault('render error', error),
@@ -9999,8 +10022,10 @@ function ensureTabElement(state, child) {
   if (child.kind === 'text' && child.buffer) {
     // Server-backed (Model B) tab — the façade rendering the active server
     // buffer. Its keys route to the server's keymap and its decorations come
-    // from the mirror; mode/math-preview are server-side (so null/[] here).
-    // Every other tab keeps the in-renderer wiring exactly as before.
+    // from the mirror; its major-mode name + math-preview-active flag are
+    // server-pushed onto the mirror too (read via resolvedMajorModeName /
+    // getMathReplacedRanges below). Every other tab keeps the in-renderer
+    // wiring exactly as before.
     const serverBacked = isServerBackedView(child);
     el = /** @type {*} */ (document.createElement('text-view'));
     el.configure({
@@ -10030,14 +10055,11 @@ function ensureTabElement(state, child) {
       // have it as well or math-preview-mode renders nothing in tabs.
       // The tab IS a plain text view (no tabline to peel), so the handle
       // points `view`/`id` straight at `child` and supplies this tab's
-      // own element for the MathJax-startup re-render. (Server-backed: math
-      // preview is a server-side feature, so [] here.)
-      getReplacedRanges: serverBacked
-        ? () => []
-        : () => getMathReplacedRanges({ id: child, view: child, element: el }),
-      getMajorModeName: serverBacked
-        ? () => null
-        : () => bufferMajorModeName(child.buffer ?? null, keyword),
+      // own element for the MathJax-startup re-render. getMathReplacedRanges
+      // is server-aware: for a server-backed tab it reads the mode state
+      // (major-mode name + active flag) the server pushed onto the mirror.
+      getReplacedRanges: () => getMathReplacedRanges({ id: child, view: child, element: el }),
+      getMajorModeName: () => resolvedMajorModeName(child.buffer ?? null),
       getOverrideGeneration: () => highlightOverrideStore.generation(),
       onRenderError: (error) => reportRendererFault('render error', error),
     });

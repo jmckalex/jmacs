@@ -238,6 +238,12 @@ export const PANE_INTENT = Object.freeze({
  * @property {number} point - The primary cursor offset.
  * @property {number | null} mark - The selection anchor, or null.
  * @property {string} name - The view/buffer name (the modeline label).
+ * @property {string} [majorModeName] - The buffer's major-mode display name
+ *   (e.g. "Markdown", "LaTeX"); the client uses it to pick the math-preview
+ *   scanner provider. Empty for a data-source leaf.
+ * @property {boolean} [mathPreviewActive] - Whether `math-preview-mode` is on
+ *   for this buffer; the client typesets math only when true (its own
+ *   interpreter is inert under GODOT_SERVER=1, so this state is server-owned).
  * @property {string} modeline - The fully-rendered modeline string.
  * @property {string} status - The echo-area message (show-status!), or ''.
  * @property {MinibufferState} minibuffer - The minibuffer prompt state.

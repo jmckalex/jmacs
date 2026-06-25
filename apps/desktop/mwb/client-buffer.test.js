@@ -37,6 +37,30 @@ test('read surface is delegated to real L1 storage (subtle math is correct)', ()
   assert.equal(b.lineAt(4).text, '\u{1F600}b');
 });
 
+// --- server-pushed mode state (math-preview) --------------------------
+
+test('applyViewMode adopts the server-pushed major-mode name + math-preview flag', () => {
+  const b = createClientBuffer({ initialText: '$x$', name: 'note.md' });
+  // Defaults before any VIEW: mode unknown, no preview.
+  assert.equal(b.majorModeName, '');
+  assert.equal(b.mathPreviewActive, false);
+
+  // A VIEW carrying mode state is adopted; the first set reports a change so
+  // onView can force a re-render even when the cursor did not move.
+  assert.equal(b.applyViewMode({ majorModeName: 'Markdown', mathPreviewActive: true }), true);
+  assert.equal(b.majorModeName, 'Markdown');
+  assert.equal(b.mathPreviewActive, true);
+
+  // Re-applying identical state is a no-op (no change → no forced re-render).
+  assert.equal(b.applyViewMode({ majorModeName: 'Markdown', mathPreviewActive: true }), false);
+
+  // Toggling the flag off is a change; a missing/garbled field reads as off.
+  assert.equal(b.applyViewMode({ majorModeName: 'Markdown', mathPreviewActive: false }), true);
+  assert.equal(b.mathPreviewActive, false);
+  assert.equal(b.applyViewMode({}), true); // majorModeName clears to ''
+  assert.equal(b.majorModeName, '');
+});
+
 // --- cursor as window-state -------------------------------------------
 
 test('point/mark are owned window-state, seeded from options', () => {
