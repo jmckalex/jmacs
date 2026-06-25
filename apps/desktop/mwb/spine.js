@@ -3066,6 +3066,10 @@ export function createSpine(options, effects = {}) {
       }
       dataSources.remove(killedId);
       for (const s of clientBuffers.values()) s.delete(killedId);
+      // The re-home above pushed PANE_TREEs BEFORE this removal, so their
+      // `liveShells` still listed the killed shell. Re-push now (post-removal) so
+      // the client reaps its pty (same stale-by-one issue as close-tab).
+      onPaneTree(index);
       statusText = `Killed ${ds ? ds.name : 'buffer'}`;
       onStatus(statusText);
       return;
@@ -3473,13 +3477,19 @@ export function createSpine(options, effects = {}) {
         // active tab closed, the model re-points to a neighbour — the server's
         // MSG.PANE handler sees the focused buffer change and re-syncs.
         const closedId = String(intent.bufferId ?? '');
+        const wasShell = dataSources.get(closedId)?.kind === 'shell';
         const ok = model.closeFocusedTab(closedId);
         // A SHELL tab close REAPS the shell: drop its source + open-set so the
         // shellSessionsOf fan tells the client to kill the pty. (Text/media tabs
         // un-curate but live on in the pool — no process to reap.)
-        if (ok && dataSources.get(closedId)?.kind === 'shell') {
+        if (ok && wasShell) {
           dataSources.remove(closedId);
           for (const s of clientBuffers.values()) s.delete(closedId);
+          // closeFocusedTab already pushed a PANE_TREE — but it ran BEFORE this
+          // removal, so its `liveShells` still listed the closed shell. Re-push so
+          // the client sees the shell gone and reaps its pty (else the client's
+          // live-set lags by one close and the last shell never gets reaped).
+          onPaneTree(index);
         }
         return ok;
       }

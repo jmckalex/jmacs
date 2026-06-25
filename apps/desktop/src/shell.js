@@ -117,7 +117,13 @@ export function defaultShell() {
  * deal with multi-arg escaping inside `-c`.
  */
 const PYTHON_PTY_SCRIPT =
-  "import sys, os, pty, struct, fcntl, termios, select\n" +
+  "import sys, os, pty, struct, fcntl, termios, select, signal\n" +
+  // A child spawned by Electron can INHERIT an ignored (SIG_IGN) disposition for
+  // SIGTERM across exec, which makes `child.kill('SIGTERM')` a silent no-op — the
+  // helper then sits in select() forever and the pty (+ its shell) leaks on close.
+  // Reset SIGTERM to the default (terminate) so a kill actually reaps us; the
+  // dying helper closes the pty master, which HUPs the inner shell.
+  "signal.signal(signal.SIGTERM, signal.SIG_DFL)\n" +
   "sh = sys.argv[1]\n" +
   "args = [sh, '-i']\n" +
   "pid, fd = pty.fork()\n" +
@@ -237,11 +243,16 @@ function terminateSession(sessionId) {
   const entry = sessions.get(sessionId);
   if (!entry) return;
   sessions.delete(sessionId);
-  try {
-    if (!entry.child.killed) entry.child.kill('SIGTERM');
-  } catch {
-    // Already exited; nothing to do.
-  }
+  const child = entry.child;
+  try { child.kill('SIGTERM'); } catch { /* already exited */ }
+  // Backstop: if SIGTERM didn't reap it promptly (an inherited SIG_IGN, or the
+  // helper wedged in select()), force SIGKILL — which can't be ignored. Killing
+  // the helper closes the pty master, which HUPs the inner shell.
+  setTimeout(() => {
+    try {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    } catch { /* already exited */ }
+  }, 250);
 }
 
 /**
