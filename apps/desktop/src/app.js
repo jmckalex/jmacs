@@ -8359,6 +8359,34 @@ function buildMinimapAdapter(buffer, textViewEl) {
   };
 }
 
+/** The per-instance live-process element (`<gnuplot-view>` etc.) bound to CONTENT
+ *  in LEAF — a bare-leaf element (procViewElementByView) or a tabline tab (the
+ *  tabline's editorByChild). Null when none is mounted yet. */
+function procViewElementFor(content, leaf) {
+  if (procViewElementByView.has(content)) return procViewElementByView.get(content);
+  if (isTablineView(leaf.view)) {
+    const st = tablineStateByView.get(leaf.view);
+    if (st && st.editorByChild) return st.editorByChild.get(content) ?? null;
+  }
+  return null;
+}
+
+/** Build a `kind:'plots'` minimap adapter over a live `<gnuplot-view>` element:
+ *  the minimap reads its rendered plots, re-renders when a new one lands, and a
+ *  thumbnail click jumps the gnuplot transcript to that plot. */
+function buildGnuplotMinimapAdapter(gnuplotEl) {
+  return {
+    kind: 'plots',
+    getPlots: () =>
+      typeof gnuplotEl.getPlots === 'function' ? gnuplotEl.getPlots() : [],
+    onChange: (cb) =>
+      typeof gnuplotEl.onPlotsChange === 'function' ? gnuplotEl.onPlotsChange(cb) : () => {},
+    scrollToPlot: (id) => {
+      if (typeof gnuplotEl.scrollToPlot === 'function') gnuplotEl.scrollToPlot(id);
+    },
+  };
+}
+
 /** Resolve the target leaf's *current* active text content + its live
  *  editor element and (re)bind the minimap. If the active content isn't a
  *  text view → bind null ("not supported"). If the target leaf is gone →
@@ -8372,6 +8400,18 @@ function rebindMinimapForLeaf(targetLeafId) {
   const leaf = leafPanes(rootPane).find((l) => l.id === targetLeafId);
   if (!leaf) { removeMinimapForLeaf(targetLeafId); return; }
   const content = peelTabline(leaf.view);
+  // A GNUPLOT target: bind a plots adapter so the minimap shows a strip of plot
+  // thumbnails (a click jumps the transcript to that plot). Falls back to "not
+  // supported" until the gnuplot element is mounted.
+  if (content && content.kind === 'gnuplot') {
+    const gpEl = procViewElementFor(content, leaf);
+    el.bindTarget(
+      gpEl && typeof gpEl.getPlots === 'function'
+        ? buildGnuplotMinimapAdapter(gpEl)
+        : null
+    );
+    return;
+  }
   if (!content || content.kind !== 'text' || !content.buffer) {
     el.bindTarget(null);
     return;

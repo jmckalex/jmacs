@@ -4272,6 +4272,43 @@ minimap-view,
   font-family: system-ui, sans-serif;
   font-size: 12px;
 }
+/* Plot-thumbnail strip — shown instead of the canvas when the minimap target is
+   a gnuplot view: a scrollable column of scaled plot previews, click to jump. */
+.minimap-plot-strip {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  box-sizing: border-box;
+}
+.minimap-plot-thumb {
+  flex: 0 0 auto;
+  width: 100%;
+  cursor: pointer;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg-chrome) 85%, #000);
+}
+.minimap-plot-thumb:hover {
+  border-color: color-mix(in srgb, var(--fg) 40%, transparent);
+}
+.minimap-plot-thumb svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.minimap-plots-empty {
+  padding: 12px 8px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+}
 /* Off-screen probe used to resolve `.tok-*` face colours via
    getComputedStyle — kept rendered (not display:none) so colour computes. */
 .minimap-probe {
