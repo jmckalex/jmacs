@@ -186,6 +186,24 @@ export function createPaneModel(options = {}, hooks = {}) {
   /** @type {Map<string, LeafState>} */
   const stateById = new Map();
 
+  // Minimap companions: target leaf id → its minimap leaf id. A minimap leaf is
+  // a NON-FOCUSABLE companion (no buffer) held in a split beside its target; the
+  // client binds its <minimap-view> to the target leaf's <text-view>. The server
+  // owns only the structure (so it rides the PANE_TREE + survives a reconcile).
+  /** @type {Map<string, string>} */
+  const minimapByTarget = new Map();
+
+  /** Whether LEAF is a minimap companion (its state carries a target leaf id). */
+  function isMinimapLeaf(leaf) {
+    const s = leaf ? stateById.get(leaf.id) : null;
+    return !!(s && s.minimapTarget != null);
+  }
+
+  /** The leaves the keyboard can focus — every leaf except minimap companions. */
+  function focusableLeaves() {
+    return leafPanes(rootPane).filter((l) => !isMinimapLeaf(l));
+  }
+
   /** Mint a leaf pane over BUFFERID with a fresh state, registered in the map.
    *  The leaf's `.view` is a thin handle the Lisp `current-view` returns. */
   function makeLeaf(bufferId, seedState) {
@@ -207,8 +225,9 @@ export function createPaneModel(options = {}, hooks = {}) {
       if (leaf.id === focusedId) return leaf;
     }
     // Focus drifted (a delete removed the focused leaf without re-homing):
-    // fall back to the first leaf so the model is never focus-less.
-    const first = leafPanes(rootPane)[0] ?? null;
+    // fall back to the first FOCUSABLE leaf so the model is never focus-less
+    // (and never lands the keyboard on a minimap companion).
+    const first = focusableLeaves()[0] ?? leafPanes(rootPane)[0] ?? null;
     if (first) focusedId = first.id;
     return first;
   }
@@ -226,6 +245,10 @@ export function createPaneModel(options = {}, hooks = {}) {
     const live = new Set(leafPanes(rootPane).map((l) => l.id));
     for (const id of [...stateById.keys()]) {
       if (!live.has(id)) stateById.delete(id);
+    }
+    // Drop minimap tracking whose target or minimap leaf is gone (e.g. C-x 1).
+    for (const [targetId, mmId] of [...minimapByTarget]) {
+      if (!live.has(targetId) || !live.has(mmId)) minimapByTarget.delete(targetId);
     }
   }
 
@@ -276,15 +299,99 @@ export function createPaneModel(options = {}, hooks = {}) {
   function deletePane() {
     const target = focusedLeaf();
     if (!target) return false;
-    const parent = parentOf(rootPane, target);
-    if (!parent) return false; // the root leaf — nothing to collapse into.
-    const sibling = siblingOf(rootPane, target);
+    // If the focused leaf carries a minimap companion, the node to remove is the
+    // whole [target, minimap] split — so we never promote or strand the minimap.
+    // When that split is the root, the target is the sole editing pane → no-op.
+    let toRemove = target;
+    if (minimapByTarget.has(target.id)) {
+      const mmLeaf = leafPanes(rootPane).find((l) => l.id === minimapByTarget.get(target.id));
+      const mmParent = mmLeaf ? parentOf(rootPane, mmLeaf) : null;
+      if (mmParent) toRemove = mmParent;
+    }
+    const parent = parentOf(rootPane, toRemove);
+    if (!parent) return false; // the root — nothing to collapse into.
+    const sibling = siblingOf(rootPane, toRemove);
     if (!sibling) return false;
     rootPane = replacePane(rootPane, parent, sibling);
-    // Focus the sibling subtree's first leaf (the deleted leaf is gone).
-    const survivor = leafPanes(sibling)[0] ?? leafPanes(rootPane)[0] ?? null;
+    // Focus a real editing leaf in the surviving subtree (never a minimap).
+    const survivor = leafPanes(sibling).find((l) => !isMinimapLeaf(l))
+      ?? leafPanes(sibling)[0] ?? leafPanes(rootPane)[0] ?? null;
     if (survivor) focusedId = survivor.id;
+    minimapByTarget.delete(target.id);
     pruneOrphanState();
+    onChange();
+    return true;
+  }
+
+  // --- minimap companion (a non-focusable pane beside its target) -------
+
+  /** Mint a non-focusable MINIMAP companion leaf for TARGETID on SIDE. It holds
+   *  no buffer; the client binds its <minimap-view> to the target's <text-view>. */
+  function makeMinimapLeaf(targetId, side) {
+    const state = {
+      bufferId: null,
+      viewKey: freshViewKey(),
+      view: null,
+      tabline: false,
+      tabs: null,
+      point: 0,
+      mark: null,
+      scrollLine: 0,
+      minimapTarget: targetId,
+      minimapSide: side === 'left' ? 'left' : 'right',
+    };
+    const leaf = createLeafPane({ view: { kind: 'minimap' } });
+    stateById.set(leaf.id, state);
+    return leaf;
+  }
+
+  /** Remove TARGETID's minimap companion — collapse its [target, minimap] split
+   *  back to the target. Caller fires onChange. Returns whether one was removed. */
+  function removeMinimapFor(targetId) {
+    const mmId = minimapByTarget.get(targetId);
+    if (mmId == null) return false;
+    minimapByTarget.delete(targetId);
+    const mmLeaf = leafPanes(rootPane).find((l) => l.id === mmId);
+    if (mmLeaf) {
+      const parent = parentOf(rootPane, mmLeaf);
+      const sibling = siblingOf(rootPane, mmLeaf);
+      if (parent && sibling) rootPane = replacePane(rootPane, parent, sibling);
+    }
+    if (focusedId === mmId) focusedId = targetId;
+    stateById.delete(mmId);
+    return true;
+  }
+
+  /**
+   * Toggle a MINIMAP companion beside the focused leaf. SIDE is 'left'|'right';
+   * WIDTHFRACTION the minimap's share of the split (clamped 0.05–0.45). Attaching
+   * wraps the focused leaf in a horizontal split with a non-focusable minimap leaf
+   * — focus STAYS on the editor. A second call removes it. No-op on a minimap leaf
+   * itself or a leaf that already has one being re-added. Returns whether the
+   * minimap is now PRESENT.
+   *
+   * @param {'left'|'right'} side
+   * @param {number} [widthFraction]
+   * @returns {boolean}
+   */
+  function toggleFocusedMinimap(side, widthFraction) {
+    const target = focusedLeaf();
+    if (!target || isMinimapLeaf(target)) return false;
+    if (minimapByTarget.has(target.id)) {
+      removeMinimapFor(target.id);
+      onChange();
+      return false;
+    }
+    const onLeft = side === 'left';
+    const f = typeof widthFraction === 'number' && Number.isFinite(widthFraction)
+      ? Math.min(0.45, Math.max(0.05, widthFraction))
+      : 0.16;
+    const mmLeaf = makeMinimapLeaf(target.id, onLeft ? 'left' : 'right');
+    const splitNode = onLeft
+      ? createSplitPane({ orientation: SPLIT_HORIZONTAL, ratio: f, first: mmLeaf, second: target })
+      : createSplitPane({ orientation: SPLIT_HORIZONTAL, ratio: 1 - f, first: target, second: mmLeaf });
+    rootPane = replacePane(rootPane, target, splitNode);
+    minimapByTarget.set(target.id, mmLeaf.id);
     onChange();
     return true;
   }
@@ -314,7 +421,7 @@ export function createPaneModel(options = {}, hooks = {}) {
    * @returns {object} The focused leaf after cycling.
    */
   function otherPane() {
-    const leaves = leafPanes(rootPane);
+    const leaves = focusableLeaves();
     if (leaves.length <= 1) return focusedLeaf();
     const i = leaves.findIndex((l) => l.id === focusedId);
     const next = leaves[(Math.max(0, i) + 1) % leaves.length];
@@ -323,10 +430,11 @@ export function createPaneModel(options = {}, hooks = {}) {
     return next;
   }
 
-  /** Focus a specific leaf by id (a client click). Returns true on success. */
+  /** Focus a specific leaf by id (a client click). Returns true on success.
+   *  A minimap companion is never focusable (clicks on it navigate the editor). */
   function focusPane(id) {
     const leaf = leafPanes(rootPane).find((l) => l.id === id);
-    if (!leaf) return false;
+    if (!leaf || isMinimapLeaf(leaf)) return false;
     if (focusedId === leaf.id) return true;
     focusedId = leaf.id;
     onChange();
@@ -445,7 +553,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     const { ordered } = spiralOrder(rootPane, {
       left: 0, top: 0, width: hostRect.width, height: hostRect.height,
     });
-    return ordered;
+    return ordered.filter((l) => !isMinimapLeaf(l)); // minimaps don't get a badge
   }
 
   // --- per-leaf view-state (the active client edits the focused leaf) ---
@@ -624,6 +732,15 @@ export function createPaneModel(options = {}, hooks = {}) {
     return serializePaneTree(rootPane, focusedId, (leaf) => {
       const s = stateById.get(leaf.id);
       if (!s) return { bufferId: null };
+      // A MINIMAP companion is structural only — no buffer/cursor. The client
+      // mounts a <minimap-view> and binds it to its target leaf's <text-view>.
+      if (s.minimapTarget != null) {
+        return {
+          viewKind: 'minimap',
+          minimapTarget: s.minimapTarget,
+          minimapSide: s.minimapSide ?? 'right',
+        };
+      }
       const data = {
         bufferId: s.bufferId,
         name: nameForBuffer(s.bufferId),
@@ -737,6 +854,11 @@ export function createPaneModel(options = {}, hooks = {}) {
     function paneBlob(node) {
       if (!node || typeof node !== 'object') return null;
       if (node.kind === 'split') {
+        // A minimap companion is a transient view aid — not persisted. Collapse
+        // its split to the target (restoring it would need a stable leaf id we
+        // don't keep across sessions; the minimap is re-toggled cheaply).
+        if (isMinimapLeaf(node.first)) return paneBlob(node.second);
+        if (isMinimapLeaf(node.second)) return paneBlob(node.first);
         return {
           kind: 'split',
           orientation: node.orientation,
@@ -856,6 +978,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     deleteOtherPanes,
     otherPane,
     focusPane,
+    toggleFocusedMinimap,
     balancePanes,
     swapPanes,
     setSplitRatio,

@@ -5952,6 +5952,13 @@ if (window.host && window.host.serverMode) {
   // source is no longer shown.
   /** @type {Map<string, object>} sourceId -> element-view object. */
   const serverMediaViews = new Map();
+  // Minimap companion views, keyed by the minimap LEAF id (stable across
+  // reconciles). A minimap leaf has no buffer; after the reconcile mounts every
+  // leaf, each minimap is bound to its TARGET leaf's <text-view> via the shared
+  // minimap machinery (minimapByTargetLeafId / rebindMinimapForLeaf). Pruned when
+  // the leaf leaves the PANE_TREE (toggle-off / target deleted).
+  /** @type {Map<string, object>} minimapLeafId -> minimap view object. */
+  const serverMinimapViews = new Map();
 
   /** Map a window.host.openFilePath result to createView options for the matching
    *  element-view — MIRRORS openAsMediaViewIfRecognised's per-kind extras (image
@@ -6356,6 +6363,27 @@ if (window.host && window.host.serverMode) {
    *  tabs (3c); else the focused leaf gets the live façade; a same-buffer pane a
    *  static view over the live mirror (3a); a DIFFERENT-buffer pane a static
    *  view over its own buffer seeded from the tree's text (3b). */
+  /** Build (or reuse) the view object for a MINIMAP companion leaf. It has no
+   *  buffer/bytes — the reconcile binds it to its target leaf's <text-view> via
+   *  the shared minimap machinery. Keyed by the minimap leaf id so its
+   *  <minimap-view> element survives reconciles. */
+  function buildServerMinimapView(w) {
+    let v = serverMinimapViews.get(w.id);
+    if (!v) {
+      v = createView({
+        kind: 'minimap',
+        name: 'Minimap',
+        // :no-focus — clicking the minimap navigates the editor; it must never
+        // become the active pane (and the server's pane model never focuses it).
+        extras: { side: w.minimapSide === 'left' ? 'left' : 'right', noFocus: true },
+      });
+      v._serverMinimap = true;
+      serverMinimapViews.set(w.id, v);
+    }
+    v._minimapTargetLeafId = w.minimapTarget ?? null;
+    return v;
+  }
+
   function buildServerPaneNode(wire) {
     if (wire && wire.kind === 'split') {
       const ratio =
@@ -6373,6 +6401,10 @@ if (window.host && window.host.serverMode) {
     let view;
     if (w.tabline) {
       view = buildServerLeafTabline(w); // 3c: a tabline of this leaf's own tabs
+    } else if (w.viewKind === 'minimap') {
+      // A minimap companion: a non-focusable <minimap-view> bound (after the
+      // reconcile) to its target leaf's <text-view>. Not a data-source.
+      view = buildServerMinimapView(w);
     } else if (w.viewKind && w.viewKind !== 'text') {
       // A bare non-text data-source pane: media (image/audio/video/pdf) or a
       // directory-view (directory-tree / directory-columns).
@@ -6399,8 +6431,12 @@ if (window.host && window.host.serverMode) {
     const stillStatic = new Set();
     const tablineLeafIds = new Set();
     const shownMedia = new Set();
+    const shownMinimaps = new Set();
     forEachWireLeaf(serverPaneTreeWire, (lf) => {
       if (lf.tabline) tablineLeafIds.add(lf.id);
+      // A minimap companion leaf is structural-only (no buffer); track it by leaf
+      // id so a toggle-off / target-delete prunes its element below.
+      if (lf.viewKind === 'minimap') { shownMinimaps.add(lf.id); return; }
       // A leaf whose ACTIVE content is a media source (a bare media pane, or a
       // tabline leaf whose active tab is media) carries `viewKind`; a tabline's
       // media TABS (active or not) each keep their element-view, so keep all of
@@ -6425,6 +6461,18 @@ if (window.host && window.host.serverMode) {
         const v = serverMediaViews.get(id);
         if (v && v.kind === 'bookmark') disposeBookmarkElementForView(v);
         serverMediaViews.delete(id);
+      }
+    }
+    // Drop minimap companions whose leaf left the tree (toggle-off / target
+    // deleted): dispose the <minimap-view> element + clear its target binding.
+    for (const [leafId, v] of [...serverMinimapViews]) {
+      if (!shownMinimaps.has(leafId)) {
+        const targetId = v._minimapTargetLeafId;
+        if (targetId != null && minimapByTargetLeafId.get(targetId) === v) {
+          minimapByTargetLeafId.delete(targetId);
+        }
+        disposeMinimapElementForView(v);
+        serverMinimapViews.delete(leafId);
       }
     }
     // Dispose tabline-views whose leaf vanished or flipped back to a single view
@@ -6481,6 +6529,13 @@ if (window.host && window.host.serverMode) {
             try { el.setBuffer(activeChild); } catch { /* ignore */ }
           }
         }
+      } else if (leaf.view && leaf.view._serverMinimap) {
+        // A minimap companion: mount its <minimap-view> element and remember its
+        // target leaf so the deferred rebind below binds it to that leaf's
+        // <text-view> (after every leaf's element exists + has laid out).
+        const targetId = leaf.view._minimapTargetLeafId;
+        if (targetId != null) minimapByTargetLeafId.set(targetId, leaf.view);
+        ensureMinimapElementForView(leaf.view, paneElements.get(leaf.id));
       } else if (leaf.view && leaf.view._serverMedia) {
         // A bare media pane (image/audio/video/pdf): mount the element-view via
         // the existing per-kind pipeline (mountKindView). A media tab inside a
@@ -6513,6 +6568,9 @@ if (window.host && window.host.serverMode) {
     hideInactiveSingletons();
     relayoutPanes();
     refreshPaneFocusIndicators();
+    // Bind each minimap companion to its target leaf's <text-view> now that every
+    // leaf has mounted + laid out (deferred a microtask; a no-op when none exist).
+    scheduleMinimapReconcile();
     // A reconcile that REPLACED the focused leaf's element (toggle-tabline
     // flipping it to/from a tabline destroys the old <text-view>) orphans
     // keyboard focus to <body>. Restore it to the focused leaf's element — but
@@ -8282,6 +8340,12 @@ function attachMinimapBesideLeaf(targetLeaf, side, widthFraction) {
 /** Toggle the minimap for the focused leaf. SIDE / WIDTHFRACTION come from
  *  the Lisp defcustoms via the command. */
 function toggleMinimapForFocusedLeaf(side, widthFraction) {
+  // Server mode (Model B): the SERVER owns the pane layout — the minimap is a
+  // companion leaf in the server pane model, toggled by the `toggle-minimap`
+  // server command (M-x toggle-minimap / C-x m). Mutating the local rootPane here
+  // would be clobbered by the next PANE_TREE reconcile (and blank the editor —
+  // the original bug), so stand down and let the server path drive it.
+  if (window.host && window.host.serverMode) return;
   const leaf = currentPane();
   if (!leaf || leaf.kind !== 'leaf' || !leaf.view) return;
   if (leaf.view.kind === 'minimap') return; // never minimap a minimap

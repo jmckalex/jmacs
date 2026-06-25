@@ -550,3 +550,74 @@ test('a non-text (bookmark) leaf round-trips by kind + path + pin (not as text)'
   assert.equal(snap.bufferId, 'bm-ds', 'restored to the re-resolved bookmark data-source');
   assert.equal(snap.tabline, undefined, 'a single non-text view, not a tabline');
 });
+
+// --- minimap companion (Model-B minimap port) -------------------------
+
+test('toggleFocusedMinimap attaches a non-focusable companion, then removes it', () => {
+  const { model } = makeModel('b1');
+  const target = model.focusedId;
+
+  assert.equal(model.toggleFocusedMinimap('right', 0.2), true, 'attach reports present');
+  let leaves = snapshotLeaves(model.snapshot());
+  assert.equal(leaves.length, 2, 'a companion leaf appears beside the editor');
+  const mm = leaves.find((l) => l.viewKind === 'minimap');
+  assert.ok(mm, 'the companion is a minimap leaf');
+  assert.equal(mm.minimapTarget, target, 'it references its target leaf');
+  assert.equal(mm.minimapSide, 'right');
+  assert.equal(mm.bufferId, null, 'a minimap leaf carries no buffer');
+  assert.equal(model.focusedId, target, 'focus stays on the editor, not the minimap');
+
+  assert.equal(model.toggleFocusedMinimap('right', 0.2), false, 'second toggle removes it');
+  leaves = snapshotLeaves(model.snapshot());
+  assert.equal(leaves.length, 1, 'back to a single editor leaf');
+  assert.equal(leaves[0].viewKind, undefined);
+  assert.equal(model.focusedId, target);
+});
+
+test('otherPane never lands focus on the minimap companion', () => {
+  const { model } = makeModel('b1');
+  const first = model.focusedId;
+  model.split('horizontal', 0.5); // a second editing leaf; focus moves to it
+  const second = model.focusedId;
+  model.toggleFocusedMinimap('right'); // minimap beside `second`
+  assert.equal(snapshotLeaves(model.snapshot()).length, 3, 'two editors + one minimap');
+
+  const a = model.otherPane().id;
+  const b = model.otherPane().id;
+  assert.deepEqual(
+    new Set([a, b]), new Set([first, second]),
+    'focus cycles only the two editing leaves, never the minimap'
+  );
+});
+
+test('deleting a leaf that has a minimap removes the whole companion split', () => {
+  const { model } = makeModel('b1');
+  const first = model.focusedId;
+  model.split('horizontal', 0.5);
+  const second = model.focusedId; // focused
+  model.toggleFocusedMinimap('right'); // minimap beside `second`
+  assert.equal(snapshotLeaves(model.snapshot()).length, 3);
+
+  assert.equal(model.deletePane(), true, 'delete the focused editor');
+  const leaves = snapshotLeaves(model.snapshot());
+  assert.equal(leaves.length, 1, 'the minimap is gone too — never stranded');
+  assert.equal(leaves[0].bufferId, 'b1');
+  assert.equal(leaves.find((l) => l.viewKind === 'minimap'), undefined);
+  assert.equal(model.focusedId, first, 'focus re-homes to the surviving editor');
+});
+
+test('C-x 0 on the sole editor + its minimap is a no-op (sole editing pane)', () => {
+  const { model } = makeModel('b1');
+  model.toggleFocusedMinimap('right');
+  // the [target, minimap] split is the root → target is the only editing pane.
+  assert.equal(model.deletePane(), false, 'cannot delete the sole editor');
+  assert.equal(snapshotLeaves(model.snapshot()).length, 2, 'editor + minimap untouched');
+});
+
+test('serialiseLayout collapses the minimap split — the companion is not persisted', () => {
+  const { model } = makeModel('b1');
+  model.toggleFocusedMinimap('right');
+  const blob = model.serialiseLayout((id) => (id ? { kind: 'text', path: `/p/${id}` } : null));
+  assert.equal(blob.kind, 'leaf', 'the [target, minimap] split collapses to the target');
+  assert.equal(blob.view.path, '/p/b1', 'only the editor is persisted');
+});

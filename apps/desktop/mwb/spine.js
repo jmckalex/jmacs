@@ -265,6 +265,13 @@ const SPINE_STDLIB = Object.freeze([
   // only the host primitives differ. Needs custom.lisp (defgroup/defcustom)
   // and commands.lisp (defcommand), both already loaded above.
   'panes.lisp',
+  // minimap.lisp — the code-minimap companion pane (M-x toggle-minimap, C-x m).
+  // Just the *minimap-side* / *minimap-width-fraction* defcustoms + the command,
+  // which calls the spine's `toggle-minimap!` host primitive (above) to mutate the
+  // active client's pane model. The companion leaf rides the PANE_TREE; the client
+  // renders the <minimap-view> + binds it to the target's <text-view>. Needs
+  // custom.lisp (defcustom/defgroup) + commands.lisp, both loaded above.
+  'minimap.lisp',
   // auto-pair.lisp — automatic matching-bracket / quote insertion. FULLY
   // model-side: it works over point / buffer-substring / insert! / goto! /
   // delete-region! / delete-backward! and a defcustom (*auto-pair*). Its
@@ -457,6 +464,7 @@ const CX_MAP = Object.freeze({
   // More of production's C-x map (editing.lisp — pure buffer ops):
   'C-x': 'exchange-point-and-mark', // C-x C-x — swap point and mark
   h: 'mark-whole-buffer', // C-x h — select the whole buffer
+  m: 'toggle-minimap', // C-x m — toggle the minimap companion (minimap.lisp)
   ';': 'comment-line', // C-x ; — comment/uncomment the line (mode comment-prefix)
   // Multi-buffer (production keymap.lisp): C-x b switches buffer (a
   // minibuffer name read, host-completed), C-x C-b lists buffers, C-x k
@@ -1193,6 +1201,19 @@ export function createSpine(options, effects = {}) {
       // (panes-in-spiral-order) — the leaves in clockwise-badge order, as a
       // Lisp list (swap-views/permute-views read its length). Geometry-derived.
       'panes-in-spiral-order': () => arrayToList(currentPaneModel().panesInSpiralOrder()),
+      // (toggle-minimap! side width-fraction) — attach/remove a minimap companion
+      // beside the focused leaf in this client's pane model. SIDE is 'left|'right;
+      // WIDTH-FRACTION an optional number. The model owns only the STRUCTURE (the
+      // companion leaf rides the PANE_TREE so it survives a reconcile); onChange
+      // re-pushes it and the client mounts the <minimap-view> + binds it to the
+      // target leaf's <text-view>. minimap.lisp's toggle-minimap command passes
+      // the *minimap-side* / *minimap-width-fraction* defcustoms through.
+      'toggle-minimap!': (args) => {
+        const side = symName(args[0]) === 'left' ? 'left' : 'right';
+        const width = typeof args[1] === 'number' ? args[1] : undefined;
+        currentPaneModel().toggleFocusedMinimap(side, width);
+        return NIL;
+      },
 
       // --- system clipboard (kill.lisp) — STUB (server-local) ----------
       // The kill ring's *internal* state is real shared interpreter state

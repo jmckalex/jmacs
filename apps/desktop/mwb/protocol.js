@@ -492,11 +492,16 @@ export function normaliseCursors(cursors) {
  *   its ordered curated tab set (the active tab is the leaf's `bufferId`); a
  *   non-text tab carries its `viewKind`.
  * @property {string} [viewKind] - For a non-text DATA-SOURCE leaf
- *   (image/audio/video/pdf), the element-view kind the client mounts.
+ *   (image/audio/video/pdf), the element-view kind the client mounts. Also
+ *   `'minimap'` for a minimap companion leaf (no buffer; see below).
  * @property {string|null} [filePath] - The data-source's file (the client loads
  *   its bytes via the main process).
  * @property {object} [state] - A mutable data-source's shared state (unused by
  *   immutable media).
+ * @property {string} [minimapTarget] - For a `viewKind:'minimap'` leaf, the id
+ *   of the target leaf it mirrors (the client binds its <minimap-view> to that
+ *   leaf's <text-view>).
+ * @property {'left'|'right'} [minimapSide] - Which side the minimap sits on.
  */
 
 /**
@@ -546,6 +551,11 @@ export function serializePaneTree(pane, focusedId, leafData) {
     node.viewKind = data.viewKind;
     node.filePath = data.filePath ?? null;
     if (data.state && typeof data.state === 'object') node.state = data.state;
+    // A minimap companion leaf (`viewKind:'minimap'`) carries the id of the
+    // target leaf it mirrors + which side it sits on; the client binds its
+    // <minimap-view> to that leaf's <text-view>.
+    if (data.minimapTarget != null) node.minimapTarget = data.minimapTarget;
+    if (typeof data.minimapSide === 'string') node.minimapSide = data.minimapSide;
     return node;
   }
   // Step 3b: a different-buffer leaf carries its text so the client can render
