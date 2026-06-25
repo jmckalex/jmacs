@@ -2838,6 +2838,22 @@ async function quitInteractive() {
   ) {
     return;
   }
+  // C2 (server mode): offer to REMEMBER this workspace — the ARRANGEMENT
+  // (windows / panes / files / cursors / geometry), NOT the documents — before
+  // quitting. Type a name to save a named workspace (it then shows in the launch
+  // chooser); empty + Enter skips (the `__last__` auto-snapshot still preserves
+  // the layout); C-g aborts the quit. Posted BEFORE the flushes below, which give
+  // the server time to do its synchronous save before it's torn down.
+  if (serverViewClient && godotServerPort) {
+    const label = await new Promise((resolve) => {
+      minibuffer.prompt('Remember this workspace as (empty = don’t): ', {
+        onSubmit: (v) => resolve(String(v ?? '').trim()),
+        onCancel: () => resolve(null),
+      });
+    });
+    if (label === null) return; // cancelled → don't quit
+    if (label !== '') godotServerPort.postMessage({ type: MSG.SESSION_SAVE, label });
+  }
   // A clean, confirmed quit is not a crash: drop every recovery snapshot
   // so the next launch doesn't offer to "recover" work the user chose to
   // discard (or had already saved). `quitting` stops the pagehide handler

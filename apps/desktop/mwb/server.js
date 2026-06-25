@@ -1150,6 +1150,25 @@ function onClientMessage(client, event) {
         client.display = msg.display ?? null;
       }
       break;
+    case MSG.SESSION_SAVE: {
+      // C2: remember the live multi-window arrangement under a label (the quit
+      // "Remember this workspace?" prompt). Captures the ARRANGEMENT (panes /
+      // files / cursors / geometry), NOT document content. The write is a
+      // synchronous atomicWriteSync, and the client posts this just before it
+      // quits (every window still live), so it lands before the server is killed.
+      const label = typeof msg.label === 'string' ? msg.label : '';
+      const windows = collectSessionWindows();
+      if (windows.length > 0) {
+        const id = sessionStore.save({ label, windows, activeWindow: activeWindowIndex() });
+        console.error(`[mwb-session] saved workspace "${label}" (${id}, ${windows.length} window(s))`);
+      }
+      break;
+    }
+    case MSG.SESSION_DELETE:
+      // Remove a named workspace (from the chooser). The `__last__` snapshot
+      // can't be deleted this way (it's the live auto-snapshot).
+      if (typeof msg.id === 'string' && msg.id !== '__last__') sessionStore.remove(msg.id);
+      break;
     case MSG.MINIBUFFER_COMPLETE: {
       // TAB in the minibuffer. Find-file gets CASE-INSENSITIVE path completion;
       // the client sent its current input. Other prompts (M-x, switch-to-buffer)

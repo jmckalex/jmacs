@@ -111,6 +111,12 @@ export const MSG = Object.freeze({
   // (window-geometry.js) before applying — it owns `screen`, the client doesn't.
   WINDOW_BOUNDS: 'window-bounds',
   SET_WINDOW_BOUNDS: 'set-window-bounds',
+  // Workspace manager (slice C2). The client asks the server to SAVE the live
+  // multi-window arrangement under a label (the quit "Remember this workspace?"
+  // prompt), or to DELETE a named workspace (from the chooser). Saves the
+  // ARRANGEMENT — panes/files/cursors/geometry — never document content.
+  SESSION_SAVE: 'session-save',
+  SESSION_DELETE: 'session-delete',
   // --- the generic render-side picker channel (G0b) ------------------
   // A server command SUSPENDS and asks the client to pick a row from a
   // list — the buffer list, *Recover*, completions, RefTeX select, cite:
