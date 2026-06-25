@@ -6813,6 +6813,19 @@ if (window.host && window.host.serverMode) {
       // back down (RUN_CLIENT_COMMAND), and run them here when it does.
       clientCommandNames: elementViewCommandNames,
       runClientCommand: (name, bibPath) => {
+        // SAFETY GATE. Only renderer-owned ELEMENT-VIEW commands (define-element-
+        // view) are safe to run in the inert renderer session — they open a view
+        // through the server's OPEN_ELEMENT_SOURCE channel. The server's M-x
+        // fallback forwards ANY unmatched name here (to catch a LIVE-registered
+        // element-view whose CLIENT_COMMANDS announcement didn't include it), so
+        // REFUSE anything that isn't a current element-view: a typo, or a renderer
+        // command not yet ported to Model B (e.g. `shell`, the old minimap) would
+        // otherwise run `(run-command …)` against the inert session and corrupt
+        // the server-owned layout (the bug that blanked the editor on toggle-minimap).
+        if (!elementViewCommandNames().includes(name)) {
+          minibuffer.message(`No command: ${name}`);
+          return;
+        }
         try {
           // bib-search can't see the active document in server mode (the
           // renderer session is inert), so the server resolved its bibliography

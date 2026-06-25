@@ -946,11 +946,15 @@ function handleMinibufferSubmit(value) {
     } else if (chosen) {
       spine.runCommand(chosen);
     } else {
-      // No server (or known client) command matched. Forward the raw name to
-      // the client as a fallback: the renderer may own it even if its
-      // CLIENT_COMMANDS announcement hadn't arrived yet (boot race) or it was
-      // registered live (a define-element-view eval'd after connect). The
-      // renderer's run-command surfaces an error if it's a genuine typo.
+      // No server (or known client) command matched. Forward the raw name to the
+      // client: the renderer may own it as a LIVE-registered element-view (a
+      // define-element-view eval'd after connect, so its CLIENT_COMMANDS
+      // announcement — sent once on connect — didn't include it). The renderer
+      // GATES this: `runClientCommand` only runs CURRENT element-view commands and
+      // refuses anything else (a typo, or a renderer command not yet ported to
+      // Model B like `shell` / the old minimap) with a "No command" message — so
+      // an unmatched name can NEVER run against the inert session and corrupt the
+      // server-owned layout. (Was: a blind run that blanked the editor.)
       const raw = value.trim();
       if (raw !== '') sendRunClientCommand(activeClient, raw);
     }
