@@ -665,16 +665,16 @@ test('each M-x shell mints a FRESH shell (no dedup), with distinct sessionIds', 
   assert.equal(new Set(shells.map((r) => r.id)).size, 2, 'distinct sessionIds');
 });
 
-test('shellSessionsOf lists open shells; kill-buffer reaps the focused one', () => {
+test('liveProcessSessionsOf lists open shells; kill-buffer reaps the focused one', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
   spine.runCommand('shell');
   const shellId = wireLeaves(spine.paneSnapshot(0))[0].bufferId;
-  // Fanned to the client per PANE_TREE so it knows which pty sessions are live.
-  assert.deepEqual(spine.shellSessionsOf(0), [shellId], 'the open shell is in the live set');
+  // Fanned to the client per PANE_TREE so it knows which process sessions are live.
+  assert.deepEqual(spine.liveProcessSessionsOf(0), [shellId], 'the open shell is in the live set');
   // C-x k on the focused shell removes the SOURCE (not just a registry buffer):
   // it leaves the open-set, so the client reaps its pty.
   spine.runCommand('kill-buffer');
-  assert.deepEqual(spine.shellSessionsOf(0), [], 'the killed shell left the live set');
+  assert.deepEqual(spine.liveProcessSessionsOf(0), [], 'the killed shell left the live set');
   assert.equal(spine.isDataSource(shellId), false, 'the shell data-source is gone');
   // The focused leaf re-homed onto a surviving text buffer, not the dead source.
   assert.notEqual(wireLeaves(spine.paneSnapshot(0))[0].bufferId, shellId);
@@ -687,8 +687,38 @@ test('kill-buffer on a shell bypasses the "only buffer" guard (data-source path)
   assert.equal(spine.bufferCount, 1, 'one text buffer (scratch)');
   spine.runCommand('shell');
   spine.runCommand('kill-buffer');
-  assert.equal(spine.shellSessionsOf(0).length, 0, 'the shell was reaped, not refused');
+  assert.equal(spine.liveProcessSessionsOf(0).length, 0, 'the shell was reaped, not refused');
   assert.equal(spine.bufferCount, 1, 'the text buffer survived');
+});
+
+test('M-x gnuplot mints a server-owned gnuplot data-source leaf (full Lisp path)', () => {
+  // The same shape as M-x shell: gnuplot.lisp (gnuplot) → (open-gnuplot-buffer!)
+  // → openProcessView('gnuplot'). Proves gnuplot.lisp loaded in SPINE_STDLIB.
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('gnuplot');
+  assert.equal(spine.bufferCount, 1, 'a gnuplot did NOT add a text buffer');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.match(leaf.bufferId, /^ds\d+$/, 'a data-source id');
+  assert.equal(leaf.viewKind, 'gnuplot');
+  assert.equal(leaf.name, '*gnuplot*');
+  assert.equal(leaf.state.sessionId, leaf.bufferId, 'sessionId is the source id');
+  // Tracked as a live process, and reaped on kill-buffer.
+  assert.deepEqual(spine.liveProcessSessionsOf(0), [leaf.bufferId]);
+  spine.runCommand('kill-buffer');
+  assert.equal(spine.liveProcessSessionsOf(0).length, 0, 'the gnuplot was reaped');
+});
+
+test('serializeWindow/loadWindowLayout round-trips a gnuplot as a FRESH source', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('gnuplot');
+  const before = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'gnuplot');
+  assert.ok(before, 'a gnuplot leaf exists before save');
+  const blob = spine.serializeWindow(0);
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const after = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'gnuplot');
+  assert.ok(after, 'restored as a gnuplot (not text, not dropped)');
+  assert.notEqual(after.bufferId, before.bufferId, 'a FRESH gnuplot source on restore');
+  assert.equal(after.state.sessionId, after.bufferId, 'fresh sessionId tied to the new source');
 });
 
 test('serializeWindow/loadWindowLayout round-trips a shell as a FRESH source', () => {

@@ -1975,7 +1975,7 @@ function hideInactiveSingletons() {
   hideInactiveDocs();
   hideInactivePlaceholders();
   hideInactiveElementHosts();
-  hideInactiveShells();
+  hideInactiveProcViews();
 }
 
 /** Switch to the view at INDEX: dispatch through mountKindView to
@@ -5917,10 +5917,11 @@ if (window.host && window.host.serverMode) {
   // `{kind:'split',orientation,ratio,first,second}` /
   // `{kind:'leaf',id,bufferId,focused,name,point,mark,tabline?,tabs?}` (no pixels).
   let serverPaneTreeWire = null;
-  // The shell sources still open in this window (fanned per PANE_TREE). A cached
-  // shell whose session leaves this set was closed → reaped (pty killed + element
-  // disposed) in the reconcile; a switch-away keeps it here, so it survives.
-  let serverLiveShells = new Set();
+  // The live-process sources (shell + gnuplot) still open in this window (fanned
+  // per PANE_TREE). A cached process whose session leaves this set was closed →
+  // reaped (child killed + element disposed) in the reconcile; a switch-away
+  // keeps it here, so it survives.
+  let serverLiveProcs = new Set();
   // Step 3b: per-buffer STATIC mirrors for panes showing a DIFFERENT buffer than
   // the focused/active one. Seeded + refreshed from each PANE_TREE leaf's `text`
   // (not live deltas — they update on a structural/focus change, which is when a
@@ -6028,7 +6029,7 @@ if (window.host && window.host.serverMode) {
       const elementKind = w.viewKind === 'element';
       const jukeboxKind = w.viewKind === 'jukebox';
       const bookmarkKind = w.viewKind === 'bookmark';
-      const shellKind = w.viewKind === 'shell';
+      const procViewKind = isProcViewKind(w.viewKind); // shell | gnuplot
       let extras;
       if (bookmarkKind) {
         // The outline of a text buffer's bookmarks. The server holds the records
@@ -6052,16 +6053,16 @@ if (window.host && window.host.serverMode) {
           keyboard: s.keyboard,
           noFocus: s.noFocus === true,
         };
-      } else if (shellKind) {
-        // A SHELL data-source (M-x shell). The server owns the descriptor
-        // (sessionId + cwd, both server-minted); the renderer drives a real pty
-        // in MAIN by `sessionId` via the existing shell:* IPC (the server never
-        // touches the process). `spawned`/`ended` are client-owned flags on the
-        // (persisted) view object — the view is exempt from the switch-away prune
-        // (see reconcileServerPaneTree), so a buffer-switch/split never respawns;
-        // the pty is reaped only when the data-source is closed. Per-instance,
-        // not a singleton: each shell owns its own <shell-view> + xterm + pty, so
-        // several render at once (a split, or a bottom tabline of shells).
+      } else if (procViewKind) {
+        // A LIVE-PROCESS data-source (shell / gnuplot). The server owns the
+        // descriptor (sessionId + cwd, both server-minted); the renderer drives
+        // the child in MAIN by `sessionId` via the existing shell:*/gnuplot:* IPC
+        // (the server never touches the process). `spawned`/`ended` are
+        // client-owned flags on the (persisted) view object — the view is exempt
+        // from the switch-away prune (see reconcileServerPaneTree), so a
+        // buffer-switch/split never respawns; the child is reaped only when the
+        // data-source is closed. Per-instance, not a singleton: each owns its own
+        // <shell-view>/<gnuplot-view> + child, so several render at once.
         const s = (w.state && typeof w.state === 'object') ? w.state : {};
         extras = {
           sessionId: typeof s.sessionId === 'string' ? s.sessionId : w.bufferId,
@@ -6106,7 +6107,7 @@ if (window.host && window.host.serverMode) {
       serverMediaViews.set(w.bufferId, v);
       // Only media needs an async byte-load; directory / element / jukebox /
       // bookmark / shell render themselves from the spec / state.
-      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind && !shellKind) {
+      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind && !procViewKind) {
         loadServerMediaSrc(v, w.filePath);
       }
     }
@@ -6407,21 +6408,19 @@ if (window.host && window.host.serverMode) {
     return v;
   }
 
-  /** Reap a CLOSED shell: kill its pty + dispose its <shell-view> wherever it
-   *  lives (a bare-leaf element via shellElementByView, or a tabline tab via the
-   *  tabline's editorByChild) and drop it from the media cache. Called from the
-   *  reconcile when the shell's source has left the server's open-set. */
-  function reapServerShell(view, sourceId) {
-    if (shellElementByView.has(view)) {
-      // Bare leaf: disposeShellElementForView kills the pty + destroys the xterm.
-      disposeShellElementForView(view);
+  /** Reap a CLOSED live-process view (shell/gnuplot): kill its child + dispose
+   *  its element wherever it lives (a bare-leaf element via procViewElementByView,
+   *  or a tabline tab via the tabline's editorByChild) and drop it from the media
+   *  cache. Called from the reconcile when the source has left the open-set. */
+  function reapProcView(view, sourceId) {
+    if (procViewElementByView.has(view)) {
+      // Bare leaf: disposeProcViewElement kills the child + destroys the element.
+      disposeProcViewElement(view);
     } else {
       // Tabline tab: the element lives in the tabline's editorByChild — kill the
-      // pty ourselves (the element's destroy() only tears down the xterm) then
-      // dispose + un-register it.
-      if (typeof view.sessionId === 'string') {
-        try { window.host?.shellKill?.(view.sessionId); } catch { /* already gone */ }
-      }
+      // child ourselves (the element's destroy() only tears down the view) then
+      // dispose + un-register it. disposeKindView dispatches shellKill/gnuplotKill.
+      try { disposeKindView(view); } catch { /* already gone */ }
       for (const st of tablineStateByView.values()) {
         const el = st.editorByChild.get(view);
         if (el) {
@@ -6510,23 +6509,24 @@ if (window.host && window.host.serverMode) {
     for (const id of [...serverMediaViews.keys()]) {
       if (!shownMedia.has(id)) {
         const v = serverMediaViews.get(id);
-        // A SHELL is a live process: leaving the visible tree (a buffer-switch,
-        // a C-x 0 that collapses its pane, a tab change) must NOT reap it. Keep
-        // the cached view + its <shell-view>/xterm/pty alive (hideInactiveShells
-        // hides the element); it is reaped only when its data-source is actually
-        // closed (reconcileShellSources, driven by the server's live-shell set).
-        if (v && v.kind === 'shell') continue;
+        // A LIVE-PROCESS view (shell/gnuplot) is a running child: leaving the
+        // visible tree (a buffer-switch, a C-x 0 that collapses its pane, a tab
+        // change) must NOT reap it. Keep the cached view + its element/child alive
+        // (hideInactiveProcViews hides the element); it is reaped only when its
+        // data-source is actually closed (the reap loop below, driven by the
+        // server's live-process set).
+        if (v && isProcViewKind(v.kind)) continue;
         if (v && v.kind === 'bookmark') disposeBookmarkElementForView(v);
         serverMediaViews.delete(id);
       }
     }
-    // Reap CLOSED shells: a shell whose source left the server's open-set
-    // (serverLiveShells) was killed (C-x k / tab ×) — kill its pty + dispose its
-    // element. A switch-away keeps the source open, so it's still here and
-    // survives (the prune above already exempted it). Keyed by source id, which
-    // is the sessionId.
+    // Reap CLOSED live-process views: a shell/gnuplot whose source left the
+    // server's open-set (serverLiveProcs) was killed (C-x k / tab ×) — kill its
+    // child + dispose its element. A switch-away keeps the source open, so it's
+    // still here and survives (the prune above already exempted it). Keyed by
+    // source id, which is the sessionId.
     for (const [id, v] of [...serverMediaViews]) {
-      if (v && v.kind === 'shell' && !serverLiveShells.has(id)) reapServerShell(v, id);
+      if (v && isProcViewKind(v.kind) && !serverLiveProcs.has(id)) reapProcView(v, id);
     }
     // Drop minimap companions whose leaf left the tree (toggle-off / target
     // deleted): dispose the <minimap-view> element + clear its target binding.
@@ -6590,15 +6590,15 @@ if (window.host && window.host.serverMode) {
             // Preserve scroll on a focus/relayout re-point (only reveal on a
             // genuine buffer switch) — never scroll the document on focus.
             try { repointServerTextEl(el, activeChild); } catch { /* ignore */ }
-          } else if (el && typeof el.setBuffer === 'function' && activeChild.kind !== 'shell') {
+          } else if (el && typeof el.setBuffer === 'function' && !isProcViewKind(activeChild.kind)) {
             // Media (image/audio/video/pdf) re-binds via setBuffer so swapping one
-            // media tab in over another re-points the element. A SHELL is NOT
-            // re-bound: its <shell-view> is already bound 1:1 to its pty session
-            // (ensureTabElement set it once), and a redundant setBuffer re-enters
-            // the async ensureTerminal() — racing a SECOND Terminal build, which
-            // leaves the visible grid blank even though the pty spawned and bytes
-            // arrive. This is the tabline-path twin of the ensureShellElementForView
-            // guard; the bare-leaf path has no re-point, which is why it worked.
+            // media tab in over another re-points the element. A LIVE-PROCESS view
+            // (shell/gnuplot) is NOT re-bound: its element is already bound 1:1 to
+            // its child session (ensureTabElement set it once), and a redundant
+            // setBuffer re-enters the view's async build — racing a SECOND instance
+            // + double-spawn, which leaves the visible view blank even though the
+            // child spawned and output arrives. This is the tabline-path twin of
+            // the ensureProcViewElement guard; the bare-leaf path has no re-point.
             try { el.setBuffer(activeChild); } catch { /* ignore */ }
           }
         }
@@ -6622,11 +6622,11 @@ if (window.host && window.host.serverMode) {
         // A bookmark outline re-mounts on EVERY reconcile (its records refresh on
         // fan-out); only focus it when it is the focused leaf, so a `C-x r m`
         // from the document — which refreshes the open outline — doesn't yank
-        // focus off the document. A SHELL follows the same rule: with a shell in a
-        // split beside the document, an unrelated reconcile must not yank the
-        // keyboard into the terminal. Other media keep the old always-focus path.
+        // focus off the document. A LIVE-PROCESS view (shell/gnuplot) follows the
+        // same rule: with one in a split beside the document, an unrelated
+        // reconcile must not yank the keyboard into it. Media keep always-focus.
         const focus = !(
-          (leaf.view.kind === 'bookmark' || leaf.view.kind === 'shell')
+          (leaf.view.kind === 'bookmark' || isProcViewKind(leaf.view.kind))
           && leaf.id !== currentPaneId
         );
         mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id), focus });
@@ -6702,13 +6702,13 @@ if (window.host && window.host.serverMode) {
   /** A server PANE_TREE push: store it and render the new layout — splits appear
    *  / collapse, a tabline leaf re-renders. Every window renders from its
    *  PANE_TREE now (the unify); a push before the first mirror is just stored. */
-  function applyServerPaneTree(tree, liveShells) {
+  function applyServerPaneTree(tree, liveProcs) {
     serverPaneTreeWire = tree;
-    // The shell sources still open in this window (server's open-set). A shell
-    // whose session is NOT here was closed (C-x k / tab ×) — reaped below. Only
-    // update when the server actually sent the field (every PANE_TREE does), so
-    // a stray push without it can't wrongly reap every shell.
-    if (Array.isArray(liveShells)) serverLiveShells = new Set(liveShells);
+    // The live-process sources (shell + gnuplot) still open in this window
+    // (server's open-set). A process whose session is NOT here was closed (C-x k /
+    // tab ×) — reaped below. Only update when the server actually sent the field
+    // (every PANE_TREE does), so a stray push without it can't wrongly reap all.
+    if (Array.isArray(liveProcs)) serverLiveProcs = new Set(liveProcs);
     if (serverMirror) renderServerPaneLayout();
   }
 
@@ -6856,7 +6856,7 @@ if (window.host && window.host.serverMode) {
     // G4 Step 3: the server pushed this window's pane layout. Render it (splits
     // become visible). Only a 'single' (fresh / composable) window reflects the
     // server tree; window 1 keeps its tabline.
-    setPaneTree: (tree, liveShells) => applyServerPaneTree(tree, liveShells),
+    setPaneTree: (tree, liveProcs) => applyServerPaneTree(tree, liveProcs),
   };
 
   bootServerViewClient = () => {
@@ -8675,77 +8675,73 @@ function disposeBookmarkElementForView(view) {
   bookmarkElementByView.delete(view);
 }
 
-// --- shell as a per-instance pane view (server mode) ---------------------
-// In server mode each shell data-source owns its OWN <shell-view> element (its
-// own xterm + its own pty session), so several shells render in one window — a
-// split with two shells, or a bottom tabline of shell tabs. The flag-off app
-// keeps the single shared `shellView` singleton (mounted via the singleton path
-// in mountKindView); only `_serverMedia` shell views route to the per-instance
-// path here. Mirrors ensureBookmarkElementForView / the browser + doc views.
-// CRUCIAL: this element is hide-not-kill (a switch-away/split hides it, never
-// destroys it) so the running process + scrollback survive; it is reaped only
-// by disposeShellElementForView when the data-source is actually closed.
-const shellElementByView = new Map();
+// --- live-process views (shell + gnuplot) as per-instance pane views (server) ---
+// In server mode each live-process data-source (a shell or a gnuplot) owns its
+// OWN element (<shell-view> / <gnuplot-view>) — its own child process + view — so
+// several render in one window (a split, or a bottom tabline of process tabs).
+// The flag-off app keeps the single shared singletons; only `_serverMedia` views
+// route to this per-instance path. Mirrors ensureBookmarkElementForView / the
+// browser + doc views. CRUCIAL: the element is hide-not-kill (a switch-away/split
+// hides it, never destroys it) so the running process + view state survive; it is
+// reaped only by disposeProcViewElement when the data-source is actually closed.
+const PROC_VIEW_KINDS = new Set(['shell', 'gnuplot']);
+const isProcViewKind = (kind) => PROC_VIEW_KINDS.has(kind);
+const procViewElementByView = new Map();
 
-/** The <shell-view> element for a SERVER-mode shell VIEW — created (configured
- *  + mounted in PANE-EL) on first use, then reused and re-parented. The pty
- *  spawns lazily on the element's first setBuffer (when `view.spawned` is
- *  false); a reused element with `view.spawned` already true just re-attaches
- *  to the still-running session. */
-function ensureShellElementForView(view, paneEl) {
-  let el = shellElementByView.get(view);
+/** The per-instance element for a SERVER-mode live-process VIEW (shell/gnuplot)
+ *  — created (configured + mounted in PANE-EL) on first use, then reused and
+ *  re-parented. The child spawns lazily on the element's first setBuffer (when
+ *  `view.spawned` is false); a reused element with `view.spawned` already true
+ *  just re-attaches to the still-running session. */
+function ensureProcViewElement(view, paneEl) {
+  let el = procViewElementByView.get(view);
   if (el) {
-    // Reuse: re-parent only. Do NOT call setBuffer again — the element is
-    // already bound to this view and its xterm + pty are live. In server mode a
-    // shell leaf re-mounts on EVERY reconcile, and a redundant setBuffer re-enters
-    // shell-view's async ensureTerminal() (its `if (term) return` guard doesn't
-    // hold against calls that race before the first `await fonts.ready`), which
-    // builds a second Terminal and can double-spawn/terminate the pty — leaving
-    // the visible grid orphaned + empty. Re-parenting (a DOM move) fires only the
-    // no-op disconnected/connected callbacks, so the running terminal is preserved.
+    // Reuse: re-parent only. Do NOT call setBuffer again — the element is already
+    // bound and its child is live. In server mode a process leaf re-mounts on
+    // EVERY reconcile, and a redundant setBuffer re-enters the view's async build
+    // (e.g. shell-view's ensureTerminal, whose `if (term) return` guard can't hold
+    // against calls racing before the first `await fonts.ready`) → a second
+    // instance + a double-spawn, leaving the visible view orphaned. Re-parenting
+    // (a DOM move) fires only the no-op disconnected/connected callbacks.
     if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
     return el;
   }
-  el = /** @type {*} */ (document.createElement('shell-view'));
-  el.configure(configureShellView());
-  el.setBuffer(view); // first bind: spawns the pty lazily (view.spawned → true)
+  const factory = perKindConfigureFactory(view.kind); // configureShellView / configureGnuplotView
+  el = /** @type {*} */ (document.createElement(`${view.kind}-view`));
+  if (factory) el.configure(factory());
+  el.setBuffer(view); // first bind: spawns the child lazily (view.spawned → true)
   if (paneEl) paneEl.append(el);
-  shellElementByView.set(view, el);
+  procViewElementByView.set(view, el);
   return el;
 }
 
-/** Show leaf-direct shell elements whose view is active; hide the rest (do NOT
- *  destroy — the pty + grid stay alive). Tabline shell tabs manage their own
- *  visibility via mountTablineActiveChild. Called from hideInactiveSingletons. */
-function hideInactiveShells() {
+/** Show leaf-direct process elements whose view is active; hide the rest (do NOT
+ *  destroy — the child + view state stay alive). Tabline process tabs manage
+ *  their own visibility via mountTablineActiveChild. Called from
+ *  hideInactiveSingletons. */
+function hideInactiveProcViews() {
   const active = new Set();
   for (const leaf of leafPanes(rootPane)) {
-    if (!isTablineView(leaf.view) && leaf.view && leaf.view.kind === 'shell') {
+    if (!isTablineView(leaf.view) && leaf.view && isProcViewKind(leaf.view.kind)) {
       active.add(leaf.view);
     }
   }
-  for (const [view, el] of shellElementByView) {
+  for (const [view, el] of procViewElementByView) {
     el.style.display = active.has(view) ? '' : 'none';
   }
 }
 
-/** Tear down the per-instance <shell-view> bound to VIEW and reap its pty (its
- *  data-source was closed). disposeKindView's shell arm also calls shellKill;
- *  doing it here keeps the reap atomic with the element teardown. */
-function disposeShellElementForView(view) {
-  const el = shellElementByView.get(view);
+/** Tear down the per-instance element bound to VIEW and reap its child (its
+ *  data-source was closed). The element's destroy() does NOT kill the child;
+ *  disposeKindView dispatches the right kill (shellKill / gnuplotKill). */
+function disposeProcViewElement(view) {
+  const el = procViewElementByView.get(view);
   if (!el) return;
-  try { el.destroy(); } catch { /* already gone */ } // xterm dispose + IPC unsubscribe
+  try { el.destroy(); } catch { /* already gone */ } // view dispose + IPC unsubscribe
   el.remove();
-  shellElementByView.delete(view);
-  // Reap the pty in MAIN (the renderer-side destroy() above does NOT kill it).
-  if (typeof view.sessionId === 'string') {
-    try {
-      if (window.host && typeof window.host.shellKill === 'function') {
-        window.host.shellKill(view.sessionId);
-      }
-    } catch { /* process already gone */ }
-  }
+  procViewElementByView.delete(view);
+  // Reap the child in MAIN (the renderer-side destroy() above does NOT kill it).
+  try { disposeKindView(view); } catch { /* process already gone */ }
 }
 
 // --- documentation as a pane view (per-instance, mirrors the browser) ---
@@ -9885,15 +9881,15 @@ function mountKindView(view, context) {
     if (!context || context.focus !== false) el.focus();
     return;
   }
-  if (view.kind === 'shell' && view._serverMedia) {
+  if (isProcViewKind(view.kind) && view._serverMedia) {
     // Per-instance in SERVER mode (flag-off keeps the singleton below): each
-    // shell owns its own <shell-view> + xterm + pty, so several render at once
-    // (a split, or — via mountTablineActiveChild, which routes here too — a
-    // bottom tabline of shell tabs). Honor the focus context: a shell
-    // re-mounting on a reconcile must not steal focus from the document.
+    // live-process view (shell/gnuplot) owns its own element + child, so several
+    // render at once (a split, or — via mountTablineActiveChild, which routes
+    // here too — a bottom tabline of process tabs). Honor the focus context: a
+    // re-mount on a reconcile must not steal focus from the document.
     const leaf = leafPanes(rootPane).find((l) => l.view === view);
     const paneEl = (context && context.paneEl) || (leaf ? paneElements.get(leaf.id) : null);
-    const el = ensureShellElementForView(view, paneEl);
+    const el = ensureProcViewElement(view, paneEl);
     el.style.display = '';
     if (!context || context.focus !== false) el.focus();
     return;
@@ -10377,12 +10373,11 @@ function mountTablineActiveChild(tablineView) {
   // they're safe to create hidden.
   for (const tab of tablineView.tabs) {
     // Skip TEXT (its editor measures the container bounding box, which is zero
-    // under display:none) AND SHELL (xterm measures its host the same way at
-    // term.open — eager creation in a hidden/unsized content area leaves the
-    // canvas renderer stuck at zero cols/rows and it never paints, even though
-    // the pty spawns and bytes arrive). Both are created LAZILY on activation
-    // below, when the content area is visible + sized.
-    if (tab.kind !== 'text' && tab.kind !== 'shell') ensureTabElement(state, tab);
+    // under display:none) AND LIVE-PROCESS views (shell's xterm measures its host
+    // the same way at term.open; gnuplot likewise — eager creation in a hidden/
+    // unsized content area leaves it mis-rendered even though the child spawns).
+    // These are created LAZILY on activation below, when the content is sized.
+    if (tab.kind !== 'text' && !isProcViewKind(tab.kind)) ensureTabElement(state, tab);
   }
 
   const child = (typeof tablineView.active === 'number' &&

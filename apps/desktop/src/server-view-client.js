@@ -571,7 +571,7 @@ export function createServerViewClient({
           try { runClientCommand(msg.name, msg.bibPath ?? null); } catch { /* surfaced by app.js */ }
         }
         break;
-      case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveShells); break;
+      case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs); break;
       case MSG.MINIBUFFER_COMPLETIONS:
         showCompletionsDom({ value: msg.value, items: msg.items, directory: msg.directory });
         break;

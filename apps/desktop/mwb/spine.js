@@ -279,6 +279,11 @@ const SPINE_STDLIB = Object.freeze([
   // <shell-view> leaf rides the PANE_TREE like media/jukebox/the minimap. Needs
   // commands.lisp (defcommand), loaded above.
   'shell.lisp',
+  // gnuplot.lisp — the `(gnuplot)` command (M-x gnuplot). A one-line defcommand
+  // wrapping the spine's `open-gnuplot-buffer!` host primitive (above): a
+  // server-owned 'gnuplot' live-process data-source whose child runs in MAIN,
+  // exactly like the shell. Needs commands.lisp (defcommand), loaded above.
+  'gnuplot.lisp',
   // auto-pair.lisp — automatic matching-bracket / quote insertion. FULLY
   // model-side: it works over point / buffer-substring / insert! / goto! /
   // delete-region! / delete-backward! and a defcustom (*auto-pair*). Its
@@ -1227,7 +1232,12 @@ export function createSpine(options, effects = {}) {
       // it; the <shell-view> leaf then rides the PANE_TREE. The pty itself runs
       // in MAIN (shell.js), keyed by the sessionId — the server never touches
       // the process. Returns the new source id (the command ignores it).
-      'open-shell-buffer!': () => openShell(),
+      'open-shell-buffer!': () => openProcessView('shell'),
+      // (open-gnuplot-buffer!) — open a fresh gnuplot VIEW (M-x gnuplot). Same
+      // shape as the shell: a server-owned 'gnuplot' live-process data-source
+      // (server-stable sessionId + the active doc's cwd); the gnuplot child runs
+      // in MAIN keyed by sessionId. Returns the new source id.
+      'open-gnuplot-buffer!': () => openProcessView('gnuplot'),
 
       // --- system clipboard (kill.lisp) — STUB (server-local) ----------
       // The kill ring's *internal* state is real shared interpreter state
@@ -2263,32 +2273,37 @@ export function createSpine(options, effects = {}) {
     return src.id;
   }
 
-  // A monotonic counter for shell display names (*shell*, *shell*<2>, …). Each
-  // (shell) call mints a FRESH shell (its own pty) — no dedup, unlike media.
-  let shellSeq = 0;
+  // Monotonic per-kind counters for LIVE-PROCESS view names (*shell*, *shell*<2>,
+  // *gnuplot*, …). Each open mints a FRESH process (its own child) — no dedup,
+  // unlike media. "Live-process views" = shell + gnuplot: a server-owned
+  // data-source whose child runs in MAIN, keyed by a server-minted sessionId
+  // (the server never touches the process; the renderer drives it via `shell:*`/
+  // `gnuplot:*` IPC).
+  const procSeq = { shell: 0, gnuplot: 0 };
+  const procLabel = (kind) => (kind === 'gnuplot' ? '*gnuplot*' : '*shell*');
 
   /**
-   * Open a fresh SHELL data-source for the active client (M-x shell). Unlike
-   * media/jukebox there is no dedup — every call is a new terminal with its own
-   * long-lived process. The data-source is FILE-LESS; its `state` carries:
+   * Open a fresh live-process data-source (KIND 'shell' | 'gnuplot') for the
+   * active client (M-x shell / M-x gnuplot). No dedup — every call is a new
+   * process. FILE-LESS; its `state` carries:
    *   - `sessionId` — server-minted + stable (tied to the data-source id). The
-   *     renderer keys MAIN's pty IPC (`shell:spawn`/`write`/`resize`/`kill`) by
-   *     it; the server itself never touches the process.
-   *   - `cwd` — the active document's directory (resolved here, server-side,
-   *     since the client's interpreter is inert), so the shell opens where you
-   *     are. Empty when the active buffer has no file (main falls back to $HOME).
-   * Switches the active client's focused leaf to it (like openJukebox). Returns
-   * the source id.
+   *     renderer keys MAIN's IPC (`shell:*` / `gnuplot:*`) by it; the server
+   *     itself never touches the process.
+   *   - `cwd` — the active document's directory (resolved here, server-side),
+   *     so the process opens where you are. Empty → MAIN falls back to $HOME.
+   * Switches the active client's focused leaf to it. Returns the source id.
    *
+   * @param {'shell'|'gnuplot'} kind
    * @returns {string}
    */
-  function openShell() {
-    shellSeq += 1;
+  function openProcessView(kind) {
+    procSeq[kind] = (procSeq[kind] ?? 0) + 1;
+    const n = procSeq[kind];
     const cwd = activeEntry && activeEntry.filePath
       ? dirname(activeEntry.filePath)
       : '';
-    const name = shellSeq === 1 ? '*shell*' : `*shell*<${shellSeq}>`;
-    const src = dataSources.add({ kind: 'shell', name, state: { cwd } });
+    const name = n === 1 ? procLabel(kind) : `${procLabel(kind)}<${n}>`;
+    const src = dataSources.add({ kind, name, state: { cwd } });
     // sessionId is tied to the (unique) data-source id so it's stable + server-
     // owned; mutate the state object we just seeded (descriptor returns it live).
     src.state.sessionId = src.id;
@@ -2298,16 +2313,17 @@ export function createSpine(options, effects = {}) {
     return src.id;
   }
 
-  /** Restore a shell as a FRESH data-source in CWD (the client spawns a new
-   *  sessionId + pty). A workspace saves the ARRANGEMENT, not the live process;
-   *  the cwd just starts it where it was. Returns the new source id (loadLayout
-   *  places it in the restored leaf — no switch here). Mirror of serializeWindow's
-   *  shell branch. */
-  function restoreShell(cwd) {
-    shellSeq += 1;
-    const name = shellSeq === 1 ? '*shell*' : `*shell*<${shellSeq}>`;
+  /** Restore a live-process view (KIND) as a FRESH data-source in CWD (the
+   *  client spawns a new sessionId + child). A workspace saves the ARRANGEMENT,
+   *  not the live process; the cwd just starts it where it was. Returns the new
+   *  source id (loadLayout places it in the restored leaf — no switch here).
+   *  Mirror of serializeWindow's live-process branch. */
+  function restoreProcessView(kind, cwd) {
+    procSeq[kind] = (procSeq[kind] ?? 0) + 1;
+    const n = procSeq[kind];
+    const name = n === 1 ? procLabel(kind) : `${procLabel(kind)}<${n}>`;
     const src = dataSources.add({
-      kind: 'shell', name, state: { cwd: typeof cwd === 'string' ? cwd : '' },
+      kind, name, state: { cwd: typeof cwd === 'string' ? cwd : '' },
     });
     src.state.sessionId = src.id;
     return src.id;
@@ -2874,11 +2890,13 @@ export function createSpine(options, effects = {}) {
       if (e && e.filePath) return { kind: 'text', path: e.filePath };
       const ds = dataSources.get(bufferId);
       if (!ds) return null;
-      // A SHELL is path-less — serialise its cwd; restore re-opens a FRESH shell
-      // there (new sessionId + pty). A workspace saves the arrangement, not the
-      // live process. (pane-model.serialiseLeafView passes a `shell` blob through
-      // its path guard for exactly this.)
-      if (ds.kind === 'shell') return { kind: 'shell', cwd: ds.state?.cwd ?? '' };
+      // A LIVE-PROCESS view (shell/gnuplot) is path-less — serialise its kind +
+      // cwd; restore re-opens a FRESH process there (new sessionId + child). A
+      // workspace saves the arrangement, not the live process. (serialiseLeafView
+      // passes a kind-only blob through its path guard for exactly this.)
+      if (ds.kind === 'shell' || ds.kind === 'gnuplot') {
+        return { kind: ds.kind, cwd: ds.state?.cwd ?? '' };
+      }
       // A BOOKMARK outline has no filePath — it identifies its source by
       // `state.sourceBufferId` (+ a pin flag). Serialise it by its SOURCE file +
       // kind so restore reopens an outline, not a text copy of the file.
@@ -2921,9 +2939,12 @@ export function createSpine(options, effects = {}) {
     if (!model || !rootBlob) return false;
     const resolveId = (viewBlob) => {
       if (!viewBlob) return null;
-      // A SHELL restores as a FRESH shell data-source (new sessionId + pty) in the
-      // saved cwd. Path-less, so it must precede the path guard below.
-      if (viewBlob.kind === 'shell') return restoreShell(viewBlob.cwd);
+      // A LIVE-PROCESS view (shell/gnuplot) restores as a FRESH data-source (new
+      // sessionId + child) in the saved cwd. Path-less, so it must precede the
+      // path guard below.
+      if (viewBlob.kind === 'shell' || viewBlob.kind === 'gnuplot') {
+        return restoreProcessView(viewBlob.kind, viewBlob.cwd);
+      }
       if (typeof viewBlob.path !== 'string' || viewBlob.path === '') return null;
       // A bookmark leaf reopens as a fresh per-window OUTLINE over its source file
       // (not a text buffer); everything else resolves by path (the files were
@@ -3018,19 +3039,19 @@ export function createSpine(options, effects = {}) {
       .filter((id) => id != null);
   }
 
-  /** The SHELL data-source ids in client INDEX's open-set (the shells "live" in
-   *  that window). Fanned to the client on every PANE_TREE so it can reap a
-   *  shell's pty when its source leaves the open-set (a real close — C-x k /
-   *  tab ×) WITHOUT reaping on a mere switch-away (the source stays in the set).
-   *  The source id IS the sessionId (openShell ties them), so the client matches
-   *  its <shell-view> by it directly. */
-  function shellSessionsOf(index) {
+  /** The LIVE-PROCESS data-source ids (shell + gnuplot) in client INDEX's
+   *  open-set — the processes "live" in that window. Fanned to the client on
+   *  every PANE_TREE so it can reap a process when its source leaves the open-set
+   *  (a real close — C-x k / tab ×) WITHOUT reaping on a mere switch-away (the
+   *  source stays in the set). The source id IS the sessionId (openProcessView
+   *  ties them), so the client matches its <shell-view>/<gnuplot-view> directly. */
+  function liveProcessSessionsOf(index) {
     const set = clientBuffers.get(index);
     if (!set) return [];
     const out = [];
     for (const id of set) {
       const ds = dataSources.get(id);
-      if (ds && ds.kind === 'shell') out.push(id);
+      if (ds && (ds.kind === 'shell' || ds.kind === 'gnuplot')) out.push(id);
     }
     return out;
   }
@@ -3044,7 +3065,7 @@ export function createSpine(options, effects = {}) {
 
     // A DATA-SOURCE (shell/media) — not a registry buffer. Remove the SOURCE and
     // drop it from every open-set; a shell's pty is then reaped client-side (it
-    // leaves the shellSessionsOf fan). The registry-count guard doesn't apply (a
+    // leaves the liveProcessSessionsOf fan). The registry-count guard doesn't apply (a
     // text buffer is always the fallback). Un-curate a tabline tab (re-points to
     // a neighbour) or re-home a bare leaf onto a survivor text buffer.
     if (dataSources.has(killedId)) {
@@ -3477,18 +3498,20 @@ export function createSpine(options, effects = {}) {
         // active tab closed, the model re-points to a neighbour — the server's
         // MSG.PANE handler sees the focused buffer change and re-syncs.
         const closedId = String(intent.bufferId ?? '');
-        const wasShell = dataSources.get(closedId)?.kind === 'shell';
+        const closedKind = dataSources.get(closedId)?.kind;
+        const wasProcess = closedKind === 'shell' || closedKind === 'gnuplot';
         const ok = model.closeFocusedTab(closedId);
-        // A SHELL tab close REAPS the shell: drop its source + open-set so the
-        // shellSessionsOf fan tells the client to kill the pty. (Text/media tabs
-        // un-curate but live on in the pool — no process to reap.)
-        if (ok && wasShell) {
+        // A LIVE-PROCESS tab close (shell/gnuplot) REAPS the process: drop its
+        // source + open-set so the liveProcessSessionsOf fan tells the client to
+        // kill the child. (Text/media tabs un-curate but live on in the pool — no
+        // process to reap.)
+        if (ok && wasProcess) {
           dataSources.remove(closedId);
           for (const s of clientBuffers.values()) s.delete(closedId);
           // closeFocusedTab already pushed a PANE_TREE — but it ran BEFORE this
-          // removal, so its `liveShells` still listed the closed shell. Re-push so
-          // the client sees the shell gone and reaps its pty (else the client's
-          // live-set lags by one close and the last shell never gets reaped).
+          // removal, so its live-set still listed the closing process. Re-push so
+          // the client sees it gone and reaps the child (else the client's
+          // live-set lags by one close and the last process never gets reaped).
           onPaneTree(index);
         }
         return ok;
@@ -3727,7 +3750,7 @@ export function createSpine(options, effects = {}) {
      *  skip the text SNAPSHOT when a data-source leaf is focused — that snapshot
      *  would rebuild + scroll a document shown in a sibling pane. */
     isDataSource: (id) => dataSources.has(id),
-    shellSessionsOf,
+    liveProcessSessionsOf,
     killActiveBuffer,
     /** Plain-data buffer-list records for client INDEX's TABS / View List, each
      *  tagged with whether it is that client's CURRENT buffer. Scoped to the

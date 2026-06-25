@@ -816,11 +816,12 @@ export function createPaneModel(options = {}, hooks = {}) {
     const blobFor = (id, withCursor) => {
       const src = resolveSource(id);
       if (!src) return null;
-      // A SHELL is path-less: persist its cwd (restore re-opens a FRESH shell
-      // there — a workspace saves the arrangement, not the live process). Must
-      // precede the path guard, which would otherwise drop it.
-      if (src.kind === 'shell') {
-        return { kind: 'shell', cwd: typeof src.cwd === 'string' ? src.cwd : '' };
+      // A LIVE-PROCESS view (shell/gnuplot) is path-less: persist its kind + cwd
+      // (restore re-opens a FRESH process there — a workspace saves the
+      // arrangement, not the live process). Must precede the path guard, which
+      // would otherwise drop it.
+      if (src.kind === 'shell' || src.kind === 'gnuplot') {
+        return { kind: src.kind, cwd: typeof src.cwd === 'string' ? src.cwd : '' };
       }
       if (typeof src.path !== 'string' || src.path === '') return null;
       if (src.kind !== 'text') {
