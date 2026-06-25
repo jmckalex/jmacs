@@ -135,6 +135,10 @@ export function createServerViewClient({
   // an unsubscribe). Both injected by app.js from the host; no-ops in tests.
   getWindowBounds = () => Promise.resolve(null),
   subscribeWindowBounds = () => () => {},
+  // The REPL / utility-dock visibility `{ visible }`, for the workspace. Pulled
+  // on connect; app.js also calls reportDock() after a manual toggle. No-op in
+  // tests.
+  getDockState = () => null,
   // The renderer-owned command names (element-views) announced to the server on
   // connect, so M-x routes them back down via RUN_CLIENT_COMMAND. A function so
   // it is read at connect time (the registry is populated as stdlib loads).
@@ -178,6 +182,8 @@ export function createServerViewClient({
   // BOUNDS, sent to window 1 on restore). The host reconciles + resizes; a no-op
   // until wired.
   const setWindowBoundsDom = chrome.setWindowBounds ?? (() => {});
+  // Workspace restore: re-show/hide the REPL / utility dock to its saved state.
+  const setDockDom = chrome.setDock ?? (() => {});
   // PANE_TREE (G4 Step 3): the server pushes this window's logical pane layout
   // (split structure + per-leaf buffer/view-state + the focused leaf; no
   // pixels). The host renders it — splits become visible. A no-op until wired.
@@ -268,6 +274,13 @@ export function createServerViewClient({
       bounds: descriptor.bounds,
       display: descriptor.display ?? null,
     });
+  }
+
+  /** Report the REPL / utility-dock visibility to the server (the workspace
+   *  records it). Called on connect + by app.js after a manual toggle. */
+  function reportDock() {
+    const dock = getDockState();
+    if (dock && typeof dock === 'object') port.postMessage({ type: MSG.WINDOW_DOCK, dock });
   }
 
   /**
@@ -533,6 +546,7 @@ export function createServerViewClient({
       case MSG.BUFFER_LIST: onBufferList(msg.buffers); break;
       case MSG.WINDOW_NEW: requestNewWindowDom(msg.geometry); break;
       case MSG.SET_WINDOW_BOUNDS: setWindowBoundsDom(msg.geometry); break;
+      case MSG.SET_DOCK: setDockDom(msg.dock); break;
       case MSG.RUN_CLIENT_COMMAND:
         // The server dispatched a renderer-owned command (an element-view): run
         // it in the renderer, where its spec is computed (it calls back via
@@ -567,6 +581,7 @@ export function createServerViewClient({
     // move/resize, so the session snapshot records its geometry.
     try { Promise.resolve(getWindowBounds()).then(reportBounds).catch(() => {}); } catch { /* no host */ }
     if (!unsubscribeBounds) unsubscribeBounds = subscribeWindowBounds(reportBounds);
+    reportDock(); // the REPL/dock visibility, for the workspace
     port.postMessage({ type: MSG.HELLO });
     // Announce the renderer-owned commands (element-views) so the server can
     // route them back down via RUN_CLIENT_COMMAND. Tolerant of a bad getter.
@@ -689,6 +704,9 @@ export function createServerViewClient({
     connect,
     dispatchKey,
     sendPaneIntent,
+    // Re-report the REPL/dock visibility (app.js calls this after a manual toggle
+    // + before a workspace save, so the saved arrangement is current).
+    reportDock,
     handleMessage,
     getMirror: () => mirror,
     getView: () => view,

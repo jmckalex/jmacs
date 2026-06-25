@@ -1150,6 +1150,11 @@ function onClientMessage(client, event) {
         client.display = msg.display ?? null;
       }
       break;
+    case MSG.WINDOW_DOCK:
+      // The client reported its REPL / utility-dock visibility (renderer chrome,
+      // not in the pane tree — so the workspace records it separately).
+      if (msg.dock && typeof msg.dock === 'object') client.dock = msg.dock;
+      break;
     case MSG.SESSION_SAVE: {
       // C2: remember the live multi-window arrangement under a label (the quit
       // "Remember this workspace?" prompt). Captures the ARRANGEMENT (panes /
@@ -1311,7 +1316,10 @@ function collectSessionWindows() {
   for (const c of ordered) {
     const rootPane = spine.serializeWindow(c.index);
     if (!rootPane) continue;
-    out.push({ rootPane, bounds: c.bounds ?? null, display: c.display ?? null });
+    out.push({
+      rootPane, bounds: c.bounds ?? null, display: c.display ?? null,
+      dock: c.dock ?? null,
+    });
   }
   return out;
 }
@@ -1447,6 +1455,16 @@ function windowGeometry(w) {
   return w && w.bounds ? { bounds: w.bounds, display: w.display ?? null } : null;
 }
 
+/** Send CLIENT its saved REPL / utility-dock visibility (on restore), and keep
+ *  the server's record in sync with what we just restored (so a later save of an
+ *  un-toggled, un-quit window still records the restored state). */
+function sendDockTo(client, dock) {
+  if (dock && client && client.port) {
+    client.dock = dock;
+    client.port.postMessage({ type: MSG.SET_DOCK, dock });
+  }
+}
+
 /** Ask a live client to spawn another OS window (main creates it + attaches it
  *  as a new client, at GEOMETRY's reconciled bounds when given). Targets the
  *  active client, else the bootstrap (clients[0]) — both are connected during a
@@ -1504,6 +1522,7 @@ function restoreSession(client, id = '__last__') {
     if (geom0 && client.port) {
       client.port.postMessage({ type: MSG.SET_WINDOW_BOUNDS, geometry: geom0 });
     }
+    sendDockTo(client, win0.dock);
     console.error(`[mwb-session] restoring ${windows.length} window(s)`);
     pendingRestore = windows.slice(1).filter((w) => w && w.rootPane);
     if (pendingRestore.length > 0) spawnNextRestoreWindow();
@@ -1523,6 +1542,7 @@ function applyNextRestoreWindow(client) {
   awaitingRestoreWindow = false;
   const blob = pendingRestore.shift();
   if (blob && blob.rootPane) spine.loadWindowLayout(client.index, blob.rootPane);
+  sendDockTo(client, blob && blob.dock); // restore this window's REPL/dock state
   if (pendingRestore.length > 0) {
     spawnNextRestoreWindow();
   } else {

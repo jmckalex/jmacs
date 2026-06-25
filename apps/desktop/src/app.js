@@ -2852,7 +2852,10 @@ async function quitInteractive() {
       });
     });
     if (label === null) return; // cancelled → don't quit
-    if (label !== '') godotServerPort.postMessage({ type: MSG.SESSION_SAVE, label });
+    if (label !== '') {
+      serverViewClient.reportDock(); // ensure this window's dock state is current
+      godotServerPort.postMessage({ type: MSG.SESSION_SAVE, label });
+    }
   }
   // A clean, confirmed quit is not a crash: drop every recovery snapshot
   // so the next launch doesn't offer to "recover" work the user chose to
@@ -5207,6 +5210,9 @@ const interpreter = createInterpreter({
     },
     'toggle-repl!': () => {
       utilityDock.toggleUtilityDock();
+      // Tell the server the new dock visibility so the workspace keeps it (even
+      // when this isn't the window the user later quits from).
+      if (serverViewClient) serverViewClient.reportDock();
       return NIL;
     },
     'markdown-preview!': () => {
@@ -6698,6 +6704,12 @@ if (window.host && window.host.serverMode) {
         window.host.setWindowBounds(geometry);
       }
     },
+    // Workspace restore: re-show/hide the REPL / utility dock to its saved state.
+    setDock: (dock) => {
+      if (!dock) return;
+      if (dock.visible === false) utilityDock.hideUtilityDock();
+      else if (dock.visible === true) utilityDock.showUtilityDock();
+    },
     // G4 Step 3: the server pushed this window's pane layout. Render it (splits
     // become visible). Only a 'single' (fresh / composable) window reflects the
     // server tree; window 1 keeps its tabline.
@@ -6733,6 +6745,9 @@ if (window.host && window.host.serverMode) {
         }
         return () => {};
       },
+      // The REPL / utility-dock visibility, for the workspace (reported on connect
+      // + after a manual toggle).
+      getDockState: () => ({ visible: utilityDock.isUtilityVisible() }),
       // The renderer owns element-view commands (define-element-view, incl.
       // user config): announce their names so the server's M-x routes them
       // back down (RUN_CLIENT_COMMAND), and run them here when it does.

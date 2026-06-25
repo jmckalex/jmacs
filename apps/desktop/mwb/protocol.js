@@ -117,6 +117,12 @@ export const MSG = Object.freeze({
   // ARRANGEMENT — panes/files/cursors/geometry — never document content.
   SESSION_SAVE: 'session-save',
   SESSION_DELETE: 'session-delete',
+  // Per-window REPL / utility-dock visibility (part of the workspace, but it's
+  // renderer CHROME, not in the pane tree). The client reports it (WINDOW_DOCK,
+  // up) so the session records it; on restore the server sends it back down
+  // (SET_DOCK) and the client re-shows/hides the dock. `{ visible }`.
+  WINDOW_DOCK: 'window-dock',
+  SET_DOCK: 'set-dock',
   // --- the generic render-side picker channel (G0b) ------------------
   // A server command SUSPENDS and asks the client to pick a row from a
   // list — the buffer list, *Recover*, completions, RefTeX select, cite:
