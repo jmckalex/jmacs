@@ -239,8 +239,13 @@ export function createPickerPanel(container, options = {}) {
     if (inputEl) inputEl.focus();
     else root.focus();
   }
-  // Focus on the next tick so the caller can finish mounting.
+  // Focus now, then RE-assert on the next frame. A no-filter MENU picker focuses
+  // a bare div (there's no <input> to reliably hold focus), and a render that
+  // lands right after we mount — the server's snapshot/pane-tree repaint — steals
+  // focus back to the editor, killing keyboard nav. Re-grabbing focus next frame
+  // wins that race (an <input> picker is unaffected; it just re-focuses itself).
   focus();
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(focus);
 
   return {
     el: root,

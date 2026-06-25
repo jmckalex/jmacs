@@ -1055,7 +1055,8 @@ function onClientMessage(client, event) {
   const msg = event.data;
   if (!msg || typeof msg !== 'object') return;
   switch (msg.type) {
-    case MSG.HELLO:
+    case MSG.HELLO: {
+      let openChooserAfterPaint = false;
       spine.setActiveClient(client.index);
       // Restore the server's session (the user's open files) onto the FIRST
       // client to connect — before the snapshot, so it lands on the active file
@@ -1066,10 +1067,12 @@ function onClientMessage(client, event) {
         sessionRestored = true;
         if (hasRestorableWorkspaces()) {
           // Slice C1: ask the user which workspace to restore (or start fresh)
-          // via the chooser, instead of auto-restoring. The restore happens on
-          // the choice (handleWorkspaceChoice); the snapshot below paints the
-          // *scratch* backdrop + the picker overlay until then.
-          openWorkspaceChooser(client);
+          // via the chooser, instead of auto-restoring. DEFER the open until AFTER
+          // the snapshot/pane-tree are painted below — else that view render steals
+          // keyboard focus from the just-mounted (no-input) picker, killing nav.
+          // The restore happens on the choice (handleWorkspaceChoice); the scratch
+          // backdrop shows behind the chooser until then.
+          openChooserAfterPaint = true;
         } else {
           // Nothing to restore — present the boot buffer as a 1-tab tabline
           // (today's first-run look).
@@ -1095,7 +1098,11 @@ function onClientMessage(client, event) {
       // The window's pane layout (a single leaf on first connect, or its
       // restored split tree on reconnect).
       sendPaneTreeTo(client);
+      // The view is now painted — open the workspace chooser LAST so its picker
+      // grabs (and, via picker-panel's next-frame re-assert, keeps) focus.
+      if (openChooserAfterPaint) openWorkspaceChooser(client);
       break;
+    }
     case MSG.INTENT:
       applyIntent(client, msg.intent);
       break;
