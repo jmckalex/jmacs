@@ -8243,6 +8243,23 @@ function buildMinimapAdapter(buffer, textViewEl) {
       if (!root) return;
       root.scrollTop = f * Math.max(0, root.scrollHeight - root.clientHeight);
     },
+    // Drop the editor's cursor at the END of document LINE (a minimap CLICK —
+    // the line the minimap highlights under the pointer). Server mode: the
+    // mirror's moveTo echoes locally + sends a `point` intent so the server
+    // moves the focused leaf's cursor; flag-off: it moves the buffer's cursor
+    // directly. Tolerant of a missing read surface (a non-text view → no-op).
+    moveCursorToLineEnd: (line) => {
+      if (!buffer || typeof buffer.moveTo !== 'function'
+          || typeof buffer.lineCount !== 'number') return;
+      const n = Math.max(0, Math.min(buffer.lineCount - 1, Math.floor(line)));
+      let end;
+      try {
+        const start = buffer.offsetAt(n, 0);
+        const info = buffer.lineAt(start);
+        end = info && typeof info.text === 'string' ? start + info.text.length : start;
+      } catch { return; }
+      buffer.moveTo(end);
+    },
   };
 }
 

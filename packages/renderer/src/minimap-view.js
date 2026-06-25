@@ -526,7 +526,7 @@ export class MinimapView extends ViewElement {
 
   _wireEvents() {
     const canvas = /** @type {HTMLCanvasElement} */ (this._canvas);
-    const navigate = (event) => {
+    const navigate = (event, placeCursor = false) => {
       if (!this._adapter || typeof this._adapter.scrollToContentFraction !== 'function') {
         return;
       }
@@ -534,20 +534,29 @@ export class MinimapView extends ViewElement {
       const y = event.clientY - rect.top;
       const metrics = this._safeMetrics();
       if (!metrics) return;
-      const mmContentH = this._lineCount() * MM_LINE_H;
+      const lineCount = this._lineCount();
+      const mmContentH = lineCount * MM_LINE_H;
       const { mmScrollTop } = thumbRect(metrics, mmContentH, rect.height);
       const f = clickToScrollFraction(y, mmScrollTop, mmContentH, metrics);
       this._adapter.scrollToContentFraction(f);
+      // A CLICK (not a drag-scrub) also drops the editor's cursor at the END of
+      // the clicked line — the same line the hover highlights under the pointer.
+      if (placeCursor && lineCount > 0
+          && typeof this._adapter.moveCursorToLineEnd === 'function') {
+        const line = Math.max(0, Math.min(lineCount - 1,
+          Math.floor((y + mmScrollTop) / MM_LINE_H)));
+        this._adapter.moveCursorToLineEnd(line);
+      }
     };
     canvas.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       this._dragging = true;
       this._hideHover(); // the preview is noise while scrubbing
       try { canvas.setPointerCapture(event.pointerId); } catch { /* ok */ }
-      navigate(event);
+      navigate(event, true); // a click drops the cursor at the clicked line's end
     });
     canvas.addEventListener('pointermove', (event) => {
-      if (this._dragging) navigate(event);
+      if (this._dragging) navigate(event); // drag-scrub: scroll only, no cursor churn
       else this._onHover(event);
     });
     canvas.addEventListener('pointerleave', () => this._hideHover());
