@@ -2994,12 +2994,59 @@ export function createSpine(options, effects = {}) {
       .filter((id) => id != null);
   }
 
+  /** The SHELL data-source ids in client INDEX's open-set (the shells "live" in
+   *  that window). Fanned to the client on every PANE_TREE so it can reap a
+   *  shell's pty when its source leaves the open-set (a real close — C-x k /
+   *  tab ×) WITHOUT reaping on a mere switch-away (the source stays in the set).
+   *  The source id IS the sessionId (openShell ties them), so the client matches
+   *  its <shell-view> by it directly. */
+  function shellSessionsOf(index) {
+    const set = clientBuffers.get(index);
+    if (!set) return [];
+    const out = [];
+    for (const id of set) {
+      const ds = dataSources.get(id);
+      if (ds && ds.kind === 'shell') out.push(id);
+    }
+    return out;
+  }
+
   /** Kill the ACTIVE client's focused buffer, switching every pane (in any
    *  window) showing it to another buffer. Refuses to kill the last buffer
    *  (the registry guard). Called by the kill-current-buffer! primitive. */
   function killActiveBuffer() {
     const index = activeClientIndex;
     const killedId = currentBufferIdOf(index);
+
+    // A DATA-SOURCE (shell/media) — not a registry buffer. Remove the SOURCE and
+    // drop it from every open-set; a shell's pty is then reaped client-side (it
+    // leaves the shellSessionsOf fan). The registry-count guard doesn't apply (a
+    // text buffer is always the fallback). Un-curate a tabline tab (re-points to
+    // a neighbour) or re-home a bare leaf onto a survivor text buffer.
+    if (dataSources.has(killedId)) {
+      const ds = dataSources.get(killedId);
+      const survivor = registry.list()[0] ?? null;
+      for (const [ci, model] of paneModels) {
+        for (const leaf of model.leaves()) {
+          if (model.stateOf(leaf.id)?.bufferId !== killedId) continue;
+          model.focusPane(leaf.id);
+          const st = model.stateOf(leaf.id);
+          if (st && st.tabline && Array.isArray(st.tabs)
+              && st.tabs.includes(killedId) && st.tabs.length > 1) {
+            model.closeFocusedTab(killedId);          // un-curate + re-point
+            onBufferSwitched(model.focusedBufferId());
+          } else if (survivor) {
+            switchClientToBuffer(ci, survivor.id);    // re-home a bare leaf
+          }
+        }
+      }
+      dataSources.remove(killedId);
+      for (const s of clientBuffers.values()) s.delete(killedId);
+      statusText = `Killed ${ds ? ds.name : 'buffer'}`;
+      onStatus(statusText);
+      return;
+    }
+
     if (registry.count() <= 1) {
       statusText = 'kill-buffer: refusing to kill the only buffer';
       onStatus(statusText);
@@ -3396,12 +3443,22 @@ export function createSpine(options, effects = {}) {
           return true;
         }
         return false;
-      case 'close-tab':
+      case 'close-tab': {
         // Step 3c: close a tab in the focused tabline leaf (un-curate that
         // buffer from THIS tabline; the buffer lives on in the pool). If the
         // active tab closed, the model re-points to a neighbour — the server's
         // MSG.PANE handler sees the focused buffer change and re-syncs.
-        return model.closeFocusedTab(String(intent.bufferId ?? ''));
+        const closedId = String(intent.bufferId ?? '');
+        const ok = model.closeFocusedTab(closedId);
+        // A SHELL tab close REAPS the shell: drop its source + open-set so the
+        // shellSessionsOf fan tells the client to kill the pty. (Text/media tabs
+        // un-curate but live on in the pool — no process to reap.)
+        if (ok && dataSources.get(closedId)?.kind === 'shell') {
+          dataSources.remove(closedId);
+          for (const s of clientBuffers.values()) s.delete(closedId);
+        }
+        return ok;
+      }
       case 'reorder-tab':
         // Step 3c: drag-reorder a tab in the focused tabline leaf. The active
         // tab is tracked by buffer id, so the order changes but not which tab is
@@ -3636,6 +3693,7 @@ export function createSpine(options, effects = {}) {
      *  skip the text SNAPSHOT when a data-source leaf is focused — that snapshot
      *  would rebuild + scroll a document shown in a sibling pane. */
     isDataSource: (id) => dataSources.has(id),
+    shellSessionsOf,
     killActiveBuffer,
     /** Plain-data buffer-list records for client INDEX's TABS / View List, each
      *  tagged with whether it is that client's CURRENT buffer. Scoped to the

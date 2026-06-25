@@ -619,7 +619,14 @@ function sendPickerTo(client, req) {
  *  derives those). Sent on HELLO and whenever the layout/focus changes. */
 function sendPaneTreeTo(client) {
   const tree = spine.paneSnapshot(client.index);
-  if (tree) client.port.postMessage({ type: MSG.PANE_TREE, tree, seq });
+  // `liveShells` = the shell sources still open in this window. The client reaps
+  // a shell's pty + element when its session leaves this set (a real close), but
+  // NOT on a switch-away (the source stays open). See app.js reconcile.
+  if (tree) {
+    client.port.postMessage({
+      type: MSG.PANE_TREE, tree, seq, liveShells: spine.shellSessionsOf(client.index),
+    });
+  }
 }
 
 /** Push a fresh PANE_TREE to the client at INDEX (the onPaneTree effect). */

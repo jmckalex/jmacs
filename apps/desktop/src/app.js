@@ -5917,6 +5917,10 @@ if (window.host && window.host.serverMode) {
   // `{kind:'split',orientation,ratio,first,second}` /
   // `{kind:'leaf',id,bufferId,focused,name,point,mark,tabline?,tabs?}` (no pixels).
   let serverPaneTreeWire = null;
+  // The shell sources still open in this window (fanned per PANE_TREE). A cached
+  // shell whose session leaves this set was closed → reaped (pty killed + element
+  // disposed) in the reconcile; a switch-away keeps it here, so it survives.
+  let serverLiveShells = new Set();
   // Step 3b: per-buffer STATIC mirrors for panes showing a DIFFERENT buffer than
   // the focused/active one. Seeded + refreshed from each PANE_TREE leaf's `text`
   // (not live deltas — they update on a structural/focus change, which is when a
@@ -6403,6 +6407,34 @@ if (window.host && window.host.serverMode) {
     return v;
   }
 
+  /** Reap a CLOSED shell: kill its pty + dispose its <shell-view> wherever it
+   *  lives (a bare-leaf element via shellElementByView, or a tabline tab via the
+   *  tabline's editorByChild) and drop it from the media cache. Called from the
+   *  reconcile when the shell's source has left the server's open-set. */
+  function reapServerShell(view, sourceId) {
+    if (shellElementByView.has(view)) {
+      // Bare leaf: disposeShellElementForView kills the pty + destroys the xterm.
+      disposeShellElementForView(view);
+    } else {
+      // Tabline tab: the element lives in the tabline's editorByChild — kill the
+      // pty ourselves (the element's destroy() only tears down the xterm) then
+      // dispose + un-register it.
+      if (typeof view.sessionId === 'string') {
+        try { window.host?.shellKill?.(view.sessionId); } catch { /* already gone */ }
+      }
+      for (const st of tablineStateByView.values()) {
+        const el = st.editorByChild.get(view);
+        if (el) {
+          try { el.destroy?.(); } catch { /* already gone */ }
+          try { el.remove(); } catch { /* detached */ }
+          st.editorByChild.delete(view);
+          break;
+        }
+      }
+    }
+    serverMediaViews.delete(sourceId);
+  }
+
   function buildServerPaneNode(wire) {
     if (wire && wire.kind === 'split') {
       const ratio =
@@ -6487,6 +6519,14 @@ if (window.host && window.host.serverMode) {
         if (v && v.kind === 'bookmark') disposeBookmarkElementForView(v);
         serverMediaViews.delete(id);
       }
+    }
+    // Reap CLOSED shells: a shell whose source left the server's open-set
+    // (serverLiveShells) was killed (C-x k / tab ×) — kill its pty + dispose its
+    // element. A switch-away keeps the source open, so it's still here and
+    // survives (the prune above already exempted it). Keyed by source id, which
+    // is the sessionId.
+    for (const [id, v] of [...serverMediaViews]) {
+      if (v && v.kind === 'shell' && !serverLiveShells.has(id)) reapServerShell(v, id);
     }
     // Drop minimap companions whose leaf left the tree (toggle-off / target
     // deleted): dispose the <minimap-view> element + clear its target binding.
@@ -6662,8 +6702,13 @@ if (window.host && window.host.serverMode) {
   /** A server PANE_TREE push: store it and render the new layout — splits appear
    *  / collapse, a tabline leaf re-renders. Every window renders from its
    *  PANE_TREE now (the unify); a push before the first mirror is just stored. */
-  function applyServerPaneTree(tree) {
+  function applyServerPaneTree(tree, liveShells) {
     serverPaneTreeWire = tree;
+    // The shell sources still open in this window (server's open-set). A shell
+    // whose session is NOT here was closed (C-x k / tab ×) — reaped below. Only
+    // update when the server actually sent the field (every PANE_TREE does), so
+    // a stray push without it can't wrongly reap every shell.
+    if (Array.isArray(liveShells)) serverLiveShells = new Set(liveShells);
     if (serverMirror) renderServerPaneLayout();
   }
 
@@ -6811,7 +6856,7 @@ if (window.host && window.host.serverMode) {
     // G4 Step 3: the server pushed this window's pane layout. Render it (splits
     // become visible). Only a 'single' (fresh / composable) window reflects the
     // server tree; window 1 keeps its tabline.
-    setPaneTree: (tree) => applyServerPaneTree(tree),
+    setPaneTree: (tree, liveShells) => applyServerPaneTree(tree, liveShells),
   };
 
   bootServerViewClient = () => {

@@ -665,6 +665,32 @@ test('each M-x shell mints a FRESH shell (no dedup), with distinct sessionIds', 
   assert.equal(new Set(shells.map((r) => r.id)).size, 2, 'distinct sessionIds');
 });
 
+test('shellSessionsOf lists open shells; kill-buffer reaps the focused one', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('shell');
+  const shellId = wireLeaves(spine.paneSnapshot(0))[0].bufferId;
+  // Fanned to the client per PANE_TREE so it knows which pty sessions are live.
+  assert.deepEqual(spine.shellSessionsOf(0), [shellId], 'the open shell is in the live set');
+  // C-x k on the focused shell removes the SOURCE (not just a registry buffer):
+  // it leaves the open-set, so the client reaps its pty.
+  spine.runCommand('kill-buffer');
+  assert.deepEqual(spine.shellSessionsOf(0), [], 'the killed shell left the live set');
+  assert.equal(spine.isDataSource(shellId), false, 'the shell data-source is gone');
+  // The focused leaf re-homed onto a surviving text buffer, not the dead source.
+  assert.notEqual(wireLeaves(spine.paneSnapshot(0))[0].bufferId, shellId);
+});
+
+test('kill-buffer on a shell bypasses the "only buffer" guard (data-source path)', () => {
+  // Even with a single TEXT buffer (scratch), killing a shell succeeds — the
+  // registry-count guard only governs registry buffers, not data-sources.
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  assert.equal(spine.bufferCount, 1, 'one text buffer (scratch)');
+  spine.runCommand('shell');
+  spine.runCommand('kill-buffer');
+  assert.equal(spine.shellSessionsOf(0).length, 0, 'the shell was reaped, not refused');
+  assert.equal(spine.bufferCount, 1, 'the text buffer survived');
+});
+
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
