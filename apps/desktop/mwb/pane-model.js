@@ -382,18 +382,26 @@ export function createPaneModel(options = {}, hooks = {}) {
       onChange();
       return false;
     }
-    const onLeft = side === 'left';
-    const f = typeof widthFraction === 'number' && Number.isFinite(widthFraction)
-      ? Math.min(0.45, Math.max(0.05, widthFraction))
-      : 0.16;
-    const mmLeaf = makeMinimapLeaf(target.id, onLeft ? 'left' : 'right');
-    const splitNode = onLeft
-      ? createSplitPane({ orientation: SPLIT_HORIZONTAL, ratio: f, first: mmLeaf, second: target })
-      : createSplitPane({ orientation: SPLIT_HORIZONTAL, ratio: 1 - f, first: target, second: mmLeaf });
-    rootPane = replacePane(rootPane, target, splitNode);
-    minimapByTarget.set(target.id, mmLeaf.id);
+    rootPane = replacePane(rootPane, target, makeMinimapSplit(target, side, widthFraction));
     onChange();
     return true;
+  }
+
+  /** Build a [target, minimap] split — the minimap on SIDE, FRACTION wide (its
+   *  share of the split, clamped 0.05–0.45) — and register the companion. Returns
+   *  the split node (the caller installs it in the tree). Shared by the toggle +
+   *  session restore (loadLayout). */
+  function makeMinimapSplit(targetLeaf, side, fraction) {
+    const onLeft = side === 'left';
+    const f = typeof fraction === 'number' && Number.isFinite(fraction)
+      ? Math.min(0.45, Math.max(0.05, fraction))
+      : 0.16;
+    const mmLeaf = makeMinimapLeaf(targetLeaf.id, onLeft ? 'left' : 'right');
+    const splitNode = onLeft
+      ? createSplitPane({ orientation: SPLIT_HORIZONTAL, ratio: f, first: mmLeaf, second: targetLeaf })
+      : createSplitPane({ orientation: SPLIT_HORIZONTAL, ratio: 1 - f, first: targetLeaf, second: mmLeaf });
+    minimapByTarget.set(targetLeaf.id, mmLeaf.id);
+    return splitNode;
   }
 
   /**
@@ -854,11 +862,25 @@ export function createPaneModel(options = {}, hooks = {}) {
     function paneBlob(node) {
       if (!node || typeof node !== 'object') return null;
       if (node.kind === 'split') {
-        // A minimap companion is a transient view aid — not persisted. Collapse
-        // its split to the target (restoring it would need a stable leaf id we
-        // don't keep across sessions; the minimap is re-toggled cheaply).
-        if (isMinimapLeaf(node.first)) return paneBlob(node.second);
-        if (isMinimapLeaf(node.second)) return paneBlob(node.first);
+        // A [target, minimap] companion split: persist the minimap as a `minimap`
+        // flag (side + fraction) on the TARGET leaf's blob — not a phantom,
+        // path-less leaf — so restore re-attaches the companion (loadLayout's
+        // buildPane). The companion split node itself isn't persisted.
+        const mmFirst = isMinimapLeaf(node.first);
+        const mmSecond = isMinimapLeaf(node.second);
+        if (mmFirst || mmSecond) {
+          const targetNode = mmFirst ? node.second : node.first;
+          const mmNode = mmFirst ? node.first : node.second;
+          const blob = paneBlob(targetNode);
+          if (blob) {
+            const ratio = typeof node.ratio === 'number' ? node.ratio : 0.16;
+            blob.minimap = {
+              side: stateById.get(mmNode.id)?.minimapSide ?? (mmFirst ? 'left' : 'right'),
+              fraction: mmFirst ? ratio : 1 - ratio, // the minimap's own share
+            };
+          }
+          return blob;
+        }
         return {
           kind: 'split',
           orientation: node.orientation,
@@ -957,7 +979,14 @@ export function createPaneModel(options = {}, hooks = {}) {
         const orientation = node.orientation === SPLIT_VERTICAL ? SPLIT_VERTICAL : SPLIT_HORIZONTAL;
         return createSplitPane({ orientation, ratio: r, first, second });
       }
-      if (node.kind === 'leaf') return buildLeaf(node);
+      if (node.kind === 'leaf') {
+        const leaf = buildLeaf(node);
+        // A persisted minimap companion: re-attach it to this restored target leaf.
+        if (leaf && node.minimap && typeof node.minimap === 'object') {
+          return makeMinimapSplit(leaf, node.minimap.side, node.minimap.fraction);
+        }
+        return leaf;
+      }
       return null;
     }
 

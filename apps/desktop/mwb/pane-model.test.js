@@ -614,10 +614,28 @@ test('C-x 0 on the sole editor + its minimap is a no-op (sole editing pane)', ()
   assert.equal(snapshotLeaves(model.snapshot()).length, 2, 'editor + minimap untouched');
 });
 
-test('serialiseLayout collapses the minimap split — the companion is not persisted', () => {
+test('session round-trip preserves the minimap companion', () => {
   const { model } = makeModel('b1');
-  model.toggleFocusedMinimap('right');
+  model.toggleFocusedMinimap('right', 0.2);
   const blob = model.serialiseLayout((id) => (id ? { kind: 'text', path: `/p/${id}` } : null));
-  assert.equal(blob.kind, 'leaf', 'the [target, minimap] split collapses to the target');
-  assert.equal(blob.view.path, '/p/b1', 'only the editor is persisted');
+  // Persisted as a `minimap` flag on the TARGET leaf (not a phantom path-less leaf).
+  assert.equal(blob.kind, 'leaf', 'the target leaf carries the companion as metadata');
+  assert.equal(blob.view.path, '/p/b1');
+  assert.ok(blob.minimap, 'the minimap is persisted on the target');
+  assert.equal(blob.minimap.side, 'right');
+  assert.ok(blob.minimap.fraction > 0 && blob.minimap.fraction < 0.5, 'its width fraction too');
+
+  // Restore into a fresh model: the companion split comes back, bound to the editor.
+  const dst = createPaneModel({ initialBufferId: 'z' }, {});
+  const toId = (v) => (v && typeof v.path === 'string' ? v.path.replace('/p/', '') : null);
+  assert.equal(dst.loadLayout(blob, toId), true);
+  const leaves = snapshotLeaves(dst.snapshot());
+  assert.equal(leaves.length, 2, 'editor + restored minimap');
+  const mm = leaves.find((l) => l.viewKind === 'minimap');
+  const editor = leaves.find((l) => l.viewKind !== 'minimap');
+  assert.ok(mm && editor, 'both a minimap and an editor leaf');
+  assert.equal(mm.minimapSide, 'right');
+  assert.equal(mm.minimapTarget, editor.id, 'bound to the restored editor leaf');
+  assert.equal(editor.bufferId, 'b1', 'the editor restored to its file');
+  assert.equal(dst.focusedId, editor.id, 'focus is the editor, never the minimap');
 });
