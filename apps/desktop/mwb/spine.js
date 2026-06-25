@@ -2298,6 +2298,21 @@ export function createSpine(options, effects = {}) {
     return src.id;
   }
 
+  /** Restore a shell as a FRESH data-source in CWD (the client spawns a new
+   *  sessionId + pty). A workspace saves the ARRANGEMENT, not the live process;
+   *  the cwd just starts it where it was. Returns the new source id (loadLayout
+   *  places it in the restored leaf — no switch here). Mirror of serializeWindow's
+   *  shell branch. */
+  function restoreShell(cwd) {
+    shellSeq += 1;
+    const name = shellSeq === 1 ? '*shell*' : `*shell*<${shellSeq}>`;
+    const src = dataSources.add({
+      kind: 'shell', name, state: { cwd: typeof cwd === 'string' ? cwd : '' },
+    });
+    src.state.sessionId = src.id;
+    return src.id;
+  }
+
   // --- bookmarks (server-owned, edit-tracked) --------------------------
   //
   // Bookmarks graduate to the server like overlays: each is an L2 MARKER on a
@@ -2859,6 +2874,11 @@ export function createSpine(options, effects = {}) {
       if (e && e.filePath) return { kind: 'text', path: e.filePath };
       const ds = dataSources.get(bufferId);
       if (!ds) return null;
+      // A SHELL is path-less — serialise its cwd; restore re-opens a FRESH shell
+      // there (new sessionId + pty). A workspace saves the arrangement, not the
+      // live process. (pane-model.serialiseLeafView passes a `shell` blob through
+      // its path guard for exactly this.)
+      if (ds.kind === 'shell') return { kind: 'shell', cwd: ds.state?.cwd ?? '' };
       // A BOOKMARK outline has no filePath — it identifies its source by
       // `state.sourceBufferId` (+ a pin flag). Serialise it by its SOURCE file +
       // kind so restore reopens an outline, not a text copy of the file.
@@ -2900,7 +2920,11 @@ export function createSpine(options, effects = {}) {
     const model = paneModels.get(index);
     if (!model || !rootBlob) return false;
     const resolveId = (viewBlob) => {
-      if (!viewBlob || typeof viewBlob.path !== 'string' || viewBlob.path === '') return null;
+      if (!viewBlob) return null;
+      // A SHELL restores as a FRESH shell data-source (new sessionId + pty) in the
+      // saved cwd. Path-less, so it must precede the path guard below.
+      if (viewBlob.kind === 'shell') return restoreShell(viewBlob.cwd);
+      if (typeof viewBlob.path !== 'string' || viewBlob.path === '') return null;
       // A bookmark leaf reopens as a fresh per-window OUTLINE over its source file
       // (not a text buffer); everything else resolves by path (the files were
       // opened up front — text → registry, media/dir → data-source).

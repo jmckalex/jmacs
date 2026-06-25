@@ -691,6 +691,33 @@ test('kill-buffer on a shell bypasses the "only buffer" guard (data-source path)
   assert.equal(spine.bufferCount, 1, 'the text buffer survived');
 });
 
+test('serializeWindow/loadWindowLayout round-trips a shell as a FRESH source', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('shell');
+  const before = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'shell');
+  assert.ok(before, 'a shell leaf exists before save');
+  const blob = spine.serializeWindow(0);
+  assert.equal(spine.loadWindowLayout(0, blob), true, 'layout restored');
+  const after = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'shell');
+  assert.ok(after, 'restored as a shell (not text, not dropped)');
+  // A workspace saves the ARRANGEMENT, not the live process: a NEW source + pty.
+  assert.notEqual(after.bufferId, before.bufferId, 'a fresh shell source on restore');
+  assert.equal(after.state.sessionId, after.bufferId, 'fresh sessionId tied to the new source');
+});
+
+test('a restored shell keeps its cwd (fresh process, same dir)', () => {
+  const files = { '/proj/x.js': { text: 'x', name: 'x.js' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  spine.visitFile('/proj/x.js');
+  spine.runCommand('shell'); // cwd resolves to the doc dir
+  assert.equal(wireLeaves(spine.paneSnapshot(0))[0].state.cwd, '/proj');
+  const blob = spine.serializeWindow(0);
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const after = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'shell');
+  assert.ok(after, 'a shell leaf restored');
+  assert.equal(after.state.cwd, '/proj', 'restored shell starts in the saved cwd');
+});
+
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
