@@ -2786,10 +2786,38 @@ export function createSpine(options, effects = {}) {
     return model.serialiseLayout((bufferId) => {
       if (bufferId == null) return null;
       const e = registry.get(bufferId);
-      if (e && e.filePath) return e.filePath;
+      if (e && e.filePath) return { kind: 'text', path: e.filePath };
       const ds = dataSources.get(bufferId);
-      return ds && ds.filePath ? ds.filePath : null;
+      if (!ds) return null;
+      // A BOOKMARK outline has no filePath — it identifies its source by
+      // `state.sourceBufferId` (+ a pin flag). Serialise it by its SOURCE file +
+      // kind so restore reopens an outline, not a text copy of the file.
+      if (ds.kind === 'bookmark') {
+        const srcEntry = ds.state ? registry.get(ds.state.sourceBufferId) : null;
+        const path = srcEntry && srcEntry.filePath ? srcEntry.filePath : null;
+        if (!path) return null; // bookmarks over an unsaved buffer can't be restored
+        return { kind: 'bookmark', path, pinned: !!(ds.state && ds.state.pinned) };
+      }
+      // Media / directory data-sources carry their own filePath (suffix-routable).
+      return ds.filePath ? { kind: ds.kind, path: ds.filePath } : null;
     });
+  }
+
+  /** Restore a per-window bookmark OUTLINE over the file at SOURCEPATH (which must
+   *  already be open), pinned or following per the saved leaf. Returns the new
+   *  outline data-source's id (the leaf shows it), or null when the source file
+   *  didn't open. The mirror of serializeWindow's bookmark branch. */
+  function restoreBookmarkOutline(index, sourcePath, pinned) {
+    const srcEntry = registry.findByPath(sourcePath);
+    if (!srcEntry) return null;
+    bookmarksFor(srcEntry); // ensure markers + live anchors before snapshotting
+    const src = dataSources.add({
+      kind: 'bookmark',
+      name: '*Bookmarks*',
+      state: { ...bookmarkOutlineState(srcEntry), pinned: !!pinned },
+    });
+    src._ownerClient = index; // per-window ownership
+    return src.id;
   }
 
   /** Restore client INDEX's window layout from a path-keyed blob (the mirror of
@@ -2801,11 +2829,17 @@ export function createSpine(options, effects = {}) {
   function loadWindowLayout(index, rootBlob) {
     const model = paneModels.get(index);
     if (!model || !rootBlob) return false;
-    const resolveId = (path) => {
-      if (typeof path !== 'string' || path === '') return null;
-      const e = registry.findByPath(path);
+    const resolveId = (viewBlob) => {
+      if (!viewBlob || typeof viewBlob.path !== 'string' || viewBlob.path === '') return null;
+      // A bookmark leaf reopens as a fresh per-window OUTLINE over its source file
+      // (not a text buffer); everything else resolves by path (the files were
+      // opened up front — text → registry, media/dir → data-source).
+      if (viewBlob.kind === 'bookmark') {
+        return restoreBookmarkOutline(index, viewBlob.path, viewBlob.pinned);
+      }
+      const e = registry.findByPath(viewBlob.path);
       if (e) return e.id;
-      const ds = dataSources.findByPath(path);
+      const ds = dataSources.findByPath(viewBlob.path);
       return ds ? ds.id : null;
     };
     const ok = model.loadLayout(rootBlob, resolveId);

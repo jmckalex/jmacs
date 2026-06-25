@@ -448,9 +448,9 @@ test('snapshot reflects a 4-pane layout with the right leaf count', () => {
 // --- session persistence: serialiseLayout / loadLayout round-trips --------
 
 test('serialiseLayout/loadLayout round-trips structure, buffers, focus, cursor', () => {
-  const toPath = (id) => (id == null ? null : `/p/${id}.txt`);
-  const toId = (path) => {
-    const m = /^\/p\/(.+)\.txt$/.exec(path);
+  const toPath = (id) => (id == null ? null : { kind: 'text', path: `/p/${id}.txt` });
+  const toId = (blob) => {
+    const m = /^\/p\/(.+)\.txt$/.exec(blob.path);
     return m ? m[1] : null;
   };
   // Build  A | (B / C)  — a horizontal split whose 2nd child is split vertically.
@@ -489,8 +489,8 @@ test('serialiseLayout/loadLayout round-trips structure, buffers, focus, cursor',
 });
 
 test('a path-less leaf serialises to a null view and restores to scratch', () => {
-  const toPath = (id) => (id === 'A' ? '/p/A.txt' : null); // 'S' has no file
-  const toId = (path) => (path === '/p/A.txt' ? 'A' : null);
+  const toPath = (id) => (id === 'A' ? { kind: 'text', path: '/p/A.txt' } : null); // 'S' has no file
+  const toId = (blob) => (blob.path === '/p/A.txt' ? 'A' : null);
   const src = createPaneModel({ initialBufferId: 'S' }, {});
   src.split('horizontal', 0.5, 'after');
   src.setFocusedBuffer('A'); // second leaf → A
@@ -506,8 +506,8 @@ test('a path-less leaf serialises to a null view and restores to scratch', () =>
 });
 
 test('a tabline leaf round-trips its tabs + the active tab cursor', () => {
-  const toPath = (id) => (id == null ? null : `/p/${id}`);
-  const toId = (path) => path.replace('/p/', '') || null;
+  const toPath = (id) => (id == null ? null : { kind: 'text', path: `/p/${id}` });
+  const toId = (blob) => blob.path.replace('/p/', '') || null;
   const src = createPaneModel({ initialBufferId: 'b1' }, {});
   src.seedFocusedTabline(['b1', 'b2', 'b3'], 'b2');
   src.setFocusedPoint(7, null); // the active tab (b2) cursor
@@ -525,4 +525,28 @@ test('a tabline leaf round-trips its tabs + the active tab cursor', () => {
   assert.deepEqual(snap.tabs.map((t) => t.bufferId), ['b1', 'b2', 'b3'], 'tab set restored in order');
   assert.equal(snap.bufferId, 'b2', 'active tab restored');
   assert.equal(snap.point, 7, 'active cursor restored');
+});
+
+test('a non-text (bookmark) leaf round-trips by kind + path + pin (not as text)', () => {
+  // The bug Jason hit: a bookmark-outline pane serialised as a text copy of its
+  // source file. Now it carries its DATA-SOURCE kind + source path + pin, and
+  // restores to a (re-resolved) bookmark data-source — never a text buffer.
+  const toSource = (id) =>
+    (id === 'bm' ? { kind: 'bookmark', path: '/doc.html', pinned: true } : null);
+  const toId = (blob) =>
+    (blob.kind === 'bookmark' && blob.path === '/doc.html' ? 'bm-ds' : null);
+  const src = createPaneModel({ initialBufferId: 'bm' }, {});
+  const blob = src.serialiseLayout(toSource);
+  assert.equal(blob.kind, 'leaf');
+  assert.equal(blob.view.kind, 'bookmark', 'serialised by its data-source kind, not text');
+  assert.equal(blob.view.path, '/doc.html', 'carries the SOURCE file path');
+  assert.equal(blob.view.pinned, true, 'carries the pin flag');
+  assert.equal(blob.view.point, undefined, 'no cursor for a non-text view');
+
+  const dst = createPaneModel({ initialBufferId: 'z' }, {});
+  assert.equal(dst.loadLayout(blob, toId), true);
+  const snap = dst.snapshot();
+  assert.equal(snap.kind, 'leaf');
+  assert.equal(snap.bufferId, 'bm-ds', 'restored to the re-resolved bookmark data-source');
+  assert.equal(snap.tabline, undefined, 'a single non-text view, not a tabline');
 });

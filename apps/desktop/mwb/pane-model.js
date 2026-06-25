@@ -679,54 +679,61 @@ export function createPaneModel(options = {}, hooks = {}) {
   // leaf is marked in-tree (`focused: true`) rather than by id — a reload mints
   // fresh leaf ids, so the old id is meaningless on the way back in.
 
-  /** Serialise a leaf's view-state to a path-keyed view-blob, or null when it
-   *  can't be reopened (a path-less *scratch*, or every tab unresolved → the
-   *  owning leaf restores to a fresh scratch). RESOLVEPATH maps a buffer id to
-   *  its file path (or null). */
-  function serialiseLeafView(state, resolvePath) {
+  /** Serialise a leaf's view-state to a view-blob, or null when it can't be
+   *  reopened (a path-less *scratch*, or every tab unresolved → the owning leaf
+   *  restores to a fresh scratch). RESOLVESOURCE maps a buffer id to a
+   *  `{ kind, path, pinned? }` descriptor (or null): `kind:'text'` for a text
+   *  buffer; the DATA-SOURCE kind ('bookmark' / 'image' / 'pdf' / 'directory-*')
+   *  for a non-text leaf — so restore reopens the right VIEW, not a text copy of
+   *  the path. Only text carries a cursor; a bookmark carries its `pinned` flag. */
+  function serialiseLeafView(state, resolveSource) {
     if (!state) return null;
+    const blobFor = (id, withCursor) => {
+      const src = resolveSource(id);
+      if (!src || typeof src.path !== 'string' || src.path === '') return null;
+      if (src.kind !== 'text') {
+        const b = { kind: src.kind, path: src.path };
+        if (typeof src.pinned === 'boolean') b.pinned = src.pinned; // bookmark pin
+        return b;
+      }
+      // Only the ACTIVE buffer carries a live cursor; others restore at 0.
+      return {
+        kind: 'text',
+        path: src.path,
+        point: withCursor ? statePoint(state) : 0,
+        mark: withCursor ? stateMark(state) : null,
+      };
+    };
     if (state.tabline && Array.isArray(state.tabs)) {
       const tabs = [];
       let active = 0;
       for (const id of state.tabs) {
-        const path = resolvePath(id);
-        if (typeof path !== 'string' || path === '') continue; // drop unresolvable tabs
         const isActive = id === state.bufferId;
+        const blob = blobFor(id, isActive);
+        if (!blob) continue; // drop unresolvable tabs
         if (isActive) active = tabs.length;
-        // Only the ACTIVE tab carries a live cursor; background tabs restore at 0
-        // (their per-(leaf,buffer) cursor lives in the registry, not the model).
-        tabs.push({
-          kind: 'text',
-          path,
-          point: isActive ? statePoint(state) : 0,
-          mark: isActive ? stateMark(state) : null,
-        });
+        tabs.push(blob);
       }
       if (tabs.length === 0) return null;
       return { kind: 'tabline', active, tabs };
     }
-    const path = resolvePath(state.bufferId);
-    if (typeof path !== 'string' || path === '') return null; // path-less scratch
-    return {
-      kind: 'text',
-      path,
-      point: statePoint(state),
-      mark: stateMark(state),
-      scrollLine: state.scrollLine,
-    };
+    const blob = blobFor(state.bufferId, true);
+    if (blob && blob.kind === 'text') blob.scrollLine = state.scrollLine;
+    return blob;
   }
 
   /**
    * Serialise the whole pane tree to a persistence blob (the session's
    * per-window `rootPane`). Splits carry `orientation` + `ratio`; leaves carry a
    * path-keyed view-blob (or null → a scratch on restore); the focused leaf is
-   * tagged `focused: true`. Pure given RESOLVEPATH (`bufferId -> filePath|null`).
+   * tagged `focused: true`. Pure given RESOLVESOURCE (`bufferId -> { kind, path,
+   * pinned? } | null` — see serialiseLeafView).
    *
-   * @param {(bufferId: string|null) => string|null} resolvePath
+   * @param {(bufferId: string|null) => ({kind: string, path: string, pinned?: boolean}|null)} resolveSource
    * @returns {object|null} The root pane-blob, or null for an empty tree.
    */
-  function serialiseLayout(resolvePath) {
-    const resolve = typeof resolvePath === 'function' ? resolvePath : () => null;
+  function serialiseLayout(resolveSource) {
+    const resolve = typeof resolveSource === 'function' ? resolveSource : () => null;
     function paneBlob(node) {
       if (!node || typeof node !== 'object') return null;
       if (node.kind === 'split') {
@@ -748,14 +755,15 @@ export function createPaneModel(options = {}, hooks = {}) {
   /**
    * Rebuild the window's pane tree from a persistence blob (the restore mirror
    * of `serialiseLayout`). Mints fresh leaves + states; resolves each leaf's
-   * path back to a live buffer id via RESOLVEID (`filePath -> bufferId|null`); a
-   * null/unresolved view becomes a *scratch* leaf. Focus follows the
-   * `focused: true` tag (else the first leaf). Replaces the current tree
-   * wholesale and prunes the orphaned states. Returns true when a tree was
-   * installed.
+   * view-blob back to a live buffer/data-source id via RESOLVEID (which dispatches
+   * on the blob's `kind` — a 'bookmark' blob creates/finds the outline, a text
+   * blob resolves its path); a null/unresolved view becomes a *scratch* leaf.
+   * Focus follows the `focused: true` tag (else the first leaf). Replaces the
+   * current tree wholesale and prunes the orphaned states. Returns true when a
+   * tree was installed.
    *
    * @param {object} blob - A root pane-blob from `serialiseLayout`.
-   * @param {(path: string) => string|null} resolveId
+   * @param {(viewBlob: object) => string|null} resolveId
    * @returns {boolean}
    */
   function loadLayout(blob, resolveId) {
@@ -771,7 +779,7 @@ export function createPaneModel(options = {}, hooks = {}) {
       let mark = null;
       let scrollLine = 0;
       if (view && view.kind === 'text') {
-        bufferId = resolve(view.path);
+        bufferId = resolve(view);
         point = Number.isFinite(view.point) ? view.point : 0;
         mark = view.mark == null ? null : (Number.isFinite(view.mark) ? view.mark : null);
         scrollLine = Number.isFinite(view.scrollLine) ? view.scrollLine : 0;
@@ -779,14 +787,16 @@ export function createPaneModel(options = {}, hooks = {}) {
         const ids = [];
         let activeId = null;
         view.tabs.forEach((tab, i) => {
-          if (!tab || tab.kind !== 'text') return;
-          const id = resolve(tab.path);
+          if (!tab) return;
+          const id = resolve(tab);
           if (id == null) return;
           ids.push(id);
           if (i === view.active) {
             activeId = id;
-            point = Number.isFinite(tab.point) ? tab.point : 0;
-            mark = tab.mark == null ? null : (Number.isFinite(tab.mark) ? tab.mark : null);
+            if (tab.kind === 'text') {
+              point = Number.isFinite(tab.point) ? tab.point : 0;
+              mark = tab.mark == null ? null : (Number.isFinite(tab.mark) ? tab.mark : null);
+            }
           }
         });
         if (ids.length > 0) {
@@ -794,6 +804,10 @@ export function createPaneModel(options = {}, hooks = {}) {
           tabs = ids;
           bufferId = activeId ?? ids[0];
         }
+      } else if (view) {
+        // A non-text single view (bookmark / media / directory): resolve the blob
+        // to its data-source id; no cursor.
+        bufferId = resolve(view);
       }
       const state = freshState(bufferId);
       state.tabline = tabline;

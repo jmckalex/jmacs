@@ -1254,9 +1254,13 @@ function pathsInWindowBlob(rootPane) {
   const add = (p) => { if (typeof p === 'string' && p !== '' && !out.includes(p)) out.push(p); };
   const walkView = (v) => {
     if (!v) return;
-    if (v.kind === 'text') add(v.path);
-    else if (v.kind === 'tabline' && Array.isArray(v.tabs)) {
-      v.tabs.forEach((t) => { if (t && t.kind === 'text') add(t.path); });
+    if (v.kind === 'tabline' && Array.isArray(v.tabs)) {
+      v.tabs.forEach((t) => { if (t && typeof t.path === 'string') add(t.path); });
+    } else if (typeof v.path === 'string') {
+      // Every leaf kind's file is opened up front: text → buffer, media/dir →
+      // data-source (visitFile routes by suffix), a BOOKMARK's path is its SOURCE
+      // file (opened as text; restoreBookmarkOutline then builds the outline).
+      add(v.path);
     }
   };
   const walkPane = (p) => {
