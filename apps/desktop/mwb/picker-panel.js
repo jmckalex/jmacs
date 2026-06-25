@@ -174,6 +174,23 @@ export function createPickerPanel(container, options = {}) {
         detail.textContent = row.detail;
         item.appendChild(detail);
       }
+      // A clickable × on a deletable row (workspace mgmt), top-right of the row.
+      if (onDelete && row.deletable === true) {
+        item.style.position = 'relative';
+        const del = doc.createElement('span');
+        del.className = 'mwb-picker-row-delete';
+        del.textContent = '×';
+        del.title = 'Delete workspace';
+        del.style.cssText =
+          'position:absolute;right:6px;top:6px;color:#e06c75;cursor:pointer;'
+          + 'opacity:0.6;font-size:1.15em;line-height:1;padding:2px 5px;';
+        del.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation(); // don't also trigger the row's choose
+          deleteAt(i);
+        });
+        item.appendChild(del);
+      }
       item.addEventListener('mousedown', (e) => {
         // mousedown (not click) so the focus doesn't bounce to the row first.
         e.preventDefault();
@@ -209,19 +226,26 @@ export function createPickerPanel(container, options = {}) {
     onChoose(value);
   }
 
-  /** Delete the selected row (only if it's flagged `deletable` — e.g. a named
-   *  workspace, not "Last workspace" / "Start fresh"). Removes it from the list +
-   *  re-renders; the panel stays open so several can be deleted in a row. */
-  function deleteSelected() {
-    if (!onDelete || selected < 0) return;
-    const row = visible[selected];
+  /** Delete the row at visible-index POS (only if it's flagged `deletable` — a
+   *  named workspace, not "Last workspace" / "Start fresh"). Removes it and keeps
+   *  the selection at the SAME position (the item that slid up, or the new last
+   *  one) rather than jumping to the top; the panel stays open so several can be
+   *  cleared in a row. */
+  function deleteAt(pos) {
+    if (!onDelete || pos < 0 || pos >= visible.length) return;
+    const row = visible[pos];
     if (!row || row.deletable !== true) return;
     onDelete(row.value);
     const i = rows.indexOf(row);
     if (i >= 0) rows.splice(i, 1);
-    recompute();
+    recompute(); // would re-select the first row (the deleted value is gone) —
+    if (visible.length > 0) {
+      selected = Math.min(pos, visible.length - 1); // …so pin it back to POS.
+      selectedValue = visible[selected].value;
+    }
     renderRows();
   }
+  function deleteSelected() { deleteAt(selected); }
 
   // --- keyboard ---
   function onKeyDown(event) {
