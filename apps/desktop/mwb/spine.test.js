@@ -621,6 +621,50 @@ test('openElementSource reuses by tag and rejects a tag-less spec', () => {
   assert.equal(spine.openElementSource({ name: 'x' }), null, 'a tag-less spec is a no-op');
 });
 
+test('M-x shell mints a server-owned shell data-source leaf (full Lisp path)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  // The REAL chain: shell.lisp's (shell) defcommand → (open-shell-buffer!) host
+  // primitive → openShell. Proves shell.lisp loaded in SPINE_STDLIB + resolves.
+  spine.runCommand('shell');
+  assert.equal(spine.bufferCount, 1, 'a shell did NOT add a text buffer');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.match(leaf.bufferId, /^ds\d+$/, 'a data-source id, not a buffer id');
+  assert.equal(leaf.viewKind, 'shell');
+  assert.equal(leaf.name, '*shell*');
+  // sessionId is server-minted + tied to the (unique) source id, so the renderer
+  // can key MAIN's pty IPC by it; the server itself never touches the process.
+  assert.equal(leaf.state.sessionId, leaf.bufferId, 'sessionId is the source id');
+  // A path-less active buffer → empty cwd (MAIN falls back to $HOME).
+  assert.equal(leaf.state.cwd, '', 'no cwd for a path-less active buffer');
+  assert.equal(leaf.text, undefined, 'a shell leaf carries no text');
+  // It joins the window buffer list (View List / session record / C-x b).
+  const rec = spine.bufferListRecords(0).find((r) => r.id === leaf.bufferId);
+  assert.ok(rec && rec.viewKind === 'shell', 'the shell is in the window buffer list');
+});
+
+test('M-x shell resolves cwd to the active document directory (server-side)', () => {
+  const files = { '/proj/src/main.js': { text: 'x', name: 'main.js' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  spine.visitFile('/proj/src/main.js');
+  spine.runCommand('shell');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.viewKind, 'shell');
+  assert.equal(leaf.state.cwd, '/proj/src', 'shell opens in the active document directory');
+});
+
+test('each M-x shell mints a FRESH shell (no dedup), with distinct sessionIds', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('shell');
+  const first = wireLeaves(spine.paneSnapshot(0))[0].bufferId;
+  spine.runCommand('shell');
+  const second = wireLeaves(spine.paneSnapshot(0))[0].bufferId;
+  assert.notEqual(first, second, 'a second (shell) is a NEW source, not a reuse');
+  const shells = spine.bufferListRecords(0).filter((r) => r.viewKind === 'shell');
+  assert.equal(shells.length, 2, 'both shells are live in the buffer list (one pty each)');
+  // The source id IS the sessionId, so distinct ids == distinct pty sessions.
+  assert.equal(new Set(shells.map((r) => r.id)).size, 2, 'distinct sessionIds');
+});
+
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });

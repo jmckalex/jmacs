@@ -272,6 +272,13 @@ const SPINE_STDLIB = Object.freeze([
   // renders the <minimap-view> + binds it to the target's <text-view>. Needs
   // custom.lisp (defcustom/defgroup) + commands.lisp, both loaded above.
   'minimap.lisp',
+  // shell.lisp — the `(shell)` command (M-x shell). Just a one-line defcommand
+  // wrapping the spine's `open-shell-buffer!` host primitive (below), which
+  // mints a server-owned shell DATA-SOURCE (kind 'shell') and switches the
+  // active client to it. The pty stays in MAIN (apps/desktop/src/shell.js); the
+  // <shell-view> leaf rides the PANE_TREE like media/jukebox/the minimap. Needs
+  // commands.lisp (defcommand), loaded above.
+  'shell.lisp',
   // auto-pair.lisp — automatic matching-bracket / quote insertion. FULLY
   // model-side: it works over point / buffer-substring / insert! / goto! /
   // delete-region! / delete-backward! and a defcustom (*auto-pair*). Its
@@ -1214,6 +1221,13 @@ export function createSpine(options, effects = {}) {
         currentPaneModel().toggleFocusedMinimap(side, width);
         return NIL;
       },
+      // (open-shell-buffer!) — open a fresh shell VIEW (M-x shell). Mints a
+      // server-owned 'shell' data-source (a server-stable sessionId + the
+      // active document's directory as cwd) and switches the active client to
+      // it; the <shell-view> leaf then rides the PANE_TREE. The pty itself runs
+      // in MAIN (shell.js), keyed by the sessionId — the server never touches
+      // the process. Returns the new source id (the command ignores it).
+      'open-shell-buffer!': () => openShell(),
 
       // --- system clipboard (kill.lisp) — STUB (server-local) ----------
       // The kill ring's *internal* state is real shared interpreter state
@@ -2243,6 +2257,41 @@ export function createSpine(options, effects = {}) {
     const existing = dataSources.list()
       .find((d) => d.kind === 'jukebox' && d.state && d.state.dir === dir);
     const src = existing ?? dataSources.add({ kind: 'jukebox', name, state });
+    switchClientToSource(activeClientIndex, src.id);
+    statusText = '';
+    onStatus('');
+    return src.id;
+  }
+
+  // A monotonic counter for shell display names (*shell*, *shell*<2>, …). Each
+  // (shell) call mints a FRESH shell (its own pty) — no dedup, unlike media.
+  let shellSeq = 0;
+
+  /**
+   * Open a fresh SHELL data-source for the active client (M-x shell). Unlike
+   * media/jukebox there is no dedup — every call is a new terminal with its own
+   * long-lived process. The data-source is FILE-LESS; its `state` carries:
+   *   - `sessionId` — server-minted + stable (tied to the data-source id). The
+   *     renderer keys MAIN's pty IPC (`shell:spawn`/`write`/`resize`/`kill`) by
+   *     it; the server itself never touches the process.
+   *   - `cwd` — the active document's directory (resolved here, server-side,
+   *     since the client's interpreter is inert), so the shell opens where you
+   *     are. Empty when the active buffer has no file (main falls back to $HOME).
+   * Switches the active client's focused leaf to it (like openJukebox). Returns
+   * the source id.
+   *
+   * @returns {string}
+   */
+  function openShell() {
+    shellSeq += 1;
+    const cwd = activeEntry && activeEntry.filePath
+      ? dirname(activeEntry.filePath)
+      : '';
+    const name = shellSeq === 1 ? '*shell*' : `*shell*<${shellSeq}>`;
+    const src = dataSources.add({ kind: 'shell', name, state: { cwd } });
+    // sessionId is tied to the (unique) data-source id so it's stable + server-
+    // owned; mutate the state object we just seeded (descriptor returns it live).
+    src.state.sessionId = src.id;
     switchClientToSource(activeClientIndex, src.id);
     statusText = '';
     onStatus('');

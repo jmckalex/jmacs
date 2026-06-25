@@ -1975,6 +1975,7 @@ function hideInactiveSingletons() {
   hideInactiveDocs();
   hideInactivePlaceholders();
   hideInactiveElementHosts();
+  hideInactiveShells();
 }
 
 /** Switch to the view at INDEX: dispatch through mountKindView to
@@ -6023,6 +6024,7 @@ if (window.host && window.host.serverMode) {
       const elementKind = w.viewKind === 'element';
       const jukeboxKind = w.viewKind === 'jukebox';
       const bookmarkKind = w.viewKind === 'bookmark';
+      const shellKind = w.viewKind === 'shell';
       let extras;
       if (bookmarkKind) {
         // The outline of a text buffer's bookmarks. The server holds the records
@@ -6045,6 +6047,23 @@ if (window.host && window.host.serverMode) {
           fit: s.fit,
           keyboard: s.keyboard,
           noFocus: s.noFocus === true,
+        };
+      } else if (shellKind) {
+        // A SHELL data-source (M-x shell). The server owns the descriptor
+        // (sessionId + cwd, both server-minted); the renderer drives a real pty
+        // in MAIN by `sessionId` via the existing shell:* IPC (the server never
+        // touches the process). `spawned`/`ended` are client-owned flags on the
+        // (persisted) view object — the view is exempt from the switch-away prune
+        // (see reconcileServerPaneTree), so a buffer-switch/split never respawns;
+        // the pty is reaped only when the data-source is closed. Per-instance,
+        // not a singleton: each shell owns its own <shell-view> + xterm + pty, so
+        // several render at once (a split, or a bottom tabline of shells).
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          sessionId: typeof s.sessionId === 'string' ? s.sessionId : w.bufferId,
+          cwd: typeof s.cwd === 'string' ? s.cwd : '',
+          ended: false,
+          spawned: false,
         };
       } else if (directoryKind) {
         extras = { rootPath: w.filePath, expanded: new Set() };
@@ -6082,8 +6101,8 @@ if (window.host && window.host.serverMode) {
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
       // Only media needs an async byte-load; directory / element / jukebox /
-      // bookmark render themselves from the spec / state.
-      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind) {
+      // bookmark / shell render themselves from the spec / state.
+      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind && !shellKind) {
         loadServerMediaSrc(v, w.filePath);
       }
     }
@@ -6459,6 +6478,12 @@ if (window.host && window.host.serverMode) {
     for (const id of [...serverMediaViews.keys()]) {
       if (!shownMedia.has(id)) {
         const v = serverMediaViews.get(id);
+        // A SHELL is a live process: leaving the visible tree (a buffer-switch,
+        // a C-x 0 that collapses its pane, a tab change) must NOT reap it. Keep
+        // the cached view + its <shell-view>/xterm/pty alive (hideInactiveShells
+        // hides the element); it is reaped only when its data-source is actually
+        // closed (reconcileShellSources, driven by the server's live-shell set).
+        if (v && v.kind === 'shell') continue;
         if (v && v.kind === 'bookmark') disposeBookmarkElementForView(v);
         serverMediaViews.delete(id);
       }
@@ -6525,7 +6550,15 @@ if (window.host && window.host.serverMode) {
             // Preserve scroll on a focus/relayout re-point (only reveal on a
             // genuine buffer switch) — never scroll the document on focus.
             try { repointServerTextEl(el, activeChild); } catch { /* ignore */ }
-          } else if (el && typeof el.setBuffer === 'function') {
+          } else if (el && typeof el.setBuffer === 'function' && activeChild.kind !== 'shell') {
+            // Media (image/audio/video/pdf) re-binds via setBuffer so swapping one
+            // media tab in over another re-points the element. A SHELL is NOT
+            // re-bound: its <shell-view> is already bound 1:1 to its pty session
+            // (ensureTabElement set it once), and a redundant setBuffer re-enters
+            // the async ensureTerminal() — racing a SECOND Terminal build, which
+            // leaves the visible grid blank even though the pty spawned and bytes
+            // arrive. This is the tabline-path twin of the ensureShellElementForView
+            // guard; the bare-leaf path has no re-point, which is why it worked.
             try { el.setBuffer(activeChild); } catch { /* ignore */ }
           }
         }
@@ -6549,8 +6582,13 @@ if (window.host && window.host.serverMode) {
         // A bookmark outline re-mounts on EVERY reconcile (its records refresh on
         // fan-out); only focus it when it is the focused leaf, so a `C-x r m`
         // from the document — which refreshes the open outline — doesn't yank
-        // focus off the document. Other media keep the old always-focus behaviour.
-        const focus = !(leaf.view.kind === 'bookmark' && leaf.id !== currentPaneId);
+        // focus off the document. A SHELL follows the same rule: with a shell in a
+        // split beside the document, an unrelated reconcile must not yank the
+        // keyboard into the terminal. Other media keep the old always-focus path.
+        const focus = !(
+          (leaf.view.kind === 'bookmark' || leaf.view.kind === 'shell')
+          && leaf.id !== currentPaneId
+        );
         mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id), focus });
       } else if (leaf.view && leaf.view.kind === 'text') {
         const inst = ensureEditorViewForLeaf(leaf);
@@ -8592,6 +8630,79 @@ function disposeBookmarkElementForView(view) {
   bookmarkElementByView.delete(view);
 }
 
+// --- shell as a per-instance pane view (server mode) ---------------------
+// In server mode each shell data-source owns its OWN <shell-view> element (its
+// own xterm + its own pty session), so several shells render in one window — a
+// split with two shells, or a bottom tabline of shell tabs. The flag-off app
+// keeps the single shared `shellView` singleton (mounted via the singleton path
+// in mountKindView); only `_serverMedia` shell views route to the per-instance
+// path here. Mirrors ensureBookmarkElementForView / the browser + doc views.
+// CRUCIAL: this element is hide-not-kill (a switch-away/split hides it, never
+// destroys it) so the running process + scrollback survive; it is reaped only
+// by disposeShellElementForView when the data-source is actually closed.
+const shellElementByView = new Map();
+
+/** The <shell-view> element for a SERVER-mode shell VIEW — created (configured
+ *  + mounted in PANE-EL) on first use, then reused and re-parented. The pty
+ *  spawns lazily on the element's first setBuffer (when `view.spawned` is
+ *  false); a reused element with `view.spawned` already true just re-attaches
+ *  to the still-running session. */
+function ensureShellElementForView(view, paneEl) {
+  let el = shellElementByView.get(view);
+  if (el) {
+    // Reuse: re-parent only. Do NOT call setBuffer again — the element is
+    // already bound to this view and its xterm + pty are live. In server mode a
+    // shell leaf re-mounts on EVERY reconcile, and a redundant setBuffer re-enters
+    // shell-view's async ensureTerminal() (its `if (term) return` guard doesn't
+    // hold against calls that race before the first `await fonts.ready`), which
+    // builds a second Terminal and can double-spawn/terminate the pty — leaving
+    // the visible grid orphaned + empty. Re-parenting (a DOM move) fires only the
+    // no-op disconnected/connected callbacks, so the running terminal is preserved.
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('shell-view'));
+  el.configure(configureShellView());
+  el.setBuffer(view); // first bind: spawns the pty lazily (view.spawned → true)
+  if (paneEl) paneEl.append(el);
+  shellElementByView.set(view, el);
+  return el;
+}
+
+/** Show leaf-direct shell elements whose view is active; hide the rest (do NOT
+ *  destroy — the pty + grid stay alive). Tabline shell tabs manage their own
+ *  visibility via mountTablineActiveChild. Called from hideInactiveSingletons. */
+function hideInactiveShells() {
+  const active = new Set();
+  for (const leaf of leafPanes(rootPane)) {
+    if (!isTablineView(leaf.view) && leaf.view && leaf.view.kind === 'shell') {
+      active.add(leaf.view);
+    }
+  }
+  for (const [view, el] of shellElementByView) {
+    el.style.display = active.has(view) ? '' : 'none';
+  }
+}
+
+/** Tear down the per-instance <shell-view> bound to VIEW and reap its pty (its
+ *  data-source was closed). disposeKindView's shell arm also calls shellKill;
+ *  doing it here keeps the reap atomic with the element teardown. */
+function disposeShellElementForView(view) {
+  const el = shellElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ } // xterm dispose + IPC unsubscribe
+  el.remove();
+  shellElementByView.delete(view);
+  // Reap the pty in MAIN (the renderer-side destroy() above does NOT kill it).
+  if (typeof view.sessionId === 'string') {
+    try {
+      if (window.host && typeof window.host.shellKill === 'function') {
+        window.host.shellKill(view.sessionId);
+      }
+    } catch { /* process already gone */ }
+  }
+}
+
 // --- documentation as a pane view (per-instance, mirrors the browser) ---
 // A `doc`-kind view shows the navigable manual in a pane (bigger than the
 // utility dock). Each doc view owns its own <doc-view> element so two doc
@@ -9729,6 +9840,19 @@ function mountKindView(view, context) {
     if (!context || context.focus !== false) el.focus();
     return;
   }
+  if (view.kind === 'shell' && view._serverMedia) {
+    // Per-instance in SERVER mode (flag-off keeps the singleton below): each
+    // shell owns its own <shell-view> + xterm + pty, so several render at once
+    // (a split, or — via mountTablineActiveChild, which routes here too — a
+    // bottom tabline of shell tabs). Honor the focus context: a shell
+    // re-mounting on a reconcile must not steal focus from the document.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = (context && context.paneEl) || (leaf ? paneElements.get(leaf.id) : null);
+    const el = ensureShellElementForView(view, paneEl);
+    el.style.display = '';
+    if (!context || context.focus !== false) el.focus();
+    return;
+  }
   if (view.kind === 'minimap') {
     // Per-instance companion: mount THIS minimap's element in its pane, but
     // do NOT focus it — clicks navigate the editor and the keyboard stays
@@ -10207,7 +10331,13 @@ function mountTablineActiveChild(tablineView) {
   // correct dimensions). Non-text tabs don't measure font metrics, so
   // they're safe to create hidden.
   for (const tab of tablineView.tabs) {
-    if (tab.kind !== 'text') ensureTabElement(state, tab);
+    // Skip TEXT (its editor measures the container bounding box, which is zero
+    // under display:none) AND SHELL (xterm measures its host the same way at
+    // term.open — eager creation in a hidden/unsized content area leaves the
+    // canvas renderer stuck at zero cols/rows and it never paints, even though
+    // the pty spawns and bytes arrive). Both are created LAZILY on activation
+    // below, when the content area is visible + sized.
+    if (tab.kind !== 'text' && tab.kind !== 'shell') ensureTabElement(state, tab);
   }
 
   const child = (typeof tablineView.active === 'number' &&
@@ -10282,7 +10412,14 @@ function mountTablineActiveChild(tablineView) {
   // leaf's leaf-direct text-view (when there is one) is only
   // toggled by the path that *changed* the focused leaf's view —
   // not as a side effect of a click in another tabline.
-  const activeEl = state.editorByChild.get(child);
+  //
+  // A SHELL tab is created LAZILY here (it's excluded from the eager loop
+  // above): ensureTabElement now, while the content area is visible + sized, so
+  // the xterm's term.open() measures a real box. Set display:'' explicitly (the
+  // display loop above only iterates already-created elements). Mirrors the text
+  // branch. Other non-text kinds were created eagerly and already in the map.
+  const activeEl = ensureTabElement(state, child);
+  if (activeEl) activeEl.style.display = '';
   state.activeEditor = null;
   state.activeEditorChild = null;
   hideInactiveSingletons();
