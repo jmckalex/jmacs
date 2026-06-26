@@ -890,6 +890,35 @@ function applyIntent(client, intent) {
         activeClient = null;
         return;
       }
+      case INTENT.NOTEBOOK_EVAL: {
+        // The renderer can't eval (CSP forbids unsafe-eval); run the cell in the
+        // spine's Node context and reply to THIS client with the serializable
+        // result. Async — don't block the intent loop; reqId pairs the reply to
+        // the awaiting cell. runNotebookCell never throws, but guard the reply.
+        const reqId = intent.reqId;
+        const source = typeof intent.source === 'string' ? intent.source : '';
+        Promise.resolve(spine.runNotebookCell(source))
+          .then((result) => {
+            try { client.port.postMessage({ type: MSG.NOTEBOOK_RESULT, reqId, result }); }
+            catch { /* client detached */ }
+          })
+          .catch((err) => {
+            try {
+              client.port.postMessage({
+                type: MSG.NOTEBOOK_RESULT,
+                reqId,
+                result: {
+                  state: 'error',
+                  descriptor: { type: 'empty' },
+                  logs: [],
+                  error: { name: 'Error', message: String((err && err.message) || err), stack: '' },
+                },
+              });
+            } catch { /* client detached */ }
+          });
+        activeClient = null;
+        return;
+      }
       default:
         break;
     }

@@ -52,6 +52,10 @@ export const STDLIB_FILES = Object.freeze([
   // A built-in element-view: the bibliography search panel (M-x bib-search) —
   // a self-contained <bib-search> (bundles citation.js) that inserts \cite{…}.
   'element-view-bib-search.lisp',
+  // A built-in element-view: the JavaScript notebook (M-x notebook-js). The
+  // bundled <notebook-js-view> (empty :module); cells eval in the spine's Node
+  // context (renderer can't — CSP), via the NOTEBOOK_EVAL round-trip.
+  'element-view-notebook-js.lisp',
   'panes.lisp',
   'tabline.lisp',
   'minimap.lisp',

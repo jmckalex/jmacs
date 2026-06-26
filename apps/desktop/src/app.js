@@ -6890,6 +6890,16 @@ if (window.host && window.host.serverMode) {
 
   bootServerViewClient = () => {
     if (serverViewClient || !godotServerPort) return;
+    // The JS notebook view (an element-view) evaluates its cells in the spine's
+    // Node context — the renderer can't (CSP forbids unsafe-eval). Expose the
+    // round-trip as a renderer global the bundled <notebook-js-view> reads;
+    // lazy so it works regardless of when serverViewClient finishes connecting.
+    // Flag-off this is never set, so the notebook view falls back to local eval
+    // (which the CSP blocks — the notebook is a GODOT_SERVER=1 feature).
+    window.__godotNotebookEval = (source) =>
+      serverViewClient && typeof serverViewClient.notebookEval === 'function'
+        ? serverViewClient.notebookEval(source)
+        : Promise.reject(new Error('notebook eval needs the server (GODOT_SERVER=1)'));
     serverViewClient = createServerViewClient({
       port: godotServerPort,
       mountView: mountServerView,

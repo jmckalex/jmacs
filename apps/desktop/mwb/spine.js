@@ -46,6 +46,13 @@ import { createBufferPrimitives, createLatexPrimitives } from '@editor/stdlib';
 import { renderModeline, screenfulStep } from './protocol.js';
 import { createBufferRegistry } from './buffer-registry.js';
 import { createDataSourceRegistry } from './data-source.js';
+// JavaScript notebook (M-x notebook-js): cells eval HERE, in the spine's Node
+// context — the renderer can't (CSP forbids unsafe-eval). Pure, Node-safe copies
+// of the renderer modules: the engine runs the AsyncFunction + captures
+// console/error; `inspect` turns the raw value into a SERIALIZABLE descriptor the
+// client materializes (the raw value can't cross the wire).
+import { runCell as runNotebookCellEngine } from './notebook-engine.js';
+import { inspect as inspectNotebookValue } from './notebook-output.js';
 // Bookmarks graduate to the server: the SAME engine the in-renderer app runs
 // (pure / Node-safe — markers + context-relocate, no DOM), one instance per
 // buffer entry. The outline's structural ops (indent/outdent) + document-order
@@ -3813,6 +3820,35 @@ export function createSpine(options, effects = {}) {
     };
   }
 
+  /** Evaluate a JavaScript notebook cell in the spine's Node context (no CSP, so
+   *  AsyncFunction works — the renderer can't eval). Returns a SERIALIZABLE result
+   *  the client renders: the value as a tagged descriptor (the raw value can't
+   *  cross the wire), plus captured console logs and any error. Never throws — a
+   *  cell error is reported in the result. (MVP facade is empty; editor.eval /
+   *  require / cross-cell `cells` are a later phase.) */
+  async function runNotebookCell(source) {
+    let result;
+    try {
+      result = await runNotebookCellEngine(String(source ?? ''), {});
+    } catch (err) {
+      return {
+        state: 'error',
+        descriptor: { type: 'empty' },
+        logs: [],
+        error: { name: 'Error', message: String((err && err.message) || err), stack: '' },
+      };
+    }
+    const descriptor = result.state === 'ok'
+      ? inspectNotebookValue(result.value)
+      : { type: 'empty' };
+    return {
+      state: result.state,
+      descriptor,
+      logs: Array.isArray(result.logs) ? result.logs : [],
+      error: result.error || null,
+    };
+  }
+
   /** @typedef {object} Spine */
   return {
     /** The canonical L2 buffer (read-only access for the server). */
@@ -3941,6 +3977,8 @@ export function createSpine(options, effects = {}) {
     isDataSource: (id) => dataSources.has(id),
     liveProcessSessionsOf,
     openCustomizeScope,
+    // JS notebook: evaluate a cell server-side (Node, no CSP) → serializable result.
+    runNotebookCell,
     killActiveBuffer,
     /** Plain-data buffer-list records for client INDEX's TABS / View List, each
      *  tagged with whether it is that client's CURRENT buffer. Scoped to the

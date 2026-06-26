@@ -79,6 +79,15 @@ export {
   badgeForState,
   moveItem,
 } from './notebook-view.js';
+// The JavaScript notebook (M-x notebook-js). Importing it registers the bundled
+// <notebook-js-view> custom element (defineViewElement) so the element-view can
+// mount it by tag with an empty :module.
+export {
+  NotebookJsView,
+  makeCell as makeNotebookJsCell,
+  serializeNotebook as serializeNotebookJs,
+  parseNotebook as parseNotebookJs,
+} from './notebook-js-view.js';
 export { ViewListView, kindLabel, fileLabel } from './view-list-view.js';
 export { RecoverView, formatAge, recoverFileLabel } from './recover-view.js';
 export {

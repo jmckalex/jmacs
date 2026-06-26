@@ -6223,3 +6223,182 @@ notebook-view,
 .mwb-picker-row:hover {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
+
+/* ── JavaScript notebook (M-x notebook-js) ──────────────────────────────
+   The <notebook-js-view> element-view: a column of JS cells. Styled to the
+   editor chrome — theme variables + color-mix overlays (theme-agnostic, like
+   .customize), so it reads on dark and light themes alike. */
+notebook-js-view {
+  display: block;
+  height: 100%;
+}
+.nbjs-view {
+  height: 100%;
+  overflow: auto;
+  padding: 20px 26px;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+}
+
+.nbjs-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+}
+.nbjs-header .fa-flask {
+  color: var(--accent);
+  opacity: 0.85;
+}
+.nbjs-title {
+  flex: 1 1 auto;
+  font-size: 15px;
+  font-weight: 600;
+}
+.nbjs-run-all,
+.nbjs-add-cell {
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.nbjs-run-all:hover,
+.nbjs-add-cell:hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
+.nbjs-cells {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.nbjs-cell {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+
+.nbjs-gutter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  /* Drop the run/badge to the code row — the name field sits above the editor
+     in the body, so top-aligning the gutter would float ▶ beside the name. */
+  padding-top: 30px;
+}
+.nbjs-badge {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-dim);
+}
+.nbjs-badge-running { color: var(--accent); }
+.nbjs-badge-ok { color: #5fb87f; }
+.nbjs-badge-error { color: var(--error); }
+.nbjs-run {
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.nbjs-run:hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
+.nbjs-cell-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nbjs-name {
+  align-self: flex-start;
+  max-width: 240px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+}
+.nbjs-name::placeholder {
+  color: color-mix(in srgb, var(--fg) 35%, transparent);
+}
+
+.nbjs-editor {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  tab-size: 2;
+}
+.nbjs-editor:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.nbjs-logs {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.nbjs-log-warn { color: color-mix(in srgb, var(--fg) 55%, #e0c060); }
+.nbjs-log-error { color: var(--error); }
+
+.nbjs-output {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.nbjs-output-empty { display: none; }
+.nbjs-output-error { color: var(--error); }
+
+.nbjs-table {
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.nbjs-table th,
+.nbjs-table td {
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  text-align: left;
+}
+.nbjs-table th {
+  color: var(--fg-dim);
+  font-weight: 600;
+}
+
+.nbjs-trunc {
+  color: var(--fg-dim);
+  font-style: italic;
+}
