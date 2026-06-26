@@ -182,6 +182,16 @@
 
 ;; --- resolution -------------------------------------------------------
 
+(define (-theme->name theme)
+  "THEME as a plain string name for the `:default-<theme>` key. Tolerates a
+   SYMBOL (the canonical form) OR a string — `*theme*` can end up either (e.g.
+   set via customize / the REPL), and resolution must not throw on a non-symbol.
+   Anything else falls through to \"dark\" (→ the `:default-dark` fallback)."
+  (cond
+    ((symbol? theme) (symbol->string theme))
+    ((string? theme) theme)
+    (else "dark")))
+
 (define (-face-own-default name theme)
   "The face's OWN per-theme default attributes (no inheritance), straight
    from the registry. The per-theme block is keyed `:default-<theme>`
@@ -196,7 +206,7 @@
         {}
         (let ((own (get entry
                         (string->keyword
-                         (string-append "default-" (symbol->string theme)))
+                         (string-append "default-" (-theme->name theme)))
                         nil)))
           (if (nil? own)
               (get entry :default-dark {})

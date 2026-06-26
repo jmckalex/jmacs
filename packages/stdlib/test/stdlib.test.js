@@ -2815,6 +2815,18 @@ test('current-face-styles returns an alist for every face', async () => {
   assert.ok(keys.includes('slant'));
 });
 
+test('current-face-styles tolerates a non-symbol *theme* (the symbol->string fix)', async () => {
+  const { interpreter } = await editor();
+  // -theme->name maps either form to the `:default-<theme>` key name.
+  assert.equal(interpreter.evaluate("(-theme->name 'solarized-dark)"), 'solarized-dark');
+  assert.equal(interpreter.evaluate('(-theme->name "solarized-dark")'), 'solarized-dark');
+  // *theme* is normally a symbol, but customize / the REPL can set it to a
+  // STRING; resolution must fall through to the matching block, not throw.
+  interpreter.evaluate('(set! *theme* "dark")');
+  const alist = listToArray(interpreter.call('current-face-styles'));
+  assert.ok(alist.length >= 13, 'resolves every face with a string *theme*, no throw');
+});
+
 // --- face overrides (Phase 2) -----------------------------------------
 
 test('set-face-attribute applies a global override the resolver sees', async () => {
