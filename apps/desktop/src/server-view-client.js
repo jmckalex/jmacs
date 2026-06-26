@@ -155,6 +155,11 @@ export function createServerViewClient({
   let connected = false;
   let currentBufferId = null;
   let nextIntentId = 1;
+  // JS notebook: a cell's eval is a round-trip to the spine (Node; the renderer
+  // can't eval under CSP). Each run gets a reqId; the promise resolves when the
+  // matching MSG.NOTEBOOK_RESULT arrives.
+  let nextNotebookReq = 1;
+  const notebookPending = new Map();
 
   // --- the server-driven DOM chrome (server-mode only) -----------------
   // Hooks the caller (app.js) supplies; each missing one is a no-op so the
@@ -576,6 +581,11 @@ export function createServerViewClient({
         break;
       case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs); break;
       case MSG.CUSTOMIZE_SYNC: onCustomizeSyncDom(msg.change); break;
+      case MSG.NOTEBOOK_RESULT: {
+        const resolve = notebookPending.get(msg.reqId);
+        if (resolve) { notebookPending.delete(msg.reqId); resolve(msg.result); }
+        break;
+      }
       case MSG.MINIBUFFER_COMPLETIONS:
         showCompletionsDom({ value: msg.value, items: msg.items, directory: msg.directory });
         break;
@@ -741,6 +751,20 @@ export function createServerViewClient({
     });
   }
 
+  /** Evaluate a JS notebook cell in the spine (Node — the renderer can't eval
+   *  under CSP). Returns a promise of the serializable result
+   *  `{ state, descriptor, logs, error }` (resolved on MSG.NOTEBOOK_RESULT). */
+  function notebookEval(source) {
+    const reqId = nextNotebookReq++;
+    return new Promise((resolve) => {
+      notebookPending.set(reqId, resolve);
+      port.postMessage({
+        type: MSG.INTENT,
+        intent: { id: nextIntentId++, kind: INTENT.NOTEBOOK_EVAL, reqId, source: String(source ?? '') },
+      });
+    });
+  }
+
   return {
     connect,
     dispatchKey,
@@ -773,6 +797,8 @@ export function createServerViewClient({
     customizeOp,
     // Propagate a customize setting change outward (server relays to windows).
     customizeChanged,
+    // Evaluate a JS notebook cell in the spine (Node, no CSP) → serializable result.
+    notebookEval,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the

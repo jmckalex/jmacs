@@ -161,6 +161,11 @@ export const MSG = Object.freeze({
   // doesn't render). The originating window already applied it locally; the
   // receivers update their interpreter + re-apply theme + face styles.
   CUSTOMIZE_SYNC: 'customize-sync',
+  // down: the result of a JS notebook cell evaluated in the spine's Node context
+  // (the renderer can't eval — CSP forbids unsafe-eval). Carries `{ reqId,
+  // result }` where result is a SERIALIZABLE { state, descriptor, logs, error };
+  // the client matches reqId to the pending run and materializes the descriptor.
+  NOTEBOOK_RESULT: 'notebook-result',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -223,6 +228,11 @@ export const INTENT = Object.freeze({
   // windows. Carries `{ op, name?, value?, face?, attr? }`. The originating
   // window already applied it locally (immediate); this just propagates outward.
   CUSTOMIZE_CHANGED: 'customize-changed',
+  // A JS notebook cell wants to run. The renderer can't eval (CSP forbids
+  // unsafe-eval), so the source is sent to the spine, which evaluates it in its
+  // Node context and replies with MSG.NOTEBOOK_RESULT. Carries `{ reqId, source }`
+  // — reqId pairs the async reply to the awaiting cell.
+  NOTEBOOK_EVAL: 'notebook-eval',
 });
 
 /**

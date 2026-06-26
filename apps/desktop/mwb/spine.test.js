@@ -1737,3 +1737,38 @@ test('loadWindowLayout resets the window open-set to exactly its restored buffer
   const shownPaths = spine.bufferListRecords(0).map((r) => r.filePath).filter(Boolean);
   assert.deepEqual(shownPaths, ['/tmp/a.js'], 'only the restored buffer remains in the open-set');
 });
+
+// --- JS notebook: server-side cell eval (M-x notebook-js) --------------------
+// The renderer can't eval (CSP forbids unsafe-eval); cells run HERE in the
+// spine's Node context and return a SERIALIZABLE result the client materializes.
+
+test('runNotebookCell evaluates a value cell → ok + serializable descriptor', async () => {
+  const { spine } = makeSpine('');
+  const r = await spine.runNotebookCell('1 + 1');
+  assert.equal(r.state, 'ok');
+  assert.equal(r.error, null);
+  // A number inspects to a text descriptor "2" (serializable — crosses the wire).
+  assert.ok(r.descriptor && (r.descriptor.text === '2' || r.descriptor.value === 2),
+    'descriptor represents the value 2');
+});
+
+test('runNotebookCell captures console output', async () => {
+  const { spine } = makeSpine('');
+  const r = await spine.runNotebookCell('console.log("hi"); 42');
+  assert.equal(r.state, 'ok');
+  assert.ok(r.logs.some((l) => String(l.text).includes('hi')), 'console.log captured');
+});
+
+test('runNotebookCell supports top-level await (AsyncFunction)', async () => {
+  const { spine } = makeSpine('');
+  const r = await spine.runNotebookCell('await Promise.resolve(7)');
+  assert.equal(r.state, 'ok');
+  assert.ok(r.descriptor.text === '7' || r.descriptor.value === 7);
+});
+
+test('runNotebookCell reports a thrown error instead of throwing', async () => {
+  const { spine } = makeSpine('');
+  const r = await spine.runNotebookCell('throw new Error("boom")');
+  assert.equal(r.state, 'error');
+  assert.equal(r.error.message, 'boom');
+});
