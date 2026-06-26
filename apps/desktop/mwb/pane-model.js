@@ -770,8 +770,13 @@ export function createPaneModel(options = {}, hooks = {}) {
             filePath: meta.filePath ?? null,
           };
           // A non-text (data-source) tab carries its kind so the client mounts
-          // the right element-view / icons the tab.
+          // the right element-view / icons the tab — plus its `state`, so the
+          // ACTIVE tab renders from the same descriptor a bare leaf gets (e.g. a
+          // customize tab needs its scope; without it the view fell back to the
+          // default group).
           if (typeof meta.viewKind === 'string') tab.viewKind = meta.viewKind;
+          if (meta.state && typeof meta.state === 'object'
+              && Object.keys(meta.state).length > 0) tab.state = meta.state;
           return tab;
         });
       }

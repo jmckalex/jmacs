@@ -94,6 +94,24 @@ test('a tabline leaf seeds its curated tabs; a switch ADDS a tab (Step 3c)', () 
   assert.equal(leaf.bufferId, 'b1', 're-activated the existing tab');
 });
 
+test('a tabline tab carries its data-source state on the wire (Step 3c)', () => {
+  // A non-text tab (customize/jukebox/bookmark) renders FROM its state when it
+  // is the active tab. tabMeta supplies kind + state; both must reach the wire,
+  // else the active tab falls back to a default (the customize-shows-godot bug).
+  const model = createPaneModel(
+    { initialBufferId: 'ds1' },
+    {
+      nameForBuffer: (id) => `name-of-${id}`,
+      tabMeta: (id) => ({ name: `name-of-${id}`, viewKind: 'customize', state: { scope: { group: id } } }),
+    }
+  );
+  model.toggleFocusedTabline(true);
+  const leaf = snapshotLeaves(model.snapshot())[0];
+  assert.equal(leaf.tabs[0].viewKind, 'customize', 'the tab carries its kind');
+  assert.deepEqual(leaf.tabs[0].state, { scope: { group: 'ds1' } },
+    'the tab carries its state so the active tab renders the right scope');
+});
+
 test('setFocusedBuffer on a NON-tabline leaf replaces (no tab set) (Step 3c)', () => {
   const { model } = makeModel('b1');
   model.setFocusedBuffer('b2');

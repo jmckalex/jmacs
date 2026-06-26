@@ -695,7 +695,11 @@ export function createSpine(options, effects = {}) {
         // never "modified" (immutable).
         tabMeta: (id) => {
           const ds = id ? dataSources.get(id) : null;
-          if (ds) return { name: ds.name, modified: false, filePath: ds.filePath, viewKind: ds.kind };
+          // Carry the data-source `state` too: a non-text tab (customize/jukebox/
+          // bookmark/…) renders FROM its state when it's the active tab, so the
+          // active tab needs the same descriptor a bare leaf gets. Without it a
+          // customize tab fell back to the default scope (showed the wrong group).
+          if (ds) return { name: ds.name, modified: false, filePath: ds.filePath, viewKind: ds.kind, state: ds.state };
           const e = id ? registry.get(id) : null;
           if (!e) return { name: 'scratch', modified: false, filePath: null };
           return {
