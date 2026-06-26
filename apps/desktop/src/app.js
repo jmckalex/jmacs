@@ -10319,6 +10319,7 @@ function perKindConfigureFactory(kind) {
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
     case 'notebook':          return configureNotebookView;
+    case 'customize':         return configureCustomizeView;
     default:                  return null;
   }
 }
