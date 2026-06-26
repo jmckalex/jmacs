@@ -628,9 +628,8 @@
   "Open the customisation buffer for the single face NAME (a symbol)."
   (open-customize-face! (symbol->string name)))
 
-(defcommand customize-faces ()
-  "Open the customisation buffer scoped to the Faces group."
-  (open-customize-faces!))
+;; `customize-faces` (M-x) now lives in custom.lisp so it resolves server-side
+;; too (the spine loads custom.lisp but not this render-side file).
 
 ;; --- string-keyed mutators for the host -------------------------------
 ;; The renderer (a JS module) speaks strings, not symbols / keywords.

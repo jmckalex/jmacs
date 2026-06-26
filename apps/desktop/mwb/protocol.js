@@ -202,6 +202,15 @@ export const INTENT = Object.freeze({
   // document's point + re-syncs the client. The view never mutates its own copy;
   // it re-renders from the fanned-out state, exactly as it forwards key intents.
   BOOKMARK_OP: 'bookmark-op',
+  // Sub-navigation from the customize VIEW (a 'customize' data-source). The
+  // view's model + value/face edits run client-side (the client's interpreter
+  // holds the defcustom/face registry it renders from); only opening another
+  // SCOPE — a subgroup / variable / face — needs the server, which owns the
+  // leaf. The view sends `{ scope }` ({group|variable|face}); the server
+  // find-or-creates that scope's customize leaf and switches this client to it
+  // (mirror of openScope flag-off). Like BOOKMARK_OP: the view never owns the
+  // pane structure, it just requests it.
+  CUSTOMIZE_OP: 'customize-op',
 });
 
 /**

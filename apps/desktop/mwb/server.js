@@ -862,6 +862,19 @@ function applyIntent(client, intent) {
         activeClient = null;
         return;
       }
+      case INTENT.CUSTOMIZE_OP: {
+        // Sub-navigation from a customize VIEW (openScope): find-or-create the
+        // requested SCOPE's customize leaf and switch this client to it. The
+        // view's model + value/face edits run client-side; only the leaf (pane
+        // structure) is server-owned, so this is all the server does.
+        const scope = (intent.scope && typeof intent.scope === 'object') ? intent.scope : null;
+        if (scope) {
+          spine.openCustomizeScope(scope);
+          resyncClientToCurrentBuffer(client);
+        }
+        activeClient = null;
+        return;
+      }
       default:
         break;
     }

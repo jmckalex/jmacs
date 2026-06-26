@@ -715,6 +715,17 @@ export function createServerViewClient({
     });
   }
 
+  /** Customize sub-navigation (openScope): ask the spine to open SCOPE's
+   *  customize leaf ({group|variable|face}) and switch this client to it. The
+   *  model + value/face edits stay client-side; only the leaf is server-owned. */
+  function customizeOp(scope) {
+    if (!scope || typeof scope !== 'object') return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.CUSTOMIZE_OP, scope },
+    });
+  }
+
   return {
     connect,
     dispatchKey,
@@ -743,6 +754,8 @@ export function createServerViewClient({
     insertText,
     // Send a bookmark-outline edit op (jump/rename/delete/indent/outdent/toggle).
     bookmarkOp,
+    // Customize sub-navigation: open another scope's customize leaf (openScope).
+    customizeOp,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the

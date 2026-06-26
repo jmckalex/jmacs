@@ -6030,6 +6030,7 @@ if (window.host && window.host.serverMode) {
       const jukeboxKind = w.viewKind === 'jukebox';
       const bookmarkKind = w.viewKind === 'bookmark';
       const procViewKind = isProcViewKind(w.viewKind); // shell | gnuplot
+      const customizeKind = w.viewKind === 'customize';
       let extras;
       if (bookmarkKind) {
         // The outline of a text buffer's bookmarks. The server holds the records
@@ -6090,6 +6091,15 @@ if (window.host && window.host.serverMode) {
           // quit (q) stops playback; the pane itself closes via the tabline ×.
           quit: () => { try { audio.stop(); } catch { /* ignore */ } },
         };
+      } else if (customizeKind) {
+        // The customize view: the server leaf carries only the SCOPE
+        // ({group|variable|face}); the (pre-configured singleton) view renders
+        // the model + applies value/face edits from the CLIENT's interpreter,
+        // which holds the same defcustom/face registry. Default = 'godot' group.
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          scope: (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' },
+        };
       } else {
         extras = { filePath: w.filePath };
       }
@@ -6107,7 +6117,8 @@ if (window.host && window.host.serverMode) {
       serverMediaViews.set(w.bufferId, v);
       // Only media needs an async byte-load; directory / element / jukebox /
       // bookmark / shell render themselves from the spec / state.
-      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind && !procViewKind) {
+      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind
+          && !procViewKind && !customizeKind) {
         loadServerMediaSrc(v, w.filePath);
       }
     }
@@ -6122,6 +6133,13 @@ if (window.host && window.host.serverMode) {
       v.sourceName = typeof s.sourceName === 'string' ? s.sourceName : '';
       v.sourceBufferId = s.sourceBufferId ?? null;
       v.pinned = s.pinned === true; // drives the thumbtack (pinned vs following)
+    }
+    // The customize view is likewise mutable: refresh its scope from the wire on
+    // every reconcile so a CUSTOMIZE_OP scope change (openScope) re-renders the
+    // (reused, pre-configured singleton) view at the new scope.
+    if (w.viewKind === 'customize') {
+      const s = (w.state && typeof w.state === 'object') ? w.state : {};
+      v.scope = (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' };
     }
     return v;
   }
@@ -7878,6 +7896,12 @@ function resetFaceFromView(faceName) {
 /** Open a customisation buffer for a scope — a subgroup, a variable,
  *  or a single face. */
 function openCustomScope(scope) {
+  // Server mode: the customize leaf is server-owned — ask the spine to open the
+  // scope's leaf (CUSTOMIZE_OP); it switches this client + the view re-renders.
+  if (serverViewClient) {
+    serverViewClient.customizeOp(scope);
+    return;
+  }
   if (scope.variable) {
     openCustomize(`*Customize: ${scope.variable}*`, scope);
   } else if (scope.face) {

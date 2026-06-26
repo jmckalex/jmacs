@@ -1404,13 +1404,19 @@ export function createSpine(options, effects = {}) {
       // (path) -> "ok" | "error".
       'write-file!': (args) => writeActiveBufferTo(String(args[0] ?? '')),
 
-      // --- customisation openers (custom.lisp) — STUB ------------------
-      // These open a render-side customize view. The `customize` command
-      // resolves; the panel itself is a render-side slice, deferred. None
-      // is called at load time, so loading custom.lisp is unaffected.
-      'open-customize!': () => NIL,
-      'open-customize-group!': () => NIL,
-      'open-customize-variable!': () => NIL,
+      // --- customisation openers (custom.lisp / faces.lisp) ------------
+      // Open a 'customize' data-source leaf carrying the SCOPE (group /
+      // variable / face). The leaf is server-owned (so it lives in PANE_TREE
+      // + survives reconciles), but its model + value/face edits run CLIENT-
+      // side: the client's interpreter holds the same defcustom/face registry
+      // it renders from. openCustomizeScope find-or-creates the scope's leaf +
+      // switches to it (mirror of app.js openCustomScope). See app.js
+      // buildServerMediaView 'customize' + the CUSTOMIZE_OP intent (openScope).
+      'open-customize!': () => openCustomizeScope({ group: 'godot' }),
+      'open-customize-group!': (args) => openCustomizeScope({ group: String(args[0] ?? '') }),
+      'open-customize-variable!': (args) => openCustomizeScope({ variable: String(args[0] ?? '') }),
+      'open-customize-face!': (args) => openCustomizeScope({ face: String(args[0] ?? '') }),
+      'open-customize-faces!': () => openCustomizeScope({ group: 'faces' }),
       'write-custom-file!': () => NIL,
 
       // --- search (search.lisp) ----------------------------------------
@@ -2269,6 +2275,34 @@ export function createSpine(options, effects = {}) {
     const existing = dataSources.list()
       .find((d) => d.kind === 'jukebox' && d.state && d.state.dir === dir);
     const src = existing ?? dataSources.add({ kind: 'jukebox', name, state });
+    switchClientToSource(activeClientIndex, src.id);
+    statusText = '';
+    onStatus('');
+    return src.id;
+  }
+
+  /** The buffer name for a customize SCOPE — mirrors app.js openCustomScope so
+   *  find-or-create keys on a stable per-scope name. */
+  function customizeName(scope) {
+    if (scope.variable) return `*Customize: ${scope.variable}*`;
+    if (scope.face) return `*Customize Face: ${scope.face}*`;
+    if (scope.group === 'faces') return '*Customize: faces*';
+    if (scope.group && scope.group !== 'godot') return `*Customize: ${scope.group}*`;
+    return '*Customize*';
+  }
+
+  /** Open (find-or-create) a 'customize' data-source for SCOPE and switch the
+   *  active client to it. The leaf carries only the scope — the client renders
+   *  the model + applies value/face edits from its own interpreter. Called by
+   *  the open-customize* host primitives AND the CUSTOMIZE_OP intent (openScope
+   *  sub-navigation). Returns the source id. */
+  function openCustomizeScope(scope) {
+    const sc = (scope && typeof scope === 'object') ? scope : { group: 'godot' };
+    const name = customizeName(sc);
+    const existing = dataSources.list()
+      .find((d) => d.kind === 'customize' && d.name === name);
+    const src = existing ?? dataSources.add({ kind: 'customize', name, state: { scope: sc } });
+    src.state.scope = sc; // refresh a reused leaf's scope (descriptor returns it live)
     switchClientToSource(activeClientIndex, src.id);
     statusText = '';
     onStatus('');
@@ -3753,6 +3787,7 @@ export function createSpine(options, effects = {}) {
      *  would rebuild + scroll a document shown in a sibling pane. */
     isDataSource: (id) => dataSources.has(id),
     liveProcessSessionsOf,
+    openCustomizeScope,
     killActiveBuffer,
     /** Plain-data buffer-list records for client INDEX's TABS / View List, each
      *  tagged with whether it is that client's CURRENT buffer. Scoped to the
