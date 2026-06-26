@@ -957,6 +957,15 @@ test('viewState reports the major-mode name + math-preview-active flag', () => {
   assert.equal(spine.viewStateOf(0).majorModeName, 'Markdown');
   assert.equal(spine.viewStateOf(0).mathPreviewActive, false);
 
+  // The mode MENU rides the VIEW too, computed server-side (the client's own
+  // interpreter is inert) so the macOS app menu can follow the buffer's mode.
+  const menu = spine.viewStateOf(0).modeMenu;
+  assert.ok(menu, 'the server computes a mode menu for a text buffer');
+  assert.equal(menu.label, 'Markdown', 'the menu is for the focused buffer mode');
+  assert.ok(Array.isArray(menu.entries) && menu.entries.length > 0,
+    'the menu carries the mode keymap entries');
+  assert.ok(Array.isArray(menu.sections), 'and the structured sections');
+
   spine.runCommand('toggle-math-preview'); // enable on this buffer
   assert.equal(spine.viewStateOf(0).mathPreviewActive, true,
     'the server reports math-preview-mode on once toggled');

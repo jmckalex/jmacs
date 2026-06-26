@@ -1698,6 +1698,44 @@ export function createSpine(options, effects = {}) {
     (define (mode-menu-sections-for mode-name)
       (get *mode-menu-sections* mode-name nil))
 
+    ;; The menu QUERY functions (menus.lisp — not loaded; pure data). The spine
+    ;; computes the FOCUSED buffer's mode menu and ships it in the view-state, so
+    ;; a server-mode client's macOS menu follows the buffer's mode (the client's
+    ;; own interpreter is inert). Verbatim from menus.lisp; they resolve the
+    ;; keymap accessors (modes.lisp, loaded below) at call time.
+    (define (-flatten-keymap keymap prefix)
+      (reduce
+        (lambda (entries key)
+          (let ((binding (get keymap key nil))
+                (sequence (if (= (string-length prefix) 0)
+                              key
+                              (str prefix " " key))))
+            (cond
+              ((map? binding) (append entries (-flatten-keymap binding sequence)))
+              ((symbol? binding) (append entries (list (cons sequence binding))))
+              (else entries))))
+        (list)
+        (keys keymap)))
+    (define (-command-doc name)
+      (let ((info (doc (eval name))))
+        (if (string? info) info "")))
+    (define (mode-menu-entries)
+      (let ((keymaps (append (minor-mode-keymaps) (list (major-mode-keymap)))))
+        (map (lambda (entry)
+               (list (car entry) (symbol->string (cdr entry)) (-command-doc (cdr entry))))
+             (reduce (lambda (entries keymap)
+                       (if (nil? keymap) entries (append entries (-flatten-keymap keymap ""))))
+                     (list) keymaps))))
+    (define (mode-menu-sections-resolved)
+      (let ((sections (mode-menu-sections-for (major-mode-name))))
+        (if (nil? sections)
+            (list)
+            (map (lambda (section)
+                   (cons (car section)
+                         (map (lambda (leaf) (list (car leaf) (symbol->string (cdr leaf))))
+                              (cdr section))))
+                 sections))))
+
     ;; *prefix-arg* — the C-u universal-argument state (keymap.lisp owns it in
     ;; production; that file is render-heavy and not loaded). panes.lisp reads
     ;; it to decide a split's side ('after with no prefix, 'before with C-u).
@@ -3250,16 +3288,54 @@ export function createSpine(options, effects = {}) {
    *  binding. Read-only (no buffer text touched), so the round-trip is safe.
    *  This keeps a window's modeline mode correct even when another window on
    *  a different buffer is the active one. */
-  function majorModeNameFor(entry, v) {
-    if (entry === activeEntry) return majorModeName();
+  // The mode menu (flat entries + structured sections) the renderer needs to
+  // build the macOS menu, computed under the active binding. The client's own
+  // interpreter is inert under GODOT_SERVER=1, so the menu — like majorModeName
+  // — is only knowable here. Cached by mode display name (the menu depends only
+  // on the mode's keymaps + registered sections, which don't change after load),
+  // so the per-view keymap walk happens once per mode.
+  const modeMenuCache = new Map();
+  function computeModeMenuBound() {
+    try {
+      const raw = listToArray(interpreter.call('mode-menu-entries'));
+      if (raw.length === 0) return null;
+      const entries = raw.map((e) => listToArray(e).map((x) => String(x)));
+      const sections = listToArray(
+        interpreter.call('mode-menu-sections-resolved')
+      ).map((s) => {
+        const a = listToArray(s);
+        return [String(a[0]), ...a.slice(1).map((leaf) => listToArray(leaf).map((x) => String(x)))];
+      });
+      return { entries, sections };
+    } catch {
+      return null;
+    }
+  }
+
+  /** The major-mode display name AND mode menu a SPECIFIC entry would show.
+   *  Binds the entry once (like the old majorModeNameFor) and derives both, so a
+   *  background window/pane on another buffer reports the right mode + menu with
+   *  a single read-only round-trip. */
+  function modeInfoFor(entry, v) {
+    const build = () => {
+      const name = majorModeName();
+      let menu = modeMenuCache.get(name);
+      if (menu === undefined) {
+        const data = computeModeMenuBound();
+        menu = data ? { label: name, entries: data.entries, sections: data.sections } : null;
+        modeMenuCache.set(name, menu);
+      }
+      return { name, menu };
+    };
+    if (entry === activeEntry) return build();
     const savedEntry = activeEntry;
     const savedView = view;
     bindActive(entry, v);
     try {
       interpreter.call('-spine-choose-major-mode');
-      return majorModeName();
+      return build();
     } catch {
-      return '';
+      return { name: '', menu: null };
     } finally {
       bindActive(savedEntry, savedView);
       interpreter.call('-spine-choose-major-mode');
@@ -3331,6 +3407,7 @@ export function createSpine(options, effects = {}) {
         name: ds.name,
         // A data-source leaf has no text major mode and never typesets math.
         majorModeName: '',
+        modeMenu: null,
         mathPreviewActive: false,
         modeline: renderModeline({ name: ds.name, modified: false, line: 1, column: 0, mode: ds.kind }),
         status: statusText,
@@ -3347,12 +3424,15 @@ export function createSpine(options, effects = {}) {
     // a client under GODOT_SERVER=1 can pick the math scanner provider + decide
     // whether to typeset — its own interpreter is inert, so the buffer's
     // minor-mode/major-mode state is only knowable from the server.
-    const modeName = majorModeNameFor(entry, v);
+    const { name: modeName, menu: modeMenu } = modeInfoFor(entry, v);
     return {
       point: v.point,
       mark: v.mark,
       name: buf.name,
       majorModeName: modeName,
+      // The focused buffer's mode menu, computed server-side (the client's
+      // interpreter is inert) so the macOS app menu can follow the buffer's mode.
+      modeMenu,
       mathPreviewActive: bufferHasMathPreview(buf),
       modeline: renderModeline({
         name: buf.name, modified, line: line + 1, column,

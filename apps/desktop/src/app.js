@@ -6789,10 +6789,14 @@ if (window.host && window.host.serverMode) {
     // The server bakes the modeline string (renderModeline). Show it whole in
     // the name slot; the line:col is already inside the string, so the position
     // slot is cleared (the server is authoritative for it now).
-    setModeline: (modeline) => {
+    setModeline: (modeline, v) => {
       nameEl.textContent = modeline;
       positionEl.textContent = '';
       document.title = `${modeline} — Godot`;
+      // The server computes the focused buffer's mode menu (the client's own
+      // interpreter is inert under GODOT_SERVER=1) and ships it in the view-state;
+      // forward it to the macOS app menu so the menu follows the buffer's mode.
+      if (v && 'modeMenu' in v) applyServerModeMenu(v.modeMenu);
     },
     // A customize setting changed in ANOTHER window — re-apply it here so global
     // rendering (theme / faces / line-height) stays consistent across windows.
@@ -7229,6 +7233,23 @@ let lastModeMenuJson = null;
 function refreshModeMenu() {
   if (!keymapReady) return;
   const menu = currentModeMenu();
+  const json = JSON.stringify(menu);
+  if (json === lastModeMenuJson) return;
+  lastModeMenuJson = json;
+  window.host.setModeMenu(menu);
+}
+
+/** Forward a SERVER-computed mode menu (carried in the view-state) to the macOS
+ *  app menu. Under GODOT_SERVER=1 the focused buffer + its mode live on the
+ *  server, so the spine computes the menu and ships `{label, entries, sections}`;
+ *  the local interpreter can't (it's inert). Built with the same builder as the
+ *  local path and dedup'd via lastModeMenuJson. Called on every view-state
+ *  update (mode switch, pane/buffer switch). */
+function applyServerModeMenu(data) {
+  if (!keymapReady) return;
+  const menu = data
+    ? { label: data.label, items: buildModeMenuItems(data.entries, data.sections) }
+    : null;
   const json = JSON.stringify(menu);
   if (json === lastModeMenuJson) return;
   lastModeMenuJson = json;
