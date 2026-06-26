@@ -71,45 +71,29 @@
   (read-next-key
     (lambda (key) (-isearch-handle-key key query dir origin cur))))
 
-;; --- match overlays (lazy-highlight) ----------------------------------
-;; Light up every match of the query: the CURRENT one (the match starting at
-;; CUR) with the bright `isearch` face, the rest with the light `search-match`
-;; face. Overlay kind "isearch", independent of M-s h's "search" overlays.
-(define (-isearch-overlay-loop text query n from cur)
-  (let ((found (string-index-of text query from)))
-    (cond
-      ((< found 0) nil)
-      (else
-        (add-overlay! found (+ found n)
-                      (if (and (number? cur) (= found cur)) "isearch" "search-match")
-                      "isearch")
-        (-isearch-overlay-loop text query n (+ found n) cur)))))
-
-(define (-isearch-overlay-matches query cur)
-  "Refresh the isearch overlays for QUERY (CUR = the current match start, or
-   nil). Clears the previous set first; an empty query just clears."
-  (clear-overlays! "isearch")
-  (when (> (string-length query) 0)
-    (-isearch-overlay-loop (buffer-text) query (string-length query) 0 cur)))
-
-;; Refresh the overlays for the new state, then prompt + read the next key.
-;; Kept distinct from -isearch-start's bare -isearch-step so the loop-START
-;; path — which the stdlib harness exercises WITHOUT the overlay primitives —
-;; never touches overlays; only typing / repeating / exiting does.
+;; Refresh the match highlight for the new state, then prompt + read the next
+;; key. The highlight is host-side (isearch-highlight!): the CURRENT match (the
+;; match starting at CUR) is lit IMMEDIATELY with the bright `isearch` face,
+;; while the LAZY matches (the rest, face `search-match`) are rebuilt DEBOUNCED
+;; and WINDOWED to the viewport — so typing in / repeating through a long buffer
+;; stays smooth and C-s doesn't flicker the whole set. Kept distinct from
+;; -isearch-start's bare -isearch-step so the loop-START path — which the stdlib
+;; harness exercises WITHOUT the overlay primitives — never touches overlays;
+;; only typing / repeating / exiting does.
 (define (-isearch-continue query dir origin cur)
-  (-isearch-overlay-matches query cur)
+  (isearch-highlight! query (if (number? cur) cur -1))
   (-isearch-step query dir origin cur))
 
 (define (-isearch-handle-key key query dir origin cur)
   (cond
     ;; Exit at the current match — release the keyboard (no re-arm).
     ((or (eq? key "enter") (eq? key "escape"))
-     (clear-overlays! "isearch")
+     (isearch-highlight-clear!)
      (clear-status!))
     ;; Abort — restore the origin point.
     ((eq? key "C-g")
      (goto! origin)
-     (clear-overlays! "isearch")
+     (isearch-highlight-clear!)
      (clear-status!))
     ;; Repeat forward / backward (switching direction if needed).
     ((eq? key "C-s")
@@ -134,7 +118,7 @@
        (-isearch-continue q2 dir origin (-isearch-research q2 dir origin))))
     ;; Any other key ends the search at the current match.
     (else
-      (clear-overlays! "isearch")
+      (isearch-highlight-clear!)
       (clear-status!))))
 
 (define (-isearch-start dir)

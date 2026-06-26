@@ -100,36 +100,47 @@ test('isearch-forward: backspace shrinks the query', () => {
   assert.equal(spine.buffer.point, 7);
 });
 
-test('isearch-forward: highlights every match; the current one with the isearch face', () => {
+test('isearch-forward: lights the current match IMMEDIATELY with the isearch face', () => {
   const { spine } = makeSpine('cat dog cat'); // 'cat' at 0 and 8
   spine.buffer.moveTo(0);
   spine.handleKey('C-s');
   for (const ch of 'cat') spine.handleKey(ch); // current match at 0 (point 3)
-  const ov = spine.overlaySnapshot().filter((o) => o.kind === 'isearch');
-  assert.equal(ov.length, 2, 'both matches are highlighted');
-  const current = ov.find((o) => o.face === 'isearch');
-  const lazy = ov.find((o) => o.face === 'search-match');
-  assert.ok(current && current.start === 0 && current.end === 3,
+  const cur = spine.overlaySnapshot().filter((o) => o.kind === 'isearch-current');
+  assert.equal(cur.length, 1, 'exactly one current-match overlay (immediate, no debounce)');
+  assert.ok(cur[0].start === 0 && cur[0].end === 3 && cur[0].face === 'isearch',
     'the current match (0..3) wears the bright isearch face');
-  assert.ok(lazy && lazy.start === 8 && lazy.end === 11,
-    'the other match wears the light search-match face');
-  // The current-match overlay tracks C-s: repeating moves `isearch` to match 8.
+  // C-s moves the current overlay WITHOUT rebuilding the whole set (no flicker).
   spine.handleKey('C-s');
-  const after = spine.overlaySnapshot().filter((o) => o.face === 'isearch');
-  assert.ok(after.length === 1 && after[0].start === 8, 'isearch face follows the current match');
-  // Exit clears the whole set.
+  const after = spine.overlaySnapshot().filter((o) => o.kind === 'isearch-current');
+  assert.ok(after.length === 1 && after[0].start === 8, 'the current overlay follows C-s');
+  // Exit clears it.
   spine.handleKey('enter');
-  assert.equal(spine.overlaySnapshot().filter((o) => o.kind === 'isearch').length, 0,
-    'exiting clears the match overlays');
+  assert.equal(spine.overlaySnapshot().filter((o) => o.kind === 'isearch-current').length, 0,
+    'exit clears the current overlay');
 });
 
-test('isearch-forward: C-g clears the match overlays', () => {
+test('isearch-forward: the lazy highlight is DEBOUNCED + windowed (the other matches)', async () => {
+  const { spine } = makeSpine('cat dog cat'); // 'cat' at 0 and 8
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-s');
+  for (const ch of 'cat') spine.handleKey(ch); // current at 0
+  // Not built per-keystroke — that was the bog-down. Nothing lazy yet.
+  assert.equal(spine.overlaySnapshot().filter((o) => o.kind === 'isearch-lazy').length, 0,
+    'lazy overlays are not constructed synchronously');
+  await new Promise((resolve) => setTimeout(resolve, 400)); // let the debounce fire
+  const lazy = spine.overlaySnapshot().filter((o) => o.kind === 'isearch-lazy');
+  assert.equal(lazy.length, 1, 'the OTHER match is lazily highlighted (current excluded)');
+  assert.ok(lazy[0].start === 8 && lazy[0].face === 'search-match',
+    'the non-current match (8) wears the light search-match face');
+});
+
+test('isearch-forward: C-g clears the overlays + cancels the pending lazy build', async () => {
   const { spine } = makeSpine('cat dog cat');
   spine.buffer.moveTo(0);
   spine.handleKey('C-s');
   for (const ch of 'cat') spine.handleKey(ch);
-  assert.ok(spine.overlaySnapshot().some((o) => o.kind === 'isearch'), 'highlighted while searching');
-  spine.handleKey('C-g');
-  assert.equal(spine.overlaySnapshot().filter((o) => o.kind === 'isearch').length, 0,
-    'abort clears the match overlays');
+  spine.handleKey('C-g'); // abort: clears current + cancels the debounce timer
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(spine.overlaySnapshot().length, 0,
+    'no isearch overlays survive the abort (the lazy timer was cancelled)');
 });

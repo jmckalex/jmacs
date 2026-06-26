@@ -896,6 +896,10 @@ export function createSpine(options, effects = {}) {
     return entry ? registry.overlaySnapshot(entry) : [];
   }
 
+  // Pending debounced isearch lazy-highlight rebuild (isearch-highlight!). One
+  // timer; each keystroke/repeat resets it, so the (windowed) lazy overlays are
+  // built only when the keys settle — never per-keystroke on a long buffer.
+  let isearchLazyTimer = null;
 
   // --- the interpreter --------------------------------------------------
   const interpreter = createInterpreter({
@@ -1280,6 +1284,71 @@ export function createSpine(options, effects = {}) {
       },
       // (overlay-count) -> integer (the live, non-collapsed count).
       'overlay-count': () => overlaySnapshot().length,
+
+      // --- isearch highlighting (current immediate + lazy debounced) ---
+      // (isearch-highlight! query curStart) -> nil. Sets the CURRENT match
+      // overlay synchronously (kind 'isearch-current', face 'isearch') so it
+      // follows point with no full-set flicker, and (re)schedules a DEBOUNCED
+      // rebuild of the LAZY overlays (kind 'isearch-lazy', face 'search-match')
+      // limited to a WINDOW around point sized by the client's viewport — so
+      // typing in / repeating through a long buffer never constructs hundreds of
+      // overlays per keystroke. CURSTART < 0 = no current match.
+      'isearch-highlight!': (args) => {
+        const query = String(args[0] ?? '');
+        const cur = Number.isFinite(Number(args[1])) ? Math.floor(Number(args[1])) : -1;
+        const n = query.length;
+        // 1. The current match — immediate (one overlay; point already moved).
+        registry.clearOverlays(activeEntry, 'isearch-current');
+        if (n > 0 && cur >= 0) {
+          registry.addOverlay(activeEntry, cur, cur + n, 'isearch', 'isearch-current');
+        }
+        // 2. The lazy matches — debounced: rapid typing / C-s keeps resetting
+        //    the timer, so the (windowed) set is rebuilt only once the keys
+        //    settle. That kills both the per-keystroke bog-down and the
+        //    full-set flicker on C-s (the lazy set isn't touched until then).
+        if (isearchLazyTimer) { clearTimeout(isearchLazyTimer); isearchLazyTimer = null; }
+        if (n === 0) {
+          registry.clearOverlays(activeEntry, 'isearch-lazy');
+          onOverlays();
+          return NIL;
+        }
+        onOverlays(); // fan the current-overlay move now
+        const entry = activeEntry;
+        isearchLazyTimer = setTimeout(() => {
+          isearchLazyTimer = null;
+          if (!entry) return;
+          const text = buffer.text;
+          const point = buffer.point;
+          // A WINDOW around point — NOT the whole buffer — so a long file never
+          // builds thousands of overlays. point is always in the viewport during
+          // isearch, so ±HALF chars (~120 lines each side) comfortably covers the
+          // visible region + scroll margin. Bounded + capped (≤ 400 below).
+          const HALF = 8000;
+          const lo = Math.max(0, point - HALF);
+          const hi = Math.min(text.length, point + HALF);
+          registry.clearOverlays(entry, 'isearch-lazy');
+          let from = lo;
+          let count = 0;
+          while (count < 400) {
+            const i = text.indexOf(query, from);
+            if (i < 0 || i >= hi) break;
+            if (i !== cur) registry.addOverlay(entry, i, i + n, 'search-match', 'isearch-lazy');
+            from = i + n;
+            count += 1;
+          }
+          onOverlays();
+        }, 300);
+        return NIL;
+      },
+      // (isearch-highlight-clear!) -> nil. Clear both isearch overlay kinds +
+      // cancel any pending lazy rebuild (the search exited / aborted).
+      'isearch-highlight-clear!': () => {
+        if (isearchLazyTimer) { clearTimeout(isearchLazyTimer); isearchLazyTimer = null; }
+        registry.clearOverlays(activeEntry, 'isearch-current');
+        registry.clearOverlays(activeEntry, 'isearch-lazy');
+        onOverlays();
+        return NIL;
+      },
 
       // --- multi-buffer host helpers -----------------------------------
       // open-buffer-list! signals the host to send the active client the
