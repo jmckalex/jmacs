@@ -74,6 +74,13 @@ let mainWindow = null;
  *  window. Empty + untouched in the flag-off build. */
 const windows = new Set();
 
+/** G4.3: the last mode-menu each window sent, keyed by `webContents.id`. The
+ *  macOS app menu is global, so only the FOCUSED window's menu is applied; a
+ *  background window's spec is held here and re-applied when it regains focus.
+ *  Flag-off (single window) keeps last-writer-wins behaviour — that one window
+ *  is always the focused one. */
+const windowMenuSpecs = new Map();
+
 /** The window a menu command / quit confirm should target: the focused one,
  *  falling back to `mainWindow` (e.g. during quit, when nothing is focused).
  *  Only consulted in server mode. */
@@ -191,6 +198,15 @@ function createWindow(opts = {}) {
     };
     win.on('resize', scheduleBoundsReport);
     win.on('move', scheduleBoundsReport);
+    // G4.3: gaining focus makes the global app menu THIS window's menu. (No
+    // stored spec yet — a just-opened window — leaves the current menu; it
+    // sends its own menu:set on boot.)
+    win.on('focus', () => {
+      const spec = windowMenuSpecs.get(win.webContents.id);
+      if (spec) {
+        buildAppMenu(spec, dispatchMenuCommand, { canNewWindow: isServerMode() });
+      }
+    });
   }
 
   // The red traffic-light button closes the window directly, which (like
@@ -218,8 +234,10 @@ function createWindow(opts = {}) {
   // destroyed window. Flag-off (single window) never adds this listener, so
   // its lifecycle is unchanged.
   if (isServerMode()) {
+    const wcId = win.webContents.id; // capture now; gone after 'closed'
     win.on('closed', () => {
       windows.delete(win);
+      windowMenuSpecs.delete(wcId); // G4.3: drop the closed window's menu spec
       if (mainWindow === win) {
         mainWindow = windows.values().next().value ?? null;
       }
@@ -294,8 +312,17 @@ app.whenReady().then(() => {
   );
   // The renderer sends the current buffer's mode menu; rebuild the
   // application menu around it as the buffer's mode changes.
-  ipcMain.on('menu:set', (_event, modeMenu) => {
-    buildAppMenu(modeMenu, dispatchMenuCommand, { canNewWindow: isServerMode() });
+  ipcMain.on('menu:set', (event, modeMenu) => {
+    // G4.3: the app menu follows the focused window. Store this window's menu;
+    // apply it only if this window is focused (or nothing is focused — e.g. the
+    // app is backgrounded — so the menu isn't left stale). Flag-off has one
+    // window, which is the focused one, so this stays last-writer-wins.
+    const id = event.sender.id;
+    windowMenuSpecs.set(id, modeMenu);
+    const focused = BrowserWindow.getFocusedWindow();
+    if (!focused || focused.webContents.id === id) {
+      buildAppMenu(modeMenu, dispatchMenuCommand, { canNewWindow: isServerMode() });
+    }
   });
 
   // G1: behind GODOT_SERVER=1 only, fork the Model-B server utilityProcess so a
