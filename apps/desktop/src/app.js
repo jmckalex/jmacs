@@ -7858,12 +7858,24 @@ function rerenderAllEditors() {
   forEachMinimapElement((el) => el.invalidateColors());
 }
 
+/** Re-apply ALL of this window's customize-driven rendering from its (current)
+ *  interpreter: the theme CSS vars, the resolved face styles, and an editor
+ *  re-render (a highlight-rule change adds/removes spans). Used by every
+ *  customize edit AND the cross-window sync, so a change renders the same in the
+ *  window that made it and in every other window — not just for *theme*. Safe to
+ *  call any time now that current-face-styles tolerates any *theme*. */
+function reapplyCustomizeRendering() {
+  applyCurrentTheme();
+  applyCurrentFaceStyles();
+  rerenderAllEditors();
+}
+
 /** Apply a setting for the session — a value, quote-wrapped to survive
  *  its type. */
 function applyCustomSetting(name, value) {
   const valueSrc = writeString(value);
   interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
-  if (name === '*theme*') applyCurrentTheme();
+  reapplyCustomizeRendering();
   // Propagate the Lisp SOURCE (a string), not the raw value: a custom value can
   // be a Lisp symbol (e.g. a theme name), which doesn't survive structured-clone
   // over the wire (it arrives as a plain {name}); the source reconstructs it.
@@ -7874,14 +7886,14 @@ function applyCustomSetting(name, value) {
 function saveCustomSetting(name, value) {
   const valueSrc = writeString(value);
   interpreter.evaluate(`(custom-apply-and-save! (quote ${name}) (quote ${valueSrc}))`);
-  if (name === '*theme*') applyCurrentTheme();
+  reapplyCustomizeRendering();
   propagateCustomize({ op: 'save', name, valueSrc });
 }
 
 /** Reset a setting to its default value. */
 function resetCustomSetting(name) {
   interpreter.evaluate(`(custom-reset! (quote ${name}))`);
-  if (name === '*theme*') applyCurrentTheme();
+  reapplyCustomizeRendering();
   propagateCustomize({ op: 'reset', name });
 }
 
@@ -7918,25 +7930,19 @@ function propagateCustomize(change) {
 }
 
 /** Apply a customize change that originated in ANOTHER window (the relay):
- *  update THIS window's interpreter to match + re-render, EXACTLY mirroring the
- *  matching local edit callback (so both windows behave identically) — never the
- *  local persist, and never re-broadcasts. We deliberately do NOT blanket-call
- *  applyCurrentFaceStyles here: the local theme path doesn't either (its
- *  applyCurrentTheme theme-listeners cover faces), and calling it directly trips
- *  a `current-face-styles` symbol→string error in this state. */
+ *  update THIS window's interpreter to match, then re-render the same way the
+ *  local edit does (reapplyCustomizeRendering) so the windows stay identical.
+ *  Uses valueSrc — the originator's Lisp SOURCE — verbatim, so a symbol value
+ *  reconstructs as a symbol (not the wire-mangled {name}). Never re-persists
+ *  (the originator already saved) and never re-broadcasts. */
 function applyCustomizeSync(change) {
   if (!change || typeof change !== 'object' || !keymapReady) return;
   try {
     const { op, name, valueSrc, face, attr } = change;
     if (op === 'apply' || op === 'save') {
-      // valueSrc is the originating window's Lisp SOURCE, used verbatim — so a
-      // symbol value reconstructs as a symbol, not the wire-mangled {name}.
-      // (Receivers apply but never re-persist — the originator already saved.)
       interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
-      if (name === '*theme*') applyCurrentTheme();
     } else if (op === 'reset') {
       interpreter.evaluate(`(custom-reset! (quote ${name}))`);
-      if (name === '*theme*') applyCurrentTheme();
     } else if (op === 'set-face') {
       interpreter.evaluate(
         `(set-face-attribute-by-strings ${writeString(face)} ${writeString(attr)} ${valueSrc})`
@@ -7947,6 +7953,7 @@ function applyCustomizeSync(change) {
   } catch (error) {
     repl.appendError(`customize-sync: ${error.lispMessage ?? error.message}`);
   }
+  reapplyCustomizeRendering();
 }
 
 /** Open a customisation buffer for a scope — a subgroup, a variable,
