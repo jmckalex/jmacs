@@ -1413,23 +1413,12 @@ export function createSpine(options, effects = {}) {
       'open-customize-variable!': () => NIL,
       'write-custom-file!': () => NIL,
 
-      // --- search (search.lisp) — STUB (the isearch loop is host-owned) -
-      // `isearch-forward`/`isearch-backward` just BEGIN an incremental
-      // search; the per-keystroke match + highlight + minibuffer loop
-      // lives in the host. Server-side that is a render-message slice of
-      // its own (a server search state machine + a client overlay). For
-      // now the commands resolve and surface a status so the wiring is
-      // visible, then no-op. See PRIMITIVE-SPLIT.md "Search".
-      'start-search!': () => {
-        statusText = 'I-search: temporarily unavailable in server-mode (being rebuilt)';
-        onStatus(statusText);
-        return NIL;
-      },
-      'start-search-backward!': () => {
-        statusText = 'I-search backward: temporarily unavailable in server-mode (being rebuilt)';
-        onStatus(statusText);
-        return NIL;
-      },
+      // --- search (search.lisp) ----------------------------------------
+      // Plain isearch (C-s / C-r) is now a real server-side loop in
+      // search.lisp — a read-next-key state machine over find-string-forward
+      // / find-string-backward / point / goto! — so there is no host stub
+      // here. See search.lisp + isearch.test.js. The REGEXP isearch starters
+      // below are still render-side stubs (not yet ported).
 
       // --- regexp isearch starters (regex-search.lisp) — STUB ----------
       // Like start-search!, these BEGIN an incremental regexp search; the
@@ -1476,6 +1465,19 @@ export function createSpine(options, effects = {}) {
         const index = buffer.text.indexOf(needle, Math.max(0, from));
         return index < 0 ? false : cons(index, index + needle.length);
       },
+      // (find-string-backward needle from) -> (start . end) | #f. The LAST
+      // plain match whose start is at-or-before FROM — the backward isearch
+      // step (mirror of find-string-forward; `lastIndexOf` clamps `from`).
+      'find-string-backward': (args) => {
+        const needle = String(args[0] ?? '');
+        const from = Number(args[1] ?? 0);
+        if (needle === '') return false;
+        const index = buffer.text.lastIndexOf(needle, Math.max(0, from));
+        return index < 0 ? false : cons(index, index + needle.length);
+      },
+      // (point-max) -> the largest valid point (the buffer length). Used by
+      // isearch's backward wrap (search backward from the buffer end).
+      'point-max': () => buffer.text.length,
       // (replace-regexp-all! source replacement) -> count, or -1 for an
       // invalid pattern. REPLACEMENT honours $N / $& / $$.
       'replace-regexp-all!': (args) => {
