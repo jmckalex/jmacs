@@ -30,6 +30,11 @@
 (define *bib-search-sample*
   "app://editor/apps/desktop/vendor/bib-search/sample.bib")
 
+;; A host-pinned absolute bib path. The host (server mode) sets this when it
+;; has resolved the active document's bibliography itself — the renderer session
+;; is inert there, so it can't detect it. Nil = detect from the session as usual.
+(define *bib-search-doc-override* nil)
+
 ;; --- detect the active document's bibliography -------------------------
 
 (define (-bib-search-latex-path)
@@ -57,17 +62,32 @@
 
 (define (-bib-search-metadata-path)
   "The bib path from a markdown/jmarkdown `Bibliography: path` metadata
-   header, resolved against the document's directory, or nil."
-  (let ((decl (-bib-search-scan-lines (string-split (buffer-text) "\n") 0)))
-    (if (or (nil? decl) (string=? decl ""))
+   header, resolved against the document's directory, or nil. Nil-safe: with
+   no readable buffer text or document directory (e.g. an inert session), it
+   yields nil rather than crashing — the caller then falls back to the sample."
+  (let ((text (buffer-text)))
+    (if (not (string? text))
         nil
-        (path-resolve (view-directory (current-view)) decl))))
+        (let ((decl (-bib-search-scan-lines (string-split text "\n") 0)))
+          (if (or (nil? decl) (string=? decl ""))
+              nil
+              (let ((dir (view-directory (current-view))))
+                (if (string? dir) (path-resolve dir decl) nil)))))))
 
 (define (-bib-search-document-path)
   "The active document's bibliography path (absolute), or nil — LaTeX via
    RefTeX, markdown/jmarkdown via the `Bibliography:` header, else
    `*citation-bib-path*`."
-  (let* ((mode (major-mode-name))
+  ;; A host-pinned bib path (server mode) wins — the server resolved the active
+  ;; document's bibliography the inert renderer session can't see.
+  (if (and (string? *bib-search-doc-override*)
+           (not (string=? *bib-search-doc-override* "")))
+      *bib-search-doc-override*
+  ;; NB `nil` is TRUTHY in this Lisp, so guard with `string?`, not the value
+  ;; itself — `(and from-doc …)` would fall through on a nil `from-doc` and
+  ;; `(string=? nil "")` would crash (the inert-session case in server mode).
+  (let* ((raw-mode (major-mode-name))
+         (mode (if (string? raw-mode) raw-mode ""))
          (from-doc
           (cond
             ((string-contains? mode "TeX") (-bib-search-latex-path))
@@ -75,11 +95,11 @@
              (-bib-search-metadata-path))
             (else nil))))
     (cond
-      ((and from-doc (not (string=? from-doc ""))) from-doc)
+      ((and (string? from-doc) (not (string=? from-doc ""))) from-doc)
       ((and (string? *citation-bib-path*)
             (not (string=? *citation-bib-path* "")))
        *citation-bib-path*)
-      (else nil))))
+      (else nil)))))
 
 (define (-bib-search-source)
   "A src URL for the panel: the active document's bibliography as an

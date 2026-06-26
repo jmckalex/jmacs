@@ -795,13 +795,22 @@ test('C-x n opens a seeded scratch buffer; new-view stays on M-x', async () => {
 test('C-s starts an incremental search', async () => {
   const { interpreter, searchCalls } = await editor();
   press(interpreter, 'C-s');
-  assert.deepEqual(searchCalls, ['search']);
+  // isearch-forward now runs the loop in-process (search.lisp): it shows the
+  // I-search prompt and arms read-next-key — no more start-search! stub. The
+  // full per-keystroke behaviour is covered by mwb/isearch.test.js.
+  assert.ok(
+    searchCalls.some((s) => s.startsWith('status:I-search') && !s.includes('backward')),
+    `expected the I-search prompt; got ${JSON.stringify(searchCalls)}`
+  );
 });
 
 test('C-r starts a backward search', async () => {
   const { interpreter, searchCalls } = await editor();
   press(interpreter, 'C-r');
-  assert.deepEqual(searchCalls, ['search-backward']);
+  assert.ok(
+    searchCalls.some((s) => s.startsWith('status:I-search backward')),
+    `expected the I-search backward prompt; got ${JSON.stringify(searchCalls)}`
+  );
 });
 
 test('M-x opens the command palette', async () => {
@@ -2804,6 +2813,18 @@ test('current-face-styles returns an alist for every face', async () => {
   const keys = commentAttrs.map((c) => c.head.name).sort();
   assert.ok(keys.includes('foreground'));
   assert.ok(keys.includes('slant'));
+});
+
+test('current-face-styles tolerates a non-symbol *theme* (the symbol->string fix)', async () => {
+  const { interpreter } = await editor();
+  // -theme->name maps either form to the `:default-<theme>` key name.
+  assert.equal(interpreter.evaluate("(-theme->name 'solarized-dark)"), 'solarized-dark');
+  assert.equal(interpreter.evaluate('(-theme->name "solarized-dark")'), 'solarized-dark');
+  // *theme* is normally a symbol, but customize / the REPL can set it to a
+  // STRING; resolution must fall through to the matching block, not throw.
+  interpreter.evaluate('(set! *theme* "dark")');
+  const alist = listToArray(interpreter.call('current-face-styles'));
+  assert.ok(alist.length >= 13, 'resolves every face with a string *theme*, no throw');
 });
 
 // --- face overrides (Phase 2) -----------------------------------------

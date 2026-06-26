@@ -162,6 +162,16 @@ function createGnuplotView(container, options = {}) {
    *  keying by id is robust regardless). */
   const cellsById = new Map();
 
+  /** Persistent list of rendered plots, in document order: `{ id, svg, cell }`.
+   *  (cellsById is cleared once a result lands; this survives so the minimap can
+   *  show thumbnails of every plot + scroll the transcript to one.) */
+  const plots = [];
+  /** Listeners notified when the plot set changes (a new plot rendered). */
+  const plotsListeners = new Set();
+  function notifyPlots() {
+    for (const cb of plotsListeners) { try { cb(); } catch { /* ignore */ } }
+  }
+
   /** Subscription handles, cleared in `destroy()`. */
   let unsubscribeResult = null;
   let unsubscribeExit = null;
@@ -310,6 +320,10 @@ function createGnuplotView(container, options = {}) {
       cell.append(plot);
       rendered = true;
       hasPlot = true;
+      // Record the plot (persistently) + notify the minimap so it can add a
+      // thumbnail. The cell ref lets scrollToPlot() jump the transcript here.
+      plots.push({ id: payload.id, svg: payload.svg, cell });
+      notifyPlots();
     }
     // Text output (print, show, …).
     if (typeof payload.text === 'string' && payload.text.trim() !== '') {
@@ -501,12 +515,30 @@ function createGnuplotView(container, options = {}) {
     setBuffer,
     focus: focusInput,
     applyTheme,
+    /** The rendered plots in document order: `[{ id, svg }]` — the minimap
+     *  reads this to draw a thumbnail per plot. */
+    getPlots: () => plots.map((p) => ({ id: p.id, svg: p.svg })),
+    /** Subscribe to plot-set changes (a new plot rendered). Returns unsubscribe. */
+    onPlotsChange: (cb) => {
+      if (typeof cb !== 'function') return () => {};
+      plotsListeners.add(cb);
+      return () => plotsListeners.delete(cb);
+    },
+    /** Scroll the transcript to the plot with ID (a minimap thumbnail click). */
+    scrollToPlot: (id) => {
+      const p = plots.find((x) => x.id === id);
+      if (p && p.cell && typeof p.cell.scrollIntoView === 'function') {
+        p.cell.scrollIntoView({ block: 'center' });
+      }
+    },
     destroy: () => {
       if (typeof unsubscribeResult === 'function') unsubscribeResult();
       if (typeof unsubscribeExit === 'function') unsubscribeExit();
       unsubscribeResult = null;
       unsubscribeExit = null;
       cellsById.clear();
+      plots.length = 0;
+      plotsListeners.clear();
     },
   };
 }
@@ -556,6 +588,21 @@ export class GnuplotView extends ViewElement {
 
   applyTheme() {
     if (this._inner !== null) this._inner.applyTheme();
+  }
+
+  /** The rendered plots `[{ id, svg }]` — read by the minimap to draw thumbnails. */
+  getPlots() {
+    return this._inner !== null ? this._inner.getPlots() : [];
+  }
+
+  /** Subscribe to plot-set changes (a new plot rendered). Returns unsubscribe. */
+  onPlotsChange(cb) {
+    return this._inner !== null ? this._inner.onPlotsChange(cb) : () => {};
+  }
+
+  /** Scroll the transcript to plot ID (a minimap thumbnail click). */
+  scrollToPlot(id) {
+    if (this._inner !== null) this._inner.scrollToPlot(id);
   }
 
   connectedCallback() {

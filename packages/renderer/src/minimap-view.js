@@ -368,6 +368,11 @@ export class MinimapView extends ViewElement {
     this._lastHoverLine = -1;
     /** @type {HTMLElement | null} */
     this._message = null;
+    /** @type {HTMLElement | null} - the plot-thumbnail strip (gnuplot targets). */
+    this._plotStrip = null;
+    /** Whether the bound target is a `kind:'plots'` adapter (a gnuplot view):
+     *  we render a strip of plot thumbnails instead of the text canvas. */
+    this._plotsMode = false;
     /** @type {HTMLElement | null} */
     this._probe = null;
     /** @type {ResizeObserver | null} */
@@ -419,9 +424,23 @@ export class MinimapView extends ViewElement {
     this._hideHover(); // a new target's scopes/lines differ — recompute on hover
     if (!this._mounted) return; // painted on connectedCallback
     if (!this._adapter) {
+      this._setPlotsMode(false);
       this._showMessage(true);
       return;
     }
+    // A gnuplot (or other live-process) target hands us a `kind:'plots'` adapter:
+    // render a strip of plot thumbnails instead of the text canvas, and re-render
+    // whenever the plot set changes (a new plot rendered).
+    if (this._adapter.kind === 'plots') {
+      this._setPlotsMode(true);
+      const onChange = this._adapter.onChange;
+      if (typeof onChange === 'function') {
+        this._unsubs.push(onChange(() => this._renderPlots()));
+      }
+      this._renderPlots();
+      return;
+    }
+    this._setPlotsMode(false);
     this._showMessage(false);
     const onChange = this._adapter.onChange;
     const onScroll = this._adapter.onScroll;
@@ -509,12 +528,19 @@ export class MinimapView extends ViewElement {
     message.style.display = 'none';
     this._message = message;
 
+    // The plot-thumbnail strip — a scrollable column of scaled plot previews,
+    // shown (instead of the text canvas) when the target is a gnuplot view.
+    const plotStrip = doc.createElement('div');
+    plotStrip.className = 'minimap-plot-strip';
+    plotStrip.style.display = 'none';
+    this._plotStrip = plotStrip;
+
     // Off-screen probe for resolving `.tok-{face}` → a concrete color.
     const probe = doc.createElement('span');
     probe.className = 'minimap-probe';
     this._probe = probe;
 
-    this.append(canvas, thumb, band, message, probe);
+    this.append(canvas, thumb, band, message, plotStrip, probe);
     this._wireEvents();
 
     if (typeof ResizeObserver !== 'undefined') {
@@ -526,7 +552,7 @@ export class MinimapView extends ViewElement {
 
   _wireEvents() {
     const canvas = /** @type {HTMLCanvasElement} */ (this._canvas);
-    const navigate = (event) => {
+    const navigate = (event, placeCursor = false) => {
       if (!this._adapter || typeof this._adapter.scrollToContentFraction !== 'function') {
         return;
       }
@@ -534,20 +560,29 @@ export class MinimapView extends ViewElement {
       const y = event.clientY - rect.top;
       const metrics = this._safeMetrics();
       if (!metrics) return;
-      const mmContentH = this._lineCount() * MM_LINE_H;
+      const lineCount = this._lineCount();
+      const mmContentH = lineCount * MM_LINE_H;
       const { mmScrollTop } = thumbRect(metrics, mmContentH, rect.height);
       const f = clickToScrollFraction(y, mmScrollTop, mmContentH, metrics);
       this._adapter.scrollToContentFraction(f);
+      // A CLICK (not a drag-scrub) also drops the editor's cursor at the END of
+      // the clicked line — the same line the hover highlights under the pointer.
+      if (placeCursor && lineCount > 0
+          && typeof this._adapter.moveCursorToLineEnd === 'function') {
+        const line = Math.max(0, Math.min(lineCount - 1,
+          Math.floor((y + mmScrollTop) / MM_LINE_H)));
+        this._adapter.moveCursorToLineEnd(line);
+      }
     };
     canvas.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       this._dragging = true;
       this._hideHover(); // the preview is noise while scrubbing
       try { canvas.setPointerCapture(event.pointerId); } catch { /* ok */ }
-      navigate(event);
+      navigate(event, true); // a click drops the cursor at the clicked line's end
     });
     canvas.addEventListener('pointermove', (event) => {
-      if (this._dragging) navigate(event);
+      if (this._dragging) navigate(event); // drag-scrub: scroll only, no cursor churn
       else this._onHover(event);
     });
     canvas.addEventListener('pointerleave', () => this._hideHover());
@@ -583,6 +618,67 @@ export class MinimapView extends ViewElement {
     if (this._canvas) this._canvas.style.display = show ? 'none' : '';
     if (this._thumb) this._thumb.style.display = show ? 'none' : '';
     if (show) this._hideHover();
+  }
+
+  // --- internal: plot-thumbnail mode (gnuplot targets) ----------------
+
+  /** Switch between the text canvas and the plot-thumbnail strip. In plots
+   *  mode the canvas/thumb/message hide and the strip shows; leaving it
+   *  restores the text chrome (the caller then shows canvas or message). */
+  _setPlotsMode(on) {
+    this._plotsMode = on;
+    if (this._plotStrip) this._plotStrip.style.display = on ? '' : 'none';
+    if (on) {
+      if (this._canvas) this._canvas.style.display = 'none';
+      if (this._thumb) this._thumb.style.display = 'none';
+      if (this._message) this._message.style.display = 'none';
+      this._hideHover();
+    }
+  }
+
+  /** Render one scaled thumbnail per plot from the bound `plots` adapter; a
+   *  click jumps the gnuplot transcript to that plot. The plot SVGs are
+   *  trusted-local (the host's own gnuplot output). Re-run on every plot change. */
+  _renderPlots() {
+    if (!this._plotStrip || !this._adapter) return;
+    let plots = [];
+    try { plots = this._adapter.getPlots() || []; } catch { plots = []; }
+    const doc = this.ownerDocument;
+    const frag = doc.createDocumentFragment();
+    for (const p of plots) {
+      if (!p || typeof p.svg !== 'string' || p.svg === '') continue;
+      const thumb = doc.createElement('div');
+      thumb.className = 'minimap-plot-thumb';
+      thumb.innerHTML = p.svg;
+      const svgEl = thumb.querySelector('svg');
+      if (svgEl) {
+        // Make the plot scale to the narrow strip: ensure a viewBox (so the
+        // intrinsic size becomes scalable), then let CSS size it (width:100%).
+        if (!svgEl.getAttribute('viewBox')) {
+          const w = parseFloat(svgEl.getAttribute('width')) || 0;
+          const h = parseFloat(svgEl.getAttribute('height')) || 0;
+          if (w > 0 && h > 0) svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
+        }
+        svgEl.removeAttribute('width');
+        svgEl.removeAttribute('height');
+        svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+      }
+      thumb.addEventListener('click', () => {
+        try {
+          if (typeof this._adapter?.scrollToPlot === 'function') {
+            this._adapter.scrollToPlot(p.id);
+          }
+        } catch { /* target gone */ }
+      });
+      frag.append(thumb);
+    }
+    if (!frag.childNodes.length) {
+      const empty = doc.createElement('div');
+      empty.className = 'minimap-plots-empty';
+      empty.textContent = 'No plots yet';
+      frag.append(empty);
+    }
+    this._plotStrip.replaceChildren(frag);
   }
 
   // --- internal: hover (scope-extent band + code-preview flyout) ------
@@ -812,6 +908,7 @@ export class MinimapView extends ViewElement {
 
   _paint() {
     if (!this._mounted) return;
+    if (this._plotsMode) return; // plot-thumbnail mode renders via _renderPlots
     if (!this._adapter) { this._showMessage(true); return; }
     const metrics = this._safeMetrics();
     const canvas = /** @type {HTMLCanvasElement} */ (this._canvas);

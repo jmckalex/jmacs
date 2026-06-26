@@ -49,6 +49,12 @@ function createBookmarkView(container, options = {}) {
     typeof options.closeBuffer === 'function' ? options.closeBuffer : null;
   const jump = typeof options.jump === 'function' ? options.jump : null;
   const persist = typeof options.persist === 'function' ? options.persist : null;
+  // Server mode: the outline is a mutable 'bookmark' data-source. Records come
+  // from the bound view object (the server holds them, edit-tracked); edits are
+  // SEMANTIC ops sent up via emitOp(sourceId, op) — the view never mutates its
+  // own records or any buffer metadata. It re-renders from the fanned-out state.
+  const emitOp = typeof options.emitOp === 'function' ? options.emitOp : null;
+  const serverMode = emitOp !== null;
 
   const root = doc.createElement('div');
   root.className = 'bookmark-view';
@@ -63,6 +69,23 @@ function createBookmarkView(container, options = {}) {
   const subtitle = doc.createElement('span');
   subtitle.className = 'bookmark-subtitle';
   header.append(title, subtitle);
+  // The pin thumbtack (server mode): shows whether this outline is FROZEN to its
+  // file (fa-thumbtack) or FOLLOWING focus (fa-thumbtack-slash), and toggles it on
+  // click. Mousedown (not click) so it beats the pane's focus-click; preventDefault
+  // keeps the toggle from also moving server focus. The icon updates from the
+  // fanned-out `pinned` state (paintPin, called by paint()).
+  const pin = serverMode ? doc.createElement('button') : null;
+  if (pin) {
+    pin.className = 'bookmark-pin';
+    pin.type = 'button';
+    pin.tabIndex = -1;
+    pin.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      emitOp(serverSourceId(), { op: 'pin' });
+    });
+    header.append(pin);
+  }
   root.append(header);
 
   const body = doc.createElement('div');
@@ -85,8 +108,15 @@ function createBookmarkView(container, options = {}) {
     return view ? view.sourceBuffer ?? null : null;
   }
 
-  /** The source buffer's bookmark records (live array), or []. */
+  /** The bookmark data-source id the server applies ops to (server mode). */
+  function serverSourceId() {
+    return view ? view._serverSourceId ?? null : null;
+  }
+
+  /** The bookmark records to render: the server snapshot (server mode) or the
+   *  source buffer's live `metadata.bookmarks` array (in-renderer). */
   function records() {
+    if (serverMode) return view && Array.isArray(view.records) ? view.records : [];
     const buf = source();
     if (!buf) return [];
     if (!buf.metadata) buf.metadata = {};
@@ -108,20 +138,38 @@ function createBookmarkView(container, options = {}) {
 
   // --- rendering ---------------------------------------------------------
 
+  /** Reflect the current pinned state on the thumbtack (server mode only). */
+  function paintPin() {
+    if (!pin) return;
+    const pinned = !!(view && view.pinned);
+    pin.innerHTML = pinned
+      ? '<i class="fa-solid fa-thumbtack" aria-hidden="true"></i>'
+      : '<i class="fa-solid fa-thumbtack-slash" aria-hidden="true"></i>';
+    pin.classList.toggle('is-pinned', pinned);
+    pin.title = pinned
+      ? 'Pinned to this file — click to follow focus'
+      : 'Following focus — click to pin to this file';
+    pin.setAttribute('aria-label', pin.title);
+  }
+
   function paint() {
     closeMenu();
+    paintPin();
     const recs = records();
     // Keep the outline in document order: sort siblings by position with
     // subtrees kept intact, in place. A bookmark set mid-document then
     // lands where it belongs instead of at the end. Mutating the shared
     // array means the order also persists (the debounced metadata write
     // reads it by reference) and the index-based ops below stay aligned.
-    if (recs.length > 1) {
+    // Server mode: the records arrive already document-ordered (the server
+    // sorts + persists), so we don't re-sort the wire snapshot.
+    if (!serverMode && recs.length > 1) {
       recs.splice(0, recs.length, ...sortByDocumentPosition(recs));
     }
     const buf = source();
+    const sourceLabel = serverMode ? (view && view.sourceName) : (buf && buf.name);
     subtitle.textContent =
-      `${buf && buf.name ? buf.name : ''}${recs.length ? `  ·  ${recs.length}` : ''}`;
+      `${sourceLabel || ''}${recs.length ? `  ·  ${recs.length}` : ''}`;
     body.replaceChildren();
     rows = visibleRows(recs);
 
@@ -175,6 +223,11 @@ function createBookmarkView(container, options = {}) {
   }
 
   function positionLabel(record) {
+    // Server mode: the line/column travel on the wire record (no buffer here).
+    if (serverMode || typeof record.line === 'number') {
+      if (typeof record.line !== 'number') return '';
+      return `Ln ${record.line + 1}:${record.column + 1}`;
+    }
     const buf = source();
     if (!buf || typeof buf.positionAt !== 'function') return '';
     const { line, column } = buf.positionAt(record.anchor ?? 0);
@@ -201,25 +254,33 @@ function createBookmarkView(container, options = {}) {
 
   function jumpSelected() {
     const idx = selectedRecordIndex();
+    if (idx < 0) return;
+    const rec = records()[idx];
+    if (serverMode) { emitOp(serverSourceId(), { op: 'jump', id: rec.id }); return; }
     const buf = source();
-    if (idx < 0 || !buf || !jump) return;
-    jump(buf, records()[idx].name);
+    if (!buf || !jump) return;
+    jump(buf, rec.name);
   }
 
   function indentSelected() {
     const idx = selectedRecordIndex();
-    if (idx >= 0 && indent(records(), idx)) commit();
+    if (idx < 0) return;
+    if (serverMode) { emitOp(serverSourceId(), { op: 'indent', id: records()[idx].id }); return; }
+    if (indent(records(), idx)) commit();
   }
 
   function outdentSelected() {
     const idx = selectedRecordIndex();
-    if (idx >= 0 && outdent(records(), idx)) commit();
+    if (idx < 0) return;
+    if (serverMode) { emitOp(serverSourceId(), { op: 'outdent', id: records()[idx].id }); return; }
+    if (outdent(records(), idx)) commit();
   }
 
   function toggleCollapse(recordIndex) {
     const recs = records();
     if (recordIndex < 0 || recordIndex >= recs.length) return;
     if (!hasChildren(recs, recordIndex)) return;
+    if (serverMode) { emitOp(serverSourceId(), { op: 'toggle', id: recs[recordIndex].id }); return; }
     recs[recordIndex].collapsed = !recs[recordIndex].collapsed;
     commit();
   }
@@ -232,6 +293,7 @@ function createBookmarkView(container, options = {}) {
     const idx = selectedRecordIndex();
     const recs = records();
     if (idx < 0 || idx >= recs.length) return;
+    if (serverMode) { emitOp(serverSourceId(), { op: 'delete', id: recs[idx].id }); return; }
     recs.splice(idx, 1);
     commit();
   }
@@ -258,8 +320,13 @@ function createBookmarkView(container, options = {}) {
       done = true;
       const next = input.value.trim();
       if (commitEdit && next !== '' && next !== record.name) {
-        record.name = next;
-        commit();
+        if (serverMode) {
+          emitOp(serverSourceId(), { op: 'rename', id: record.id, name: next });
+          paint(); // close the input now; the fan-out re-renders the new name
+        } else {
+          record.name = next;
+          commit();
+        }
       } else {
         paint();
       }
@@ -379,7 +446,13 @@ function createBookmarkView(container, options = {}) {
       case 'space': toggleSelected(); event.preventDefault(); return;
       case 'r': renameSelected(); event.preventDefault(); return;
       case 'd': deleteSelected(); event.preventDefault(); return;
-      case 'g': paint(); event.preventDefault(); return;
+      case 'g':
+        // Refresh: server mode re-derives the wire (fresh line/col after source
+        // edits) + re-renders via fan-out; in-renderer just repaints.
+        if (serverMode) emitOp(serverSourceId(), { op: 'refresh' });
+        else paint();
+        event.preventDefault();
+        return;
       case 'q': if (closeBuffer) closeBuffer(); event.preventDefault(); return;
       case 'escape': closeMenu(); event.preventDefault(); return;
       default: break;
@@ -394,9 +467,43 @@ function createBookmarkView(container, options = {}) {
   });
 
   function setBuffer(next) {
+    // Server mode: the outline re-mounts (setBuffer) on EVERY reconcile — a
+    // fanned-out edit OR any unrelated PANE_TREE push — so resetting the
+    // selection to the top each time would make it jump around. Preserve it by
+    // the selected record's id; fall back to a clamped index when it's gone.
+    if (serverMode) {
+      const priorId = selectedRecordId();
+      view = next;
+      paint();
+      restoreSelection(priorId);
+      return;
+    }
     view = next;
     selected = 0;
     paint();
+  }
+
+  /** The id of the currently-selected record, or null (server-mode selection
+   *  preservation). Reads the visible row → record before a re-render. */
+  function selectedRecordId() {
+    const row = rows[selected];
+    if (!row) return null;
+    const rec = records()[row.index];
+    return rec ? rec.id : null;
+  }
+
+  /** After a re-render, re-select the row whose record has id ID; if it's gone,
+   *  clamp the old index into range. */
+  function restoreSelection(id) {
+    if (id != null) {
+      const i = rows.findIndex((row) => {
+        const rec = records()[row.index];
+        return rec && rec.id === id;
+      });
+      if (i >= 0) { selected = i; highlight(); return; }
+    }
+    selected = Math.max(0, Math.min(selected, rows.length - 1));
+    highlight();
   }
 
   return {

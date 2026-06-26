@@ -27,6 +27,7 @@ import {
   keyword,
   Lambda,
   LispError,
+  LispInterrupt,
   LispMacro,
   list,
   listToArray,
@@ -50,6 +51,107 @@ class TailCall {
   constructor(form, env) {
     this.form = form;
     this.env = env;
+  }
+}
+
+// --- cooperative interrupt + step budget --------------------------------
+//
+// A synchronous tree-walker can't be preempted from outside, so abortion
+// has to be cooperative: the `evaluate` trampoline counts its bounces and,
+// every `CHECK_INTERVAL` of them, asks two questions — has the step budget
+// been exceeded, and has an installed interrupt-check fired? Either throws a
+// `LispInterrupt`, which unwinds through `try`/`catch`/`finally` like any
+// error (cleanup runs) but is distinguishable by JS callers.
+//
+// With no budget and no interrupt-check (the defaults) the cost is one
+// counter increment and one cheap `& mask` test per bounce — the hot path
+// is otherwise untouched, so the real app and the existing suite behave
+// exactly as before.
+
+/**
+ * How many trampoline bounces between interrupt/budget checks. A power of
+ * two so the modulo is a bitmask. Small enough that a `C-g` aborts a
+ * runaway within a few hundred microseconds; large enough that the check
+ * is statistically free on a normal program.
+ */
+const CHECK_INTERVAL = 4096;
+const CHECK_MASK = CHECK_INTERVAL - 1;
+
+/**
+ * The installed interrupt-check, or `null`. When set, the trampoline calls
+ * it periodically; a truthy return aborts the current evaluation with a
+ * `LispInterrupt`. The function is arbitrary — in Model B it will read a
+ * cross-process `SharedArrayBuffer` flag via `Atomics.load`.
+ * @type {(() => boolean) | null}
+ */
+let interruptCheck = null;
+
+/**
+ * The maximum number of trampoline bounces a single top-level evaluation
+ * may take before it is aborted with a `LispInterrupt`, or `Infinity` for
+ * no ceiling (the default). Reset to count from zero on each fresh
+ * top-level evaluation by `resetStepCounter`.
+ * @type {number}
+ */
+let stepBudget = Infinity;
+
+/** Bounces taken since the last `resetStepCounter`. */
+let stepCount = 0;
+
+/**
+ * Install (or clear, with `null`) the cooperative interrupt-check. The
+ * trampoline calls `fn()` roughly every {@link CHECK_INTERVAL} bounces; a
+ * truthy result aborts the running evaluation with a `LispInterrupt`. Pass
+ * `null` to remove the check (the default, zero-overhead state).
+ *
+ * @param {(() => boolean) | null} fn
+ */
+export function setInterruptCheck(fn) {
+  if (fn !== null && typeof fn !== 'function') {
+    throw new TypeError('setInterruptCheck: expected a function or null');
+  }
+  interruptCheck = fn;
+}
+
+/**
+ * Set the per-evaluation step budget — the maximum number of trampoline
+ * bounces a single top-level evaluation may take before it is aborted with
+ * a `LispInterrupt`. Pass `Infinity` (the default) for no ceiling. The
+ * counter is reset by `resetStepCounter` at each top-level entry, so the
+ * budget is per top-level call, not cumulative across calls.
+ *
+ * @param {number} n - A positive number, or `Infinity` for no limit.
+ */
+export function setStepBudget(n) {
+  if (typeof n !== 'number' || Number.isNaN(n) || n <= 0) {
+    throw new TypeError('setStepBudget: expected a positive number or Infinity');
+  }
+  stepBudget = n;
+}
+
+/**
+ * Reset the step counter to zero. Called at each top-level entry (host
+ * `evaluate` / `call`) so the step budget applies per top-level call rather
+ * than accumulating across the lifetime of the interpreter.
+ */
+export function resetStepCounter() {
+  stepCount = 0;
+}
+
+/**
+ * The periodic check itself: invoked from the trampoline every
+ * `CHECK_INTERVAL` bounces. Throws a `LispInterrupt` if the step budget is
+ * exhausted or the interrupt-check fires. Pulled out of the loop so the hot
+ * path is just an increment and a masked test; the call here is rare.
+ */
+function interruptPoint() {
+  if (stepCount >= stepBudget) {
+    throw new LispInterrupt(
+      `step budget exceeded (${stepBudget} steps)`
+    );
+  }
+  if (interruptCheck !== null && interruptCheck()) {
+    throw new LispInterrupt('quit');
   }
 }
 
@@ -97,6 +199,14 @@ export function evaluate(form, env) {
   // The trampoline: each iteration either returns a value or rebinds
   // `form`/`env` from a TailCall and loops, instead of recursing.
   for (;;) {
+    // Cooperative interrupt + step budget. One increment and a masked test
+    // per bounce; the actual check (a function call) runs only every
+    // CHECK_INTERVAL bounces, so this is statistically free on the hot
+    // path. A runaway tail loop bounces here forever, so this is where it
+    // gets caught. `stepCount` is reset per top-level evaluation.
+    stepCount += 1;
+    if ((stepCount & CHECK_MASK) === 0) interruptPoint();
+
     // Symbols are variable references.
     if (form instanceof Sym) {
       return env.lookup(form.name);

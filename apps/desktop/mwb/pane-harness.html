@@ -1,0 +1,166 @@
+<!doctype html>
+<!--
+  Model-B MULTI-PANE harness (G0a) — render a window's PANE_TREE as several
+  real view.js instances, laid out by the client's OWN pixels.
+
+  The server owns the logical pane tree; this page receives a PANE_TREE
+  (structure + ratios + per-leaf buffer/view-state + focus, NO pixels), lays
+  it out with the pure computeRects math fed by THIS window's editor-area
+  rectangle, and mounts one createEditorView per leaf. C-x 2 / C-x 3 split,
+  C-x o cycles focus, C-x 0 deletes a pane, C-x 1 = delete-other-windows —
+  all run the REAL panes.lisp commands server-side. Click in and try them.
+
+  This page is loaded only behind the MWB pane harness; production is
+  untouched. The verification of record is node --test (pane-client-layout +
+  the spine pane integration tests); this is the architect's eyes-on demo.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Model B — multi-pane: the server's PANE_TREE, the client's pixels</title>
+    <link rel="stylesheet" href="../styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "@editor/storage": "../../../packages/storage/src/index.js",
+          "@editor/buffer": "../../../packages/buffer/src/index.js",
+          "@editor/view": "../../../packages/view/src/index.js",
+          "@editor/pane": "../../../packages/pane/src/index.js",
+          "@editor/lisp": "../../../packages/lisp/src/index.js",
+          "@editor/renderer": "../../../packages/renderer/src/index.js",
+          "@editor/stdlib": "../../../packages/stdlib/src/index.js"
+        }
+      }
+    </script>
+    <style>
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: var(--bg-editor, #303841);
+        color: var(--fg, #d8dee9);
+        display: flex;
+        flex-direction: column;
+        font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+      }
+      header {
+        padding: 8px 14px;
+        background: var(--bg, #2b333b);
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        font-size: 12px;
+        flex: 0 0 auto;
+      }
+      header b { color: #88c0d0; }
+      .good { color: #a3be8c; }
+      .warn { color: #ebcb8b; }
+      /* The pane host: leaf elements are absolute-positioned inside it at the
+         client-computed rects (computeRects over this rect). */
+      #panes {
+        flex: 1 1 auto;
+        position: relative;
+        overflow: hidden;
+        min-height: 0;
+      }
+      /* Each leaf: a host for one createEditorView, framed so the splits are
+         visible. The focused leaf gets a brighter border (the focus indicator
+         the logical tree's `focused` flag drives). */
+      .mwb-pane {
+        box-sizing: border-box;
+        border: 1px solid rgba(255,255,255,0.10);
+        overflow: hidden;
+      }
+      .mwb-pane--focused {
+        border-color: #88c0d0;
+        box-shadow: 0 0 0 1px #88c0d0 inset;
+      }
+      #status {
+        flex: 0 0 auto;
+        padding: 6px 14px;
+        background: var(--bg, #2b333b);
+        border-top: 1px solid rgba(255,255,255,0.08);
+        font-size: 11px;
+        white-space: pre;
+      }
+      /* --- the generic PICKER panel (G0b) --- */
+      /* A dimmed overlay over the whole window; the panel is centred near the
+         top, like a command palette. The same chrome serves every picker. */
+      .mwb-picker-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.35);
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        padding-top: 12vh;
+        z-index: 1000;
+      }
+      .mwb-picker {
+        width: min(620px, 80vw);
+        max-height: 64vh;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg, #2b333b);
+        border: 1px solid #88c0d0;
+        border-radius: 6px;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+        overflow: hidden;
+      }
+      .mwb-picker-title {
+        padding: 8px 12px;
+        font-size: 12px;
+        color: #88c0d0;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+      }
+      .mwb-picker-filter {
+        margin: 8px 12px;
+        padding: 6px 8px;
+        font: inherit;
+        font-size: 13px;
+        color: var(--fg, #d8dee9);
+        background: var(--bg-editor, #303841);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 4px;
+        outline: none;
+      }
+      .mwb-picker-filter:focus { border-color: #88c0d0; }
+      .mwb-picker-list {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        padding: 4px 0 8px;
+      }
+      .mwb-picker-row {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 4px 12px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .mwb-picker-row-label { flex: 1 1 auto; }
+      .mwb-picker-row-meta { color: rgba(216,222,233,0.5); font-size: 11px; }
+      .mwb-picker-row-detail {
+        flex-basis: 100%;
+        color: rgba(216,222,233,0.45);
+        font-size: 11px;
+      }
+      .mwb-picker-row--current .mwb-picker-row-label::after {
+        content: ' (current)';
+        color: rgba(216,222,233,0.4);
+        font-size: 11px;
+      }
+      .mwb-picker-row--selected { background: rgba(136,192,208,0.22); }
+      .mwb-picker-row:hover { background: rgba(255,255,255,0.06); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <b>Model B — multi-pane.</b>
+      The server owns the logical pane tree; this window renders it as real
+      view.js panes laid out by its OWN pixels.
+      <b>C-x 2</b>/<b>3</b> split, <b>C-x o</b> cycle focus, <b>C-x 0</b>
+      delete, <b>C-x 1</b> sole, <b>C-x C-b</b> buffer picker.
+      <span id="link" class="warn">connecting…</span>
+    </header>
+    <div id="panes"></div>
+    <div id="status">loading…</div>
+    <script type="module" src="./pane-view-client.js"></script>
+  </body>
+</html>

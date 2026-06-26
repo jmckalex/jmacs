@@ -1,17 +1,20 @@
 ;;; shell.lisp — the `(shell)` command.
 ;;;
 ;;; Opens a shell buffer: a child process running the user's default
-;;; shell ($SHELL, falling back to /bin/zsh) with a transcript above
-;;; an input line. Each call creates a fresh buffer with its own
-;;; long-lived shell process — to revisit an existing shell, switch
-;;; to it by name with `C-x b`.
+;;; shell ($SHELL, falling back to /bin/zsh) inside a REAL pty, shown
+;;; through a full xterm.js terminal grid. Each call creates a fresh
+;;; buffer with its own long-lived shell process — to revisit an
+;;; existing shell, switch to it by name with `C-x b`.
 ;;;
-;;; This is a deliberately minimal `M-x shell`: line-oriented commands
-;;; like `ls`, `git status`, `npm test`, `echo $PATH` work; curses
-;;; applications (`vi`, `top`, `less`) will misbehave because there is
-;;; no PTY. The view itself lives in
+;;; This is a real `M-x shell`: a proper terminal. Curses applications
+;;; (`vi`, `top`, `less`), 256-colour output, window-resize reflow and
+;;; full-screen TUIs all work — the backend runs the shell under a
+;;; `pty.fork` (main process; no native addon — see
+;;; `apps/desktop/src/shell.js`). The view itself lives in
 ;;; `packages/renderer/src/shell-view.js`; this file is just the Lisp
-;;; surface for invoking it.
+;;; surface for invoking it. Under `GODOT_SERVER=1` the same command
+;;; runs on the server, which owns the shell VIEW as a data-source (the
+;;; pty stays in main); `open-shell-buffer!` is the host primitive.
 
 (defcommand shell ()
   "Open a fresh shell buffer running the user's default shell.

@@ -1,0 +1,38 @@
+<!doctype html>
+<!--
+  G1 server-bridge self-test — the CLIENT page.
+
+  A deliberately minimal page whose only job is to confirm the port handshake
+  works end-to-end against the REAL preload (preload.mjs): it listens for the
+  `godot:server-port` window message that the real preload re-dispatches (only
+  when GODOT_SERVER=1), and logs a PASS line the electron entry watches for.
+
+  It does NOT render the editor — G1 only proves a port connects, not that
+  editing routes through it (that is G2).
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>G1 server-bridge self-test</title>
+  </head>
+  <body>
+    <pre id="log">waiting for the server port…</pre>
+    <script>
+      // The real preload (preload.mjs), under GODOT_SERVER=1, re-dispatches the
+      // transferred MessagePort as this window message. Confirm it arrives + is
+      // a live MessagePort, then say PASS (the electron entry exits on it).
+      const log = document.getElementById('log');
+      window.addEventListener('message', (event) => {
+        if (event.source !== window) return;
+        const data = event.data;
+        if (!data || data.type !== 'godot:server-port') return;
+        const [port] = event.ports;
+        const ok = !!port && typeof port.postMessage === 'function';
+        log.textContent = ok ? 'PORT RECEIVED' : 'PORT MISSING';
+        // Confirm host.serverMode is the single gate the renderer reads.
+        const gate = !!(window.host && window.host.serverMode);
+        console.log(`[g1-selftest-client] ${ok && gate ? 'PASS' : 'FAIL'} port=${ok} serverMode=${gate}`);
+      });
+    </script>
+  </body>
+</html>

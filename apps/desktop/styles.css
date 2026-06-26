@@ -3274,6 +3274,31 @@ directory-tree-view,
   white-space: nowrap;
 }
 
+/* The pin thumbtack (server mode): pushed to the header's right edge. Muted
+   while following focus; accented when pinned (frozen to the file). */
+.bookmark-pin {
+  margin-left: auto;
+  flex: 0 0 auto;
+  align-self: center;
+  background: none;
+  border: none;
+  padding: 2px 5px;
+  cursor: pointer;
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 4px;
+}
+
+.bookmark-pin:hover {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  color: var(--fg);
+}
+
+.bookmark-pin.is-pinned {
+  color: var(--accent);
+}
+
 .bookmark-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -4246,6 +4271,43 @@ minimap-view,
   color: var(--fg-dim);
   font-family: system-ui, sans-serif;
   font-size: 12px;
+}
+/* Plot-thumbnail strip — shown instead of the canvas when the minimap target is
+   a gnuplot view: a scrollable column of scaled plot previews, click to jump. */
+.minimap-plot-strip {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  box-sizing: border-box;
+}
+.minimap-plot-thumb {
+  flex: 0 0 auto;
+  width: 100%;
+  cursor: pointer;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg-chrome) 85%, #000);
+}
+.minimap-plot-thumb:hover {
+  border-color: color-mix(in srgb, var(--fg) 40%, transparent);
+}
+.minimap-plot-thumb svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.minimap-plots-empty {
+  padding: 12px 8px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
 }
 /* Off-screen probe used to resolve `.tok-*` face colours via
    getComputedStyle — kept rendered (not display:none) so colour computes. */
@@ -6081,4 +6143,83 @@ notebook-view,
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg);
+}
+
+/* --- the server-view (G2) generic picker panel -------------------------
+ * The overlay panel the server-driven picker renders (buffer list, M-x,
+ * RefTeX, completions). Only appears in server-mode (GODOT_SERVER=1), so it is
+ * inert flag-off. Theme-variable-driven + color-mix overlays (not dark-only
+ * #ffffffXX) so it doesn't wash out in light themes (the chrome convention). */
+.mwb-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, #000 35%, transparent);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  z-index: 1000;
+}
+.mwb-picker {
+  width: min(620px, 80vw);
+  max-height: 64vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--accent, #88c0d0);
+  border-radius: 6px;
+  box-shadow: 0 12px 40px color-mix(in srgb, #000 50%, transparent);
+  overflow: hidden;
+}
+.mwb-picker-title {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--accent, #88c0d0);
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.mwb-picker-filter {
+  margin: 8px 12px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-editor);
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 4px;
+  outline: none;
+}
+.mwb-picker-filter:focus { border-color: var(--accent, #88c0d0); }
+.mwb-picker-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 4px 0 8px;
+}
+.mwb-picker-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.mwb-picker-row-label { flex: 1 1 auto; }
+.mwb-picker-row-meta {
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+  font-size: 11px;
+}
+.mwb-picker-row-detail {
+  flex-basis: 100%;
+  color: color-mix(in srgb, var(--fg) 45%, transparent);
+  font-size: 11px;
+}
+.mwb-picker-row--current .mwb-picker-row-label::after {
+  content: ' (current)';
+  color: color-mix(in srgb, var(--fg) 40%, transparent);
+  font-size: 11px;
+}
+.mwb-picker-row--selected {
+  background: color-mix(in srgb, var(--accent, #88c0d0) 22%, transparent);
+}
+.mwb-picker-row:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
 }

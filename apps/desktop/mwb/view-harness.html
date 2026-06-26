@@ -1,0 +1,141 @@
+<!doctype html>
+<!--
+  Model-B render-from-mirror slice — the REAL-VIEW client page.
+
+  Mounts the production renderer (`createEditorView`) and drives it from a
+  ClientBuffer MIRROR fed by server deltas. Loads the app's real
+  stylesheet so the editor + tree-sitter highlighting render exactly as in
+  the app, and the renderer's language grammars so a real file (the server
+  loads view.js by default) highlights for real — all off the mirror text,
+  proving the render stack is reusable as-is from a replicated buffer.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Model B — render the REAL view.js from a mirror</title>
+    <!-- The app's real stylesheet: editor layout + .tok-* faces + the
+         :root Mariana fallbacks (so highlighting shows without the Lisp
+         theme machinery). -->
+    <link rel="stylesheet" href="../styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "@editor/storage": "../../../packages/storage/src/index.js",
+          "@editor/buffer": "../../../packages/buffer/src/index.js",
+          "@editor/view": "../../../packages/view/src/index.js",
+          "@editor/pane": "../../../packages/pane/src/index.js",
+          "@editor/lisp": "../../../packages/lisp/src/index.js",
+          "@editor/renderer": "../../../packages/renderer/src/index.js",
+          "@editor/stdlib": "../../../packages/stdlib/src/index.js"
+        }
+      }
+    </script>
+    <style>
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: var(--bg-editor, #303841);
+        color: var(--fg, #d8dee9);
+        display: flex;
+        flex-direction: column;
+        font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+      }
+      header {
+        padding: 8px 14px;
+        background: var(--bg, #2b333b);
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        font-size: 12px;
+        flex: 0 0 auto;
+      }
+      header b { color: #88c0d0; }
+      .good { color: #a3be8c; }
+      .warn { color: #ebcb8b; }
+      /* The editor host. createEditorView builds .editor inside this. */
+      #editor {
+        flex: 1 1 auto;
+        position: relative;
+        overflow: hidden;
+        min-height: 0;
+      }
+      /* The modeline: the server-rendered status line under the buffer. */
+      #modeline {
+        flex: 0 0 auto;
+        padding: 3px 14px;
+        background: var(--bg-status, #222a31);
+        color: var(--fg, #d8dee9);
+        border-top: 1px solid rgba(255,255,255,0.10);
+        font-size: 11px;
+        white-space: pre;
+      }
+      /* The echo area / minibuffer: the bottom line. Shows server status
+         and, when a command prompts, an editable prompt. */
+      #minibuffer {
+        flex: 0 0 auto;
+        padding: 4px 14px;
+        background: var(--bg-editor, #303841);
+        color: var(--fg, #d8dee9);
+        border-top: 1px solid rgba(255,255,255,0.08);
+        font-size: 12px;
+        min-height: 1.4em;
+        white-space: pre;
+        display: flex;
+        gap: 4px;
+        align-items: baseline;
+      }
+      #mb-prompt { color: #88c0d0; }
+      #mb-input {
+        flex: 1 1 auto;
+        background: transparent;
+        border: none;
+        color: var(--fg, #d8dee9);
+        font: inherit;
+        outline: none;
+        padding: 0;
+      }
+      #mb-input.hidden { display: none; }
+      #mb-echo { color: #a3be8c; }
+      #mb-hint { color: #ebcb8b; opacity: 0.85; }
+      #status {
+        flex: 0 0 auto;
+        padding: 6px 14px;
+        background: var(--bg, #2b333b);
+        border-top: 1px solid rgba(255,255,255,0.08);
+        font-size: 11px;
+        white-space: pre;
+      }
+      /* Search-match overlay face. view.js paints a synced overlay as
+         <div class="editor-decoration tok-search-match">; styles.css has
+         no search face (the production isearch uses the selection), so the
+         mwb harness supplies one — a translucent amber wash, like a
+         find-all highlight. (An mwb-only face; production styles.css is
+         untouched, per the MWB isolation rule.) */
+      .editor-decoration.tok-search-match {
+        background: rgba(235, 203, 139, 0.32);
+        border-radius: 2px;
+        box-shadow: 0 0 0 1px rgba(235, 203, 139, 0.55) inset;
+      }
+      .editor-decoration.tok-overlay {
+        background: rgba(136, 192, 208, 0.25);
+        border-radius: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <b>Model B — real view.js from a mirror.</b>
+      The server owns the canonical buffer (a real file); this window holds
+      a synced mirror and renders it with the REAL renderer + REAL
+      tree-sitter highlighting. Click in and type.
+      <span id="link" class="warn">connecting…</span>
+    </header>
+    <div id="editor"></div>
+    <div id="modeline">—</div>
+    <div id="minibuffer">
+      <span id="mb-prompt"></span>
+      <input id="mb-input" class="hidden" autocomplete="off" spellcheck="false" />
+      <span id="mb-echo"></span>
+      <span id="mb-hint"></span>
+    </div>
+    <div id="status">loading…</div>
+    <script type="module" src="./view-client.js"></script>
+  </body>
+</html>

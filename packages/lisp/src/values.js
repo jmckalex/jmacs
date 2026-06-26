@@ -231,6 +231,28 @@ export class LispError extends Error {
   }
 }
 
+/**
+ * A cooperative interrupt — the Lisp analogue of Emacs's `C-g` /
+ * `keyboard-quit`, or exceeding the evaluator's step budget. Raised by the
+ * eval trampoline (see eval.js) when an installed interrupt-check fires or
+ * the step ceiling is crossed, so a runaway command can be aborted.
+ *
+ * It extends {@link LispError} on purpose, so it unwinds through `try` /
+ * `catch` / `finally` exactly like any other Lisp error — cleanup still
+ * runs. JavaScript callers can tell it apart with `instanceof LispInterrupt`
+ * (or by the `interrupt` flag), e.g. to distinguish "the user quit" from "the
+ * program failed".
+ */
+export class LispInterrupt extends LispError {
+  /** @param {string} [message] */
+  constructor(message = 'interrupted') {
+    super(message);
+    this.name = 'LispInterrupt';
+    /** Marks this as a quit/interrupt rather than an ordinary error. */
+    this.interrupt = true;
+  }
+}
+
 // --- truthiness and equality -------------------------------------------
 
 /**

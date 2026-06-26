@@ -16,6 +16,13 @@
 export * from './values.js';
 export * from './reader.js';
 export { Environment } from './environment.js';
-export { evaluate, applyProcedure, specialFormNames } from './eval.js';
+export {
+  evaluate,
+  applyProcedure,
+  specialFormNames,
+  setInterruptCheck,
+  setStepBudget,
+  resetStepCounter,
+} from './eval.js';
 export { installPrimitives } from './primitives.js';
 export { createInterpreter } from './interpreter.js';

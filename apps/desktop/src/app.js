@@ -152,6 +152,31 @@ import { createBookmarks } from './bookmarks.js';
 import { enterAddPaneMode } from './add-pane-mode.js';
 import { enterMoveViewsMode } from './move-view-mode.js';
 import { createTabline } from '@editor/renderer';
+// G2 (plans/MWB-GRADUATION.md): the server-view client core. Imported
+// unconditionally (it has no top-level effects), but only CONSTRUCTED behind
+// the GODOT_SERVER flag in the late boot — so flag-off is byte-for-byte today.
+import { createServerViewClient } from './server-view-client.js';
+// The wire-protocol message tags (no side effects). Used only by the
+// serverMode-only __godotG2 test hook below to feed a synthetic SNAPSHOT.
+import { MSG } from '../mwb/protocol.js';
+// G2 router gate: a pure predicate the global key router consults so it stands
+// down (defers to the server) in server-mode once the server view is mounted —
+// focus-independent, so the dual-dispatch undo bell can't ring. No-op flag-off
+// (serverMode false → always returns false → the router runs as today).
+import { shouldGlobalRouterDefer } from './server-router-gate.js';
+// (The leaf-flip retired the G2 overlay container, so the stale-<text-view>
+// sweep `clearStaleServerViews` is no longer imported — the bound leaf reuses
+// one instance across buffer switches; nothing accumulates. The module +
+// its tests remain for now as dead code, to delete in a follow-up.)
+// G2 chrome: the generic PICKER panel the server-view client renders in
+// server-mode (buffer list / M-x / RefTeX). Imported unconditionally (no
+// top-level effects); only USED inside the serverMode-gated boot below.
+import { createPickerPanel } from '../mwb/picker-panel.js';
+// G4 Step 3b: static panes (a split pane showing a DIFFERENT buffer than the
+// focused one) render from a ClientBuffer seeded with the PANE_TREE leaf's text.
+// Imported unconditionally (pure factory, no top-level effects); used only in
+// the serverMode pane-layout reconcile below.
+import { createClientBuffer } from '../mwb/client-buffer.js';
 
 /**
  * Build a Lisp hash-map (a JS `Map` with interned-keyword keys) from a
@@ -403,6 +428,37 @@ window.addEventListener('unhandledrejection', (event) => {
   reportRendererFault('unhandled rejection', event.reason);
 });
 
+// G1/G2 (plans/MWB-GRADUATION.md): when GODOT_SERVER=1, main forks the Model-B
+// server and transfers a MessagePort to this renderer (re-dispatched by the
+// preload as a `godot:server-port` window message). G1 stashed the port; G2
+// routes ONE real editor view through it (see the server-view boot near the
+// end of this file). With the flag off (`host.serverMode` false), this listener
+// is never registered, so the renderer is byte-for-byte unchanged. The block
+// reads only `window.host` (always present) and module-globals, so it is safe
+// at module-init time.
+//
+// @type {MessagePort | null} — the connected server port in server mode, else null.
+var godotServerPort = null; // eslint-disable-line no-var -- hoisted; set from a window-message listener registered at init.
+// @type {(() => void) | null} — the G2 boot hook, defined late once the
+// highlighters + key normaliser exist. The port may connect before or after
+// that, so whichever runs second fires it. Hoisted so the init-time listener
+// can reference it before the boot assigns it (it's null until then).
+var bootServerViewClient = null; // eslint-disable-line no-var -- hoisted; assigned in the async boot, called from here.
+if (window.host && window.host.serverMode) {
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.type !== 'godot:server-port') return;
+    const [port] = event.ports;
+    if (!port) return;
+    godotServerPort = port;
+    console.info('[godot] Model-B server port connected (GODOT_SERVER=1)');
+    // If the boot already ran (highlighters ready), wire the G2 client now;
+    // otherwise the boot will call us once it's ready (it checks the port).
+    if (typeof bootServerViewClient === 'function') bootServerViewClient();
+  });
+}
+
 /** Monotonic id source for shell-buffer session ids. Each new shell
  *  buffer gets a fresh id; the host keys its child-process table off
  *  this. */
@@ -494,6 +550,18 @@ function peelTabline(view) {
   return v;
 }
 
+/** True when VIEW is the server-backed text view the Model-B leaf-flip
+ *  installs as a leaf's `view` (`GODOT_SERVER=1`). Such a view is a live
+ *  façade over the `ClientBuffer` mirror: its `buffer` IS the mirror and its
+ *  point/mark/cursors read straight off it. Two render seams branch on this —
+ *  the leaf's `onKey` routes to the server's keymap, and its decorations come
+ *  from the mirror (not the in-renderer snippet store). The `_serverBacked`
+ *  marker is ONLY ever set inside the serverMode boot block, so this is always
+ *  false flag-off and every guard keyed on it is a no-op in the normal editor. */
+function isServerBackedView(view) {
+  return !!(view && view._serverBacked === true);
+}
+
 /** The next index in `views` from FROM, stepping by DELTA (+1 / -1) and
  *  skipping transient placeholder entries. Wraps around. Returns -1 when
  *  there is no non-placeholder view to land on. Used by the
@@ -515,6 +583,11 @@ const nameEl = document.getElementById('modeline-name');
 const positionEl = document.getElementById('modeline-position');
 
 function updateModeline() {
+  // In server-mode the modeline is driven by the server's VIEW message (the
+  // G2 chrome paints nameEl/positionEl from the spine's renderModeline); the
+  // in-renderer editor is idle behind the overlay, so its modeline must stand
+  // down or it would fight the server's. Flag-off this guard is never taken.
+  if (window.host && window.host.serverMode) return;
   const shown = views[currentViewIndex];
   // A placeholder chooser pane shows its label and no count — never a
   // `9/7`-style index (it isn't part of the user-visible view list).
@@ -849,11 +922,24 @@ function focusPaneFromEvent(event) {
   if (!(target instanceof Element)) return;
   // Splitter handles aren't panes — pressing one focuses nothing.
   if (target.closest('.pane-splitter')) return;
+  // A :no-focus element-view (e.g. bib-search, server mode) must not steal pane
+  // focus — it acts on the active document, which keeps focus. (The clicked
+  // input still takes DOM focus normally; only the server pane-focus is held.)
+  if (target.closest('element-view[data-no-focus="true"]')) return;
   const paneEl = target.closest('.pane');
   if (!paneEl) return;
   const paneId = paneEl.dataset.paneId;
   if (typeof paneId !== 'string' || paneId === currentPaneId) return;
   setCurrentPaneId(paneId);
+  // G4 Step 3: in server mode the SERVER owns the focused leaf, so a click must
+  // also move focus there — else a server-side command (C-x 3 split, find-file)
+  // acts on the server's stale focus, not the pane the user just clicked. The
+  // server re-pushes PANE_TREE, which the reconcile reflects. (paneId is the
+  // server's leaf id — buildServerPaneNode reuses it; a non-matching id, e.g. a
+  // window-1 tabline pane, is a harmless no-op server-side.)
+  if (serverViewClient && typeof serverViewClient.sendPaneIntent === 'function') {
+    serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId });
+  }
 }
 // Capture-phase listeners: run *before* the click target's own handlers
 // fire. A tabline-tab's mousedown handler rebuilds the strip (replaces
@@ -1751,6 +1837,14 @@ function attachSplitterDrag(handle) {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
+      // Server mode: report the final ratio so the server stores it. Otherwise the
+      // drag is purely local, and the next reconcile (any PANE_TREE push — e.g. a
+      // bookmark pin toggle) rebuilds the split from the server's stale ratio and
+      // the resize snaps back. The server echoes the fresh PANE_TREE, which the
+      // client rebuilds at this same ratio (a no-op visually).
+      if (window.host && window.host.serverMode && serverViewClient) {
+        serverViewClient.sendPaneIntent({ op: 'resize', paneId: splitId, ratio: splitNode.ratio });
+      }
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -1881,6 +1975,7 @@ function hideInactiveSingletons() {
   hideInactiveDocs();
   hideInactivePlaceholders();
   hideInactiveElementHosts();
+  hideInactiveProcViews();
 }
 
 /** Switch to the view at INDEX: dispatch through mountKindView to
@@ -2744,6 +2839,25 @@ async function quitInteractive() {
   ) {
     return;
   }
+  // C2 (server mode): offer to REMEMBER this workspace — the ARRANGEMENT
+  // (windows / panes / files / cursors / geometry), NOT the documents — before
+  // quitting. Type a name to save a named workspace (it then shows in the launch
+  // chooser); empty + Enter skips (the `__last__` auto-snapshot still preserves
+  // the layout); C-g aborts the quit. Posted BEFORE the flushes below, which give
+  // the server time to do its synchronous save before it's torn down.
+  if (serverViewClient && godotServerPort) {
+    const label = await new Promise((resolve) => {
+      minibuffer.prompt('Remember this workspace as (empty = don’t): ', {
+        onSubmit: (v) => resolve(String(v ?? '').trim()),
+        onCancel: () => resolve(null),
+      });
+    });
+    if (label === null) return; // cancelled → don't quit
+    if (label !== '') {
+      serverViewClient.reportDock(); // ensure this window's dock state is current
+      godotServerPort.postMessage({ type: MSG.SESSION_SAVE, label });
+    }
+  }
   // A clean, confirmed quit is not a crash: drop every recovery snapshot
   // so the next launch doesn't offer to "recover" work the user chose to
   // discard (or had already saved). `quitting` stops the pagehide handler
@@ -3196,6 +3310,33 @@ function completeFromPanel(name) {
   minibuffer.setValue(completionsDirectory + name);
 }
 
+/** Open (or update in place) the transient "Completions" utility-dock tab with
+ *  ITEMS (display strings; a directory carries a trailing '/'), relative to
+ *  DIRECTORY (the typed path prefix, for click-to-complete). Shared by the Lisp
+ *  `show-completions!` primitive (flag-off) and the server-mode completion reply
+ *  (showServerCompletions). `focus:false` keeps the minibuffer focused. */
+function displayCompletionsPanel(items, directory) {
+  completionsDirectory = directory ?? '';
+  const panel = utilityDock.hasTab(COMPLETIONS_TAB_ID)
+    ? utilityDock.getPanel(COMPLETIONS_TAB_ID)
+    : null;
+  if (panel && typeof panel.setItems === 'function') {
+    panel.setItems(items);
+  } else {
+    utilityDock.openUtilityPanel({
+      id: COMPLETIONS_TAB_ID,
+      title: 'Completions',
+      icon: 'fa-solid fa-list-ul',
+      focus: false,
+      makePanel: () => createCompletionsPanel({
+        items,
+        onSelect: completeFromPanel,
+        onActivate: activateFromPanel,
+      }),
+    });
+  }
+}
+
 /** Double-click in the completions panel = activate (file-browser idiom): a
  *  file OPENS (submit the prompt — drops the panel, delivers the path); a
  *  directory is ENTERED — re-running TAB completion so its contents list and
@@ -3525,6 +3666,26 @@ const interpreter = createInterpreter({
         titleRaw === undefined || titleRaw === null || titleRaw === NIL
           ? tag
           : lispText(titleRaw);
+      // Server mode: the renderer computes the spec (here — it owns
+      // define-element-view + host primitives), but the view must live as a
+      // SERVER data-source to get a pane slot + restore. Send the plain spec up;
+      // the server holds it + switches the leaf, and the client mounts
+      // <element-view> from the PANE_TREE. (onReady is a Lisp callback that
+      // can't cross the wire — deferred; noFocus is honoured server-side later.)
+      if (window.host && window.host.serverMode) {
+        if (serverViewClient) {
+          serverViewClient.openElementView({
+            name,
+            tag: extras.tag,
+            moduleUrl: extras.moduleUrl,
+            attrs: extras.attrs,
+            fit: extras.fit,
+            keyboard: extras.keyboard,
+            noFocus: extras.noFocus,
+          });
+        }
+        return NIL;
+      }
       // A :no-focus panel (e.g. bib-search) opens BESIDE the document in
       // its own split, keeping the editing focus on the document — and
       // reuses an already-open instance of the same tag rather than
@@ -3734,26 +3895,7 @@ const interpreter = createInterpreter({
     // removed by `clear-completions!` (on TAB progress) or when the
     // completing minibuffer closes (see `open-completing-minibuffer!`).
     'show-completions!': (args) => {
-      const items = listToArray(args[0] ?? NIL).map(String);
-      completionsDirectory = String(args[1] ?? '');
-      const panel = utilityDock.hasTab(COMPLETIONS_TAB_ID)
-        ? utilityDock.getPanel(COMPLETIONS_TAB_ID)
-        : null;
-      if (panel && typeof panel.setItems === 'function') {
-        panel.setItems(items);
-      } else {
-        utilityDock.openUtilityPanel({
-          id: COMPLETIONS_TAB_ID,
-          title: 'Completions',
-          icon: 'fa-solid fa-list-ul',
-          focus: false,
-          makePanel: () => createCompletionsPanel({
-            items,
-            onSelect: completeFromPanel,
-            onActivate: activateFromPanel,
-          }),
-        });
-      }
+      displayCompletionsPanel(listToArray(args[0] ?? NIL).map(String), String(args[1] ?? ''));
       return NIL;
     },
     'clear-completions!': () => {
@@ -5069,6 +5211,9 @@ const interpreter = createInterpreter({
     },
     'toggle-repl!': () => {
       utilityDock.toggleUtilityDock();
+      // Tell the server the new dock visibility so the workspace keeps it (even
+      // when this isn't the window the user later quits from).
+      if (serverViewClient) serverViewClient.reportDock();
       return NIL;
     },
     'markdown-preview!': () => {
@@ -5702,6 +5847,1161 @@ const { highlighters, foldCaptures } = await loadLanguageHighlighters(
 );
 document.body.dataset.treesitter = Object.keys(highlighters).join(',');
 
+// --- G2: route ONE real view through the Model-B server -----------------
+//
+// plans/MWB-GRADUATION.md §G2 + the leaf-flip. With GODOT_SERVER=1, route the
+// FOCUSED LEAF's own real editor view (the real `<text-view>` / `createEditorView`,
+// the real highlighters loaded just above, the real `keyEventToString`) through
+// the server: it opens the server's seed buffer through a HELLO/SNAPSHOT, builds
+// a ClientBuffer mirror, makes `leaf.view` a live façade over that mirror, and
+// lets the EXISTING pane render show the leaf's `<text-view>` from it. Keystrokes
+// route to the server (onKey → intent → delta/view-update → mirror → re-render).
+// No overlay: the leaf's own view IS the server view (the reverted Step A tried
+// a foreign overlay element and lost to the render loop). Broad coverage (splits,
+// multi-window) is G3/G4; this binds ONE leaf.
+//
+// ‼ FLAG-OFF IS BYTE-FOR-BYTE TODAY: this whole block is gated on
+// `window.host.serverMode` (the G1 gate, false by default). When false,
+// `serverViewClient` stays null, no client mounts, `leaf.view` is never
+// re-pointed, and the in-renderer interpreter drives everything exactly as
+// today. The only shared-pipeline touch-points — `serverViewKeyOption` and the
+// `getDecorations` guard in `ensureEditorViewForLeaf` — both short-circuit to
+// their original behaviour when `serverMode` is false, so there is zero risk to
+// the flag-off path.
+let serverViewClient = null;
+// --- the shared server-view façade (server mode only; inert flag-off) -------
+// In server mode the focused leaf becomes a tabline of the server's open
+// buffers (Increment 2). The client mirrors only ONE buffer at a time — the
+// ACTIVE one — so there is ONE shared façade view whose getters read the single
+// live mirror; it always occupies the tabline's active slot, with the other
+// server buffers shown as lightweight proxy tabs (labels only, no live
+// content). `serverMirror` is null and `serverFacadeView` is never tabbed
+// flag-off, so every render branch keyed on `isServerBackedView` is a no-op in
+// the normal editor.
+let serverMirror = null;
+const serverFacadeView = {
+  id: 'server-facade',
+  kind: 'text',
+  _serverBacked: true,
+  get buffer() { return serverMirror; },
+  get name() { return serverMirror ? serverMirror.name : '*server*'; },
+  get point() { return serverMirror ? serverMirror.point : 0; },
+  get mark() { return serverMirror ? serverMirror.mark : null; },
+  get cursors() { return serverMirror ? serverMirror.cursors : [{ point: 0, mark: null }]; },
+};
+if (window.host && window.host.serverMode) {
+  // The leaf-flip (plans/MWB-GRADUATION.md): the server drives the focused
+  // leaf's OWN `<text-view>` through the real pane pipeline — NOT a separate
+  // full-bleed overlay. We make `leaf.view` a live façade over the mirror and
+  // let `ensureEditorViewForLeaf` + the existing tabline/warehouse/sync render
+  // show it; panes/splits/tabs/multi-window then inherit server-backing for
+  // free. The id of the leaf this client's mirror is bound to, captured on the
+  // first mount so a buffer switch re-points the SAME leaf.
+  let serverBoundLeafId = null;
+
+  /** The live leaf this client is bound to, or null before the first mount /
+   *  if it was deleted. */
+  function serverBoundLeaf() {
+    if (serverBoundLeafId === null) return null;
+    return leafPanes(rootPane).find((l) => l.id === serverBoundLeafId) ?? null;
+  }
+
+  // The lightweight proxy tabs (id/name/dirty only, never mounted) a leaf-tabline
+  // shows for its inactive tabs — only the active tab carries content. Keyed by
+  // buffer id, shared across this window's tabline leaves.
+  /** @type {Map<string, object>} bufferId -> proxy tab view (label only). */
+  const serverTabProxies = new Map();
+
+  // G4 Step 3 — the last pane-layout the server pushed. EVERY window renders its
+  // leaf layout from this PANE_TREE (the unify); the wire tree is
+  // `{kind:'split',orientation,ratio,first,second}` /
+  // `{kind:'leaf',id,bufferId,focused,name,point,mark,tabline?,tabs?}` (no pixels).
+  let serverPaneTreeWire = null;
+  // The live-process sources (shell + gnuplot) still open in this window (fanned
+  // per PANE_TREE). A cached process whose session leaves this set was closed →
+  // reaped (child killed + element disposed) in the reconcile; a switch-away
+  // keeps it here, so it survives.
+  let serverLiveProcs = new Set();
+  // Step 3b: per-buffer STATIC mirrors for panes showing a DIFFERENT buffer than
+  // the focused/active one. Seeded + refreshed from each PANE_TREE leaf's `text`
+  // (not live deltas — they update on a structural/focus change, which is when a
+  // background buffer can change in THIS window). Same-buffer panes use the live
+  // shared serverMirror instead. Pruned to the currently-shown set each reconcile.
+  /** @type {Map<string, object>} bufferId -> static ClientBuffer. */
+  const serverStaticBuffers = new Map();
+  // Step 3c: per-leaf tabline-views, keyed by the server leaf id. A leaf flagged
+  // `tabline` in the PANE_TREE renders as a real tabline-view of its OWN curated
+  // tabs (NOT the window's whole buffer set). Reused across reconciles so its
+  // tablineState / per-tab elements survive a focus-only re-render; disposed when
+  // the leaf vanishes or flips back to a single view.
+  /** @type {Map<string, object>} leafId -> tabline-view. */
+  const serverLeafTablines = new Map();
+  // The STABLE active-tab view for a tabline leaf, keyed by leaf id and updated
+  // in place each reconcile — so its per-tab `<text-view>` element is reused
+  // (keyed by view identity in editorByChild) instead of churned. ONE object per
+  // leaf serves BOTH focus states (makeLeafTabView flips it LIVE↔STATIC), so a
+  // focus change never swaps the tab between two elements with independent scroll
+  // — the leaf-flip fix (#2). Used for focused AND non-focused tabline leaves.
+  /** @type {Map<string, object>} leafId -> stable active-tab view (live-or-static). */
+  const serverLeafActiveTabViews = new Map();
+  // The buffer each server-backed text element last rendered. Lets a reconcile
+  // tell a FOCUS / split / re-layout (same buffer → keep the scroll exactly) from
+  // a BUFFER SWITCH (new buffer → let it reveal its cursor) — so scroll never
+  // changes on focus, even when the cursor sits off-screen. WeakMap: GC'd with
+  // the element.
+  const serverTextElLastBuffer = new WeakMap();
+  // Non-text DATA-SOURCE views (image/audio/video/pdf), keyed by the server
+  // source id. A media leaf/tab carries `viewKind` + `filePath` on the wire; the
+  // client builds the matching element-view here and loads the bytes itself via
+  // window.host.openFilePath (the server never reads them). Reused across
+  // reconciles (the element survives a focus-only re-render); pruned when the
+  // source is no longer shown.
+  /** @type {Map<string, object>} sourceId -> element-view object. */
+  const serverMediaViews = new Map();
+  // Minimap companion views, keyed by the minimap LEAF id (stable across
+  // reconciles). A minimap leaf has no buffer; after the reconcile mounts every
+  // leaf, each minimap is bound to its TARGET leaf's <text-view> via the shared
+  // minimap machinery (minimapByTargetLeafId / rebindMinimapForLeaf). Pruned when
+  // the leaf leaves the PANE_TREE (toggle-off / target deleted).
+  /** @type {Map<string, object>} minimapLeafId -> minimap view object. */
+  const serverMinimapViews = new Map();
+
+  /** Map a window.host.openFilePath result to createView options for the matching
+   *  element-view — MIRRORS openAsMediaViewIfRecognised's per-kind extras (image
+   *  / audio / video / pdf), without pushing into the global `views` list. Null
+   *  when the result isn't a recognised media shape. */
+  function serverMediaViewSpec(result) {
+    if (!result || typeof result !== 'object') return null;
+    if (typeof result.imageSrc === 'string') {
+      return { kind: 'image', name: result.name, extras: { filePath: result.path, src: result.imageSrc } };
+    }
+    if (result.mediaKind === 'audio') {
+      return { kind: 'audio', name: result.name, extras: {
+        filePath: result.path, src: result.src,
+        ...(result.metadata ? { metadata: result.metadata } : {}),
+        ...(result.albumArtSrc ? { albumArtSrc: result.albumArtSrc } : {}),
+      } };
+    }
+    if (result.mediaKind === 'video') {
+      return { kind: 'video', name: result.name, extras: { filePath: result.path, src: result.src } };
+    }
+    if (result.pdfKind === true) {
+      return { kind: 'pdf', name: result.name, extras: { filePath: result.path, src: result.src, persist: true } };
+    }
+    return null;
+  }
+
+  /** Load a media source's bytes (via the main process) and bind them onto its
+   *  element-view. Async — the view mounts immediately (blank) and repaints when
+   *  the src arrives; an already-mounted element is re-bound, else the next
+   *  reconcile mounts it with the src. Tolerant: a failed load just leaves blank. */
+  async function loadServerMediaSrc(view, filePath) {
+    if (!filePath || !window.host || typeof window.host.openFilePath !== 'function') return;
+    let result;
+    try { result = await window.host.openFilePath(filePath); } catch { return; }
+    const spec = serverMediaViewSpec(result);
+    if (!spec) return;
+    Object.assign(view, spec.extras); // src (+ audio metadata / album art)
+    if (typeof result.name === 'string') view.name = result.name;
+    const el = elementForViewInstance(view);
+    if (el && typeof el.setBuffer === 'function') {
+      try { el.setBuffer(view); } catch { /* ignore */ }
+    } else if (serverPaneTreeWire) {
+      renderServerPaneLayout(); // not mounted yet → reconcile mounts it with the src
+    }
+  }
+
+  /** Build (or reuse) the element-view for a media data-source leaf/tab (Step:
+   *  data-sources). Keyed by the source id so its element survives reconciles;
+   *  the bytes load asynchronously (loadServerMediaSrc). Marked `_serverMedia`
+   *  so the reconcile mounts it via mountKindView (the existing element pipeline). */
+  function buildServerMediaView(w) {
+    let v = serverMediaViews.get(w.bufferId);
+    if (!v) {
+      // A DIRECTORY data-source (directory-tree / directory-columns) reads the
+      // filesystem itself from `rootPath` — no bytes to load. An ELEMENT
+      // data-source carries its spec (tag / moduleUrl / attrs / fit / keyboard /
+      // noFocus) on the wire `state`; <element-view> reads those spread onto the
+      // view. A media source (image/audio/video/pdf) loads its bytes from
+      // `filePath` asynchronously.
+      const directoryKind =
+        w.viewKind === 'directory-tree' || w.viewKind === 'directory-columns';
+      const elementKind = w.viewKind === 'element';
+      const jukeboxKind = w.viewKind === 'jukebox';
+      const bookmarkKind = w.viewKind === 'bookmark';
+      const procViewKind = isProcViewKind(w.viewKind); // shell | gnuplot
+      const customizeKind = w.viewKind === 'customize';
+      let extras;
+      if (bookmarkKind) {
+        // The outline of a text buffer's bookmarks. The server holds the records
+        // (each at its edit-tracked offset + line/column); the view renders them
+        // and sends semantic ops back. Refreshed below on every reconcile so a
+        // fanned-out edit re-renders (the mutable-source seam).
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          records: Array.isArray(s.records) ? s.records : [],
+          sourceName: typeof s.sourceName === 'string' ? s.sourceName : '',
+          sourceBufferId: s.sourceBufferId ?? null,
+          pinned: s.pinned === true,
+        };
+      } else if (elementKind) {
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          tag: s.tag,
+          moduleUrl: s.moduleUrl,
+          attrs: Array.isArray(s.attrs) ? s.attrs : [],
+          fit: s.fit,
+          keyboard: s.keyboard,
+          noFocus: s.noFocus === true,
+        };
+      } else if (procViewKind) {
+        // A LIVE-PROCESS data-source (shell / gnuplot). The server owns the
+        // descriptor (sessionId + cwd, both server-minted); the renderer drives
+        // the child in MAIN by `sessionId` via the existing shell:*/gnuplot:* IPC
+        // (the server never touches the process). `spawned`/`ended` are
+        // client-owned flags on the (persisted) view object — the view is exempt
+        // from the switch-away prune (see reconcileServerPaneTree), so a
+        // buffer-switch/split never respawns; the child is reaped only when the
+        // data-source is closed. Per-instance, not a singleton: each owns its own
+        // <shell-view>/<gnuplot-view> + child, so several render at once.
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          sessionId: typeof s.sessionId === 'string' ? s.sessionId : w.bufferId,
+          cwd: typeof s.cwd === 'string' ? s.cwd : '',
+          ended: false,
+          spawned: false,
+        };
+      } else if (directoryKind) {
+        extras = { rootPath: w.filePath, expanded: new Set() };
+      } else if (jukeboxKind) {
+        // The server lists the directory's audio files + album art; the client
+        // formats per-track labels (the same Lisp helper + audio-metadata IPC as
+        // flag-off) and plays tracks via media:// URLs (jukebox-view).
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        const dir = typeof s.dir === 'string' ? s.dir : '';
+        const tracks = Array.isArray(s.tracks) ? s.tracks : [];
+        extras = {
+          dir,
+          tracks,
+          art: typeof s.art === 'string' ? s.art : null,
+          labels: tracks.map((t) => formatTrackLabel(joinPath(dir, t))),
+          // refresh (g) re-reads the dir — deferred in server mode (v1 is
+          // immutable; the mutable-source seam would re-scan + restate).
+          refresh: () => {},
+          // quit (q) stops playback; the pane itself closes via the tabline ×.
+          quit: () => { try { audio.stop(); } catch { /* ignore */ } },
+        };
+      } else if (customizeKind) {
+        // The customize view: the server leaf carries only the SCOPE
+        // ({group|variable|face}); the (pre-configured singleton) view renders
+        // the model + applies value/face edits from the CLIENT's interpreter,
+        // which holds the same defcustom/face registry. Default = 'godot' group.
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          scope: (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' },
+        };
+      } else {
+        extras = { filePath: w.filePath };
+      }
+      v = createView({
+        kind: w.viewKind,
+        name: w.name || `*${w.viewKind}*`,
+        extras,
+      });
+      v._serverMedia = true;
+      v._serverSourceId = w.bufferId;
+      // The tab click / close handlers resolve a tab to a server id via
+      // `_serverBufferId` (the same field a proxy tab carries), so a media /
+      // directory / element / jukebox tab is switchable / closable like any other.
+      v._serverBufferId = w.bufferId;
+      serverMediaViews.set(w.bufferId, v);
+      // Only media needs an async byte-load; directory / element / jukebox /
+      // bookmark / shell render themselves from the spec / state.
+      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind
+          && !procViewKind && !customizeKind) {
+        loadServerMediaSrc(v, w.filePath);
+      }
+    }
+    // The bookmark outline is a MUTABLE data-source: refresh the (possibly
+    // REUSED) view's records from the latest wire state on EVERY reconcile, so a
+    // fanned-out edit (setState → PANE_TREE) re-renders. The reconcile re-mounts
+    // the leaf → mountKindView → el.setBuffer(view), which repaints from these.
+    // This is the mutable-source client seam — lit here first.
+    if (w.viewKind === 'bookmark') {
+      const s = (w.state && typeof w.state === 'object') ? w.state : {};
+      v.records = Array.isArray(s.records) ? s.records : [];
+      v.sourceName = typeof s.sourceName === 'string' ? s.sourceName : '';
+      v.sourceBufferId = s.sourceBufferId ?? null;
+      v.pinned = s.pinned === true; // drives the thumbtack (pinned vs following)
+    }
+    // The customize view is likewise mutable: refresh its scope from the wire on
+    // every reconcile so a CUSTOMIZE_OP scope change (openScope) re-renders the
+    // (reused, pre-configured singleton) view at the new scope.
+    if (w.viewKind === 'customize') {
+      const s = (w.state && typeof w.state === 'object') ? w.state : {};
+      v.scope = (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' };
+    }
+    return v;
+  }
+
+  /** Get-or-create the lightweight proxy tab for server buffer B (id/name only;
+   *  never mounted — only the active buffer's façade tab has an element). */
+  function ensureServerProxy(b) {
+    let p = serverTabProxies.get(b.id);
+    if (!p) {
+      p = {
+        id: `srvtab-${b.id}`, kind: 'text', _serverBacked: true,
+        _serverBufferId: b.id, buffer: null, point: 0, mark: null,
+        name: b.name, _modified: !!b.modified, filePath: b.filePath ?? null,
+      };
+      serverTabProxies.set(b.id, p);
+    } else {
+      p.name = b.name; p._modified = !!b.modified; p.filePath = b.filePath ?? null;
+    }
+    return p;
+  }
+
+  /** G4 Step 1 — the single-pane (fresh window) mount. The leaf's OWN
+   *  `<text-view>` renders the mirror via the shared façade — NO tabline. This
+   *  is the original leaf-flip mount: the façade is a text view, so the real
+   *  pane pipeline mounts it with no fight, and the user composes the window
+   *  from here (open a file / add a tabline-view). A fresh window opens this
+   *  way on its own *scratch*; window 1 keeps the tabline. */
+  /** A STATIC server-backed leaf view — a NON-focused pane in a split. It reads
+   *  the SHARED mirror for text (3a assumes the panes share the active buffer;
+   *  per-buffer mirrors are 3b) but carries its OWN cursor from the server's
+   *  pane-tree leaf data. The FOCUSED leaf instead uses the live serverFacadeView
+   *  (its cursor tracks the mirror as you type). */
+  function makeServerStaticLeafView(wire) {
+    const point = Number.isFinite(wire.point) ? wire.point : 0;
+    const mark = wire.mark === null || Number.isFinite(wire.mark) ? wire.mark : null;
+    return {
+      kind: 'text',
+      _serverBacked: true,
+      buffer: serverMirror,
+      name: typeof wire.name === 'string'
+        ? wire.name
+        : (serverMirror ? serverMirror.name : '*server*'),
+      point,
+      mark,
+      cursors: [{ point, mark }],
+    };
+  }
+
+  /** The focused leaf id in a wire pane-tree (the server marks exactly one). */
+  function wireFocusedId(node) {
+    if (!node || typeof node !== 'object') return null;
+    if (node.kind === 'leaf') return node.focused ? node.id : null;
+    return wireFocusedId(node.first) ?? wireFocusedId(node.second);
+  }
+
+  /** Walk every leaf of a wire pane-tree. */
+  function forEachWireLeaf(node, fn) {
+    if (!node || typeof node !== 'object') return;
+    if (node.kind === 'leaf') { fn(node); return; }
+    forEachWireLeaf(node.first, fn);
+    forEachWireLeaf(node.second, fn);
+  }
+
+  /** The id of the active buffer (the focused leaf's buffer = the live mirror),
+   *  or null before the first snapshot. */
+  function activeServerBufferId() {
+    return serverViewClient ? serverViewClient.currentBufferId() : null;
+  }
+
+  /** Get-or-create the STATIC ClientBuffer for a different-buffer leaf, seeding /
+   *  refreshing it from the leaf's wire `text`. The buffer is display-only (its
+   *  text is server-pushed via PANE_TREE, never edited locally); a switch to
+   *  this pane re-binds it to the live mirror. */
+  function serverStaticBufferFor(wire) {
+    const text = typeof wire.text === 'string' ? wire.text : '';
+    let buf = serverStaticBuffers.get(wire.bufferId);
+    if (!buf) {
+      buf = createClientBuffer({
+        initialText: text,
+        name: wire.name || '*buffer*',
+        point: Number.isFinite(wire.point) ? wire.point : 0,
+        sendIntent: () => {}, // display-only; edits route through the server
+      });
+      serverStaticBuffers.set(wire.bufferId, buf);
+    } else if (buf.text !== text) {
+      // Refresh in place (keep the object so mounted views stay subscribed).
+      try {
+        buf.applyResync({
+          text,
+          cursors: [{ point: Number.isFinite(wire.point) ? wire.point : 0, mark: wire.mark ?? null }],
+        });
+      } catch { /* tolerant */ }
+    }
+    return buf;
+  }
+
+  /** A static view over a given buffer (the focused/same-buffer panes use the
+   *  live serverFacadeView / shared mirror; this is for a DIFFERENT buffer). */
+  function makeServerStaticBufferView(wire, buf) {
+    const point = Number.isFinite(wire.point) ? wire.point : 0;
+    const mark = wire.mark === null || Number.isFinite(wire.mark) ? wire.mark : null;
+    return {
+      kind: 'text',
+      _serverBacked: true,
+      buffer: buf,
+      name: typeof wire.name === 'string' ? wire.name : (buf ? buf.name : '*buffer*'),
+      point,
+      mark,
+      cursors: [{ point, mark }],
+    };
+  }
+
+  /** The live `<text-view>` element rendering the FOCUSED leaf — the leaf's own
+   *  editor instance, or (a tabline focused leaf) the façade element in its
+   *  active tab. Null before the first mount. Used by the focused-leaf adapter
+   *  (focus / recenter / pageLines) and the reconcile's focus-restore. */
+  function focusedServerLeafElement() {
+    const leaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
+    if (!leaf) return null;
+    if (isTablineView(leaf.view)) {
+      const st = tablineStateByView.get(leaf.view);
+      if (!st) return null;
+      // The focused tabline's active text tab is now its per-leaf view object
+      // (makeLeafTabView), not the shared façade — resolve its element via the
+      // active child (st.activeEditor is the same element, kept as a fallback).
+      const active = tablineActiveChild(leaf.view);
+      return st.editorByChild.get(active) ?? st.activeEditor ?? null;
+    }
+    return editorViewByPaneId.get(leaf.id) ?? null;
+  }
+
+  /** A per-leaf active-tab view object for a server tabline's TEXT tab. ONE of
+   *  these exists per tabline leaf (cached in serverLeafActiveTabViews), so the
+   *  tab's `<text-view>` element is REUSED — and its scrollTop preserved — across
+   *  focus changes. It flips between LIVE (focused: tracks the shared mirror, like
+   *  the old façade, so typing re-renders without a reconcile) and STATIC (not
+   *  focused: a snapshot at the wire point/buffer) via `_live`, but stays the SAME
+   *  object throughout. This is the leaf-flip fix (#2): focus no longer swaps the
+   *  active tab between two elements (the shared façade vs a static view) with
+   *  independent scroll, which had scrolled the document to the top when a
+   *  sibling pane (e.g. the bookmark outline) took focus. */
+  function makeLeafTabView() {
+    return {
+      kind: 'text',
+      _serverBacked: true,
+      _live: false,
+      _staticBuffer: null,
+      _staticPoint: 0,
+      _staticMark: null,
+      _serverBufferId: null,
+      _name: null,
+      // LIVE → the shared mirror (point/cursors track typing); STATIC → the wire
+      // snapshot. Getters so the SAME object serves both without churning.
+      get buffer() { return this._live ? serverMirror : this._staticBuffer; },
+      get name() {
+        const b = this._live ? serverMirror : this._staticBuffer;
+        return this._name ?? (b ? b.name : '*buffer*');
+      },
+      get point() {
+        return this._live ? (serverMirror ? serverMirror.point : 0) : this._staticPoint;
+      },
+      get mark() {
+        return this._live ? (serverMirror ? serverMirror.mark : null) : this._staticMark;
+      },
+      get cursors() {
+        return this._live
+          ? (serverMirror ? serverMirror.cursors : [{ point: 0, mark: null }])
+          : [{ point: this._staticPoint, mark: this._staticMark }];
+      },
+    };
+  }
+
+  /** The content view for a tabline leaf's ACTIVE text tab: the STABLE per-leaf
+   *  object above, bound LIVE when focused (tracks the mirror) or STATIC when not
+   *  (a snapshot mirroring buildServerPaneNode's non-focused branches — a buffer
+   *  DIFFERENT from the active one reads its own static text (3b); the SAME buffer
+   *  reads the live shared mirror (3a), so a tabline split off the focused pane
+   *  isn't empty). The inactive tabs are lightweight proxies; only the active tab
+   *  carries content. A non-text active tab (media) mounts its element-view. */
+  function serverLeafActiveTabView(w) {
+    if (w.viewKind && w.viewKind !== 'text') return buildServerMediaView(w);
+    let v = serverLeafActiveTabViews.get(w.id);
+    if (!v) { v = makeLeafTabView(); serverLeafActiveTabViews.set(w.id, v); }
+    v._live = !!w.focused;
+    v._serverBufferId = w.bufferId ?? null;
+    v._name = typeof w.name === 'string' ? w.name : null;
+    if (!v._live) {
+      v._staticBuffer =
+        (w.bufferId && w.bufferId !== activeServerBufferId() && typeof w.text === 'string')
+          ? serverStaticBufferFor(w) // 3b: a different buffer, its own snapshot text
+          : serverMirror;            // 3a: the same buffer as active, the live mirror
+      v._staticPoint = Number.isFinite(w.point) ? w.point : 0;
+      v._staticMark = w.mark === null || Number.isFinite(w.mark) ? w.mark : null;
+    }
+    return v;
+  }
+
+  /** Re-point server-backed text element EL at VIEW during a reconcile,
+   *  PRESERVING its scroll when the bound buffer is UNCHANGED (a focus / split /
+   *  re-layout — not a buffer switch). `setView` forces followCursor (reveal the
+   *  cursor), which is correct when the cursor MOVES or the buffer switches but
+   *  wrong on a focus change: the scroll must stay put even if the cursor is
+   *  off-screen. So for an unchanged buffer we capture + restore scrollTop around
+   *  the re-point (setView renders synchronously, so the followCursor scroll has
+   *  already happened by the time we restore). A changed buffer (a new mirror or
+   *  static snapshot) re-points normally, so the new content reveals its cursor.
+   *  Cursor MOVES don't come through here (they re-point via the focused-leaf
+   *  adapter / buffer onChange), so reveal-on-move is unaffected. */
+  function repointServerTextEl(el, view) {
+    if (!el || typeof el.setView !== 'function') return;
+    const nextBuffer = view ? view.buffer : null;
+    const sameBuffer = nextBuffer != null && serverTextElLastBuffer.get(el) === nextBuffer;
+    const scroller = sameBuffer ? el.scrollElement : null;
+    const savedTop = scroller ? scroller.scrollTop : null;
+    el.setView(view);
+    if (scroller && savedTop != null) scroller.scrollTop = savedTop;
+    serverTextElLastBuffer.set(el, nextBuffer);
+  }
+
+  /** Build (or reuse) the tabline-view for a `tabline` leaf (Step 3c): one tab
+   *  per id in the leaf's OWN curated `tabs` list — the active tab is the live
+   *  façade (focused) or a static view (non-focused), every other tab a
+   *  lightweight proxy (label only). Reused by leaf id so its tablineState
+   *  survives a reconcile. Marked `_serverLeafTabline` so the tab click / close
+   *  handlers route through the server (focus-pane + switch / close-tab). */
+  function buildServerLeafTabline(w) {
+    const tabs = Array.isArray(w.tabs) ? w.tabs : [];
+    const activeId = w.bufferId;
+    let tlv = serverLeafTablines.get(w.id);
+    if (!tlv) {
+      tlv = createView({ kind: 'tabline', extras: { tabs: [], active: 0, edge: 'top' } });
+      tlv._serverLeafTabline = true;
+      tlv._serverLeafId = w.id;
+      serverLeafTablines.set(w.id, tlv);
+    }
+    const activeTextView = serverLeafActiveTabView(w);
+    tlv.tabs = tabs.map((t) => {
+      // A MEDIA tab uses its element-view whether active or not (like a real
+      // tabline's non-text tabs) — a consistent object across reconciles, so
+      // switching media↔media doesn't churn a proxy in over the view (which left
+      // the new tab unswitchable / unloaded). Only the active tab is shown; the
+      // others mount hidden.
+      if (t.viewKind && t.viewKind !== 'text') {
+        return buildServerMediaView({
+          bufferId: t.bufferId, viewKind: t.viewKind, name: t.name, filePath: t.filePath,
+          // Carry the tab's data-source state (scope / records / tracks): this
+          // build REUSES the cached view, so omitting state let its mutable
+          // refresh clobber the scope to the fallback (customize showed godot).
+          state: t.state,
+        });
+      }
+      // A text tab: the active one is the façade/static content; the rest proxies.
+      return t.bufferId === activeId
+        ? activeTextView
+        : ensureServerProxy({
+            id: t.bufferId, name: t.name, modified: t.modified, filePath: t.filePath,
+          });
+    });
+    const activeIdx = tabs.findIndex((t) => t.bufferId === activeId);
+    tlv.active = activeIdx >= 0 ? activeIdx : 0;
+    return tlv;
+  }
+
+  /** Build a client pane node from the server's wire pane-tree, reusing the
+   *  server's stable leaf/split ids (so paneElements survive a focus-only
+   *  reconcile). A `tabline` leaf becomes a real tabline-view of its own curated
+   *  tabs (3c); else the focused leaf gets the live façade; a same-buffer pane a
+   *  static view over the live mirror (3a); a DIFFERENT-buffer pane a static
+   *  view over its own buffer seeded from the tree's text (3b). */
+  /** Build (or reuse) the view object for a MINIMAP companion leaf. It has no
+   *  buffer/bytes — the reconcile binds it to its target leaf's <text-view> via
+   *  the shared minimap machinery. Keyed by the minimap leaf id so its
+   *  <minimap-view> element survives reconciles. */
+  function buildServerMinimapView(w) {
+    let v = serverMinimapViews.get(w.id);
+    if (!v) {
+      v = createView({
+        kind: 'minimap',
+        name: 'Minimap',
+        // :no-focus — clicking the minimap navigates the editor; it must never
+        // become the active pane (and the server's pane model never focuses it).
+        extras: { side: w.minimapSide === 'left' ? 'left' : 'right', noFocus: true },
+      });
+      v._serverMinimap = true;
+      serverMinimapViews.set(w.id, v);
+    }
+    v._minimapTargetLeafId = w.minimapTarget ?? null;
+    return v;
+  }
+
+  /** Reap a CLOSED live-process view (shell/gnuplot): kill its child + dispose
+   *  its element wherever it lives (a bare-leaf element via procViewElementByView,
+   *  or a tabline tab via the tabline's editorByChild) and drop it from the media
+   *  cache. Called from the reconcile when the source has left the open-set. */
+  function reapProcView(view, sourceId) {
+    if (procViewElementByView.has(view)) {
+      // Bare leaf: disposeProcViewElement kills the child + destroys the element.
+      disposeProcViewElement(view);
+    } else {
+      // Tabline tab: the element lives in the tabline's editorByChild — kill the
+      // child ourselves (the element's destroy() only tears down the view) then
+      // dispose + un-register it. disposeKindView dispatches shellKill/gnuplotKill.
+      try { disposeKindView(view); } catch { /* already gone */ }
+      for (const st of tablineStateByView.values()) {
+        const el = st.editorByChild.get(view);
+        if (el) {
+          try { el.destroy?.(); } catch { /* already gone */ }
+          try { el.remove(); } catch { /* detached */ }
+          st.editorByChild.delete(view);
+          break;
+        }
+      }
+    }
+    serverMediaViews.delete(sourceId);
+  }
+
+  function buildServerPaneNode(wire) {
+    if (wire && wire.kind === 'split') {
+      const ratio =
+        typeof wire.ratio === 'number' && wire.ratio > 0.05 && wire.ratio < 0.95
+          ? wire.ratio : 0.5;
+      return createSplitPane({
+        id: wire.id,
+        orientation: wire.orientation === 'vertical' ? SPLIT_VERTICAL : SPLIT_HORIZONTAL,
+        ratio,
+        first: buildServerPaneNode(wire.first),
+        second: buildServerPaneNode(wire.second),
+      });
+    }
+    const w = wire || {};
+    let view;
+    if (w.tabline) {
+      view = buildServerLeafTabline(w); // 3c: a tabline of this leaf's own tabs
+    } else if (w.viewKind === 'minimap') {
+      // A minimap companion: a non-focusable <minimap-view> bound (after the
+      // reconcile) to its target leaf's <text-view>. Not a data-source.
+      view = buildServerMinimapView(w);
+    } else if (w.viewKind && w.viewKind !== 'text') {
+      // A bare non-text data-source pane: media (image/audio/video/pdf) or a
+      // directory-view (directory-tree / directory-columns).
+      view = buildServerMediaView(w);
+    } else if (w.focused) {
+      view = serverFacadeView; // the live active buffer
+    } else if (w.bufferId && w.bufferId !== activeServerBufferId() && typeof w.text === 'string') {
+      view = makeServerStaticBufferView(w, serverStaticBufferFor(w)); // 3b: a different buffer
+    } else {
+      view = makeServerStaticLeafView(w); // 3a: same buffer, over the live mirror
+    }
+    return createLeafPane({ id: w.id, view });
+  }
+
+  /** Reconcile the client's pane tree to the server's PANE_TREE: rebuild
+   *  rootPane, drop editor instances for leaves that vanished, mount each leaf's
+   *  <text-view>, lay out, and focus the server's focused leaf. Splits become
+   *  visible; C-x 2/3/0/1/o drive the layout through the server. */
+  function reconcileServerPaneTree() {
+    if (!serverPaneTreeWire) return;
+    rootPane = buildServerPaneNode(serverPaneTreeWire);
+    // Prune static buffers no longer shown as a different-buffer pane.
+    const activeId = activeServerBufferId();
+    const stillStatic = new Set();
+    const tablineLeafIds = new Set();
+    const shownMedia = new Set();
+    const shownMinimaps = new Set();
+    forEachWireLeaf(serverPaneTreeWire, (lf) => {
+      if (lf.tabline) tablineLeafIds.add(lf.id);
+      // A minimap companion leaf is structural-only (no buffer); track it by leaf
+      // id so a toggle-off / target-delete prunes its element below.
+      if (lf.viewKind === 'minimap') { shownMinimaps.add(lf.id); return; }
+      // A leaf whose ACTIVE content is a media source (a bare media pane, or a
+      // tabline leaf whose active tab is media) carries `viewKind`; a tabline's
+      // media TABS (active or not) each keep their element-view, so keep all of
+      // them (their views are reused across reconciles).
+      if (lf.viewKind && lf.viewKind !== 'text') shownMedia.add(lf.bufferId);
+      if (Array.isArray(lf.tabs)) {
+        for (const t of lf.tabs) {
+          if (t.viewKind && t.viewKind !== 'text') shownMedia.add(t.bufferId);
+        }
+      }
+      if (!lf.focused && lf.bufferId && lf.bufferId !== activeId && typeof lf.text === 'string') {
+        stillStatic.add(lf.bufferId);
+      }
+    });
+    for (const id of [...serverStaticBuffers.keys()]) {
+      if (!stillStatic.has(id)) serverStaticBuffers.delete(id);
+    }
+    // Drop element-views for media sources no longer shown as an active view.
+    // A per-instance bookmark outline also disposes its own <bookmark-view>.
+    for (const id of [...serverMediaViews.keys()]) {
+      if (!shownMedia.has(id)) {
+        const v = serverMediaViews.get(id);
+        // A LIVE-PROCESS view (shell/gnuplot) is a running child: leaving the
+        // visible tree (a buffer-switch, a C-x 0 that collapses its pane, a tab
+        // change) must NOT reap it. Keep the cached view + its element/child alive
+        // (hideInactiveProcViews hides the element); it is reaped only when its
+        // data-source is actually closed (the reap loop below, driven by the
+        // server's live-process set).
+        if (v && isProcViewKind(v.kind)) continue;
+        if (v && v.kind === 'bookmark') disposeBookmarkElementForView(v);
+        serverMediaViews.delete(id);
+      }
+    }
+    // Reap CLOSED live-process views: a shell/gnuplot whose source left the
+    // server's open-set (serverLiveProcs) was killed (C-x k / tab ×) — kill its
+    // child + dispose its element. A switch-away keeps the source open, so it's
+    // still here and survives (the prune above already exempted it). Keyed by
+    // source id, which is the sessionId.
+    for (const [id, v] of [...serverMediaViews]) {
+      if (v && isProcViewKind(v.kind) && !serverLiveProcs.has(id)) reapProcView(v, id);
+    }
+    // Drop minimap companions whose leaf left the tree (toggle-off / target
+    // deleted): dispose the <minimap-view> element + clear its target binding.
+    for (const [leafId, v] of [...serverMinimapViews]) {
+      if (!shownMinimaps.has(leafId)) {
+        const targetId = v._minimapTargetLeafId;
+        if (targetId != null && minimapByTargetLeafId.get(targetId) === v) {
+          minimapByTargetLeafId.delete(targetId);
+        }
+        disposeMinimapElementForView(v);
+        serverMinimapViews.delete(leafId);
+      }
+    }
+    // Dispose tabline-views whose leaf vanished or flipped back to a single view
+    // (toggle-tabline off / delete-pane), so no orphan strip lingers.
+    for (const [id, tlv] of serverLeafTablines) {
+      if (!tablineLeafIds.has(id)) {
+        try { disposeTablineKind(tlv); } catch { /* ignore */ }
+        serverLeafTablines.delete(id);
+        serverLeafActiveTabViews.delete(id);
+      }
+    }
+    // Tear down editor instances for leaves the new tree no longer has (an
+    // unsplit / delete-pane), so nothing renders behind the new layout.
+    const liveIds = new Set(leafPanes(rootPane).map((l) => l.id));
+    for (const [id, inst] of editorViewByPaneId) {
+      if (!liveIds.has(id)) {
+        try { inst.destroy(); } catch { /* ignore */ }
+        try { inst.remove(); } catch { /* ignore */ }
+        editorViewByPaneId.delete(id);
+      }
+    }
+    currentPaneId = wireFocusedId(serverPaneTreeWire)
+      ?? leafPanes(rootPane)[0]?.id ?? null;
+    serverBoundLeafId = currentPaneId;
+    syncPaneElements();
+    for (const leaf of leafPanes(rootPane)) {
+      if (isTablineView(leaf.view)) {
+        // A leaf that just flipped text→tabline still has its leaf-direct
+        // <text-view> mounted behind the new strip — unlink it (TextView.destroy
+        // nulls the inner editor but leaves the host element), then mount the
+        // tabline via its own pipeline (mountKindView, not the text path).
+        const stale = editorViewByPaneId.get(leaf.id);
+        if (stale) {
+          try { stale.destroy(); } catch { /* ignore */ }
+          try { stale.remove(); } catch { /* ignore */ }
+          editorViewByPaneId.delete(leaf.id);
+        }
+        mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id) });
+        // ensureTabElement reuses the active tab's element but doesn't re-bind it;
+        // re-point it at its (in-place-updated) view so a non-focused tab reflects
+        // content/cursor changes — and a 3a→3b (or focus) flip rebinds its buffer.
+        const st = tablineStateByView.get(leaf.view);
+        const activeChild = tablineActiveChild(leaf.view);
+        if (st && activeChild) {
+          const el = st.editorByChild.get(activeChild);
+          // A text tab re-binds via setView; a media tab (image/audio/video/pdf
+          // element) has no setView — re-bind it via setBuffer so swapping one
+          // media tab in over another actually re-points the element.
+          if (el && typeof el.setView === 'function') {
+            // Preserve scroll on a focus/relayout re-point (only reveal on a
+            // genuine buffer switch) — never scroll the document on focus.
+            try { repointServerTextEl(el, activeChild); } catch { /* ignore */ }
+          } else if (el && typeof el.setBuffer === 'function' && !isProcViewKind(activeChild.kind)) {
+            // Media (image/audio/video/pdf) re-binds via setBuffer so swapping one
+            // media tab in over another re-points the element. A LIVE-PROCESS view
+            // (shell/gnuplot) is NOT re-bound: its element is already bound 1:1 to
+            // its child session (ensureTabElement set it once), and a redundant
+            // setBuffer re-enters the view's async build — racing a SECOND instance
+            // + double-spawn, which leaves the visible view blank even though the
+            // child spawned and output arrives. This is the tabline-path twin of
+            // the ensureProcViewElement guard; the bare-leaf path has no re-point.
+            try { el.setBuffer(activeChild); } catch { /* ignore */ }
+          }
+        }
+      } else if (leaf.view && leaf.view._serverMinimap) {
+        // A minimap companion: mount its <minimap-view> element and remember its
+        // target leaf so the deferred rebind below binds it to that leaf's
+        // <text-view> (after every leaf's element exists + has laid out).
+        const targetId = leaf.view._minimapTargetLeafId;
+        if (targetId != null) minimapByTargetLeafId.set(targetId, leaf.view);
+        ensureMinimapElementForView(leaf.view, paneElements.get(leaf.id));
+      } else if (leaf.view && leaf.view._serverMedia) {
+        // A bare media pane (image/audio/video/pdf): mount the element-view via
+        // the existing per-kind pipeline (mountKindView). A media tab inside a
+        // tabline is handled by the tabline branch above (per-tab element).
+        const stale = editorViewByPaneId.get(leaf.id);
+        if (stale) {
+          try { stale.destroy(); } catch { /* ignore */ }
+          try { stale.remove(); } catch { /* ignore */ }
+          editorViewByPaneId.delete(leaf.id);
+        }
+        // A bookmark outline re-mounts on EVERY reconcile (its records refresh on
+        // fan-out); only focus it when it is the focused leaf, so a `C-x r m`
+        // from the document — which refreshes the open outline — doesn't yank
+        // focus off the document. A LIVE-PROCESS view (shell/gnuplot) follows the
+        // same rule: with one in a split beside the document, an unrelated
+        // reconcile must not yank the keyboard into it. Media keep always-focus.
+        const focus = !(
+          (leaf.view.kind === 'bookmark' || isProcViewKind(leaf.view.kind))
+          && leaf.id !== currentPaneId
+        );
+        mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id), focus });
+      } else if (leaf.view && leaf.view.kind === 'text') {
+        const inst = ensureEditorViewForLeaf(leaf);
+        // Preserve scroll on a focus/relayout re-point (a plain leaf reuses its
+        // element, so only followCursor could move it); reveal only on a switch.
+        if (inst) { try { repointServerTextEl(inst, leaf.view); } catch { /* ignore */ } }
+      }
+    }
+    // A bare media pane mounts the per-kind SINGLETON (image/audio/video/pdf),
+    // which starts display:none — the singleton mount path doesn't reveal it
+    // (unlike the named-kind branches). hideInactiveSingletons shows whichever
+    // singleton a leaf now displays directly and hides the rest; without it a
+    // media pane (e.g. in a second window) renders blank. A no-op for a text /
+    // tabline-only window (no leaf-direct singleton in use).
+    hideInactiveSingletons();
+    relayoutPanes();
+    refreshPaneFocusIndicators();
+    // Bind each minimap companion to its target leaf's <text-view> now that every
+    // leaf has mounted + laid out (deferred a microtask; a no-op when none exist).
+    scheduleMinimapReconcile();
+    // A reconcile that REPLACED the focused leaf's element (toggle-tabline
+    // flipping it to/from a tabline destroys the old <text-view>) orphans
+    // keyboard focus to <body>. Restore it to the focused leaf's element — but
+    // ONLY when focus is genuinely orphaned, so an open minibuffer/picker (whose
+    // input holds focus) is never stolen from. A buffer switch re-focuses via the
+    // SNAPSHOT path instead, so this is a no-op there (activeElement is the view).
+    if (document.activeElement === document.body || document.activeElement === null) {
+      const el = focusedServerLeafElement();
+      if (el && typeof el.focus === 'function') {
+        try { el.focus(); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  /** Single-leaf fallback before the first PANE_TREE arrives (the SNAPSHOT beats
+   *  it on HELLO): the leaf's own <text-view> over the façade, no tabline. */
+  function mountServerSingleFallback() {
+    const leaf = serverBoundLeaf() ?? currentPane() ?? leafPanes(rootPane)[0];
+    if (!leaf) return;
+    serverBoundLeafId = leaf.id;
+    currentPaneId = leaf.id;
+    leaf.view = serverFacadeView;
+    const inst = ensureEditorViewForLeaf(leaf);
+    if (inst) { try { inst.setView(serverFacadeView); } catch { /* ignore */ } }
+  }
+
+  /** Render a 'single' window's layout: the server pane-tree if present, else
+   *  the single-leaf fallback. Called on the first mount + each PANE_TREE. */
+  function renderServerPaneLayout() {
+    if (serverPaneTreeWire) reconcileServerPaneTree();
+    else mountServerSingleFallback();
+  }
+
+  /** The mountView adapter for a 'single' window: it always resolves the CURRENT
+   *  focused leaf's <text-view> (dynamic), so it survives a reconcile (a split /
+   *  focus change rebuilds the tree, but focus/scroll still target the right
+   *  pane). */
+  function makeServerFocusedLeafAdapter() {
+    // The focused leaf's live element — a plain leaf's editor instance, or (a
+    // tabline focused leaf) the façade element in its active tab.
+    const focusedInstance = focusedServerLeafElement;
+    return {
+      setView: () => { const i = focusedInstance(); if (i) { try { i.setView(i.boundView ?? serverFacadeView); } catch { /* ignore */ } } },
+      focus: () => { const i = focusedInstance(); if (i) { try { i.focus(); } catch { /* ignore */ } } },
+      recenter: () => { const i = focusedInstance(); if (i) { try { i.recenter(); } catch { /* ignore */ } } },
+      pageLines: () => { const i = focusedInstance(); try { return i ? i.pageLines() : 0; } catch { return 0; } },
+      destroy: () => { /* soft */ },
+    };
+  }
+
+  /** A server PANE_TREE push: store it and render the new layout — splits appear
+   *  / collapse, a tabline leaf re-renders. Every window renders from its
+   *  PANE_TREE now (the unify); a push before the first mirror is just stored. */
+  function applyServerPaneTree(tree, liveProcs) {
+    serverPaneTreeWire = tree;
+    // The live-process sources (shell + gnuplot) still open in this window
+    // (server's open-set). A process whose session is NOT here was closed (C-x k /
+    // tab ×) — reaped below. Only update when the server actually sent the field
+    // (every PANE_TREE does), so a stray push without it can't wrongly reap all.
+    if (Array.isArray(liveProcs)) serverLiveProcs = new Set(liveProcs);
+    if (serverMirror) renderServerPaneLayout();
+  }
+
+  /** The `mountView` collaborator. A SNAPSHOT (re)points the shared mirror; the
+   *  window then renders its pane layout from the server's PANE_TREE (the unify:
+   *  EVERY window is a composable pane layout — window 1 a tabline leaf of its
+   *  restored files, fresh windows a single scratch pane; one render path). */
+  function mountServerView(mirror) {
+    serverMirror = mirror;
+    // The startup splash (the faint Lisp backdrop) is dismissed by an edit /
+    // view-switch — none of which fire for a fresh server window, so it lingered
+    // behind the empty *scratch* (the "(cond" ghost). The server drives the view
+    // now, so retire it. Idempotent.
+    dismissSplash();
+    renderServerPaneLayout();
+    return makeServerFocusedLeafAdapter();
+  }
+
+  // Define the boot hook the init-time port listener calls (or that we call
+  // here, whichever runs second — the highlighters are ready now, so if the
+  // port already connected we boot immediately below).
+  // The server-driven DOM chrome (server-mode only): the modeline, the echo
+  // area / pending-prefix, the minibuffer prompt, and the generic picker panel
+  // — all driven from the server's VIEW / PICKER messages. The real editor's
+  // own in-renderer chrome is idle behind the G2 overlay, so these drive the
+  // SAME DOM nodes (modeline footer + minibuffer host) the user already sees.
+  let g2PickerHost = null;
+  let g2PickerPanel = null;
+  function closeServerPicker() {
+    if (g2PickerPanel) { try { g2PickerPanel.destroy(); } catch { /* ignore */ } }
+    if (g2PickerHost && g2PickerHost.parentNode) {
+      g2PickerHost.parentNode.removeChild(g2PickerHost);
+    }
+    g2PickerPanel = null;
+    g2PickerHost = null;
+  }
+  // After a minibuffer/picker closes, keyboard focus must return to the
+  // server-routed view or the next keystroke goes nowhere. The client exposes
+  // the mounted <text-view> via getView(); refocus it on the next tick (after
+  // the close handler finishes blurring the input).
+  function refocusServerView() {
+    const v = serverViewClient && serverViewClient.getView();
+    if (v && typeof v.focus === 'function') {
+      requestAnimationFrame(() => {
+        // A CHAINED prompt (M-x → a command that itself prompts, e.g.
+        // directory-tree) closes the M-x prompt and opens a new one in the same
+        // burst: close → schedule this refocus → open + focus the new input.
+        // If that new prompt is up by the time this fires, don't steal its focus
+        // back to the editor (the bug: the chained prompt needed a click).
+        if (minibuffer.isOpen()) return;
+        try { v.focus(); } catch { /* ignore */ }
+      });
+    }
+  }
+  const serverChrome = {
+    // The server bakes the modeline string (renderModeline). Show it whole in
+    // the name slot; the line:col is already inside the string, so the position
+    // slot is cleared (the server is authoritative for it now).
+    setModeline: (modeline, v) => {
+      nameEl.textContent = modeline;
+      positionEl.textContent = '';
+      document.title = `${modeline} — Godot`;
+      // The server computes the focused buffer's mode menu (the client's own
+      // interpreter is inert under GODOT_SERVER=1) and ships it in the view-state;
+      // forward it to the macOS app menu so the menu follows the buffer's mode.
+      if (v && 'modeMenu' in v) applyServerModeMenu(v.modeMenu);
+    },
+    // A customize setting changed in ANOTHER window — re-apply it here so global
+    // rendering (theme / faces / line-height) stays consistent across windows.
+    onCustomizeSync: (change) => applyCustomizeSync(change),
+    // The echo area: a mid-chord prefix (e.g. "C-x-") or a one-off status. The
+    // minibuffer component reuses its row as the echo area when no prompt is up.
+    setEcho: (status) => minibuffer.setStatus(status ?? ''),
+    // A server-suspended minibuffer read: open the real minibuffer; its input
+    // routes back up as MINIBUFFER_* intents (the spine resumes the command).
+    // On submit/cancel, return focus to the server view so typing resumes.
+    openMinibuffer: (prompt, value, cbs) => {
+      minibuffer.prompt(prompt, {
+        initialValue: value ?? '',
+        onChange: (v) => cbs.onChange(v),
+        onSubmit: (v) => {
+          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
+          cbs.onSubmit(v); refocusServerView();
+        },
+        onCancel: () => {
+          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
+          cbs.onCancel(); refocusServerView();
+        },
+        // TAB: ask the server to complete the path (find-file, case-insensitive).
+        // The reply (showCompletions below) fills the input + shows candidates;
+        // returning undefined leaves the input unchanged until then.
+        onTab: (v) => { if (serverViewClient) serverViewClient.requestMinibufferComplete(v); },
+      });
+    },
+    closeMinibuffer: () => {
+      utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
+      minibuffer.close(); refocusServerView();
+    },
+    // The server's TAB-completion reply: fill the minibuffer with the completed
+    // value and show the candidate list (find-file). The minibuffer keeps focus.
+    showCompletions: ({ value, items, directory }) => {
+      if (typeof value === 'string') minibuffer.setValue(value);
+      displayCompletionsPanel(Array.isArray(items) ? items : [], directory ?? '');
+    },
+    // The generic picker (buffer list, M-x, RefTeX, completions): an overlay
+    // panel; the choice/cancel routes back up as PICKER_* intents.
+    openPicker: (request, cbs) => {
+      closeServerPicker(); // one picker at a time
+      g2PickerHost = document.createElement('div');
+      g2PickerHost.className = 'mwb-picker-overlay';
+      document.body.appendChild(g2PickerHost);
+      g2PickerPanel = createPickerPanel(g2PickerHost, {
+        request,
+        onChoose: (v) => { cbs.onChoose(v); closeServerPicker(); refocusServerView(); },
+        onCancel: () => { cbs.onCancel(); closeServerPicker(); refocusServerView(); },
+        // ⌫ on a deletable row (workspace mgmt): the panel stays open.
+        onDelete: typeof cbs.onDelete === 'function' ? cbs.onDelete : undefined,
+      });
+    },
+    closePicker: closeServerPicker,
+    // The server's open-buffer set (a BUFFER_LIST push). Every window renders its
+    // tabs from the PANE_TREE now, so this just keeps the *View List* table in
+    // step (it reads server-sourced viewListRecords); the leaf-tabline strips
+    // refresh on the PANE_TREE reconcile.
+    setBufferList: () => {
+      if (viewListView && typeof viewListView.refresh === 'function') viewListView.refresh();
+    },
+    // C-x C-c: the client resolves the quit chord (the server can't close the
+    // window); run the normal interactive quit (flush + host.quit()).
+    requestQuit: () => quitInteractive(),
+    // C-x 5 2: the server resolved the new-window command and asked us to open
+    // another window onto the shared server. host.newWindow() → main creates +
+    // attaches it as a new client. (Guarded: only present in server mode.)
+    requestNewWindow: (geometry) => {
+      if (window.host && typeof window.host.newWindow === 'function') {
+        window.host.newWindow(geometry);
+      }
+    },
+    // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
+    // window 1 on restore). main reconciles it against the live displays.
+    setWindowBounds: (geometry) => {
+      if (window.host && typeof window.host.setWindowBounds === 'function') {
+        window.host.setWindowBounds(geometry);
+      }
+    },
+    // Workspace restore: re-show/hide the REPL / utility dock to its saved state.
+    setDock: (dock) => {
+      if (!dock) return;
+      if (dock.visible === false) utilityDock.hideUtilityDock();
+      else if (dock.visible === true) utilityDock.showUtilityDock();
+    },
+    // G4 Step 3: the server pushed this window's pane layout. Render it (splits
+    // become visible). Only a 'single' (fresh / composable) window reflects the
+    // server tree; window 1 keeps its tabline.
+    setPaneTree: (tree, liveProcs) => applyServerPaneTree(tree, liveProcs),
+  };
+
+  bootServerViewClient = () => {
+    if (serverViewClient || !godotServerPort) return;
+    serverViewClient = createServerViewClient({
+      port: godotServerPort,
+      mountView: mountServerView,
+      highlighters,
+      foldCaptures,
+      keyEventToString,
+      chrome: serverChrome,
+      // Re-report the viewport line count when the window resizes (the dock
+      // hiding/showing, an OS resize), so a screenful (C-v/M-v) tracks the
+      // live pane height. Returns an unsubscribe the client calls on destroy.
+      subscribeResize: (report) => {
+        window.addEventListener('resize', report);
+        return () => window.removeEventListener('resize', report);
+      },
+      // B2: this window's frame + display, for the session's geometry. A one-shot
+      // pull on connect + a subscription to every move/resize (main pushes
+      // window:bounds). Both no-op if the host build lacks the methods.
+      getWindowBounds: () =>
+        (window.host && typeof window.host.getWindowBounds === 'function'
+          ? window.host.getWindowBounds()
+          : Promise.resolve(null)),
+      subscribeWindowBounds: (report) => {
+        if (window.host && typeof window.host.onWindowBounds === 'function') {
+          return window.host.onWindowBounds(report);
+        }
+        return () => {};
+      },
+      // The REPL / utility-dock visibility, for the workspace (reported on connect
+      // + after a manual toggle).
+      getDockState: () => ({ visible: utilityDock.isUtilityVisible() }),
+      // The renderer owns element-view commands (define-element-view, incl.
+      // user config): announce their names so the server's M-x routes them
+      // back down (RUN_CLIENT_COMMAND), and run them here when it does.
+      clientCommandNames: elementViewCommandNames,
+      runClientCommand: (name, bibPath) => {
+        // SAFETY GATE. Only renderer-owned ELEMENT-VIEW commands (define-element-
+        // view) are safe to run in the inert renderer session — they open a view
+        // through the server's OPEN_ELEMENT_SOURCE channel. The server's M-x
+        // fallback forwards ANY unmatched name here (to catch a LIVE-registered
+        // element-view whose CLIENT_COMMANDS announcement didn't include it), so
+        // REFUSE anything that isn't a current element-view: a typo, or a renderer
+        // command not yet ported to Model B (e.g. `shell`, the old minimap) would
+        // otherwise run `(run-command …)` against the inert session and corrupt
+        // the server-owned layout (the bug that blanked the editor on toggle-minimap).
+        if (!elementViewCommandNames().includes(name)) {
+          minibuffer.message(`No command: ${name}`);
+          return;
+        }
+        try {
+          // bib-search can't see the active document in server mode (the
+          // renderer session is inert), so the server resolved its bibliography
+          // and sent it here. Pin it via the override the command consults; a
+          // null clears any stale pin. Defensive: a missing var (bib-search not
+          // loaded) must not block the command run.
+          const v = typeof bibPath === 'string' && bibPath !== ''
+            ? writeString(bibPath) : 'nil';
+          try { interpreter.evaluate(`(set! *bib-search-doc-override* ${v})`); }
+          catch { /* bib-search lisp not loaded — fine */ }
+          interpreter.evaluate(`(run-command (quote ${name}))`);
+        } catch (error) {
+          repl.appendError(
+            `run ${name}: ${error.lispMessage ?? error.message ?? error}`
+          );
+        }
+      },
+    });
+    serverViewClient.connect();
+    console.info('[godot] G2: real view routed through the server');
+    // A tiny, serverMode-only test hook so the flag-gated electron self-test
+    // (mwb/server-view-selftest.js) can drive a key into the server-routed
+    // view and read the mirror back — no production code reads this. It is
+    // never defined flag-off (this whole block is gated on serverMode).
+    window.__godotG2 = {
+      dispatchKey: (k) => serverViewClient.dispatchKey(k),
+      mirrorText: () => {
+        const m = serverViewClient.getMirror();
+        return m ? m.text : null;
+      },
+      isMounted: () => serverViewClient.getView() != null,
+      bufferId: () => serverViewClient.currentBufferId(),
+      // The single-live-view invariant probe: how many <text-view> elements
+      // sit in the bound leaf's pane. Must stay 1 across a buffer switch
+      // (find-file / C-x b / kill-buffer) — the leaf-flip re-points the SAME
+      // leaf/instance, so the count never grows. The multibuffer self-test
+      // asserts it, and the architect can eyeball it after opening a file.
+      textViewCount: () => {
+        const leaf = serverBoundLeaf();
+        const paneEl = leaf ? paneElements.get(leaf.id) : null;
+        return paneEl ? paneEl.querySelectorAll('text-view').length : 0;
+      },
+      // Feed a synthetic SNAPSHOT for a DIFFERENT buffer through the real
+      // client → onSnapshot → mountServerView path, so the self-test can prove
+      // the real-app buffer switch re-mirrors + keeps exactly one live view
+      // WITHOUT driving the minibuffer DOM. This is the same message the server
+      // sends on find-file/switch; only the bufferId differs from the seed, so
+      // onSnapshot treats it as a switch.
+      simulateSwitch: (text, name, bufferId) => {
+        serverViewClient.handleMessage({
+          type: MSG.SNAPSHOT,
+          text: String(text ?? ''),
+          point: 0,
+          name: String(name ?? 'scratch'),
+          bufferId: String(bufferId ?? 'sim-switch'),
+          seq: 0,
+        });
+      },
+    };
+  };
+  // If the port beat the boot, wire it now.
+  if (godotServerPort) bootServerViewClient();
+}
+
 // Install the persisted user highlight rules now that the override store
 // and the highlighters exist. (The faces.json read above already filled
 // `highlightRulesCache`.) Re-render-on-push is a guarded no-op here —
@@ -5791,6 +7091,36 @@ function targetOwnsKeys(el) {
 // <webview> delivers keydown to the guest page, which never reaches us.
 window.addEventListener('keydown', (event) => {
   if (!keymapReady) return;
+  // Server-mode (Model B): once the server view is mounted it is the sole
+  // dispatcher. A focused TEXT view routes its own keys (its onKey →
+  // serverViewClient.dispatchKey), so the global router stands down for it — else
+  // a key reaching <body> (focus drift) would be dispatched twice. BUT a focused
+  // NON-TEXT view (a media / element data-source view) has no such onKey, so a
+  // command CHORD would be lost and could trap the user on, e.g., a video. Route
+  // just those held-modifier chords up to the server here; bare keys
+  // (space=play/pause, arrows=seek) stay with the element. Flag-off
+  // serverViewClient is null, so this whole branch is skipped.
+  if (window.host && window.host.serverMode && serverViewClient && serverViewClient.getView()) {
+    if (event.defaultPrevented) return;            // a deeper listener claimed it
+    if (BARE_MODIFIER_KEYS.has(event.key)) return; // a bare modifier press
+    if (targetOwnsKeys(event.target)) return;      // minibuffer / native input
+    const focusedLeaf = leafPanes(rootPane).find((l) => l.id === currentPaneId);
+    const fv = focusedLeaf ? peelTabline(focusedLeaf.view) : null;
+    const isTextFocus = !!fv && !isTablineView(fv)
+      && (fv.kind === 'text' || fv._serverBacked === true);
+    if (isTextFocus) return; // the text-view's own onKey dispatches it
+    if (!(event.metaKey || event.ctrlKey || event.altKey)) return; // bare → the element
+    const chord = keyEventToString(event);
+    if (serverViewClient.dispatchKey(chord)) event.preventDefault();
+    return;
+  }
+  // Flag-off (and the pre-mount window): the router runs exactly as today.
+  if (shouldGlobalRouterDefer(
+    !!(window.host && window.host.serverMode),
+    !!(serverViewClient && serverViewClient.getView())
+  )) {
+    return;
+  }
   // A deeper listener already claimed it (focused view, modal, input).
   if (event.defaultPrevented) return;
   // A bare modifier press is not a keystroke in its own right.
@@ -5835,6 +7165,14 @@ window.addEventListener('keydown', (event) => {
 // through the clipboard-aware `yank`. Native inputs keep their own paste.
 window.addEventListener('paste', (event) => {
   if (!keymapReady) return;
+  // Same server-mode stand-down as the key router: the in-renderer `yank`
+  // would mutate the idle editor, not the server's buffer. (Flag-off: false.)
+  if (shouldGlobalRouterDefer(
+    !!(window.host && window.host.serverMode),
+    !!(serverViewClient && serverViewClient.getView())
+  )) {
+    return;
+  }
   if (targetOwnsKeys(event.target)) return;
   const current = views[currentViewIndex];
   if (!current || current.kind !== 'text') return;
@@ -5895,6 +7233,23 @@ let lastModeMenuJson = null;
 function refreshModeMenu() {
   if (!keymapReady) return;
   const menu = currentModeMenu();
+  const json = JSON.stringify(menu);
+  if (json === lastModeMenuJson) return;
+  lastModeMenuJson = json;
+  window.host.setModeMenu(menu);
+}
+
+/** Forward a SERVER-computed mode menu (carried in the view-state) to the macOS
+ *  app menu. Under GODOT_SERVER=1 the focused buffer + its mode live on the
+ *  server, so the spine computes the menu and ships `{label, entries, sections}`;
+ *  the local interpreter can't (it's inert). Built with the same builder as the
+ *  local path and dedup'd via lastModeMenuJson. Called on every view-state
+ *  update (mode switch, pane/buffer switch). */
+function applyServerModeMenu(data) {
+  if (!keymapReady) return;
+  const menu = data
+    ? { label: data.label, items: buildModeMenuItems(data.entries, data.sections) }
+    : null;
   const json = JSON.stringify(menu);
   if (json === lastModeMenuJson) return;
   lastModeMenuJson = json;
@@ -6038,6 +7393,29 @@ function resolveMathPreviewMode() {
   return mathPreviewMode;
 }
 
+/** The major-mode display name for BUFFER. Under GODOT_SERVER=1 the renderer's
+ *  interpreter is inert and the mirror carries no Lisp major-mode map, so the
+ *  server pushes the name onto the mirror (`buffer.majorModeName`); prefer that
+ *  when present, else read the buffer's own major-mode map (the flag-off
+ *  path). The math-preview host feeds the result to mathPreviewProviderForMode. */
+function resolvedMajorModeName(buffer) {
+  if (buffer && typeof buffer.majorModeName === 'string' && buffer.majorModeName) {
+    return buffer.majorModeName;
+  }
+  return bufferMajorModeName(buffer, keyword);
+}
+
+/** Whether math-preview-mode is on for BUFFER. The mirror carries no
+ *  minor-mode list, so in server mode the server pushes a boolean flag
+ *  (`buffer.mathPreviewActive`); prefer it when present, else walk the
+ *  buffer's own minor-mode list (the flag-off path). */
+function resolvedMathPreviewActive(buffer, mode) {
+  if (buffer && typeof buffer.mathPreviewActive === 'boolean') {
+    return buffer.mathPreviewActive;
+  }
+  return isMathPreviewActive(buffer, mode);
+}
+
 /** The math-preview replaced ranges for LEAF's view this render, or an
  *  empty list when the leaf's buffer does not have math-preview-mode on,
  *  its major mode has no math provider, or the feature isn't available.
@@ -6060,14 +7438,14 @@ function getMathReplacedRanges(leaf) {
   const view = peelTabline(leaf.view);
   const isText = view && !isTablineView(view) && view.kind === 'text';
   const buffer = isText ? view.buffer : null;
-  if (!buffer || !isMathPreviewActive(buffer, mode)) {
+  if (!buffer || !resolvedMathPreviewActive(buffer, mode)) {
     // Mode off (or no buffer): drop any idle controller and show source.
     disposeMathPreviewForLeaf(leaf);
     return [];
   }
   // Pick the scanner provider by the buffer's major mode. No provider
   // (a mode without math support) → show source, no controller.
-  const provider = mathPreviewProviderForMode(bufferMajorModeName(buffer, keyword));
+  const provider = mathPreviewProviderForMode(resolvedMajorModeName(buffer));
   if (!provider) {
     disposeMathPreviewForLeaf(leaf);
     return [];
@@ -6108,7 +7486,7 @@ function getMathReplacedRanges(leaf) {
       scan: (text) => {
         const v = peeledTextView();
         const buf = v ? v.buffer : null;
-        const p = mathPreviewProviderForMode(bufferMajorModeName(buf, keyword));
+        const p = mathPreviewProviderForMode(resolvedMajorModeName(buf));
         return p ? p.scan(text) : provider.scan(text);
       },
       // The buffer's own macro definitions (JMarkdown's `Math macros:`
@@ -6117,7 +7495,7 @@ function getMathReplacedRanges(leaf) {
       preamble: (text) => {
         const v = peeledTextView();
         const buf = v ? v.buffer : null;
-        const p = mathPreviewProviderForMode(bufferMajorModeName(buf, keyword));
+        const p = mathPreviewProviderForMode(resolvedMajorModeName(buf));
         const harvest = (p ?? provider).preamble;
         return typeof harvest === 'function' ? harvest(text) : '';
       },
@@ -6152,6 +7530,46 @@ function focusedTextLeafId() {
   // one pane it's that pane's id. The variable is declared above this
   // section in the pane block.
   return currentPaneId;
+}
+
+/** The `onKey` configure option for a leaf's `<text-view>`.
+ *
+ *  Flag-off (the common case) this is byte-for-byte the original: bind the
+ *  in-renderer `dispatchKey` once the keymap is ready, nothing before.
+ *
+ *  Flag-on (Model B) it installs a per-keystroke router instead, because
+ *  `TextView.configure()` cannot re-run after mount (it throws) yet a leaf may
+ *  become server-backed *after* its element was built. The closure decides live
+ *  on each key: a server-backed leaf sends the key to the server's keymap
+ *  (the leaf-flip — auto-pair / chords / self-insert all resolve server-side);
+ *  any other leaf falls back to the in-renderer dispatch exactly as flag-off. */
+function serverViewKeyOption(instance) {
+  if (!(window.host && window.host.serverMode)) {
+    return keymapReady ? { onKey: dispatchKey } : {};
+  }
+  return {
+    onKey: (key) => {
+      const v = peelTabline(instance._boundLeaf.view);
+      if (isServerBackedView(v) && serverViewClient) {
+        return serverViewClient.dispatchKey(key);
+      }
+      return keymapReady ? dispatchKey(key) : false;
+    },
+  };
+}
+
+/** The `onKey` for a NON-TEXT element-view (image/audio/video/pdf) that routes to
+ *  the SERVER's keymap in server mode — so a chord (C-x C-f, M-x, C-x b…) typed
+ *  while a media view is focused reaches the server instead of being swallowed by
+ *  the idle in-renderer dispatchKey (which would preventDefault it, so the
+ *  window-level router never sees it either). Flag-off it is exactly the legacy
+ *  `keymapReady ? { onKey: dispatchKey } : {}`. serverViewClient is resolved at
+ *  key-press time (it's null when the singletons are configured at boot). */
+function serverMediaKeyOption() {
+  if (window.host && window.host.serverMode) {
+    return { onKey: (key) => (serverViewClient ? serverViewClient.dispatchKey(key) : false) };
+  }
+  return keymapReady ? { onKey: dispatchKey } : {};
 }
 
 /** Create (or reuse) the <text-view> custom element for LEAF, mount it
@@ -6192,7 +7610,7 @@ function ensureEditorViewForLeaf(leaf) {
   // on every reuse, rather than capturing `leaf` (a per-update snapshot).
   instance._boundLeaf = leaf;
   instance.configure({
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverViewKeyOption(instance),
     highlighters,
     foldCaptures,
     // Per-view-point: each pane's renderer reads the cursor from
@@ -6229,6 +7647,14 @@ function ensureEditorViewForLeaf(leaf) {
     // every render from live offsets, so they survive edits.
     getDecorations: () => {
       const v = peelTabline(instance._boundLeaf.view);
+      // Server-backed leaf: the decorations (shared overlays / multi-cursor)
+      // are pushed by the server onto the mirror — the in-renderer snippet
+      // store is empty server-side, so read the mirror instead.
+      if (isServerBackedView(v)) {
+        return Array.isArray(v.buffer && v.buffer.decorations)
+          ? v.buffer.decorations
+          : [];
+      }
       const b = v && !isTablineView(v) ? v.buffer : null;
       return snippetDecorationsFor(b);
     },
@@ -6243,7 +7669,7 @@ function ensureEditorViewForLeaf(leaf) {
     getMajorModeName: () => {
       const v = peelTabline(instance._boundLeaf.view);
       const buf = v && !isTablineView(v) ? v.buffer : null;
-      return bufferMajorModeName(buf, keyword);
+      return resolvedMajorModeName(buf);
     },
     getOverrideGeneration: () => highlightOverrideStore.generation(),
     onRenderError: (error) => reportRendererFault('render error', error),
@@ -6453,27 +7879,43 @@ function rerenderAllEditors() {
   forEachMinimapElement((el) => el.invalidateColors());
 }
 
+/** Re-apply ALL of this window's customize-driven rendering from its (current)
+ *  interpreter: the theme CSS vars, the resolved face styles, and an editor
+ *  re-render (a highlight-rule change adds/removes spans). Used by every
+ *  customize edit AND the cross-window sync, so a change renders the same in the
+ *  window that made it and in every other window — not just for *theme*. Safe to
+ *  call any time now that current-face-styles tolerates any *theme*. */
+function reapplyCustomizeRendering() {
+  applyCurrentTheme();
+  applyCurrentFaceStyles();
+  rerenderAllEditors();
+}
+
 /** Apply a setting for the session — a value, quote-wrapped to survive
  *  its type. */
 function applyCustomSetting(name, value) {
-  interpreter.evaluate(
-    `(custom-apply! (quote ${name}) (quote ${writeString(value)}))`
-  );
-  if (name === '*theme*') applyCurrentTheme();
+  const valueSrc = writeString(value);
+  interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
+  reapplyCustomizeRendering();
+  // Propagate the Lisp SOURCE (a string), not the raw value: a custom value can
+  // be a Lisp symbol (e.g. a theme name), which doesn't survive structured-clone
+  // over the wire (it arrives as a plain {name}); the source reconstructs it.
+  propagateCustomize({ op: 'apply', name, valueSrc });
 }
 
 /** Apply a setting and persist it. */
 function saveCustomSetting(name, value) {
-  interpreter.evaluate(
-    `(custom-apply-and-save! (quote ${name}) (quote ${writeString(value)}))`
-  );
-  if (name === '*theme*') applyCurrentTheme();
+  const valueSrc = writeString(value);
+  interpreter.evaluate(`(custom-apply-and-save! (quote ${name}) (quote ${valueSrc}))`);
+  reapplyCustomizeRendering();
+  propagateCustomize({ op: 'save', name, valueSrc });
 }
 
 /** Reset a setting to its default value. */
 function resetCustomSetting(name) {
   interpreter.evaluate(`(custom-reset! (quote ${name}))`);
-  if (name === '*theme*') applyCurrentTheme();
+  reapplyCustomizeRendering();
+  propagateCustomize({ op: 'reset', name });
 }
 
 /** Apply a face-attribute change from the customize view. The widget
@@ -6486,6 +7928,9 @@ function setFaceFromView(faceName, attr, value) {
   interpreter.evaluate(
     `(set-face-attribute-by-strings ${writeString(faceName)} ${writeString(attr)} ${valueSrc})`
   );
+  // `face` + `attr` are strings (set-face-attribute-by-STRINGS), so they ride the
+  // wire fine; `valueSrc` is the already-built Lisp source (booleans → true/false).
+  propagateCustomize({ op: 'set-face', face: faceName, attr, valueSrc });
 }
 
 /** Reset a face — drop the global override and rerender. */
@@ -6493,11 +7938,54 @@ function resetFaceFromView(faceName) {
   interpreter.evaluate(
     `(reset-face-by-string ${writeString(faceName)})`
   );
+  propagateCustomize({ op: 'reset-face', face: faceName });
+}
+
+/** Tell the OTHER windows a customize setting changed (the server relays it),
+ *  so global rendering — theme / faces / line-height — stays consistent across
+ *  windows. A no-op flag-off (single window) and when no server is connected. */
+function propagateCustomize(change) {
+  if (serverViewClient && typeof serverViewClient.customizeChanged === 'function') {
+    serverViewClient.customizeChanged(change);
+  }
+}
+
+/** Apply a customize change that originated in ANOTHER window (the relay):
+ *  update THIS window's interpreter to match, then re-render the same way the
+ *  local edit does (reapplyCustomizeRendering) so the windows stay identical.
+ *  Uses valueSrc — the originator's Lisp SOURCE — verbatim, so a symbol value
+ *  reconstructs as a symbol (not the wire-mangled {name}). Never re-persists
+ *  (the originator already saved) and never re-broadcasts. */
+function applyCustomizeSync(change) {
+  if (!change || typeof change !== 'object' || !keymapReady) return;
+  try {
+    const { op, name, valueSrc, face, attr } = change;
+    if (op === 'apply' || op === 'save') {
+      interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
+    } else if (op === 'reset') {
+      interpreter.evaluate(`(custom-reset! (quote ${name}))`);
+    } else if (op === 'set-face') {
+      interpreter.evaluate(
+        `(set-face-attribute-by-strings ${writeString(face)} ${writeString(attr)} ${valueSrc})`
+      );
+    } else if (op === 'reset-face') {
+      interpreter.evaluate(`(reset-face-by-string ${writeString(face)})`);
+    }
+  } catch (error) {
+    repl.appendError(`customize-sync: ${error.lispMessage ?? error.message}`);
+  }
+  reapplyCustomizeRendering();
 }
 
 /** Open a customisation buffer for a scope — a subgroup, a variable,
  *  or a single face. */
 function openCustomScope(scope) {
+  // Server mode: the customize leaf is server-owned — ask the spine to open the
+  // scope's leaf (CUSTOMIZE_OP); it switches this client + the view re-renders.
+  if (serverViewClient) {
+    serverViewClient.customizeOp(scope);
+    return;
+  }
   if (scope.variable) {
     openCustomize(`*Customize: ${scope.variable}*`, scope);
   } else if (scope.face) {
@@ -6541,7 +8029,7 @@ customizeView.style.display = 'none';
 // configure factory is reused by the tabline mount path so each
 // image tab gets its own `<image-view>` (one per view, not shared).
 function configureImageView() {
-  return { ...(keymapReady ? { onKey: dispatchKey } : {}) };
+  return { ...serverMediaKeyOption() };
 }
 const imageView = /** @type {*} */ (document.createElement('image-view'));
 imageView.configure(configureImageView());
@@ -6609,10 +8097,22 @@ function configureDocView() {
 // Phase 3f: jukebox-view is a custom element now. Factory reused by
 // the tabline mount for per-tab `<jukebox-view>` instances.
 function configureJukeboxView() {
+  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // onKey routes chords to the server's keymap in server mode; flag-off
+    // byte-for-byte. (Jukebox's own SPC/RET/n/p/s keys are handled inside the
+    // view; onKey only forwards the chords it doesn't claim.)
+    ...serverMediaKeyOption(),
     audio,
-    openImage: (path) => openImageByPath(expandTilde(path)),
+    openImage: (path) => {
+      // M-RET on the album art opens it as an image. Server mode: route through
+      // the server's find-file (a media data-source); flag-off: open locally.
+      if (serverMode) {
+        if (serverViewClient) serverViewClient.visitPath(expandTilde(path));
+        return;
+      }
+      openImageByPath(expandTilde(path));
+    },
     report: (message) => repl.appendNote(message),
     // Embedded album-art lookup: the host IPC reads the file's tag
     // and returns `{ mime, dataUrl }` or null. The view shows the
@@ -6716,7 +8216,7 @@ function stripDerivedFields(meta) {
 // instances (one per audio view, not a shared singleton).
 function configureAudioView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     closeBuffer: () => {
       if (!keymapReady) return;
       try {
@@ -6747,7 +8247,7 @@ audioView.style.display = 'none';
 // reused by the tabline mount path.
 function configureVideoView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     closeBuffer: () => {
       if (!keymapReady) return;
       try {
@@ -6773,7 +8273,7 @@ videoView.style.display = 'none';
 // with their state intact.
 function configurePdfView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     // Inverse SyncTeX: an Option-click in the PDF jumps the editor to the
     // source. The pdf-view hands us the 1-based page and the clicked PDF
     // point (SyncTeX convention); `latex-synctex-inverse` runs
@@ -6947,6 +8447,51 @@ function buildMinimapAdapter(buffer, textViewEl) {
       if (!root) return;
       root.scrollTop = f * Math.max(0, root.scrollHeight - root.clientHeight);
     },
+    // Drop the editor's cursor at the END of document LINE (a minimap CLICK —
+    // the line the minimap highlights under the pointer). Server mode: the
+    // mirror's moveTo echoes locally + sends a `point` intent so the server
+    // moves the focused leaf's cursor; flag-off: it moves the buffer's cursor
+    // directly. Tolerant of a missing read surface (a non-text view → no-op).
+    moveCursorToLineEnd: (line) => {
+      if (!buffer || typeof buffer.moveTo !== 'function'
+          || typeof buffer.lineCount !== 'number') return;
+      const n = Math.max(0, Math.min(buffer.lineCount - 1, Math.floor(line)));
+      let end;
+      try {
+        const start = buffer.offsetAt(n, 0);
+        const info = buffer.lineAt(start);
+        end = info && typeof info.text === 'string' ? start + info.text.length : start;
+      } catch { return; }
+      buffer.moveTo(end);
+    },
+  };
+}
+
+/** The per-instance live-process element (`<gnuplot-view>` etc.) bound to CONTENT
+ *  in LEAF — a bare-leaf element (procViewElementByView) or a tabline tab (the
+ *  tabline's editorByChild). Null when none is mounted yet. */
+function procViewElementFor(content, leaf) {
+  if (procViewElementByView.has(content)) return procViewElementByView.get(content);
+  if (isTablineView(leaf.view)) {
+    const st = tablineStateByView.get(leaf.view);
+    if (st && st.editorByChild) return st.editorByChild.get(content) ?? null;
+  }
+  return null;
+}
+
+/** Build a `kind:'plots'` minimap adapter over a live `<gnuplot-view>` element:
+ *  the minimap reads its rendered plots, re-renders when a new one lands, and a
+ *  thumbnail click jumps the gnuplot transcript to that plot. */
+function buildGnuplotMinimapAdapter(gnuplotEl) {
+  return {
+    kind: 'plots',
+    getPlots: () =>
+      typeof gnuplotEl.getPlots === 'function' ? gnuplotEl.getPlots() : [],
+    onChange: (cb) =>
+      typeof gnuplotEl.onPlotsChange === 'function' ? gnuplotEl.onPlotsChange(cb) : () => {},
+    scrollToPlot: (id) => {
+      if (typeof gnuplotEl.scrollToPlot === 'function') gnuplotEl.scrollToPlot(id);
+    },
   };
 }
 
@@ -6963,6 +8508,18 @@ function rebindMinimapForLeaf(targetLeafId) {
   const leaf = leafPanes(rootPane).find((l) => l.id === targetLeafId);
   if (!leaf) { removeMinimapForLeaf(targetLeafId); return; }
   const content = peelTabline(leaf.view);
+  // A GNUPLOT target: bind a plots adapter so the minimap shows a strip of plot
+  // thumbnails (a click jumps the transcript to that plot). Falls back to "not
+  // supported" until the gnuplot element is mounted.
+  if (content && content.kind === 'gnuplot') {
+    const gpEl = procViewElementFor(content, leaf);
+    el.bindTarget(
+      gpEl && typeof gpEl.getPlots === 'function'
+        ? buildGnuplotMinimapAdapter(gpEl)
+        : null
+    );
+    return;
+  }
   if (!content || content.kind !== 'text' || !content.buffer) {
     el.bindTarget(null);
     return;
@@ -7044,6 +8601,12 @@ function attachMinimapBesideLeaf(targetLeaf, side, widthFraction) {
 /** Toggle the minimap for the focused leaf. SIDE / WIDTHFRACTION come from
  *  the Lisp defcustoms via the command. */
 function toggleMinimapForFocusedLeaf(side, widthFraction) {
+  // Server mode (Model B): the SERVER owns the pane layout — the minimap is a
+  // companion leaf in the server pane model, toggled by the `toggle-minimap`
+  // server command (M-x toggle-minimap / C-x m). Mutating the local rootPane here
+  // would be clobbered by the next PANE_TREE reconcile (and blank the editor —
+  // the original bug), so stand down and let the server path drive it.
+  if (window.host && window.host.serverMode) return;
   const leaf = currentPane();
   if (!leaf || leaf.kind !== 'leaf' || !leaf.view) return;
   if (leaf.view.kind === 'minimap') return; // never minimap a minimap
@@ -7100,9 +8663,25 @@ function parseElementAttrs(list) {
   return out;
 }
 
+/** The command names the renderer owns by registering element-views
+ *  (`define-element-view`) — the `element-views` registry's keys (built-ins +
+ *  any in user config). Server mode announces these so M-x routes them back
+ *  down (RUN_CLIENT_COMMAND). Tolerant: [] before the stdlib registers any. */
+function elementViewCommandNames() {
+  try {
+    const reg = interpreter.call('element-views');
+    if (reg instanceof Map) {
+      return [...reg.keys()].map((k) => lispText(k)).filter((n) => n !== '');
+    }
+  } catch { /* stdlib/registry not ready — element-views just aren't M-x-routable yet */ }
+  return [];
+}
+
 function configureElementView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // onKey routes chords to the server's keymap in server mode; flag-off
+    // byte-for-byte (keymapReady ? dispatchKey : nothing).
+    ...serverMediaKeyOption(),
     // Lets the hosted element run a Lisp `:on-ready` callback (its arg is
     // the embedded element instance).
     deliver: (callback, callArgs) =>
@@ -7114,6 +8693,13 @@ function configureElementView() {
     // insert `\cite{…}`.
     insertText: (text) => {
       if (typeof text !== 'string' || text === '') return;
+      // Server mode: route the insert to the SERVER's active buffer (the
+      // document) — the in-renderer session is inert. The server fans the delta
+      // back so the document updates.
+      if (window.host && window.host.serverMode) {
+        if (serverViewClient) serverViewClient.insertText(text);
+        return;
+      }
       try {
         interpreter.evaluate(`(insert! ${writeString(text)})`);
       } catch (error) {
@@ -7165,6 +8751,12 @@ function ensureElementHostForView(view, paneEl) {
   }
   el = /** @type {*} */ (document.createElement('element-view'));
   el.configure(configureElementView());
+  // Server mode: mark a :no-focus panel (bib-search) so a click on it doesn't
+  // send a focus-pane intent that would move the server's focus off the
+  // document (which must stay active for the panel's insert-text to land).
+  if (window.host && window.host.serverMode && view && view.noFocus) {
+    el.dataset.noFocus = 'true';
+  }
   el.setBuffer(view); // spec read on connectedCallback
   if (paneEl) paneEl.append(el); // triggers boot → import module + create tag
   elementHostByView.set(view, el);
@@ -7194,6 +8786,110 @@ function disposeElementHostForView(view) {
   try { el.destroy(); } catch { /* already gone */ }
   el.remove();
   elementHostByView.delete(view);
+}
+
+// --- bookmark outline as a per-instance pane view (server mode) ----------
+// In server mode each bookmark outline owns its OWN <bookmark-view> element
+// (keyed by its source view object), so two outlines can render in one window —
+// a vertical split with two files, each its own outline. The flag-off app keeps
+// the single shared `bookmarkView` singleton (mounted via the singleton path in
+// mountKindView); only `_serverMedia` bookmark views route to the per-instance
+// path. Mirrors ensureElementHostForView / the browser + doc per-instance views.
+const bookmarkElementByView = new Map();
+
+/** The <bookmark-view> element for a SERVER-mode outline VIEW — created
+ *  (configured + mounted in PANE-EL) on first use, then reused and re-pointed. */
+function ensureBookmarkElementForView(view, paneEl) {
+  let el = bookmarkElementByView.get(view);
+  if (el) {
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    el.setBuffer(view); // re-render with the (possibly re-targeted) records
+    return el;
+  }
+  el = /** @type {*} */ (document.createElement('bookmark-view'));
+  el.configure(configureBookmarkView());
+  el.setBuffer(view);
+  if (paneEl) paneEl.append(el);
+  bookmarkElementByView.set(view, el);
+  return el;
+}
+
+/** Tear down the per-instance <bookmark-view> bound to VIEW (its source closed). */
+function disposeBookmarkElementForView(view) {
+  const el = bookmarkElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ }
+  el.remove();
+  bookmarkElementByView.delete(view);
+}
+
+// --- live-process views (shell + gnuplot) as per-instance pane views (server) ---
+// In server mode each live-process data-source (a shell or a gnuplot) owns its
+// OWN element (<shell-view> / <gnuplot-view>) — its own child process + view — so
+// several render in one window (a split, or a bottom tabline of process tabs).
+// The flag-off app keeps the single shared singletons; only `_serverMedia` views
+// route to this per-instance path. Mirrors ensureBookmarkElementForView / the
+// browser + doc views. CRUCIAL: the element is hide-not-kill (a switch-away/split
+// hides it, never destroys it) so the running process + view state survive; it is
+// reaped only by disposeProcViewElement when the data-source is actually closed.
+const PROC_VIEW_KINDS = new Set(['shell', 'gnuplot']);
+const isProcViewKind = (kind) => PROC_VIEW_KINDS.has(kind);
+const procViewElementByView = new Map();
+
+/** The per-instance element for a SERVER-mode live-process VIEW (shell/gnuplot)
+ *  — created (configured + mounted in PANE-EL) on first use, then reused and
+ *  re-parented. The child spawns lazily on the element's first setBuffer (when
+ *  `view.spawned` is false); a reused element with `view.spawned` already true
+ *  just re-attaches to the still-running session. */
+function ensureProcViewElement(view, paneEl) {
+  let el = procViewElementByView.get(view);
+  if (el) {
+    // Reuse: re-parent only. Do NOT call setBuffer again — the element is already
+    // bound and its child is live. In server mode a process leaf re-mounts on
+    // EVERY reconcile, and a redundant setBuffer re-enters the view's async build
+    // (e.g. shell-view's ensureTerminal, whose `if (term) return` guard can't hold
+    // against calls racing before the first `await fonts.ready`) → a second
+    // instance + a double-spawn, leaving the visible view orphaned. Re-parenting
+    // (a DOM move) fires only the no-op disconnected/connected callbacks.
+    if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
+    return el;
+  }
+  const factory = perKindConfigureFactory(view.kind); // configureShellView / configureGnuplotView
+  el = /** @type {*} */ (document.createElement(`${view.kind}-view`));
+  if (factory) el.configure(factory());
+  el.setBuffer(view); // first bind: spawns the child lazily (view.spawned → true)
+  if (paneEl) paneEl.append(el);
+  procViewElementByView.set(view, el);
+  return el;
+}
+
+/** Show leaf-direct process elements whose view is active; hide the rest (do NOT
+ *  destroy — the child + view state stay alive). Tabline process tabs manage
+ *  their own visibility via mountTablineActiveChild. Called from
+ *  hideInactiveSingletons. */
+function hideInactiveProcViews() {
+  const active = new Set();
+  for (const leaf of leafPanes(rootPane)) {
+    if (!isTablineView(leaf.view) && leaf.view && isProcViewKind(leaf.view.kind)) {
+      active.add(leaf.view);
+    }
+  }
+  for (const [view, el] of procViewElementByView) {
+    el.style.display = active.has(view) ? '' : 'none';
+  }
+}
+
+/** Tear down the per-instance element bound to VIEW and reap its child (its
+ *  data-source was closed). The element's destroy() does NOT kill the child;
+ *  disposeKindView dispatches the right kill (shellKill / gnuplotKill). */
+function disposeProcViewElement(view) {
+  const el = procViewElementByView.get(view);
+  if (!el) return;
+  try { el.destroy(); } catch { /* already gone */ } // view dispose + IPC unsubscribe
+  el.remove();
+  procViewElementByView.delete(view);
+  // Reap the child in MAIN (the renderer-side destroy() above does NOT kill it).
+  try { disposeKindView(view); } catch { /* process already gone */ }
 }
 
 // --- documentation as a pane view (per-instance, mirrors the browser) ---
@@ -7308,13 +9004,22 @@ async function openDocInPane(name) {
 // Phase 3g: directory-tree is a custom element now. Factory reused by
 // the tabline mount path for per-tab `<directory-tree-view>` instances.
 function configureDirectoryTreeView() {
+  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // onKey routes chords to the server's keymap in server mode (so C-x C-f /
+    // M-x reach it), else the in-renderer dispatchKey. Flag-off byte-for-byte.
+    ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     // Colour file/folder icons from the vendored Material Icon Theme set.
     iconUrlFor: (name, isDirectory, expanded) =>
       materialIconUrlForEntry(name, isDirectory, expanded),
     openPath: (path) => {
+      // Server mode: open the file by path through the server's find-file
+      // (visitFile), switching the focused leaf onto it.
+      if (serverMode) {
+        if (serverViewClient) serverViewClient.visitPath(path);
+        return;
+      }
       // Route through the `directory-tree-open-file` Lisp function so the
       // target honours `*directory-tree-open-target*` and stays user-
       // overridable. Fall back to the focused-pane open if the stdlib
@@ -7330,6 +9035,9 @@ function configureDirectoryTreeView() {
       openFileInTabAdjacent(path);
     },
     closeBuffer: () => {
+      // Server mode: closing a directory pane isn't wired server-side yet
+      // (follow-on). The pane is replaced when a file is opened from it.
+      if (serverMode) return;
       if (!keymapReady) return;
       try {
         interpreter.call('kill-view');
@@ -7382,6 +9090,23 @@ function panePositionByView() {
  *  id so selection isn't ambiguous when two views share a name. Mirrors
  *  viewHost.listViewRecords (the Lisp `list-views`) but returns JS. */
 function viewListRecords() {
+  // Server mode: the *View List* shows the SERVER's open buffers — the
+  // in-renderer `views[]` holds only the welcome seed (the real buffers live
+  // server-side). Build rows from the last BUFFER_LIST; each row's id IS the
+  // server buffer id, so selectView/killView route it to switch/close.
+  if (window.host && window.host.serverMode && serverViewClient) {
+    return serverViewClient.getBufferList().map((b) => ({
+      id: b.id,
+      name: b.name ?? '',
+      kind: 'text',
+      mode: null, // server-side major mode not surfaced yet (task: mode coverage)
+      lines: typeof b.lineCount === 'number' ? b.lineCount : 0,
+      pane: b.current ? 1 : null,
+      file: b.filePath ?? null,
+      modified: !!b.modified,
+      current: !!b.current,
+    }));
+  }
   const paneByView = panePositionByView();
   const current = session.currentView;
   // Placeholders are transient chooser panes — excluded from the *View
@@ -7413,10 +9138,21 @@ function configureViewListView() {
       keymapReady && interpreter.call('chord-in-progress?') === true,
     getViews: viewListRecords,
     selectView: (id) => {
+      // Server mode: the id is a server buffer id — switch to it (the server
+      // re-syncs + re-pushes BUFFER_LIST, re-marking the active row/tab).
+      if (window.host && window.host.serverMode && serverViewClient) {
+        serverViewClient.switchBuffer(id);
+        return;
+      }
       const view = views.find((v) => v.id === id);
       if (view) switchToView(view);
     },
     killView: (id) => {
+      // Server mode: close the server buffer (kill-buffer via switch + C-x k).
+      if (window.host && window.host.serverMode && serverViewClient) {
+        serverViewClient.closeBuffer(id);
+        return;
+      }
       const idx = views.findIndex((v) => v.id === id);
       if (idx !== -1) killViewAtIndex(idx);
     },
@@ -7831,14 +9567,21 @@ function disposePlaceholderElementForView(view) {
 // Phase 3g: directory-columns is a custom element now. Factory reused
 // by the tabline mount path for per-tab `<directory-columns-view>` instances.
 function configureDirectoryColumnsView() {
+  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    // onKey routes to the server's keymap in server mode; flag-off byte-for-byte.
+    ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     getPreview: (path) => buildColumnPreview(path),
     // Same tree-sitter highlighter registry the editor uses, so the
     // preview pane colourises the file the same way as if it were open.
     highlighters,
     openPath: (path) => {
+      // Server mode: open by path through the server's find-file (visitFile).
+      if (serverMode) {
+        if (serverViewClient) serverViewClient.visitPath(path);
+        return;
+      }
       openFileInTabAdjacent(path);
     },
     onRevealInFolder: (path) => window.host.revealInFolder(path),
@@ -7850,6 +9593,8 @@ function configureDirectoryColumnsView() {
       return window.host.renameFile(path, to);
     },
     closeBuffer: () => {
+      // Server mode: closing a directory pane isn't wired server-side yet.
+      if (serverMode) return;
       if (!keymapReady) return;
       try {
         interpreter.call('kill-view');
@@ -7868,6 +9613,27 @@ directoryColumnsView.style.display = 'none';
 // text buffer it annotates) is shown through this outliner. Outline edits
 // write back to the source buffer's metadata.bookmarks via `persist`.
 function configureBookmarkView() {
+  // Server mode: the outline is a MUTABLE 'bookmark' data-source. Its records
+  // come from the server (on the bound view object), and edits are SEMANTIC ops
+  // sent up (jump/rename/delete/indent/outdent/toggle) — the view never mutates
+  // its own copy or touches buffer metadata; it re-renders from the fanned-out
+  // state. Keys route to the SERVER keymap (serverMediaKeyOption), exactly like
+  // the directory-tree / jukebox views; q closes the pane via C-x 0.
+  if (window.host && window.host.serverMode) {
+    return {
+      ...serverMediaKeyOption(),
+      closeBuffer: () => {
+        if (serverViewClient) {
+          serverViewClient.dispatchKey('C-x');
+          serverViewClient.dispatchKey('0');
+        }
+      },
+      // The view passes its bound source id; route the op to the server.
+      emitOp: (sourceId, op) => {
+        if (serverViewClient && sourceId) serverViewClient.bookmarkOp(sourceId, op);
+      },
+    };
+  }
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
     // While a chord is mid-flight (C-x just pressed) the outline must
@@ -8142,6 +9908,18 @@ const SINGLETON_VIEWS = [
  *  instance work and calls this helper afterwards). */
 function applyTextMountSideEffects(view, instance) {
   if (!view || view.kind !== 'text' || !view.buffer) return;
+  // Server-backed (Model B) view: the SERVER owns the buffer, cursor, mode and
+  // overlays. The in-renderer machinery below doesn't apply — and `bindCursor`
+  // (an L2 Buffer method the ClientBuffer mirror lacks) would throw. Just point
+  // the active editor at it and render; everything else is server-driven.
+  if (isServerBackedView(view)) {
+    if (instance) {
+      editorView = instance;
+      instance.setView(view);
+      if (typeof instance.focus === 'function') instance.focus();
+    }
+    return;
+  }
   currentTextBuffer = view.buffer;
   // Per-view-point (plans/PANES.md Q2): bind the buffer's cursor to
   // the view so the buffer's `point`/`mark` API reads and writes the
@@ -8238,6 +10016,32 @@ function mountKindView(view, context) {
     el.focus();
     return;
   }
+  if (view.kind === 'bookmark' && view._serverMedia) {
+    // Per-instance in SERVER mode (the flag-off outline stays the singleton
+    // below): each outline owns its own <bookmark-view>, so two can coexist in
+    // one window. Honor the focus context — a non-focused outline re-mounting on
+    // a fan-out must not steal focus from the document (same rule as the
+    // singleton path; see the bare-media reconcile branch).
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = (context && context.paneEl) || (leaf ? paneElements.get(leaf.id) : null);
+    const el = ensureBookmarkElementForView(view, paneEl);
+    el.style.display = '';
+    if (!context || context.focus !== false) el.focus();
+    return;
+  }
+  if (isProcViewKind(view.kind) && view._serverMedia) {
+    // Per-instance in SERVER mode (flag-off keeps the singleton below): each
+    // live-process view (shell/gnuplot) owns its own element + child, so several
+    // render at once (a split, or — via mountTablineActiveChild, which routes
+    // here too — a bottom tabline of process tabs). Honor the focus context: a
+    // re-mount on a reconcile must not steal focus from the document.
+    const leaf = leafPanes(rootPane).find((l) => l.view === view);
+    const paneEl = (context && context.paneEl) || (leaf ? paneElements.get(leaf.id) : null);
+    const el = ensureProcViewElement(view, paneEl);
+    el.style.display = '';
+    if (!context || context.focus !== false) el.focus();
+    return;
+  }
   if (view.kind === 'minimap') {
     // Per-instance companion: mount THIS minimap's element in its pane, but
     // do NOT focus it — clicks navigate the editor and the keyboard stays
@@ -8265,7 +10069,9 @@ function mountKindView(view, context) {
       (leaf ? paneElements.get(leaf.id) : null);
     if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
     el.setBuffer(view);
-    el.focus();
+    // Callers may suppress the focus (a non-focused bookmark outline re-mounting
+    // on a fan-out must not steal focus from the document). Default: focus.
+    if (!context || context.focus !== false) el.focus();
   }
 }
 
@@ -8448,13 +10254,41 @@ function ensureTablineState(view) {
     edge: view.edge ?? 'top',
     onSelect: (i) => activateTabInTabline(view, i),
     onClose: (i) => {
+      // A per-leaf server tabline (Step 3c): closing a tab un-curates that buffer
+      // from THIS tabline (it lives on in the pool — NOT a global kill). Focus
+      // the leaf, then send a close-tab pane intent; the server re-points to a
+      // neighbour if the active tab closed and re-pushes PANE_TREE.
+      if (view._serverLeafTabline) {
+        const target = view.tabs[i];
+        if (!target || !serverViewClient) return;
+        const id = target === serverFacadeView
+          ? serverViewClient.currentBufferId()
+          : target._serverBufferId;
+        if (!id) return;
+        serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId: view._serverLeafId });
+        serverViewClient.sendPaneIntent({ op: 'close-tab', paneId: view._serverLeafId, bufferId: id });
+        return;
+      }
       const target = view.tabs[i];
       if (!target) return;
       const globalIdx = views.indexOf(target);
       if (globalIdx >= 0) killViewAtIndex(globalIdx);
       else removeTabInTabline(view, i);
     },
-    onReorder: (from, to) => reorderTabInTabline(view, from, to),
+    onReorder: (from, to) => {
+      // A per-leaf server tabline (Step 3c): the server owns the tab order, so a
+      // drag routes UP (focus the leaf, then reorder its curated tabs); the
+      // re-pushed PANE_TREE re-renders the strip in the new order. A local
+      // splice would be reverted by the next reconcile.
+      if (view._serverLeafTabline) {
+        if (serverViewClient) {
+          serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId: view._serverLeafId });
+          serverViewClient.sendPaneIntent({ op: 'reorder-tab', paneId: view._serverLeafId, from, to });
+        }
+        return;
+      }
+      reorderTabInTabline(view, from, to);
+    },
   });
 
   state = {
@@ -8569,6 +10403,7 @@ function perKindConfigureFactory(kind) {
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
     case 'notebook':          return configureNotebookView;
+    case 'customize':         return configureCustomizeView;
     default:                  return null;
   }
 }
@@ -8593,9 +10428,18 @@ function ensureTabElement(state, child) {
   if (el !== undefined) return el;
 
   if (child.kind === 'text' && child.buffer) {
+    // Server-backed (Model B) tab — the façade rendering the active server
+    // buffer. Its keys route to the server's keymap and its decorations come
+    // from the mirror; its major-mode name + math-preview-active flag are
+    // server-pushed onto the mirror too (read via resolvedMajorModeName /
+    // getMathReplacedRanges below). Every other tab keeps the in-renderer
+    // wiring exactly as before.
+    const serverBacked = isServerBackedView(child);
     el = /** @type {*} */ (document.createElement('text-view'));
     el.configure({
-      ...(keymapReady ? { onKey: dispatchKey } : {}),
+      ...(serverBacked
+        ? { onKey: (key) => (serverViewClient ? serverViewClient.dispatchKey(key) : false) }
+        : (keymapReady ? { onKey: dispatchKey } : {})),
       highlighters,
       foldCaptures,
       getPoint: () => typeof child.point === 'number' ? child.point : 0,
@@ -8608,18 +10452,22 @@ function ensureTabElement(state, child) {
         }];
       },
       getTabWidth: () => currentTabWidth,
-      // Snippet field + mirror boxes for this tab's buffer.
-      getDecorations: () => snippetDecorationsFor(child.buffer ?? null),
+      // Snippet field + mirror boxes for this tab's buffer (server-backed: the
+      // server-pushed overlays / multi-cursor set on the mirror instead).
+      getDecorations: serverBacked
+        ? () => (child.buffer && Array.isArray(child.buffer.decorations)
+          ? child.buffer.decorations : [])
+        : () => snippetDecorationsFor(child.buffer ?? null),
       // Per-view math preview — the leaf-direct path
       // (`ensureEditorViewForLeaf`) wires this too; a tabline tab must
       // have it as well or math-preview-mode renders nothing in tabs.
       // The tab IS a plain text view (no tabline to peel), so the handle
       // points `view`/`id` straight at `child` and supplies this tab's
-      // own element for the MathJax-startup re-render.
-      getReplacedRanges: () =>
-        getMathReplacedRanges({ id: child, view: child, element: el }),
-      getMajorModeName: () =>
-        bufferMajorModeName(child.buffer ?? null, keyword),
+      // own element for the MathJax-startup re-render. getMathReplacedRanges
+      // is server-aware: for a server-backed tab it reads the mode state
+      // (major-mode name + active flag) the server pushed onto the mirror.
+      getReplacedRanges: () => getMathReplacedRanges({ id: child, view: child, element: el }),
+      getMajorModeName: () => resolvedMajorModeName(child.buffer ?? null),
       getOverrideGeneration: () => highlightOverrideStore.generation(),
       onRenderError: (error) => reportRendererFault('render error', error),
     });
@@ -8673,7 +10521,12 @@ function mountTablineActiveChild(tablineView) {
   // correct dimensions). Non-text tabs don't measure font metrics, so
   // they're safe to create hidden.
   for (const tab of tablineView.tabs) {
-    if (tab.kind !== 'text') ensureTabElement(state, tab);
+    // Skip TEXT (its editor measures the container bounding box, which is zero
+    // under display:none) AND LIVE-PROCESS views (shell's xterm measures its host
+    // the same way at term.open; gnuplot likewise — eager creation in a hidden/
+    // unsized content area leaves it mis-rendered even though the child spawns).
+    // These are created LAZILY on activation below, when the content is sized.
+    if (tab.kind !== 'text' && !isProcViewKind(tab.kind)) ensureTabElement(state, tab);
   }
 
   const child = (typeof tablineView.active === 'number' &&
@@ -8748,7 +10601,14 @@ function mountTablineActiveChild(tablineView) {
   // leaf's leaf-direct text-view (when there is one) is only
   // toggled by the path that *changed* the focused leaf's view —
   // not as a side effect of a click in another tabline.
-  const activeEl = state.editorByChild.get(child);
+  //
+  // A SHELL tab is created LAZILY here (it's excluded from the eager loop
+  // above): ensureTabElement now, while the content area is visible + sized, so
+  // the xterm's term.open() measures a real box. Set display:'' explicitly (the
+  // display loop above only iterates already-created elements). Mirrors the text
+  // branch. Other non-text kinds were created eagerly and already in the map.
+  const activeEl = ensureTabElement(state, child);
+  if (activeEl) activeEl.style.display = '';
   state.activeEditor = null;
   state.activeEditorChild = null;
   hideInactiveSingletons();
@@ -8786,6 +10646,9 @@ function elementForViewInstance(view) {
   if (view.kind === 'element' && elementHostByView.has(view)) {
     return elementHostByView.get(view);
   }
+  if (view.kind === 'bookmark' && bookmarkElementByView.has(view)) {
+    return bookmarkElementByView.get(view);
+  }
   return singletonElementForKind(view.kind);
 }
 
@@ -8821,6 +10684,21 @@ function deliverLispCallback(callback, callArgs, primName) {
 function activateTabInTabline(tablineView, index) {
   if (!Array.isArray(tablineView.tabs)) return;
   if (index < 0 || index >= tablineView.tabs.length) return;
+  // A per-leaf server tabline (Step 3c): clicking a tab focuses THIS leaf on the
+  // server (the click may be in a non-focused pane), then switches its active
+  // tab. Both route up; the server re-pushes PANE_TREE and the reconcile
+  // re-renders the strip with the new active tab. The active tab IS the façade
+  // (switch is a server no-op); a proxy carries its own id.
+  if (tablineView._serverLeafTabline) {
+    if (!serverViewClient) return;
+    const target = tablineView.tabs[index];
+    const id = target === serverFacadeView
+      ? serverViewClient.currentBufferId()
+      : (target && target._serverBufferId);
+    serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId: tablineView._serverLeafId });
+    if (id) serverViewClient.switchBuffer(id);
+    return;
+  }
   tablineView.active = index;
   const state = tablineStateByView.get(tablineView);
   if (state) state.strip.refresh();
@@ -10464,10 +12342,24 @@ function projectStateHost(root) {
   };
 }
 
+/** An inert session controller used in server mode. Model B makes the SERVER
+ *  the owner of buffers + the session: the in-renderer `views[]` holds only the
+ *  welcome seed (the real buffers live server-side), so letting the in-renderer
+ *  session persist would overwrite the user's real (flag-off) session.json with
+ *  a near-empty one. Every save/flush/restore therefore routes here and no-ops.
+ *  (Server-side session restore arrives in a later increment.) */
+const NULL_SESSION = {
+  save() {},
+  flush: async () => {},
+  restore: async () => {},
+};
+
 /** The session controller saves should target right now: the open
  *  project's, or the global home one. All debounced saves and the
- *  pagehide flush go through this so the right file gets written. */
+ *  pagehide flush go through this so the right file gets written. In server
+ *  mode it is inert (see NULL_SESSION) so the server owns the session alone. */
 function activeSession() {
+  if (window.host && window.host.serverMode) return NULL_SESSION;
   return projectSession ?? sessionController;
 }
 
@@ -10769,7 +12661,14 @@ document.addEventListener('visibilitychange', () => {
 restoring = true;
 const rootPaneBeforeRestore = rootPane;
 try {
-  await sessionController.restore();
+  // Server mode: the SERVER owns buffers + the session, and the leaf-flip
+  // hands the focused leaf to the server's SNAPSHOT. Skip the in-renderer
+  // restore entirely so it can't re-open files into the leaf and compete
+  // with the server (the boot-time clobber the overlay used to mask).
+  // (Restore-through-the-server is a later increment.)
+  if (!(window.host && window.host.serverMode)) {
+    await sessionController.restore();
+  }
 } finally {
   restoring = false;
 }
@@ -10807,12 +12706,16 @@ if (sessionInstalledTree) {
   if (currentViewIndex >= views.length) {
     currentViewIndex = Math.max(0, views.length - 1);
   }
-} else {
+} else if (!(window.host && window.host.serverMode)) {
   // Phase 3b commit 3: wrap the root pane's view in a tabline-view
   // that contains every restored view (or the welcome / scratch
   // seeds when there was no session). The wrap runs *after* restore
   // so the tabs list is final; the helper is idempotent only by
   // caller discipline (this is the one call site).
+  //
+  // Skipped in server mode: the leaf-flip hands the bare focused leaf to
+  // the server's SNAPSHOT (one live view), so an in-renderer tabline would
+  // just compete. Server-driven tabs arrive with the BUFFER_LIST increment.
   wrapRootInTabline();
 }
 // One trip through the per-pane strip refresh + a session save so the
@@ -10827,10 +12730,16 @@ activeSession().save();
 // crash. Best-effort: a scan failure must never stop the editor coming
 // up. The *Recover* view opens on top of the restored session only when
 // there is something worth recovering.
-try {
-  if ((await scanForRecovery()) > 0) openRecoverView();
-} catch {
-  // Recovery is best-effort; never block startup on it.
+//
+// Skipped in server mode: the SERVER runs its own crash recovery (mwb
+// autosave), so the in-renderer scan would only surface stale in-renderer
+// snapshots and pop a spurious *Recover* over the server-driven leaf.
+if (!(window.host && window.host.serverMode)) {
+  try {
+    if ((await scanForRecovery()) > 0) openRecoverView();
+  } catch {
+    // Recovery is best-effort; never block startup on it.
+  }
 }
 
 // Boot reached the end successfully — stand the boot error boundary down
