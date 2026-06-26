@@ -2932,3 +2932,130 @@ drop the data-source. **Bigger next:** the MUTABLE data-source fan-out seam
 (stella/jukebox), RESTORE-of-structure (pane tree / per-leaf tabs), then G4.3 → G5.
 A MERGE CHECKPOINT to main is worth considering (147 commits unmerged, flag-off
 byte-for-byte).
+
+## [2026-06-24] view-port sweep: 5 non-text views graduated to server data-sources
+
+**Context**: Continued the Model-B view ports. Five views ported + LIVE-VERIFIED
+by Jason this session (branch `multi-window-b`, tip `b4cf01b`, ~153 ahead, suite
+878, flag-off byte-for-byte). Not a blocker note — a session summary.
+
+**Done (4 commits):**
+- `ea556a9` PDF media fix — opened blank in server mode. `loadServerMediaSrc`
+  mutates the view in place to add `src`, then re-`setBuffer(sameRef)`; pdf-view's
+  identity guard dropped it. Now short-circuits only when already loaded/loading.
+- `eaa0e38` directory-tree/columns AS server data-sources (server detects a dir via
+  `statSync`; `<directory-tree-view>` lists the FS; file clicks → new `VISIT_FILE`
+  intent → `visitFile`). **Folded in: session TAB-CLOSE fix** (`shownBufferIds` —
+  persistence records the SHOWN pane-tree set, re-persists on a pane intent; a
+  closed/un-curated tab stays closed across relaunch).
+- `1b07615` generic element-views (atari + bib-search + any define-element-view).
+  Renderer-computes-and-sends: 3 new protocol msgs CLIENT_COMMANDS /
+  RUN_CLIENT_COMMAND / OPEN_ELEMENT_SOURCE (renderer owns the spec — user views live
+  in init.lisp + bib-search needs host-file-url). bib-search `:no-focus` opens
+  beside the doc (`openSourceBesideFocus`), `insert-text`→server SELF_INSERT, server
+  resolves the doc's real `.bib` (markdown header / \bibliography / \addbibresource)
+  → `*bib-search-doc-override*`. Fixed a nil-truthy crash (`nil` is truthy → guard
+  with `string?`, not `(and val …)`).
+- `b4cf01b` jukebox AS a server data-source (server scans dir → `{dir,tracks,art}`;
+  client does labels via `format-track`, `media://` playback, art, shuffle).
+
+**The established pattern** (now documented in HANDOVER.md): non-text view → server
+DATA-SOURCE; PANE_TREE leaf carries `viewKind`+`state`/`filePath`; client
+`buildServerMediaView` builds the view's extras; the kind's configure factory made
+server-aware (`serverMediaKeyOption`, `visitPath`/`insertText`). Two creation
+sub-patterns: server-detects/scans (media/directory/jukebox) vs
+renderer-computes-and-sends (element-views).
+
+**Next (Jason's order): bookmarks → gnuplot → notebook.** ⚠ Bookmarks is the HARDEST,
+not easy — `bookmarks.lisp` is unported and the 190-line `bookmarks.js` engine ties
+each bookmark to an L2 marker (rides edits) + `metadata.bookmarks` + the
+`.godot-metadata` sidecar, all server-owned now, so the whole engine + commands + the
+`bookmark` view must move to the spine. Notebook is likely the actual easy one (server
+text buffer + `notebook-eval!` round-trip). Jason will /clear + start fresh for bookmarks.
+
+**State**: clean, all committed, suite green. Nothing merged; `main` untouched.
+
+---
+
+## [2026-06-25] Shell port to Model B: DONE (4 commits) + one design fork for you
+
+**Built + committed on `mwb/shell`** (off `mwb/minimap`; `mwb/minimap` already
+folded into `multi-window-b` this session): the shell view graduated to Model B.
+- `26c9646` Phase 1+2 — server-owned `{viewKind:'shell', state:{sessionId,cwd}}`
+  data-source; PER-INSTANCE client views (each shell its own `<shell-view>` +
+  xterm + pty, so several render at once — splits AND a tabline of shell tabs).
+- `8f8b7ec` Phase 3 — reap a shell's pty on close (open-set fan `shellSessionsOf`
+  → client reaps when a session leaves it; switch-away survives).
+- `c71719b` Phase 4 — session-restore (fresh process, same cwd).
+- Suite 925/0. **LIVE-VERIFIED by you:** shells render in tabs, multiple
+  coexist, Claude Code runs, switch-away persists. NOT yet verified: pty reap on
+  close (the C-x k blocker below; the tab × should work — please test).
+
+**THE FORK — `C-x k` can't close a focused shell (your call; I did NOT guess):**
+When a shell is focused, xterm.js forwards every Ctrl chord to the pty, so `C-x`
+becomes the literal `\x18` byte — it never reaches the editor keymap, so
+`kill-buffer` never fires. And kill-buffer kills the *focused* buffer, so you'd
+have to be focused on the shell to kill it → catch-22. The reap MECHANISM is
+correct; only the keyboard *trigger* is blocked. Options:
+- **A (status quo):** close via the tab × (mouse) — already wired (close-tab
+  reaps a shell). No keyboard close from inside a shell.
+- **B:** intercept the `C-x` prefix in `<shell-view>` (xterm
+  `attachCustomKeyEventHandler` → return false so it propagates to the editor
+  router). Risk: breaks shell-side `C-x` (emacs, readline `C-x C-e`).
+- **C (VS Code's `commandsToSkipShell`):** a configurable set of editor chords
+  the shell-view intercepts; everything else → pty. Most flexible, most work.
+- **D (tmux / term-mode style):** a dedicated "escape the terminal" key (e.g. Esc
+  or `C-g` defocuses to the editor), then editor chords work normally.
+- **Worth a quick test:** `M-x` is Cmd+X; xterm usually does NOT grab Cmd combos
+  on macOS, so `M-x kill-buffer` may ALREADY work from a focused shell — if so,
+  that's a zero-code keyboard close. Try it.
+Recommendation: D or C. I'd lean D (one escape key) for v1 simplicity.
+
+**Gotcha for the gnuplot port (next): the double-`setBuffer` race.** A non-text
+element-view in a tabline is re-`setBuffer`'d on every reconcile (app.js re-point
+~6553); for an xterm-backed view that re-enters the async `ensureTerminal()` and
+builds a SECOND Terminal (the empty one paints over the live one → blank grid).
+Fix pattern (now in for shells): skip the re-point for the kind, don't
+re-setBuffer on reuse, lazy-create the tab on activation (like text). gnuplot
+(also a live-process singleton) will hit this identically.
+
+**State**: clean, all committed on `mwb/shell` (tip `c71719b`), suite 925/0.
+`main` untouched; `mwb/minimap` folded into `multi-window-b`. Merge-to-main
+checkpoint still pending your go-ahead.
+
+---
+
+## [2026-06-25 late] Shell: FINISHED + 2 more fixes; gnuplot next; notebook-js spawned
+
+Shell port is now COMPLETE + LIVE-VERIFIED (`mwb/shell` tip `8135a1f`, 5 commits,
+926/0). Two fixes after the live-verify:
+- `39b6ba6` **pty-reap-on-close** — the leak was a STALE-BY-ONE `liveShells`:
+  `closeFocusedTab`/`killActiveBuffer` push the PANE_TREE synchronously *before*
+  the data-source is removed a line later, so the fanned `shellSessionsOf` still
+  listed the closing shell; the client's live-set lagged each close by one and
+  the LAST shell never reaped. Fix = re-push the PANE_TREE (`onPaneTree(index)`)
+  AFTER removal, both close paths. (Also defensive in shell.js: python resets
+  SIGTERM→SIG_DFL — a child can inherit SIG_IGN across exec — + a SIGKILL backstop;
+  but the re-push was the real fix.) Verified: 2 shells → close both → 0 ptys.
+- `8135a1f` **double-`*scratch*` on "Start fresh"** — crash-recovery recovered a
+  pristine empty `*scratch*` (recoverBuffer baselines empty text to a space → ●
+  → dirty-by-construction → re-snapshots + reappears every launch). Fix:
+  `selectRecoverable` drops an empty path-less snapshot. Unit-tested.
+
+DECISIONS (Jason): **`C-x k` from a focused shell DROPPED** — xterm grabs even
+Cmd-X (`M-x kill-buffer` doesn't work either); close via tab × + a future "Close
+pane"/kill-buffer MENU item (menu bypasses xterm). **Shell live-cwd restore
+PARKED** — restore uses the OPEN-TIME cwd, not the live cwd after `cd`; needs OSC
+7 (shell hook) or an lsof//proc read; deferred.
+
+**NEXT = the GNUPLOT port** (the last view-port). Structurally IDENTICAL to the
+shell — reuse the 5 `mwb/shell` commits verbatim (server data-source + per-instance
+client view + the double-`setBuffer` guards + the reap re-push). See the ⚡ NEXT
+ACTION in `HANDOVER.md`. Then fold `mwb/shell`→`multi-window-b` + merge-to-main.
+
+**Separate NEW project (design only):** branch `notebook-js` (off `mwb/shell`,
+worktree `/Users/jalex/Source/jmacs/godot-notebook`) — an Observable-like
+notebook whose cells run arbitrary JavaScript in the SAME Node session as the
+server's Lisp interpreter. A design subagent drafted `plans/NOTEBOOK-JS.md` there.
+
+---
