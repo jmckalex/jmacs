@@ -7915,9 +7915,12 @@ function propagateCustomize(change) {
 }
 
 /** Apply a customize change that originated in ANOTHER window (the relay):
- *  update THIS window's interpreter to match, then re-apply theme + face styles
- *  so its rendering follows. Never re-broadcasts. Variables apply via custom.lisp;
- *  faces via faces.lisp — both loaded in every (rendering) client. */
+ *  update THIS window's interpreter to match + re-render, EXACTLY mirroring the
+ *  matching local edit callback (so both windows behave identically) — never the
+ *  local persist, and never re-broadcasts. We deliberately do NOT blanket-call
+ *  applyCurrentFaceStyles here: the local theme path doesn't either (its
+ *  applyCurrentTheme theme-listeners cover faces), and calling it directly trips
+ *  a `current-face-styles` symbol→string error in this state. */
 function applyCustomizeSync(change) {
   if (!change || typeof change !== 'object' || !keymapReady) return;
   try {
@@ -7925,8 +7928,10 @@ function applyCustomizeSync(change) {
     if (op === 'apply' || op === 'save') {
       // Receivers apply but never re-persist — the originator already saved.
       interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${writeString(value)}))`);
+      if (name === '*theme*') applyCurrentTheme();
     } else if (op === 'reset') {
       interpreter.evaluate(`(custom-reset! (quote ${name}))`);
+      if (name === '*theme*') applyCurrentTheme();
     } else if (op === 'set-face') {
       const valueSrc =
         typeof value === 'boolean' ? (value ? 'true' : 'false') : writeString(String(value));
@@ -7939,10 +7944,6 @@ function applyCustomizeSync(change) {
   } catch (error) {
     repl.appendError(`customize-sync: ${error.lispMessage ?? error.message}`);
   }
-  // Re-apply ALL rendering from this window's (now-updated) interpreter.
-  applyCurrentTheme();
-  applyCurrentFaceStyles();
-  rerenderAllEditors();
 }
 
 /** Open a customisation buffer for a scope — a subgroup, a variable,
