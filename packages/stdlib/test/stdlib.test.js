@@ -795,13 +795,22 @@ test('C-x n opens a seeded scratch buffer; new-view stays on M-x', async () => {
 test('C-s starts an incremental search', async () => {
   const { interpreter, searchCalls } = await editor();
   press(interpreter, 'C-s');
-  assert.deepEqual(searchCalls, ['search']);
+  // isearch-forward now runs the loop in-process (search.lisp): it shows the
+  // I-search prompt and arms read-next-key — no more start-search! stub. The
+  // full per-keystroke behaviour is covered by mwb/isearch.test.js.
+  assert.ok(
+    searchCalls.some((s) => s.startsWith('status:I-search') && !s.includes('backward')),
+    `expected the I-search prompt; got ${JSON.stringify(searchCalls)}`
+  );
 });
 
 test('C-r starts a backward search', async () => {
   const { interpreter, searchCalls } = await editor();
   press(interpreter, 'C-r');
-  assert.deepEqual(searchCalls, ['search-backward']);
+  assert.ok(
+    searchCalls.some((s) => s.startsWith('status:I-search backward')),
+    `expected the I-search backward prompt; got ${JSON.stringify(searchCalls)}`
+  );
 });
 
 test('M-x opens the command palette', async () => {
