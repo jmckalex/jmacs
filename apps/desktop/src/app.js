@@ -7861,20 +7861,21 @@ function rerenderAllEditors() {
 /** Apply a setting for the session — a value, quote-wrapped to survive
  *  its type. */
 function applyCustomSetting(name, value) {
-  interpreter.evaluate(
-    `(custom-apply! (quote ${name}) (quote ${writeString(value)}))`
-  );
+  const valueSrc = writeString(value);
+  interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
   if (name === '*theme*') applyCurrentTheme();
-  propagateCustomize({ op: 'apply', name, value });
+  // Propagate the Lisp SOURCE (a string), not the raw value: a custom value can
+  // be a Lisp symbol (e.g. a theme name), which doesn't survive structured-clone
+  // over the wire (it arrives as a plain {name}); the source reconstructs it.
+  propagateCustomize({ op: 'apply', name, valueSrc });
 }
 
 /** Apply a setting and persist it. */
 function saveCustomSetting(name, value) {
-  interpreter.evaluate(
-    `(custom-apply-and-save! (quote ${name}) (quote ${writeString(value)}))`
-  );
+  const valueSrc = writeString(value);
+  interpreter.evaluate(`(custom-apply-and-save! (quote ${name}) (quote ${valueSrc}))`);
   if (name === '*theme*') applyCurrentTheme();
-  propagateCustomize({ op: 'save', name, value });
+  propagateCustomize({ op: 'save', name, valueSrc });
 }
 
 /** Reset a setting to its default value. */
@@ -7894,7 +7895,9 @@ function setFaceFromView(faceName, attr, value) {
   interpreter.evaluate(
     `(set-face-attribute-by-strings ${writeString(faceName)} ${writeString(attr)} ${valueSrc})`
   );
-  propagateCustomize({ op: 'set-face', face: faceName, attr, value });
+  // `face` + `attr` are strings (set-face-attribute-by-STRINGS), so they ride the
+  // wire fine; `valueSrc` is the already-built Lisp source (booleans → true/false).
+  propagateCustomize({ op: 'set-face', face: faceName, attr, valueSrc });
 }
 
 /** Reset a face — drop the global override and rerender. */
@@ -7924,17 +7927,17 @@ function propagateCustomize(change) {
 function applyCustomizeSync(change) {
   if (!change || typeof change !== 'object' || !keymapReady) return;
   try {
-    const { op, name, value, face, attr } = change;
+    const { op, name, valueSrc, face, attr } = change;
     if (op === 'apply' || op === 'save') {
-      // Receivers apply but never re-persist — the originator already saved.
-      interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${writeString(value)}))`);
+      // valueSrc is the originating window's Lisp SOURCE, used verbatim — so a
+      // symbol value reconstructs as a symbol, not the wire-mangled {name}.
+      // (Receivers apply but never re-persist — the originator already saved.)
+      interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
       if (name === '*theme*') applyCurrentTheme();
     } else if (op === 'reset') {
       interpreter.evaluate(`(custom-reset! (quote ${name}))`);
       if (name === '*theme*') applyCurrentTheme();
     } else if (op === 'set-face') {
-      const valueSrc =
-        typeof value === 'boolean' ? (value ? 'true' : 'false') : writeString(String(value));
       interpreter.evaluate(
         `(set-face-attribute-by-strings ${writeString(face)} ${writeString(attr)} ${valueSrc})`
       );
