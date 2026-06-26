@@ -187,7 +187,7 @@ function createCustomizeView(container, options = {}) {
     reset.addEventListener('click', () => {
       resetSetting(setting.name);
       staged.delete(setting.name);
-      render();
+      render(true);
     });
 
     const controls = doc.createElement('div');
@@ -202,7 +202,7 @@ function createCustomizeView(container, options = {}) {
   function commit(commitFn) {
     for (const [name, value] of staged) commitFn(name, value);
     staged.clear();
-    render();
+    render(true);
   }
 
   /** Build one face row — name, doc, live swatch, and all the
@@ -295,7 +295,7 @@ function createCustomizeView(container, options = {}) {
     reset.title = 'Drop overrides for this face';
     reset.addEventListener('click', () => {
       resetFace(face.name);
-      render();
+      render(true);
     });
 
     const controls = doc.createElement('div');
@@ -319,7 +319,7 @@ function createCustomizeView(container, options = {}) {
     input.value = value && value.startsWith('#') ? value : '#000000';
     input.addEventListener('change', () => {
       setFaceAttribute(faceName, attr, input.value);
-      render();
+      render(true);
     });
     field.append(labelEl, input);
     return field;
@@ -341,7 +341,7 @@ function createCustomizeView(container, options = {}) {
     }
     select.addEventListener('change', () => {
       setFaceAttribute(faceName, attr, select.value);
-      render();
+      render(true);
     });
     field.append(labelEl, select);
     return field;
@@ -356,7 +356,7 @@ function createCustomizeView(container, options = {}) {
     input.checked = value === true;
     input.addEventListener('change', () => {
       setFaceAttribute(faceName, attr, input.checked);
-      render();
+      render(true);
     });
     const labelEl = doc.createElement('span');
     labelEl.textContent = label;
@@ -382,7 +382,7 @@ function createCustomizeView(container, options = {}) {
       const v = input.value.trim();
       if (v === '') return; // inherit; Reset clears an override
       setFaceAttribute(faceName, attr, v);
-      render();
+      render(true);
     });
     field.append(labelEl, input);
     return field;
@@ -400,14 +400,18 @@ function createCustomizeView(container, options = {}) {
     input.value = value ?? '';
     input.addEventListener('change', () => {
       setFaceAttribute(faceName, attr, input.value);
-      render();
+      render(true);
     });
     field.append(labelEl, input);
     return field;
   }
 
-  /** Render the view for the current buffer's scope. */
-  function render() {
+  /** Render the view for the current buffer's scope. PRESERVESCROLL keeps the
+   *  current scroll position across the rebuild — an in-place update (toggling a
+   *  face checkbox, applying, resetting) must not jump back to the top. A fresh
+   *  buffer renders at the top (or at `scrollToFace`). */
+  function render(preserveScroll = false) {
+    const prevScroll = preserveScroll ? root.scrollTop : 0;
     root.replaceChildren();
     const model = buffer ? getModel(buffer.scope) : null;
     if (!model) return;
@@ -482,7 +486,7 @@ function createCustomizeView(container, options = {}) {
       revert.title = 'Discard staged changes';
       revert.addEventListener('click', () => {
         staged.clear();
-        render();
+        render(true);
       });
       footer.append(apply, save, revert);
     }
@@ -496,6 +500,10 @@ function createCustomizeView(container, options = {}) {
       if (el && typeof el.scrollIntoView === 'function') {
         el.scrollIntoView({ block: 'start' });
       }
+    } else {
+      // Restore the pre-render scroll: 0 for a fresh buffer, the live position
+      // for an in-place re-render.
+      root.scrollTop = prevScroll;
     }
   }
 
