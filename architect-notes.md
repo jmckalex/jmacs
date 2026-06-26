@@ -2932,3 +2932,55 @@ drop the data-source. **Bigger next:** the MUTABLE data-source fan-out seam
 (stella/jukebox), RESTORE-of-structure (pane tree / per-leaf tabs), then G4.3 → G5.
 A MERGE CHECKPOINT to main is worth considering (147 commits unmerged, flag-off
 byte-for-byte).
+
+## [2026-06-26 02:00] SVG editor (overnight build): MVP shipped, two decisions parked
+
+**Context**: Built the Inkscape-like `<svg-editor-view>` per plans/SVG-EDITOR.md
+on branch `svg-editor`. Phase-1 MVP (rect/ellipse/line/text + select/move/resize
++ save) and the headline LaTeX math boxes are in and reachable via `M-x svg-edit`.
+6 commits, all on top of the design-doc commit; renderer suite 841/0, stdlib 883/0.
+Live-verify is yours in the morning (I can't launch the GUI).
+
+**Decision 1 — `.svg` default handler.** I did NOT change `.svg` ownership.
+Plain `.svg` still opens as the read-only image view (media-kinds.js untouched);
+the editor is an explicit `M-x svg-edit` entry point that opens a BLANK canvas.
+The spec's §"Open questions" #1 recommends editor-by-default with a "view as
+image" escape hatch — that is your call because it changes behaviour for anyone
+who just wanted to *look* at an SVG. To make the editor the default later: route
+`.svg` in `apps/desktop/src/media-kinds.js` and add an open-existing path
+(parse file bytes → `setBuffer({svgText})`). I left it as-is to avoid a
+behaviour change while you sleep. **Recommend: editor-by-default + a "View as
+image" command, but confirm.**
+
+**Decision 2 — MathJax defs id de-collision approach.** I took the
+**prefix-rewrite** route, not `fontCache:'none'`. `svg-mathjax-ids.js`
+(pure + 9 tests) namespaces every id and its references (`id=`,
+`href`/`xlink:href` `#frag`, `url(#X)`) per box, so two math boxes in one
+document don't collide MathJax's repeated `MJX-N-...` glyph ids and each box's
+`<use>` resolves to its own `<defs>`. This keeps file size down and the
+round-trip valid. The `fontCache:'none'` alternative (inline paths, no `<use>`)
+is simpler but fatter; the prefix approach is the spec's recommendation (§"Open
+questions" #2). **Needs your live spike: type two different formulas in two boxes,
+save, reopen in a browser/Inkscape, confirm both render correctly.** The pure
+helper is unit-tested but the real MathJax output structure can only be confirmed
+live — if the namespacing misses an id form MathJax emits, that test sample
+needs updating.
+
+**What's NOT done (the budget line for one overnight session):**
+- Host file-backed **save/open-existing** wiring. The MVP `save()` downloads the
+  cleaned `.svg` via a Blob (works, but it's a download, not an in-place file
+  write). Real save needs either an `onSave` host bridge through the element-view
+  wrapper or the Model-B server-owned `svg-document` data-source (spec §6 / Phase
+  0 + 5). I deliberately did NOT touch app.js territory for this overnight run.
+- **Model-B / server data-source** (`svg-document` kind, per-instance client view,
+  session-restore) — Phase 0/5, mirrors the shell/gnuplot ports. Untouched.
+- Connectors, arrowheads, groups, rotate, pan/zoom UI, multi-select, snapping,
+  PNG/PDF export — all later phases per the spec.
+
+**State of the work**: branch `svg-editor`, 6 commits past the design doc, working
+tree clean (this note is the only uncommitted change), both suites green. Pure
+helpers (geometry / mathjax-ids / document-model) carry 38 unit tests; the live
+element is exercised by you in Electron. Build order followed the brief: pure
+testable helpers first, then the element, then the wiring.
+
+---
