@@ -52,6 +52,10 @@ export const STDLIB_FILES = Object.freeze([
   // A built-in element-view: the bibliography search panel (M-x bib-search) —
   // a self-contained <bib-search> (bundles citation.js) that inserts \cite{…}.
   'element-view-bib-search.lisp',
+  // A built-in element-view: the Inkscape-like SVG editor (M-x svg-edit).
+  // The <svg-editor-view> tag is bundled with the renderer (index.js), so
+  // :module is empty — the wrapper just creates the registered tag.
+  'element-view-svg-editor.lisp',
   'panes.lisp',
   'tabline.lisp',
   'minimap.lisp',

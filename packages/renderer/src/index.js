@@ -70,6 +70,7 @@ export {
 export { ShellView } from './shell-view.js';
 export { GnuplotView } from './gnuplot-view.js';
 export { createHistory } from './gnuplot-history.js';
+export { SvgEditorView, TOOLS as SVG_EDITOR_TOOLS } from './svg-editor-view.js';
 export {
   NotebookView,
   serializeCells,

@@ -6186,3 +6186,67 @@ notebook-view,
 .mwb-picker-row:hover {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
+
+/* ---- SVG editor view (svg-editor-view.js) ---------------------------- */
+svg-editor-view.svg-editor-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--bg, #1a2026);
+  color: var(--fg);
+  overflow: hidden;
+}
+.svg-editor-palette {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 6px;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.svg-editor-tool,
+.svg-editor-save {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.svg-editor-tool:hover,
+.svg-editor-save:hover {
+  background: color-mix(in srgb, var(--fg) 14%, transparent);
+}
+.svg-editor-tool.active {
+  background: color-mix(in srgb, var(--accent, #88c0d0) 30%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #88c0d0) 55%, transparent);
+}
+.svg-editor-save {
+  margin-left: auto;
+}
+.svg-editor-stage {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  outline: none;
+  /* A light, themed checker so the document bounds are visible. */
+  background:
+    repeating-conic-gradient(
+      color-mix(in srgb, var(--fg) 4%, transparent) 0% 25%,
+      transparent 0% 50%
+    )
+    50% / 24px 24px;
+}
+.svg-editor-document {
+  background: #ffffff;
+}
+.svg-editor-overlay {
+  pointer-events: none;
+}
+.svg-editor-handle {
+  pointer-events: all;
+}

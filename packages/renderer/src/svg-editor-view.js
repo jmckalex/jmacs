@@ -830,8 +830,33 @@ export class SvgEditorView extends ViewElement {
   }
 
   save() {
+    const svgText = this.serialize();
     const onSave = this._options && this._options.onSave;
-    if (typeof onSave === 'function') onSave(this.serialize());
+    if (typeof onSave === 'function') {
+      onSave(svgText);
+      return;
+    }
+    // No host save wiring (e.g. opened via the generic element-view path):
+    // fall back to a browser download so the MVP can still persist a file.
+    this._downloadSvg(svgText);
+  }
+
+  _downloadSvg(svgText) {
+    if (typeof document === 'undefined' || typeof Blob === 'undefined') return;
+    try {
+      const blob = new Blob([svgText], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download =
+        (this._buffer && this._buffer.name) || 'drawing.svg';
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      /* download unavailable; nothing else we can do from the renderer */
+    }
   }
 
   _notifyChange() {
