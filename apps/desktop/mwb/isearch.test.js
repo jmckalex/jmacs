@@ -99,3 +99,37 @@ test('isearch-forward: backspace shrinks the query', () => {
   spine.handleKey('backspace'); // query → 'car' (matches 'car' at 4) → point 7
   assert.equal(spine.buffer.point, 7);
 });
+
+test('isearch-forward: highlights every match; the current one with the isearch face', () => {
+  const { spine } = makeSpine('cat dog cat'); // 'cat' at 0 and 8
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-s');
+  for (const ch of 'cat') spine.handleKey(ch); // current match at 0 (point 3)
+  const ov = spine.overlaySnapshot().filter((o) => o.kind === 'isearch');
+  assert.equal(ov.length, 2, 'both matches are highlighted');
+  const current = ov.find((o) => o.face === 'isearch');
+  const lazy = ov.find((o) => o.face === 'search-match');
+  assert.ok(current && current.start === 0 && current.end === 3,
+    'the current match (0..3) wears the bright isearch face');
+  assert.ok(lazy && lazy.start === 8 && lazy.end === 11,
+    'the other match wears the light search-match face');
+  // The current-match overlay tracks C-s: repeating moves `isearch` to match 8.
+  spine.handleKey('C-s');
+  const after = spine.overlaySnapshot().filter((o) => o.face === 'isearch');
+  assert.ok(after.length === 1 && after[0].start === 8, 'isearch face follows the current match');
+  // Exit clears the whole set.
+  spine.handleKey('enter');
+  assert.equal(spine.overlaySnapshot().filter((o) => o.kind === 'isearch').length, 0,
+    'exiting clears the match overlays');
+});
+
+test('isearch-forward: C-g clears the match overlays', () => {
+  const { spine } = makeSpine('cat dog cat');
+  spine.buffer.moveTo(0);
+  spine.handleKey('C-s');
+  for (const ch of 'cat') spine.handleKey(ch);
+  assert.ok(spine.overlaySnapshot().some((o) => o.kind === 'isearch'), 'highlighted while searching');
+  spine.handleKey('C-g');
+  assert.equal(spine.overlaySnapshot().filter((o) => o.kind === 'isearch').length, 0,
+    'abort clears the match overlays');
+});

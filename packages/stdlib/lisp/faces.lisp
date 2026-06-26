@@ -693,3 +693,29 @@
 ;; customize buffer as a link the user can click into.
 (defgroup 'faces 'godot
   "Per-token font faces — colours, weight, slant, decoration.")
+
+;; --- search highlighting faces ----------------------------------------
+;; `search-match` lights EVERY occurrence (M-s h highlight-matches, and the
+;; non-current matches during an incremental search) with a LIGHT background;
+;; `isearch` is the CURRENT incremental-search match — a brighter, heavier fill
+;; so the active hit stands out from the lazy ones. Both are real faces, so the
+;; user can recolour them in `M-x customize-faces`. (Same hue, two intensities;
+;; backgrounds kept dark-enough on dark themes / light-enough on light themes so
+;; the text on top stays readable — see the snippet faces for the convention.)
+(defface 'search-match
+  :doc "Every match of a search — M-s h, and the other (non-current) matches
+        during an incremental search. A light highlight so all hits show."
+  :default-light    (face :background "#fff3a0")
+  :default-solarized-light (face :background "#eee8aa")
+  :default-dark     (face :background "#454a20")
+  :default-bright   (face :background "#454a20")
+  :default-midnight (face :background "#3a3f1c"))
+
+(defface 'isearch
+  :doc "The CURRENT match during an incremental search (C-s / C-r) — a brighter,
+        heavier background than `search-match` so the active hit stands out."
+  :default-light    (face :background "#ffc83d")
+  :default-solarized-light (face :background "#e9b949")
+  :default-dark     (face :background "#7d6212")
+  :default-bright   (face :background "#7d6212")
+  :default-midnight (face :background "#6a5310"))
