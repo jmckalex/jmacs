@@ -155,6 +155,12 @@ export const MSG = Object.freeze({
   // keyboard, noFocus, name }). The server holds it like any data-source (a
   // pane slot + restore); the client mounts <element-view> from the spec.
   OPEN_ELEMENT_SOURCE: 'open-element-source',
+  // down: a customize setting changed in ONE window — re-apply it in every OTHER
+  // window so theme / faces / variables stay consistent across windows. Carries
+  // the change `{ op, name?, value?, face?, attr? }`; the server relays it (it
+  // doesn't render). The originating window already applied it locally; the
+  // receivers update their interpreter + re-apply theme + face styles.
+  CUSTOMIZE_SYNC: 'customize-sync',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -211,6 +217,12 @@ export const INTENT = Object.freeze({
   // (mirror of openScope flag-off). Like BOOKMARK_OP: the view never owns the
   // pane structure, it just requests it.
   CUSTOMIZE_OP: 'customize-op',
+  // A customize SETTING changed (Apply / Save / Reset / face edit) in this
+  // window. The server relays it to the OTHER windows (MSG.CUSTOMIZE_SYNC) so
+  // global rendering state (theme / faces / line-height) stays consistent across
+  // windows. Carries `{ op, name?, value?, face?, attr? }`. The originating
+  // window already applied it locally (immediate); this just propagates outward.
+  CUSTOMIZE_CHANGED: 'customize-changed',
 });
 
 /**

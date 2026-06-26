@@ -6794,6 +6794,9 @@ if (window.host && window.host.serverMode) {
       positionEl.textContent = '';
       document.title = `${modeline} — Godot`;
     },
+    // A customize setting changed in ANOTHER window — re-apply it here so global
+    // rendering (theme / faces / line-height) stays consistent across windows.
+    onCustomizeSync: (change) => applyCustomizeSync(change),
     // The echo area: a mid-chord prefix (e.g. "C-x-") or a one-off status. The
     // minibuffer component reuses its row as the echo area when no prompt is up.
     setEcho: (status) => minibuffer.setStatus(status ?? ''),
@@ -7862,6 +7865,7 @@ function applyCustomSetting(name, value) {
     `(custom-apply! (quote ${name}) (quote ${writeString(value)}))`
   );
   if (name === '*theme*') applyCurrentTheme();
+  propagateCustomize({ op: 'apply', name, value });
 }
 
 /** Apply a setting and persist it. */
@@ -7870,12 +7874,14 @@ function saveCustomSetting(name, value) {
     `(custom-apply-and-save! (quote ${name}) (quote ${writeString(value)}))`
   );
   if (name === '*theme*') applyCurrentTheme();
+  propagateCustomize({ op: 'save', name, value });
 }
 
 /** Reset a setting to its default value. */
 function resetCustomSetting(name) {
   interpreter.evaluate(`(custom-reset! (quote ${name}))`);
   if (name === '*theme*') applyCurrentTheme();
+  propagateCustomize({ op: 'reset', name });
 }
 
 /** Apply a face-attribute change from the customize view. The widget
@@ -7888,6 +7894,7 @@ function setFaceFromView(faceName, attr, value) {
   interpreter.evaluate(
     `(set-face-attribute-by-strings ${writeString(faceName)} ${writeString(attr)} ${valueSrc})`
   );
+  propagateCustomize({ op: 'set-face', face: faceName, attr, value });
 }
 
 /** Reset a face — drop the global override and rerender. */
@@ -7895,6 +7902,47 @@ function resetFaceFromView(faceName) {
   interpreter.evaluate(
     `(reset-face-by-string ${writeString(faceName)})`
   );
+  propagateCustomize({ op: 'reset-face', face: faceName });
+}
+
+/** Tell the OTHER windows a customize setting changed (the server relays it),
+ *  so global rendering — theme / faces / line-height — stays consistent across
+ *  windows. A no-op flag-off (single window) and when no server is connected. */
+function propagateCustomize(change) {
+  if (serverViewClient && typeof serverViewClient.customizeChanged === 'function') {
+    serverViewClient.customizeChanged(change);
+  }
+}
+
+/** Apply a customize change that originated in ANOTHER window (the relay):
+ *  update THIS window's interpreter to match, then re-apply theme + face styles
+ *  so its rendering follows. Never re-broadcasts. Variables apply via custom.lisp;
+ *  faces via faces.lisp — both loaded in every (rendering) client. */
+function applyCustomizeSync(change) {
+  if (!change || typeof change !== 'object' || !keymapReady) return;
+  try {
+    const { op, name, value, face, attr } = change;
+    if (op === 'apply' || op === 'save') {
+      // Receivers apply but never re-persist — the originator already saved.
+      interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${writeString(value)}))`);
+    } else if (op === 'reset') {
+      interpreter.evaluate(`(custom-reset! (quote ${name}))`);
+    } else if (op === 'set-face') {
+      const valueSrc =
+        typeof value === 'boolean' ? (value ? 'true' : 'false') : writeString(String(value));
+      interpreter.evaluate(
+        `(set-face-attribute-by-strings ${writeString(face)} ${writeString(attr)} ${valueSrc})`
+      );
+    } else if (op === 'reset-face') {
+      interpreter.evaluate(`(reset-face-by-string ${writeString(face)})`);
+    }
+  } catch (error) {
+    repl.appendError(`customize-sync: ${error.lispMessage ?? error.message}`);
+  }
+  // Re-apply ALL rendering from this window's (now-updated) interpreter.
+  applyCurrentTheme();
+  applyCurrentFaceStyles();
+  rerenderAllEditors();
 }
 
 /** Open a customisation buffer for a scope — a subgroup, a variable,

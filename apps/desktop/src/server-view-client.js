@@ -188,6 +188,9 @@ export function createServerViewClient({
   // (split structure + per-leaf buffer/view-state + the focused leaf; no
   // pixels). The host renders it — splits become visible. A no-op until wired.
   const setPaneTreeDom = chrome.setPaneTree ?? (() => {});
+  // A customize setting changed in ANOTHER window — re-apply it here (host wires
+  // this to update this window's interpreter + theme / face styles).
+  const onCustomizeSyncDom = chrome.onCustomizeSync ?? (() => {});
   // MINIBUFFER_COMPLETIONS: the server's reply to a TAB-completion request — the
   // completed value + the candidate list. The host fills the minibuffer + shows
   // the candidates (find-file). A no-op until wired.
@@ -572,6 +575,7 @@ export function createServerViewClient({
         }
         break;
       case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs); break;
+      case MSG.CUSTOMIZE_SYNC: onCustomizeSyncDom(msg.change); break;
       case MSG.MINIBUFFER_COMPLETIONS:
         showCompletionsDom({ value: msg.value, items: msg.items, directory: msg.directory });
         break;
@@ -726,6 +730,17 @@ export function createServerViewClient({
     });
   }
 
+  /** Propagate a customize SETTING change outward: the server relays it to the
+   *  other windows (MSG.CUSTOMIZE_SYNC) so theme / faces / line-height stay
+   *  consistent. CHANGE = `{ op, name?, value?, face?, attr? }`. */
+  function customizeChanged(change) {
+    if (!change || typeof change !== 'object') return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.CUSTOMIZE_CHANGED, change },
+    });
+  }
+
   return {
     connect,
     dispatchKey,
@@ -756,6 +771,8 @@ export function createServerViewClient({
     bookmarkOp,
     // Customize sub-navigation: open another scope's customize leaf (openScope).
     customizeOp,
+    // Propagate a customize setting change outward (server relays to windows).
+    customizeChanged,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the

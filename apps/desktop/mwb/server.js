@@ -875,6 +875,21 @@ function applyIntent(client, intent) {
         activeClient = null;
         return;
       }
+      case INTENT.CUSTOMIZE_CHANGED: {
+        // A customize setting changed in `client`'s window — relay it to every
+        // OTHER window so global rendering state (theme / faces / line-height)
+        // stays consistent. The server doesn't render, so it just fans the
+        // change; the originating window already applied it locally. (Behaviour-
+        // variable apply on the spine's own interpreter is a later refinement.)
+        const change = (intent.change && typeof intent.change === 'object') ? intent.change : null;
+        if (change) {
+          for (const c of clients) {
+            if (c !== client) c.port.postMessage({ type: MSG.CUSTOMIZE_SYNC, change });
+          }
+        }
+        activeClient = null;
+        return;
+      }
       default:
         break;
     }
