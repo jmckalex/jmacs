@@ -6385,6 +6385,10 @@ if (window.host && window.host.serverMode) {
       if (t.viewKind && t.viewKind !== 'text') {
         return buildServerMediaView({
           bufferId: t.bufferId, viewKind: t.viewKind, name: t.name, filePath: t.filePath,
+          // Carry the tab's data-source state (scope / records / tracks): this
+          // build REUSES the cached view, so omitting state let its mutable
+          // refresh clobber the scope to the fallback (customize showed godot).
+          state: t.state,
         });
       }
       // A text tab: the active one is the façade/static content; the rest proxies.
