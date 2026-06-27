@@ -6224,6 +6224,28 @@ notebook-view,
   background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
 
+/* Workspace restore chooser: lay each row out as a 3-column table —
+   label (wide, no early wrap) | windows | date — so the columns line up down
+   the list. Scoped to the workspace picker; other pickers keep the flex flow. */
+.mwb-picker--workspace .mwb-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7em 6em;
+  align-items: baseline;
+  column-gap: 14px;
+  padding-right: 30px; /* clear of the × delete affordance (absolute, right:6px) */
+}
+.mwb-picker--workspace .mwb-picker-row-label {
+  min-width: 0;            /* let the column, not the text, drive width */
+  white-space: nowrap;     /* no wrapping after a single word */
+  overflow: hidden;
+  text-overflow: ellipsis; /* a very long name ellipsizes (full text on hover) */
+}
+.mwb-picker--workspace .mwb-picker-row-meta,
+.mwb-picker--workspace .mwb-picker-row-detail {
+  flex-basis: auto;        /* drop the flex `flex-basis:100%` that squeezed the label */
+  white-space: nowrap;
+}
+
 /* ── JavaScript notebook (M-x notebook-js) ──────────────────────────────
    The <notebook-js-view> element-view: a column of JS cells. Styled to the
    editor chrome — theme variables + color-mix overlays (theme-agnostic, like

@@ -161,6 +161,7 @@ export function createPickerPanel(container, options = {}) {
       const label = doc.createElement('span');
       label.className = 'mwb-picker-row-label';
       label.textContent = row.label;
+      label.title = row.label; // full name on hover when a column ellipsizes it
       item.appendChild(label);
       if (row.meta) {
         const meta = doc.createElement('span');
