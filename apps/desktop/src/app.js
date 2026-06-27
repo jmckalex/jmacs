@@ -6875,6 +6875,18 @@ if (window.host && window.host.serverMode) {
         window.host.newWindow(geometry);
       }
     },
+    // P2: a CLIENT_DIRECTIVE — the server told THIS window to perform a
+    // renderer-side action. The server already chose the recipients (this /
+    // other / all windows); we just apply it. `close-window` (C-x 5 0, or
+    // C-x 5 1 from another window) closes this window via the host; the server
+    // keeps the buffers. New directive names slot in as they're ported.
+    applyDirective: (name, _args) => {
+      if (name === 'close-window') {
+        if (window.host && typeof window.host.closeWindow === 'function') {
+          window.host.closeWindow();
+        }
+      }
+    },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
     // window 1 on restore). main reconciles it against the live displays.
     setWindowBounds: (geometry) => {

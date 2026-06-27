@@ -79,9 +79,11 @@
    ;; C-x u — the classic Emacs undo binding (alongside C-z / C-/).
    "u"        'undo
    ;; C-x 5 — the frame/window prefix (Model B multi-window). C-x 5 2 opens
-   ;; another window onto the shared server. (C-x 5 0 / 5 1 — close-window /
-   ;; close-other-windows — arrive with the directive channel, P2.)
-   "5"        {"2" 'new-window}})
+   ;; another window; C-x 5 0 closes this one; C-x 5 1 closes every other
+   ;; window (the directive channel drives the close across windows).
+   "5"        {"2" 'new-window
+               "0" 'close-window
+               "1" 'close-other-windows}})
 
 ;; The C-h prefix map — help.
 (define c-h-keymap

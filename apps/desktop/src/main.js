@@ -290,6 +290,16 @@ app.whenReady().then(() => {
   ipcMain.on('window:new', (_event, geometry) => {
     if (isServerMode()) createWindow({ geometry: geometry ?? null });
   });
+  // P2: the renderer asks main to close THIS window (host.closeWindow()),
+  // driven by the server's close-window CLIENT_DIRECTIVE (C-x 5 0, or C-x 5 1
+  // from another window). Server mode only — in server mode a window closes
+  // freely (the buffers live in the server; win.on('close') returns early), so
+  // we just close the sender's BrowserWindow.
+  ipcMain.on('window:close', (event) => {
+    if (!isServerMode()) return;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) win.close();
+  });
   // B2: apply a saved frame to an existing window (window 1 on restore — it
   // pre-exists at default bounds). main owns `screen`, so it reconciles the
   // saved frame against the live displays here, then resizes.

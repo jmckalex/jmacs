@@ -1996,6 +1996,18 @@ export function createSpine(options, effects = {}) {
        window itself is opened by the client's host; this raises the effect."
       (request-new-window!))
 
+    (defcommand close-window ()
+      "Close THIS window (C-x 5 0). The buffers live in the shared server and
+       outlive the window, so closing loses nothing; the server reaps the
+       detached client. Sends a close-window directive to this window only."
+      (emit-client-directive! (list (this-window-id)) 'close-window))
+
+    (defcommand close-other-windows ()
+      "Close every window EXCEPT this one (C-x 5 1) — the multi-window payoff:
+       one keystroke shuts the others. Each target closes itself; the server
+       keeps their buffers. A no-op when this is the only window."
+      (emit-client-directive! (other-window-ids) 'close-window))
+
     (defcommand toggle-tabline ()
       "Toggle whether the focused pane is a tabline of this window's buffers
        (Step 3c) — 'add a tabline-view' to a single pane, or back."

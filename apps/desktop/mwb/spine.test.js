@@ -428,6 +428,31 @@ test('emit-client-directive! to (this-window-id) targets only the active window,
   assert.deepEqual(log.directives[0].args, ['nova']);
 });
 
+test('C-x 5 0 close-window directs a close to this window only', () => {
+  const { spine, log } = makeSpine('x');
+  const idx2 = spine.addClientView();
+  spine.setActiveClient(idx2);
+  spine.handleKey('C-x');
+  spine.handleKey('5');
+  spine.handleKey('0');
+  assert.equal(log.directives.length, 1);
+  assert.deepEqual(log.directives[0].ids, [idx2]);
+  assert.equal(log.directives[0].name, 'close-window');
+});
+
+test('C-x 5 1 close-other-windows directs a close to every other window', () => {
+  const { spine, log } = makeSpine('x');
+  spine.addClientView();        // idx 1
+  const idx3 = spine.addClientView(); // idx 2
+  spine.setActiveClient(1);
+  spine.handleKey('C-x');
+  spine.handleKey('5');
+  spine.handleKey('1');
+  assert.equal(log.directives.length, 1);
+  assert.deepEqual([...log.directives[0].ids].sort(), [0, idx3].sort());
+  assert.equal(log.directives[0].name, 'close-window');
+});
+
 test('a fresh window opens on its own private *scratch* (hidden from window 1)', () => {
   const { spine } = makeSpine('the session file', 'session.txt');
   const before = spine.bufferCount;
