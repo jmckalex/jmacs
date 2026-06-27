@@ -80,9 +80,9 @@ test('motion: arrows + C-a/C-e move point through the real commands', () => {
 
 test('M-< / M-> jump to buffer start/end via real commands', () => {
   const { spine } = makeSpine('abcdef');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   assert.equal(spine.buffer.point, 6);
-  spine.handleKey('M-less');
+  spine.handleKey('M-S-comma');
   assert.equal(spine.buffer.point, 0);
 });
 
@@ -1113,7 +1113,7 @@ test('sort-lines: an interactive region command sorts the selected lines', () =>
   const { spine } = makeSpine('banana\napple\ncherry');
   spine.buffer.moveTo(0);
   spine.handleKey('C-space');
-  spine.handleKey('M-greater'); // select to end of buffer
+  spine.handleKey('M-S-period'); // select to end of buffer
   spine.runCommand('sort-lines'); // interactive region → uses the selection
   assert.equal(spine.buffer.text, 'apple\nbanana\ncherry');
 });
@@ -1446,7 +1446,7 @@ test('a recovered buffer with no disk baseline is conservatively dirty', () => {
 
 test('C-/ undoes the last edit through the real command (text + point)', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
-  spine.handleKey('M-greater'); // end of buffer
+  spine.handleKey('M-S-period'); // end of buffer
   for (const ch of 'XY') spine.handleKey(ch);
   assert.equal(spine.buffer.text, 'seedXY');
   spine.handleKey('C-slash'); // C-/ → undo
@@ -1457,7 +1457,7 @@ test('C-/ undoes the last edit through the real command (text + point)', () => {
 
 test('C-x u is also bound to undo', () => {
   const { spine } = makeSpine('ab', 'scratch.txt');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   spine.handleKey('c');
   assert.equal(spine.buffer.text, 'abc');
   spine.handleKey('C-x');
@@ -1467,7 +1467,7 @@ test('C-x u is also bound to undo', () => {
 
 test('redo (C-S-/) reapplies an undone edit', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   spine.handleKey('Z');
   spine.handleKey('C-slash'); // undo → 'seed'
   assert.equal(spine.buffer.text, 'seed');
@@ -1478,7 +1478,7 @@ test('redo (C-S-/) reapplies an undone edit', () => {
 
 test('undo/redo set the history-op flag (consumeHistoryOp) for the server resync', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   spine.handleKey('Q');
   // An ordinary self-insert is NOT a history op.
   assert.equal(spine.consumeHistoryOp(), false);
@@ -1493,7 +1493,7 @@ test('the ● dirty flag agrees with undo against the saved baseline', () => {
   // Baseline = the seed text (a path-less buffer baselines its initial text).
   const { spine } = makeSpine('seed', 'scratch.txt');
   assert.equal(spine.activeModified, false, 'clean at the start');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   for (const ch of 'AB') spine.handleKey(ch); // 'seedAB' → dirty
   assert.equal(spine.activeModified, true);
   assert.ok(spine.viewState().modeline.startsWith('●'), 'dirty shows ●');

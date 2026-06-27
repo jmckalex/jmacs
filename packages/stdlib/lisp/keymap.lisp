@@ -73,7 +73,15 @@
    "C-left"   'focus-pane-left
    "C-right"  'focus-pane-right
    "C-up"     'focus-pane-up
-   "C-down"   'focus-pane-down})
+   "C-down"   'focus-pane-down
+   ;; C-x C-w — write the buffer to a new path (save-as).
+   "C-w"      'write-file
+   ;; C-x u — the classic Emacs undo binding (alongside C-z / C-/).
+   "u"        'undo
+   ;; C-x 5 — the frame/window prefix (Model B multi-window). C-x 5 2 opens
+   ;; another window onto the shared server. (C-x 5 0 / 5 1 — close-window /
+   ;; close-other-windows — arrive with the directive channel, P2.)
+   "5"        {"2" 'new-window}})
 
 ;; The C-h prefix map — help.
 (define c-h-keymap
@@ -95,8 +103,13 @@
    "t" 'toggle-sticky-notes})
 
 ;; The M-s prefix map — search-related commands (see occur.lisp).
+;; M-s h highlights every occurrence of the word at point / region as
+;; overlays the renderer draws; M-s u clears them (a server-side overlay
+;; feature — proves overlay sync end to end).
 (define m-s-keymap
-  {"o" 'occur})
+  {"o" 'occur
+   "h" 'highlight-matches
+   "u" 'unhighlight-all})
 
 ;; The C-c prefix map — at the global root for editor-wide commands.
 ;; (Mode-local C-c bindings live in each mode's own keymap and shadow
@@ -175,6 +188,11 @@
    ;; router only fires while the editing surface has focus.)
    "M-z"          'undo
    "M-S-z"        'redo
+   ;; Emacs undo/redo keys (US layout: C-/ is event.code "Slash"; the literal
+   ;; C-_ is Shift+Minus → C-S-minus). Kept alongside C-z / M-z.
+   "C-slash"      'undo
+   "C-S-minus"    'undo
+   "C-S-slash"    'redo
    ;; Universal-argument prefix. Pressing C-u sets `*prefix-arg*` so
    ;; the next command can alter its behaviour (e.g. flip a split's
    ;; direction). Numeric multi-press isn't supported yet — a single
@@ -429,7 +447,14 @@
           ;; right after would defeat the purpose.
           ((symbol? binding)
            (reset-keymap!)
-           (run-command binding)
+           ;; The server is the only resolver under Model B, but some bindings
+           ;; name renderer-only commands not (yet) registered server-side.
+           ;; run-command would (eval name) and throw on an unbound symbol, so
+           ;; guard: run only a registered command, else a quiet status.
+           (if (command-registered? binding)
+               (run-command binding)
+               (show-status! (str (symbol->string binding)
+                                  " is not available here")))
            (when (not (eq? binding 'universal-argument))
              (reset-prefix-arg!))
            #t)
@@ -440,6 +465,9 @@
            #t)
           ;; At rest: self-insert a character, else leave unhandled.
           ((self-insert-key? key)
+           ;; Typing invalidates a pending yank-pop chain (the *last-command*
+           ;; subtlety): mark this as a self-insert before inserting.
+           (set! *last-command* 'self-insert)
            (insert! key)
            #t)
           (else #f)))))

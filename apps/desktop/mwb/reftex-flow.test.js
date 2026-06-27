@@ -88,7 +88,7 @@ function makeRefTeXSpine() {
   // Put point at the end of the buffer (a realistic "insert a cite where I'm
   // writing" cursor) so an insertion appends, not prepends — visitFile leaves
   // point at 0. M-> = end-of-buffer.
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   return { spine, log, fx };
 }
 

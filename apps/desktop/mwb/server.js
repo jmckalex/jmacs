@@ -1791,7 +1791,7 @@ function runSaveSelfTest() {
 
     // 2) Edit it (self-insert) → dirty + the ● modeline indicator.
     const MARK = 'EDITED ';
-    spine.handleKey('M-greater'); // end of buffer
+    spine.handleKey('M-S-period'); // end of buffer
     for (const ch of MARK) spine.handleKey(ch);
     checks.dirty = spine.activeModified === true;
     checks.bullet = spine.viewState().modeline.startsWith('●');
@@ -1858,7 +1858,7 @@ function runUndoSelfTest() {
     spine.setActiveClient(0);
     const baseline = spine.buffer.text;
     // Edit → dirty (●).
-    spine.handleKey('M-greater'); // end of buffer
+    spine.handleKey('M-S-period'); // end of buffer
     for (const ch of 'XY') spine.handleKey(ch);
     checks.edited = spine.buffer.text === `${baseline}XY`;
     checks.dirty = spine.activeModified === true

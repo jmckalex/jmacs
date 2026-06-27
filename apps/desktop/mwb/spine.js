@@ -195,6 +195,14 @@ const SPINE_STDLIB = Object.freeze([
   'custom.lisp',
   'indent.lisp',
   'modes.lisp',
+  // keymap.lisp — the ONE keymap + the dispatch engine (handle-key,
+  // lookup-key, keymap-chain, the prefix-map stack, the key-reader). Under
+  // Model B the server is the sole resolver; this file is authoritative and
+  // disk-editable. Loads before multi-cursor.lisp (so its keyboard-quit is
+  // the base multi-cursor wraps) and before auto-pair.lisp (so auto-pair's
+  // bracket bindings layer onto the real the-keymap). Needs only commands.lisp
+  // (defcommand / register-command!); the commands it binds resolve late.
+  'keymap.lisp',
   'math-preview.lisp',
   'kill.lisp',
   'yank-pop.lisp',
@@ -232,7 +240,7 @@ const SPINE_STDLIB = Object.freeze([
   // loaded — modes.lisp declares latex-mode + latex-mode-map (which this
   // file fills), and math-preview.lisp defines math-preview-mode (aliased
   // as latex-math-preview-mode). The C-c chord dispatches through the
-  // spine's mode-keymap chain (resolveMode). Production order: after
+  // mode-keymap chain in keymap.lisp's handle-key. Production order: after
   // markdown.lisp. See PRIMITIVE-SPLIT.md "Modes / latex".
   'latex.lisp',
   // latex-insert.lisp — AUCTeX Phase 2 smart insertion (environment /
@@ -360,166 +368,6 @@ const SPINE_STDLIB = Object.freeze([
   // style!). Extends latex-c-c-map with [. Loads after reftex-refs.lisp.
   'reftex-cite.lisp',
 ]);
-
-/**
- * The keymap: a key-string → command-name table, in the same spirit as
- * production `keymap.lisp` but pared to what the spine exercises. The
- * server's `handle-key` resolves a key here, runs the bound command
- * through the REAL `run-command`, or self-inserts a bare printable.
- *
- * `keyEventToString` names (see reference_key_names): arrows are
- * `left/right/up/down`; `enter`, `backspace`; Meta is Command (`M-…`).
- */
-const KEYMAP = Object.freeze({
-  // motion
-  left: 'backward-char',
-  right: 'forward-char',
-  up: 'previous-line',
-  down: 'next-line',
-  'C-a': 'move-beginning-of-line',
-  'C-e': 'move-end-of-line',
-  'C-f': 'forward-char',
-  'C-b': 'backward-char',
-  'C-n': 'next-line',
-  'C-p': 'previous-line',
-  'M-f': 'forward-word',
-  'M-b': 'backward-word',
-  'M-less': 'beginning-of-buffer',
-  'M-greater': 'end-of-buffer',
-  // Screenful scroll (editing.lisp scroll-up/scroll-down, loaded verbatim):
-  // C-v page-down, M-v page-up. They step point by `(page-lines)` — the host
-  // primitive that reads this client's reported VIEWPORT (only the client
-  // knows how many lines fit). Moving point makes the client follow-scroll.
-  'C-v': 'scroll-up',
-  'M-v': 'scroll-down',
-  // more motion (editing.lisp, loaded verbatim — pure goto!-based)
-  'M-m': 'back-to-indentation', // M-m → first non-blank of the line
-  'M-a': 'backward-sentence', // M-a → start of the sentence
-  'M-e': 'forward-sentence', // M-e → end of the sentence
-  'M-g': 'goto-line', // M-g → read a line number (goto-line! is host-wired)
-  // editing
-  enter: 'newline',
-  backspace: 'delete-backward',
-  'C-d': 'delete-forward',
-  'C-l': 'recenter',
-  // --- more everyday editing (editing.lisp / kill.lisp, loaded verbatim) ---
-  // C-o opens a line (insert "\n", leave point before it); C-t transposes the
-  // two chars before point. Both are pure point/insert!/delete-region! over
-  // the real buffer primitives — no renderer dependency. (keymap.lisp binds
-  // these in the production global-map; they were simply not in the spine's
-  // pared map yet.)
-  'C-o': 'open-line',
-  'C-t': 'transpose-chars',
-  'M-k': 'kill-sentence', // kill.lisp — kill forward to the sentence end
-  'M-q': 'fill-paragraph', // editing.lisp → fill-paragraph! (createBufferPrimitives)
-  'M-r': 'replace-string', // editing.lisp → replace-all! (host-wired); minibuffer read
-  // C-= grows the active region one structural step (word→line→paragraph→
-  // buffer); chains on repeat via *last-command* (which run-command tracks).
-  // The `=` key normalises to `C-equal` (event.code "Equal"), per keymap.lisp.
-  'C-equal': 'expand-region',
-  // --- undo / redo (editing.lisp `undo`/`redo` → `undo!`/`redo!`) -----
-  // The L2 undo stack lives with the canonical buffer, so undo through the
-  // server reverts the buffer BOTH windows on it see (the Model-B payoff).
-  // C-/ is the Emacs undo key; on a US layout `event.code` is `Slash`, so it
-  // normalises to `C-slash` (and Emacs's literal C-_ is Shift+Minus →
-  // `C-S-minus`). C-x u (the other classic undo binding) is in CX_MAP.
-  // Redo: C-S-/ (`C-S-slash`) + M-S-z (`M-S-z`), mirroring keymap.lisp.
-  'C-slash': 'undo',
-  'C-S-minus': 'undo',
-  'C-S-slash': 'redo',
-  'M-S-z': 'redo',
-  // selection
-  'C-space': 'set-mark-command',
-  'C-g': 'keyboard-quit',
-  // --- kill ring / yank (kill.lisp + yank-pop.lisp) ------------------
-  'C-w': 'kill-region',
-  'M-w': 'copy-region',
-  'C-k': 'kill-line',
-  'C-y': 'yank',
-  'M-y': 'yank-pop',
-  'M-d': 'kill-word',
-  'M-backspace': 'backward-kill-word',
-  // --- line operations (line-ops.lisp) ------------------------------
-  'M-up': 'move-line-up',
-  'M-down': 'move-line-down',
-  'M-bracketright': 'indent-region', // M-]
-  'M-bracketleft': 'outdent-region', // M-[
-  // --- search (search.lisp — commands resolve; loop is a host stub) -
-  'C-s': 'isearch-forward',
-  'C-r': 'isearch-backward',
-  // --- highlight all matches (a REAL overlay feature, server-side) ---
-  // M-s h highlights every occurrence of the word at point / region as
-  // overlays the renderer draws via getDecorations(); M-s u clears them.
-  // (Emacs binds highlight-symbol-at-point under M-s h …; we keep the
-  // mnemonic.) These prove overlay sync end-to-end.
-  'M-s': { h: 'highlight-matches', u: 'unhighlight-all' },
-  // command spine entry points
-  'M-x': 'execute-command',
-});
-
-/**
- * The global `C-c` prefix the spine offers when no MAJOR mode claims it.
- * In a Markdown buffer the mode-keymap chain catches `C-c` first (its
- * `C-c b` etc.), so these only fire in a plain buffer — exactly where
- * production's global `c-c-keymap` holds `C-c d` / `C-c D` (multi-cursor).
- */
-const CC_MAP = Object.freeze({
-  d: 'add-cursor-next', // multi-cursor.lisp — word-select + add next match
-  D: 'select-all-matches', // multi-cursor.lisp — a cursor at every match
-});
-
-/**
- * A keymap whose values are themselves keymaps make a key a *prefix*. The
- * `C-x` prefix carries the file + buffer commands. (Production resolves
- * this through nested maps in keymap.lisp; the spine inlines the one
- * prefix it needs.)
- */
-const CX_MAP = Object.freeze({
-  'C-f': 'find-file',
-  'C-s': 'save-buffer',
-  'C-w': 'write-file', // save-as: write the buffer to a new path (prompts)
-  'C-d': 'duplicate-line', // line-ops.lisp (production binds C-x C-d here)
-  'C-j': 'join-line', // line-ops.lisp
-  // More of production's C-x map (editing.lisp — pure buffer ops):
-  'C-x': 'exchange-point-and-mark', // C-x C-x — swap point and mark
-  h: 'mark-whole-buffer', // C-x h — select the whole buffer
-  m: 'toggle-minimap', // C-x m — toggle the minimap companion (minimap.lisp)
-  ';': 'comment-line', // C-x ; — comment/uncomment the line (mode comment-prefix)
-  // Multi-buffer (production keymap.lisp): C-x b switches buffer (a
-  // minibuffer name read, host-completed), C-x C-b lists buffers, C-x k
-  // kills the current buffer.
-  b: 'switch-view',
-  'C-b': 'list-views',
-  k: 'kill-view',
-  u: 'undo', // C-x u — the classic Emacs undo binding (alongside C-/)
-  // --- pane/window splits (panes.lisp — the Emacs C-x map) -----------
-  // C-x 2 / 3 / 0 / 1 / o drive the REAL panes.lisp commands against the
-  // active window's LOGICAL pane tree (pane-model.js). So a key routed
-  // through handleKey splits/cycles/deletes panes server-side, the same as
-  // a PANE_INTENT does — both paths run the same commands.
-  2: 'split-vertical', // C-x 2 — split top/bottom
-  3: 'split-horizontal', // C-x 3 — split side-by-side
-  0: 'delete-pane', // C-x 0 — delete the focused pane
-  1: 'delete-other-panes', // C-x 1 — the focused pane fills the window
-  o: 'other-pane', // C-x o — cycle focus to the next pane
-  // --- new window (C-x 5 2 — the Emacs make-frame prefix, G4) --------
-  // C-x 5 is the frame-command prefix; the spine offers `2` (make a new
-  // frame). A nested map makes `5` a prefix. The command's effect is
-  // CLIENT-performed (new-window → request-new-window! → WINDOW_NEW →
-  // host.newWindow()), so it's window lifecycle, not a buffer edit. (No
-  // conflict with C-x 2 = split-vertical: that resolves at the C-x level
-  // before this sub-map is entered.)
-  5: Object.freeze({ 2: 'new-window' }),
-  // --- bookmarks (C-x r prefix — bookmarks.lisp) ---------------------
-  // C-x r m set · C-x r b jump · C-x r l open the outline. A nested map makes
-  // `r` a prefix (production's keymap.lisp isn't loaded server-side; the spine
-  // inlines the bindings it needs, like the C-x 5 frame prefix above).
-  r: Object.freeze({
-    m: 'bookmark-set',
-    b: 'bookmark-jump',
-    l: 'list-bookmarks',
-  }),
-});
 
 /**
  * Create the command spine.
@@ -1743,27 +1591,10 @@ export function createSpine(options, effects = {}) {
                               (cdr section))))
                  sections))))
 
-    ;; *prefix-arg* — the C-u universal-argument state (keymap.lisp owns it in
-    ;; production; that file is render-heavy and not loaded). panes.lisp reads
-    ;; it to decide a split's side ('after with no prefix, 'before with C-u).
-    ;; The spine has no C-u path yet, so it stays nil → splits default 'after.
-    (define *prefix-arg* nil)
-
-    ;; the-keymap — the global key -> command table (keymap.lisp owns it in
-    ;; production; not loaded here). auto-pair.lisp binds the bracket/quote
-    ;; characters into it ((set! the-keymap (assoc the-keymap "(" …))), and
-    ;; the spine's handle-key consults it for a single printable BEFORE
-    ;; self-inserting — so a typed "(" runs auto-pair-open-paren server-side,
-    ;; exactly as production resolves the-keymap before self-insert. It seeds
-    ;; empty (the spine's motion/editing chords live in the JS KEYMAP); only
-    ;; the per-character auto-pair bindings land here. (-spine-the-keymap-get
-    ;; reads it for handle-key; a miss is #f.)
-    (define the-keymap {})
-    (define (-spine-the-keymap-get key)
-      "The command bound to KEY in the-keymap, or #f when unbound. Read by
-       handle-key's printable path so auto-pair's character bindings fire."
-      (let ((binding (get the-keymap key nil)))
-        (if (nil? binding) #f binding)))
+    ;; *prefix-arg* (the C-u state, read by panes.lisp) and the-keymap (the
+    ;; global key->command table, layered by auto-pair.lisp) are both defined
+    ;; by keymap.lisp, loaded just below in SPINE_STDLIB — the server is the
+    ;; sole resolver now, so there is no spine-side shim for either.
 
     ;; defface / face — the face registry (faces.lisp owns these in
     ;; production; that file is render-heavy and not loaded). snippets.lisp
@@ -1807,21 +1638,11 @@ export function createSpine(options, effects = {}) {
 
   // Load the real command system + editing commands + the model-heavy
   // slice (see SPINE_STDLIB) verbatim from disk — the same source the
-  // production editor runs. Just before multi-cursor.lisp (which rebinds
-  // keyboard-quit), define a minimal model-side keyboard-quit: production's
-  // (keymap.lisp, render-heavy, not loaded) also resets the keymap + prefix
-  // arg, but the spine owns chord state in JS (resetChord), so the model
-  // half is just clearing the mark. `defcommand` exists once commands.lisp
-  // (first in the list) has loaded, so this must run mid-loop, not in the
-  // early prelude above.
+  // production editor runs. keymap.lisp (loaded before multi-cursor.lisp)
+  // now defines keyboard-quit (reset-keymap! + reset-prefix-arg! + clear-mark!);
+  // multi-cursor.lisp wraps it to also collapse the cursor set, exactly as in
+  // production. No spine-side keyboard-quit shim is needed.
   for (const file of SPINE_STDLIB) {
-    if (file === 'multi-cursor.lisp') {
-      interpreter.evaluate(`
-        (defcommand keyboard-quit ()
-          "Abort a partial key sequence and clear the selection (C-g)."
-          (clear-mark!))
-      `);
-    }
     const source = readFileSync(join(STDLIB_DIR, file), 'utf8');
     interpreter.evaluate(source);
   }
@@ -2061,76 +1882,36 @@ export function createSpine(options, effects = {}) {
                          (reftex-cite-insert key)))))
   `);
 
-  // --- the mode-keymap resolver (the meaningful spine extension) -------
+  // --- post-stdlib dispatch glue --------------------------------------
   //
-  // For a mode's bindings (Markdown's C-c b, the math-symbol minor mode's
-  // \`) to dispatch server-side, handleKey must consult the active
-  // buffer's mode-keymap chain — exactly what production keymap.lisp does
-  // via `lookup-in-chain (keymap-chain)`. modes.lisp (now loaded) provides
-  // `minor-mode-keymaps` + `major-mode-keymap`; this resolver reuses them.
-  //
-  // It is written in Lisp (so it walks the real Lisp hash-maps) but is
-  // STATELESS toward JS: it returns a tagged plain value JS can branch on
-  // without holding a Lisp object —
-  //   - a command name (string)  → JS runs it through run-command;
-  //   - the symbol 'prefix       → JS knows a chord started (the resolver
-  //                                stashed the map in `-spine-chord-map`);
-  //   - nil                      → not bound in the mode chain (JS falls
-  //                                through to its own global KEYMAP).
-  // The chord state lives in `-spine-chord-map`; a follow-up key resolves
-  // against it. resetMode() clears it (C-g, an unbound mid-chord key).
+  // keymap.lisp (loaded above) now owns the whole dispatch: handle-key,
+  // lookup-key, the keymap-chain (minor → major → the-keymap), the prefix-map
+  // stack, the key-reader (*key-reader* / read-next-key), self-insert, and the
+  // unregistered-command guard. The spine no longer reimplements any of it.
+  // Two small host-side concerns remain, defined here AFTER the stdlib so they
+  // see the real definitions:
   interpreter.evaluate(`
-    (define -spine-chord-map nil)
-
-    (define (-spine-mode-chain)
-      "The mode keymaps for the current buffer, highest precedence first:
-       minor-mode maps, then the major-mode map. (No global map — the JS
-       KEYMAP is the spine's global layer.)"
-      (append (minor-mode-keymaps) (list (major-mode-keymap))))
-
-    (define (-spine-lookup key maps)
-      "First non-nil binding of KEY among MAPS (skipping nil maps)."
-      (cond
-        ((nil? maps) nil)
-        ((nil? (car maps)) (-spine-lookup key (cdr maps)))
-        (else (let ((b (get (car maps) key nil)))
-                (if (nil? b) (-spine-lookup key (cdr maps)) b)))))
-
-    (define (-spine-resolve key)
-      "Resolve KEY through the mode chain (or the active chord map). Returns
-       a command name (string), 'prefix (a chord began — map stashed), or
-       nil (unbound in the mode chain)."
-      (let ((b (if (nil? -spine-chord-map)
-                   (-spine-lookup key (-spine-mode-chain))
-                   (get -spine-chord-map key nil))))
-        (cond
-          ((nil? b) (set! -spine-chord-map nil) nil)
-          ((map? b) (set! -spine-chord-map b) 'prefix)
-          ((symbol? b) (set! -spine-chord-map nil) (symbol->string b))
-          (else (set! -spine-chord-map nil) nil))))
-
-    (define (-spine-reset-chord) (set! -spine-chord-map nil))
-    (define (-spine-chord-active?) (not (nil? -spine-chord-map)))
-
     ;; Choose the major mode from the current view's name (modes.lisp's
-    ;; choose-major-mode! turns on default minor modes too — none here yet).
+    ;; choose-major-mode! turns on default minor modes too).
     (define (-spine-choose-major-mode) (choose-major-mode!) nil)
 
-    ;; read-next-key support: route the next keystroke to a callback
-    ;; instead of the keymaps (keymap.lisp's mechanism; the math-symbol
-    ;; minor mode's \` uses it). Defined here because keymap.lisp (which
-    ;; owns the production version) is render-heavy and not loaded.
-    (define *spine-key-reader* nil)
-    (define (read-next-key callback) (set! *spine-key-reader* callback) nil)
-    (define (-spine-key-reader-pending?) (not (nil? *spine-key-reader*)))
-    (define (-spine-take-key-reader key)
-      "If a key-reader is pending, consume it with KEY and return #t."
-      (if (nil? *spine-key-reader*)
-          #f
-          (let ((reader *spine-key-reader*))
-            (set! *spine-key-reader* nil)
-            (reader key)
-            #t)))
+    ;; History-op tracking for the cross-window resync. keymap.lisp's handle-key
+    ;; calls run-command directly, so wrap run-command (late binding means
+    ;; handle-key AND the JS runCommand / applyPaneIntent / M-x paths all hit
+    ;; this wrapper) to record when an undo/redo ran. The server reads-and-clears
+    ;; the flag via -spine-consume-history-op (consumeHistoryOp) to decide
+    ;; whether to resync full text + cursors (a change-group's single delta
+    ;; can't be replayed on the client mirror).
+    (define -spine-base-run-command run-command)
+    (define -spine-history-op #f)
+    (define (run-command name)
+      (when (or (eq? name 'undo) (eq? name 'redo))
+        (set! -spine-history-op #t))
+      (-spine-base-run-command name))
+    (define (-spine-consume-history-op)
+      (let ((v -spine-history-op))
+        (set! -spine-history-op #f)
+        v))
   `);
 
   // --- M-x: a real command-name read --------------------------------
@@ -3473,175 +3254,33 @@ export function createSpine(options, effects = {}) {
 
   // --- the keymap dispatch ---------------------------------------------
   //
-  // A pared `handle-key` in the server's host (JS), in the SAME shape as
-  // production keymap.lisp's `handle-key`: resolve the key in the active
-  // map (a prefix stack) or the global map; a nested map starts a chord; a
-  // command name runs through the REAL run-command; a bare printable
-  // self-inserts. The minibuffer steals keys while a prompt is open (the
-  // client handles minibuffer input itself, so the server only sees the
-  // resolved submit/cancel — handle-key is not called during a prompt).
-
-  /** The active JS prefix map (a global chord is in progress), or null. */
-  let activeMap = null;
-  let chordPrefix = '';
-
-  function resetChord() {
-    activeMap = null;
-    chordPrefix = '';
-    if (statusText.endsWith('-')) {
-      statusText = '';
-      onStatus('');
-    }
-  }
-
-  /** Is a Lisp key-reader pending (read-next-key, e.g. the math-symbol `)? */
-  function keyReaderPending() {
-    return interpreter.call('-spine-key-reader-pending?') === true;
-  }
-
-  /** Resolve a key through the mode chain (or the active mode-chord). One
-   *  of: a command name (string), the boolean-ish marker 'prefix', or
-   *  false/nil. Re-entry while a mode-chord is active resolves against it. */
-  function resolveMode(key) {
-    const result = interpreter.call('-spine-resolve', key);
-    if (typeof result === 'string') return result;
-    if (result && typeof result === 'object' && result.name === 'prefix') {
-      return 'prefix';
-    }
-    return null; // nil / unbound
-  }
-
-  /** Is a mode-chord (e.g. after C-c) in progress? */
-  function modeChordActive() {
-    return interpreter.call('-spine-chord-active?') === true;
-  }
+  // The server is the only resolver. keymap.lisp (loaded into SPINE_STDLIB)
+  // owns the keymap, the chord state machine, the prefix-map stack, the
+  // key-reader, self-insert, run-command, and the unregistered-command guard.
+  // This host wrapper just relays the keystroke to (handle-key …). The
+  // minibuffer steals keys while a prompt is open (the client handles
+  // minibuffer input itself, so handle-key is not called during a prompt).
+  // Status echo flows through the show-status!/clear-status! host primitives
+  // that keymap.lisp drives.
 
   /**
-   * Dispatch a key. Returns true when the key was handled. Mirrors
-   * keymap.lisp's resolution order: a pending key-reader first, then the
-   * active chord (mode or global), then — at rest — the buffer's
-   * mode-keymap chain, then the spine's global KEYMAP; a bare printable
-   * self-inserts.
+   * Dispatch a key through keymap.lisp's handle-key. Returns true when the
+   * key was handled (a command ran, a chord began/continued, or a printable
+   * self-inserted).
    *
    * @param {string} key - A normalised key string (keyEventToString name).
    * @returns {boolean}
    */
   function handleKey(key) {
-    // 1. A pending key-reader (read-next-key) steals the key.
-    if (keyReaderPending()) {
-      interpreter.call('-spine-take-key-reader', key);
-      return true;
-    }
-
-    // 2. Mid mode-chord (e.g. C-c then b): resolve against the stashed map.
-    if (modeChordActive()) {
-      const r = resolveMode(key);
-      if (r === 'prefix') {
-        chordPrefix = `${chordPrefix} ${key}`;
-        statusText = `${chordPrefix}-`;
-        onStatus(statusText);
-        return true;
-      }
-      // Either a command or unbound — the chord ends.
-      if (statusText.endsWith('-')) { statusText = ''; onStatus(''); }
-      chordPrefix = '';
-      if (typeof r === 'string') runCommand(r);
-      return true;
-    }
-
-    // 3. Mid global chord (e.g. C-x then C-f).
-    if (activeMap !== null) {
-      const binding = activeMap[key];
-      if (binding && typeof binding === 'object') {
-        activeMap = binding;
-        chordPrefix = `${chordPrefix} ${key}`;
-        statusText = `${chordPrefix}-`;
-        onStatus(statusText);
-        return true;
-      }
-      if (typeof binding === 'string') {
-        resetChord();
-        runCommand(binding);
-        return true;
-      }
-      resetChord(); // unbound mid-chord: abort cleanly
-      return true;
-    }
-
-    // 4. At rest — try the buffer's mode-keymap chain first (so a mode's
-    //    bindings, e.g. Markdown C-c b, win over the global table).
-    const modeResult = resolveMode(key);
-    if (modeResult === 'prefix') {
-      chordPrefix = key;
-      statusText = `${chordPrefix}-`;
-      onStatus(statusText);
-      return true;
-    }
-    if (typeof modeResult === 'string') {
-      runCommand(modeResult);
-      return true;
-    }
-
-    // 5. The spine's global KEYMAP (motion / editing / kill-yank / …).
-    let binding = KEYMAP[key];
-    if (key === 'C-x') binding = CX_MAP;
-    // The global C-c prefix (multi-cursor) — only reached when no major
-    // mode claimed C-c above (step 4). In Markdown, the mode map wins.
-    if (key === 'C-c') binding = CC_MAP;
-    if (binding && typeof binding === 'object') {
-      activeMap = binding;
-      chordPrefix = key;
-      statusText = `${chordPrefix}-`;
-      onStatus(statusText);
-      return true;
-    }
-    if (typeof binding === 'string') {
-      runCommand(binding);
-      return true;
-    }
-
-    // 6. A single printable bound in the-keymap (auto-pair.lisp binds the
-    //    bracket/quote characters there). Production resolves the-keymap
-    //    before self-insert; the spine does the same so a typed "(" runs
-    //    auto-pair-open-paren server-side rather than self-inserting. A miss
-    //    is #f → fall through to plain self-insert below.
-    if (typeof key === 'string' && [...key].length === 1) {
-      const charBinding = interpreter.call('-spine-the-keymap-get', key);
-      if (typeof charBinding === 'string') {
-        runCommand(charBinding);
-        return true;
-      }
-      if (charBinding && typeof charBinding === 'object'
-          && typeof charBinding.name === 'string') {
-        runCommand(charBinding.name); // a bound Sym
-        return true;
-      }
-    }
-
-    // 7. At rest, unbound: self-insert a bare printable. Route the
-    //    *last-command* update through it too (the yank-pop subtlety —
-    //    see PRIMITIVE-SPLIT.md): typing must invalidate a pending yank.
-    if (typeof key === 'string' && [...key].length === 1) {
-      interpreter.evaluate("(set! *last-command* 'self-insert)");
-      buffer.insert(key);
-      return true;
-    }
-    return false;
+    return interpreter.call('handle-key', key) === true;
   }
 
-  // Did the last dispatched command perform an undo or redo? A change-group
-  // undo emits SEVERAL L1 edits but only ONE L2 change event, so the single
-  // forwarded delta can't replicate it on the client mirror (proven: it
-  // desyncs). The server therefore RESYNCs (full text + cursors) after an
-  // undo/redo, exactly as it does for a multi-cursor edit. This flag tells it
-  // an undo/redo just ran; the server reads-and-clears it via consumeHistoryOp.
-  let lastWasHistoryOp = false;
-
-  /** Run a command by name through the REAL run-command. A name that needs
-   *  interactive args (a minibuffer prompt) suspends inside run-command;
-   *  the prompt is delivered later via deliverMinibuffer. */
+  /** Run a command by name through the REAL run-command. The spine's Lisp
+   *  run-command wrapper records undo/redo for the cross-window resync (read
+   *  via consumeHistoryOp). A name that needs interactive args (a minibuffer
+   *  prompt) suspends inside run-command; the prompt is delivered later via
+   *  deliverMinibuffer. */
   function runCommand(name) {
-    if (name === 'undo' || name === 'redo') lastWasHistoryOp = true;
     interpreter.evaluate(`(run-command (quote ${name}))`);
   }
 
@@ -3727,13 +3366,12 @@ export function createSpine(options, effects = {}) {
     }
   }
 
-  /** Read-and-clear the "last dispatch was an undo/redo" flag. The server
-   *  calls this after each intent to decide whether to RESYNC (a change-group
-   *  undo's single delta is insufficient — see lastWasHistoryOp). */
+  /** Read-and-clear the "last dispatch was an undo/redo" flag (the spine's
+   *  Lisp run-command wrapper sets it). The server calls this after each intent
+   *  to decide whether to RESYNC — a change-group undo's single delta can't be
+   *  replayed on the client mirror. */
   function consumeHistoryOp() {
-    const was = lastWasHistoryOp;
-    lastWasHistoryOp = false;
-    return was;
+    return interpreter.call('-spine-consume-history-op') === true;
   }
 
   /** Deliver a minibuffer result to the suspended command (commands.lisp's
