@@ -1772,3 +1772,42 @@ test('runNotebookCell reports a thrown error instead of throwing', async () => {
   assert.equal(r.state, 'error');
   assert.equal(r.error.message, 'boom');
 });
+
+// --- cross-cell shared scope (Jupyter-style; the notebook-cells view) --------
+// A sessionId gives a notebook a PERSISTENT scope: a cell's top-level
+// declarations flow to later cells in the same session, and only that session.
+
+const num = (d) => (d && (d.text != null ? String(d.text) : String(d.value)));
+
+test('runNotebookCell: top-level const flows to a later cell in the same session', async () => {
+  const { spine } = makeSpine('');
+  const a = await spine.runNotebookCell('const total = 21;\ntotal', 'sessX');
+  assert.equal(a.state, 'ok');
+  const b = await spine.runNotebookCell('total * 2', 'sessX');
+  assert.equal(b.state, 'ok');
+  assert.equal(num(b.descriptor), '42');
+});
+
+test('runNotebookCell: a top-level function persists across cells', async () => {
+  const { spine } = makeSpine('');
+  await spine.runNotebookCell('function dbl(x) { return x * 2 }', 'sessF');
+  const r = await spine.runNotebookCell('dbl(20) + 2', 'sessF');
+  assert.equal(r.state, 'ok');
+  assert.equal(num(r.descriptor), '42');
+});
+
+test('runNotebookCell: scopes are isolated across sessions', async () => {
+  const { spine } = makeSpine('');
+  await spine.runNotebookCell('const secret = 99;\nsecret', 'sessA');
+  const r = await spine.runNotebookCell('typeof secret', 'sessB');
+  assert.equal(r.state, 'ok');
+  assert.match(num(r.descriptor), /undefined/);
+});
+
+test('runNotebookCell: with NO session id, cells stay isolated (no leak)', async () => {
+  const { spine } = makeSpine('');
+  await spine.runNotebookCell('const loose = 5;\nloose');
+  const r = await spine.runNotebookCell('typeof loose');
+  assert.equal(r.state, 'ok');
+  assert.match(num(r.descriptor), /undefined/);
+});

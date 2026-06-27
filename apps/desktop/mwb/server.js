@@ -897,7 +897,10 @@ function applyIntent(client, intent) {
         // the awaiting cell. runNotebookCell never throws, but guard the reply.
         const reqId = intent.reqId;
         const source = typeof intent.source === 'string' ? intent.source : '';
-        Promise.resolve(spine.runNotebookCell(source))
+        // The notebook's session id selects its persistent shared scope (a
+        // cell's top-level decls flow to later cells in the same notebook).
+        const sessionId = typeof intent.sessionId === 'string' ? intent.sessionId : null;
+        Promise.resolve(spine.runNotebookCell(source, sessionId))
           .then((result) => {
             try { client.port.postMessage({ type: MSG.NOTEBOOK_RESULT, reqId, result }); }
             catch { /* client detached */ }

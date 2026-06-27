@@ -5847,6 +5847,12 @@ const { highlighters, foldCaptures } = await loadLanguageHighlighters(
 );
 document.body.dataset.treesitter = Object.keys(highlighters).join(',');
 
+// Bridge the loaded highlighters to embedded editors that mount their OWN
+// <text-view> over a renderer-local buffer (the notebook-cells view), so they
+// highlight without re-running loadLanguageHighlighters. Mirrors the
+// window.__godotNotebookEval host→view bridge.
+window.__godotHighlighters = { highlighters, foldCaptures };
+
 // --- G2: route ONE real view through the Model-B server -----------------
 //
 // plans/MWB-GRADUATION.md §G2 + the leaf-flip. With GODOT_SERVER=1, route the
@@ -6896,9 +6902,9 @@ if (window.host && window.host.serverMode) {
     // lazy so it works regardless of when serverViewClient finishes connecting.
     // Flag-off this is never set, so the notebook view falls back to local eval
     // (which the CSP blocks — the notebook is a GODOT_SERVER=1 feature).
-    window.__godotNotebookEval = (source) =>
+    window.__godotNotebookEval = (source, sessionId) =>
       serverViewClient && typeof serverViewClient.notebookEval === 'function'
-        ? serverViewClient.notebookEval(source)
+        ? serverViewClient.notebookEval(source, sessionId)
         : Promise.reject(new Error('notebook eval needs the server (GODOT_SERVER=1)'));
     serverViewClient = createServerViewClient({
       port: godotServerPort,

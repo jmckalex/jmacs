@@ -2042,6 +2042,15 @@ export function createEditorView(buffer, container, options = {}) {
       schedule();
     },
 
+    /** Force a re-render on the next frame without moving the cursor or
+     *  scroll. For hosts that change a replaced-range widget's content
+     *  out of band (e.g. the notebook view, when a cell finishes running)
+     *  and need the widget layer to re-mount — there is no buffer edit to
+     *  trigger the usual onChange-driven render. */
+    refresh() {
+      schedule();
+    },
+
     /** Roughly how many lines fit in the viewport — used for paging. */
     pageLines() {
       const lineHeight = cursorEl.getBoundingClientRect().height || 22;

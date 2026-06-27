@@ -88,6 +88,11 @@ export {
   serializeNotebook as serializeNotebookJs,
   parseNotebook as parseNotebookJs,
 } from './notebook-js-view.js';
+// The Architecture-A cell notebook (M-x notebook-cells): all cells in ONE real
+// editor over a unified buffer. Importing it registers the bundled
+// <notebook-cells-view> custom element so the element-view mounts it by tag
+// with an empty :module.
+export { NotebookCellsView } from './notebook-cells-view.js';
 export { ViewListView, kindLabel, fileLabel } from './view-list-view.js';
 export { RecoverView, formatAge, recoverFileLabel } from './recover-view.js';
 export {
