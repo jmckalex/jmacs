@@ -1,7 +1,8 @@
 # Plan — server-authoritative key dispatch (one keymap, G5)
 
-**Status: DESIGN, awaiting sign-off on §4 (vocabulary), §5 (directive schema),
-§8 (phasing).** Branch: `spine-keymap-from-lisp`, off `main`.
+**Status: SIGNED OFF (2026-06-27) — P1 in progress.** Branch:
+`spine-keymap-from-lisp`, off `main`. Vocabulary (§4), directive schema (§5),
+and phasing (§8) all settled with Jason.
 
 This supersedes the earlier "make keymap.lisp authoritative" Option-A draft.
 Jason's call (2026-06-27): this is the **start of G5** — flag-off (the
@@ -63,8 +64,10 @@ KEY intent to server → the spine's JS table has no `M-left` → no-op.
 - **The client forwards every key** as a `KEY` intent (it already does:
   `server-view-client.js:20`). The client does **no** keymap resolution — the
   current local `C-x C-c` quit special-case (`server-view-client.js:315`) is
-  **removed** and becomes a server `quit` command that emits a `close-window`
-  directive to `self` (§5).
+  **removed** and becomes a server `quit` command. Because the server holds
+  every client's state, it can check for unsaved content across the affected
+  windows (and prompt / refuse) **before** emitting the `close-window`
+  directive (§5) — something a client-local quit could never do.
 - **`keymap.lisp` is the one keymap**, resolved by the server through its own
   `handle-key` / `lookup-key` / `keymap-chain` / `-prefix-maps-for`
   (all already implemented in `keymap.lisp`). The spine's JS tables and
@@ -75,26 +78,29 @@ KEY intent to server → the spine's JS table has no `M-left` → no-op.
 This is "Option B" (delegate to Lisp `handle-key`) — now unambiguous because
 flag-off is gone, so there is no second consumer of `keymap.lisp` to perturb.
 
-## 4. Vocabulary convergence (NEEDS SIGN-OFF)
+## 4. Vocabulary convergence — view-centric (SIGNED OFF)
 
-`keymap.lisp` (inherited, pre-Model-B) binds several keys to **renderer**
-command *names* the spine registers under **different** names. Today these keys
-work via the JS tables; switching to `keymap.lisp` unchanged would break them.
-We converge on **one** name per command. Proposed: the server/Emacs name wins,
-and `keymap.lisp` is edited to use it (we own `keymap.lisp` now).
+Decision (Jason, 2026-06-27): the **view** vocabulary is canonical, not
+"buffer". A *view* is the general on-screen surface; only **text** views have a
+backing L2 `Buffer` — other views (media, shell, directory, element, …) have a
+**data-source** instead. The "buffer" command names in the spine are an
+Emacs-era holdover from when every surface was assumed to be text. So the
+spine's commands are **renamed to the view vocabulary** (and their references
+in `server.js` + tests updated); `keymap.lisp` keeps the view names it already
+had, with `buffer-menu` → `list-views`.
 
-| Key      | keymap.lisp (old) | spine (server)            | proposed canonical |
-|----------|-------------------|---------------------------|--------------------|
-| `M-x`    | `execute-command` | `execute-extended-command`| `execute-extended-command` |
-| `C-x b`  | `switch-view`     | `switch-to-buffer`        | `switch-to-buffer` |
-| `C-x C-b`| `buffer-menu`     | `list-buffers`            | `list-buffers`     |
-| `C-x k`  | `kill-view`       | `kill-buffer`             | `kill-buffer`      |
-| `C-x n`  | `scratch-buffer`  | (none yet)                | port `scratch-buffer` server-side |
+| Key      | canonical name     | spine renamed from          |
+|----------|--------------------|-----------------------------|
+| `M-x`    | `execute-command`  | `execute-extended-command`  |
+| `C-x b`  | `switch-view`      | `switch-to-buffer`          |
+| `C-x C-b`| `list-views`       | `list-buffers` (keymap.lisp: `buffer-menu`) |
+| `C-x k`  | `kill-view`        | `kill-buffer`               |
+| `C-x n`  | `scratch-view`     | (port server-side)          |
 
-**Open question for Jason:** `switch-view`/`kill-view` reflect the editor's
-*view* model (per-tab surface), not just *buffer*; confirm these are functional
-synonyms server-side (they should be under Model B — a window shows one buffer)
-or whether the buffer/view distinction must be preserved in the names.
+Implication: `switch-view` / `list-views` must enumerate **all** views (text
+*and* data-source), not just text buffers. The internal L2 `Buffer` object
+stays a "buffer" (it really is one, when a view has it) — only the
+command/user-facing vocabulary goes view-centric.
 
 Genuinely **server-only** bindings absent from the old `keymap.lisp` — **add**
 to `keymap.lisp` (it's the source of truth now):
@@ -103,38 +109,48 @@ to `keymap.lisp` (it's the source of truth now):
 - `C-x 5 0` / `C-x 5 1` → `close-window` / `close-other-windows` (NEW commands,
   the proving ground for §5 — see P2).
 
-## 5. The client-directive channel (NEEDS SIGN-OFF)
+## 5. The client-directive channel (SIGNED OFF)
 
 Generalize the existing `RUN_CLIENT_COMMAND` (protocol.js:152, built for
 element-views) into a first-class directive with **window targeting**.
 
+Decision (Jason, 2026-06-27): targeting is an **explicit array of window ids** —
+nothing richer. The server already knows which window is the sender and which
+are the rest, so "self" / "others" / "all" are just Lisp helpers that *return*
+an id array; the message itself only ever carries a concrete list.
+
 **New message** (protocol.js): `CLIENT_DIRECTIVE`
 ```
 { type: 'client-directive',
-  targets: 'self' | 'others' | 'all' | number[],   // client indices
-  directive: { name: string, args: <json> } }      // serializable only
+  targets: number[],                              // explicit window ids, always an array
+  directive: { name: string, args: <json> } }     // structured-clone-safe only
 ```
 
 **Lisp host primitive** a command body calls:
 ```lisp
-(emit-client-directive! targets name . args)   ; targets: 'self 'others 'all or a list of ids
+(emit-client-directive! ids name . args)   ; ids: a list of window ids
+```
+with id-set helpers the server provides:
+```lisp
+(this-window-id)     ; the window whose keystroke is running
+(other-window-ids)   ; every window except this one
+(all-window-ids)     ; every window
 ```
 e.g.
 ```lisp
 (defcommand close-other-windows ()
   "Close every window except this one (C-x 5 1)."
-  (emit-client-directive! 'others 'close-window))
+  (emit-client-directive! (other-window-ids) 'close-window))
 ```
-The spine resolves `targets` against its live client set (it already tracks
-`paneModels` keyed by client index + the active client), serializes the
-directive, and posts it to each selected port. The renderer has a directive
-handler that maps `name` → a renderer action (close the window, toggle a fold,
-re-theme, …). **Constraint:** directive args are structured-clone-safe — no
-raw Lisp symbols over the port (the known gotcha); send strings/plain data.
+The spine serializes the directive and posts it to each listed window's port.
+The renderer has one directive handler that maps `name` → a renderer action
+(close the window, toggle a fold, re-theme, …). **Constraint:** directive args
+are structured-clone-safe — no raw Lisp symbols over the port (the known
+gotcha); send strings/plain data.
 
-This subsumes `RUN_CLIENT_COMMAND` (`self` target) and adds the multi-window
-reach. Migration: re-express the element-view `RUN_CLIENT_COMMAND` callers as
-`CLIENT_DIRECTIVE … targets:'self'`, then retire the old message.
+This subsumes `RUN_CLIENT_COMMAND` (a one-element id list). Migration:
+re-express the element-view `RUN_CLIENT_COMMAND` callers as `CLIENT_DIRECTIVE`
+with `(list (this-window-id))`, then retire the old message.
 
 ## 6. The guard (mandatory)
 
@@ -180,10 +196,12 @@ Internal commits stage it so each step is live-verifiable:
   select, `C-x +`/`x`/`X`/`C-arrows`, the `C-h`/`M-n` prefixes engaging,
   `C-c d`-in-Markdown fallthrough — all start working; all existing chords
   still work. spine.test.js green throughout.
-- **P2 — the directive channel.** Add `CLIENT_DIRECTIVE` + `emit-client-directive!`
-  (§5). Migrate window lifecycle: `quit`/`close-window`/`close-other-windows`
-  as server commands emitting directives; remove the client's `C-x C-c`
-  special-case. **Proves** the multi-window round-trip end to end.
+- **P2 — the directive channel.** Add `CLIENT_DIRECTIVE` +
+  `emit-client-directive!` + the id-set helpers (§5). Migrate window lifecycle:
+  `quit`/`close-window`/`close-other-windows` as server commands emitting
+  directives, with the server's unsaved-content check before any close; remove
+  the client's `C-x C-c` special-case. **Proves** the multi-window round-trip
+  end to end.
 - **P3 — port the renderer-only commands** incrementally onto the directive
   channel: folding, help/describe (`C-h` family), themes/faces, sticky-notes,
   eval-at-point, notebooks. Each becomes a real server command emitting a
