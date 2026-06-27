@@ -6822,6 +6822,9 @@ if (window.host && window.host.serverMode) {
     // The echo area: a mid-chord prefix (e.g. "C-x-") or a one-off status. The
     // minibuffer component reuses its row as the echo area when no prompt is up.
     setEcho: (status) => minibuffer.setStatus(status ?? ''),
+    // The echo area as STYLED segments ([{ text, color, bold }]) — e.g. the
+    // quit walk's red Save prompt with a bold filename. Plain setEcho otherwise.
+    setEchoRich: (segments) => minibuffer.setStatusRich(segments),
     // A server-suspended minibuffer read: open the real minibuffer; its input
     // routes back up as MINIBUFFER_* intents (the spine resumes the command).
     // On submit/cancel, return focus to the server view so typing resumes.

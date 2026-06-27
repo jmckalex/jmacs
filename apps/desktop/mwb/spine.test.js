@@ -497,6 +497,21 @@ test('quit-editor: n skips the save, the net fires, and n aborts the quit', () =
   assert.equal(log.directives.length, 0, 'quit aborted');
 });
 
+test('quit-editor save prompt is styled (red text, bold filename)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt');
+  spine.handleKey('Z'); // dirty the path-backed buffer
+  spine.runCommand('quit-editor'); // prompts "Save doc.txt?"
+  const segs = spine.viewState().statusSegments;
+  assert.ok(Array.isArray(segs) && segs.length === 3, 'styled 3-segment prompt');
+  assert.equal(segs[0].text, 'Save ');
+  assert.equal(segs[1].bold, true, 'the filename segment is bold');
+  assert.ok(segs[1].color, 'the filename segment has a colour');
+  assert.ok(segs[2].text.includes('?'), 'the trailing prompt is present');
+});
+
 test('a fresh window opens on its own private *scratch* (hidden from window 1)', () => {
   const { spine } = makeSpine('the session file', 'session.txt');
   const before = spine.bufferCount;

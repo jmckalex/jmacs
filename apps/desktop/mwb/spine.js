@@ -692,6 +692,19 @@ export function createSpine(options, effects = {}) {
 
   // --- the echo area (status line) -------------------------------------
   let statusText = '';
+  // Optional styled rendering for the CURRENT status: { plain, segments } where
+  // segments is [{ text, color, bold }]. show-status-rich! sets it; the
+  // view-state emits the segments ONLY while statusText still equals `plain`,
+  // so any later plain status (a "Wrote foo", clear-status!, a JS-direct set)
+  // auto-reverts the echo to plain with no manual clearing. See viewStatusSegments.
+  let statusSegments = null;
+  /** The styled segments for the view-state, or null when the current status is
+   *  plain (statusText diverged from the segments' plain text). */
+  function viewStatusSegments() {
+    return statusSegments && statusSegments.plain === statusText
+      ? statusSegments.segments
+      : null;
+  }
 
   // --- the active minibuffer prompt ------------------------------------
   // The prompt label of an open minibuffer read, or null. The server reads
@@ -805,6 +818,25 @@ export function createSpine(options, effects = {}) {
       'clear-status!': () => {
         statusText = '';
         onStatus('');
+        return NIL;
+      },
+      // show-status-rich! — a STYLED echo message. The arg is a list of
+      // (text color bold) triples; each becomes a coloured (and optionally
+      // bold) span in the echo area. statusText is the concatenated plain text
+      // (the fallback + what the view-state compares against), so a later plain
+      // status auto-reverts to unstyled. Used by the quit walk's Save prompts.
+      'show-status-rich!': (args) => {
+        const segments = listToArray(args[0] ?? NIL).map((triple) => {
+          const [text, color, bold] = listToArray(triple);
+          return {
+            text: String(text ?? ''),
+            color: symName(color) ?? (typeof color === 'string' ? color : null),
+            bold: bold === true,
+          };
+        });
+        statusText = segments.map((s) => s.text).join('');
+        statusSegments = { plain: statusText, segments };
+        onStatus(statusText);
         return NIL;
       },
 
@@ -2046,8 +2078,10 @@ export function createSpine(options, effects = {}) {
          (save-buffer-by-id! (car ids))
          (-quit-walk (cdr ids) #t))
         (else
-         (show-status!
-           (str "Save " (buffer-name-by-id (car ids)) "? (y/n/! all/q stop)"))
+         (show-status-rich!
+           (list (list "Save " "#a83232" #f)
+                 (list (buffer-name-by-id (car ids)) "#ff3b30" #t)
+                 (list "? (y / n / ! all / q stop)" "#a83232" #f)))
          (read-next-key
            (lambda (key)
              (cond
@@ -2065,8 +2099,9 @@ export function createSpine(options, effects = {}) {
       (let ((remaining (+ (length (dirty-buffer-ids)) (dirty-pathless-count))))
         (if (> remaining 0)
             (begin
-              (show-status!
-                (str remaining " buffer(s) unsaved — quit anyway? (y/n)"))
+              (show-status-rich!
+                (list (list (str remaining) "#ff3b30" #t)
+                      (list " buffer(s) unsaved — quit anyway? (y / n)" "#a83232" #f)))
               (read-next-key
                 (lambda (key)
                   (cond
@@ -3354,6 +3389,7 @@ export function createSpine(options, effects = {}) {
         mathPreviewActive: false,
         modeline: renderModeline({ name: ds.name, modified: false, mode: ds.kind, noPosition: true }),
         status: statusText,
+        statusSegments: viewStatusSegments(),
         modified: false,
       };
     }
@@ -3382,6 +3418,7 @@ export function createSpine(options, effects = {}) {
         mode: modeName,
       }),
       status: statusText,
+      statusSegments: viewStatusSegments(),
       modified,
     };
   }
@@ -3609,6 +3646,7 @@ export function createSpine(options, effects = {}) {
         name: buffer.name, modified, line, column, mode: majorModeName(),
       }),
       status: statusText,
+      statusSegments: viewStatusSegments(),
       modified,
     };
   }

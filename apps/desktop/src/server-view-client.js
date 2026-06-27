@@ -166,6 +166,10 @@ export function createServerViewClient({
   // unit tests + the core text path run without any chrome.
   const setModelineDom = chrome.setModeline ?? (() => {});
   const setEchoDom = chrome.setEcho ?? (() => {});
+  // Styled echo: the server sent the status as coloured/bold segments
+  // (statusSegments — e.g. the quit walk's red Save prompt with a bold
+  // filename). Falls back to plain setEcho when the host doesn't wire it.
+  const setEchoRichDom = chrome.setEchoRich ?? null;
   const openMinibufferDom = chrome.openMinibuffer ?? (() => {});
   const closeMinibufferDom = chrome.closeMinibuffer ?? (() => {});
   const openPickerDom = chrome.openPicker ?? (() => {});
@@ -387,7 +391,13 @@ export function createServerViewClient({
     // echo while a prompt is up; this avoids fighting it).
     const mb = v.minibuffer;
     const mbActive = !!(mb && mb.active);
-    if (!mbActive && typeof v.status === 'string') setEchoDom(v.status);
+    if (!mbActive) {
+      if (Array.isArray(v.statusSegments) && v.statusSegments.length > 0 && setEchoRichDom) {
+        setEchoRichDom(v.statusSegments);
+      } else if (typeof v.status === 'string') {
+        setEchoDom(v.status);
+      }
+    }
     // Minibuffer open/close transitions, in lock-step with the server.
     if (mbActive && !minibufferActive) {
       minibufferActive = true;
