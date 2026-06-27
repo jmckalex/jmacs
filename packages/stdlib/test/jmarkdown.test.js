@@ -106,6 +106,12 @@ test('the mode declares the jmarkdown highlighter and its keymap', async () => {
   );
 });
 
+test('TAB / S-TAB indent / dedent the selection in jmarkdown-mode', async () => {
+  const { ev } = await jmdEditor();
+  assert.equal(ev('(eq? (get jmarkdown-mode-map "tab" nil) \'jmarkdown-tab)'), true);
+  assert.equal(ev('(eq? (get jmarkdown-mode-map "S-tab" nil) \'jmarkdown-backtab)'), true);
+});
+
 test('a structured menu is registered for JMarkdown', async () => {
   const { ev } = await jmdEditor();
   assert.equal(ev('(nil? (get *mode-menu-sections* "JMarkdown" nil))'), false);

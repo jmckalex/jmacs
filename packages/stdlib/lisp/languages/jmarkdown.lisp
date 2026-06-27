@@ -362,6 +362,31 @@
           (goto! from)
           (insert! (-jmd-join replacement)))))))
 
+;; --- TAB / S-TAB: indent / dedent the selection -------------------------
+;; With a region active, TAB indents and S-TAB outdents the lines it
+;; touches (the same `indent-region` / `outdent-region` as M-] / M-[, on
+;; the Tab keys). Snippet navigation must still win: an active snippet
+;; field is usually SELECTED, so we defer to `snippet-tab` /
+;; `snippet-shift-tab` whenever a snippet is active — those also handle
+;; trigger-expansion and the plain `insert-tab` fallback, so non-selection
+;; TAB behaviour is unchanged.
+
+(defcommand jmarkdown-tab ()
+  "TAB — indent the selected lines by one level when a region is active
+   (and no snippet is running), else the normal TAB (snippet field /
+   expand / insert-tab)."
+  (if (and (region-active?) (not (snippet-active?)))
+      (indent-region)
+      (snippet-tab)))
+
+(defcommand jmarkdown-backtab ()
+  "S-TAB — outdent the selected lines by one level when a region is
+   active (and no snippet is running), else step to the previous snippet
+   field (a no-op when no snippet is active)."
+  (if (and (region-active?) (not (snippet-active?)))
+      (outdent-region)
+      (snippet-shift-tab)))
+
 ;; --- the jmarkdown-mode keymap ------------------------------------------
 ;; C-c is the prefix, mirroring markdown-mode's map for the shared
 ;; commands and adding the dialect's own.
@@ -398,7 +423,10 @@
 ;; JMarkdown-aware one (the latex-mode-map does the same).
 (set! jmarkdown-mode-map
       {"C-c" jmarkdown-c-c-map
-       "M-q" 'jmarkdown-fill-paragraph})
+       "M-q" 'jmarkdown-fill-paragraph
+       ;; TAB / S-TAB indent / dedent the selection (snippets still win).
+       "tab" 'jmarkdown-tab
+       "S-tab" 'jmarkdown-backtab})
 
 ;; --- the jmarkdown-mode menu --------------------------------------------
 
