@@ -232,6 +232,13 @@ export class TextView extends ViewElement {
     if (this._editor !== null) this._editor.flashCurrentLine();
   }
 
+  /** Force a re-render without moving the cursor — used by an embedding
+   *  host (the notebook view) to re-mount replaced-range widgets after an
+   *  out-of-band content change (a cell finished running). */
+  refresh() {
+    if (this._editor !== null) this._editor.refresh();
+  }
+
   /** Roughly how many lines fit in the viewport — for paging. */
   pageLines() {
     return this._editor !== null ? this._editor.pageLines() : 0;

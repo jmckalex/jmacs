@@ -6402,3 +6402,150 @@ notebook-js-view {
   color: var(--fg-dim);
   font-style: italic;
 }
+
+/* --- notebook-cells (Architecture A): one editor, chrome as block widgets - */
+.nbc-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-editor);
+  color: var(--fg);
+}
+.nbc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+}
+.nbc-toolbar-icon { color: var(--accent); opacity: 0.85; }
+.nbc-toolbar-title { flex: 1 1 auto; font-size: 13px; font-weight: 600; }
+.nbc-toolbar-btn {
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.nbc-toolbar-btn:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); }
+
+/* The embedded editor fills the rest of the pane and scrolls internally.
+   `height: auto` overrides the global `text-view { height: 100% }` so flex
+   (not the full-pane height) sizes it below the toolbar. */
+.nbc-view text-view {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+/* No line-number gutter in the notebook — it shows cells, not a code file. */
+.nbc-view .editor-gutter,
+.nbc-view .editor-gutter-sticky {
+  display: none;
+}
+
+/* Left breathing room for cell content (the now-hidden gutter used to supply
+   it). Padding on `.editor` shifts the content box, which `offsetFromPoint`
+   measures against — so click-to-position stays correct. */
+.nbc-view .editor {
+  padding-left: 18px;
+}
+
+/* Per-cell header bar (block widget over the cell's `{` scaffolding line). */
+.nbc-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 9%, transparent);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  font-family: system-ui, sans-serif;
+}
+.nbc-badge { font-size: 12px; line-height: 1; color: var(--fg-dim); }
+.nbc-badge-running { color: var(--accent); }
+.nbc-badge-ok { color: #5fb87f; }
+.nbc-badge-error { color: var(--error); }
+.nbc-label {
+  flex: 1 1 auto;
+  font-size: 11px;
+  color: var(--fg-dim);
+  letter-spacing: 0.02em;
+}
+.nbc-run {
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.nbc-run:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); }
+.nbc-cell-add {
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.nbc-cell-add:hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  color: var(--fg);
+}
+
+/* Per-cell output region (block widget over the cell's `}` scaffolding line). */
+.nbc-output {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 10px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 9%, transparent);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg);
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* nbc chrome rides the block-widget layer, but unlike display math it must be
+   full-width and LEFT-aligned (not centred), with no block margin — otherwise
+   `.math-block { text-align: center; margin: 0.2lh 0 }` centres the output and
+   the margin overflows the reserved row height. */
+.math-widget.math-block:has(> .nbc-header),
+.math-widget.math-block:has(> .nbc-output) {
+  display: block;
+  width: 100%;
+  margin: 0;
+  text-align: left;
+  cursor: default;
+}
+.nbc-output-empty { padding: 0; border-bottom: none; }
+.nbc-output-running { color: var(--accent); }
+.nbc-output-error { color: var(--error); }
+.nbc-log { color: var(--fg-dim); }
+.nbc-log-warn { color: color-mix(in srgb, var(--fg) 55%, #e0c060); }
+.nbc-log-error { color: var(--error); }
+.nbc-result-json { color: var(--fg); }
+
+.nbc-table { border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
+.nbc-table th,
+.nbc-table td {
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  text-align: left;
+}
+.nbc-table th { color: var(--fg-dim); font-weight: 600; }
+.nbc-trunc { color: var(--fg-dim); font-style: italic; }

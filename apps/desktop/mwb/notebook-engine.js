@@ -240,7 +240,66 @@ export function formatArg(arg) {
  * @param {string} source - the cell's editable text.
  * @returns {Function} the compiled async function.
  */
-export function compileCell(source) {
+/** The parameter name carrying a notebook's persistent shared scope into a
+ *  shared-mode cell. Picked to be unlikely to collide with user code. */
+export const SHARED_SCOPE_PARAM = '__nbScope';
+
+/**
+ * Rewrite a cell's TOP-LEVEL declarations into assignments on a shared scope
+ * object, so they persist to later cells in the same notebook (Jupyter
+ * kernel semantics). Only column-0 declarations are touched (nested,
+ * block-scoped ones stay cell-local), and only the common forms:
+ * `const`/`let`/`var NAME = …`, `function NAME(…)`, `class NAME …`. Complex
+ * forms (destructuring, multi-declarator) are left alone and simply stay
+ * cell-local. Conservative by design — it never has to be complete, only
+ * safe; the body runs inside `with (scope)` so reads still resolve.
+ *
+ * @param {string} source
+ * @param {string} scopeVar
+ * @returns {string}
+ */
+export function rewriteTopLevelDeclsToScope(source, scopeVar) {
+  if (typeof source !== 'string' || source === '') return source;
+  return source
+    .split('\n')
+    .map((line) => {
+      let m;
+      if ((m = /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=(?![=>])/.exec(line))) {
+        return `${scopeVar}.${m[1]} =${line.slice(m[0].length)}`;
+      }
+      if ((m = /^function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/.exec(line))) {
+        return `${scopeVar}.${m[1]} = ${line}`;
+      }
+      if ((m = /^class\s+([A-Za-z_$][\w$]*)\b/.exec(line))) {
+        return `${scopeVar}.${m[1]} = ${line}`;
+      }
+      return line;
+    })
+    .join('\n');
+}
+
+/**
+ * Compile a cell SOURCE into an `AsyncFunction` taking the facade names as
+ * parameters, with the last expression turned into the return value.
+ *
+ * When `opts.shared` is true the cell is compiled for a PERSISTENT notebook
+ * scope: top-level declarations are rewritten onto a `SHARED_SCOPE_PARAM`
+ * object and the body runs inside `with (scope) { … }`, so a prior cell's
+ * `const xs = …` resolves as a bare `xs` here. `with` is illegal under
+ * `"use strict"`, so shared cells omit the strict pragma; isolated cells
+ * (the default — every `notebook-js` cell) keep strict mode, unchanged.
+ *
+ * @param {string} source
+ * @param {{shared?: boolean}} [opts]
+ * @returns {Function}
+ */
+export function compileCell(source, opts = {}) {
+  if (opts.shared) {
+    const rewritten = rewriteTopLevelDeclsToScope(source ?? '', SHARED_SCOPE_PARAM);
+    const body = transformLastExprToReturn(rewritten);
+    const wrapped = `with (${SHARED_SCOPE_PARAM}) {\n${body}\n}`;
+    return new AsyncFunction(...FACADE_NAMES, SHARED_SCOPE_PARAM, wrapped);
+  }
   const body = transformLastExprToReturn(source ?? '');
   const wrapped = `"use strict";\n${body}`;
   return new AsyncFunction(...FACADE_NAMES, wrapped);
@@ -317,9 +376,12 @@ export async function runCell(source, facade = {}, opts = {}) {
     abortSignal: opts.signal,
   };
 
+  // A persistent shared scope (Jupyter-style cross-cell state) when the
+  // caller supplies one; otherwise the cell runs isolated (the default).
+  const scope = opts.scope || null;
   let fn;
   try {
-    fn = compileCell(source);
+    fn = compileCell(source, { shared: !!scope });
   } catch (err) {
     return {
       state: 'error',
@@ -335,7 +397,9 @@ export async function runCell(source, facade = {}, opts = {}) {
     if (opts.signal?.aborted) {
       throw new DOMExceptionLike('The cell run was aborted.', 'AbortError');
     }
-    const value = await fn(...FACADE_NAMES.map((n) => args[n]));
+    const value = scope
+      ? await fn(...FACADE_NAMES.map((n) => args[n]), scope)
+      : await fn(...FACADE_NAMES.map((n) => args[n]));
     return {
       state: 'ok',
       value,

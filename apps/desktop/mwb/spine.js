@@ -3416,7 +3416,7 @@ export function createSpine(options, effects = {}) {
         majorModeName: '',
         modeMenu: null,
         mathPreviewActive: false,
-        modeline: renderModeline({ name: ds.name, modified: false, line: 1, column: 0, mode: ds.kind }),
+        modeline: renderModeline({ name: ds.name, modified: false, mode: ds.kind, noPosition: true }),
         status: statusText,
         modified: false,
       };
@@ -3826,10 +3826,27 @@ export function createSpine(options, effects = {}) {
    *  cross the wire), plus captured console logs and any error. Never throws — a
    *  cell error is reported in the result. (MVP facade is empty; editor.eval /
    *  require / cross-cell `cells` are a later phase.) */
-  async function runNotebookCell(source) {
+  // Persistent per-notebook shared scopes: a cell's top-level declarations
+  // persist to later cells in the SAME notebook session (Jupyter-style
+  // cross-cell state). Keyed by the client-supplied sessionId; an absent
+  // sessionId (e.g. the flat notebook-js) runs isolated, unchanged.
+  const notebookScopes = new Map();
+  function notebookScopeFor(sessionId) {
+    if (!sessionId) return null;
+    let scope = notebookScopes.get(sessionId);
+    if (!scope) {
+      scope = Object.create(null);
+      notebookScopes.set(sessionId, scope);
+    }
+    return scope;
+  }
+
+  async function runNotebookCell(source, sessionId) {
     let result;
     try {
-      result = await runNotebookCellEngine(String(source ?? ''), {});
+      result = await runNotebookCellEngine(String(source ?? ''), {}, {
+        scope: notebookScopeFor(sessionId),
+      });
     } catch (err) {
       return {
         state: 'error',

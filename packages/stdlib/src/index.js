@@ -56,6 +56,9 @@ export const STDLIB_FILES = Object.freeze([
   // bundled <notebook-js-view> (empty :module); cells eval in the spine's Node
   // context (renderer can't — CSP), via the NOTEBOOK_EVAL round-trip.
   'element-view-notebook-js.lisp',
+  // The Architecture-A cell notebook (M-x notebook-cells): all cells in ONE
+  // real editor over a unified buffer; chrome rides the block-widget layer.
+  'element-view-notebook-cells.lisp',
   'panes.lisp',
   'tabline.lisp',
   'minimap.lisp',

@@ -323,11 +323,18 @@ export function renderModeline(parts) {
   // A single-glyph dirty indicator: ● = unsaved edits, – = saved/clean.
   const flag = parts.modified ? '●' : '–';
   const name = parts.name || 'untitled';
-  const line = Number.isFinite(parts.line) ? parts.line : 1;
-  const column = Number.isFinite(parts.column) ? parts.column : 0;
-  const pos = `L${line}:C${column}`;
-  const mode = parts.mode ? `  (${parts.mode})` : '';
-  return `${flag}  ${name}   ${pos}${mode}`;
+  // A view with no text cursor (an element / media data-source — e.g. the
+  // notebook) passes `noPosition: true` so the modeline doesn't show a frozen,
+  // meaningless `L1:C0`.
+  let pos = '';
+  if (parts.noPosition !== true) {
+    const line = Number.isFinite(parts.line) ? parts.line : 1;
+    const column = Number.isFinite(parts.column) ? parts.column : 0;
+    pos = `L${line}:C${column}`;
+  }
+  const mode = parts.mode ? `(${parts.mode})` : '';
+  const tail = [pos, mode].filter(Boolean).join('  ');
+  return `${flag}  ${name}${tail ? `   ${tail}` : ''}`;
 }
 
 /**

@@ -754,13 +754,21 @@ export function createServerViewClient({
   /** Evaluate a JS notebook cell in the spine (Node — the renderer can't eval
    *  under CSP). Returns a promise of the serializable result
    *  `{ state, descriptor, logs, error }` (resolved on MSG.NOTEBOOK_RESULT). */
-  function notebookEval(source) {
+  function notebookEval(source, sessionId) {
     const reqId = nextNotebookReq++;
     return new Promise((resolve) => {
       notebookPending.set(reqId, resolve);
       port.postMessage({
         type: MSG.INTENT,
-        intent: { id: nextIntentId++, kind: INTENT.NOTEBOOK_EVAL, reqId, source: String(source ?? '') },
+        intent: {
+          id: nextIntentId++,
+          kind: INTENT.NOTEBOOK_EVAL,
+          reqId,
+          source: String(source ?? ''),
+          // Selects the notebook's persistent shared scope on the server
+          // (cross-cell state). Absent for the flat notebook-js (isolated).
+          sessionId: sessionId || null,
+        },
       });
     });
   }
