@@ -61,10 +61,23 @@ Authoritative doc for dispatch, the directive channel, embedded-Lisp authoring, 
 
 ---
 
+## How these docs nest (the drill-down)
+
+The docs form a hierarchy, so **"I need to know X about Y"** resolves top-down to the code you'll edit:
+
+1. **`docs/MAP.md`** (this file) — the **router**. Subsystem → its playbook.
+2. **Subsystem playbook** (e.g. `docs/MODEL-B-DISPATCH.md`, `docs/VIEWS.md`) — the **model**: seams, ownership, invariants, traps. Each ends with a **"Where to look"** block: a *code map* (seam → file → symbols), plus links *deeper* (specs) and *sideways* (related playbooks).
+3. **Spec** (`docs/spec/*.md`) — the **authoritative detail** for a language or format (the Lisp dialect, modes).
+4. **Code** — the file + symbol the playbook's code map names. Open it and get stuck in.
+
+Convention for every playbook: name **files + symbols** (grep-able, durable), never line numbers, and end with the "Where to look" block so the path to code is always one scroll away. The `run-and-verify` skill is the procedural leaf — how to confirm the change once you've made it.
+
+---
+
 ## Where each kind of knowledge lives (the meta-map)
 
 - **`CLAUDE.md`** — standing *process* agreements (branching, testing, territory, style). Loaded every session. **Points, doesn't contain** architecture — keep it lean.
-- **`docs/*.md`** — authoritative *reference*: seams, ownership, invariants, recurring bug families. Slow-changing. Describe seams, not line numbers.
+- **`docs/*.md`** — authoritative *reference*: seams, ownership, invariants, recurring bug families. Slow-changing. **Name files + symbols** (grep-able, durable); avoid line numbers (they rot). Every subsystem playbook ends with a **"Where to look"** code map.
 - **`docs/spec/*.md`** — language/mode specifications.
 - **`plans/*.md`** — per-feature working plans with a STATUS block.
 - **`HANDOVER.md`** — the rolling *state log*: what's in flight right now. Not a place for durable architecture (that goes in `docs/`).

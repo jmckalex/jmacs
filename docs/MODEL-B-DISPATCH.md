@@ -185,6 +185,30 @@ The pattern for "a server command surfaces something in the window's chrome." Th
 
 ---
 
+## Where to look — code & specs
+
+The sections above describe the seams; this is where each one lives, so you can go straight in. **Files + symbols, not line numbers** — a symbol survives edits (grep it); a line number doesn't.
+
+| Seam / concept | File | Symbols (grep these) |
+|---|---|---|
+| Key event → normalised string | `packages/renderer/src/keymap.js` | `keyEventToString` |
+| Client: send KEY intent, apply directives | `apps/desktop/src/server-view-client.js` | `dispatchKey`, `applyDirectiveDom`, `case MSG.CLIENT_DIRECTIVE` |
+| Server: dispatch entry, stdlib load, embedded commands | `apps/desktop/mwb/spine.js` | `handleKey`, `SPINE_STDLIB`, the embedded `interpreter.evaluate(...)` block, `deliverMinibuffer` |
+| The one keymap + dispatch engine | `packages/stdlib/lisp/keymap.lisp` | `handle-key`, `lookup-key`, `keymap-chain`, `lookup-in-chain`, `-prefix-maps-for`, `read-next-key`, `the-keymap`, `c-x-keymap`, `c-h-keymap` |
+| Command machinery (defcommand / run / interactive) | `packages/stdlib/lisp/commands.lisp` | `defcommand`, `run-command`, `command-registered?`, `registered-command-names` |
+| Directive emit (Lisp wrapper + host) | `apps/desktop/mwb/spine.js` (embedded) | `emit-client-directive!`, `-emit-client-directive!`, `this-window-id`, `other-window-ids`, `all-window-ids` |
+| Server routing + minibuffer-submit fork | `apps/desktop/mwb/server.js` | `onClientDirective`, `sendClientDirective`, `handleMinibufferSubmit`, `bestCommandMatch` |
+| Wire protocol / message types | `apps/desktop/mwb/protocol.js` | `CLIENT_DIRECTIVE`, `MSG` |
+| Renderer effect handlers | `apps/desktop/src/app.js` | `applyDirective` (chrome hook), `displayDocPanel`, `showDocInPane`, `performShutdown` |
+| Core primitives + reader escape map | `packages/lisp/src/` | `primitives.js`, `reader.js` |
+| Help worked example (this session) | `spine.js` (embedded) · `app.js` · `packages/renderer/src/doc-panel.js` | `describe-key`, `describe-command`, `apropos-doc`, `-show-help!` · `displayDocPanel`, `HELP_TAB_ID` · `createDocPanel` |
+
+**Deeper (authoritative detail):** the Lisp dialect → `docs/spec/lisp.md`; major/minor modes → `docs/spec/modes.md`.
+**Related playbooks:** views & panes → `docs/VIEWS.md`; adding a new on-screen surface → `docs/CUSTOM-VIEWS.md`.
+**Up (the index):** `docs/MAP.md`.
+
+---
+
 ## Reload rules (which edits need what)
 
 | Edited | To pick up |
