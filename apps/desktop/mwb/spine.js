@@ -2174,6 +2174,95 @@ export function createSpine(options, effects = {}) {
                       (show-status! (str key " runs "
                                          (symbol->string binding)))))))))))
 
+    ;; --- describe-command (C-h f) — P3 help port --------------------------
+    ;; Type a command name; echo the first line of its docstring. The typed
+    ;; text is resolved like M-x's submit-time match (bestCommandMatch):
+    ;; exact name, else the SHORTEST registered command name containing it,
+    ;; so a partial name still lands — and the echo shows the resolved name,
+    ;; so the lenient match is never a surprise. Server-registered commands
+    ;; only (the renderer-owned element-view commands carry no server-side
+    ;; docstring). The "Describe command: " prompt isn't special-cased in
+    ;; server.js, so its submit falls through to deliverMinibuffer and this
+    ;; body runs with the typed value. Reuses -doc-first-line.
+    (define (-command-name-match typed)
+      "Resolve TYPED to a registered command name: exact, else the shortest
+       registered name containing TYPED, or nil when nothing matches."
+      (let ((names (registered-command-names)))
+        (if (member typed names)
+            typed
+            (let ((hits (sort (filter (lambda (n) (string-contains? n typed))
+                                      names)
+                              (lambda (a b)
+                                (< (string-length a) (string-length b))))))
+              (if (nil? hits) nil (car hits))))))
+
+    (defcommand describe-command (typed)
+      "Describe a command by name (C-h f). Resolves the typed text (exact,
+       else shortest containing match, like M-x) and echoes the command and
+       the first line of its docstring."
+      (interactive (string "Describe command: "))
+      (let ((name (-command-name-match typed)))
+        (cond
+          ((nil? name)
+           (show-status! (str "No command matching: " typed)))
+          (else
+            (let ((info (doc (eval (string->symbol name)))))
+              (if (string? info)
+                  (show-status! (str name " — " (-doc-first-line info)))
+                  (show-status! (str name " — (no documentation)"))))))))
+
+    ;; --- apropos-doc (C-h a) — P3 help port -------------------------------
+    ;; List every registered command whose NAME or docstring contains the
+    ;; typed text (case-insensitive) in a fresh *Apropos: PATTERN* view, each
+    ;; as "name — first docstring line", shortest name first. Modeled on
+    ;; occur (new-view! + insert!), fully server-side. The renderer's
+    ;; start-doc-search! fuzzy-searched the built doc MANIFEST; the server
+    ;; instead searches LIVE commands — broader (every command, not only
+    ;; pre-built pages) and available without docs.lisp. Like occur's
+    ;; "Occur: " prompt, "Apropos: " falls through to deliverMinibuffer.
+    (define (-apropos-entry name)
+      "(name . docstring) for command NAME (a string); docstring is the
+       empty string when the command has none."
+      (let ((info (doc (eval (string->symbol name)))))
+        (cons name (if (string? info) info ""))))
+
+    (define (-apropos-match? needle entry)
+      "True when NEEDLE (already lowercased) is a substring of ENTRY's
+       lowercased name or docstring."
+      (or (string-contains? (string-downcase (car entry)) needle)
+          (string-contains? (string-downcase (cdr entry)) needle)))
+
+    (define (-apropos-format entries)
+      "Render ENTRIES (name . docstring) as lines 'name — first-doc-line'."
+      (if (nil? entries)
+          ""
+          (let* ((e (car entries))
+                 (first (-doc-first-line (cdr e)))
+                 (line (if (= (string-length first) 0)
+                           (car e)
+                           (str (car e) " — " first))))
+            (str line "\\n" (-apropos-format (cdr entries))))))
+
+    (defcommand apropos-doc (pattern)
+      "List every command whose name or documentation matches PATTERN (a
+       case-insensitive substring) in a fresh *Apropos: PATTERN* view
+       (C-h a). Each line is the command name and its docstring's first
+       line, shortest name first."
+      (interactive (string "Apropos: "))
+      (let* ((needle (string-downcase pattern))
+             (all (map -apropos-entry (registered-command-names)))
+             (hits (sort (filter (lambda (e) (-apropos-match? needle e)) all)
+                         (lambda (a b)
+                           (< (string-length (car a))
+                              (string-length (car b))))))
+             (count (length hits))
+             (header (str count " command" (if (= count 1) "" "s")
+                          " matching " pattern ":\\n\\n")))
+        (new-view! (str "*Apropos: " pattern "*"))
+        (insert! (if (nil? hits)
+                     (str header "(none)\\n")
+                     (str header (-apropos-format hits))))))
+
     (defcommand toggle-tabline ()
       "Toggle whether the focused pane is a tabline of this window's buffers
        (Step 3c) — 'add a tabline-view' to a single pane, or back."
