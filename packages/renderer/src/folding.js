@@ -73,6 +73,15 @@ export function foldRanges(text, captures) {
       offsetToLine(lineStarts, cap.end)
     );
     if (endLine <= startLine) continue;
+    // Drop a fold whose HEADER line is blank. A tree-sitter `section` can
+    // begin on the empty line after a metadata/frontmatter header (the first
+    // blank line in a `.jmd` document), which would put a fold caret — and a
+    // pinned, empty sticky-header — on that blank line. You can't fold "at" a
+    // blank line; the real construct (heading / fence / @begin) keeps its own
+    // fold on its own non-blank line.
+    const hdrFrom = lineStarts[startLine];
+    const hdrTo = startLine + 1 < lineCount ? lineStarts[startLine + 1] : text.length;
+    if (text.slice(hdrFrom, hdrTo).trim() === '') continue;
     const existing = byStart.get(startLine);
     if (existing !== undefined && endLine <= existing.endLine) continue;
     const range = { endLine };
