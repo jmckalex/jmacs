@@ -2134,6 +2134,46 @@ export function createSpine(options, effects = {}) {
        off to this window."
       (-quit-walk (dirty-buffer-ids) #f))
 
+    ;; --- describe-key (C-h k) — P3 help port ------------------------------
+    ;; The server now owns the keymap AND the command docstrings, so the
+    ;; renderer-only help.lisp version (println / open-doc!) graduates here.
+    ;; Read ONE key, resolve it through the full mode chain (keymap-chain),
+    ;; and report it in the echo area. read-next-key auto-clears after one
+    ;; key (handle-key nils *key-reader* before invoking the reader), so no
+    ;; stranded reader and no special abort handling is needed — C-h k C-g
+    ;; just describes keyboard-quit, as in Emacs. The full doc PAGE
+    ;; (open-doc! → the manual view) is a later follow-up via the directive
+    ;; channel; for now we surface the first line of the docstring inline.
+    (define (-doc-first-line s)
+      "The first line of docstring S (everything up to the first newline)."
+      (let ((nl (string-index-of s "\\n")))
+        (if (< nl 0) s (substring s 0 nl))))
+
+    (defcommand describe-key ()
+      "Describe the command bound to the next key pressed (C-h k). Reads one
+       key and reports whether it is unbound, a prefix key, a command not
+       available on the server, or the bound command with the first line of
+       its docstring."
+      (show-status! "Describe key — press a key:")
+      (read-next-key
+        (lambda (key)
+          (let ((binding (lookup-in-chain key (keymap-chain))))
+            (cond
+              ((nil? binding)
+               (show-status! (str key " is unbound")))
+              ((map? binding)
+               (show-status! (str key " is a prefix key")))
+              ((not (command-registered? binding))
+               (show-status! (str key " runs " (symbol->string binding)
+                                  " (not available here)")))
+              (else
+                (let ((info (doc (eval binding))))
+                  (if (string? info)
+                      (show-status! (str key " runs " (symbol->string binding)
+                                         " — " (-doc-first-line info)))
+                      (show-status! (str key " runs "
+                                         (symbol->string binding)))))))))))
+
     (defcommand toggle-tabline ()
       "Toggle whether the focused pane is a tabline of this window's buffers
        (Step 3c) — 'add a tabline-view' to a single pane, or back."
