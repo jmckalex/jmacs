@@ -1,10 +1,10 @@
 # Plan — server-authoritative key dispatch (one keymap, G5)
 
-**Status: P1 DONE, P2a+P2b DONE — quit (P2c) + P3 remain (2026-06-27).**
-Branch: `spine-keymap-from-lisp`, off `main`. Vocabulary (§4), directive schema
-(§5), and phasing (§8) all settled with Jason. Suite green throughout
-(full root 3169/3169). Recovery tags: `p1-keymap-complete`,
-`p2-directive-channel`.
+**Status: P1 DONE, P2a+P2b+P2c DONE (built+tested) — flip + live-verify + P3
+remain (2026-06-27).** Branch: `spine-keymap-from-lisp`, off `main`. Vocabulary
+(§4), directive schema (§5), phasing (§8), and the quit UX (§8a: per-buffer
+save-some-buffers) all settled with Jason. Suite green throughout (full root
+3173/3173). Recovery tags: `p1-keymap-complete`, `p2-directive-channel`.
 
 **Done:**
 - **P1 — one resolver** (`p1-keymap-complete`, commits 12c9c5a + d3708b5).
@@ -18,9 +18,17 @@ Branch: `spine-keymap-from-lisp`, off `main`. Vocabulary (§4), directive schema
   host close bridge (preload `host.closeWindow` → main `window:close`).
   ⚠️ The host bridge can't be unit-tested — needs live-verify.
 
+- **P2c — quit server-side, save-some-buffers** (`0edd157`). `quit-editor` runs
+  the cross-window per-buffer save walk (y/n/!/q) + the final net, then hands
+  off via a `quit` directive to `app.js performShutdown`. Reachable via
+  `M-x quit-editor`. ⚠️ The client `C-x C-c` special-case is KEPT as a fallback
+  (old single-confirm quit) — the flip + live-verify is the next step.
+
 **Remaining:**
-- **P2c — quit server-side + the cross-window unsaved check (NEEDS A DECISION).**
-  See §8a below. Data-safety path; not built blind.
+- **The C-x C-c flip** — once `M-x quit-editor` is live-verified, remove the
+  client `C-x C-c` special-case (`server-view-client.js:315`) so `C-x C-c` →
+  server `quit-editor`. One small change; do it after verify so quit is never
+  broken untested.
 - **P3 — port the renderer-only commands** onto the directive channel
   (folding, help/describe, themes/faces, sticky-notes, eval-at-point,
   notebooks). Each becomes a server command emitting a directive.
