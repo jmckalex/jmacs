@@ -506,9 +506,13 @@ test('quit-editor save prompt is styled (red text, bold filename)', () => {
   spine.runCommand('quit-editor'); // prompts "Save doc.txt?"
   const segs = spine.viewState().statusSegments;
   assert.ok(Array.isArray(segs) && segs.length === 3, 'styled 3-segment prompt');
-  assert.equal(segs[0].text, 'Save ');
+  assert.equal(segs[0].text, 'Save ', 'frame ends with a space before the filename');
   assert.equal(segs[1].bold, true, 'the filename segment is bold');
   assert.ok(segs[1].color, 'the filename segment has a colour');
+  assert.ok(
+    segs[1].text.startsWith('"') && segs[1].text.endsWith('"'),
+    'the filename is wrapped in double-quotes'
+  );
   assert.ok(segs[2].text.includes('?'), 'the trailing prompt is present');
 });
 

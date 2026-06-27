@@ -189,13 +189,20 @@ export function createMinibuffer(container) {
       const target = root.hidden ? echoEl : statusEl;
       target.textContent = '';
       const list = Array.isArray(segments) ? segments : [];
+      // Wrap the spans in ONE container: .minibuffer-echo is `display: flex`,
+      // so each direct child is a flex item whose trailing whitespace is
+      // trimmed (it would eat the space after "Save"). A single wrapper is the
+      // lone flex item; the segment spans inside stay inline, so inter-segment
+      // spaces survive.
+      const wrap = document.createElement('span');
       for (const seg of list) {
         const span = document.createElement('span');
         span.textContent = String(seg && seg.text != null ? seg.text : '');
         if (seg && seg.color) span.style.color = seg.color;
         if (seg && seg.bold) span.style.fontWeight = 'bold';
-        target.appendChild(span);
+        wrap.appendChild(span);
       }
+      target.appendChild(wrap);
       if (root.hidden) echoEl.hidden = list.length === 0;
     },
 

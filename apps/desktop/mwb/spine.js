@@ -2079,9 +2079,9 @@ export function createSpine(options, effects = {}) {
          (-quit-walk (cdr ids) #t))
         (else
          (show-status-rich!
-           (list (list "Save " "#a83232" #f)
-                 (list (buffer-name-by-id (car ids)) "#ff3b30" #t)
-                 (list "? (y / n / ! all / q stop)" "#a83232" #f)))
+           (list (list "Save " "#c0392b" #f)
+                 (list (str "\\"" (buffer-name-by-id (car ids)) "\\"") "#ff3b30" #t)
+                 (list "? (y / n / ! all / q stop)" "#c0392b" #f)))
          (read-next-key
            (lambda (key)
              (cond
@@ -2101,7 +2101,7 @@ export function createSpine(options, effects = {}) {
             (begin
               (show-status-rich!
                 (list (list (str remaining) "#ff3b30" #t)
-                      (list " buffer(s) unsaved — quit anyway? (y / n)" "#a83232" #f)))
+                      (list " buffer(s) unsaved — quit anyway? (y / n)" "#c0392b" #f)))
               (read-next-key
                 (lambda (key)
                   (cond
