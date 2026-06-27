@@ -2071,6 +2071,12 @@ export function createSpine(options, effects = {}) {
     ;; hands off the shutdown (workspace prompt + flush + host.quit) to the
     ;; originating window via a 'quit directive. Modelled on query-replace's
     ;; read-next-key loop (regex-search.lisp).
+    (define (-quit-cancel)
+      "Abort the quit walk: clear the prompt and leave NO pending key-reader,
+       so a later C-x C-c starts the walk over from scratch (not stranded
+       mid-prompt). Nothing is quit."
+      (show-status! "Quit canceled"))
+
     (define (-quit-walk ids save-all)
       (cond
         ((nil? ids) (-quit-net))
@@ -2081,7 +2087,7 @@ export function createSpine(options, effects = {}) {
          (show-status-rich!
            (list (list "Save " "#c0392b" #f)
                  (list (str "\\"" (buffer-name-by-id (car ids)) "\\"") "#ff3b30" #t)
-                 (list "? (y / n / ! all / q stop)" "#c0392b" #f)))
+                 (list "? (y / n / ! all / q stop / C-g cancel)" "#c0392b" #f)))
          (read-next-key
            (lambda (key)
              (cond
@@ -2089,6 +2095,8 @@ export function createSpine(options, effects = {}) {
                ((equal? key "n") (-quit-walk (cdr ids) #f))
                ((equal? key "!") (save-buffer-by-id! (car ids)) (-quit-walk (cdr ids) #t))
                ((equal? key "q") (-quit-net))
+               ;; C-g / Escape cancel the whole quit cleanly (no pending reader).
+               ((or (equal? key "C-g") (equal? key "escape")) (-quit-cancel))
                ;; Any other key re-prompts for THIS buffer.
                (else (-quit-walk ids #f))))))))
 
@@ -2106,7 +2114,9 @@ export function createSpine(options, effects = {}) {
                 (lambda (key)
                   (cond
                     ((equal? key "y") (-quit-do))
-                    ((equal? key "n") (clear-status!))   ;; abort the quit
+                    ;; n / C-g / Escape abort the quit cleanly (no pending reader).
+                    ((or (equal? key "n") (equal? key "C-g") (equal? key "escape"))
+                     (-quit-cancel))
                     (else (-quit-net))))))
             (-quit-do))))
 

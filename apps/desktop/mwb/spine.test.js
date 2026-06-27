@@ -497,6 +497,30 @@ test('quit-editor: n skips the save, the net fires, and n aborts the quit', () =
   assert.equal(log.directives.length, 0, 'quit aborted');
 });
 
+test('quit-editor: C-g aborts cleanly so a fresh C-x C-c restarts the SAVE walk', () => {
+  // Regression: an aborted quit used to strand a pending key-reader (the else
+  // branch re-armed it), so the next C-x C-c was eaten by it and landed back in
+  // the net instead of re-prompting the save walk.
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt');
+  spine.handleKey('Z'); // dirty (path-backed) → the walk will prompt to save it
+  spine.runCommand('quit-editor'); // "Save doc.txt?"
+  spine.handleKey('q'); // stop saving → the net
+  spine.handleKey('C-g'); // abort the net — must leave NO pending reader
+  assert.equal(log.directives.length, 0, 'aborted: nothing quit');
+  // A fresh quit via the keys must reach quit-editor (not a stale reader) and
+  // restart the SAVE walk from the first buffer.
+  spine.handleKey('C-x');
+  spine.handleKey('C-c');
+  const segs = spine.viewState().statusSegments;
+  assert.ok(
+    Array.isArray(segs) && segs[0].text === 'Save ',
+    'a fresh quit restarts the save walk, not the net'
+  );
+});
+
 test('quit-editor save prompt is styled (red text, bold filename)', () => {
   const { spine } = makeSpine('seed', 'scratch.txt', {
     openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
