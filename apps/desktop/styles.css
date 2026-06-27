@@ -949,11 +949,14 @@ mjx-assistive-mml[display='block'] {
 }
 
 /* A pinned content header — reuses `.editor-line` for byte-identical text +
-   highlighting; the opaque background masks the code scrolling beneath it,
-   and `right: 0` stretches the row (otherwise shrink-to-fit) so the whole
-   width is a click target and a clean mask. */
+   highlighting; the opaque background masks the code scrolling beneath it, and
+   `right` stretches the row (otherwise shrink-to-fit) so the whole width is a
+   click target and a clean mask. The negative right runs the row — background,
+   hairlines and all — across the editor's right padding to the pane edge
+   (matches `.editor`'s `padding: 0 22px 18px 0`), so the separator reaches the
+   scrollbar AND no scrolling text leaks through the gap beside the header. */
 .editor-sticky-line {
-  right: 0;
+  right: -22px;
   background: var(--bg-editor);
   pointer-events: auto;
   cursor: pointer;
