@@ -178,10 +178,9 @@ export function createServerViewClient({
   // in-renderer tabs + View List in server mode. A no-op until the host wires
   // it (the core text path is unaffected).
   const setBufferListDom = chrome.setBufferList ?? (() => {});
-  // Quit (C-x C-c): window-lifecycle, not buffer editing — the server can't
-  // close the renderer window, so the client owns the quit chord and asks the
-  // host to quit. A no-op until the host wires it.
-  const requestQuitDom = chrome.requestQuit ?? (() => {});
+  // (Quit is server-owned now: C-x C-c forwards to the server like any chord →
+  // quit-editor runs the cross-window save-some-buffers walk, then sends a
+  // `quit` CLIENT_DIRECTIVE back so the host shuts down. No client interception.)
   // New Window (G4): the server resolves C-x 5 2 → the new-window command and
   // sends WINDOW_NEW down; the client asks its host to open another window (a
   // new client on the shared server). Window lifecycle is the host's job, like
@@ -226,10 +225,6 @@ export function createServerViewClient({
   // composable pane on its own *scratch*, no forced tabline). Passed to mountView
   // so the host mounts the right root. Stable per window; defaults to 'tabline'.
   let windowKind = 'tabline';
-  // The previous keystroke, tracked ONLY to catch the C-x C-c quit chord
-  // client-side (the server leaves it unbound — quitting the window is a host
-  // action). Any key between C-x and C-c resets it, so it never misfires.
-  let lastDispatchedKey = null;
 
   // Pending intents we sent + await confirmation for, keyed by id. `predicted`
   // is retained on the entry shape for the VIEW-reconcile guard (a stale VIEW
@@ -318,15 +313,9 @@ export function createServerViewClient({
    */
   function dispatchKey(keyString) {
     if (!mirror) return false;
-    // C-x C-c quits the window. The server keymap leaves this chord unbound
-    // (quitting is a host action it can't perform), so the client resolves it:
-    // `lastDispatchedKey` shadows the server's prefix state for this ONE chord.
-    if (lastDispatchedKey === 'C-x' && keyString === 'C-c') {
-      lastDispatchedKey = null;
-      requestQuitDom();
-      return true;
-    }
-    lastDispatchedKey = keyString;
+    // Every key — C-x C-c included — goes up as a KEY intent; the server's
+    // keymap owns dispatch, including quit (C-x C-c → quit-editor, which runs
+    // the cross-window save-some-buffers walk, then a `quit` directive back).
     sendKey(keyString);
     return true;
   }

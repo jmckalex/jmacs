@@ -658,31 +658,18 @@ test('closeBuffer(id) switches to the buffer then sends C-x k to kill it', () =>
   assert.deepEqual(keys, ['C-x', 'k']);
 });
 
-// --- C-x C-c quit (client-resolved; the server leaves it unbound) -------
+// --- C-x C-c quit (server-resolved now; forwarded as keys) --------------
 
-test('C-x then C-c asks the host to quit and does NOT forward C-c as a key', () => {
+test('C-x C-c is forwarded to the server as keys; the client does not quit itself', () => {
   const { port, chrome, client } = connectedClientWithChrome();
   const before = port.sent.length;
-  assert.equal(client.dispatchKey('C-x'), true); // forwarded (prefix)
-  assert.equal(client.dispatchKey('C-c'), true); // intercepted
-  assert.equal(chrome.quitRequests, 1);
-  // C-x went up as a KEY; C-c did NOT (only one new intent).
+  assert.equal(client.dispatchKey('C-x'), true);
+  assert.equal(client.dispatchKey('C-c'), true);
+  // Both go up as KEY intents — the server's keymap owns quit (C-x C-c ->
+  // quit-editor); the client no longer intercepts the chord.
   const newKeys = port.sent.slice(before)
     .filter((m) => m.type === MSG.INTENT && m.intent.kind === INTENT.KEY)
     .map((m) => m.intent.key);
-  assert.deepEqual(newKeys, ['C-x']);
-});
-
-test('a key between C-x and C-c resets the chord (no quit)', () => {
-  const { chrome, client } = connectedClientWithChrome();
-  client.dispatchKey('C-x');
-  client.dispatchKey('C-g'); // abort the prefix
-  client.dispatchKey('C-c');
-  assert.equal(chrome.quitRequests, 0);
-});
-
-test('a bare C-c (no preceding C-x) does not quit', () => {
-  const { chrome, client } = connectedClientWithChrome();
-  client.dispatchKey('C-c');
-  assert.equal(chrome.quitRequests, 0);
+  assert.deepEqual(newKeys, ['C-x', 'C-c']);
+  assert.equal(chrome.quitRequests ?? 0, 0, 'the client does not request quit itself');
 });
