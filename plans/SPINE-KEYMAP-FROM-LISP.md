@@ -1,8 +1,29 @@
 # Plan — server-authoritative key dispatch (one keymap, G5)
 
-**Status: SIGNED OFF (2026-06-27) — P1 in progress.** Branch:
-`spine-keymap-from-lisp`, off `main`. Vocabulary (§4), directive schema (§5),
-and phasing (§8) all settled with Jason.
+**Status: P1 DONE, P2a+P2b DONE — quit (P2c) + P3 remain (2026-06-27).**
+Branch: `spine-keymap-from-lisp`, off `main`. Vocabulary (§4), directive schema
+(§5), and phasing (§8) all settled with Jason. Suite green throughout
+(full root 3169/3169). Recovery tags: `p1-keymap-complete`,
+`p2-directive-channel`.
+
+**Done:**
+- **P1 — one resolver** (`p1-keymap-complete`, commits 12c9c5a + d3708b5).
+  keymap.lisp is the sole keymap; JS tables / `-spine-resolve` deleted;
+  `handleKey` delegates to `handle-key`; guard + history-wrapper +
+  self-insert `*last-command*` in place; view-vocab rename.
+- **P2a — directive channel** (49b4992). `CLIENT_DIRECTIVE` +
+  `emit-client-directive!` + `this/other/all-window-ids` + server routing +
+  renderer `applyDirective` hook.
+- **P2b — close-window / close-other-windows** (7743216). `C-x 5 0 / 5 1`,
+  host close bridge (preload `host.closeWindow` → main `window:close`).
+  ⚠️ The host bridge can't be unit-tested — needs live-verify.
+
+**Remaining:**
+- **P2c — quit server-side + the cross-window unsaved check (NEEDS A DECISION).**
+  See §8a below. Data-safety path; not built blind.
+- **P3 — port the renderer-only commands** onto the directive channel
+  (folding, help/describe, themes/faces, sticky-notes, eval-at-point,
+  notebooks). Each becomes a server command emitting a directive.
 
 This supersedes the earlier "make keymap.lisp authoritative" Option-A draft.
 Jason's call (2026-06-27): this is the **start of G5** — flag-off (the
@@ -206,6 +227,35 @@ Internal commits stage it so each step is live-verifiable:
   channel: folding, help/describe (`C-h` family), themes/faces, sticky-notes,
   eval-at-point, notebooks. Each becomes a real server command emitting a
   directive; the §6 guard's no-op list shrinks as they land.
+
+## 8a. P2c — quit server-side (NEEDS A DECISION before building)
+
+Why it was deferred: quit is a **data-safety path** (it kills the server) and
+the cross-window save-prompt UX is a genuine fork — not just untestable
+plumbing. The current quit (`app.js:2834 quitInteractive`) is renderer-side:
+it checks the renderer's **own** `dirtyBuffers` set, then runs the workspace
+"Remember this workspace?" prompt, flushes metadata, clears recovery, and calls
+`host.quit()`. The flaw you identified: a quit from window A only sees A's
+dirty set — buffers unsaved in window B are invisible to A's check. The server
+sees all of them.
+
+**Recommended design (for your call):**
+1. The client's `C-x C-c` special-case (`server-view-client.js:315`) is
+   removed, so `C-x C-c` → server `quit-editor` (keymap.lisp already binds it).
+2. `quit-editor` asks the spine for the **cross-window** dirty set (a new spine
+   query over the buffer registry — `dirty-buffer-names` / a count), then emits
+   a `quit` directive to the originating window **carrying that count/list**.
+3. The window's `applyDirective('quit', { dirtyCount, names })` runs the
+   existing `quitInteractive`, but the confirm now reflects **all** windows'
+   unsaved buffers (passed in), not just its own. The workspace prompt + flush +
+   `host.quit()` stay where they are (they're host concerns).
+
+This keeps the proven shutdown sequence, fixes the cross-window blind spot, and
+the only new pieces are the spine dirty-query + the directive carry (both
+testable). **Open question:** do you want the save-prompt to stay a single
+confirm ("Discard unsaved in N buffers?") as today, or become a per-buffer
+save/discard flow? And should quit be refused outright when dirty, or always
+offer discard? That UX choice is yours.
 
 ## 9. Tests + live-verify
 
