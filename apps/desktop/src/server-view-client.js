@@ -196,6 +196,11 @@ export function createServerViewClient({
   // A customize setting changed in ANOTHER window — re-apply it here (host wires
   // this to update this window's interpreter + theme / face styles).
   const onCustomizeSyncDom = chrome.onCustomizeSync ?? (() => {});
+  // CLIENT_DIRECTIVE: the server told THIS window to perform a renderer-side
+  // action (close-window, toggle a fold, re-theme, …). The host maps the
+  // directive name → an action (window lifecycle is the host's job, like quit /
+  // new-window). A no-op until wired. `(name, args)`.
+  const applyDirectiveDom = chrome.applyDirective ?? (() => {});
   // MINIBUFFER_COMPLETIONS: the server's reply to a TAB-completion request — the
   // completed value + the candidate list. The host fills the minibuffer + shows
   // the candidates (find-file). A no-op until wired.
@@ -581,6 +586,11 @@ export function createServerViewClient({
         break;
       case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs); break;
       case MSG.CUSTOMIZE_SYNC: onCustomizeSyncDom(msg.change); break;
+      case MSG.CLIENT_DIRECTIVE:
+        if (msg.directive && typeof msg.directive.name === 'string') {
+          applyDirectiveDom(msg.directive.name, msg.directive.args ?? []);
+        }
+        break;
       case MSG.NOTEBOOK_RESULT: {
         const resolve = notebookPending.get(msg.reqId);
         if (resolve) { notebookPending.delete(msg.reqId); resolve(msg.result); }

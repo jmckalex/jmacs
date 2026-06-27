@@ -520,6 +520,13 @@ export function createSpine(options, effects = {}) {
    *  open another window (a new client on this shared server). Signature: (). */
   const onNewWindow = effects.onNewWindow ?? (() => {});
 
+  /** Raised by `emit-client-directive!`: send the directive `{ name, args }` to
+   *  each window in IDS. The command chose the recipients (this/other/all window
+   *  ids); the server posts a CLIENT_DIRECTIVE to just those ports. NAME is a
+   *  string, ARGS a serializable array (no raw Lisp values cross the port).
+   *  Signature: (ids: number[], name: string, args: any[]). */
+  const onClientDirective = effects.onClientDirective ?? (() => {});
+
   /** Create (and remember) the pane model for client INDEX, seeded on the
    *  client's starting buffer. */
   function makePaneModel(index, startBufferId) {
@@ -962,6 +969,29 @@ export function createSpine(options, effects = {}) {
       // keymap binding + the command) is here; the host half is in the client.
       'request-new-window!': () => {
         onNewWindow();
+        return NIL;
+      },
+
+      // --- client directives (the multi-window round-trip) ---------------
+      // A command picks WHICH windows to drive via these id-set helpers, then
+      // sends them a directive (a renderer-side action) with emit-client-directive!.
+      // The server posts a CLIENT_DIRECTIVE to just those ports. "this window" is
+      // the one whose keystroke is running (the active client).
+      'this-window-id': () => activeClientIndex,
+      'other-window-ids': () =>
+        arrayToList([...paneModels.keys()].filter((i) => i !== activeClientIndex)),
+      'all-window-ids': () => arrayToList([...paneModels.keys()]),
+      // -emit-client-directive! (the host half; emit-client-directive! in Lisp
+      // wraps it, converting the NAME symbol to a string). IDS is a Lisp list of
+      // window ids; NAME a string; ARGS a Lisp list of serializable values —
+      // converted to plain JS here so no raw Lisp value crosses the port.
+      '-emit-client-directive!': (args) => {
+        const ids = listToArray(args[0] ?? NIL).map(Number);
+        const name = symName(args[1]) ?? String(args[1] ?? '');
+        const directiveArgs = listToArray(args[2] ?? NIL).map((v) =>
+          typeof v === 'number' ? v : symName(v) ?? lispString(v)
+        );
+        onClientDirective(ids, name, directiveArgs);
         return NIL;
       },
 
@@ -1912,6 +1942,13 @@ export function createSpine(options, effects = {}) {
       (let ((v -spine-history-op))
         (set! -spine-history-op #f)
         v))
+
+    ;; emit-client-directive! — send a renderer-side directive to a chosen set
+    ;; of windows. IDS is a list of window ids (this-window-id / other-window-ids
+    ;; / all-window-ids); NAME is a symbol; ARGS are serializable. The host half
+    ;; (-emit-client-directive!) posts a CLIENT_DIRECTIVE to each window's port.
+    (define (emit-client-directive! ids name . args)
+      (-emit-client-directive! ids (symbol->string name) args))
   `);
 
   // --- M-x: a real command-name read --------------------------------

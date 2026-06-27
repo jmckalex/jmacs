@@ -24,6 +24,8 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
     pickerOpens: [],
     // Each new-window request (the C-x 5 2 effect, G4).
     newWindows: 0,
+    // Each client directive raised (the multi-window round-trip): { ids, name, args }.
+    directives: [],
   };
   const spine = createSpine(
     { initialText, name },
@@ -34,6 +36,7 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
       onScroll: (r) => log.scrolls.push(r),
       onPicker: (req) => log.pickerOpens.push(req),
       onNewWindow: () => { log.newWindows += 1; },
+      onClientDirective: (ids, name, args) => log.directives.push({ ids, name, args }),
       openFile: extra.openFile,
       // A recording save: capture the {path, text} the spine would write, and
       // return success unless the test injects a failure. Lets save-buffer /
@@ -389,6 +392,40 @@ test('C-x 5 2 resolves to new-window and raises the onNewWindow effect', () => {
   spine.handleKey('C-x');
   spine.handleKey('2');
   assert.equal(log.newWindows, 1, 'C-x 2 is split-vertical, not new-window');
+});
+
+// --- client directives: the multi-window round-trip (P2) ----------------
+
+test('emit-client-directive! to all-window-ids targets every window', () => {
+  const { spine, log } = makeSpine('x');
+  const idx2 = spine.addClientView(); // a 2nd window
+  spine.setActiveClient(0);
+  spine.interpreter.evaluate("(emit-client-directive! (all-window-ids) 'close-window)");
+  assert.equal(log.directives.length, 1);
+  assert.deepEqual([...log.directives[0].ids].sort(), [0, idx2].sort());
+  assert.equal(log.directives[0].name, 'close-window');
+  assert.deepEqual(log.directives[0].args, []);
+});
+
+test('emit-client-directive! to other-window-ids targets every window but the active one', () => {
+  const { spine, log } = makeSpine('x');
+  const idx2 = spine.addClientView();
+  spine.setActiveClient(idx2);
+  spine.interpreter.evaluate("(emit-client-directive! (other-window-ids) 'close-window)");
+  assert.deepEqual(log.directives[0].ids, [0]);
+  assert.equal(log.directives[0].name, 'close-window');
+});
+
+test('emit-client-directive! to (this-window-id) targets only the active window, with args', () => {
+  const { spine, log } = makeSpine('x');
+  spine.addClientView();
+  spine.setActiveClient(0);
+  spine.interpreter.evaluate(
+    "(emit-client-directive! (list (this-window-id)) 'reload-theme \"nova\")"
+  );
+  assert.deepEqual(log.directives[0].ids, [0]);
+  assert.equal(log.directives[0].name, 'reload-theme');
+  assert.deepEqual(log.directives[0].args, ['nova']);
 });
 
 test('a fresh window opens on its own private *scratch* (hidden from window 1)', () => {

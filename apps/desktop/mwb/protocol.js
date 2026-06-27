@@ -150,6 +150,15 @@ export const MSG = Object.freeze({
   // commands by name — the M-x dispatch of a client-owned command. The client
   // runs it in the renderer interpreter (where the spec is computed).
   RUN_CLIENT_COMMAND: 'run-client-command',
+  // down: a general "client directive" — the server tells a chosen set of
+  // windows to perform a renderer-side action (close-window, toggle a fold,
+  // re-theme, …). A server command picks WHICH windows by emitting an explicit
+  // id list (via this-window-id / other-window-ids / all-window-ids); the
+  // server posts this only to those ports, so each recipient simply applies it.
+  // Carries `{ directive: { name, args } }` — structured-clone-safe, no raw Lisp
+  // values. The general form of RUN_CLIENT_COMMAND, with multi-window targeting:
+  // a keystroke in one window (e.g. C-x 5 1) can drive an action in others.
+  CLIENT_DIRECTIVE: 'client-directive',
   // up: the renderer's `open-element-view!` asks the server to create an
   // `element` DATA-SOURCE from a computed spec ({ tag, moduleUrl, attrs, fit,
   // keyboard, noFocus, name }). The server holds it like any data-source (a

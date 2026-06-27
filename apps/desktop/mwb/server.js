@@ -413,6 +413,10 @@ const spine = createSpine(
     // active client to (host.newWindow() → main creates + attaches it as a new
     // client on this shared server).
     onNewWindow: () => sendWindowNewToActiveClient(),
+    // emit-client-directive!: a command drove a renderer-side action in a chosen
+    // set of windows (e.g. C-x 5 1 close-other-windows). The spine resolved the
+    // target ids; post the directive to just those ports.
+    onClientDirective: (ids, name, args) => sendClientDirective(ids, name, args),
     openFile: readFileForVisit,
     // save-buffer / write-file: atomic disk write (temp + fsync + rename).
     saveFile: writeFileForSave,
@@ -1125,6 +1129,20 @@ function sendRunClientCommand(client, name) {
   if (!client) return;
   const bibPath = name === 'bib-search' ? activeDocumentBibPath(client.index) : null;
   client.port.postMessage({ type: MSG.RUN_CLIENT_COMMAND, name, bibPath });
+}
+
+/** Send a client directive `{ name, args }` to each window in IDS. The spine's
+ *  command chose the recipients (this-window-id / other-window-ids /
+ *  all-window-ids); we post a CLIENT_DIRECTIVE to just those ports. Each
+ *  recipient applies it; the payload is structured-clone-safe. */
+function sendClientDirective(ids, name, args) {
+  if (!Array.isArray(ids)) return;
+  for (const index of ids) {
+    const client = clients.find((c) => c.index === index);
+    if (client && client.port) {
+      client.port.postMessage({ type: MSG.CLIENT_DIRECTIVE, directive: { name, args } });
+    }
+  }
 }
 
 function bestCommandMatch(value) {
