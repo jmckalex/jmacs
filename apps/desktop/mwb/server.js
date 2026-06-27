@@ -767,6 +767,12 @@ function applyIntent(client, intent) {
         break;
       case INTENT.POINT:
         buffer.moveTo(Number(intent.point) || 0);
+        // A drag-selection sends its anchor as `intent.mark`; moveTo() just
+        // cleared the mark, so reapply it (null = a plain click, no selection).
+        // Without this the echoed CURSOR/CURSORS report mark:null and the
+        // client's selection vanishes — click-to-place works, drag-select
+        // doesn't (the mirror's local mark is overwritten by the server echo).
+        buffer.setMark(typeof intent.mark === 'number' ? intent.mark : null);
         break;
       case INTENT.MINIBUFFER_SUBMIT:
         handleMinibufferSubmit(String(intent.value ?? ''));
