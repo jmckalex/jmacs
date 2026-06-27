@@ -1362,6 +1362,28 @@ export function createSpine(options, effects = {}) {
       // (path) -> "ok" | "error".
       'write-file!': (args) => writeActiveBufferTo(String(args[0] ?? '')),
 
+      // --- quit / save-some-buffers (the cross-window unsaved walk) -------
+      // The server sees EVERY window's buffers, so quit-editor's save walk
+      // (quit.lisp-style, defined below) runs server-side. These feed it:
+      //   dirty-buffer-ids   — ids of modified buffers that HAVE a file path
+      //                        (saveable in place), across all windows.
+      //   dirty-pathless-count — modified buffers with no file (e.g. an edited
+      //                        *scratch*); the walk can't save them, so they
+      //                        only figure into the final "will be lost" net.
+      //   buffer-name-by-id  — the display name for the per-buffer prompt.
+      //   save-buffer-by-id! — save one buffer in place (no window switch).
+      'dirty-buffer-ids': () =>
+        arrayToList(
+          registry.listRecords().filter((r) => r.modified && r.filePath).map((r) => r.id)
+        ),
+      'dirty-pathless-count': () =>
+        registry.listRecords().filter((r) => r.modified && !r.filePath).length,
+      'buffer-name-by-id': (args) => {
+        const e = registry.get(String(args[0] ?? ''));
+        return e ? e.buffer.name : NIL;
+      },
+      'save-buffer-by-id!': (args) => saveBufferById(String(args[0] ?? '')),
+
       // --- customisation openers (custom.lisp / faces.lisp) ------------
       // Open a 'customize' data-source leaf carrying the SCOPE (group /
       // variable / face). The leaf is server-owned (so it lives in PANE_TREE
@@ -2008,6 +2030,65 @@ export function createSpine(options, effects = {}) {
        keeps their buffers. A no-op when this is the only window."
       (emit-client-directive! (other-window-ids) 'close-window))
 
+    ;; --- quit-editor: the cross-window save-some-buffers walk -------------
+    ;; C-x C-c quits the app, which tears down this shared server — so unlike a
+    ;; window close, quit needs the unsaved check, and the server is the only
+    ;; thing that sees EVERY window's buffers. The walk (Emacs save-some-buffers
+    ;; style) reads ONE key per modified, path-backed buffer — y save, n skip,
+    ;; ! save the rest, q stop — then a final net if any stay unsaved, then it
+    ;; hands off the shutdown (workspace prompt + flush + host.quit) to the
+    ;; originating window via a 'quit directive. Modelled on query-replace's
+    ;; read-next-key loop (regex-search.lisp).
+    (define (-quit-walk ids save-all)
+      (cond
+        ((nil? ids) (-quit-net))
+        (save-all
+         (save-buffer-by-id! (car ids))
+         (-quit-walk (cdr ids) #t))
+        (else
+         (show-status!
+           (str "Save " (buffer-name-by-id (car ids)) "? (y/n/! all/q stop)"))
+         (read-next-key
+           (lambda (key)
+             (cond
+               ((equal? key "y") (save-buffer-by-id! (car ids)) (-quit-walk (cdr ids) #f))
+               ((equal? key "n") (-quit-walk (cdr ids) #f))
+               ((equal? key "!") (save-buffer-by-id! (car ids)) (-quit-walk (cdr ids) #t))
+               ((equal? key "q") (-quit-net))
+               ;; Any other key re-prompts for THIS buffer.
+               (else (-quit-walk ids #f))))))))
+
+    ;; The final safety net: count what's still unsaved (the n-skipped
+    ;; path-backed buffers + the path-less ones the walk can't save). If any
+    ;; remain, one confirm before discarding them; else quit straight away.
+    (define (-quit-net)
+      (let ((remaining (+ (length (dirty-buffer-ids)) (dirty-pathless-count))))
+        (if (> remaining 0)
+            (begin
+              (show-status!
+                (str remaining " buffer(s) unsaved — quit anyway? (y/n)"))
+              (read-next-key
+                (lambda (key)
+                  (cond
+                    ((equal? key "y") (-quit-do))
+                    ((equal? key "n") (clear-status!))   ;; abort the quit
+                    (else (-quit-net))))))
+            (-quit-do))))
+
+    ;; Hand the shutdown to the originating window: it runs the workspace
+    ;; "Remember this workspace?" prompt, flushes metadata, clears recovery,
+    ;; and calls host.quit() (those are host concerns; the server only kills
+    ;; itself when the process exits).
+    (define (-quit-do)
+      (clear-status!)
+      (emit-client-directive! (list (this-window-id)) 'quit))
+
+    (defcommand quit-editor ()
+      "Quit the editor (C-x C-c). Walks the unsaved buffers across ALL windows
+       (save-some-buffers style: y/n/!/q per buffer), then hands the shutdown
+       off to this window."
+      (-quit-walk (dirty-buffer-ids) #f))
+
     (defcommand toggle-tabline ()
       "Toggle whether the focused pane is a tabline of this window's buffers
        (Step 3c) — 'add a tabline-view' to a single pane, or back."
@@ -2619,6 +2700,31 @@ export function createSpine(options, effects = {}) {
   function saveActiveBuffer() {
     if (!activeEntry.filePath) return 'no-path';
     return writeActiveBufferTo(activeEntry.filePath);
+  }
+
+  /** Save the buffer with id ID to its own file path, WITHOUT switching the
+   *  active client to it (the quit save-some-buffers walk saves buffers in
+   *  other windows in place). Re-baselines on success so the dirty flag clears.
+   *  Returns "ok" | "no-entry" | "no-path" | "error". */
+  function saveBufferById(id) {
+    const entry = registry.get(id);
+    if (!entry) return 'no-entry';
+    if (!entry.filePath) return 'no-path';
+    let result;
+    try {
+      result = saveFile({ path: entry.filePath, text: entry.buffer.text });
+    } catch (error) {
+      result = { ok: false, error: error && error.message };
+    }
+    if (!result || !result.ok) {
+      statusText = `Save failed: ${(result && result.error) || 'unknown error'}`;
+      onStatus(statusText);
+      return 'error';
+    }
+    registry.markSaved(entry);
+    statusText = `Wrote ${entry.buffer.name}`;
+    onStatus(statusText);
+    return 'ok';
   }
 
   /**

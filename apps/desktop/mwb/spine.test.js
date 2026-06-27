@@ -453,6 +453,50 @@ test('C-x 5 1 close-other-windows directs a close to every other window', () => 
   assert.equal(log.directives[0].name, 'close-window');
 });
 
+// --- quit-editor: the cross-window save-some-buffers walk (P2c) ----------
+
+test('quit-editor with nothing unsaved emits a quit directive straight away', () => {
+  const { spine, log } = makeSpine('clean', 'scratch.txt');
+  spine.runCommand('quit-editor');
+  assert.deepEqual(log.directives, [{ ids: [0], name: 'quit', args: [] }]);
+});
+
+test('quit-editor on an unsaved path-less buffer goes to the net; y quits', () => {
+  const { spine, log } = makeSpine('', 'scratch.txt');
+  spine.handleKey('x'); // dirty the path-less buffer (can't be saved in the walk)
+  spine.runCommand('quit-editor');
+  assert.equal(log.directives.length, 0, 'no per-buffer prompt; the net is pending');
+  spine.handleKey('y'); // quit anyway
+  assert.deepEqual(log.directives, [{ ids: [0], name: 'quit', args: [] }]);
+});
+
+test('quit-editor saves a path-backed buffer on y, then quits', () => {
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt'); // a path-backed buffer, now active
+  spine.handleKey('Z'); // dirty it
+  spine.runCommand('quit-editor');
+  assert.equal(log.directives.length, 0, 'prompting Save doc.txt?, not quit yet');
+  spine.handleKey('y'); // save it
+  assert.ok(log.saves.some((s) => s.path === '/tmp/doc.txt'), 'doc.txt was saved');
+  assert.deepEqual(log.directives, [{ ids: [0], name: 'quit', args: [] }]);
+});
+
+test('quit-editor: n skips the save, the net fires, and n aborts the quit', () => {
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt');
+  spine.handleKey('Z');
+  spine.runCommand('quit-editor');
+  spine.handleKey('n'); // skip saving doc.txt
+  assert.equal(log.saves.length, 0, 'nothing saved');
+  assert.equal(log.directives.length, 0, 'doc.txt still dirty → the net is pending');
+  spine.handleKey('n'); // do NOT quit
+  assert.equal(log.directives.length, 0, 'quit aborted');
+});
+
 test('a fresh window opens on its own private *scratch* (hidden from window 1)', () => {
   const { spine } = makeSpine('the session file', 'session.txt');
   const before = spine.bufferCount;

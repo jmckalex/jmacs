@@ -2839,6 +2839,18 @@ async function quitInteractive() {
   ) {
     return;
   }
+  await performShutdown();
+}
+
+/**
+ * The shutdown ritual, separated from the unsaved-changes check so it can run
+ * after EITHER path has decided to quit: the client-side `quitInteractive`
+ * (its own dirty confirm) OR the server-driven `quit` directive (P2c — the
+ * spine already walked the unsaved buffers across all windows, so it must NOT
+ * be re-checked here). Offers the workspace-remember prompt, flushes metadata,
+ * clears the recovery snapshots, and asks the host to quit.
+ */
+async function performShutdown() {
   // C2 (server mode): offer to REMEMBER this workspace — the ARRANGEMENT
   // (windows / panes / files / cursors / geometry), NOT the documents — before
   // quitting. Type a name to save a named workspace (it then shows in the launch
@@ -6885,6 +6897,11 @@ if (window.host && window.host.serverMode) {
         if (window.host && typeof window.host.closeWindow === 'function') {
           window.host.closeWindow();
         }
+      } else if (name === 'quit') {
+        // P2c: the spine's quit-editor already walked the unsaved buffers
+        // across all windows (save-some-buffers), so run the shutdown ritual
+        // directly — no second dirty check.
+        performShutdown();
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
