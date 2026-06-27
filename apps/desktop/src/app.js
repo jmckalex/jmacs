@@ -70,6 +70,7 @@ import {
   createUtilityDock,
   createOutputPanel,
   createCompletionsPanel,
+  createDocPanel,
   ShellView,
   GnuplotView,
   NotebookView,
@@ -3347,6 +3348,58 @@ function displayCompletionsPanel(items, directory) {
       }),
     });
   }
+}
+
+// Reusable doc-panel tabs in the utility dock. describe-key (C-h k) /
+// describe-command (C-h f) refill "Help"; apropos (C-h a) refills "Apropos".
+// Both are server-driven (the show-help / show-apropos directives) and use the
+// Completions-tab refill idiom so repeated lookups don't pile up tabs.
+const HELP_TAB_ID = 'help-view';
+const APROPOS_TAB_ID = 'apropos-view';
+
+/** Open (or refill in place) a reusable doc-panel tab in the utility dock. BODY
+ *  is rendered as Markdown and framed under HEADING in the doc-page shape the
+ *  `<doc-view>` lifts; an empty body shows the EMPTY placeholder. The dock is
+ *  revealed and the tab brought forward, but focus stays in the editor (click
+ *  the panel to scroll / press `q` to dismiss).
+ *
+ *  @param {{id: string, title: string, icon: string, heading: string,
+ *    body: string, empty?: string}} spec
+ */
+async function displayDocPanel({ id, title, icon, heading, body, empty }) {
+  let rendered;
+  try {
+    rendered = await renderMarkdownHtml(
+      typeof body === 'string' && body.length > 0 ? body : (empty ?? '_Nothing to show._')
+    );
+  } catch (error) {
+    repl.appendError(`${title} render failed: ${error.message}`);
+    return;
+  }
+  const html =
+    `<article class="doc-page docstring-page" data-node-id="${escapeHtml(heading)}">` +
+    `<h3 class="doc-name">${escapeHtml(heading)}</h3>\n` +
+    `<div class="doc-docstring">${rendered}</div></article>`;
+  const panel = utilityDock.hasTab(id) ? utilityDock.getPanel(id) : null;
+  if (panel && typeof panel.setHtml === 'function') {
+    panel.setHtml(html);
+  } else {
+    utilityDock.openUtilityPanel({
+      id,
+      title,
+      icon,
+      focus: false,
+      makePanel: () => createDocPanel({
+        html,
+        title,
+        icon,
+        openDoc: openDocInPane,
+        closeBuffer: () => utilityDock.closeUtilityTab(id),
+      }),
+    });
+  }
+  utilityDock.showUtilityDock();
+  utilityDock.activateUtilityTab(id);
 }
 
 /** Double-click in the completions panel = activate (file-browser idiom): a
@@ -6895,7 +6948,7 @@ if (window.host && window.host.serverMode) {
     // other / all windows); we just apply it. `close-window` (C-x 5 0, or
     // C-x 5 1 from another window) closes this window via the host; the server
     // keeps the buffers. New directive names slot in as they're ported.
-    applyDirective: (name, _args) => {
+    applyDirective: (name, args) => {
       if (name === 'close-window') {
         if (window.host && typeof window.host.closeWindow === 'function') {
           window.host.closeWindow();
@@ -6905,6 +6958,23 @@ if (window.host && window.host.serverMode) {
         // across all windows (save-some-buffers), so run the shutdown ritual
         // directly — no second dirty check.
         performShutdown();
+      } else if (name === 'show-help') {
+        // P3: describe-key (C-h k) / describe-command (C-h f) resolved a
+        // command server-side and asked THIS window to surface its docstring.
+        // args = [heading, docstring]; the dock owns one reusable Help tab.
+        displayDocPanel({
+          id: HELP_TAB_ID, title: 'Help', icon: 'fa-solid fa-circle-question',
+          heading: String(args?.[0] ?? ''), body: String(args?.[1] ?? ''),
+          empty: '_No documentation._',
+        });
+      } else if (name === 'show-apropos') {
+        // P3: apropos (C-h a) matched commands server-side and asked THIS
+        // window to list them. args = [heading, markdown-list].
+        displayDocPanel({
+          id: APROPOS_TAB_ID, title: 'Apropos', icon: 'fa-solid fa-list-ul',
+          heading: String(args?.[0] ?? ''), body: String(args?.[1] ?? ''),
+          empty: '_(none)_',
+        });
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to

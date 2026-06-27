@@ -2149,24 +2149,26 @@ export function createSpine(options, effects = {}) {
       (let ((nl (string-index-of s "\\n")))
         (if (< nl 0) s (substring s 0 nl))))
 
-    ;; Pop a *Help: TITLE* view: a HEADING line, a blank line, then the full
-    ;; docstring INFO (a string, or #f / empty → a no-documentation note). The
-    ;; multi-line docstring needs a real view — the echo area is one line —
-    ;; so this reuses the same server-side new-view! + insert! mechanism as
-    ;; occur / apropos. Like those, a fresh view per call (no reuse yet).
-    (define (-help-page! title heading info)
-      (new-view! (str "*Help: " title "*"))
-      (insert! (str heading "\\n\\n"
-                    (if (and (string? info) (> (string-length info) 0))
-                        info
-                        "(no documentation)")
-                    "\\n")))
+    ;; Show HEADING and the docstring INFO (a string, or #f / empty → a
+    ;; no-documentation note) in the utility dock's reusable *Help* tab. The
+    ;; dock is RENDERER chrome and the server resolves the key, so this is a
+    ;; renderer-side effect: it emits a show-help directive to THIS window
+    ;; (the directive channel — §the P3 pattern). The renderer renders INFO
+    ;; as Markdown and refills one shared Help tab (no buffer-list clutter,
+    ;; read-only, q-dismissable) — unlike the old new-view!/insert! buffer.
+    (define (-show-help! heading info)
+      ;; emit-client-directive! is variadic (ids name . args) — pass the
+      ;; directive args FLAT, not wrapped in a (list …) (which would nest
+      ;; them into a single arg the host can't serialize).
+      (emit-client-directive! (list (this-window-id)) 'show-help
+                              heading (if (string? info) info "")))
 
     (defcommand describe-key ()
       "Describe the command bound to the next key pressed (C-h k). Reads one
        key and reports whether it is unbound, a prefix key, or a command not
        available on the server; for a bound, registered command its FULL
-       docstring opens in a *Help* view (with a one-line echo summary)."
+       docstring opens in the utility dock's Help tab (with a one-line echo
+       summary)."
       (show-status! "Describe key — press a key:")
       (read-next-key
         (lambda (key)
@@ -2181,8 +2183,7 @@ export function createSpine(options, effects = {}) {
                                   " (not available here)")))
               (else
                 (let ((name (symbol->string binding)))
-                  (-help-page! name (str key " runs " name)
-                               (doc (eval binding)))
+                  (-show-help! (str key " runs " name) (doc (eval binding)))
                   (show-status! (str key " runs " name)))))))))
 
     ;; --- describe-command (C-h f) — P3 help port --------------------------
@@ -2209,18 +2210,16 @@ export function createSpine(options, effects = {}) {
 
     (defcommand describe-command (typed)
       "Describe a command by name (C-h f). Resolves the typed text (exact,
-       else shortest containing match, like M-x) and echoes the command and
-       the first line of its docstring."
+       else shortest containing match, like M-x) and shows the command's
+       FULL docstring in the utility dock's Help tab."
       (interactive (string "Describe command: "))
       (let ((name (-command-name-match typed)))
         (cond
           ((nil? name)
            (show-status! (str "No command matching: " typed)))
           (else
-            (let ((info (doc (eval (string->symbol name)))))
-              (if (string? info)
-                  (show-status! (str name " — " (-doc-first-line info)))
-                  (show-status! (str name " — (no documentation)"))))))))
+            (-show-help! name (doc (eval (string->symbol name))))
+            (show-status! name)))))
 
     ;; --- apropos-doc (C-h a) — P3 help port -------------------------------
     ;; List every registered command whose NAME or docstring contains the
@@ -2244,21 +2243,31 @@ export function createSpine(options, effects = {}) {
           (string-contains? (string-downcase (cdr entry)) needle)))
 
     (define (-apropos-format entries)
-      "Render ENTRIES (name . docstring) as lines 'name — first-doc-line'."
+      "Render ENTRIES (name . docstring) as a Markdown bullet list
+       '- name — first-doc-line' (the body of the Apropos dock panel). No
+       backticks — a literal backtick in this embedded JS template closes it."
       (if (nil? entries)
           ""
           (let* ((e (car entries))
                  (first (-doc-first-line (cdr e)))
                  (line (if (= (string-length first) 0)
-                           (car e)
-                           (str (car e) " — " first))))
+                           (str "- " (car e))
+                           (str "- " (car e) " — " first))))
             (str line "\\n" (-apropos-format (cdr entries))))))
+
+    ;; Show the apropos results in the utility dock's reusable *Apropos* tab —
+    ;; a renderer-side effect (the dock is client chrome), so it goes out as a
+    ;; show-apropos directive to THIS window. HEADING is the count line; BODY
+    ;; the Markdown bullet list. Mirrors -show-help! (args passed FLAT).
+    (define (-show-apropos! heading body)
+      (emit-client-directive! (list (this-window-id)) 'show-apropos
+                              heading body))
 
     (defcommand apropos-doc (pattern)
       "List every command whose name or documentation matches PATTERN (a
-       case-insensitive substring) in a fresh *Apropos: PATTERN* view
-       (C-h a). Each line is the command name and its docstring's first
-       line, shortest name first."
+       case-insensitive substring) in the utility dock's Apropos tab (C-h a).
+       Each line is the command name and its docstring's first line, shortest
+       name first."
       (interactive (string "Apropos: "))
       (let* ((needle (string-downcase pattern))
              (all (map -apropos-entry (registered-command-names)))
@@ -2267,12 +2276,10 @@ export function createSpine(options, effects = {}) {
                            (< (string-length (car a))
                               (string-length (car b))))))
              (count (length hits))
-             (header (str count " command" (if (= count 1) "" "s")
-                          " matching " pattern ":\\n\\n")))
-        (new-view! (str "*Apropos: " pattern "*"))
-        (insert! (if (nil? hits)
-                     (str header "(none)\\n")
-                     (str header (-apropos-format hits))))))
+             (heading (str count " command" (if (= count 1) "" "s")
+                           " matching " pattern)))
+        (-show-apropos! heading (if (nil? hits) "" (-apropos-format hits)))
+        (show-status! heading)))
 
     (defcommand toggle-tabline ()
       "Toggle whether the focused pane is a tabline of this window's buffers
