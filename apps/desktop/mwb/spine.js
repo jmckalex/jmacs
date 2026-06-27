@@ -454,7 +454,7 @@ const KEYMAP = Object.freeze({
   // mnemonic.) These prove overlay sync end-to-end.
   'M-s': { h: 'highlight-matches', u: 'unhighlight-all' },
   // command spine entry points
-  'M-x': 'execute-extended-command',
+  'M-x': 'execute-command',
 });
 
 /**
@@ -488,9 +488,9 @@ const CX_MAP = Object.freeze({
   // Multi-buffer (production keymap.lisp): C-x b switches buffer (a
   // minibuffer name read, host-completed), C-x C-b lists buffers, C-x k
   // kills the current buffer.
-  b: 'switch-to-buffer',
-  'C-b': 'list-buffers',
-  k: 'kill-buffer',
+  b: 'switch-view',
+  'C-b': 'list-views',
+  k: 'kill-view',
   u: 'undo', // C-x u — the classic Emacs undo binding (alongside C-/)
   // --- pane/window splits (panes.lisp — the Emacs C-x map) -----------
   // C-x 2 / 3 / 0 / 1 / o drive the REAL panes.lisp commands against the
@@ -566,7 +566,7 @@ export function createSpine(options, effects = {}) {
   // sharing the buffer (overlays are shared state). Called with no args;
   // the server reads `spine.overlaySnapshot()`.
   const onOverlays = effects.onOverlays ?? (() => {});
-  // Raised when the active client runs list-buffers (C-x C-b). The server
+  // Raised when the active client runs list-views (C-x C-b). The server
   // sends that client the buffer-list records (`spine.bufferListRecords`).
   const onBufferList = effects.onBufferList ?? (() => {});
   // Raised when a command opens a generic PICKER (open-picker! — the G0b
@@ -575,7 +575,7 @@ export function createSpine(options, effects = {}) {
   // interactive list and the user's choice/cancel comes back up, resolved
   // via `deliverPicker`. Mirrors onMinibufferOpen.
   const onPicker = effects.onPicker ?? (() => {});
-  // Raised when a kill-buffer switched the active client to a different
+  // Raised when a kill-view switched the active client to a different
   // buffer (the killed buffer is gone). The server re-snapshots that client
   // onto its new buffer. Called with the active client's new bufferId.
   const onBufferSwitched = effects.onBufferSwitched ?? (() => {});
@@ -1879,24 +1879,24 @@ export function createSpine(options, effects = {}) {
     ;; the prompt (it has the command list); on submit the host calls
     ;; (run-command (quote NAME)) directly, so this command's body just
     ;; opens the prompt with a marker the host recognises.
-    (defcommand execute-extended-command ()
+    (defcommand execute-command ()
       "Read a command name in the minibuffer and run it (M-x)."
       (interactive (string "M-x "))
       ;; The argument IS the chosen command name (the host resolved it).
       (lambda (name) name))
 
     ;; --- multi-buffer commands (C-x b / C-x C-b / C-x k) -------------
-    ;; switch-to-buffer prompts for a buffer name; the host completes
+    ;; switch-view prompts for a buffer name; the host completes
     ;; against the live buffer list and, on submit, switches the active
     ;; client to that buffer (sending it the new buffer's snapshot +
     ;; overlays). Like M-x/find-file, the body is a host-fulfilled
     ;; placeholder — the host acts on submit (server.js).
-    (defcommand switch-to-buffer ()
-      "Switch the current window to another buffer by name (C-x b)."
+    (defcommand switch-view ()
+      "Switch the current window to another view by name (C-x b)."
       (interactive (string "Switch to buffer: "))
       (lambda (name) name))
 
-    ;; list-buffers (C-x C-b) — the FIRST consumer of the generic picker
+    ;; list-views (C-x C-b) — the FIRST consumer of the generic picker
     ;; (G0b). It opens an interactive PICKER over the open buffers (rows from
     ;; the host's buffer-list-rows provider) and, on a choice, switches this
     ;; window to the chosen buffer. This is the round-trip in miniature: the
@@ -1905,8 +1905,8 @@ export function createSpine(options, effects = {}) {
     ;; buffer's id; the body switches to it. switch-to-buffer-id! is host-side
     ;; (it re-syncs the client onto the new buffer). A cancel resumes with nil
     ;; → the cond's else does nothing (the window stays put).
-    (defcommand list-buffers ()
-      "Pick a buffer to switch to (C-x C-b)."
+    (defcommand list-views ()
+      "Pick a view to switch to (C-x C-b)."
       (picker-read "Buffer list"
                    (buffer-list-rows)
                    (lambda (id)
@@ -1914,11 +1914,11 @@ export function createSpine(options, effects = {}) {
                        ((nil? id) nil)            ;; cancelled — stay put
                        (else (switch-to-buffer-id! id))))))
 
-    ;; kill-buffer removes the current buffer from the registry and
+    ;; kill-view removes the current buffer from the registry and
     ;; switches the window to another (the registry refuses to drop the
     ;; last buffer). The host performs the kill + re-snapshot on dispatch.
-    (defcommand kill-buffer ()
-      "Kill the current buffer and switch to another (C-x k)."
+    (defcommand kill-view ()
+      "Kill the current view and switch to another (C-x k)."
       (kill-current-buffer!))
 
     ;; save-buffer (C-x C-s): write the current buffer to its file path
@@ -2134,7 +2134,7 @@ export function createSpine(options, effects = {}) {
   `);
 
   // --- M-x: a real command-name read --------------------------------
-  // execute-extended-command's interactive (string "M-x ") opens the
+  // execute-command's interactive (string "M-x ") opens the
   // minibuffer; the host (server) completes against the real command
   // registry and, on submit, runs the chosen command. We expose the
   // command names + a runner for the server to use.
@@ -2838,7 +2838,7 @@ export function createSpine(options, effects = {}) {
   // to the client's focused leaf's buffer + that leaf's view.
 
   /** The client index the server is currently serving (so a command's effect
-   *  — kill-buffer, list-buffers, split-window — targets the right window). */
+   *  — kill-view, list-views, split-window — targets the right window). */
   let activeClientIndex = 0;
 
   /** Register a new client/window. Returns a fresh, never-reused index.
@@ -3183,7 +3183,7 @@ export function createSpine(options, effects = {}) {
   }
 
   /** Every buffer id any leaf of client INDEX shows (a window may have several
-   *  panes on different buffers). Used by the kill-buffer re-home: a window is
+   *  panes on different buffers). Used by the kill-view re-home: a window is
    *  "affected" if ANY of its panes shows the killed buffer. */
   function buffersShownByClient(index) {
     const model = paneModels.get(index);
@@ -3251,7 +3251,7 @@ export function createSpine(options, effects = {}) {
     }
 
     if (registry.count() <= 1) {
-      statusText = 'kill-buffer: refusing to kill the only buffer';
+      statusText = 'kill-view: refusing to kill the only buffer';
       onStatus(statusText);
       return;
     }

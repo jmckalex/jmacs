@@ -117,7 +117,7 @@ test('command-names comes from the REAL registry', () => {
   const names = spine.commandNames();
   assert.ok(names.includes('forward-char'), 'forward-char registered');
   assert.ok(names.includes('newline'), 'newline registered');
-  assert.ok(names.includes('execute-extended-command'), 'M-x registered');
+  assert.ok(names.includes('execute-command'), 'M-x registered');
   assert.ok(names.includes('find-file'), 'find-file registered');
 });
 
@@ -262,7 +262,7 @@ test('find-file on a missing file reports and keeps the current buffer', () => {
 });
 
 test('M-x flow: open the prompt, abort it, then host-run the chosen command', () => {
-  // execute-extended-command opens the "M-x " prompt. The host (server)
+  // execute-command opens the "M-x " prompt. The host (server)
   // recognises that prompt, aborts the placeholder command, then runs the
   // chosen command itself — here, end-of-buffer.
   const { spine } = makeSpine('abcdef');
@@ -442,7 +442,7 @@ test('viewState reports point, mark, name, modeline and modified flag', () => {
   assert.match(vs.modeline, /^●/);
 });
 
-// --- multi-buffer: the registry, switching, kill-buffer ----------------
+// --- multi-buffer: the registry, switching, kill-view ----------------
 
 test('the server starts with one buffer; find-file adds a second', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
@@ -665,7 +665,7 @@ test('each M-x shell mints a FRESH shell (no dedup), with distinct sessionIds', 
   assert.equal(new Set(shells.map((r) => r.id)).size, 2, 'distinct sessionIds');
 });
 
-test('liveProcessSessionsOf lists open shells; kill-buffer reaps the focused one', () => {
+test('liveProcessSessionsOf lists open shells; kill-view reaps the focused one', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
   spine.runCommand('shell');
   const shellId = wireLeaves(spine.paneSnapshot(0))[0].bufferId;
@@ -673,20 +673,20 @@ test('liveProcessSessionsOf lists open shells; kill-buffer reaps the focused one
   assert.deepEqual(spine.liveProcessSessionsOf(0), [shellId], 'the open shell is in the live set');
   // C-x k on the focused shell removes the SOURCE (not just a registry buffer):
   // it leaves the open-set, so the client reaps its pty.
-  spine.runCommand('kill-buffer');
+  spine.runCommand('kill-view');
   assert.deepEqual(spine.liveProcessSessionsOf(0), [], 'the killed shell left the live set');
   assert.equal(spine.isDataSource(shellId), false, 'the shell data-source is gone');
   // The focused leaf re-homed onto a surviving text buffer, not the dead source.
   assert.notEqual(wireLeaves(spine.paneSnapshot(0))[0].bufferId, shellId);
 });
 
-test('kill-buffer on a shell bypasses the "only buffer" guard (data-source path)', () => {
+test('kill-view on a shell bypasses the "only buffer" guard (data-source path)', () => {
   // Even with a single TEXT buffer (scratch), killing a shell succeeds — the
   // registry-count guard only governs registry buffers, not data-sources.
   const { spine } = makeSpine('seed', 'scratch.txt');
   assert.equal(spine.bufferCount, 1, 'one text buffer (scratch)');
   spine.runCommand('shell');
-  spine.runCommand('kill-buffer');
+  spine.runCommand('kill-view');
   assert.equal(spine.liveProcessSessionsOf(0).length, 0, 'the shell was reaped, not refused');
   assert.equal(spine.bufferCount, 1, 'the text buffer survived');
 });
@@ -702,9 +702,9 @@ test('M-x gnuplot mints a server-owned gnuplot data-source leaf (full Lisp path)
   assert.equal(leaf.viewKind, 'gnuplot');
   assert.equal(leaf.name, '*gnuplot*');
   assert.equal(leaf.state.sessionId, leaf.bufferId, 'sessionId is the source id');
-  // Tracked as a live process, and reaped on kill-buffer.
+  // Tracked as a live process, and reaped on kill-view.
   assert.deepEqual(spine.liveProcessSessionsOf(0), [leaf.bufferId]);
-  spine.runCommand('kill-buffer');
+  spine.runCommand('kill-view');
   assert.equal(spine.liveProcessSessionsOf(0).length, 0, 'the gnuplot was reaped');
 });
 
@@ -769,7 +769,7 @@ test('find-file of an already-open file REUSES its buffer (no name<2>; shared ac
   assert.equal(spine.currentBufferIdOf(1), firstId, 'the second window shows the shared buffer');
 });
 
-test('switch-to-buffer moves the active client between buffers, keeping cursor', () => {
+test('switch-view moves the active client between buffers, keeping cursor', () => {
   const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
   const { spine } = makeSpine('alpha beta', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
@@ -816,13 +816,13 @@ test('bufferListRecords is per-window: a window shows only its OWN buffers', () 
 // channel itself is provider-agnostic — these prove it on buffers, and the
 // stale-id guard proves the round-trip is robust to a superseded picker.
 
-test('list-buffers opens a generic PICKER over the open buffers', () => {
+test('list-views opens a generic PICKER over the open buffers', () => {
   const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
   const { spine, log } = makeSpine('alpha', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
   });
   spine.visitFile('/x.js'); // now two buffers; active client on x.js
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   // The command suspended on a PICKER (not the minibuffer): one open request.
   assert.equal(log.pickerOpens.length, 1);
   assert.equal(log.minibufferOpens.length, 0);
@@ -848,7 +848,7 @@ test('PICKER round-trip: choosing a buffer row switches the window to it', () =>
   spine.visitFile('/x.js'); // active client now on x.js
   assert.equal(spine.buffer.name, 'x.js');
   // Open the picker, then deliver a choice of the SEED buffer's id.
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   const req = log.pickerOpens[0];
   const seedRow = req.rows.find((r) => r.value === seedId);
   assert.ok(seedRow, 'the seed buffer is a row');
@@ -869,7 +869,7 @@ test('PICKER cancel resumes the command with nil and leaves the window put', () 
   });
   spine.visitFile('/x.js');
   assert.equal(spine.buffer.name, 'x.js');
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   const req = log.pickerOpens[0];
   const cancelled = spine.cancelPicker(req.id);
   assert.equal(cancelled, true);
@@ -885,7 +885,7 @@ test('a stale PICKER reply (wrong id) is dropped, not resumed', () => {
   });
   const seedId = spine.currentBufferIdOf(0);
   spine.visitFile('/x.js');
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   const req = log.pickerOpens[0];
   // A reply tagged with a DIFFERENT (stale) picker id must be ignored.
   assert.equal(spine.deliverPicker(seedId, 'picker-999'), false);
@@ -974,7 +974,7 @@ test('viewState reports the major-mode name + math-preview-active flag', () => {
   assert.equal(spine.viewStateOf(0).mathPreviewActive, false);
 });
 
-test('kill-buffer removes the active buffer and re-homes the client', () => {
+test('kill-view removes the active buffer and re-homes the client', () => {
   const files = { '/x.js': { text: 'x', name: 'x.js' } };
   const { spine } = makeSpine('seed', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
@@ -987,7 +987,7 @@ test('kill-buffer removes the active buffer and re-homes the client', () => {
   assert.equal(spine.buffer.name, 'scratch.txt');
 });
 
-test('kill-buffer refuses to kill the only buffer', () => {
+test('kill-view refuses to kill the only buffer', () => {
   const { spine } = makeSpine('only', 'scratch.txt');
   spine.setActiveClient(0);
   spine.killActiveBuffer();

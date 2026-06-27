@@ -30,7 +30,7 @@
    "C-r"   'reload-stdlib
    "C-c"   'quit-editor
    "b"     'switch-view
-   "C-b"   'buffer-menu
+   "C-b"   'list-views
    "right" 'next-view
    "left"  'previous-view
    ;; n was new-view (still on M-x); a seeded scratch is the more
