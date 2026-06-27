@@ -2149,11 +2149,24 @@ export function createSpine(options, effects = {}) {
       (let ((nl (string-index-of s "\\n")))
         (if (< nl 0) s (substring s 0 nl))))
 
+    ;; Pop a *Help: TITLE* view: a HEADING line, a blank line, then the full
+    ;; docstring INFO (a string, or #f / empty → a no-documentation note). The
+    ;; multi-line docstring needs a real view — the echo area is one line —
+    ;; so this reuses the same server-side new-view! + insert! mechanism as
+    ;; occur / apropos. Like those, a fresh view per call (no reuse yet).
+    (define (-help-page! title heading info)
+      (new-view! (str "*Help: " title "*"))
+      (insert! (str heading "\\n\\n"
+                    (if (and (string? info) (> (string-length info) 0))
+                        info
+                        "(no documentation)")
+                    "\\n")))
+
     (defcommand describe-key ()
       "Describe the command bound to the next key pressed (C-h k). Reads one
-       key and reports whether it is unbound, a prefix key, a command not
-       available on the server, or the bound command with the first line of
-       its docstring."
+       key and reports whether it is unbound, a prefix key, or a command not
+       available on the server; for a bound, registered command its FULL
+       docstring opens in a *Help* view (with a one-line echo summary)."
       (show-status! "Describe key — press a key:")
       (read-next-key
         (lambda (key)
@@ -2167,12 +2180,10 @@ export function createSpine(options, effects = {}) {
                (show-status! (str key " runs " (symbol->string binding)
                                   " (not available here)")))
               (else
-                (let ((info (doc (eval binding))))
-                  (if (string? info)
-                      (show-status! (str key " runs " (symbol->string binding)
-                                         " — " (-doc-first-line info)))
-                      (show-status! (str key " runs "
-                                         (symbol->string binding)))))))))))
+                (let ((name (symbol->string binding)))
+                  (-help-page! name (str key " runs " name)
+                               (doc (eval binding)))
+                  (show-status! (str key " runs " name)))))))))
 
     ;; --- describe-command (C-h f) — P3 help port --------------------------
     ;; Type a command name; echo the first line of its docstring. The typed
