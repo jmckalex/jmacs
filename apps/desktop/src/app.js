@@ -122,7 +122,6 @@ import { createAudioController } from './audio.js';
 import {
   emptyOverrides,
   jsonToLispOverrides,
-  lispToJsonFacesFile,
   jsonToLispUserFaces,
   jsonToLispHighlightRules,
 } from './face-overrides.js';
@@ -231,15 +230,6 @@ const SCRATCH = `;; scratch.lisp — a buffer for evaluating Lisp.
       (* n (factorial (- n 1)))))
 
 (define greeting "hello, world")
-`;
-
-/** The header of the machine-written custom.lisp settings file. */
-const CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
-;;;
-;;; jmacs writes this file; edits made by hand will be overwritten the
-;;; next time a setting is saved. For free-form configuration, use
-;;; init.lisp instead.
-
 `;
 
 /** The commented init.lisp written into the config directory on first run. */
@@ -5063,22 +5053,11 @@ const interpreter = createInterpreter({
     'load-face-overrides!': () =>
       faceOverridesCache ?? emptyOverrides(lispFactories),
 
-    // Face customisation: write the COMPLETE faces.json — colour
-    // overrides + user-created faces + highlight rules — in one blob.
-    // The Lisp side passes `(current-faces-file)`; we serialise all
-    // three sections (lists are unfolded via listToArray for the rules).
-    'write-faces!': (args) => {
-      const facesFile = args[0];
-      try {
-        const json = lispToJsonFacesFile(facesFile, lispFactories, listToArray);
-        window.host.writeFaces(json);
-      } catch (error) {
-        repl.appendError(
-          `faces:write: ${error.lispMessage ?? error.message}`
-        );
-      }
-      return NIL;
-    },
+    // Face customisation: faces.json persistence is now SERVER-side (B2.2a;
+    // plans/MODEL-B-DEFAULT.md). The spine wires the face saver + the real
+    // write-faces! that atomic-writes faces.json. The renderer no longer
+    // persists (installFacePersistence wires no saver), so this is a no-op.
+    'write-faces!': () => NIL,
     // Highlight customisation: receive the user's `kind -> face` rule
     // set from Lisp (highlight-rules.lisp) and push it into the live
     // highlighter store. Each ARG[0] element is a record with :scope
@@ -5307,11 +5286,10 @@ const interpreter = createInterpreter({
     // spread in below this block. The host shape (viewHost) is defined
     // alongside the interpreter so the closures see the live views.
 
-    // Persist the customisation registry's saved settings to disk.
-    'write-custom-file!': (args) => {
-      writeCustomFile(args[0]);
-      return NIL;
-    },
+    // Persist the customisation registry's saved settings to disk — now
+    // SERVER-side (B2.2a). The spine's write-custom-file! atomic-writes
+    // custom.lisp (the file it also loads at boot); the renderer is a no-op.
+    'write-custom-file!': () => NIL,
     // Open (or switch to) a customisation buffer.
     'open-customize!': () => {
       openCustomize('*Customize*', { group: 'godot' });
@@ -5644,24 +5622,6 @@ async function discoverRendererLanguages() {
 }
 
 /**
- * Write the customisation registry's saved settings to custom.lisp.
- * `pairList` is a Lisp list of (name value) pairs; each value is
- * wrapped in `quote` so it round-trips whatever its type.
- */
-function writeCustomFile(pairList) {
-  const lines = listToArray(pairList).map((pair) => {
-    const [name, value] = listToArray(pair);
-    return `(custom-set-saved! (quote ${writeString(name)}) (quote ${writeString(value)}))`;
-  });
-  const text = CUSTOM_FILE_HEADER + lines.join('\n') + '\n';
-  window.host
-    .writeConfigFile('custom.lisp', text)
-    .catch((error) =>
-      repl.appendError(`saving customisations failed: ${error.message}`)
-    );
-}
-
-/**
  * Load the user's saved customisations and their init.lisp — the
  * jmacs equivalent of .emacs. The saved file loads first so a hand
  * edit in init.lisp wins. A broken config file is reported, not fatal.
@@ -5750,19 +5710,14 @@ async function reloadStdlib() {
   }
 }
 
-/** Wire the renderer-side face persistence into the Lisp face system.
- *  After this runs, every `set-face-attribute` persists to faces.json.
- *  CSS regeneration is already handled by the `apply-face-styles!`
- *  primitive that Lisp calls directly on every change. */
-function installFacePersistence() {
-  // The saver writes the WHOLE faces.json — colour overrides, user-
-  // created faces, and highlight rules — so both the face-change and
-  // highlight-rule-change paths (which share this hook) persist
-  // everything in one atomic write.
-  interpreter.evaluate(
-    '(set-face-overrides-saver! (lambda () (write-faces! (current-faces-file))))'
-  );
-}
+/** Face persistence is now SERVER-side (B2.2a; plans/MODEL-B-DEFAULT.md): the
+ *  spine wires the face-overrides saver and atomic-writes faces.json. The
+ *  renderer wires NO saver, so a renderer-side face change does not persist
+ *  (it is relayed to the spine, which applies + persists). CSS regeneration is
+ *  still handled renderer-side by `apply-face-styles!` until B2.2b. Kept as a
+ *  no-op (still called at boot + after reload-stdlib) so those call sites need
+ *  no change; it dies with the renderer interpreter in B7. */
+function installFacePersistence() {}
 
 /** Install the persisted user highlight rules into the (freshly-loaded)
  *  stdlib and push them into the live highlighter. A no-op-but-safe push

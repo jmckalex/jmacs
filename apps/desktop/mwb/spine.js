@@ -35,6 +35,7 @@
  */
 
 import { readFileSync, statSync, readdirSync } from 'node:fs';
+import { atomicWriteSync } from './atomic-write-sync.js';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -72,6 +73,7 @@ import {
   jsonToLispOverrides,
   jsonToLispUserFaces,
   jsonToLispHighlightRules,
+  lispToJsonFacesFile,
 } from '../src/face-overrides.js';
 // Pure CSS generator (no DOM) — the spine builds the face-overrides CSS the
 // renderer injects, so chrome is server-authoritative (B1.3).
@@ -111,6 +113,24 @@ function readConfigText(name) {
     return null;
   }
 }
+
+/** Atomically write text to `<userData>/<name>` (custom.lisp on save). A no-op
+ *  when USER_DATA is absent (the test harness) so the suite never touches disk.
+ *  Uses the same temp+fsync+rename writer as the buffer-save path. */
+function writeConfigText(name, text) {
+  if (!USER_DATA) return;
+  atomicWriteSync(join(USER_DATA, name), text);
+}
+
+/** The header the spine writes atop custom.lisp — mirrors the renderer's old
+ *  CUSTOM_FILE_HEADER (B2.2a moved persistence server-side). */
+const SPINE_CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
+;;;
+;;; jmacs writes this file; edits made by hand will be overwritten the
+;;; next time a setting is saved. For free-form configuration, use
+;;; init.lisp instead.
+
+`;
 
 /** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
  *  Keyword both carry a `.name`), with any leading `:` stripped, or null when
@@ -1499,7 +1519,25 @@ export function createSpine(options, effects = {}) {
       'open-customize-variable!': (args) => openCustomizeScope({ variable: String(args[0] ?? '') }),
       'open-customize-face!': (args) => openCustomizeScope({ face: String(args[0] ?? '') }),
       'open-customize-faces!': () => openCustomizeScope({ group: 'faces' }),
-      'write-custom-file!': () => NIL,
+      // B2.2a (plans/MODEL-B-DEFAULT.md): persistence is server-authoritative.
+      // `(custom-apply-and-save! …)` -> save-customizations -> write-custom-file!
+      // with the (name value) pairs to persist; serialise each as a
+      // `(custom-set-saved! (quote NAME) (quote VALUE))` form (writeString quotes
+      // the value so its type round-trips) and atomic-write custom.lisp — the
+      // same file the spine LOADS at boot (B1.4). The renderer's writer is now a
+      // no-op. A no-op when USER_DATA is absent (the test harness).
+      'write-custom-file!': (args) => {
+        try {
+          const lines = listToArray(args[0]).map((pair) => {
+            const [name, value] = listToArray(pair);
+            return `(custom-set-saved! (quote ${writeString(name)}) (quote ${writeString(value)}))`;
+          });
+          writeConfigText('custom.lisp', SPINE_CUSTOM_FILE_HEADER + lines.join('\n') + '\n');
+        } catch (error) {
+          console.error('[spine] write-custom-file! failed:', error.message);
+        }
+        return NIL;
+      },
 
       // --- faces / theme / highlight apply-side (B1; plans/MODEL-B-DEFAULT.md) -
       // faces.lisp / themes.lisp / highlight-rules.lisp now load server-side (the
@@ -1523,7 +1561,22 @@ export function createSpine(options, effects = {}) {
       // same file the renderer writes) and return them in the Lisp shape
       // set-face-overrides! consumes. Empty (defaults) when the file is absent.
       'load-face-overrides!': () => jsonToLispOverrides(readFacesJson(), FACE_FACTORIES),
-      'write-faces!': () => NIL,
+      // B2.2a: persist the COMPLETE faces.json (colour overrides + user faces +
+      // highlight rules) server-side. The face saver (wired after the boot faces
+      // install) calls this with `(current-faces-file)` on every face/override
+      // change; serialise via the shared pure converter and atomic-write the same
+      // file the spine READS at boot (B1.2). The renderer's writer is now a no-op.
+      // A no-op when FACES_PATH is absent (the test harness).
+      'write-faces!': (args) => {
+        if (!FACES_PATH) return NIL;
+        try {
+          const json = lispToJsonFacesFile(args[0], FACE_FACTORIES, listToArray);
+          atomicWriteSync(FACES_PATH, JSON.stringify(json, null, 2));
+        } catch (error) {
+          console.error('[spine] write-faces! failed:', error.message);
+        }
+        return NIL;
+      },
       'face-color-for': () => '',
 
       // --- search (search.lisp) ----------------------------------------
@@ -1871,6 +1924,19 @@ export function createSpine(options, effects = {}) {
     console.error('[spine] faces.json install failed:', error.message);
   }
 
+  // B2.2a: wire the face-overrides saver now (after the bulk install above, so
+  // it never fires on the boot install — only the runtime mutators call
+  // -on-face-change!). Every set-face-attribute / reset-face then persists the
+  // whole faces.json via the now-real write-faces! primitive. Mirrors app.js's
+  // old installFacePersistence, which is now a no-op.
+  try {
+    interpreter.evaluate(
+      '(set-face-overrides-saver! (lambda () (write-faces! (current-faces-file))))'
+    );
+  } catch (error) {
+    console.error('[spine] face saver wiring failed:', error.message);
+  }
+
   // B1.3 (plans/MODEL-B-DEFAULT.md): the server is authoritative for chrome.
   // Compute the theme / face / highlight payloads as FLAT, structured-clone-safe
   // values (JSON strings + the prebuilt CSS string — no raw Lisp crosses the
@@ -1931,15 +1997,24 @@ export function createSpine(options, effects = {}) {
   // attr), never raw Lisp. The chrome PUSH is suppressed here: already-open
   // windows get this change via the renderer CUSTOMIZE_SYNC relay (server.js), so
   // pushing too would double-paint them; new windows pick up the updated state on
-  // connect. (B2's full move makes the spine the sole driver + persister.)
+  // connect. (B2.2b makes the spine the sole DRIVER — drops the relay + the
+  // suppression.)
+  //
+  // B2.2a: PERSISTENCE is now server-side. 'save' runs custom-apply-and-save!
+  // (-> write-custom-file!) and the face ops fire the wired saver (-> write-faces!),
+  // so custom.lisp / faces.json are written here; the renderer's writers are no-ops.
   function applyCustomizeChange(change) {
     if (!change || typeof change !== 'object') return;
     const { op, name, valueSrc, face, attr } = change;
     const wasEnabled = chromePushEnabled;
     chromePushEnabled = false;
     try {
-      if (op === 'apply' || op === 'save') {
+      if (op === 'apply') {
         interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
+      } else if (op === 'save') {
+        // B2.2a: 'save' runs the SAVE path so the spine persists custom.lisp
+        // (custom-apply-and-save! -> save-customizations -> write-custom-file!).
+        interpreter.evaluate(`(custom-apply-and-save! (quote ${name}) (quote ${valueSrc}))`);
       } else if (op === 'reset') {
         interpreter.evaluate(`(custom-reset! (quote ${name}))`);
       } else if (op === 'set-face') {
