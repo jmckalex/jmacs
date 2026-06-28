@@ -1,6 +1,6 @@
 # Model-B key dispatch & the directive channel
 
-A reference for myself (Claude) and future versions of myself. The editor runs as a server (the *spine*, `GODOT_SERVER=1`) that owns dispatch, plus one thin client per window, with a directive channel that drives them. There is one keymap and one resolver, both server-side. The same handful of facts get re-derived from `grep` every session — this is them, written down once.
+A reference for myself (Claude) and future versions of myself. The editor runs as a server (the *spine*, an Electron `utilityProcess`) that owns dispatch, plus one thin client per window, with a directive channel that drives them. Model B is the only mode — there is no flag (a bare `electron .` launches it). There is one keymap and one resolver, both server-side. The same handful of facts get re-derived from `grep` every session — this is them, written down once.
 
 Read `docs/MAP.md` for the index and `docs/VIEWS.md` for the view/pane half. This document is the **dispatch + directive** half: how a keystroke becomes a command, where commands may live, and how a command makes something happen in a renderer it doesn't share a process with.
 

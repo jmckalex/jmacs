@@ -14,10 +14,10 @@ The architecture is Model B: a Lisp **server** (the *spine*) plus thin per-windo
 ## Launch (what Jason runs)
 
 ```
-cd /Users/jalex/Source/jmacs/main/apps/desktop && GODOT_SERVER=1 ./node_modules/.bin/electron .
+cd /Users/jalex/Source/jmacs/main/apps/desktop && ./node_modules/.bin/electron .
 ```
 
-Add `--enable-logging=stderr` to surface renderer console + errors (also how you diagnose the `app.js` init TDZ trap: `… | grep "before initialization"`). Do **not** use `pnpm dev` (its pre-run check fails on a `citation-js` placeholder).
+Model B is the only mode now — a bare launch boots it (the `GODOT_SERVER` flag is gone; see `plans/MODEL-B-DEFAULT.md`). Add `--enable-logging=stderr` to surface renderer console + errors (also how you diagnose the `app.js` init TDZ trap: `… | grep "before initialization"`). Do **not** use `pnpm dev` (its pre-run check fails on a `citation-js` placeholder).
 
 ## Reload rules — which edit needs what
 

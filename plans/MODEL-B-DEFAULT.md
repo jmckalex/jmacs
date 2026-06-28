@@ -1,10 +1,15 @@
 # Plan — One world on the server: make Model B the default, remove the flag, and delete the renderer Lisp interpreter
 
-> **STATUS:** DRAFT (2026-06-28). Not started. Branch base: `main` (green, 63 ahead of `origin/main`).
-> Scope chosen by the architect: **Deep** — not just remove the flag, but eliminate the
-> renderer's Lisp interpreter entirely so there is a single Lisp world (the spine) and the
-> renderer becomes a pure-JS thin client.
-> Recovery tag to cut before the first merge: `pre-model-b-default`.
+> **STATUS:** Part A IN PROGRESS (2026-06-28). Branch `model-b-default` (off `main`,
+> recovery tag `pre-model-b-default` @ `b2d4f03`). Done: **A1** (default flip, `cd2e8b4`),
+> **A2** (flag plumbing removed, `79621c4`), **A4** (docs). **A3 (delete the dead
+> in-renderer path) is DEFERRED into Part B** — see the note below; it's threaded through
+> live call sites and dies wholesale when the interpreter is removed, so doing it
+> surgically now (on an untested 13k-line file) is redundant risk. Part A is thus a clean
+> mergeable milestone (A1+A2+A4); Part B is the epic.
+> Scope chosen by the architect: **Deep** — eliminate the renderer's Lisp interpreter
+> entirely so there is a single Lisp world (the spine) and the renderer becomes a pure-JS
+> thin client.
 
 ---
 
@@ -100,36 +105,39 @@ with the flag off.
 **A0 — Pre-flight.** Branch `model-b-default` off green `main`; tag `pre-model-b-default`.
 Confirm `pnpm test` green and the app boots with `GODOT_SERVER=1` (baseline).
 
-**A1 — Flip the default (reversible checkpoint).** `preload.serverMode = true`
-unconditionally; `main.js` forks the server unconditionally; preload port-listener
-unconditional. Delete nothing else yet. **Live-verify a bare `electron .` (no env) boots
-Model B** — types, chords, M-x, find-file, splits, multi-window, themes, docs. This proves
-default-on before any deletion.
+**A1 — Flip the default (reversible checkpoint).** ✅ DONE (`cd2e8b4`, live-verified).
+`isServerMode`/`serverMode` flipped to "on unless `GODOT_SERVER=0`", so a bare `electron .`
+boots Model B while the legacy path stayed reachable for A/B testing. Proved default-on
+before any deletion.
 
-**A2 — Remove the flag plumbing.** Delete `isServerMode` (`server-bridge.js`) + its import;
-collapse every `main.js` guard to the server branch (window registry, bounds listeners,
-free window-close, `closed` cleanup, `window:new`/`:close`/`:set-bounds`, `canNewWindow:
-true`, `focusedWindow()` quit target, unconditional fork + `serverBridge.dispose()`);
-collapse the preload port-listener. Delete the three `isServerMode` tests in
-`server-bridge.test.js` (keep the `createServerBridge` factory tests). `node --check` +
-live-verify.
+**A2 — Remove the flag plumbing.** ✅ DONE (`79621c4`, live-verified; suite 3197).
+Deleted `isServerMode` (`server-bridge.js`) + its import; collapsed every `main.js` guard
+to the server branch (window registry, bounds listeners, free window-close, `closed`
+cleanup, `window:new`/`:close`/`:set-bounds`, `canNewWindow: true`, `focusedWindow()` quit
+target, unconditional fork + `serverBridge.dispose()`); made the preload port-listener
+unconditional and pinned `serverMode: true`. Dropped the three `isServerMode` tests (kept
+the `createServerBridge` factory tests). The `GODOT_SERVER=0` escape hatch is gone.
 
-**A3 — Delete the dead in-renderer dispatch/editing/session path (app.js).** Staged by
-concern, `node --check` + live-verify after **each** (app.js is not in the suite):
-`updateModeline`, `ensureMajorMode`, the placeholder/split chooser, the local
-M-x/buffer-switcher/describe pickers, `currentModeMenu`, `toggleMinimapForFocusedLeaf`,
-the local-dispatch branch of the global key router (**boot-window trap, §7**), the
-bookmark/element-view local `insertText`/`configureBookmarkView` branches, the
-`NULL_SESSION`/`activeSession` fork + local session restore/recovery.
-Rewrite `server-router-gate.test.js` (`serverMode` is always true → "defer iff mounted").
+**A3 — Delete the dead in-renderer dispatch/editing/session path (app.js). → DEFERRED into
+Part B.** Investigation found this code is **threaded through live call sites**, not
+standalone: e.g. `updateModeline()` already early-returns under Model B (its body is dead)
+but is called from ~25 live sites, and nearly every dead arm calls the renderer interpreter
+(`handle-key`, `run-command`, the local pickers, the placeholder system). The interpreter
+is exactly what Part B removes, at which point all of this dies **wholesale and cleanly**.
+Surgically un-threading it now — on a 13k-line file with **no test coverage** — is
+redundant risk for no architectural gain. So it moves to Part B (see B6/B7 below). The two
+stale manual selftests (`mwb/*-selftest.js`) that still hard-require `GODOT_SERVER=1` are
+also left for that pass. `server-router-gate.test.js` is likewise rewritten in B7.
 
-**A4 — Docs/launch for Part A.** Drop the `GODOT_SERVER=1` prefix from `CLAUDE.md`,
-`docs/MAP.md`, `docs/MODEL-B-DISPATCH.md`, `.claude/skills/run-and-verify/SKILL.md`. Note
-in `MWB-GRADUATION.md` that its final "make default" step is done.
+**A4 — Docs/launch for Part A.** ✅ DONE. Dropped the `GODOT_SERVER=1` framing from
+`docs/MAP.md`, `docs/MODEL-B-DISPATCH.md`, and `.claude/skills/run-and-verify/SKILL.md`
+(`CLAUDE.md`'s launch line was already flag-free); added a STATUS banner to
+`MWB-GRADUATION.md` pointing its G5 endgame here.
 
 > **End of Part A:** Model B is the only mode; the flag is gone; the renderer interpreter
-> remains but is reached only for chrome. This is a clean, mergeable milestone — consider
-> merging Part A to `main` before starting Part B.
+> remains (reached only for chrome) with its now-unreachable dispatch/editing/session code
+> still present — that dead code is removed in Part B. Part A (A1+A2+A4) is a clean,
+> mergeable milestone — consider merging to `main` before starting Part B.
 
 ---
 
@@ -228,7 +236,19 @@ replaced by a pushed value/directive, or (b) confirmed pure-JS and rewritten wit
 Delete the ~41 renderer-only primitives and the four primitive-factory spreads from the
 `createInterpreter` call. Anything still referenced is a missed B4/B5 item — find its home.
 
-### B7 — Delete the renderer interpreter
+### B7 — Delete the renderer interpreter (subsumes the deferred A3)
+
+This is where the dead in-renderer **dispatch/editing/session** path goes — it can't
+survive the interpreter's removal. As the interpreter loses its callers, delete: the
+local-dispatch arm of the global key router (**handle the boot-window trap — swallow keys
+until the server view is mounted rather than dispatching locally**), `updateModeline`'s
+dead body + its now-no-op call sites, `ensureMajorMode`, the placeholder/split chooser, the
+local M-x/buffer-switcher/describe pickers, `currentModeMenu`, `toggleMinimapForFocusedLeaf`,
+the local `insertText`/`configureBookmarkView` arms, and the `NULL_SESSION`/`activeSession`
+fork + local session restore/recovery. Rewrite `server-router-gate.test.js` ("defer iff the
+server view is mounted") and drop the `GODOT_SERVER=1` guards in `mwb/*-selftest.js`.
+
+Then:
 
 - Remove `createInterpreter`, `loadStdlib`, `reloadStdlib`, `loadUserConfig`, the
   `@editor/lisp` + `@editor/stdlib` imports from `app.js`.
