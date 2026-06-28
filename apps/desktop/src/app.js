@@ -6145,12 +6145,15 @@ if (window.host && window.host.serverMode) {
       v.sourceBufferId = s.sourceBufferId ?? null;
       v.pinned = s.pinned === true; // drives the thumbtack (pinned vs following)
     }
-    // The customize view is likewise mutable: refresh its scope from the wire on
-    // every reconcile so a CUSTOMIZE_OP scope change (openScope) re-renders the
-    // (reused, pre-configured singleton) view at the new scope.
+    // The customize view is likewise mutable: refresh its scope AND its
+    // server-computed model from the wire on every reconcile, so an openScope
+    // (CUSTOMIZE_OP) navigation or a value/face edit (setState fan-out) re-renders
+    // the (reused, pre-configured singleton) view from the pushed data. B2.3: the
+    // model is computed server-side now; the renderer renders from state.model.
     if (w.viewKind === 'customize') {
       const s = (w.state && typeof w.state === 'object') ? w.state : {};
       v.scope = (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' };
+      v.model = (s.model && typeof s.model === 'object') ? s.model : null;
     }
     return v;
   }

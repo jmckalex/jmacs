@@ -413,7 +413,11 @@ function createCustomizeView(container, options = {}) {
   function render(preserveScroll = false) {
     const prevScroll = preserveScroll ? root.scrollTop : 0;
     root.replaceChildren();
-    const model = buffer ? getModel(buffer.scope) : null;
+    // B2.3: prefer the server-computed model carried on the buffer (state.model);
+    // fall back to the local pull until the renderer interpreter goes (B2.3b/B7).
+    const model = buffer
+      ? (buffer.model ?? getModel(buffer.scope))
+      : null;
     if (!model) return;
 
     if (model.parent) {

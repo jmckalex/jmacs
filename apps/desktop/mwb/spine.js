@@ -77,7 +77,7 @@ import {
 } from '../src/face-overrides.js';
 // Pure CSS generator (no DOM) — the spine builds the face-overrides CSS the
 // renderer injects, so chrome is server-authoritative (B1.3).
-import { faceStylesCss } from '../src/face-styles.js';
+import { faceStylesCss, BASE_FACE_NAME } from '../src/face-styles.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
@@ -131,6 +131,18 @@ const SPINE_CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
 ;;; init.lisp instead.
 
 `;
+
+/** Convert a raw Lisp custom value into a clone-safe JS value for the customize
+ *  MODEL the spine pushes over the port (B2.3): a symbol/keyword becomes its
+ *  name string; NIL becomes null; numbers / strings / booleans pass through. A
+ *  :choice value is a SYMBOL — it rides as a string and the renderer sends that
+ *  string back; custom-apply!'s -coerce-for-type re-symbolises it by the
+ *  setting's type, so no raw Lisp symbol ever crosses the port. */
+function lispValueToWire(v) {
+  if (v === NIL || v == null) return null;
+  if (typeof v === 'object' && typeof v.name === 'string') return v.name;
+  return v;
+}
 
 /** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
  *  Keyword both carry a `.name`), with any leading `:` stripped, or null when
@@ -2046,6 +2058,9 @@ export function createSpine(options, effects = {}) {
       } else if (op === 'reset-face') {
         interpreter.evaluate(`(reset-face-by-string ${writeString(face)})`);
       }
+      // B2.3: re-push the model so the customize panel(s) reflect the new value
+      // and state badge (e.g. standard -> set, or a Reset reverting the widget).
+      refreshCustomizeModels();
     } catch (error) {
       console.error('[spine] applyCustomizeChange failed:', error.message);
     }
@@ -2859,18 +2874,107 @@ export function createSpine(options, effects = {}) {
     return '*Customize*';
   }
 
+  // --- the customize MODEL (B2.3): server-computed, pushed in the leaf state ---
+  // The spine computes the customize view's model (plain, clone-safe JS — the
+  // port of app.js getCustomModel + fieldToSetting + rowToFace) and carries it in
+  // the 'customize' data-source's `state.model`. The renderer renders from it
+  // instead of pulling from its own interpreter (which is removed in B7). Symbols
+  // become name strings (lispValueToWire) so nothing raw-Lisp crosses the port.
+
+  /** A `custom-field` Lisp list -> a clone-safe setting object. */
+  function fieldToSettingWire(field) {
+    const f = listToArray(field);
+    return {
+      name: f[0],
+      type: String(f[1]).replace(/^:/, ''),
+      value: lispValueToWire(f[2]),
+      default: lispValueToWire(f[3]),
+      doc: f[4],
+      state: f[5],
+      options: f[6] === NIL ? [] : listToArray(f[6]).map(lispValueToWire),
+    };
+  }
+
+  /** A `face-row` Lisp list -> a clone-safe face object. */
+  function rowToFaceWire(row) {
+    const r = listToArray(row);
+    const name = String(r[0]);
+    return {
+      name,
+      doc: String(r[1] ?? ''),
+      foreground: typeof r[2] === 'string' ? r[2] : '',
+      background: typeof r[3] === 'string' ? r[3] : '',
+      weight: String(r[4] ?? 'normal'),
+      slant: String(r[5] ?? 'normal'),
+      underline: r[6] === true,
+      strikeThrough: r[7] === true,
+      size: typeof r[8] === 'number' ? r[8] : '',
+      family: typeof r[9] === 'string' ? r[9] : '',
+      isBase: name === BASE_FACE_NAME,
+      state: String(r[10] ?? 'standard'),
+    };
+  }
+
+  /** The clone-safe model for a customize SCOPE ({group|variable|face}), or null
+   *  on error. Mirror of app.js getCustomModel, over the SPINE's interpreter. */
+  function customizeModel(scope) {
+    const sc = (scope && typeof scope === 'object') ? scope : { group: 'godot' };
+    try {
+      if (sc.variable) {
+        const field = interpreter.evaluate(`(custom-field (quote ${sc.variable}))`);
+        return { title: sc.variable, doc: '', parent: null, groups: [],
+                 settings: [fieldToSettingWire(field)], faces: [] };
+      }
+      if (sc.face) {
+        const m = listToArray(interpreter.evaluate(`(face-single-model ${writeString(sc.face)})`));
+        return { title: sc.face, doc: m[1], parent: m[2] === NIL ? null : String(m[2]),
+                 groups: [], settings: [], faces: listToArray(m[4]).map(rowToFaceWire),
+                 scrollToFace: sc.face };
+      }
+      if (sc.group === 'faces') {
+        const m = listToArray(interpreter.call('faces-group-model'));
+        return { title: m[0], doc: m[1], parent: m[2] === NIL ? null : String(m[2]),
+                 groups: [], settings: [], faces: listToArray(m[4]).map(rowToFaceWire) };
+      }
+      const m = listToArray(interpreter.evaluate(`(custom-group-model (quote ${sc.group}))`));
+      return {
+        title: m[0], doc: m[1], parent: m[2] === NIL ? null : m[2],
+        groups: listToArray(m[3]).map((pair) => {
+          const g = listToArray(pair);
+          return { name: g[0], doc: g[1] };
+        }),
+        settings: listToArray(m[4]).map(fieldToSettingWire), faces: [],
+      };
+    } catch (error) {
+      console.error('[spine] customizeModel failed:', error.message);
+      return null;
+    }
+  }
+
+  /** Recompute + fan out every open customize leaf's model. Called after a
+   *  customize edit so the panel(s) showing it re-render with the new values /
+   *  states (the reconcile re-mounts the leaf -> the view reads state.model). */
+  function refreshCustomizeModels() {
+    for (const d of dataSources.list()) {
+      if (d.kind !== 'customize') continue;
+      dataSources.setState(d.id, { ...d.state, model: customizeModel(d.state.scope) });
+    }
+  }
+
   /** Open (find-or-create) a 'customize' data-source for SCOPE and switch the
-   *  active client to it. The leaf carries only the scope — the client renders
-   *  the model + applies value/face edits from its own interpreter. Called by
-   *  the open-customize* host primitives AND the CUSTOMIZE_OP intent (openScope
+   *  active client to it. The leaf carries the scope AND the server-computed
+   *  model (B2.3); the client renders from state.model. Called by the
+   *  open-customize* host primitives AND the CUSTOMIZE_OP intent (openScope
    *  sub-navigation). Returns the source id. */
   function openCustomizeScope(scope) {
     const sc = (scope && typeof scope === 'object') ? scope : { group: 'godot' };
     const name = customizeName(sc);
+    const model = customizeModel(sc);
     const existing = dataSources.list()
       .find((d) => d.kind === 'customize' && d.name === name);
-    const src = existing ?? dataSources.add({ kind: 'customize', name, state: { scope: sc } });
-    src.state.scope = sc; // refresh a reused leaf's scope (descriptor returns it live)
+    const src = existing ?? dataSources.add({ kind: 'customize', name, state: { scope: sc, model } });
+    src.state.scope = sc;     // refresh a reused leaf's scope (descriptor returns it live)
+    src.state.model = model;  // refresh a reused leaf's model
     switchClientToSource(activeClientIndex, src.id);
     statusText = '';
     onStatus('');
