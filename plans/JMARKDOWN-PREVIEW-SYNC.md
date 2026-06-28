@@ -196,19 +196,25 @@ serving pipeline.
 - **Links/interactives:** a *plain* click is left untouched; only the
   modifier-click is intercepted (and only when embedded).
 
-## 6. Godot side (the mirror contract — built separately, in `app.js`)
-For the building agent's awareness; not part of `sync.js`.
-- **Forward:** while the preview is open, when the active buffer's cursor line
-  changes, Godot posts to `iframe.contentWindow`:
-  `{ source:'jmarkdown-sync', version:1, type:'scroll-to-line', line, behavior:'smooth' }`
-  (`targetOrigin:'*'`). The cursor line is already known server-side (the
-  modeline's `L<n>`); Godot reads it from the view-state.
-- **Inverse:** Godot listens for `message`; on `{type:'source-line-click', line}`
-  (validated origin + source) it moves the cursor to that line — under Model B,
-  by dispatching a `goto-line`/equivalent command to the spine for the previewed
-  buffer.
-- **`ready`:** enables the forward feature and lets Godot push the current line
-  immediately. Inbound origin must be `http://localhost:*` / `http://127.0.0.1:*`.
+## 6. Godot side — **BUILT** (branch `jmarkdown-watch-preview`)
+The app half is implemented and unit-tested (live-test pending `sync.js`). What
+Godot actually does, so the `sync.js` author can rely on it exactly:
+- **Forward:** while the preview is open, on every server cursor-line change Godot
+  posts to the iframe (`targetOrigin:'*'`):
+  `{ source:'jmarkdown-sync', version:1, type:'scroll-to-line', line, behavior:'smooth' }`.
+  `line` is 1-based. De-duped (only on change) and replayed when Godot receives a
+  `ready`. (Server plumbing: a `cursorLine` view-state field — commit `d1a5bb1`.)
+- **Inverse:** Godot listens for `message`, accepting only
+  `event.origin` matching `^https?://(localhost|127\.0\.0\.1)(:\d+)?$` **and**
+  `data.source === 'jmarkdown-sync'`. On `{type:'source-line-click', line}` it
+  moves the cursor via a `GOTO_LINE` intent → `spine.gotoLine(line)` (commits
+  `d1a5bb1` server, `b993eec` renderer). `line` is 1-based; out-of-range is
+  clamped; a click is assumed to target the focused (previewed) buffer.
+- **`ready`:** Godot replays the current cursor line immediately (so the preview
+  aligns on open and after a live reload). Send `ready` once per (re)load.
+
+> So the `sync.js` author needs only: post `ready` + `source-line-click`, and
+> handle `scroll-to-line`. The exact field names above are the contract.
 
 ## 7. Acceptance checklist
 - Standalone `jmarkdown watch` in a browser: ⌘-click does nothing unusual; no
