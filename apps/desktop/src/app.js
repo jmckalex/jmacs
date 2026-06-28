@@ -11265,14 +11265,28 @@ function postToPreview(msg) {
   );
 }
 
+/** Whether forward search (preview-follows-cursor) is enabled. Reads the
+ *  `*markdown-preview-follow-cursor*` defcustom from the renderer interpreter
+ *  (customize is client-side under Model B, so this reflects the live setting);
+ *  defaults on. */
+function previewFollowCursorOn() {
+  try {
+    return interpreter.evaluate('*markdown-preview-follow-cursor*') !== false;
+  } catch {
+    return true;
+  }
+}
+
 /** Forward search: scroll the open preview to the block for `line`. Skips when
- *  the pane is hidden or the line is unchanged. Records the line either way so
- *  a later `ready` (preview reload) can replay it. */
+ *  the pane is hidden, forward search is toggled off, or the line is unchanged.
+ *  Records the line either way so a later `ready` (preview reload) can replay
+ *  it once forward search is on. */
 function previewScrollToCursor(line) {
   if (typeof line !== 'number') return;
   lastKnownCursorLine = line;
   if (!markdownPreviewVisible()) return;
   if (line === lastPostedPreviewLine) return;
+  if (!previewFollowCursorOn()) return;
   lastPostedPreviewLine = line;
   postToPreview({ type: 'scroll-to-line', line, behavior: 'smooth' });
 }
