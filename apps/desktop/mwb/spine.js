@@ -1537,9 +1537,20 @@ export function createSpine(options, effects = {}) {
       // pane drives the REAL `jmarkdown watch` server on the saved FILE, so the
       // directive carries the active buffer's absolute path ('' when the buffer
       // is unsaved / path-less — the renderer then says "save the file first").
+      //
+      // The mode guard lives HERE, not in the renderer: the major mode is known
+      // authoritatively on the server (the client's mirror carries the mode
+      // name but NOT the buffer's file path, and a server-backed buffer never
+      // updates the renderer's `currentTextBuffer`). So a non-markdown buffer
+      // (e.g. M-x markdown-preview) reports a status and emits no directive.
       // (math-preview! stays a no-op — math preview is driven by the pushed
       // majorModeName / mathPreviewActive VIEW fields, not a directive.)
       'markdown-preview!': () => {
+        if (!/markdown/i.test(majorModeName())) {
+          statusText = 'markdown-preview: the current buffer is not in Markdown mode';
+          onStatus(statusText);
+          return NIL;
+        }
         const path = activeEntry && activeEntry.filePath ? activeEntry.filePath : '';
         onClientDirective([activeClientIndex], 'markdown-preview', [path]);
         return NIL;

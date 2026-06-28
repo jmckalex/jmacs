@@ -673,6 +673,21 @@ test('markdown-preview sends an empty path for an unsaved buffer', () => {
   assert.deepEqual(d.args, [''], 'an unsaved buffer sends an empty path');
 });
 
+test('markdown-preview on a NON-markdown buffer emits no directive (mode guarded server-side)', () => {
+  // A .txt buffer is Fundamental mode, not Markdown — the server guards the
+  // mode (the renderer can't see it reliably) and reports a status instead.
+  const { spine, log } = makeSpine('plain text\n', 'notes.txt', { initialPath: '/notes.txt' });
+  spine.runCommand('markdown-preview');
+  assert.ok(
+    !log.directives.some((x) => x.name === 'markdown-preview'),
+    'no markdown-preview directive for a non-markdown buffer'
+  );
+  assert.ok(
+    log.status.some((s) => /not in Markdown mode/i.test(s)),
+    'a "not in Markdown mode" status was shown'
+  );
+});
+
 test('find-file of a MEDIA file creates a data-source leaf (no garbage text buffer)', () => {
   // The openFile effect returns a media descriptor for media suffixes (the real
   // server's readFileForVisit does this via media-kinds); a text file returns text.

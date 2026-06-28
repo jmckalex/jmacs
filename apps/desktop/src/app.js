@@ -11238,25 +11238,9 @@ document.body.classList.add('markdown-preview-hidden');
  *  buffer is backed by the same file. */
 let previewWatchedPath = null;
 
-/** Whether the current buffer is in markdown-mode. */
-function currentBufferIsMarkdown() {
-  // Under the server the renderer interpreter is inert, so read the mode from
-  // the server-pushed VIEW field (resolvedMajorModeName), not interpreter.call.
-  // markdown-preview is offered for BOTH Markdown and JMarkdown (.jmd); both
-  // render through the JMarkdown pipeline.
-  const mode = resolvedMajorModeName(currentTextBuffer);
-  return mode === 'Markdown' || mode === 'JMarkdown';
-}
-
 /** Whether the preview pane is currently visible. */
 function markdownPreviewVisible() {
   return !document.body.classList.contains('markdown-preview-hidden');
-}
-
-/** The current buffer's saved absolute path, or '' when unsaved/path-less. */
-function currentBufferFilePath() {
-  const path = currentTextBuffer && currentTextBuffer.filePath;
-  return typeof path === 'string' && path !== '' ? path : '';
 }
 
 /** Hide the preview pane and stop this window's watch subprocess. */
@@ -11295,39 +11279,32 @@ async function showMarkdownPreview(path) {
   markdownPreviewFrame.src = `http://localhost:${result.port}/`;
 }
 
-/** Re-point the preview after a buffer switch: follow the new buffer if it is
- *  a saved Markdown/JMarkdown file, otherwise hide the pane (it only makes
- *  sense for one). A no-op when the pane is already hidden, or when the new
- *  buffer is the same file already being watched. */
+/** Re-point the preview after a buffer switch. The server owns the buffer's
+ *  mode AND file path: a server-backed buffer never updates the renderer's
+ *  `currentTextBuffer`, and the pushed mirror carries no file path — so the
+ *  renderer can't learn a newly-focused buffer's path. The preview therefore
+ *  stays PINNED to the file it was opened on; re-open (C-c v) on another file
+ *  to preview it instead. (Server-driven re-point is a follow-up; in server
+ *  mode this isn't even reached — applyTextMountSideEffects returns first.) */
 function syncMarkdownPreviewToBuffer() {
-  if (!markdownPreviewVisible()) return;
-  const file = currentBufferFilePath();
-  if (!currentBufferIsMarkdown() || file === '') {
-    hideMarkdownPreview();
-    return;
-  }
-  if (file !== previewWatchedPath) showMarkdownPreview(file);
+  // intentionally a no-op — see above.
 }
 
-/** Toggle the Markdown preview pane (C-c v). `path` is the active buffer's
- *  saved path from the server directive ('' when unsaved). Opening it on a
- *  non-Markdown or unsaved buffer is reported and skipped. */
+/** Toggle the Markdown preview pane (C-c v). The server emits this directive
+ *  only for a Markdown / JMarkdown buffer (it guards the mode) and sends the
+ *  active buffer's saved `path` ('' when unsaved). So the renderer just
+ *  toggles: open on a saved file, else report "save the file first". */
 function toggleMarkdownPreview(path) {
   if (markdownPreviewVisible()) {
     hideMarkdownPreview();
     editorView.focus();
     return;
   }
-  if (!currentBufferIsMarkdown()) {
-    repl.appendNote('markdown-preview: the current buffer is not in Markdown mode');
-    return;
-  }
-  const file = typeof path === 'string' && path !== '' ? path : currentBufferFilePath();
-  if (file === '') {
+  if (typeof path !== 'string' || path === '') {
     repl.appendNote('markdown-preview: save the file first');
     return;
   }
-  showMarkdownPreview(file);
+  showMarkdownPreview(path);
   editorView.focus();
 }
 
