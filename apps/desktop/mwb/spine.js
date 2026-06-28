@@ -101,6 +101,17 @@ function readFacesJson() {
   }
 }
 
+/** Read a config file (e.g. `custom.lisp`) from `<userData>` as text. Null when
+ *  absent / unreadable (first launch, or the test harness). */
+function readConfigText(name) {
+  if (!USER_DATA) return null;
+  try {
+    return readFileSync(join(USER_DATA, name), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 /** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
  *  Keyword both carry a `.name`), with any leading `:` stripped, or null when
  *  ARG isn't symbol-like. The pane primitives read their orientation/side/
@@ -1819,11 +1830,26 @@ export function createSpine(options, effects = {}) {
     interpreter.evaluate(source);
   }
 
-  // Gates runtime chrome pushes (B1.3). OFF during the boot faces install below,
-  // so set-face-overrides! / set-highlight-rules! don't emit chrome directives
-  // before any client port exists (the real initial push is the on-connect one in
-  // server.js). Turned ON once the helpers are defined.
+  // Gates runtime chrome pushes (B1.3). OFF during the boot config + faces
+  // install below, so the defcustom :on-change handlers (e.g. *theme* ->
+  // apply-theme!) and set-face-overrides! / set-highlight-rules! don't emit
+  // chrome directives before any client port exists (the real initial push is the
+  // on-connect one in server.js). Turned ON once the helpers are defined.
   let chromePushEnabled = false;
+
+  // Load the user's saved customisations (defcustom values incl. the active
+  // *theme*) so the server's computed chrome reflects them — mirrors app.js
+  // loadUserConfig's custom.lisp step. custom-set-saved! -> custom-apply! sets
+  // the active value (and fires :on-change, suppressed above); a setting the
+  // spine doesn't register (renderer-only stdlib not loaded here) is a safe
+  // no-op. (init.lisp is deferred — it may call renderer-only primitives.)
+  try {
+    const customSrc = readConfigText('custom.lisp');
+    if (customSrc) interpreter.evaluate(customSrc);
+  } catch (error) {
+    console.error('[spine] custom.lisp load failed:', error.message);
+  }
+
   // B1.2 (plans/MODEL-B-DEFAULT.md): install the user's faces.json overrides
   // into the server's face / theme / highlight registries, so the spine's
   // computed chrome (current-theme-css-vars / current-face-styles /
