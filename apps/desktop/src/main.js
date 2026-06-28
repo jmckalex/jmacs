@@ -284,6 +284,32 @@ function createWindow(opts = {}) {
   return win;
 }
 
+// A browser VIEW is an Electron <webview>; a `target="_blank"` link or a
+// `window.open()` inside a page would otherwise spawn a bare OS popup window
+// (the guest asked for a new window, and `allowpopups` keeps it from being
+// silently dropped). We never want a popup OS window, so we always DENY. The
+// disposition tells us what the page meant:
+//   - 'foreground-tab' — a real link the USER clicked (a `target="_blank"`):
+//     keep it inside the editor by loading it in THIS webview (the back button
+//     returns; `did-navigate` updates the URL bar + reports to the server).
+//   - anything else ('new-window' / 'background-tab' / 'other') — a programmatic
+//     / background popup: silent OAuth renewal (Spotify embeds do this with
+//     `window.open(...prompt=none&response_mode=web_message)`), ad windows, etc.
+//     Drop it silently — opening it would pop a window, and navigating THIS view
+//     to it would hijack the user's page with a login/redirect endpoint.
+// Scoped to webview-type contents, so editor windows and the jmarkdown-preview
+// iframe are unaffected.
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() !== 'webview') return;
+  contents.setWindowOpenHandler(({ url, disposition }) => {
+    if (disposition === 'foreground-tab'
+        && typeof url === 'string' && /^https?:\/\//i.test(url)) {
+      contents.loadURL(url).catch(() => { /* aborted / bad URL — ignore */ });
+    }
+    return { action: 'deny' };
+  });
+});
+
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   protocol.handle('media', serveMediaFile);

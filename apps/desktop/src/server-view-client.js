@@ -593,7 +593,7 @@ export function createServerViewClient({
           try { runClientCommand(msg.name, msg.bibPath ?? null); } catch { /* surfaced by app.js */ }
         }
         break;
-      case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs); break;
+      case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs, msg.liveBrowsers); break;
       case MSG.CUSTOMIZE_SYNC: onCustomizeSyncDom(msg.change); break;
       case MSG.CLIENT_DIRECTIVE:
         if (msg.directive && typeof msg.directive.name === 'string') {
@@ -709,6 +709,15 @@ export function createServerViewClient({
     port.postMessage({ type: MSG.OPEN_ELEMENT_SOURCE, spec });
   }
 
+  /** Report that a browser VIEW (data-source SOURCEID) navigated to URL — a link
+   *  click, the URL bar, or an in-page route. The server quietly updates the
+   *  source's `state.url` (no fan-out) so the page is tracked for session-restore.
+   *  A no-op for a falsy id / url. */
+  function browserNavigated(sourceId, url) {
+    if (!sourceId || typeof url !== 'string' || url === '') return;
+    port.postMessage({ type: MSG.BROWSER_NAVIGATED, sourceId: String(sourceId), url });
+  }
+
   /** Insert TEXT into the server's active buffer at point — the generic
    *  element-view `insert-text` channel in server mode (e.g. bib-search drops
    *  `\cite{…}` into the document, which keeps focus as a :no-focus panel). The
@@ -817,6 +826,8 @@ export function createServerViewClient({
     visitPath,
     // Hold a renderer-computed element-view spec as a server data-source.
     openElementView,
+    // Report a browser view's navigation UP so the server tracks its state.url.
+    browserNavigated,
     // Insert text into the server's active buffer (element-view insert-text).
     insertText,
     // Send a bookmark-outline edit op (jump/rename/delete/indent/outdent/toggle).

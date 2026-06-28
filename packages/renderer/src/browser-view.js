@@ -62,6 +62,10 @@ export function normaliseUrl(input) {
  * @property {(view: object) => void} [onTitleChanged] - Called when the
  *   page title updates so the host can refresh its label (modeline /
  *   tabline). Receives the view object the buffer was set with.
+ * @property {(view: object, url: string) => void} [onNavigate] - Called when
+ *   the page navigates (link / URL bar / in-page route) so the host can track
+ *   the live URL upstream (the server's data-source state.url). Receives the
+ *   buffer/view and the new URL.
  */
 
 export class BrowserView extends ViewElement {
@@ -207,10 +211,11 @@ export class BrowserView extends ViewElement {
         ? this._options.partition
         : 'persist:browser-views';
     webview.setAttribute('partition', partition);
-    // allowpopups lets target=_blank links open via new-window events
-    // rather than being silently dropped. v1 default is to ignore them
-    // (no new-window handler wired); the attribute keeps the door open
-    // for a v2 handler without another mount change.
+    // allowpopups surfaces `target="_blank"` / `window.open()` as window-open
+    // requests rather than silently dropping them. The MAIN process intercepts
+    // them (web-contents-created → setWindowOpenHandler in main.js): it never
+    // opens a bare OS popup — a user-clicked link loads in THIS webview, while a
+    // background popup (OAuth silent-renewal, ad windows) is dropped.
     webview.setAttribute('allowpopups', '');
 
     this._toolbar = toolbar;
@@ -277,10 +282,7 @@ export class BrowserView extends ViewElement {
       const next =
         (event && /** @type {*} */ (event).url) ||
         (typeof webview.getURL === 'function' ? webview.getURL() : '');
-      if (typeof next === 'string' && next !== '') {
-        urlInput.value = next;
-        if (this._buffer) this._buffer.url = next;
-      }
+      this._recordNavigation(next);
       this._refreshNavButtons();
     });
     // Same handler for in-page navigation (hash changes, history.pushState).
@@ -289,10 +291,7 @@ export class BrowserView extends ViewElement {
         const next = typeof webview.getURL === 'function'
           ? webview.getURL()
           : '';
-        if (typeof next === 'string' && next !== '') {
-          urlInput.value = next;
-          if (this._buffer) this._buffer.url = next;
-        }
+        this._recordNavigation(next);
       } catch { /* ignore */ }
       this._refreshNavButtons();
     });
@@ -343,6 +342,21 @@ export class BrowserView extends ViewElement {
     });
   }
 
+  /** Record a navigation to NEXT (a `did-navigate` / `did-navigate-in-page`):
+   *  reflect it in the URL bar, stamp it on the buffer so a later repaint
+   *  restores THIS page (not the URL first opened), and notify the host so it
+   *  can track the URL upstream (the server's data-source state). A blank /
+   *  non-string url is ignored. */
+  _recordNavigation(next) {
+    if (typeof next !== 'string' || next === '') return;
+    if (this._urlInput) this._urlInput.value = next;
+    if (this._buffer) this._buffer.url = next;
+    const onNavigate = this._options && this._options.onNavigate;
+    if (typeof onNavigate === 'function' && this._buffer) {
+      try { onNavigate(this._buffer, next); } catch { /* host's problem */ }
+    }
+  }
+
   /** Read canGoBack / canGoForward off the webview and disable the
    *  corresponding buttons. Wrapped in a try because the methods may
    *  throw before the webview is fully ready. */
@@ -368,7 +382,11 @@ export class BrowserView extends ViewElement {
    *  for the createView shape, then the configured default. */
   _paint() {
     if (this._webview === null || this._urlInput === null) return;
-    const url = this._urlForBuffer();
+    // Normalise the buffer's URL the same way the URL bar does, so a
+    // schemeless address typed at the `M-x browser-view` prompt (e.g.
+    // `google.com`) gets `https://` prepended rather than failing to load.
+    // Idempotent on a URL that already has a scheme (about:/http(s)/file:…).
+    const url = normaliseUrl(this._urlForBuffer());
     this._urlInput.value = url;
     // Drive navigation through the `src` ATTRIBUTE rather than loadURL.
     // The attribute lives on the element, so when the webview's guest is
