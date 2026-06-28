@@ -166,6 +166,10 @@ export function createServerViewClient({
   // unit tests + the core text path run without any chrome.
   const setModelineDom = chrome.setModeline ?? (() => {});
   const setEchoDom = chrome.setEcho ?? (() => {});
+  // Styled echo: the server sent the status as coloured/bold segments
+  // (statusSegments — e.g. the quit walk's red Save prompt with a bold
+  // filename). Falls back to plain setEcho when the host doesn't wire it.
+  const setEchoRichDom = chrome.setEchoRich ?? null;
   const openMinibufferDom = chrome.openMinibuffer ?? (() => {});
   const closeMinibufferDom = chrome.closeMinibuffer ?? (() => {});
   const openPickerDom = chrome.openPicker ?? (() => {});
@@ -174,10 +178,9 @@ export function createServerViewClient({
   // in-renderer tabs + View List in server mode. A no-op until the host wires
   // it (the core text path is unaffected).
   const setBufferListDom = chrome.setBufferList ?? (() => {});
-  // Quit (C-x C-c): window-lifecycle, not buffer editing — the server can't
-  // close the renderer window, so the client owns the quit chord and asks the
-  // host to quit. A no-op until the host wires it.
-  const requestQuitDom = chrome.requestQuit ?? (() => {});
+  // (Quit is server-owned now: C-x C-c forwards to the server like any chord →
+  // quit-editor runs the cross-window save-some-buffers walk, then sends a
+  // `quit` CLIENT_DIRECTIVE back so the host shuts down. No client interception.)
   // New Window (G4): the server resolves C-x 5 2 → the new-window command and
   // sends WINDOW_NEW down; the client asks its host to open another window (a
   // new client on the shared server). Window lifecycle is the host's job, like
@@ -196,6 +199,11 @@ export function createServerViewClient({
   // A customize setting changed in ANOTHER window — re-apply it here (host wires
   // this to update this window's interpreter + theme / face styles).
   const onCustomizeSyncDom = chrome.onCustomizeSync ?? (() => {});
+  // CLIENT_DIRECTIVE: the server told THIS window to perform a renderer-side
+  // action (close-window, toggle a fold, re-theme, …). The host maps the
+  // directive name → an action (window lifecycle is the host's job, like quit /
+  // new-window). A no-op until wired. `(name, args)`.
+  const applyDirectiveDom = chrome.applyDirective ?? (() => {});
   // MINIBUFFER_COMPLETIONS: the server's reply to a TAB-completion request — the
   // completed value + the candidate list. The host fills the minibuffer + shows
   // the candidates (find-file). A no-op until wired.
@@ -217,10 +225,6 @@ export function createServerViewClient({
   // composable pane on its own *scratch*, no forced tabline). Passed to mountView
   // so the host mounts the right root. Stable per window; defaults to 'tabline'.
   let windowKind = 'tabline';
-  // The previous keystroke, tracked ONLY to catch the C-x C-c quit chord
-  // client-side (the server leaves it unbound — quitting the window is a host
-  // action). Any key between C-x and C-c resets it, so it never misfires.
-  let lastDispatchedKey = null;
 
   // Pending intents we sent + await confirmation for, keyed by id. `predicted`
   // is retained on the entry shape for the VIEW-reconcile guard (a stale VIEW
@@ -309,15 +313,9 @@ export function createServerViewClient({
    */
   function dispatchKey(keyString) {
     if (!mirror) return false;
-    // C-x C-c quits the window. The server keymap leaves this chord unbound
-    // (quitting is a host action it can't perform), so the client resolves it:
-    // `lastDispatchedKey` shadows the server's prefix state for this ONE chord.
-    if (lastDispatchedKey === 'C-x' && keyString === 'C-c') {
-      lastDispatchedKey = null;
-      requestQuitDom();
-      return true;
-    }
-    lastDispatchedKey = keyString;
+    // Every key — C-x C-c included — goes up as a KEY intent; the server's
+    // keymap owns dispatch, including quit (C-x C-c → quit-editor, which runs
+    // the cross-window save-some-buffers walk, then a `quit` directive back).
     sendKey(keyString);
     return true;
   }
@@ -382,7 +380,13 @@ export function createServerViewClient({
     // echo while a prompt is up; this avoids fighting it).
     const mb = v.minibuffer;
     const mbActive = !!(mb && mb.active);
-    if (!mbActive && typeof v.status === 'string') setEchoDom(v.status);
+    if (!mbActive) {
+      if (Array.isArray(v.statusSegments) && v.statusSegments.length > 0 && setEchoRichDom) {
+        setEchoRichDom(v.statusSegments);
+      } else if (typeof v.status === 'string') {
+        setEchoDom(v.status);
+      }
+    }
     // Minibuffer open/close transitions, in lock-step with the server.
     if (mbActive && !minibufferActive) {
       minibufferActive = true;
@@ -581,6 +585,11 @@ export function createServerViewClient({
         break;
       case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs); break;
       case MSG.CUSTOMIZE_SYNC: onCustomizeSyncDom(msg.change); break;
+      case MSG.CLIENT_DIRECTIVE:
+        if (msg.directive && typeof msg.directive.name === 'string') {
+          applyDirectiveDom(msg.directive.name, msg.directive.args ?? []);
+        }
+        break;
       case MSG.NOTEBOOK_RESULT: {
         const resolve = notebookPending.get(msg.reqId);
         if (resolve) { notebookPending.delete(msg.reqId); resolve(msg.result); }

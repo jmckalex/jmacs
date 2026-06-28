@@ -24,6 +24,8 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
     pickerOpens: [],
     // Each new-window request (the C-x 5 2 effect, G4).
     newWindows: 0,
+    // Each client directive raised (the multi-window round-trip): { ids, name, args }.
+    directives: [],
   };
   const spine = createSpine(
     { initialText, name },
@@ -34,6 +36,7 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
       onScroll: (r) => log.scrolls.push(r),
       onPicker: (req) => log.pickerOpens.push(req),
       onNewWindow: () => { log.newWindows += 1; },
+      onClientDirective: (ids, name, args) => log.directives.push({ ids, name, args }),
       openFile: extra.openFile,
       // A recording save: capture the {path, text} the spine would write, and
       // return success unless the test injects a failure. Lets save-buffer /
@@ -80,9 +83,9 @@ test('motion: arrows + C-a/C-e move point through the real commands', () => {
 
 test('M-< / M-> jump to buffer start/end via real commands', () => {
   const { spine } = makeSpine('abcdef');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   assert.equal(spine.buffer.point, 6);
-  spine.handleKey('M-less');
+  spine.handleKey('M-S-comma');
   assert.equal(spine.buffer.point, 0);
 });
 
@@ -117,7 +120,7 @@ test('command-names comes from the REAL registry', () => {
   const names = spine.commandNames();
   assert.ok(names.includes('forward-char'), 'forward-char registered');
   assert.ok(names.includes('newline'), 'newline registered');
-  assert.ok(names.includes('execute-extended-command'), 'M-x registered');
+  assert.ok(names.includes('execute-command'), 'M-x registered');
   assert.ok(names.includes('find-file'), 'find-file registered');
 });
 
@@ -262,7 +265,7 @@ test('find-file on a missing file reports and keeps the current buffer', () => {
 });
 
 test('M-x flow: open the prompt, abort it, then host-run the chosen command', () => {
-  // execute-extended-command opens the "M-x " prompt. The host (server)
+  // execute-command opens the "M-x " prompt. The host (server)
   // recognises that prompt, aborts the placeholder command, then runs the
   // chosen command itself — here, end-of-buffer.
   const { spine } = makeSpine('abcdef');
@@ -391,6 +394,152 @@ test('C-x 5 2 resolves to new-window and raises the onNewWindow effect', () => {
   assert.equal(log.newWindows, 1, 'C-x 2 is split-vertical, not new-window');
 });
 
+// --- client directives: the multi-window round-trip (P2) ----------------
+
+test('emit-client-directive! to all-window-ids targets every window', () => {
+  const { spine, log } = makeSpine('x');
+  const idx2 = spine.addClientView(); // a 2nd window
+  spine.setActiveClient(0);
+  spine.interpreter.evaluate("(emit-client-directive! (all-window-ids) 'close-window)");
+  assert.equal(log.directives.length, 1);
+  assert.deepEqual([...log.directives[0].ids].sort(), [0, idx2].sort());
+  assert.equal(log.directives[0].name, 'close-window');
+  assert.deepEqual(log.directives[0].args, []);
+});
+
+test('emit-client-directive! to other-window-ids targets every window but the active one', () => {
+  const { spine, log } = makeSpine('x');
+  const idx2 = spine.addClientView();
+  spine.setActiveClient(idx2);
+  spine.interpreter.evaluate("(emit-client-directive! (other-window-ids) 'close-window)");
+  assert.deepEqual(log.directives[0].ids, [0]);
+  assert.equal(log.directives[0].name, 'close-window');
+});
+
+test('emit-client-directive! to (this-window-id) targets only the active window, with args', () => {
+  const { spine, log } = makeSpine('x');
+  spine.addClientView();
+  spine.setActiveClient(0);
+  spine.interpreter.evaluate(
+    "(emit-client-directive! (list (this-window-id)) 'reload-theme \"nova\")"
+  );
+  assert.deepEqual(log.directives[0].ids, [0]);
+  assert.equal(log.directives[0].name, 'reload-theme');
+  assert.deepEqual(log.directives[0].args, ['nova']);
+});
+
+test('C-x 5 0 close-window directs a close to this window only', () => {
+  const { spine, log } = makeSpine('x');
+  const idx2 = spine.addClientView();
+  spine.setActiveClient(idx2);
+  spine.handleKey('C-x');
+  spine.handleKey('5');
+  spine.handleKey('0');
+  assert.equal(log.directives.length, 1);
+  assert.deepEqual(log.directives[0].ids, [idx2]);
+  assert.equal(log.directives[0].name, 'close-window');
+});
+
+test('C-x 5 1 close-other-windows directs a close to every other window', () => {
+  const { spine, log } = makeSpine('x');
+  spine.addClientView();        // idx 1
+  const idx3 = spine.addClientView(); // idx 2
+  spine.setActiveClient(1);
+  spine.handleKey('C-x');
+  spine.handleKey('5');
+  spine.handleKey('1');
+  assert.equal(log.directives.length, 1);
+  assert.deepEqual([...log.directives[0].ids].sort(), [0, idx3].sort());
+  assert.equal(log.directives[0].name, 'close-window');
+});
+
+// --- quit-editor: the cross-window save-some-buffers walk (P2c) ----------
+
+test('quit-editor with nothing unsaved emits a quit directive straight away', () => {
+  const { spine, log } = makeSpine('clean', 'scratch.txt');
+  spine.runCommand('quit-editor');
+  assert.deepEqual(log.directives, [{ ids: [0], name: 'quit', args: [] }]);
+});
+
+test('quit-editor on an unsaved path-less buffer goes to the net; y quits', () => {
+  const { spine, log } = makeSpine('', 'scratch.txt');
+  spine.handleKey('x'); // dirty the path-less buffer (can't be saved in the walk)
+  spine.runCommand('quit-editor');
+  assert.equal(log.directives.length, 0, 'no per-buffer prompt; the net is pending');
+  spine.handleKey('y'); // quit anyway
+  assert.deepEqual(log.directives, [{ ids: [0], name: 'quit', args: [] }]);
+});
+
+test('quit-editor saves a path-backed buffer on y, then quits', () => {
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt'); // a path-backed buffer, now active
+  spine.handleKey('Z'); // dirty it
+  spine.runCommand('quit-editor');
+  assert.equal(log.directives.length, 0, 'prompting Save doc.txt?, not quit yet');
+  spine.handleKey('y'); // save it
+  assert.ok(log.saves.some((s) => s.path === '/tmp/doc.txt'), 'doc.txt was saved');
+  assert.deepEqual(log.directives, [{ ids: [0], name: 'quit', args: [] }]);
+});
+
+test('quit-editor: n skips the save, the net fires, and n aborts the quit', () => {
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt');
+  spine.handleKey('Z');
+  spine.runCommand('quit-editor');
+  spine.handleKey('n'); // skip saving doc.txt
+  assert.equal(log.saves.length, 0, 'nothing saved');
+  assert.equal(log.directives.length, 0, 'doc.txt still dirty → the net is pending');
+  spine.handleKey('n'); // do NOT quit
+  assert.equal(log.directives.length, 0, 'quit aborted');
+});
+
+test('quit-editor: C-g aborts cleanly so a fresh C-x C-c restarts the SAVE walk', () => {
+  // Regression: an aborted quit used to strand a pending key-reader (the else
+  // branch re-armed it), so the next C-x C-c was eaten by it and landed back in
+  // the net instead of re-prompting the save walk.
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt');
+  spine.handleKey('Z'); // dirty (path-backed) → the walk will prompt to save it
+  spine.runCommand('quit-editor'); // "Save doc.txt?"
+  spine.handleKey('q'); // stop saving → the net
+  spine.handleKey('C-g'); // abort the net — must leave NO pending reader
+  assert.equal(log.directives.length, 0, 'aborted: nothing quit');
+  // A fresh quit via the keys must reach quit-editor (not a stale reader) and
+  // restart the SAVE walk from the first buffer.
+  spine.handleKey('C-x');
+  spine.handleKey('C-c');
+  const segs = spine.viewState().statusSegments;
+  assert.ok(
+    Array.isArray(segs) && segs[0].text === 'Save ',
+    'a fresh quit restarts the save walk, not the net'
+  );
+});
+
+test('quit-editor save prompt is styled (red text, bold filename)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt');
+  spine.handleKey('Z'); // dirty the path-backed buffer
+  spine.runCommand('quit-editor'); // prompts "Save doc.txt?"
+  const segs = spine.viewState().statusSegments;
+  assert.ok(Array.isArray(segs) && segs.length === 3, 'styled 3-segment prompt');
+  assert.equal(segs[0].text, 'Save ', 'frame ends with a space before the filename');
+  assert.equal(segs[1].bold, true, 'the filename segment is bold');
+  assert.ok(segs[1].color, 'the filename segment has a colour');
+  assert.ok(
+    segs[1].text.startsWith('"') && segs[1].text.endsWith('"'),
+    'the filename is wrapped in double-quotes'
+  );
+  assert.ok(segs[2].text.includes('?'), 'the trailing prompt is present');
+});
+
 test('a fresh window opens on its own private *scratch* (hidden from window 1)', () => {
   const { spine } = makeSpine('the session file', 'session.txt');
   const before = spine.bufferCount;
@@ -442,7 +591,7 @@ test('viewState reports point, mark, name, modeline and modified flag', () => {
   assert.match(vs.modeline, /^●/);
 });
 
-// --- multi-buffer: the registry, switching, kill-buffer ----------------
+// --- multi-buffer: the registry, switching, kill-view ----------------
 
 test('the server starts with one buffer; find-file adds a second', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
@@ -456,6 +605,65 @@ test('the server starts with one buffer; find-file adds a second', () => {
   assert.equal(spine.currentBufferIdOf(0), id);
   assert.equal(spine.buffer.name, 'b.md');
   assert.ok(spine.bufferIdByName('scratch.txt'));
+});
+
+test('close-tab KILLS the view by default; *close-tab-kills-view* #f un-curates', () => {
+  const files = {
+    '/a.md': { text: 'A\n', name: 'a.md', path: '/a.md' },
+    '/b.md': { text: 'B\n', name: 'b.md', path: '/b.md' },
+  };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const aId = spine.visitFile('/a.md');
+  const bId = spine.visitFile('/b.md');
+  // Window 0's focused leaf is a tabline of [a, b], active = b.
+  spine.seedClientTabline(0, [aId, bId], bId);
+  assert.equal(spine.bufferCount, 3, 'scratch + a + b');
+
+  // DEFAULT (#t): closing a's tab KILLS it — gone from the registry/buffer list.
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: aId }));
+  assert.ok(
+    !spine.bufferListRecords(0).some((r) => r.id === aId),
+    'killed buffer is off the buffer list'
+  );
+  assert.equal(spine.bufferCount, 2, 'scratch + b remain');
+
+  // OPT-OUT (#f): closing a tab only un-curates — the buffer survives the pool.
+  spine.interpreter.evaluate('(set! *close-tab-kills-view* #f)');
+  const scratchId = spine.bufferListRecords(0).find((r) => r.name === 'scratch.txt').id;
+  spine.seedClientTabline(0, [scratchId, bId], bId);
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: bId }));
+  assert.ok(
+    spine.bufferListRecords(0).some((r) => r.id === bId),
+    'un-curated buffer survives in the buffer list'
+  );
+  assert.equal(spine.bufferCount, 2, 'nothing killed under the opt-out');
+});
+
+test('closing the LAST tab collapses the tabline to a bare *scratch* leaf', () => {
+  const files = { '/a.md': { text: 'A\n', name: 'a.md', path: '/a.md' } };
+  const { spine } = makeSpine('seed', 'doc.txt', { openFile: (p) => files[p] ?? null });
+  const aId = spine.visitFile('/a.md');
+  spine.seedClientTabline(0, [aId], aId); // a tabline with a SINGLE tab
+  assert.equal(wireLeaves(spine.paneSnapshot(0))[0].tabline, true, 'starts as a tabline');
+
+  // Close the last tab → collapse to a bare *scratch* leaf; a is killed.
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: aId }));
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.ok(!leaf.tabline, 'the tabline is gone (a bare leaf)');
+  assert.equal(
+    spine.bufferListRecords(0).find((r) => r.current).name, '*scratch*',
+    'the bare leaf shows *scratch*'
+  );
+  assert.ok(!spine.bufferListRecords(0).some((r) => r.id === aId), 'the closed view was killed');
+});
+
+test('markdown-preview routes to the active window via a directive (Model B port)', () => {
+  const { spine, log } = makeSpine('# hi\n', 'doc.md');
+  spine.runCommand('markdown-preview'); // the command body calls markdown-preview!
+  assert.ok(
+    log.directives.some((d) => d.name === 'markdown-preview' && d.ids.includes(0)),
+    'a markdown-preview directive went to the active window'
+  );
 });
 
 test('find-file of a MEDIA file creates a data-source leaf (no garbage text buffer)', () => {
@@ -665,7 +873,7 @@ test('each M-x shell mints a FRESH shell (no dedup), with distinct sessionIds', 
   assert.equal(new Set(shells.map((r) => r.id)).size, 2, 'distinct sessionIds');
 });
 
-test('liveProcessSessionsOf lists open shells; kill-buffer reaps the focused one', () => {
+test('liveProcessSessionsOf lists open shells; kill-view reaps the focused one', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
   spine.runCommand('shell');
   const shellId = wireLeaves(spine.paneSnapshot(0))[0].bufferId;
@@ -673,20 +881,20 @@ test('liveProcessSessionsOf lists open shells; kill-buffer reaps the focused one
   assert.deepEqual(spine.liveProcessSessionsOf(0), [shellId], 'the open shell is in the live set');
   // C-x k on the focused shell removes the SOURCE (not just a registry buffer):
   // it leaves the open-set, so the client reaps its pty.
-  spine.runCommand('kill-buffer');
+  spine.runCommand('kill-view');
   assert.deepEqual(spine.liveProcessSessionsOf(0), [], 'the killed shell left the live set');
   assert.equal(spine.isDataSource(shellId), false, 'the shell data-source is gone');
   // The focused leaf re-homed onto a surviving text buffer, not the dead source.
   assert.notEqual(wireLeaves(spine.paneSnapshot(0))[0].bufferId, shellId);
 });
 
-test('kill-buffer on a shell bypasses the "only buffer" guard (data-source path)', () => {
+test('kill-view on a shell bypasses the "only buffer" guard (data-source path)', () => {
   // Even with a single TEXT buffer (scratch), killing a shell succeeds — the
   // registry-count guard only governs registry buffers, not data-sources.
   const { spine } = makeSpine('seed', 'scratch.txt');
   assert.equal(spine.bufferCount, 1, 'one text buffer (scratch)');
   spine.runCommand('shell');
-  spine.runCommand('kill-buffer');
+  spine.runCommand('kill-view');
   assert.equal(spine.liveProcessSessionsOf(0).length, 0, 'the shell was reaped, not refused');
   assert.equal(spine.bufferCount, 1, 'the text buffer survived');
 });
@@ -702,9 +910,9 @@ test('M-x gnuplot mints a server-owned gnuplot data-source leaf (full Lisp path)
   assert.equal(leaf.viewKind, 'gnuplot');
   assert.equal(leaf.name, '*gnuplot*');
   assert.equal(leaf.state.sessionId, leaf.bufferId, 'sessionId is the source id');
-  // Tracked as a live process, and reaped on kill-buffer.
+  // Tracked as a live process, and reaped on kill-view.
   assert.deepEqual(spine.liveProcessSessionsOf(0), [leaf.bufferId]);
-  spine.runCommand('kill-buffer');
+  spine.runCommand('kill-view');
   assert.equal(spine.liveProcessSessionsOf(0).length, 0, 'the gnuplot was reaped');
 });
 
@@ -769,7 +977,7 @@ test('find-file of an already-open file REUSES its buffer (no name<2>; shared ac
   assert.equal(spine.currentBufferIdOf(1), firstId, 'the second window shows the shared buffer');
 });
 
-test('switch-to-buffer moves the active client between buffers, keeping cursor', () => {
+test('switch-view moves the active client between buffers, keeping cursor', () => {
   const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
   const { spine } = makeSpine('alpha beta', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
@@ -816,13 +1024,13 @@ test('bufferListRecords is per-window: a window shows only its OWN buffers', () 
 // channel itself is provider-agnostic — these prove it on buffers, and the
 // stale-id guard proves the round-trip is robust to a superseded picker.
 
-test('list-buffers opens a generic PICKER over the open buffers', () => {
+test('list-views opens a generic PICKER over the open buffers', () => {
   const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
   const { spine, log } = makeSpine('alpha', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
   });
   spine.visitFile('/x.js'); // now two buffers; active client on x.js
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   // The command suspended on a PICKER (not the minibuffer): one open request.
   assert.equal(log.pickerOpens.length, 1);
   assert.equal(log.minibufferOpens.length, 0);
@@ -848,7 +1056,7 @@ test('PICKER round-trip: choosing a buffer row switches the window to it', () =>
   spine.visitFile('/x.js'); // active client now on x.js
   assert.equal(spine.buffer.name, 'x.js');
   // Open the picker, then deliver a choice of the SEED buffer's id.
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   const req = log.pickerOpens[0];
   const seedRow = req.rows.find((r) => r.value === seedId);
   assert.ok(seedRow, 'the seed buffer is a row');
@@ -869,7 +1077,7 @@ test('PICKER cancel resumes the command with nil and leaves the window put', () 
   });
   spine.visitFile('/x.js');
   assert.equal(spine.buffer.name, 'x.js');
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   const req = log.pickerOpens[0];
   const cancelled = spine.cancelPicker(req.id);
   assert.equal(cancelled, true);
@@ -885,7 +1093,7 @@ test('a stale PICKER reply (wrong id) is dropped, not resumed', () => {
   });
   const seedId = spine.currentBufferIdOf(0);
   spine.visitFile('/x.js');
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   const req = log.pickerOpens[0];
   // A reply tagged with a DIFFERENT (stale) picker id must be ignored.
   assert.equal(spine.deliverPicker(seedId, 'picker-999'), false);
@@ -974,7 +1182,7 @@ test('viewState reports the major-mode name + math-preview-active flag', () => {
   assert.equal(spine.viewStateOf(0).mathPreviewActive, false);
 });
 
-test('kill-buffer removes the active buffer and re-homes the client', () => {
+test('kill-view removes the active buffer and re-homes the client', () => {
   const files = { '/x.js': { text: 'x', name: 'x.js' } };
   const { spine } = makeSpine('seed', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
@@ -987,7 +1195,7 @@ test('kill-buffer removes the active buffer and re-homes the client', () => {
   assert.equal(spine.buffer.name, 'scratch.txt');
 });
 
-test('kill-buffer refuses to kill the only buffer', () => {
+test('kill-view refuses to kill the only buffer', () => {
   const { spine } = makeSpine('only', 'scratch.txt');
   spine.setActiveClient(0);
   spine.killActiveBuffer();
@@ -1113,7 +1321,7 @@ test('sort-lines: an interactive region command sorts the selected lines', () =>
   const { spine } = makeSpine('banana\napple\ncherry');
   spine.buffer.moveTo(0);
   spine.handleKey('C-space');
-  spine.handleKey('M-greater'); // select to end of buffer
+  spine.handleKey('M-S-period'); // select to end of buffer
   spine.runCommand('sort-lines'); // interactive region → uses the selection
   assert.equal(spine.buffer.text, 'apple\nbanana\ncherry');
 });
@@ -1446,7 +1654,7 @@ test('a recovered buffer with no disk baseline is conservatively dirty', () => {
 
 test('C-/ undoes the last edit through the real command (text + point)', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
-  spine.handleKey('M-greater'); // end of buffer
+  spine.handleKey('M-S-period'); // end of buffer
   for (const ch of 'XY') spine.handleKey(ch);
   assert.equal(spine.buffer.text, 'seedXY');
   spine.handleKey('C-slash'); // C-/ → undo
@@ -1457,7 +1665,7 @@ test('C-/ undoes the last edit through the real command (text + point)', () => {
 
 test('C-x u is also bound to undo', () => {
   const { spine } = makeSpine('ab', 'scratch.txt');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   spine.handleKey('c');
   assert.equal(spine.buffer.text, 'abc');
   spine.handleKey('C-x');
@@ -1467,7 +1675,7 @@ test('C-x u is also bound to undo', () => {
 
 test('redo (C-S-/) reapplies an undone edit', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   spine.handleKey('Z');
   spine.handleKey('C-slash'); // undo → 'seed'
   assert.equal(spine.buffer.text, 'seed');
@@ -1478,7 +1686,7 @@ test('redo (C-S-/) reapplies an undone edit', () => {
 
 test('undo/redo set the history-op flag (consumeHistoryOp) for the server resync', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   spine.handleKey('Q');
   // An ordinary self-insert is NOT a history op.
   assert.equal(spine.consumeHistoryOp(), false);
@@ -1493,7 +1701,7 @@ test('the ● dirty flag agrees with undo against the saved baseline', () => {
   // Baseline = the seed text (a path-less buffer baselines its initial text).
   const { spine } = makeSpine('seed', 'scratch.txt');
   assert.equal(spine.activeModified, false, 'clean at the start');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   for (const ch of 'AB') spine.handleKey(ch); // 'seedAB' → dirty
   assert.equal(spine.activeModified, true);
   assert.ok(spine.viewState().modeline.startsWith('●'), 'dirty shows ●');

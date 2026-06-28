@@ -71,7 +71,7 @@ test('save-buffer writes the edited bytes to disk (atomic) and clears dirty', ()
     assert.equal(spine.activeModified, false);
 
     // Edit it → dirty + ● modeline.
-    spine.handleKey('M-greater');
+    spine.handleKey('M-S-period');
     for (const ch of 'EDIT') spine.handleKey(ch);
     assert.equal(spine.activeModified, true);
     assert.ok(spine.viewState().modeline.startsWith('●'), 'dirty shows ●');
@@ -114,7 +114,7 @@ test('autosave snapshots a dirty buffer to disk; scan recovers it', () => {
     const spine = makeRealSpine();
     spine.visitFile(target);
     // Edit but do NOT save → unsaved work in the server's memory.
-    spine.handleKey('M-greater');
+    spine.handleKey('M-S-period');
     for (const ch of 'UNSAVED') spine.handleKey(ch);
     assert.equal(spine.activeModified, true);
 

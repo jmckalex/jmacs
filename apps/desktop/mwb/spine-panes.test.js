@@ -271,10 +271,13 @@ test('splitting a tabline leaf keeps the original tabline; the new leaf is plain
   assert.equal(tab.text, undefined, 'no static text for a same-buffer tabline leaf');
 });
 
-test('a close-tab pane intent un-curates a tab (buffer survives in the pool) (Step 3c)', () => {
+test('a close-tab pane intent un-curates a tab (buffer survives in the pool) (Step 3c, opt-out)', () => {
   const files = { '/x.js': { text: 'x', name: 'x.js' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
   const seedId = spine.currentBufferIdOf(0);
+  // The default is now KILL-on-close; opt out so this exercises the un-curate
+  // path (the buffer survives in the pool / C-x C-b).
+  spine.interpreter.evaluate('(set! *close-tab-kills-view* #f)');
   spine.runCommand('toggle-tabline');
   const xId = spine.visitFile('/x.js'); // tabs: seed, x (x active)
 

@@ -101,7 +101,7 @@ function makeWiredPair(initialText) {
 test('integration: an undo in one window reverts BOTH mirrors of the shared buffer', () => {
   const { spine, mirrors, pump } = makeWiredPair('seed');
   // Client 0 types ' edit' at the end of the buffer.
-  pump(0, 'M-greater'); // motion, no text change
+  pump(0, 'M-S-period'); // motion, no text change
   for (const ch of ' edit') pump(0, ch);
   assert.equal(spine.buffer.text, 'seed edit');
   assert.equal(mirrors[0].text, 'seed edit');
@@ -117,7 +117,7 @@ test('integration: an undo in one window reverts BOTH mirrors of the shared buff
 
 test('integration: redo done in one window reapplies to both mirrors', () => {
   const { spine, mirrors, pump } = makeWiredPair('seed');
-  pump(0, 'M-greater');
+  pump(0, 'M-S-period');
   pump(0, '!');
   assert.equal(spine.buffer.text, 'seed!');
   pump(0, 'C-slash'); // undo → 'seed'
@@ -138,7 +138,7 @@ test('integration: a CHANGE-GROUP edit + its undo both stay in sync on both mirr
   //   - the grouped UNDO emits a SINGLE delta for several inverse edits, which
   //     is LOSSY — so undo/redo RESYNCs instead (the fix this wave adds).
   const { spine, mirrors, pump } = makeWiredPair('alpha\n   beta');
-  pump(0, 'M-less'); // beginning of buffer (on 'alpha')
+  pump(0, 'M-S-comma'); // beginning of buffer (on 'alpha')
   pump(0, 'C-x');
   pump(0, 'C-j'); // join-line — an atomic change group (faithful via N deltas)
   const joined = spine.buffer.text;
@@ -177,7 +177,7 @@ test('integration: WITHOUT the undo resync a grouped undo would desync (regressi
       });
     }
   });
-  spine.handleKey('M-less');
+  spine.handleKey('M-S-comma');
   deltas.length = 0;
   spine.runCommand('join-line');
   for (const d of deltas) mirror.applyDelta({ ...d, seq: 1 });

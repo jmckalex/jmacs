@@ -114,6 +114,12 @@ contextBridge.exposeInMainWorld('host', {
    *  in the flag-off build (nothing triggers it). */
   newWindow: (geometry) => ipcRenderer.send('window:new', geometry ?? null),
 
+  /** P2 (server mode): close THIS window. Driven by the server's close-window
+   *  CLIENT_DIRECTIVE (C-x 5 0 on this window, or C-x 5 1 from another). In
+   *  server mode the buffers live in the server and outlive the window, so the
+   *  close is free; main just closes this BrowserWindow. */
+  closeWindow: () => ipcRenderer.send('window:close'),
+
   /** Session restore (B2): this window's frame + display, for the geometry the
    *  session records. getWindowBounds is a one-shot pull (the client reports it
    *  on connect); onWindowBounds fires on every move/resize (returns an

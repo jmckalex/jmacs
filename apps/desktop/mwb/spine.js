@@ -195,6 +195,14 @@ const SPINE_STDLIB = Object.freeze([
   'custom.lisp',
   'indent.lisp',
   'modes.lisp',
+  // keymap.lisp — the ONE keymap + the dispatch engine (handle-key,
+  // lookup-key, keymap-chain, the prefix-map stack, the key-reader). Under
+  // Model B the server is the sole resolver; this file is authoritative and
+  // disk-editable. Loads before multi-cursor.lisp (so its keyboard-quit is
+  // the base multi-cursor wraps) and before auto-pair.lisp (so auto-pair's
+  // bracket bindings layer onto the real the-keymap). Needs only commands.lisp
+  // (defcommand / register-command!); the commands it binds resolve late.
+  'keymap.lisp',
   'math-preview.lisp',
   'kill.lisp',
   'yank-pop.lisp',
@@ -232,7 +240,7 @@ const SPINE_STDLIB = Object.freeze([
   // loaded — modes.lisp declares latex-mode + latex-mode-map (which this
   // file fills), and math-preview.lisp defines math-preview-mode (aliased
   // as latex-math-preview-mode). The C-c chord dispatches through the
-  // spine's mode-keymap chain (resolveMode). Production order: after
+  // mode-keymap chain in keymap.lisp's handle-key. Production order: after
   // markdown.lisp. See PRIMITIVE-SPLIT.md "Modes / latex".
   'latex.lisp',
   // latex-insert.lisp — AUCTeX Phase 2 smart insertion (environment /
@@ -362,166 +370,6 @@ const SPINE_STDLIB = Object.freeze([
 ]);
 
 /**
- * The keymap: a key-string → command-name table, in the same spirit as
- * production `keymap.lisp` but pared to what the spine exercises. The
- * server's `handle-key` resolves a key here, runs the bound command
- * through the REAL `run-command`, or self-inserts a bare printable.
- *
- * `keyEventToString` names (see reference_key_names): arrows are
- * `left/right/up/down`; `enter`, `backspace`; Meta is Command (`M-…`).
- */
-const KEYMAP = Object.freeze({
-  // motion
-  left: 'backward-char',
-  right: 'forward-char',
-  up: 'previous-line',
-  down: 'next-line',
-  'C-a': 'move-beginning-of-line',
-  'C-e': 'move-end-of-line',
-  'C-f': 'forward-char',
-  'C-b': 'backward-char',
-  'C-n': 'next-line',
-  'C-p': 'previous-line',
-  'M-f': 'forward-word',
-  'M-b': 'backward-word',
-  'M-less': 'beginning-of-buffer',
-  'M-greater': 'end-of-buffer',
-  // Screenful scroll (editing.lisp scroll-up/scroll-down, loaded verbatim):
-  // C-v page-down, M-v page-up. They step point by `(page-lines)` — the host
-  // primitive that reads this client's reported VIEWPORT (only the client
-  // knows how many lines fit). Moving point makes the client follow-scroll.
-  'C-v': 'scroll-up',
-  'M-v': 'scroll-down',
-  // more motion (editing.lisp, loaded verbatim — pure goto!-based)
-  'M-m': 'back-to-indentation', // M-m → first non-blank of the line
-  'M-a': 'backward-sentence', // M-a → start of the sentence
-  'M-e': 'forward-sentence', // M-e → end of the sentence
-  'M-g': 'goto-line', // M-g → read a line number (goto-line! is host-wired)
-  // editing
-  enter: 'newline',
-  backspace: 'delete-backward',
-  'C-d': 'delete-forward',
-  'C-l': 'recenter',
-  // --- more everyday editing (editing.lisp / kill.lisp, loaded verbatim) ---
-  // C-o opens a line (insert "\n", leave point before it); C-t transposes the
-  // two chars before point. Both are pure point/insert!/delete-region! over
-  // the real buffer primitives — no renderer dependency. (keymap.lisp binds
-  // these in the production global-map; they were simply not in the spine's
-  // pared map yet.)
-  'C-o': 'open-line',
-  'C-t': 'transpose-chars',
-  'M-k': 'kill-sentence', // kill.lisp — kill forward to the sentence end
-  'M-q': 'fill-paragraph', // editing.lisp → fill-paragraph! (createBufferPrimitives)
-  'M-r': 'replace-string', // editing.lisp → replace-all! (host-wired); minibuffer read
-  // C-= grows the active region one structural step (word→line→paragraph→
-  // buffer); chains on repeat via *last-command* (which run-command tracks).
-  // The `=` key normalises to `C-equal` (event.code "Equal"), per keymap.lisp.
-  'C-equal': 'expand-region',
-  // --- undo / redo (editing.lisp `undo`/`redo` → `undo!`/`redo!`) -----
-  // The L2 undo stack lives with the canonical buffer, so undo through the
-  // server reverts the buffer BOTH windows on it see (the Model-B payoff).
-  // C-/ is the Emacs undo key; on a US layout `event.code` is `Slash`, so it
-  // normalises to `C-slash` (and Emacs's literal C-_ is Shift+Minus →
-  // `C-S-minus`). C-x u (the other classic undo binding) is in CX_MAP.
-  // Redo: C-S-/ (`C-S-slash`) + M-S-z (`M-S-z`), mirroring keymap.lisp.
-  'C-slash': 'undo',
-  'C-S-minus': 'undo',
-  'C-S-slash': 'redo',
-  'M-S-z': 'redo',
-  // selection
-  'C-space': 'set-mark-command',
-  'C-g': 'keyboard-quit',
-  // --- kill ring / yank (kill.lisp + yank-pop.lisp) ------------------
-  'C-w': 'kill-region',
-  'M-w': 'copy-region',
-  'C-k': 'kill-line',
-  'C-y': 'yank',
-  'M-y': 'yank-pop',
-  'M-d': 'kill-word',
-  'M-backspace': 'backward-kill-word',
-  // --- line operations (line-ops.lisp) ------------------------------
-  'M-up': 'move-line-up',
-  'M-down': 'move-line-down',
-  'M-bracketright': 'indent-region', // M-]
-  'M-bracketleft': 'outdent-region', // M-[
-  // --- search (search.lisp — commands resolve; loop is a host stub) -
-  'C-s': 'isearch-forward',
-  'C-r': 'isearch-backward',
-  // --- highlight all matches (a REAL overlay feature, server-side) ---
-  // M-s h highlights every occurrence of the word at point / region as
-  // overlays the renderer draws via getDecorations(); M-s u clears them.
-  // (Emacs binds highlight-symbol-at-point under M-s h …; we keep the
-  // mnemonic.) These prove overlay sync end-to-end.
-  'M-s': { h: 'highlight-matches', u: 'unhighlight-all' },
-  // command spine entry points
-  'M-x': 'execute-extended-command',
-});
-
-/**
- * The global `C-c` prefix the spine offers when no MAJOR mode claims it.
- * In a Markdown buffer the mode-keymap chain catches `C-c` first (its
- * `C-c b` etc.), so these only fire in a plain buffer — exactly where
- * production's global `c-c-keymap` holds `C-c d` / `C-c D` (multi-cursor).
- */
-const CC_MAP = Object.freeze({
-  d: 'add-cursor-next', // multi-cursor.lisp — word-select + add next match
-  D: 'select-all-matches', // multi-cursor.lisp — a cursor at every match
-});
-
-/**
- * A keymap whose values are themselves keymaps make a key a *prefix*. The
- * `C-x` prefix carries the file + buffer commands. (Production resolves
- * this through nested maps in keymap.lisp; the spine inlines the one
- * prefix it needs.)
- */
-const CX_MAP = Object.freeze({
-  'C-f': 'find-file',
-  'C-s': 'save-buffer',
-  'C-w': 'write-file', // save-as: write the buffer to a new path (prompts)
-  'C-d': 'duplicate-line', // line-ops.lisp (production binds C-x C-d here)
-  'C-j': 'join-line', // line-ops.lisp
-  // More of production's C-x map (editing.lisp — pure buffer ops):
-  'C-x': 'exchange-point-and-mark', // C-x C-x — swap point and mark
-  h: 'mark-whole-buffer', // C-x h — select the whole buffer
-  m: 'toggle-minimap', // C-x m — toggle the minimap companion (minimap.lisp)
-  ';': 'comment-line', // C-x ; — comment/uncomment the line (mode comment-prefix)
-  // Multi-buffer (production keymap.lisp): C-x b switches buffer (a
-  // minibuffer name read, host-completed), C-x C-b lists buffers, C-x k
-  // kills the current buffer.
-  b: 'switch-to-buffer',
-  'C-b': 'list-buffers',
-  k: 'kill-buffer',
-  u: 'undo', // C-x u — the classic Emacs undo binding (alongside C-/)
-  // --- pane/window splits (panes.lisp — the Emacs C-x map) -----------
-  // C-x 2 / 3 / 0 / 1 / o drive the REAL panes.lisp commands against the
-  // active window's LOGICAL pane tree (pane-model.js). So a key routed
-  // through handleKey splits/cycles/deletes panes server-side, the same as
-  // a PANE_INTENT does — both paths run the same commands.
-  2: 'split-vertical', // C-x 2 — split top/bottom
-  3: 'split-horizontal', // C-x 3 — split side-by-side
-  0: 'delete-pane', // C-x 0 — delete the focused pane
-  1: 'delete-other-panes', // C-x 1 — the focused pane fills the window
-  o: 'other-pane', // C-x o — cycle focus to the next pane
-  // --- new window (C-x 5 2 — the Emacs make-frame prefix, G4) --------
-  // C-x 5 is the frame-command prefix; the spine offers `2` (make a new
-  // frame). A nested map makes `5` a prefix. The command's effect is
-  // CLIENT-performed (new-window → request-new-window! → WINDOW_NEW →
-  // host.newWindow()), so it's window lifecycle, not a buffer edit. (No
-  // conflict with C-x 2 = split-vertical: that resolves at the C-x level
-  // before this sub-map is entered.)
-  5: Object.freeze({ 2: 'new-window' }),
-  // --- bookmarks (C-x r prefix — bookmarks.lisp) ---------------------
-  // C-x r m set · C-x r b jump · C-x r l open the outline. A nested map makes
-  // `r` a prefix (production's keymap.lisp isn't loaded server-side; the spine
-  // inlines the bindings it needs, like the C-x 5 frame prefix above).
-  r: Object.freeze({
-    m: 'bookmark-set',
-    b: 'bookmark-jump',
-    l: 'list-bookmarks',
-  }),
-});
-
-/**
  * Create the command spine.
  *
  * @param {object} options
@@ -566,7 +414,7 @@ export function createSpine(options, effects = {}) {
   // sharing the buffer (overlays are shared state). Called with no args;
   // the server reads `spine.overlaySnapshot()`.
   const onOverlays = effects.onOverlays ?? (() => {});
-  // Raised when the active client runs list-buffers (C-x C-b). The server
+  // Raised when the active client runs list-views (C-x C-b). The server
   // sends that client the buffer-list records (`spine.bufferListRecords`).
   const onBufferList = effects.onBufferList ?? (() => {});
   // Raised when a command opens a generic PICKER (open-picker! — the G0b
@@ -575,7 +423,7 @@ export function createSpine(options, effects = {}) {
   // interactive list and the user's choice/cancel comes back up, resolved
   // via `deliverPicker`. Mirrors onMinibufferOpen.
   const onPicker = effects.onPicker ?? (() => {});
-  // Raised when a kill-buffer switched the active client to a different
+  // Raised when a kill-view switched the active client to a different
   // buffer (the killed buffer is gone). The server re-snapshots that client
   // onto its new buffer. Called with the active client's new bufferId.
   const onBufferSwitched = effects.onBufferSwitched ?? (() => {});
@@ -671,6 +519,13 @@ export function createSpine(options, effects = {}) {
    *  a WINDOW_NEW down-message to the active client, which asks its host to
    *  open another window (a new client on this shared server). Signature: (). */
   const onNewWindow = effects.onNewWindow ?? (() => {});
+
+  /** Raised by `emit-client-directive!`: send the directive `{ name, args }` to
+   *  each window in IDS. The command chose the recipients (this/other/all window
+   *  ids); the server posts a CLIENT_DIRECTIVE to just those ports. NAME is a
+   *  string, ARGS a serializable array (no raw Lisp values cross the port).
+   *  Signature: (ids: number[], name: string, args: any[]). */
+  const onClientDirective = effects.onClientDirective ?? (() => {});
 
   /** Create (and remember) the pane model for client INDEX, seeded on the
    *  client's starting buffer. */
@@ -837,6 +692,19 @@ export function createSpine(options, effects = {}) {
 
   // --- the echo area (status line) -------------------------------------
   let statusText = '';
+  // Optional styled rendering for the CURRENT status: { plain, segments } where
+  // segments is [{ text, color, bold }]. show-status-rich! sets it; the
+  // view-state emits the segments ONLY while statusText still equals `plain`,
+  // so any later plain status (a "Wrote foo", clear-status!, a JS-direct set)
+  // auto-reverts the echo to plain with no manual clearing. See viewStatusSegments.
+  let statusSegments = null;
+  /** The styled segments for the view-state, or null when the current status is
+   *  plain (statusText diverged from the segments' plain text). */
+  function viewStatusSegments() {
+    return statusSegments && statusSegments.plain === statusText
+      ? statusSegments.segments
+      : null;
+  }
 
   // --- the active minibuffer prompt ------------------------------------
   // The prompt label of an open minibuffer read, or null. The server reads
@@ -950,6 +818,25 @@ export function createSpine(options, effects = {}) {
       'clear-status!': () => {
         statusText = '';
         onStatus('');
+        return NIL;
+      },
+      // show-status-rich! — a STYLED echo message. The arg is a list of
+      // (text color bold) triples; each becomes a coloured (and optionally
+      // bold) span in the echo area. statusText is the concatenated plain text
+      // (the fallback + what the view-state compares against), so a later plain
+      // status auto-reverts to unstyled. Used by the quit walk's Save prompts.
+      'show-status-rich!': (args) => {
+        const segments = listToArray(args[0] ?? NIL).map((triple) => {
+          const [text, color, bold] = listToArray(triple);
+          return {
+            text: String(text ?? ''),
+            color: symName(color) ?? (typeof color === 'string' ? color : null),
+            bold: bold === true,
+          };
+        });
+        statusText = segments.map((s) => s.text).join('');
+        statusSegments = { plain: statusText, segments };
+        onStatus(statusText);
         return NIL;
       },
 
@@ -1114,6 +1001,29 @@ export function createSpine(options, effects = {}) {
       // keymap binding + the command) is here; the host half is in the client.
       'request-new-window!': () => {
         onNewWindow();
+        return NIL;
+      },
+
+      // --- client directives (the multi-window round-trip) ---------------
+      // A command picks WHICH windows to drive via these id-set helpers, then
+      // sends them a directive (a renderer-side action) with emit-client-directive!.
+      // The server posts a CLIENT_DIRECTIVE to just those ports. "this window" is
+      // the one whose keystroke is running (the active client).
+      'this-window-id': () => activeClientIndex,
+      'other-window-ids': () =>
+        arrayToList([...paneModels.keys()].filter((i) => i !== activeClientIndex)),
+      'all-window-ids': () => arrayToList([...paneModels.keys()]),
+      // -emit-client-directive! (the host half; emit-client-directive! in Lisp
+      // wraps it, converting the NAME symbol to a string). IDS is a Lisp list of
+      // window ids; NAME a string; ARGS a Lisp list of serializable values —
+      // converted to plain JS here so no raw Lisp value crosses the port.
+      '-emit-client-directive!': (args) => {
+        const ids = listToArray(args[0] ?? NIL).map(Number);
+        const name = symName(args[1]) ?? String(args[1] ?? '');
+        const directiveArgs = listToArray(args[2] ?? NIL).map((v) =>
+          typeof v === 'number' ? v : symName(v) ?? lispString(v)
+        );
+        onClientDirective(ids, name, directiveArgs);
         return NIL;
       },
 
@@ -1484,6 +1394,28 @@ export function createSpine(options, effects = {}) {
       // (path) -> "ok" | "error".
       'write-file!': (args) => writeActiveBufferTo(String(args[0] ?? '')),
 
+      // --- quit / save-some-buffers (the cross-window unsaved walk) -------
+      // The server sees EVERY window's buffers, so quit-editor's save walk
+      // (quit.lisp-style, defined below) runs server-side. These feed it:
+      //   dirty-buffer-ids   — ids of modified buffers that HAVE a file path
+      //                        (saveable in place), across all windows.
+      //   dirty-pathless-count — modified buffers with no file (e.g. an edited
+      //                        *scratch*); the walk can't save them, so they
+      //                        only figure into the final "will be lost" net.
+      //   buffer-name-by-id  — the display name for the per-buffer prompt.
+      //   save-buffer-by-id! — save one buffer in place (no window switch).
+      'dirty-buffer-ids': () =>
+        arrayToList(
+          registry.listRecords().filter((r) => r.modified && r.filePath).map((r) => r.id)
+        ),
+      'dirty-pathless-count': () =>
+        registry.listRecords().filter((r) => r.modified && !r.filePath).length,
+      'buffer-name-by-id': (args) => {
+        const e = registry.get(String(args[0] ?? ''));
+        return e ? e.buffer.name : NIL;
+      },
+      'save-buffer-by-id!': (args) => saveBufferById(String(args[0] ?? '')),
+
       // --- customisation openers (custom.lisp / faces.lisp) ------------
       // Open a 'customize' data-source leaf carrying the SCOPE (group /
       // variable / face). The leaf is server-owned (so it lives in PANE_TREE
@@ -1598,12 +1530,15 @@ export function createSpine(options, effects = {}) {
       },
 
       // --- live preview (markdown.lisp) — STUB -------------------------
-      // markdown-preview! / math-preview! drive render-side iframes /
-      // MathJax. The toggle commands resolve; the visual effect is a
-      // render-message to build later. See PRIMITIVE-SPLIT.md "preview".
+      // markdown-preview! — the JMarkdown live-preview toggle (C-c v / the
+      // Markdown / JMarkdown mode menu's "Toggle Preview Pane"). The command
+      // (markdown.lisp) runs server-side, but the preview pane lives in the
+      // CLIENT, so route it to the active window via the directive channel; the
+      // renderer toggles it using its own buffer mirror (text + pushed mode).
+      // (math-preview! stays a no-op — math preview is driven by the pushed
+      // majorModeName / mathPreviewActive VIEW fields, not a directive.)
       'markdown-preview!': () => {
-        statusText = 'markdown-preview: (spine stub — preview pane is render-side)';
-        onStatus(statusText);
+        onClientDirective([activeClientIndex], 'markdown-preview', []);
         return NIL;
       },
       'math-preview!': () => NIL,
@@ -1743,27 +1678,10 @@ export function createSpine(options, effects = {}) {
                               (cdr section))))
                  sections))))
 
-    ;; *prefix-arg* — the C-u universal-argument state (keymap.lisp owns it in
-    ;; production; that file is render-heavy and not loaded). panes.lisp reads
-    ;; it to decide a split's side ('after with no prefix, 'before with C-u).
-    ;; The spine has no C-u path yet, so it stays nil → splits default 'after.
-    (define *prefix-arg* nil)
-
-    ;; the-keymap — the global key -> command table (keymap.lisp owns it in
-    ;; production; not loaded here). auto-pair.lisp binds the bracket/quote
-    ;; characters into it ((set! the-keymap (assoc the-keymap "(" …))), and
-    ;; the spine's handle-key consults it for a single printable BEFORE
-    ;; self-inserting — so a typed "(" runs auto-pair-open-paren server-side,
-    ;; exactly as production resolves the-keymap before self-insert. It seeds
-    ;; empty (the spine's motion/editing chords live in the JS KEYMAP); only
-    ;; the per-character auto-pair bindings land here. (-spine-the-keymap-get
-    ;; reads it for handle-key; a miss is #f.)
-    (define the-keymap {})
-    (define (-spine-the-keymap-get key)
-      "The command bound to KEY in the-keymap, or #f when unbound. Read by
-       handle-key's printable path so auto-pair's character bindings fire."
-      (let ((binding (get the-keymap key nil)))
-        (if (nil? binding) #f binding)))
+    ;; *prefix-arg* (the C-u state, read by panes.lisp) and the-keymap (the
+    ;; global key->command table, layered by auto-pair.lisp) are both defined
+    ;; by keymap.lisp, loaded just below in SPINE_STDLIB — the server is the
+    ;; sole resolver now, so there is no spine-side shim for either.
 
     ;; defface / face — the face registry (faces.lisp owns these in
     ;; production; that file is render-heavy and not loaded). snippets.lisp
@@ -1807,21 +1725,11 @@ export function createSpine(options, effects = {}) {
 
   // Load the real command system + editing commands + the model-heavy
   // slice (see SPINE_STDLIB) verbatim from disk — the same source the
-  // production editor runs. Just before multi-cursor.lisp (which rebinds
-  // keyboard-quit), define a minimal model-side keyboard-quit: production's
-  // (keymap.lisp, render-heavy, not loaded) also resets the keymap + prefix
-  // arg, but the spine owns chord state in JS (resetChord), so the model
-  // half is just clearing the mark. `defcommand` exists once commands.lisp
-  // (first in the list) has loaded, so this must run mid-loop, not in the
-  // early prelude above.
+  // production editor runs. keymap.lisp (loaded before multi-cursor.lisp)
+  // now defines keyboard-quit (reset-keymap! + reset-prefix-arg! + clear-mark!);
+  // multi-cursor.lisp wraps it to also collapse the cursor set, exactly as in
+  // production. No spine-side keyboard-quit shim is needed.
   for (const file of SPINE_STDLIB) {
-    if (file === 'multi-cursor.lisp') {
-      interpreter.evaluate(`
-        (defcommand keyboard-quit ()
-          "Abort a partial key sequence and clear the selection (C-g)."
-          (clear-mark!))
-      `);
-    }
     const source = readFileSync(join(STDLIB_DIR, file), 'utf8');
     interpreter.evaluate(source);
   }
@@ -1879,24 +1787,24 @@ export function createSpine(options, effects = {}) {
     ;; the prompt (it has the command list); on submit the host calls
     ;; (run-command (quote NAME)) directly, so this command's body just
     ;; opens the prompt with a marker the host recognises.
-    (defcommand execute-extended-command ()
+    (defcommand execute-command ()
       "Read a command name in the minibuffer and run it (M-x)."
       (interactive (string "M-x "))
       ;; The argument IS the chosen command name (the host resolved it).
       (lambda (name) name))
 
     ;; --- multi-buffer commands (C-x b / C-x C-b / C-x k) -------------
-    ;; switch-to-buffer prompts for a buffer name; the host completes
+    ;; switch-view prompts for a buffer name; the host completes
     ;; against the live buffer list and, on submit, switches the active
     ;; client to that buffer (sending it the new buffer's snapshot +
     ;; overlays). Like M-x/find-file, the body is a host-fulfilled
     ;; placeholder — the host acts on submit (server.js).
-    (defcommand switch-to-buffer ()
-      "Switch the current window to another buffer by name (C-x b)."
+    (defcommand switch-view ()
+      "Switch the current window to another view by name (C-x b)."
       (interactive (string "Switch to buffer: "))
       (lambda (name) name))
 
-    ;; list-buffers (C-x C-b) — the FIRST consumer of the generic picker
+    ;; list-views (C-x C-b) — the FIRST consumer of the generic picker
     ;; (G0b). It opens an interactive PICKER over the open buffers (rows from
     ;; the host's buffer-list-rows provider) and, on a choice, switches this
     ;; window to the chosen buffer. This is the round-trip in miniature: the
@@ -1905,8 +1813,8 @@ export function createSpine(options, effects = {}) {
     ;; buffer's id; the body switches to it. switch-to-buffer-id! is host-side
     ;; (it re-syncs the client onto the new buffer). A cancel resumes with nil
     ;; → the cond's else does nothing (the window stays put).
-    (defcommand list-buffers ()
-      "Pick a buffer to switch to (C-x C-b)."
+    (defcommand list-views ()
+      "Pick a view to switch to (C-x C-b)."
       (picker-read "Buffer list"
                    (buffer-list-rows)
                    (lambda (id)
@@ -1914,11 +1822,11 @@ export function createSpine(options, effects = {}) {
                        ((nil? id) nil)            ;; cancelled — stay put
                        (else (switch-to-buffer-id! id))))))
 
-    ;; kill-buffer removes the current buffer from the registry and
+    ;; kill-view removes the current buffer from the registry and
     ;; switches the window to another (the registry refuses to drop the
     ;; last buffer). The host performs the kill + re-snapshot on dispatch.
-    (defcommand kill-buffer ()
-      "Kill the current buffer and switch to another (C-x k)."
+    (defcommand kill-view ()
+      "Kill the current view and switch to another (C-x k)."
       (kill-current-buffer!))
 
     ;; save-buffer (C-x C-s): write the current buffer to its file path
@@ -2061,80 +1969,47 @@ export function createSpine(options, effects = {}) {
                          (reftex-cite-insert key)))))
   `);
 
-  // --- the mode-keymap resolver (the meaningful spine extension) -------
+  // --- post-stdlib dispatch glue --------------------------------------
   //
-  // For a mode's bindings (Markdown's C-c b, the math-symbol minor mode's
-  // \`) to dispatch server-side, handleKey must consult the active
-  // buffer's mode-keymap chain — exactly what production keymap.lisp does
-  // via `lookup-in-chain (keymap-chain)`. modes.lisp (now loaded) provides
-  // `minor-mode-keymaps` + `major-mode-keymap`; this resolver reuses them.
-  //
-  // It is written in Lisp (so it walks the real Lisp hash-maps) but is
-  // STATELESS toward JS: it returns a tagged plain value JS can branch on
-  // without holding a Lisp object —
-  //   - a command name (string)  → JS runs it through run-command;
-  //   - the symbol 'prefix       → JS knows a chord started (the resolver
-  //                                stashed the map in `-spine-chord-map`);
-  //   - nil                      → not bound in the mode chain (JS falls
-  //                                through to its own global KEYMAP).
-  // The chord state lives in `-spine-chord-map`; a follow-up key resolves
-  // against it. resetMode() clears it (C-g, an unbound mid-chord key).
+  // keymap.lisp (loaded above) now owns the whole dispatch: handle-key,
+  // lookup-key, the keymap-chain (minor → major → the-keymap), the prefix-map
+  // stack, the key-reader (*key-reader* / read-next-key), self-insert, and the
+  // unregistered-command guard. The spine no longer reimplements any of it.
+  // Two small host-side concerns remain, defined here AFTER the stdlib so they
+  // see the real definitions:
   interpreter.evaluate(`
-    (define -spine-chord-map nil)
-
-    (define (-spine-mode-chain)
-      "The mode keymaps for the current buffer, highest precedence first:
-       minor-mode maps, then the major-mode map. (No global map — the JS
-       KEYMAP is the spine's global layer.)"
-      (append (minor-mode-keymaps) (list (major-mode-keymap))))
-
-    (define (-spine-lookup key maps)
-      "First non-nil binding of KEY among MAPS (skipping nil maps)."
-      (cond
-        ((nil? maps) nil)
-        ((nil? (car maps)) (-spine-lookup key (cdr maps)))
-        (else (let ((b (get (car maps) key nil)))
-                (if (nil? b) (-spine-lookup key (cdr maps)) b)))))
-
-    (define (-spine-resolve key)
-      "Resolve KEY through the mode chain (or the active chord map). Returns
-       a command name (string), 'prefix (a chord began — map stashed), or
-       nil (unbound in the mode chain)."
-      (let ((b (if (nil? -spine-chord-map)
-                   (-spine-lookup key (-spine-mode-chain))
-                   (get -spine-chord-map key nil))))
-        (cond
-          ((nil? b) (set! -spine-chord-map nil) nil)
-          ((map? b) (set! -spine-chord-map b) 'prefix)
-          ((symbol? b) (set! -spine-chord-map nil) (symbol->string b))
-          (else (set! -spine-chord-map nil) nil))))
-
-    (define (-spine-reset-chord) (set! -spine-chord-map nil))
-    (define (-spine-chord-active?) (not (nil? -spine-chord-map)))
-
     ;; Choose the major mode from the current view's name (modes.lisp's
-    ;; choose-major-mode! turns on default minor modes too — none here yet).
+    ;; choose-major-mode! turns on default minor modes too).
     (define (-spine-choose-major-mode) (choose-major-mode!) nil)
 
-    ;; read-next-key support: route the next keystroke to a callback
-    ;; instead of the keymaps (keymap.lisp's mechanism; the math-symbol
-    ;; minor mode's \` uses it). Defined here because keymap.lisp (which
-    ;; owns the production version) is render-heavy and not loaded.
-    (define *spine-key-reader* nil)
-    (define (read-next-key callback) (set! *spine-key-reader* callback) nil)
-    (define (-spine-key-reader-pending?) (not (nil? *spine-key-reader*)))
-    (define (-spine-take-key-reader key)
-      "If a key-reader is pending, consume it with KEY and return #t."
-      (if (nil? *spine-key-reader*)
-          #f
-          (let ((reader *spine-key-reader*))
-            (set! *spine-key-reader* nil)
-            (reader key)
-            #t)))
+    ;; History-op tracking for the cross-window resync. keymap.lisp's handle-key
+    ;; calls run-command directly, so wrap run-command (late binding means
+    ;; handle-key AND the JS runCommand / applyPaneIntent / M-x paths all hit
+    ;; this wrapper) to record when an undo/redo ran. The server reads-and-clears
+    ;; the flag via -spine-consume-history-op (consumeHistoryOp) to decide
+    ;; whether to resync full text + cursors (a change-group's single delta
+    ;; can't be replayed on the client mirror).
+    (define -spine-base-run-command run-command)
+    (define -spine-history-op #f)
+    (define (run-command name)
+      (when (or (eq? name 'undo) (eq? name 'redo))
+        (set! -spine-history-op #t))
+      (-spine-base-run-command name))
+    (define (-spine-consume-history-op)
+      (let ((v -spine-history-op))
+        (set! -spine-history-op #f)
+        v))
+
+    ;; emit-client-directive! — send a renderer-side directive to a chosen set
+    ;; of windows. IDS is a list of window ids (this-window-id / other-window-ids
+    ;; / all-window-ids); NAME is a symbol; ARGS are serializable. The host half
+    ;; (-emit-client-directive!) posts a CLIENT_DIRECTIVE to each window's port.
+    (define (emit-client-directive! ids name . args)
+      (-emit-client-directive! ids (symbol->string name) args))
   `);
 
   // --- M-x: a real command-name read --------------------------------
-  // execute-extended-command's interactive (string "M-x ") opens the
+  // execute-command's interactive (string "M-x ") opens the
   // minibuffer; the host (server) completes against the real command
   // registry and, on submit, runs the chosen command. We expose the
   // command names + a runner for the server to use.
@@ -2177,6 +2052,264 @@ export function createSpine(options, effects = {}) {
       "Open another editor window onto the shared server (C-x 5 2). The
        window itself is opened by the client's host; this raises the effect."
       (request-new-window!))
+
+    (defcommand close-window ()
+      "Close THIS window (C-x 5 0). The buffers live in the shared server and
+       outlive the window, so closing loses nothing; the server reaps the
+       detached client. Sends a close-window directive to this window only."
+      (emit-client-directive! (list (this-window-id)) 'close-window))
+
+    (defcommand close-other-windows ()
+      "Close every window EXCEPT this one (C-x 5 1) — the multi-window payoff:
+       one keystroke shuts the others. Each target closes itself; the server
+       keeps their buffers. A no-op when this is the only window."
+      (emit-client-directive! (other-window-ids) 'close-window))
+
+    ;; --- quit-editor: the cross-window save-some-buffers walk -------------
+    ;; C-x C-c quits the app, which tears down this shared server — so unlike a
+    ;; window close, quit needs the unsaved check, and the server is the only
+    ;; thing that sees EVERY window's buffers. The walk (Emacs save-some-buffers
+    ;; style) reads ONE key per modified, path-backed buffer — y save, n skip,
+    ;; ! save the rest, q stop — then a final net if any stay unsaved, then it
+    ;; hands off the shutdown (workspace prompt + flush + host.quit) to the
+    ;; originating window via a 'quit directive. Modelled on query-replace's
+    ;; read-next-key loop (regex-search.lisp).
+    (define (-quit-cancel)
+      "Abort the quit walk: clear the prompt and leave NO pending key-reader,
+       so a later C-x C-c starts the walk over from scratch (not stranded
+       mid-prompt). Nothing is quit."
+      (show-status! "Quit canceled"))
+
+    (define (-quit-walk ids save-all)
+      (cond
+        ((nil? ids) (-quit-net))
+        (save-all
+         (save-buffer-by-id! (car ids))
+         (-quit-walk (cdr ids) #t))
+        (else
+         (show-status-rich!
+           (list (list "Save " "#c0392b" #f)
+                 (list (str "\\"" (buffer-name-by-id (car ids)) "\\"") "#ff3b30" #t)
+                 (list "? (y / n / ! all / q stop / C-g cancel)" "#c0392b" #f)))
+         (read-next-key
+           (lambda (key)
+             (cond
+               ((equal? key "y") (save-buffer-by-id! (car ids)) (-quit-walk (cdr ids) #f))
+               ((equal? key "n") (-quit-walk (cdr ids) #f))
+               ((equal? key "!") (save-buffer-by-id! (car ids)) (-quit-walk (cdr ids) #t))
+               ((equal? key "q") (-quit-net))
+               ;; C-g / Escape cancel the whole quit cleanly (no pending reader).
+               ((or (equal? key "C-g") (equal? key "escape")) (-quit-cancel))
+               ;; Any other key re-prompts for THIS buffer.
+               (else (-quit-walk ids #f))))))))
+
+    ;; The final safety net: count what's still unsaved (the n-skipped
+    ;; path-backed buffers + the path-less ones the walk can't save). If any
+    ;; remain, one confirm before discarding them; else quit straight away.
+    (define (-quit-net)
+      (let ((remaining (+ (length (dirty-buffer-ids)) (dirty-pathless-count))))
+        (if (> remaining 0)
+            (begin
+              (show-status-rich!
+                (list (list (str remaining) "#ff3b30" #t)
+                      (list " buffer(s) unsaved — quit anyway? (y / n)" "#c0392b" #f)))
+              (read-next-key
+                (lambda (key)
+                  (cond
+                    ((equal? key "y") (-quit-do))
+                    ;; n / C-g / Escape abort the quit cleanly (no pending reader).
+                    ((or (equal? key "n") (equal? key "C-g") (equal? key "escape"))
+                     (-quit-cancel))
+                    (else (-quit-net))))))
+            (-quit-do))))
+
+    ;; Hand the shutdown to the originating window: it runs the workspace
+    ;; "Remember this workspace?" prompt, flushes metadata, clears recovery,
+    ;; and calls host.quit() (those are host concerns; the server only kills
+    ;; itself when the process exits).
+    (define (-quit-do)
+      (clear-status!)
+      (emit-client-directive! (list (this-window-id)) 'quit))
+
+    (defcommand quit-editor ()
+      "Quit the editor (C-x C-c). Walks the unsaved buffers across ALL windows
+       (save-some-buffers style: y/n/!/q per buffer), then hands the shutdown
+       off to this window."
+      (-quit-walk (dirty-buffer-ids) #f))
+
+    ;; --- describe-key (C-h k) — P3 help port ------------------------------
+    ;; The server now owns the keymap AND the command docstrings, so the
+    ;; renderer-only help.lisp version (println / open-doc!) graduates here.
+    ;; Read ONE key, resolve it through the full mode chain (keymap-chain),
+    ;; and report it in the echo area. read-next-key auto-clears after one
+    ;; key (handle-key nils *key-reader* before invoking the reader), so no
+    ;; stranded reader and no special abort handling is needed — C-h k C-g
+    ;; just describes keyboard-quit, as in Emacs. The full doc PAGE
+    ;; (open-doc! → the manual view) is a later follow-up via the directive
+    ;; channel; for now we surface the first line of the docstring inline.
+    (define (-doc-first-line s)
+      "The first line of docstring S (everything up to the first newline)."
+      (let ((nl (string-index-of s "\\n")))
+        (if (< nl 0) s (substring s 0 nl))))
+
+    ;; Show HEADING and the docstring INFO (a string, or #f / empty → a
+    ;; no-documentation note) in the utility dock's reusable *Help* tab. The
+    ;; dock is RENDERER chrome and the server resolves the key, so this is a
+    ;; renderer-side effect: it emits a show-help directive to THIS window
+    ;; (the directive channel — §the P3 pattern). The renderer renders INFO
+    ;; as Markdown and refills one shared Help tab (no buffer-list clutter,
+    ;; read-only, q-dismissable) — unlike the old new-view!/insert! buffer.
+    (define (-show-help! heading info)
+      ;; emit-client-directive! is variadic (ids name . args) — pass the
+      ;; directive args FLAT, not wrapped in a (list …) (which would nest
+      ;; them into a single arg the host can't serialize).
+      (emit-client-directive! (list (this-window-id)) 'show-help
+                              heading (if (string? info) info "")))
+
+    ;; describe-key reads a COMPLETE key sequence, following prefix maps
+    ;; (C-x …, C-c …) until it resolves to a command or an unbound key — so
+    ;; C-h k C-x C-f describes find-file, not "C-x is a prefix". MAPS is the
+    ;; list of keymaps the next key resolves through: the mode chain at the
+    ;; start, then the prefix sub-maps after each prefix key (the same
+    ;; lookup-in-chain / -prefix-maps-for the live dispatcher uses). Each
+    ;; prefix descent re-arms read-next-key; every non-prefix key terminates
+    ;; the sequence, so there is no re-prompt loop and no stranded reader.
+    (define (-describe-key-step keys-so-far maps)
+      (read-next-key
+        (lambda (key)
+          (cond
+            ;; Mid-sequence C-g / Escape aborts the walk cleanly — no pending
+            ;; reader, nothing described. At the FIRST key these are real keys
+            ;; to describe (C-g → keyboard-quit), so only abort once a prefix
+            ;; has been entered.
+            ((and (> (string-length keys-so-far) 0)
+                  (or (equal? key "C-g") (equal? key "escape")))
+             (show-status! "Quit"))
+            (else
+              (let* ((seq (if (= (string-length keys-so-far) 0)
+                              key
+                              (str keys-so-far " " key)))
+                     (binding (lookup-in-chain key maps)))
+                (cond
+                  ((nil? binding)
+                   (show-status! (str seq " is unbound")))
+                  ((map? binding)
+                   ;; A prefix — echo the running sequence with a trailing dash
+                   ;; (Emacs-style) and read the next key within the sub-maps.
+                   (show-status! (str seq "-"))
+                   (-describe-key-step seq (-prefix-maps-for key maps)))
+                  ((not (command-registered? binding))
+                   (show-status! (str seq " runs " (symbol->string binding)
+                                      " (not available here)")))
+                  (else
+                    (let ((name (symbol->string binding)))
+                      (-show-help! (str seq " runs " name) (doc (eval binding)))
+                      (show-status! (str seq " runs " name)))))))))))
+
+    (defcommand describe-key ()
+      "Describe the command bound to a COMPLETE key sequence (C-h k). Reads
+       keys, following prefix maps (C-x …, C-c …, C-h …) until the sequence
+       resolves to a command or an unbound key — so C-h k C-x C-f describes
+       find-file. A bound, registered command's full docstring opens in the
+       utility dock's Help tab; an unbound or still-in-progress sequence
+       shows in the echo area."
+      (show-status! "Describe key — press a key sequence:")
+      (-describe-key-step "" (keymap-chain)))
+
+    ;; --- describe-command (C-h f) — P3 help port --------------------------
+    ;; Type a command name; echo the first line of its docstring. The typed
+    ;; text is resolved like M-x's submit-time match (bestCommandMatch):
+    ;; exact name, else the SHORTEST registered command name containing it,
+    ;; so a partial name still lands — and the echo shows the resolved name,
+    ;; so the lenient match is never a surprise. Server-registered commands
+    ;; only (the renderer-owned element-view commands carry no server-side
+    ;; docstring). The "Describe command: " prompt isn't special-cased in
+    ;; server.js, so its submit falls through to deliverMinibuffer and this
+    ;; body runs with the typed value. Reuses -doc-first-line.
+    (define (-command-name-match typed)
+      "Resolve TYPED to a registered command name: exact, else the shortest
+       registered name containing TYPED, or nil when nothing matches."
+      (let ((names (registered-command-names)))
+        (if (member typed names)
+            typed
+            (let ((hits (sort (filter (lambda (n) (string-contains? n typed))
+                                      names)
+                              (lambda (a b)
+                                (< (string-length a) (string-length b))))))
+              (if (nil? hits) nil (car hits))))))
+
+    (defcommand describe-command (typed)
+      "Describe a command by name (C-h f). Resolves the typed text (exact,
+       else shortest containing match, like M-x) and shows the command's
+       FULL docstring in the utility dock's Help tab."
+      (interactive (string "Describe command: "))
+      (let ((name (-command-name-match typed)))
+        (cond
+          ((nil? name)
+           (show-status! (str "No command matching: " typed)))
+          (else
+            (-show-help! name (doc (eval (string->symbol name))))
+            (show-status! name)))))
+
+    ;; --- apropos-doc (C-h a) — P3 help port -------------------------------
+    ;; List every registered command whose NAME or docstring contains the
+    ;; typed text (case-insensitive) in a fresh *Apropos: PATTERN* view, each
+    ;; as "name — first docstring line", shortest name first. Modeled on
+    ;; occur (new-view! + insert!), fully server-side. The renderer's
+    ;; start-doc-search! fuzzy-searched the built doc MANIFEST; the server
+    ;; instead searches LIVE commands — broader (every command, not only
+    ;; pre-built pages) and available without docs.lisp. Like occur's
+    ;; "Occur: " prompt, "Apropos: " falls through to deliverMinibuffer.
+    (define (-apropos-entry name)
+      "(name . docstring) for command NAME (a string); docstring is the
+       empty string when the command has none."
+      (let ((info (doc (eval (string->symbol name)))))
+        (cons name (if (string? info) info ""))))
+
+    (define (-apropos-match? needle entry)
+      "True when NEEDLE (already lowercased) is a substring of ENTRY's
+       lowercased name or docstring."
+      (or (string-contains? (string-downcase (car entry)) needle)
+          (string-contains? (string-downcase (cdr entry)) needle)))
+
+    (define (-apropos-format entries)
+      "Render ENTRIES (name . docstring) as a Markdown bullet list
+       '- name — first-doc-line' (the body of the Apropos dock panel). No
+       backticks — a literal backtick in this embedded JS template closes it."
+      (if (nil? entries)
+          ""
+          (let* ((e (car entries))
+                 (first (-doc-first-line (cdr e)))
+                 (line (if (= (string-length first) 0)
+                           (str "- " (car e))
+                           (str "- " (car e) " — " first))))
+            (str line "\\n" (-apropos-format (cdr entries))))))
+
+    ;; Show the apropos results in the utility dock's reusable *Apropos* tab —
+    ;; a renderer-side effect (the dock is client chrome), so it goes out as a
+    ;; show-apropos directive to THIS window. HEADING is the count line; BODY
+    ;; the Markdown bullet list. Mirrors -show-help! (args passed FLAT).
+    (define (-show-apropos! heading body)
+      (emit-client-directive! (list (this-window-id)) 'show-apropos
+                              heading body))
+
+    (defcommand apropos-doc (pattern)
+      "List every command whose name or documentation matches PATTERN (a
+       case-insensitive substring) in the utility dock's Apropos tab (C-h a).
+       Each line is the command name and its docstring's first line, shortest
+       name first."
+      (interactive (string "Apropos: "))
+      (let* ((needle (string-downcase pattern))
+             (all (map -apropos-entry (registered-command-names)))
+             (hits (sort (filter (lambda (e) (-apropos-match? needle e)) all)
+                         (lambda (a b)
+                           (< (string-length (car a))
+                              (string-length (car b))))))
+             (count (length hits))
+             (heading (str count " command" (if (= count 1) "" "s")
+                           " matching " pattern)))
+        (-show-apropos! heading (if (nil? hits) "" (-apropos-format hits)))
+        (show-status! heading)))
 
     (defcommand toggle-tabline ()
       "Toggle whether the focused pane is a tabline of this window's buffers
@@ -2791,6 +2924,31 @@ export function createSpine(options, effects = {}) {
     return writeActiveBufferTo(activeEntry.filePath);
   }
 
+  /** Save the buffer with id ID to its own file path, WITHOUT switching the
+   *  active client to it (the quit save-some-buffers walk saves buffers in
+   *  other windows in place). Re-baselines on success so the dirty flag clears.
+   *  Returns "ok" | "no-entry" | "no-path" | "error". */
+  function saveBufferById(id) {
+    const entry = registry.get(id);
+    if (!entry) return 'no-entry';
+    if (!entry.filePath) return 'no-path';
+    let result;
+    try {
+      result = saveFile({ path: entry.filePath, text: entry.buffer.text });
+    } catch (error) {
+      result = { ok: false, error: error && error.message };
+    }
+    if (!result || !result.ok) {
+      statusText = `Save failed: ${(result && result.error) || 'unknown error'}`;
+      onStatus(statusText);
+      return 'error';
+    }
+    registry.markSaved(entry);
+    statusText = `Wrote ${entry.buffer.name}`;
+    onStatus(statusText);
+    return 'ok';
+  }
+
   /**
    * Write the active buffer's text to PATH (atomic), rebind the buffer's
    * file path to it, and re-baseline the saved text. Used by save-buffer
@@ -2838,7 +2996,7 @@ export function createSpine(options, effects = {}) {
   // to the client's focused leaf's buffer + that leaf's view.
 
   /** The client index the server is currently serving (so a command's effect
-   *  — kill-buffer, list-buffers, split-window — targets the right window). */
+   *  — kill-view, list-views, split-window — targets the right window). */
   let activeClientIndex = 0;
 
   /** Register a new client/window. Returns a fresh, never-reused index.
@@ -3183,7 +3341,7 @@ export function createSpine(options, effects = {}) {
   }
 
   /** Every buffer id any leaf of client INDEX shows (a window may have several
-   *  panes on different buffers). Used by the kill-buffer re-home: a window is
+   *  panes on different buffers). Used by the kill-view re-home: a window is
    *  "affected" if ANY of its panes shows the killed buffer. */
   function buffersShownByClient(index) {
     const model = paneModels.get(index);
@@ -3210,12 +3368,14 @@ export function createSpine(options, effects = {}) {
     return out;
   }
 
-  /** Kill the ACTIVE client's focused buffer, switching every pane (in any
-   *  window) showing it to another buffer. Refuses to kill the last buffer
-   *  (the registry guard). Called by the kill-current-buffer! primitive. */
-  function killActiveBuffer() {
+  /** Kill the buffer/source with id KILLEDID, switching every pane (in any
+   *  window) showing it to another buffer. Refuses to kill the last text
+   *  buffer (the registry guard). The caller should re-point the focused
+   *  tabline first (close-tab does) — this finishes the GLOBAL removal. Used
+   *  by kill-current-buffer! (kill-view) and close-tab (the clicked tab). */
+  function killBufferById(killedId) {
     const index = activeClientIndex;
-    const killedId = currentBufferIdOf(index);
+    if (!killedId) return;
 
     // A DATA-SOURCE (shell/media) — not a registry buffer. Remove the SOURCE and
     // drop it from every open-set; a shell's pty is then reaped client-side (it
@@ -3245,13 +3405,14 @@ export function createSpine(options, effects = {}) {
       // `liveShells` still listed the killed shell. Re-push now (post-removal) so
       // the client reaps its pty (same stale-by-one issue as close-tab).
       onPaneTree(index);
+      onBufferList(); // the source left the pool — refresh the buffer list
       statusText = `Killed ${ds ? ds.name : 'buffer'}`;
       onStatus(statusText);
       return;
     }
 
     if (registry.count() <= 1) {
-      statusText = 'kill-buffer: refusing to kill the only buffer';
+      statusText = 'kill-view: refusing to kill the only buffer';
       onStatus(statusText);
       return;
     }
@@ -3272,8 +3433,15 @@ export function createSpine(options, effects = {}) {
         }
       }
     }
+    onBufferList(); // the buffer left the pool — refresh the buffer list
     statusText = `Killed buffer; switched to ${survivor.buffer.name}`;
     onStatus(statusText);
+  }
+
+  /** Kill the ACTIVE client's focused buffer — the kill-current-buffer! /
+   *  kill-view (C-x k) path. */
+  function killActiveBuffer() {
+    killBufferById(currentBufferIdOf(activeClientIndex));
   }
 
   /** The current (active) buffer's major-mode display name (e.g. "Markdown"),
@@ -3418,6 +3586,7 @@ export function createSpine(options, effects = {}) {
         mathPreviewActive: false,
         modeline: renderModeline({ name: ds.name, modified: false, mode: ds.kind, noPosition: true }),
         status: statusText,
+        statusSegments: viewStatusSegments(),
         modified: false,
       };
     }
@@ -3446,6 +3615,7 @@ export function createSpine(options, effects = {}) {
         mode: modeName,
       }),
       status: statusText,
+      statusSegments: viewStatusSegments(),
       modified,
     };
   }
@@ -3473,175 +3643,33 @@ export function createSpine(options, effects = {}) {
 
   // --- the keymap dispatch ---------------------------------------------
   //
-  // A pared `handle-key` in the server's host (JS), in the SAME shape as
-  // production keymap.lisp's `handle-key`: resolve the key in the active
-  // map (a prefix stack) or the global map; a nested map starts a chord; a
-  // command name runs through the REAL run-command; a bare printable
-  // self-inserts. The minibuffer steals keys while a prompt is open (the
-  // client handles minibuffer input itself, so the server only sees the
-  // resolved submit/cancel — handle-key is not called during a prompt).
-
-  /** The active JS prefix map (a global chord is in progress), or null. */
-  let activeMap = null;
-  let chordPrefix = '';
-
-  function resetChord() {
-    activeMap = null;
-    chordPrefix = '';
-    if (statusText.endsWith('-')) {
-      statusText = '';
-      onStatus('');
-    }
-  }
-
-  /** Is a Lisp key-reader pending (read-next-key, e.g. the math-symbol `)? */
-  function keyReaderPending() {
-    return interpreter.call('-spine-key-reader-pending?') === true;
-  }
-
-  /** Resolve a key through the mode chain (or the active mode-chord). One
-   *  of: a command name (string), the boolean-ish marker 'prefix', or
-   *  false/nil. Re-entry while a mode-chord is active resolves against it. */
-  function resolveMode(key) {
-    const result = interpreter.call('-spine-resolve', key);
-    if (typeof result === 'string') return result;
-    if (result && typeof result === 'object' && result.name === 'prefix') {
-      return 'prefix';
-    }
-    return null; // nil / unbound
-  }
-
-  /** Is a mode-chord (e.g. after C-c) in progress? */
-  function modeChordActive() {
-    return interpreter.call('-spine-chord-active?') === true;
-  }
+  // The server is the only resolver. keymap.lisp (loaded into SPINE_STDLIB)
+  // owns the keymap, the chord state machine, the prefix-map stack, the
+  // key-reader, self-insert, run-command, and the unregistered-command guard.
+  // This host wrapper just relays the keystroke to (handle-key …). The
+  // minibuffer steals keys while a prompt is open (the client handles
+  // minibuffer input itself, so handle-key is not called during a prompt).
+  // Status echo flows through the show-status!/clear-status! host primitives
+  // that keymap.lisp drives.
 
   /**
-   * Dispatch a key. Returns true when the key was handled. Mirrors
-   * keymap.lisp's resolution order: a pending key-reader first, then the
-   * active chord (mode or global), then — at rest — the buffer's
-   * mode-keymap chain, then the spine's global KEYMAP; a bare printable
-   * self-inserts.
+   * Dispatch a key through keymap.lisp's handle-key. Returns true when the
+   * key was handled (a command ran, a chord began/continued, or a printable
+   * self-inserted).
    *
    * @param {string} key - A normalised key string (keyEventToString name).
    * @returns {boolean}
    */
   function handleKey(key) {
-    // 1. A pending key-reader (read-next-key) steals the key.
-    if (keyReaderPending()) {
-      interpreter.call('-spine-take-key-reader', key);
-      return true;
-    }
-
-    // 2. Mid mode-chord (e.g. C-c then b): resolve against the stashed map.
-    if (modeChordActive()) {
-      const r = resolveMode(key);
-      if (r === 'prefix') {
-        chordPrefix = `${chordPrefix} ${key}`;
-        statusText = `${chordPrefix}-`;
-        onStatus(statusText);
-        return true;
-      }
-      // Either a command or unbound — the chord ends.
-      if (statusText.endsWith('-')) { statusText = ''; onStatus(''); }
-      chordPrefix = '';
-      if (typeof r === 'string') runCommand(r);
-      return true;
-    }
-
-    // 3. Mid global chord (e.g. C-x then C-f).
-    if (activeMap !== null) {
-      const binding = activeMap[key];
-      if (binding && typeof binding === 'object') {
-        activeMap = binding;
-        chordPrefix = `${chordPrefix} ${key}`;
-        statusText = `${chordPrefix}-`;
-        onStatus(statusText);
-        return true;
-      }
-      if (typeof binding === 'string') {
-        resetChord();
-        runCommand(binding);
-        return true;
-      }
-      resetChord(); // unbound mid-chord: abort cleanly
-      return true;
-    }
-
-    // 4. At rest — try the buffer's mode-keymap chain first (so a mode's
-    //    bindings, e.g. Markdown C-c b, win over the global table).
-    const modeResult = resolveMode(key);
-    if (modeResult === 'prefix') {
-      chordPrefix = key;
-      statusText = `${chordPrefix}-`;
-      onStatus(statusText);
-      return true;
-    }
-    if (typeof modeResult === 'string') {
-      runCommand(modeResult);
-      return true;
-    }
-
-    // 5. The spine's global KEYMAP (motion / editing / kill-yank / …).
-    let binding = KEYMAP[key];
-    if (key === 'C-x') binding = CX_MAP;
-    // The global C-c prefix (multi-cursor) — only reached when no major
-    // mode claimed C-c above (step 4). In Markdown, the mode map wins.
-    if (key === 'C-c') binding = CC_MAP;
-    if (binding && typeof binding === 'object') {
-      activeMap = binding;
-      chordPrefix = key;
-      statusText = `${chordPrefix}-`;
-      onStatus(statusText);
-      return true;
-    }
-    if (typeof binding === 'string') {
-      runCommand(binding);
-      return true;
-    }
-
-    // 6. A single printable bound in the-keymap (auto-pair.lisp binds the
-    //    bracket/quote characters there). Production resolves the-keymap
-    //    before self-insert; the spine does the same so a typed "(" runs
-    //    auto-pair-open-paren server-side rather than self-inserting. A miss
-    //    is #f → fall through to plain self-insert below.
-    if (typeof key === 'string' && [...key].length === 1) {
-      const charBinding = interpreter.call('-spine-the-keymap-get', key);
-      if (typeof charBinding === 'string') {
-        runCommand(charBinding);
-        return true;
-      }
-      if (charBinding && typeof charBinding === 'object'
-          && typeof charBinding.name === 'string') {
-        runCommand(charBinding.name); // a bound Sym
-        return true;
-      }
-    }
-
-    // 7. At rest, unbound: self-insert a bare printable. Route the
-    //    *last-command* update through it too (the yank-pop subtlety —
-    //    see PRIMITIVE-SPLIT.md): typing must invalidate a pending yank.
-    if (typeof key === 'string' && [...key].length === 1) {
-      interpreter.evaluate("(set! *last-command* 'self-insert)");
-      buffer.insert(key);
-      return true;
-    }
-    return false;
+    return interpreter.call('handle-key', key) === true;
   }
 
-  // Did the last dispatched command perform an undo or redo? A change-group
-  // undo emits SEVERAL L1 edits but only ONE L2 change event, so the single
-  // forwarded delta can't replicate it on the client mirror (proven: it
-  // desyncs). The server therefore RESYNCs (full text + cursors) after an
-  // undo/redo, exactly as it does for a multi-cursor edit. This flag tells it
-  // an undo/redo just ran; the server reads-and-clears it via consumeHistoryOp.
-  let lastWasHistoryOp = false;
-
-  /** Run a command by name through the REAL run-command. A name that needs
-   *  interactive args (a minibuffer prompt) suspends inside run-command;
-   *  the prompt is delivered later via deliverMinibuffer. */
+  /** Run a command by name through the REAL run-command. The spine's Lisp
+   *  run-command wrapper records undo/redo for the cross-window resync (read
+   *  via consumeHistoryOp). A name that needs interactive args (a minibuffer
+   *  prompt) suspends inside run-command; the prompt is delivered later via
+   *  deliverMinibuffer. */
   function runCommand(name) {
-    if (name === 'undo' || name === 'redo') lastWasHistoryOp = true;
     interpreter.evaluate(`(run-command (quote ${name}))`);
   }
 
@@ -3689,28 +3717,59 @@ export function createSpine(options, effects = {}) {
         }
         return false;
       case 'close-tab': {
-        // Step 3c: close a tab in the focused tabline leaf (un-curate that
-        // buffer from THIS tabline; the buffer lives on in the pool). If the
-        // active tab closed, the model re-points to a neighbour — the server's
-        // MSG.PANE handler sees the focused buffer change and re-syncs.
+        // Close a tab in the focused tabline. By DEFAULT this KILLS the view
+        // (what most editors do); *close-tab-kills-view* (panes, #t) flips back
+        // to the old un-curate (the buffer survives in C-x C-b). Closing the
+        // LAST tab collapses the tabline back to a bare *scratch* leaf.
         const closedId = String(intent.bufferId ?? '');
-        const closedKind = dataSources.get(closedId)?.kind;
-        const wasProcess = closedKind === 'shell' || closedKind === 'gnuplot';
-        const ok = model.closeFocusedTab(closedId);
-        // A LIVE-PROCESS tab close (shell/gnuplot) REAPS the process: drop its
-        // source + open-set so the liveProcessSessionsOf fan tells the client to
-        // kill the child. (Text/media tabs un-curate but live on in the pool — no
-        // process to reap.)
-        if (ok && wasProcess) {
-          dataSources.remove(closedId);
-          for (const s of clientBuffers.values()) s.delete(closedId);
-          // closeFocusedTab already pushed a PANE_TREE — but it ran BEFORE this
-          // removal, so its live-set still listed the closing process. Re-push so
-          // the client sees it gone and reaps the child (else the client's
-          // live-set lags by one close and the last process never gets reaped).
-          onPaneTree(index);
+        let killsView = true;
+        try {
+          killsView = interpreter.evaluate('*close-tab-kills-view*') !== false;
+        } catch { /* var unbound (custom not loaded) → keep the kill default */ }
+        const reapIfProcess = (id) => {
+          const kind = dataSources.get(id)?.kind;
+          if (kind === 'shell' || kind === 'gnuplot') {
+            dataSources.remove(id);
+            for (const s of clientBuffers.values()) s.delete(id);
+            onPaneTree(index);
+          }
+        };
+
+        // Is closedId the SOLE tab of the focused tabline? Then collapse it.
+        const fleaf = model.focusedLeaf();
+        const fstate = fleaf ? model.stateOf(fleaf.id) : null;
+        const isLastTab = !!fstate && fstate.tabline === true
+          && Array.isArray(fstate.tabs) && fstate.tabs.length === 1
+          && fstate.tabs[0] === closedId;
+
+        if (isLastTab) {
+          // Drop back to an UNTABBED *scratch* leaf. Reuse an existing empty
+          // *scratch* if there is one (don't proliferate *scratch*<2>), else
+          // mint one — unless the closed buffer is ITSELF an empty scratch, in
+          // which case just keep it as the bare leaf.
+          const isEmptyScratch = (e) => !!e
+            && (e.filePath == null || e.filePath === '')
+            && String(e.buffer.name || '').replace(/(<\d+>)+$/, '') === '*scratch*'
+            && (e.buffer.text || '').trim() === '';
+          const closedEntry = registry.list().find((e) => e.id === closedId);
+          model.toggleFocusedTabline(false); // the tabline disappears
+          if (isEmptyScratch(closedEntry)) return true; // already a bare scratch
+          const reuse = registry.list().find((e) => e.id !== closedId && isEmptyScratch(e));
+          const scratchId = reuse ? reuse.id : registry.add('', '*scratch*', null).id;
+          clientBuffers.get(index)?.add(scratchId);
+          model.setFocusedBuffer(scratchId); // the bare leaf now shows the scratch
+          if (killsView) killBufferById(closedId); else reapIfProcess(closedId);
+          onBufferList();
+          return true;
         }
-        return ok;
+
+        // A normal multi-tab close: un-curate from the focused tabline (re-points
+        // to a neighbour — the proven path), then kill the view (default) or
+        // just un-curate (a detached live process is always reaped).
+        const ok = model.closeFocusedTab(closedId);
+        if (!ok) return false;
+        if (killsView) killBufferById(closedId); else reapIfProcess(closedId);
+        return true;
       }
       case 'reorder-tab':
         // Step 3c: drag-reorder a tab in the focused tabline leaf. The active
@@ -3727,13 +3786,12 @@ export function createSpine(options, effects = {}) {
     }
   }
 
-  /** Read-and-clear the "last dispatch was an undo/redo" flag. The server
-   *  calls this after each intent to decide whether to RESYNC (a change-group
-   *  undo's single delta is insufficient — see lastWasHistoryOp). */
+  /** Read-and-clear the "last dispatch was an undo/redo" flag (the spine's
+   *  Lisp run-command wrapper sets it). The server calls this after each intent
+   *  to decide whether to RESYNC — a change-group undo's single delta can't be
+   *  replayed on the client mirror. */
   function consumeHistoryOp() {
-    const was = lastWasHistoryOp;
-    lastWasHistoryOp = false;
-    return was;
+    return interpreter.call('-spine-consume-history-op') === true;
   }
 
   /** Deliver a minibuffer result to the suspended command (commands.lisp's
@@ -3816,6 +3874,7 @@ export function createSpine(options, effects = {}) {
         name: buffer.name, modified, line, column, mode: majorModeName(),
       }),
       status: statusText,
+      statusSegments: viewStatusSegments(),
       modified,
     };
   }
@@ -3912,12 +3971,21 @@ export function createSpine(options, effects = {}) {
      *  `[{ id, name, filePath, text }]`. Pure data (no L2 objects), so the
      *  server can write each to a recovery file without holding the buffer. */
     dirtyBufferSnapshots() {
-      return registry.dirtyEntries().map((e) => ({
-        id: e.id,
-        name: e.buffer.name,
-        filePath: e.filePath,
-        text: e.buffer.text,
-      }));
+      return registry.dirtyEntries()
+        // Never snapshot a path-less *scratch* — it is the ephemeral backdrop
+        // (Emacs semantics), so it is neither recovered nor duplicated into a
+        // *scratch*<2> on relaunch (the "two *scratch* on Start fresh" bug). A
+        // scratch saved to a file is path-bound and IS snapshotted.
+        .filter((e) => !(
+          (e.filePath == null || e.filePath === '')
+          && String(e.buffer.name || '').replace(/(<\d+>)+$/, '') === '*scratch*'
+        ))
+        .map((e) => ({
+          id: e.id,
+          name: e.buffer.name,
+          filePath: e.filePath,
+          text: e.buffer.text,
+        }));
     },
     viewState,
     pointPosition,

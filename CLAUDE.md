@@ -106,20 +106,33 @@ Don't delete previous notes. The architect reads through them.
 
 ### What to read first
 
+**Start with `docs/MAP.md`** — the index/router. It points to the one
+authoritative doc for whatever subsystem you're touching and explains how the
+docs nest (MAP → subsystem playbook → spec → code). It exists precisely so you
+don't rediscover the architecture by grepping every session; each playbook ends
+with a **"Where to look" code map** of file + symbol pointers.
+
 For any non-trivial task:
 
 1. `HANDOVER.md` (current state + in-flight branch) and `MEMORY.md`
-2. `docs/VISION.md` and `docs/ARCHITECTURE.md`
-3. The relevant plan document in `plans/`
-4. The spec document for any layer you interact with
-5. The existing code in your package and its tests
-6. Current state of `architect-notes.md`
+2. **`docs/MAP.md`** — the router; from it, the subsystem playbook you need
+3. `docs/VISION.md` (the why). `docs/ARCHITECTURE.md` is background and
+   **predates the Model-B server topology** — `docs/MODEL-B-DISPATCH.md` is the
+   current dispatch model
+4. The relevant plan document in `plans/`
+5. The spec document (`docs/spec/`) for any layer you interact with
+6. The existing code in your package and its tests
+7. Current state of `architect-notes.md`
 
-**If the task touches views or panes**, read `docs/VIEWS.md` *first*.
-It is the condensed playbook of which display-state is owned by
-which path, what stays invariant under view/tab operations, and the
-specific bug families that keep recurring. Skipping it almost
-guarantees a one-line fix that breaks three other arms.
+**If the task touches views or panes**, read `docs/VIEWS.md` *first*. **If it
+touches key dispatch or cross-window effects (Model B)**, read
+`docs/MODEL-B-DISPATCH.md` *first*. These are the condensed playbooks — which
+display-state is owned by which path, the seams, the directive channel, and the
+bug families that keep recurring. Skipping them almost guarantees a one-line fix
+that breaks three other arms.
+
+Model B (server + thin clients) is **the** architecture; the old in-renderer
+("flag-off") path is retired — don't reason about it as a live alternative.
 
 ### Communication style
 

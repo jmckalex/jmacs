@@ -46,6 +46,19 @@
 ;; override the policy entirely.
 (define (pane-focus-border-setting) *pane-focus-border*)
 
+;; --- closing a tab ----------------------------------------------------
+;; Most editors KILL a view when you close its tab — it's gone, off the
+;; buffer list. Godot's tabline historically only UN-CURATED the tab (the
+;; view stayed in the buffer list, reachable via C-x C-b), which surprises
+;; people. Default to kill; set #f to keep the un-curate behaviour.
+(defcustom *close-tab-kills-view* #t :boolean
+  :group 'panes
+  :doc "When you close a tab (its × button), KILL the underlying view —
+   remove its buffer from the buffer list, as most editors do (the
+   default, #t). When #f, closing a tab only removes it from this tabline;
+   the buffer lives on and is reachable via the buffer list (C-x C-b). A
+   live-process view (shell / gnuplot) is reaped on close either way.")
+
 (defcommand add-pane ()
   "Enter the visual add-pane macro. An overlay over the editor area
    highlights every splitter and the four outer borders; click one to

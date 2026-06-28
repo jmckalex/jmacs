@@ -70,6 +70,7 @@ import {
   createUtilityDock,
   createOutputPanel,
   createCompletionsPanel,
+  createDocPanel,
   ShellView,
   GnuplotView,
   NotebookView,
@@ -2839,6 +2840,18 @@ async function quitInteractive() {
   ) {
     return;
   }
+  await performShutdown();
+}
+
+/**
+ * The shutdown ritual, separated from the unsaved-changes check so it can run
+ * after EITHER path has decided to quit: the client-side `quitInteractive`
+ * (its own dirty confirm) OR the server-driven `quit` directive (P2c — the
+ * spine already walked the unsaved buffers across all windows, so it must NOT
+ * be re-checked here). Offers the workspace-remember prompt, flushes metadata,
+ * clears the recovery snapshots, and asks the host to quit.
+ */
+async function performShutdown() {
   // C2 (server mode): offer to REMEMBER this workspace — the ARRANGEMENT
   // (windows / panes / files / cursors / geometry), NOT the documents — before
   // quitting. Type a name to save a named workspace (it then shows in the launch
@@ -3335,6 +3348,72 @@ function displayCompletionsPanel(items, directory) {
       }),
     });
   }
+}
+
+// Reusable doc-panel tabs in the utility dock. describe-key (C-h k) /
+// describe-command (C-h f) refill "Help"; apropos (C-h a) refills "Apropos".
+// Both are server-driven (the show-help / show-apropos directives) and use the
+// Completions-tab refill idiom so repeated lookups don't pile up tabs.
+const HELP_TAB_ID = 'help-view';
+const APROPOS_TAB_ID = 'apropos-view';
+
+/** Open (or refill in place) a reusable doc-panel tab in the utility dock. BODY
+ *  is rendered as Markdown and framed under HEADING in the doc-page shape the
+ *  `<doc-view>` lifts; an empty body shows the EMPTY placeholder. The dock is
+ *  revealed and the tab brought forward, but focus stays in the editor (click
+ *  the panel to scroll / press `q` to dismiss).
+ *
+ *  @param {{id: string, title: string, icon: string, heading: string,
+ *    body: string, empty?: string}} spec
+ */
+async function displayDocPanel({ id, title, icon, heading, body, empty }) {
+  let rendered;
+  try {
+    rendered = await renderMarkdownHtml(
+      typeof body === 'string' && body.length > 0 ? body : (empty ?? '_Nothing to show._')
+    );
+  } catch (error) {
+    repl.appendError(`${title} render failed: ${error.message}`);
+    return;
+  }
+  const html =
+    `<article class="doc-page docstring-page" data-node-id="${escapeHtml(heading)}">` +
+    `<h3 class="doc-name">${escapeHtml(heading)}</h3>\n` +
+    `<div class="doc-docstring">${rendered}</div></article>`;
+  const panel = utilityDock.hasTab(id) ? utilityDock.getPanel(id) : null;
+  if (panel && typeof panel.setHtml === 'function') {
+    panel.setHtml(html);
+  } else {
+    utilityDock.openUtilityPanel({
+      id,
+      title,
+      icon,
+      focus: false,
+      makePanel: () => createDocPanel({
+        html,
+        title,
+        icon,
+        openDoc: openDocInPane,
+        closeBuffer: () => utilityDock.closeUtilityTab(id),
+      }),
+    });
+  }
+  utilityDock.showUtilityDock();
+  utilityDock.activateUtilityTab(id);
+  // activateUtilityTab focuses the active tab's panel — but these help panels
+  // are focus:false by design (you keep typing in the editor). The key router
+  // only forwards keys while the editing surface is focused, so without this
+  // the NEXT chord (another C-h k) is dropped until you click back into the
+  // pane. Return focus to the editor next frame (after the dock's focus
+  // settles), unless a minibuffer prompt is up (don't steal its focus). Same
+  // shape as refocusServerView, which can't be reached from this scope.
+  requestAnimationFrame(() => {
+    if (minibuffer.isOpen()) return;
+    const v = serverViewClient && serverViewClient.getView();
+    if (v && typeof v.focus === 'function') {
+      try { v.focus(); } catch { /* ignore */ }
+    }
+  });
 }
 
 /** Double-click in the completions panel = activate (file-browser idiom): a
@@ -6810,6 +6889,9 @@ if (window.host && window.host.serverMode) {
     // The echo area: a mid-chord prefix (e.g. "C-x-") or a one-off status. The
     // minibuffer component reuses its row as the echo area when no prompt is up.
     setEcho: (status) => minibuffer.setStatus(status ?? ''),
+    // The echo area as STYLED segments ([{ text, color, bold }]) — e.g. the
+    // quit walk's red Save prompt with a bold filename. Plain setEcho otherwise.
+    setEchoRich: (segments) => minibuffer.setStatusRich(segments),
     // A server-suspended minibuffer read: open the real minibuffer; its input
     // routes back up as MINIBUFFER_* intents (the spine resumes the command).
     // On submit/cancel, return focus to the server view so typing resumes.
@@ -6873,6 +6955,45 @@ if (window.host && window.host.serverMode) {
     requestNewWindow: (geometry) => {
       if (window.host && typeof window.host.newWindow === 'function') {
         window.host.newWindow(geometry);
+      }
+    },
+    // P2: a CLIENT_DIRECTIVE — the server told THIS window to perform a
+    // renderer-side action. The server already chose the recipients (this /
+    // other / all windows); we just apply it. `close-window` (C-x 5 0, or
+    // C-x 5 1 from another window) closes this window via the host; the server
+    // keeps the buffers. New directive names slot in as they're ported.
+    applyDirective: (name, args) => {
+      if (name === 'close-window') {
+        if (window.host && typeof window.host.closeWindow === 'function') {
+          window.host.closeWindow();
+        }
+      } else if (name === 'quit') {
+        // P2c: the spine's quit-editor already walked the unsaved buffers
+        // across all windows (save-some-buffers), so run the shutdown ritual
+        // directly — no second dirty check.
+        performShutdown();
+      } else if (name === 'show-help') {
+        // P3: describe-key (C-h k) / describe-command (C-h f) resolved a
+        // command server-side and asked THIS window to surface its docstring.
+        // args = [heading, docstring]; the dock owns one reusable Help tab.
+        displayDocPanel({
+          id: HELP_TAB_ID, title: 'Help', icon: 'fa-solid fa-circle-question',
+          heading: String(args?.[0] ?? ''), body: String(args?.[1] ?? ''),
+          empty: '_No documentation._',
+        });
+      } else if (name === 'show-apropos') {
+        // P3: apropos (C-h a) matched commands server-side and asked THIS
+        // window to list them. args = [heading, markdown-list].
+        displayDocPanel({
+          id: APROPOS_TAB_ID, title: 'Apropos', icon: 'fa-solid fa-list-ul',
+          heading: String(args?.[0] ?? ''), body: String(args?.[1] ?? ''),
+          empty: '_(none)_',
+        });
+      } else if (name === 'markdown-preview') {
+        // P3: the JMarkdown live-preview toggle (C-c v / the Markdown/JMarkdown
+        // mode menu). The server resolved the command; toggle the preview pane
+        // here, rendering this window's buffer mirror through the pipeline.
+        toggleMarkdownPreview();
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
@@ -11185,12 +11306,12 @@ document.body.classList.add('markdown-preview-hidden');
 
 /** Whether the current buffer is in markdown-mode. */
 function currentBufferIsMarkdown() {
-  if (!keymapReady) return false;
-  try {
-    return interpreter.call('major-mode-name') === 'Markdown';
-  } catch {
-    return false;
-  }
+  // Under the server the renderer interpreter is inert, so read the mode from
+  // the server-pushed VIEW field (resolvedMajorModeName), not interpreter.call.
+  // markdown-preview is offered for BOTH Markdown and JMarkdown (.jmd); both
+  // render through the JMarkdown pipeline.
+  const mode = resolvedMajorModeName(currentTextBuffer);
+  return mode === 'Markdown' || mode === 'JMarkdown';
 }
 
 /** Whether the preview pane is currently visible. */
