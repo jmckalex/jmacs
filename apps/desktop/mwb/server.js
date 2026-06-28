@@ -897,13 +897,19 @@ function applyIntent(client, intent) {
         return;
       }
       case INTENT.CUSTOMIZE_CHANGED: {
-        // A customize setting changed in `client`'s window — relay it to every
-        // OTHER window so global rendering state (theme / faces / line-height)
-        // stays consistent. The server doesn't render, so it just fans the
-        // change; the originating window already applied it locally. (Behaviour-
-        // variable apply on the spine's own interpreter is a later refinement.)
+        // A customize setting changed in `client`'s window. Two things:
+        // (1) B2.1: apply it to the SPINE's interpreter so the server's state is
+        //     current — a window opened LATER then gets the changed chrome on
+        //     connect (fixes "change theme, open a new window, it shows the boot
+        //     theme"). The spine suppresses its own chrome push for this (the
+        //     already-open windows are handled by the relay below).
+        // (2) Relay it to every OTHER open window so their renderer-side state
+        //     (theme / faces / line-height) stays consistent now. The originating
+        //     window already applied it locally.
+        // (B2's full move makes the spine the sole driver + persister.)
         const change = (intent.change && typeof intent.change === 'object') ? intent.change : null;
         if (change) {
+          spine.applyCustomizeChange(change);
           for (const c of clients) {
             if (c !== client) c.port.postMessage({ type: MSG.CUSTOMIZE_SYNC, change });
           }

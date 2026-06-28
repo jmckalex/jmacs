@@ -38,7 +38,7 @@ import { readFileSync, statSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInterpreter, NIL, cons, listToArray, arrayToList, keyword, sym } from '@editor/lisp';
+import { createInterpreter, NIL, cons, listToArray, arrayToList, keyword, sym, writeString } from '@editor/lisp';
 import { createBuffer } from '@editor/buffer';
 import { createView } from '@editor/view';
 import { createBufferPrimitives, createLatexPrimitives } from '@editor/stdlib';
@@ -1922,6 +1922,39 @@ export function createSpine(options, effects = {}) {
   // calls were suppressed). From here, a post-boot face/theme/highlight change
   // fans out to every window.
   chromePushEnabled = true;
+
+  // B2.1 (plans/MODEL-B-DEFAULT.md): apply a customize change from a window to
+  // the SERVER's interpreter, so the spine's state (and thus a freshly-connected
+  // window's chrome) reflects it — fixes "change theme, open a new window, it
+  // shows the boot theme". Mirrors app.js applyCustomizeSync's op->Lisp mapping;
+  // the change fields are plain strings off the wire (name / valueSrc / face /
+  // attr), never raw Lisp. The chrome PUSH is suppressed here: already-open
+  // windows get this change via the renderer CUSTOMIZE_SYNC relay (server.js), so
+  // pushing too would double-paint them; new windows pick up the updated state on
+  // connect. (B2's full move makes the spine the sole driver + persister.)
+  function applyCustomizeChange(change) {
+    if (!change || typeof change !== 'object') return;
+    const { op, name, valueSrc, face, attr } = change;
+    const wasEnabled = chromePushEnabled;
+    chromePushEnabled = false;
+    try {
+      if (op === 'apply' || op === 'save') {
+        interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
+      } else if (op === 'reset') {
+        interpreter.evaluate(`(custom-reset! (quote ${name}))`);
+      } else if (op === 'set-face') {
+        interpreter.evaluate(
+          `(set-face-attribute-by-strings ${writeString(face)} ${writeString(attr)} ${valueSrc})`
+        );
+      } else if (op === 'reset-face') {
+        interpreter.evaluate(`(reset-face-by-string ${writeString(face)})`);
+      }
+    } catch (error) {
+      console.error('[spine] applyCustomizeChange failed:', error.message);
+    } finally {
+      chromePushEnabled = wasEnabled;
+    }
+  }
 
   // Language major modes (`languages/*.lisp`: a `define-mode` + `register-mode`
   // each, plus a few editing commands using the same primitives the modes above
@@ -4325,6 +4358,9 @@ export function createSpine(options, effects = {}) {
     // B1.3: the theme/face/highlight directives a freshly-connected window needs
     // (server.js posts them right after the snapshot).
     chromeDirectives,
+    // B2.1: apply a window's customize change to the server's interpreter so new
+    // windows reflect it (server.js calls this from the CUSTOMIZE_CHANGED relay).
+    applyCustomizeChange,
     setActiveClient,
     viewStateOf,
     // --- the pane tree (G0a) -------------------------------------------
