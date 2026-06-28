@@ -126,7 +126,7 @@ import {
   jsonToLispUserFaces,
   jsonToLispHighlightRules,
 } from './face-overrides.js';
-import { applyFaceStyles, BASE_FACE_NAME } from './face-styles.js';
+import { applyFaceStyles, writeFaceStyleElement, BASE_FACE_NAME } from './face-styles.js';
 import { resolveElementModuleUrl, normalizeFit } from './element-spec.js';
 import {
   isMathPreviewActive,
@@ -5869,8 +5869,11 @@ if (keymapReady) {
     interpreter.call('set-css-line-height!', interpreter.evaluate('*line-height*'));
   } catch { /* an old config without the setting — the CSS default stands */ }
 }
-if (keymapReady) applyCurrentTheme();
-if (keymapReady) applyCurrentFaceStyles();
+// B1.3 (plans/MODEL-B-DEFAULT.md): theme + faces are server-authoritative — the
+// spine pushes theme-apply / faces-apply on connect (and re-pushes on change),
+// applied in applyDirective above. No local face/theme computation at boot.
+// (applyCurrentTheme / applyCurrentFaceStyles stay for reloadStdlib + customize
+// edits until the renderer interpreter is removed in B7.)
 
 // Kick off the doc manifest fetch — fire-and-forget. The
 // `load-doc-manifest!` primitive returns the cached value once it
@@ -7040,6 +7043,35 @@ if (window.host && window.host.serverMode) {
         // Explicit forward search (C-c C-v): scroll the preview to the cursor's
         // line (args[0], 1-based) and flash it, regardless of the follow setting.
         previewSyncToCursor(Number(args?.[0]));
+      } else if (name === 'theme-apply') {
+        // B1.3 (plans/MODEL-B-DEFAULT.md): the spine pushed the theme's CSS
+        // variables (JSON array of [--var, value]). Apply them to :root and
+        // notify theme listeners (e.g. the shell's xterm palette). The server is
+        // authoritative — the renderer no longer computes the theme itself.
+        try {
+          const pairs = JSON.parse(String(args?.[0] ?? '[]'));
+          for (const [cssVar, value] of pairs) {
+            if (typeof cssVar === 'string' && cssVar.startsWith('--') && value !== '') {
+              document.documentElement.style.setProperty(cssVar, String(value));
+            }
+          }
+          for (const listener of themeListeners) {
+            try { listener(); } catch { /* listener bug — keep going */ }
+          }
+        } catch { /* malformed payload — keep the current theme */ }
+      } else if (name === 'faces-apply') {
+        // B1.3: the spine pushed the prebuilt face-overrides CSS string; inject it
+        // into <style id="face-overrides"> (writeFaceStyleElement). No local
+        // face-styles computation needed.
+        writeFaceStyleElement(document, String(args?.[0] ?? ''));
+      } else if (name === 'highlight-rules') {
+        // B1.3: the spine pushed the user's highlight-rule records (JSON
+        // {scope,key,pattern,face}). Replace the override store + re-highlight.
+        try {
+          const entries = JSON.parse(String(args?.[0] ?? '[]'));
+          highlightOverrideStore.replaceAll(entries);
+          rerenderAllEditors();
+        } catch { /* malformed — keep current highlighting */ }
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
@@ -7186,12 +7218,9 @@ if (window.host && window.host.serverMode) {
   if (godotServerPort) bootServerViewClient();
 }
 
-// Install the persisted user highlight rules now that the override store
-// and the highlighters exist. (The faces.json read above already filled
-// `highlightRulesCache`.) Re-render-on-push is a guarded no-op here —
-// the editors mount below — so the rules are simply seeded into the
-// store, ready for the first highlight call.
-if (keymapReady) installHighlightRules();
+// B1.3: highlight rules are server-authoritative too — the spine pushes
+// highlight-rules on connect (and on change), applied in applyDirective above.
+// No local install at boot. (installHighlightRules stays for reloadStdlib.)
 
 /** Dispatch a keystroke through the Lisp keymap. */
 function dispatchKey(key) {

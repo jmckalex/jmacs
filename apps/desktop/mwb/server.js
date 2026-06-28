@@ -1214,6 +1214,14 @@ function onClientMessage(client, event) {
       // The window's pane layout (a single leaf on first connect, or its
       // restored split tree on reconnect).
       sendPaneTreeTo(client);
+      // B1.3 (plans/MODEL-B-DEFAULT.md): paint this window's chrome from the
+      // server — theme CSS vars, the face-overrides CSS, and the user's
+      // highlight rules. The renderer no longer computes faces itself; it
+      // applies these directives. Sent now (after the view) so faces land with
+      // the first paint; re-pushed to all windows on any later change.
+      for (const d of spine.chromeDirectives()) {
+        sendClientDirective([client.index], d.name, d.args);
+      }
       // The view is now painted — open the workspace chooser LAST so its picker
       // grabs (and, via picker-panel's next-frame re-assert, keeps) focus.
       if (openChooserAfterPaint) openWorkspaceChooser(client);
