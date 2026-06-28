@@ -368,7 +368,11 @@ export class BrowserView extends ViewElement {
    *  for the createView shape, then the configured default. */
   _paint() {
     if (this._webview === null || this._urlInput === null) return;
-    const url = this._urlForBuffer();
+    // Normalise the buffer's URL the same way the URL bar does, so a
+    // schemeless address typed at the `M-x browser-view` prompt (e.g.
+    // `google.com`) gets `https://` prepended rather than failing to load.
+    // Idempotent on a URL that already has a scheme (about:/http(s)/file:…).
+    const url = normaliseUrl(this._urlForBuffer());
     this._urlInput.value = url;
     // Drive navigation through the `src` ATTRIBUTE rather than loadURL.
     // The attribute lives on the element, so when the webview's guest is
