@@ -307,10 +307,22 @@ export function writeFaceStyleElement(doc, css) {
  *   alist (per-mode overrides), already unfolded. Optional — omit it for
  *   the global-only behaviour.
  */
-export function applyFaceStyles(doc, alist, listToArray, modeAlist) {
+/**
+ * Build the full face-overrides CSS text — the base-face `:root` rule first,
+ * then the per-token `.tok-` rules, then any per-mode overrides — from the
+ * Lisp-side `current-face-styles` alist (+ optional `current-mode-face-styles`).
+ *
+ * Pure (no DOM): the spine generates this CSS server-side and pushes it to every
+ * window as a FACES_APPLY directive (plans/MODEL-B-DEFAULT.md B1.3); the renderer
+ * injects the returned string via `writeFaceStyleElement`.
+ *
+ * @param {Array<*>} alist - current-face-styles, unfolded with listToArray.
+ * @param {(form: *) => Array<*>} listToArray
+ * @param {Array<*>} [modeAlist] - current-mode-face-styles, unfolded.
+ * @returns {string}
+ */
+export function faceStylesCss(alist, listToArray, modeAlist) {
   const faces = facesFromAlist(alist, listToArray);
-  // The base-face `:root` rule comes first, then the per-token `.tok-`
-  // rules, then any per-mode overrides.
   const base = generateBaseFaceCss(faces);
   let css = generateFaceCss(faces);
   if (base !== '') css = css === '' ? base : `${base}\n${css}`;
@@ -319,5 +331,9 @@ export function applyFaceStyles(doc, alist, listToArray, modeAlist) {
     const modeCss = generateModeFaceCss(perMode);
     if (modeCss !== '') css = css === '' ? modeCss : `${css}\n${modeCss}`;
   }
-  writeFaceStyleElement(doc, css);
+  return css;
+}
+
+export function applyFaceStyles(doc, alist, listToArray, modeAlist) {
+  writeFaceStyleElement(doc, faceStylesCss(alist, listToArray, modeAlist));
 }
