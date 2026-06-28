@@ -11283,6 +11283,11 @@ document.body.classList.add('markdown-preview-hidden');
 let previewWatchedPath = null;
 /** The watch server's port while the preview is open (for the pop-out URL). */
 let previewPort = null;
+/** True while the preview lives in a popped-out window: forward search routes to
+ *  it (via main) instead of the in-app iframe, and inverse search arrives back
+ *  the same way. Cleared when the popped-out window closes or the in-app preview
+ *  is reopened. */
+let previewPoppedOut = false;
 
 // --- preview ⇄ source sync (forward / inverse search) ------------------
 // The preview iframe is cross-origin (localhost vs app://), so source↔preview
@@ -11321,18 +11326,51 @@ function previewFollowCursorOn() {
   }
 }
 
-/** Forward search: scroll the open preview to the block for `line`. Skips when
- *  the pane is hidden, forward search is toggled off, or the line is unchanged.
- *  Records the line either way so a later `ready` (preview reload) can replay
- *  it once forward search is on. */
+/** Forward search: scroll the preview to the block for `line` — the in-app
+ *  iframe, or (when detached) the popped-out window via main. Skips when no
+ *  preview is showing, forward search is toggled off, or the line is unchanged.
+ *  Records the line either way so a later `ready` can replay it. */
 function previewScrollToCursor(line) {
   if (typeof line !== 'number') return;
   lastKnownCursorLine = line;
-  if (!markdownPreviewVisible()) return;
+  // Prefer the in-app pane if it's visible, else the popped-out window.
+  const target = markdownPreviewVisible() ? 'inapp' : (previewPoppedOut ? 'popout' : null);
+  if (!target) return;
   if (line === lastPostedPreviewLine) return;
   if (!previewFollowCursorOn()) return;
   lastPostedPreviewLine = line;
-  postToPreview({ type: 'scroll-to-line', line, behavior: 'smooth' });
+  if (target === 'popout') {
+    if (window.host && typeof window.host.previewForward === 'function') {
+      window.host.previewForward(line);
+    }
+  } else {
+    postToPreview({ type: 'scroll-to-line', line, behavior: 'smooth' });
+  }
+}
+
+// Relay from a popped-out preview window (via main): inverse-search clicks and
+// the preview's `ready`. Registered once.
+if (window.host && typeof window.host.onPreviewUp === 'function') {
+  window.host.onPreviewUp((msg) => {
+    if (!msg) return;
+    if (msg.type === 'ready') {
+      // The popped-out preview is up — replay the current cursor line.
+      lastPostedPreviewLine = null;
+      if (previewPoppedOut && typeof lastKnownCursorLine === 'number') {
+        previewScrollToCursor(lastKnownCursorLine);
+      }
+    } else if (msg.type === 'source-line-click' && typeof msg.line === 'number') {
+      if (serverViewClient && typeof serverViewClient.sendGotoLine === 'function') {
+        serverViewClient.sendGotoLine(msg.line);
+      }
+    }
+  });
+}
+if (window.host && typeof window.host.onPreviewPopoutClosed === 'function') {
+  window.host.onPreviewPopoutClosed(() => {
+    previewPoppedOut = false;
+    lastPostedPreviewLine = null;
+  });
 }
 
 // Inverse search + handshake from the preview's sync.js. Registered once;
@@ -11396,6 +11434,7 @@ async function popOutMarkdownPreview() {
   }
   if (result && result.ok) {
     resetMarkdownPreviewPane(); // the popped-out window owns the watch now
+    previewPoppedOut = true;    // forward search now routes to that window
   } else {
     repl.appendNote(`markdown-preview: ${result?.error ?? 'could not pop out the preview'}`);
   }
@@ -11407,6 +11446,7 @@ async function popOutMarkdownPreview() {
  *  re-hides the pane and reports the reason. */
 async function showMarkdownPreview(path) {
   document.body.classList.remove('markdown-preview-hidden');
+  previewPoppedOut = false; // reopening in-app takes over forwarding
   markdownPreviewFilename.textContent = `${previewBasename(path)} · starting…`;
   previewWatchedPath = path;
   let result;

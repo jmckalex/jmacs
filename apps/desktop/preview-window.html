@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <!-- Served from app://editor (same origin as the editor). The live preview
+         is embedded as a cross-origin localhost iframe (frame-src), so its
+         sync.js sees a parent and engages; this page relays its forward/inverse
+         messages to the editor window through the preload + main. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' app:; style-src 'self' app: 'unsafe-inline'; frame-src http://localhost:* http://127.0.0.1:*"
+    />
+    <title>Preview</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #ffffff; }
+      #preview-frame { border: 0; display: block; width: 100vw; height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <iframe id="preview-frame"></iframe>
+    <script src="./preview-window.js"></script>
+  </body>
+</html>

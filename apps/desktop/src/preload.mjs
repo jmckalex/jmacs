@@ -257,6 +257,16 @@ contextBridge.exposeInMainWorld('host', {
    */
   popOutPreview: () => ipcRenderer.invoke('jmarkdown:watch:popout'),
 
+  /** Forward search to a popped-out preview window: the editor's cursor line. */
+  previewForward: (line) =>
+    ipcRenderer.send('preview-sync:down', { type: 'scroll-to-line', line }),
+  /** Messages UP from a popped-out preview window: `{type:'ready'}` (replay the
+   *  cursor line) or `{type:'source-line-click', line}` (inverse search). */
+  onPreviewUp: (cb) => ipcRenderer.on('preview-sync:up', (_event, msg) => cb(msg)),
+  /** The popped-out preview window closed — stop forwarding to it. */
+  onPreviewPopoutClosed: (cb) =>
+    ipcRenderer.on('preview-sync:popout-closed', () => cb()),
+
   /**
    * Read a file's companion metadata (sticky notes), or null.
    * @param {string} path - The file's own path.

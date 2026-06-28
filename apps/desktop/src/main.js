@@ -57,6 +57,13 @@ app.commandLine.appendSwitch('force-color-profile', 'srgb');
 app.setName('Godot');
 
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
+const PREVIEW_PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preview-preload.mjs');
+const PREVIEW_WINDOW_URL = EDITOR_URL.replace(/index\.html$/, 'preview-window.html');
+
+// Markdown-preview pop-out: each editor window ↔ its popped-out preview window,
+// for forward/inverse-search relay (separate renderers route through main).
+const previewPopoutByEditor = new Map(); // editorWcId -> popout webContents
+const previewEditorByPopout = new Map(); // popoutWcId -> editor webContents
 
 // §3a: a main-process throw or unhandled rejection should log, not kill
 // the host silently (which would take the window down with no warning).
@@ -335,29 +342,57 @@ app.whenReady().then(() => {
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
   );
-  // Pop the Markdown preview out into its own Godot window: a lightweight
-  // BrowserWindow on the live `jmarkdown watch` URL. The watch process's
-  // OWNERSHIP transfers from the editor window to this preview window, so it is
-  // reaped when the preview window closes (and on app quit) — and a fresh C-c v
-  // in the editor starts an independent watcher. The page is plain localhost
-  // HTML; no preload/node access is granted to it.
+  // Pop the Markdown preview out into its own Godot window: a BrowserWindow on
+  // the wrapper page (preview-window.html), which embeds the live `jmarkdown
+  // watch` localhost page in an iframe and relays forward/inverse search to the
+  // editor window (the two are separate renderers, so they talk through main —
+  // see the preview-sync:* handlers below). The watch process's OWNERSHIP
+  // transfers from the editor window to the preview window, so it is reaped when
+  // the preview window closes (and on app quit), and a fresh C-c v in the editor
+  // starts an independent watcher.
   ipcMain.handle('jmarkdown:watch:popout', (event) => {
-    const editorWcId = event.sender.id;
+    const editorWc = event.sender;
+    const editorWcId = editorWc.id;
     if (watcherPort(editorWcId) == null) return { ok: false, error: 'no preview to pop out' };
     const win = new BrowserWindow({
       width: 820,
       height: 1000,
       title: 'Preview',
-      webPreferences: { contextIsolation: true, nodeIntegration: false },
+      webPreferences: {
+        preload: PREVIEW_PRELOAD,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false, // ESM preload
+      },
     });
     const port = transferWatcherTo(editorWcId, win.webContents.id);
     if (port == null) {
       win.destroy();
       return { ok: false, error: 'no preview to pop out' };
     }
-    win.loadURL(`http://localhost:${port}/`);
-    win.on('closed', () => stopJmarkdownWatch(win.webContents.id));
+    const popoutWcId = win.webContents.id;
+    previewPopoutByEditor.set(editorWcId, win.webContents);
+    previewEditorByPopout.set(popoutWcId, editorWc);
+    win.loadURL(`${PREVIEW_WINDOW_URL}?port=${port}`);
+    win.on('closed', () => {
+      stopJmarkdownWatch(popoutWcId);
+      previewPopoutByEditor.delete(editorWcId);
+      previewEditorByPopout.delete(popoutWcId);
+      // Tell the editor its preview window is gone so it stops forwarding.
+      if (!editorWc.isDestroyed()) editorWc.send('preview-sync:popout-closed');
+    });
     return { ok: true };
+  });
+
+  // Forward search: an editor's cursor line → ITS popped-out preview window.
+  ipcMain.on('preview-sync:down', (event, msg) => {
+    const popoutWc = previewPopoutByEditor.get(event.sender.id);
+    if (popoutWc && !popoutWc.isDestroyed()) popoutWc.send('preview-sync:down', msg);
+  });
+  // Inverse search (+ the preview's `ready`): a popped-out preview → ITS editor.
+  ipcMain.on('preview-sync:up', (event, msg) => {
+    const editorWc = previewEditorByPopout.get(event.sender.id);
+    if (editorWc && !editorWc.isDestroyed()) editorWc.send('preview-sync:up', msg);
   });
   // The renderer sends the current buffer's mode menu; rebuild the
   // application menu around it as the buffer's mode changes.
