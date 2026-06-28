@@ -211,10 +211,11 @@ export class BrowserView extends ViewElement {
         ? this._options.partition
         : 'persist:browser-views';
     webview.setAttribute('partition', partition);
-    // allowpopups lets target=_blank links open via new-window events
-    // rather than being silently dropped. v1 default is to ignore them
-    // (no new-window handler wired); the attribute keeps the door open
-    // for a v2 handler without another mount change.
+    // allowpopups surfaces `target="_blank"` / `window.open()` as window-open
+    // requests rather than silently dropping them. The MAIN process intercepts
+    // them (web-contents-created → setWindowOpenHandler in main.js): it never
+    // opens a bare OS popup — a user-clicked link loads in THIS webview, while a
+    // background popup (OAuth silent-renewal, ad windows) is dropped.
     webview.setAttribute('allowpopups', '');
 
     this._toolbar = toolbar;
