@@ -182,6 +182,22 @@ The pattern for "a server command surfaces something in the window's chrome." Th
 - **`app.js` init TDZ.** The initial focus paint runs before later `let`/`const` declarations; adding a read of a later-declared variable aborts the whole renderer boot (window paints but is frozen). Hoist the var. Diagnose with `electron . --enable-logging=stderr | grep "before initialization"`.
 - **Directive args must be FLAT and structured-clone-safe** (no raw Lisp symbols). See above.
 - **Command/primitive namespace is shared**; a command shadows a same-named primitive. Name side-effecting openers with `!`.
+- **The renderer interpreter is INERT under the server.** Any `interpreter.call(...)` in `app.js` (e.g. `interpreter.call('major-mode-name')`) returns nothing/wrong — the server owns the interpreter. Read server-pushed state via the `resolved*` helpers (`resolvedMajorModeName`, `resolvedMathPreviewActive`), which prefer a pushed VIEW field (`buffer.majorModeName`) over the inert call. Hit by math-preview AND markdown-preview.
+- **Stubbed spine primitives.** A server-registered command (a `SPINE_STDLIB` `.lisp` defcommand) may call a host primitive that is a no-op STUB in the spine (a deferred "render-side, build later"). The command "resolves" but does nothing. When porting a feature, grep the spine for the primitive and check it isn't a stub; route the effect through the directive channel.
+- **Duplicate object keys silently shadow** (last wins). The spine host-primitives are one big object literal; adding a key that already exists elsewhere is silently overridden by the later one. Grep for an existing primitive before adding it (a leftover `markdown-preview!` stub shadowed a new one this way — the harness caught it: no directive emitted).
+- **Opening dock chrome from a directive steals focus.** `utility-dock`'s `activateUtilityTab` force-focuses the panel, and the key router only forwards keys while the **editing surface** is focused — so the next chord is dropped until a click. After opening dock chrome with `focus:false`, return focus to the editor (the `refocusServerView` pattern: `serverViewClient.getView().focus()` next frame, guarded by `minibuffer.isOpen()`).
+
+---
+
+## Porting a renderer feature to Model B
+
+The recurring task (help commands, math-preview, the minimap, markdown-preview). A renderer feature breaks under the server in up to **three** independent ways — check all three:
+
+1. **Command dispatch.** If the command lives in a `SPINE_STDLIB` `.lisp` file it runs *server-side*. Its body must reach the renderer: either it calls a host primitive that emits a **directive** (the right pattern), or that primitive is a silent **stub** (broken — wire it to a directive). A renderer-only command *not* in SPINE_STDLIB instead routes via the M-x `RUN_CLIENT_COMMAND` fallback (gated to element-view commands).
+2. **The effect.** A renderer-side effect is a `CLIENT_DIRECTIVE` → an `applyDirective` case in `app.js` that drives the chrome. Carry any data the renderer needs (e.g. the buffer's file path) in the directive args (FLAT, clone-safe).
+3. **The renderer's own reads.** Code that read editor state through the (now-inert) interpreter must read **server-pushed VIEW fields** instead (`resolved*` helpers). This is the subtle one — the toggle can fire yet the feature still no-ops because a mode/active check came back false.
+
+Worked example: the help family (`show-help`) covers 1+2; the markdown-preview port additionally hit 2 (the stub) and 3 (the inert mode check).
 
 ---
 
