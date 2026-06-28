@@ -729,6 +729,15 @@ test('markdown-preview on a NON-markdown buffer emits no directive (mode guarded
   );
 });
 
+test('markdown-preview-sync (C-c C-v) emits a directive with the 1-based cursor line', () => {
+  const { spine, log } = makeSpine('# h\nline two\nline three\n', 'doc.md');
+  spine.buffer.moveTo(spine.buffer.offsetAt(2, 0)); // 0-based line 2 → 1-based line 3
+  spine.runCommand('markdown-preview-sync');
+  const d = log.directives.find((x) => x.name === 'markdown-preview-sync');
+  assert.ok(d && d.ids.includes(0), 'a markdown-preview-sync directive went to the active window');
+  assert.deepEqual(d.args, [3], 'carries the 1-based cursor line');
+});
+
 test('find-file of a MEDIA file creates a data-source leaf (no garbage text buffer)', () => {
   // The openFile effect returns a media descriptor for media suffixes (the real
   // server's readFileForVisit does this via media-kinds); a text file returns text.

@@ -1558,6 +1558,15 @@ export function createSpine(options, effects = {}) {
         onClientDirective([activeClientIndex], 'markdown-preview', [path]);
         return NIL;
       },
+      // markdown-preview-sync! (C-c C-v) — EXPLICIT forward search: scroll the
+      // open preview to the cursor's line AND flash the spot. Carries the 1-based
+      // cursor line so the renderer scrolls there regardless of the
+      // follow-cursor setting. A no-op (renderer-side) when no preview is open.
+      'markdown-preview-sync!': () => {
+        const line = buffer.positionAt(buffer.point).line + 1;
+        onClientDirective([activeClientIndex], 'markdown-preview-sync', [line]);
+        return NIL;
+      },
       'math-preview!': () => NIL,
 
       // --- snippets.lisp host primitives -------------------------------

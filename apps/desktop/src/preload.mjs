@@ -259,9 +259,10 @@ contextBridge.exposeInMainWorld('host', {
    */
   popOutPreview: (opts) => ipcRenderer.invoke('jmarkdown:watch:popout', opts),
 
-  /** Forward search to a popped-out preview window: the editor's cursor line. */
-  previewForward: (line) =>
-    ipcRenderer.send('preview-sync:down', { type: 'scroll-to-line', line }),
+  /** Forward search to a popped-out preview window: the editor's cursor line.
+   *  `flash` requests the yellow location flash (the explicit C-c C-v sync). */
+  previewForward: (line, flash) =>
+    ipcRenderer.send('preview-sync:down', { type: 'scroll-to-line', line, flash: !!flash }),
   /** Messages UP from a popped-out preview window: `{type:'ready'}` (replay the
    *  cursor line) or `{type:'source-line-click', line}` (inverse search). */
   onPreviewUp: (cb) => ipcRenderer.on('preview-sync:up', (_event, msg) => cb(msg)),

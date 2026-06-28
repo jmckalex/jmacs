@@ -78,6 +78,12 @@
    refreshes as the buffer is edited."
   (markdown-preview!))
 
+(defcommand markdown-preview-sync ()
+  "Scroll the live preview to the cursor's location and flash the spot
+   (forward search). Bound to C-c C-v — an explicit request, independent of
+   the preview-follows-cursor setting (which scrolls silently, no flash)."
+  (markdown-preview-sync!))
+
 ;; --- preview styling ---------------------------------------------------
 ;; The preview renders into an isolated iframe, so it can carry its own
 ;; CSS without affecting (or being affected by) the editor chrome.
@@ -181,6 +187,7 @@
    "6" 'markdown-heading-6
    "m" 'toggle-math-mode
    "v" 'markdown-preview
+   "C-v" 'markdown-preview-sync
    "C-p" 'toggle-markdown-math-preview})
 
 ;; markdown-mode-map is declared empty in modes.lisp; fill it in here.

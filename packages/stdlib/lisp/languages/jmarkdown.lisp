@@ -417,6 +417,7 @@
    "6" 'markdown-heading-6
    "m" 'toggle-math-mode
    "v" 'markdown-preview
+   "C-v" 'markdown-preview-sync
    "C-p" 'toggle-jmarkdown-math-preview})
 
 ;; M-q overrides keymap.lisp's global generic fill with the

@@ -58,7 +58,7 @@ window.host.onDown((msg) => {
   const win = frame.contentWindow;
   if (win) {
     win.postMessage(
-      { source: SOURCE, version: VERSION, type: 'scroll-to-line', line: msg.line, behavior: 'smooth' },
+      { source: SOURCE, version: VERSION, type: 'scroll-to-line', line: msg.line, behavior: 'smooth', flash: !!msg.flash },
       '*'
     );
   }

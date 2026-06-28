@@ -73,7 +73,7 @@ and by `event.origin` being `http://localhost:*` / `http://127.0.0.1:*` plus the
 ### 2.2 parent → preview
 | `type`            | payload | effect |
 |-------------------|---------|--------|
-| `scroll-to-line`  | `{ line: number, behavior?: 'smooth'\|'auto', align?: 'center'\|'top' }` | scroll the block mapped to `line` into view (default `behavior:'auto'`, `align:'center'`) and briefly flash it. |
+| `scroll-to-line`  | `{ line: number, flash?: boolean, behavior?: 'smooth'\|'auto', align?: 'center'\|'top' }` | scroll the block mapped to `line` into view (default `behavior:'auto'`, `align:'center'`); flash it **only when `flash: true`** (the explicit C-c C-v sync — auto-follow sends `flash:false` and must scroll silently). |
 
 ## 3. Line resolution
 
@@ -132,7 +132,7 @@ serving pipeline.
     if (lastFlashed) lastFlashed.classList.remove('jmarkdown-sync-flash');
     if (el) { el.classList.add('jmarkdown-sync-flash'); lastFlashed = el; }
   }
-  function scrollToLine(line, behavior, align) {
+  function scrollToLine(line, behavior, align, doFlash) {
     lastLine = line;
     var el = elForLine(line);
     if (!el) return;
@@ -140,7 +140,7 @@ serving pipeline.
       block: align === 'top' ? 'start' : 'center',
       behavior: behavior === 'smooth' ? 'smooth' : 'auto',
     });
-    flash(el);
+    if (doFlash) flash(el); // ONLY on an explicit (flash:true) request
   }
 
   // --- inverse: ⌘/Ctrl-click → the source line clicked ---------------------
@@ -173,19 +173,13 @@ serving pipeline.
     var d = e.data;
     if (!d || d.source !== SOURCE) return;
     if (d.type === 'scroll-to-line' && typeof d.line === 'number') {
-      scrollToLine(d.line, d.behavior, d.align);
+      scrollToLine(d.line, d.behavior, d.align, !!d.flash);
     }
   });
 
-  // --- re-flash the last target after a live (morphdom) reload -------------
-  try {
-    var t = null;
-    new MutationObserver(function () {
-      if (lastLine == null) return;
-      clearTimeout(t);
-      t = setTimeout(function () { flash(elForLine(lastLine)); }, 50);
-    }).observe(document.body, { childList: true, subtree: true });
-  } catch (e) { /* no body yet / unsupported — non-fatal */ }
+  // NB: do NOT re-flash on a live (morphdom) reload. The flash is reserved for an
+  // EXPLICIT forward-search (Godot's C-c C-v sends flash:true); auto-follow and
+  // save-driven reloads must not flash, or every save flashes the editing spot.
 
   // --- inject the flash style + announce readiness -------------------------
   var css = '.jmarkdown-sync-flash{animation:jmarkdown-sync-flash 1s ease-out}'
@@ -203,8 +197,11 @@ serving pipeline.
 - **No feedback loop:** forward is parent-driven (scroll), inverse is
   click-driven. They never trigger each other. (If scroll-position→cursor sync
   is ever added, it must be guarded against the forward scroll.)
-- **First-load race:** Godot waits for `ready` before sending `scroll-to-line`;
-  `sync.js` also remembers `lastLine` so a live reload re-flashes the right spot.
+- **First-load race:** Godot waits for `ready` before sending `scroll-to-line`.
+- **No flash on reload:** a save triggers a morphdom reload; `sync.js` must NOT
+  re-flash on it. The flash is purely a response to a `flash:true` scroll. (This
+  was changed from an earlier draft that re-flashed `lastLine` on reload — that
+  made every save flash the editing spot, which is wrong.)
 - **Clamping:** a line past the last block → last element; before the first →
   first element.
 - **Links/interactives:** a *plain* click is left untouched; only the
@@ -213,11 +210,16 @@ serving pipeline.
 ## 6. Godot side — **BUILT** (branch `jmarkdown-watch-preview`)
 The app half is implemented and unit-tested (live-test pending `sync.js`). What
 Godot actually does, so the `sync.js` author can rely on it exactly:
-- **Forward:** while the preview is open, on every server cursor-line change Godot
-  posts to the iframe (`targetOrigin:'*'`):
-  `{ source:'jmarkdown-sync', version:1, type:'scroll-to-line', line, behavior:'smooth' }`.
-  `line` is 1-based. De-duped (only on change) and replayed when Godot receives a
-  `ready`. (Server plumbing: a `cursorLine` view-state field — commit `d1a5bb1`.)
+- **Forward (two paths):**
+  - *Auto-follow* (`*markdown-preview-follow-cursor*` on): on every server
+    cursor-line change Godot posts `scroll-to-line` with **`flash:false`** —
+    scroll silently, no flash. De-duped (only on change), replayed on `ready`.
+  - *Explicit* (**C-c C-v**, `markdown-preview-sync`): Godot posts `scroll-to-line`
+    with **`flash:true`** — scroll AND flash — regardless of the follow setting.
+  Both post `{ source:'jmarkdown-sync', version:1, type:'scroll-to-line', line,
+  flash, behavior:'smooth' }` (`targetOrigin:'*'`, `line` 1-based). So `sync.js`
+  MUST gate the flash on `flash:true` and never flash on a reload. (Server
+  plumbing: `cursorLine` view-state field; `markdown-preview-sync!` directive.)
 - **Inverse:** Godot listens for `message`, accepting only
   `event.origin` matching `^https?://(localhost|127\.0\.0\.1)(:\d+)?$` **and**
   `data.source === 'jmarkdown-sync'`. On `{type:'source-line-click', line}` it

@@ -7004,6 +7004,10 @@ if (window.host && window.host.serverMode) {
         if (editorView && typeof editorView.flashCurrentLine === 'function') {
           editorView.flashCurrentLine();
         }
+      } else if (name === 'markdown-preview-sync') {
+        // Explicit forward search (C-c C-v): scroll the preview to the cursor's
+        // line (args[0], 1-based) and flash it, regardless of the follow setting.
+        previewSyncToCursor(Number(args?.[0]));
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
@@ -11326,26 +11330,43 @@ function previewFollowCursorOn() {
   }
 }
 
-/** Forward search: scroll the preview to the block for `line` — the in-app
- *  iframe, or (when detached) the popped-out window via main. Skips when no
- *  preview is showing, forward search is toggled off, or the line is unchanged.
- *  Records the line either way so a later `ready` can replay it. */
+/** Scroll the preview to `line` — the in-app iframe, or (when detached) the
+ *  popped-out window via main. `flash` requests the yellow location flash
+ *  (reserved for the explicit C-c C-v sync; auto-follow scrolls silently).
+ *  Returns whether a preview was targeted. */
+function postPreviewScroll(line, flash) {
+  const target = markdownPreviewVisible() ? 'inapp' : (previewPoppedOut ? 'popout' : null);
+  if (!target) return false;
+  if (target === 'popout') {
+    if (window.host && typeof window.host.previewForward === 'function') {
+      window.host.previewForward(line, !!flash);
+    }
+  } else {
+    postToPreview({ type: 'scroll-to-line', line, behavior: 'smooth', flash: !!flash });
+  }
+  return true;
+}
+
+/** Auto-follow (preview-follows-cursor on): as the server-pushed cursor line
+ *  changes, scroll the preview to it — SILENTLY (no flash). Skips when no
+ *  preview is showing, the toggle is off, or the line is unchanged. */
 function previewScrollToCursor(line) {
   if (typeof line !== 'number') return;
   lastKnownCursorLine = line;
-  // Prefer the in-app pane if it's visible, else the popped-out window.
-  const target = markdownPreviewVisible() ? 'inapp' : (previewPoppedOut ? 'popout' : null);
-  if (!target) return;
   if (line === lastPostedPreviewLine) return;
   if (!previewFollowCursorOn()) return;
   lastPostedPreviewLine = line;
-  if (target === 'popout') {
-    if (window.host && typeof window.host.previewForward === 'function') {
-      window.host.previewForward(line);
-    }
-  } else {
-    postToPreview({ type: 'scroll-to-line', line, behavior: 'smooth' });
-  }
+  postPreviewScroll(line, false);
+}
+
+/** Explicit forward search (C-c C-v): scroll the preview to `line` (or the last
+ *  known cursor line) AND flash the spot — regardless of the follow-cursor
+ *  toggle. A no-op when no preview is showing. */
+function previewSyncToCursor(line) {
+  const target = typeof line === 'number' ? line : lastKnownCursorLine;
+  if (typeof target !== 'number') return;
+  lastKnownCursorLine = target;
+  if (postPreviewScroll(target, true)) lastPostedPreviewLine = target;
 }
 
 // Relay from a popped-out preview window (via main): inverse-search clicks and
