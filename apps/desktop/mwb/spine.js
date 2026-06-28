@@ -299,6 +299,12 @@ const SPINE_STDLIB = Object.freeze([
   // server-owned 'gnuplot' live-process data-source whose child runs in MAIN,
   // exactly like the shell. Needs commands.lisp (defcommand), loaded above.
   'gnuplot.lisp',
+  // browser.lisp — the `(browser-view url)` command (M-x browser-view). A
+  // one-line defcommand wrapping the spine's `open-browser-view!` host primitive
+  // (above): a server-owned 'browser' data-source carrying the url, whose live
+  // <webview> lives per-instance in the renderer — the non-text twin of the
+  // shell. Needs commands.lisp (defcommand + interactive), loaded above.
+  'browser.lisp',
   // auto-pair.lisp — automatic matching-bracket / quote insertion. FULLY
   // model-side: it works over point / buffer-substring / insert! / goto! /
   // delete-region! / delete-backward! and a defcustom (*auto-pair*). Its
@@ -1166,6 +1172,12 @@ export function createSpine(options, effects = {}) {
       // (server-stable sessionId + the active doc's cwd); the gnuplot child runs
       // in MAIN keyed by sessionId. Returns the new source id.
       'open-gnuplot-buffer!': () => openProcessView('gnuplot'),
+      // (open-browser-view! url) — open a fresh browser VIEW (M-x browser-view)
+      // at URL (empty → the home page). Mints a server-owned 'browser' data-source
+      // carrying the url; the <browser-view> (Electron <webview>) leaf rides the
+      // PANE_TREE and the page itself lives per-instance in the renderer. Returns
+      // the new source id (the command ignores it).
+      'open-browser-view!': (args) => openBrowserSource(String(args[0] ?? '')),
 
       // --- system clipboard (kill.lisp) — STUB (server-local) ----------
       // The kill ring's *internal* state is real shared interpreter state
@@ -2642,6 +2654,51 @@ export function createSpine(options, effects = {}) {
     return src.id;
   }
 
+  // --- browser views (server-owned, per-instance webview) --------------
+  //
+  // A browser is the non-text twin of a live-process view: the server owns the
+  // 'browser' data-source (a `state.url`), but the actual webview — Chromium
+  // history, scroll, the live page — lives PER-INSTANCE in the renderer (an
+  // Electron <webview>). Like a shell child, that runtime state must survive a
+  // switch-away (re-creating it would reset the page), so the browser rides the
+  // same "still-open" live-set seam as the proc views (liveBrowserSourcesOf);
+  // the client reaps the element only when the source actually closes. No dedup
+  // — each `browser-view` mints a fresh page (the URL bar navigates from there).
+  let browserSeq = 0;
+  const BROWSER_HOME = 'about:blank';
+
+  /**
+   * Open a fresh browser data-source at URL (M-x browser-view) for the active
+   * client and switch its focused leaf to it. An empty/blank URL opens the home
+   * page; the renderer's URL bar navigates from there. The page itself is a
+   * renderer <webview>; the server only holds the kind + url. Returns the id.
+   *
+   * @param {string} url
+   * @returns {string}
+   */
+  function openBrowserSource(url) {
+    const u = typeof url === 'string' && url.trim() !== '' ? url.trim() : BROWSER_HOME;
+    browserSeq += 1;
+    const name = browserSeq === 1 ? '*Browser*' : `*Browser*<${browserSeq}>`;
+    const src = dataSources.add({ kind: 'browser', name, state: { url: u } });
+    switchClientToSource(activeClientIndex, src.id);
+    statusText = '';
+    onStatus('');
+    return src.id;
+  }
+
+  /** Restore a browser view as a FRESH data-source at URL (loadLayout places it
+   *  in the restored leaf — no switch here). The renderer re-creates the webview
+   *  and navigates to URL; live history/scroll are not persisted (a workspace
+   *  saves the arrangement, not the page). Mirror of serializeWindow's branch. */
+  function restoreBrowserSource(url) {
+    browserSeq += 1;
+    const name = browserSeq === 1 ? '*Browser*' : `*Browser*<${browserSeq}>`;
+    const u = typeof url === 'string' && url.trim() !== '' ? url.trim() : BROWSER_HOME;
+    const src = dataSources.add({ kind: 'browser', name, state: { url: u } });
+    return src.id;
+  }
+
   // --- bookmarks (server-owned, edit-tracked) --------------------------
   //
   // Bookmarks graduate to the server like overlays: each is an L2 MARKER on a
@@ -3259,6 +3316,11 @@ export function createSpine(options, effects = {}) {
       if (ds.kind === 'shell' || ds.kind === 'gnuplot') {
         return { kind: ds.kind, cwd: ds.state?.cwd ?? '' };
       }
+      // A BROWSER view is also path-less — serialise its kind + url; restore
+      // re-opens a FRESH webview there (live history/scroll aren't persisted).
+      if (ds.kind === 'browser') {
+        return { kind: 'browser', url: ds.state?.url ?? '' };
+      }
       // A BOOKMARK outline has no filePath — it identifies its source by
       // `state.sourceBufferId` (+ a pin flag). Serialise it by its SOURCE file +
       // kind so restore reopens an outline, not a text copy of the file.
@@ -3306,6 +3368,11 @@ export function createSpine(options, effects = {}) {
       // path guard below.
       if (viewBlob.kind === 'shell' || viewBlob.kind === 'gnuplot') {
         return restoreProcessView(viewBlob.kind, viewBlob.cwd);
+      }
+      // A BROWSER view restores as a FRESH webview at its saved url. Path-less,
+      // so it must precede the path guard below.
+      if (viewBlob.kind === 'browser') {
+        return restoreBrowserSource(viewBlob.url);
       }
       if (typeof viewBlob.path !== 'string' || viewBlob.path === '') return null;
       // A bookmark leaf reopens as a fresh per-window OUTLINE over its source file
@@ -3414,6 +3481,22 @@ export function createSpine(options, effects = {}) {
     for (const id of set) {
       const ds = dataSources.get(id);
       if (ds && (ds.kind === 'shell' || ds.kind === 'gnuplot')) out.push(id);
+    }
+    return out;
+  }
+
+  /** The OPEN browser sources in client INDEX's window (the twin of
+   *  liveProcessSessionsOf for webviews). Fanned to the client on every PANE_TREE
+   *  so it reaps a browser's <webview> element when its source leaves the open-set
+   *  (a real close — C-x k / tab ×) but NOT on a mere switch-away (the source
+   *  stays open, so its Chromium page survives). */
+  function liveBrowserSourcesOf(index) {
+    const set = clientBuffers.get(index);
+    if (!set) return [];
+    const out = [];
+    for (const id of set) {
+      const ds = dataSources.get(id);
+      if (ds && ds.kind === 'browser') out.push(id);
     }
     return out;
   }
@@ -4144,6 +4227,8 @@ export function createSpine(options, effects = {}) {
      *  would rebuild + scroll a document shown in a sibling pane. */
     isDataSource: (id) => dataSources.has(id),
     liveProcessSessionsOf,
+    liveBrowserSourcesOf,
+    openBrowserSource,
     openCustomizeScope,
     // JS notebook: evaluate a cell server-side (Node, no CSP) → serializable result.
     runNotebookCell,

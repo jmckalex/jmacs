@@ -41,6 +41,9 @@ export const STDLIB_FILES = Object.freeze([
   'indent.lisp',
   'files.lisp',
   'views.lisp',
+  // browser-view: open an Electron <webview> in a pane (M-x browser-view).
+  // Needs `defcommand` (commands.lisp); the host supplies `open-browser-view!`.
+  'browser.lisp',
   // element-views: register a view backed by an arbitrary custom element
   // (define-element-view). Needs `defcommand` (commands.lisp, loaded
   // first); the host supplies `open-element-view!`.

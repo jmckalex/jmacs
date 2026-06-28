@@ -626,10 +626,14 @@ function sendPaneTreeTo(client) {
   // `liveProcs` = the live-process sources (shell + gnuplot) still open in this
   // window. The client reaps a process's child + element when its session leaves
   // this set (a real close), but NOT on a switch-away (the source stays open).
-  // See app.js reconcile.
+  // `liveBrowsers` is the same seam for browser <webview>s (their Chromium page
+  // is the per-instance runtime that must survive a switch-away). See app.js
+  // reconcile.
   if (tree) {
     client.port.postMessage({
-      type: MSG.PANE_TREE, tree, seq, liveProcs: spine.liveProcessSessionsOf(client.index),
+      type: MSG.PANE_TREE, tree, seq,
+      liveProcs: spine.liveProcessSessionsOf(client.index),
+      liveBrowsers: spine.liveBrowserSourcesOf(client.index),
     });
   }
 }

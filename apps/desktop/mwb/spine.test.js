@@ -1028,6 +1028,64 @@ test('a restored shell keeps its cwd (fresh process, same dir)', () => {
   assert.equal(after.state.cwd, '/proj', 'restored shell starts in the saved cwd');
 });
 
+test('M-x browser-view mints a server-owned browser data-source at the typed URL', () => {
+  // The full Lisp path: browser.lisp (browser-view) prompts for a URL →
+  // (open-browser-view! url) → openBrowserSource. Proves browser.lisp loaded in
+  // SPINE_STDLIB and the interactive prompt round-trips server-side.
+  const { spine, log } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('browser-view');
+  assert.deepEqual(log.minibufferOpens, ['Browse URL: '], 'prompts for a URL');
+  spine.deliverMinibuffer('example.com');
+  assert.equal(spine.bufferCount, 1, 'a browser did NOT add a text buffer');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.match(leaf.bufferId, /^ds\d+$/, 'a data-source id');
+  assert.equal(leaf.viewKind, 'browser');
+  assert.equal(leaf.state.url, 'example.com', 'carries the typed URL on the wire state');
+});
+
+test('browser-view with an empty URL opens the home page (about:blank)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('browser-view');
+  spine.deliverMinibuffer(''); // submit empty → home page
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.viewKind, 'browser');
+  assert.equal(leaf.state.url, 'about:blank', 'empty URL falls back to the home page');
+});
+
+test('liveBrowserSourcesOf lists open browsers; kill-view reaps the focused one', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const browserId = spine.openBrowserSource('https://example.com');
+  // Fanned to the client per PANE_TREE so it reaps the <webview> on a real close
+  // (not a switch-away — the source stays in the set then).
+  assert.deepEqual(spine.liveBrowserSourcesOf(0), [browserId], 'the open browser is in the live set');
+  spine.runCommand('kill-view');
+  assert.deepEqual(spine.liveBrowserSourcesOf(0), [], 'the killed browser left the live set');
+  assert.equal(spine.isDataSource(browserId), false, 'the browser data-source is gone');
+});
+
+test('kill-view on a browser bypasses the "only buffer" guard (data-source path)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  assert.equal(spine.bufferCount, 1, 'one text buffer (scratch)');
+  spine.openBrowserSource('https://example.com');
+  spine.runCommand('kill-view');
+  assert.equal(spine.liveBrowserSourcesOf(0).length, 0, 'the browser was reaped, not refused');
+  assert.equal(spine.bufferCount, 1, 'the text buffer survived');
+});
+
+test('serializeWindow/loadWindowLayout round-trips a browser as a FRESH source at its URL', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.openBrowserSource('https://example.com/page');
+  const before = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'browser');
+  assert.ok(before, 'a browser leaf exists before save');
+  const blob = spine.serializeWindow(0);
+  assert.equal(spine.loadWindowLayout(0, blob), true, 'layout restored');
+  const after = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'browser');
+  assert.ok(after, 'restored as a browser (not text, not dropped)');
+  // A workspace saves the ARRANGEMENT: a fresh source, but at the same saved URL.
+  assert.notEqual(after.bufferId, before.bufferId, 'a fresh browser source on restore');
+  assert.equal(after.state.url, 'https://example.com/page', 'restored at the saved URL');
+});
+
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });

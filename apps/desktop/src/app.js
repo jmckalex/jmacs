@@ -6006,6 +6006,11 @@ if (window.host && window.host.serverMode) {
   // reaped (child killed + element disposed) in the reconcile; a switch-away
   // keeps it here, so it survives.
   let serverLiveProcs = new Set();
+  // The open browser sources in this window (fanned per PANE_TREE, the twin of
+  // serverLiveProcs). A cached <browser-view> whose source leaves this set was
+  // closed → its webview element is disposed in the reconcile; a switch-away
+  // keeps it here, so its Chromium page survives.
+  let serverLiveBrowsers = new Set();
   // Step 3b: per-buffer STATIC mirrors for panes showing a DIFFERENT buffer than
   // the focused/active one. Seeded + refreshed from each PANE_TREE leaf's `text`
   // (not live deltas — they update on a structural/focus change, which is when a
@@ -6113,6 +6118,7 @@ if (window.host && window.host.serverMode) {
       const elementKind = w.viewKind === 'element';
       const jukeboxKind = w.viewKind === 'jukebox';
       const bookmarkKind = w.viewKind === 'bookmark';
+      const browserKind = w.viewKind === 'browser';
       const procViewKind = isProcViewKind(w.viewKind); // shell | gnuplot
       const customizeKind = w.viewKind === 'customize';
       let extras;
@@ -6155,6 +6161,13 @@ if (window.host && window.host.serverMode) {
           ended: false,
           spawned: false,
         };
+      } else if (browserKind) {
+        // A BROWSER data-source carries its url on the wire `state`; the
+        // <browser-view> (Electron <webview>) reads `view.url` and navigates
+        // there. The live page (history/scroll) is per-instance renderer state
+        // — the server only owns the url, like a shell's cwd.
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = { url: typeof s.url === 'string' && s.url !== '' ? s.url : 'about:blank' };
       } else if (directoryKind) {
         extras = { rootPath: w.filePath, expanded: new Set() };
       } else if (jukeboxKind) {
@@ -6200,9 +6213,9 @@ if (window.host && window.host.serverMode) {
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
       // Only media needs an async byte-load; directory / element / jukebox /
-      // bookmark / shell render themselves from the spec / state.
+      // bookmark / shell / browser render themselves from the spec / state.
       if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind
-          && !procViewKind && !customizeKind) {
+          && !procViewKind && !customizeKind && !browserKind) {
         loadServerMediaSrc(v, w.filePath);
       }
     }
@@ -6622,6 +6635,12 @@ if (window.host && window.host.serverMode) {
         // data-source is actually closed (the reap loop below, driven by the
         // server's live-process set).
         if (v && isProcViewKind(v.kind)) continue;
+        // A BROWSER is per-instance renderer state (a live Chromium <webview>):
+        // like a proc view, a switch-away must NOT reap it — re-creating the
+        // element would reset the page (history/scroll/url). Keep it cached +
+        // mounted (hideInactiveBrowsers hides it); reaped only on a real close
+        // (the browser reap loop below, driven by serverLiveBrowsers).
+        if (v && v.kind === 'browser') continue;
         if (v && v.kind === 'bookmark') disposeBookmarkElementForView(v);
         serverMediaViews.delete(id);
       }
@@ -6633,6 +6652,16 @@ if (window.host && window.host.serverMode) {
     // source id, which is the sessionId.
     for (const [id, v] of [...serverMediaViews]) {
       if (v && isProcViewKind(v.kind) && !serverLiveProcs.has(id)) reapProcView(v, id);
+    }
+    // Reap CLOSED browser views: a <browser-view> whose source left the server's
+    // open-set (serverLiveBrowsers) was closed (C-x k / tab ×) — dispose its
+    // webview element + drop the cache. A switch-away keeps it open (exempted
+    // above), so its page survives. Keyed by the data-source id.
+    for (const [id, v] of [...serverMediaViews]) {
+      if (v && v.kind === 'browser' && !serverLiveBrowsers.has(id)) {
+        disposeBrowserElementForView(v);
+        serverMediaViews.delete(id);
+      }
     }
     // Drop minimap companions whose leaf left the tree (toggle-off / target
     // deleted): dispose the <minimap-view> element + clear its target binding.
@@ -6732,7 +6761,8 @@ if (window.host && window.host.serverMode) {
         // same rule: with one in a split beside the document, an unrelated
         // reconcile must not yank the keyboard into it. Media keep always-focus.
         const focus = !(
-          (leaf.view.kind === 'bookmark' || isProcViewKind(leaf.view.kind))
+          (leaf.view.kind === 'bookmark' || leaf.view.kind === 'browser'
+            || isProcViewKind(leaf.view.kind))
           && leaf.id !== currentPaneId
         );
         mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id), focus });
@@ -6808,13 +6838,15 @@ if (window.host && window.host.serverMode) {
   /** A server PANE_TREE push: store it and render the new layout — splits appear
    *  / collapse, a tabline leaf re-renders. Every window renders from its
    *  PANE_TREE now (the unify); a push before the first mirror is just stored. */
-  function applyServerPaneTree(tree, liveProcs) {
+  function applyServerPaneTree(tree, liveProcs, liveBrowsers) {
     serverPaneTreeWire = tree;
     // The live-process sources (shell + gnuplot) still open in this window
     // (server's open-set). A process whose session is NOT here was closed (C-x k /
     // tab ×) — reaped below. Only update when the server actually sent the field
     // (every PANE_TREE does), so a stray push without it can't wrongly reap all.
     if (Array.isArray(liveProcs)) serverLiveProcs = new Set(liveProcs);
+    // The open browser sources (same seam, for <webview> elements).
+    if (Array.isArray(liveBrowsers)) serverLiveBrowsers = new Set(liveBrowsers);
     if (serverMirror) renderServerPaneLayout();
   }
 
@@ -7026,7 +7058,8 @@ if (window.host && window.host.serverMode) {
     // G4 Step 3: the server pushed this window's pane layout. Render it (splits
     // become visible). Only a 'single' (fresh / composable) window reflects the
     // server tree; window 1 keeps its tabline.
-    setPaneTree: (tree, liveProcs) => applyServerPaneTree(tree, liveProcs),
+    setPaneTree: (tree, liveProcs, liveBrowsers) =>
+      applyServerPaneTree(tree, liveProcs, liveBrowsers),
   };
 
   bootServerViewClient = () => {
@@ -10131,12 +10164,14 @@ function mountKindView(view, context) {
     return;
   }
   if (view.kind === 'browser') {
-    // Per-instance: mount THIS view's own browser element in its pane.
+    // Per-instance: mount THIS view's own browser element in its pane. Honor the
+    // focus context — a non-focused browser re-mounting on a fan-out reconcile
+    // must not yank the keyboard into its <webview> (same rule as proc/bookmark).
     const leaf = leafPanes(rootPane).find((l) => l.view === view);
-    const paneEl = leaf ? paneElements.get(leaf.id) : null;
+    const paneEl = (context && context.paneEl) || (leaf ? paneElements.get(leaf.id) : null);
     const el = ensureBrowserElementForView(view, paneEl);
     el.style.display = '';
-    el.focus();
+    if (!context || context.focus !== false) el.focus();
     return;
   }
   if (view.kind === 'doc') {

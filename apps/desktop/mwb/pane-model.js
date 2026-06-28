@@ -828,6 +828,12 @@ export function createPaneModel(options = {}, hooks = {}) {
       if (src.kind === 'shell' || src.kind === 'gnuplot') {
         return { kind: src.kind, cwd: typeof src.cwd === 'string' ? src.cwd : '' };
       }
+      // A BROWSER view is path-less too: persist its kind + url (restore re-opens
+      // a FRESH webview at that url — the live page isn't persisted). Must precede
+      // the path guard, which would otherwise drop it.
+      if (src.kind === 'browser') {
+        return { kind: 'browser', url: typeof src.url === 'string' ? src.url : '' };
+      }
       if (typeof src.path !== 'string' || src.path === '') return null;
       if (src.kind !== 'text') {
         const b = { kind: src.kind, path: src.path };

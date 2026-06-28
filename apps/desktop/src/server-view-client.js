@@ -593,7 +593,7 @@ export function createServerViewClient({
           try { runClientCommand(msg.name, msg.bibPath ?? null); } catch { /* surfaced by app.js */ }
         }
         break;
-      case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs); break;
+      case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs, msg.liveBrowsers); break;
       case MSG.CUSTOMIZE_SYNC: onCustomizeSyncDom(msg.change); break;
       case MSG.CLIENT_DIRECTIVE:
         if (msg.directive && typeof msg.directive.name === 'string') {
