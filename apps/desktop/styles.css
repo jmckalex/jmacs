@@ -1530,8 +1530,12 @@ body.markdown-preview-hidden #preview-splitter {
 }
 
 .markdown-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   flex: 0 0 auto;
-  padding: 6px 14px;
+  padding: 4px 6px 4px 14px;
   font-size: 11.5px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1539,6 +1543,54 @@ body.markdown-preview-hidden #preview-splitter {
   background: var(--bg-chrome);
   border-bottom: 1px solid #00000040;
   user-select: none;
+}
+
+/* The "PREVIEW <filename>" label. Truncates with an ellipsis when narrow. */
+.markdown-preview-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The file name keeps its real case (the label is uppercased) and is a touch
+   brighter than the dim label. */
+.markdown-preview-filename {
+  text-transform: none;
+  letter-spacing: 0;
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+}
+
+.markdown-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+
+/* Header icon buttons (pop-out, close). Transparent until hovered. */
+.markdown-preview-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 4px 7px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+.markdown-preview-btn:hover {
+  background: color-mix(in srgb, var(--fg) 14%, transparent);
+  color: var(--fg);
+}
+/* The close X reads red, and intensifies on hover. */
+.markdown-preview-close {
+  color: #e5484d;
+}
+.markdown-preview-close:hover {
+  background: color-mix(in srgb, #e5484d 22%, transparent);
+  color: #ff5c5c;
 }
 
 /* The preview renders into an isolated iframe; its inner styling comes

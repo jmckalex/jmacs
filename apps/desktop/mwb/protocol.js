@@ -201,6 +201,11 @@ export const INTENT = Object.freeze({
   // directory-view (directory-tree / directory-columns). The server runs the
   // same `visitFile` find-file opens use; `path` is the absolute file path.
   VISIT_FILE: 'visit-file',
+  // Markdown-preview INVERSE search: a ⌘/Ctrl-click in the preview iframe maps
+  // to a source line (the sync.js bridge's data-source-line lookup); the client
+  // sends the 1-based `line` and the server moves the active buffer's point
+  // there (spine.gotoLine). See plans/JMARKDOWN-PREVIEW-SYNC.md.
+  GOTO_LINE: 'goto-line',
   // Generic picker round-trip (the command spine, G0b). When a server-side
   // command suspends on a PICKER (open-picker! → a PICKER down-message),
   // the client renders the interactive list and the user's choice/cancel

@@ -23,6 +23,13 @@ import { reconcileBounds } from './window-geometry.js';
 import { registerFileHandlers } from './files.js';
 import { isServerMode, createServerBridge } from './server-bridge.js';
 import { renderJMarkdown } from './jmarkdown.js';
+import {
+  registerJmarkdownWatchHandlers,
+  stopJmarkdownWatch,
+  reapJmarkdownWatchers,
+  watcherPort,
+  transferWatcherTo,
+} from './jmarkdown-watch.js';
 import { buildAppMenu } from './menu.js';
 import { EDITOR_URL, serveAppFile, serveMediaFile, allowHostDir } from './serve.js';
 import { registerShellHandlers } from './shell.js';
@@ -50,6 +57,13 @@ app.commandLine.appendSwitch('force-color-profile', 'srgb');
 app.setName('Godot');
 
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
+const PREVIEW_PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preview-preload.mjs');
+const PREVIEW_WINDOW_URL = EDITOR_URL.replace(/index\.html$/, 'preview-window.html');
+
+// Markdown-preview pop-out: each editor window ↔ its popped-out preview window,
+// for forward/inverse-search relay (separate renderers route through main).
+const previewPopoutByEditor = new Map(); // editorWcId -> popout webContents
+const previewEditorByPopout = new Map(); // popoutWcId -> editor webContents
 
 // §3a: a main-process throw or unhandled rejection should log, not kill
 // the host silently (which would take the window down with no warning).
@@ -244,6 +258,13 @@ function createWindow(opts = {}) {
     });
   }
 
+  // Reap this window's JMarkdown preview watcher (if any) when it closes, in
+  // every mode — a live `jmarkdown watch` subprocess must not outlive the
+  // window that asked for it. (`webContents.id` is captured now; it's gone
+  // once 'closed' has fired.)
+  const previewWcId = win.webContents.id;
+  win.on('closed', () => stopJmarkdownWatch(previewWcId));
+
   // §3a: the renderer crashing (or being killed) takes the editor down.
   // Log the cause; the user's unsaved work is recoverable on relaunch
   // from the autosave snapshots (the *Recover* view), since a crash is
@@ -273,6 +294,7 @@ app.whenReady().then(() => {
   registerShellHandlers();
   registerProcessHandlers();
   registerGnuplotHandlers();
+  registerJmarkdownWatchHandlers();
   buildAppMenu(null, dispatchMenuCommand, { canNewWindow: isServerMode() });
   // The renderer calls this (via host.quit) from quitInteractive, after
   // it has confirmed there is nothing unsaved to lose. Mark the quit
@@ -320,6 +342,67 @@ app.whenReady().then(() => {
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
   );
+  // Pop the Markdown preview out into its own Godot window: a BrowserWindow on
+  // the wrapper page (preview-window.html), which embeds the live `jmarkdown
+  // watch` localhost page in an iframe and relays forward/inverse search to the
+  // editor window (the two are separate renderers, so they talk through main —
+  // see the preview-sync:* handlers below). The watch process's OWNERSHIP
+  // transfers from the editor window to the preview window, so it is reaped when
+  // the preview window closes (and on app quit), and a fresh C-c v in the editor
+  // starts an independent watcher.
+  ipcMain.handle('jmarkdown:watch:popout', (event, opts) => {
+    const editorWc = event.sender;
+    const editorWcId = editorWc.id;
+    if (watcherPort(editorWcId) == null) return { ok: false, error: 'no preview to pop out' };
+    const name = typeof opts?.name === 'string' ? opts.name : '';
+    const bg = typeof opts?.bg === 'string' ? opts.bg : '';
+    const fg = typeof opts?.fg === 'string' ? opts.fg : '';
+    const win = new BrowserWindow({
+      width: 820,
+      height: 1000,
+      title: name || 'Preview',
+      // Match the editor's window chrome: an inset title bar (the page draws a
+      // themed strip) over the theme's background colour, not a white native bar.
+      titleBarStyle: 'hiddenInset',
+      backgroundColor: /^#[0-9a-fA-F]{3,8}$/.test(bg) ? bg : '#1b1b23',
+      webPreferences: {
+        preload: PREVIEW_PRELOAD,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false, // ESM preload
+      },
+    });
+    const port = transferWatcherTo(editorWcId, win.webContents.id);
+    if (port == null) {
+      win.destroy();
+      return { ok: false, error: 'no preview to pop out' };
+    }
+    const popoutWcId = win.webContents.id;
+    previewPopoutByEditor.set(editorWcId, win.webContents);
+    previewEditorByPopout.set(popoutWcId, editorWc);
+    const query = `port=${port}&name=${encodeURIComponent(name)}`
+      + `&bg=${encodeURIComponent(bg)}&fg=${encodeURIComponent(fg)}`;
+    win.loadURL(`${PREVIEW_WINDOW_URL}?${query}`);
+    win.on('closed', () => {
+      stopJmarkdownWatch(popoutWcId);
+      previewPopoutByEditor.delete(editorWcId);
+      previewEditorByPopout.delete(popoutWcId);
+      // Tell the editor its preview window is gone so it stops forwarding.
+      if (!editorWc.isDestroyed()) editorWc.send('preview-sync:popout-closed');
+    });
+    return { ok: true };
+  });
+
+  // Forward search: an editor's cursor line → ITS popped-out preview window.
+  ipcMain.on('preview-sync:down', (event, msg) => {
+    const popoutWc = previewPopoutByEditor.get(event.sender.id);
+    if (popoutWc && !popoutWc.isDestroyed()) popoutWc.send('preview-sync:down', msg);
+  });
+  // Inverse search (+ the preview's `ready`): a popped-out preview → ITS editor.
+  ipcMain.on('preview-sync:up', (event, msg) => {
+    const editorWc = previewEditorByPopout.get(event.sender.id);
+    if (editorWc && !editorWc.isDestroyed()) editorWc.send('preview-sync:up', msg);
+  });
   // The renderer sends the current buffer's mode menu; rebuild the
   // application menu around it as the buffer's mode changes.
   ipcMain.on('menu:set', (event, modeMenu) => {
@@ -401,6 +484,11 @@ function shouldHoldForConfirm() {
 // `app:quit` to actually quit, or does nothing to cancel. Holding here
 // means the windows never close, so the `close` guard below does not
 // also fire for the same Cmd+Q.
+// Reap every JMarkdown preview watcher once the quit actually proceeds (after
+// any save-confirm). 'will-quit' fires only on a real quit — unlike
+// 'before-quit', which also fires on a quit the user then cancels.
+app.on('will-quit', () => reapJmarkdownWatchers());
+
 app.on('before-quit', (event) => {
   if (!shouldHoldForConfirm()) return;
   event.preventDefault();

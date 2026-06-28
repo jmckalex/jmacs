@@ -94,6 +94,15 @@
   :group 'godot
   :doc "Link the built-in Markdown-preview stylesheet in the preview iframe. Turn off to let your own *markdown-preview-css* fully control the preview's appearance.")
 
+;; --- preview <-> source sync (forward search) --------------------------
+;; With the live preview open, following the cursor scrolls the preview to the
+;; block under point as you move (forward search, via the sync.js bridge). Some
+;; prefer a still preview; turn this off to stop the auto-scroll. Inverse search
+;; (Command-click the preview to jump the source) is unaffected by this.
+(defcustom *markdown-preview-follow-cursor* #t :boolean
+  :group 'godot
+  :doc "Scroll the Markdown/JMarkdown live preview to follow the editor cursor (forward search). Off keeps the preview still; Command-click inverse search still works.")
+
 ;; --- live inline math preview -----------------------------------------
 ;; Markdown gets the same live MathJax typesetting LaTeX does, built on
 ;; the general `math-preview-mode` (math-preview.lisp). The host scans a

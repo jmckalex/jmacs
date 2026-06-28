@@ -1,8 +1,38 @@
 # Plan — JMarkdown preview via `jmarkdown watch` (morphdom live-reload)
 
-**Status: DESIGNED, not built (2026-06-28).** Decisions locked with Jason;
-the current in-app preview (committed `7a5bc48`, working under Model B) stays
-until this lands, then is replaced.
+**Status: BUILT 2026-06-28, awaiting live-verify.** Branch
+`jmarkdown-watch-preview` (off `main`), 3 commits (`bd00e4f` main-process
+watcher · `6dac4e5` spine directive path · `d87aa68` renderer pane). Suite
+**3182/3182**. The in-app render path is now removed (replaced, as planned).
+
+## Live-verify checklist (Jason — quit + relaunch, this is main-process work)
+`cd apps/desktop && GODOT_SERVER=1 ./node_modules/.bin/electron .`
+- Open a **saved** `.jmd` / `.md`; JMarkdown menu → Toggle Preview Pane (C-c v):
+  the pane opens, header shows "starting…", then the iframe shows the real
+  jmarkdown output (book CSS/MathJax = byte-identical to the build).
+- **Edit + save (C-x C-s):** the preview live-reloads (morphdom — scroll
+  preserved). *If it does NOT update on save*, the suspect is jmarkdown's file
+  watcher vs our **atomic save** (temp-file + rename); see the wrinkle below.
+- **Unsaved buffer:** C-c v on a fresh/unsaved buffer → status "save the file
+  first" (no pane). **Non-markdown buffer:** "not in Markdown mode".
+- **Toggle off** (C-c v again): pane hides; confirm the `jmarkdown` process is
+  gone (`pgrep -fl 'jmarkdown watch'`). **Close the window / quit:** no orphaned
+  watch processes. **Buffer switch** to another saved markdown file with the
+  pane open: it re-points to the new file (one watcher, old one reaped).
+
+## Residual / follow-ups (noted, not blocking)
+- **Atomic-save vs the watcher:** jmarkdown watch must notice our temp-file+
+  rename save. If it misses it, fix on the jmarkdown side (chokidar handles
+  atomic writes) — do not re-add an in-app refresh.
+- **Dead code now unused by the app:** `packages/renderer/src/markdown-preview.js`
+  (the in-app srcdoc/morphdom component) is still exported + unit-tested but no
+  longer imported by `app.js`; and `*markdown-preview-css*` /
+  `*markdown-preview-default-style*` (markdown.lisp) configured the old in-app
+  CSS and are now inert. Remove in a follow-up once the watch path is blessed.
+
+---
+
+## Original design (as built)
 
 ## Goal
 Replace the in-app Markdown/JMarkdown preview pane with the **real** jmarkdown

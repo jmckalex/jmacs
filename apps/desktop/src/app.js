@@ -63,8 +63,6 @@ import {
   ImageView,
   JukeboxView,
   PdfView,
-  createMarkdownPreview,
-  buildPreviewHead,
   createMinibuffer,
   createReplView,
   createUtilityDock,
@@ -673,8 +671,9 @@ function watchCurrentBuffer() {
         recovery.save();
       }
       dismissSplash();
-      // Keep the Markdown preview pane in step with the buffer.
-      refreshMarkdownPreview();
+      // The Markdown preview (when open) tracks the SAVED file via its own
+      // `jmarkdown watch` server, so an edit needs no renderer-side refresh —
+      // the preview updates on save (C-x C-s), not per keystroke.
       // While a snippet is active, reflow the active field's extent and
       // the trailing offsets after each edit. A no-op when no snippet is
       // active (guarded in Lisp).
@@ -6882,6 +6881,8 @@ if (window.host && window.host.serverMode) {
       // interpreter is inert under GODOT_SERVER=1) and ships it in the view-state;
       // forward it to the macOS app menu so the menu follows the buffer's mode.
       if (v && 'modeMenu' in v) applyServerModeMenu(v.modeMenu);
+      // Markdown-preview forward search: follow the cursor line in the preview.
+      if (v && typeof v.cursorLine === 'number') previewScrollToCursor(v.cursorLine);
     },
     // A customize setting changed in ANOTHER window — re-apply it here so global
     // rendering (theme / faces / line-height) stays consistent across windows.
@@ -6991,9 +6992,18 @@ if (window.host && window.host.serverMode) {
         });
       } else if (name === 'markdown-preview') {
         // P3: the JMarkdown live-preview toggle (C-c v / the Markdown/JMarkdown
-        // mode menu). The server resolved the command; toggle the preview pane
-        // here, rendering this window's buffer mirror through the pipeline.
-        toggleMarkdownPreview();
+        // mode menu). The server resolved the command and sent the active
+        // buffer's saved path (args[0], '' when unsaved); toggle the preview
+        // pane here, pointing it at the real `jmarkdown watch` server.
+        toggleMarkdownPreview(String(args?.[0] ?? ''));
+      } else if (name === 'flash-current-line') {
+        // Inverse search (Markdown-preview ⌘-click): the server moved + centered
+        // the cursor; flash its line so the user sees where the jump landed. The
+        // view defers the flash to the next render, so it lands on the just-moved
+        // line regardless of whether this arrives before or after the cursor view.
+        if (editorView && typeof editorView.flashCurrentLine === 'function') {
+          editorView.flashCurrentLine();
+        }
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
@@ -11196,33 +11206,20 @@ const bookmarks = createBookmarks({
 bookmarks.setBuffer(currentTextBuffer);
 
 // --- Markdown preview pane ---------------------------------------------
-// A toggleable pane (markdown-preview, C-c v) that renders the current
-// markdown-mode buffer to HTML through the same JMarkdown pipeline the
-// sticky notes use, refreshing — debounced — as the buffer is edited.
-
-/** Typeset mathematics inside the preview iframe, once its own MathJax
- *  has started. The iframe loads its own MathJax (see buildPreviewHead),
- *  so this runs against THAT instance, not the editor's. `elements` is
- *  the set to typeset: the whole body `[body]` after a rebuild, or just
- *  the math spans morphdom brought in fresh on the incremental path. */
-function typesetPreview(frameWindow, elements) {
-  const mathJax = frameWindow && frameWindow.MathJax;
-  if (!mathJax) return;
-  if (!Array.isArray(elements) || elements.length === 0) return;
-  const run = () => {
-    if (typeof mathJax.typesetPromise === 'function') {
-      mathJax.typesetPromise(elements).catch(() => {});
-    }
-  };
-  const ready = mathJax.startup && mathJax.startup.promise;
-  if (ready) ready.then(run).catch(() => {});
-  else run();
-}
+// A toggleable pane (markdown-preview, C-c v) that shows the current
+// Markdown / JMarkdown FILE rendered by the real `jmarkdown watch` server
+// (apps/desktop/src/jmarkdown-watch.js) inside an iframe — the same pipeline
+// the book build uses, live-reloading (morphdom) on each save. The renderer
+// owns only the pane + the iframe's `src`; the rendering, CSS, and MathJax all
+// come from the watch server's output, so there is no in-app render path here.
+// The preview tracks the SAVED file, so it refreshes when the buffer is saved
+// (C-x C-s), not per keystroke; an unsaved / path-less buffer has nothing to
+// watch.
 
 /** Build an `app://editor/__host__/…` URL for an absolute file path —
  *  the renderer-side mirror of serve.js's `hostFileUrl` (keep in sync).
- *  Serves any local file same-origin, so the preview iframe can load the
- *  book's CSS and a file's relative assets. */
+ *  Serves any local file same-origin (e.g. resolving a bibliography that
+ *  lives outside an opened folder). */
 function hostFileUrl(filePath) {
   return (
     'app://editor/__host__' +
@@ -11230,132 +11227,280 @@ function hostFileUrl(filePath) {
   );
 }
 
-/** The MathJax config the preview iframe uses — mirrors index.html. */
-const PREVIEW_MATHJAX_CONFIG = {
-  tex: {
-    inlineMath: [['$', '$'], ['\\(', '\\)']],
-    displayMath: [['$$', '$$'], ['\\[', '\\]']],
-    // Honour `\$` as a literal dollar (renderMarkdown preserves it), so a
-    // price like "\$45" isn't paired into math.
-    processEscapes: true,
-  },
-  svg: { fontCache: 'local' },
-  startup: { typeset: false },
-};
-const PREVIEW_MATHJAX_SRC =
-  'app://editor/apps/desktop/vendor/mathjax/tex-svg.js';
-const PREVIEW_DEFAULT_CSS_URL =
-  'app://editor/apps/desktop/markdown-preview.css';
+// The preview pane DOM: a header + an iframe inside #markdown-preview-host.
+// The CSS classes (.markdown-preview / -header / -frame, and the
+// body.markdown-preview-hidden toggle) are shared with the old in-app pane, so
+// styles.css needs no change. The iframe's `src` points at the watch server.
+const markdownPreviewPane = document.createElement('div');
+markdownPreviewPane.className = 'markdown-preview';
 
-/** The current markdown buffer's directory as a base URL the iframe
- *  resolves relative assets against — or null for an unsaved buffer. */
-function currentPreviewBaseUrl() {
-  const path = currentTextBuffer && currentTextBuffer.filePath;
-  if (typeof path !== 'string' || path === '') return null;
-  const dir = path.slice(0, path.lastIndexOf('/') + 1);
-  return dir ? hostFileUrl(dir) : null;
+// Header: a "PREVIEW" label + the file name on the left, action buttons (pop
+// out, close) on the right.
+const markdownPreviewHeader = document.createElement('div');
+markdownPreviewHeader.className = 'markdown-preview-header';
+const markdownPreviewTitle = document.createElement('span');
+markdownPreviewTitle.className = 'markdown-preview-title';
+markdownPreviewTitle.textContent = 'Preview';
+const markdownPreviewFilename = document.createElement('span');
+markdownPreviewFilename.className = 'markdown-preview-filename';
+markdownPreviewTitle.append(' ', markdownPreviewFilename);
+
+const markdownPreviewActions = document.createElement('span');
+markdownPreviewActions.className = 'markdown-preview-actions';
+const markdownPreviewPopoutBtn = document.createElement('button');
+markdownPreviewPopoutBtn.className = 'markdown-preview-btn';
+markdownPreviewPopoutBtn.title = 'Open the preview in its own window';
+markdownPreviewPopoutBtn.setAttribute('aria-label', 'Pop out preview');
+markdownPreviewPopoutBtn.innerHTML = '<i class="fa-solid fa-arrow-up-right-from-square"></i>';
+const markdownPreviewCloseBtn = document.createElement('button');
+markdownPreviewCloseBtn.className = 'markdown-preview-btn markdown-preview-close';
+markdownPreviewCloseBtn.title = 'Close the preview (stops the watch process)';
+markdownPreviewCloseBtn.setAttribute('aria-label', 'Close preview');
+markdownPreviewCloseBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+markdownPreviewActions.append(markdownPreviewPopoutBtn, markdownPreviewCloseBtn);
+markdownPreviewHeader.append(markdownPreviewTitle, markdownPreviewActions);
+
+const markdownPreviewFrame = document.createElement('iframe');
+markdownPreviewFrame.className = 'markdown-preview-frame';
+markdownPreviewPane.append(markdownPreviewHeader, markdownPreviewFrame);
+document.getElementById('markdown-preview-host').append(markdownPreviewPane);
+
+markdownPreviewPopoutBtn.addEventListener('click', () => {
+  popOutMarkdownPreview();
+  editorView.focus();
+});
+markdownPreviewCloseBtn.addEventListener('click', () => {
+  hideMarkdownPreview();
+  editorView.focus();
+});
+
+// The pane starts hidden; markdown-preview reveals it.
+document.body.classList.add('markdown-preview-hidden');
+
+/** The absolute path of the file the preview is currently watching, or null
+ *  when the preview is off. Lets a buffer switch skip a respawn when the new
+ *  buffer is backed by the same file. */
+let previewWatchedPath = null;
+/** The watch server's port while the preview is open (for the pop-out URL). */
+let previewPort = null;
+/** True while the preview lives in a popped-out window: forward search routes to
+ *  it (via main) instead of the in-app iframe, and inverse search arrives back
+ *  the same way. Cleared when the popped-out window closes or the in-app preview
+ *  is reopened. */
+let previewPoppedOut = false;
+
+// --- preview ⇄ source sync (forward / inverse search) ------------------
+// The preview iframe is cross-origin (localhost vs app://), so source↔preview
+// position sync goes through postMessage with the watch page's injected
+// `sync.js` (contract: plans/JMARKDOWN-PREVIEW-SYNC.md). Forward search: when
+// the server-pushed cursor line changes, ask the preview to scroll to it.
+// Inverse search: a ⌘/Ctrl-click in the preview posts a source line back; we
+// move the editor cursor there via a server GOTO_LINE intent (the renderer's
+// own buffer mirror can't move the server cursor).
+const PREVIEW_SYNC_SOURCE = 'jmarkdown-sync';
+const PREVIEW_SYNC_VERSION = 1;
+/** The most recent 1-based cursor line the server pushed (for replay on `ready`). */
+let lastKnownCursorLine = null;
+/** The last line we asked the preview to scroll to (de-dupes per-keystroke posts). */
+let lastPostedPreviewLine = null;
+
+/** Post a sync message to the preview iframe. No-op if it isn't mounted. */
+function postToPreview(msg) {
+  const win = markdownPreviewFrame && markdownPreviewFrame.contentWindow;
+  if (!win) return;
+  win.postMessage(
+    { source: PREVIEW_SYNC_SOURCE, version: PREVIEW_SYNC_VERSION, ...msg },
+    '*' // line numbers only; '*' avoids the localhost-port origin dance
+  );
 }
 
-/** The user's `*markdown-preview-css*` paths as iframe-loadable URLs.
- *  Absolute (and `~`) paths go through the host-file scheme; a relative
- *  path is left as-is to resolve against the iframe's <base>. */
-function currentPreviewCssUrls() {
-  let paths = [];
+/** Whether forward search (preview-follows-cursor) is enabled. Reads the
+ *  `*markdown-preview-follow-cursor*` defcustom from the renderer interpreter
+ *  (customize is client-side under Model B, so this reflects the live setting);
+ *  defaults on. */
+function previewFollowCursorOn() {
   try {
-    paths = listToArray(interpreter.evaluate('*markdown-preview-css*')).map(String);
-  } catch {
-    paths = [];
-  }
-  return paths.map((p) => {
-    let path = p;
-    if (path.startsWith('~/')) path = window.host.homeDirectory + path.slice(1);
-    return path.startsWith('/') ? hostFileUrl(path) : path;
-  });
-}
-
-/** Whether the built-in preview stylesheet should be linked. */
-function previewDefaultStyleOn() {
-  try {
-    return interpreter.evaluate('*markdown-preview-default-style*') !== false;
+    return interpreter.evaluate('*markdown-preview-follow-cursor*') !== false;
   } catch {
     return true;
   }
 }
 
-/** The <head> for the preview iframe: base + stylesheets + MathJax. */
-function buildPreviewFrameHead() {
-  return buildPreviewHead({
-    baseUrl: currentPreviewBaseUrl(),
-    cssUrls: currentPreviewCssUrls(),
-    defaultCssUrl: previewDefaultStyleOn() ? PREVIEW_DEFAULT_CSS_URL : null,
-    mathjaxSrc: PREVIEW_MATHJAX_SRC,
-    mathjaxConfig: PREVIEW_MATHJAX_CONFIG,
+/** Forward search: scroll the preview to the block for `line` — the in-app
+ *  iframe, or (when detached) the popped-out window via main. Skips when no
+ *  preview is showing, forward search is toggled off, or the line is unchanged.
+ *  Records the line either way so a later `ready` can replay it. */
+function previewScrollToCursor(line) {
+  if (typeof line !== 'number') return;
+  lastKnownCursorLine = line;
+  // Prefer the in-app pane if it's visible, else the popped-out window.
+  const target = markdownPreviewVisible() ? 'inapp' : (previewPoppedOut ? 'popout' : null);
+  if (!target) return;
+  if (line === lastPostedPreviewLine) return;
+  if (!previewFollowCursorOn()) return;
+  lastPostedPreviewLine = line;
+  if (target === 'popout') {
+    if (window.host && typeof window.host.previewForward === 'function') {
+      window.host.previewForward(line);
+    }
+  } else {
+    postToPreview({ type: 'scroll-to-line', line, behavior: 'smooth' });
+  }
+}
+
+// Relay from a popped-out preview window (via main): inverse-search clicks and
+// the preview's `ready`. Registered once.
+if (window.host && typeof window.host.onPreviewUp === 'function') {
+  window.host.onPreviewUp((msg) => {
+    if (!msg) return;
+    if (msg.type === 'ready') {
+      // The popped-out preview is up — replay the current cursor line.
+      lastPostedPreviewLine = null;
+      if (previewPoppedOut && typeof lastKnownCursorLine === 'number') {
+        previewScrollToCursor(lastKnownCursorLine);
+      }
+    } else if (msg.type === 'source-line-click' && typeof msg.line === 'number') {
+      if (serverViewClient && typeof serverViewClient.sendGotoLine === 'function') {
+        serverViewClient.sendGotoLine(msg.line);
+      }
+    }
+  });
+}
+if (window.host && typeof window.host.onPreviewPopoutClosed === 'function') {
+  window.host.onPreviewPopoutClosed(() => {
+    previewPoppedOut = false;
+    lastPostedPreviewLine = null;
   });
 }
 
-const markdownPreview = createMarkdownPreview(
-  document.getElementById('markdown-preview-host'),
-  {
-    render: renderNoteHtml,
-    buildHead: buildPreviewFrameHead,
-    typeset: typesetPreview,
+// Inverse search + handshake from the preview's sync.js. Registered once;
+// filters to the localhost preview origin and our protocol, ignores all else.
+window.addEventListener('message', (event) => {
+  if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(event.origin)) return;
+  const d = event.data;
+  if (!d || d.source !== PREVIEW_SYNC_SOURCE) return;
+  if (d.type === 'ready') {
+    // The preview (re)loaded its sync bridge — replay the current cursor line so
+    // the view aligns immediately.
+    lastPostedPreviewLine = null;
+    if (typeof lastKnownCursorLine === 'number') previewScrollToCursor(lastKnownCursorLine);
+  } else if (d.type === 'source-line-click' && typeof d.line === 'number') {
+    if (serverViewClient && typeof serverViewClient.sendGotoLine === 'function') {
+      serverViewClient.sendGotoLine(d.line);
+    }
   }
-);
-// The pane starts hidden; markdown-preview reveals it.
-document.body.classList.add('markdown-preview-hidden');
-
-/** Whether the current buffer is in markdown-mode. */
-function currentBufferIsMarkdown() {
-  // Under the server the renderer interpreter is inert, so read the mode from
-  // the server-pushed VIEW field (resolvedMajorModeName), not interpreter.call.
-  // markdown-preview is offered for BOTH Markdown and JMarkdown (.jmd); both
-  // render through the JMarkdown pipeline.
-  const mode = resolvedMajorModeName(currentTextBuffer);
-  return mode === 'Markdown' || mode === 'JMarkdown';
-}
+});
 
 /** Whether the preview pane is currently visible. */
 function markdownPreviewVisible() {
   return !document.body.classList.contains('markdown-preview-hidden');
 }
 
-/** Render the current buffer into the preview pane, debounced. Used on
- *  edits; a no-op when the pane is hidden. */
-function refreshMarkdownPreview() {
-  if (!markdownPreviewVisible()) return;
-  markdownPreview.update(currentTextBuffer.text);
+/** The trailing path segment (file name) of an absolute path. */
+function previewBasename(path) {
+  return String(path).split('/').pop() || String(path);
 }
 
-/** Re-point the preview pane after a buffer switch: render the new
- *  buffer if the pane is open and the buffer is Markdown; otherwise
- *  hide the pane, since it only makes sense for a markdown-mode
- *  buffer. A no-op when the pane is already hidden. */
-function syncMarkdownPreviewToBuffer() {
-  if (!markdownPreviewVisible()) return;
-  if (currentBufferIsMarkdown()) {
-    markdownPreview.refreshNow(currentTextBuffer.text);
-  } else {
-    document.body.classList.add('markdown-preview-hidden');
-    markdownPreview.clear();
+/** Reset the in-app preview pane chrome: hide it and clear its state. Shared by
+ *  close (which also stops the watch) and pop-out (which hands the watch to the
+ *  new window and so keeps it alive). */
+function resetMarkdownPreviewPane() {
+  document.body.classList.add('markdown-preview-hidden');
+  previewWatchedPath = null;
+  previewPort = null;
+  lastPostedPreviewLine = null; // a re-open re-scrolls to the cursor
+  markdownPreviewFrame.src = 'about:blank';
+  markdownPreviewFilename.textContent = '';
+}
+
+/** Hide the preview pane and stop this window's watch subprocess. */
+function hideMarkdownPreview() {
+  resetMarkdownPreviewPane();
+  if (window.host && typeof window.host.stopJmarkdownWatch === 'function') {
+    window.host.stopJmarkdownWatch();
   }
 }
 
-/** Toggle the Markdown preview pane. Showing it renders the current
- *  buffer at once; the pane only makes sense for a markdown-mode
- *  buffer, so opening it on any other buffer is reported and skipped. */
-function toggleMarkdownPreview() {
+/** Pop the preview out into its own Godot window. Main moves the watch's
+ *  ownership to the new window, so the in-app pane DETACHES (closes) without
+ *  stopping the watch. A no-op until the watcher's port is known. */
+async function popOutMarkdownPreview() {
+  if (previewPort == null) return;
+  // Pass the file name + the editor's resolved chrome colours so the popped-out
+  // window's title bar matches the active theme.
+  const cs = getComputedStyle(document.body);
+  const opts = {
+    name: previewBasename(previewWatchedPath || ''),
+    bg: cs.getPropertyValue('--bg-chrome').trim(),
+    fg: cs.getPropertyValue('--fg-dim').trim(),
+  };
+  let result;
+  try {
+    result = await window.host.popOutPreview(opts);
+  } catch (error) {
+    result = { error: String(error && error.message ? error.message : error) };
+  }
+  if (result && result.ok) {
+    resetMarkdownPreviewPane(); // the popped-out window owns the watch now
+    previewPoppedOut = true;    // forward search now routes to that window
+  } else {
+    repl.appendNote(`markdown-preview: ${result?.error ?? 'could not pop out the preview'}`);
+  }
+}
+
+/** Reveal the pane and point the iframe at a `jmarkdown watch` server on
+ *  `path`. Starting the watcher is async (the server builds before it serves);
+ *  the header shows a "starting…" state until the port is ready. A failure
+ *  re-hides the pane and reports the reason. */
+async function showMarkdownPreview(path) {
+  document.body.classList.remove('markdown-preview-hidden');
+  previewPoppedOut = false; // reopening in-app takes over forwarding
+  markdownPreviewFilename.textContent = `${previewBasename(path)} · starting…`;
+  previewWatchedPath = path;
+  let result;
+  try {
+    result = await window.host.startJmarkdownWatch(path);
+  } catch (error) {
+    result = { error: String(error && error.message ? error.message : error) };
+  }
+  // A later toggle/switch may have moved on while we awaited; honour it.
+  if (previewWatchedPath !== path) return;
+  if (!result || result.error) {
+    hideMarkdownPreview();
+    repl.appendNote(`markdown-preview: ${result?.error ?? 'could not start preview'}`);
+    return;
+  }
+  previewPort = result.port;
+  markdownPreviewFilename.textContent = previewBasename(path);
+  markdownPreviewFrame.src = `http://localhost:${result.port}/`;
+}
+
+/** Re-point the preview after a buffer switch. The server owns the buffer's
+ *  mode AND file path: a server-backed buffer never updates the renderer's
+ *  `currentTextBuffer`, and the pushed mirror carries no file path — so the
+ *  renderer can't learn a newly-focused buffer's path. The preview therefore
+ *  stays PINNED to the file it was opened on; re-open (C-c v) on another file
+ *  to preview it instead. (Server-driven re-point is a follow-up; in server
+ *  mode this isn't even reached — applyTextMountSideEffects returns first.) */
+function syncMarkdownPreviewToBuffer() {
+  // intentionally a no-op — see above.
+}
+
+/** Toggle the Markdown preview pane (C-c v). The server emits this directive
+ *  only for a Markdown / JMarkdown buffer (it guards the mode) and sends the
+ *  active buffer's saved `path` ('' when unsaved). So the renderer just
+ *  toggles: open on a saved file, else report "save the file first". */
+function toggleMarkdownPreview(path) {
   if (markdownPreviewVisible()) {
-    document.body.classList.add('markdown-preview-hidden');
-    markdownPreview.clear();
+    hideMarkdownPreview();
     editorView.focus();
     return;
   }
-  if (!currentBufferIsMarkdown()) {
-    repl.appendNote('markdown-preview: the current buffer is not in Markdown mode');
+  if (typeof path !== 'string' || path === '') {
+    repl.appendNote('markdown-preview: save the file first');
     return;
   }
-  document.body.classList.remove('markdown-preview-hidden');
-  markdownPreview.refreshNow(currentTextBuffer.text);
+  showMarkdownPreview(path);
   editorView.focus();
 }
 

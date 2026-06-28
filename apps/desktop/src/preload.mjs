@@ -233,6 +233,43 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('jmarkdown:render', { command, source }),
 
   /**
+   * Start (or restart) this window's JMarkdown live-preview watcher on the
+   * saved file `path` — spawns `jmarkdown watch path --port N` in the main
+   * process. Resolves `{ port }` once the preview server is accepting
+   * connections, or `{ error }` on failure.
+   * @param {string} path - Absolute path of the saved file to preview.
+   * @returns {Promise<{port: number} | {error: string}>}
+   */
+  startJmarkdownWatch: (path) =>
+    ipcRenderer.invoke('jmarkdown:watch:start', { path }),
+
+  /**
+   * Stop this window's JMarkdown preview watcher (a no-op if none is running).
+   * @returns {Promise<{ok: boolean}>}
+   */
+  stopJmarkdownWatch: () => ipcRenderer.invoke('jmarkdown:watch:stop'),
+
+  /**
+   * Pop this window's JMarkdown preview out into its own Godot window. The watch
+   * process's ownership transfers to the new window. Resolves `{ ok }` or
+   * `{ error }`.
+   * @param {{name?: string, bg?: string, fg?: string}} [opts] - File name + the
+   *   editor's resolved chrome colours, to theme the preview window's title bar.
+   * @returns {Promise<{ok: boolean, error?: string}>}
+   */
+  popOutPreview: (opts) => ipcRenderer.invoke('jmarkdown:watch:popout', opts),
+
+  /** Forward search to a popped-out preview window: the editor's cursor line. */
+  previewForward: (line) =>
+    ipcRenderer.send('preview-sync:down', { type: 'scroll-to-line', line }),
+  /** Messages UP from a popped-out preview window: `{type:'ready'}` (replay the
+   *  cursor line) or `{type:'source-line-click', line}` (inverse search). */
+  onPreviewUp: (cb) => ipcRenderer.on('preview-sync:up', (_event, msg) => cb(msg)),
+  /** The popped-out preview window closed — stop forwarding to it. */
+  onPreviewPopoutClosed: (cb) =>
+    ipcRenderer.on('preview-sync:popout-closed', () => cb()),
+
+  /**
    * Read a file's companion metadata (sticky notes), or null.
    * @param {string} path - The file's own path.
    * @returns {Promise<object | null>}

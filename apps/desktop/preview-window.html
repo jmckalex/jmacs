@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <!-- Served from app://editor (same origin as the editor). The live preview
+         is embedded as a cross-origin localhost iframe (frame-src), so its
+         sync.js sees a parent and engages; this page relays its forward/inverse
+         messages to the editor window through the preload + main. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' app:; style-src 'self' app: 'unsafe-inline'; frame-src http://localhost:* http://127.0.0.1:*"
+    />
+    <title>Preview</title>
+    <style>
+      html, body { margin: 0; height: 100%; }
+      body {
+        display: flex;
+        flex-direction: column;
+        background: var(--tb-bg, #262d34);
+      }
+      /* A themed title bar matching the editor's (.titlebar): the file name
+         centred, the whole strip draggable. The native traffic lights overlay
+         its left under `titleBarStyle: hiddenInset`; centred text clears them. */
+      #titlebar {
+        flex: 0 0 38px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--tb-bg, #262d34);
+        color: var(--tb-fg, #7c8f9e);
+        border-bottom: 1px solid #00000040;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        user-select: none;
+        -webkit-app-region: drag;
+      }
+      #preview-frame {
+        flex: 1 1 auto;
+        border: 0;
+        width: 100%;
+        min-height: 0;
+        background: #ffffff;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="titlebar"><span id="titlebar-name">Preview</span></div>
+    <iframe id="preview-frame"></iframe>
+    <script src="./preview-window.js"></script>
+  </body>
+</html>

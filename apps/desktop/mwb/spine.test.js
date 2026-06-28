@@ -28,7 +28,7 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
     directives: [],
   };
   const spine = createSpine(
-    { initialText, name },
+    { initialText, name, initialPath: extra.initialPath },
     {
       onStatus: (s) => log.status.push(s),
       onMinibufferOpen: (p) => log.minibufferOpens.push(p),
@@ -591,6 +591,47 @@ test('viewState reports point, mark, name, modeline and modified flag', () => {
   assert.match(vs.modeline, /^●/);
 });
 
+test('viewState carries the 1-based cursorLine (Markdown-preview forward search)', () => {
+  const { spine } = makeSpine('line one\nline two\nline three', 'doc.md');
+  assert.equal(spine.viewState().cursorLine, 1, 'point at start → line 1');
+  assert.equal(spine.viewStateOf(0).cursorLine, 1, 'viewStateOf agrees');
+  spine.buffer.moveTo(spine.buffer.offsetAt(2, 0)); // 0-based line 2 → 1-based line 3
+  assert.equal(spine.viewState().cursorLine, 3);
+  assert.equal(spine.viewStateOf(0).cursorLine, 3);
+});
+
+test('gotoLine is a quiet move (no scroll / no flash) and reports whether it moved', () => {
+  const { spine, log } = makeSpine('aaa\nbbb\nccc\nddd', 'doc.md');
+  assert.equal(spine.gotoLine(3), true, 'reports it moved');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, '1-based 3 → 0-based line 2');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).column, 0, 'lands at column 0');
+  assert.equal(spine.gotoLine(999), true); // clamped to the last line
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 3);
+  const before = spine.buffer.point;
+  assert.equal(spine.gotoLine(0), false, 'non-positive → no move');
+  assert.equal(spine.buffer.point, before);
+  assert.ok(!log.scrolls.some((s) => s.kind === 'recenter'), 'gotoLine does not recenter');
+  assert.ok(!log.directives.some((d) => d.name === 'flash-current-line'), 'gotoLine does not flash');
+});
+
+test('gotoLineReveal moves AND reveals: recenter scroll + flash-current-line directive', () => {
+  const { spine, log } = makeSpine('aaa\nbbb\nccc\nddd', 'doc.md');
+  spine.gotoLineReveal(3);
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, 'moved to the line');
+  const recenter = log.scrolls.find((s) => s.kind === 'recenter');
+  assert.ok(recenter, 'a recenter scroll was emitted');
+  assert.equal(recenter.line, 2, 'recenter targets the landed (0-based) line');
+  assert.ok(
+    log.directives.some((d) => d.name === 'flash-current-line' && d.ids.includes(0)),
+    'a flash-current-line directive went to the active window'
+  );
+  // A no-op reveals nothing.
+  log.scrolls.length = 0; log.directives.length = 0;
+  spine.gotoLineReveal(0);
+  assert.equal(log.scrolls.length, 0);
+  assert.equal(log.directives.length, 0);
+});
+
 // --- multi-buffer: the registry, switching, kill-view ----------------
 
 test('the server starts with one buffer; find-file adds a second', () => {
@@ -657,12 +698,34 @@ test('closing the LAST tab collapses the tabline to a bare *scratch* leaf', () =
   assert.ok(!spine.bufferListRecords(0).some((r) => r.id === aId), 'the closed view was killed');
 });
 
-test('markdown-preview routes to the active window via a directive (Model B port)', () => {
-  const { spine, log } = makeSpine('# hi\n', 'doc.md');
+test('markdown-preview directive carries the active buffer SAVED path', () => {
+  const { spine, log } = makeSpine('# hi\n', 'doc.md', { initialPath: '/docs/doc.md' });
   spine.runCommand('markdown-preview'); // the command body calls markdown-preview!
+  const d = log.directives.find((x) => x.name === 'markdown-preview');
+  assert.ok(d && d.ids.includes(0), 'a markdown-preview directive went to the active window');
+  assert.deepEqual(d.args, ['/docs/doc.md'], 'the saved path travels as the sole directive arg');
+});
+
+test('markdown-preview sends an empty path for an unsaved buffer', () => {
+  // No initialPath → a path-less buffer; the renderer then says "save first".
+  const { spine, log } = makeSpine('# hi\n', 'doc.md');
+  spine.runCommand('markdown-preview');
+  const d = log.directives.find((x) => x.name === 'markdown-preview');
+  assert.deepEqual(d.args, [''], 'an unsaved buffer sends an empty path');
+});
+
+test('markdown-preview on a NON-markdown buffer emits no directive (mode guarded server-side)', () => {
+  // A .txt buffer is Fundamental mode, not Markdown — the server guards the
+  // mode (the renderer can't see it reliably) and reports a status instead.
+  const { spine, log } = makeSpine('plain text\n', 'notes.txt', { initialPath: '/notes.txt' });
+  spine.runCommand('markdown-preview');
   assert.ok(
-    log.directives.some((d) => d.name === 'markdown-preview' && d.ids.includes(0)),
-    'a markdown-preview directive went to the active window'
+    !log.directives.some((x) => x.name === 'markdown-preview'),
+    'no markdown-preview directive for a non-markdown buffer'
+  );
+  assert.ok(
+    log.status.some((s) => /not in Markdown mode/i.test(s)),
+    'a "not in Markdown mode" status was shown'
   );
 });
 

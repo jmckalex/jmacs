@@ -1529,16 +1529,30 @@ export function createSpine(options, effects = {}) {
         return NIL;
       },
 
-      // --- live preview (markdown.lisp) — STUB -------------------------
+      // --- live preview (markdown.lisp) --------------------------------
       // markdown-preview! — the JMarkdown live-preview toggle (C-c v / the
       // Markdown / JMarkdown mode menu's "Toggle Preview Pane"). The command
       // (markdown.lisp) runs server-side, but the preview pane lives in the
-      // CLIENT, so route it to the active window via the directive channel; the
-      // renderer toggles it using its own buffer mirror (text + pushed mode).
+      // CLIENT, so route it to the active window via the directive channel. The
+      // pane drives the REAL `jmarkdown watch` server on the saved FILE, so the
+      // directive carries the active buffer's absolute path ('' when the buffer
+      // is unsaved / path-less — the renderer then says "save the file first").
+      //
+      // The mode guard lives HERE, not in the renderer: the major mode is known
+      // authoritatively on the server (the client's mirror carries the mode
+      // name but NOT the buffer's file path, and a server-backed buffer never
+      // updates the renderer's `currentTextBuffer`). So a non-markdown buffer
+      // (e.g. M-x markdown-preview) reports a status and emits no directive.
       // (math-preview! stays a no-op — math preview is driven by the pushed
       // majorModeName / mathPreviewActive VIEW fields, not a directive.)
       'markdown-preview!': () => {
-        onClientDirective([activeClientIndex], 'markdown-preview', []);
+        if (!/markdown/i.test(majorModeName())) {
+          statusText = 'markdown-preview: the current buffer is not in Markdown mode';
+          onStatus(statusText);
+          return NIL;
+        }
+        const path = activeEntry && activeEntry.filePath ? activeEntry.filePath : '';
+        onClientDirective([activeClientIndex], 'markdown-preview', [path]);
         return NIL;
       },
       'math-preview!': () => NIL,
@@ -3603,6 +3617,11 @@ export function createSpine(options, effects = {}) {
     const { name: modeName, menu: modeMenu } = modeInfoFor(entry, v);
     return {
       point: v.point,
+      // The cursor's 1-based source line (positionAt is 0-based). Travels as its
+      // own field so the client can drive Markdown-preview forward search
+      // (scroll the preview to the block for this line) without parsing the
+      // baked modeline string.
+      cursorLine: line + 1,
       mark: v.mark,
       name: buf.name,
       majorModeName: modeName,
@@ -3860,6 +3879,31 @@ export function createSpine(options, effects = {}) {
     return { line: line + 1, column };
   }
 
+  /** Move the active buffer's point to the start of the 1-based LINE (clamped to
+   *  the buffer's line range). A quiet move — no scroll/flash. Returns whether it
+   *  moved (false for a non-integer / non-positive LINE). The active client is
+   *  bound by setActiveClient before the intent, so `buffer` is the focused
+   *  buffer. */
+  function gotoLine(n) {
+    const line = Number(n);
+    if (!Number.isInteger(line) || line < 1) return false;
+    buffer.moveTo(buffer.offsetAt(Math.min(line, buffer.lineCount) - 1, 0));
+    return true;
+  }
+
+  /** goto + REVEAL: move to the 1-based LINE, then CENTER it vertically and flash
+   *  it, so the user sees where the jump landed (mirrors LaTeX SyncTeX's
+   *  -latex-goto-line-flash). Markdown-preview INVERSE search (the GOTO_LINE
+   *  intent) calls this; plain `gotoLine` stays quiet. recenter is a
+   *  server-decided scroll; the flash is a renderer capability sent as a
+   *  directive — the view defers it to the next render, so it lands on the
+   *  freshly-moved line whatever the message order. A no-op LINE reveals nothing. */
+  function gotoLineReveal(n) {
+    if (!gotoLine(n)) return;
+    onScroll({ kind: 'recenter', line: buffer.positionAt(buffer.point).line });
+    onClientDirective([activeClientIndex], 'flash-current-line', []);
+  }
+
   /** A fresh view-state object (protocol ViewState) for the active client.
    *  The modeline is rendered by the shared pure helper in protocol.js, so
    *  the server and any future client agree on its shape. */
@@ -3868,6 +3912,7 @@ export function createSpine(options, effects = {}) {
     const modified = buffer.text !== activeEntry.savedText;
     return {
       point: buffer.point,
+      cursorLine: line, // 1-based (pointPosition); Markdown-preview forward search
       mark: buffer.mark,
       name: buffer.name,
       modeline: renderModeline({
@@ -3940,6 +3985,8 @@ export function createSpine(options, effects = {}) {
     },
     handleKey,
     runCommand,
+    gotoLine,
+    gotoLineReveal,
     consumeHistoryOp,
     commandNames,
     deliverMinibuffer,
