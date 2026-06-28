@@ -6996,6 +6996,14 @@ if (window.host && window.host.serverMode) {
         // buffer's saved path (args[0], '' when unsaved); toggle the preview
         // pane here, pointing it at the real `jmarkdown watch` server.
         toggleMarkdownPreview(String(args?.[0] ?? ''));
+      } else if (name === 'flash-current-line') {
+        // Inverse search (Markdown-preview ⌘-click): the server moved + centered
+        // the cursor; flash its line so the user sees where the jump landed. The
+        // view defers the flash to the next render, so it lands on the just-moved
+        // line regardless of whether this arrives before or after the cursor view.
+        if (editorView && typeof editorView.flashCurrentLine === 'function') {
+          editorView.flashCurrentLine();
+        }
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to

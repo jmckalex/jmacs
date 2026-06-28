@@ -600,16 +600,36 @@ test('viewState carries the 1-based cursorLine (Markdown-preview forward search)
   assert.equal(spine.viewStateOf(0).cursorLine, 3);
 });
 
-test('gotoLine moves point to the start of a 1-based line (Markdown-preview inverse search)', () => {
-  const { spine } = makeSpine('aaa\nbbb\nccc\nddd', 'doc.md');
-  spine.gotoLine(3);
+test('gotoLine is a quiet move (no scroll / no flash) and reports whether it moved', () => {
+  const { spine, log } = makeSpine('aaa\nbbb\nccc\nddd', 'doc.md');
+  assert.equal(spine.gotoLine(3), true, 'reports it moved');
   assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, '1-based 3 → 0-based line 2');
   assert.equal(spine.buffer.positionAt(spine.buffer.point).column, 0, 'lands at column 0');
-  spine.gotoLine(999); // clamped to the last line
+  assert.equal(spine.gotoLine(999), true); // clamped to the last line
   assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 3);
   const before = spine.buffer.point;
-  spine.gotoLine(0); // non-positive → no-op
+  assert.equal(spine.gotoLine(0), false, 'non-positive → no move');
   assert.equal(spine.buffer.point, before);
+  assert.ok(!log.scrolls.some((s) => s.kind === 'recenter'), 'gotoLine does not recenter');
+  assert.ok(!log.directives.some((d) => d.name === 'flash-current-line'), 'gotoLine does not flash');
+});
+
+test('gotoLineReveal moves AND reveals: recenter scroll + flash-current-line directive', () => {
+  const { spine, log } = makeSpine('aaa\nbbb\nccc\nddd', 'doc.md');
+  spine.gotoLineReveal(3);
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, 'moved to the line');
+  const recenter = log.scrolls.find((s) => s.kind === 'recenter');
+  assert.ok(recenter, 'a recenter scroll was emitted');
+  assert.equal(recenter.line, 2, 'recenter targets the landed (0-based) line');
+  assert.ok(
+    log.directives.some((d) => d.name === 'flash-current-line' && d.ids.includes(0)),
+    'a flash-current-line directive went to the active window'
+  );
+  // A no-op reveals nothing.
+  log.scrolls.length = 0; log.directives.length = 0;
+  spine.gotoLineReveal(0);
+  assert.equal(log.scrolls.length, 0);
+  assert.equal(log.directives.length, 0);
 });
 
 // --- multi-buffer: the registry, switching, kill-view ----------------

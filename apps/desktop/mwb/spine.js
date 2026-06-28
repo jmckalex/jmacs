@@ -3880,14 +3880,28 @@ export function createSpine(options, effects = {}) {
   }
 
   /** Move the active buffer's point to the start of the 1-based LINE (clamped to
-   *  the buffer's line range). Markdown-preview INVERSE search lands here via the
-   *  GOTO_LINE intent. A non-integer / non-positive LINE is a no-op. The active
-   *  client is bound by setActiveClient before the intent, so `buffer` is the
-   *  focused buffer. */
+   *  the buffer's line range). A quiet move — no scroll/flash. Returns whether it
+   *  moved (false for a non-integer / non-positive LINE). The active client is
+   *  bound by setActiveClient before the intent, so `buffer` is the focused
+   *  buffer. */
   function gotoLine(n) {
     const line = Number(n);
-    if (!Number.isInteger(line) || line < 1) return;
+    if (!Number.isInteger(line) || line < 1) return false;
     buffer.moveTo(buffer.offsetAt(Math.min(line, buffer.lineCount) - 1, 0));
+    return true;
+  }
+
+  /** goto + REVEAL: move to the 1-based LINE, then CENTER it vertically and flash
+   *  it, so the user sees where the jump landed (mirrors LaTeX SyncTeX's
+   *  -latex-goto-line-flash). Markdown-preview INVERSE search (the GOTO_LINE
+   *  intent) calls this; plain `gotoLine` stays quiet. recenter is a
+   *  server-decided scroll; the flash is a renderer capability sent as a
+   *  directive — the view defers it to the next render, so it lands on the
+   *  freshly-moved line whatever the message order. A no-op LINE reveals nothing. */
+  function gotoLineReveal(n) {
+    if (!gotoLine(n)) return;
+    onScroll({ kind: 'recenter', line: buffer.positionAt(buffer.point).line });
+    onClientDirective([activeClientIndex], 'flash-current-line', []);
   }
 
   /** A fresh view-state object (protocol ViewState) for the active client.
@@ -3972,6 +3986,7 @@ export function createSpine(options, effects = {}) {
     handleKey,
     runCommand,
     gotoLine,
+    gotoLineReveal,
     consumeHistoryOp,
     commandNames,
     deliverMinibuffer,
