@@ -14,11 +14,10 @@ contextBridge.exposeInMainWorld('host', {
    *  filesystem and `file://` URL scheme will accept. */
   homeDirectory: homedir(),
 
-  /** Model B is now the DEFAULT. The renderer reads this single gate to decide
-   *  whether to listen for the server port and route editing through it. On
-   *  unless `GODOT_SERVER=0` forces the legacy in-renderer path — a transitional
-   *  escape hatch removed in Part A2 (plans/MODEL-B-DEFAULT.md). */
-  serverMode: process.env.GODOT_SERVER !== '0',
+  /** Model B is the only mode. Retained as a constant `true` while the renderer
+   *  still reads `window.host.serverMode` at its branch points; those reads go
+   *  away in Part A3 (plans/MODEL-B-DEFAULT.md), after which this field does too. */
+  serverMode: true,
 
   /** The editor's per-user data directory (`app.getPath('userData')`),
    *  resolved once at preload time over a synchronous IPC call. The
@@ -781,15 +780,12 @@ contextBridge.exposeInMainWorld('host', {
   },
 });
 
-// Model B (default): main transfers a MessagePort connected to the server over
-// the `godot:server-port` IPC channel. ipcRenderer delivers transferred ports on
+// Model B: main transfers a MessagePort connected to the server over the
+// `godot:server-port` IPC channel. ipcRenderer delivers transferred ports on
 // `event.ports`; the page can't touch ipcRenderer across the context bridge, so
-// we re-dispatch the port to the page as a `window` message (transferring it into
-// page-land). Skipped only when `GODOT_SERVER=0` forces the legacy in-renderer
-// path — a transitional escape hatch removed in Part A2.
-if (process.env.GODOT_SERVER !== '0') {
-  ipcRenderer.on('godot:server-port', (event) => {
-    const [port] = event.ports;
-    if (port) window.postMessage({ type: 'godot:server-port' }, '*', [port]);
-  });
-}
+// we re-dispatch the port to the page as a `window` message (transferring it
+// into page-land).
+ipcRenderer.on('godot:server-port', (event) => {
+  const [port] = event.ports;
+  if (port) window.postMessage({ type: 'godot:server-port' }, '*', [port]);
+});

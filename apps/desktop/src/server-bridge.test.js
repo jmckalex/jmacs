@@ -1,40 +1,23 @@
 /**
- * @file Tests for the G1 server bridge (`server-bridge.js`).
+ * @file Tests for the Model-B server bridge (`server-bridge.js`).
  *
  * These run under `node --test` with NO real Electron: the bridge takes its
  * Electron collaborators (`utilityProcess`, `MessageChannelMain`) by
- * injection, so the flag-gating, fork config, and per-window port-transfer
- * dance are all assertable with fakes. They are the automated half of the G1
- * verification; the actual spawn/boot is an architect-run electron self-test
- * (see `mwb/server-bridge-selftest.js`).
+ * injection, so the fork config and per-window port-transfer dance are all
+ * assertable with fakes. They are the automated half of the verification; the
+ * actual spawn/boot is an architect-run electron self-test (see
+ * `mwb/server-bridge-selftest.js`).
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  isServerMode,
   serverModulePath,
   buildServerForkConfig,
   createServerBridge,
   SERVER_PORT_CHANNEL,
 } from './server-bridge.js';
-
-// --- the single gate ---------------------------------------------------
-
-test('isServerMode is on by default — Model B is the default mode', () => {
-  assert.equal(isServerMode({}), true);
-});
-
-test('isServerMode stays on for any value except the explicit "0" escape hatch', () => {
-  assert.equal(isServerMode({ GODOT_SERVER: '1' }), true);
-  assert.equal(isServerMode({ GODOT_SERVER: 'true' }), true);
-  assert.equal(isServerMode({ GODOT_SERVER: '' }), true);
-});
-
-test('isServerMode is off only when GODOT_SERVER === "0" (transitional legacy path)', () => {
-  assert.equal(isServerMode({ GODOT_SERVER: '0' }), false);
-});
 
 // --- the static config -------------------------------------------------
 
