@@ -79,6 +79,23 @@ test('a split pushes a fresh PANE_TREE', () => {
   assert.equal(log.paneTrees[log.paneTrees.length - 1], 0); // for client 0
 });
 
+test('list-bookmarks (C-x r l) TOGGLES the bookmark outline open and closed', () => {
+  const { spine } = makeSpine();
+  spine.runCommand('list-bookmarks'); // open
+  let leaves = wireLeaves(spine.paneSnapshot(0));
+  assert.equal(leaves.length, 2, 'the outline opened beside the document');
+  assert.ok(leaves.some((l) => l.viewKind === 'bookmark'), 'a leaf is the bookmark outline');
+
+  spine.runCommand('list-bookmarks'); // toggle closed
+  assert.equal(
+    wireLeaves(spine.paneSnapshot(0)).length, 1,
+    'a second C-x r l closed the outline, leaving just the document'
+  );
+
+  spine.runCommand('list-bookmarks'); // toggle open again
+  assert.equal(wireLeaves(spine.paneSnapshot(0)).length, 2, 're-opens after a close');
+});
+
 // --- C-x o: other-window cycles focus ----------------------------------
 
 test('C-x o (other-window) cycles focus between the two panes', () => {

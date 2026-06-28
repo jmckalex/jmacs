@@ -989,9 +989,12 @@ export function createSpine(options, effects = {}) {
       },
       'bookmark-names': () => arrayToList(bookmarksFor(activeEntry).names()),
       'bookmark-count': () => bookmarksFor(activeEntry).count(),
-      // open-bookmark-view! (C-x r l) — open/reveal the outline beside the
-      // document as a mutable 'bookmark' data-source.
+      // open-bookmark-view! — open/reveal the outline beside the document as a
+      // mutable 'bookmark' data-source.
       'open-bookmark-view!': () => { openBookmarkView(); return NIL; },
+      // toggle-bookmark-view! (C-x r l) — open the outline, or close it if its
+      // following outline is already shown beside the document.
+      'toggle-bookmark-view!': () => { toggleBookmarkView(); return NIL; },
 
       // --- window lifecycle (G4) ----------------------------------------
       // request-new-window! is the `new-window` command's effect (C-x 5 2).
@@ -2768,6 +2771,26 @@ export function createSpine(options, effects = {}) {
     statusText = '';
     onStatus('');
     return src.id;
+  }
+
+  /** Toggle the bookmark OUTLINE for the active client (C-x r l): close it when
+   *  its following outline is already shown in a pane, else open it. The
+   *  data-source survives a close, so a re-toggle re-opens + re-targets. A PINNED
+   *  outline isn't a toggle target (it's frozen per-file) — toggling opens a
+   *  fresh following outline. Returns the source id when opening, else null. */
+  function toggleBookmarkView() {
+    const model = paneModels.get(activeClientIndex);
+    const src = followingOutlineOf(activeClientIndex);
+    if (model && src) {
+      const shown = model.leaves().find((l) => model.stateOf(l.id)?.bufferId === src.id);
+      if (shown) {
+        model.focusPane(shown.id); // focus the OUTLINE pane, then collapse it
+        model.deletePane();        // into its sibling (the document beside it)
+        rebindFocusedPane();
+        return null;
+      }
+    }
+    return openBookmarkView();
   }
 
   /** Follow focus: re-target the active client's FOLLOWING outline(s) to its
