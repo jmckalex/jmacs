@@ -591,6 +591,27 @@ test('viewState reports point, mark, name, modeline and modified flag', () => {
   assert.match(vs.modeline, /^●/);
 });
 
+test('viewState carries the 1-based cursorLine (Markdown-preview forward search)', () => {
+  const { spine } = makeSpine('line one\nline two\nline three', 'doc.md');
+  assert.equal(spine.viewState().cursorLine, 1, 'point at start → line 1');
+  assert.equal(spine.viewStateOf(0).cursorLine, 1, 'viewStateOf agrees');
+  spine.buffer.moveTo(spine.buffer.offsetAt(2, 0)); // 0-based line 2 → 1-based line 3
+  assert.equal(spine.viewState().cursorLine, 3);
+  assert.equal(spine.viewStateOf(0).cursorLine, 3);
+});
+
+test('gotoLine moves point to the start of a 1-based line (Markdown-preview inverse search)', () => {
+  const { spine } = makeSpine('aaa\nbbb\nccc\nddd', 'doc.md');
+  spine.gotoLine(3);
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, '1-based 3 → 0-based line 2');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).column, 0, 'lands at column 0');
+  spine.gotoLine(999); // clamped to the last line
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 3);
+  const before = spine.buffer.point;
+  spine.gotoLine(0); // non-positive → no-op
+  assert.equal(spine.buffer.point, before);
+});
+
 // --- multi-buffer: the registry, switching, kill-view ----------------
 
 test('the server starts with one buffer; find-file adds a second', () => {

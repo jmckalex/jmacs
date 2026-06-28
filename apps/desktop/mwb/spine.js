@@ -3617,6 +3617,11 @@ export function createSpine(options, effects = {}) {
     const { name: modeName, menu: modeMenu } = modeInfoFor(entry, v);
     return {
       point: v.point,
+      // The cursor's 1-based source line (positionAt is 0-based). Travels as its
+      // own field so the client can drive Markdown-preview forward search
+      // (scroll the preview to the block for this line) without parsing the
+      // baked modeline string.
+      cursorLine: line + 1,
       mark: v.mark,
       name: buf.name,
       majorModeName: modeName,
@@ -3874,6 +3879,17 @@ export function createSpine(options, effects = {}) {
     return { line: line + 1, column };
   }
 
+  /** Move the active buffer's point to the start of the 1-based LINE (clamped to
+   *  the buffer's line range). Markdown-preview INVERSE search lands here via the
+   *  GOTO_LINE intent. A non-integer / non-positive LINE is a no-op. The active
+   *  client is bound by setActiveClient before the intent, so `buffer` is the
+   *  focused buffer. */
+  function gotoLine(n) {
+    const line = Number(n);
+    if (!Number.isInteger(line) || line < 1) return;
+    buffer.moveTo(buffer.offsetAt(Math.min(line, buffer.lineCount) - 1, 0));
+  }
+
   /** A fresh view-state object (protocol ViewState) for the active client.
    *  The modeline is rendered by the shared pure helper in protocol.js, so
    *  the server and any future client agree on its shape. */
@@ -3882,6 +3898,7 @@ export function createSpine(options, effects = {}) {
     const modified = buffer.text !== activeEntry.savedText;
     return {
       point: buffer.point,
+      cursorLine: line, // 1-based (pointPosition); Markdown-preview forward search
       mark: buffer.mark,
       name: buffer.name,
       modeline: renderModeline({
@@ -3954,6 +3971,7 @@ export function createSpine(options, effects = {}) {
     },
     handleKey,
     runCommand,
+    gotoLine,
     consumeHistoryOp,
     commandNames,
     deliverMinibuffer,

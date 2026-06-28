@@ -861,6 +861,12 @@ function applyIntent(client, intent) {
         }
         break;
       }
+      case INTENT.GOTO_LINE:
+        // Markdown-preview inverse search: move the active buffer's point to the
+        // clicked source line. Falls through to the post-intent view emit, which
+        // reconciles the cursor (and the client scrolls it into view).
+        spine.gotoLine(Number(intent.line));
+        break;
       case INTENT.BOOKMARK_OP: {
         // An outline edit from a bookmark VIEW (mutable 'bookmark' data-source):
         // apply it to the source buffer's records. EDIT ops persist + fan the
