@@ -262,6 +262,16 @@ export function createServerViewClient({
     port.postMessage({ type: MSG.INTENT, intent: { id, kind: INTENT.KEY, key } });
   }
 
+  /** Markdown-preview INVERSE search: move the active buffer's point to the
+   *  1-based LINE the user ⌘/Ctrl-clicked in the preview. The server moves the
+   *  cursor (spine.gotoLine) and echoes the reconciled view. A no-op for a
+   *  non-positive / non-integer line. */
+  function sendGotoLine(line) {
+    const n = Number(line);
+    if (!Number.isInteger(n) || n < 1) return;
+    port.postMessage({ type: MSG.INTENT, intent: { id: nextIntentId++, kind: INTENT.GOTO_LINE, line: n } });
+  }
+
   /** Measure the mounted view's visible text-line count and report it UP as a
    *  VIEWPORT message, so the server can size a screenful (C-v/M-v scroll, plan
    *  §5d — only the client knows how many lines fit). Called on mount + on
@@ -786,6 +796,7 @@ export function createServerViewClient({
     connect,
     dispatchKey,
     sendPaneIntent,
+    sendGotoLine,
     // Re-report the REPL/dock visibility (app.js calls this after a manual toggle
     // + before a workspace save, so the saved arrangement is current).
     reportDock,

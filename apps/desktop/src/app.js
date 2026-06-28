@@ -6881,6 +6881,8 @@ if (window.host && window.host.serverMode) {
       // interpreter is inert under GODOT_SERVER=1) and ships it in the view-state;
       // forward it to the macOS app menu so the menu follows the buffer's mode.
       if (v && 'modeMenu' in v) applyServerModeMenu(v.modeMenu);
+      // Markdown-preview forward search: follow the cursor line in the preview.
+      if (v && typeof v.cursorLine === 'number') previewScrollToCursor(v.cursorLine);
     },
     // A customize setting changed in ANOTHER window — re-apply it here so global
     // rendering (theme / faces / line-height) stays consistent across windows.
@@ -11238,6 +11240,61 @@ document.body.classList.add('markdown-preview-hidden');
  *  buffer is backed by the same file. */
 let previewWatchedPath = null;
 
+// --- preview ⇄ source sync (forward / inverse search) ------------------
+// The preview iframe is cross-origin (localhost vs app://), so source↔preview
+// position sync goes through postMessage with the watch page's injected
+// `sync.js` (contract: plans/JMARKDOWN-PREVIEW-SYNC.md). Forward search: when
+// the server-pushed cursor line changes, ask the preview to scroll to it.
+// Inverse search: a ⌘/Ctrl-click in the preview posts a source line back; we
+// move the editor cursor there via a server GOTO_LINE intent (the renderer's
+// own buffer mirror can't move the server cursor).
+const PREVIEW_SYNC_SOURCE = 'jmarkdown-sync';
+const PREVIEW_SYNC_VERSION = 1;
+/** The most recent 1-based cursor line the server pushed (for replay on `ready`). */
+let lastKnownCursorLine = null;
+/** The last line we asked the preview to scroll to (de-dupes per-keystroke posts). */
+let lastPostedPreviewLine = null;
+
+/** Post a sync message to the preview iframe. No-op if it isn't mounted. */
+function postToPreview(msg) {
+  const win = markdownPreviewFrame && markdownPreviewFrame.contentWindow;
+  if (!win) return;
+  win.postMessage(
+    { source: PREVIEW_SYNC_SOURCE, version: PREVIEW_SYNC_VERSION, ...msg },
+    '*' // line numbers only; '*' avoids the localhost-port origin dance
+  );
+}
+
+/** Forward search: scroll the open preview to the block for `line`. Skips when
+ *  the pane is hidden or the line is unchanged. Records the line either way so
+ *  a later `ready` (preview reload) can replay it. */
+function previewScrollToCursor(line) {
+  if (typeof line !== 'number') return;
+  lastKnownCursorLine = line;
+  if (!markdownPreviewVisible()) return;
+  if (line === lastPostedPreviewLine) return;
+  lastPostedPreviewLine = line;
+  postToPreview({ type: 'scroll-to-line', line, behavior: 'smooth' });
+}
+
+// Inverse search + handshake from the preview's sync.js. Registered once;
+// filters to the localhost preview origin and our protocol, ignores all else.
+window.addEventListener('message', (event) => {
+  if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(event.origin)) return;
+  const d = event.data;
+  if (!d || d.source !== PREVIEW_SYNC_SOURCE) return;
+  if (d.type === 'ready') {
+    // The preview (re)loaded its sync bridge — replay the current cursor line so
+    // the view aligns immediately.
+    lastPostedPreviewLine = null;
+    if (typeof lastKnownCursorLine === 'number') previewScrollToCursor(lastKnownCursorLine);
+  } else if (d.type === 'source-line-click' && typeof d.line === 'number') {
+    if (serverViewClient && typeof serverViewClient.sendGotoLine === 'function') {
+      serverViewClient.sendGotoLine(d.line);
+    }
+  }
+});
+
 /** Whether the preview pane is currently visible. */
 function markdownPreviewVisible() {
   return !document.body.classList.contains('markdown-preview-hidden');
@@ -11247,6 +11304,7 @@ function markdownPreviewVisible() {
 function hideMarkdownPreview() {
   document.body.classList.add('markdown-preview-hidden');
   previewWatchedPath = null;
+  lastPostedPreviewLine = null; // a re-open re-scrolls to the cursor
   markdownPreviewFrame.src = 'about:blank';
   markdownPreviewHeader.textContent = 'Preview';
   if (window.host && typeof window.host.stopJmarkdownWatch === 'function') {
