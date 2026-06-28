@@ -2174,25 +2174,34 @@ export function createSpine(options, effects = {}) {
     (define (-describe-key-step keys-so-far maps)
       (read-next-key
         (lambda (key)
-          (let* ((seq (if (= (string-length keys-so-far) 0)
-                          key
-                          (str keys-so-far " " key)))
-                 (binding (lookup-in-chain key maps)))
-            (cond
-              ((nil? binding)
-               (show-status! (str seq " is unbound")))
-              ((map? binding)
-               ;; A prefix — echo the running sequence with a trailing dash
-               ;; (Emacs-style) and read the next key within the sub-maps.
-               (show-status! (str seq "-"))
-               (-describe-key-step seq (-prefix-maps-for key maps)))
-              ((not (command-registered? binding))
-               (show-status! (str seq " runs " (symbol->string binding)
-                                  " (not available here)")))
-              (else
-                (let ((name (symbol->string binding)))
-                  (-show-help! (str seq " runs " name) (doc (eval binding)))
-                  (show-status! (str seq " runs " name)))))))))
+          (cond
+            ;; Mid-sequence C-g / Escape aborts the walk cleanly — no pending
+            ;; reader, nothing described. At the FIRST key these are real keys
+            ;; to describe (C-g → keyboard-quit), so only abort once a prefix
+            ;; has been entered.
+            ((and (> (string-length keys-so-far) 0)
+                  (or (equal? key "C-g") (equal? key "escape")))
+             (show-status! "Quit"))
+            (else
+              (let* ((seq (if (= (string-length keys-so-far) 0)
+                              key
+                              (str keys-so-far " " key)))
+                     (binding (lookup-in-chain key maps)))
+                (cond
+                  ((nil? binding)
+                   (show-status! (str seq " is unbound")))
+                  ((map? binding)
+                   ;; A prefix — echo the running sequence with a trailing dash
+                   ;; (Emacs-style) and read the next key within the sub-maps.
+                   (show-status! (str seq "-"))
+                   (-describe-key-step seq (-prefix-maps-for key maps)))
+                  ((not (command-registered? binding))
+                   (show-status! (str seq " runs " (symbol->string binding)
+                                      " (not available here)")))
+                  (else
+                    (let ((name (symbol->string binding)))
+                      (-show-help! (str seq " runs " name) (doc (eval binding)))
+                      (show-status! (str seq " runs " name)))))))))))
 
     (defcommand describe-key ()
       "Describe the command bound to a COMPLETE key sequence (C-h k). Reads

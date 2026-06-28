@@ -3400,6 +3400,20 @@ async function displayDocPanel({ id, title, icon, heading, body, empty }) {
   }
   utilityDock.showUtilityDock();
   utilityDock.activateUtilityTab(id);
+  // activateUtilityTab focuses the active tab's panel — but these help panels
+  // are focus:false by design (you keep typing in the editor). The key router
+  // only forwards keys while the editing surface is focused, so without this
+  // the NEXT chord (another C-h k) is dropped until you click back into the
+  // pane. Return focus to the editor next frame (after the dock's focus
+  // settles), unless a minibuffer prompt is up (don't steal its focus). Same
+  // shape as refocusServerView, which can't be reached from this scope.
+  requestAnimationFrame(() => {
+    if (minibuffer.isOpen()) return;
+    const v = serverViewClient && serverViewClient.getView();
+    if (v && typeof v.focus === 'function') {
+      try { v.focus(); } catch { /* ignore */ }
+    }
+  });
 }
 
 /** Double-click in the completions panel = activate (file-browser idiom): a
