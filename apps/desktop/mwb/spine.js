@@ -73,6 +73,9 @@ import {
   jsonToLispUserFaces,
   jsonToLispHighlightRules,
 } from '../src/face-overrides.js';
+// Pure CSS generator (no DOM) — the spine builds the face-overrides CSS the
+// renderer injects, so chrome is server-authoritative (B1.3).
+import { faceStylesCss } from '../src/face-styles.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
@@ -1495,11 +1498,16 @@ export function createSpine(options, effects = {}) {
       // own interpreter, so there is zero behaviour change); B1.3 turns them into
       // directive emitters so the spine drives every window's CSS. `load-face-
       // overrides!` returns empty until B1.2 reads faces.json server-side.
-      'apply-theme!': () => NIL,
-      'apply-face-styles!': () => NIL,
+      // B1.3: these fire whenever the spine's face state changes (a theme switch
+      // -> apply-theme!; a face/override edit -> apply-face-styles!; a
+      // highlight-rule change -> set-highlight-overrides!). Each re-pushes the
+      // current chrome to every window; a no-op before any window connects (the
+      // boot faces install). set-css-* stay no-ops (CSS knobs deferred).
+      'apply-theme!': () => (pushChromeToAll(), NIL),
+      'apply-face-styles!': () => (pushChromeToAll(), NIL),
       'set-css-tab-width!': () => NIL,
       'set-css-line-height!': () => NIL,
-      'set-highlight-overrides!': () => NIL,
+      'set-highlight-overrides!': () => (pushChromeToAll(), NIL),
       // B1.2: read the user's colour overrides from <userData>/faces.json (the
       // same file the renderer writes) and return them in the Lisp shape
       // set-face-overrides! consumes. Empty (defaults) when the file is absent.
@@ -1811,6 +1819,11 @@ export function createSpine(options, effects = {}) {
     interpreter.evaluate(source);
   }
 
+  // Gates runtime chrome pushes (B1.3). OFF during the boot faces install below,
+  // so set-face-overrides! / set-highlight-rules! don't emit chrome directives
+  // before any client port exists (the real initial push is the on-connect one in
+  // server.js). Turned ON once the helpers are defined.
+  let chromePushEnabled = false;
   // B1.2 (plans/MODEL-B-DEFAULT.md): install the user's faces.json overrides
   // into the server's face / theme / highlight registries, so the spine's
   // computed chrome (current-theme-css-vars / current-face-styles /
@@ -1831,6 +1844,58 @@ export function createSpine(options, effects = {}) {
   } catch (error) {
     console.error('[spine] faces.json install failed:', error.message);
   }
+
+  // B1.3 (plans/MODEL-B-DEFAULT.md): the server is authoritative for chrome.
+  // Compute the theme / face / highlight payloads as FLAT, structured-clone-safe
+  // values (JSON strings + the prebuilt CSS string — no raw Lisp crosses the
+  // port) and push them to chosen windows. A window gets them on connect
+  // (server.js, right after its snapshot, via chromeDirectives()) and ALL windows
+  // get them whenever the spine's face state changes (the apply-* stubs above
+  // call pushChromeToAll). The renderer applies these in applyDirective and no
+  // longer computes faces itself.
+  function chromeDirectives() {
+    const out = [];
+    try {
+      const themeVars = listToArray(interpreter.call('current-theme-css-vars'))
+        .map((p) => [String(p.head), String(p.tail ?? '')])
+        .filter(([v, val]) => v.startsWith('--') && val !== '');
+      out.push({ name: 'theme-apply', args: [JSON.stringify(themeVars)] });
+
+      const css = faceStylesCss(
+        listToArray(interpreter.call('current-face-styles')),
+        listToArray,
+        listToArray(interpreter.call('current-mode-face-styles'))
+      );
+      out.push({ name: 'faces-apply', args: [css] });
+
+      const records = listToArray(interpreter.call('highlight-rule-records'))
+        .filter((r) => r instanceof Map)
+        .map((r) => ({
+          scope: typeof r.get(keyword('scope')) === 'string' ? r.get(keyword('scope')) : 'language',
+          key: r.get(keyword('key')) == null ? '' : String(r.get(keyword('key'))),
+          pattern: r.get(keyword('pattern')) == null ? '' : String(r.get(keyword('pattern'))),
+          face: r.get(keyword('face')) == null ? '' : String(r.get(keyword('face'))),
+        }));
+      out.push({ name: 'highlight-rules', args: [JSON.stringify(records)] });
+    } catch (error) {
+      console.error('[spine] chromeDirectives failed:', error.message);
+    }
+    return out;
+  }
+
+  /** Push the current chrome (theme/faces/highlight) to every connected window.
+   *  Called by the apply-* stubs when the spine's face state changes; a no-op
+   *  before any window exists (e.g. during the boot faces install). */
+  function pushChromeToAll() {
+    if (!chromePushEnabled) return; // suppressed during the boot faces install
+    const ids = [...paneModels.keys()];
+    if (ids.length === 0) return;
+    for (const d of chromeDirectives()) onClientDirective(ids, d.name, d.args);
+  }
+  // Runtime pushes start now — the boot install above has finished (its apply-*
+  // calls were suppressed). From here, a post-boot face/theme/highlight change
+  // fans out to every window.
+  chromePushEnabled = true;
 
   // Language major modes (`languages/*.lisp`: a `define-mode` + `register-mode`
   // each, plus a few editing commands using the same primitives the modes above
@@ -4231,6 +4296,9 @@ export function createSpine(options, effects = {}) {
     // multi-client window-state (per-client buffer + cursor)
     addClientView,
     removeClientView,
+    // B1.3: the theme/face/highlight directives a freshly-connected window needs
+    // (server.js posts them right after the snapshot).
+    chromeDirectives,
     setActiveClient,
     viewStateOf,
     // --- the pane tree (G0a) -------------------------------------------
