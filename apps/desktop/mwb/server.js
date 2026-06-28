@@ -1316,6 +1316,15 @@ function onClientMessage(client, event) {
         }
       }
       break;
+    case MSG.BROWSER_NAVIGATED:
+      // A browser VIEW navigated (link / URL bar / in-page route). Quietly track
+      // the new URL on its data-source so a saved workspace restores the page the
+      // user is on. No fan-out / no view emit — a browser source isn't shared, so
+      // the originating window already shows the page.
+      if (typeof msg.sourceId === 'string' && typeof msg.url === 'string') {
+        spine.setBrowserSourceUrl(msg.sourceId, msg.url);
+      }
+      break;
     case MSG.OPEN_ELEMENT_SOURCE: {
       // The renderer computed an element-view spec and asks the server to hold
       // it as a data-source + switch this client's focused leaf to it (like a

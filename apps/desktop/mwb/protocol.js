@@ -164,6 +164,12 @@ export const MSG = Object.freeze({
   // keyboard, noFocus, name }). The server holds it like any data-source (a
   // pane slot + restore); the client mounts <element-view> from the spec.
   OPEN_ELEMENT_SOURCE: 'open-element-source',
+  // up: a browser VIEW navigated to a new URL (a link click / the URL bar /
+  // an in-page route). Carries `{ sourceId, url }`; the server QUIETLY updates
+  // that browser data-source's `state.url` (no fan-out — a browser source isn't
+  // shared across panes) so the page is tracked for session-restore and any
+  // rebuild-from-wire reflects where the user actually browsed to.
+  BROWSER_NAVIGATED: 'browser-navigated',
   // down: a customize setting changed in ONE window — re-apply it in every OTHER
   // window so theme / faces / variables stay consistent across windows. Carries
   // the change `{ op, name?, value?, face?, attr? }`; the server relays it (it

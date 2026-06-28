@@ -2687,6 +2687,19 @@ export function createSpine(options, effects = {}) {
     return src.id;
   }
 
+  /** Record that a browser source navigated to URL — a QUIET update of its
+   *  `state.url` (no onStateChange fan-out: a browser source is per-instance, not
+   *  shared across panes, so the originating window already shows the page and no
+   *  other window needs a re-push). Keeps the data-source canonical so a saved
+   *  workspace restores the page the user browsed to, and any rebuild-from-wire
+   *  reflects it. A no-op for a non-browser / unknown id. */
+  function setBrowserSourceUrl(id, url) {
+    const ds = dataSources.get(id);
+    if (!ds || ds.kind !== 'browser') return;
+    if (typeof url !== 'string' || url === '') return;
+    ds.state.url = url;
+  }
+
   /** Restore a browser view as a FRESH data-source at URL (loadLayout places it
    *  in the restored leaf — no switch here). The renderer re-creates the webview
    *  and navigates to URL; live history/scroll are not persisted (a workspace
@@ -4229,6 +4242,7 @@ export function createSpine(options, effects = {}) {
     liveProcessSessionsOf,
     liveBrowserSourcesOf,
     openBrowserSource,
+    setBrowserSourceUrl,
     openCustomizeScope,
     // JS notebook: evaluate a cell server-side (Node, no CSP) → serializable result.
     runNotebookCell,

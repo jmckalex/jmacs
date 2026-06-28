@@ -8494,6 +8494,15 @@ function configureBrowserView() {
     // Page title updates flow through here so the modeline + tabline
     // pick up the page's <title> as the view's label.
     onTitleChanged: () => notifyViewsChanged(),
+    // A navigation (link / URL bar / in-page route) reports the new URL UP so
+    // the server's browser data-source tracks the current page (session-restore
+    // reopens where the user browsed to, not the URL it was first opened at).
+    onNavigate: (view, url) => {
+      const id = view && view._serverBufferId;
+      if (id && serverViewClient && typeof serverViewClient.browserNavigated === 'function') {
+        serverViewClient.browserNavigated(id, url);
+      }
+    },
   };
 }
 // Browsers are PER-INSTANCE, not a shared singleton: each browser VIEW

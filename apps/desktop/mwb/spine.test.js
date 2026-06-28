@@ -1086,6 +1086,30 @@ test('serializeWindow/loadWindowLayout round-trips a browser as a FRESH source a
   assert.equal(after.state.url, 'https://example.com/page', 'restored at the saved URL');
 });
 
+test('setBrowserSourceUrl tracks navigation so restore reopens the current page', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const id = spine.openBrowserSource('https://example.com');
+  // The user navigates within the page (a link / the URL bar): the view reports
+  // the new URL up, and the source quietly tracks it (no fan-out / view emit).
+  spine.setBrowserSourceUrl(id, 'https://example.com/deep/page');
+  assert.equal(wireLeaves(spine.paneSnapshot(0))[0].state.url, 'https://example.com/deep/page',
+    'the data-source now carries the navigated URL');
+  // A saved workspace therefore restores the page the user is ON, not the opener.
+  const blob = spine.serializeWindow(0);
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const after = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'browser');
+  assert.equal(after.state.url, 'https://example.com/deep/page', 'restored at the navigated URL');
+});
+
+test('setBrowserSourceUrl ignores a bad id / non-browser source / empty url', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const id = spine.openBrowserSource('https://example.com');
+  spine.setBrowserSourceUrl('nope', 'https://evil.example'); // unknown id → no-op
+  spine.setBrowserSourceUrl(id, '');                          // empty url → keep current
+  assert.equal(wireLeaves(spine.paneSnapshot(0))[0].state.url, 'https://example.com',
+    'a bad id / empty url leaves the URL untouched');
+});
+
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
