@@ -3714,36 +3714,58 @@ export function createSpine(options, effects = {}) {
         }
         return false;
       case 'close-tab': {
-        // Close a tab in the focused tabline. First un-curate it from THIS
-        // tabline — the model re-points to a neighbour (the proven path). Then,
-        // by DEFAULT, KILL the underlying view: drop the buffer from the pool /
-        // every window, or reap a live-process source — what most editors do.
-        // The *close-tab-kills-view* defcustom (panes) flips back to the old
-        // un-curate-only behaviour (the buffer survives in C-x C-b).
+        // Close a tab in the focused tabline. By DEFAULT this KILLS the view
+        // (what most editors do); *close-tab-kills-view* (panes, #t) flips back
+        // to the old un-curate (the buffer survives in C-x C-b). Closing the
+        // LAST tab collapses the tabline back to a bare *scratch* leaf.
         const closedId = String(intent.bufferId ?? '');
-        const ok = model.closeFocusedTab(closedId);
-        if (!ok) return false; // last tab — never empty a tabline
         let killsView = true;
         try {
           killsView = interpreter.evaluate('*close-tab-kills-view*') !== false;
         } catch { /* var unbound (custom not loaded) → keep the kill default */ }
-        if (killsView) {
-          // The focused tabline was already re-pointed above; killBufferById
-          // finishes the GLOBAL removal (registry / open-sets / other panes) and
-          // reaps a shell/gnuplot source. Refuses to kill the last text buffer.
-          killBufferById(closedId);
-        } else {
-          // Opt-out keeps text/media in the pool, but a detached live process is
-          // still reaped (no point keeping an orphaned pty). Re-push the
-          // PANE_TREE AFTER removal so the client's live-set sees it gone (else
-          // it lags by one close and the last process is never reaped).
-          const closedKind = dataSources.get(closedId)?.kind;
-          if (closedKind === 'shell' || closedKind === 'gnuplot') {
-            dataSources.remove(closedId);
-            for (const s of clientBuffers.values()) s.delete(closedId);
+        const reapIfProcess = (id) => {
+          const kind = dataSources.get(id)?.kind;
+          if (kind === 'shell' || kind === 'gnuplot') {
+            dataSources.remove(id);
+            for (const s of clientBuffers.values()) s.delete(id);
             onPaneTree(index);
           }
+        };
+
+        // Is closedId the SOLE tab of the focused tabline? Then collapse it.
+        const fleaf = model.focusedLeaf();
+        const fstate = fleaf ? model.stateOf(fleaf.id) : null;
+        const isLastTab = !!fstate && fstate.tabline === true
+          && Array.isArray(fstate.tabs) && fstate.tabs.length === 1
+          && fstate.tabs[0] === closedId;
+
+        if (isLastTab) {
+          // Drop back to an UNTABBED *scratch* leaf. Reuse an existing empty
+          // *scratch* if there is one (don't proliferate *scratch*<2>), else
+          // mint one — unless the closed buffer is ITSELF an empty scratch, in
+          // which case just keep it as the bare leaf.
+          const isEmptyScratch = (e) => !!e
+            && (e.filePath == null || e.filePath === '')
+            && String(e.buffer.name || '').replace(/(<\d+>)+$/, '') === '*scratch*'
+            && (e.buffer.text || '').trim() === '';
+          const closedEntry = registry.list().find((e) => e.id === closedId);
+          model.toggleFocusedTabline(false); // the tabline disappears
+          if (isEmptyScratch(closedEntry)) return true; // already a bare scratch
+          const reuse = registry.list().find((e) => e.id !== closedId && isEmptyScratch(e));
+          const scratchId = reuse ? reuse.id : registry.add('', '*scratch*', null).id;
+          clientBuffers.get(index)?.add(scratchId);
+          model.setFocusedBuffer(scratchId); // the bare leaf now shows the scratch
+          if (killsView) killBufferById(closedId); else reapIfProcess(closedId);
+          onBufferList();
+          return true;
         }
+
+        // A normal multi-tab close: un-curate from the focused tabline (re-points
+        // to a neighbour — the proven path), then kill the view (default) or
+        // just un-curate (a detached live process is always reaped).
+        const ok = model.closeFocusedTab(closedId);
+        if (!ok) return false;
+        if (killsView) killBufferById(closedId); else reapIfProcess(closedId);
         return true;
       }
       case 'reorder-tab':

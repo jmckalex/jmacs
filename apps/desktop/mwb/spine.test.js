@@ -639,6 +639,24 @@ test('close-tab KILLS the view by default; *close-tab-kills-view* #f un-curates'
   assert.equal(spine.bufferCount, 2, 'nothing killed under the opt-out');
 });
 
+test('closing the LAST tab collapses the tabline to a bare *scratch* leaf', () => {
+  const files = { '/a.md': { text: 'A\n', name: 'a.md', path: '/a.md' } };
+  const { spine } = makeSpine('seed', 'doc.txt', { openFile: (p) => files[p] ?? null });
+  const aId = spine.visitFile('/a.md');
+  spine.seedClientTabline(0, [aId], aId); // a tabline with a SINGLE tab
+  assert.equal(wireLeaves(spine.paneSnapshot(0))[0].tabline, true, 'starts as a tabline');
+
+  // Close the last tab → collapse to a bare *scratch* leaf; a is killed.
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: aId }));
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.ok(!leaf.tabline, 'the tabline is gone (a bare leaf)');
+  assert.equal(
+    spine.bufferListRecords(0).find((r) => r.current).name, '*scratch*',
+    'the bare leaf shows *scratch*'
+  );
+  assert.ok(!spine.bufferListRecords(0).some((r) => r.id === aId), 'the closed view was killed');
+});
+
 test('find-file of a MEDIA file creates a data-source leaf (no garbage text buffer)', () => {
   // The openFile effect returns a media descriptor for media suffixes (the real
   // server's readFileForVisit does this via media-kinds); a text file returns text.
