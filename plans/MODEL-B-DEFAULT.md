@@ -11,8 +11,11 @@
 >   `b2485d5`, B1.2 `a771148`, B1.3a `80ddf0c`, B1.3b `7ac1cf9`, B1.3c `58cd998`,
 >   B1.4 (custom.lisp → saved theme honored). The B0 "spine loads user config" slice is
 >   partly done (faces.json in B1.2, custom.lisp in B1.4); **init.lisp still deferred**.
-> - **NEXT: B2** (customize → server-authoritative) — closes the in-session-change-then-
->   new-window staleness + activates B1.3b's on-change emitters.
+> - **Part B2** (customize → server-authoritative) STARTED: **B2.1** `5dc2b65` — the
+>   spine applies customize edits to its own state (server `CUSTOMIZE_CHANGED` →
+>   `spine.applyCustomizeChange`), fixing the new-window staleness (live-verified).
+>   **NEXT: B2.2/B2.3** — the full move (renderer sends edits; spine is the sole
+>   applier + persister; customize model pushed to the panel).
 > Scope chosen by the architect: **Deep** — eliminate the renderer's Lisp interpreter
 > entirely so there is a single Lisp world (the spine) and the renderer becomes a pure-JS
 > thin client.
