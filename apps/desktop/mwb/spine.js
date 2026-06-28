@@ -2163,28 +2163,46 @@ export function createSpine(options, effects = {}) {
       (emit-client-directive! (list (this-window-id)) 'show-help
                               heading (if (string? info) info "")))
 
-    (defcommand describe-key ()
-      "Describe the command bound to the next key pressed (C-h k). Reads one
-       key and reports whether it is unbound, a prefix key, or a command not
-       available on the server; for a bound, registered command its FULL
-       docstring opens in the utility dock's Help tab (with a one-line echo
-       summary)."
-      (show-status! "Describe key — press a key:")
+    ;; describe-key reads a COMPLETE key sequence, following prefix maps
+    ;; (C-x …, C-c …) until it resolves to a command or an unbound key — so
+    ;; C-h k C-x C-f describes find-file, not "C-x is a prefix". MAPS is the
+    ;; list of keymaps the next key resolves through: the mode chain at the
+    ;; start, then the prefix sub-maps after each prefix key (the same
+    ;; lookup-in-chain / -prefix-maps-for the live dispatcher uses). Each
+    ;; prefix descent re-arms read-next-key; every non-prefix key terminates
+    ;; the sequence, so there is no re-prompt loop and no stranded reader.
+    (define (-describe-key-step keys-so-far maps)
       (read-next-key
         (lambda (key)
-          (let ((binding (lookup-in-chain key (keymap-chain))))
+          (let* ((seq (if (= (string-length keys-so-far) 0)
+                          key
+                          (str keys-so-far " " key)))
+                 (binding (lookup-in-chain key maps)))
             (cond
               ((nil? binding)
-               (show-status! (str key " is unbound")))
+               (show-status! (str seq " is unbound")))
               ((map? binding)
-               (show-status! (str key " is a prefix key")))
+               ;; A prefix — echo the running sequence with a trailing dash
+               ;; (Emacs-style) and read the next key within the sub-maps.
+               (show-status! (str seq "-"))
+               (-describe-key-step seq (-prefix-maps-for key maps)))
               ((not (command-registered? binding))
-               (show-status! (str key " runs " (symbol->string binding)
+               (show-status! (str seq " runs " (symbol->string binding)
                                   " (not available here)")))
               (else
                 (let ((name (symbol->string binding)))
-                  (-show-help! (str key " runs " name) (doc (eval binding)))
-                  (show-status! (str key " runs " name)))))))))
+                  (-show-help! (str seq " runs " name) (doc (eval binding)))
+                  (show-status! (str seq " runs " name)))))))))
+
+    (defcommand describe-key ()
+      "Describe the command bound to a COMPLETE key sequence (C-h k). Reads
+       keys, following prefix maps (C-x …, C-c …, C-h …) until the sequence
+       resolves to a command or an unbound key — so C-h k C-x C-f describes
+       find-file. A bound, registered command's full docstring opens in the
+       utility dock's Help tab; an unbound or still-in-progress sequence
+       shows in the echo area."
+      (show-status! "Describe key — press a key sequence:")
+      (-describe-key-step "" (keymap-chain)))
 
     ;; --- describe-command (C-h f) — P3 help port --------------------------
     ;; Type a command name; echo the first line of its docstring. The typed
