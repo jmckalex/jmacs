@@ -1,12 +1,18 @@
 # Plan — One world on the server: make Model B the default, remove the flag, and delete the renderer Lisp interpreter
 
-> **STATUS:** Part A IN PROGRESS (2026-06-28). Branch `model-b-default` (off `main`,
-> recovery tag `pre-model-b-default` @ `b2d4f03`). Done: **A1** (default flip, `cd2e8b4`),
-> **A2** (flag plumbing removed, `79621c4`), **A4** (docs). **A3 (delete the dead
-> in-renderer path) is DEFERRED into Part B** — see the note below; it's threaded through
-> live call sites and dies wholesale when the interpreter is removed, so doing it
-> surgically now (on an untested 13k-line file) is redundant risk. Part A is thus a clean
-> mergeable milestone (A1+A2+A4); Part B is the epic.
+> **STATUS (2026-06-28):** Part A DONE + Part B1 DONE, all live-verified on branch
+> `model-b-default` (off `main`, recovery tag `pre-model-b-default` @ `b2d4f03`; **NOT
+> merged** — merging only when all of Part B is done, Jason's call). Suite green (3197).
+> - **Part A** (Model B is the only mode; `GODOT_SERVER` gone): A1 `cd2e8b4`, A2
+>   `79621c4`, A4 `174a8ab`. **A3 (delete the dead in-renderer dispatch/editing/session
+>   path) DEFERRED into B7** — threaded through live call sites; dies wholesale with the
+>   interpreter.
+> - **Part B1** (faces/themes/highlighting/saved-theme server-authoritative): B1.1
+>   `b2485d5`, B1.2 `a771148`, B1.3a `80ddf0c`, B1.3b `7ac1cf9`, B1.3c `58cd998`,
+>   B1.4 (custom.lisp → saved theme honored). The B0 "spine loads user config" slice is
+>   partly done (faces.json in B1.2, custom.lisp in B1.4); **init.lisp still deferred**.
+> - **NEXT: B2** (customize → server-authoritative) — closes the in-session-change-then-
+>   new-window staleness + activates B1.3b's on-change emitters.
 > Scope chosen by the architect: **Deep** — eliminate the renderer's Lisp interpreter
 > entirely so there is a single Lisp world (the spine) and the renderer becomes a pure-JS
 > thin client.
@@ -164,7 +170,14 @@ delete the now-unused renderer interpreter calls/primitives for that subsystem, 
   `*bib-search-doc-override*`, …). Renderer caches them; replace the inert
   `interpreter.evaluate('*…*')` reads with the cached value. Push on connect + on change.
 
-### B1 — Faces / themes / CSS (highest value; cross-window sync already exists)
+### B1 — Faces / themes / CSS (highest value; cross-window sync already exists) — ✅ DONE
+
+> Done in commits B1.1–B1.4 (see STATUS). The spine loads `faces.lisp`/`themes.lisp`/
+> `highlight-rules.lisp` + the user's `faces.json` + `custom.lisp`, computes
+> `theme-apply`/`faces-apply`/`highlight-rules` directives, and pushes them on connect +
+> on change; the renderer applies them and no longer computes chrome at boot. CSS knobs
+> (`*tab-width*`/`*line-height*`) were left renderer-side for now (a small follow-up).
+> The plan text below is the original design, kept for reference.
 
 - Move `themes.lisp`, `faces.lisp`, `highlight-rules.lisp` into `SPINE_STDLIB`.
 - Spine computes `current-theme-css-vars`, `current-face-styles`, `current-mode-face-styles`,
