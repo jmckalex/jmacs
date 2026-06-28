@@ -657,6 +657,15 @@ test('closing the LAST tab collapses the tabline to a bare *scratch* leaf', () =
   assert.ok(!spine.bufferListRecords(0).some((r) => r.id === aId), 'the closed view was killed');
 });
 
+test('markdown-preview routes to the active window via a directive (Model B port)', () => {
+  const { spine, log } = makeSpine('# hi\n', 'doc.md');
+  spine.runCommand('markdown-preview'); // the command body calls markdown-preview!
+  assert.ok(
+    log.directives.some((d) => d.name === 'markdown-preview' && d.ids.includes(0)),
+    'a markdown-preview directive went to the active window'
+  );
+});
+
 test('find-file of a MEDIA file creates a data-source leaf (no garbage text buffer)', () => {
   // The openFile effect returns a media descriptor for media suffixes (the real
   // server's readFileForVisit does this via media-kinds); a text file returns text.

@@ -1530,12 +1530,15 @@ export function createSpine(options, effects = {}) {
       },
 
       // --- live preview (markdown.lisp) — STUB -------------------------
-      // markdown-preview! / math-preview! drive render-side iframes /
-      // MathJax. The toggle commands resolve; the visual effect is a
-      // render-message to build later. See PRIMITIVE-SPLIT.md "preview".
+      // markdown-preview! — the JMarkdown live-preview toggle (C-c v / the
+      // Markdown / JMarkdown mode menu's "Toggle Preview Pane"). The command
+      // (markdown.lisp) runs server-side, but the preview pane lives in the
+      // CLIENT, so route it to the active window via the directive channel; the
+      // renderer toggles it using its own buffer mirror (text + pushed mode).
+      // (math-preview! stays a no-op — math preview is driven by the pushed
+      // majorModeName / mathPreviewActive VIEW fields, not a directive.)
       'markdown-preview!': () => {
-        statusText = 'markdown-preview: (spine stub — preview pane is render-side)';
-        onStatus(statusText);
+        onClientDirective([activeClientIndex], 'markdown-preview', []);
         return NIL;
       },
       'math-preview!': () => NIL,

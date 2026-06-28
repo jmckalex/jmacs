@@ -6989,6 +6989,11 @@ if (window.host && window.host.serverMode) {
           heading: String(args?.[0] ?? ''), body: String(args?.[1] ?? ''),
           empty: '_(none)_',
         });
+      } else if (name === 'markdown-preview') {
+        // P3: the JMarkdown live-preview toggle (C-c v / the Markdown/JMarkdown
+        // mode menu). The server resolved the command; toggle the preview pane
+        // here, rendering this window's buffer mirror through the pipeline.
+        toggleMarkdownPreview();
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
@@ -11301,12 +11306,12 @@ document.body.classList.add('markdown-preview-hidden');
 
 /** Whether the current buffer is in markdown-mode. */
 function currentBufferIsMarkdown() {
-  if (!keymapReady) return false;
-  try {
-    return interpreter.call('major-mode-name') === 'Markdown';
-  } catch {
-    return false;
-  }
+  // Under the server the renderer interpreter is inert, so read the mode from
+  // the server-pushed VIEW field (resolvedMajorModeName), not interpreter.call.
+  // markdown-preview is offered for BOTH Markdown and JMarkdown (.jmd); both
+  // render through the JMarkdown pipeline.
+  const mode = resolvedMajorModeName(currentTextBuffer);
+  return mode === 'Markdown' || mode === 'JMarkdown';
 }
 
 /** Whether the preview pane is currently visible. */
