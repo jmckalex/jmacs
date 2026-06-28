@@ -36,13 +36,15 @@ import { fileURLToPath } from 'node:url';
  *  the page as a `window` message. */
 export const SERVER_PORT_CHANNEL = 'godot:server-port';
 
-/** The single gate. Everything server-side is guarded by this one predicate
- *  so the flag-off path is provably the old path: if this returns false,
- *  `main.js` never constructs a bridge and never takes a new branch.
+/** The single gate. Model B is now the DEFAULT: server mode is on unless
+ *  `GODOT_SERVER=0` explicitly forces the legacy in-renderer path — a
+ *  transitional escape hatch for A/B testing, removed in Part A2
+ *  (plans/MODEL-B-DEFAULT.md). Everything server-side is guarded by this one
+ *  predicate.
  *  @param {Record<string, string | undefined>} [env]
  *  @returns {boolean} */
 export function isServerMode(env = process.env) {
-  return env.GODOT_SERVER === '1';
+  return env.GODOT_SERVER !== '0';
 }
 
 /** Absolute path to the Model-B server module the `utilityProcess` forks.

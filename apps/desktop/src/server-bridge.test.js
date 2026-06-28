@@ -22,19 +22,18 @@ import {
 
 // --- the single gate ---------------------------------------------------
 
-test('isServerMode is false when GODOT_SERVER is unset (the default = today)', () => {
-  assert.equal(isServerMode({}), false);
+test('isServerMode is on by default — Model B is the default mode', () => {
+  assert.equal(isServerMode({}), true);
 });
 
-test('isServerMode is false for any value other than the exact "1"', () => {
-  assert.equal(isServerMode({ GODOT_SERVER: '0' }), false);
-  assert.equal(isServerMode({ GODOT_SERVER: 'true' }), false);
-  assert.equal(isServerMode({ GODOT_SERVER: '' }), false);
-  assert.equal(isServerMode({ GODOT_SERVER: ' 1' }), false);
-});
-
-test('isServerMode is true only for GODOT_SERVER === "1"', () => {
+test('isServerMode stays on for any value except the explicit "0" escape hatch', () => {
   assert.equal(isServerMode({ GODOT_SERVER: '1' }), true);
+  assert.equal(isServerMode({ GODOT_SERVER: 'true' }), true);
+  assert.equal(isServerMode({ GODOT_SERVER: '' }), true);
+});
+
+test('isServerMode is off only when GODOT_SERVER === "0" (transitional legacy path)', () => {
+  assert.equal(isServerMode({ GODOT_SERVER: '0' }), false);
 });
 
 // --- the static config -------------------------------------------------
