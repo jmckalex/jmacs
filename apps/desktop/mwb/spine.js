@@ -144,6 +144,26 @@ function lispValueToWire(v) {
   return v;
 }
 
+/** The built-docs directory (`docs/build/`, sibling of packages/). The spine
+ *  reads the doc manifest here so doc-known? resolves server-side (B3). */
+const DOCS_BUILD_DIR = join(here, '..', '..', '..', 'docs', 'build');
+let docManifestNamesCache = null;
+
+/** The list of documented names from `docs/build/manifest.json`
+ *  (`Object.keys(functions)`, the same set the host's `doc:manifest` derives),
+ *  or null when the docs haven't been built. Cached on first success. */
+function readDocManifestNames() {
+  if (docManifestNamesCache) return docManifestNamesCache;
+  try {
+    const map = JSON.parse(readFileSync(join(DOCS_BUILD_DIR, 'manifest.json'), 'utf8'));
+    const names = map.functions ? Object.keys(map.functions) : Object.keys(map);
+    docManifestNamesCache = names;
+    return names;
+  } catch {
+    return null; // docs not built — doc-known? is #f; open-doc falls to live docstrings
+  }
+}
+
 /** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
  *  Keyword both carry a `.name`), with any leading `:` stripped, or null when
  *  ARG isn't symbol-like. The pane primitives read their orientation/side/
@@ -460,6 +480,19 @@ const SPINE_STDLIB = Object.freeze([
   // bridge (citation-parse-lenient / -entries / -format-keys / -register-
   // style!). Extends latex-c-c-map with [. Loads after reftex-refs.lisp.
   'reftex-cite.lisp',
+  // docs.lisp — the in-editor documentation surface (B3; plans/MODEL-B-DEFAULT.md):
+  // doc-manifest / doc-known? (over the load-doc-manifest! host primitive that the
+  // spine reads from docs/build/manifest.json via fs), symbol-at-point + doc-
+  // summary-for (pure Lisp over buffer-text/point + the interpreter's docstrings),
+  // and the commands open-manual (C-h d), open-doc, describe-symbol-at-point (C-h .).
+  // Those commands call render-side primitives (open-doc!/open-manual!/open-
+  // docstring-page!) that the spine provides as `open-doc`/`open-manual`/
+  // `open-docstring` directive emitters; the renderer's openDocInPane /
+  // openDocstringBuffer render them. docs.lisp's `apropos-doc` is SHADOWED by the
+  // embedded show-apropos one (it loads after this) so C-h a keeps command-apropos.
+  // Needs editing.lisp/custom.lisp (buffer/point/defcustom) + expand-region.lisp
+  // (the -scan-*/-char-at symbol helpers) — all earlier in this list.
+  'docs.lisp',
 ]);
 
 /**
@@ -1594,6 +1627,18 @@ export function createSpine(options, effects = {}) {
       },
       'face-color-for': () => '',
 
+      // --- docs (B3; docs.lisp now in SPINE_STDLIB) --------------------
+      // The doc MANIFEST read server-side: the list of documented names from
+      // docs/build/manifest.json (same set the host's doc:manifest derives). NIL
+      // when the docs aren't built — doc-known? is then #f and open-doc falls to
+      // the live-docstring path. (The doc page HTML stays a render concern: the
+      // open-doc/open-manual/open-docstring directives drive the renderer's
+      // openDocInPane/openDocstringBuffer, which read the HTML via the host.)
+      'load-doc-manifest!': () => {
+        const names = readDocManifestNames();
+        return names ? arrayToList(names) : NIL;
+      },
+
       // --- search (search.lisp) ----------------------------------------
       // Plain isearch (C-s / C-r) is now a real server-side loop in
       // search.lisp — a read-next-key state machine over find-string-forward
@@ -2647,6 +2692,23 @@ export function createSpine(options, effects = {}) {
       "Toggle whether the focused pane is a tabline of this window's buffers
        (Step 3c) — 'add a tabline-view' to a single pane, or back."
       (toggle-tabline!))
+
+    ;; --- doc render-side primitives (B3; docs.lisp now in SPINE_STDLIB) ----
+    ;; docs.lisp's commands (open-manual C-h d, open-doc, describe-symbol-at-
+    ;; point C-h .) call these. Here they emit directives to THIS window, where
+    ;; the renderer's openDocInPane / openDocstringBuffer render the page (the
+    ;; page HTML is read render-side via the host; the doc-view stays renderer).
+    ;; Args FLAT. doc-known? resolves server-side via load-doc-manifest! above.
+    (define (open-doc! name)
+      (emit-client-directive! (list (this-window-id)) 'open-doc name))
+    (define (open-manual!)
+      (emit-client-directive! (list (this-window-id)) 'open-manual))
+    (define (open-docstring-page! name source)
+      (emit-client-directive! (list (this-window-id)) 'open-docstring name source))
+    ;; docs.lisp's apropos-doc (-> start-doc-search!) is shadowed by the embedded
+    ;; show-apropos apropos-doc above (C-h a), so this never runs; a no-op stub
+    ;; keeps any stray call safe (the doc fuzzy-search UI is deferred).
+    (define (start-doc-search!) nil)
   `);
 
   // Now that the stdlib + the mode machinery are loaded, choose the major

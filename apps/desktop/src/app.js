@@ -6998,6 +6998,20 @@ if (window.host && window.host.serverMode) {
             document.documentElement.style.setProperty('--line-height', String(lineHeight));
           }
         } catch { /* malformed — keep the current knobs */ }
+      } else if (name === 'open-doc') {
+        // B3: the spine resolved a doc command (open-doc / describe-symbol-at-
+        // point) and asked THIS window to show the page for args[0]. The HTML is
+        // read render-side via the host (openDocInPane), keeping the doc-view a
+        // render concern — the spine only decides WHICH page.
+        openDocInPane(String(args?.[0] ?? ''));
+      } else if (name === 'open-manual') {
+        // B3 (C-h d): open the manual at its Top node. The node tree is
+        // render-side state; the spine just triggers the open.
+        openDocInPane((docNavTree && docNavTree.top) || 'the-jmacs-manual');
+      } else if (name === 'open-docstring') {
+        // B3: a live (user-defined) doc — the spine pushed the docstring source
+        // (Markdown); render it in a doc buffer (no pre-built page exists).
+        openDocstringBuffer(String(args?.[0] ?? ''), String(args?.[1] ?? ''));
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
