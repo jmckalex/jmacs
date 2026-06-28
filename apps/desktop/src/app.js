@@ -63,8 +63,6 @@ import {
   ImageView,
   JukeboxView,
   PdfView,
-  createMarkdownPreview,
-  buildPreviewHead,
   createMinibuffer,
   createReplView,
   createUtilityDock,
@@ -673,8 +671,9 @@ function watchCurrentBuffer() {
         recovery.save();
       }
       dismissSplash();
-      // Keep the Markdown preview pane in step with the buffer.
-      refreshMarkdownPreview();
+      // The Markdown preview (when open) tracks the SAVED file via its own
+      // `jmarkdown watch` server, so an edit needs no renderer-side refresh —
+      // the preview updates on save (C-x C-s), not per keystroke.
       // While a snippet is active, reflow the active field's extent and
       // the trailing offsets after each edit. A no-op when no snippet is
       // active (guarded in Lisp).
@@ -6991,9 +6990,10 @@ if (window.host && window.host.serverMode) {
         });
       } else if (name === 'markdown-preview') {
         // P3: the JMarkdown live-preview toggle (C-c v / the Markdown/JMarkdown
-        // mode menu). The server resolved the command; toggle the preview pane
-        // here, rendering this window's buffer mirror through the pipeline.
-        toggleMarkdownPreview();
+        // mode menu). The server resolved the command and sent the active
+        // buffer's saved path (args[0], '' when unsaved); toggle the preview
+        // pane here, pointing it at the real `jmarkdown watch` server.
+        toggleMarkdownPreview(String(args?.[0] ?? ''));
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
@@ -11196,33 +11196,20 @@ const bookmarks = createBookmarks({
 bookmarks.setBuffer(currentTextBuffer);
 
 // --- Markdown preview pane ---------------------------------------------
-// A toggleable pane (markdown-preview, C-c v) that renders the current
-// markdown-mode buffer to HTML through the same JMarkdown pipeline the
-// sticky notes use, refreshing — debounced — as the buffer is edited.
-
-/** Typeset mathematics inside the preview iframe, once its own MathJax
- *  has started. The iframe loads its own MathJax (see buildPreviewHead),
- *  so this runs against THAT instance, not the editor's. `elements` is
- *  the set to typeset: the whole body `[body]` after a rebuild, or just
- *  the math spans morphdom brought in fresh on the incremental path. */
-function typesetPreview(frameWindow, elements) {
-  const mathJax = frameWindow && frameWindow.MathJax;
-  if (!mathJax) return;
-  if (!Array.isArray(elements) || elements.length === 0) return;
-  const run = () => {
-    if (typeof mathJax.typesetPromise === 'function') {
-      mathJax.typesetPromise(elements).catch(() => {});
-    }
-  };
-  const ready = mathJax.startup && mathJax.startup.promise;
-  if (ready) ready.then(run).catch(() => {});
-  else run();
-}
+// A toggleable pane (markdown-preview, C-c v) that shows the current
+// Markdown / JMarkdown FILE rendered by the real `jmarkdown watch` server
+// (apps/desktop/src/jmarkdown-watch.js) inside an iframe — the same pipeline
+// the book build uses, live-reloading (morphdom) on each save. The renderer
+// owns only the pane + the iframe's `src`; the rendering, CSS, and MathJax all
+// come from the watch server's output, so there is no in-app render path here.
+// The preview tracks the SAVED file, so it refreshes when the buffer is saved
+// (C-x C-s), not per keystroke; an unsaved / path-less buffer has nothing to
+// watch.
 
 /** Build an `app://editor/__host__/…` URL for an absolute file path —
  *  the renderer-side mirror of serve.js's `hostFileUrl` (keep in sync).
- *  Serves any local file same-origin, so the preview iframe can load the
- *  book's CSS and a file's relative assets. */
+ *  Serves any local file same-origin (e.g. resolving a bibliography that
+ *  lives outside an opened folder). */
 function hostFileUrl(filePath) {
   return (
     'app://editor/__host__' +
@@ -11230,79 +11217,26 @@ function hostFileUrl(filePath) {
   );
 }
 
-/** The MathJax config the preview iframe uses — mirrors index.html. */
-const PREVIEW_MATHJAX_CONFIG = {
-  tex: {
-    inlineMath: [['$', '$'], ['\\(', '\\)']],
-    displayMath: [['$$', '$$'], ['\\[', '\\]']],
-    // Honour `\$` as a literal dollar (renderMarkdown preserves it), so a
-    // price like "\$45" isn't paired into math.
-    processEscapes: true,
-  },
-  svg: { fontCache: 'local' },
-  startup: { typeset: false },
-};
-const PREVIEW_MATHJAX_SRC =
-  'app://editor/apps/desktop/vendor/mathjax/tex-svg.js';
-const PREVIEW_DEFAULT_CSS_URL =
-  'app://editor/apps/desktop/markdown-preview.css';
-
-/** The current markdown buffer's directory as a base URL the iframe
- *  resolves relative assets against — or null for an unsaved buffer. */
-function currentPreviewBaseUrl() {
-  const path = currentTextBuffer && currentTextBuffer.filePath;
-  if (typeof path !== 'string' || path === '') return null;
-  const dir = path.slice(0, path.lastIndexOf('/') + 1);
-  return dir ? hostFileUrl(dir) : null;
-}
-
-/** The user's `*markdown-preview-css*` paths as iframe-loadable URLs.
- *  Absolute (and `~`) paths go through the host-file scheme; a relative
- *  path is left as-is to resolve against the iframe's <base>. */
-function currentPreviewCssUrls() {
-  let paths = [];
-  try {
-    paths = listToArray(interpreter.evaluate('*markdown-preview-css*')).map(String);
-  } catch {
-    paths = [];
-  }
-  return paths.map((p) => {
-    let path = p;
-    if (path.startsWith('~/')) path = window.host.homeDirectory + path.slice(1);
-    return path.startsWith('/') ? hostFileUrl(path) : path;
-  });
-}
-
-/** Whether the built-in preview stylesheet should be linked. */
-function previewDefaultStyleOn() {
-  try {
-    return interpreter.evaluate('*markdown-preview-default-style*') !== false;
-  } catch {
-    return true;
-  }
-}
-
-/** The <head> for the preview iframe: base + stylesheets + MathJax. */
-function buildPreviewFrameHead() {
-  return buildPreviewHead({
-    baseUrl: currentPreviewBaseUrl(),
-    cssUrls: currentPreviewCssUrls(),
-    defaultCssUrl: previewDefaultStyleOn() ? PREVIEW_DEFAULT_CSS_URL : null,
-    mathjaxSrc: PREVIEW_MATHJAX_SRC,
-    mathjaxConfig: PREVIEW_MATHJAX_CONFIG,
-  });
-}
-
-const markdownPreview = createMarkdownPreview(
-  document.getElementById('markdown-preview-host'),
-  {
-    render: renderNoteHtml,
-    buildHead: buildPreviewFrameHead,
-    typeset: typesetPreview,
-  }
-);
+// The preview pane DOM: a header + an iframe inside #markdown-preview-host.
+// The CSS classes (.markdown-preview / -header / -frame, and the
+// body.markdown-preview-hidden toggle) are shared with the old in-app pane, so
+// styles.css needs no change. The iframe's `src` points at the watch server.
+const markdownPreviewPane = document.createElement('div');
+markdownPreviewPane.className = 'markdown-preview';
+const markdownPreviewHeader = document.createElement('div');
+markdownPreviewHeader.className = 'markdown-preview-header';
+markdownPreviewHeader.textContent = 'Preview';
+const markdownPreviewFrame = document.createElement('iframe');
+markdownPreviewFrame.className = 'markdown-preview-frame';
+markdownPreviewPane.append(markdownPreviewHeader, markdownPreviewFrame);
+document.getElementById('markdown-preview-host').append(markdownPreviewPane);
 // The pane starts hidden; markdown-preview reveals it.
 document.body.classList.add('markdown-preview-hidden');
+
+/** The absolute path of the file the preview is currently watching, or null
+ *  when the preview is off. Lets a buffer switch skip a respawn when the new
+ *  buffer is backed by the same file. */
+let previewWatchedPath = null;
 
 /** Whether the current buffer is in markdown-mode. */
 function currentBufferIsMarkdown() {
@@ -11319,34 +11253,68 @@ function markdownPreviewVisible() {
   return !document.body.classList.contains('markdown-preview-hidden');
 }
 
-/** Render the current buffer into the preview pane, debounced. Used on
- *  edits; a no-op when the pane is hidden. */
-function refreshMarkdownPreview() {
-  if (!markdownPreviewVisible()) return;
-  markdownPreview.update(currentTextBuffer.text);
+/** The current buffer's saved absolute path, or '' when unsaved/path-less. */
+function currentBufferFilePath() {
+  const path = currentTextBuffer && currentTextBuffer.filePath;
+  return typeof path === 'string' && path !== '' ? path : '';
 }
 
-/** Re-point the preview pane after a buffer switch: render the new
- *  buffer if the pane is open and the buffer is Markdown; otherwise
- *  hide the pane, since it only makes sense for a markdown-mode
- *  buffer. A no-op when the pane is already hidden. */
-function syncMarkdownPreviewToBuffer() {
-  if (!markdownPreviewVisible()) return;
-  if (currentBufferIsMarkdown()) {
-    markdownPreview.refreshNow(currentTextBuffer.text);
-  } else {
-    document.body.classList.add('markdown-preview-hidden');
-    markdownPreview.clear();
+/** Hide the preview pane and stop this window's watch subprocess. */
+function hideMarkdownPreview() {
+  document.body.classList.add('markdown-preview-hidden');
+  previewWatchedPath = null;
+  markdownPreviewFrame.src = 'about:blank';
+  markdownPreviewHeader.textContent = 'Preview';
+  if (window.host && typeof window.host.stopJmarkdownWatch === 'function') {
+    window.host.stopJmarkdownWatch();
   }
 }
 
-/** Toggle the Markdown preview pane. Showing it renders the current
- *  buffer at once; the pane only makes sense for a markdown-mode
- *  buffer, so opening it on any other buffer is reported and skipped. */
-function toggleMarkdownPreview() {
+/** Reveal the pane and point the iframe at a `jmarkdown watch` server on
+ *  `path`. Starting the watcher is async (the server builds before it serves);
+ *  the header shows a "starting…" state until the port is ready. A failure
+ *  re-hides the pane and reports the reason. */
+async function showMarkdownPreview(path) {
+  document.body.classList.remove('markdown-preview-hidden');
+  markdownPreviewHeader.textContent = 'Preview — starting…';
+  previewWatchedPath = path;
+  let result;
+  try {
+    result = await window.host.startJmarkdownWatch(path);
+  } catch (error) {
+    result = { error: String(error && error.message ? error.message : error) };
+  }
+  // A later toggle/switch may have moved on while we awaited; honour it.
+  if (previewWatchedPath !== path) return;
+  if (!result || result.error) {
+    hideMarkdownPreview();
+    repl.appendNote(`markdown-preview: ${result?.error ?? 'could not start preview'}`);
+    return;
+  }
+  markdownPreviewHeader.textContent = 'Preview';
+  markdownPreviewFrame.src = `http://localhost:${result.port}/`;
+}
+
+/** Re-point the preview after a buffer switch: follow the new buffer if it is
+ *  a saved Markdown/JMarkdown file, otherwise hide the pane (it only makes
+ *  sense for one). A no-op when the pane is already hidden, or when the new
+ *  buffer is the same file already being watched. */
+function syncMarkdownPreviewToBuffer() {
+  if (!markdownPreviewVisible()) return;
+  const file = currentBufferFilePath();
+  if (!currentBufferIsMarkdown() || file === '') {
+    hideMarkdownPreview();
+    return;
+  }
+  if (file !== previewWatchedPath) showMarkdownPreview(file);
+}
+
+/** Toggle the Markdown preview pane (C-c v). `path` is the active buffer's
+ *  saved path from the server directive ('' when unsaved). Opening it on a
+ *  non-Markdown or unsaved buffer is reported and skipped. */
+function toggleMarkdownPreview(path) {
   if (markdownPreviewVisible()) {
-    document.body.classList.add('markdown-preview-hidden');
-    markdownPreview.clear();
+    hideMarkdownPreview();
     editorView.focus();
     return;
   }
@@ -11354,8 +11322,12 @@ function toggleMarkdownPreview() {
     repl.appendNote('markdown-preview: the current buffer is not in Markdown mode');
     return;
   }
-  document.body.classList.remove('markdown-preview-hidden');
-  markdownPreview.refreshNow(currentTextBuffer.text);
+  const file = typeof path === 'string' && path !== '' ? path : currentBufferFilePath();
+  if (file === '') {
+    repl.appendNote('markdown-preview: save the file first');
+    return;
+  }
+  showMarkdownPreview(file);
   editorView.focus();
 }
 
