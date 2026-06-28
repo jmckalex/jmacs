@@ -1575,7 +1575,7 @@ body.markdown-preview-hidden #preview-splitter {
   border: 0;
   color: var(--fg-dim);
   cursor: pointer;
-  padding: 4px 5px;
+  padding: 4px 3px;
   border-radius: 4px;
   font-size: 12px;
   line-height: 1;
@@ -1584,10 +1584,8 @@ body.markdown-preview-hidden #preview-splitter {
   background: color-mix(in srgb, var(--fg) 14%, transparent);
   color: var(--fg);
 }
-/* The close X reads bright (white on dark themes), not red. */
-.markdown-preview-close {
-  color: var(--fg);
-}
+/* The close X matches the rest of the header text (--fg-dim) — it inherits the
+   .markdown-preview-btn colour, no override. */
 
 /* The preview renders into an isolated iframe; its inner styling comes
    from markdown-preview.css (and the user's *markdown-preview-css*), not
