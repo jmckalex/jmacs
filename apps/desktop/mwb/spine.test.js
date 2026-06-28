@@ -28,7 +28,7 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
     directives: [],
   };
   const spine = createSpine(
-    { initialText, name },
+    { initialText, name, initialPath: extra.initialPath },
     {
       onStatus: (s) => log.status.push(s),
       onMinibufferOpen: (p) => log.minibufferOpens.push(p),
@@ -657,13 +657,20 @@ test('closing the LAST tab collapses the tabline to a bare *scratch* leaf', () =
   assert.ok(!spine.bufferListRecords(0).some((r) => r.id === aId), 'the closed view was killed');
 });
 
-test('markdown-preview routes to the active window via a directive (Model B port)', () => {
-  const { spine, log } = makeSpine('# hi\n', 'doc.md');
+test('markdown-preview directive carries the active buffer SAVED path', () => {
+  const { spine, log } = makeSpine('# hi\n', 'doc.md', { initialPath: '/docs/doc.md' });
   spine.runCommand('markdown-preview'); // the command body calls markdown-preview!
-  assert.ok(
-    log.directives.some((d) => d.name === 'markdown-preview' && d.ids.includes(0)),
-    'a markdown-preview directive went to the active window'
-  );
+  const d = log.directives.find((x) => x.name === 'markdown-preview');
+  assert.ok(d && d.ids.includes(0), 'a markdown-preview directive went to the active window');
+  assert.deepEqual(d.args, ['/docs/doc.md'], 'the saved path travels as the sole directive arg');
+});
+
+test('markdown-preview sends an empty path for an unsaved buffer', () => {
+  // No initialPath → a path-less buffer; the renderer then says "save first".
+  const { spine, log } = makeSpine('# hi\n', 'doc.md');
+  spine.runCommand('markdown-preview');
+  const d = log.directives.find((x) => x.name === 'markdown-preview');
+  assert.deepEqual(d.args, [''], 'an unsaved buffer sends an empty path');
 });
 
 test('find-file of a MEDIA file creates a data-source leaf (no garbage text buffer)', () => {
