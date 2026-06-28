@@ -37,6 +37,17 @@ The mapping data already exists: `jmarkdown` emits **`data-source-line="N"`**
   event delegation** (not per-element listeners) and **query the DOM fresh** at
   message time, so live updates that replace block nodes don't break it. (Under
   `--full-reload` the script simply re-initialises and re-announces `ready`.)
+- **MUST suppress the native edit-link navigation when embedded.** The watch page
+  already turns a click into an external-editor jump — a `kmtrigger://…:LINE`
+  (Keyboard Maestro "open in Sublime") navigation. Inside Godot that must NOT
+  fire: the iframe navigating to `kmtrigger://` is **blocked by Godot's CSP and
+  blanks the preview white** (observed 2026-06-28). When embedded, `sync.js` must
+  fully intercept the modifier-click — `e.preventDefault()` **and**
+  `e.stopImmediatePropagation()` in the **capture phase** so the page's own
+  handler never runs — and route via `postMessage` (`source-line-click`) instead.
+  Equivalently, the page can simply not wire the `kmtrigger` edit-link when
+  `window.parent !== window.self`. Either way: **embedded ⇒ no `kmtrigger`
+  navigation, ever.**
 
 ## 2. Message envelope
 Every message — both directions — is a plain JSON object:
@@ -150,7 +161,10 @@ serving pipeline.
     if (!(e.metaKey || e.ctrlKey)) return;      // only the modified click
     var line = lineForClick(e.target, e.clientY);
     if (line == null) return;
+    // Fully claim the click so the page's own kmtrigger/edit-link handler never
+    // runs (that navigation is CSP-blocked in Godot and blanks the preview).
     e.preventDefault();
+    e.stopImmediatePropagation();
     post({ type: 'source-line-click', line: line });
   }, true);
 
