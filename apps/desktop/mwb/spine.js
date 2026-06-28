@@ -38,7 +38,7 @@ import { readFileSync, statSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInterpreter, NIL, cons, listToArray, arrayToList, keyword } from '@editor/lisp';
+import { createInterpreter, NIL, cons, listToArray, arrayToList, keyword, sym } from '@editor/lisp';
 import { createBuffer } from '@editor/buffer';
 import { createView } from '@editor/view';
 import { createBufferPrimitives, createLatexPrimitives } from '@editor/stdlib';
@@ -66,9 +66,37 @@ import {
 } from '../../../packages/renderer/src/bookmark-outline.js';
 import { createPaneModel } from './pane-model.js';
 import { createCitationPrimitives } from './citation-bridge.js';
+// Pure JSON<->Lisp converters for faces.json (no DOM / electron deps), shared
+// with the renderer — the spine now reads the user's faces server-side (B1.2).
+import {
+  jsonToLispOverrides,
+  jsonToLispUserFaces,
+  jsonToLispHighlightRules,
+} from '../src/face-overrides.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
+
+/** The per-user config directory (`app.getPath('userData')`), passed by main via
+ *  MWB_USER_DATA before the fork. Absent under the unit-test harness
+ *  (`createSpine` without the env) → user-config reads return empty defaults, so
+ *  the suite is unaffected. */
+const USER_DATA = process.env.MWB_USER_DATA || null;
+const FACES_PATH = USER_DATA ? join(USER_DATA, 'faces.json') : null;
+/** The Lisp constructors face-overrides.js needs to build hash-maps. */
+const FACE_FACTORIES = { keyword, sym };
+
+/** Read + parse `<userData>/faces.json`. Returns null when absent / unreadable /
+ *  malformed (first launch, or the test harness) so callers fall back to the
+ *  built-in defaults rather than breaking boot. */
+function readFacesJson() {
+  if (!FACES_PATH) return null;
+  try {
+    return JSON.parse(readFileSync(FACES_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+}
 
 /** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
  *  Keyword both carry a `.name`), with any leading `:` stripped, or null when
@@ -1472,7 +1500,10 @@ export function createSpine(options, effects = {}) {
       'set-css-tab-width!': () => NIL,
       'set-css-line-height!': () => NIL,
       'set-highlight-overrides!': () => NIL,
-      'load-face-overrides!': () => NIL,
+      // B1.2: read the user's colour overrides from <userData>/faces.json (the
+      // same file the renderer writes) and return them in the Lisp shape
+      // set-face-overrides! consumes. Empty (defaults) when the file is absent.
+      'load-face-overrides!': () => jsonToLispOverrides(readFacesJson(), FACE_FACTORIES),
       'write-faces!': () => NIL,
       'face-color-for': () => '',
 
@@ -1778,6 +1809,27 @@ export function createSpine(options, effects = {}) {
   for (const file of SPINE_STDLIB) {
     const source = readFileSync(join(STDLIB_DIR, file), 'utf8');
     interpreter.evaluate(source);
+  }
+
+  // B1.2 (plans/MODEL-B-DEFAULT.md): install the user's faces.json overrides
+  // into the server's face / theme / highlight registries, so the spine's
+  // computed chrome (current-theme-css-vars / current-face-styles /
+  // highlight-rule-records) reflects the user's customisations. Mirrors app.js's
+  // post-stdlib faces install. The APPLY side is still render-side (the stubs
+  // above are no-ops; B1.3 turns them into directive emitters), so this changes
+  // only what the spine COMPUTES, not what any window shows yet. Guarded so a
+  // missing / malformed faces.json (first launch, the test harness) falls back
+  // to defaults without breaking boot.
+  try {
+    const facesJson = readFacesJson();
+    interpreter.call('set-user-faces!', jsonToLispUserFaces(facesJson, FACE_FACTORIES));
+    interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
+    interpreter.call(
+      'set-highlight-rules!',
+      jsonToLispHighlightRules(facesJson, FACE_FACTORIES, arrayToList, cons)
+    );
+  } catch (error) {
+    console.error('[spine] faces.json install failed:', error.message);
   }
 
   // Language major modes (`languages/*.lisp`: a `define-mode` + `register-mode`

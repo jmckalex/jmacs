@@ -414,6 +414,9 @@ app.whenReady().then(() => {
     // here, before the fork. After the first boot the server owns its own
     // session and ignores this.
     process.env.MWB_SESSION_SEED = join(app.getPath('userData'), 'session.json');
+    // The spine reads user config (faces.json now; init.lisp/custom.lisp later)
+    // from this dir directly via fs (plans/MODEL-B-DEFAULT.md, Part B).
+    process.env.MWB_USER_DATA = app.getPath('userData');
     serverBridge = createServerBridge({ utilityProcess, MessageChannelMain });
     console.error('[main] Model-B server forked');
   } catch (error) {
