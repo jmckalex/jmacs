@@ -96,6 +96,22 @@ test('list-bookmarks (C-x r l) TOGGLES the bookmark outline open and closed', ()
   assert.equal(wireLeaves(spine.paneSnapshot(0)).length, 2, 're-opens after a close');
 });
 
+test('C-x r l also CLOSES a PINNED outline (no duplicate after a restore)', () => {
+  const { spine } = makeSpine();
+  spine.runCommand('list-bookmarks'); // open a following outline
+  const outline = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'bookmark');
+  assert.ok(outline, 'the outline opened');
+  spine.applyBookmarkOp(outline.bufferId, { op: 'pin' }); // pin it (as a restore would)
+
+  // C-x r l on a window showing only a PINNED outline must CLOSE it, not spawn a
+  // second (following) one beside it.
+  spine.runCommand('list-bookmarks');
+  assert.equal(
+    wireLeaves(spine.paneSnapshot(0)).length, 1,
+    'the pinned outline closed, leaving just the document (no duplicate)'
+  );
+});
+
 // --- C-x o: other-window cycles focus ----------------------------------
 
 test('C-x o (other-window) cycles focus between the two panes', () => {

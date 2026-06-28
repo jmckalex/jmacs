@@ -2773,16 +2773,20 @@ export function createSpine(options, effects = {}) {
     return src.id;
   }
 
-  /** Toggle the bookmark OUTLINE for the active client (C-x r l): close it when
-   *  its following outline is already shown in a pane, else open it. The
-   *  data-source survives a close, so a re-toggle re-opens + re-targets. A PINNED
-   *  outline isn't a toggle target (it's frozen per-file) — toggling opens a
-   *  fresh following outline. Returns the source id when opening, else null. */
+  /** Toggle the bookmark OUTLINE for the active client (C-x r l): close ANY
+   *  bookmark outline already shown in this window — a FOLLOWING one OR a
+   *  (restored) PINNED one — by collapsing its pane into the document beside it;
+   *  else open a fresh following outline. Closing a pinned outline this way is
+   *  what makes C-x r l dismiss a restored, pinned pane rather than spawn a
+   *  duplicate. Returns the source id when opening, else null. */
   function toggleBookmarkView() {
     const model = paneModels.get(activeClientIndex);
-    const src = followingOutlineOf(activeClientIndex);
-    if (model && src) {
-      const shown = model.leaves().find((l) => model.stateOf(l.id)?.bufferId === src.id);
+    if (model) {
+      const shown = model.leaves().find((l) => {
+        const id = model.stateOf(l.id)?.bufferId;
+        const ds = id ? dataSources.get(id) : null;
+        return !!(ds && ds.kind === 'bookmark');
+      });
       if (shown) {
         model.focusPane(shown.id); // focus the OUTLINE pane, then collapse it
         model.deletePane();        // into its sibling (the document beside it)
