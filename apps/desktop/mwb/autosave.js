@@ -82,6 +82,12 @@ export function recoveryRecord(snapshot, now) {
   };
 }
 
+/** A buffer name with any `<n>` uniquifier suffixes stripped (`*scratch*<2>` →
+ *  `*scratch*`), so the ephemeral scratch is recognised whatever its suffix. */
+export function baseBufferName(name) {
+  return String(name || '').replace(/(<\d+>)+$/, '');
+}
+
 /**
  * From recovery RECORDS (each enriched with the state of its on-disk file —
  * `diskExists` + `diskModified` ms), pick the ones worth offering on startup:
@@ -89,28 +95,31 @@ export function recoveryRecord(snapshot, now) {
  * or that has no on-disk file at all (a path-less or deleted buffer). This is
  * the exact predicate `app.js scanForRecovery` applies. Pure.
  *
- * An EMPTY, path-less snapshot (a pristine `*scratch*`) is dropped: it has no
- * content to recover, and recovering it spawns a duplicate scratch which —
- * being dirty-by-construction (recoverBuffer baselines empty text to a space so
- * it shows ●) — re-snapshots itself every tick and reappears on every launch
- * (the "two `*scratch*` on Start fresh" bug). A path-BOUND emptied buffer is
- * still recovered (deleting all of a file's text and not saving is a real edit).
+ * A path-less `*scratch*` snapshot is dropped, whether empty or holding jotted
+ * text: `*scratch*` is the ephemeral backdrop (Emacs semantics — it isn't
+ * persisted), and recovering it spawns a duplicate that, being
+ * dirty-by-construction, re-snapshots itself and reappears as `*scratch*<2>` on
+ * every launch (the "two `*scratch*` on Start fresh" bug). Any OTHER empty
+ * path-less snapshot is dropped too (nothing to recover). A path-BOUND buffer,
+ * or a NAMED path-less buffer with content (e.g. an `*Occur*` result), is still
+ * recovered.
  *
- * @param {Array<{text?:string, path?:string|null, diskExists?:boolean, diskModified?:number|null, savedAt?:number}>} records
+ * @param {Array<{text?:string, name?:string, path?:string|null, diskExists?:boolean, diskModified?:number|null, savedAt?:number}>} records
  * @returns {Array} The subset worth recovering.
  */
 export function selectRecoverable(records) {
   if (!Array.isArray(records)) return [];
-  return records.filter(
-    (r) =>
-      r &&
-      typeof r.text === 'string' &&
-      // Skip a pristine path-less scratch (empty text + no file) — nothing to
-      // recover, and it would perpetuate a duplicate scratch every launch.
-      !((r.path == null || r.path === '') && r.text.trim() === '') &&
-      (!r.diskExists ||
-        (typeof r.diskModified === 'number' && r.savedAt > r.diskModified))
-  );
+  return records.filter((r) => {
+    if (!r || typeof r.text !== 'string') return false;
+    const pathless = r.path == null || r.path === '';
+    // Drop a path-less *scratch* (empty OR jotted — it's the ephemeral
+    // backdrop, and recovering it perpetuates a duplicate), and any other
+    // empty path-less buffer (nothing to recover).
+    if (pathless && (r.text.trim() === '' || baseBufferName(r.name) === '*scratch*')) {
+      return false;
+    }
+    return !r.diskExists || (typeof r.diskModified === 'number' && r.savedAt > r.diskModified);
+  });
 }
 
 /**

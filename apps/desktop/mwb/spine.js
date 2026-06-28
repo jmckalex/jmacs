@@ -3927,12 +3927,21 @@ export function createSpine(options, effects = {}) {
      *  `[{ id, name, filePath, text }]`. Pure data (no L2 objects), so the
      *  server can write each to a recovery file without holding the buffer. */
     dirtyBufferSnapshots() {
-      return registry.dirtyEntries().map((e) => ({
-        id: e.id,
-        name: e.buffer.name,
-        filePath: e.filePath,
-        text: e.buffer.text,
-      }));
+      return registry.dirtyEntries()
+        // Never snapshot a path-less *scratch* — it is the ephemeral backdrop
+        // (Emacs semantics), so it is neither recovered nor duplicated into a
+        // *scratch*<2> on relaunch (the "two *scratch* on Start fresh" bug). A
+        // scratch saved to a file is path-bound and IS snapshotted.
+        .filter((e) => !(
+          (e.filePath == null || e.filePath === '')
+          && String(e.buffer.name || '').replace(/(<\d+>)+$/, '') === '*scratch*'
+        ))
+        .map((e) => ({
+          id: e.id,
+          name: e.buffer.name,
+          filePath: e.filePath,
+          text: e.buffer.text,
+        }));
     },
     viewState,
     pointPosition,

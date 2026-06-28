@@ -71,21 +71,26 @@ test('selectRecoverable drops records with no text and tolerates junk', () => {
   );
 });
 
-test('selectRecoverable drops an empty path-less scratch (the duplicate-scratch bug)', () => {
+test('selectRecoverable drops a path-less *scratch* (empty OR jotted) — the duplicate-scratch bug', () => {
   const records = [
-    // A pristine *scratch*: empty text + no file → nothing to recover → SKIP
-    // (recovering it spawns a dirty-by-construction duplicate that reappears
-    // every launch — the "two *scratch* on Start fresh" bug).
+    // A pristine *scratch*: empty + no file → nothing to recover → SKIP.
     { key: 's', name: '*scratch*', path: null, text: '', diskExists: false, diskModified: null, savedAt: 50 },
     // A file-BOUND buffer emptied + unsaved → deleting all the text is a real
     // lost edit → RECOVER.
     { key: 'f', name: 'notes.txt', path: '/n.txt', text: '', diskExists: false, diskModified: null, savedAt: 60 },
-    // A path-less scratch WITH content the user jotted → RECOVER.
+    // A path-less *scratch* WITH jotted content → still SKIP: *scratch* is the
+    // ephemeral backdrop (Emacs semantics — not persisted), and recovering it
+    // perpetuates a duplicate *scratch*<2> on every launch (the bug). The
+    // <n>-suffixed form too.
     { key: 'n', name: '*scratch*', path: null, text: 'jot', diskExists: false, diskModified: null, savedAt: 70 },
-    // Whitespace-only path-less scratch is still "empty" → SKIP.
+    { key: 'n2', name: '*scratch*<2>', path: null, text: 'asdf', diskExists: false, diskModified: null, savedAt: 75 },
+    // Whitespace-only path-less scratch → SKIP (empty).
     { key: 'w', name: '*scratch*', path: null, text: '  \n ', diskExists: false, diskModified: null, savedAt: 80 },
+    // A NAMED path-less buffer (NOT *scratch*) with content → RECOVER: the guard
+    // targets only the scratch backdrop, not every path-less buffer.
+    { key: 'o', name: '*Occur: foo*', path: null, text: '3 matches', diskExists: false, diskModified: null, savedAt: 90 },
   ];
-  assert.deepEqual(selectRecoverable(records).map((r) => r.key), ['f', 'n']);
+  assert.deepEqual(selectRecoverable(records).map((r) => r.key), ['f', 'o']);
 });
 
 // --- the controller against a real temp dir ---------------------------
