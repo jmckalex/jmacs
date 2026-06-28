@@ -23,6 +23,11 @@ import { reconcileBounds } from './window-geometry.js';
 import { registerFileHandlers } from './files.js';
 import { isServerMode, createServerBridge } from './server-bridge.js';
 import { renderJMarkdown } from './jmarkdown.js';
+import {
+  registerJmarkdownWatchHandlers,
+  stopJmarkdownWatch,
+  reapJmarkdownWatchers,
+} from './jmarkdown-watch.js';
 import { buildAppMenu } from './menu.js';
 import { EDITOR_URL, serveAppFile, serveMediaFile, allowHostDir } from './serve.js';
 import { registerShellHandlers } from './shell.js';
@@ -244,6 +249,13 @@ function createWindow(opts = {}) {
     });
   }
 
+  // Reap this window's JMarkdown preview watcher (if any) when it closes, in
+  // every mode — a live `jmarkdown watch` subprocess must not outlive the
+  // window that asked for it. (`webContents.id` is captured now; it's gone
+  // once 'closed' has fired.)
+  const previewWcId = win.webContents.id;
+  win.on('closed', () => stopJmarkdownWatch(previewWcId));
+
   // §3a: the renderer crashing (or being killed) takes the editor down.
   // Log the cause; the user's unsaved work is recoverable on relaunch
   // from the autosave snapshots (the *Recover* view), since a crash is
@@ -273,6 +285,7 @@ app.whenReady().then(() => {
   registerShellHandlers();
   registerProcessHandlers();
   registerGnuplotHandlers();
+  registerJmarkdownWatchHandlers();
   buildAppMenu(null, dispatchMenuCommand, { canNewWindow: isServerMode() });
   // The renderer calls this (via host.quit) from quitInteractive, after
   // it has confirmed there is nothing unsaved to lose. Mark the quit
@@ -401,6 +414,11 @@ function shouldHoldForConfirm() {
 // `app:quit` to actually quit, or does nothing to cancel. Holding here
 // means the windows never close, so the `close` guard below does not
 // also fire for the same Cmd+Q.
+// Reap every JMarkdown preview watcher once the quit actually proceeds (after
+// any save-confirm). 'will-quit' fires only on a real quit — unlike
+// 'before-quit', which also fires on a quit the user then cancels.
+app.on('will-quit', () => reapJmarkdownWatchers());
+
 app.on('before-quit', (event) => {
   if (!shouldHoldForConfirm()) return;
   event.preventDefault();

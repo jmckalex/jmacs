@@ -233,6 +233,23 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('jmarkdown:render', { command, source }),
 
   /**
+   * Start (or restart) this window's JMarkdown live-preview watcher on the
+   * saved file `path` — spawns `jmarkdown watch path --port N` in the main
+   * process. Resolves `{ port }` once the preview server is accepting
+   * connections, or `{ error }` on failure.
+   * @param {string} path - Absolute path of the saved file to preview.
+   * @returns {Promise<{port: number} | {error: string}>}
+   */
+  startJmarkdownWatch: (path) =>
+    ipcRenderer.invoke('jmarkdown:watch:start', { path }),
+
+  /**
+   * Stop this window's JMarkdown preview watcher (a no-op if none is running).
+   * @returns {Promise<{ok: boolean}>}
+   */
+  stopJmarkdownWatch: () => ipcRenderer.invoke('jmarkdown:watch:stop'),
+
+  /**
    * Read a file's companion metadata (sticky notes), or null.
    * @param {string} path - The file's own path.
    * @returns {Promise<object | null>}
