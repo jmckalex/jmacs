@@ -493,6 +493,12 @@ const SPINE_STDLIB = Object.freeze([
   // Needs editing.lisp/custom.lisp (buffer/point/defcustom) + expand-region.lisp
   // (the -scan-*/-char-at symbol helpers) — all earlier in this list.
   'docs.lisp',
+  // folding.lisp — code-folding commands (B4): toggle-fold-at-point (C-c TAB),
+  // fold-all (C-c C-,), unfold-all (C-c C-.). Folding is a pure VIEW concern, so
+  // these wrap render-side primitives (toggle-fold-at-point!/fold-all!/unfold-all!)
+  // that the spine provides as `fold-toggle`/`fold-all`/`unfold-all` directive
+  // emitters → the renderer's editorView.toggleFoldAtPoint()/foldAll()/unfoldAll().
+  'folding.lisp',
 ]);
 
 /**
@@ -2709,6 +2715,17 @@ export function createSpine(options, effects = {}) {
     ;; show-apropos apropos-doc above (C-h a), so this never runs; a no-op stub
     ;; keeps any stray call safe (the doc fuzzy-search UI is deferred).
     (define (start-doc-search!) nil)
+
+    ;; --- folding render-side primitives (B4; folding.lisp) -----------------
+    ;; Folding is a pure view concern — the renderer tracks collapsed lines per
+    ;; buffer. These emit directives to THIS window; the renderer's editorView
+    ;; folds its own display (the cursor it shows is the server-synced point).
+    (define (toggle-fold-at-point!)
+      (emit-client-directive! (list (this-window-id)) 'fold-toggle))
+    (define (fold-all!)
+      (emit-client-directive! (list (this-window-id)) 'fold-all))
+    (define (unfold-all!)
+      (emit-client-directive! (list (this-window-id)) 'unfold-all))
   `);
 
   // Now that the stdlib + the mode machinery are loaded, choose the major

@@ -7012,6 +7012,13 @@ if (window.host && window.host.serverMode) {
         // B3: a live (user-defined) doc — the spine pushed the docstring source
         // (Markdown); render it in a doc buffer (no pre-built page exists).
         openDocstringBuffer(String(args?.[0] ?? ''), String(args?.[1] ?? ''));
+      } else if (name === 'fold-toggle') {
+        // B4 (folding.lisp): fold a view concern — act on the focused editor.
+        editorView.toggleFoldAtPoint();
+      } else if (name === 'fold-all') {
+        editorView.foldAll();
+      } else if (name === 'unfold-all') {
+        editorView.unfoldAll();
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
