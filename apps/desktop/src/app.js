@@ -3927,28 +3927,15 @@ const interpreter = createInterpreter({
     // directory-columns preview line read the CSS var via
     // `tab-size: var(--tab-width)`; the cached number is what
     // `getTabWidth` returns to createEditorView so the cursor /
-    // selection rects line up with the rendered glyph when the line
-    // contains tabs. Called once on startup (after stdlib loads) and
-    // again from the *tab-width* defcustom's on-change hook whenever
-    // the user changes it.
-    'set-css-tab-width!': (args) => {
-      const value = Number(args[0]);
-      const width = Number.isFinite(value) && value > 0 ? value | 0 : 4;
-      document.documentElement.style.setProperty('--tab-width', String(width));
-      currentTabWidth = width;
-      return NIL;
-    },
-    // Paint the editor's line spacing onto the `--line-height` CSS var, which
-    // `.editor { line-height: var(--line-height) }` reads — so every line's
-    // `1lh`-based position reflows in step (no re-render needed). Driven by
-    // the *line-height* defcustom: once on startup, then on its on-change.
-    // Clamped to a sane multiple so a fat-fingered value can't break layout.
-    'set-css-line-height!': (args) => {
-      const value = Number(args[0]);
-      const lh = Number.isFinite(value) && value >= 1 && value <= 3 ? value : 1.35;
-      document.documentElement.style.setProperty('--line-height', String(lh));
-      return NIL;
-    },
+    // B2.2b: CSS knobs (--tab-width / --line-height) are server-driven now. A
+    // *tab-width* / *line-height* customise edit applies on the spine, whose
+    // on-change fires the spine's set-css-* -> pushChromeToAll, repainting every
+    // window via the `css-knobs` directive (applyDirective sets the CSS vars +
+    // currentTabWidth). The renderer-local custom-apply! eval still fires these
+    // on-change hooks (model bookkeeping until B2.3), so they are no-ops here to
+    // avoid the originating window painting twice. Die with the interpreter (B7).
+    'set-css-tab-width!': () => NIL,
+    'set-css-line-height!': () => NIL,
     'clear-status!': () => {
       minibuffer.clearStatus();
       return NIL;
@@ -4747,21 +4734,17 @@ const interpreter = createInterpreter({
       reloadStdlib();
       return NIL;
     },
-    // Themes set CSS custom properties on the document root. The Lisp
-    // side holds the palettes and decides which is active; this is the
-    // host hook that reads the current palette and writes it to the DOM.
-    'apply-theme!': () => {
-      applyCurrentTheme();
-      applyCurrentFaceStyles();
-      return NIL;
-    },
-    // Face customisation: regenerate `<style id="face-overrides">`
-    // from the Lisp-side resolved face map. Called whenever any
-    // override changes, plus on startup and theme switch.
-    'apply-face-styles!': () => {
-      applyCurrentFaceStyles();
-      return NIL;
-    },
+    // B2.2b (plans/MODEL-B-DEFAULT.md): theme + face rendering is server-driven.
+    // A customize edit applies on the SPINE, whose :on-change fires the spine's
+    // apply-theme! / apply-face-styles! -> pushChromeToAll, repainting every
+    // window via the theme-apply / faces-apply directives (applyDirective). The
+    // renderer-local custom-apply! eval still fires these on-change hooks (it
+    // keeps the renderer's model current for getCustomModel until B2.3), so they
+    // must be no-ops here or the originating window would double-paint. The
+    // direct applyCurrentTheme/applyCurrentFaceStyles JS path stays for
+    // reloadStdlib. These die with the renderer interpreter in B7.
+    'apply-theme!': () => NIL,
+    'apply-face-styles!': () => NIL,
     // Documentation: open the doc page for NAME in a doc-kind buffer.
     // The page HTML is read from docs/build/ by the host (the
     // renderer is sandboxed). Unknown names print to the REPL.
@@ -5796,39 +5779,12 @@ if (keymapReady) {
 
 if (keymapReady) await loadUserConfig();
 
-// Sync the `--tab-width` CSS variable with the live *tab-width*
-// setting. Runs after stdlib + user config load so a user-customised
-// value lands here. The `on-change` hook (installed via
-// `custom-on-change!` below) keeps the var in sync afterwards.
-if (keymapReady) {
-  try {
-    const value = interpreter.evaluate('*tab-width*');
-    interpreter.call('set-css-tab-width!', value);
-    // Install an on-change hook so subsequent customise edits update
-    // the CSS var. The Lisp side stores the hook in the *custom-registry*;
-    // we wrap a host-side closure as a Lisp lambda via `eval`.
-    interpreter.evaluate(`
-      (set! *custom-registry*
-        (assoc *custom-registry* '*tab-width*
-          (assoc (get *custom-registry* '*tab-width* {})
-                 :on-change (lambda (_n v) (set-css-tab-width! v)))))
-    `);
-  } catch (error) {
-    repl.appendError(`tab-width sync failed: ${error.lispMessage ?? error.message}`);
-  }
-}
-// Sync the editor line-height CSS var from *line-height* on startup; the
-// defcustom's on-change keeps it current after customise edits.
-if (keymapReady) {
-  try {
-    interpreter.call('set-css-line-height!', interpreter.evaluate('*line-height*'));
-  } catch { /* an old config without the setting — the CSS default stands */ }
-}
-// B1.3 (plans/MODEL-B-DEFAULT.md): theme + faces are server-authoritative — the
-// spine pushes theme-apply / faces-apply on connect (and re-pushes on change),
-// applied in applyDirective above. No local face/theme computation at boot.
-// (applyCurrentTheme / applyCurrentFaceStyles stay for reloadStdlib + customize
-// edits until the renderer interpreter is removed in B7.)
+// B2.2b (plans/MODEL-B-DEFAULT.md): the CSS knobs (--tab-width / --line-height)
+// are server-authoritative now, like theme + faces (B1.3). The spine pushes a
+// `css-knobs` directive on connect (and re-pushes on change), applied in
+// applyDirective above — so there is no local boot-time knob sync here, and the
+// renderer's set-css-* are no-ops. The host-injected *tab-width* on-change moved
+// to the spine.
 
 // Kick off the doc manifest fetch — fire-and-forget. The
 // `load-doc-manifest!` primitive returns the cached value once it
@@ -6874,9 +6830,6 @@ if (window.host && window.host.serverMode) {
       // Markdown-preview forward search: follow the cursor line in the preview.
       if (v && typeof v.cursorLine === 'number') previewScrollToCursor(v.cursorLine);
     },
-    // A customize setting changed in ANOTHER window — re-apply it here so global
-    // rendering (theme / faces / line-height) stays consistent across windows.
-    onCustomizeSync: (change) => applyCustomizeSync(change),
     // The echo area: a mid-chord prefix (e.g. "C-x-") or a one-off status. The
     // minibuffer component reuses its row as the echo area when no prompt is up.
     setEcho: (status) => minibuffer.setStatus(status ?? ''),
@@ -7027,6 +6980,22 @@ if (window.host && window.host.serverMode) {
           highlightOverrideStore.replaceAll(entries);
           rerenderAllEditors();
         } catch { /* malformed — keep current highlighting */ }
+      } else if (name === 'css-knobs') {
+        // B2.2b: the spine pushed the editor's CSS knobs ({tabWidth, lineHeight}).
+        // Apply them to the document root's CSS vars — the renderer's set-css-*
+        // primitives are no-ops now; the server drives these like theme/faces.
+        // Clamp defensively (the old set-css-* primitives did the same).
+        try {
+          const { tabWidth, lineHeight } = JSON.parse(String(args?.[0] ?? '{}'));
+          if (Number.isFinite(tabWidth) && tabWidth > 0) {
+            const width = tabWidth | 0;
+            document.documentElement.style.setProperty('--tab-width', String(width));
+            currentTabWidth = width;
+          }
+          if (Number.isFinite(lineHeight) && lineHeight >= 1 && lineHeight <= 3) {
+            document.documentElement.style.setProperty('--line-height', String(lineHeight));
+          }
+        } catch { /* malformed — keep the current knobs */ }
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
@@ -8047,42 +8016,35 @@ function rerenderAllEditors() {
   forEachMinimapElement((el) => el.invalidateColors());
 }
 
-/** Re-apply ALL of this window's customize-driven rendering from its (current)
- *  interpreter: the theme CSS vars, the resolved face styles, and an editor
- *  re-render (a highlight-rule change adds/removes spans). Used by every
- *  customize edit AND the cross-window sync, so a change renders the same in the
- *  window that made it and in every other window — not just for *theme*. Safe to
- *  call any time now that current-face-styles tolerates any *theme*. */
-function reapplyCustomizeRendering() {
-  applyCurrentTheme();
-  applyCurrentFaceStyles();
-  rerenderAllEditors();
-}
+// B2.2b (plans/MODEL-B-DEFAULT.md): the spine is the SOLE applier + render driver
+// + persister for customize. Each edit below sends a CUSTOMIZE_CHANGED intent
+// (propagateCustomize); the spine applies it to its interpreter, persists
+// custom.lisp / faces.json, and pushes the resulting chrome (theme / faces /
+// highlight / css-knobs) to EVERY window via applyDirective. The local
+// interpreter.evaluate is kept ONLY to keep THIS window's interpreter current for
+// the synchronous getCustomModel pull (removed in B2.3) — its on-change hooks
+// (apply-theme! / apply-face-styles! / set-css-*) are no-ops now, so it does not
+// paint. The cross-window CUSTOMIZE_SYNC relay + applyCustomizeSync are gone (the
+// push replaces them). Values ride as Lisp SOURCE strings: a symbol value (e.g. a
+// theme name) would not survive structured-clone over the wire.
 
-/** Apply a setting for the session — a value, quote-wrapped to survive
- *  its type. */
+/** Apply a setting for the session. */
 function applyCustomSetting(name, value) {
   const valueSrc = writeString(value);
   interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
-  reapplyCustomizeRendering();
-  // Propagate the Lisp SOURCE (a string), not the raw value: a custom value can
-  // be a Lisp symbol (e.g. a theme name), which doesn't survive structured-clone
-  // over the wire (it arrives as a plain {name}); the source reconstructs it.
   propagateCustomize({ op: 'apply', name, valueSrc });
 }
 
-/** Apply a setting and persist it. */
+/** Apply a setting and persist it (the spine persists). */
 function saveCustomSetting(name, value) {
   const valueSrc = writeString(value);
   interpreter.evaluate(`(custom-apply-and-save! (quote ${name}) (quote ${valueSrc}))`);
-  reapplyCustomizeRendering();
   propagateCustomize({ op: 'save', name, valueSrc });
 }
 
 /** Reset a setting to its default value. */
 function resetCustomSetting(name) {
   interpreter.evaluate(`(custom-reset! (quote ${name}))`);
-  reapplyCustomizeRendering();
   propagateCustomize({ op: 'reset', name });
 }
 
@@ -8101,7 +8063,7 @@ function setFaceFromView(faceName, attr, value) {
   propagateCustomize({ op: 'set-face', face: faceName, attr, valueSrc });
 }
 
-/** Reset a face — drop the global override and rerender. */
+/** Reset a face — drop the global override. */
 function resetFaceFromView(faceName) {
   interpreter.evaluate(
     `(reset-face-by-string ${writeString(faceName)})`
@@ -8109,40 +8071,13 @@ function resetFaceFromView(faceName) {
   propagateCustomize({ op: 'reset-face', face: faceName });
 }
 
-/** Tell the OTHER windows a customize setting changed (the server relays it),
- *  so global rendering — theme / faces / line-height — stays consistent across
- *  windows. A no-op flag-off (single window) and when no server is connected. */
+/** Send a customize change to the spine (CUSTOMIZE_CHANGED). The spine applies +
+ *  persists + pushes chrome to every window (see the block comment above). A
+ *  no-op when no server is connected. */
 function propagateCustomize(change) {
   if (serverViewClient && typeof serverViewClient.customizeChanged === 'function') {
     serverViewClient.customizeChanged(change);
   }
-}
-
-/** Apply a customize change that originated in ANOTHER window (the relay):
- *  update THIS window's interpreter to match, then re-render the same way the
- *  local edit does (reapplyCustomizeRendering) so the windows stay identical.
- *  Uses valueSrc — the originator's Lisp SOURCE — verbatim, so a symbol value
- *  reconstructs as a symbol (not the wire-mangled {name}). Never re-persists
- *  (the originator already saved) and never re-broadcasts. */
-function applyCustomizeSync(change) {
-  if (!change || typeof change !== 'object' || !keymapReady) return;
-  try {
-    const { op, name, valueSrc, face, attr } = change;
-    if (op === 'apply' || op === 'save') {
-      interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
-    } else if (op === 'reset') {
-      interpreter.evaluate(`(custom-reset! (quote ${name}))`);
-    } else if (op === 'set-face') {
-      interpreter.evaluate(
-        `(set-face-attribute-by-strings ${writeString(face)} ${writeString(attr)} ${valueSrc})`
-      );
-    } else if (op === 'reset-face') {
-      interpreter.evaluate(`(reset-face-by-string ${writeString(face)})`);
-    }
-  } catch (error) {
-    repl.appendError(`customize-sync: ${error.lispMessage ?? error.message}`);
-  }
-  reapplyCustomizeRendering();
 }
 
 /** Open a customisation buffer for a scope — a subgroup, a variable,

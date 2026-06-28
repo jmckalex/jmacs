@@ -196,9 +196,6 @@ export function createServerViewClient({
   // (split structure + per-leaf buffer/view-state + the focused leaf; no
   // pixels). The host renders it — splits become visible. A no-op until wired.
   const setPaneTreeDom = chrome.setPaneTree ?? (() => {});
-  // A customize setting changed in ANOTHER window — re-apply it here (host wires
-  // this to update this window's interpreter + theme / face styles).
-  const onCustomizeSyncDom = chrome.onCustomizeSync ?? (() => {});
   // CLIENT_DIRECTIVE: the server told THIS window to perform a renderer-side
   // action (close-window, toggle a fold, re-theme, …). The host maps the
   // directive name → an action (window lifecycle is the host's job, like quit /
@@ -594,7 +591,6 @@ export function createServerViewClient({
         }
         break;
       case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs, msg.liveBrowsers); break;
-      case MSG.CUSTOMIZE_SYNC: onCustomizeSyncDom(msg.change); break;
       case MSG.CLIENT_DIRECTIVE:
         if (msg.directive && typeof msg.directive.name === 'string') {
           applyDirectiveDom(msg.directive.name, msg.directive.args ?? []);
@@ -768,9 +764,10 @@ export function createServerViewClient({
     });
   }
 
-  /** Propagate a customize SETTING change outward: the server relays it to the
-   *  other windows (MSG.CUSTOMIZE_SYNC) so theme / faces / line-height stay
-   *  consistent. CHANGE = `{ op, name?, value?, face?, attr? }`. */
+  /** Send a customize SETTING change to the spine (CUSTOMIZE_CHANGED). The spine
+   *  applies it, persists custom.lisp / faces.json, and pushes the resulting
+   *  chrome (theme / faces / highlight / css-knobs) to EVERY window (B2.2).
+   *  CHANGE = `{ op, name?, valueSrc?, face?, attr? }`. */
   function customizeChanged(change) {
     if (!change || typeof change !== 'object') return;
     port.postMessage({

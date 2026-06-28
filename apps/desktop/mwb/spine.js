@@ -1551,11 +1551,14 @@ export function createSpine(options, effects = {}) {
       // -> apply-theme!; a face/override edit -> apply-face-styles!; a
       // highlight-rule change -> set-highlight-overrides!). Each re-pushes the
       // current chrome to every window; a no-op before any window connects (the
-      // boot faces install). set-css-* stay no-ops (CSS knobs deferred).
+      // boot faces install).
       'apply-theme!': () => (pushChromeToAll(), NIL),
       'apply-face-styles!': () => (pushChromeToAll(), NIL),
-      'set-css-tab-width!': () => NIL,
-      'set-css-line-height!': () => NIL,
+      // B2.2b: CSS knobs (*tab-width* / *line-height*) are server-driven too —
+      // their on-change fires these, which re-push chrome (chromeDirectives now
+      // carries a `css-knobs` directive); the renderer's set-css-* are no-ops.
+      'set-css-tab-width!': () => (pushChromeToAll(), NIL),
+      'set-css-line-height!': () => (pushChromeToAll(), NIL),
       'set-highlight-overrides!': () => (pushChromeToAll(), NIL),
       // B1.2: read the user's colour overrides from <userData>/faces.json (the
       // same file the renderer writes) and return them in the Lisp shape
@@ -1937,6 +1940,23 @@ export function createSpine(options, effects = {}) {
     console.error('[spine] face saver wiring failed:', error.message);
   }
 
+  // B2.2b: *tab-width* has no stdlib :on-change (it would couple indent.lisp to a
+  // host primitive, breaking the host-stubbed unit tests). Inject one here — like
+  // app.js did renderer-side — so a tab-width customise edit fires set-css-tab-
+  // width! -> pushChromeToAll, fanning the new --tab-width to every window.
+  // (*line-height* already has its on-change in themes.lisp.) Suppressed during
+  // boot (chromePushEnabled is still false); only runtime edits push.
+  try {
+    interpreter.evaluate(`
+      (set! *custom-registry*
+        (assoc *custom-registry* '*tab-width*
+          (assoc (get *custom-registry* '*tab-width* {})
+                 :on-change (lambda (_n v) (set-css-tab-width! v)))))
+    `);
+  } catch (error) {
+    console.error('[spine] tab-width on-change wiring failed:', error.message);
+  }
+
   // B1.3 (plans/MODEL-B-DEFAULT.md): the server is authoritative for chrome.
   // Compute the theme / face / highlight payloads as FLAT, structured-clone-safe
   // values (JSON strings + the prebuilt CSS string — no raw Lisp crosses the
@@ -1969,6 +1989,14 @@ export function createSpine(options, effects = {}) {
           face: r.get(keyword('face')) == null ? '' : String(r.get(keyword('face'))),
         }));
       out.push({ name: 'highlight-rules', args: [JSON.stringify(records)] });
+
+      // B2.2b: CSS knobs — the editor's --tab-width / --line-height. The spine
+      // owns *tab-width* / *line-height* (defcustoms in indent.lisp / themes.lisp,
+      // both in SPINE_STDLIB); push their current values so the renderer sets the
+      // CSS vars from the directive instead of computing them at boot.
+      const tabWidth = Number(interpreter.evaluate('*tab-width*'));
+      const lineHeight = Number(interpreter.evaluate('*line-height*'));
+      out.push({ name: 'css-knobs', args: [JSON.stringify({ tabWidth, lineHeight })] });
     } catch (error) {
       console.error('[spine] chromeDirectives failed:', error.message);
     }
@@ -1989,31 +2017,25 @@ export function createSpine(options, effects = {}) {
   // fans out to every window.
   chromePushEnabled = true;
 
-  // B2.1 (plans/MODEL-B-DEFAULT.md): apply a customize change from a window to
-  // the SERVER's interpreter, so the spine's state (and thus a freshly-connected
-  // window's chrome) reflects it — fixes "change theme, open a new window, it
-  // shows the boot theme". Mirrors app.js applyCustomizeSync's op->Lisp mapping;
-  // the change fields are plain strings off the wire (name / valueSrc / face /
-  // attr), never raw Lisp. The chrome PUSH is suppressed here: already-open
-  // windows get this change via the renderer CUSTOMIZE_SYNC relay (server.js), so
-  // pushing too would double-paint them; new windows pick up the updated state on
-  // connect. (B2.2b makes the spine the sole DRIVER — drops the relay + the
-  // suppression.)
-  //
-  // B2.2a: PERSISTENCE is now server-side. 'save' runs custom-apply-and-save!
-  // (-> write-custom-file!) and the face ops fire the wired saver (-> write-faces!),
-  // so custom.lisp / faces.json are written here; the renderer's writers are no-ops.
+  // The spine is the SOLE applier + driver + persister for customize (B2.1/2.2).
+  // A window's customize edit becomes a CUSTOMIZE_CHANGED intent; the server
+  // hands it here. We apply it to the spine's interpreter (op -> Lisp; the change
+  // fields are plain strings off the wire — name / valueSrc / face / attr, never
+  // raw Lisp), which:
+  //   - B2.2a: PERSISTS — 'save' runs custom-apply-and-save! (-> write-custom-file!);
+  //     face ops fire the wired saver (-> write-faces!). custom.lisp / faces.json
+  //     are written here; the renderer's writers are no-ops.
+  //   - B2.2b: DRIVES rendering — the edit's :on-change fires apply-theme! /
+  //     apply-face-styles! / set-css-* -> pushChromeToAll, repainting EVERY window
+  //     from the server (the chrome push is NO LONGER suppressed; the renderer's
+  //     apply-* / set-css-* are no-ops and the CUSTOMIZE_SYNC relay is gone).
   function applyCustomizeChange(change) {
     if (!change || typeof change !== 'object') return;
     const { op, name, valueSrc, face, attr } = change;
-    const wasEnabled = chromePushEnabled;
-    chromePushEnabled = false;
     try {
       if (op === 'apply') {
         interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
       } else if (op === 'save') {
-        // B2.2a: 'save' runs the SAVE path so the spine persists custom.lisp
-        // (custom-apply-and-save! -> save-customizations -> write-custom-file!).
         interpreter.evaluate(`(custom-apply-and-save! (quote ${name}) (quote ${valueSrc}))`);
       } else if (op === 'reset') {
         interpreter.evaluate(`(custom-reset! (quote ${name}))`);
@@ -2026,8 +2048,6 @@ export function createSpine(options, effects = {}) {
       }
     } catch (error) {
       console.error('[spine] applyCustomizeChange failed:', error.message);
-    } finally {
-      chromePushEnabled = wasEnabled;
     }
   }
 
