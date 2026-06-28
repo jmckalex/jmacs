@@ -3365,12 +3365,14 @@ export function createSpine(options, effects = {}) {
     return out;
   }
 
-  /** Kill the ACTIVE client's focused buffer, switching every pane (in any
-   *  window) showing it to another buffer. Refuses to kill the last buffer
-   *  (the registry guard). Called by the kill-current-buffer! primitive. */
-  function killActiveBuffer() {
+  /** Kill the buffer/source with id KILLEDID, switching every pane (in any
+   *  window) showing it to another buffer. Refuses to kill the last text
+   *  buffer (the registry guard). The caller should re-point the focused
+   *  tabline first (close-tab does) — this finishes the GLOBAL removal. Used
+   *  by kill-current-buffer! (kill-view) and close-tab (the clicked tab). */
+  function killBufferById(killedId) {
     const index = activeClientIndex;
-    const killedId = currentBufferIdOf(index);
+    if (!killedId) return;
 
     // A DATA-SOURCE (shell/media) — not a registry buffer. Remove the SOURCE and
     // drop it from every open-set; a shell's pty is then reaped client-side (it
@@ -3400,6 +3402,7 @@ export function createSpine(options, effects = {}) {
       // `liveShells` still listed the killed shell. Re-push now (post-removal) so
       // the client reaps its pty (same stale-by-one issue as close-tab).
       onPaneTree(index);
+      onBufferList(); // the source left the pool — refresh the buffer list
       statusText = `Killed ${ds ? ds.name : 'buffer'}`;
       onStatus(statusText);
       return;
@@ -3427,8 +3430,15 @@ export function createSpine(options, effects = {}) {
         }
       }
     }
+    onBufferList(); // the buffer left the pool — refresh the buffer list
     statusText = `Killed buffer; switched to ${survivor.buffer.name}`;
     onStatus(statusText);
+  }
+
+  /** Kill the ACTIVE client's focused buffer — the kill-current-buffer! /
+   *  kill-view (C-x k) path. */
+  function killActiveBuffer() {
+    killBufferById(currentBufferIdOf(activeClientIndex));
   }
 
   /** The current (active) buffer's major-mode display name (e.g. "Markdown"),
@@ -3704,28 +3714,37 @@ export function createSpine(options, effects = {}) {
         }
         return false;
       case 'close-tab': {
-        // Step 3c: close a tab in the focused tabline leaf (un-curate that
-        // buffer from THIS tabline; the buffer lives on in the pool). If the
-        // active tab closed, the model re-points to a neighbour — the server's
-        // MSG.PANE handler sees the focused buffer change and re-syncs.
+        // Close a tab in the focused tabline. First un-curate it from THIS
+        // tabline — the model re-points to a neighbour (the proven path). Then,
+        // by DEFAULT, KILL the underlying view: drop the buffer from the pool /
+        // every window, or reap a live-process source — what most editors do.
+        // The *close-tab-kills-view* defcustom (panes) flips back to the old
+        // un-curate-only behaviour (the buffer survives in C-x C-b).
         const closedId = String(intent.bufferId ?? '');
-        const closedKind = dataSources.get(closedId)?.kind;
-        const wasProcess = closedKind === 'shell' || closedKind === 'gnuplot';
         const ok = model.closeFocusedTab(closedId);
-        // A LIVE-PROCESS tab close (shell/gnuplot) REAPS the process: drop its
-        // source + open-set so the liveProcessSessionsOf fan tells the client to
-        // kill the child. (Text/media tabs un-curate but live on in the pool — no
-        // process to reap.)
-        if (ok && wasProcess) {
-          dataSources.remove(closedId);
-          for (const s of clientBuffers.values()) s.delete(closedId);
-          // closeFocusedTab already pushed a PANE_TREE — but it ran BEFORE this
-          // removal, so its live-set still listed the closing process. Re-push so
-          // the client sees it gone and reaps the child (else the client's
-          // live-set lags by one close and the last process never gets reaped).
-          onPaneTree(index);
+        if (!ok) return false; // last tab — never empty a tabline
+        let killsView = true;
+        try {
+          killsView = interpreter.evaluate('*close-tab-kills-view*') !== false;
+        } catch { /* var unbound (custom not loaded) → keep the kill default */ }
+        if (killsView) {
+          // The focused tabline was already re-pointed above; killBufferById
+          // finishes the GLOBAL removal (registry / open-sets / other panes) and
+          // reaps a shell/gnuplot source. Refuses to kill the last text buffer.
+          killBufferById(closedId);
+        } else {
+          // Opt-out keeps text/media in the pool, but a detached live process is
+          // still reaped (no point keeping an orphaned pty). Re-push the
+          // PANE_TREE AFTER removal so the client's live-set sees it gone (else
+          // it lags by one close and the last process is never reaped).
+          const closedKind = dataSources.get(closedId)?.kind;
+          if (closedKind === 'shell' || closedKind === 'gnuplot') {
+            dataSources.remove(closedId);
+            for (const s of clientBuffers.values()) s.delete(closedId);
+            onPaneTree(index);
+          }
         }
-        return ok;
+        return true;
       }
       case 'reorder-tab':
         // Step 3c: drag-reorder a tab in the focused tabline leaf. The active

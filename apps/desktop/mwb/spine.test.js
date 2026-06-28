@@ -607,6 +607,38 @@ test('the server starts with one buffer; find-file adds a second', () => {
   assert.ok(spine.bufferIdByName('scratch.txt'));
 });
 
+test('close-tab KILLS the view by default; *close-tab-kills-view* #f un-curates', () => {
+  const files = {
+    '/a.md': { text: 'A\n', name: 'a.md', path: '/a.md' },
+    '/b.md': { text: 'B\n', name: 'b.md', path: '/b.md' },
+  };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const aId = spine.visitFile('/a.md');
+  const bId = spine.visitFile('/b.md');
+  // Window 0's focused leaf is a tabline of [a, b], active = b.
+  spine.seedClientTabline(0, [aId, bId], bId);
+  assert.equal(spine.bufferCount, 3, 'scratch + a + b');
+
+  // DEFAULT (#t): closing a's tab KILLS it — gone from the registry/buffer list.
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: aId }));
+  assert.ok(
+    !spine.bufferListRecords(0).some((r) => r.id === aId),
+    'killed buffer is off the buffer list'
+  );
+  assert.equal(spine.bufferCount, 2, 'scratch + b remain');
+
+  // OPT-OUT (#f): closing a tab only un-curates — the buffer survives the pool.
+  spine.interpreter.evaluate('(set! *close-tab-kills-view* #f)');
+  const scratchId = spine.bufferListRecords(0).find((r) => r.name === 'scratch.txt').id;
+  spine.seedClientTabline(0, [scratchId, bId], bId);
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: bId }));
+  assert.ok(
+    spine.bufferListRecords(0).some((r) => r.id === bId),
+    'un-curated buffer survives in the buffer list'
+  );
+  assert.equal(spine.bufferCount, 2, 'nothing killed under the opt-out');
+});
+
 test('find-file of a MEDIA file creates a data-source leaf (no garbage text buffer)', () => {
   // The openFile effect returns a media descriptor for media suffixes (the real
   // server's readFileForVisit does this via media-kinds); a text file returns text.
