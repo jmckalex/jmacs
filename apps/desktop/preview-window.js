@@ -18,7 +18,21 @@ const SOURCE = 'jmarkdown-sync';
 const VERSION = 1;
 
 const frame = document.getElementById('preview-frame');
-const port = new URLSearchParams(location.search).get('port');
+const params = new URLSearchParams(location.search);
+
+// Theme the window to match the editor: the file name in the title bar, and the
+// editor's resolved chrome colours (passed at pop-out time).
+const name = params.get('name');
+if (name) {
+  document.title = name;
+  document.getElementById('titlebar-name').textContent = name;
+}
+const tbBg = params.get('bg');
+const tbFg = params.get('fg');
+if (tbBg) document.documentElement.style.setProperty('--tb-bg', tbBg);
+if (tbFg) document.documentElement.style.setProperty('--tb-fg', tbFg);
+
+const port = params.get('port');
 if (port) frame.src = `http://localhost:${port}/`;
 
 /** Only the embedded localhost preview is a trusted message source. */

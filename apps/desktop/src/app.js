@@ -11426,9 +11426,17 @@ function hideMarkdownPreview() {
  *  stopping the watch. A no-op until the watcher's port is known. */
 async function popOutMarkdownPreview() {
   if (previewPort == null) return;
+  // Pass the file name + the editor's resolved chrome colours so the popped-out
+  // window's title bar matches the active theme.
+  const cs = getComputedStyle(document.body);
+  const opts = {
+    name: previewBasename(previewWatchedPath || ''),
+    bg: cs.getPropertyValue('--bg-chrome').trim(),
+    fg: cs.getPropertyValue('--fg-dim').trim(),
+  };
   let result;
   try {
-    result = await window.host.popOutPreview();
+    result = await window.host.popOutPreview(opts);
   } catch (error) {
     result = { error: String(error && error.message ? error.message : error) };
   }

@@ -350,14 +350,21 @@ app.whenReady().then(() => {
   // transfers from the editor window to the preview window, so it is reaped when
   // the preview window closes (and on app quit), and a fresh C-c v in the editor
   // starts an independent watcher.
-  ipcMain.handle('jmarkdown:watch:popout', (event) => {
+  ipcMain.handle('jmarkdown:watch:popout', (event, opts) => {
     const editorWc = event.sender;
     const editorWcId = editorWc.id;
     if (watcherPort(editorWcId) == null) return { ok: false, error: 'no preview to pop out' };
+    const name = typeof opts?.name === 'string' ? opts.name : '';
+    const bg = typeof opts?.bg === 'string' ? opts.bg : '';
+    const fg = typeof opts?.fg === 'string' ? opts.fg : '';
     const win = new BrowserWindow({
       width: 820,
       height: 1000,
-      title: 'Preview',
+      title: name || 'Preview',
+      // Match the editor's window chrome: an inset title bar (the page draws a
+      // themed strip) over the theme's background colour, not a white native bar.
+      titleBarStyle: 'hiddenInset',
+      backgroundColor: /^#[0-9a-fA-F]{3,8}$/.test(bg) ? bg : '#1b1b23',
       webPreferences: {
         preload: PREVIEW_PRELOAD,
         contextIsolation: true,
@@ -373,7 +380,9 @@ app.whenReady().then(() => {
     const popoutWcId = win.webContents.id;
     previewPopoutByEditor.set(editorWcId, win.webContents);
     previewEditorByPopout.set(popoutWcId, editorWc);
-    win.loadURL(`${PREVIEW_WINDOW_URL}?port=${port}`);
+    const query = `port=${port}&name=${encodeURIComponent(name)}`
+      + `&bg=${encodeURIComponent(bg)}&fg=${encodeURIComponent(fg)}`;
+    win.loadURL(`${PREVIEW_WINDOW_URL}?${query}`);
     win.on('closed', () => {
       stopJmarkdownWatch(popoutWcId);
       previewPopoutByEditor.delete(editorWcId);

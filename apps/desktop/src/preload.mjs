@@ -253,9 +253,11 @@ contextBridge.exposeInMainWorld('host', {
    * Pop this window's JMarkdown preview out into its own Godot window. The watch
    * process's ownership transfers to the new window. Resolves `{ ok }` or
    * `{ error }`.
+   * @param {{name?: string, bg?: string, fg?: string}} [opts] - File name + the
+   *   editor's resolved chrome colours, to theme the preview window's title bar.
    * @returns {Promise<{ok: boolean, error?: string}>}
    */
-  popOutPreview: () => ipcRenderer.invoke('jmarkdown:watch:popout'),
+  popOutPreview: (opts) => ipcRenderer.invoke('jmarkdown:watch:popout', opts),
 
   /** Forward search to a popped-out preview window: the editor's cursor line. */
   previewForward: (line) =>
