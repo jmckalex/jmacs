@@ -11233,13 +11233,47 @@ function hostFileUrl(filePath) {
 // styles.css needs no change. The iframe's `src` points at the watch server.
 const markdownPreviewPane = document.createElement('div');
 markdownPreviewPane.className = 'markdown-preview';
+
+// Header: a "PREVIEW" label + the file name on the left, action buttons (pop
+// out, close) on the right.
 const markdownPreviewHeader = document.createElement('div');
 markdownPreviewHeader.className = 'markdown-preview-header';
-markdownPreviewHeader.textContent = 'Preview';
+const markdownPreviewTitle = document.createElement('span');
+markdownPreviewTitle.className = 'markdown-preview-title';
+markdownPreviewTitle.textContent = 'Preview';
+const markdownPreviewFilename = document.createElement('span');
+markdownPreviewFilename.className = 'markdown-preview-filename';
+markdownPreviewTitle.append(' ', markdownPreviewFilename);
+
+const markdownPreviewActions = document.createElement('span');
+markdownPreviewActions.className = 'markdown-preview-actions';
+const markdownPreviewPopoutBtn = document.createElement('button');
+markdownPreviewPopoutBtn.className = 'markdown-preview-btn';
+markdownPreviewPopoutBtn.title = 'Open the preview in its own window';
+markdownPreviewPopoutBtn.setAttribute('aria-label', 'Pop out preview');
+markdownPreviewPopoutBtn.innerHTML = '<i class="fa-solid fa-arrow-up-right-from-square"></i>';
+const markdownPreviewCloseBtn = document.createElement('button');
+markdownPreviewCloseBtn.className = 'markdown-preview-btn markdown-preview-close';
+markdownPreviewCloseBtn.title = 'Close the preview (stops the watch process)';
+markdownPreviewCloseBtn.setAttribute('aria-label', 'Close preview');
+markdownPreviewCloseBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+markdownPreviewActions.append(markdownPreviewPopoutBtn, markdownPreviewCloseBtn);
+markdownPreviewHeader.append(markdownPreviewTitle, markdownPreviewActions);
+
 const markdownPreviewFrame = document.createElement('iframe');
 markdownPreviewFrame.className = 'markdown-preview-frame';
 markdownPreviewPane.append(markdownPreviewHeader, markdownPreviewFrame);
 document.getElementById('markdown-preview-host').append(markdownPreviewPane);
+
+markdownPreviewPopoutBtn.addEventListener('click', () => {
+  popOutMarkdownPreview();
+  editorView.focus();
+});
+markdownPreviewCloseBtn.addEventListener('click', () => {
+  hideMarkdownPreview();
+  editorView.focus();
+});
+
 // The pane starts hidden; markdown-preview reveals it.
 document.body.classList.add('markdown-preview-hidden');
 
@@ -11247,6 +11281,8 @@ document.body.classList.add('markdown-preview-hidden');
  *  when the preview is off. Lets a buffer switch skip a respawn when the new
  *  buffer is backed by the same file. */
 let previewWatchedPath = null;
+/** The watch server's port while the preview is open (for the pop-out URL). */
+let previewPort = null;
 
 // --- preview ⇄ source sync (forward / inverse search) ------------------
 // The preview iframe is cross-origin (localhost vs app://), so source↔preview
@@ -11322,15 +11358,31 @@ function markdownPreviewVisible() {
   return !document.body.classList.contains('markdown-preview-hidden');
 }
 
+/** The trailing path segment (file name) of an absolute path. */
+function previewBasename(path) {
+  return String(path).split('/').pop() || String(path);
+}
+
 /** Hide the preview pane and stop this window's watch subprocess. */
 function hideMarkdownPreview() {
   document.body.classList.add('markdown-preview-hidden');
   previewWatchedPath = null;
+  previewPort = null;
   lastPostedPreviewLine = null; // a re-open re-scrolls to the cursor
   markdownPreviewFrame.src = 'about:blank';
-  markdownPreviewHeader.textContent = 'Preview';
+  markdownPreviewFilename.textContent = '';
   if (window.host && typeof window.host.stopJmarkdownWatch === 'function') {
     window.host.stopJmarkdownWatch();
+  }
+}
+
+/** Pop the preview out into its own window: open the live watch URL in the
+ *  system browser. The in-app pane stays open — both share the one watch
+ *  server. A no-op until the watcher's port is known. */
+function popOutMarkdownPreview() {
+  if (previewPort == null) return;
+  if (window.host && typeof window.host.openExternalUrl === 'function') {
+    window.host.openExternalUrl(`http://localhost:${previewPort}/`);
   }
 }
 
@@ -11340,7 +11392,7 @@ function hideMarkdownPreview() {
  *  re-hides the pane and reports the reason. */
 async function showMarkdownPreview(path) {
   document.body.classList.remove('markdown-preview-hidden');
-  markdownPreviewHeader.textContent = 'Preview — starting…';
+  markdownPreviewFilename.textContent = `${previewBasename(path)} · starting…`;
   previewWatchedPath = path;
   let result;
   try {
@@ -11355,7 +11407,8 @@ async function showMarkdownPreview(path) {
     repl.appendNote(`markdown-preview: ${result?.error ?? 'could not start preview'}`);
     return;
   }
-  markdownPreviewHeader.textContent = 'Preview';
+  previewPort = result.port;
+  markdownPreviewFilename.textContent = previewBasename(path);
   markdownPreviewFrame.src = `http://localhost:${result.port}/`;
 }
 

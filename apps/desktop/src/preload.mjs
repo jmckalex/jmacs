@@ -250,6 +250,14 @@ contextBridge.exposeInMainWorld('host', {
   stopJmarkdownWatch: () => ipcRenderer.invoke('jmarkdown:watch:stop'),
 
   /**
+   * Open `url` in the user's default browser (the Markdown-preview pop-out).
+   * Only http(s) URLs are honoured.
+   * @param {string} url
+   * @returns {Promise<{ok: boolean}>}
+   */
+  openExternalUrl: (url) => ipcRenderer.invoke('app:open-external', { url }),
+
+  /**
    * Read a file's companion metadata (sticky notes), or null.
    * @param {string} path - The file's own path.
    * @returns {Promise<object | null>}

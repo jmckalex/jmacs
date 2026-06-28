@@ -15,6 +15,9 @@ import {
   utilityProcess,
   MessageChannelMain,
   screen,
+  // Electron's OS-integration module (openExternal). Aliased to avoid confusion
+  // with the editor's `shell` terminal feature (src/shell.js / M-x shell).
+  shell as electronShell,
 } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -333,6 +336,15 @@ app.whenReady().then(() => {
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
   );
+  // Open a URL in the user's default browser — the Markdown-preview pop-out
+  // (the live `jmarkdown watch` URL). Restricted to http(s) so it can't be
+  // coerced into file:/custom-scheme opens.
+  ipcMain.handle('app:open-external', (_event, { url }) => {
+    const u = String(url ?? '');
+    if (!/^https?:\/\//i.test(u)) return { ok: false };
+    electronShell.openExternal(u);
+    return { ok: true };
+  });
   // The renderer sends the current buffer's mode menu; rebuild the
   // application menu around it as the buffer's mode changes.
   ipcMain.on('menu:set', (event, modeMenu) => {
