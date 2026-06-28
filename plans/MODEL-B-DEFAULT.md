@@ -11,11 +11,21 @@
 >   `b2485d5`, B1.2 `a771148`, B1.3a `80ddf0c`, B1.3b `7ac1cf9`, B1.3c `58cd998`,
 >   B1.4 (custom.lisp → saved theme honored). The B0 "spine loads user config" slice is
 >   partly done (faces.json in B1.2, custom.lisp in B1.4); **init.lisp still deferred**.
-> - **Part B2** (customize → server-authoritative) STARTED: **B2.1** `5dc2b65` — the
->   spine applies customize edits to its own state (server `CUSTOMIZE_CHANGED` →
->   `spine.applyCustomizeChange`), fixing the new-window staleness (live-verified).
->   **NEXT: B2.2/B2.3** — the full move (renderer sends edits; spine is the sole
->   applier + persister; customize model pushed to the panel).
+> - **Part B2** (customize → server-authoritative) **DONE** (suite green 3197; the
+>   renderer makes ZERO `interpreter.*` calls for customize). B2.1 `5dc2b65` (spine
+>   mirrors the edit). **B2.2a** `272dd65` — persistence server-side: real
+>   `write-custom-file!`/`write-faces!` (atomic) + the face saver; renderer writers
+>   no-op (live-verified). **B2.2b** `dc1a36c` — spine is the sole render DRIVER:
+>   `applyCustomizeChange` pushes chrome unsuppressed; CSS knobs folded into the
+>   push (new `css-knobs` directive + injected `*tab-width*` on-change); renderer
+>   `apply-*`/`set-css-*` no-op; CUSTOMIZE_SYNC relay deleted (live-verified).
+>   **B2.3a** `49a5178` — the spine computes the MODEL (clone-safe; symbols→strings,
+>   `:choice` re-symbolised by `-coerce-for-type` on apply) and carries it in the
+>   leaf `state.model`, refreshed on each edit (setState fan-out). **B2.3b**
+>   `3840e38` — renderer renders push-only (`buffer.model`); deleted
+>   `getCustomModel`/`fieldToSetting`/`rowToFace` + the local apply evals.
+>   **B2.3 NEEDS LIVE-VERIFY** (the push path is load-bearing now — fallback removed).
+>   **NEXT: B3** (docs/help → server) per §PART B.
 > Scope chosen by the architect: **Deep** — eliminate the renderer's Lisp interpreter
 > entirely so there is a single Lisp world (the spine) and the renderer becomes a pure-JS
 > thin client.
