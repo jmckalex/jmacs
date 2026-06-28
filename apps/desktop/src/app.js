@@ -125,7 +125,7 @@ import {
   jsonToLispUserFaces,
   jsonToLispHighlightRules,
 } from './face-overrides.js';
-import { applyFaceStyles, writeFaceStyleElement, BASE_FACE_NAME } from './face-styles.js';
+import { applyFaceStyles, writeFaceStyleElement } from './face-styles.js';
 import { resolveElementModuleUrl, normalizeFit } from './element-spec.js';
 import {
   isMathPreviewActive,
@@ -3927,13 +3927,13 @@ const interpreter = createInterpreter({
     // directory-columns preview line read the CSS var via
     // `tab-size: var(--tab-width)`; the cached number is what
     // `getTabWidth` returns to createEditorView so the cursor /
-    // B2.2b: CSS knobs (--tab-width / --line-height) are server-driven now. A
+    // B2.2b: CSS knobs (--tab-width / --line-height) are server-driven. A
     // *tab-width* / *line-height* customise edit applies on the spine, whose
     // on-change fires the spine's set-css-* -> pushChromeToAll, repainting every
     // window via the `css-knobs` directive (applyDirective sets the CSS vars +
-    // currentTabWidth). The renderer-local custom-apply! eval still fires these
-    // on-change hooks (model bookkeeping until B2.3), so they are no-ops here to
-    // avoid the originating window painting twice. Die with the interpreter (B7).
+    // currentTabWidth). These renderer primitives are no-op stubs — kept only
+    // because reloadStdlib's stdlib still references them; they die with the
+    // renderer interpreter in B7.
     'set-css-tab-width!': () => NIL,
     'set-css-line-height!': () => NIL,
     'clear-status!': () => {
@@ -4737,12 +4737,11 @@ const interpreter = createInterpreter({
     // B2.2b (plans/MODEL-B-DEFAULT.md): theme + face rendering is server-driven.
     // A customize edit applies on the SPINE, whose :on-change fires the spine's
     // apply-theme! / apply-face-styles! -> pushChromeToAll, repainting every
-    // window via the theme-apply / faces-apply directives (applyDirective). The
-    // renderer-local custom-apply! eval still fires these on-change hooks (it
-    // keeps the renderer's model current for getCustomModel until B2.3), so they
-    // must be no-ops here or the originating window would double-paint. The
-    // direct applyCurrentTheme/applyCurrentFaceStyles JS path stays for
-    // reloadStdlib. These die with the renderer interpreter in B7.
+    // window via the theme-apply / faces-apply directives (applyDirective). These
+    // renderer primitives are no-op stubs — kept only because reloadStdlib's
+    // stdlib still references them. The direct applyCurrentTheme /
+    // applyCurrentFaceStyles JS path stays for reloadStdlib. They die with the
+    // renderer interpreter in B7.
     'apply-theme!': () => NIL,
     'apply-face-styles!': () => NIL,
     // Documentation: open the doc page for NAME in a doc-kind buffer.
@@ -7841,108 +7840,9 @@ ensureEditorViewForLeaf(initialLeaf);
 let editorView = /** @type {*} */ (editorViewByPaneId.get(initialLeaf.id));
 
 // --- the customisation view's data bridge ------------------------------
-// The view is decoupled from the Lisp; these turn registry data into
-// plain objects for it, and route its callbacks back into the registry.
-
-/** Turn a `custom-field` Lisp list into a plain setting object. */
-function fieldToSetting(field) {
-  const f = listToArray(field);
-  return {
-    name: f[0],
-    type: String(f[1]).replace(/^:/, ''),
-    value: f[2] === NIL ? null : f[2],
-    default: f[3] === NIL ? null : f[3],
-    doc: f[4],
-    state: f[5],
-    options: f[6] === NIL ? [] : listToArray(f[6]),
-  };
-}
-
-/** Turn a `face-row` Lisp list into a plain face object. */
-function rowToFace(row) {
-  const r = listToArray(row);
-  const name = String(r[0]);
-  return {
-    name,
-    doc: String(r[1] ?? ''),
-    foreground: typeof r[2] === 'string' ? r[2] : '',
-    background: typeof r[3] === 'string' ? r[3] : '',
-    weight: String(r[4] ?? 'normal'),
-    slant: String(r[5] ?? 'normal'),
-    underline: r[6] === true,
-    strikeThrough: r[7] === true,
-    // Typography: size is a number (or '' when unset), family a string.
-    // The base face owns these; on other faces they are blank (inherit).
-    size: typeof r[8] === 'number' ? r[8] : '',
-    family: typeof r[9] === 'string' ? r[9] : '',
-    isBase: name === BASE_FACE_NAME,
-    state: String(r[10] ?? 'standard'),
-  };
-}
-
-/** The model the customisation view renders for a buffer's scope. */
-function getCustomModel(scope) {
-  if (!keymapReady) return null;
-  try {
-    if (scope.variable) {
-      const field = interpreter.evaluate(
-        `(custom-field (quote ${scope.variable}))`
-      );
-      return {
-        title: scope.variable,
-        doc: '',
-        parent: null,
-        groups: [],
-        settings: [fieldToSetting(field)],
-        faces: [],
-      };
-    }
-    if (scope.face) {
-      const model = listToArray(
-        interpreter.evaluate(
-          `(face-single-model ${writeString(scope.face)})`
-        )
-      );
-      return {
-        title: scope.face,
-        doc: model[1],
-        parent: model[2] === NIL ? null : String(model[2]),
-        groups: [],
-        settings: [],
-        faces: listToArray(model[4]).map(rowToFace),
-        scrollToFace: scope.face,
-      };
-    }
-    if (scope.group === 'faces') {
-      const model = listToArray(interpreter.call('faces-group-model'));
-      return {
-        title: model[0],
-        doc: model[1],
-        parent: model[2] === NIL ? null : String(model[2]),
-        groups: [],
-        settings: [],
-        faces: listToArray(model[4]).map(rowToFace),
-      };
-    }
-    const model = listToArray(
-      interpreter.evaluate(`(custom-group-model (quote ${scope.group}))`)
-    );
-    return {
-      title: model[0],
-      doc: model[1],
-      parent: model[2] === NIL ? null : model[2],
-      groups: listToArray(model[3]).map((pair) => {
-        const g = listToArray(pair);
-        return { name: g[0], doc: g[1] };
-      }),
-      settings: listToArray(model[4]).map(fieldToSetting),
-      faces: [],
-    };
-  } catch (error) {
-    repl.appendError(`customize: ${error.lispMessage ?? error.message}`);
-    return null;
-  }
-}
+// The customize MODEL is computed server-side and pushed in the leaf state
+// (B2.3 — the view renders from v.model); these functions only route the
+// view's callbacks back to the spine (propagateCustomize -> CUSTOMIZE_CHANGED).
 
 /** Apply the current theme: read each (--var . value) pair from Lisp
  *  and write it to the document root's inline style. Settings the
@@ -8019,48 +7919,38 @@ function rerenderAllEditors() {
   forEachMinimapElement((el) => el.invalidateColors());
 }
 
-// B2.2b (plans/MODEL-B-DEFAULT.md): the spine is the SOLE applier + render driver
-// + persister for customize. Each edit below sends a CUSTOMIZE_CHANGED intent
-// (propagateCustomize); the spine applies it to its interpreter, persists
-// custom.lisp / faces.json, and pushes the resulting chrome (theme / faces /
-// highlight / css-knobs) to EVERY window via applyDirective. The local
-// interpreter.evaluate is kept ONLY to keep THIS window's interpreter current for
-// the synchronous getCustomModel pull (removed in B2.3) — its on-change hooks
-// (apply-theme! / apply-face-styles! / set-css-*) are no-ops now, so it does not
-// paint. The cross-window CUSTOMIZE_SYNC relay + applyCustomizeSync are gone (the
-// push replaces them). Values ride as Lisp SOURCE strings: a symbol value (e.g. a
-// theme name) would not survive structured-clone over the wire.
+// B2.2b/B2.3 (plans/MODEL-B-DEFAULT.md): the spine is the SOLE applier + render
+// driver + persister + MODEL computer for customize. Each edit below sends a
+// CUSTOMIZE_CHANGED intent (propagateCustomize) and nothing else — the spine
+// applies it to its interpreter, persists custom.lisp / faces.json, pushes the
+// resulting chrome (theme / faces / highlight / css-knobs) to EVERY window, and
+// re-pushes the refreshed customize MODEL so the panel re-renders. The renderer
+// makes ZERO interpreter calls for customize now. Values ride as Lisp SOURCE
+// strings (writeString): a :choice value is a string the spine re-symbolises by
+// type (custom-apply! -> -coerce-for-type), so nothing raw-Lisp crosses the wire.
 
 /** Apply a setting for the session. */
 function applyCustomSetting(name, value) {
-  const valueSrc = writeString(value);
-  interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
-  propagateCustomize({ op: 'apply', name, valueSrc });
+  propagateCustomize({ op: 'apply', name, valueSrc: writeString(value) });
 }
 
 /** Apply a setting and persist it (the spine persists). */
 function saveCustomSetting(name, value) {
-  const valueSrc = writeString(value);
-  interpreter.evaluate(`(custom-apply-and-save! (quote ${name}) (quote ${valueSrc}))`);
-  propagateCustomize({ op: 'save', name, valueSrc });
+  propagateCustomize({ op: 'save', name, valueSrc: writeString(value) });
 }
 
 /** Reset a setting to its default value. */
 function resetCustomSetting(name) {
-  interpreter.evaluate(`(custom-reset! (quote ${name}))`);
   propagateCustomize({ op: 'reset', name });
 }
 
-/** Apply a face-attribute change from the customize view. The widget
- *  passes everything as strings/booleans; the wrapper coerces. */
+/** Apply a face-attribute change from the customize view. The widget passes
+ *  strings/booleans; the spine's set-face-attribute-by-strings coerces. */
 function setFaceFromView(faceName, attr, value) {
   const valueSrc =
     typeof value === 'boolean'
       ? (value ? 'true' : 'false')
       : writeString(String(value));
-  interpreter.evaluate(
-    `(set-face-attribute-by-strings ${writeString(faceName)} ${writeString(attr)} ${valueSrc})`
-  );
   // `face` + `attr` are strings (set-face-attribute-by-STRINGS), so they ride the
   // wire fine; `valueSrc` is the already-built Lisp source (booleans → true/false).
   propagateCustomize({ op: 'set-face', face: faceName, attr, valueSrc });
@@ -8068,9 +7958,6 @@ function setFaceFromView(faceName, attr, value) {
 
 /** Reset a face — drop the global override. */
 function resetFaceFromView(faceName) {
-  interpreter.evaluate(
-    `(reset-face-by-string ${writeString(faceName)})`
-  );
   propagateCustomize({ op: 'reset-face', face: faceName });
 }
 
@@ -8112,7 +7999,8 @@ function openCustomScope(scope) {
 function configureCustomizeView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    getModel: getCustomModel,
+    // B2.3: no getModel — the model is server-computed and pushed in the leaf
+    // state (v.model); the view renders from it.
     applySetting: applyCustomSetting,
     saveSetting: saveCustomSetting,
     resetSetting: resetCustomSetting,
