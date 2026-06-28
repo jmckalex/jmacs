@@ -24,8 +24,25 @@
 >   leaf `state.model`, refreshed on each edit (setState fan-out). **B2.3b**
 >   `3840e38` — renderer renders push-only (`buffer.model`); deleted
 >   `getCustomModel`/`fieldToSetting`/`rowToFace` + the local apply evals.
->   **B2.3 NEEDS LIVE-VERIFY** (the push path is load-bearing now — fallback removed).
->   **NEXT: B3** (docs/help → server) per §PART B.
+>   **B2.3 confirmed live (persists across relaunch — Jason 2026-06-29).**
+> - **Part B3** (docs/help → server) **DONE** (suite green 3197). `f839218` — added
+>   `docs.lisp` to `SPINE_STDLIB`; `load-doc-manifest!` host primitive reads
+>   `docs/build/manifest.json` (doc-known? resolves server-side, 478 names); embedded
+>   `open-doc!`/`open-manual!`/`open-docstring-page!` emit `open-doc`/`open-manual`/
+>   `open-docstring` directives → renderer `applyDirective` calls the existing
+>   `openDocInPane`/`openDocstringBuffer`. `apropos-doc` (C-h a) preserved (embedded
+>   show-apropos shadows docs.lisp's). Fixes C-h d / open-doc / describe-symbol-at-point,
+>   which were BROKEN under Model B. **NEEDS LIVE-VERIFY**: that the doc actually renders
+>   in the doc-view (the renderer DOM half — unverifiable without Electron).
+> - **NEXT: B4** (rich views & file/project UI). Audit of what's still BROKEN under
+>   Model B (validated against the live spine via `registered-command-names`, see
+>   `architect-notes.md` 2026-06-29): `describe-face-at-point`/`highlight-construct-at-
+>   point` (face-info.lisp — needs render-side tree-sitter captures), `eval-expression-
+>   at-point`/`-before-point` (inline-eval.lisp), the sticky-note family, the folding
+>   family (`fold-all`/`unfold-all`/`toggle-fold-at-point`), `find-project`,
+>   `scratch-buffer`, `notebook`, `toggle-repl`, `view-list`, `reload-stdlib`. None is a
+>   clean "reuse a render fn via a directive" like docs — each needs render-side data /
+>   view-state / overlay UI, so each needs per-batch LIVE-VERIFY (do NOT port blind).
 > Scope chosen by the architect: **Deep** — eliminate the renderer's Lisp interpreter
 > entirely so there is a single Lisp world (the spine) and the renderer becomes a pure-JS
 > thin client.

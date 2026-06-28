@@ -3059,3 +3059,65 @@ notebook whose cells run arbitrary JavaScript in the SAME Node session as the
 server's Lisp interpreter. A design subagent drafted `plans/NOTEBOOK-JS.md` there.
 
 ---
+
+## [2026-06-29 overnight] Model-B-default Part B: B2 + B3 landed; stopping before blind B4 ports
+
+**Context**: Branch `model-b-default`. Jason went to bed and asked me to run
+autonomously to "land the Model B port". I CANNOT launch Electron here (the build
+side can't run the GUI — confirmed by `run-and-verify`), so the renderer DOM + real
+IPC are unverifiable by me; my tools are `pnpm test`, `node --check`, and
+`createSpine` harnesses.
+
+**What I landed this session (all on `model-b-default`, suite green 3197 at every
+commit, NOT merged):**
+- **B2 customize → server-authoritative, COMPLETE** (`272dd65` B2.2a, `dc1a36c`
+  B2.2b, `49a5178` B2.3a, `3840e38` B2.3b, `5f3e338` plan). Spine now persists
+  (atomic custom.lisp/faces.json), is the sole render driver (chrome push incl. a
+  new `css-knobs` directive; CUSTOMIZE_SYNC relay deleted), and computes+pushes the
+  customize MODEL. **The renderer makes ZERO `interpreter.*` calls for customize.**
+  Jason live-verified persistence-across-relaunch.
+- **B3 docs/help → server** (`f839218`). `docs.lisp` into `SPINE_STDLIB` +
+  `load-doc-manifest!` (fs) + `open-doc`/`open-manual`/`open-docstring` directives →
+  existing `openDocInPane`/`openDocstringBuffer`. Fixes C-h d / open-doc /
+  describe-symbol-at-point (were BROKEN under Model B). Harness-verified the spine
+  half; the doc-render half NEEDS LIVE-VERIFY.
+
+**Judgement call — why I STOPPED rather than keep porting B4 / doing the teardown:**
+1. I can't live-verify, and every B4 port adds unverified renderer surface. B3 was
+   safe because it REUSES existing render functions via a directive (can't regress a
+   feature that was already broken). The remaining B4 commands are NOT like that.
+2. I validated the remaining "broken under Model B" set against the live spine
+   (`(member "<cmd>" (registered-command-names))`, predicate sanity-checked:
+   forward-char ✓, open-manual ✓ (just ported), describe-face-at-point ✗). The
+   still-broken keybound commands, by feature:
+   - **face-info.lisp** (C-h F): `describe-face-at-point`, `highlight-construct-at-point`
+     — needs RENDER-SIDE tree-sitter captures (`tree-sitter-captures-for-buffer!`),
+     so the spine can't compute it; needs a request/response intent. NOT a clean port.
+   - **inline-eval.lisp**: `eval-expression-at-point`, `eval-expression-before-point`
+     — eval can run in the spine session, but the result OVERLAY is render UI.
+   - **sticky-notes.lisp**: add/edit/delete/toggle-sticky-note(s) — render view + metadata.
+   - **folding.lisp**: `fold-all`, `unfold-all`, `toggle-fold-at-point` — view-state heavy.
+   - **project.lisp**: `find-project`. **views/system**: `scratch-buffer`, `view-list`.
+   - **notebook.lisp**: `notebook`. **utility-pane.lisp**: `toggle-repl`.
+   - **renderer-dev**: `reload-stdlib` (reloads the RENDERER interpreter — becomes moot
+     once the interpreter is deleted; B7 territory, leave it).
+3. The interpreter teardown (B5–B7, incl. the deferred A3) is OFF-LIMITS unattended —
+   the boot-window dispatch trap + TDZ + "full live matrix" make it exactly the kind
+   of change that silently bricks the app and is found in the morning. Needs Jason.
+
+**State of the work**: clean + green on `model-b-default`. Working tree has only the
+long-standing untracked/unrelated files + this notes/handover/plan edit. Recovery
+tag `pre-model-b-default` @ `b2d4f03` (main's tip). NOT merged (Jason's call).
+
+**Recommended next steps (for Jason)**:
+- Live-verify B3 (C-h d opens the manual; C-h . on a symbol; M-x open-doc).
+- B4 is genuinely per-batch work needing live-verify — best done with Jason driving.
+  Suggest order: file/IO (find-file already works) → sticky-notes → folding →
+  inline-eval → face-info (needs the render→spine captures round-trip) → notebook.
+- I recommend (but did NOT do, per "set aside automation") promoting the throwaway
+  `createSpine` harnesses (customize persistence/push/model + docs) into committed
+  `apps/desktop/mwb/*.test.js` so the B2/B3 server behavior is regression-locked and
+  future B4 work is verifiable without Electron. This is the single highest-leverage
+  thing to make the rest of the epic safe.
+
+---
