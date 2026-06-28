@@ -250,12 +250,12 @@ contextBridge.exposeInMainWorld('host', {
   stopJmarkdownWatch: () => ipcRenderer.invoke('jmarkdown:watch:stop'),
 
   /**
-   * Open `url` in the user's default browser (the Markdown-preview pop-out).
-   * Only http(s) URLs are honoured.
-   * @param {string} url
-   * @returns {Promise<{ok: boolean}>}
+   * Pop this window's JMarkdown preview out into its own Godot window. The watch
+   * process's ownership transfers to the new window. Resolves `{ ok }` or
+   * `{ error }`.
+   * @returns {Promise<{ok: boolean, error?: string}>}
    */
-  openExternalUrl: (url) => ipcRenderer.invoke('app:open-external', { url }),
+  popOutPreview: () => ipcRenderer.invoke('jmarkdown:watch:popout'),
 
   /**
    * Read a file's companion metadata (sticky notes), or null.

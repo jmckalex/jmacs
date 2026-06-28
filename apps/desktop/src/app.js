@@ -11363,26 +11363,41 @@ function previewBasename(path) {
   return String(path).split('/').pop() || String(path);
 }
 
-/** Hide the preview pane and stop this window's watch subprocess. */
-function hideMarkdownPreview() {
+/** Reset the in-app preview pane chrome: hide it and clear its state. Shared by
+ *  close (which also stops the watch) and pop-out (which hands the watch to the
+ *  new window and so keeps it alive). */
+function resetMarkdownPreviewPane() {
   document.body.classList.add('markdown-preview-hidden');
   previewWatchedPath = null;
   previewPort = null;
   lastPostedPreviewLine = null; // a re-open re-scrolls to the cursor
   markdownPreviewFrame.src = 'about:blank';
   markdownPreviewFilename.textContent = '';
+}
+
+/** Hide the preview pane and stop this window's watch subprocess. */
+function hideMarkdownPreview() {
+  resetMarkdownPreviewPane();
   if (window.host && typeof window.host.stopJmarkdownWatch === 'function') {
     window.host.stopJmarkdownWatch();
   }
 }
 
-/** Pop the preview out into its own window: open the live watch URL in the
- *  system browser. The in-app pane stays open — both share the one watch
- *  server. A no-op until the watcher's port is known. */
-function popOutMarkdownPreview() {
+/** Pop the preview out into its own Godot window. Main moves the watch's
+ *  ownership to the new window, so the in-app pane DETACHES (closes) without
+ *  stopping the watch. A no-op until the watcher's port is known. */
+async function popOutMarkdownPreview() {
   if (previewPort == null) return;
-  if (window.host && typeof window.host.openExternalUrl === 'function') {
-    window.host.openExternalUrl(`http://localhost:${previewPort}/`);
+  let result;
+  try {
+    result = await window.host.popOutPreview();
+  } catch (error) {
+    result = { error: String(error && error.message ? error.message : error) };
+  }
+  if (result && result.ok) {
+    resetMarkdownPreviewPane(); // the popped-out window owns the watch now
+  } else {
+    repl.appendNote(`markdown-preview: ${result?.error ?? 'could not pop out the preview'}`);
   }
 }
 

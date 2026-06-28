@@ -15,9 +15,6 @@ import {
   utilityProcess,
   MessageChannelMain,
   screen,
-  // Electron's OS-integration module (openExternal). Aliased to avoid confusion
-  // with the editor's `shell` terminal feature (src/shell.js / M-x shell).
-  shell as electronShell,
 } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +27,8 @@ import {
   registerJmarkdownWatchHandlers,
   stopJmarkdownWatch,
   reapJmarkdownWatchers,
+  watcherPort,
+  transferWatcherTo,
 } from './jmarkdown-watch.js';
 import { buildAppMenu } from './menu.js';
 import { EDITOR_URL, serveAppFile, serveMediaFile, allowHostDir } from './serve.js';
@@ -336,13 +335,28 @@ app.whenReady().then(() => {
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
   );
-  // Open a URL in the user's default browser — the Markdown-preview pop-out
-  // (the live `jmarkdown watch` URL). Restricted to http(s) so it can't be
-  // coerced into file:/custom-scheme opens.
-  ipcMain.handle('app:open-external', (_event, { url }) => {
-    const u = String(url ?? '');
-    if (!/^https?:\/\//i.test(u)) return { ok: false };
-    electronShell.openExternal(u);
+  // Pop the Markdown preview out into its own Godot window: a lightweight
+  // BrowserWindow on the live `jmarkdown watch` URL. The watch process's
+  // OWNERSHIP transfers from the editor window to this preview window, so it is
+  // reaped when the preview window closes (and on app quit) — and a fresh C-c v
+  // in the editor starts an independent watcher. The page is plain localhost
+  // HTML; no preload/node access is granted to it.
+  ipcMain.handle('jmarkdown:watch:popout', (event) => {
+    const editorWcId = event.sender.id;
+    if (watcherPort(editorWcId) == null) return { ok: false, error: 'no preview to pop out' };
+    const win = new BrowserWindow({
+      width: 820,
+      height: 1000,
+      title: 'Preview',
+      webPreferences: { contextIsolation: true, nodeIntegration: false },
+    });
+    const port = transferWatcherTo(editorWcId, win.webContents.id);
+    if (port == null) {
+      win.destroy();
+      return { ok: false, error: 'no preview to pop out' };
+    }
+    win.loadURL(`http://localhost:${port}/`);
+    win.on('closed', () => stopJmarkdownWatch(win.webContents.id));
     return { ok: true };
   });
   // The renderer sends the current buffer's mode menu; rebuild the

@@ -193,6 +193,24 @@ export function stopJmarkdownWatch(wcId) {
   killWatcher(wcId);
 }
 
+/** The live watch server port for window `wcId`, or null if it has no watcher.
+ *  (The pop-out reads it to decide whether there is anything to detach.) */
+export function watcherPort(wcId) {
+  const entry = watchers.get(wcId);
+  return entry ? entry.port : null;
+}
+
+/** Transfer a window's watcher to a different window (the pop-out): the watch
+ *  process now lives and dies with `newWcId`, not the editor window. Returns
+ *  the port (so the caller can load the URL), or null if there was no watcher. */
+export function transferWatcherTo(fromWcId, newWcId) {
+  const entry = watchers.get(fromWcId);
+  if (!entry) return null;
+  watchers.delete(fromWcId);
+  watchers.set(newWcId, entry);
+  return entry.port;
+}
+
 /** Reap every watcher — called on app quit. */
 export function reapJmarkdownWatchers() {
   for (const wcId of [...watchers.keys()]) killWatcher(wcId);
