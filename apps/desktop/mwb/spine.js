@@ -195,6 +195,19 @@ const SPINE_STDLIB = Object.freeze([
   'custom.lisp',
   'indent.lisp',
   'modes.lisp',
+  // faces.lisp / themes.lisp / highlight-rules.lisp — the face + theme +
+  // highlight-rule REGISTRIES and the PURE getters (current-theme-css-vars,
+  // current-face-styles, current-mode-face-styles, highlight-rule-records) that
+  // the spine computes and (B1.3) pushes to every window as directives, so the
+  // server is the single source of truth for chrome (plans/MODEL-B-DEFAULT.md,
+  // Part B1). `faces.lisp`'s `defface` MACRO replaces the former prelude shim, so
+  // these must load BEFORE any defface user (snippets.lisp/themes.lisp) and after
+  // their deps (custom.lisp = defcustom/defgroup, modes.lisp = per-mode faces).
+  // Their apply-side primitives (apply-theme!/apply-face-styles!/set-css-*/
+  // set-highlight-overrides!) are spine stubs (B1.1 no-ops → B1.3 emitters).
+  'faces.lisp',
+  'themes.lisp',
+  'highlight-rules.lisp',
   // keymap.lisp — the ONE keymap + the dispatch engine (handle-key,
   // lookup-key, keymap-chain, the prefix-map stack, the key-reader). Under
   // Model B the server is the sole resolver; this file is authoritative and
@@ -1446,6 +1459,23 @@ export function createSpine(options, effects = {}) {
       'open-customize-faces!': () => openCustomizeScope({ group: 'faces' }),
       'write-custom-file!': () => NIL,
 
+      // --- faces / theme / highlight apply-side (B1; plans/MODEL-B-DEFAULT.md) -
+      // faces.lisp / themes.lisp / highlight-rules.lisp now load server-side (the
+      // registries + the PURE getters current-theme-css-vars / current-face-styles
+      // / highlight-rule-records live here). The APPLY side is render-side: B1.1
+      // stubs these as no-ops (the renderer still computes + paints faces from its
+      // own interpreter, so there is zero behaviour change); B1.3 turns them into
+      // directive emitters so the spine drives every window's CSS. `load-face-
+      // overrides!` returns empty until B1.2 reads faces.json server-side.
+      'apply-theme!': () => NIL,
+      'apply-face-styles!': () => NIL,
+      'set-css-tab-width!': () => NIL,
+      'set-css-line-height!': () => NIL,
+      'set-highlight-overrides!': () => NIL,
+      'load-face-overrides!': () => NIL,
+      'write-faces!': () => NIL,
+      'face-color-for': () => '',
+
       // --- search (search.lisp) ----------------------------------------
       // Plain isearch (C-s / C-r) is now a real server-side loop in
       // search.lisp — a read-next-key state machine over find-string-forward
@@ -1721,32 +1751,10 @@ export function createSpine(options, effects = {}) {
     ;; by keymap.lisp, loaded just below in SPINE_STDLIB — the server is the
     ;; sole resolver now, so there is no spine-side shim for either.
 
-    ;; defface / face — the face registry (faces.lisp owns these in
-    ;; production; that file is render-heavy and not loaded). snippets.lisp
-    ;; (and other feature files) register their faces at load via defface.
-    ;; The face REGISTRY is shared model state — two windows agree on what a
-    ;; face is — so the spine records it; only the *rendering* (the
-    ;; <style id="face-overrides"> the host writes) is render-side, deferred.
-    ;; A minimal model-side version: the face constructor builds a
-    ;; descriptor hash-map; defface stores it under its name. snippets.lisp
-    ;; (and the other feature files the spine loads) call defface with an
-    ;; EXPLICIT quote on the name — (defface 'snippet-active-face :doc …
-    ;; :default-dark (face …)) — and evaluated (face …) blocks, so a plain
-    ;; function (not a macro)
-    ;; suffices: NAME arrives already as a symbol, the option values already
-    ;; evaluated. The (from 'parent) inheritance form is unused here. See
-    ;; PRIMITIVE-SPLIT.md "Live preview / faces".
-    (define *face-registry* {})
-    (define (face . pairs)
-      "Build a face descriptor (a hash-map) from keyword-value pairs."
-      (apply hash-map pairs))
-    (define (defface name . options)
-      "Register face NAME (a symbol) with OPTIONS (keyword/value pairs).
-       Model-side: records the descriptor; the rendering is deferred."
-      (set! *face-registry*
-            (assoc *face-registry* name
-                   (assoc (apply hash-map options) :name name)))
-      name)
+    ;; defface / face / *face-registry* now load from faces.lisp (in
+    ;; SPINE_STDLIB, after modes.lisp, before snippets.lisp/themes.lisp) — the
+    ;; server holds the REAL face registry + the theme/face getters, not the
+    ;; former minimal model-side shim (plans/MODEL-B-DEFAULT.md, Part B1).
 
     ;; minibuffer-tab-complete — the base TAB-completion handler the
     ;; minibuffer's onTab calls (files.lisp owns it in production; that file
