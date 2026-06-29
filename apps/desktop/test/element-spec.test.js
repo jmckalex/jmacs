@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveElementModuleUrl, normalizeFit } from '../src/element-spec.js';
+import {
+  resolveElementModuleUrl,
+  normalizeFit,
+  elementViewKinds,
+  elementViewSpec,
+  elementViewOpenPayload,
+} from '../src/element-spec.js';
 
 test('a repo-relative path is served from the app://editor origin', () => {
   assert.equal(
@@ -45,4 +51,71 @@ test('normalizeFit defaults unknown / empty to center', () => {
   assert.equal(normalizeFit(''), 'center');
   assert.equal(normalizeFit('sideways'), 'center');
   assert.equal(normalizeFit(undefined), 'center');
+});
+
+// --- L4: the plain-JS element-view registry (replaces the Lisp registry) ----
+
+test('elementViewKinds is the three built-ins', () => {
+  assert.deepEqual(elementViewKinds().sort(),
+    ['atari', 'bib-search', 'notebook-cells']);
+});
+
+test('elementViewSpec returns the spec, or null for an unknown kind', () => {
+  assert.equal(elementViewSpec('atari').tag, 'stella-emulator');
+  assert.equal(elementViewSpec('nope'), null);
+  // No prototype pollution: a key like "toString" is not a registered kind.
+  assert.equal(elementViewSpec('toString'), null);
+});
+
+test('open payload for atari mirrors what open-element-view! built', () => {
+  const p = elementViewOpenPayload('atari');
+  assert.deepEqual(p, {
+    name: 'Atari 2600',
+    tag: 'stella-emulator',
+    moduleUrl: 'app://editor/apps/desktop/vendor/stella/stella-element.js',
+    attrs: [['controls', true],
+      ['src', 'app://editor/apps/desktop/vendor/stella/oystron.bin']],
+    fit: 'center',
+    keyboard: 'grab',
+    noFocus: false,
+  });
+});
+
+test('notebook-cells: empty module → empty moduleUrl, keyboard off', () => {
+  const p = elementViewOpenPayload('notebook-cells');
+  assert.equal(p.moduleUrl, '');
+  assert.equal(p.tag, 'notebook-cells-view');
+  assert.equal(p.keyboard, 'off');
+  assert.equal(p.fit, 'fill');
+});
+
+test('bib-search with no bibPath uses the bundled sample', () => {
+  const p = elementViewOpenPayload('bib-search');
+  assert.deepEqual(p.attrs,
+    [['src', 'app://editor/apps/desktop/vendor/bib-search/sample.bib']]);
+  assert.equal(p.noFocus, true);
+});
+
+test('bib-search with an absolute bibPath → host-file-url src + bib-path attr', () => {
+  const hostFileUrl = (p) => `app://editor/__host__${p}`;
+  const p = elementViewOpenPayload('bib-search', {
+    bibPath: '/Users/me/refs.bib', hostFileUrl,
+  });
+  assert.deepEqual(p.attrs, [
+    ['src', 'app://editor/__host__/Users/me/refs.bib'],
+    ['bib-path', '/Users/me/refs.bib'],
+  ]);
+});
+
+test('bib-search ignores a non-absolute / empty bibPath (falls back to sample)', () => {
+  const hostFileUrl = (p) => `app://editor/__host__${p}`;
+  for (const bibPath of ['', null, 'relative/refs.bib']) {
+    const p = elementViewOpenPayload('bib-search', { bibPath, hostFileUrl });
+    assert.deepEqual(p.attrs,
+      [['src', 'app://editor/apps/desktop/vendor/bib-search/sample.bib']]);
+  }
+});
+
+test('elementViewOpenPayload returns null for an unknown kind', () => {
+  assert.equal(elementViewOpenPayload('nope'), null);
 });
