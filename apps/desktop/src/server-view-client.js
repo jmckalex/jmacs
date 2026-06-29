@@ -196,9 +196,10 @@ export function createServerViewClient({
   // (split structure + per-leaf buffer/view-state + the focused leaf; no
   // pixels). The host renders it — splits become visible. A no-op until wired.
   const setPaneTreeDom = chrome.setPaneTree ?? (() => {});
-  // A customize setting changed in ANOTHER window — re-apply it here (host wires
-  // this to update this window's interpreter + theme / face styles).
-  const onCustomizeSyncDom = chrome.onCustomizeSync ?? (() => {});
+  // B4: a freshly-mirrored server buffer mounted (SNAPSHOT). The host points the
+  // sticky-notes overlay manager at this mirror + its editor view so the buffer's
+  // notes (carried on the snapshot, set on mirror.metadata.notes below) render.
+  const onServerBufferDom = chrome.onServerBuffer ?? (() => {});
   // CLIENT_DIRECTIVE: the server told THIS window to perform a renderer-side
   // action (close-window, toggle a fold, re-theme, …). The host maps the
   // directive name → an action (window lifecycle is the host's job, like quit /
@@ -462,6 +463,11 @@ export function createServerViewClient({
     });
     if (view) view.destroy();
     view = mountView(mirror, buildMountOptions());
+    // B4: seed the mirror's note metadata from the snapshot so the sticky-notes
+    // manager (pointed here by onServerBuffer) renders the buffer's notes. The
+    // manager reads buffer.metadata.notes + edit-tracks via mirror.onChange.
+    mirror.metadata = { notes: Array.isArray(msg.notes) ? msg.notes : [] };
+    onServerBufferDom(mirror, view);
     if (typeof view.focus === 'function') view.focus();
     // Report the freshly-mounted view's visible line count so screenful scroll
     // (C-v/M-v) is sized correctly from the first keystroke. A frame later the
@@ -594,7 +600,6 @@ export function createServerViewClient({
         }
         break;
       case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs, msg.liveBrowsers); break;
-      case MSG.CUSTOMIZE_SYNC: onCustomizeSyncDom(msg.change); break;
       case MSG.CLIENT_DIRECTIVE:
         if (msg.directive && typeof msg.directive.name === 'string') {
           applyDirectiveDom(msg.directive.name, msg.directive.args ?? []);
@@ -768,14 +773,31 @@ export function createServerViewClient({
     });
   }
 
-  /** Propagate a customize SETTING change outward: the server relays it to the
-   *  other windows (MSG.CUSTOMIZE_SYNC) so theme / faces / line-height stay
-   *  consistent. CHANGE = `{ op, name?, value?, face?, attr? }`. */
+  /** Send a customize SETTING change to the spine (CUSTOMIZE_CHANGED). The spine
+   *  applies it, persists custom.lisp / faces.json, and pushes the resulting
+   *  chrome (theme / faces / highlight / css-knobs) to EVERY window (B2.2).
+   *  CHANGE = `{ op, name?, valueSrc?, face?, attr? }`. */
   function customizeChanged(change) {
     if (!change || typeof change !== 'object') return;
     port.postMessage({
       type: MSG.INTENT,
       intent: { id: nextIntentId++, kind: INTENT.CUSTOMIZE_CHANGED, change },
+    });
+  }
+
+  /** B4: ship the CURRENT buffer's sticky notes up so the server persists them to
+   *  the sidecar (it owns the file under Model B). Called by the sticky-notes
+   *  manager's onChange. A no-op without a current buffer. */
+  function notesChanged(notes) {
+    if (currentBufferId === null) return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: {
+        id: nextIntentId++,
+        kind: INTENT.NOTES_CHANGED,
+        bufferId: currentBufferId,
+        notes: Array.isArray(notes) ? notes : [],
+      },
     });
   }
 
@@ -836,6 +858,7 @@ export function createServerViewClient({
     customizeOp,
     // Propagate a customize setting change outward (server relays to windows).
     customizeChanged,
+    notesChanged,
     // Evaluate a JS notebook cell in the spine (Node, no CSP) → serializable result.
     notebookEval,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.

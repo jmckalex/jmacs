@@ -1,41 +1,23 @@
 /**
- * @file Tests for the G1 server bridge (`server-bridge.js`).
+ * @file Tests for the Model-B server bridge (`server-bridge.js`).
  *
  * These run under `node --test` with NO real Electron: the bridge takes its
  * Electron collaborators (`utilityProcess`, `MessageChannelMain`) by
- * injection, so the flag-gating, fork config, and per-window port-transfer
- * dance are all assertable with fakes. They are the automated half of the G1
- * verification; the actual spawn/boot is an architect-run electron self-test
- * (see `mwb/server-bridge-selftest.js`).
+ * injection, so the fork config and per-window port-transfer dance are all
+ * assertable with fakes. They are the automated half of the verification; the
+ * actual spawn/boot is an architect-run electron self-test (see
+ * `mwb/server-bridge-selftest.js`).
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  isServerMode,
   serverModulePath,
   buildServerForkConfig,
   createServerBridge,
   SERVER_PORT_CHANNEL,
 } from './server-bridge.js';
-
-// --- the single gate ---------------------------------------------------
-
-test('isServerMode is false when GODOT_SERVER is unset (the default = today)', () => {
-  assert.equal(isServerMode({}), false);
-});
-
-test('isServerMode is false for any value other than the exact "1"', () => {
-  assert.equal(isServerMode({ GODOT_SERVER: '0' }), false);
-  assert.equal(isServerMode({ GODOT_SERVER: 'true' }), false);
-  assert.equal(isServerMode({ GODOT_SERVER: '' }), false);
-  assert.equal(isServerMode({ GODOT_SERVER: ' 1' }), false);
-});
-
-test('isServerMode is true only for GODOT_SERVER === "1"', () => {
-  assert.equal(isServerMode({ GODOT_SERVER: '1' }), true);
-});
 
 // --- the static config -------------------------------------------------
 

@@ -170,12 +170,21 @@ export const MSG = Object.freeze({
   // shared across panes) so the page is tracked for session-restore and any
   // rebuild-from-wire reflects where the user actually browsed to.
   BROWSER_NAVIGATED: 'browser-navigated',
-  // down: a customize setting changed in ONE window — re-apply it in every OTHER
-  // window so theme / faces / variables stay consistent across windows. Carries
-  // the change `{ op, name?, value?, face?, attr? }`; the server relays it (it
-  // doesn't render). The originating window already applied it locally; the
-  // receivers update their interpreter + re-apply theme + face styles.
-  CUSTOMIZE_SYNC: 'customize-sync',
+  // up (B4 project Stage 3): the renderer's native directory dialog / project
+  // chooser picked a project directory. Carries `{ path }`; the server routes it
+  // to spine.openProjectAt → a NEW project window. The keyboard path (find-project)
+  // delivers via the minibuffer instead; this is the dialog/chooser's way in.
+  PROJECT_OPEN: 'project-open',
+  // up (B4 face-info): the renderer's reply to a `tree-sitter-query` directive —
+  // the focused buffer's tree-sitter info at point: `{ lang, captures: [[start,
+  // end, face],…], node: {type,start,end,ancestors}|null }`. tree-sitter is WASM
+  // in the renderer, so the spine asks for it and resumes the suspended C-h F /
+  // C-h C-f command (deliverTreeSitterInfo → tree-sitter-info-delivered). The
+  // reverse of NOTEBOOK_EVAL (renderer→spine→reply).
+  TREE_SITTER_INFO: 'tree-sitter-info',
+  // (B2.2b removed CUSTOMIZE_SYNC: customize is server-authoritative now — the
+  // spine applies + persists the change and pushes the resulting chrome to every
+  // window via CLIENT_DIRECTIVE, so there is no per-window re-apply relay.)
   // down: the result of a JS notebook cell evaluated in the spine's Node context
   // (the renderer can't eval — CSP forbids unsafe-eval). Carries `{ reqId,
   // result }` where result is a SERIALIZABLE { state, descriptor, logs, error };
@@ -243,11 +252,17 @@ export const INTENT = Object.freeze({
   // pane structure, it just requests it.
   CUSTOMIZE_OP: 'customize-op',
   // A customize SETTING changed (Apply / Save / Reset / face edit) in this
-  // window. The server relays it to the OTHER windows (MSG.CUSTOMIZE_SYNC) so
-  // global rendering state (theme / faces / line-height) stays consistent across
-  // windows. Carries `{ op, name?, value?, face?, attr? }`. The originating
-  // window already applied it locally (immediate); this just propagates outward.
+  // window. The spine applies it, persists custom.lisp / faces.json, and pushes
+  // the resulting chrome (theme / faces / highlight / css-knobs) to EVERY window
+  // via CLIENT_DIRECTIVE (B2.2 — server-authoritative customize). Carries
+  // `{ op, name?, valueSrc?, face?, attr? }`.
   CUSTOMIZE_CHANGED: 'customize-changed',
+  // A buffer's sticky notes changed in this window (create / edit / move / resize
+  // / delete / collapse). The server owns the file + its `.godot-metadata` sidecar
+  // under Model B, so the renderer ships the whole notes array up; the spine
+  // updates the buffer's metadata + persists. Carries `{ bufferId, notes }` (notes
+  // are clone-safe records: id/anchor/x/y/width/height/source/collapsed). B4.
+  NOTES_CHANGED: 'notes-changed',
   // A JS notebook cell wants to run. The renderer can't eval (CSP forbids
   // unsafe-eval), so the source is sent to the spine, which evaluates it in its
   // Node context and replies with MSG.NOTEBOOK_RESULT. Carries `{ reqId, source }`

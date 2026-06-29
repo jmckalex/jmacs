@@ -126,8 +126,6 @@ export const STDLIB_FILES = Object.freeze([
   'project.lisp',
   'shell.lisp',
   'gnuplot.lisp',
-  'notebook.lisp',
-  'notebook-commands.lisp',
   'palette.lisp',
   'docs.lisp',
   'help.lisp',

@@ -173,3 +173,57 @@ test('an error with no following l.NN keeps line null', () => {
   assert.equal(diags[0].line, null);
   assert.equal(diags[0].message, 'Emergency stop');
 });
+
+// --- TeX line-wrapping (max_print_line = 79) -------------------------------
+// TeX hard-wraps every log line at 79 chars, so long error/warning messages
+// spill onto continuation lines. The parser rejoins them so the captured
+// message is the whole thing, not just the first ~79 chars (the truncation
+// users saw in the *TeX errors* view). The split is verbatim at column 79.
+
+/** Re-wrap STRING the way TeX emits it: a hard cut every 79 chars. */
+function wrap79(string) {
+  const out = [];
+  for (let i = 0; i < string.length; i += 79) out.push(string.slice(i, i + 79));
+  return out;
+}
+
+test('a wrapped package error message is rejoined in full', () => {
+  const full =
+    "! Package embedfile Error: File `/Volumes/iDisk/Documents/Bibliography.bib' not found.";
+  assert.equal(wrap79(full)[0].length, 79, 'fixture really wraps at 79');
+  const log = ['(./paper.tex', ...wrap79(full), '', 'l.10 \\embedfile{...}', ')'].join('\n');
+  const [diag] = parseLatexLog(log);
+  assert.equal(diag.kind, 'error');
+  assert.equal(diag.line, 10);
+  assert.equal(
+    diag.message,
+    "Package embedfile Error: File `/Volumes/iDisk/Documents/Bibliography.bib' not found"
+  );
+});
+
+test('a wrapped package warning is rejoined and its line still parsed', () => {
+  // A real-world line: mathdesign warns about amsfonts; it wraps at 79.
+  const full =
+    "Package mathdesign/mdugm Warning: Package 'amsfonts' shouldn't be used in conjonction with package mdugm, on input line 20.";
+  assert.equal(wrap79(full)[0].length, 79, 'fixture really wraps at 79');
+  const log = ['(./paper.tex', ...wrap79(full), ')'].join('\n');
+  const [diag] = parseLatexLog(log);
+  assert.equal(diag.kind, 'warning');
+  assert.equal(diag.line, 20);
+  assert.equal(
+    diag.message,
+    "Package 'amsfonts' shouldn't be used in conjonction with package mdugm,"
+  );
+});
+
+test('a new error after a genuine 79-char line is not swallowed by the unwrapper', () => {
+  // A non-message log line of exactly 79 chars, immediately followed by an error:
+  // the construct guard keeps the `! ` line as its own diagnostic.
+  const filler = 'x'.repeat(79);
+  const log = ['(./paper.tex', filler, '! Undefined control sequence.', 'l.5 \\foo', ')'].join('\n');
+  const diags = parseLatexLog(log);
+  assert.equal(diags.length, 1);
+  assert.equal(diags[0].kind, 'error');
+  assert.equal(diags[0].message, 'Undefined control sequence');
+  assert.equal(diags[0].line, 5);
+});

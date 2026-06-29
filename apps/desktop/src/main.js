@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import { reconcileBounds } from './window-geometry.js';
 import { registerFileHandlers } from './files.js';
-import { isServerMode, createServerBridge } from './server-bridge.js';
+import { createServerBridge } from './server-bridge.js';
 import { renderJMarkdown } from './jmarkdown.js';
 import {
   registerJmarkdownWatchHandlers,
@@ -76,41 +76,30 @@ process.on('unhandledRejection', (reason) => {
   console.error('[main] unhandled rejection:', reason);
 });
 
-/** The editor window. In the flag-off (default) build there is only ever one,
- *  and this is it. In server mode (GODOT_SERVER=1, G4 multi-window) it tracks
- *  the most-recently-created window and is re-pointed at a survivor when a
- *  window closes; routing that should target the *focused* window uses
- *  `focusedWindow()` instead. */
+/** The editor window. Tracks the most-recently-created window and is re-pointed
+ *  at a survivor when a window closes; routing that should target the *focused*
+ *  window uses `focusedWindow()` instead. */
 let mainWindow = null;
 
-/** G4 (server mode only): every open client window. Each is a thin client on
- *  the one shared server; the buffers live in the server and outlive any
- *  window. Empty + untouched in the flag-off build. */
+/** Every open client window. Each is a thin client on the one shared server;
+ *  the buffers live in the server and outlive any window. */
 const windows = new Set();
 
-/** G4.3: the last mode-menu each window sent, keyed by `webContents.id`. The
- *  macOS app menu is global, so only the FOCUSED window's menu is applied; a
- *  background window's spec is held here and re-applied when it regains focus.
- *  Flag-off (single window) keeps last-writer-wins behaviour — that one window
- *  is always the focused one. */
+/** The last mode-menu each window sent, keyed by `webContents.id`. The macOS
+ *  app menu is global, so only the FOCUSED window's menu is applied; a
+ *  background window's spec is held here and re-applied when it regains focus. */
 const windowMenuSpecs = new Map();
 
 /** The window a menu command / quit confirm should target: the focused one,
- *  falling back to `mainWindow` (e.g. during quit, when nothing is focused).
- *  Only consulted in server mode. */
+ *  falling back to `mainWindow` (e.g. during quit, when nothing is focused). */
 function focusedWindow() {
   return BrowserWindow.getFocusedWindow() ?? mainWindow;
 }
 
 /**
- * G1 (plans/MWB-GRADUATION.md): the Model-B server bridge, or null.
- *
- * Non-null ONLY when `GODOT_SERVER=1`. With the flag unset (the default), this
- * stays null and every reference below is a guarded no-op, so the app's
- * behaviour is byte-for-byte today: no server process, no port plumbing, no new
- * code path taken. When the flag is on, a server `utilityProcess` is forked and
- * a port is connected to the window's renderer — but nothing is routed through
- * it yet (G2 routes editing). See `server-bridge.js`.
+ * The Model-B server bridge. Forked once at startup (see `whenReady`); a port is
+ * connected to each window's renderer. Stays null only if the fork fails, so the
+ * references below keep a defensive null-guard. See `server-bridge.js`.
  *
  * @type {ReturnType<typeof createServerBridge> | null}
  */
@@ -121,15 +110,10 @@ let serverBridge = null;
  *  quit through instead of prompting again. */
 let quitConfirmed = false;
 
-/** Send a command chosen from a native menu to the renderer to run. In server
- *  mode the menu's "New Window" item is a window-lifecycle action main performs
- *  directly (the server can't open an OS window); everything else targets the
- *  focused window. The flag-off path is byte-for-byte today (single window). */
+/** Send a command chosen from a native menu to the renderer to run. The menu's
+ *  "New Window" item is a window-lifecycle action main performs directly (the
+ *  server can't open an OS window); everything else targets the focused window. */
 function dispatchMenuCommand(command) {
-  if (!isServerMode()) {
-    if (mainWindow) mainWindow.webContents.send('menu:invoke', command);
-    return;
-  }
   if (command === 'new-window') {
     createWindow();
     return;
@@ -197,66 +181,47 @@ function createWindow(opts = {}) {
     },
   });
   mainWindow = win;
-  if (isServerMode()) {
-    windows.add(win);
-    // B2: report this window's frame to its renderer on move/resize (debounced),
-    // so the session snapshot records its geometry — the renderer forwards it to
-    // the server. The renderer also pulls once on connect (window:get-bounds).
-    let boundsTimer = null;
-    const scheduleBoundsReport = () => {
-      if (boundsTimer) clearTimeout(boundsTimer);
-      boundsTimer = setTimeout(() => {
-        boundsTimer = null;
-        if (!win.isDestroyed()) win.webContents.send('window:bounds', boundsDescriptor(win));
-      }, 250);
-    };
-    win.on('resize', scheduleBoundsReport);
-    win.on('move', scheduleBoundsReport);
-    // G4.3: gaining focus makes the global app menu THIS window's menu. (No
-    // stored spec yet — a just-opened window — leaves the current menu; it
-    // sends its own menu:set on boot.)
-    win.on('focus', () => {
-      const spec = windowMenuSpecs.get(win.webContents.id);
-      if (spec) {
-        buildAppMenu(spec, dispatchMenuCommand, { canNewWindow: isServerMode() });
-      }
-    });
-  }
-
-  // The red traffic-light button closes the window directly, which (like
-  // a native Quit) would tear down the renderer and drop unsaved edits
-  // with no prompt. (Cmd+W does NOT reach here — the renderer binds it to
-  // close-tab; only the traffic-light button and app.quit() close the
-  // window.) Intercept the first close and route it through the same
-  // renderer confirm as before-quit; quitInteractive calls back via
-  // `app:quit` (which sets quitConfirmed) to let the next close through,
-  // or does nothing to cancel and the window stays open.
-  win.on('close', (event) => {
-    // G4: in server mode the buffers live in the central server and outlive
-    // any window — closing a window loses nothing (the server-side detach
-    // reaps the client; unsaved edits stay in the server + its autosave). So
-    // a window closes freely; only QUITTING the app (before-quit / C-x C-c),
-    // which kills the server, runs the unsaved-changes confirm.
-    if (isServerMode()) return;
-    if (!shouldHoldForConfirm()) return;
-    event.preventDefault();
-    win.webContents.send('app:confirm-quit');
+  windows.add(win);
+  // B2: report this window's frame to its renderer on move/resize (debounced),
+  // so the session snapshot records its geometry — the renderer forwards it to
+  // the server. The renderer also pulls once on connect (window:get-bounds).
+  let boundsTimer = null;
+  const scheduleBoundsReport = () => {
+    if (boundsTimer) clearTimeout(boundsTimer);
+    boundsTimer = setTimeout(() => {
+      boundsTimer = null;
+      if (!win.isDestroyed()) win.webContents.send('window:bounds', boundsDescriptor(win));
+    }, 250);
+  };
+  win.on('resize', scheduleBoundsReport);
+  win.on('move', scheduleBoundsReport);
+  // G4.3: gaining focus makes the global app menu THIS window's menu. (No
+  // stored spec yet — a just-opened window — leaves the current menu; it
+  // sends its own menu:set on boot.)
+  win.on('focus', () => {
+    const spec = windowMenuSpecs.get(win.webContents.id);
+    if (spec) {
+      buildAppMenu(spec, dispatchMenuCommand, { canNewWindow: true });
+    }
   });
 
-  // G4: keep the window registry current as windows close, and re-point
-  // `mainWindow` at a survivor so the quit/menu fallbacks never reference a
-  // destroyed window. Flag-off (single window) never adds this listener, so
-  // its lifecycle is unchanged.
-  if (isServerMode()) {
-    const wcId = win.webContents.id; // capture now; gone after 'closed'
-    win.on('closed', () => {
-      windows.delete(win);
-      windowMenuSpecs.delete(wcId); // G4.3: drop the closed window's menu spec
-      if (mainWindow === win) {
-        mainWindow = windows.values().next().value ?? null;
-      }
-    });
-  }
+  // A window closes freely: in Model B the buffers live in the central server
+  // and outlive any window — closing one loses nothing (the server-side detach
+  // reaps the client; unsaved edits stay in the server + its autosave). Only
+  // QUITTING the app (before-quit / C-x C-c), which kills the server, runs the
+  // unsaved-changes confirm. (Cmd+W does NOT close a window — the renderer binds
+  // it to close-tab; only the traffic-light button and app.quit() close it.)
+
+  // Keep the window registry current as windows close, and re-point `mainWindow`
+  // at a survivor so the quit/menu fallbacks never reference a destroyed window.
+  const wcId = win.webContents.id; // capture now; gone after 'closed'
+  win.on('closed', () => {
+    windows.delete(win);
+    windowMenuSpecs.delete(wcId); // drop the closed window's menu spec
+    if (mainWindow === win) {
+      mainWindow = windows.values().next().value ?? null;
+    }
+  });
 
   // Reap this window's JMarkdown preview watcher (if any) when it closes, in
   // every mode — a live `jmarkdown watch` subprocess must not outlive the
@@ -275,11 +240,9 @@ function createWindow(opts = {}) {
 
   win.loadURL(EDITOR_URL);
 
-  // G1: when the server is running (GODOT_SERVER=1), plumb a MessageChannel
-  // port from the server to this window's renderer. `serverBridge` is null with
-  // the flag off, so this is a no-op in the default config — the renderer never
-  // hears of a port and boots exactly as today. With the flag on, the renderer
-  // receives + stashes the port but does NOT route editing through it (G2).
+  // Plumb a MessageChannel port from the server to this window's renderer.
+  // `serverBridge` is null only if the startup fork failed, so this keeps a
+  // defensive null-guard.
   if (serverBridge) serverBridge.attachWindow(win.webContents);
   return win;
 }
@@ -321,7 +284,7 @@ app.whenReady().then(() => {
   registerProcessHandlers();
   registerGnuplotHandlers();
   registerJmarkdownWatchHandlers();
-  buildAppMenu(null, dispatchMenuCommand, { canNewWindow: isServerMode() });
+  buildAppMenu(null, dispatchMenuCommand, { canNewWindow: true });
   // The renderer calls this (via host.quit) from quitInteractive, after
   // it has confirmed there is nothing unsaved to lose. Mark the quit
   // confirmed so before-quit lets it through, then quit.
@@ -329,22 +292,20 @@ app.whenReady().then(() => {
     quitConfirmed = true;
     app.quit();
   });
-  // G4: the renderer asks for another window via host.newWindow() — driven by
-  // the server's WINDOW_NEW effect (the C-x 5 2 chord resolves to a server
-  // `new-window` command). Server mode only; the server can't open an OS
-  // window, so main does it and the bridge attaches it as a new client. B2: a
-  // session restore threads the saved window geometry through, so a spawned
-  // window is born at its reconciled size/position.
+  // The renderer asks for another window via host.newWindow() — driven by the
+  // server's WINDOW_NEW effect (the C-x 5 2 chord resolves to a server
+  // `new-window` command). The server can't open an OS window, so main does it
+  // and the bridge attaches it as a new client. B2: a session restore threads
+  // the saved window geometry through, so a spawned window is born at its
+  // reconciled size/position.
   ipcMain.on('window:new', (_event, geometry) => {
-    if (isServerMode()) createWindow({ geometry: geometry ?? null });
+    createWindow({ geometry: geometry ?? null });
   });
   // P2: the renderer asks main to close THIS window (host.closeWindow()),
   // driven by the server's close-window CLIENT_DIRECTIVE (C-x 5 0, or C-x 5 1
-  // from another window). Server mode only — in server mode a window closes
-  // freely (the buffers live in the server; win.on('close') returns early), so
-  // we just close the sender's BrowserWindow.
+  // from another window). A window closes freely (the buffers live in the
+  // server), so we just close the sender's BrowserWindow.
   ipcMain.on('window:close', (event) => {
-    if (!isServerMode()) return;
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win && !win.isDestroyed()) win.close();
   });
@@ -352,7 +313,7 @@ app.whenReady().then(() => {
   // pre-exists at default bounds). main owns `screen`, so it reconciles the
   // saved frame against the live displays here, then resizes.
   ipcMain.on('window:set-bounds', (event, geometry) => {
-    if (!isServerMode() || !geometry) return;
+    if (!geometry) return;
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
     const b = reconcileBounds(geometry, screen.getAllDisplays().map(describeDisplay));
@@ -432,36 +393,35 @@ app.whenReady().then(() => {
   // The renderer sends the current buffer's mode menu; rebuild the
   // application menu around it as the buffer's mode changes.
   ipcMain.on('menu:set', (event, modeMenu) => {
-    // G4.3: the app menu follows the focused window. Store this window's menu;
-    // apply it only if this window is focused (or nothing is focused — e.g. the
-    // app is backgrounded — so the menu isn't left stale). Flag-off has one
-    // window, which is the focused one, so this stays last-writer-wins.
+    // The app menu follows the focused window. Store this window's menu; apply
+    // it only if this window is focused (or nothing is focused — e.g. the app is
+    // backgrounded — so the menu isn't left stale).
     const id = event.sender.id;
     windowMenuSpecs.set(id, modeMenu);
     const focused = BrowserWindow.getFocusedWindow();
     if (!focused || focused.webContents.id === id) {
-      buildAppMenu(modeMenu, dispatchMenuCommand, { canNewWindow: isServerMode() });
+      buildAppMenu(modeMenu, dispatchMenuCommand, { canNewWindow: true });
     }
   });
 
-  // G1: behind GODOT_SERVER=1 only, fork the Model-B server utilityProcess so a
-  // window can later (G2) be driven by it. Construction is wrapped so a fork
-  // failure logs rather than crashing the host. With the flag off, isServerMode
-  // is false and `serverBridge` stays null — the app is unchanged.
-  if (isServerMode()) {
-    try {
-      // Increment 3: let the server SEED its session from the renderer's
-      // session.json on its first boot (so the user's existing open files come
-      // back through the server). The forked utilityProcess inherits
-      // process.env, so set the path here, before the fork. After the first
-      // boot the server owns its own session and ignores this.
-      process.env.MWB_SESSION_SEED = join(app.getPath('userData'), 'session.json');
-      serverBridge = createServerBridge({ utilityProcess, MessageChannelMain });
-      console.error('[main] GODOT_SERVER=1: Model-B server forked');
-    } catch (error) {
-      serverBridge = null;
-      console.error('[main] failed to start the Model-B server:', error);
-    }
+  // Fork the Model-B server utilityProcess. Construction is wrapped so a fork
+  // failure logs rather than crashing the host (the references to `serverBridge`
+  // keep a defensive null-guard for that case).
+  try {
+    // Let the server SEED its session from the renderer's session.json on its
+    // first boot (so the user's existing open files come back through the
+    // server). The forked utilityProcess inherits process.env, so set the path
+    // here, before the fork. After the first boot the server owns its own
+    // session and ignores this.
+    process.env.MWB_SESSION_SEED = join(app.getPath('userData'), 'session.json');
+    // The spine reads user config (faces.json now; init.lisp/custom.lisp later)
+    // from this dir directly via fs (plans/MODEL-B-DEFAULT.md, Part B).
+    process.env.MWB_USER_DATA = app.getPath('userData');
+    serverBridge = createServerBridge({ utilityProcess, MessageChannelMain });
+    console.error('[main] Model-B server forked');
+  } catch (error) {
+    serverBridge = null;
+    console.error('[main] failed to start the Model-B server:', error);
   }
 
   createWindow();
@@ -476,10 +436,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// G1 lifecycle: kill the server `utilityProcess` when the app is quitting, so
-// no orphaned server outlives the app. `will-quit` fires once the quit is
-// committed (after the renderer's confirm). `dispose` is idempotent and guarded;
-// with the flag off `serverBridge` is null and this is a no-op.
+// Kill the server `utilityProcess` when the app is quitting, so no orphaned
+// server outlives the app. `will-quit` fires once the quit is committed (after
+// the renderer's confirm). `dispose` is idempotent and guarded; `serverBridge`
+// is null only if the fork failed, in which case this is a no-op.
 app.on('will-quit', () => {
   if (serverBridge) {
     serverBridge.dispose();
@@ -518,10 +478,10 @@ app.on('will-quit', () => reapJmarkdownWatchers());
 app.on('before-quit', (event) => {
   if (!shouldHoldForConfirm()) return;
   event.preventDefault();
-  // G4: in server mode the confirm runs in the focused window (any window can
-  // confirm — the buffers are shared server state); flag-off it is the single
-  // window. quitInteractive there calls back via `app:quit` to proceed.
-  const win = isServerMode() ? focusedWindow() : mainWindow;
+  // The confirm runs in the focused window (any window can confirm — the buffers
+  // are shared server state). quitInteractive there calls back via `app:quit` to
+  // proceed.
+  const win = focusedWindow();
   if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
     win.webContents.send('app:confirm-quit');
   } else {

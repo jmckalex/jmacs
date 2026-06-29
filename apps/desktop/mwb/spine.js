@@ -35,10 +35,13 @@
  */
 
 import { readFileSync, statSync, readdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { homedir } from 'node:os';
+import { atomicWriteSync } from './atomic-write-sync.js';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInterpreter, NIL, cons, listToArray, arrayToList, keyword } from '@editor/lisp';
+import { createInterpreter, NIL, cons, listToArray, arrayToList, keyword, sym, writeString, applyProcedure } from '@editor/lisp';
 import { createBuffer } from '@editor/buffer';
 import { createView } from '@editor/view';
 import { createBufferPrimitives, createLatexPrimitives } from '@editor/stdlib';
@@ -66,9 +69,120 @@ import {
 } from '../../../packages/renderer/src/bookmark-outline.js';
 import { createPaneModel } from './pane-model.js';
 import { createCitationPrimitives } from './citation-bridge.js';
+// Pure JSON<->Lisp converters for faces.json (no DOM / electron deps), shared
+// with the renderer — the spine now reads the user's faces server-side (B1.2).
+import {
+  jsonToLispOverrides,
+  jsonToLispUserFaces,
+  jsonToLispHighlightRules,
+  lispToJsonFacesFile,
+} from '../src/face-overrides.js';
+// Pure CSS generator (no DOM) — the spine builds the face-overrides CSS the
+// renderer injects, so chrome is server-authoritative (B1.3).
+import { faceStylesCss, BASE_FACE_NAME } from '../src/face-styles.js';
+// Pure Lisp form-bounds (no DOM) — inline-eval computes the form at/before point
+// server-side (B4), then evals it in the spine session.
+import { formBoundsAtPoint, formBoundsBeforePoint } from '../../../packages/renderer/src/brackets.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
+
+/** The per-user config directory (`app.getPath('userData')`), passed by main via
+ *  MWB_USER_DATA before the fork. Absent under the unit-test harness
+ *  (`createSpine` without the env) → user-config reads return empty defaults, so
+ *  the suite is unaffected. */
+const USER_DATA = process.env.MWB_USER_DATA || null;
+const FACES_PATH = USER_DATA ? join(USER_DATA, 'faces.json') : null;
+/** The Lisp constructors face-overrides.js needs to build hash-maps. */
+const FACE_FACTORIES = { keyword, sym };
+
+/** Read + parse `<userData>/faces.json`. Returns null when absent / unreadable /
+ *  malformed (first launch, or the test harness) so callers fall back to the
+ *  built-in defaults rather than breaking boot. */
+function readFacesJson() {
+  if (!FACES_PATH) return null;
+  try {
+    return JSON.parse(readFileSync(FACES_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** Read a config file (e.g. `custom.lisp`) from `<userData>` as text. Null when
+ *  absent / unreadable (first launch, or the test harness). */
+function readConfigText(name) {
+  if (!USER_DATA) return null;
+  try {
+    return readFileSync(join(USER_DATA, name), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** Atomically write text to `<userData>/<name>` (custom.lisp on save). A no-op
+ *  when USER_DATA is absent (the test harness) so the suite never touches disk.
+ *  Uses the same temp+fsync+rename writer as the buffer-save path. */
+function writeConfigText(name, text) {
+  if (!USER_DATA) return;
+  atomicWriteSync(join(USER_DATA, name), text);
+}
+
+/** The header the spine writes atop custom.lisp — mirrors the renderer's old
+ *  CUSTOM_FILE_HEADER (B2.2a moved persistence server-side). */
+const SPINE_CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
+;;;
+;;; jmacs writes this file; edits made by hand will be overwritten the
+;;; next time a setting is saved. For free-form configuration, use
+;;; init.lisp instead.
+
+`;
+
+/** The seed for a fresh `scratch-buffer` (B4) — mirrors app.js's SCRATCH. */
+const SPINE_SCRATCH_SEED = `;; scratch.lisp — a buffer for evaluating Lisp.
+;;
+;; This buffer is syntax-highlighted because its name ends in .lisp.
+;; Edit freely; press C-x b to switch back to the welcome buffer.
+
+(define (factorial n)
+  "The classic recursion."
+  (if (= n 0)
+      1
+      (* n (factorial (- n 1)))))
+
+(define greeting "hello, world")
+`;
+
+/** Convert a raw Lisp custom value into a clone-safe JS value for the customize
+ *  MODEL the spine pushes over the port (B2.3): a symbol/keyword becomes its
+ *  name string; NIL becomes null; numbers / strings / booleans pass through. A
+ *  :choice value is a SYMBOL — it rides as a string and the renderer sends that
+ *  string back; custom-apply!'s -coerce-for-type re-symbolises it by the
+ *  setting's type, so no raw Lisp symbol ever crosses the port. */
+function lispValueToWire(v) {
+  if (v === NIL || v == null) return null;
+  if (typeof v === 'object' && typeof v.name === 'string') return v.name;
+  return v;
+}
+
+/** The built-docs directory (`docs/build/`, sibling of packages/). The spine
+ *  reads the doc manifest here so doc-known? resolves server-side (B3). */
+const DOCS_BUILD_DIR = join(here, '..', '..', '..', 'docs', 'build');
+let docManifestNamesCache = null;
+
+/** The list of documented names from `docs/build/manifest.json`
+ *  (`Object.keys(functions)`, the same set the host's `doc:manifest` derives),
+ *  or null when the docs haven't been built. Cached on first success. */
+function readDocManifestNames() {
+  if (docManifestNamesCache) return docManifestNamesCache;
+  try {
+    const map = JSON.parse(readFileSync(join(DOCS_BUILD_DIR, 'manifest.json'), 'utf8'));
+    const names = map.functions ? Object.keys(map.functions) : Object.keys(map);
+    docManifestNamesCache = names;
+    return names;
+  } catch {
+    return null; // docs not built — doc-known? is #f; open-doc falls to live docstrings
+  }
+}
 
 /** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
  *  Keyword both carry a `.name`), with any leading `:` stripped, or null when
@@ -195,6 +309,19 @@ const SPINE_STDLIB = Object.freeze([
   'custom.lisp',
   'indent.lisp',
   'modes.lisp',
+  // faces.lisp / themes.lisp / highlight-rules.lisp — the face + theme +
+  // highlight-rule REGISTRIES and the PURE getters (current-theme-css-vars,
+  // current-face-styles, current-mode-face-styles, highlight-rule-records) that
+  // the spine computes and (B1.3) pushes to every window as directives, so the
+  // server is the single source of truth for chrome (plans/MODEL-B-DEFAULT.md,
+  // Part B1). `faces.lisp`'s `defface` MACRO replaces the former prelude shim, so
+  // these must load BEFORE any defface user (snippets.lisp/themes.lisp) and after
+  // their deps (custom.lisp = defcustom/defgroup, modes.lisp = per-mode faces).
+  // Their apply-side primitives (apply-theme!/apply-face-styles!/set-css-*/
+  // set-highlight-overrides!) are spine stubs (B1.1 no-ops → B1.3 emitters).
+  'faces.lisp',
+  'themes.lisp',
+  'highlight-rules.lisp',
   // keymap.lisp — the ONE keymap + the dispatch engine (handle-key,
   // lookup-key, keymap-chain, the prefix-map stack, the key-reader). Under
   // Model B the server is the sole resolver; this file is authoritative and
@@ -243,6 +370,18 @@ const SPINE_STDLIB = Object.freeze([
   // mode-keymap chain in keymap.lisp's handle-key. Production order: after
   // markdown.lisp. See PRIMITIVE-SPLIT.md "Modes / latex".
   'latex.lisp',
+  // latex-compile.lisp — AUCTeX's compile/view loop (B4): C-c C-c latex-compile
+  // (save + run *latex-command* via the spine's run-process! — it spawns the
+  // build child DIRECTLY, being a Node utilityProcess — then writes *TeX output*/
+  // *TeX errors* to the utility dock via directives and parses the log with the
+  // model-side parse-latex-log), C-c C-v latex-view (open-file-in-split! splits
+  // the pane + opens the built PDF beside the source; pdf-reload! refreshes it),
+  // C-c ` latex-next-error (open-file-path! + goto-line!, both model-side). Loads
+  // right after latex.lisp (it extends latex-c-c-map) and BEFORE reftex.lisp
+  // (which redefines this file's latex-master-file seam — reftex's wins). Mirrors
+  // the canonical STDLIB order (utility-pane.lisp's utility-output-set helper is
+  // embedded post-load below rather than loading that whole file).
+  'latex-compile.lisp',
   // latex-insert.lisp — AUCTeX Phase 2 smart insertion (environment /
   // macro / section / font). The pure ENV-STACK helpers + the model-side
   // commands run server-side; the completion-driven inserts route through
@@ -373,7 +512,89 @@ const SPINE_STDLIB = Object.freeze([
   // bridge (citation-parse-lenient / -entries / -format-keys / -register-
   // style!). Extends latex-c-c-map with [. Loads after reftex-refs.lisp.
   'reftex-cite.lisp',
+  // docs.lisp — the in-editor documentation surface (B3; plans/MODEL-B-DEFAULT.md):
+  // doc-manifest / doc-known? (over the load-doc-manifest! host primitive that the
+  // spine reads from docs/build/manifest.json via fs), symbol-at-point + doc-
+  // summary-for (pure Lisp over buffer-text/point + the interpreter's docstrings),
+  // and the commands open-manual (C-h d), open-doc, describe-symbol-at-point (C-h .).
+  // Those commands call render-side primitives (open-doc!/open-manual!/open-
+  // docstring-page!) that the spine provides as `open-doc`/`open-manual`/
+  // `open-docstring` directive emitters; the renderer's openDocInPane /
+  // openDocstringBuffer render them. docs.lisp's `apropos-doc` is SHADOWED by the
+  // embedded show-apropos one (it loads after this) so C-h a keeps command-apropos.
+  // Needs editing.lisp/custom.lisp (buffer/point/defcustom) + expand-region.lisp
+  // (the -scan-*/-char-at symbol helpers) — all earlier in this list.
+  'docs.lisp',
+  // folding.lisp — code-folding commands (B4): toggle-fold-at-point (C-c TAB),
+  // fold-all (C-c C-,), unfold-all (C-c C-.). Folding is a pure VIEW concern, so
+  // these wrap render-side primitives (toggle-fold-at-point!/fold-all!/unfold-all!)
+  // that the spine provides as `fold-toggle`/`fold-all`/`unfold-all` directive
+  // emitters → the renderer's editorView.toggleFoldAtPoint()/foldAll()/unfoldAll().
+  'folding.lisp',
+  // project.lisp — the open-project / find-project / close-project commands (B4).
+  // Thin Lisp over the host primitives open-project-at! / open-project! /
+  // close-project! / open-project-chooser! (above) — under Model B each project
+  // opens in its OWN window (open-project-at! → onOpenProjectWindow → the server
+  // spawns a window + assembles the 3-column layout via loadProjectWindow).
+  // find-project's minibuffer helpers (-initial-find-file-value, -expand-tilde)
+  // are embedded post-load (files.lisp isn't in SPINE_STDLIB; they resolve at
+  // command-call time, so load order is fine). Needs commands.lisp (defcommand).
+  'project.lisp',
+  // face-info.lisp — C-h F describe-face-at-point + C-h C-f highlight-construct-
+  // at-point (B4). The commands fetch RENDER-side tree-sitter data (captures +
+  // node at point) via `with-tree-sitter-info` — the spine's async round-trip to
+  // the renderer (embedded glue below; the reverse of NOTEBOOK_EVAL) — then run
+  // server-side: smallest-covering-capture + the Markdown render → open-docstring-
+  // page! (the B3 doc data-source), and the C-h C-f face/rule mutation via
+  // create-face! / add-highlight-rule! (faces.lisp / highlight-rules.lisp, both
+  // loaded). face-color-for resolves from the spine's theme vars. The C-h F / C-h
+  // C-f bindings already live in keymap.lisp. Load-time has no external calls, so
+  // order is free; with-tree-sitter-info resolves at command-call time.
+  'face-info.lisp',
 ]);
+
+/**
+ * Renderer-consumed customize variables (B2 regression / B0 config-push).
+ *
+ * These defcustoms live in renderer-only stdlib files NOT loaded into
+ * SPINE_STDLIB (sticky-notes / views / system / jukebox / directory-tree),
+ * so B2.3 — which computes the customize MODEL from the spine's
+ * `*custom-registry*` — dropped them from `M-x customize`. The spine now
+ * DECLARES them itself (see the embedded block after the stdlib load), so
+ * they show + persist again; but the renderer is still the code that READS
+ * their values (markdown preview, autosave, the jukebox `format-track` Lisp
+ * fn, the PDF restore default, the dir-tree open target). B2.2b deleted the
+ * CUSTOMIZE_SYNC relay, so a live customize edit no longer reaches the
+ * renderer's interpreter. This set is the whitelist whose `:on-change`
+ * pushes the new value down (`config-apply`) so a live edit takes effect
+ * without a restart — the explicitly-deferred B0 config push. (The eventual
+ * pure-JS migration of these consumers belongs to B7, when the renderer
+ * interpreter is deleted; until then the renderer re-applies via its own
+ * `custom-apply!`, which also fires its native on-change hooks.)
+ */
+const RENDERER_CONFIG_VARS = Object.freeze(new Set([
+  '*markdown-interpreter*',
+  '*pdf-restore-default*',
+  '*autosave-recovery*',
+  '*autosave-recovery-interval*',
+  '*jukebox-track-format*',
+  '*directory-tree-open-target*',
+]));
+
+/** Expand a leading `~` / `~/` to the user's home directory. The spine reads
+ *  disk directly (Node), so it resolves paths itself rather than leaning on a
+ *  renderer helper. A non-tilde path is returned unchanged. */
+function expandTildePath(p) {
+  const s = String(p ?? '');
+  if (s === '~') return homedir();
+  if (s.startsWith('~/')) return join(homedir(), s.slice(2));
+  return s;
+}
+
+// The left directory-tree sidebar's share of a project window (the canonical
+// Nova proportion, mirroring app.js's PROJECT_SIDEBAR_RATIO). The bookmark
+// outline on the right is split off the editing pane by openBookmarkBeside.
+const PROJECT_SIDEBAR_RATIO = 0.18;
 
 /**
  * Create the command spine.
@@ -526,6 +747,19 @@ export function createSpine(options, effects = {}) {
    *  open another window (a new client on this shared server). Signature: (). */
   const onNewWindow = effects.onNewWindow ?? (() => {});
 
+  /** Raised when `open-project-at!` (find-project / open-project) opens a project:
+   *  each project gets its OWN window (Model B can do this now; the old in-renderer
+   *  path reconfigured the single window in place because it couldn't). The server
+   *  stashes CONFIG, spawns a fresh window, and assembles the 3-column project
+   *  layout on its HELLO via `spine.loadProjectWindow`. Signature: (config) where
+   *  config is `{ root }` (a project root path). */
+  const onOpenProjectWindow = effects.onOpenProjectWindow ?? (() => {});
+
+  /** Raised by `close-project!`: persist the project window's open-file layout to
+   *  `<root>/.godot/project.json` and close the window (each project is its own
+   *  window now). Signature: ({ root, files, active, windowId }). */
+  const onCloseProject = effects.onCloseProject ?? (() => {});
+
   /** Raised by `emit-client-directive!`: send the directive `{ name, args }` to
    *  each window in IDS. The command chose the recipients (this/other/all window
    *  ids); the server posts a CLIENT_DIRECTIVE to just those ports. NAME is a
@@ -590,6 +824,11 @@ export function createSpine(options, effects = {}) {
 
   // Client 0's pane tree starts as a single leaf on the seed buffer.
   makePaneModel(0, initialEntry.id);
+
+  // B4 project: which client windows are PROJECT windows (index → project root).
+  // Set by loadProjectWindow; read by close-project! (to know what to save +
+  // close); cleared when the window tears down (removeClientView).
+  const projectRootByClient = new Map();
 
   /** The pane model of the active client (what the pane primitives mutate).
    *  Falls back to any surviving model — index 0 may have detached — then null
@@ -786,6 +1025,25 @@ export function createSpine(options, effects = {}) {
   // built only when the keys settle — never per-keystroke on a long buffer.
   let isearchLazyTimer = null;
 
+  // --- general process runner (run-process!) — B4 latex-compile ---------
+  // The spine is a Node utilityProcess, so it spawns build children DIRECTLY
+  // (node:child_process) — no main-process IPC like the renderer's old
+  // run-process! needed. Each call gets a monotonic id; the on-exit Lisp
+  // procedure is parked here and applied once when the child finishes, with a
+  // `{:stdout :stderr :code}` hash-map (the SAME contract apps/desktop/src/
+  // process.js gave the renderer: code nil on signal-kill / spawn ENOENT, the
+  // error text folded into stderr). This is the async-callback-into-Lisp seam
+  // the latex-compile loop is built on (handover 2026-06-29).
+  let nextRunId = 0;
+  /** @type {Map<string, *>} runId → the parked on-exit Lisp procedure. */
+  const runProcessCallbacks = new Map();
+  // B4 face-info: the renderer-resolved {faceName: cssColour} from the last
+  // tree-sitter-query reply (the `--tok-<face>` values live in the renderer's CSS
+  // cascade). face-color-for reads it; deliverTreeSitterInfo refreshes it.
+  let treeSitterColors = {};
+  /** @type {Map<string, import('node:child_process').ChildProcess>} live children. */
+  const runProcessChildren = new Map();
+
   // --- the interpreter --------------------------------------------------
   const interpreter = createInterpreter({
     write: () => {}, // discard print output in the spine
@@ -853,7 +1111,10 @@ export function createSpine(options, effects = {}) {
       // `minibuffer-delivered` (called from deliverMinibuffer below).
       'open-minibuffer!': (args) => {
         activePrompt = String(args[0] ?? '');
-        onMinibufferOpen(activePrompt);
+        // args[1] (optional) seeds the input — e.g. find-file's starting
+        // directory; the server puts it in minibufferState.value, the client
+        // pre-fills it. Empty when no seed is given.
+        onMinibufferOpen(activePrompt, lispString(args[1]) ?? String(args[1] ?? ''));
         return NIL;
       },
       // open-completing-minibuffer! — the completion-backed prompt the
@@ -868,7 +1129,9 @@ export function createSpine(options, effects = {}) {
       // PRIMITIVE-SPLIT.md "Minibuffer / completion".
       'open-completing-minibuffer!': (args) => {
         activePrompt = String(args[0] ?? '');
-        onMinibufferOpen(activePrompt);
+        // args[1] (optional) seeds the input (find-file / find-project start at a
+        // sensible directory). Forwarded to the client via minibufferState.value.
+        onMinibufferOpen(activePrompt, lispString(args[1]) ?? String(args[1] ?? ''));
         return NIL;
       },
 
@@ -1010,6 +1273,61 @@ export function createSpine(options, effects = {}) {
       // keymap binding + the command) is here; the host half is in the client.
       'request-new-window!': () => {
         onNewWindow();
+        return NIL;
+      },
+
+      // --- projects (B4 project.lisp) -----------------------------------
+      // (open-project-at! PATH) — open the directory PATH as a project in a NEW
+      // window (each project gets its own window now that Model B supports it;
+      // the old in-renderer path reconfigured the single window in place because
+      // it couldn't). Validate PATH is a directory (the openFile effect marks a
+      // dir), then raise onOpenProjectWindow — the server spawns a window and
+      // assembles the 3-column layout (dir-tree | editing | bookmarks) on its
+      // HELLO via loadProjectWindow. A non-directory reports on the status line.
+      'open-project-at!': (args) => {
+        openProjectAtPath(lispString(args[0]) ?? String(args[0] ?? ''));
+        return NIL;
+      },
+      // (open-project!) — the native OS directory-picker entry point (the `open-
+      // project` command). The dialog is a renderer/main concern, so emit a
+      // directive; the renderer runs host.openDirectory() and sends the chosen
+      // path back up as a PROJECT_OPEN message, which the server routes to
+      // openProjectAt (→ a new project window). (Stage 3.)
+      'open-project!': () => {
+        onClientDirective([activeClientIndex], 'open-project-dialog', []);
+        return NIL;
+      },
+      // (close-project!) — save the project window's open files to its sidecar
+      // (<root>/.godot/project.json) and close the window. A no-op (with a status)
+      // in a non-project window. The save/close happen host-side (onCloseProject).
+      'close-project!': () => {
+        const root = projectRootByClient.get(activeClientIndex);
+        if (!root) {
+          statusText = 'close-project: this window is not a project';
+          onStatus(statusText);
+          return NIL;
+        }
+        // Gather the project's open FILE paths (the editing tabline) + the focused
+        // one. Data-sources (the dir-tree / bookmark outline) aren't files, so
+        // filtering by registry filePath leaves just the editing files.
+        const files = [];
+        for (const id of (clientBuffers.get(activeClientIndex) ?? new Set())) {
+          const e = registry.get(id);
+          if (e && e.filePath && !files.includes(e.filePath)) files.push(e.filePath);
+        }
+        const focused = registry.get(currentBufferIdOf(activeClientIndex));
+        const active = focused && focused.filePath ? focused.filePath : null;
+        const windowId = activeClientIndex;
+        projectRootByClient.delete(windowId);
+        onCloseProject({ root, files, active, windowId });
+        return NIL;
+      },
+      // (open-project-chooser!) — the visual Project Chooser launcher. A renderer
+      // modal, so emit a directive; the renderer shows the chooser and sends the
+      // chosen project path back up as PROJECT_OPEN (→ openProjectAt → a new
+      // window). (Stage 3.)
+      'open-project-chooser!': () => {
+        onClientDirective([activeClientIndex], 'open-project-chooser', []);
         return NIL;
       },
 
@@ -1331,6 +1649,24 @@ export function createSpine(options, effects = {}) {
         switchClientToBuffer(activeClientIndex, entry.id);
         return registry.viewFor(entry.id, activeClientIndex);
       },
+      // view cycling (B4; views.lisp's next-view/previous-view): step the active
+      // window's open-set (clientBuffers, insertion-ordered) relative to its
+      // current buffer and switch — the switch reconciles to the client via the
+      // normal PANE_TREE push, so no directive is needed. A no-op with <2 buffers.
+      'next-view!': () => { cycleActiveView(1); return NIL; },
+      'previous-view!': () => { cycleActiveView(-1); return NIL; },
+      // scratch-buffer (B4): mint a uniquely-named scratch buffer seeded like the
+      // first-run scratch.lisp and switch to it (the startup seed is dropped on
+      // session restore — this conjures one mid-session). Server-owned buffer, so
+      // it reconciles to the client like any switch.
+      'new-scratch-view!': () => {
+        const used = new Set(registry.listRecords().map((r) => r.name));
+        let name = 'scratch.lisp';
+        for (let i = 2; used.has(name); i += 1) name = `scratch-${i}.lisp`;
+        const entry = registry.add(SPINE_SCRATCH_SEED, name);
+        switchClientToBuffer(activeClientIndex, entry.id);
+        return registry.viewFor(entry.id, activeClientIndex);
+      },
       // find-view — a by-name buffer lookup. A miss is `#f` (absence
       // convention), so `(if (find-view n) …)` works. Returns the active
       // client's view of that buffer, or #f.
@@ -1351,6 +1687,27 @@ export function createSpine(options, effects = {}) {
         switchClientToBuffer(activeClientIndex, entry.id);
         return registry.viewFor(entry.id, activeClientIndex);
       },
+      // (view-list) — the active client's OPEN views, as a Lisp list. Each entry
+      // is a real @editor/view (text buffer) OR, for a non-text DATA-SOURCE
+      // (image/audio/video/PDF), a lightweight wrapper carrying its filePath so
+      // `view-file-path` can match it. latex-compile.lisp's -latex-find-view-by-
+      // file walks this to decide whether a built PDF is already on screen
+      // (reload) or must be split-opened. Per-window semantics: the open set of
+      // the window that ran the command (clientBuffers, insertion-ordered).
+      'view-list': () => {
+        const set = clientBuffers.get(activeClientIndex) ?? new Set();
+        const out = [];
+        for (const id of set) {
+          if (registry.has(id)) {
+            const v = registry.viewFor(id, activeClientIndex);
+            if (v) out.push(v);
+          } else if (dataSources.has(id)) {
+            const ds = dataSources.get(id);
+            out.push({ dataSourceId: id, filePath: ds && ds.filePath ? ds.filePath : null, name: ds ? ds.name : '' });
+          }
+        }
+        return arrayToList(out);
+      },
 
       // --- view → file mapping (RefTeX document model) -----------------
       // The RefTeX R1 document model (reftex.lisp) needs the file path /
@@ -1359,9 +1716,16 @@ export function createSpine(options, effects = {}) {
       // @editor/view bound to a registry buffer; map it back to its registry
       // entry by buffer identity (view.buffer === entry.buffer) to read the
       // entry's filePath. A view with no backing file (scratch) → nil.
-      // (view-file-path VIEW) -> absolute path string, or nil.
+      // (view-file-path VIEW) -> absolute path string, or nil. Handles both a
+      // real @editor/view (mapped to its registry entry by buffer identity) and
+      // a data-source wrapper from view-list (carries filePath directly — a
+      // built PDF is a data-source, not a buffer-backed view).
       'view-file-path': (args) => {
-        const entry = entryForView(args[0]);
+        const v = args[0];
+        if (v && typeof v === 'object' && typeof v.dataSourceId === 'string') {
+          return (typeof v.filePath === 'string' && v.filePath !== '') ? v.filePath : NIL;
+        }
+        const entry = entryForView(v);
         return entry && entry.filePath ? entry.filePath : NIL;
       },
       // (view-buffer VIEW) -> the view's buffer object, or nil. reftex.lisp
@@ -1395,6 +1759,10 @@ export function createSpine(options, effects = {}) {
           return false;
         }
       },
+      // (home-directory) — the user's home directory (no trailing slash). The
+      // fallback start path for the find-file / find-project prompts when the
+      // current buffer has no file (a scratch). The server is a Node child.
+      'home-directory': () => homedir(),
 
       // --- save (real file I/O, atomic) --------------------------------
       // save-buffer! writes the ACTIVE buffer's text to its file path
@@ -1444,7 +1812,284 @@ export function createSpine(options, effects = {}) {
       'open-customize-variable!': (args) => openCustomizeScope({ variable: String(args[0] ?? '') }),
       'open-customize-face!': (args) => openCustomizeScope({ face: String(args[0] ?? '') }),
       'open-customize-faces!': () => openCustomizeScope({ group: 'faces' }),
-      'write-custom-file!': () => NIL,
+      // B2.2a (plans/MODEL-B-DEFAULT.md): persistence is server-authoritative.
+      // `(custom-apply-and-save! …)` -> save-customizations -> write-custom-file!
+      // with the (name value) pairs to persist; serialise each as a
+      // `(custom-set-saved! (quote NAME) (quote VALUE))` form (writeString quotes
+      // the value so its type round-trips) and atomic-write custom.lisp — the
+      // same file the spine LOADS at boot (B1.4). The renderer's writer is now a
+      // no-op. A no-op when USER_DATA is absent (the test harness).
+      'write-custom-file!': (args) => {
+        try {
+          const lines = listToArray(args[0]).map((pair) => {
+            const [name, value] = listToArray(pair);
+            return `(custom-set-saved! (quote ${writeString(name)}) (quote ${writeString(value)}))`;
+          });
+          writeConfigText('custom.lisp', SPINE_CUSTOM_FILE_HEADER + lines.join('\n') + '\n');
+        } catch (error) {
+          console.error('[spine] write-custom-file! failed:', error.message);
+        }
+        return NIL;
+      },
+
+      // --- faces / theme / highlight apply-side (B1; plans/MODEL-B-DEFAULT.md) -
+      // faces.lisp / themes.lisp / highlight-rules.lisp now load server-side (the
+      // registries + the PURE getters current-theme-css-vars / current-face-styles
+      // / highlight-rule-records live here). The APPLY side is render-side: B1.1
+      // stubs these as no-ops (the renderer still computes + paints faces from its
+      // own interpreter, so there is zero behaviour change); B1.3 turns them into
+      // directive emitters so the spine drives every window's CSS. `load-face-
+      // overrides!` returns empty until B1.2 reads faces.json server-side.
+      // B1.3: these fire whenever the spine's face state changes (a theme switch
+      // -> apply-theme!; a face/override edit -> apply-face-styles!; a
+      // highlight-rule change -> set-highlight-overrides!). Each re-pushes the
+      // current chrome to every window; a no-op before any window connects (the
+      // boot faces install).
+      'apply-theme!': () => (pushChromeToAll(), NIL),
+      'apply-face-styles!': () => (pushChromeToAll(), NIL),
+      // B2.2b: CSS knobs (*tab-width* / *line-height*) are server-driven too —
+      // their on-change fires these, which re-push chrome (chromeDirectives now
+      // carries a `css-knobs` directive); the renderer's set-css-* are no-ops.
+      'set-css-tab-width!': () => (pushChromeToAll(), NIL),
+      'set-css-line-height!': () => (pushChromeToAll(), NIL),
+      'set-highlight-overrides!': () => (pushChromeToAll(), NIL),
+      // B2 regression / B0 config-push: a renderer-consumed defcustom changed
+      // (its :on-change calls this with the var-name string). Push the NEW value
+      // to every window so the renderer re-applies it live — the markdown
+      // preview / autosave / jukebox-label / pdf-restore / dir-tree-target
+      // consumers all read from the renderer's interpreter, which B2.2b's relay
+      // deletion stopped updating on a live edit. The value rides as its
+      // writeString SOURCE (clone-safe — a raw Lisp value would mangle symbols
+      // across the port; see the customize :choice trick), re-applied client-side
+      // via `(custom-apply! (quote NAME) (quote SRC))`. A no-op before any window
+      // connects (the boot custom.lisp apply, which fires on-changes too).
+      'push-renderer-config!': (args) => {
+        if (!chromePushEnabled) return NIL;
+        const ids = [...paneModels.keys()];
+        if (ids.length === 0) return NIL;
+        const name = symName(args[0]) ?? lispString(args[0]) ?? String(args[0] ?? '');
+        if (!RENDERER_CONFIG_VARS.has(name)) return NIL;
+        let valueSrc;
+        try {
+          valueSrc = writeString(interpreter.evaluate(name));
+        } catch {
+          return NIL;
+        }
+        onClientDirective(ids, 'config-apply', [name, valueSrc]);
+        return NIL;
+      },
+
+      // --- B4 latex-compile: process runner + compile-loop effects -------
+      // (run-process! PROGRAM ARGS CWD ON-EXIT) — spawn PROGRAM (string) with
+      // ARGS (a Lisp list of strings) in CWD (a dir string, or nil). ON-EXIT is
+      // a Lisp procedure applied once with a hash-map {:stdout :stderr :code}
+      // (code nil on signal-kill / spawn ENOENT, the error text in :stderr).
+      // No shell — argv goes straight to exec (no metachar interpretation; see
+      // process.js). Returns the runId string. The whole AUCTeX compile/view
+      // loop (latex-compile.lisp) rides this one async-callback-into-Lisp seam.
+      'run-process!': (args) => {
+        const program = lispString(args[0]) ?? String(args[0] ?? '');
+        if (program === '') return NIL;
+        const argList = (args[1] != null && args[1] !== NIL)
+          ? listToArray(args[1]).map((a) => lispString(a) ?? String(a))
+          : [];
+        const cwd = (args[2] != null && args[2] !== NIL)
+          ? (lispString(args[2]) ?? String(args[2]))
+          : undefined;
+        const onExit = args[3];
+        const runId = `run-${nextRunId++}`;
+        if (onExit != null && onExit !== NIL) runProcessCallbacks.set(runId, onExit);
+
+        let stdout = '';
+        let stderr = '';
+        let errored = false;
+        // Build the {:stdout :stderr :code} hash-map and apply the parked Lisp
+        // procedure exactly once. The on-exit body runs the compile callback
+        // (writes *TeX output*/*TeX errors*, sets status, reloads an open PDF) —
+        // all server-side, fanning effects out as directives.
+        const finish = ({ out, err, code }) => {
+          runProcessChildren.delete(runId);
+          const proc = runProcessCallbacks.get(runId);
+          runProcessCallbacks.delete(runId);
+          if (proc == null || proc === NIL) return;
+          const map = new Map();
+          map.set(keyword('stdout'), out);
+          map.set(keyword('stderr'), err);
+          map.set(keyword('code'), typeof code === 'number' ? code : NIL);
+          try {
+            applyProcedure(proc, [map]);
+          } catch (error) {
+            console.error('[spine] run-process! on-exit failed:',
+              error.lispMessage ?? error.message ?? String(error));
+          }
+        };
+
+        let child;
+        try {
+          child = spawn(program, argList, cwd ? { cwd } : {});
+        } catch (error) {
+          // A synchronous spawn throw (bad cwd / args): report like an async
+          // error so the callback still fires exactly once.
+          finish({ out: '', err: String(error?.message ?? error), code: null });
+          return runId;
+        }
+        runProcessChildren.set(runId, child);
+        if (child.stdout) {
+          child.stdout.setEncoding('utf8');
+          child.stdout.on('data', (c) => { stdout += c; });
+        }
+        if (child.stderr) {
+          child.stderr.setEncoding('utf8');
+          child.stderr.on('data', (c) => { stderr += c; });
+        }
+        // The common ENOENT (program not on PATH) arrives async as 'error':
+        // fold it into stderr with a null code so -latex-spawn-failed? detects
+        // it and the latexmk→pdflatex fallback fires.
+        child.on('error', (error) => {
+          errored = true;
+          finish({ out: stdout, err: stderr + String(error?.message ?? error), code: null });
+        });
+        child.on('exit', (code, signal) => {
+          if (errored) return; // 'error' already reported the (authoritative) result
+          finish({ out: stdout, err: stderr, code: signal !== null ? null : code });
+        });
+        return runId;
+      },
+
+      // utility-panel-open! / -set! / -activate! — the utility dock is renderer
+      // UI (per-window), so these become directives to the window that ran the
+      // command (activeClientIndex; for the async build callback that's the
+      // window awaiting its compile). They mirror the renderer's own primitives
+      // 1:1 (applyDirective replicates their bodies over utilityDock). The
+      // *TeX output* / *TeX errors* tabs ride utility-output-set (a Lisp helper
+      // embedded below) which calls open! then set!.
+      'utility-panel-open!': (args) => {
+        const factory = lispString(args[0]) ?? String(args[0] ?? '');
+        const id = (args[1] != null && args[1] !== NIL) ? (lispString(args[1]) ?? String(args[1])) : factory;
+        const title = (args[2] != null && args[2] !== NIL) ? (lispString(args[2]) ?? String(args[2])) : id;
+        onClientDirective([activeClientIndex], 'utility-panel-open', [factory, id, title]);
+        return id;
+      },
+      'utility-panel-set!': (args) => {
+        const id = lispString(args[0]) ?? String(args[0] ?? '');
+        const text = lispString(args[1]) ?? String(args[1] ?? '');
+        onClientDirective([activeClientIndex], 'utility-panel-set', [id, text]);
+        return NIL;
+      },
+      'utility-panel-append!': (args) => {
+        const id = lispString(args[0]) ?? String(args[0] ?? '');
+        const text = lispString(args[1]) ?? String(args[1] ?? '');
+        onClientDirective([activeClientIndex], 'utility-panel-append', [id, text]);
+        return NIL;
+      },
+      'utility-panel-activate!': (args) => {
+        const id = lispString(args[0]) ?? String(args[0] ?? '');
+        onClientDirective([activeClientIndex], 'utility-panel-activate', [id]);
+        return NIL;
+      },
+
+      // (pdf-reload! [PATH]) — a recompile produces the SAME pdf path with NEW
+      // bytes; tell the active window's pdf-view to reload (bypassing its
+      // same-path load guard). Empty PATH → reload the current pdf. A directive;
+      // the renderer no-ops when no matching pdf is open.
+      'pdf-reload!': (args) => {
+        const path = (args[0] != null && args[0] !== NIL) ? (lispString(args[0]) ?? String(args[0])) : '';
+        onClientDirective([activeClientIndex], 'pdf-reload', [path]);
+        return NIL;
+      },
+
+      // (open-file-in-split! PATH [ORIENTATION [SIDE [PERSIST]]]) — latex-view's
+      // programmatic split: open PATH (a built PDF) BESIDE the source. Server-
+      // side via the pane tree (no directive): mint/reuse the pdf DATA-SOURCE,
+      // split the active client's focused pane (split() focuses the new leaf),
+      // and retarget that new leaf to the pdf — source | PDF side by side. The
+      // PERSIST flag (*latex-pdf-restore*) is a workspace-restore concern handled
+      // by the session machinery, so it's not threaded here (v1). A non-media
+      // PATH is a no-op.
+      'open-file-in-split!': (args) => {
+        const path = lispString(args[0]) ?? String(args[0] ?? '');
+        if (path === '') return NIL;
+        const orientation = symName(args[1]) === 'vertical' ? 'vertical' : 'horizontal';
+        const side = symName(args[2]) === 'before' ? 'before' : 'after';
+        const result = openFile(path);
+        if (!result || !result.media) return NIL;
+        const absPath = (typeof result.path === 'string' && result.path !== '') ? result.path : path;
+        const src = dataSources.findByPath(absPath)
+          ?? dataSources.add({ kind: result.kind, name: result.name, filePath: absPath });
+        currentPaneModel().split(orientation, 0.5, side);
+        switchClientToSource(activeClientIndex, src.id);
+        return NIL;
+      },
+      // B1.2: read the user's colour overrides from <userData>/faces.json (the
+      // same file the renderer writes) and return them in the Lisp shape
+      // set-face-overrides! consumes. Empty (defaults) when the file is absent.
+      'load-face-overrides!': () => jsonToLispOverrides(readFacesJson(), FACE_FACTORIES),
+      // B2.2a: persist the COMPLETE faces.json (colour overrides + user faces +
+      // highlight rules) server-side. The face saver (wired after the boot faces
+      // install) calls this with `(current-faces-file)` on every face/override
+      // change; serialise via the shared pure converter and atomic-write the same
+      // file the spine READS at boot (B1.2). The renderer's writer is now a no-op.
+      // A no-op when FACES_PATH is absent (the test harness).
+      'write-faces!': (args) => {
+        if (!FACES_PATH) return NIL;
+        try {
+          const json = lispToJsonFacesFile(args[0], FACE_FACTORIES, listToArray);
+          atomicWriteSync(FACES_PATH, JSON.stringify(json, null, 2));
+        } catch (error) {
+          console.error('[spine] write-faces! failed:', error.message);
+        }
+        return NIL;
+      },
+      // (face-color-for FACE) — the colour the active theme RENDERS face's token
+      // with. The `--tok-<face>` value lives in the renderer's CSS cascade
+      // (styles.css defaults + theme + face overrides), which the spine can't
+      // replicate, so the renderer resolves it (getComputedStyle) and ships a
+      // {face: colour} map in the tree-sitter-query reply; deliverTreeSitterInfo
+      // stashes it here. Used by describe-face-at-point right after the reply.
+      'face-color-for': (args) => {
+        const face = String(args[0] ?? '');
+        return (face !== '' && typeof treeSitterColors[face] === 'string')
+          ? treeSitterColors[face] : '';
+      },
+      // (request-tree-sitter-info!) — B4 face-info: ask the active window's
+      // renderer for the focused buffer's tree-sitter info (captures + node) at
+      // point. The render-side reply resumes the suspended command via
+      // deliverTreeSitterInfo -> tree-sitter-info-delivered. The point is sent so
+      // the renderer computes node-at-point at the same spot the command reads.
+      'request-tree-sitter-info!': () => {
+        let pt = 0;
+        try { pt = Number(interpreter.evaluate('(point)')) || 0; } catch { /* default 0 */ }
+        onClientDirective([activeClientIndex], 'tree-sitter-query', [pt]);
+        return NIL;
+      },
+
+      // --- docs (B3; docs.lisp now in SPINE_STDLIB) --------------------
+      // The doc MANIFEST read server-side: the list of documented names from
+      // docs/build/manifest.json (same set the host's doc:manifest derives). NIL
+      // when the docs aren't built — doc-known? is then #f and open-doc falls to
+      // the live-docstring path. (The doc page HTML stays a render concern: the
+      // open-doc/open-manual/open-docstring directives drive the renderer's
+      // openDocInPane/openDocstringBuffer, which read the HTML via the host.)
+      'load-doc-manifest!': () => {
+        const names = readDocManifestNames();
+        return names ? arrayToList(names) : NIL;
+      },
+      // B4 fix: a doc page opens as a SERVER 'doc' data-source (not a renderer-only
+      // view — that created an un-switchable tab, since tabs/switching are
+      // server-owned). The state carries the doc NAME (the renderer reads the HTML
+      // via the host) or, for a live docstring, the markdown SOURCE. Switches the
+      // active client to it, like a media/customize leaf.
+      'open-doc-view!': (args) => { openDocSource({ docName: String(args[0] ?? '') }); return NIL; },
+      'open-doc-source-view!': (args) => {
+        openDocSource({ docName: String(args[0] ?? ''), source: String(args[1] ?? '') });
+        return NIL;
+      },
+      // B4 (inline-eval): evaluate the Lisp form at / before point IN THE SPINE
+      // SESSION (Model B's one Lisp world — the renderer interpreter it used was
+      // inert) and push the result to THIS window as a pill overlay. Form bounds
+      // come from the pure brackets.js helpers over (buffer-text)/(point).
+      'eval-form-at-point!': () => { inlineEvalForm('at'); return NIL; },
+      'eval-form-before-point!': () => { inlineEvalForm('before'); return NIL; },
 
       // --- search (search.lisp) ----------------------------------------
       // Plain isearch (C-s / C-r) is now a real server-side loop in
@@ -1721,32 +2366,10 @@ export function createSpine(options, effects = {}) {
     ;; by keymap.lisp, loaded just below in SPINE_STDLIB — the server is the
     ;; sole resolver now, so there is no spine-side shim for either.
 
-    ;; defface / face — the face registry (faces.lisp owns these in
-    ;; production; that file is render-heavy and not loaded). snippets.lisp
-    ;; (and other feature files) register their faces at load via defface.
-    ;; The face REGISTRY is shared model state — two windows agree on what a
-    ;; face is — so the spine records it; only the *rendering* (the
-    ;; <style id="face-overrides"> the host writes) is render-side, deferred.
-    ;; A minimal model-side version: the face constructor builds a
-    ;; descriptor hash-map; defface stores it under its name. snippets.lisp
-    ;; (and the other feature files the spine loads) call defface with an
-    ;; EXPLICIT quote on the name — (defface 'snippet-active-face :doc …
-    ;; :default-dark (face …)) — and evaluated (face …) blocks, so a plain
-    ;; function (not a macro)
-    ;; suffices: NAME arrives already as a symbol, the option values already
-    ;; evaluated. The (from 'parent) inheritance form is unused here. See
-    ;; PRIMITIVE-SPLIT.md "Live preview / faces".
-    (define *face-registry* {})
-    (define (face . pairs)
-      "Build a face descriptor (a hash-map) from keyword-value pairs."
-      (apply hash-map pairs))
-    (define (defface name . options)
-      "Register face NAME (a symbol) with OPTIONS (keyword/value pairs).
-       Model-side: records the descriptor; the rendering is deferred."
-      (set! *face-registry*
-            (assoc *face-registry* name
-                   (assoc (apply hash-map options) :name name)))
-      name)
+    ;; defface / face / *face-registry* now load from faces.lisp (in
+    ;; SPINE_STDLIB, after modes.lisp, before snippets.lisp/themes.lisp) — the
+    ;; server holds the REAL face registry + the theme/face getters, not the
+    ;; former minimal model-side shim (plans/MODEL-B-DEFAULT.md, Part B1).
 
     ;; minibuffer-tab-complete — the base TAB-completion handler the
     ;; minibuffer's onTab calls (files.lisp owns it in production; that file
@@ -1770,6 +2393,273 @@ export function createSpine(options, effects = {}) {
   for (const file of SPINE_STDLIB) {
     const source = readFileSync(join(STDLIB_DIR, file), 'utf8');
     interpreter.evaluate(source);
+  }
+
+  // B4 latex-compile: the `utility-output` / `utility-output-set` helpers from
+  // utility-pane.lisp (which the spine does NOT load wholesale — its commands
+  // would shadow working server commands). latex-compile.lisp's build callback
+  // calls `utility-output-set` to (re)fill the *TeX output* / *TeX errors* dock
+  // tabs; both wrap the host utility-panel-* directive emitters. Defined after
+  // the stdlib load (commands.lisp's `define` is present) and before any build
+  // can run.
+  try {
+    interpreter.evaluate(`
+      (define (utility-output id title text)
+        "Open/reuse the dock tab ID (titled TITLE) and APPEND TEXT to it."
+        (utility-panel-open! "output" id title)
+        (utility-panel-append! id text))
+      (define (utility-output-set id title text)
+        "Open/reuse the dock tab ID (titled TITLE) and REPLACE its content."
+        (utility-panel-open! "output" id title)
+        (utility-panel-set! id text))
+
+      ;; find-file / find-project minibuffer helpers (files.lisp isn't loaded in
+      ;; the spine). -expand-tilde is a passthrough — open-project-at! expands the
+      ;; leading ~ itself (Node-side). -initial-find-file-value seeds the prompt
+      ;; with the current file's directory (trailing /), falling back to the home
+      ;; directory for a scratch buffer — so TAB immediately lists somewhere
+      ;; sensible (mirrors files.lisp's version).
+      (define (-expand-tilde path) path)
+      (define (-initial-find-file-value)
+        (let ((d (view-directory (current-view))))
+          (if (or (nil? d) (equal? d ""))
+              (let ((home (home-directory)))
+                (if (equal? home "") "" (str home "/")))
+              (str d "/"))))
+    `);
+  } catch (error) {
+    console.error('[spine] utility-output helpers install failed:', error.message);
+  }
+
+  // B2 regression fix: re-register the customize settings owned by renderer-only
+  // stdlib files that are NOT in SPINE_STDLIB. B2.3 computes the `M-x customize`
+  // MODEL from the spine's *custom-registry*, so these dropped out of the UI.
+  // Declare them here (verbatim type / default / options / group / doc from the
+  // owning files) so they show + persist again. This MUST run before the
+  // custom.lisp load below, so a user's SAVED value applies to the spine's copy
+  // (and the customize panel shows the saved value + the right state badge).
+  //
+  //  - The 6 RENDERER-CONSUMED settings (sticky-notes / views / system / jukebox
+  //    / directory-tree) carry an :on-change that calls push-renderer-config! —
+  //    the B0 config push (RENDERER_CONFIG_VARS). The renderer still owns the
+  //    code that reads them, so a live edit must reach it; the on-change is a
+  //    no-op until a window connects (push-renderer-config! gates on
+  //    chromePushEnabled), so the boot custom.lisp apply below doesn't fan out.
+  //    NB: the jukebox setting's stdlib :on-change (refresh-jukebox-labels!) is a
+  //    RENDER-side primitive absent here — we replace it with the config push;
+  //    the renderer's own custom-apply! fires the real refresh client-side.
+  //  - The 5 LaTeX settings are now declared by latex-compile.lisp itself (in
+  //    SPINE_STDLIB above, since the latex-compile port landed) — SPINE-consumed,
+  //    no config push — so they are no longer re-declared here.
+  try {
+    interpreter.evaluate(`
+      (defgroup 'sticky-notes 'godot "Sticky notes overlaid on the buffer.")
+      (defgroup 'views 'godot "Open views: persistence and switching.")
+      (defgroup 'jukebox 'godot "Jukebox view: how audio files are listed.")
+      (defgroup 'directory-tree 'godot "The directory tree-view sidebar.")
+
+      ;; --- renderer-consumed (B0 config push on change) ------------------
+      (defcustom *markdown-interpreter* "marked" :string
+        :group 'sticky-notes
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Markdown renderer for sticky notes and live docstrings. \\"marked\\" selects the bundled marked.js library; any other string is a shell command that reads Markdown on stdin and prints HTML on stdout.")
+
+      (defcustom *pdf-restore-default* #t :boolean
+        :group 'views
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Whether a freshly-opened PDF view persists across a relaunch by default. #t restores every PDF on startup; #f keeps generic / texdoc PDFs transient (latex-view's output persists regardless, via *latex-pdf-restore*).")
+
+      (defcustom *autosave-recovery* #t :boolean
+        :group 'editing
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Write crash-recovery snapshots of unsaved buffers (debounced after edits, on window blur). Turn off to disable autosave entirely; a crash will then lose unsaved work. Existing snapshots are cleared on a clean quit regardless.")
+
+      (defcustom *autosave-recovery-interval* 1000 :number
+        :group 'editing
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Milliseconds to wait after an edit before writing a crash-recovery snapshot (the autosave debounce). Lower snapshots more eagerly; higher writes less often.")
+
+      (defcustom *jukebox-track-format* "\\"{title}\\", {artist}, {album}" :string
+        :group 'jukebox
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Template used by format-track to render each row in a jukebox buffer. Placeholders in {braces}: {title} {artist} {album} {track} {year} {genre} {filename}. Missing fields render empty; an untagged file falls back to the bare filename.")
+
+      (defcustom *directory-tree-open-target* 'editing-pane :choice
+        :group 'directory-tree
+        :options '(editing-pane other-pane this-pane)
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Where a file opens when activated in a directory tree-view: 'editing-pane (the main editing area; the default), 'other-pane (the next editing pane after the tree), or 'this-pane (the tree's own pane, promoted to a tabline).")
+    `);
+  } catch (error) {
+    console.error('[spine] renderer-config defcustoms install failed:', error.message);
+  }
+
+  // Gates runtime chrome pushes (B1.3). OFF during the boot config + faces
+  // install below, so the defcustom :on-change handlers (e.g. *theme* ->
+  // apply-theme!) and set-face-overrides! / set-highlight-rules! don't emit
+  // chrome directives before any client port exists (the real initial push is the
+  // on-connect one in server.js). Turned ON once the helpers are defined.
+  let chromePushEnabled = false;
+
+  // Load the user's saved customisations (defcustom values incl. the active
+  // *theme*) so the server's computed chrome reflects them — mirrors app.js
+  // loadUserConfig's custom.lisp step. custom-set-saved! -> custom-apply! sets
+  // the active value (and fires :on-change, suppressed above); a setting the
+  // spine doesn't register (renderer-only stdlib not loaded here) is a safe
+  // no-op. (init.lisp is deferred — it may call renderer-only primitives.)
+  try {
+    const customSrc = readConfigText('custom.lisp');
+    if (customSrc) interpreter.evaluate(customSrc);
+  } catch (error) {
+    console.error('[spine] custom.lisp load failed:', error.message);
+  }
+
+  // B1.2 (plans/MODEL-B-DEFAULT.md): install the user's faces.json overrides
+  // into the server's face / theme / highlight registries, so the spine's
+  // computed chrome (current-theme-css-vars / current-face-styles /
+  // highlight-rule-records) reflects the user's customisations. Mirrors app.js's
+  // post-stdlib faces install. The APPLY side is still render-side (the stubs
+  // above are no-ops; B1.3 turns them into directive emitters), so this changes
+  // only what the spine COMPUTES, not what any window shows yet. Guarded so a
+  // missing / malformed faces.json (first launch, the test harness) falls back
+  // to defaults without breaking boot.
+  try {
+    const facesJson = readFacesJson();
+    interpreter.call('set-user-faces!', jsonToLispUserFaces(facesJson, FACE_FACTORIES));
+    interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
+    interpreter.call(
+      'set-highlight-rules!',
+      jsonToLispHighlightRules(facesJson, FACE_FACTORIES, arrayToList, cons)
+    );
+  } catch (error) {
+    console.error('[spine] faces.json install failed:', error.message);
+  }
+
+  // B2.2a: wire the face-overrides saver now (after the bulk install above, so
+  // it never fires on the boot install — only the runtime mutators call
+  // -on-face-change!). Every set-face-attribute / reset-face then persists the
+  // whole faces.json via the now-real write-faces! primitive. Mirrors app.js's
+  // old installFacePersistence, which is now a no-op.
+  try {
+    interpreter.evaluate(
+      '(set-face-overrides-saver! (lambda () (write-faces! (current-faces-file))))'
+    );
+  } catch (error) {
+    console.error('[spine] face saver wiring failed:', error.message);
+  }
+
+  // B2.2b: *tab-width* has no stdlib :on-change (it would couple indent.lisp to a
+  // host primitive, breaking the host-stubbed unit tests). Inject one here — like
+  // app.js did renderer-side — so a tab-width customise edit fires set-css-tab-
+  // width! -> pushChromeToAll, fanning the new --tab-width to every window.
+  // (*line-height* already has its on-change in themes.lisp.) Suppressed during
+  // boot (chromePushEnabled is still false); only runtime edits push.
+  try {
+    interpreter.evaluate(`
+      (set! *custom-registry*
+        (assoc *custom-registry* '*tab-width*
+          (assoc (get *custom-registry* '*tab-width* {})
+                 :on-change (lambda (_n v) (set-css-tab-width! v)))))
+    `);
+  } catch (error) {
+    console.error('[spine] tab-width on-change wiring failed:', error.message);
+  }
+
+  // B1.3 (plans/MODEL-B-DEFAULT.md): the server is authoritative for chrome.
+  // Compute the theme / face / highlight payloads as FLAT, structured-clone-safe
+  // values (JSON strings + the prebuilt CSS string — no raw Lisp crosses the
+  // port) and push them to chosen windows. A window gets them on connect
+  // (server.js, right after its snapshot, via chromeDirectives()) and ALL windows
+  // get them whenever the spine's face state changes (the apply-* stubs above
+  // call pushChromeToAll). The renderer applies these in applyDirective and no
+  // longer computes faces itself.
+  function chromeDirectives() {
+    const out = [];
+    try {
+      const themeVars = listToArray(interpreter.call('current-theme-css-vars'))
+        .map((p) => [String(p.head), String(p.tail ?? '')])
+        .filter(([v, val]) => v.startsWith('--') && val !== '');
+      out.push({ name: 'theme-apply', args: [JSON.stringify(themeVars)] });
+
+      const css = faceStylesCss(
+        listToArray(interpreter.call('current-face-styles')),
+        listToArray,
+        listToArray(interpreter.call('current-mode-face-styles'))
+      );
+      out.push({ name: 'faces-apply', args: [css] });
+
+      const records = listToArray(interpreter.call('highlight-rule-records'))
+        .filter((r) => r instanceof Map)
+        .map((r) => ({
+          scope: typeof r.get(keyword('scope')) === 'string' ? r.get(keyword('scope')) : 'language',
+          key: r.get(keyword('key')) == null ? '' : String(r.get(keyword('key'))),
+          pattern: r.get(keyword('pattern')) == null ? '' : String(r.get(keyword('pattern'))),
+          face: r.get(keyword('face')) == null ? '' : String(r.get(keyword('face'))),
+        }));
+      out.push({ name: 'highlight-rules', args: [JSON.stringify(records)] });
+
+      // B2.2b: CSS knobs — the editor's --tab-width / --line-height. The spine
+      // owns *tab-width* / *line-height* (defcustoms in indent.lisp / themes.lisp,
+      // both in SPINE_STDLIB); push their current values so the renderer sets the
+      // CSS vars from the directive instead of computing them at boot.
+      const tabWidth = Number(interpreter.evaluate('*tab-width*'));
+      const lineHeight = Number(interpreter.evaluate('*line-height*'));
+      out.push({ name: 'css-knobs', args: [JSON.stringify({ tabWidth, lineHeight })] });
+    } catch (error) {
+      console.error('[spine] chromeDirectives failed:', error.message);
+    }
+    return out;
+  }
+
+  /** Push the current chrome (theme/faces/highlight) to every connected window.
+   *  Called by the apply-* stubs when the spine's face state changes; a no-op
+   *  before any window exists (e.g. during the boot faces install). */
+  function pushChromeToAll() {
+    if (!chromePushEnabled) return; // suppressed during the boot faces install
+    const ids = [...paneModels.keys()];
+    if (ids.length === 0) return;
+    for (const d of chromeDirectives()) onClientDirective(ids, d.name, d.args);
+  }
+  // Runtime pushes start now — the boot install above has finished (its apply-*
+  // calls were suppressed). From here, a post-boot face/theme/highlight change
+  // fans out to every window.
+  chromePushEnabled = true;
+
+  // The spine is the SOLE applier + driver + persister for customize (B2.1/2.2).
+  // A window's customize edit becomes a CUSTOMIZE_CHANGED intent; the server
+  // hands it here. We apply it to the spine's interpreter (op -> Lisp; the change
+  // fields are plain strings off the wire — name / valueSrc / face / attr, never
+  // raw Lisp), which:
+  //   - B2.2a: PERSISTS — 'save' runs custom-apply-and-save! (-> write-custom-file!);
+  //     face ops fire the wired saver (-> write-faces!). custom.lisp / faces.json
+  //     are written here; the renderer's writers are no-ops.
+  //   - B2.2b: DRIVES rendering — the edit's :on-change fires apply-theme! /
+  //     apply-face-styles! / set-css-* -> pushChromeToAll, repainting EVERY window
+  //     from the server (the chrome push is NO LONGER suppressed; the renderer's
+  //     apply-* / set-css-* are no-ops and the CUSTOMIZE_SYNC relay is gone).
+  function applyCustomizeChange(change) {
+    if (!change || typeof change !== 'object') return;
+    const { op, name, valueSrc, face, attr } = change;
+    try {
+      if (op === 'apply') {
+        interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
+      } else if (op === 'save') {
+        interpreter.evaluate(`(custom-apply-and-save! (quote ${name}) (quote ${valueSrc}))`);
+      } else if (op === 'reset') {
+        interpreter.evaluate(`(custom-reset! (quote ${name}))`);
+      } else if (op === 'set-face') {
+        interpreter.evaluate(
+          `(set-face-attribute-by-strings ${writeString(face)} ${writeString(attr)} ${valueSrc})`
+        );
+      } else if (op === 'reset-face') {
+        interpreter.evaluate(`(reset-face-by-string ${writeString(face)})`);
+      }
+      // B2.3: re-push the model so the customize panel(s) reflect the new value
+      // and state badge (e.g. standard -> set, or a Reset reverting the widget).
+      refreshCustomizeModels();
+    } catch (error) {
+      console.error('[spine] applyCustomizeChange failed:', error.message);
+    }
   }
 
   // Language major modes (`languages/*.lisp`: a `define-mode` + `register-mode`
@@ -1820,6 +2710,33 @@ export function createSpine(options, effects = {}) {
       (let ((reader *picker-reader*))
         (set! *picker-reader* nil)
         (if (not (nil? reader)) (reader result))))
+
+    ;; --- the tree-sitter info round-trip (B4 face-info) ------------------
+    ;; describe-face-at-point (C-h F) / highlight-construct-at-point (C-h C-f)
+    ;; need RENDER-side tree-sitter data — the syntax captures + the node at
+    ;; point — which the spine can't compute (tree-sitter is WASM in the
+    ;; renderer). Same suspend/resume shape as the picker, but the REVERSE of
+    ;; NOTEBOOK_EVAL: with-tree-sitter-info parks a continuation and asks the
+    ;; renderer (request-tree-sitter-info! -> a tree-sitter-query directive);
+    ;; the renderer computes (lang captures node) and replies, and the host
+    ;; resumes via tree-sitter-info-delivered. Everything AFTER the data lands
+    ;; (picking the capture, rendering the page, the C-h C-f rule/face mutation)
+    ;; runs server-side.
+    (define *tree-sitter-reader* nil)
+
+    (define (with-tree-sitter-info callback)
+      "Request the focused buffer's tree-sitter info at point; CALLBACK gets
+       (lang captures node): LANG the language tag (nil = no tree-sitter
+       language), CAPTURES a list of (start end face), NODE a hash-map
+       {:type :start :end :ancestors} or nil."
+      (set! *tree-sitter-reader* callback)
+      (request-tree-sitter-info!))
+
+    (define (tree-sitter-info-delivered lang captures node)
+      "Called by the host when the renderer replies. Resumes the continuation."
+      (let ((reader *tree-sitter-reader*))
+        (set! *tree-sitter-reader* nil)
+        (if (not (nil? reader)) (reader lang captures node))))
 
     ;; M-x — prompt for a command name, then run it. The host completes
     ;; the prompt (it has the command list); on submit the host calls
@@ -2063,9 +2980,11 @@ export function createSpine(options, effects = {}) {
   // whose prompt the host fulfils, then the host calls `visitFile`.
   interpreter.evaluate(`
     (defcommand find-file ()
-      "Visit a file (C-x C-f). The host reads the path and swaps buffers."
-      (interactive (string "Find file: "))
-      (lambda (path) path))
+      "Visit a file (C-x C-f). The prompt starts at a sensible directory (the
+       current file's, else home) and TAB-completes; the host reads the path on
+       submit (handleMinibufferSubmit keys on the 'Find file: ' prompt) and swaps
+       buffers."
+      (open-completing-minibuffer! "Find file: " (-initial-find-file-value)))
 
     (defcommand directory-tree ()
       "Open a directory tree-view rooted at a directory chosen in the
@@ -2353,6 +3272,93 @@ export function createSpine(options, effects = {}) {
       "Toggle whether the focused pane is a tabline of this window's buffers
        (Step 3c) — 'add a tabline-view' to a single pane, or back."
       (toggle-tabline!))
+
+    ;; --- doc render-side primitives (B3; docs.lisp now in SPINE_STDLIB) ----
+    ;; docs.lisp's commands (open-manual C-h d, open-doc, describe-symbol-at-
+    ;; point C-h .) call these. Here they emit directives to THIS window, where
+    ;; the renderer's openDocInPane / openDocstringBuffer render the page (the
+    ;; page HTML is read render-side via the host; the doc-view stays renderer).
+    ;; Args FLAT. doc-known? resolves server-side via load-doc-manifest! above.
+    ;; B4 fix: open the doc as a SERVER 'doc' data-source (switchable tab), not a
+    ;; renderer-only view. open-manual opens the manual's Top node by its known id.
+    (define (open-doc! name) (open-doc-view! name))
+    (define (open-manual!) (open-doc-view! "the-jmacs-manual"))
+    (define (open-docstring-page! name source) (open-doc-source-view! name source))
+    ;; docs.lisp's apropos-doc (-> start-doc-search!) is shadowed by the embedded
+    ;; show-apropos apropos-doc above (C-h a), so this never runs; a no-op stub
+    ;; keeps any stray call safe (the doc fuzzy-search UI is deferred).
+    (define (start-doc-search!) nil)
+
+    ;; --- folding render-side primitives (B4; folding.lisp) -----------------
+    ;; Folding is a pure view concern — the renderer tracks collapsed lines per
+    ;; buffer. These emit directives to THIS window; the renderer's editorView
+    ;; folds its own display (the cursor it shows is the server-synced point).
+    (define (toggle-fold-at-point!)
+      (emit-client-directive! (list (this-window-id)) 'fold-toggle))
+    (define (fold-all!)
+      (emit-client-directive! (list (this-window-id)) 'fold-all))
+    (define (unfold-all!)
+      (emit-client-directive! (list (this-window-id)) 'unfold-all))
+
+    ;; --- view / misc commands (B4; views.lisp + system.lisp) --------------
+    ;; next-view/previous-view cycle the active window's open-set, scratch-buffer
+    ;; mints a fresh scratch — all server-owned (the host primitives switch the
+    ;; buffer, which reconciles to the client). toggle-repl is a render dock
+    ;; action, so it rides a directive. (These were broken under Model B because
+    ;; views.lisp/system.lisp aren't loaded server-side; loading them wholesale
+    ;; would shadow working server commands like kill-view/quit, so the broken
+    ;; commands are defined HERE instead.)
+    (defcommand next-view ()
+      "Switch to the next view in this window (C-x C-<right>)."
+      (next-view!))
+    (defcommand previous-view ()
+      "Switch to the previous view in this window (C-x C-<left>)."
+      (previous-view!))
+    (defcommand scratch-buffer ()
+      "Open a fresh Lisp scratch buffer (C-x n)."
+      (new-scratch-view!))
+    (defcommand toggle-repl ()
+      "Show or hide the REPL / utility dock (C-x p)."
+      (emit-client-directive! (list (this-window-id)) 'toggle-repl))
+
+    ;; --- sticky notes (B4; sticky-notes.lisp, M-n prefix) -----------------
+    ;; Notes are a render-side overlay (the stickyNotes manager owns the ids +
+    ;; offsets). Each command rides ONE directive and the renderer does the whole
+    ;; op (create+edit, find-at-point+edit/delete, goto-next/prev, toggle) — so no
+    ;; renderer-minted note id ever crosses the wire. (Defined here, not by loading
+    ;; sticky-notes.lisp, because that file chains a renderer-returned note id
+    ;; through note-edit/note-create, which a directive can't return.)
+    (defcommand add-sticky-note ()
+      "Create a sticky note at the cursor and open it for editing (M-n M-n)."
+      (emit-client-directive! (list (this-window-id)) 'sticky-add))
+    (defcommand edit-sticky-note ()
+      "Edit the sticky note nearest the cursor."
+      (emit-client-directive! (list (this-window-id)) 'sticky-edit))
+    (defcommand delete-sticky-note ()
+      "Delete the sticky note nearest the cursor."
+      (emit-client-directive! (list (this-window-id)) 'sticky-delete))
+    (defcommand next-sticky-note ()
+      "Move the cursor to the next sticky note in the buffer."
+      (emit-client-directive! (list (this-window-id)) 'sticky-next))
+    (defcommand previous-sticky-note ()
+      "Move the cursor to the previous sticky note in the buffer."
+      (emit-client-directive! (list (this-window-id)) 'sticky-prev))
+    (defcommand toggle-sticky-notes ()
+      "Show or hide every sticky note in the buffer."
+      (emit-client-directive! (list (this-window-id)) 'sticky-toggle))
+
+    ;; --- inline eval (B4; inline-eval.lisp) -------------------------------
+    ;; Evaluate a Lisp form in the SPINE session (Model B's one Lisp world) and
+    ;; show the result as a pill beside it. eval-form-*! computes the bounds +
+    ;; evals + pushes the inline-eval-result directive.
+    (defcommand eval-expression-at-point ()
+      "Evaluate the Lisp form enclosing point; show the result beside its close
+       bracket (green value / red error). Bound to C-RET."
+      (eval-form-at-point!))
+    (defcommand eval-expression-before-point ()
+      "Evaluate the Lisp form immediately before point and show the result.
+       Bound to C-x C-e."
+      (eval-form-before-point!))
   `);
 
   // Now that the stdlib + the mode machinery are loaded, choose the major
@@ -2580,22 +3586,163 @@ export function createSpine(options, effects = {}) {
     return '*Customize*';
   }
 
+  // --- the customize MODEL (B2.3): server-computed, pushed in the leaf state ---
+  // The spine computes the customize view's model (plain, clone-safe JS — the
+  // port of app.js getCustomModel + fieldToSetting + rowToFace) and carries it in
+  // the 'customize' data-source's `state.model`. The renderer renders from it
+  // instead of pulling from its own interpreter (which is removed in B7). Symbols
+  // become name strings (lispValueToWire) so nothing raw-Lisp crosses the port.
+
+  /** A `custom-field` Lisp list -> a clone-safe setting object. */
+  function fieldToSettingWire(field) {
+    const f = listToArray(field);
+    return {
+      name: f[0],
+      type: String(f[1]).replace(/^:/, ''),
+      value: lispValueToWire(f[2]),
+      default: lispValueToWire(f[3]),
+      doc: f[4],
+      state: f[5],
+      options: f[6] === NIL ? [] : listToArray(f[6]).map(lispValueToWire),
+    };
+  }
+
+  /** A `face-row` Lisp list -> a clone-safe face object. */
+  function rowToFaceWire(row) {
+    const r = listToArray(row);
+    const name = String(r[0]);
+    return {
+      name,
+      doc: String(r[1] ?? ''),
+      foreground: typeof r[2] === 'string' ? r[2] : '',
+      background: typeof r[3] === 'string' ? r[3] : '',
+      weight: String(r[4] ?? 'normal'),
+      slant: String(r[5] ?? 'normal'),
+      underline: r[6] === true,
+      strikeThrough: r[7] === true,
+      size: typeof r[8] === 'number' ? r[8] : '',
+      family: typeof r[9] === 'string' ? r[9] : '',
+      isBase: name === BASE_FACE_NAME,
+      state: String(r[10] ?? 'standard'),
+    };
+  }
+
+  /** The clone-safe model for a customize SCOPE ({group|variable|face}), or null
+   *  on error. Mirror of app.js getCustomModel, over the SPINE's interpreter. */
+  function customizeModel(scope) {
+    const sc = (scope && typeof scope === 'object') ? scope : { group: 'godot' };
+    try {
+      if (sc.variable) {
+        const field = interpreter.evaluate(`(custom-field (quote ${sc.variable}))`);
+        return { title: sc.variable, doc: '', parent: null, groups: [],
+                 settings: [fieldToSettingWire(field)], faces: [] };
+      }
+      if (sc.face) {
+        const m = listToArray(interpreter.evaluate(`(face-single-model ${writeString(sc.face)})`));
+        return { title: sc.face, doc: m[1], parent: m[2] === NIL ? null : String(m[2]),
+                 groups: [], settings: [], faces: listToArray(m[4]).map(rowToFaceWire),
+                 scrollToFace: sc.face };
+      }
+      if (sc.group === 'faces') {
+        const m = listToArray(interpreter.call('faces-group-model'));
+        return { title: m[0], doc: m[1], parent: m[2] === NIL ? null : String(m[2]),
+                 groups: [], settings: [], faces: listToArray(m[4]).map(rowToFaceWire) };
+      }
+      const m = listToArray(interpreter.evaluate(`(custom-group-model (quote ${sc.group}))`));
+      return {
+        title: m[0], doc: m[1], parent: m[2] === NIL ? null : m[2],
+        groups: listToArray(m[3]).map((pair) => {
+          const g = listToArray(pair);
+          return { name: g[0], doc: g[1] };
+        }),
+        settings: listToArray(m[4]).map(fieldToSettingWire), faces: [],
+      };
+    } catch (error) {
+      console.error('[spine] customizeModel failed:', error.message);
+      return null;
+    }
+  }
+
+  /** Recompute + fan out every open customize leaf's model. Called after a
+   *  customize edit so the panel(s) showing it re-render with the new values /
+   *  states (the reconcile re-mounts the leaf -> the view reads state.model). */
+  function refreshCustomizeModels() {
+    for (const d of dataSources.list()) {
+      if (d.kind !== 'customize') continue;
+      dataSources.setState(d.id, { ...d.state, model: customizeModel(d.state.scope) });
+    }
+  }
+
   /** Open (find-or-create) a 'customize' data-source for SCOPE and switch the
-   *  active client to it. The leaf carries only the scope — the client renders
-   *  the model + applies value/face edits from its own interpreter. Called by
-   *  the open-customize* host primitives AND the CUSTOMIZE_OP intent (openScope
+   *  active client to it. The leaf carries the scope AND the server-computed
+   *  model (B2.3); the client renders from state.model. Called by the
+   *  open-customize* host primitives AND the CUSTOMIZE_OP intent (openScope
    *  sub-navigation). Returns the source id. */
   function openCustomizeScope(scope) {
     const sc = (scope && typeof scope === 'object') ? scope : { group: 'godot' };
     const name = customizeName(sc);
+    const model = customizeModel(sc);
     const existing = dataSources.list()
       .find((d) => d.kind === 'customize' && d.name === name);
-    const src = existing ?? dataSources.add({ kind: 'customize', name, state: { scope: sc } });
-    src.state.scope = sc; // refresh a reused leaf's scope (descriptor returns it live)
+    const src = existing ?? dataSources.add({ kind: 'customize', name, state: { scope: sc, model } });
+    src.state.scope = sc;     // refresh a reused leaf's scope (descriptor returns it live)
+    src.state.model = model;  // refresh a reused leaf's model
     switchClientToSource(activeClientIndex, src.id);
     statusText = '';
     onStatus('');
     return src.id;
+  }
+
+  /** Open (find-or-create) a 'doc' data-source and switch the active client to it
+   *  (B4). The leaf carries the doc NAME (a manifest page / nav node — the client
+   *  reads the HTML via the host) or, with `source`, a live docstring's Markdown
+   *  (the client renders it). Manifest pages dedup by name (one tab per page); a
+   *  docstring source is always a fresh leaf. Mirrors openCustomizeScope. */
+  function openDocSource(opts) {
+    const docName = String((opts && opts.docName) || '');
+    const source = opts && typeof opts.source === 'string' && opts.source !== '' ? opts.source : null;
+    const existing = source ? null : dataSources.list()
+      .find((d) => d.kind === 'doc' && d.state && d.state.docName === docName && !d.state.source);
+    const state = source ? { docName, source } : { docName };
+    const src = existing ?? dataSources.add({ kind: 'doc', name: docName || 'Manual', state });
+    src.state = state; // refresh a reused leaf
+    switchClientToSource(activeClientIndex, src.id);
+    statusText = '';
+    onStatus('');
+    return src.id;
+  }
+
+  /** B4 inline-eval: evaluate the Lisp form at/before point in the SPINE session
+   *  and push the result to the active window as a pill overlay. WHICH is 'at'
+   *  (enclosing form) or 'before' (form whose close-bracket is just before point).
+   *  Bounds come from the pure brackets.js helpers over (buffer-text)/(point). */
+  function inlineEvalForm(which) {
+    let text;
+    let point;
+    try {
+      text = String(interpreter.evaluate('(buffer-text)'));
+      point = Number(interpreter.evaluate('(point)'));
+    } catch {
+      return;
+    }
+    const bounds = which === 'before'
+      ? formBoundsBeforePoint(text, point, 'lisp')
+      : formBoundsAtPoint(text, point, 'lisp');
+    if (!bounds) {
+      onStatus(`eval: no form ${which === 'before' ? 'before' : 'at'} point`);
+      return;
+    }
+    const source = text.slice(bounds.start, bounds.end);
+    const ids = [activeClientIndex];
+    try {
+      const result = interpreter.evaluate(source);
+      let label = writeString(result);
+      if (label.length > 200) label = `${label.slice(0, 197)}…`;
+      onClientDirective(ids, 'inline-eval-result', [bounds.end, label, true]);
+    } catch (error) {
+      onClientDirective(ids, 'inline-eval-result',
+        [bounds.end, error.lispMessage ?? error.message ?? String(error), false]);
+    }
   }
 
   // Monotonic per-kind counters for LIVE-PROCESS view names (*shell*, *shell*<2>,
@@ -2761,6 +3908,20 @@ export function createSpine(options, effects = {}) {
     writeMetadata(entry.filePath, entry.buffer.metadata ?? {});
   }
 
+  /** B4: a window edited buffer ID's sticky notes (create/move/resize/…). Update
+   *  the buffer's metadata + persist the sidecar (server-owned under Model B). The
+   *  notes array is the client's full set; bookmarks in the same metadata are
+   *  preserved. NOTES are clone-safe records straight off the wire. */
+  function setBufferNotes(id, notes) {
+    const entry = registry.get(String(id ?? ''));
+    if (!entry) return;
+    if (!entry.buffer.metadata || typeof entry.buffer.metadata !== 'object') {
+      entry.buffer.metadata = {};
+    }
+    entry.buffer.metadata.notes = Array.isArray(notes) ? notes : [];
+    persistMetadata(entry);
+  }
+
   /** The wire snapshot of ENTRY's bookmarks for the outline view: each record at
    *  its CURRENT (edit-tracked) offset, plus the line/column the client renders
    *  (it has no buffer to compute them) and the outline depth/collapsed flag.
@@ -2909,6 +4070,108 @@ export function createSpine(options, effects = {}) {
       return switchClientToSource(index, srcId);
     }
     return switchClientToSource(index, srcId);
+  }
+
+  /** Open the directory RAW as a project in a NEW window: expand ~, validate it's
+   *  a directory (the openFile effect marks dirs), then raise onOpenProjectWindow
+   *  — the server reads the project's saved files, spawns a window, and assembles
+   *  the 3-column layout on its HELLO (loadProjectWindow). A non-directory reports
+   *  on the status line. Shared by the open-project-at! primitive (M-x find-project
+   *  / scripting) and the openProjectAt method (the PROJECT_OPEN message from the
+   *  native dialog / chooser). Returns true when a project window was requested. */
+  function openProjectAtPath(raw) {
+    if (typeof raw !== 'string' || raw === '') return false;
+    const path = expandTildePath(raw);
+    const probe = openFile(path);
+    if (!probe || !probe.directory) {
+      statusText = `open-project: not a directory — ${raw}`;
+      onStatus(statusText);
+      return false;
+    }
+    const root = (typeof probe.path === 'string' && probe.path !== '') ? probe.path : path;
+    // Record it in the central project index so the chooser lists it. Under
+    // Model B the spine opens projects (find-project / dialog / chooser), so the
+    // old in-renderer openProject's rememberProject call no longer runs — emit a
+    // directive to the active window, which owns the index (window.host).
+    onClientDirective([activeClientIndex], 'remember-project', [root]);
+    onOpenProjectWindow({ root });
+    statusText = '';
+    onStatus('');
+    return true;
+  }
+
+  /** Assemble the 3-column Nova PROJECT layout in client INDEX's window (a window
+   *  the server just spawned for `open-project-at!`): a directory-tree rooted at
+   *  CONFIG.root on the LEFT, the project's open files as an editing tabline in the
+   *  MIDDLE (a fresh scratch when the project has none), and the following bookmark
+   *  outline on the RIGHT. Built imperatively (split + the tabline + bookmark-beside
+   *  machinery) rather than from a path-keyed blob, so an empty project (path-less
+   *  scratch) works too. CONFIG.files are the saved open-file paths (already opened
+   *  into the registry by the caller); CONFIG.active the focused one. Called from
+   *  server.js on the spawned window's HELLO (when it's the active client). Returns
+   *  true on success. */
+  function loadProjectWindow(index, config) {
+    const model = paneModels.get(index);
+    if (!model || !config || typeof config.root !== 'string' || config.root === '') return false;
+    setActiveClient(index);
+    const root = config.root;
+    // Middle: the project's open files (resolved to buffer ids — the caller opened
+    // them), or a fresh scratch when the project has none.
+    const fileIds = [];
+    for (const p of (Array.isArray(config.files) ? config.files : [])) {
+      const e = registry.findByPath(p);
+      if (e && !fileIds.includes(e.id)) fileIds.push(e.id);
+    }
+    let activeId;
+    if (fileIds.length > 0) {
+      const ae = config.active ? registry.findByPath(config.active) : null;
+      activeId = ae && fileIds.includes(ae.id) ? ae.id : fileIds[0];
+    } else {
+      const used = new Set(registry.listRecords().map((r) => r.name));
+      let scratchName = 'scratch.lisp';
+      for (let i = 2; used.has(scratchName); i += 1) scratchName = `scratch-${i}.lisp`;
+      const scratch = registry.add(SPINE_SCRATCH_SEED, scratchName, null);
+      fileIds.push(scratch.id);
+      activeId = scratch.id;
+    }
+    switchClientToBuffer(index, activeId);
+    // Left: split the directory-tree sidebar off BEFORE the editing pane. 'before'
+    // makes the new (left) leaf the FIRST child with fraction (1 - r), so pass
+    // (1 - PROJECT_SIDEBAR_RATIO) to give the sidebar PROJECT_SIDEBAR_RATIO width.
+    if (model.split('horizontal', 1 - PROJECT_SIDEBAR_RATIO, 'before')) {
+      rebindFocusedPane(); // focus moved to the new (left) leaf
+      const name = root.replace(/\/+$/, '').split('/').pop() || root;
+      const dt = dataSources.findByPath(root)
+        ?? dataSources.add({ kind: 'directory-tree', name, filePath: root });
+      switchClientToSource(index, dt.id); // left leaf shows the directory-tree
+      model.otherPane(); // focus back to the editing pane
+      rebindFocusedPane();
+    }
+    // Make the editing pane a TABLINE of the project's files (a 1-tab tabline for a
+    // single file / the scratch — consistent with how every window presents).
+    model.seedFocusedTabline(fileIds, activeId);
+    // Right: the following bookmark outline, split off the editing pane (uses the
+    // active client = INDEX + its focused entry). Re-focus the editing pane after,
+    // so the user lands in the middle, not the outline.
+    openBookmarkView();
+    const mid = model.leaves().find((l) => {
+      const s = model.stateOf(l.id);
+      return s && (s.bufferId === activeId || (s.tabline && Array.isArray(s.tabs) && s.tabs.includes(activeId)));
+    });
+    if (mid) { model.focusPane(mid.id); rebindFocusedPane(); }
+    // Reset the window's open-set to EXACTLY its leaves' buffers (mirrors
+    // loadWindowLayout). A freshly-spawned window is seeded from the home window's
+    // focused buffer; without this reset that home buffer would linger in the
+    // project's open-set (and wrongly be saved into project.json by close-project).
+    clientBuffers.set(index, new Set());
+    for (const leaf of model.leaves()) {
+      const s = model.stateOf(leaf.id);
+      if (!s) continue;
+      if (s.tabline && Array.isArray(s.tabs)) s.tabs.forEach((id) => noteClientBuffer(index, id));
+      else noteClientBuffer(index, s.bufferId);
+    }
+    projectRootByClient.set(index, root);
+    return true;
   }
 
   /** Apply an outline op from the bookmark VIEW to its source buffer's records.
@@ -3159,6 +4422,7 @@ export function createSpine(options, effects = {}) {
     paneModels.delete(index);
     clientViewports.delete(index);
     clientBuffers.delete(index);
+    projectRootByClient.delete(index); // B4: forget a closed project window's root
     registry.dropClient(index);
     // The bookmark outline(s) are per-window — drop this window's own so they
     // don't linger after it closes.
@@ -3432,6 +4696,17 @@ export function createSpine(options, effects = {}) {
   /** The buffer id the FOCUSED leaf of client INDEX shows. */
   function currentBufferIdOf(index) {
     return paneModels.get(index)?.focusedBufferId() ?? initialEntry.id;
+  }
+
+  /** Cycle the ACTIVE window's focused leaf through its open-set by DIR (+1 next,
+   *  -1 previous), wrapping. B4: backs next-view! / previous-view!. A no-op when
+   *  the window has fewer than two open buffers. */
+  function cycleActiveView(dir) {
+    const set = clientBuffers.get(activeClientIndex);
+    if (!set || set.size < 2) return;
+    const ids = [...set];
+    const i = Math.max(0, ids.indexOf(currentBufferIdOf(activeClientIndex)));
+    switchClientToBuffer(activeClientIndex, ids[(i + dir + ids.length) % ids.length]);
   }
 
   /** The registry entry backing VIEW (an @editor/view), matched by buffer
@@ -4004,6 +5279,35 @@ export function createSpine(options, effects = {}) {
     return deliverPicker(null, pickerId);
   }
 
+  /** B4 face-info: resume a command suspended on `with-tree-sitter-info` with the
+   *  renderer's reply (the focused buffer's tree-sitter INFO at point). Builds the
+   *  Lisp values in-spine (no port crossing) and calls `tree-sitter-info-delivered`.
+   *  INFO is `{ lang, captures: [[start,end,face],…], node: {type,start,end,
+   *  ancestors}|null }`; a missing language → (nil nil nil). */
+  function deliverTreeSitterInfo(info) {
+    const i = info && typeof info === 'object' ? info : {};
+    // Stash the renderer-resolved face→colour map (the `--tok-<face>` values from
+    // its CSS cascade) so face-color-for can read it during the resumed command.
+    treeSitterColors = (i.colors && typeof i.colors === 'object') ? i.colors : {};
+    const lang = (typeof i.lang === 'string' && i.lang !== '') ? i.lang : NIL;
+    const captures = Array.isArray(i.captures)
+      ? arrayToList(i.captures.map((c) => arrayToList([Number(c[0]) || 0, Number(c[1]) || 0, String(c[2] ?? '')])))
+      : NIL;
+    let node = NIL;
+    if (i.node && typeof i.node === 'object') {
+      node = new Map();
+      node.set(keyword('type'), String(i.node.type ?? ''));
+      node.set(keyword('start'), Number(i.node.start) || 0);
+      node.set(keyword('end'), Number(i.node.end) || 0);
+      node.set(keyword('ancestors'), arrayToList((Array.isArray(i.node.ancestors) ? i.node.ancestors : []).map(String)));
+    }
+    try {
+      interpreter.call('tree-sitter-info-delivered', lang, captures, node);
+    } catch (error) {
+      console.error('[spine] tree-sitter-info-delivered failed:', error.message);
+    }
+  }
+
   // --- view-state snapshot ---------------------------------------------
   /** The current point's 1-based line and 0-based column. */
   function pointPosition() {
@@ -4126,6 +5430,9 @@ export function createSpine(options, effects = {}) {
     // the generic picker round-trip (G0b): resolve / cancel the open picker.
     deliverPicker,
     cancelPicker,
+    // B4 face-info: the renderer's tree-sitter reply (server.js routes the
+    // TREE_SITTER_INFO message here to resume the suspended C-h F / C-h C-f).
+    deliverTreeSitterInfo,
     visitFile,
     visitDirectory,
     openElementSource,
@@ -4134,6 +5441,9 @@ export function createSpine(options, effects = {}) {
      *  / outdent / toggle) to its source buffer's records. Returns true when the
      *  op moved the document's point (jump) so the server re-syncs the client. */
     applyBookmarkOp,
+    // B4: persist a buffer's sticky notes (edited render-side, shipped up via
+    // NOTES_CHANGED). The server owns the sidecar under Model B.
+    setBufferNotes,
     recoverBuffer,
     // save (real disk write) — the server wires saveFile to atomicWrite.
     saveActiveBuffer,
@@ -4171,6 +5481,12 @@ export function createSpine(options, effects = {}) {
     // multi-client window-state (per-client buffer + cursor)
     addClientView,
     removeClientView,
+    // B1.3: the theme/face/highlight directives a freshly-connected window needs
+    // (server.js posts them right after the snapshot).
+    chromeDirectives,
+    // B2.1: apply a window's customize change to the server's interpreter so new
+    // windows reflect it (server.js calls this from the CUSTOMIZE_CHANGED relay).
+    applyCustomizeChange,
     setActiveClient,
     viewStateOf,
     // --- the pane tree (G0a) -------------------------------------------
@@ -4189,6 +5505,12 @@ export function createSpine(options, effects = {}) {
     // (the files must already be open). The server adds geometry around these.
     serializeWindow,
     loadWindowLayout,
+    // B4 project: assemble the 3-column project layout in a freshly-spawned
+    // window (server.js calls it on the window's HELLO; see onOpenProjectWindow).
+    loadProjectWindow,
+    // B4 project Stage 3: open a project by path (server.js calls it from the
+    // PROJECT_OPEN message — the native dialog / chooser's chosen directory).
+    openProjectAt: (path) => openProjectAtPath(path),
     /** Record client INDEX's editor-area pixel rectangle (a VIEWPORT-style
      *  report). Only spatial pane navigation needs it; everything else is
      *  pixel-free. `{ width, height }`. */

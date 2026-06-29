@@ -12,6 +12,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createSpine } from './spine.js';
 import { wireLeaves, wireFocusedLeafId } from './protocol.js';
@@ -20,10 +23,17 @@ import { wireLeaves, wireFocusedLeafId } from './protocol.js';
 function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
   const log = {
     status: [], minibufferOpens: [], minibufferCloses: 0, scrolls: [], saves: [],
+    // The initial-value seed for each minibuffer open (find-file / find-project
+    // start at a sensible directory), parallel to minibufferOpens.
+    minibufferSeeds: [],
     // Each open generic-picker request (the G0b channel), as the server sees it.
     pickerOpens: [],
     // Each new-window request (the C-x 5 2 effect, G4).
     newWindows: 0,
+    // Each open-project-window request (B4 project): the parked { root } config.
+    projectWindows: [],
+    // Each close-project request (B4): { root, files, active, windowId }.
+    projectCloses: [],
     // Each client directive raised (the multi-window round-trip): { ids, name, args }.
     directives: [],
   };
@@ -31,11 +41,13 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
     { initialText, name, initialPath: extra.initialPath },
     {
       onStatus: (s) => log.status.push(s),
-      onMinibufferOpen: (p) => log.minibufferOpens.push(p),
+      onMinibufferOpen: (p, initial) => { log.minibufferOpens.push(p); log.minibufferSeeds.push(initial ?? ''); },
       onMinibufferClose: () => { log.minibufferCloses += 1; },
       onScroll: (r) => log.scrolls.push(r),
       onPicker: (req) => log.pickerOpens.push(req),
       onNewWindow: () => { log.newWindows += 1; },
+      onOpenProjectWindow: (cfg) => log.projectWindows.push(cfg),
+      onCloseProject: (c) => log.projectCloses.push(c),
       onClientDirective: (ids, name, args) => log.directives.push({ ids, name, args }),
       openFile: extra.openFile,
       // A recording save: capture the {path, text} the spine would write, and
@@ -2172,4 +2184,350 @@ test('runNotebookCell: with NO session id, cells stay isolated (no leak)', async
   const r = await spine.runNotebookCell('typeof loose');
   assert.equal(r.state, 'ok');
   assert.match(num(r.descriptor), /undefined/);
+});
+
+// --- B4: latex-compile port (run-process! + the compile/view loop) ---------
+// The spine is a Node utilityProcess, so run-process! spawns build children
+// directly and applies the on-exit Lisp procedure async; latex-compile.lisp
+// rides that seam. These exercise the real spawn + the compile flow's dock
+// directives + the latex-view pane split, all server-side.
+
+/** Poll until PRED() is truthy or the budget runs out (async spawn waits). */
+async function until(pred, ms = 4000, step = 20) {
+  for (let waited = 0; waited < ms; waited += step) {
+    if (pred()) return true;
+    await new Promise((r) => setTimeout(r, step));
+  }
+  return pred();
+}
+
+test('B4 run-process!: spawns a child and delivers {:stdout :stderr :code} to the Lisp on-exit', async () => {
+  const { spine } = makeSpine('');
+  spine.interpreter.evaluate('(define *rp* nil)');
+  spine.interpreter.evaluate(
+    `(run-process! "node" (list "-e" "process.stdout.write('OUT'); process.stderr.write('ERR'); process.exit(2)") nil (lambda (r) (set! *rp* r)))`
+  );
+  await until(() => spine.interpreter.evaluate('(nil? *rp*)') === false);
+  assert.equal(spine.interpreter.evaluate('(get *rp* :stdout "")'), 'OUT');
+  assert.equal(spine.interpreter.evaluate('(get *rp* :stderr "")'), 'ERR');
+  assert.equal(spine.interpreter.evaluate('(get *rp* :code -1)'), 2);
+});
+
+test('B4 run-process!: a missing program reports :code nil + ENOENT in stderr (fallback trigger)', async () => {
+  const { spine } = makeSpine('');
+  spine.interpreter.evaluate('(define *rp2* nil)');
+  spine.interpreter.evaluate(
+    `(run-process! "no-such-program-zzz" (list) nil (lambda (r) (set! *rp2* r)))`
+  );
+  await until(() => spine.interpreter.evaluate('(nil? *rp2*)') === false);
+  assert.equal(spine.interpreter.evaluate('(nil? (get *rp2* :code nil))'), true);
+  assert.equal(spine.interpreter.evaluate('(-latex-spawn-failed? *rp2*)'), true);
+});
+
+test('B4 latex-compile: saves, runs the build, and writes *TeX output*/*TeX errors* dock tabs', async () => {
+  const { spine, log } = makeSpine('\\documentclass{article}', 'paper.tex', {
+    initialPath: '/tmp/paper.tex',
+    openFile: (p) => (p.endsWith('.tex') ? { text: '% tex', name: 'paper.tex', path: p } : null),
+  });
+  // Use `node` as a deterministic stand-in for the LaTeX toolchain (no latexmk
+  // needed in CI): it prints a line and exits 0; the .tex basename is appended
+  // as an ignored extra arg. The compile flow still parses + tabs the output.
+  spine.interpreter.evaluate(
+    `(custom-apply! (quote *latex-command*) (list "node" "-e" "process.stdout.write('build ok')"))`
+  );
+  spine.interpreter.evaluate('(run-command (quote latex-compile))');
+  const sawOutput = () =>
+    log.directives.some((d) => d.name === 'utility-panel-set' && d.args[0] === 'tex-output');
+  await until(sawOutput, 6000);
+  assert.ok(log.saves.length >= 1, 'saved the buffer before building');
+  assert.ok(
+    log.directives.some((d) => d.name === 'utility-panel-open' && d.args[1] === 'tex-output'),
+    'opened the *TeX output* dock tab'
+  );
+  assert.ok(sawOutput(), 'wrote the build log to *TeX output*');
+  assert.ok(
+    log.directives.some((d) => d.name === 'utility-panel-set' && d.args[0] === 'tex-errors'),
+    'wrote diagnostics to *TeX errors*'
+  );
+});
+
+test('B4 open-file-in-split!: splits the focused pane and opens the pdf in the new leaf', () => {
+  const { spine } = makeSpine('% tex', 'paper.tex', {
+    initialPath: '/tmp/paper.tex',
+    openFile: (p) =>
+      p.endsWith('.pdf') ? { media: true, kind: 'pdf', name: 'paper.pdf', path: p } : null,
+  });
+  spine.interpreter.evaluate('(open-file-in-split! "/tmp/paper.pdf" (quote horizontal) (quote after))');
+  const snap = spine.paneSnapshot(0);
+  assert.equal(snap.kind, 'split');
+  assert.equal(snap.orientation, 'horizontal');
+  // source on the left (unfocused), the freshly-opened pdf on the right (focused).
+  assert.equal(snap.first.name, 'paper.tex');
+  assert.equal(snap.second.viewKind, 'pdf');
+  assert.equal(snap.second.focused, true);
+});
+
+test('B4 view-list: surfaces an open pdf data-source so latex-view can find it (reload vs split)', () => {
+  const { spine } = makeSpine('% tex', 'paper.tex', {
+    initialPath: '/tmp/paper.tex',
+    openFile: (p) =>
+      p.endsWith('.pdf') ? { media: true, kind: 'pdf', name: 'paper.pdf', path: p } : null,
+  });
+  // not open yet
+  assert.equal(spine.interpreter.evaluate('(nil? (-latex-find-view-by-file "/tmp/paper.pdf"))'), true);
+  spine.interpreter.evaluate('(open-file-in-split! "/tmp/paper.pdf" (quote horizontal) (quote after))');
+  // now open: -latex-find-view-by-file matches it via view-list + view-file-path
+  assert.equal(spine.interpreter.evaluate('(nil? (-latex-find-view-by-file "/tmp/paper.pdf"))'), false);
+});
+
+// --- B4: project port (find-project / open-project-at! -> a NEW window) -----
+// Each project now opens in its OWN window (the old in-renderer path reconfigured
+// the single window in place because it couldn't). open-project-at! validates the
+// directory + raises onOpenProjectWindow; the server spawns a window and assembles
+// the 3-column Nova layout (dir-tree | editing | bookmark) on its HELLO via
+// spine.loadProjectWindow.
+
+function projectSpine() {
+  return makeSpine('', 'home.txt', {
+    initialPath: '/home/home.txt',
+    openFile: (path) => {
+      if (path === '/proj/btt' || path === '/proj/btt/') {
+        return { directory: true, kind: 'directory-tree', name: 'btt', path: '/proj/btt' };
+      }
+      if (path.endsWith('.txt')) return { text: 'hi', name: path.split('/').pop(), path };
+      return null;
+    },
+  });
+}
+
+test('B4 project: commands registered + find-project minibuffer helpers resolve', () => {
+  const { spine } = projectSpine();
+  for (const c of ['find-project', 'open-project', 'close-project', 'project-chooser']) {
+    assert.notEqual(spine.interpreter.evaluate(`(member "${c}" (registered-command-names))`), false);
+  }
+  assert.equal(typeof spine.interpreter.evaluate('(-initial-find-file-value)'), 'string');
+  assert.equal(spine.interpreter.evaluate('(-expand-tilde "/proj/btt")'), '/proj/btt');
+});
+
+test('B4 project: open-project-at! validates the dir + raises onOpenProjectWindow', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project-at! "/proj/btt")');
+  assert.equal(log.projectWindows.length, 1);
+  assert.equal(log.projectWindows[0].root, '/proj/btt');
+  // a non-directory is rejected — no window spawn
+  spine.interpreter.evaluate('(open-project-at! "/home/home.txt")');
+  assert.equal(log.projectWindows.length, 1);
+});
+
+test('B4 project: loadProjectWindow assembles the 3-column layout in a spawned window', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project-at! "/proj/btt")');
+  const cfg = log.projectWindows[0];
+  const idx = spine.addClientView(); // simulate the freshly-spawned window
+  assert.equal(spine.loadProjectWindow(idx, cfg), true);
+  const snap = spine.paneSnapshot(idx);
+  assert.equal(snap.kind, 'split');
+  assert.equal(snap.orientation, 'horizontal');
+  assert.equal(snap.first.viewKind, 'directory-tree'); // left column
+  assert.equal(snap.second.kind, 'split'); // right block = editing | bookmark
+  const leaves = [];
+  (function walk(n) { if (!n) return; if (n.kind === 'leaf') leaves.push(n); else { walk(n.first); walk(n.second); } })(snap);
+  assert.equal(leaves.length, 3);
+  assert.ok(leaves.some((l) => l.viewKind === 'directory-tree'), 'directory-tree leaf');
+  assert.ok(leaves.some((l) => l.viewKind === 'bookmark'), 'bookmark outline leaf');
+  const editing = leaves.find((l) => l.viewKind !== 'directory-tree' && l.viewKind !== 'bookmark');
+  assert.ok(editing && editing.focused === true, 'the editing pane is focused');
+});
+
+// --- B4: project Stage 2 — restore saved files + close-project save/close ---
+
+test('B4 project Stage 2: a project window restores its saved files into the middle tabline', () => {
+  const { spine } = projectSpine();
+  // mirror server.js: open the project's saved files, then assemble the window.
+  const idx = spine.addClientView();
+  spine.setActiveClient(idx);
+  spine.visitFile('/proj/a.txt');
+  spine.visitFile('/proj/b.txt');
+  assert.equal(
+    spine.loadProjectWindow(idx, { root: '/proj/btt', files: ['/proj/a.txt', '/proj/b.txt'], active: '/proj/b.txt' }),
+    true
+  );
+  const snap = spine.paneSnapshot(idx);
+  const leaves = [];
+  (function walk(n) { if (!n) return; if (n.kind === 'leaf') leaves.push(n); else { walk(n.first); walk(n.second); } })(snap);
+  const tab = leaves.find((l) => Array.isArray(l.tabs));
+  assert.ok(tab, 'middle is a tabline');
+  const names = tab.tabs.map((t) => t.name);
+  assert.ok(names.includes('a.txt') && names.includes('b.txt'), `tabline holds both files: ${JSON.stringify(names)}`);
+});
+
+test('B4 project Stage 2: close-project! saves only the project files + closes the window', () => {
+  const { spine, log } = projectSpine();
+  const idx = spine.addClientView();
+  spine.setActiveClient(idx);
+  spine.visitFile('/proj/a.txt');
+  spine.visitFile('/proj/b.txt');
+  spine.loadProjectWindow(idx, { root: '/proj/btt', files: ['/proj/a.txt', '/proj/b.txt'], active: '/proj/b.txt' });
+  spine.setActiveClient(idx);
+  spine.interpreter.evaluate('(close-project!)');
+  assert.equal(log.projectCloses.length, 1);
+  const c = log.projectCloses[0];
+  assert.equal(c.root, '/proj/btt');
+  assert.equal(c.windowId, idx);
+  // ONLY the project's files — the home seed buffer must NOT leak into project.json
+  assert.deepEqual([...c.files].sort(), ['/proj/a.txt', '/proj/b.txt']);
+  assert.ok(!c.files.includes('/home/home.txt'), 'home buffer did not leak into the project save');
+});
+
+test('B4 project Stage 2: close-project! in a non-project window is a no-op', () => {
+  const { spine, log } = projectSpine();
+  spine.setActiveClient(0); // the home window (not a project)
+  spine.interpreter.evaluate('(close-project!)');
+  assert.equal(log.projectCloses.length, 0);
+});
+
+// --- B4: project Stage 3 — open-project (dialog) + chooser route to a window -
+
+test('B4 project Stage 3: open-project! / open-project-chooser! emit renderer directives', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project!)');
+  assert.ok(log.directives.some((d) => d.name === 'open-project-dialog'), 'open-project! → open-project-dialog');
+  log.directives.length = 0;
+  spine.interpreter.evaluate('(open-project-chooser!)');
+  assert.ok(log.directives.some((d) => d.name === 'open-project-chooser'), 'open-project-chooser! → open-project-chooser');
+});
+
+test('B4 project Stage 3: spine.openProjectAt (the PROJECT_OPEN path) opens a project window', () => {
+  const { spine, log } = projectSpine();
+  assert.equal(spine.openProjectAt('/proj/btt'), true);
+  assert.equal(log.projectWindows.length, 1);
+  assert.equal(log.projectWindows[0].root, '/proj/btt');
+  // a non-directory path is rejected — no window
+  assert.equal(spine.openProjectAt('/home/home.txt'), false);
+  assert.equal(log.projectWindows.length, 1);
+});
+
+test('B4 project Stage 3: opening a project records it in the central index (chooser grid)', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project-at! "/proj/btt")');
+  const remember = log.directives.find((d) => d.name === 'remember-project');
+  assert.ok(remember, 'emits a remember-project directive');
+  assert.equal(remember.args[0], '/proj/btt');
+});
+
+// --- B4: face-info (C-h F / C-h C-f) — the render-side tree-sitter round-trip --
+// describe-face-at-point / highlight-construct-at-point fetch render-side
+// tree-sitter data via with-tree-sitter-info (a tree-sitter-query directive →
+// the renderer replies → deliverTreeSitterInfo resumes), then run server-side.
+
+test('B4 face-info: describe-face-at-point suspends on a tree-sitter-query, then opens a doc page', () => {
+  const { spine, log } = makeSpine('function foo() {}', 'test.js', { initialPath: '/t/test.js' });
+  spine.buffer.moveTo(3); // inside `function`
+  spine.interpreter.evaluate('(run-command (quote describe-face-at-point))');
+  const q = log.directives.find((d) => d.name === 'tree-sitter-query');
+  assert.ok(q, 'emits a tree-sitter-query directive');
+  assert.equal(q.args[0], 3, 'carries point');
+  // the renderer replies with a covering capture → a *Face at point* doc opens
+  spine.deliverTreeSitterInfo({
+    lang: 'javascript', captures: [[0, 8, 'keyword'], [9, 12, 'function']],
+    node: null, colors: { keyword: '#c594c5' },
+  });
+  const snap = JSON.stringify(spine.paneSnapshot(0));
+  assert.ok(snap.includes('"viewKind":"doc"'), 'a doc data-source leaf is shown');
+  assert.ok(snap.includes('Face at point'), 'the doc page is named "Face at point"');
+  // the resolved colour came from the renderer-provided stash
+  assert.equal(spine.interpreter.evaluate('(face-color-for "keyword")'), '#c594c5');
+});
+
+test('B4 face-info: describe-face-at-point falls back to node info when no capture covers point', () => {
+  const { spine, log } = makeSpine('abc def', 'test.js', { initialPath: '/t/test.js' });
+  spine.buffer.moveTo(0);
+  spine.interpreter.evaluate('(run-command (quote describe-face-at-point))');
+  assert.ok(log.directives.some((d) => d.name === 'tree-sitter-query'));
+  spine.deliverTreeSitterInfo({
+    lang: 'javascript', captures: [[5, 9, 'keyword']], // doesn't cover 0
+    node: { type: 'identifier', start: 0, end: 3, ancestors: ['program'] }, colors: {},
+  });
+  assert.ok(JSON.stringify(spine.paneSnapshot(0)).includes('Face at point'),
+    'opens the no-capture fallback doc page from the node info');
+});
+
+test('B4 face-info: highlight-construct-at-point round-trips then prompts for a face', () => {
+  const { spine, log } = makeSpine('abc', 'test.js', { initialPath: '/t/test.js' });
+  spine.interpreter.evaluate('(run-command (quote highlight-construct-at-point))');
+  assert.ok(log.directives.some((d) => d.name === 'tree-sitter-query'), 'C-h C-f emits tree-sitter-query');
+  spine.deliverTreeSitterInfo({
+    lang: 'javascript', captures: [],
+    node: { type: 'identifier', start: 0, end: 3, ancestors: [] }, colors: {},
+  });
+  assert.ok(log.minibufferOpens.some((p) => p.includes('Face for `identifier`')),
+    `prompts for the face (${JSON.stringify(log.minibufferOpens)})`);
+});
+
+test('B4 face-info: describe-face-at-point reports when there is no tree-sitter language', () => {
+  const { spine, log } = makeSpine('plain text', 'notes.txt', { initialPath: '/t/notes.txt' });
+  spine.interpreter.evaluate('(run-command (quote describe-face-at-point))');
+  spine.deliverTreeSitterInfo({ lang: null, captures: [], node: null, colors: {} });
+  // no doc page opened; the focused leaf is still the text buffer
+  assert.ok(!JSON.stringify(spine.paneSnapshot(0)).includes('"viewKind":"doc"'),
+    'no doc page when the buffer has no tree-sitter language');
+});
+
+// --- B4: latex error-nav resolves relative diagnostic paths (live-found bug) --
+// TeX engines report file paths RELATIVE to the build dir (e.g. ./paper.tex);
+// the spine's file-exists? statSyncs against its own cwd, so latex-next-error's
+// guard failed and never jumped. -latex-resolve-diag-file resolves against the
+// master file's directory.
+
+test('B4 latex-next-error: resolves a relative diagnostic path + jumps to the line', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tex-'));
+  const file = join(dir, 'paper.tex');
+  const text = Array.from({ length: 14 }, (_, i) => `line ${i + 1}`).join('\n');
+  writeFileSync(file, text);
+  try {
+    const { spine } = makeSpine(text, 'paper.tex', {
+      initialPath: file,
+      openFile: (p) => (p === file ? { text, name: 'paper.tex', path: file } : null),
+    });
+    const ev = (s) => spine.interpreter.evaluate(s);
+    // relative paths resolve against the master dir; absolute pass through
+    assert.equal(ev('(-latex-resolve-diag-file "./paper.tex")'), file);
+    assert.equal(ev(`(-latex-resolve-diag-file "${file}")`), file);
+    assert.equal(ev('(nil? (-latex-resolve-diag-file nil))'), true); // a nil file stays nil
+    // a relative-path diagnostic at line 10 → latex-next-error jumps there
+    ev('(set! *latex-error-list* (list {:file "./paper.tex" :line 10 :message "oops"}))');
+    ev('(set! *latex-error-index* -1)');
+    spine.buffer.moveTo(0);
+    ev('(latex-next-error)');
+    assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 9, 'jumped to line 10 (0-based 9)');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- B4: find-file / find-project seed the prompt with a sensible directory ---
+// (live-found) The minibuffer opens pre-filled at the current file's directory,
+// or the home directory for a scratch — so TAB immediately lists somewhere
+// useful. open-completing-minibuffer!'s 2nd arg is forwarded to the client via
+// minibufferState.value.
+
+test('B4 find-file: seeds the current file\'s directory', () => {
+  const { spine, log } = makeSpine('x', 'paper.tex', { initialPath: '/Users/jalex/Articles/paper.tex' });
+  spine.interpreter.evaluate('(run-command (quote find-file))');
+  assert.equal(log.minibufferOpens[0], 'Find file: ');
+  assert.equal(log.minibufferSeeds[0], '/Users/jalex/Articles/');
+});
+
+test('B4 find-file: seeds the home directory from a scratch buffer', () => {
+  const { spine, log } = makeSpine('x', '*scratch*'); // no initialPath
+  spine.interpreter.evaluate('(run-command (quote find-file))');
+  const home = spine.interpreter.evaluate('(home-directory)');
+  assert.equal(log.minibufferSeeds[0], `${home}/`);
+});
+
+test('B4 find-project: opens the "Open project: " prompt seeded at a sensible dir', () => {
+  const { spine, log } = makeSpine('x', 'main.txt', { initialPath: '/Users/jalex/Source/proj/main.txt' });
+  spine.interpreter.evaluate('(run-command (quote find-project))');
+  assert.equal(log.minibufferOpens[0], 'Open project: ');
+  assert.equal(log.minibufferSeeds[0], '/Users/jalex/Source/proj/');
 });

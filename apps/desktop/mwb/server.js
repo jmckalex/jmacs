@@ -25,7 +25,7 @@
  * ports over `process.parentPort` — one per client window.
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
@@ -386,7 +386,7 @@ const spine = createSpine(
     // ALL clients' view-state after each intent in applyIntent anyway; these
     // hooks cover the minibuffer/status/scroll specifics.
     onStatus: () => broadcastView(),
-    onMinibufferOpen: (prompt) => openMinibuffer(prompt),
+    onMinibufferOpen: (prompt, initial) => openMinibuffer(prompt, initial),
     onMinibufferClose: () => closeMinibuffer(),
     onScroll: (req) => sendScrollToActive(req),
     // Overlays are PER-BUFFER, SHARED state: a highlight added on one window
@@ -413,6 +413,29 @@ const spine = createSpine(
     // active client to (host.newWindow() → main creates + attaches it as a new
     // client on this shared server).
     onNewWindow: () => sendWindowNewToActiveClient(),
+    // open-project-at! (find-project / open-project): each project opens in its
+    // OWN window now. Stash the project config, spawn a window, and assemble its
+    // 3-column layout on its HELLO (mirrors the multi-window restore spawn-and-
+    // apply). The home window is left untouched.
+    onOpenProjectWindow: (config) => {
+      // Read the project's saved open-file layout (<root>/.godot/project.json) so
+      // the spawned window restores its files; an unsaved/first-open project has
+      // none (a fresh scratch middle). The files are OPENED on the window's HELLO
+      // (below), then loadProjectWindow seeds the middle tabline from them.
+      const saved = readProjectState(config.root);
+      pendingProjectWindow = { root: config.root, files: saved.files, active: saved.active };
+      requestSpawnWindow(null);
+    },
+    // close-project: persist the project window's open files to its sidecar, then
+    // close the window (each project is its own window now). Raised by the spine's
+    // close-project! with the gathered {root, files, active}.
+    onCloseProject: ({ root, files, active, windowId }) => {
+      writeProjectState(root, { files, active });
+      const target = clients.find((c) => c && c.index === windowId);
+      if (target && target.port) {
+        sendClientDirective([windowId], 'close-window', []);
+      }
+    },
     // emit-client-directive!: a command drove a renderer-side action in a chosen
     // set of windows (e.g. C-x 5 1 close-other-windows). The spine resolved the
     // target ids; post the directive to just those ports.
@@ -646,9 +669,11 @@ function sendPaneTreeToIndex(index) {
 
 /** Open the minibuffer for the active client (the one that ran the
  *  command). One prompt at a time in the shared model. */
-function openMinibuffer(prompt) {
+function openMinibuffer(prompt, initial = '') {
   minibufferClient = activeClient;
-  minibufferState = { active: true, prompt, value: '' };
+  // `value` seeds the input — the client pre-fills it (find-file / find-project
+  // start at a sensible directory). Empty for an ordinary prompt.
+  minibufferState = { active: true, prompt, value: typeof initial === 'string' ? initial : '' };
   if (minibufferClient) sendViewTo(minibufferClient);
 }
 
@@ -684,6 +709,12 @@ function sendSnapshot(client) {
     point: spine.viewStateOf(client.index).point,
     name: spine.buffer.name,
     bufferId: spine.currentBufferIdOf(client.index),
+    // B4: the buffer's sticky notes (seeded from its .godot-metadata sidecar) so
+    // the client can render the overlay. Plain records (id/anchor/x/y/w/h/source/
+    // collapsed) — clone-safe. Empty for a sidecar-less / note-less buffer.
+    notes: (spine.buffer.metadata && Array.isArray(spine.buffer.metadata.notes))
+      ? spine.buffer.metadata.notes
+      : [],
     clientIndex: client.index, // so a client knows whether it's the typer
     // G4 Step 1: how this window presents its root — 'tabline' (window 1, the
     // welcome/restored session) or 'single' (a fresh window: one composable
@@ -883,6 +914,18 @@ function applyIntent(client, intent) {
         activeClient = null;
         return;
       }
+      case INTENT.NOTES_CHANGED: {
+        // B4: a window edited a buffer's sticky notes. The server owns the file +
+        // sidecar, so persist the shipped-up notes to that buffer's metadata. No
+        // re-push: the originating window already shows them; other windows pick
+        // them up on their next snapshot of that buffer.
+        spine.setBufferNotes(
+          String(intent.bufferId ?? ''),
+          Array.isArray(intent.notes) ? intent.notes : [],
+        );
+        activeClient = null;
+        return;
+      }
       case INTENT.CUSTOMIZE_OP: {
         // Sub-navigation from a customize VIEW (openScope): find-or-create the
         // requested SCOPE's customize leaf and switch this client to it. The
@@ -897,17 +940,14 @@ function applyIntent(client, intent) {
         return;
       }
       case INTENT.CUSTOMIZE_CHANGED: {
-        // A customize setting changed in `client`'s window — relay it to every
-        // OTHER window so global rendering state (theme / faces / line-height)
-        // stays consistent. The server doesn't render, so it just fans the
-        // change; the originating window already applied it locally. (Behaviour-
-        // variable apply on the spine's own interpreter is a later refinement.)
+        // A customize setting changed in `client`'s window. The spine is the sole
+        // applier + render driver + persister (B2.2): apply the change to its
+        // interpreter, which persists custom.lisp / faces.json AND pushes the
+        // resulting chrome (theme / faces / highlight / css-knobs) to EVERY window
+        // (its :on-change -> apply-* -> pushChromeToAll). The old CUSTOMIZE_SYNC
+        // relay to the other windows is gone — the push replaces it.
         const change = (intent.change && typeof intent.change === 'object') ? intent.change : null;
-        if (change) {
-          for (const c of clients) {
-            if (c !== client) c.port.postMessage({ type: MSG.CUSTOMIZE_SYNC, change });
-          }
-        }
+        if (change) spine.applyCustomizeChange(change);
         activeClient = null;
         return;
       }
@@ -1199,6 +1239,16 @@ function onClientMessage(client, event) {
         // A just-spawned restore window: hand it the next saved layout BEFORE the
         // snapshot below, so it paints its restored tree (not the fresh scratch).
         applyNextRestoreWindow(client);
+      } else if (pendingProjectWindow) {
+        // A just-spawned PROJECT window (B4): open its saved files into the shared
+        // registry (visitFile switches THIS new window's leaf transiently — the
+        // home window is untouched since the new window is the active client during
+        // its HELLO), then assemble the 3-column layout BEFORE the snapshot so it
+        // paints directory-tree | editing tabline | bookmark. One project per spawn.
+        const config = pendingProjectWindow;
+        pendingProjectWindow = null;
+        for (const p of config.files) spine.visitFile(p);
+        spine.loadProjectWindow(client.index, config);
       }
       sendSnapshot(client);
       sendViewTo(client);
@@ -1214,6 +1264,14 @@ function onClientMessage(client, event) {
       // The window's pane layout (a single leaf on first connect, or its
       // restored split tree on reconnect).
       sendPaneTreeTo(client);
+      // B1.3 (plans/MODEL-B-DEFAULT.md): paint this window's chrome from the
+      // server — theme CSS vars, the face-overrides CSS, and the user's
+      // highlight rules. The renderer no longer computes faces itself; it
+      // applies these directives. Sent now (after the view) so faces land with
+      // the first paint; re-pushed to all windows on any later change.
+      for (const d of spine.chromeDirectives()) {
+        sendClientDirective([client.index], d.name, d.args);
+      }
       // The view is now painted — open the workspace chooser LAST so its picker
       // grabs (and, via picker-panel's next-frame re-assert, keeps) focus.
       if (openChooserAfterPaint) openWorkspaceChooser(client);
@@ -1290,12 +1348,30 @@ function onClientMessage(client, event) {
       // can't be deleted this way (it's the live auto-snapshot).
       if (typeof msg.id === 'string' && msg.id !== '__last__') sessionStore.remove(msg.id);
       break;
+    case MSG.PROJECT_OPEN:
+      // B4 Stage 3: the native dir dialog / project chooser picked a directory.
+      // Route it to the spine, which opens it as a NEW project window (the same
+      // path find-project takes after its minibuffer submit).
+      if (typeof msg.path === 'string' && msg.path !== '') {
+        spine.setActiveClient(client.index);
+        spine.openProjectAt(msg.path);
+      }
+      break;
+    case MSG.TREE_SITTER_INFO:
+      // B4 face-info: the renderer's reply to a tree-sitter-query directive.
+      // Resume the suspended C-h F / C-h C-f command with the captures + node +
+      // the renderer-resolved {face: colour} map (face-color-for reads it for the
+      // *Face at point* "Resolved colour").
+      spine.setActiveClient(client.index);
+      spine.deliverTreeSitterInfo({ lang: msg.lang, captures: msg.captures, node: msg.node, colors: msg.colors });
+      break;
     case MSG.MINIBUFFER_COMPLETE: {
       // TAB in the minibuffer. Find-file gets CASE-INSENSITIVE path completion;
       // the client sent its current input. Other prompts (M-x, switch-to-buffer)
       // have their own completion — not wired yet. A read-only query (no edit),
       // so it replies directly rather than going through applyIntent.
       if (spine.activePrompt === 'Find file: '
+          || spine.activePrompt === 'Open project: '
           || spine.activePrompt === 'Directory tree: '
           || spine.activePrompt === 'Directory columns: '
           || spine.activePrompt === 'Jukebox directory: ') {
@@ -1400,6 +1476,55 @@ function pathsInWindowBlob(rootPane) {
   };
   walkPane(rootPane);
   return out;
+}
+
+// --- per-project save-state (<root>/.godot/project.json) — B4 project ------
+// The spine is a Node child, so it owns the project's sidecar directly (no
+// main-process IPC). Mirrors files.js's projectStatePath/project:read/write.
+
+/** `<root>/.godot/project.json`, or null for a non-absolute root. */
+function projectStatePath(root) {
+  if (typeof root !== 'string' || root === '' || !root.startsWith('/')) return null;
+  return join(root, '.godot', 'project.json');
+}
+
+/** Read a project's saved state → `{ files: string[], active: string|null }`.
+ *  Tolerant of BOTH the forward `{ version, files, active }` shape AND an older
+ *  session-style blob (`{ windows:[{rootPane}] }` / `{ rootPane }`) — from which
+ *  the open-file paths are extracted via pathsInWindowBlob. Null/unreadable →
+ *  no saved files (a first open). */
+function readProjectState(root) {
+  const target = projectStatePath(root);
+  if (!target) return { files: [], active: null };
+  let data;
+  try {
+    data = JSON.parse(readFileSync(target, 'utf8'));
+  } catch {
+    return { files: [], active: null };
+  }
+  if (data && Array.isArray(data.files)) {
+    return {
+      files: data.files.filter((p) => typeof p === 'string' && p !== ''),
+      active: typeof data.active === 'string' ? data.active : null,
+    };
+  }
+  // Migrate an older session-blob format: pull the file paths out of its tree.
+  const win = data && Array.isArray(data.windows) ? data.windows[0] : data;
+  const rootPane = win && win.rootPane ? win.rootPane : null;
+  return { files: rootPane ? pathsInWindowBlob(rootPane) : [], active: null };
+}
+
+/** Write a project's open-file layout to `<root>/.godot/project.json` (atomic,
+ *  creating `.godot/`). The forward `{ version, files, active }` shape. */
+function writeProjectState(root, { files, active }) {
+  const target = projectStatePath(root);
+  if (!target) return;
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    atomicWriteSync(target, JSON.stringify({ version: 2, files, active: active ?? null }, null, 2));
+  } catch (error) {
+    console.error(`[mwb-project] write ${target} failed: ${error.message}`);
+  }
 }
 
 /** The boot SEED hint `{ files, active }` from the store's `__last__` snapshot:
@@ -1578,6 +1703,10 @@ function handleWorkspaceChoice(client, value) {
 let pendingRestore = [];
 let awaitingRestoreWindow = false;
 let restoreInProgress = false;
+// B4 project: the project config awaiting its freshly-spawned window's HELLO
+// (open-project-at! → onOpenProjectWindow stashes it, then requestSpawnWindow).
+// The next non-bootstrap, non-restore HELLO assembles the 3-column layout for it.
+let pendingProjectWindow = null;
 
 /** The saved geometry `{ bounds, display }` of a window-blob, or null. */
 function windowGeometry(w) {

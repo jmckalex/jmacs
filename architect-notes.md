@@ -3059,3 +3059,160 @@ notebook whose cells run arbitrary JavaScript in the SAME Node session as the
 server's Lisp interpreter. A design subagent drafted `plans/NOTEBOOK-JS.md` there.
 
 ---
+
+## [2026-06-29 overnight] Model-B-default Part B: B2 + B3 landed; stopping before blind B4 ports
+
+**Context**: Branch `model-b-default`. Jason went to bed and asked me to run
+autonomously to "land the Model B port". I CANNOT launch Electron here (the build
+side can't run the GUI — confirmed by `run-and-verify`), so the renderer DOM + real
+IPC are unverifiable by me; my tools are `pnpm test`, `node --check`, and
+`createSpine` harnesses.
+
+**What I landed this session (all on `model-b-default`, suite green 3197 at every
+commit, NOT merged):**
+- **B2 customize → server-authoritative, COMPLETE** (`272dd65` B2.2a, `dc1a36c`
+  B2.2b, `49a5178` B2.3a, `3840e38` B2.3b, `5f3e338` plan). Spine now persists
+  (atomic custom.lisp/faces.json), is the sole render driver (chrome push incl. a
+  new `css-knobs` directive; CUSTOMIZE_SYNC relay deleted), and computes+pushes the
+  customize MODEL. **The renderer makes ZERO `interpreter.*` calls for customize.**
+  Jason live-verified persistence-across-relaunch.
+- **B3 docs/help → server** (`f839218`). `docs.lisp` into `SPINE_STDLIB` +
+  `load-doc-manifest!` (fs) + `open-doc`/`open-manual`/`open-docstring` directives →
+  existing `openDocInPane`/`openDocstringBuffer`. Fixes C-h d / open-doc /
+  describe-symbol-at-point (were BROKEN under Model B). Harness-verified the spine
+  half; the doc-render half NEEDS LIVE-VERIFY.
+
+**Judgement call — why I STOPPED rather than keep porting B4 / doing the teardown:**
+1. I can't live-verify, and every B4 port adds unverified renderer surface. B3 was
+   safe because it REUSES existing render functions via a directive (can't regress a
+   feature that was already broken). The remaining B4 commands are NOT like that.
+2. I validated the remaining "broken under Model B" set against the live spine
+   (`(member "<cmd>" (registered-command-names))`, predicate sanity-checked:
+   forward-char ✓, open-manual ✓ (just ported), describe-face-at-point ✗). The
+   still-broken keybound commands, by feature:
+   - **face-info.lisp** (C-h F): `describe-face-at-point`, `highlight-construct-at-point`
+     — needs RENDER-SIDE tree-sitter captures (`tree-sitter-captures-for-buffer!`),
+     so the spine can't compute it; needs a request/response intent. NOT a clean port.
+   - **inline-eval.lisp**: `eval-expression-at-point`, `eval-expression-before-point`
+     — eval can run in the spine session, but the result OVERLAY is render UI.
+   - **sticky-notes.lisp**: add/edit/delete/toggle-sticky-note(s) — render view + metadata.
+   - **folding.lisp**: `fold-all`, `unfold-all`, `toggle-fold-at-point` — view-state heavy.
+   - **project.lisp**: `find-project`. **views/system**: `scratch-buffer`, `view-list`.
+   - **notebook.lisp**: `notebook`. **utility-pane.lisp**: `toggle-repl`.
+   - **renderer-dev**: `reload-stdlib` (reloads the RENDERER interpreter — becomes moot
+     once the interpreter is deleted; B7 territory, leave it).
+3. The interpreter teardown (B5–B7, incl. the deferred A3) is OFF-LIMITS unattended —
+   the boot-window dispatch trap + TDZ + "full live matrix" make it exactly the kind
+   of change that silently bricks the app and is found in the morning. Needs Jason.
+
+**State of the work**: clean + green on `model-b-default`. Working tree has only the
+long-standing untracked/unrelated files + this notes/handover/plan edit. Recovery
+tag `pre-model-b-default` @ `b2d4f03` (main's tip). NOT merged (Jason's call).
+
+**Recommended next steps (for Jason)**:
+- Live-verify B3 (C-h d opens the manual; C-h . on a symbol; M-x open-doc).
+- B4 is genuinely per-batch work needing live-verify — best done with Jason driving.
+  Suggest order: file/IO (find-file already works) → sticky-notes → folding →
+  inline-eval → face-info (needs the render→spine captures round-trip) → notebook.
+- I recommend (but did NOT do, per "set aside automation") promoting the throwaway
+  `createSpine` harnesses (customize persistence/push/model + docs) into committed
+  `apps/desktop/mwb/*.test.js` so the B2/B3 server behavior is regression-locked and
+  future B4 work is verifiable without Electron. This is the single highest-leverage
+  thing to make the rest of the epic safe.
+
+---
+
+## [2026-06-29 cont.] B4 ports started (folding + view/misc) + a B2 REGRESSION found
+
+Jason asked to "fix all of these" (the broken-under-Model-B commands). Ported two
+clean batches, then hit a regression + per-feature complications worth his call.
+
+**Landed (green 3197, harness-verified server-side):**
+- `63c4332` **folding** — fold-all/unfold-all/toggle-fold-at-point → spine commands
+  emitting fold-* directives → renderer editorView fold methods. Clean (the B3
+  pattern). NEEDS LIVE-VERIFY (folds toggle).
+- `267bac2` **view/misc** — next-view/previous-view (cycle the active window's
+  open-set, pure server-side), scratch-buffer (mint a seeded scratch buffer, pure
+  server-side), toggle-repl (directive → utilityDock). next/previous-view +
+  scratch are FULLY verified (the harness switches the actual buffer); only
+  toggle-repl's dock toggle needs live-verify. Defined in the embedded block (NOT
+  by loading views.lisp/system.lisp — those would shadow working server commands
+  kill-view/quit).
+
+**⚠️ B2 REGRESSION (from MY work this session): renderer-only-file defcustoms
+dropped out of the customize UI.** B2.3 moved the customize MODEL computation to the
+spine (computed from the spine's `*custom-registry*`). Defcustoms declared in files
+NOT in SPINE_STDLIB are absent from that registry, so they no longer appear in
+`M-x customize`. Confirmed missing (11): `*markdown-interpreter*` (sticky-notes),
+`*pdf-restore-default*` (views), `*autosave-recovery*` + `*autosave-recovery-interval*`
+(system), `*jukebox-track-format*` (jukebox), `*latex-command*`/`*latex-bibtex-command*`/
+`*latex-view*`/`*latex-pdf-restore*`/`*latex-clean*` (latex-compile),
+`*directory-tree-open-target*` (directory-tree). Existing SAVED values still apply at
+boot (the renderer's loadUserConfig still evals custom.lisp); the user just can't
+see/change them in customize anymore. Also: post-B2.3b, even if shown, a live edit to
+a RENDERER-CONSUMED defcustom wouldn't take effect (the renderer interpreter no longer
+gets customize edits) until restart — this is the deferred **B0 config-snapshot push**.
+**Proper fix needs a design call** (register these defcustoms server-side AND push the
+renderer-consumed values — B0). I did NOT hack a partial fix.
+
+**Why I paused the remaining ports (sticky-notes/inline-eval/notebook/project/
+face-info/latex-compile):** each has a Model-B complication that wants your input or
+is unverifiable here:
+- **sticky-notes**: `(note-edit! (note-create!))` chains a renderer-returned note id;
+  next/prev move the SERVER-owned cursor. So it's NOT a simple directive port — needs
+  command-level directives (renderer does the whole op) + a move-point intent. Also
+  owns `*markdown-interpreter*` (the regression).
+- **inline-eval**: eval must run in the SPINE session (the renderer interpreter is
+  going away); the result pill is a render overlay → eval server-side + push overlay.
+- **face-info** (C-h F): needs render-side tree-sitter captures → a request/response
+  round-trip (renderer computes captures → spine formats → directive back).
+- **project**: minibuffer completion + project-open (`-open-project-deliver`).
+- **latex-compile**: a subprocess (main process) + an output pane; owns 5 defcustoms.
+- **notebook**: a complex reactive view; `notebook` opens it, next/prev switch.
+
+**Recommendation**: (1) decide the defcustom/B0 approach — it's a real regression and
+blocks doing sticky-notes/latex-compile settings cleanly; (2) then I can do the
+command ports, but several need live-verify (I can't launch Electron). Suggest the
+order: project → notebook → inline-eval → sticky-notes → face-info, with the B0
+config push first (it unblocks the defcustoms AND is needed before B7 anyway).
+
+State: clean + green on `model-b-default`. 4 commits this round beyond B2/B3
+(folding, view/misc + the two doc commits). NOT merged.
+
+---
+
+## [2026-06-29 cont.2] B4: inline-eval + sticky-notes ported (feature-tier); the overlay-wiring lesson
+
+Continued B4 (Jason live-verifying each). Beyond folding/view-misc/docs:
+- **inline-eval** (`c089200`): eval-expression-at-point/-before-point evaluate IN THE
+  SPINE SESSION (form bounds via the pure brackets.js helpers over (buffer-text)/(point);
+  result pushed as `inline-eval-result` directive → the renderer pill). The renderer's
+  old eval-region! ran on the INERT renderer interpreter — that was the bug. `d140386`
+  positions the pill via the mirror; `d1403869` +6pt pad.
+- **sticky-notes FULL** (`a461e5e` commands → `edc64b1` display → `c8d9b51` persist).
+  The manager (apps/desktop/src/sticky-notes.js) was reusable as-is — it reads
+  buffer.metadata.notes + edit-tracks via buffer.onChange, both present on the CLIENT
+  MIRROR. Display: spine seeds notes onto spine.buffer.metadata (seedMetadata, legacy
+  .jmacs-metadata fallback included) → SNAPSHOT carries `notes` → client sets
+  mirror.metadata.notes + onServerBuffer points the manager at the mirror. Persist:
+  manager.onChange → `serverViewClient.notesChanged` → NOTES_CHANGED intent →
+  `spine.setBufferNotes` → persistMetadata (bookmarks in the same sidecar preserved).
+
+**THE LESSON (will recur):** under Model B, `mountKindView` EARLY-RETURNS for
+server-backed editor views, so the editor's overlay layer was never wired to the
+overlay managers (stickyNotes / inlineEval) — pills + notes couldn't render at all.
+Fixed `b6fa739` + the new `chrome.onServerBuffer(mirror, view)` hook
+(server-view-client fires it in onSnapshot after mounting). app.js's onServerBuffer
+sets `currentTextBuffer = mirror` (bare — server owns dirty/autosave) so inline-eval's
+getBuffer→positionAt + sticky-notes anchoring use the RIGHT buffer. Any future
+overlay/anchor feature wires through the mirror, not a local renderer buffer.
+
+**REMAINING B4 (all LARGE):** latex-compile (run-process! subprocess + async onExit +
+TeX views + PDF + errors + 5 defcustoms; the spine CAN spawn — it's a Node
+utilityProcess — + hold/apply the onExit closure async), project (open-project-at!
+workspace rebuild), notebook (reactive engine), face-info (needs a spine→renderer→reply
+round-trip for tree-sitter captures — the reverse of NOTEBOOK_EVAL). + the B2 defcustom
+regression (register the 11 server-side + the B0 config-push). Left Jason on the fork:
+**checkpoint/merge the milestone, or push into latex-compile.** ~24 commits, green 3197.
+
+---

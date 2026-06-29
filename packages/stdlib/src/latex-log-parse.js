@@ -85,7 +85,11 @@ export function parseLatexLog(text) {
   const currentFile = () =>
     fileStack.length > 0 ? fileStack[fileStack.length - 1].path : null;
 
-  const lines = text.split('\n');
+  // TeX wraps log lines hard at `max_print_line` (79 by default), so long error
+  // and warning messages spill onto continuation lines (e.g. `… not` + `found.`).
+  // Rejoin them first so the captured message is the whole thing, not just its
+  // first ~79 chars (the truncation users see in the *TeX errors* view).
+  const lines = unwrapTeXLog(text);
   for (const line of lines) {
     // Update the file stack from this line's parens *first*, so an error
     // or warning on the same line is attributed to the file just opened.
@@ -197,6 +201,50 @@ function updateFileStack(line, stack, parenState) {
       }
     }
   }
+}
+
+/** TeX's default `max_print_line` — the column at which it hard-wraps every log
+ *  line (no hyphen, no trailing space, a bare cut). A line of EXACTLY this length
+ *  was almost certainly wrapped, so the next line continues it. */
+const MAX_PRINT_LINE = 79;
+
+/**
+ * Rejoin TeX's hard-wrapped log lines into logical lines. A raw line of exactly
+ * `MAX_PRINT_LINE` chars is a wrap point; the following line is its continuation
+ * and is appended. To avoid swallowing a genuinely new diagnostic that happens
+ * to follow a 79-char line, a line that STARTS a construct (an `! ` error, an
+ * `l.NN` line, or a `… Warning:` line) is never treated as a continuation.
+ *
+ * This recovers full error/warning messages (`… not found.`,
+ * `… in conjunction with amsmath`) instead of the first ~79 chars. A legitimate
+ * non-wrapped 79-char line is rare; the construct guard keeps the failure mode
+ * harmless (at worst a little extra trailing log text on one message).
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+function unwrapTeXLog(text) {
+  const raw = text.split('\n');
+  /** @type {string[]} */
+  const out = [];
+  let continuing = false;
+  for (const line of raw) {
+    if (continuing && out.length > 0 && !startsConstruct(line)) {
+      out[out.length - 1] += line;
+    } else {
+      out.push(line);
+    }
+    continuing = line.length === MAX_PRINT_LINE;
+  }
+  return out;
+}
+
+/** Whether LINE opens a new diagnostic construct the parser keys on — so the
+ *  unwrapper never merges it into a preceding wrapped line. */
+function startsConstruct(line) {
+  return line.startsWith('! ')
+    || /^l\.\d+\b/.test(line)
+    || /(?:LaTeX|Package\s+\S+)\s+Warning:/.test(line);
 }
 
 /**

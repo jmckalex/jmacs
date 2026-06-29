@@ -1,5 +1,11 @@
 # MWB Graduation — flipping the real app to the server/client model
 
+> **STATUS (2026-06-28):** DONE through G4. The G5 endgame — *flip the default +
+> delete the dead in-renderer path* — is now carried out by
+> `plans/MODEL-B-DEFAULT.md`: Model B is the default and the `GODOT_SERVER` flag
+> is removed (Part A); the renderer interpreter teardown is Part B. This document
+> is kept as the historical migration record.
+>
 > The plan to graduate the **proven** Model-B prototype (`apps/desktop/mwb/`,
 > branch `multi-window-b`) from a flag-gated spike into the **real** app's
 > architecture: one central Lisp server (an Electron `utilityProcess`) owning

@@ -125,7 +125,6 @@ const VIDEO_SUFFIXES = new Set([
  *  symmetry with the audio / video sets; the renderer's `isPdfName`
  *  twin lives in `packages/renderer/src/pdf-view.js`. */
 const PDF_SUFFIXES = new Set(['.pdf']);
-const NOTEBOOK_SUFFIXES = new Set(['.rxlisp']);
 
 /** The image MIME type for a path, by its suffix, or `null` when the
  *  path is not a recognised image. The renderer's `mimeTypeForImage`
@@ -315,15 +314,10 @@ async function readPathAsBuffer(path) {
     };
   }
   const content = await readFile(path, 'utf8');
-  // Record the on-disk baseline for these savable text/notebook buffers,
-  // so a later save can detect an external change. (Re-opening the same
-  // path — e.g. a reload — re-notes it and clears any stale conflict.)
+  // Record the on-disk baseline for these savable text buffers, so a later
+  // save can detect an external change. (Re-opening the same path — e.g. a
+  // reload — re-notes it and clears any stale conflict.)
   await changeTracker.note(path);
-  if (NOTEBOOK_SUFFIXES.has(extname(path).toLowerCase())) {
-    // A reactive Lisp notebook (.rxlisp) — opens as a `notebook` view,
-    // not a text editor. Its `(cell …)` source is the content.
-    return { path, name: basename(path), content, notebookKind: true };
-  }
   return { path, name: basename(path), content };
 }
 

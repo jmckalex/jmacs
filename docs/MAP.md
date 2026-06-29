@@ -37,7 +37,7 @@ For views/panes work, `docs/VIEWS.md` is mandatory **first**. For key dispatch /
 
 ## The architecture: server + thin clients (Model B)
 
-The editor runs as a **server** (the *spine*, an Electron `utilityProcess`, `apps/desktop/mwb/spine.js`) plus one thin **client** per window, each over a `MessageChannelMain` port. The Lisp interpreter runs in the server; the **server resolves every key**; renderer-side effects come back as a **`CLIENT_DIRECTIVE`** that can target any subset of windows. The stdlib slice the server loads is `SPINE_STDLIB` (in `spine.js`). Launched with `GODOT_SERVER=1`.
+The editor runs as a **server** (the *spine*, an Electron `utilityProcess`, `apps/desktop/mwb/spine.js`) plus one thin **client** per window, each over a `MessageChannelMain` port. The Lisp interpreter runs in the server; the **server resolves every key**; renderer-side effects come back as a **`CLIENT_DIRECTIVE`** that can target any subset of windows. The stdlib slice the server loads is `SPINE_STDLIB` (in `spine.js`). Model B is the only mode — a bare `electron .` launches it (the `GODOT_SERVER` flag is gone; see `plans/MODEL-B-DEFAULT.md`).
 
 This is **the** architecture — the older in-renderer interpreter path is gone, not an alternative to keep in mind. Understanding the server/client split is essential before touching dispatch or views.
 

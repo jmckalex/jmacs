@@ -71,7 +71,6 @@ import {
   createDocPanel,
   ShellView,
   GnuplotView,
-  NotebookView,
   ViewListView,
   RecoverView,
   createReftexSelectPanel,
@@ -122,11 +121,10 @@ import { createAudioController } from './audio.js';
 import {
   emptyOverrides,
   jsonToLispOverrides,
-  lispToJsonFacesFile,
   jsonToLispUserFaces,
   jsonToLispHighlightRules,
 } from './face-overrides.js';
-import { applyFaceStyles, BASE_FACE_NAME } from './face-styles.js';
+import { applyFaceStyles, writeFaceStyleElement } from './face-styles.js';
 import { resolveElementModuleUrl, normalizeFit } from './element-spec.js';
 import {
   isMathPreviewActive,
@@ -231,15 +229,6 @@ const SCRATCH = `;; scratch.lisp — a buffer for evaluating Lisp.
       (* n (factorial (- n 1)))))
 
 (define greeting "hello, world")
-`;
-
-/** The header of the machine-written custom.lisp settings file. */
-const CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
-;;;
-;;; jmacs writes this file; edits made by hand will be overwritten the
-;;; next time a setting is saved. For free-form configuration, use
-;;; init.lisp instead.
-
 `;
 
 /** The commented init.lisp written into the config directory on first run. */
@@ -474,51 +463,6 @@ let gnuplotSessionCounter = 0;
 function nextGnuplotSessionId() {
   gnuplotSessionCounter += 1;
   return `gnuplot-${gnuplotSessionCounter}-${Date.now()}`;
-}
-
-/** Monotonic id source for notebook views. The reactive engine keys its
- *  per-notebook record (cell values, dep graph) off this id. */
-let notebookCounter = 0;
-function nextNotebookId() {
-  notebookCounter += 1;
-  return `notebook-${notebookCounter}-${Date.now()}`;
-}
-
-/** Rename the notebook with NOTEBOOK-ID to NAME (its display + buffer
- *  name; the file on disk is unchanged). Keyed by id, not by "current
- *  view", so it's robust to focus moving during a minibuffer prompt. */
-function renameNotebookById(id, name) {
-  const n = String(name ?? '').trim();
-  if (n === '') return;
-  const view = views.find((v) => v.kind === 'notebook' && v.notebookId === id);
-  if (!view) return;
-  view.name = n;
-  if (view.buffer) view.buffer.name = n;
-  updateModeline();
-  notifyViewsChanged();
-  // Refresh every notebook view's header picker so the new name shows in
-  // the dropdown — the inline ✎ button refreshes its own, but the M-x
-  // command path (rename-notebook-by-id!) has no view handle, so do it for
-  // all notebook elements here.
-  for (const el of document.querySelectorAll('notebook-view')) {
-    if (typeof el.refreshHeader === 'function') el.refreshHeader();
-  }
-}
-
-/** Switch to the next (DELTA +1) or previous (-1) open notebook, wrapping
- *  around. If the current view isn't a notebook, jump to the first/last. */
-function cycleNotebook(delta) {
-  const notebooks = views.filter((v) => v.kind === 'notebook');
-  if (notebooks.length === 0) return;
-  const current = views[currentViewIndex];
-  const here = current && current.kind === 'notebook' ? notebooks.indexOf(current) : -1;
-  const next =
-    here === -1
-      ? delta > 0
-        ? 0
-        : notebooks.length - 1
-      : (here + delta + notebooks.length) % notebooks.length;
-  switchToViewIndex(views.indexOf(notebooks[next]));
 }
 
 /** A change to the view list or the current index. Refreshes the
@@ -1155,17 +1099,6 @@ function cloneViewForPlaceholder(originView) {
           kind: 'gnuplot',
           name: seq === 1 ? '*gnuplot*' : `*gnuplot*<${seq}>`,
           extras: { sessionId, ended: false, spawned: false },
-        });
-      }
-      if (originView.kind === 'notebook') {
-        const notebookId = nextNotebookId();
-        const seq = views.filter((v) => v.kind === 'notebook').length + 1;
-        const name = seq === 1 ? '*notebook*' : `*notebook*<${seq}>`;
-        return createView({
-          kind: 'notebook',
-          name,
-          buffer: { text: '', filePath: null, name },
-          extras: { notebookId },
         });
       }
       // directory-tree / directory-columns: a fresh view at the same
@@ -2553,22 +2486,6 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
     }));
     return finalise();
   }
-  // A `.rxlisp` file is a reactive Lisp notebook: open it through the
-  // notebook view, its `(cell …)` source backing `buffer.text` so the
-  // generic save path round-trips it.
-  if (result.notebookKind === true) {
-    views.push(createView({
-      kind: 'notebook',
-      name: result.name,
-      buffer: {
-        text: result.content ?? '',
-        filePath: result.path,
-        name: result.name,
-      },
-      extras: { notebookId: nextNotebookId() },
-    }));
-    return finalise();
-  }
   return false;
 }
 
@@ -3937,28 +3854,15 @@ const interpreter = createInterpreter({
     // directory-columns preview line read the CSS var via
     // `tab-size: var(--tab-width)`; the cached number is what
     // `getTabWidth` returns to createEditorView so the cursor /
-    // selection rects line up with the rendered glyph when the line
-    // contains tabs. Called once on startup (after stdlib loads) and
-    // again from the *tab-width* defcustom's on-change hook whenever
-    // the user changes it.
-    'set-css-tab-width!': (args) => {
-      const value = Number(args[0]);
-      const width = Number.isFinite(value) && value > 0 ? value | 0 : 4;
-      document.documentElement.style.setProperty('--tab-width', String(width));
-      currentTabWidth = width;
-      return NIL;
-    },
-    // Paint the editor's line spacing onto the `--line-height` CSS var, which
-    // `.editor { line-height: var(--line-height) }` reads — so every line's
-    // `1lh`-based position reflows in step (no re-render needed). Driven by
-    // the *line-height* defcustom: once on startup, then on its on-change.
-    // Clamped to a sane multiple so a fat-fingered value can't break layout.
-    'set-css-line-height!': (args) => {
-      const value = Number(args[0]);
-      const lh = Number.isFinite(value) && value >= 1 && value <= 3 ? value : 1.35;
-      document.documentElement.style.setProperty('--line-height', String(lh));
-      return NIL;
-    },
+    // B2.2b: CSS knobs (--tab-width / --line-height) are server-driven. A
+    // *tab-width* / *line-height* customise edit applies on the spine, whose
+    // on-change fires the spine's set-css-* -> pushChromeToAll, repainting every
+    // window via the `css-knobs` directive (applyDirective sets the CSS vars +
+    // currentTabWidth). These renderer primitives are no-op stubs — kept only
+    // because reloadStdlib's stdlib still references them; they die with the
+    // renderer interpreter in B7.
+    'set-css-tab-width!': () => NIL,
+    'set-css-line-height!': () => NIL,
     'clear-status!': () => {
       minibuffer.clearStatus();
       return NIL;
@@ -4695,51 +4599,6 @@ const interpreter = createInterpreter({
       switchToViewIndex(views.length - 1);
       return NIL;
     },
-    // Open a reactive Lisp notebook: a sheet of `(cell NAME EXPR)` cells
-    // shown through the L4 notebook view, where editing one cell
-    // recomputes everything downstream. Like `open-gnuplot-buffer!`,
-    // each call creates a fresh view; switch to an existing one with
-    // C-x b. In-memory for now (M2); a `.rxlisp` file backing comes with
-    // persistence (M3).
-    'open-notebook-buffer!': () => {
-      const notebookId = nextNotebookId();
-      const sequence = views.filter((v) => v.kind === 'notebook').length + 1;
-      const name = sequence === 1 ? '*notebook*' : `*notebook*<${sequence}>`;
-      views.push(createView({
-        kind: 'notebook',
-        name,
-        // The canonical `(cell …)` source lives in buffer.text so the
-        // generic save path works once the user gives it a file.
-        buffer: { text: '', filePath: null, name },
-        extras: { notebookId },
-      }));
-      switchToViewIndex(views.length - 1);
-      return NIL;
-    },
-    // The current notebook's id, or nil. Captured by the rename command
-    // *before* it prompts, so the rename targets the right notebook even
-    // after the minibuffer moves focus.
-    'current-notebook-id': () => {
-      const view = session.currentView;
-      return view && view.kind === 'notebook' && typeof view.notebookId === 'string'
-        ? view.notebookId
-        : NIL;
-    },
-    // Rename the notebook with this id (display + buffer name; the file on
-    // disk is unchanged — use save-as to rename that).
-    'rename-notebook-by-id!': (args) => {
-      renameNotebookById(String(args[0] ?? ''), String(args[1] ?? ''));
-      return NIL;
-    },
-    // Cycle among open notebooks (also reachable via the header picker).
-    'next-notebook!': () => {
-      cycleNotebook(1);
-      return NIL;
-    },
-    'previous-notebook!': () => {
-      cycleNotebook(-1);
-      return NIL;
-    },
     // Open a Finder-style column-view buffer rooted at `path`. Same
     // re-use semantics as `open-directory-tree!`.
     'open-directory-columns!': (args) => {
@@ -4757,21 +4616,16 @@ const interpreter = createInterpreter({
       reloadStdlib();
       return NIL;
     },
-    // Themes set CSS custom properties on the document root. The Lisp
-    // side holds the palettes and decides which is active; this is the
-    // host hook that reads the current palette and writes it to the DOM.
-    'apply-theme!': () => {
-      applyCurrentTheme();
-      applyCurrentFaceStyles();
-      return NIL;
-    },
-    // Face customisation: regenerate `<style id="face-overrides">`
-    // from the Lisp-side resolved face map. Called whenever any
-    // override changes, plus on startup and theme switch.
-    'apply-face-styles!': () => {
-      applyCurrentFaceStyles();
-      return NIL;
-    },
+    // B2.2b (plans/MODEL-B-DEFAULT.md): theme + face rendering is server-driven.
+    // A customize edit applies on the SPINE, whose :on-change fires the spine's
+    // apply-theme! / apply-face-styles! -> pushChromeToAll, repainting every
+    // window via the theme-apply / faces-apply directives (applyDirective). These
+    // renderer primitives are no-op stubs — kept only because reloadStdlib's
+    // stdlib still references them. The direct applyCurrentTheme /
+    // applyCurrentFaceStyles JS path stays for reloadStdlib. They die with the
+    // renderer interpreter in B7.
+    'apply-theme!': () => NIL,
+    'apply-face-styles!': () => NIL,
     // Documentation: open the doc page for NAME in a doc-kind buffer.
     // The page HTML is read from docs/build/ by the host (the
     // renderer is sandboxed). Unknown names print to the REPL.
@@ -5063,22 +4917,11 @@ const interpreter = createInterpreter({
     'load-face-overrides!': () =>
       faceOverridesCache ?? emptyOverrides(lispFactories),
 
-    // Face customisation: write the COMPLETE faces.json — colour
-    // overrides + user-created faces + highlight rules — in one blob.
-    // The Lisp side passes `(current-faces-file)`; we serialise all
-    // three sections (lists are unfolded via listToArray for the rules).
-    'write-faces!': (args) => {
-      const facesFile = args[0];
-      try {
-        const json = lispToJsonFacesFile(facesFile, lispFactories, listToArray);
-        window.host.writeFaces(json);
-      } catch (error) {
-        repl.appendError(
-          `faces:write: ${error.lispMessage ?? error.message}`
-        );
-      }
-      return NIL;
-    },
+    // Face customisation: faces.json persistence is now SERVER-side (B2.2a;
+    // plans/MODEL-B-DEFAULT.md). The spine wires the face saver + the real
+    // write-faces! that atomic-writes faces.json. The renderer no longer
+    // persists (installFacePersistence wires no saver), so this is a no-op.
+    'write-faces!': () => NIL,
     // Highlight customisation: receive the user's `kind -> face` rule
     // set from Lisp (highlight-rules.lisp) and push it into the live
     // highlighter store. Each ARG[0] element is a record with :scope
@@ -5307,11 +5150,10 @@ const interpreter = createInterpreter({
     // spread in below this block. The host shape (viewHost) is defined
     // alongside the interpreter so the closures see the live views.
 
-    // Persist the customisation registry's saved settings to disk.
-    'write-custom-file!': (args) => {
-      writeCustomFile(args[0]);
-      return NIL;
-    },
+    // Persist the customisation registry's saved settings to disk — now
+    // SERVER-side (B2.2a). The spine's write-custom-file! atomic-writes
+    // custom.lisp (the file it also loads at boot); the renderer is a no-op.
+    'write-custom-file!': () => NIL,
     // Open (or switch to) a customisation buffer.
     'open-customize!': () => {
       openCustomize('*Customize*', { group: 'godot' });
@@ -5644,24 +5486,6 @@ async function discoverRendererLanguages() {
 }
 
 /**
- * Write the customisation registry's saved settings to custom.lisp.
- * `pairList` is a Lisp list of (name value) pairs; each value is
- * wrapped in `quote` so it round-trips whatever its type.
- */
-function writeCustomFile(pairList) {
-  const lines = listToArray(pairList).map((pair) => {
-    const [name, value] = listToArray(pair);
-    return `(custom-set-saved! (quote ${writeString(name)}) (quote ${writeString(value)}))`;
-  });
-  const text = CUSTOM_FILE_HEADER + lines.join('\n') + '\n';
-  window.host
-    .writeConfigFile('custom.lisp', text)
-    .catch((error) =>
-      repl.appendError(`saving customisations failed: ${error.message}`)
-    );
-}
-
-/**
  * Load the user's saved customisations and their init.lisp — the
  * jmacs equivalent of .emacs. The saved file loads first so a hand
  * edit in init.lisp wins. A broken config file is reported, not fatal.
@@ -5750,19 +5574,14 @@ async function reloadStdlib() {
   }
 }
 
-/** Wire the renderer-side face persistence into the Lisp face system.
- *  After this runs, every `set-face-attribute` persists to faces.json.
- *  CSS regeneration is already handled by the `apply-face-styles!`
- *  primitive that Lisp calls directly on every change. */
-function installFacePersistence() {
-  // The saver writes the WHOLE faces.json — colour overrides, user-
-  // created faces, and highlight rules — so both the face-change and
-  // highlight-rule-change paths (which share this hook) persist
-  // everything in one atomic write.
-  interpreter.evaluate(
-    '(set-face-overrides-saver! (lambda () (write-faces! (current-faces-file))))'
-  );
-}
+/** Face persistence is now SERVER-side (B2.2a; plans/MODEL-B-DEFAULT.md): the
+ *  spine wires the face-overrides saver and atomic-writes faces.json. The
+ *  renderer wires NO saver, so a renderer-side face change does not persist
+ *  (it is relayed to the spine, which applies + persists). CSS regeneration is
+ *  still handled renderer-side by `apply-face-styles!` until B2.2b. Kept as a
+ *  no-op (still called at boot + after reload-stdlib) so those call sites need
+ *  no change; it dies with the renderer interpreter in B7. */
+function installFacePersistence() {}
 
 /** Install the persisted user highlight rules into the (freshly-loaded)
  *  stdlib and push them into the live highlighter. A no-op-but-safe push
@@ -5841,36 +5660,12 @@ if (keymapReady) {
 
 if (keymapReady) await loadUserConfig();
 
-// Sync the `--tab-width` CSS variable with the live *tab-width*
-// setting. Runs after stdlib + user config load so a user-customised
-// value lands here. The `on-change` hook (installed via
-// `custom-on-change!` below) keeps the var in sync afterwards.
-if (keymapReady) {
-  try {
-    const value = interpreter.evaluate('*tab-width*');
-    interpreter.call('set-css-tab-width!', value);
-    // Install an on-change hook so subsequent customise edits update
-    // the CSS var. The Lisp side stores the hook in the *custom-registry*;
-    // we wrap a host-side closure as a Lisp lambda via `eval`.
-    interpreter.evaluate(`
-      (set! *custom-registry*
-        (assoc *custom-registry* '*tab-width*
-          (assoc (get *custom-registry* '*tab-width* {})
-                 :on-change (lambda (_n v) (set-css-tab-width! v)))))
-    `);
-  } catch (error) {
-    repl.appendError(`tab-width sync failed: ${error.lispMessage ?? error.message}`);
-  }
-}
-// Sync the editor line-height CSS var from *line-height* on startup; the
-// defcustom's on-change keeps it current after customise edits.
-if (keymapReady) {
-  try {
-    interpreter.call('set-css-line-height!', interpreter.evaluate('*line-height*'));
-  } catch { /* an old config without the setting — the CSS default stands */ }
-}
-if (keymapReady) applyCurrentTheme();
-if (keymapReady) applyCurrentFaceStyles();
+// B2.2b (plans/MODEL-B-DEFAULT.md): the CSS knobs (--tab-width / --line-height)
+// are server-authoritative now, like theme + faces (B1.3). The spine pushes a
+// `css-knobs` directive on connect (and re-pushes on change), applied in
+// applyDirective above — so there is no local boot-time knob sync here, and the
+// renderer's set-css-* are no-ops. The host-injected *tab-width* on-change moved
+// to the spine.
 
 // Kick off the doc manifest fetch — fire-and-forget. The
 // `load-doc-manifest!` primitive returns the cached value once it
@@ -6121,6 +5916,7 @@ if (window.host && window.host.serverMode) {
       const browserKind = w.viewKind === 'browser';
       const procViewKind = isProcViewKind(w.viewKind); // shell | gnuplot
       const customizeKind = w.viewKind === 'customize';
+      const docKind = w.viewKind === 'doc'; // B4: docs are a server data-source now
       let extras;
       if (bookmarkKind) {
         // The outline of a text buffer's bookmarks. The server holds the records
@@ -6197,6 +5993,17 @@ if (window.host && window.host.serverMode) {
         extras = {
           scope: (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' },
         };
+      } else if (docKind) {
+        // B4: a server 'doc' data-source carries the doc NAME (a manifest page /
+        // nav node) or a live docstring's Markdown `source`. The HTML is filled
+        // asynchronously below (read render-side via the host, or rendered from
+        // the source); the <doc-view> renders from view.html + the nav manifest.
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          docName: typeof s.docName === 'string' ? s.docName : '',
+          docSource: typeof s.source === 'string' ? s.source : null,
+          html: '',
+        };
       } else {
         extras = { filePath: w.filePath };
       }
@@ -6213,10 +6020,18 @@ if (window.host && window.host.serverMode) {
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
       // Only media needs an async byte-load; directory / element / jukebox /
-      // bookmark / shell / browser render themselves from the spec / state.
+      // bookmark / shell / browser / doc render themselves from the spec / state.
       if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind
-          && !procViewKind && !customizeKind && !browserKind) {
+          && !procViewKind && !customizeKind && !browserKind && !docKind) {
         loadServerMediaSrc(v, w.filePath);
+      }
+      // B4: the <doc-view> self-fetches its content from docName / docSource (see
+      // configureDocView's readPage / renderMarkdown), so the reconcile only
+      // refines the tab name from the nav tree — no host-side fill, no element
+      // lookup (which differs by mount path).
+      if (docKind) {
+        const node = docNavTree && docNavTree.nodes ? docNavTree.nodes[v.docName] : null;
+        if (node && typeof node.title === 'string') v.name = node.title;
       }
     }
     // The bookmark outline is a MUTABLE data-source: refresh the (possibly
@@ -6231,12 +6046,15 @@ if (window.host && window.host.serverMode) {
       v.sourceBufferId = s.sourceBufferId ?? null;
       v.pinned = s.pinned === true; // drives the thumbtack (pinned vs following)
     }
-    // The customize view is likewise mutable: refresh its scope from the wire on
-    // every reconcile so a CUSTOMIZE_OP scope change (openScope) re-renders the
-    // (reused, pre-configured singleton) view at the new scope.
+    // The customize view is likewise mutable: refresh its scope AND its
+    // server-computed model from the wire on every reconcile, so an openScope
+    // (CUSTOMIZE_OP) navigation or a value/face edit (setState fan-out) re-renders
+    // the (reused, pre-configured singleton) view from the pushed data. B2.3: the
+    // model is computed server-side now; the renderer renders from state.model.
     if (w.viewKind === 'customize') {
       const s = (w.state && typeof w.state === 'object') ? w.state : {};
       v.scope = (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' };
+      v.model = (s.model && typeof s.model === 'object') ? s.model : null;
     }
     return v;
   }
@@ -6916,9 +6734,6 @@ if (window.host && window.host.serverMode) {
       // Markdown-preview forward search: follow the cursor line in the preview.
       if (v && typeof v.cursorLine === 'number') previewScrollToCursor(v.cursorLine);
     },
-    // A customize setting changed in ANOTHER window — re-apply it here so global
-    // rendering (theme / faces / line-height) stays consistent across windows.
-    onCustomizeSync: (change) => applyCustomizeSync(change),
     // The echo area: a mid-chord prefix (e.g. "C-x-") or a one-off status. The
     // minibuffer component reuses its row as the echo area when no prompt is up.
     setEcho: (status) => minibuffer.setStatus(status ?? ''),
@@ -7040,6 +6855,214 @@ if (window.host && window.host.serverMode) {
         // Explicit forward search (C-c C-v): scroll the preview to the cursor's
         // line (args[0], 1-based) and flash it, regardless of the follow setting.
         previewSyncToCursor(Number(args?.[0]));
+      } else if (name === 'theme-apply') {
+        // B1.3 (plans/MODEL-B-DEFAULT.md): the spine pushed the theme's CSS
+        // variables (JSON array of [--var, value]). Apply them to :root and
+        // notify theme listeners (e.g. the shell's xterm palette). The server is
+        // authoritative — the renderer no longer computes the theme itself.
+        try {
+          const pairs = JSON.parse(String(args?.[0] ?? '[]'));
+          for (const [cssVar, value] of pairs) {
+            if (typeof cssVar === 'string' && cssVar.startsWith('--') && value !== '') {
+              document.documentElement.style.setProperty(cssVar, String(value));
+            }
+          }
+          for (const listener of themeListeners) {
+            try { listener(); } catch { /* listener bug — keep going */ }
+          }
+        } catch { /* malformed payload — keep the current theme */ }
+      } else if (name === 'faces-apply') {
+        // B1.3: the spine pushed the prebuilt face-overrides CSS string; inject it
+        // into <style id="face-overrides"> (writeFaceStyleElement). No local
+        // face-styles computation needed.
+        writeFaceStyleElement(document, String(args?.[0] ?? ''));
+      } else if (name === 'highlight-rules') {
+        // B1.3: the spine pushed the user's highlight-rule records (JSON
+        // {scope,key,pattern,face}). Replace the override store + re-highlight.
+        try {
+          const entries = JSON.parse(String(args?.[0] ?? '[]'));
+          highlightOverrideStore.replaceAll(entries);
+          rerenderAllEditors();
+        } catch { /* malformed — keep current highlighting */ }
+      } else if (name === 'css-knobs') {
+        // B2.2b: the spine pushed the editor's CSS knobs ({tabWidth, lineHeight}).
+        // Apply them to the document root's CSS vars — the renderer's set-css-*
+        // primitives are no-ops now; the server drives these like theme/faces.
+        // Clamp defensively (the old set-css-* primitives did the same).
+        try {
+          const { tabWidth, lineHeight } = JSON.parse(String(args?.[0] ?? '{}'));
+          if (Number.isFinite(tabWidth) && tabWidth > 0) {
+            const width = tabWidth | 0;
+            document.documentElement.style.setProperty('--tab-width', String(width));
+            currentTabWidth = width;
+          }
+          if (Number.isFinite(lineHeight) && lineHeight >= 1 && lineHeight <= 3) {
+            document.documentElement.style.setProperty('--line-height', String(lineHeight));
+          }
+        } catch { /* malformed — keep the current knobs */ }
+      } else if (name === 'config-apply') {
+        // B2 regression / B0 config-push: the spine pushed a renderer-consumed
+        // customize setting that changed live ([varName, valueSrc] — valueSrc is
+        // the writeString SOURCE of the new value, clone-safe across the port).
+        // Re-apply it into THIS window's interpreter via the same custom-apply!
+        // the spine ran, so the renderer-side consumers (markdown preview,
+        // autosave getters, the jukebox format-track fn, the pdf-restore default,
+        // the dir-tree open target) read the new value — and the setting's native
+        // renderer on-change fires (e.g. *jukebox-track-format* relabels open
+        // jukeboxes). B2.2b deleted the old CUSTOMIZE_SYNC relay; this is the
+        // narrow, spine-authoritative replacement for the values the renderer (not
+        // the spine) consumes. Superseded by the pure-JS config store at B7.
+        try {
+          const varName = String(args?.[0] ?? '');
+          const valueSrc = String(args?.[1] ?? '');
+          if (varName) {
+            interpreter.evaluate(`(custom-apply! (quote ${varName}) (quote ${valueSrc}))`);
+          }
+        } catch { /* unregistered / malformed — leave the current value */ }
+      } else if (name === 'utility-panel-open') {
+        // B4 (latex-compile.lisp): open/reuse a utility-dock tab. Mirrors the
+        // renderer's old utility-panel-open! primitive — look up the factory and
+        // open the tab without stealing focus. [factory, id, title].
+        const factoryName = String(args?.[0] ?? '');
+        const id = String(args?.[1] ?? factoryName);
+        const title = String(args?.[2] ?? id);
+        const factory = utilityPanelFactories.get(factoryName);
+        if (factory) {
+          utilityDock.openUtilityPanel({
+            id, title,
+            makePanel: (handle) => factory(handle, { title }),
+            focus: false,
+          });
+        }
+      } else if (name === 'utility-panel-set') {
+        // Replace the named panel's content ([id, text]).
+        const panel = utilityDock.getPanel(String(args?.[0] ?? ''));
+        if (panel && typeof panel.setContent === 'function') panel.setContent(String(args?.[1] ?? ''));
+      } else if (name === 'utility-panel-append') {
+        // Append to the named panel's log ([id, text]).
+        const panel = utilityDock.getPanel(String(args?.[0] ?? ''));
+        if (panel && typeof panel.appendOutput === 'function') panel.appendOutput(String(args?.[1] ?? ''));
+      } else if (name === 'utility-panel-activate') {
+        // Bring the named tab forward ([id]).
+        utilityDock.activateUtilityTab(String(args?.[0] ?? ''));
+      } else if (name === 'pdf-reload') {
+        // B4 (latex-compile.lisp): a recompile produced the same pdf path with
+        // new bytes; reload the open pdf-view (bypassing its same-path load
+        // guard). [path] — empty reloads the current pdf; a path reloads only
+        // when the singleton shows that file. Mirrors the old pdf-reload!.
+        const current = pdfView.buffer;
+        if (current) {
+          const wanted = String(args?.[0] ?? '');
+          if (!(wanted !== '' && viewFilePath(current) !== wanted)
+              && typeof pdfView.reload === 'function') {
+            pdfView.reload();
+          }
+        }
+      } else if (name === 'open-project-dialog') {
+        // B4 project Stage 3 (open-project): the spine asked this window to run the
+        // native OS directory picker; the chosen dir goes back up as PROJECT_OPEN
+        // (→ a new project window). The picker is a renderer/main concern.
+        window.host
+          .openDirectory()
+          .then((path) => { if (path) requestOpenProject(path); })
+          .catch((error) => repl.appendError(error.lispMessage ?? error.message ?? String(error)));
+      } else if (name === 'remember-project') {
+        // B4 project: record an opened project in the central index so the
+        // chooser lists it. Under Model B the spine opens projects, so the old
+        // in-place openProject's rememberProject call no longer runs.
+        const root = String(args?.[0] ?? '');
+        if (root) {
+          rememberProject(root).catch((error) =>
+            repl.appendError(error.lispMessage ?? error.message ?? String(error)));
+        }
+      } else if (name === 'open-project-chooser') {
+        // B4 project Stage 3 (project-chooser): show the visual launcher; its
+        // open/openFolder actions route the chosen path up as PROJECT_OPEN.
+        showProjectChooser();
+      } else if (name === 'tree-sitter-query') {
+        // B4 face-info: the spine asked for the focused buffer's tree-sitter info
+        // at a point (tree-sitter is WASM here). Compute the captures + node and
+        // reply up as TREE_SITTER_INFO — the spine resumes the suspended C-h F /
+        // C-h C-f command. Reuses the highlighter (same as the old in-renderer
+        // tree-sitter-captures-for-buffer! / -node-at-point! primitives).
+        const pt = Number(args?.[0] ?? 0);
+        const payload = { lang: null, captures: [], node: null, colors: {} };
+        try {
+          const buf = currentTextBuffer;
+          if (buf && typeof buf.text === 'string') {
+            const language = languageForFilename(buf.name);
+            const hl = language && highlighters[language];
+            if (hl && typeof hl.captures === 'function') {
+              payload.lang = language;
+              payload.captures = hl.captures(buf.text).map((r) => [r.start, r.end, r.face]);
+              // Resolve each distinct face's rendered colour from the live CSS
+              // cascade (--tok-<face>); the spine can't (it has no styles.css /
+              // theme CSS), so it reads these via face-color-for after the reply.
+              const root = getComputedStyle(document.documentElement);
+              for (const [, , face] of payload.captures) {
+                if (face && !(face in payload.colors)) {
+                  payload.colors[face] = root.getPropertyValue(`--tok-${face}`).trim();
+                }
+              }
+              if (typeof hl.nodeAtPoint === 'function') {
+                const info = hl.nodeAtPoint(buf.text, pt);
+                if (info) {
+                  payload.node = {
+                    type: info.type, start: info.start, end: info.end,
+                    ancestors: info.ancestors,
+                  };
+                }
+              }
+            }
+          }
+        } catch (error) {
+          repl.appendError(`tree-sitter: ${error.lispMessage ?? error.message ?? String(error)}`);
+        }
+        if (godotServerPort) {
+          godotServerPort.postMessage({ type: MSG.TREE_SITTER_INFO, ...payload });
+        }
+      } else if (name === 'fold-toggle') {
+        // B4 (folding.lisp): fold a view concern — act on the focused editor.
+        editorView.toggleFoldAtPoint();
+      } else if (name === 'fold-all') {
+        editorView.foldAll();
+      } else if (name === 'unfold-all') {
+        editorView.unfoldAll();
+      } else if (name === 'toggle-repl') {
+        // B4 (system.lisp): show/hide the REPL / utility dock, then tell the
+        // server the new visibility so the workspace keeps it (mirrors the old
+        // toggle-repl! primitive).
+        utilityDock.toggleUtilityDock();
+        if (serverViewClient) serverViewClient.reportDock();
+      } else if (name === 'sticky-add') {
+        // B4 (sticky-notes): the renderer does the whole op so no note id crosses
+        // the wire. Create at the (server-synced) cursor + open it for editing.
+        const id = stickyNotes.create();
+        if (id != null) stickyNotes.edit(String(id));
+      } else if (name === 'sticky-edit') {
+        const id = stickyNotes.noteAtPoint();
+        if (id != null) stickyNotes.edit(String(id));
+        else minibuffer.setStatus('No sticky note near the cursor.');
+      } else if (name === 'sticky-delete') {
+        const id = stickyNotes.noteAtPoint();
+        if (id != null) stickyNotes.remove(String(id));
+        else minibuffer.setStatus('No sticky note near the cursor.');
+      } else if (name === 'sticky-next') {
+        stickyNotes.gotoNext();
+      } else if (name === 'sticky-prev') {
+        stickyNotes.gotoPrevious();
+      } else if (name === 'sticky-toggle') {
+        stickyNotes.toggle();
+      } else if (name === 'inline-eval-result') {
+        // B4 (inline-eval): the spine evaluated a form in its session and pushed
+        // the result (end offset, label, ok). Show the pill beside the form.
+        const end = Number(args?.[0]);
+        const label = String(args?.[1] ?? '');
+        const ok = args?.[2] === true;
+        if (Number.isInteger(end)) {
+          if (ok) inlineEval.showResult(end, label);
+          else inlineEval.showError(end, `! ${label}`);
+        }
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
@@ -7060,6 +7083,28 @@ if (window.host && window.host.serverMode) {
     // server tree; window 1 keeps its tabline.
     setPaneTree: (tree, liveProcs, liveBrowsers) =>
       applyServerPaneTree(tree, liveProcs, liveBrowsers),
+    // B4: a server buffer mirror mounted (SNAPSHOT). Point the sticky-notes
+    // overlay manager at it so the buffer's notes (server-pushed onto
+    // mirror.metadata.notes) render on this editor, and (re)bind the inline-eval
+    // pill overlay. Guarded against the init-TDZ trap (stickyNotes / inlineEval
+    // are declared later); a later snapshot re-wires if this fires too early.
+    onServerBuffer: (mirror, serverView) => {
+      // Point currentTextBuffer at the mirror so the overlay managers that read it
+      // — inline-eval positions its pill via getBuffer→currentTextBuffer.positionAt,
+      // and sticky-notes anchors a new note at currentTextBuffer.point — use the
+      // RIGHT buffer (the editor's), not the stale boot scratch. A bare assignment
+      // (not setCurrentTextBuffer): under Model B the SERVER owns dirty/autosave, so
+      // the renderer dirty-watch is moot here.
+      currentTextBuffer = mirror;
+      try {
+        const overlay = serverView && serverView.overlayLayer;
+        if (overlay) {
+          stickyNotes.setOverlayLayer(overlay);
+          inlineEval.setOverlayLayer(overlay);
+        }
+        stickyNotes.setBuffer(mirror);
+      } catch { /* declared later / mid-init — a later snapshot re-wires */ }
+    },
   };
 
   bootServerViewClient = () => {
@@ -7186,12 +7231,9 @@ if (window.host && window.host.serverMode) {
   if (godotServerPort) bootServerViewClient();
 }
 
-// Install the persisted user highlight rules now that the override store
-// and the highlighters exist. (The faces.json read above already filled
-// `highlightRulesCache`.) Re-render-on-push is a guarded no-op here —
-// the editors mount below — so the rules are simply seeded into the
-// store, ready for the first highlight call.
-if (keymapReady) installHighlightRules();
+// B1.3: highlight rules are server-authoritative too — the spine pushes
+// highlight-rules on connect (and on change), applied in applyDirective above.
+// No local install at boot. (installHighlightRules stays for reloadStdlib.)
 
 /** Dispatch a keystroke through the Lisp keymap. */
 function dispatchKey(key) {
@@ -7885,108 +7927,9 @@ ensureEditorViewForLeaf(initialLeaf);
 let editorView = /** @type {*} */ (editorViewByPaneId.get(initialLeaf.id));
 
 // --- the customisation view's data bridge ------------------------------
-// The view is decoupled from the Lisp; these turn registry data into
-// plain objects for it, and route its callbacks back into the registry.
-
-/** Turn a `custom-field` Lisp list into a plain setting object. */
-function fieldToSetting(field) {
-  const f = listToArray(field);
-  return {
-    name: f[0],
-    type: String(f[1]).replace(/^:/, ''),
-    value: f[2] === NIL ? null : f[2],
-    default: f[3] === NIL ? null : f[3],
-    doc: f[4],
-    state: f[5],
-    options: f[6] === NIL ? [] : listToArray(f[6]),
-  };
-}
-
-/** Turn a `face-row` Lisp list into a plain face object. */
-function rowToFace(row) {
-  const r = listToArray(row);
-  const name = String(r[0]);
-  return {
-    name,
-    doc: String(r[1] ?? ''),
-    foreground: typeof r[2] === 'string' ? r[2] : '',
-    background: typeof r[3] === 'string' ? r[3] : '',
-    weight: String(r[4] ?? 'normal'),
-    slant: String(r[5] ?? 'normal'),
-    underline: r[6] === true,
-    strikeThrough: r[7] === true,
-    // Typography: size is a number (or '' when unset), family a string.
-    // The base face owns these; on other faces they are blank (inherit).
-    size: typeof r[8] === 'number' ? r[8] : '',
-    family: typeof r[9] === 'string' ? r[9] : '',
-    isBase: name === BASE_FACE_NAME,
-    state: String(r[10] ?? 'standard'),
-  };
-}
-
-/** The model the customisation view renders for a buffer's scope. */
-function getCustomModel(scope) {
-  if (!keymapReady) return null;
-  try {
-    if (scope.variable) {
-      const field = interpreter.evaluate(
-        `(custom-field (quote ${scope.variable}))`
-      );
-      return {
-        title: scope.variable,
-        doc: '',
-        parent: null,
-        groups: [],
-        settings: [fieldToSetting(field)],
-        faces: [],
-      };
-    }
-    if (scope.face) {
-      const model = listToArray(
-        interpreter.evaluate(
-          `(face-single-model ${writeString(scope.face)})`
-        )
-      );
-      return {
-        title: scope.face,
-        doc: model[1],
-        parent: model[2] === NIL ? null : String(model[2]),
-        groups: [],
-        settings: [],
-        faces: listToArray(model[4]).map(rowToFace),
-        scrollToFace: scope.face,
-      };
-    }
-    if (scope.group === 'faces') {
-      const model = listToArray(interpreter.call('faces-group-model'));
-      return {
-        title: model[0],
-        doc: model[1],
-        parent: model[2] === NIL ? null : String(model[2]),
-        groups: [],
-        settings: [],
-        faces: listToArray(model[4]).map(rowToFace),
-      };
-    }
-    const model = listToArray(
-      interpreter.evaluate(`(custom-group-model (quote ${scope.group}))`)
-    );
-    return {
-      title: model[0],
-      doc: model[1],
-      parent: model[2] === NIL ? null : model[2],
-      groups: listToArray(model[3]).map((pair) => {
-        const g = listToArray(pair);
-        return { name: g[0], doc: g[1] };
-      }),
-      settings: listToArray(model[4]).map(fieldToSetting),
-      faces: [],
-    };
-  } catch (error) {
-    repl.appendError(`customize: ${error.lispMessage ?? error.message}`);
-    return null;
-  }
-}
+// The customize MODEL is computed server-side and pushed in the leaf state
+// (B2.3 — the view renders from v.model); these functions only route the
+// view's callbacks back to the spine (propagateCustomize -> CUSTOMIZE_CHANGED).
 
 /** Apply the current theme: read each (--var . value) pair from Lisp
  *  and write it to the document root's inline style. Settings the
@@ -8063,102 +8006,55 @@ function rerenderAllEditors() {
   forEachMinimapElement((el) => el.invalidateColors());
 }
 
-/** Re-apply ALL of this window's customize-driven rendering from its (current)
- *  interpreter: the theme CSS vars, the resolved face styles, and an editor
- *  re-render (a highlight-rule change adds/removes spans). Used by every
- *  customize edit AND the cross-window sync, so a change renders the same in the
- *  window that made it and in every other window — not just for *theme*. Safe to
- *  call any time now that current-face-styles tolerates any *theme*. */
-function reapplyCustomizeRendering() {
-  applyCurrentTheme();
-  applyCurrentFaceStyles();
-  rerenderAllEditors();
-}
+// B2.2b/B2.3 (plans/MODEL-B-DEFAULT.md): the spine is the SOLE applier + render
+// driver + persister + MODEL computer for customize. Each edit below sends a
+// CUSTOMIZE_CHANGED intent (propagateCustomize) and nothing else — the spine
+// applies it to its interpreter, persists custom.lisp / faces.json, pushes the
+// resulting chrome (theme / faces / highlight / css-knobs) to EVERY window, and
+// re-pushes the refreshed customize MODEL so the panel re-renders. The renderer
+// makes ZERO interpreter calls for customize now. Values ride as Lisp SOURCE
+// strings (writeString): a :choice value is a string the spine re-symbolises by
+// type (custom-apply! -> -coerce-for-type), so nothing raw-Lisp crosses the wire.
 
-/** Apply a setting for the session — a value, quote-wrapped to survive
- *  its type. */
+/** Apply a setting for the session. */
 function applyCustomSetting(name, value) {
-  const valueSrc = writeString(value);
-  interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
-  reapplyCustomizeRendering();
-  // Propagate the Lisp SOURCE (a string), not the raw value: a custom value can
-  // be a Lisp symbol (e.g. a theme name), which doesn't survive structured-clone
-  // over the wire (it arrives as a plain {name}); the source reconstructs it.
-  propagateCustomize({ op: 'apply', name, valueSrc });
+  propagateCustomize({ op: 'apply', name, valueSrc: writeString(value) });
 }
 
-/** Apply a setting and persist it. */
+/** Apply a setting and persist it (the spine persists). */
 function saveCustomSetting(name, value) {
-  const valueSrc = writeString(value);
-  interpreter.evaluate(`(custom-apply-and-save! (quote ${name}) (quote ${valueSrc}))`);
-  reapplyCustomizeRendering();
-  propagateCustomize({ op: 'save', name, valueSrc });
+  propagateCustomize({ op: 'save', name, valueSrc: writeString(value) });
 }
 
 /** Reset a setting to its default value. */
 function resetCustomSetting(name) {
-  interpreter.evaluate(`(custom-reset! (quote ${name}))`);
-  reapplyCustomizeRendering();
   propagateCustomize({ op: 'reset', name });
 }
 
-/** Apply a face-attribute change from the customize view. The widget
- *  passes everything as strings/booleans; the wrapper coerces. */
+/** Apply a face-attribute change from the customize view. The widget passes
+ *  strings/booleans; the spine's set-face-attribute-by-strings coerces. */
 function setFaceFromView(faceName, attr, value) {
   const valueSrc =
     typeof value === 'boolean'
       ? (value ? 'true' : 'false')
       : writeString(String(value));
-  interpreter.evaluate(
-    `(set-face-attribute-by-strings ${writeString(faceName)} ${writeString(attr)} ${valueSrc})`
-  );
   // `face` + `attr` are strings (set-face-attribute-by-STRINGS), so they ride the
   // wire fine; `valueSrc` is the already-built Lisp source (booleans → true/false).
   propagateCustomize({ op: 'set-face', face: faceName, attr, valueSrc });
 }
 
-/** Reset a face — drop the global override and rerender. */
+/** Reset a face — drop the global override. */
 function resetFaceFromView(faceName) {
-  interpreter.evaluate(
-    `(reset-face-by-string ${writeString(faceName)})`
-  );
   propagateCustomize({ op: 'reset-face', face: faceName });
 }
 
-/** Tell the OTHER windows a customize setting changed (the server relays it),
- *  so global rendering — theme / faces / line-height — stays consistent across
- *  windows. A no-op flag-off (single window) and when no server is connected. */
+/** Send a customize change to the spine (CUSTOMIZE_CHANGED). The spine applies +
+ *  persists + pushes chrome to every window (see the block comment above). A
+ *  no-op when no server is connected. */
 function propagateCustomize(change) {
   if (serverViewClient && typeof serverViewClient.customizeChanged === 'function') {
     serverViewClient.customizeChanged(change);
   }
-}
-
-/** Apply a customize change that originated in ANOTHER window (the relay):
- *  update THIS window's interpreter to match, then re-render the same way the
- *  local edit does (reapplyCustomizeRendering) so the windows stay identical.
- *  Uses valueSrc — the originator's Lisp SOURCE — verbatim, so a symbol value
- *  reconstructs as a symbol (not the wire-mangled {name}). Never re-persists
- *  (the originator already saved) and never re-broadcasts. */
-function applyCustomizeSync(change) {
-  if (!change || typeof change !== 'object' || !keymapReady) return;
-  try {
-    const { op, name, valueSrc, face, attr } = change;
-    if (op === 'apply' || op === 'save') {
-      interpreter.evaluate(`(custom-apply! (quote ${name}) (quote ${valueSrc}))`);
-    } else if (op === 'reset') {
-      interpreter.evaluate(`(custom-reset! (quote ${name}))`);
-    } else if (op === 'set-face') {
-      interpreter.evaluate(
-        `(set-face-attribute-by-strings ${writeString(face)} ${writeString(attr)} ${valueSrc})`
-      );
-    } else if (op === 'reset-face') {
-      interpreter.evaluate(`(reset-face-by-string ${writeString(face)})`);
-    }
-  } catch (error) {
-    repl.appendError(`customize-sync: ${error.lispMessage ?? error.message}`);
-  }
-  reapplyCustomizeRendering();
 }
 
 /** Open a customisation buffer for a scope — a subgroup, a variable,
@@ -8190,7 +8086,8 @@ function openCustomScope(scope) {
 function configureCustomizeView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    getModel: getCustomModel,
+    // B2.3: no getModel — the model is server-computed and pushed in the leaf
+    // state (v.model); the view renders from it.
     applySetting: applyCustomSetting,
     saveSetting: saveCustomSetting,
     resetSetting: resetCustomSetting,
@@ -8254,17 +8151,15 @@ function configureDocView() {
         repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
       }
     },
-    openDoc: (name) => {
-      // In-view navigation — a clicked cross-link, menu item, breadcrumb, or
-      // nav button. The target is a built page: a navigation node id (e.g.
-      // "getting-started") OR a documented function name. Open it directly;
-      // readDocPage resolves either against the manifest. This is distinct
-      // from the `open-doc` command (C-h f / M-x), which looks up docs for an
-      // arbitrary symbol and falls back to rendering its docstring — that
-      // command only knows function names, so routing node-id clicks through
-      // it reported "no doc page".
-      openDocInPane(name);
-    },
+    // B4: the doc-view OWNS its content + navigation via these — it fetches a
+    // built page (readPage) or renders a live docstring (renderMarkdown) and
+    // setBuffers itself, regardless of how it was mounted (leaf vs tabline child).
+    // So a TOC click / Next-Prev navigates in place, and the initial page fills
+    // itself. `openDoc` stays only as a no-readPage fallback.
+    readPage: (name) =>
+      window.host.readDocPage(name).then((page) => (page ? page.html : null)),
+    renderMarkdown: (src) => renderMarkdownHtml(src),
+    openDoc: (name) => openDocInPane(name),
     highlightCode: highlightCodeForDocView,
     manifest: docNavTree,
   };
@@ -9974,81 +9869,6 @@ editorPaneElement().append(gnuplotView);
 gnuplotView.style.display = 'none';
 themeListeners.add(() => gnuplotView.applyTheme());
 
-// The notebook view — a reactive Lisp notebook (a sheet of `(cell …)`
-// cells). Per-view-instance like gnuplot: this singleton is the
-// leaf-direct element and the factory is reused by the tabline mount
-// path for per-tab `<notebook-view>` instances. Evaluation is in-process
-// through the shared interpreter's reactive engine, so the only
-// callbacks are `evaluate` (run the engine for this notebook id, marshal
-// the per-cell records to plain JS) and chord-key forwarding so the host
-// keymap fires while a cell editor is focused. `onSourceChange` (mirror
-// the canonical source into a backing buffer) is wired with persistence.
-const NOTEBOOK_KEYS = {
-  name: keyword('name'),
-  output: keyword('output'),
-  state: keyword('state'),
-  error: keyword('error'),
-  graphic: keyword('graphic'),
-  deps: keyword('deps'),
-};
-/** Marshal one Lisp cell-record map into a plain JS object. */
-function marshalNotebookCell(m) {
-  return {
-    name: String(m.get(NOTEBOOK_KEYS.name) ?? ''),
-    output: String(m.get(NOTEBOOK_KEYS.output) ?? ''),
-    state: String(m.get(NOTEBOOK_KEYS.state) ?? 'ok'),
-    error: String(m.get(NOTEBOOK_KEYS.error) ?? ''),
-    graphic: String(m.get(NOTEBOOK_KEYS.graphic) ?? ''),
-    deps: listToArray(m.get(NOTEBOOK_KEYS.deps) ?? NIL).map(String),
-  };
-}
-function configureNotebookView() {
-  return {
-    evaluate: (id, source) => {
-      try {
-        const cells = listToArray(
-          interpreter.call('notebook-eval!', id, source)
-        );
-        return cells.map(marshalNotebookCell);
-      } catch {
-        return [];
-      }
-    },
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
-    // A cell edit changed the canonical source (the view already wrote it
-    // into buffer.text). Mark the buffer dirty so C-x C-s saves it and the
-    // modeline shows the unsaved indicator.
-    onSourceChange: (buffer) => {
-      if (buffer) {
-        dirtyBuffers.add(buffer);
-        recovery.save();
-        updateModeline();
-      }
-    },
-    // The notebook picker: list the open notebooks and switch to one.
-    listNotebooks: () =>
-      views
-        .filter((v) => v.kind === 'notebook')
-        .map((v) => ({ id: v.notebookId, name: v.name ?? '*notebook*' })),
-    selectNotebook: (id) => {
-      const idx = views.findIndex(
-        (v) => v.kind === 'notebook' && v.notebookId === id
-      );
-      if (idx !== -1) switchToViewIndex(idx);
-    },
-    renameNotebook: (id, name) => renameNotebookById(id, name),
-    // Forward editor chords (C-x b, M-x, …) to the host keymap. Always
-    // present and guarded at call time, so it works regardless of whether
-    // the keymap had finished loading when this factory ran.
-    onKey: (key) => keymapReady && dispatchKey(key),
-  };
-}
-const notebookView = /** @type {*} */ (document.createElement('notebook-view'));
-notebookView.configure(configureNotebookView());
-editorPaneElement().append(notebookView);
-notebookView.style.display = 'none';
-
 // --- kind dispatch -----------------------------------------------------
 //
 // Phase 4a: the `kindRegistry` abstraction is gone. Every view kind is
@@ -10085,7 +9905,6 @@ const SINGLETON_VIEWS = [
   { kind: 'bookmark',          el: bookmarkView,          releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
   { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
-  { kind: 'notebook',          el: notebookView,          releasesBuffer: false },
 ];
 
 /** Side-effect bundle for mounting a text view: rebind the cursor,
@@ -10109,6 +9928,19 @@ function applyTextMountSideEffects(view, instance) {
     if (instance) {
       editorView = instance;
       instance.setView(view);
+      // B4: wire the overlay managers to THIS server-backed editor so inline-eval
+      // pills + sticky-note overlays render on it. The non-server branch below
+      // does this, but server-backed views early-return — so under Model B the
+      // overlays were never bound to any editor. Guarded: stickyNotes / inlineEval
+      // are module-level consts declared LATER, so a mount during the initial
+      // paint would hit their TDZ (the app.js init-TDZ trap); a later reconcile
+      // re-mount wires them once they exist.
+      if (instance.overlayLayer) {
+        try {
+          stickyNotes.setOverlayLayer(instance.overlayLayer);
+          inlineEval.setOverlayLayer(instance.overlayLayer);
+        } catch { /* declared later — a reconcile re-mount binds them */ }
+      }
       if (typeof instance.focus === 'function') instance.focus();
     }
     return;
@@ -10330,18 +10162,6 @@ function disposeKindView(view, context) {
       }
     } catch {
       // Process is already gone — nothing to do.
-    }
-    return;
-  }
-  if (view.kind === 'notebook') {
-    // No subprocess; just drop the engine's stored notebook record so a
-    // closed notebook's cell values don't linger.
-    if (typeof view.notebookId === 'string') {
-      try {
-        if (keymapReady) interpreter.call('notebook-forget!', view.notebookId);
-      } catch {
-        // Engine not ready / already gone — nothing to do.
-      }
     }
     return;
   }
@@ -10597,7 +10417,6 @@ function perKindConfigureFactory(kind) {
     case 'recover':           return configureRecoverView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
-    case 'notebook':          return configureNotebookView;
     case 'customize':         return configureCustomizeView;
     default:                  return null;
   }
@@ -11238,7 +11057,20 @@ const stickyNotes = createStickyNotes({
   overlayLayer: editorView.overlayLayer,
   getBuffer: () => currentTextBuffer,
   render: renderNoteHtml,
-  onChange: () => scheduleMetadataWrite(currentTextBuffer),
+  // B4: under Model B the server owns the file + its sidecar, so ship note changes
+  // up (NOTES_CHANGED → spine.setBufferNotes → persist) instead of writing
+  // render-side (the mirror has no filePath). Flag-off, the old renderer write.
+  onChange: () => {
+    if (serverViewClient && typeof serverViewClient.notesChanged === 'function') {
+      serverViewClient.notesChanged(
+        currentTextBuffer && currentTextBuffer.metadata
+          ? currentTextBuffer.metadata.notes
+          : []
+      );
+    } else {
+      scheduleMetadataWrite(currentTextBuffer);
+    }
+  },
 });
 stickyNotes.setBuffer(currentTextBuffer);
 
@@ -12811,6 +12643,18 @@ async function rememberProject(root) {
   await writeProjectList(upsertProject(list, root, projectNameFromRoot(root)));
 }
 
+/** Ask the SERVER to open ROOT as a project (Model B Stage 3: each project opens
+ *  in a NEW window). The native dialog / chooser run renderer-side, but the open
+ *  itself is server-authoritative (spine.openProjectAt → a project window), so the
+ *  chosen path goes UP as PROJECT_OPEN rather than the old in-renderer in-place
+ *  `openProject`. */
+function requestOpenProject(root) {
+  const path = expandTilde(String(root ?? '')).replace(/\/+$/, '');
+  if (path !== '' && godotServerPort) {
+    godotServerPort.postMessage({ type: MSG.PROJECT_OPEN, path });
+  }
+}
+
 /** Open the Project Chooser launcher modal — read the known projects, then
  *  show the grid. All of the chooser's side effects (open / add / set
  *  thumbnail / remove / read a thumbnail image) are wired to the host here;
@@ -12823,14 +12667,13 @@ function showProjectChooser() {
       let list = initial;
       openProjectChooser({
         getProjects: () => list,
-        openProject: (path) => {
-          openProject(path).catch(reportErr);
-        },
+        // Model B: opening a project is server-authoritative (a new window).
+        openProject: (path) => requestOpenProject(path),
         // Pick a folder and open it immediately (the chooser closes first).
         openFolder: () => {
           window.host
             .openDirectory()
-            .then((path) => (path ? openProject(path) : undefined))
+            .then((path) => { if (path) requestOpenProject(path); })
             .catch(reportErr);
         },
         // Pick a folder and add it to the catalogue WITHOUT opening.
