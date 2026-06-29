@@ -44,7 +44,7 @@ B7 removes the interpreter, or something breaks.
 | L1 | ~~Boot faces/theme/highlight CSS compute~~ **✅ RESOLVED — pure deletion, no FOUC** | `-migrate-stale-theme!`, `set-user-faces!`/`set-face-overrides!`, `set-highlight-rules!`/`push-highlight-rules!` (boot install + `installHighlightRules`); `current-theme-css-vars`/`current-face-styles`/`current-mode-face-styles` (in `applyCurrentTheme`/`applyCurrentFaceStyles`) | n/a — already server-driven | **L1 check done (2026-06-29).** The renderer paints **zero** faces at boot — B1 removed the boot `applyCurrentTheme()`/`applyCurrentFaceStyles()` calls (stale comment at app.js:5612 confirms). `applyCurrentTheme`/`applyCurrentFaceStyles` (the only callers of `current-*-styles`) are now reached **only** via `reloadStdlib` (M-r). Boot styling is 100% the spine's `theme-apply`/`faces-apply`/`css-knobs` push. The boot face-state install (`set-user-faces!`/etc.) only feeds `reloadStdlib` — a closed loop with no other consumers, so it **dies wholesale with the interpreter + `reloadStdlib`** in B7. **No FOUC mitigation needed** (boot has relied on the spine push since B1, daily-verified). |
 | L2 | ~~Config-var reads~~ **✅ DONE (B0, merged `03439537`)** | was 7 reads → `rendererConfig` cache | **B0 config snapshot** — shipped | Renderer reads config from the plain-JS cache; the `config-snapshot` directive seeds it on connect, `config-apply` refreshes it live. |
 | L3 | **User config eval at boot** | 5497 `evaluate(custom.lisp)`, 5514 `evaluate(init.lisp)` | **Spine loads config** (B0). custom.lisp already loads server-side (B1.4). | `init.lisp` on the spine is the biggest *semantic* change — it may call renderer-only primitives; audit + provide spine equivalents/no-ops. |
-| L4 | **Element-view registry + dispatch** | 8760 `element-views`, 10677 `:on-ready` callback, 7178 `set! *bib-search-doc-override*`, 7180 `run-command` (`RUN_CLIENT_COMMAND` forward via `runClientCommand` 7156–7186) | **Plain JS** registry + handlers; M-x already forwards unknown cmds via `RUN_CLIENT_COMMAND`. | This is the one real remaining *feature* migration (atari / bib-search / notebook-cells element views). On-ready callbacks → plain-JS handlers. |
+| L4 | ~~Element-view registry + dispatch~~ **✅ DONE + MERGED** (`78ae8631`, tag `pre-l4-element-views`) | was registry read + `run-command` + override pin | **Plain JS** — shipped | Registry is `ELEMENT_VIEW_SPECS` in `element-spec.js`; `runClientCommand` calls `serverViewClient.openElementView(elementViewOpenPayload(…))` directly. Incl. the bib-search 403 fix (`vouchHostFileUrl` allowlists the bib path). Live-verified. The `element-view-*.lisp` + `open-element-view!` stay until B7. |
 | L5 | **REPL** (interactive renderer eval) | 5443 `evaluate(source)` | Spine round-trip (like `NOTEBOOK_EVAL`) **or drop** if redundant with the notebook/inline-eval server eval. | The single interactive entry into the renderer interpreter. |
 | L6 | **`config-apply` directive handler** | 6919 `custom-apply!` | Plain JS — apply the pushed value directly instead of evaluating Lisp. | Currently the *handler* itself re-enters the renderer interpreter; must not after B7. |
 
@@ -206,10 +206,12 @@ Each step its own tested commit + **live-verify**; recovery tag before the B7 de
 1. **L1 faces/themes boot coverage.** ✅ **RESOLVED — pure deletion, no FOUC** (code-confirmed
    2026-06-29; see L1 in §1). The renderer already paints zero faces at boot; the faces
    interpreter calls are reloadStdlib-only and die with the interpreter. No mitigation.
-2. **L4 element-views → plain JS** (registry + on-ready + `RUN_CLIENT_COMMAND` dispatch).
-   The one real remaining feature migration; verify atari / bib-search / notebook-cells.
-   *← NEXT.*
-3. **L5 REPL + L6 config-apply handler** → spine round-trip / plain JS.
+2. **L4 element-views → plain JS** ✅ **DONE + MERGED** (`78ae8631`). Registry + dispatch
+   are plain JS; bib-search 403 fixed. (Found a *separate* pre-existing bug: element-views
+   holding live resources, e.g. the atari emulator's audio, aren't reaped on tab-close —
+   `disposeKindView('element')` is correct but isn't called; same seam as `liveBrowsers`/
+   `liveProcs`. Deferred — Jason's call to do the core teardown first.)
+3. **L5 REPL + L6 config-apply handler** → spine round-trip / plain JS. *← NEXT.*
 4. **Rehome the live A3 holdouts** (§2): boot-window key-trap replacement (swallow-until-
    mounted), `onMenuCommand` → server command, `currentModeMenu` refresh → `applyServerModeMenu`,
    verify `ensureMajorMode`. The local **project** functions delete with the interpreter, but
