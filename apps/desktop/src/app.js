@@ -7031,6 +7031,25 @@ if (window.host && window.host.serverMode) {
         // toggle-repl! primitive).
         utilityDock.toggleUtilityDock();
         if (serverViewClient) serverViewClient.reportDock();
+      } else if (name === 'sticky-add') {
+        // B4 (sticky-notes): the renderer does the whole op so no note id crosses
+        // the wire. Create at the (server-synced) cursor + open it for editing.
+        const id = stickyNotes.create();
+        if (id != null) stickyNotes.edit(String(id));
+      } else if (name === 'sticky-edit') {
+        const id = stickyNotes.noteAtPoint();
+        if (id != null) stickyNotes.edit(String(id));
+        else minibuffer.setStatus('No sticky note near the cursor.');
+      } else if (name === 'sticky-delete') {
+        const id = stickyNotes.noteAtPoint();
+        if (id != null) stickyNotes.remove(String(id));
+        else minibuffer.setStatus('No sticky note near the cursor.');
+      } else if (name === 'sticky-next') {
+        stickyNotes.gotoNext();
+      } else if (name === 'sticky-prev') {
+        stickyNotes.gotoPrevious();
+      } else if (name === 'sticky-toggle') {
+        stickyNotes.toggle();
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to

@@ -2789,6 +2789,32 @@ export function createSpine(options, effects = {}) {
     (defcommand toggle-repl ()
       "Show or hide the REPL / utility dock (C-x p)."
       (emit-client-directive! (list (this-window-id)) 'toggle-repl))
+
+    ;; --- sticky notes (B4; sticky-notes.lisp, M-n prefix) -----------------
+    ;; Notes are a render-side overlay (the stickyNotes manager owns the ids +
+    ;; offsets). Each command rides ONE directive and the renderer does the whole
+    ;; op (create+edit, find-at-point+edit/delete, goto-next/prev, toggle) — so no
+    ;; renderer-minted note id ever crosses the wire. (Defined here, not by loading
+    ;; sticky-notes.lisp, because that file chains a renderer-returned note id
+    ;; through note-edit/note-create, which a directive can't return.)
+    (defcommand add-sticky-note ()
+      "Create a sticky note at the cursor and open it for editing (M-n M-n)."
+      (emit-client-directive! (list (this-window-id)) 'sticky-add))
+    (defcommand edit-sticky-note ()
+      "Edit the sticky note nearest the cursor."
+      (emit-client-directive! (list (this-window-id)) 'sticky-edit))
+    (defcommand delete-sticky-note ()
+      "Delete the sticky note nearest the cursor."
+      (emit-client-directive! (list (this-window-id)) 'sticky-delete))
+    (defcommand next-sticky-note ()
+      "Move the cursor to the next sticky note in the buffer."
+      (emit-client-directive! (list (this-window-id)) 'sticky-next))
+    (defcommand previous-sticky-note ()
+      "Move the cursor to the previous sticky note in the buffer."
+      (emit-client-directive! (list (this-window-id)) 'sticky-prev))
+    (defcommand toggle-sticky-notes ()
+      "Show or hide every sticky note in the buffer."
+      (emit-client-directive! (list (this-window-id)) 'sticky-toggle))
   `);
 
   // Now that the stdlib + the mode machinery are loaded, choose the major
