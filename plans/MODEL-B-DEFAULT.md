@@ -1,8 +1,15 @@
 # Plan — One world on the server: make Model B the default, remove the flag, and delete the renderer Lisp interpreter
 
-> **STATUS (2026-06-28):** Part A DONE + Part B1 DONE, all live-verified on branch
-> `model-b-default` (off `main`, recovery tag `pre-model-b-default` @ `b2d4f03`; **NOT
-> merged** — merging only when all of Part B is done, Jason's call). Suite green (3197).
+> **✅ MERGED to `main` (2026-06-29):** Part A + B1 + B2 + B3 + **all of B4**, all
+> live-verified. Merge commit `63c6f24f`; recovery tag `pre-model-b-default` @
+> `b2d4f03`. Suite green (3190). **NEXT (the endgame, fresh session off main):** the
+> **notebook-js de-couple** (dead-code cleanup) and **B5–B7 — delete the renderer's
+> Lisp interpreter** (incl. the deferred A3) so the spine is the single Lisp world and
+> the renderer is a pure-JS thin client. Needs the full live matrix — stage it. See
+> `HANDOVER.md`.
+>
+> **STATUS (2026-06-28, historical):** Part A DONE + Part B1 DONE, all live-verified on
+> branch `model-b-default`. Suite green (3197).
 > - **Part A** (Model B is the only mode; `GODOT_SERVER` gone): A1 `cd2e8b4`, A2
 >   `79621c4`, A4 `174a8ab`. **A3 (delete the dead in-renderer dispatch/editing/session
 >   path) DEFERRED into B7** — threaded through live call sites; dies wholesale with the
