@@ -581,6 +581,22 @@ const RENDERER_CONFIG_VARS = Object.freeze(new Set([
   '*directory-tree-open-target*',
 ]));
 
+// B0 config snapshot (plans/B5-B7-TEARDOWN-AUDIT.md): the full set of
+// renderer-consumed defcustoms pushed to a window on connect (via
+// chromeDirectives → the HELLO loop), so the renderer caches them as plain JS
+// and reads config WITHOUT its own (soon-to-be-deleted) interpreter. This is
+// the live-pushed set PLUS two more configs the renderer reads but which have
+// no live :on-change push yet — *pane-focus-border* (panes.lisp) and
+// *markdown-preview-follow-cursor* (markdown.lisp), both in SPINE_STDLIB so the
+// spine can read them. The boot snapshot covers them; a live edit to those two
+// still only reaches the renderer on the next chrome push (acceptable — neither
+// is hot, and B7's pure-JS store closes the gap).
+const RENDERER_CONFIG_SNAPSHOT_VARS = Object.freeze([
+  ...RENDERER_CONFIG_VARS,
+  '*pane-focus-border*',
+  '*markdown-preview-follow-cursor*',
+]);
+
 /** Expand a leading `~` / `~/` to the user's home directory. The spine reads
  *  disk directly (Node), so it resolves paths itself rather than leaning on a
  *  renderer helper. A non-tilde path is returned unchanged. */
@@ -2605,6 +2621,25 @@ export function createSpine(options, effects = {}) {
       const tabWidth = Number(interpreter.evaluate('*tab-width*'));
       const lineHeight = Number(interpreter.evaluate('*line-height*'));
       out.push({ name: 'css-knobs', args: [JSON.stringify({ tabWidth, lineHeight })] });
+
+      // B0 config snapshot: the renderer-consumed defcustom values as plain JS
+      // (clone-safe, mirroring css-knobs). The renderer caches these and reads
+      // config without its interpreter. Idempotent — a later chrome change
+      // re-pushes the same values; live customize edits ride config-apply.
+      const config = {};
+      for (const name of RENDERER_CONFIG_SNAPSHOT_VARS) {
+        let v;
+        try {
+          v = interpreter.evaluate(name);
+        } catch {
+          continue; // unregistered — omit; the renderer keeps its built-in default
+        }
+        config[name] =
+          typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string'
+            ? v
+            : symName(v) ?? lispString(v) ?? null;
+      }
+      out.push({ name: 'config-snapshot', args: [JSON.stringify(config)] });
     } catch (error) {
       console.error('[spine] chromeDirectives failed:', error.message);
     }
