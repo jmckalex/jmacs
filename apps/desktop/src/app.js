@@ -570,17 +570,8 @@ function watchCurrentBuffer() {
       // The Markdown preview (when open) tracks the SAVED file via its own
       // `jmarkdown watch` server, so an edit needs no renderer-side refresh —
       // the preview updates on save (C-x C-s), not per keystroke.
-      // While a snippet is active, reflow the active field's extent and
-      // the trailing offsets after each edit. A no-op when no snippet is
-      // active (guarded in Lisp).
-      if (keymapReady) {
-        try {
-          interpreter.call('snippet-after-edit!');
-        } catch {
-          // A reflow error must not break editing; the snippet simply
-          // stops tracking. Surfaced lazily on the next command.
-        }
-      }
+      // (Snippet field reflow is server-side now — snippets.lisp runs in the
+      // spine; the renderer interpreter holds no snippet state.)
     }
   });
 }
@@ -6923,34 +6914,11 @@ function snippetRangePair(pair, face) {
  * @returns {Array<{start: number, end: number, face: string}>}
  */
 function snippetDecorationsFor(buffer) {
-  if (!keymapReady) return [];
-  // The active snippet is global (one across the editor) and its offsets
-  // are into the focused buffer; only paint on the pane showing it.
-  if (!buffer || buffer !== currentTextBuffer) return [];
-  try {
-    const ranges = [];
-    // Forthcoming tab stops first, so the active / mirror boxes paint
-    // over them if anything ever overlaps. These read as amber "pending"
-    // pills via `snippet-inactive-face`.
-    for (const pending of listToArray(interpreter.call('snippet-forthcoming-regions'))) {
-      const p = snippetRangePair(pending, 'snippet-inactive-face');
-      if (p !== null) ranges.push(p);
-    }
-    const active = snippetRangePair(
-      interpreter.call('snippet-active-region'),
-      'snippet-active-face'
-    );
-    if (active !== null) ranges.push(active);
-    for (const mirror of listToArray(interpreter.call('snippet-mirror-regions'))) {
-      const m = snippetRangePair(mirror, 'snippet-mirror-face');
-      if (m !== null) ranges.push(m);
-    }
-    return ranges;
-  } catch {
-    // A snippet read must never break rendering — drop the boxes for
-    // this frame. The next render retries.
-    return [];
-  }
+  // Snippet fields are server-side now (snippets.lisp runs in the spine); the
+  // renderer interpreter holds no snippet state, so there are no boxes to paint
+  // from here. If snippet decorations should show in server mode, the spine
+  // pushes them via the overlay channel (filed — verify in the matrix).
+  return [];
 }
 
 // --- editor view (per-pane instances) -----------------------------------
