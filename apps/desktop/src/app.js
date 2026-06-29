@@ -5443,12 +5443,28 @@ function formatLispError(error) {
   return loc ? `${message} (at line ${loc.line}:${loc.col})` : message;
 }
 
+/** Format a spine REPL eval error: its message + the source location of the
+ *  offending form when the spine tagged one — mirrors formatLispError for the
+ *  `{ text, location }` the spine's replEval sends back. */
+function formatReplError(r) {
+  const message = r?.text ?? 'eval error';
+  const loc = r?.location;
+  return loc ? `${message} (at line ${loc.line}:${loc.col})` : message;
+}
+
 function evaluateInRepl(source) {
-  try {
-    repl.appendResult(writeString(interpreter.evaluate(source)));
-  } catch (error) {
-    repl.appendError(formatLispError(error));
+  // L5: the REPL evaluates in the REAL spine world (the renderer interpreter is
+  // inert under Model B), so a typed form drives the live editor and sees its
+  // actual state. The result — the writeString'd value, or the error + location
+  // — comes back async and appends to the dock.
+  if (serverViewClient && typeof serverViewClient.replEval === 'function') {
+    serverViewClient.replEval(source).then((r) => {
+      if (r && r.ok) repl.appendResult(r.text);
+      else repl.appendError(formatReplError(r));
+    });
+    return;
   }
+  repl.appendError('REPL: not connected to the server yet');
 }
 
 // --- standard library ---------------------------------------------------

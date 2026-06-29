@@ -5451,6 +5451,22 @@ export function createSpine(options, effects = {}) {
     };
   }
 
+  /** L5: evaluate a line of REPL Lisp in the REAL spine world and return a
+   *  clone-safe result — the `writeString`'d value (ok), or the error message +
+   *  source location. The renderer's REPL routes here so its eval drives the
+   *  live editor instead of the inert renderer interpreter. */
+  function replEval(source) {
+    try {
+      return { ok: true, text: writeString(interpreter.evaluate(String(source ?? ''))) };
+    } catch (error) {
+      return {
+        ok: false,
+        text: error?.lispMessage ?? error?.message ?? String(error),
+        location: error?.location ?? null,
+      };
+    }
+  }
+
   /** @typedef {object} Spine */
   return {
     /** The canonical L2 buffer (read-only access for the server). */
@@ -5613,6 +5629,7 @@ export function createSpine(options, effects = {}) {
     openCustomizeScope,
     // JS notebook: evaluate a cell server-side (Node, no CSP) → serializable result.
     runNotebookCell,
+    replEval,
     killActiveBuffer,
     /** Plain-data buffer-list records for client INDEX's TABS / View List, each
      *  tagged with whether it is that client's CURRENT buffer. Scoped to the

@@ -190,6 +190,10 @@ export const MSG = Object.freeze({
   // result }` where result is a SERIALIZABLE { state, descriptor, logs, error };
   // the client matches reqId to the pending run and materializes the descriptor.
   NOTEBOOK_RESULT: 'notebook-result',
+  // The REPL's Lisp eval result (L5): the spine evaluated the typed source and
+  // replies `{ reqId, result }` where result is `{ ok, text, location? }` — the
+  // writeString'd value, or the error message + source location. Pairs by reqId.
+  REPL_RESULT: 'repl-result',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -273,6 +277,11 @@ export const INTENT = Object.freeze({
   // Node context and replies with MSG.NOTEBOOK_RESULT. Carries `{ reqId, source }`
   // — reqId pairs the async reply to the awaiting cell.
   NOTEBOOK_EVAL: 'notebook-eval',
+  // The REPL (utility dock) asks the spine to evaluate a line of Lisp in the
+  // REAL spine world (the renderer interpreter is inert). Carries `{ reqId,
+  // source }`; the spine replies MSG.REPL_RESULT. Like NOTEBOOK_EVAL but Lisp,
+  // not a JS cell. (L5; plans/B5-B7-TEARDOWN-AUDIT.md.)
+  REPL_EVAL: 'repl-eval',
 });
 
 /**
