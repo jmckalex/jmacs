@@ -6034,6 +6034,7 @@ if (window.host && window.host.serverMode) {
       const browserKind = w.viewKind === 'browser';
       const procViewKind = isProcViewKind(w.viewKind); // shell | gnuplot
       const customizeKind = w.viewKind === 'customize';
+      const docKind = w.viewKind === 'doc'; // B4: docs are a server data-source now
       let extras;
       if (bookmarkKind) {
         // The outline of a text buffer's bookmarks. The server holds the records
@@ -6110,6 +6111,17 @@ if (window.host && window.host.serverMode) {
         extras = {
           scope: (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' },
         };
+      } else if (docKind) {
+        // B4: a server 'doc' data-source carries the doc NAME (a manifest page /
+        // nav node) or a live docstring's Markdown `source`. The HTML is filled
+        // asynchronously below (read render-side via the host, or rendered from
+        // the source); the <doc-view> renders from view.html + the nav manifest.
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          docName: typeof s.docName === 'string' ? s.docName : '',
+          docSource: typeof s.source === 'string' ? s.source : null,
+          html: '',
+        };
       } else {
         extras = { filePath: w.filePath };
       }
@@ -6126,10 +6138,39 @@ if (window.host && window.host.serverMode) {
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
       // Only media needs an async byte-load; directory / element / jukebox /
-      // bookmark / shell / browser render themselves from the spec / state.
+      // bookmark / shell / browser / doc render themselves from the spec / state.
       if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind
-          && !procViewKind && !customizeKind && !browserKind) {
+          && !procViewKind && !customizeKind && !browserKind && !docKind) {
         loadServerMediaSrc(v, w.filePath);
+      }
+      // B4: fill a doc view's HTML. A manifest page reads its built HTML via the
+      // host; a live docstring renders its Markdown. Refine the tab name + push
+      // the nav manifest from docNavTree. Async — set view.html then re-mount so
+      // the (now-loaded) doc-view repaints. Once per creation (html persists on
+      // the reused view).
+      if (docKind) {
+        const fill = (html) => {
+          v.html = html;
+          const el = docElementByView.get(v);
+          if (el && typeof el.setBuffer === 'function') {
+            try { el.setBuffer(v); } catch { /* not mounted yet — mount reads v.html */ }
+          }
+        };
+        const node = docNavTree && docNavTree.nodes ? docNavTree.nodes[v.docName] : null;
+        if (node && typeof node.title === 'string') v.name = node.title;
+        if (typeof v.docSource === 'string' && v.docSource !== '') {
+          renderMarkdownHtml(v.docSource)
+            .then((body) => fill(
+              `<article class="doc-page docstring-page" data-node-id="${escapeHtml(v.docName)}">` +
+              `<h3 class="doc-name"><code>${escapeHtml(v.docName)}</code></h3>\n` +
+              `<div class="doc-docstring">${body}</div></article>`
+            ))
+            .catch((error) => repl.appendError(`doc render: ${error.message}`));
+        } else {
+          window.host.readDocPage(v.docName)
+            .then((page) => { if (page) fill(page.html); })
+            .catch((error) => repl.appendError(`doc: ${error.message}`));
+        }
       }
     }
     // The bookmark outline is a MUTABLE data-source: refresh the (possibly
@@ -6998,20 +7039,6 @@ if (window.host && window.host.serverMode) {
             document.documentElement.style.setProperty('--line-height', String(lineHeight));
           }
         } catch { /* malformed — keep the current knobs */ }
-      } else if (name === 'open-doc') {
-        // B3: the spine resolved a doc command (open-doc / describe-symbol-at-
-        // point) and asked THIS window to show the page for args[0]. The HTML is
-        // read render-side via the host (openDocInPane), keeping the doc-view a
-        // render concern — the spine only decides WHICH page.
-        openDocInPane(String(args?.[0] ?? ''));
-      } else if (name === 'open-manual') {
-        // B3 (C-h d): open the manual at its Top node. The node tree is
-        // render-side state; the spine just triggers the open.
-        openDocInPane((docNavTree && docNavTree.top) || 'the-jmacs-manual');
-      } else if (name === 'open-docstring') {
-        // B3: a live (user-defined) doc — the spine pushed the docstring source
-        // (Markdown); render it in a doc buffer (no pre-built page exists).
-        openDocstringBuffer(String(args?.[0] ?? ''), String(args?.[1] ?? ''));
       } else if (name === 'fold-toggle') {
         // B4 (folding.lisp): fold a view concern — act on the focused editor.
         editorView.toggleFoldAtPoint();

@@ -1677,6 +1677,16 @@ export function createSpine(options, effects = {}) {
         const names = readDocManifestNames();
         return names ? arrayToList(names) : NIL;
       },
+      // B4 fix: a doc page opens as a SERVER 'doc' data-source (not a renderer-only
+      // view — that created an un-switchable tab, since tabs/switching are
+      // server-owned). The state carries the doc NAME (the renderer reads the HTML
+      // via the host) or, for a live docstring, the markdown SOURCE. Switches the
+      // active client to it, like a media/customize leaf.
+      'open-doc-view!': (args) => { openDocSource({ docName: String(args[0] ?? '') }); return NIL; },
+      'open-doc-source-view!': (args) => {
+        openDocSource({ docName: String(args[0] ?? ''), source: String(args[1] ?? '') });
+        return NIL;
+      },
 
       // --- search (search.lisp) ----------------------------------------
       // Plain isearch (C-s / C-r) is now a real server-side loop in
@@ -2738,12 +2748,11 @@ export function createSpine(options, effects = {}) {
     ;; the renderer's openDocInPane / openDocstringBuffer render the page (the
     ;; page HTML is read render-side via the host; the doc-view stays renderer).
     ;; Args FLAT. doc-known? resolves server-side via load-doc-manifest! above.
-    (define (open-doc! name)
-      (emit-client-directive! (list (this-window-id)) 'open-doc name))
-    (define (open-manual!)
-      (emit-client-directive! (list (this-window-id)) 'open-manual))
-    (define (open-docstring-page! name source)
-      (emit-client-directive! (list (this-window-id)) 'open-docstring name source))
+    ;; B4 fix: open the doc as a SERVER 'doc' data-source (switchable tab), not a
+    ;; renderer-only view. open-manual opens the manual's Top node by its known id.
+    (define (open-doc! name) (open-doc-view! name))
+    (define (open-manual!) (open-doc-view! "the-jmacs-manual"))
+    (define (open-docstring-page! name source) (open-doc-source-view! name source))
     ;; docs.lisp's apropos-doc (-> start-doc-search!) is shadowed by the embedded
     ;; show-apropos apropos-doc above (C-h a), so this never runs; a no-op stub
     ;; keeps any stray call safe (the doc fuzzy-search UI is deferred).
@@ -3108,6 +3117,25 @@ export function createSpine(options, effects = {}) {
     const src = existing ?? dataSources.add({ kind: 'customize', name, state: { scope: sc, model } });
     src.state.scope = sc;     // refresh a reused leaf's scope (descriptor returns it live)
     src.state.model = model;  // refresh a reused leaf's model
+    switchClientToSource(activeClientIndex, src.id);
+    statusText = '';
+    onStatus('');
+    return src.id;
+  }
+
+  /** Open (find-or-create) a 'doc' data-source and switch the active client to it
+   *  (B4). The leaf carries the doc NAME (a manifest page / nav node — the client
+   *  reads the HTML via the host) or, with `source`, a live docstring's Markdown
+   *  (the client renders it). Manifest pages dedup by name (one tab per page); a
+   *  docstring source is always a fresh leaf. Mirrors openCustomizeScope. */
+  function openDocSource(opts) {
+    const docName = String((opts && opts.docName) || '');
+    const source = opts && typeof opts.source === 'string' && opts.source !== '' ? opts.source : null;
+    const existing = source ? null : dataSources.list()
+      .find((d) => d.kind === 'doc' && d.state && d.state.docName === docName && !d.state.source);
+    const state = source ? { docName, source } : { docName };
+    const src = existing ?? dataSources.add({ kind: 'doc', name: docName || 'Manual', state });
+    src.state = state; // refresh a reused leaf
     switchClientToSource(activeClientIndex, src.id);
     statusText = '';
     onStatus('');
