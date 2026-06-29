@@ -2379,3 +2379,24 @@ test('B4 project Stage 2: close-project! in a non-project window is a no-op', ()
   spine.interpreter.evaluate('(close-project!)');
   assert.equal(log.projectCloses.length, 0);
 });
+
+// --- B4: project Stage 3 — open-project (dialog) + chooser route to a window -
+
+test('B4 project Stage 3: open-project! / open-project-chooser! emit renderer directives', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project!)');
+  assert.ok(log.directives.some((d) => d.name === 'open-project-dialog'), 'open-project! → open-project-dialog');
+  log.directives.length = 0;
+  spine.interpreter.evaluate('(open-project-chooser!)');
+  assert.ok(log.directives.some((d) => d.name === 'open-project-chooser'), 'open-project-chooser! → open-project-chooser');
+});
+
+test('B4 project Stage 3: spine.openProjectAt (the PROJECT_OPEN path) opens a project window', () => {
+  const { spine, log } = projectSpine();
+  assert.equal(spine.openProjectAt('/proj/btt'), true);
+  assert.equal(log.projectWindows.length, 1);
+  assert.equal(log.projectWindows[0].root, '/proj/btt');
+  // a non-directory path is rejected — no window
+  assert.equal(spine.openProjectAt('/home/home.txt'), false);
+  assert.equal(log.projectWindows.length, 1);
+});

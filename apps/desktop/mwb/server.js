@@ -1346,6 +1346,15 @@ function onClientMessage(client, event) {
       // can't be deleted this way (it's the live auto-snapshot).
       if (typeof msg.id === 'string' && msg.id !== '__last__') sessionStore.remove(msg.id);
       break;
+    case MSG.PROJECT_OPEN:
+      // B4 Stage 3: the native dir dialog / project chooser picked a directory.
+      // Route it to the spine, which opens it as a NEW project window (the same
+      // path find-project takes after its minibuffer submit).
+      if (typeof msg.path === 'string' && msg.path !== '') {
+        spine.setActiveClient(client.index);
+        spine.openProjectAt(msg.path);
+      }
+      break;
     case MSG.MINIBUFFER_COMPLETE: {
       // TAB in the minibuffer. Find-file gets CASE-INSENSITIVE path completion;
       // the client sent its current input. Other prompts (M-x, switch-to-buffer)

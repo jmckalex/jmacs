@@ -1265,28 +1265,16 @@ export function createSpine(options, effects = {}) {
       // assembles the 3-column layout (dir-tree | editing | bookmarks) on its
       // HELLO via loadProjectWindow. A non-directory reports on the status line.
       'open-project-at!': (args) => {
-        const raw = lispString(args[0]) ?? String(args[0] ?? '');
-        if (raw === '') return NIL;
-        const path = expandTildePath(raw);
-        const probe = openFile(path);
-        if (!probe || !probe.directory) {
-          statusText = `open-project: not a directory — ${raw}`;
-          onStatus(statusText);
-          return NIL;
-        }
-        const root = (typeof probe.path === 'string' && probe.path !== '') ? probe.path : path;
-        onOpenProjectWindow({ root });
-        statusText = '';
-        onStatus('');
+        openProjectAtPath(lispString(args[0]) ?? String(args[0] ?? ''));
         return NIL;
       },
-      // (open-project!) — the native directory-picker entry point (the `open-
-      // project` command / a toolbar button). The OS dialog + project chooser are
-      // renderer/main concerns; Stage 2 wires the dialog round-trip. For now the
-      // keyboard path (M-x find-project) is the way in.
+      // (open-project!) — the native OS directory-picker entry point (the `open-
+      // project` command). The dialog is a renderer/main concern, so emit a
+      // directive; the renderer runs host.openDirectory() and sends the chosen
+      // path back up as a PROJECT_OPEN message, which the server routes to
+      // openProjectAt (→ a new project window). (Stage 3.)
       'open-project!': () => {
-        statusText = 'open-project: use M-x find-project (native picker coming)';
-        onStatus(statusText);
+        onClientDirective([activeClientIndex], 'open-project-dialog', []);
         return NIL;
       },
       // (close-project!) — save the project window's open files to its sidecar
@@ -1314,9 +1302,12 @@ export function createSpine(options, effects = {}) {
         onCloseProject({ root, files, active, windowId });
         return NIL;
       },
+      // (open-project-chooser!) — the visual Project Chooser launcher. A renderer
+      // modal, so emit a directive; the renderer shows the chooser and sends the
+      // chosen project path back up as PROJECT_OPEN (→ openProjectAt → a new
+      // window). (Stage 3.)
       'open-project-chooser!': () => {
-        statusText = 'project-chooser: use M-x find-project for now';
-        onStatus(statusText);
+        onClientDirective([activeClientIndex], 'open-project-chooser', []);
         return NIL;
       },
 
@@ -4002,6 +3993,29 @@ export function createSpine(options, effects = {}) {
     return switchClientToSource(index, srcId);
   }
 
+  /** Open the directory RAW as a project in a NEW window: expand ~, validate it's
+   *  a directory (the openFile effect marks dirs), then raise onOpenProjectWindow
+   *  — the server reads the project's saved files, spawns a window, and assembles
+   *  the 3-column layout on its HELLO (loadProjectWindow). A non-directory reports
+   *  on the status line. Shared by the open-project-at! primitive (M-x find-project
+   *  / scripting) and the openProjectAt method (the PROJECT_OPEN message from the
+   *  native dialog / chooser). Returns true when a project window was requested. */
+  function openProjectAtPath(raw) {
+    if (typeof raw !== 'string' || raw === '') return false;
+    const path = expandTildePath(raw);
+    const probe = openFile(path);
+    if (!probe || !probe.directory) {
+      statusText = `open-project: not a directory — ${raw}`;
+      onStatus(statusText);
+      return false;
+    }
+    const root = (typeof probe.path === 'string' && probe.path !== '') ? probe.path : path;
+    onOpenProjectWindow({ root });
+    statusText = '';
+    onStatus('');
+    return true;
+  }
+
   /** Assemble the 3-column Nova PROJECT layout in client INDEX's window (a window
    *  the server just spawned for `open-project-at!`): a directory-tree rooted at
    *  CONFIG.root on the LEFT, the project's open files as an editing tabline in the
@@ -5378,6 +5392,9 @@ export function createSpine(options, effects = {}) {
     // B4 project: assemble the 3-column project layout in a freshly-spawned
     // window (server.js calls it on the window's HELLO; see onOpenProjectWindow).
     loadProjectWindow,
+    // B4 project Stage 3: open a project by path (server.js calls it from the
+    // PROJECT_OPEN message — the native dialog / chooser's chosen directory).
+    openProjectAt: (path) => openProjectAtPath(path),
     /** Record client INDEX's editor-area pixel rectangle (a VIEWPORT-style
      *  report). Only spatial pane navigation needs it; everything else is
      *  pixel-free. `{ width, height }`. */

@@ -170,6 +170,11 @@ export const MSG = Object.freeze({
   // shared across panes) so the page is tracked for session-restore and any
   // rebuild-from-wire reflects where the user actually browsed to.
   BROWSER_NAVIGATED: 'browser-navigated',
+  // up (B4 project Stage 3): the renderer's native directory dialog / project
+  // chooser picked a project directory. Carries `{ path }`; the server routes it
+  // to spine.openProjectAt → a NEW project window. The keyboard path (find-project)
+  // delivers via the minibuffer instead; this is the dialog/chooser's way in.
+  PROJECT_OPEN: 'project-open',
   // (B2.2b removed CUSTOMIZE_SYNC: customize is server-authoritative now — the
   // spine applies + persists the change and pushes the resulting chrome to every
   // window via CLIENT_DIRECTIVE, so there is no per-window re-apply relay.)

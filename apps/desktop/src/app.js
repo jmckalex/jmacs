@@ -7076,6 +7076,18 @@ if (window.host && window.host.serverMode) {
             pdfView.reload();
           }
         }
+      } else if (name === 'open-project-dialog') {
+        // B4 project Stage 3 (open-project): the spine asked this window to run the
+        // native OS directory picker; the chosen dir goes back up as PROJECT_OPEN
+        // (→ a new project window). The picker is a renderer/main concern.
+        window.host
+          .openDirectory()
+          .then((path) => { if (path) requestOpenProject(path); })
+          .catch((error) => repl.appendError(error.lispMessage ?? error.message ?? String(error)));
+      } else if (name === 'open-project-chooser') {
+        // B4 project Stage 3 (project-chooser): show the visual launcher; its
+        // open/openFolder actions route the chosen path up as PROJECT_OPEN.
+        showProjectChooser();
       } else if (name === 'fold-toggle') {
         // B4 (folding.lisp): fold a view concern — act on the focused editor.
         editorView.toggleFoldAtPoint();
@@ -12787,6 +12799,18 @@ async function rememberProject(root) {
   await writeProjectList(upsertProject(list, root, projectNameFromRoot(root)));
 }
 
+/** Ask the SERVER to open ROOT as a project (Model B Stage 3: each project opens
+ *  in a NEW window). The native dialog / chooser run renderer-side, but the open
+ *  itself is server-authoritative (spine.openProjectAt → a project window), so the
+ *  chosen path goes UP as PROJECT_OPEN rather than the old in-renderer in-place
+ *  `openProject`. */
+function requestOpenProject(root) {
+  const path = expandTilde(String(root ?? '')).replace(/\/+$/, '');
+  if (path !== '' && godotServerPort) {
+    godotServerPort.postMessage({ type: MSG.PROJECT_OPEN, path });
+  }
+}
+
 /** Open the Project Chooser launcher modal — read the known projects, then
  *  show the grid. All of the chooser's side effects (open / add / set
  *  thumbnail / remove / read a thumbnail image) are wired to the host here;
@@ -12799,14 +12823,13 @@ function showProjectChooser() {
       let list = initial;
       openProjectChooser({
         getProjects: () => list,
-        openProject: (path) => {
-          openProject(path).catch(reportErr);
-        },
+        // Model B: opening a project is server-authoritative (a new window).
+        openProject: (path) => requestOpenProject(path),
         // Pick a folder and open it immediately (the chooser closes first).
         openFolder: () => {
           window.host
             .openDirectory()
-            .then((path) => (path ? openProject(path) : undefined))
+            .then((path) => { if (path) requestOpenProject(path); })
             .catch(reportErr);
         },
         // Pick a folder and add it to the catalogue WITHOUT opening.
