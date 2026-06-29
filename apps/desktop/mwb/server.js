@@ -1001,6 +1001,16 @@ function applyIntent(client, intent) {
         activeClient = null;
         return;
       }
+      case INTENT.REPL_EVAL: {
+        // L5: evaluate the typed Lisp in the REAL spine world + reply the result.
+        // `break` (not return) so the post-command fan-out below runs — a REPL
+        // eval that edits the buffer (e.g. `(insert! …)`) refreshes the view like
+        // any command. spine.replEval never throws (it returns {ok,text}).
+        const result = spine.replEval(intent.source);
+        try { client.port.postMessage({ type: MSG.REPL_RESULT, reqId: intent.reqId, result }); }
+        catch { /* client detached */ }
+        break;
+      }
       default:
         break;
     }

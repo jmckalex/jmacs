@@ -160,6 +160,10 @@ export function createServerViewClient({
   // matching MSG.NOTEBOOK_RESULT arrives.
   let nextNotebookReq = 1;
   const notebookPending = new Map();
+  // L5: the REPL's Lisp eval is the same round-trip shape — the spine evaluates
+  // in the real world, the promise resolves on the matching MSG.REPL_RESULT.
+  let nextReplReq = 1;
+  const replPending = new Map();
 
   // --- the server-driven DOM chrome (server-mode only) -----------------
   // Hooks the caller (app.js) supplies; each missing one is a no-op so the
@@ -605,6 +609,11 @@ export function createServerViewClient({
           applyDirectiveDom(msg.directive.name, msg.directive.args ?? []);
         }
         break;
+      case MSG.REPL_RESULT: {
+        const resolve = replPending.get(msg.reqId);
+        if (resolve) { replPending.delete(msg.reqId); resolve(msg.result); }
+        break;
+      }
       case MSG.NOTEBOOK_RESULT: {
         const resolve = notebookPending.get(msg.reqId);
         if (resolve) { notebookPending.delete(msg.reqId); resolve(msg.result); }
@@ -837,6 +846,20 @@ export function createServerViewClient({
     });
   }
 
+  /** L5: evaluate a line of REPL Lisp in the spine (the renderer interpreter is
+   *  inert). Resolves with `{ ok, text, location? }` — the writeString'd value,
+   *  or the error message + source location — on the matching MSG.REPL_RESULT. */
+  function replEval(source) {
+    const reqId = nextReplReq++;
+    return new Promise((resolve) => {
+      replPending.set(reqId, resolve);
+      port.postMessage({
+        type: MSG.INTENT,
+        intent: { id: nextIntentId++, kind: INTENT.REPL_EVAL, reqId, source: String(source ?? '') },
+      });
+    });
+  }
+
   return {
     connect,
     dispatchKey,
@@ -877,6 +900,8 @@ export function createServerViewClient({
     notesChanged,
     // Evaluate a JS notebook cell in the spine (Node, no CSP) → serializable result.
     notebookEval,
+    // Evaluate a line of REPL Lisp in the spine (L5).
+    replEval,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the

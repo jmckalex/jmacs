@@ -2599,3 +2599,26 @@ test('mode menu: the first LaTeX section is "Compile & View"', () => {
   const label = spine.interpreter.evaluate('(car (car (mode-menu-sections-for "LaTeX")))');
   assert.equal(label, 'Compile & View');
 });
+
+// --- L5: the REPL evaluates in the spine (round-trip) ------------------------
+// evaluateInRepl routes through spine.replEval, so the renderer's REPL drives
+// the REAL world instead of the inert renderer interpreter.
+
+test('replEval: returns the writeString value for a good form', () => {
+  const { spine } = makeSpine('');
+  assert.deepEqual(spine.replEval('(+ 1 2)'), { ok: true, text: '3' });
+});
+
+test('replEval: ok:false + message + location for a bad form', () => {
+  const { spine } = makeSpine('');
+  const r = spine.replEval('(this-is-not-defined)');
+  assert.equal(r.ok, false);
+  assert.match(r.text, /unbound symbol/);
+  assert.ok(r.location && typeof r.location.line === 'number', 'carries a source location');
+});
+
+test('replEval drives the REAL buffer: (insert! …) edits it', () => {
+  const { spine } = makeSpine('abc');
+  spine.replEval('(insert! "Z")');
+  assert.ok(spine.buffer.text.includes('Z'), 'the REPL eval edited the spine buffer');
+});
