@@ -3216,3 +3216,71 @@ regression (register the 11 server-side + the B0 config-push). Left Jason on the
 **checkpoint/merge the milestone, or push into latex-compile.** ~24 commits, green 3197.
 
 ---
+
+## [2026-06-29 overnight] B6/B7 interpreter teardown: drained the cleanly-separable clusters; the rest needs you
+
+**Context**: Continuing the B5–B7 interpreter teardown autonomously (you went to sleep, "press on").
+Branch `b6-b7-delete-interpreter` off main, 4 tested commits, suite 3214/0 at each. app.js
+`interpreter.*` sites **66 → 47** tonight (103 → 47 across the epic). Nothing merged.
+
+Tonight's commits (all bucket-A dead flag-off, provably safe — only-reachable-via-deleted-paths or
+behind a permanent `if (serverMode) return`):
+- `8016746c` updateModeline + 23 call sites (spine drives the modeline).
+- `58a30938` four local pickers (M-x / C-x b / C-h c / apropos) + their start-*! prims + fuzzyFilter import.
+- `2f900063` reftex Select overlay + cite panels + 6 bridges + 3 open-reftex-*! prims + createReftex*Panel imports.
+- `d661a26c` directory-tree view config → server-only (openPath/closeBuffer flag-off arms had an explicit serverMode guard).
+
+**Why I stopped here (didn't guess)**: the remaining 47 sites are NOT cleanly separable — they're
+either entangled with LIVE code or they delete *with* `createInterpreter` (the finale), and the finale
+hinges on a design decision I shouldn't make unsupervised. Specifically:
+
+1. **Local minibuffer cluster is ENTANGLED, not dead.** `const minibuffer = createMinibuffer(...)`
+   (app.js ~2720) is REUSED by the live server-suspended-read path (~6439-6471: `setEcho`/`setEchoRich`/
+   `setValue`/`close` + the server's TAB-completion reply). So I can't delete the `minibuffer` object.
+   Only the dead `interpreter.call('minibuffer-delivered')` / `minibuffer-tab-complete` calls inside the
+   flag-off `open-minibuffer!` prim + the local find-file completing-minibuffer are removable — surgical,
+   and needs live-verify that find-file/M-x/echo still work.
+2. **Jukebox**: `configureJukeboxView` is a LIVE data-source view; only the renderer `format-track`
+   (2112) + `openJukeboxForDirectory` (2158, called by a prim at ~4944) + the `jukebox-on-directory-chosen`
+   (5087) / `jukebox-track-ended` (5107) callbacks are the dead path. Verify the 4944 prim is dead before cutting.
+3. **Placeholder** (`*placeholder-default-action*` 9003, run-command 1141): audit §2 says delete the
+   chooser UI + helpers BUT "first verify the splitAndOpenFile callers (jmarkdown-preview split,
+   bookmark split) are server-gated." Needs that check.
+4. **Bucket-B "inert but reachable" — delete WITH createInterpreter (the finale), live-verify the whole**:
+   kill-view closeBuffer arms in doc/audio/video/(9116) configs (no serverMode guard — reach the idle
+   mirror; the known "audio keeps playing after tab-close" bug confirms the real close path is elsewhere);
+   `onSyncTexClick`→latex-synctex-inverse (pdf, 7980); media-key callbacks (7845/7847); element insert!
+   (8398); `deliverLispCallback` (10105); hover-doc (doc-summary-for/open-doc/eval 10303-10341); snippet
+   sites (580, 6969, 7150-7159); math-preview-mode (7228); the boot-install + reloadStdlib faces/theme/
+   highlight (5195-5351, 7558-7580); and `dispatchKey`'s body (handle-key 6962 + snippet-soft-commit 6969).
+
+5. **DESIGN DECISION (your call) — what replaces `keymapReady`?** `keymapReady` is set after
+   `loadStdlib`; B7 deletes loadStdlib, so it loses meaning. It gates the global key router
+   (`if (!keymapReady) return;` + the A3 pre-mount swallow) AND ~15 view-config `keymapReady ? {onKey:
+   dispatchKey} : {}` spreads. Options:
+   - (a) Replace with a server-readiness flag (`serverViewClient != null`, or a new `rendererReady` set
+     when the HELLO/first PANE_TREE lands). Cleanest; the router's swallow keys off it instead of keymapReady.
+   - (b) Drop the gate entirely (router always active; the mounted/pre-mount arms already self-gate on getView()).
+   - (c) Keep a vestigial `const keymapReady = true`. Hacky; rejected unless you want the smallest diff.
+   I lean (a). The ~15 `onKey: dispatchKey` spreads also die (dispatchKey goes); confirm each view's
+   server-mode onKey (serverViewKeyOption/serverMediaKeyOption already route server-backed; the raw
+   spreads are flag-off remnants — B5 sweep said dead, verify per-site).
+
+6. **View-config `chordPending` rewire** (bookmark/gnuplot/directory sidebars, 4 `chord-in-progress?`
+   sites): replace `() => keymapReady && interpreter.call('chord-in-progress?')` with `() => false`
+   (matches current server-mode behavior — the renderer interpreter's chord state is always empty) OR
+   wire to a server chord-state signal. Live-verify chord forwarding in those sidebars (e.g. C-x 0 while
+   focus is in the bookmark outline — a known-edges area).
+
+**Recommended supervised sequence**: (1) the 3 entangled bucket-A surgeries (minibuffer/jukebox/placeholder)
+as small commits, live-verify each; (2) pick the keymapReady replacement (a); (3) chordPending rewire;
+(4) the big B7 commit — delete createInterpreter + loadStdlib/reloadStdlib + the ~257 primitives + the
+bucket-B sites + the @editor/lisp+@editor/stdlib imports + import-map entries (index.html); confirm a
+bundle/boot drop; **run the full live matrix** (plan §4). B5 verification (this session) found 0 live
+holdouts, so the deletion is sound — it just needs your live eyes since the env can't launch Electron.
+
+**State of the work**: branch `b6-b7-delete-interpreter`, 4 commits, suite green, NOT merged. main has
+L6/ensureMajorMode/A3 merged (unpushed). HANDOVER.md current. Deferred bug filed: kill-ring → OS
+clipboard not syncing (M-w/C-w; not A3-introduced).
+
+---
