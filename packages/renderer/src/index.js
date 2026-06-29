@@ -70,15 +70,6 @@ export {
 export { ShellView } from './shell-view.js';
 export { GnuplotView } from './gnuplot-view.js';
 export { createHistory } from './gnuplot-history.js';
-// The JavaScript notebook (M-x notebook-js). Importing it registers the bundled
-// <notebook-js-view> custom element (defineViewElement) so the element-view can
-// mount it by tag with an empty :module.
-export {
-  NotebookJsView,
-  makeCell as makeNotebookJsCell,
-  serializeNotebook as serializeNotebookJs,
-  parseNotebook as parseNotebookJs,
-} from './notebook-js-view.js';
 // The Architecture-A cell notebook (M-x notebook-cells): all cells in ONE real
 // editor over a unified buffer. Importing it registers the bundled
 // <notebook-cells-view> custom element so the element-view mounts it by tag

@@ -20,7 +20,7 @@
  *   - `empty`   — the cell produced no value (`undefined`).
  *
  * This module is pure: it builds and bounds descriptors but never
- * touches the DOM. The client (`notebook-js-view.js`) owns rendering.
+ * touches the DOM. The client (`notebook-cells-view.js`) owns rendering.
  */
 
 /**

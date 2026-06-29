@@ -4,8 +4,7 @@
 ;;; editor over a single unified buffer (one tree-sitter parse, the windowed
 ;;; renderer, full highlighting and editing) — the cells ARE the editor.
 ;;; Per-cell chrome (a header with a Run button, an output region) rides the
-;;; existing block-replaced-range / widget layer. Contrast `M-x notebook-js`,
-;;; which is a flat column of <textarea> cells.
+;;; existing block-replaced-range / widget layer.
 ;;;
 ;;; The <notebook-cells-view> custom element is bundled with the renderer
 ;;; (registered from packages/renderer/src/index.js), so `:module` is the

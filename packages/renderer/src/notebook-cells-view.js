@@ -1,8 +1,7 @@
 /**
  * @file `<notebook-cells-view>` — the Architecture-A cell notebook view.
  *
- * Where `<notebook-js-view>` is a column of `<textarea>` cells, this view
- * renders ALL cells in ONE real editor over a single unified buffer
+ * This view renders ALL cells in ONE real editor over a single unified buffer
  * (`notebook-cells.js`): one tree-sitter parse, the windowed renderer, full
  * highlighting and editing — the cells ARE the editor. Per-cell chrome (a
  * header bar with a Run button, and an output region) is drawn through the
@@ -18,8 +17,8 @@
  * Editing is self-driven (no `onKey` → the editor's built-in keymap), so it
  * works identically flag-on and flag-off. Only *evaluation* differs:
  * `window.__godotNotebookEval` (the spine's Node session under GODOT_SERVER=1)
- * when present, else the renderer-local `runCell` (flag-off) — exactly the
- * `notebook-js` round-trip, reused.
+ * when present, else the renderer-local `runCell` (flag-off) — the cell
+ * execution engine in `notebook-cells-engine.js`.
  *
  * Cell content is tracked with two edit-riding markers per cell (content
  * start + the close-scaffold `}`); cell *source* is read live from the
@@ -34,9 +33,9 @@
 
 import { createBuffer } from '@editor/buffer';
 import { createNotebookDocument, NOTEBOOK_ADAPTERS } from './notebook-cells.js';
-import { inspect, Inspector } from './notebook-js-output.js';
-import { runCell } from './notebook-js-engine.js';
-import { badgeForResult, serializeNotebook, parseNotebook } from './notebook-js-view.js';
+import { inspect, Inspector } from './notebook-cells-output.js';
+import { runCell } from './notebook-cells-engine.js';
+import { badgeForResult, serializeNotebook, parseNotebook } from './notebook-cells-serialize.js';
 import { defineViewElement, ViewElement } from './view-elements.js';
 
 /** The cells a fresh notebook opens with — a tiny worked example that shows
@@ -333,9 +332,8 @@ function createNotebookCellsView(container, options = {}) {
   }
 
   // -------------------------------------------------------------------
-  // Output materialization. A focused copy of the `notebook-js-view`
-  // switch, kept local so the shipped flat notebook is untouched (v1);
-  // consolidate when notebook-js is next refactored (NOTEBOOK-ENV.md §16).
+  // Output materialization: the descriptor → DOM switch over the descriptor
+  // types produced by `notebook-cells-output.js` (NOTEBOOK-ENV.md §16).
 
   function materialize(out, desc) {
     out.textContent = '';
@@ -396,7 +394,7 @@ function createNotebookCellsView(container, options = {}) {
   }
 
   // -------------------------------------------------------------------
-  // Evaluation — reuse the notebook-js round-trip.
+  // Evaluation — the spine round-trip (server) or the local engine (flag-off).
 
   function facadeFor() {
     return { ...(options.facade || {}), Inspector, cells: namedValues };
@@ -509,9 +507,9 @@ function createNotebookCellsView(container, options = {}) {
   }
 
   // -------------------------------------------------------------------
-  // Persistence. The notebook serialises to the same `// @cell` fenced text
-  // the flat JS notebook uses, so the two interchange; cell *outputs* are
-  // runtime-only (recomputed on open), matching notebook-js.
+  // Persistence. The notebook serialises to `// @cell` fenced text
+  // (`notebook-cells-serialize.js`); cell *outputs* are runtime-only
+  // (recomputed on open).
 
   async function saveNotebook() {
     if (typeof window === 'undefined' || !window.host || typeof window.host.saveFile !== 'function') {

@@ -2112,7 +2112,7 @@ test('loadWindowLayout resets the window open-set to exactly its restored buffer
   assert.deepEqual(shownPaths, ['/tmp/a.js'], 'only the restored buffer remains in the open-set');
 });
 
-// --- JS notebook: server-side cell eval (M-x notebook-js) --------------------
+// --- Notebook: server-side cell eval (M-x notebook-cells) --------------------
 // The renderer can't eval (CSP forbids unsafe-eval); cells run HERE in the
 // spine's Node context and return a SERIALIZABLE result the client materializes.
 
