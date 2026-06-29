@@ -40,3 +40,29 @@
 export function shouldGlobalRouterDefer(serverMode, serverViewMounted) {
   return serverMode === true && serverViewMounted === true;
 }
+
+/**
+ * Whether the global router should SWALLOW this keydown — server-mode is on but
+ * the server view has NOT mounted yet (the boot window: the port is up but the
+ * SNAPSHOT/mount round-trip is still in flight).
+ *
+ * In that gap there is no server dispatcher to route to, and the in-renderer
+ * interpreter is the idle mirror the server supersedes (and which B7 deletes).
+ * So the router eats command chords here rather than dispatching them: an early
+ * Cmd/Ctrl/Alt chord that reached <body> would otherwise fall through to a
+ * native menu accelerator (Close/Open/…) during boot. The caller still applies
+ * the usual guards (defaultPrevented / bare modifier / native-input target) and
+ * only preventDefaults held-modifier chords; bare keys are harmless (no view to
+ * receive them yet).
+ *
+ * This is the complement of {@link shouldGlobalRouterDefer}: in server-mode,
+ * defer (mounted) and swallow (pre-mount) partition the keystrokes; in flag-off
+ * both are `false` and the router runs as it always did.
+ *
+ * @param {boolean} serverMode - `window.host.serverMode`.
+ * @param {boolean} serverViewMounted - Whether the server view is mounted.
+ * @returns {boolean} `true` if the router should swallow this keydown.
+ */
+export function shouldSwallowPreMount(serverMode, serverViewMounted) {
+  return serverMode === true && serverViewMounted === false;
+}
