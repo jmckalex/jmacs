@@ -78,9 +78,15 @@
 >   loadProjectWindow now RESETS the window open-set to its leaves (else the home seed
 >   buffer leaked into project.json — caught via harness). `projectRootByClient` tracks
 >   project windows. 3 more committed tests + an fs round-trip format check.
->   **project Stage 3 (REMAINING):** open-project (native dir dialog) + the visual chooser
->   — both route a chosen path to open-project-at! via a directive→dialog→intent round-trip
->   (find-project keyboard already covers opening, so this is the lowest-value remainder).
+>   **project Stage 3 DONE** (`39e65b6e`, suite green 3210; **needs Jason live-verify**) —
+>   the project port is COMPLETE. open-project! emits an `open-project-dialog` directive →
+>   renderer native dir picker → a new `PROJECT_OPEN` message → `spine.openProjectAt` → a
+>   project window; open-project-chooser! → `open-project-chooser` directive → the visual
+>   chooser (its open callbacks route through `requestOpenProject` → PROJECT_OPEN, not the
+>   old in-place openProject). `open-project-at!` body extracted to `openProjectAtPath`
+>   (shared by the primitive + the exposed `openProjectAt`). New `MSG.PROJECT_OPEN` + server
+>   handler. 2 more committed tests. **project (find-project/open-project/chooser/close) is
+>   fully ported — all in NEW windows.**
 >   **OTHER REMAINING ports:** **notebook** (the reactive Lisp-notebook engine + view),
 >   **face-info** (C-h F — logic interleaves Lisp rendering with render-side tree-sitter
 >   captures → needs a spine→renderer→reply round-trip the codebase lacks). `view-list`
