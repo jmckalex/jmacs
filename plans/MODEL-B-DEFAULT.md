@@ -55,9 +55,21 @@
 >   `view-file-path` reads a data-source wrapper). `latex-compile.lisp` added to
 >   SPINE_STDLIB after latex.lisp / before reftex; `utility-output-set` embedded; the 5
 >   `*latex-*` defcustoms now come from the file (dropped from the B2 block). 5 committed
->   spine.test.js tests. **REMAINING — each a LARGE multi-iteration port:** **project**
->   (`find-project` — open-project-at! rebuilds the 3-column workspace + restores
->   `.godot/project.json`), **notebook** (the reactive Lisp-notebook engine + view),
+>   spine.test.js tests.
+>   **project Stage 1 DONE** (`c980b3d4`, suite green 3205; **needs Jason live-verify**):
+>   `find-project` now opens each project in its OWN window (behavior change Jason asked
+>   for — the old in-renderer path reconfigured the single window in place because it
+>   couldn't). `open-project-at!` validates the dir + raises a new `onOpenProjectWindow`
+>   effect → server.js stashes it + `requestSpawnWindow` → on the window's HELLO,
+>   `spine.loadProjectWindow` assembles the 3-column Nova layout (dir-tree LEFT @
+>   PROJECT_SIDEBAR_RATIO | fresh scratch editing MIDDLE | following bookmark outline
+>   RIGHT, imperatively via split + openBookmarkView). `project.lisp` in SPINE_STDLIB;
+>   `-initial-find-file-value`/`-expand-tilde` embedded; `expandTildePath`+homedir added.
+>   open-project!/close-project!/open-project-chooser! are status stubs. 3 committed tests;
+>   round-trip harness-verified. **project Stage 2 (REMAINING):** restore
+>   `<root>/.godot/project.json` open files into the middle tabline; close-project (save +
+>   close the project window); open-project (native dir dialog) + the visual chooser.
+>   **OTHER REMAINING ports:** **notebook** (the reactive Lisp-notebook engine + view),
 >   **face-info** (C-h F — logic interleaves Lisp rendering with render-side tree-sitter
 >   captures → needs a spine→renderer→reply round-trip the codebase lacks). `view-list`
 >   (M-x cmd, superseded by C-x C-b) + `reload-stdlib` (renderer-dev, moot post-B7) — leave.
