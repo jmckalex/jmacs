@@ -362,14 +362,6 @@ const rendererConfig = {
   '*markdown-preview-follow-cursor*': true,
 };
 
-/** Coerce a Lisp config value (already a JS primitive, or a Sym) to plain JS
- *  for the cache — mirrors the spine's snapshot conversion. */
-function configValueToJs(v) {
-  if (typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string') return v;
-  const name = symbolNameOf(v);
-  return name != null ? name : null;
-}
-
 /** The autosave / crash-recovery controller: snapshots every dirty
  *  buffer to `<userData>/recovery/` (debounced on edit, immediate on
  *  blur), drops a buffer's snapshot when it is saved, and clears them
@@ -6934,29 +6926,19 @@ if (window.host && window.host.serverMode) {
           for (const [k, v] of Object.entries(snap)) rendererConfig[k] = v;
         } catch { /* malformed — keep the current cache */ }
       } else if (name === 'config-apply') {
-        // B2 regression / B0 config-push: the spine pushed a renderer-consumed
-        // customize setting that changed live ([varName, valueSrc] — valueSrc is
-        // the writeString SOURCE of the new value, clone-safe across the port).
-        // Re-apply it into THIS window's interpreter via the same custom-apply!
-        // the spine ran, so the renderer-side consumers (markdown preview,
-        // autosave getters, the jukebox format-track fn, the pdf-restore default,
-        // the dir-tree open target) read the new value — and the setting's native
-        // renderer on-change fires (e.g. *jukebox-track-format* relabels open
-        // jukeboxes). B2.2b deleted the old CUSTOMIZE_SYNC relay; this is the
-        // narrow, spine-authoritative replacement for the values the renderer (not
-        // the spine) consumes. Superseded by the pure-JS config store at B7.
+        // L6 (plans/B5-B7-TEARDOWN-AUDIT.md): the spine pushed a renderer-consumed
+        // customize setting that changed live, as [varName, valueJson] — the plain
+        // JS value JSON-encoded (clone-safe, mirroring config-snapshot). Merge it
+        // straight into the config cache; every live consumer (markdown preview,
+        // autosave getters, the pdf-restore default) reads from rendererConfig. No
+        // interpreter: the jukebox relabel — the only renderer reactive on-change —
+        // is server-side (relabelJukeboxes), and refresh-jukebox-labels! is a
+        // renderer no-op. (Was a custom-apply! re-eval; the last interpreter use in
+        // this handler, gone for B7.)
         try {
           const varName = String(args?.[0] ?? '');
-          const valueSrc = String(args?.[1] ?? '');
-          if (varName) {
-            interpreter.evaluate(`(custom-apply! (quote ${varName}) (quote ${valueSrc}))`);
-            // B0: keep the plain-JS config cache in step with the live edit, so
-            // the renderer's interpreter-free reads (rendererConfig) see it too.
-            try {
-              rendererConfig[varName] = configValueToJs(interpreter.evaluate(varName));
-            } catch { /* unconvertible — leave the cached value */ }
-          }
-        } catch { /* unregistered / malformed — leave the current value */ }
+          if (varName) rendererConfig[varName] = JSON.parse(String(args?.[1] ?? 'null'));
+        } catch { /* malformed — leave the current value */ }
       } else if (name === 'utility-panel-open') {
         // B4 (latex-compile.lisp): open/reuse a utility-dock tab. Mirrors the
         // renderer's old utility-panel-open! primitive — look up the factory and

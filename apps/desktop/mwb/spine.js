@@ -611,6 +611,16 @@ const RENDERER_CONFIG_SNAPSHOT_VARS = Object.freeze([
   '*markdown-preview-follow-cursor*',
 ]);
 
+/** Coerce a config defcustom's Lisp value to clone-safe plain JS — a primitive
+ *  as-is, a symbol (e.g. a :choice option) to its name string, anything else to
+ *  null. Used by both the boot config-snapshot and the live config-apply push so
+ *  the renderer caches config (rendererConfig) without its own interpreter.
+ *  Mirrors the renderer-side reader; raw Lisp values never cross the port. */
+function configValueToJs(v) {
+  if (typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string') return v;
+  return symName(v) ?? lispString(v) ?? null;
+}
+
 /** Expand a leading `~` / `~/` to the user's home directory. The spine reads
  *  disk directly (Node), so it resolves paths itself rather than leaning on a
  *  renderer helper. A non-tilde path is returned unchanged. */
@@ -1899,13 +1909,18 @@ export function createSpine(options, effects = {}) {
         if (ids.length === 0) return NIL;
         const name = symName(args[0]) ?? lispString(args[0]) ?? String(args[0] ?? '');
         if (!RENDERER_CONFIG_VARS.has(name)) return NIL;
-        let valueSrc;
+        let jsValue;
         try {
-          valueSrc = writeString(interpreter.evaluate(name));
+          jsValue = configValueToJs(interpreter.evaluate(name));
         } catch {
           return NIL;
         }
-        onClientDirective(ids, 'config-apply', [name, valueSrc]);
+        // L6 (plans/B5-B7-TEARDOWN-AUDIT.md): push the new value as plain JS
+        // (JSON-encoded — clone-safe, mirroring config-snapshot) so the renderer
+        // merges it straight into rendererConfig without re-entering its
+        // (soon-deleted) interpreter. Every live consumer — markdown preview,
+        // autosave getters, the pdf-restore default — reads from rendererConfig.
+        onClientDirective(ids, 'config-apply', [name, JSON.stringify(jsValue)]);
         // The jukebox track-format changed: re-format the open jukebox data-
         // sources server-side (setState fan-out) so rows relabel without the
         // renderer interpreter (the renderer's refresh-jukebox-labels! is a no-op).
@@ -2652,10 +2667,7 @@ export function createSpine(options, effects = {}) {
         } catch {
           continue; // unregistered — omit; the renderer keeps its built-in default
         }
-        config[name] =
-          typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string'
-            ? v
-            : symName(v) ?? lispString(v) ?? null;
+        config[name] = configValueToJs(v);
       }
       out.push({ name: 'config-snapshot', args: [JSON.stringify(config)] });
     } catch (error) {
