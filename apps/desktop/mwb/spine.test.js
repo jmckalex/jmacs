@@ -2580,3 +2580,22 @@ test('B0 config-snapshot: reflects a customized value (not just the default)', (
   spine.interpreter.evaluate('(custom-apply! (quote *markdown-interpreter*) "pandoc")');
   assert.equal(configSnapshot(spine)['*markdown-interpreter*'], 'pandoc');
 });
+
+// --- mode menu: LaTeX's structured sections are server-side (Part 2 / Bug B) ---
+// latex-menu.lisp is now in SPINE_STDLIB, so the spine pushes the GROUPED LaTeX
+// menu (Compile/Insert/Fonts/Math/References/Navigation) instead of the flat
+// mode-menu-entries. Markdown/JMarkdown already register server-side.
+
+test('mode menu: LaTeX registers its 6 structured sections server-side', () => {
+  const { spine } = makeSpine('');
+  const count = spine.interpreter.evaluate(
+    '(if (nil? (mode-menu-sections-for "LaTeX")) 0 (length (mode-menu-sections-for "LaTeX")))'
+  );
+  assert.equal(count, 6, 'LaTeX has its 6 grouped sections (latex-menu.lisp loaded server-side)');
+});
+
+test('mode menu: the first LaTeX section is "Compile & View"', () => {
+  const { spine } = makeSpine('');
+  const label = spine.interpreter.evaluate('(car (car (mode-menu-sections-for "LaTeX")))');
+  assert.equal(label, 'Compile & View');
+});
