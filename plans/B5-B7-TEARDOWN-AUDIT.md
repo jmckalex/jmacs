@@ -211,12 +211,17 @@ Each step its own tested commit + **live-verify**; recovery tag before the B7 de
    holding live resources, e.g. the atari emulator's audio, aren't reaped on tab-close —
    `disposeKindView('element')` is correct but isn't called; same seam as `liveBrowsers`/
    `liveProcs`. Deferred — Jason's call to do the core teardown first.)
+2b. **MENUS migration** ✅ **DONE + MERGED** (Part 1 `80f21157`, Part 2 `33b659db`).
+   `onMenuCommand` → `INTENT.RUN_COMMAND` through `applyIntent` (so the post-command caret +
+   view fan-out runs); `currentModeMenu`/`refreshModeMenu` deleted, mode menu is server-only
+   via `applyServerModeMenu` (+ `latex-menu.lisp` added to `SPINE_STDLIB`). Removed the
+   `onMenuCommand` + 3 mode-menu interpreter calls.
 3. **L5 REPL + L6 config-apply handler** → spine round-trip / plain JS. *← NEXT.*
-4. **Rehome the live A3 holdouts** (§2): boot-window key-trap replacement (swallow-until-
-   mounted), `onMenuCommand` → server command, `currentModeMenu` refresh → `applyServerModeMenu`,
-   verify `ensureMajorMode`. The local **project** functions delete with the interpreter, but
-   **keep** the live JS helpers (`showProjectChooser`/`requestOpenProject`/`rememberProject` +
-   the directive handlers) — the project subsystem is already server-driven.
+4. **Rehome the remaining live A3 holdouts** (§2): boot-window key-trap replacement (swallow-
+   until-mounted) — the **#1 risk**; verify `ensureMajorMode`. (`onMenuCommand` + `currentModeMenu`
+   done in 2b.) The local **project** functions delete with the interpreter, but **keep** the
+   live JS helpers (`showProjectChooser`/`requestOpenProject`/`rememberProject` + the directive
+   handlers) — the project subsystem is already server-driven.
 5. **B5 drain** — sweep `app.js` to **zero** `interpreter.*`. Anything left is a missed item above.
 6. **B6 primitive teardown** — the ~257 primitives + 4 factory spreads die with the
    `createInterpreter` call (they exist only to serve it).
