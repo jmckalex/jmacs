@@ -338,6 +338,33 @@ function bufferMatchesSaved(buffer) {
   return text.length === base.length && hashText(text) === base.hash;
 }
 
+/** B0 config cache (plans/B5-B7-TEARDOWN-AUDIT.md): the renderer-consumed
+ *  defcustom values, kept as plain JS so the renderer reads config WITHOUT its
+ *  (soon-to-be-deleted) interpreter. Seeded with the defcustom defaults, then
+ *  refreshed by the spine's `config-snapshot` directive on connect (and on any
+ *  chrome change), and by `config-apply` on a live customize edit. Declared
+ *  high (before the readers below) so an early read never hits a TDZ. Until B7
+ *  the interpreter still loads custom.lisp at boot — the same values, read here
+ *  interpreter-free. */
+const rendererConfig = {
+  '*markdown-interpreter*': 'marked',
+  '*pdf-restore-default*': true,
+  '*autosave-recovery*': true,
+  '*autosave-recovery-interval*': 1000,
+  '*jukebox-track-format*': '"{title}", {artist}, {album}',
+  '*directory-tree-open-target*': 'editing-pane',
+  '*pane-focus-border*': 'auto',
+  '*markdown-preview-follow-cursor*': true,
+};
+
+/** Coerce a Lisp config value (already a JS primitive, or a Sym) to plain JS
+ *  for the cache — mirrors the spine's snapshot conversion. */
+function configValueToJs(v) {
+  if (typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string') return v;
+  const name = symbolNameOf(v);
+  return name != null ? name : null;
+}
+
 /** The autosave / crash-recovery controller: snapshots every dirty
  *  buffer to `<userData>/recovery/` (debounced on edit, immediate on
  *  blur), drops a buffer's snapshot when it is saved, and clears them
@@ -346,25 +373,13 @@ function bufferMatchesSaved(buffer) {
 const recovery = createRecovery({
   getDirtyBuffers: () => dirtyBuffers,
   host: window.host,
-  // Live-read the Lisp defcustoms (see system.lisp) so a user can
-  // toggle autosave or retune the interval from Lisp without a restart.
-  // Both default safely (on, 1000ms) before the stdlib has loaded.
-  isEnabled: () => {
-    if (!keymapReady) return true;
-    try {
-      return interpreter.evaluate('*autosave-recovery*') !== false;
-    } catch {
-      return true;
-    }
-  },
+  // Read the config cache (seeded with the safe defaults on/1000ms, refreshed by
+  // the spine's config-snapshot/config-apply pushes) so a user can toggle
+  // autosave or retune the interval from customize without a restart.
+  isEnabled: () => rendererConfig['*autosave-recovery*'] !== false,
   getDebounceMs: () => {
-    if (!keymapReady) return 1000;
-    try {
-      const v = interpreter.evaluate('*autosave-recovery-interval*');
-      return typeof v === 'number' && v > 0 ? v : 1000;
-    } catch {
-      return 1000;
-    }
+    const v = rendererConfig['*autosave-recovery-interval*'];
+    return typeof v === 'number' && v > 0 ? v : 1000;
   },
 });
 
@@ -816,16 +831,10 @@ function currentPane() {
   return null;
 }
 
-/** The `*pane-focus-border*` setting ('auto | 'on | 'off), read from Lisp
- *  on demand. Falls back to 'auto before the stdlib is loaded, or if the
- *  read fails. */
+/** The `*pane-focus-border*` setting ('auto | 'on | 'off), from the config
+ *  cache (seeded 'auto, refreshed by the spine's config-snapshot push). */
 function paneFocusBorderMode() {
-  if (!keymapReady) return 'auto';
-  try {
-    return symbolNameOf(interpreter.call('pane-focus-border-setting')) || 'auto';
-  } catch {
-    return 'auto';
-  }
+  return rendererConfig['*pane-focus-border*'] || 'auto';
 }
 
 /** How many panes are focusable — the 'auto focus-border mode draws the
@@ -2421,11 +2430,7 @@ async function openFileInteractive() {
  *  read fails — so a missing/broken setting never makes a transient doc
  *  sticky. */
 function pdfRestoreDefault() {
-  try {
-    return interpreter.evaluate('*pdf-restore-default*') === true;
-  } catch {
-    return false;
-  }
+  return rendererConfig['*pdf-restore-default*'] === true;
 }
 
 /** Route an open-file IPC result to its matching non-text view, when
@@ -6900,6 +6905,15 @@ if (window.host && window.host.serverMode) {
             document.documentElement.style.setProperty('--line-height', String(lineHeight));
           }
         } catch { /* malformed — keep the current knobs */ }
+      } else if (name === 'config-snapshot') {
+        // B0 (plans/B5-B7-TEARDOWN-AUDIT.md): the spine pushed the full set of
+        // renderer-consumed defcustom values as plain JS (on connect, and on any
+        // chrome change). Merge into the config cache so the renderer reads
+        // config without its interpreter. Idempotent.
+        try {
+          const snap = JSON.parse(String(args?.[0] ?? '{}'));
+          for (const [k, v] of Object.entries(snap)) rendererConfig[k] = v;
+        } catch { /* malformed — keep the current cache */ }
       } else if (name === 'config-apply') {
         // B2 regression / B0 config-push: the spine pushed a renderer-consumed
         // customize setting that changed live ([varName, valueSrc] — valueSrc is
@@ -6917,6 +6931,11 @@ if (window.host && window.host.serverMode) {
           const valueSrc = String(args?.[1] ?? '');
           if (varName) {
             interpreter.evaluate(`(custom-apply! (quote ${varName}) (quote ${valueSrc}))`);
+            // B0: keep the plain-JS config cache in step with the live edit, so
+            // the renderer's interpreter-free reads (rendererConfig) see it too.
+            try {
+              rendererConfig[varName] = configValueToJs(interpreter.evaluate(varName));
+            } catch { /* unconvertible — leave the cached value */ }
           }
         } catch { /* unregistered / malformed — leave the current value */ }
       } else if (name === 'utility-panel-open') {
@@ -11020,15 +11039,11 @@ function openEvalLogBuffer() {
 // on stdin and prints HTML on stdout.
 const DEFAULT_MARKDOWN_INTERPRETER = 'marked';
 
-/** The current `*markdown-interpreter*` setting, falling back to the
- *  default if the Lisp side isn't ready or the value is empty. */
+/** The current `*markdown-interpreter*` setting, from the config cache,
+ *  falling back to the default if the value is empty. */
 function currentMarkdownInterpreter() {
-  try {
-    const value = interpreter.evaluate('*markdown-interpreter*');
-    if (typeof value === 'string' && value.trim() !== '') return value;
-  } catch {
-    // Not yet defined — fall through to the default.
-  }
+  const value = rendererConfig['*markdown-interpreter*'];
+  if (typeof value === 'string' && value.trim() !== '') return value;
   return DEFAULT_MARKDOWN_INTERPRETER;
 }
 
@@ -11195,15 +11210,10 @@ function postToPreview(msg) {
 }
 
 /** Whether forward search (preview-follows-cursor) is enabled. Reads the
- *  `*markdown-preview-follow-cursor*` defcustom from the renderer interpreter
- *  (customize is client-side under Model B, so this reflects the live setting);
- *  defaults on. */
+ *  `*markdown-preview-follow-cursor*` value from the config cache (seeded on,
+ *  refreshed by the spine's config-snapshot/config-apply pushes). */
 function previewFollowCursorOn() {
-  try {
-    return interpreter.evaluate('*markdown-preview-follow-cursor*') !== false;
-  } catch {
-    return true;
-  }
+  return rendererConfig['*markdown-preview-follow-cursor*'] !== false;
 }
 
 /** Scroll the preview to `line` — the in-app iframe, or (when detached) the

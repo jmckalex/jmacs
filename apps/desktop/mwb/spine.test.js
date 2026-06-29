@@ -2531,3 +2531,52 @@ test('B4 find-project: opens the "Open project: " prompt seeded at a sensible di
   assert.equal(log.minibufferOpens[0], 'Open project: ');
   assert.equal(log.minibufferSeeds[0], '/Users/jalex/Source/proj/');
 });
+
+// --- B0 config snapshot: renderer-consumed defcustoms pushed on connect -------
+// chromeDirectives() rides the HELLO push (server.js loops it after the
+// snapshot); folding the config snapshot in means the renderer caches config as
+// plain JS and reads it without its interpreter. (plans/B5-B7-TEARDOWN-AUDIT.md)
+
+/** The config-snapshot directive's parsed payload from chromeDirectives(). */
+function configSnapshot(spine) {
+  const dirs = spine.chromeDirectives();
+  const entry = dirs.find((d) => d.name === 'config-snapshot');
+  assert.ok(entry, 'chromeDirectives includes a config-snapshot');
+  assert.equal(entry.args.length, 1, 'config-snapshot carries one JSON arg');
+  return JSON.parse(entry.args[0]);
+}
+
+test('B0 config-snapshot: carries every renderer-consumed defcustom', () => {
+  const cfg = configSnapshot(makeSpine('').spine);
+  for (const v of [
+    '*markdown-interpreter*', '*pdf-restore-default*', '*autosave-recovery*',
+    '*autosave-recovery-interval*', '*jukebox-track-format*',
+    '*directory-tree-open-target*', '*pane-focus-border*',
+    '*markdown-preview-follow-cursor*',
+  ]) {
+    assert.ok(Object.prototype.hasOwnProperty.call(cfg, v), `snapshot includes ${v}`);
+  }
+});
+
+test('B0 config-snapshot: values are plain, clone-safe JS of the right type', () => {
+  const cfg = configSnapshot(makeSpine('').spine);
+  // Defaults prove value extraction; a symbol :choice becomes its name string.
+  assert.equal(cfg['*markdown-interpreter*'], 'marked');
+  assert.equal(cfg['*autosave-recovery-interval*'], 1000);
+  assert.equal(typeof cfg['*autosave-recovery-interval*'], 'number');
+  assert.equal(cfg['*pdf-restore-default*'], true);
+  assert.equal(cfg['*autosave-recovery*'], true);
+  assert.equal(cfg['*directory-tree-open-target*'], 'editing-pane'); // symbol → name
+  assert.equal(cfg['*pane-focus-border*'], 'auto');                  // symbol → name
+  // No raw Lisp objects survive (every value is a JS primitive).
+  for (const val of Object.values(cfg)) {
+    assert.ok(val === null || ['boolean', 'number', 'string'].includes(typeof val),
+      `clone-safe primitive, got ${typeof val}`);
+  }
+});
+
+test('B0 config-snapshot: reflects a customized value (not just the default)', () => {
+  const { spine } = makeSpine('');
+  spine.interpreter.evaluate('(custom-apply! (quote *markdown-interpreter*) "pandoc")');
+  assert.equal(configSnapshot(spine)['*markdown-interpreter*'], 'pandoc');
+});
