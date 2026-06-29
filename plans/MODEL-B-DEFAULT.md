@@ -87,10 +87,20 @@
 >   (shared by the primitive + the exposed `openProjectAt`). New `MSG.PROJECT_OPEN` + server
 >   handler. 2 more committed tests. **project (find-project/open-project/chooser/close) is
 >   fully ported — all in NEW windows.**
->   **OTHER REMAINING ports:** **notebook** (the reactive Lisp-notebook engine + view),
->   **face-info** (C-h F — logic interleaves Lisp rendering with render-side tree-sitter
->   captures → needs a spine→renderer→reply round-trip the codebase lacks). `view-list`
->   (M-x cmd, superseded by C-x C-b) + `reload-stdlib` (renderer-dev, moot post-B7) — leave.
+>   **face-info DONE** (`57e2f406`, suite green 3214; **needs Jason live-verify**): C-h F
+>   describe-face-at-point + C-h C-f highlight-construct-at-point. Built the missing
+>   spine→renderer→reply round-trip (the reverse of NOTEBOOK_EVAL): `with-tree-sitter-info`
+>   parks a continuation + emits a `tree-sitter-query` directive; the renderer computes
+>   { lang, captures, node, colors } + replies `MSG.TREE_SITTER_INFO`; `deliverTreeSitterInfo`
+>   → `tree-sitter-info-delivered` resumes. face-info.lisp's commands rewritten to fetch via
+>   it (pure helpers + Markdown renderers unchanged); doc page = the B3 doc data-source; C-h
+>   C-f uses server-side create-face!/add-highlight-rule!. `face-color-for` reads a renderer-
+>   resolved {face:colour} stash (the `--tok-<face>` values live in the renderer CSS cascade).
+>   stdlib.test.js got a with-tree-sitter-info shim so its command tests run unchanged. 4
+>   committed spine.test.js tests.
+>   **OTHER REMAINING port:** **notebook** (the reactive Lisp-notebook engine + view — pin
+>   down which 'notebook' is broken under Model B first). `view-list` (M-x cmd, superseded by
+>   C-x C-b) + `reload-stdlib` (renderer-dev, moot post-B7) — leave.
 > - **✅ B2 REGRESSION FIXED** (`f00391b9`, suite green 3197; **needs Jason live-verify**):
 >   the 11 defcustoms that dropped out of `M-x customize` are re-registered server-side
 >   (embedded defcustom block + 5 new defgroups, loaded after the stdlib loop but before
