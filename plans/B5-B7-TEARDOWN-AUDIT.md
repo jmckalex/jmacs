@@ -41,8 +41,8 @@ B7 removes the interpreter, or something breaks.
 
 | # | Responsibility | Sites (app.js) | Rehome to | Notes |
 |---|---|---|---|---|
-| L1 | **Boot faces/theme/highlight CSS compute** | 5505 `-migrate-stale-theme!`, 5559/5562 `set-user-faces!`/`set-face-overrides!`, 5594/5596 highlight rules, 5652/5653 (boot), 7942 `current-theme-css-vars`, 7962/7964 `current-face-styles` | **Already pushed** by the spine (`theme-apply`/`faces-apply`/`highlight-rules`/`css-knobs` directives — handlers at app.js:6858–6887). These boot calls are **unguarded redundancy**. | Delete + rely on the spine push; handle **boot ordering / FOUC** (gate first paint on the first `faces-apply`, or seed CSS from a cached snapshot). |
-| L2 | **Config-var reads** (renderer-consumed defcustoms) | 7 reads — see §3 (the B0 list) | **B0 config snapshot** (push values; renderer caches; reads become cache lookups). | The spine *already* re-pushes these on change via `config-apply` (handler 6903); the missing half is the **boot seed**. |
+| L1 | ~~Boot faces/theme/highlight CSS compute~~ **✅ RESOLVED — pure deletion, no FOUC** | `-migrate-stale-theme!`, `set-user-faces!`/`set-face-overrides!`, `set-highlight-rules!`/`push-highlight-rules!` (boot install + `installHighlightRules`); `current-theme-css-vars`/`current-face-styles`/`current-mode-face-styles` (in `applyCurrentTheme`/`applyCurrentFaceStyles`) | n/a — already server-driven | **L1 check done (2026-06-29).** The renderer paints **zero** faces at boot — B1 removed the boot `applyCurrentTheme()`/`applyCurrentFaceStyles()` calls (stale comment at app.js:5612 confirms). `applyCurrentTheme`/`applyCurrentFaceStyles` (the only callers of `current-*-styles`) are now reached **only** via `reloadStdlib` (M-r). Boot styling is 100% the spine's `theme-apply`/`faces-apply`/`css-knobs` push. The boot face-state install (`set-user-faces!`/etc.) only feeds `reloadStdlib` — a closed loop with no other consumers, so it **dies wholesale with the interpreter + `reloadStdlib`** in B7. **No FOUC mitigation needed** (boot has relied on the spine push since B1, daily-verified). |
+| L2 | ~~Config-var reads~~ **✅ DONE (B0, merged `03439537`)** | was 7 reads → `rendererConfig` cache | **B0 config snapshot** — shipped | Renderer reads config from the plain-JS cache; the `config-snapshot` directive seeds it on connect, `config-apply` refreshes it live. |
 | L3 | **User config eval at boot** | 5497 `evaluate(custom.lisp)`, 5514 `evaluate(init.lisp)` | **Spine loads config** (B0). custom.lisp already loads server-side (B1.4). | `init.lisp` on the spine is the biggest *semantic* change — it may call renderer-only primitives; audit + provide spine equivalents/no-ops. |
 | L4 | **Element-view registry + dispatch** | 8760 `element-views`, 10677 `:on-ready` callback, 7178 `set! *bib-search-doc-override*`, 7180 `run-command` (`RUN_CLIENT_COMMAND` forward via `runClientCommand` 7156–7186) | **Plain JS** registry + handlers; M-x already forwards unknown cmds via `RUN_CLIENT_COMMAND`. | This is the one real remaining *feature* migration (atari / bib-search / notebook-cells element views). On-ready callbacks → plain-JS handlers. |
 | L5 | **REPL** (interactive renderer eval) | 5443 `evaluate(source)` | Spine round-trip (like `NOTEBOOK_EVAL`) **or drop** if redundant with the notebook/inline-eval server eval. | The single interactive entry into the renderer interpreter. |
@@ -199,15 +199,16 @@ renderer-only since the plan: `latex-synctex`.)
 
 Each step its own tested commit + **live-verify**; recovery tag before the B7 deletion.
 
-0. **B0 — config snapshot + spine config-load.** Seed the 7 (+jukebox) config values at
-   boot (push on connect); make the renderer reads (§3) cache lookups. Spine loads
-   `init.lisp` (audit its renderer-primitive usage first — the big semantic change).
-   *Prereq for everything; soak it.*
-1. **Verify L1 (faces/themes boot coverage).** Confirm the spine push fully styles a cold
-   boot (no FOUC). If yes, the faces cluster is pure deletion. If no, add a cached-snapshot
-   seed or gate first paint on the first `faces-apply`. *Cheap, highest-leverage.*
+0. **B0 — config snapshot.** ✅ **DONE + MERGED** (`03439537`, tag `pre-b0-config-push`).
+   Renderer reads config from the `rendererConfig` cache; the config-snapshot directive
+   seeds it on connect. *(The spine-config-load / `init.lisp`-on-spine half is small here —
+   `init.lisp` is empty, `custom.lisp` already loads server-side; deferred to the B7 arc.)*
+1. **L1 faces/themes boot coverage.** ✅ **RESOLVED — pure deletion, no FOUC** (code-confirmed
+   2026-06-29; see L1 in §1). The renderer already paints zero faces at boot; the faces
+   interpreter calls are reloadStdlib-only and die with the interpreter. No mitigation.
 2. **L4 element-views → plain JS** (registry + on-ready + `RUN_CLIENT_COMMAND` dispatch).
    The one real remaining feature migration; verify atari / bib-search / notebook-cells.
+   *← NEXT.*
 3. **L5 REPL + L6 config-apply handler** → spine round-trip / plain JS.
 4. **Rehome the live A3 holdouts** (§2): boot-window key-trap replacement (swallow-until-
    mounted), `onMenuCommand` → server command, `currentModeMenu` refresh → `applyServerModeMenu`,
