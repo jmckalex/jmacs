@@ -66,9 +66,21 @@
 >   RIGHT, imperatively via split + openBookmarkView). `project.lisp` in SPINE_STDLIB;
 >   `-initial-find-file-value`/`-expand-tilde` embedded; `expandTildePath`+homedir added.
 >   open-project!/close-project!/open-project-chooser! are status stubs. 3 committed tests;
->   round-trip harness-verified. **project Stage 2 (REMAINING):** restore
->   `<root>/.godot/project.json` open files into the middle tabline; close-project (save +
->   close the project window); open-project (native dir dialog) + the visual chooser.
+>   round-trip harness-verified.
+>   **project Stage 2 DONE** (`820c1773`, suite green 3208; **needs Jason live-verify**):
+>   a project window restores its files. server.js owns `<root>/.godot/project.json` I/O
+>   (`readProjectState`/`writeProjectState` — tolerant of the forward `{version,files,
+>   active}` AND an older session-blob, paths via `pathsInWindowBlob`): open-project-at!
+>   reads the saved files → server opens them on the new window's HELLO → loadProjectWindow
+>   seeds the MIDDLE as a tabline of them (scratch when none). `close-project!` gathers the
+>   window's editing files (data-sources filtered out), raises `onCloseProject` → server
+>   writes project.json (atomic) + closes the window; no-op in a non-project window.
+>   loadProjectWindow now RESETS the window open-set to its leaves (else the home seed
+>   buffer leaked into project.json — caught via harness). `projectRootByClient` tracks
+>   project windows. 3 more committed tests + an fs round-trip format check.
+>   **project Stage 3 (REMAINING):** open-project (native dir dialog) + the visual chooser
+>   — both route a chosen path to open-project-at! via a directive→dialog→intent round-trip
+>   (find-project keyboard already covers opening, so this is the lowest-value remainder).
 >   **OTHER REMAINING ports:** **notebook** (the reactive Lisp-notebook engine + view),
 >   **face-info** (C-h F — logic interleaves Lisp rendering with render-side tree-sitter
 >   captures → needs a spine→renderer→reply round-trip the codebase lacks). `view-list`
