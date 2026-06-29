@@ -25,24 +25,31 @@
 >   `3840e38` — renderer renders push-only (`buffer.model`); deleted
 >   `getCustomModel`/`fieldToSetting`/`rowToFace` + the local apply evals.
 >   **B2.3 confirmed live (persists across relaunch — Jason 2026-06-29).**
-> - **Part B3** (docs/help → server) **DONE** (suite green 3197). `f839218` — added
->   `docs.lisp` to `SPINE_STDLIB`; `load-doc-manifest!` host primitive reads
->   `docs/build/manifest.json` (doc-known? resolves server-side, 478 names); embedded
->   `open-doc!`/`open-manual!`/`open-docstring-page!` emit `open-doc`/`open-manual`/
->   `open-docstring` directives → renderer `applyDirective` calls the existing
->   `openDocInPane`/`openDocstringBuffer`. `apropos-doc` (C-h a) preserved (embedded
->   show-apropos shadows docs.lisp's). Fixes C-h d / open-doc / describe-symbol-at-point,
->   which were BROKEN under Model B. **NEEDS LIVE-VERIFY**: that the doc actually renders
->   in the doc-view (the renderer DOM half — unverifiable without Electron).
-> - **NEXT: B4** (rich views & file/project UI). Audit of what's still BROKEN under
->   Model B (validated against the live spine via `registered-command-names`, see
->   `architect-notes.md` 2026-06-29): `describe-face-at-point`/`highlight-construct-at-
->   point` (face-info.lisp — needs render-side tree-sitter captures), `eval-expression-
->   at-point`/`-before-point` (inline-eval.lisp), the sticky-note family, the folding
->   family (`fold-all`/`unfold-all`/`toggle-fold-at-point`), `find-project`,
->   `scratch-buffer`, `notebook`, `toggle-repl`, `view-list`, `reload-stdlib`. None is a
->   clean "reuse a render fn via a directive" like docs — each needs render-side data /
->   view-state / overlay UI, so each needs per-batch LIVE-VERIFY (do NOT port blind).
+> - **Part B3** (docs/help → server) **DONE + LIVE-VERIFIED** (suite 3197). `f839218`
+>   added `docs.lisp` to `SPINE_STDLIB` + `load-doc-manifest!` (fs). Docs turned out to
+>   need a real server **'doc' DATA-SOURCE** (not a renderer view — that made an
+>   un-switchable tab): `d25d14f` (open-doc!/open-manual!/open-docstring-page! mint a
+>   doc leaf via openDocSource + the reconcile docKind branch), `05e078d`, and
+>   `661bc7c` (the `<doc-view>` SELF-FETCHES its content via readPage/renderMarkdown +
+>   navigates in place — robust to leaf-vs-tabline-child mounting). C-h d / open-doc /
+>   describe-symbol-at-point work; the manual renders + the TOC/Next-Prev navigate.
+> - **Part B4** (rich views & file/project UI) IN PROGRESS. Done + verified:
+>   **folding** (`63c4332`), **view/misc** (`267bac2`: next-view/previous-view/
+>   scratch-buffer pure server-side + toggle-repl directive), **docs** (above).
+>   REMAINING broken-under-Model-B commands (each needs render-side data/view-state/
+>   overlay → per-batch LIVE-VERIFY, do NOT port blind): **sticky-notes** (chains a
+>   renderer-returned note id + moves the server-owned cursor), **inline-eval**
+>   (`eval-expression-at-point`/`-before-point` — eval in the spine session + overlay),
+>   **face-info** (`describe-face-at-point`/`highlight-construct-at-point` — needs
+>   render-side tree-sitter captures, a round-trip), **project** (`find-project` —
+>   minibuffer), **latex-compile** (subprocess + output pane), **notebook**,
+>   **view-list**. `reload-stdlib` is renderer-dev → leave (moot post-B7).
+> - **⚠️ OPEN B2 REGRESSION** (see `architect-notes.md` 2026-06-29): 11 defcustoms in
+>   renderer-only files (`*markdown-interpreter*`, `*pdf-restore-default*`,
+>   `*autosave-recovery*`(+interval), 5 `*latex-*`, `*jukebox-track-format*`,
+>   `*directory-tree-open-target*`) dropped out of `M-x customize` (the model is
+>   computed from the spine registry now). Fix = register them server-side + the B0
+>   config-push (renderer-consumed values must reach the client). Needed before B7.
 > Scope chosen by the architect: **Deep** — eliminate the renderer's Lisp interpreter
 > entirely so there is a single Lisp world (the spine) and the renderer becomes a pure-JS
 > thin client.
