@@ -8119,15 +8119,26 @@ function configureDocView() {
       }
     },
     openDoc: (name) => {
-      // In-view navigation — a clicked cross-link, menu item, breadcrumb, or
-      // nav button. The target is a built page: a navigation node id (e.g.
-      // "getting-started") OR a documented function name. Open it directly;
-      // readDocPage resolves either against the manifest. This is distinct
-      // from the `open-doc` command (C-h f / M-x), which looks up docs for an
-      // arbitrary symbol and falls back to rendering its docstring — that
-      // command only knows function names, so routing node-id clicks through
-      // it reported "no doc page".
-      openDocInPane(name);
+      // In-view navigation — a clicked cross-link, menu item, breadcrumb, or nav
+      // button. The target is a built page (a nav node id or a documented function
+      // name; readDocPage resolves either). B4: refill the ACTIVE doc-view IN PLACE
+      // — read the page render-side + setBuffer on the same <doc-view>. The old
+      // path (openDocInPane → showDocInPane) used the renderer `views` array, which
+      // under Model B doesn't hold the server doc leaf, so it spawned a new,
+      // un-switchable tab instead of navigating.
+      window.host
+        .readDocPage(name)
+        .then((page) => {
+          if (!page) { repl.appendError(`no doc page for ${name}`); return; }
+          const view = session.currentView;
+          const el = view && view.kind === 'doc' ? docElementByView.get(view) : null;
+          if (el && typeof el.setBuffer === 'function') {
+            view.html = page.html;   // persist on the view so a reuse-mount repaints
+            view.docName = name;
+            el.setBuffer(view);
+          }
+        })
+        .catch((error) => repl.appendError(`doc: ${error.message}`));
     },
     highlightCode: highlightCodeForDocView,
     manifest: docNavTree,
