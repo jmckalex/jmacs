@@ -715,12 +715,17 @@ export function createServerViewClient({
   }
 
   /** Ask the server to run a command by EXACT name — a native app-menu /
-   *  mode-menu click. The server routes it like M-x (an element-view command
-   *  goes back down via RUN_CLIENT_COMMAND; anything else runs on the spine),
-   *  so a menu click no longer touches the inert renderer interpreter. */
+   *  mode-menu click. Sent as an INTENT (like a key) so it flows through the
+   *  server's `applyIntent`: the server routes it like M-x (an element-view
+   *  command goes back down via RUN_CLIENT_COMMAND; anything else runs on the
+   *  spine) AND the post-command fan-out (caret + view refresh) runs — so an
+   *  editing command's cursor/preview updates without a manual click. */
   function runCommand(name) {
     if (typeof name !== 'string' || name === '') return;
-    port.postMessage({ type: MSG.RUN_COMMAND, name });
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.RUN_COMMAND, name },
+    });
   }
 
   /** Report that a browser VIEW (data-source SOURCEID) navigated to URL — a link

@@ -804,6 +804,24 @@ function applyIntent(client, intent) {
       case INTENT.KEY:
         spine.handleKey(String(intent.key ?? ''));
         break;
+      case INTENT.RUN_COMMAND: {
+        // A native app-menu / mode-menu click runs a command by EXACT name.
+        // Route like M-x's exact branch (no fuzzy match): a renderer-owned
+        // element-view command goes back DOWN via RUN_CLIENT_COMMAND; anything
+        // else runs on the spine. Handling it HERE (not as a top-level message)
+        // means the post-command fan-out below — caret echo + broadcastView —
+        // runs, so an editing command's cursor/preview refreshes without a
+        // manual click. setActiveClient already ran at the top of applyIntent.
+        const name = String(intent.name ?? '');
+        if (name) {
+          if (clientCommandNames.has(name)) {
+            sendRunClientCommand(client, name);
+          } else {
+            spine.runCommand(name);
+          }
+        }
+        break;
+      }
       case INTENT.POINT:
         buffer.moveTo(Number(intent.point) || 0);
         // A drag-selection sends its anchor as `intent.mark`; moveTo() just
@@ -1389,20 +1407,6 @@ function onClientMessage(client, event) {
       if (Array.isArray(msg.names)) {
         for (const n of msg.names) {
           if (typeof n === 'string' && n !== '') clientCommandNames.add(n);
-        }
-      }
-      break;
-    case MSG.RUN_COMMAND:
-      // A native app-menu / mode-menu click asks to run a command by EXACT name.
-      // Route like M-x's exact branch (no fuzzy match — the name is exact): a
-      // renderer-owned element-view command goes back DOWN via RUN_CLIENT_COMMAND;
-      // anything else runs on the spine, in the clicking window's context.
-      if (typeof msg.name === 'string' && msg.name !== '') {
-        spine.setActiveClient(client.index);
-        if (clientCommandNames.has(msg.name)) {
-          sendRunClientCommand(client, msg.name);
-        } else {
-          spine.runCommand(msg.name);
         }
       }
       break;
