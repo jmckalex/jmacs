@@ -7706,14 +7706,8 @@ function highlightCodeForDocView(text, language) {
 function configureDocView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // View-close is server-driven now (the in-renderer kill-view was inert).
+    closeBuffer: () => {},
     // B4: the doc-view OWNS its content + navigation via these — it fetches a
     // built page (readPage) or renders a live docstring (renderMarkdown) and
     // setBuffers itself, regardless of how it was mounted (leaf vs tabline child).
@@ -7859,14 +7853,8 @@ function stripDerivedFields(meta) {
 function configureAudioView() {
   return {
     ...serverMediaKeyOption(),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // View-close is server-driven now (the in-renderer kill-view was inert).
+    closeBuffer: () => {},
     // Inline-edit lifecycle. Wired to the stubbed metadata-write
     // primitives — see `set-audio-metadata!` / `remove-audio-metadata!`
     // below. The real writers (agent-audio-edit-id3v2 onwards) replace
@@ -7890,14 +7878,8 @@ audioView.style.display = 'none';
 function configureVideoView() {
   return {
     ...serverMediaKeyOption(),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // View-close is server-driven now (the in-renderer kill-view was inert).
+    closeBuffer: () => {},
   };
 }
 const videoView = /** @type {*} */ (document.createElement('video-view'));
@@ -9009,9 +8991,8 @@ function disposePlaceholderElementForView(view) {
 // Phase 3g: directory-columns is a custom element now. Factory reused
 // by the tabline mount path for per-tab `<directory-columns-view>` instances.
 function configureDirectoryColumnsView() {
-  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    // onKey routes to the server's keymap in server mode; flag-off byte-for-byte.
+    // onKey routes to the server's keymap.
     ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     getPreview: (path) => buildColumnPreview(path),
@@ -9019,12 +9000,8 @@ function configureDirectoryColumnsView() {
     // preview pane colourises the file the same way as if it were open.
     highlighters,
     openPath: (path) => {
-      // Server mode: open by path through the server's find-file (visitFile).
-      if (serverMode) {
-        if (serverViewClient) serverViewClient.visitPath(path);
-        return;
-      }
-      openFileInTabAdjacent(path);
+      // Open by path through the server's find-file (visitFile).
+      if (serverViewClient) serverViewClient.visitPath(path);
     },
     onRevealInFolder: (path) => window.host.revealInFolder(path),
     onTrash: (path) => window.host.trashFile(path),
@@ -9034,16 +9011,9 @@ function configureDirectoryColumnsView() {
       const to = parent === '' ? newName : `${parent}/${newName}`;
       return window.host.renameFile(path, to);
     },
-    closeBuffer: () => {
-      // Server mode: closing a directory pane isn't wired server-side yet.
-      if (serverMode) return;
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // Closing a directory pane isn't wired server-side yet (the pane is
+    // replaced when a file opens from it).
+    closeBuffer: () => {},
   };
 }
 const directoryColumnsView = /** @type {*} */ (document.createElement('directory-columns-view'));
