@@ -12,6 +12,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createSpine } from './spine.js';
 import { wireLeaves, wireFocusedLeafId } from './protocol.js';
@@ -2457,4 +2460,36 @@ test('B4 face-info: describe-face-at-point reports when there is no tree-sitter 
   // no doc page opened; the focused leaf is still the text buffer
   assert.ok(!JSON.stringify(spine.paneSnapshot(0)).includes('"viewKind":"doc"'),
     'no doc page when the buffer has no tree-sitter language');
+});
+
+// --- B4: latex error-nav resolves relative diagnostic paths (live-found bug) --
+// TeX engines report file paths RELATIVE to the build dir (e.g. ./paper.tex);
+// the spine's file-exists? statSyncs against its own cwd, so latex-next-error's
+// guard failed and never jumped. -latex-resolve-diag-file resolves against the
+// master file's directory.
+
+test('B4 latex-next-error: resolves a relative diagnostic path + jumps to the line', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tex-'));
+  const file = join(dir, 'paper.tex');
+  const text = Array.from({ length: 14 }, (_, i) => `line ${i + 1}`).join('\n');
+  writeFileSync(file, text);
+  try {
+    const { spine } = makeSpine(text, 'paper.tex', {
+      initialPath: file,
+      openFile: (p) => (p === file ? { text, name: 'paper.tex', path: file } : null),
+    });
+    const ev = (s) => spine.interpreter.evaluate(s);
+    // relative paths resolve against the master dir; absolute pass through
+    assert.equal(ev('(-latex-resolve-diag-file "./paper.tex")'), file);
+    assert.equal(ev(`(-latex-resolve-diag-file "${file}")`), file);
+    assert.equal(ev('(nil? (-latex-resolve-diag-file nil))'), true); // a nil file stays nil
+    // a relative-path diagnostic at line 10 → latex-next-error jumps there
+    ev('(set! *latex-error-list* (list {:file "./paper.tex" :line 10 :message "oops"}))');
+    ev('(set! *latex-error-index* -1)');
+    spine.buffer.moveTo(0);
+    ev('(latex-next-error)');
+    assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 9, 'jumped to line 10 (0-based 9)');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
