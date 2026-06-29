@@ -52,12 +52,19 @@
 >   logic interleaves Lisp rendering with render-side tree-sitter captures → needs a
 >   spine→renderer→reply round-trip the codebase lacks). `view-list` (M-x, superseded
 >   by C-x C-b buffer-list) + `reload-stdlib` (renderer-dev, moot post-B7) — leave.
-> - **⚠️ OPEN B2 REGRESSION** (see `architect-notes.md` 2026-06-29): 11 defcustoms in
->   renderer-only files (`*markdown-interpreter*`, `*pdf-restore-default*`,
->   `*autosave-recovery*`(+interval), 5 `*latex-*`, `*jukebox-track-format*`,
->   `*directory-tree-open-target*`) dropped out of `M-x customize` (the model is
->   computed from the spine registry now). Fix = register them server-side + the B0
->   config-push (renderer-consumed values must reach the client). Needed before B7.
+> - **✅ B2 REGRESSION FIXED** (`f00391b9`, suite green 3197; **needs Jason live-verify**):
+>   the 11 defcustoms that dropped out of `M-x customize` are re-registered server-side
+>   (embedded defcustom block + 5 new defgroups, loaded after the stdlib loop but before
+>   custom.lisp so saved values apply). **B0 config-push** landed for the 6 renderer-
+>   consumed settings (`*markdown-interpreter*`, `*pdf-restore-default*`,
+>   `*autosave-recovery*`(+interval), `*jukebox-track-format*`, `*directory-tree-open-
+>   target*`): their `:on-change` calls `push-renderer-config!` → a clone-safe
+>   `config-apply` directive (var name + writeString SOURCE) → renderer re-applies via its
+>   own `custom-apply!` (firing native on-changes, e.g. jukebox relabel). The 5 `*latex-*`
+>   settings are spine-consumed (the pending latex-compile port reads them), so they're
+>   registered only — no push. The pure-JS migration of the renderer consumers is B7 work;
+>   this is the narrow spine-authoritative bridge. Harness-verified (all 11 register w/
+>   correct defaults+groups; config-apply fires for renderer-consumed edits only).
 > Scope chosen by the architect: **Deep** — eliminate the renderer's Lisp interpreter
 > entirely so there is a single Lisp world (the spine) and the renderer becomes a pure-JS
 > thin client.
