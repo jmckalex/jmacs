@@ -8749,8 +8749,10 @@ function viewListRecords() {
 function configureViewListView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     getViews: viewListRecords,
     selectView: (id) => {
       // Server mode: the id is a server buffer id — switch to it (the server
@@ -8862,8 +8864,10 @@ function discardSnapshot(key) {
 function configureRecoverView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     getEntries: recoverViewRecords,
     recover: recoverSnapshot,
     discard: discardSnapshot,
@@ -9078,8 +9082,10 @@ function configureBookmarkView() {
     // forward the *next* key — even a plain one like the `0` of `C-x 0`
     // — to the keymap instead of swallowing it; otherwise focus is
     // trapped in the outline and prefix chords (C-x 0/1/2/b/p …) die.
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     closeBuffer: () => {
       // q collapses the outline's pane (the source returns full-width);
       // the single outline view persists hidden and re-opens on C-x r l.
@@ -9200,8 +9206,10 @@ function configureGnuplotView() {
       window.host && typeof window.host.onGnuplotExit === 'function'
         ? window.host.onGnuplotExit(callback)
         : () => {},
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     exportSvg: (svg, name) =>
       window.host && typeof window.host.gnuplotSaveSvg === 'function'
         ? window.host.gnuplotSaveSvg(svg, name)
