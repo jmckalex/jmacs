@@ -2581,6 +2581,44 @@ test('B0 config-snapshot: reflects a customized value (not just the default)', (
   assert.equal(configSnapshot(spine)['*markdown-interpreter*'], 'pandoc');
 });
 
+// --- L6: config-apply carries the plain JS value, not Lisp source ------------
+// A renderer-config defcustom's :on-change calls push-renderer-config!, which
+// now pushes config-apply as [varName, JSON(value)] — clone-safe plain JS the
+// renderer merges straight into rendererConfig WITHOUT re-entering its (soon-
+// deleted) interpreter. (plans/B5-B7-TEARDOWN-AUDIT.md)
+
+/** The config-apply directives pushed for `varName` (most recent last). */
+function configApplies(log, varName) {
+  return log.directives.filter((d) => d.name === 'config-apply' && d.args[0] === varName);
+}
+
+test('L6 config-apply: a live string edit pushes the plain JS value (not Lisp source)', () => {
+  const { spine, log } = makeSpine('');
+  spine.interpreter.evaluate('(custom-apply! (quote *markdown-interpreter*) "pandoc")');
+  const d = configApplies(log, '*markdown-interpreter*').at(-1);
+  assert.ok(d, 'a config-apply was pushed to the connected window');
+  assert.deepEqual(d.ids, [0], 'pushed to window 0');
+  assert.strictEqual(JSON.parse(d.args[1]), 'pandoc', 'value arrives as plain JS via JSON');
+  // Regression: no Lisp custom-apply! source rides the wire anymore.
+  assert.ok(!d.args[1].includes('custom-apply!'), 'no Lisp source on the wire');
+});
+
+test('L6 config-apply: a boolean edit arrives as a JS boolean', () => {
+  const { spine, log } = makeSpine('');
+  spine.interpreter.evaluate('(custom-apply! (quote *pdf-restore-default*) #f)');
+  const d = configApplies(log, '*pdf-restore-default*').at(-1);
+  assert.ok(d, 'a config-apply was pushed');
+  assert.strictEqual(JSON.parse(d.args[1]), false);
+});
+
+test('L6 config-apply: a :choice symbol edit arrives as its name string', () => {
+  const { spine, log } = makeSpine('');
+  spine.interpreter.evaluate('(custom-apply! (quote *directory-tree-open-target*) (quote other-pane))');
+  const d = configApplies(log, '*directory-tree-open-target*').at(-1);
+  assert.ok(d, 'a config-apply was pushed');
+  assert.strictEqual(JSON.parse(d.args[1]), 'other-pane');
+});
+
 // --- mode menu: LaTeX's structured sections are server-side (Part 2 / Bug B) ---
 // latex-menu.lisp is now in SPINE_STDLIB, so the spine pushes the GROUPED LaTeX
 // menu (Compile/Insert/Fonts/Math/References/Navigation) instead of the flat
