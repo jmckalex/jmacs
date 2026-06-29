@@ -45,7 +45,7 @@ B7 removes the interpreter, or something breaks.
 | L2 | ~~Config-var reads~~ **✅ DONE (B0, merged `03439537`)** | was 7 reads → `rendererConfig` cache | **B0 config snapshot** — shipped | Renderer reads config from the plain-JS cache; the `config-snapshot` directive seeds it on connect, `config-apply` refreshes it live. |
 | L3 | **User config eval at boot** | 5497 `evaluate(custom.lisp)`, 5514 `evaluate(init.lisp)` | **Spine loads config** (B0). custom.lisp already loads server-side (B1.4). | `init.lisp` on the spine is the biggest *semantic* change — it may call renderer-only primitives; audit + provide spine equivalents/no-ops. |
 | L4 | ~~Element-view registry + dispatch~~ **✅ DONE + MERGED** (`78ae8631`, tag `pre-l4-element-views`) | was registry read + `run-command` + override pin | **Plain JS** — shipped | Registry is `ELEMENT_VIEW_SPECS` in `element-spec.js`; `runClientCommand` calls `serverViewClient.openElementView(elementViewOpenPayload(…))` directly. Incl. the bib-search 403 fix (`vouchHostFileUrl` allowlists the bib path). Live-verified. The `element-view-*.lisp` + `open-element-view!` stay until B7. |
-| L5 | **REPL** (interactive renderer eval) | 5443 `evaluate(source)` | Spine round-trip (like `NOTEBOOK_EVAL`) **or drop** if redundant with the notebook/inline-eval server eval. | The single interactive entry into the renderer interpreter. |
+| L5 | **REPL** (interactive renderer eval) | 5448 `evaluate(source)` | **Spine round-trip** (like `NOTEBOOK_EVAL`) — *Jason's call 2026-06-29: keep it, don't drop.* | Rewire so typed Lisp evals in the real spine world + results come back. The REPL *pane* stays as the output/error log; only the interactive eval is rehomed. |
 | L6 | **`config-apply` directive handler** | 6919 `custom-apply!` | Plain JS — apply the pushed value directly instead of evaluating Lisp. | Currently the *handler* itself re-enters the renderer interpreter; must not after B7. |
 
 > **Pivot finding:** L1 (faces/themes) looked like the big remaining cluster (10 live
@@ -226,13 +226,12 @@ Each step its own tested commit + **live-verify**; recovery tag before the B7 de
 
 ## 8. Open questions for the architect
 
-1. **Faces boot ordering (L1):** acceptable to gate first editor paint on the first
-   `faces-apply`, or do you want a cached CSS snapshot seeded into the HTML to avoid any
-   boot flash? (Determines step 1's shape.)
-2. **REPL (L5):** keep an interactive renderer-eval as a spine round-trip, or retire it
-   (inline-eval + notebook already cover server-side eval)?
-3. **`init.lisp` on the spine (B0):** any of your personal `init.lisp` that calls
-   renderer-only primitives? That's the one real behaviour change to design around.
+1. ~~Faces boot ordering (L1)~~ — **RESOLVED**: L1 is pure deletion, the renderer already
+   paints no faces at boot (since B1), so there's no flash to mitigate.
+2. ~~REPL (L5)~~ — **ANSWERED (2026-06-29): keep it, as a spine round-trip.**
+3. **`init.lisp` on the spine (B0/L3):** **ANSWERED** — Jason's `init.lisp` is empty, so the
+   spine-load is low-risk for him (the general feature still needs spine equivalents for any
+   renderer-only primitive a future init.lisp might call).
 4. **Workspace/session manager** (distinct from the now-confirmed-ported *project* feature):
    does a server-side workspace-restore exist on `main`, or is "Remember this workspace?" /
    the launch chooser still renderer-side (and thus in B7's path)? Its own small audit when
