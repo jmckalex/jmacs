@@ -3072,14 +3072,12 @@ async function displayDocPanel({ id, title, icon, heading, body, empty }) {
 function activateFromPanel(name) {
   const full = completionsDirectory + name;
   if (name.endsWith('/')) {
-    let next = full;
-    try {
-      const result = interpreter.call('minibuffer-tab-complete', full);
-      if (typeof result === 'string') next = result;
-    } catch (error) {
-      repl.appendError(`tab-complete: ${error.lispMessage ?? error.message}`);
-    }
-    minibuffer.setValue(next);
+    // A directory: descend — fill the input and ask the SERVER to complete it
+    // (the reply refreshes the panel via showCompletions), mirroring the
+    // minibuffer TAB path. (Was a renderer `minibuffer-tab-complete` against the
+    // idle interpreter — broken in server mode; this is the rehome.)
+    minibuffer.setValue(full);
+    if (serverViewClient) serverViewClient.requestMinibufferComplete(full);
   } else {
     minibuffer.submit(full);
   }
