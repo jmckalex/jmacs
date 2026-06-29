@@ -3121,3 +3121,62 @@ tag `pre-model-b-default` @ `b2d4f03` (main's tip). NOT merged (Jason's call).
   thing to make the rest of the epic safe.
 
 ---
+
+## [2026-06-29 cont.] B4 ports started (folding + view/misc) + a B2 REGRESSION found
+
+Jason asked to "fix all of these" (the broken-under-Model-B commands). Ported two
+clean batches, then hit a regression + per-feature complications worth his call.
+
+**Landed (green 3197, harness-verified server-side):**
+- `63c4332` **folding** — fold-all/unfold-all/toggle-fold-at-point → spine commands
+  emitting fold-* directives → renderer editorView fold methods. Clean (the B3
+  pattern). NEEDS LIVE-VERIFY (folds toggle).
+- `267bac2` **view/misc** — next-view/previous-view (cycle the active window's
+  open-set, pure server-side), scratch-buffer (mint a seeded scratch buffer, pure
+  server-side), toggle-repl (directive → utilityDock). next/previous-view +
+  scratch are FULLY verified (the harness switches the actual buffer); only
+  toggle-repl's dock toggle needs live-verify. Defined in the embedded block (NOT
+  by loading views.lisp/system.lisp — those would shadow working server commands
+  kill-view/quit).
+
+**⚠️ B2 REGRESSION (from MY work this session): renderer-only-file defcustoms
+dropped out of the customize UI.** B2.3 moved the customize MODEL computation to the
+spine (computed from the spine's `*custom-registry*`). Defcustoms declared in files
+NOT in SPINE_STDLIB are absent from that registry, so they no longer appear in
+`M-x customize`. Confirmed missing (11): `*markdown-interpreter*` (sticky-notes),
+`*pdf-restore-default*` (views), `*autosave-recovery*` + `*autosave-recovery-interval*`
+(system), `*jukebox-track-format*` (jukebox), `*latex-command*`/`*latex-bibtex-command*`/
+`*latex-view*`/`*latex-pdf-restore*`/`*latex-clean*` (latex-compile),
+`*directory-tree-open-target*` (directory-tree). Existing SAVED values still apply at
+boot (the renderer's loadUserConfig still evals custom.lisp); the user just can't
+see/change them in customize anymore. Also: post-B2.3b, even if shown, a live edit to
+a RENDERER-CONSUMED defcustom wouldn't take effect (the renderer interpreter no longer
+gets customize edits) until restart — this is the deferred **B0 config-snapshot push**.
+**Proper fix needs a design call** (register these defcustoms server-side AND push the
+renderer-consumed values — B0). I did NOT hack a partial fix.
+
+**Why I paused the remaining ports (sticky-notes/inline-eval/notebook/project/
+face-info/latex-compile):** each has a Model-B complication that wants your input or
+is unverifiable here:
+- **sticky-notes**: `(note-edit! (note-create!))` chains a renderer-returned note id;
+  next/prev move the SERVER-owned cursor. So it's NOT a simple directive port — needs
+  command-level directives (renderer does the whole op) + a move-point intent. Also
+  owns `*markdown-interpreter*` (the regression).
+- **inline-eval**: eval must run in the SPINE session (the renderer interpreter is
+  going away); the result pill is a render overlay → eval server-side + push overlay.
+- **face-info** (C-h F): needs render-side tree-sitter captures → a request/response
+  round-trip (renderer computes captures → spine formats → directive back).
+- **project**: minibuffer completion + project-open (`-open-project-deliver`).
+- **latex-compile**: a subprocess (main process) + an output pane; owns 5 defcustoms.
+- **notebook**: a complex reactive view; `notebook` opens it, next/prev switch.
+
+**Recommendation**: (1) decide the defcustom/B0 approach — it's a real regression and
+blocks doing sticky-notes/latex-compile settings cleanly; (2) then I can do the
+command ports, but several need live-verify (I can't launch Electron). Suggest the
+order: project → notebook → inline-eval → sticky-notes → face-info, with the B0
+config push first (it unblocks the defcustoms AND is needed before B7 anyway).
+
+State: clean + green on `model-b-default`. 4 commits this round beyond B2/B3
+(folding, view/misc + the two doc commits). NOT merged.
+
+---
