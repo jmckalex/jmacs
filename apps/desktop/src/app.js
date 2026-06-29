@@ -6143,34 +6143,13 @@ if (window.host && window.host.serverMode) {
           && !procViewKind && !customizeKind && !browserKind && !docKind) {
         loadServerMediaSrc(v, w.filePath);
       }
-      // B4: fill a doc view's HTML. A manifest page reads its built HTML via the
-      // host; a live docstring renders its Markdown. Refine the tab name + push
-      // the nav manifest from docNavTree. Async — set view.html then re-mount so
-      // the (now-loaded) doc-view repaints. Once per creation (html persists on
-      // the reused view).
+      // B4: the <doc-view> self-fetches its content from docName / docSource (see
+      // configureDocView's readPage / renderMarkdown), so the reconcile only
+      // refines the tab name from the nav tree — no host-side fill, no element
+      // lookup (which differs by mount path).
       if (docKind) {
-        const fill = (html) => {
-          v.html = html;
-          const el = docElementByView.get(v);
-          if (el && typeof el.setBuffer === 'function') {
-            try { el.setBuffer(v); } catch { /* not mounted yet — mount reads v.html */ }
-          }
-        };
         const node = docNavTree && docNavTree.nodes ? docNavTree.nodes[v.docName] : null;
         if (node && typeof node.title === 'string') v.name = node.title;
-        if (typeof v.docSource === 'string' && v.docSource !== '') {
-          renderMarkdownHtml(v.docSource)
-            .then((body) => fill(
-              `<article class="doc-page docstring-page" data-node-id="${escapeHtml(v.docName)}">` +
-              `<h3 class="doc-name"><code>${escapeHtml(v.docName)}</code></h3>\n` +
-              `<div class="doc-docstring">${body}</div></article>`
-            ))
-            .catch((error) => repl.appendError(`doc render: ${error.message}`));
-        } else {
-          window.host.readDocPage(v.docName)
-            .then((page) => { if (page) fill(page.html); })
-            .catch((error) => repl.appendError(`doc: ${error.message}`));
-        }
       }
     }
     // The bookmark outline is a MUTABLE data-source: refresh the (possibly
@@ -8118,28 +8097,15 @@ function configureDocView() {
         repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
       }
     },
-    openDoc: (name) => {
-      // In-view navigation — a clicked cross-link, menu item, breadcrumb, or nav
-      // button. The target is a built page (a nav node id or a documented function
-      // name; readDocPage resolves either). B4: refill the ACTIVE doc-view IN PLACE
-      // — read the page render-side + setBuffer on the same <doc-view>. The old
-      // path (openDocInPane → showDocInPane) used the renderer `views` array, which
-      // under Model B doesn't hold the server doc leaf, so it spawned a new,
-      // un-switchable tab instead of navigating.
-      window.host
-        .readDocPage(name)
-        .then((page) => {
-          if (!page) { repl.appendError(`no doc page for ${name}`); return; }
-          const view = session.currentView;
-          const el = view && view.kind === 'doc' ? docElementByView.get(view) : null;
-          if (el && typeof el.setBuffer === 'function') {
-            view.html = page.html;   // persist on the view so a reuse-mount repaints
-            view.docName = name;
-            el.setBuffer(view);
-          }
-        })
-        .catch((error) => repl.appendError(`doc: ${error.message}`));
-    },
+    // B4: the doc-view OWNS its content + navigation via these — it fetches a
+    // built page (readPage) or renders a live docstring (renderMarkdown) and
+    // setBuffers itself, regardless of how it was mounted (leaf vs tabline child).
+    // So a TOC click / Next-Prev navigates in place, and the initial page fills
+    // itself. `openDoc` stays only as a no-readPage fallback.
+    readPage: (name) =>
+      window.host.readDocPage(name).then((page) => (page ? page.html : null)),
+    renderMarkdown: (src) => renderMarkdownHtml(src),
+    openDoc: (name) => openDocInPane(name),
     highlightCode: highlightCodeForDocView,
     manifest: docNavTree,
   };
