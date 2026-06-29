@@ -3180,3 +3180,39 @@ State: clean + green on `model-b-default`. 4 commits this round beyond B2/B3
 (folding, view/misc + the two doc commits). NOT merged.
 
 ---
+
+## [2026-06-29 cont.2] B4: inline-eval + sticky-notes ported (feature-tier); the overlay-wiring lesson
+
+Continued B4 (Jason live-verifying each). Beyond folding/view-misc/docs:
+- **inline-eval** (`c089200`): eval-expression-at-point/-before-point evaluate IN THE
+  SPINE SESSION (form bounds via the pure brackets.js helpers over (buffer-text)/(point);
+  result pushed as `inline-eval-result` directive → the renderer pill). The renderer's
+  old eval-region! ran on the INERT renderer interpreter — that was the bug. `d140386`
+  positions the pill via the mirror; `d1403869` +6pt pad.
+- **sticky-notes FULL** (`a461e5e` commands → `edc64b1` display → `c8d9b51` persist).
+  The manager (apps/desktop/src/sticky-notes.js) was reusable as-is — it reads
+  buffer.metadata.notes + edit-tracks via buffer.onChange, both present on the CLIENT
+  MIRROR. Display: spine seeds notes onto spine.buffer.metadata (seedMetadata, legacy
+  .jmacs-metadata fallback included) → SNAPSHOT carries `notes` → client sets
+  mirror.metadata.notes + onServerBuffer points the manager at the mirror. Persist:
+  manager.onChange → `serverViewClient.notesChanged` → NOTES_CHANGED intent →
+  `spine.setBufferNotes` → persistMetadata (bookmarks in the same sidecar preserved).
+
+**THE LESSON (will recur):** under Model B, `mountKindView` EARLY-RETURNS for
+server-backed editor views, so the editor's overlay layer was never wired to the
+overlay managers (stickyNotes / inlineEval) — pills + notes couldn't render at all.
+Fixed `b6fa739` + the new `chrome.onServerBuffer(mirror, view)` hook
+(server-view-client fires it in onSnapshot after mounting). app.js's onServerBuffer
+sets `currentTextBuffer = mirror` (bare — server owns dirty/autosave) so inline-eval's
+getBuffer→positionAt + sticky-notes anchoring use the RIGHT buffer. Any future
+overlay/anchor feature wires through the mirror, not a local renderer buffer.
+
+**REMAINING B4 (all LARGE):** latex-compile (run-process! subprocess + async onExit +
+TeX views + PDF + errors + 5 defcustoms; the spine CAN spawn — it's a Node
+utilityProcess — + hold/apply the onExit closure async), project (open-project-at!
+workspace rebuild), notebook (reactive engine), face-info (needs a spine→renderer→reply
+round-trip for tree-sitter captures — the reverse of NOTEBOOK_EVAL). + the B2 defcustom
+regression (register the 11 server-side + the B0 config-push). Left Jason on the fork:
+**checkpoint/merge the milestone, or push into latex-compile.** ~24 commits, green 3197.
+
+---
