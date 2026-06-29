@@ -78,6 +78,9 @@ import {
 // Pure CSS generator (no DOM) — the spine builds the face-overrides CSS the
 // renderer injects, so chrome is server-authoritative (B1.3).
 import { faceStylesCss, BASE_FACE_NAME } from '../src/face-styles.js';
+// Pure Lisp form-bounds (no DOM) — inline-eval computes the form at/before point
+// server-side (B4), then evals it in the spine session.
+import { formBoundsAtPoint, formBoundsBeforePoint } from '../../../packages/renderer/src/brackets.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
@@ -1687,6 +1690,12 @@ export function createSpine(options, effects = {}) {
         openDocSource({ docName: String(args[0] ?? ''), source: String(args[1] ?? '') });
         return NIL;
       },
+      // B4 (inline-eval): evaluate the Lisp form at / before point IN THE SPINE
+      // SESSION (Model B's one Lisp world — the renderer interpreter it used was
+      // inert) and push the result to THIS window as a pill overlay. Form bounds
+      // come from the pure brackets.js helpers over (buffer-text)/(point).
+      'eval-form-at-point!': () => { inlineEvalForm('at'); return NIL; },
+      'eval-form-before-point!': () => { inlineEvalForm('before'); return NIL; },
 
       // --- search (search.lisp) ----------------------------------------
       // Plain isearch (C-s / C-r) is now a real server-side loop in
@@ -2815,6 +2824,19 @@ export function createSpine(options, effects = {}) {
     (defcommand toggle-sticky-notes ()
       "Show or hide every sticky note in the buffer."
       (emit-client-directive! (list (this-window-id)) 'sticky-toggle))
+
+    ;; --- inline eval (B4; inline-eval.lisp) -------------------------------
+    ;; Evaluate a Lisp form in the SPINE session (Model B's one Lisp world) and
+    ;; show the result as a pill beside it. eval-form-*! computes the bounds +
+    ;; evals + pushes the inline-eval-result directive.
+    (defcommand eval-expression-at-point ()
+      "Evaluate the Lisp form enclosing point; show the result beside its close
+       bracket (green value / red error). Bound to C-RET."
+      (eval-form-at-point!))
+    (defcommand eval-expression-before-point ()
+      "Evaluate the Lisp form immediately before point and show the result.
+       Bound to C-x C-e."
+      (eval-form-before-point!))
   `);
 
   // Now that the stdlib + the mode machinery are loaded, choose the major
@@ -3166,6 +3188,39 @@ export function createSpine(options, effects = {}) {
     statusText = '';
     onStatus('');
     return src.id;
+  }
+
+  /** B4 inline-eval: evaluate the Lisp form at/before point in the SPINE session
+   *  and push the result to the active window as a pill overlay. WHICH is 'at'
+   *  (enclosing form) or 'before' (form whose close-bracket is just before point).
+   *  Bounds come from the pure brackets.js helpers over (buffer-text)/(point). */
+  function inlineEvalForm(which) {
+    let text;
+    let point;
+    try {
+      text = String(interpreter.evaluate('(buffer-text)'));
+      point = Number(interpreter.evaluate('(point)'));
+    } catch {
+      return;
+    }
+    const bounds = which === 'before'
+      ? formBoundsBeforePoint(text, point, 'lisp')
+      : formBoundsAtPoint(text, point, 'lisp');
+    if (!bounds) {
+      onStatus(`eval: no form ${which === 'before' ? 'before' : 'at'} point`);
+      return;
+    }
+    const source = text.slice(bounds.start, bounds.end);
+    const ids = [activeClientIndex];
+    try {
+      const result = interpreter.evaluate(source);
+      let label = writeString(result);
+      if (label.length > 200) label = `${label.slice(0, 197)}…`;
+      onClientDirective(ids, 'inline-eval-result', [bounds.end, label, true]);
+    } catch (error) {
+      onClientDirective(ids, 'inline-eval-result',
+        [bounds.end, error.lispMessage ?? error.message ?? String(error), false]);
+    }
   }
 
   // Monotonic per-kind counters for LIVE-PROCESS view names (*shell*, *shell*<2>,

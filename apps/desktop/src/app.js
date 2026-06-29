@@ -7050,6 +7050,16 @@ if (window.host && window.host.serverMode) {
         stickyNotes.gotoPrevious();
       } else if (name === 'sticky-toggle') {
         stickyNotes.toggle();
+      } else if (name === 'inline-eval-result') {
+        // B4 (inline-eval): the spine evaluated a form in its session and pushed
+        // the result (end offset, label, ok). Show the pill beside the form.
+        const end = Number(args?.[0]);
+        const label = String(args?.[1] ?? '');
+        const ok = args?.[2] === true;
+        if (Number.isInteger(end)) {
+          if (ok) inlineEval.showResult(end, label);
+          else inlineEval.showError(end, `! ${label}`);
+        }
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
