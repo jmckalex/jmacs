@@ -90,7 +90,6 @@ import {
   highlightLine,
   isAudioFile,
   keyEventToString,
-  altComposedInsert,
   languageForFilename,
   loadLanguageHighlighters,
   createHighlightOverrideStore,
@@ -165,7 +164,7 @@ import { MSG } from '../mwb/protocol.js';
 // down (defers to the server) in server-mode once the server view is mounted —
 // focus-independent, so the dual-dispatch undo bell can't ring. No-op flag-off
 // (serverMode false → always returns false → the router runs as today).
-import { shouldGlobalRouterDefer } from './server-router-gate.js';
+import { shouldGlobalRouterDefer, shouldSwallowPreMount } from './server-router-gate.js';
 // (The leaf-flip retired the G2 overlay container, so the stale-<text-view>
 // sweep `clearStaleServerViews` is no longer imported — the bound leaf reuses
 // one instance across buffer switches; nothing accumulates. The module +
@@ -7319,6 +7318,8 @@ function targetOwnsKeys(el) {
 // <webview> delivers keydown to the guest page, which never reaches us.
 window.addEventListener('keydown', (event) => {
   if (!keymapReady) return;
+  const serverMode = !!(window.host && window.host.serverMode);
+  const mounted = !!(serverViewClient && serverViewClient.getView());
   // Server-mode (Model B): once the server view is mounted it is the sole
   // dispatcher. A focused TEXT view routes its own keys (its onKey →
   // serverViewClient.dispatchKey), so the global router stands down for it — else
@@ -7326,9 +7327,8 @@ window.addEventListener('keydown', (event) => {
   // NON-TEXT view (a media / element data-source view) has no such onKey, so a
   // command CHORD would be lost and could trap the user on, e.g., a video. Route
   // just those held-modifier chords up to the server here; bare keys
-  // (space=play/pause, arrows=seek) stay with the element. Flag-off
-  // serverViewClient is null, so this whole branch is skipped.
-  if (window.host && window.host.serverMode && serverViewClient && serverViewClient.getView()) {
+  // (space=play/pause, arrows=seek) stay with the element.
+  if (shouldGlobalRouterDefer(serverMode, mounted)) {
     if (event.defaultPrevented) return;            // a deeper listener claimed it
     if (BARE_MODIFIER_KEYS.has(event.key)) return; // a bare modifier press
     if (targetOwnsKeys(event.target)) return;      // minibuffer / native input
@@ -7342,74 +7342,35 @@ window.addEventListener('keydown', (event) => {
     if (serverViewClient.dispatchKey(chord)) event.preventDefault();
     return;
   }
-  // Flag-off (and the pre-mount window): the router runs exactly as today.
-  if (shouldGlobalRouterDefer(
-    !!(window.host && window.host.serverMode),
-    !!(serverViewClient && serverViewClient.getView())
-  )) {
-    return;
+  // Pre-mount (Model B boot window): server-mode is on but the view has not
+  // mounted yet (the SNAPSHOT/mount round-trip is still in flight). There is no
+  // server dispatcher to route to, and the in-renderer interpreter is the idle
+  // mirror the server supersedes (and which B7 deletes) — so SWALLOW command
+  // chords here. Otherwise an early Cmd/Ctrl/Alt chord that reached <body> would
+  // fall through to a native menu accelerator (Close/Open/…) during boot. Bare
+  // keys are harmless — no view to receive them yet. Guards mirror the mounted
+  // arm. (serverMode is permanently true in Model B, so the old flag-off
+  // local-dispatch path that ran here is dead and has been removed.)
+  if (shouldSwallowPreMount(serverMode, mounted)) {
+    if (event.defaultPrevented) return;            // a deeper listener claimed it
+    if (BARE_MODIFIER_KEYS.has(event.key)) return; // a bare modifier press
+    if (targetOwnsKeys(event.target)) return;      // minibuffer / native input
+    if (event.metaKey || event.ctrlKey || event.altKey) event.preventDefault();
   }
-  // A deeper listener already claimed it (focused view, modal, input).
-  if (event.defaultPrevented) return;
-  // A bare modifier press is not a keystroke in its own right.
-  if (BARE_MODIFIER_KEYS.has(event.key)) return;
-  // Native inputs keep every key — including editor chords — so a user
-  // typing in the minibuffer/REPL/url-bar is never interrupted.
-  if (targetOwnsKeys(event.target)) return;
-  // Add-pane mode runs its own transient key handling over the host.
-  if (editorHostEl.dataset.addPane) return;
-
-  // (The pre-Meta Cmd+V/C/X clipboard chords and the capture-phase
-  // Cmd+W close-tab handler used to live here. With Command as Meta,
-  // those chords ARE Emacs bindings — Cmd+W is M-w copy-region, Cmd+X
-  // is M-x, Cmd+V is M-v — and the kill ring already syncs with the
-  // system clipboard. Native inputs returned above keep their own
-  // chords, and an unclaimed Cmd chord falls through to its menu role
-  // (Cmd+C copy, Cmd+Z undo, Cmd+O open…), since menu accelerators
-  // only fire for keydowns the renderer leaves unhandled.)
-
-  const key = keyEventToString(event);
-  // A bare printable character self-inserts; only route that to a text
-  // view. Command keys and chords route regardless of the view kind, so
-  // C-x C-f (etc.) work from an image, pdf or audio view too.
-  if (key.length === 1) {
-    const current = views[currentViewIndex];
-    if (!current || current.kind !== 'text') return;
-  }
-  let handled = dispatchKey(key);
-  // An unbound Option chord that composed a printable character (curly
-  // quotes, accents) self-inserts the composed character into a text
-  // view — a bound `A-…` chord above wins, so Option stays bindable.
-  if (!handled && altComposedInsert(event)) {
-    const current = views[currentViewIndex];
-    if (current && current.kind === 'text') handled = dispatchKey(event.key);
-  }
-  if (handled) event.preventDefault();
 });
 
-// Right-click → Paste (and any other native paste action — the Edit
-// menu's Paste item included). The custom renderer isn't
-// contenteditable, so a paste event would otherwise do nothing. Route it
-// through the clipboard-aware `yank`. Native inputs keep their own paste.
-window.addEventListener('paste', (event) => {
+// Native paste action (right-click Paste, the Edit menu's Paste). In Model B
+// this is a server-owned concern, so the global handler stands down — see below.
+window.addEventListener('paste', () => {
   if (!keymapReady) return;
-  // Same server-mode stand-down as the key router: the in-renderer `yank`
-  // would mutate the idle editor, not the server's buffer. (Flag-off: false.)
-  if (shouldGlobalRouterDefer(
-    !!(window.host && window.host.serverMode),
-    !!(serverViewClient && serverViewClient.getView())
-  )) {
-    return;
-  }
-  if (targetOwnsKeys(event.target)) return;
-  const current = views[currentViewIndex];
-  if (!current || current.kind !== 'text') return;
-  event.preventDefault();
-  try {
-    interpreter.call('yank');
-  } catch (error) {
-    repl.appendError(`paste: ${error.message}`);
-  }
+  // Model B: paste is server-owned. Keyboard paste is the M-v binding (Cmd-V =
+  // M-v → yank server-side). For a native `paste` event (right-click / Edit
+  // menu) the in-renderer `yank` would mutate the idle mirror, not the server's
+  // buffer, so the global handler stands down — mounted, the focused element /
+  // server owns it; pre-mount there is nothing to paste into yet. (serverMode is
+  // permanently true, so the old flag-off yank path is dead and has been removed;
+  // routing a native paste event to the server is a possible follow-on.)
+  if (window.host && window.host.serverMode) return;
 });
 
 // --- mode menu ----------------------------------------------------------
