@@ -287,7 +287,7 @@ export function rewriteTopLevelDeclsToScope(source, scopeVar) {
  * object and the body runs inside `with (scope) { … }`, so a prior cell's
  * `const xs = …` resolves as a bare `xs` here. `with` is illegal under
  * `"use strict"`, so shared cells omit the strict pragma; isolated cells
- * (the default — every `notebook-js` cell) keep strict mode, unchanged.
+ * (the default) keep strict mode, unchanged.
  *
  * @param {string} source
  * @param {{shared?: boolean}} [opts]

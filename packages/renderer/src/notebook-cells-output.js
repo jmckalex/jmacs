@@ -1,5 +1,5 @@
 /**
- * @file Renderable-output descriptors for the JS notebook.
+ * @file Renderable-output descriptors for the cell notebook.
  *
  * Cells execute where there is no DOM (the renderer's interpreter
  * context in the flag-off MVP, the server's Node session in the Model-B
@@ -20,7 +20,7 @@
  *   - `empty`   — the cell produced no value (`undefined`).
  *
  * This module is pure: it builds and bounds descriptors but never
- * touches the DOM. The client (`notebook-js-view.js`) owns rendering.
+ * touches the DOM. The client (`notebook-cells-view.js`) owns rendering.
  */
 
 /**

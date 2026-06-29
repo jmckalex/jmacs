@@ -7109,9 +7109,9 @@ if (window.host && window.host.serverMode) {
 
   bootServerViewClient = () => {
     if (serverViewClient || !godotServerPort) return;
-    // The JS notebook view (an element-view) evaluates its cells in the spine's
+    // The cell notebook (M-x notebook-cells) evaluates its cells in the spine's
     // Node context — the renderer can't (CSP forbids unsafe-eval). Expose the
-    // round-trip as a renderer global the bundled <notebook-js-view> reads;
+    // round-trip as a renderer global the bundled <notebook-cells-view> reads;
     // lazy so it works regardless of when serverViewClient finishes connecting.
     // Flag-off this is never set, so the notebook view falls back to local eval
     // (which the CSP blocks — the notebook is a GODOT_SERVER=1 feature).

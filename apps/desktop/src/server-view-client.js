@@ -816,7 +816,7 @@ export function createServerViewClient({
           reqId,
           source: String(source ?? ''),
           // Selects the notebook's persistent shared scope on the server
-          // (cross-cell state). Absent for the flat notebook-js (isolated).
+          // (cross-cell state). Absent for an isolated (non-shared) cell.
           sessionId: sessionId || null,
         },
       });

@@ -1,8 +1,8 @@
 /**
- * @file The JavaScript-notebook cell execution engine.
+ * @file The cell-notebook execution engine.
  *
- * This is the heart of the JS-in-server notebook (design contract:
- * `plans/NOTEBOOK-JS.md`). It is a **pure, host-agnostic** module: given
+ * This is the heart of the cell notebook (`M-x notebook-cells`; design
+ * contract: `plans/NOTEBOOK-JS.md`). It is a **pure, host-agnostic** module: given
  * a cell's source string and a facade of injected bindings, it compiles
  * the source to an `AsyncFunction` and runs it, capturing the return
  * value, any `console.*` output, and any thrown error into a single
@@ -287,7 +287,7 @@ export function rewriteTopLevelDeclsToScope(source, scopeVar) {
  * object and the body runs inside `with (scope) { … }`, so a prior cell's
  * `const xs = …` resolves as a bare `xs` here. `with` is illegal under
  * `"use strict"`, so shared cells omit the strict pragma; isolated cells
- * (the default — every `notebook-js` cell) keep strict mode, unchanged.
+ * (the default) keep strict mode, unchanged.
  *
  * @param {string} source
  * @param {{shared?: boolean}} [opts]
