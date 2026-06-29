@@ -3386,6 +3386,20 @@ export function createSpine(options, effects = {}) {
     writeMetadata(entry.filePath, entry.buffer.metadata ?? {});
   }
 
+  /** B4: a window edited buffer ID's sticky notes (create/move/resize/…). Update
+   *  the buffer's metadata + persist the sidecar (server-owned under Model B). The
+   *  notes array is the client's full set; bookmarks in the same metadata are
+   *  preserved. NOTES are clone-safe records straight off the wire. */
+  function setBufferNotes(id, notes) {
+    const entry = registry.get(String(id ?? ''));
+    if (!entry) return;
+    if (!entry.buffer.metadata || typeof entry.buffer.metadata !== 'object') {
+      entry.buffer.metadata = {};
+    }
+    entry.buffer.metadata.notes = Array.isArray(notes) ? notes : [];
+    persistMetadata(entry);
+  }
+
   /** The wire snapshot of ENTRY's bookmarks for the outline view: each record at
    *  its CURRENT (edit-tracked) offset, plus the line/column the client renders
    *  (it has no buffer to compute them) and the outline depth/collapsed flag.
@@ -4770,6 +4784,9 @@ export function createSpine(options, effects = {}) {
      *  / outdent / toggle) to its source buffer's records. Returns true when the
      *  op moved the document's point (jump) so the server re-syncs the client. */
     applyBookmarkOp,
+    // B4: persist a buffer's sticky notes (edited render-side, shipped up via
+    // NOTES_CHANGED). The server owns the sidecar under Model B.
+    setBufferNotes,
     recoverBuffer,
     // save (real disk write) — the server wires saveFile to atomicWrite.
     saveActiveBuffer,

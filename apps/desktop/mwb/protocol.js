@@ -245,6 +245,12 @@ export const INTENT = Object.freeze({
   // via CLIENT_DIRECTIVE (B2.2 — server-authoritative customize). Carries
   // `{ op, name?, valueSrc?, face?, attr? }`.
   CUSTOMIZE_CHANGED: 'customize-changed',
+  // A buffer's sticky notes changed in this window (create / edit / move / resize
+  // / delete / collapse). The server owns the file + its `.godot-metadata` sidecar
+  // under Model B, so the renderer ships the whole notes array up; the spine
+  // updates the buffer's metadata + persists. Carries `{ bufferId, notes }` (notes
+  // are clone-safe records: id/anchor/x/y/width/height/source/collapsed). B4.
+  NOTES_CHANGED: 'notes-changed',
   // A JS notebook cell wants to run. The renderer can't eval (CSP forbids
   // unsafe-eval), so the source is sent to the spine, which evaluates it in its
   // Node context and replies with MSG.NOTEBOOK_RESULT. Carries `{ reqId, source }`

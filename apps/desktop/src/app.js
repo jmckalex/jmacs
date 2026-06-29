@@ -11143,7 +11143,20 @@ const stickyNotes = createStickyNotes({
   overlayLayer: editorView.overlayLayer,
   getBuffer: () => currentTextBuffer,
   render: renderNoteHtml,
-  onChange: () => scheduleMetadataWrite(currentTextBuffer),
+  // B4: under Model B the server owns the file + its sidecar, so ship note changes
+  // up (NOTES_CHANGED → spine.setBufferNotes → persist) instead of writing
+  // render-side (the mirror has no filePath). Flag-off, the old renderer write.
+  onChange: () => {
+    if (serverViewClient && typeof serverViewClient.notesChanged === 'function') {
+      serverViewClient.notesChanged(
+        currentTextBuffer && currentTextBuffer.metadata
+          ? currentTextBuffer.metadata.notes
+          : []
+      );
+    } else {
+      scheduleMetadataWrite(currentTextBuffer);
+    }
+  },
 });
 stickyNotes.setBuffer(currentTextBuffer);
 

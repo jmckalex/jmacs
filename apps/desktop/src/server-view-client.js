@@ -785,6 +785,22 @@ export function createServerViewClient({
     });
   }
 
+  /** B4: ship the CURRENT buffer's sticky notes up so the server persists them to
+   *  the sidecar (it owns the file under Model B). Called by the sticky-notes
+   *  manager's onChange. A no-op without a current buffer. */
+  function notesChanged(notes) {
+    if (currentBufferId === null) return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: {
+        id: nextIntentId++,
+        kind: INTENT.NOTES_CHANGED,
+        bufferId: currentBufferId,
+        notes: Array.isArray(notes) ? notes : [],
+      },
+    });
+  }
+
   /** Evaluate a JS notebook cell in the spine (Node — the renderer can't eval
    *  under CSP). Returns a promise of the serializable result
    *  `{ state, descriptor, logs, error }` (resolved on MSG.NOTEBOOK_RESULT). */
@@ -842,6 +858,7 @@ export function createServerViewClient({
     customizeOp,
     // Propagate a customize setting change outward (server relays to windows).
     customizeChanged,
+    notesChanged,
     // Evaluate a JS notebook cell in the spine (Node, no CSP) → serializable result.
     notebookEval,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.

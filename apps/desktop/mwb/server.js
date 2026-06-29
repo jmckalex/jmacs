@@ -889,6 +889,18 @@ function applyIntent(client, intent) {
         activeClient = null;
         return;
       }
+      case INTENT.NOTES_CHANGED: {
+        // B4: a window edited a buffer's sticky notes. The server owns the file +
+        // sidecar, so persist the shipped-up notes to that buffer's metadata. No
+        // re-push: the originating window already shows them; other windows pick
+        // them up on their next snapshot of that buffer.
+        spine.setBufferNotes(
+          String(intent.bufferId ?? ''),
+          Array.isArray(intent.notes) ? intent.notes : [],
+        );
+        activeClient = null;
+        return;
+      }
       case INTENT.CUSTOMIZE_OP: {
         // Sub-navigation from a customize VIEW (openScope): find-or-create the
         // requested SCOPE's customize leaf and switch this client to it. The
