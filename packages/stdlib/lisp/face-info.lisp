@@ -81,11 +81,11 @@
     "**Text:**\n\n"
     "```\n" snippet "\n```\n\n"
     "### Change it live\n\n"
-    "- **Recolour this face:** `M-x customize-face` "
-    "(or `(set-face-attribute '" face " :foreground \"#…\")`); add "
+    "- **Recolour this face:** run `M-x customize-face`, or evaluate "
+    "`(set-face-attribute '" face " :foreground \"#…\")`. Add "
     "`:mode \"…\"` to recolour it in this major mode only.\n"
-    "- **Reassign this construct to a different face:** press "
-    "`C-h C-f` (`highlight-construct-at-point`) here.\n"))
+    "- **Reassign this construct to a different face:** press `C-h C-f` "
+    "here — that runs `highlight-construct-at-point`.\n"))
 
 (define (-face-info-render-ancestors ancestors)
   "Render ANCESTORS (immediate parent first) as a left-arrowed chain,
@@ -129,9 +129,9 @@
       "applies **immediately**; it is remembered across restarts. The "
       "rule layers on top of the built-in `" lang "` grammar query — it "
       "never edits the language's `.js` file.\n\n"
-      "(Power users: the equivalent Lisp is "
+      "Power users: the equivalent Lisp is "
       "`(add-highlight-rule! 'mode \"<Mode>\" \"" node-type
-      "\" '<face>)`; remove with `remove-highlight-rule!`.)\n")))
+      "\" '<face>)`; remove it with `remove-highlight-rule!`.\n")))
 
 ;; --- the command ------------------------------------------------------
 

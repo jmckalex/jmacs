@@ -1359,9 +1359,11 @@ function onClientMessage(client, event) {
       break;
     case MSG.TREE_SITTER_INFO:
       // B4 face-info: the renderer's reply to a tree-sitter-query directive.
-      // Resume the suspended C-h F / C-h C-f command with the captures + node.
+      // Resume the suspended C-h F / C-h C-f command with the captures + node +
+      // the renderer-resolved {face: colour} map (face-color-for reads it for the
+      // *Face at point* "Resolved colour").
       spine.setActiveClient(client.index);
-      spine.deliverTreeSitterInfo({ lang: msg.lang, captures: msg.captures, node: msg.node });
+      spine.deliverTreeSitterInfo({ lang: msg.lang, captures: msg.captures, node: msg.node, colors: msg.colors });
       break;
     case MSG.MINIBUFFER_COMPLETE: {
       // TAB in the minibuffer. Find-file gets CASE-INSENSITIVE path completion;
