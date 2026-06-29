@@ -9979,6 +9979,19 @@ function applyTextMountSideEffects(view, instance) {
     if (instance) {
       editorView = instance;
       instance.setView(view);
+      // B4: wire the overlay managers to THIS server-backed editor so inline-eval
+      // pills + sticky-note overlays render on it. The non-server branch below
+      // does this, but server-backed views early-return — so under Model B the
+      // overlays were never bound to any editor. Guarded: stickyNotes / inlineEval
+      // are module-level consts declared LATER, so a mount during the initial
+      // paint would hit their TDZ (the app.js init-TDZ trap); a later reconcile
+      // re-mount wires them once they exist.
+      if (instance.overlayLayer) {
+        try {
+          stickyNotes.setOverlayLayer(instance.overlayLayer);
+          inlineEval.setOverlayLayer(instance.overlayLayer);
+        } catch { /* declared later — a reconcile re-mount binds them */ }
+      }
       if (typeof instance.focus === 'function') instance.focus();
     }
     return;
