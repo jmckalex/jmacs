@@ -79,7 +79,9 @@ export function createInlineEval(options) {
     const { line, column } = buffer.positionAt(offset);
     if (pill === null) return;
     pill.style.top = `calc(${line} * 1lh)`;
-    pill.style.left = `calc(${column} * 1ch + 1em)`;
+    // 1em sits the pill just past the form; +6pt of breathing room so it doesn't
+    // crowd the close bracket / cursor.
+    pill.style.left = `calc(${column} * 1ch + 1em + 6pt)`;
   }
 
   function watchBufferForChange(buffer) {
