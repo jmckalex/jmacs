@@ -646,20 +646,6 @@ function watchCurrentBuffer() {
   });
 }
 
-/** Give the current text view's buffer a major mode if it has none
- *  yet. A no-op when the current view has no buffer (image, shell). */
-function ensureMajorMode() {
-  if (!keymapReady) return;
-  const view = session.currentView;
-  const buffer = view ? view.buffer : null;
-  if (!buffer || buffer.majorMode !== null) return;
-  try {
-    interpreter.call('choose-major-mode!');
-  } catch (error) {
-    repl.appendError(`mode selection failed: ${error.message}`);
-  }
-}
-
 // --- pane tree ----------------------------------------------------------
 //
 // Phase 2 of plans/PANES.md: the editor area is a JS-owned pane tree.
@@ -9932,7 +9918,6 @@ function applyTextMountSideEffects(view, instance) {
   // If the bookmark outline is open beside us, follow focus to this buffer.
   followBookmarkView(view.buffer);
   watchCurrentBuffer();
-  ensureMajorMode();
   if (editorView && typeof editorView.focus === 'function') editorView.focus();
   // The mode menu rides the server's VIEW push (applyServerModeMenu) on a buffer
   // switch — no local recompute.
@@ -11368,7 +11353,6 @@ function toggleMarkdownPreview(path) {
 }
 
 watchCurrentBuffer();
-ensureMajorMode();
 updateModeline();
 editorView.focus();
 
