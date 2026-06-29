@@ -86,7 +86,6 @@ import {
   findArt,
   formBoundsAtPoint,
   formBoundsBeforePoint,
-  fuzzyFilter,
   highlightLine,
   isAudioFile,
   keyEventToString,
@@ -2941,191 +2940,6 @@ function startRegexpSearch(initialDirection) {
   );
 }
 
-// --- command palette (M-x) ---------------------------------------------
-
-/** Run the apropos-doc fuzzy search in the minibuffer. */
-function startDocSearch() {
-  let names;
-  try {
-    names = listToArray(interpreter.call('doc-manifest')).map(String);
-  } catch (error) {
-    repl.appendError(
-      `apropos-doc: ${error.lispMessage ?? error.message}`
-    );
-    return;
-  }
-  if (names.length === 0) {
-    repl.appendOutput(
-      'apropos-doc: no docs are loaded — run `pnpm run docs` and reload.'
-    );
-    return;
-  }
-  minibuffer.prompt('Doc: ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        minibuffer.setStatus('no matching doc');
-        return;
-      }
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      try {
-        interpreter.evaluate(`(open-doc ${JSON.stringify(chosen)})`);
-      } catch (error) {
-        repl.appendError(
-          error.lispMessage ?? error.message ?? String(error)
-        );
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/** Run the command palette in the minibuffer. */
-function startCommandPalette() {
-  const names = [...new Set(listToArray(interpreter.call('command-names')))];
-
-  minibuffer.prompt('M-x ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        minibuffer.setStatus('no matching command');
-        return;
-      }
-      // The first match runs on Enter; show it bracketed.
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      try {
-        interpreter.evaluate(`(run-command (quote ${chosen}))`);
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/**
- * Switch to a buffer chosen by name, with completion, in the
- * minibuffer. A name that matches no open buffer creates a new one —
- * the minibuffer status shows when a submit would create rather than
- * switch.
- *
- * Phase 3b (Q4): the picker source is the global view list minus
- * (a) the current view (so the bracketed suggestion is always a
- * different view) and (b) any view currently *visible* in some other
- * pane — the user can't switch to a view that's already on screen in
- * another pane. The auto-duplicate path on `open-file-path!` covers
- * the "two views of the same file" workflow instead.
- */
-function startBufferSwitcher() {
-  const focused = currentPane();
-  const elsewhere = viewsVisibleInOtherPanes(focused);
-  const names = views
-    .filter((view, index) => index !== currentViewIndex && !elsewhere.has(view))
-    .map((v) => v.name);
-
-  minibuffer.prompt('Buffer: ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        const trimmed = query.trim();
-        minibuffer.setStatus(trimmed === '' ? '' : `[new view: ${trimmed}]`);
-        return;
-      }
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const trimmed = query.trim();
-      // An exact name switches; otherwise the best fuzzy match does.
-      // A blank Enter accepts whatever the bracketed suggestion is —
-      // the first fuzzy match against the empty query, i.e. the first
-      // candidate alphabetically.
-      const exact =
-        trimmed === ''
-          ? -1
-          : views.findIndex((v) => v.name === trimmed);
-      if (exact >= 0) {
-        switchToViewIndex(exact);
-        return;
-      }
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen !== undefined) {
-        switchToViewIndex(views.findIndex((v) => v.name === chosen));
-        return;
-      }
-      if (trimmed === '') return; // nothing to switch to, nothing to create.
-      // No open view matches the typed name — create a fresh text view.
-      views.push(createView({
-        kind: 'text',
-        buffer: createBuffer('', { name: trimmed }),
-      }));
-      switchToViewIndex(views.length - 1);
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/** Pick a command in the minibuffer and show its documentation. */
-function startDescribeCommand() {
-  const names = [...new Set(listToArray(interpreter.call('command-names')))];
-
-  minibuffer.prompt('Describe command: ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        minibuffer.setStatus('no matching command');
-        return;
-      }
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      try {
-        interpreter.call('describe-named-command', chosen);
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
 // --- Lisp interpreter and REPL -----------------------------------------
 
 // The utility dock — the tabbed chrome region at the bottom. The REPL is its
@@ -4682,13 +4496,6 @@ const interpreter = createInterpreter({
       });
       return NIL;
     },
-    // Documentation: open the fuzzy-search minibuffer with the
-    // manifest's names as candidates; submit opens the matching
-    // doc page.
-    'start-doc-search!': () => {
-      startDocSearch();
-      return NIL;
-    },
     // Inline eval: the bounds of the form enclosing point in the
     // current buffer, as a `(start . end)` pair, or nil.
     'form-bounds-at-point!': () => {
@@ -4953,18 +4760,6 @@ const interpreter = createInterpreter({
       buffer.moveTo(Math.min(start, end));
       buffer.deleteForward(Math.abs(end - start));
       buffer.insert(text);
-      return NIL;
-    },
-    'start-command-palette!': () => {
-      startCommandPalette();
-      return NIL;
-    },
-    'start-buffer-switcher!': () => {
-      startBufferSwitcher();
-      return NIL;
-    },
-    'start-describe-command!': () => {
-      startDescribeCommand();
       return NIL;
     },
     // Open a minibuffer prompt for the command argument gatherer; the
