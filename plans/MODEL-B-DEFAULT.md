@@ -44,14 +44,23 @@
 >   `spine.setBufferNotes` → sidecar). KEY LESSON: under Model B the editor's overlay
 >   layer wasn't wired for server-backed views (mountKindView early-returns) — that
 >   blocked BOTH inline-eval pills + sticky notes; `b6fa739` fixed it.
->   **REMAINING — each a LARGE multi-iteration port (NOT a directive):** **latex-compile**
->   (run-process! subprocess + async on-exit + *TeX output*/*TeX errors* views +
->   latex-view PDF split + error nav + 5 defcustoms), **project** (`find-project` —
->   open-project-at! rebuilds the 3-column workspace + restores `.godot/project.json`),
->   **notebook** (the reactive Lisp-notebook engine + view), **face-info** (C-h F —
->   logic interleaves Lisp rendering with render-side tree-sitter captures → needs a
->   spine→renderer→reply round-trip the codebase lacks). `view-list` (M-x, superseded
->   by C-x C-b buffer-list) + `reload-stdlib` (renderer-dev, moot post-B7) — leave.
+>   **latex-compile DONE** (`d9e81ae8`, suite green 3202; **needs Jason live-verify** —
+>   renderer half + async status). The spine (Node utilityProcess) now binds
+>   `run-process!` (spawns the build child directly + applies the on-exit Lisp proc
+>   async via `applyProcedure`, same `{:stdout :stderr :code}` contract as process.js,
+>   ENOENT→fallback), `utility-panel-open!/set!/append!/activate!` + `pdf-reload!`
+>   (directive emitters → applyDirective → utilityDock/pdfView), `open-file-in-split!`
+>   (server-side: mint pdf data-source + split focused pane + retarget new leaf), and
+>   `view-list` (was unbound; surfaces the active client's open set incl. data-sources,
+>   `view-file-path` reads a data-source wrapper). `latex-compile.lisp` added to
+>   SPINE_STDLIB after latex.lisp / before reftex; `utility-output-set` embedded; the 5
+>   `*latex-*` defcustoms now come from the file (dropped from the B2 block). 5 committed
+>   spine.test.js tests. **REMAINING — each a LARGE multi-iteration port:** **project**
+>   (`find-project` — open-project-at! rebuilds the 3-column workspace + restores
+>   `.godot/project.json`), **notebook** (the reactive Lisp-notebook engine + view),
+>   **face-info** (C-h F — logic interleaves Lisp rendering with render-side tree-sitter
+>   captures → needs a spine→renderer→reply round-trip the codebase lacks). `view-list`
+>   (M-x cmd, superseded by C-x C-b) + `reload-stdlib` (renderer-dev, moot post-B7) — leave.
 > - **✅ B2 REGRESSION FIXED** (`f00391b9`, suite green 3197; **needs Jason live-verify**):
 >   the 11 defcustoms that dropped out of `M-x customize` are re-registered server-side
 >   (embedded defcustom block + 5 new defgroups, loaded after the stdlib loop but before
