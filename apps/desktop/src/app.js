@@ -80,11 +80,9 @@ import {
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
-  findArt,
   formBoundsAtPoint,
   formBoundsBeforePoint,
   highlightLine,
-  isAudioFile,
   keyEventToString,
   languageForFilename,
   loadLanguageHighlighters,
@@ -2085,126 +2083,6 @@ function killViewAtIndex(target) {
   } else {
     notifyViewsChanged();
   }
-}
-
-/** Kill the (first) view with NAME, if any. */
-function killViewByName(name) {
-  killViewAtIndex(views.findIndex((v) => v.name === name));
-}
-
-/** Join DIR and NAME with a single slash. Tiny helper used to build
- *  the absolute path for each jukebox track. */
-function joinPath(dir, name) {
-  const trimmed = typeof dir === 'string' && dir.endsWith('/')
-    ? dir.slice(0, -1)
-    : String(dir ?? '');
-  return `${trimmed}/${name}`;
-}
-
-/** Ask Lisp to format the display label for PATH using the current
- *  `*jukebox-track-format*` template. A failure (interpreter not
- *  ready, format-track not yet defined, anything thrown from the
- *  template) falls back to the bare filename — one bad tag must not
- *  break the whole listing. */
-function formatTrackLabel(path) {
-  if (!keymapReady) return basenameOf(path);
-  try {
-    const result = interpreter.call('format-track', path);
-    if (typeof result === 'string' && result !== '') return result;
-  } catch {
-    /* fall through */
-  }
-  return basenameOf(path);
-}
-
-/** The bare filename component of PATH. */
-function basenameOf(path) {
-  const slash = String(path).lastIndexOf('/');
-  return slash >= 0 ? path.slice(slash + 1) : path;
-}
-
-/** Refresh the labels of every open jukebox view. Called by the
- *  `*jukebox-track-format*` :on-change hook so a user customising the
- *  format string sees the change apply to already-open jukeboxes. */
-function refreshAllJukeboxLabels() {
-  let touched = false;
-  for (const view of views) {
-    if (view.kind !== 'jukebox' || !Array.isArray(view.tracks)) continue;
-    view.labels = view.tracks.map((track) =>
-      formatTrackLabel(joinPath(view.dir, track))
-    );
-    touched = true;
-  }
-  // Re-mount the current view so the change is visible immediately
-  // (a view's labels are read in setBuffer). switchToViewIndex with
-  // currentViewIndex forces a re-mount; we only do it when the
-  // current view is a jukebox so other views aren't disturbed.
-  if (touched && currentViewIndex >= 0 &&
-      views[currentViewIndex].kind === 'jukebox') {
-    const i = currentViewIndex;
-    currentViewIndex = -1;
-    switchToViewIndex(i);
-  }
-}
-
-/** Build a fresh tracks/art listing for DIR and create-or-refresh the
- *  matching jukebox buffer. Reusing an existing buffer by name keeps
- *  the user's switch history sane — `(jukebox "/m")` twice does not
- *  pile up two entries.
- *
- *  The host owns the filesystem; the view never touches it. This
- *  function is the bridge.
- */
-function openJukeboxForDirectory(dir) {
-  let entries;
-  try {
-    entries = window.host.listDirectorySync(dir);
-  } catch (error) {
-    repl.appendError(`jukebox: ${error.message}`);
-    return;
-  }
-  if (entries === null) {
-    repl.appendError(`jukebox: cannot read directory ${dir}`);
-    return;
-  }
-  const tracks = entries.filter(isAudioFile);
-  const art = findArt(entries);
-  // Format the display label for each track via the Lisp helper.
-  // Doing this up front (rather than per-row) keeps the renderer free
-  // of IPC chatter when the buffer mounts. A formatting error per
-  // file degrades to the bare filename — one malformed tag must not
-  // break the whole listing.
-  const labels = tracks.map((track) =>
-    formatTrackLabel(joinPath(dir, track))
-  );
-  const name = `*Jukebox: ${dir}*`;
-  let index = views.findIndex(
-    (v) => v.kind === 'jukebox' && v.name === name
-  );
-  // The jukebox view carries two callbacks the renderer invokes: a
-  // refresh (re-read the dir and rebuild) and a quit (stop, kill the
-  // view, restore the previous one).
-  const extras = {
-    dir,
-    tracks,
-    labels,
-    art,
-    refresh: () => openJukeboxForDirectory(dir),
-    quit: () => {
-      audio.stop();
-      killViewByName(name);
-    },
-  };
-  if (index >= 0) {
-    // Reuse the slot — keep the View handle stable but refresh its
-    // kind-specific fields. The renderer's setBuffer rebuilds from
-    // the new fields.
-    Object.assign(views[index], extras);
-  } else {
-    views.push(createView({ kind: 'jukebox', name, extras }));
-    index = views.length - 1;
-  }
-  switchToViewIndex(index);
 }
 
 /** Find or create the customisation view named `name`, switch to it. */
@@ -4917,16 +4795,6 @@ const interpreter = createInterpreter({
       const entries = window.host.listDirectorySync(String(args[0]));
       return entries === null ? NIL : arrayToList(entries);
     },
-    // Open (or refresh) the jukebox buffer for DIR. The host reads
-    // the directory, filters to audio files, finds an art file, then
-    // creates a `jukebox`-kind buffer carrying the state the view
-    // needs — no Lisp panel rendering, no buffer text to maintain.
-    'open-jukebox-buffer!': (args) => {
-      const dir = expandTilde(String(args[0] ?? ''));
-      if (dir === '') return NIL;
-      openJukeboxForDirectory(dir);
-      return NIL;
-    },
     // Refresh the `labels` array on every open jukebox buffer. Called
     // by the `*jukebox-track-format*` :on-change hook so a user
     // customising the format string sees it take effect immediately.
@@ -5020,40 +4888,12 @@ const interpreter = createInterpreter({
       const p = audio.currentPath();
       return p === null ? NIL : p;
     },
-    // Show the directory picker; on confirm, dispatch the chosen path
-    // back into Lisp via the jukebox callback. Mirrors how `open-file!`
-    // returns immediately and the file is shown when the dialog resolves.
-    'prompt-directory!': () => {
-      window.host
-        .openDirectory()
-        .then((path) => {
-          if (path === null) return;
-          try {
-            interpreter.call('jukebox-on-directory-chosen', path);
-          } catch (error) {
-            repl.appendError(
-              error.lispMessage ?? error.message ?? String(error)
-            );
-          }
-        })
-        .catch((error) => {
-          repl.appendError(`directory open failed: ${error.message}`);
-        });
-      return NIL;
-    },
   },
 });
 
-// Auto-advance: the audio element fires `ended`, which the jukebox
-// translates into a "next track" command. Other contexts have no such
-// command, so the call silently no-ops.
-audio.onEnded(() => {
-  try {
-    interpreter.call('jukebox-track-ended');
-  } catch {
-    // No jukebox loaded — that is fine; the track has simply finished.
-  }
-});
+// (Jukebox auto-advance was a renderer audio.onEnded → jukebox-track-ended call
+// against the idle interpreter. The jukebox is a server data-source now; if
+// playback should auto-advance in server mode, the spine drives it. Filed.)
 
 /** Evaluate a line of REPL input and show the result. */
 /** Format a Lisp error for display: its message, plus the source location
