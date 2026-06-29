@@ -33,17 +33,25 @@
 >   `661bc7c` (the `<doc-view>` SELF-FETCHES its content via readPage/renderMarkdown +
 >   navigates in place — robust to leaf-vs-tabline-child mounting). C-h d / open-doc /
 >   describe-symbol-at-point work; the manual renders + the TOC/Next-Prev navigate.
-> - **Part B4** (rich views & file/project UI) IN PROGRESS. Done + verified:
->   **folding** (`63c4332`), **view/misc** (`267bac2`: next-view/previous-view/
->   scratch-buffer pure server-side + toggle-repl directive), **docs** (above).
->   REMAINING broken-under-Model-B commands (each needs render-side data/view-state/
->   overlay → per-batch LIVE-VERIFY, do NOT port blind): **sticky-notes** (chains a
->   renderer-returned note id + moves the server-owned cursor), **inline-eval**
->   (`eval-expression-at-point`/`-before-point` — eval in the spine session + overlay),
->   **face-info** (`describe-face-at-point`/`highlight-construct-at-point` — needs
->   render-side tree-sitter captures, a round-trip), **project** (`find-project` —
->   minibuffer), **latex-compile** (subprocess + output pane), **notebook**,
->   **view-list**. `reload-stdlib` is renderer-dev → leave (moot post-B7).
+> - **Part B4** (rich views & file/project UI) IN PROGRESS. **DONE + LIVE-VERIFIED:**
+>   **folding** (`63c4332`), **view/misc** (`267bac2`: next/previous-view +
+>   scratch-buffer pure server-side; toggle-repl directive), **docs** (above),
+>   **inline-eval** (`c089200` eval in the spine session + `b6fa739` overlay wiring
+>   for server-backed views + `d140386`/`d1403869` pill position + 6pt pad), and
+>   **sticky-notes FULL** (`a461e5e` commands; `b6fa739` overlay wiring; `edc64b1`
+>   display — server seeds notes onto buffer.metadata, SNAPSHOT carries them, client
+>   points the manager at the mirror; `c8d9b51` persistence — NOTES_CHANGED intent →
+>   `spine.setBufferNotes` → sidecar). KEY LESSON: under Model B the editor's overlay
+>   layer wasn't wired for server-backed views (mountKindView early-returns) — that
+>   blocked BOTH inline-eval pills + sticky notes; `b6fa739` fixed it.
+>   **REMAINING — each a LARGE multi-iteration port (NOT a directive):** **latex-compile**
+>   (run-process! subprocess + async on-exit + *TeX output*/*TeX errors* views +
+>   latex-view PDF split + error nav + 5 defcustoms), **project** (`find-project` —
+>   open-project-at! rebuilds the 3-column workspace + restores `.godot/project.json`),
+>   **notebook** (the reactive Lisp-notebook engine + view), **face-info** (C-h F —
+>   logic interleaves Lisp rendering with render-side tree-sitter captures → needs a
+>   spine→renderer→reply round-trip the codebase lacks). `view-list` (M-x, superseded
+>   by C-x C-b buffer-list) + `reload-stdlib` (renderer-dev, moot post-B7) — leave.
 > - **⚠️ OPEN B2 REGRESSION** (see `architect-notes.md` 2026-06-29): 11 defcustoms in
 >   renderer-only files (`*markdown-interpreter*`, `*pdf-restore-default*`,
 >   `*autosave-recovery*`(+interval), 5 `*latex-*`, `*jukebox-track-format*`,
