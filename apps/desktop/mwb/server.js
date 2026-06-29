@@ -386,7 +386,7 @@ const spine = createSpine(
     // ALL clients' view-state after each intent in applyIntent anyway; these
     // hooks cover the minibuffer/status/scroll specifics.
     onStatus: () => broadcastView(),
-    onMinibufferOpen: (prompt) => openMinibuffer(prompt),
+    onMinibufferOpen: (prompt, initial) => openMinibuffer(prompt, initial),
     onMinibufferClose: () => closeMinibuffer(),
     onScroll: (req) => sendScrollToActive(req),
     // Overlays are PER-BUFFER, SHARED state: a highlight added on one window
@@ -669,9 +669,11 @@ function sendPaneTreeToIndex(index) {
 
 /** Open the minibuffer for the active client (the one that ran the
  *  command). One prompt at a time in the shared model. */
-function openMinibuffer(prompt) {
+function openMinibuffer(prompt, initial = '') {
   minibufferClient = activeClient;
-  minibufferState = { active: true, prompt, value: '' };
+  // `value` seeds the input — the client pre-fills it (find-file / find-project
+  // start at a sensible directory). Empty for an ordinary prompt.
+  minibufferState = { active: true, prompt, value: typeof initial === 'string' ? initial : '' };
   if (minibufferClient) sendViewTo(minibufferClient);
 }
 
@@ -1367,6 +1369,7 @@ function onClientMessage(client, event) {
       // have their own completion — not wired yet. A read-only query (no edit),
       // so it replies directly rather than going through applyIntent.
       if (spine.activePrompt === 'Find file: '
+          || spine.activePrompt === 'Open project: '
           || spine.activePrompt === 'Directory tree: '
           || spine.activePrompt === 'Directory columns: '
           || spine.activePrompt === 'Jukebox directory: ') {

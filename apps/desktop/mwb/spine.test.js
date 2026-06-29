@@ -23,6 +23,9 @@ import { wireLeaves, wireFocusedLeafId } from './protocol.js';
 function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
   const log = {
     status: [], minibufferOpens: [], minibufferCloses: 0, scrolls: [], saves: [],
+    // The initial-value seed for each minibuffer open (find-file / find-project
+    // start at a sensible directory), parallel to minibufferOpens.
+    minibufferSeeds: [],
     // Each open generic-picker request (the G0b channel), as the server sees it.
     pickerOpens: [],
     // Each new-window request (the C-x 5 2 effect, G4).
@@ -38,7 +41,7 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
     { initialText, name, initialPath: extra.initialPath },
     {
       onStatus: (s) => log.status.push(s),
-      onMinibufferOpen: (p) => log.minibufferOpens.push(p),
+      onMinibufferOpen: (p, initial) => { log.minibufferOpens.push(p); log.minibufferSeeds.push(initial ?? ''); },
       onMinibufferClose: () => { log.minibufferCloses += 1; },
       onScroll: (r) => log.scrolls.push(r),
       onPicker: (req) => log.pickerOpens.push(req),
@@ -2492,4 +2495,31 @@ test('B4 latex-next-error: resolves a relative diagnostic path + jumps to the li
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- B4: find-file / find-project seed the prompt with a sensible directory ---
+// (live-found) The minibuffer opens pre-filled at the current file's directory,
+// or the home directory for a scratch — so TAB immediately lists somewhere
+// useful. open-completing-minibuffer!'s 2nd arg is forwarded to the client via
+// minibufferState.value.
+
+test('B4 find-file: seeds the current file\'s directory', () => {
+  const { spine, log } = makeSpine('x', 'paper.tex', { initialPath: '/Users/jalex/Articles/paper.tex' });
+  spine.interpreter.evaluate('(run-command (quote find-file))');
+  assert.equal(log.minibufferOpens[0], 'Find file: ');
+  assert.equal(log.minibufferSeeds[0], '/Users/jalex/Articles/');
+});
+
+test('B4 find-file: seeds the home directory from a scratch buffer', () => {
+  const { spine, log } = makeSpine('x', '*scratch*'); // no initialPath
+  spine.interpreter.evaluate('(run-command (quote find-file))');
+  const home = spine.interpreter.evaluate('(home-directory)');
+  assert.equal(log.minibufferSeeds[0], `${home}/`);
+});
+
+test('B4 find-project: opens the "Open project: " prompt seeded at a sensible dir', () => {
+  const { spine, log } = makeSpine('x', 'main.txt', { initialPath: '/Users/jalex/Source/proj/main.txt' });
+  spine.interpreter.evaluate('(run-command (quote find-project))');
+  assert.equal(log.minibufferOpens[0], 'Open project: ');
+  assert.equal(log.minibufferSeeds[0], '/Users/jalex/Source/proj/');
 });

@@ -1111,7 +1111,10 @@ export function createSpine(options, effects = {}) {
       // `minibuffer-delivered` (called from deliverMinibuffer below).
       'open-minibuffer!': (args) => {
         activePrompt = String(args[0] ?? '');
-        onMinibufferOpen(activePrompt);
+        // args[1] (optional) seeds the input — e.g. find-file's starting
+        // directory; the server puts it in minibufferState.value, the client
+        // pre-fills it. Empty when no seed is given.
+        onMinibufferOpen(activePrompt, lispString(args[1]) ?? String(args[1] ?? ''));
         return NIL;
       },
       // open-completing-minibuffer! — the completion-backed prompt the
@@ -1126,7 +1129,9 @@ export function createSpine(options, effects = {}) {
       // PRIMITIVE-SPLIT.md "Minibuffer / completion".
       'open-completing-minibuffer!': (args) => {
         activePrompt = String(args[0] ?? '');
-        onMinibufferOpen(activePrompt);
+        // args[1] (optional) seeds the input (find-file / find-project start at a
+        // sensible directory). Forwarded to the client via minibufferState.value.
+        onMinibufferOpen(activePrompt, lispString(args[1]) ?? String(args[1] ?? ''));
         return NIL;
       },
 
@@ -1754,6 +1759,10 @@ export function createSpine(options, effects = {}) {
           return false;
         }
       },
+      // (home-directory) — the user's home directory (no trailing slash). The
+      // fallback start path for the find-file / find-project prompts when the
+      // current buffer has no file (a scratch). The server is a Node child.
+      'home-directory': () => homedir(),
 
       // --- save (real file I/O, atomic) --------------------------------
       // save-buffer! writes the ACTIVE buffer's text to its file path
@@ -2404,14 +2413,19 @@ export function createSpine(options, effects = {}) {
         (utility-panel-open! "output" id title)
         (utility-panel-set! id text))
 
-      ;; project.lisp's find-project minibuffer helpers (files.lisp isn't loaded
-      ;; in the spine). -expand-tilde is a passthrough — open-project-at! expands
-      ;; the leading ~ itself (Node-side). -initial-find-file-value seeds the
-      ;; prompt with the current file's directory (trailing /), empty otherwise.
+      ;; find-file / find-project minibuffer helpers (files.lisp isn't loaded in
+      ;; the spine). -expand-tilde is a passthrough — open-project-at! expands the
+      ;; leading ~ itself (Node-side). -initial-find-file-value seeds the prompt
+      ;; with the current file's directory (trailing /), falling back to the home
+      ;; directory for a scratch buffer — so TAB immediately lists somewhere
+      ;; sensible (mirrors files.lisp's version).
       (define (-expand-tilde path) path)
       (define (-initial-find-file-value)
         (let ((d (view-directory (current-view))))
-          (if (nil? d) "" (str d "/"))))
+          (if (or (nil? d) (equal? d ""))
+              (let ((home (home-directory)))
+                (if (equal? home "") "" (str home "/")))
+              (str d "/"))))
     `);
   } catch (error) {
     console.error('[spine] utility-output helpers install failed:', error.message);
@@ -2966,9 +2980,11 @@ export function createSpine(options, effects = {}) {
   // whose prompt the host fulfils, then the host calls `visitFile`.
   interpreter.evaluate(`
     (defcommand find-file ()
-      "Visit a file (C-x C-f). The host reads the path and swaps buffers."
-      (interactive (string "Find file: "))
-      (lambda (path) path))
+      "Visit a file (C-x C-f). The prompt starts at a sensible directory (the
+       current file's, else home) and TAB-completes; the host reads the path on
+       submit (handleMinibufferSubmit keys on the 'Find file: ' prompt) and swaps
+       buffers."
+      (open-completing-minibuffer! "Find file: " (-initial-find-file-value)))
 
     (defcommand directory-tree ()
       "Open a directory tree-view rooted at a directory chosen in the
