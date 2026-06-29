@@ -7080,6 +7080,21 @@ if (window.host && window.host.serverMode) {
     // server tree; window 1 keeps its tabline.
     setPaneTree: (tree, liveProcs, liveBrowsers) =>
       applyServerPaneTree(tree, liveProcs, liveBrowsers),
+    // B4: a server buffer mirror mounted (SNAPSHOT). Point the sticky-notes
+    // overlay manager at it so the buffer's notes (server-pushed onto
+    // mirror.metadata.notes) render on this editor, and (re)bind the inline-eval
+    // pill overlay. Guarded against the init-TDZ trap (stickyNotes / inlineEval
+    // are declared later); a later snapshot re-wires if this fires too early.
+    onServerBuffer: (mirror, serverView) => {
+      try {
+        const overlay = serverView && serverView.overlayLayer;
+        if (overlay) {
+          stickyNotes.setOverlayLayer(overlay);
+          inlineEval.setOverlayLayer(overlay);
+        }
+        stickyNotes.setBuffer(mirror);
+      } catch { /* declared later / mid-init — a later snapshot re-wires */ }
+    },
   };
 
   bootServerViewClient = () => {

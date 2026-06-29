@@ -196,6 +196,10 @@ export function createServerViewClient({
   // (split structure + per-leaf buffer/view-state + the focused leaf; no
   // pixels). The host renders it — splits become visible. A no-op until wired.
   const setPaneTreeDom = chrome.setPaneTree ?? (() => {});
+  // B4: a freshly-mirrored server buffer mounted (SNAPSHOT). The host points the
+  // sticky-notes overlay manager at this mirror + its editor view so the buffer's
+  // notes (carried on the snapshot, set on mirror.metadata.notes below) render.
+  const onServerBufferDom = chrome.onServerBuffer ?? (() => {});
   // CLIENT_DIRECTIVE: the server told THIS window to perform a renderer-side
   // action (close-window, toggle a fold, re-theme, …). The host maps the
   // directive name → an action (window lifecycle is the host's job, like quit /
@@ -459,6 +463,11 @@ export function createServerViewClient({
     });
     if (view) view.destroy();
     view = mountView(mirror, buildMountOptions());
+    // B4: seed the mirror's note metadata from the snapshot so the sticky-notes
+    // manager (pointed here by onServerBuffer) renders the buffer's notes. The
+    // manager reads buffer.metadata.notes + edit-tracks via mirror.onChange.
+    mirror.metadata = { notes: Array.isArray(msg.notes) ? msg.notes : [] };
+    onServerBufferDom(mirror, view);
     if (typeof view.focus === 'function') view.focus();
     // Report the freshly-mounted view's visible line count so screenful scroll
     // (C-v/M-v) is sized correctly from the first keystroke. A frame later the

@@ -684,6 +684,12 @@ function sendSnapshot(client) {
     point: spine.viewStateOf(client.index).point,
     name: spine.buffer.name,
     bufferId: spine.currentBufferIdOf(client.index),
+    // B4: the buffer's sticky notes (seeded from its .godot-metadata sidecar) so
+    // the client can render the overlay. Plain records (id/anchor/x/y/w/h/source/
+    // collapsed) — clone-safe. Empty for a sidecar-less / note-less buffer.
+    notes: (spine.buffer.metadata && Array.isArray(spine.buffer.metadata.notes))
+      ? spine.buffer.metadata.notes
+      : [],
     clientIndex: client.index, // so a client knows whether it's the typer
     // G4 Step 1: how this window presents its root — 'tabline' (window 1, the
     // welcome/restored session) or 'single' (a fresh window: one composable
