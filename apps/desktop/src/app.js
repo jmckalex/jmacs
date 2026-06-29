@@ -7037,6 +7037,45 @@ if (window.host && window.host.serverMode) {
             interpreter.evaluate(`(custom-apply! (quote ${varName}) (quote ${valueSrc}))`);
           }
         } catch { /* unregistered / malformed — leave the current value */ }
+      } else if (name === 'utility-panel-open') {
+        // B4 (latex-compile.lisp): open/reuse a utility-dock tab. Mirrors the
+        // renderer's old utility-panel-open! primitive — look up the factory and
+        // open the tab without stealing focus. [factory, id, title].
+        const factoryName = String(args?.[0] ?? '');
+        const id = String(args?.[1] ?? factoryName);
+        const title = String(args?.[2] ?? id);
+        const factory = utilityPanelFactories.get(factoryName);
+        if (factory) {
+          utilityDock.openUtilityPanel({
+            id, title,
+            makePanel: (handle) => factory(handle, { title }),
+            focus: false,
+          });
+        }
+      } else if (name === 'utility-panel-set') {
+        // Replace the named panel's content ([id, text]).
+        const panel = utilityDock.getPanel(String(args?.[0] ?? ''));
+        if (panel && typeof panel.setContent === 'function') panel.setContent(String(args?.[1] ?? ''));
+      } else if (name === 'utility-panel-append') {
+        // Append to the named panel's log ([id, text]).
+        const panel = utilityDock.getPanel(String(args?.[0] ?? ''));
+        if (panel && typeof panel.appendOutput === 'function') panel.appendOutput(String(args?.[1] ?? ''));
+      } else if (name === 'utility-panel-activate') {
+        // Bring the named tab forward ([id]).
+        utilityDock.activateUtilityTab(String(args?.[0] ?? ''));
+      } else if (name === 'pdf-reload') {
+        // B4 (latex-compile.lisp): a recompile produced the same pdf path with
+        // new bytes; reload the open pdf-view (bypassing its same-path load
+        // guard). [path] — empty reloads the current pdf; a path reloads only
+        // when the singleton shows that file. Mirrors the old pdf-reload!.
+        const current = pdfView.buffer;
+        if (current) {
+          const wanted = String(args?.[0] ?? '');
+          if (!(wanted !== '' && viewFilePath(current) !== wanted)
+              && typeof pdfView.reload === 'function') {
+            pdfView.reload();
+          }
+        }
       } else if (name === 'fold-toggle') {
         // B4 (folding.lisp): fold a view concern — act on the focused editor.
         editorView.toggleFoldAtPoint();

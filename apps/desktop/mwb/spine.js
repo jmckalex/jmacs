@@ -35,11 +35,12 @@
  */
 
 import { readFileSync, statSync, readdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { atomicWriteSync } from './atomic-write-sync.js';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createInterpreter, NIL, cons, listToArray, arrayToList, keyword, sym, writeString } from '@editor/lisp';
+import { createInterpreter, NIL, cons, listToArray, arrayToList, keyword, sym, writeString, applyProcedure } from '@editor/lisp';
 import { createBuffer } from '@editor/buffer';
 import { createView } from '@editor/view';
 import { createBufferPrimitives, createLatexPrimitives } from '@editor/stdlib';
@@ -368,6 +369,18 @@ const SPINE_STDLIB = Object.freeze([
   // mode-keymap chain in keymap.lisp's handle-key. Production order: after
   // markdown.lisp. See PRIMITIVE-SPLIT.md "Modes / latex".
   'latex.lisp',
+  // latex-compile.lisp — AUCTeX's compile/view loop (B4): C-c C-c latex-compile
+  // (save + run *latex-command* via the spine's run-process! — it spawns the
+  // build child DIRECTLY, being a Node utilityProcess — then writes *TeX output*/
+  // *TeX errors* to the utility dock via directives and parses the log with the
+  // model-side parse-latex-log), C-c C-v latex-view (open-file-in-split! splits
+  // the pane + opens the built PDF beside the source; pdf-reload! refreshes it),
+  // C-c ` latex-next-error (open-file-path! + goto-line!, both model-side). Loads
+  // right after latex.lisp (it extends latex-c-c-map) and BEFORE reftex.lisp
+  // (which redefines this file's latex-master-file seam — reftex's wins). Mirrors
+  // the canonical STDLIB order (utility-pane.lisp's utility-output-set helper is
+  // embedded post-load below rather than loading that whole file).
+  'latex-compile.lisp',
   // latex-insert.lisp — AUCTeX Phase 2 smart insertion (environment /
   // macro / section / font). The pure ENV-STACK helpers + the model-side
   // commands run server-side; the completion-driven inserts route through
@@ -958,6 +971,21 @@ export function createSpine(options, effects = {}) {
   // built only when the keys settle — never per-keystroke on a long buffer.
   let isearchLazyTimer = null;
 
+  // --- general process runner (run-process!) — B4 latex-compile ---------
+  // The spine is a Node utilityProcess, so it spawns build children DIRECTLY
+  // (node:child_process) — no main-process IPC like the renderer's old
+  // run-process! needed. Each call gets a monotonic id; the on-exit Lisp
+  // procedure is parked here and applied once when the child finishes, with a
+  // `{:stdout :stderr :code}` hash-map (the SAME contract apps/desktop/src/
+  // process.js gave the renderer: code nil on signal-kill / spawn ENOENT, the
+  // error text folded into stderr). This is the async-callback-into-Lisp seam
+  // the latex-compile loop is built on (handover 2026-06-29).
+  let nextRunId = 0;
+  /** @type {Map<string, *>} runId → the parked on-exit Lisp procedure. */
+  const runProcessCallbacks = new Map();
+  /** @type {Map<string, import('node:child_process').ChildProcess>} live children. */
+  const runProcessChildren = new Map();
+
   // --- the interpreter --------------------------------------------------
   const interpreter = createInterpreter({
     write: () => {}, // discard print output in the spine
@@ -1541,6 +1569,27 @@ export function createSpine(options, effects = {}) {
         switchClientToBuffer(activeClientIndex, entry.id);
         return registry.viewFor(entry.id, activeClientIndex);
       },
+      // (view-list) — the active client's OPEN views, as a Lisp list. Each entry
+      // is a real @editor/view (text buffer) OR, for a non-text DATA-SOURCE
+      // (image/audio/video/PDF), a lightweight wrapper carrying its filePath so
+      // `view-file-path` can match it. latex-compile.lisp's -latex-find-view-by-
+      // file walks this to decide whether a built PDF is already on screen
+      // (reload) or must be split-opened. Per-window semantics: the open set of
+      // the window that ran the command (clientBuffers, insertion-ordered).
+      'view-list': () => {
+        const set = clientBuffers.get(activeClientIndex) ?? new Set();
+        const out = [];
+        for (const id of set) {
+          if (registry.has(id)) {
+            const v = registry.viewFor(id, activeClientIndex);
+            if (v) out.push(v);
+          } else if (dataSources.has(id)) {
+            const ds = dataSources.get(id);
+            out.push({ dataSourceId: id, filePath: ds && ds.filePath ? ds.filePath : null, name: ds ? ds.name : '' });
+          }
+        }
+        return arrayToList(out);
+      },
 
       // --- view → file mapping (RefTeX document model) -----------------
       // The RefTeX R1 document model (reftex.lisp) needs the file path /
@@ -1549,9 +1598,16 @@ export function createSpine(options, effects = {}) {
       // @editor/view bound to a registry buffer; map it back to its registry
       // entry by buffer identity (view.buffer === entry.buffer) to read the
       // entry's filePath. A view with no backing file (scratch) → nil.
-      // (view-file-path VIEW) -> absolute path string, or nil.
+      // (view-file-path VIEW) -> absolute path string, or nil. Handles both a
+      // real @editor/view (mapped to its registry entry by buffer identity) and
+      // a data-source wrapper from view-list (carries filePath directly — a
+      // built PDF is a data-source, not a buffer-backed view).
       'view-file-path': (args) => {
-        const entry = entryForView(args[0]);
+        const v = args[0];
+        if (v && typeof v === 'object' && typeof v.dataSourceId === 'string') {
+          return (typeof v.filePath === 'string' && v.filePath !== '') ? v.filePath : NIL;
+        }
+        const entry = entryForView(v);
         return entry && entry.filePath ? entry.filePath : NIL;
       },
       // (view-buffer VIEW) -> the view's buffer object, or nil. reftex.lisp
@@ -1698,6 +1754,148 @@ export function createSpine(options, effects = {}) {
           return NIL;
         }
         onClientDirective(ids, 'config-apply', [name, valueSrc]);
+        return NIL;
+      },
+
+      // --- B4 latex-compile: process runner + compile-loop effects -------
+      // (run-process! PROGRAM ARGS CWD ON-EXIT) — spawn PROGRAM (string) with
+      // ARGS (a Lisp list of strings) in CWD (a dir string, or nil). ON-EXIT is
+      // a Lisp procedure applied once with a hash-map {:stdout :stderr :code}
+      // (code nil on signal-kill / spawn ENOENT, the error text in :stderr).
+      // No shell — argv goes straight to exec (no metachar interpretation; see
+      // process.js). Returns the runId string. The whole AUCTeX compile/view
+      // loop (latex-compile.lisp) rides this one async-callback-into-Lisp seam.
+      'run-process!': (args) => {
+        const program = lispString(args[0]) ?? String(args[0] ?? '');
+        if (program === '') return NIL;
+        const argList = (args[1] != null && args[1] !== NIL)
+          ? listToArray(args[1]).map((a) => lispString(a) ?? String(a))
+          : [];
+        const cwd = (args[2] != null && args[2] !== NIL)
+          ? (lispString(args[2]) ?? String(args[2]))
+          : undefined;
+        const onExit = args[3];
+        const runId = `run-${nextRunId++}`;
+        if (onExit != null && onExit !== NIL) runProcessCallbacks.set(runId, onExit);
+
+        let stdout = '';
+        let stderr = '';
+        let errored = false;
+        // Build the {:stdout :stderr :code} hash-map and apply the parked Lisp
+        // procedure exactly once. The on-exit body runs the compile callback
+        // (writes *TeX output*/*TeX errors*, sets status, reloads an open PDF) —
+        // all server-side, fanning effects out as directives.
+        const finish = ({ out, err, code }) => {
+          runProcessChildren.delete(runId);
+          const proc = runProcessCallbacks.get(runId);
+          runProcessCallbacks.delete(runId);
+          if (proc == null || proc === NIL) return;
+          const map = new Map();
+          map.set(keyword('stdout'), out);
+          map.set(keyword('stderr'), err);
+          map.set(keyword('code'), typeof code === 'number' ? code : NIL);
+          try {
+            applyProcedure(proc, [map]);
+          } catch (error) {
+            console.error('[spine] run-process! on-exit failed:',
+              error.lispMessage ?? error.message ?? String(error));
+          }
+        };
+
+        let child;
+        try {
+          child = spawn(program, argList, cwd ? { cwd } : {});
+        } catch (error) {
+          // A synchronous spawn throw (bad cwd / args): report like an async
+          // error so the callback still fires exactly once.
+          finish({ out: '', err: String(error?.message ?? error), code: null });
+          return runId;
+        }
+        runProcessChildren.set(runId, child);
+        if (child.stdout) {
+          child.stdout.setEncoding('utf8');
+          child.stdout.on('data', (c) => { stdout += c; });
+        }
+        if (child.stderr) {
+          child.stderr.setEncoding('utf8');
+          child.stderr.on('data', (c) => { stderr += c; });
+        }
+        // The common ENOENT (program not on PATH) arrives async as 'error':
+        // fold it into stderr with a null code so -latex-spawn-failed? detects
+        // it and the latexmk→pdflatex fallback fires.
+        child.on('error', (error) => {
+          errored = true;
+          finish({ out: stdout, err: stderr + String(error?.message ?? error), code: null });
+        });
+        child.on('exit', (code, signal) => {
+          if (errored) return; // 'error' already reported the (authoritative) result
+          finish({ out: stdout, err: stderr, code: signal !== null ? null : code });
+        });
+        return runId;
+      },
+
+      // utility-panel-open! / -set! / -activate! — the utility dock is renderer
+      // UI (per-window), so these become directives to the window that ran the
+      // command (activeClientIndex; for the async build callback that's the
+      // window awaiting its compile). They mirror the renderer's own primitives
+      // 1:1 (applyDirective replicates their bodies over utilityDock). The
+      // *TeX output* / *TeX errors* tabs ride utility-output-set (a Lisp helper
+      // embedded below) which calls open! then set!.
+      'utility-panel-open!': (args) => {
+        const factory = lispString(args[0]) ?? String(args[0] ?? '');
+        const id = (args[1] != null && args[1] !== NIL) ? (lispString(args[1]) ?? String(args[1])) : factory;
+        const title = (args[2] != null && args[2] !== NIL) ? (lispString(args[2]) ?? String(args[2])) : id;
+        onClientDirective([activeClientIndex], 'utility-panel-open', [factory, id, title]);
+        return id;
+      },
+      'utility-panel-set!': (args) => {
+        const id = lispString(args[0]) ?? String(args[0] ?? '');
+        const text = lispString(args[1]) ?? String(args[1] ?? '');
+        onClientDirective([activeClientIndex], 'utility-panel-set', [id, text]);
+        return NIL;
+      },
+      'utility-panel-append!': (args) => {
+        const id = lispString(args[0]) ?? String(args[0] ?? '');
+        const text = lispString(args[1]) ?? String(args[1] ?? '');
+        onClientDirective([activeClientIndex], 'utility-panel-append', [id, text]);
+        return NIL;
+      },
+      'utility-panel-activate!': (args) => {
+        const id = lispString(args[0]) ?? String(args[0] ?? '');
+        onClientDirective([activeClientIndex], 'utility-panel-activate', [id]);
+        return NIL;
+      },
+
+      // (pdf-reload! [PATH]) — a recompile produces the SAME pdf path with NEW
+      // bytes; tell the active window's pdf-view to reload (bypassing its
+      // same-path load guard). Empty PATH → reload the current pdf. A directive;
+      // the renderer no-ops when no matching pdf is open.
+      'pdf-reload!': (args) => {
+        const path = (args[0] != null && args[0] !== NIL) ? (lispString(args[0]) ?? String(args[0])) : '';
+        onClientDirective([activeClientIndex], 'pdf-reload', [path]);
+        return NIL;
+      },
+
+      // (open-file-in-split! PATH [ORIENTATION [SIDE [PERSIST]]]) — latex-view's
+      // programmatic split: open PATH (a built PDF) BESIDE the source. Server-
+      // side via the pane tree (no directive): mint/reuse the pdf DATA-SOURCE,
+      // split the active client's focused pane (split() focuses the new leaf),
+      // and retarget that new leaf to the pdf — source | PDF side by side. The
+      // PERSIST flag (*latex-pdf-restore*) is a workspace-restore concern handled
+      // by the session machinery, so it's not threaded here (v1). A non-media
+      // PATH is a no-op.
+      'open-file-in-split!': (args) => {
+        const path = lispString(args[0]) ?? String(args[0] ?? '');
+        if (path === '') return NIL;
+        const orientation = symName(args[1]) === 'vertical' ? 'vertical' : 'horizontal';
+        const side = symName(args[2]) === 'before' ? 'before' : 'after';
+        const result = openFile(path);
+        if (!result || !result.media) return NIL;
+        const absPath = (typeof result.path === 'string' && result.path !== '') ? result.path : path;
+        const src = dataSources.findByPath(absPath)
+          ?? dataSources.add({ kind: result.kind, name: result.name, filePath: absPath });
+        currentPaneModel().split(orientation, 0.5, side);
+        switchClientToSource(activeClientIndex, src.id);
         return NIL;
       },
       // B1.2: read the user's colour overrides from <userData>/faces.json (the
@@ -2054,6 +2252,28 @@ export function createSpine(options, effects = {}) {
     interpreter.evaluate(source);
   }
 
+  // B4 latex-compile: the `utility-output` / `utility-output-set` helpers from
+  // utility-pane.lisp (which the spine does NOT load wholesale — its commands
+  // would shadow working server commands). latex-compile.lisp's build callback
+  // calls `utility-output-set` to (re)fill the *TeX output* / *TeX errors* dock
+  // tabs; both wrap the host utility-panel-* directive emitters. Defined after
+  // the stdlib load (commands.lisp's `define` is present) and before any build
+  // can run.
+  try {
+    interpreter.evaluate(`
+      (define (utility-output id title text)
+        "Open/reuse the dock tab ID (titled TITLE) and APPEND TEXT to it."
+        (utility-panel-open! "output" id title)
+        (utility-panel-append! id text))
+      (define (utility-output-set id title text)
+        "Open/reuse the dock tab ID (titled TITLE) and REPLACE its content."
+        (utility-panel-open! "output" id title)
+        (utility-panel-set! id text))
+    `);
+  } catch (error) {
+    console.error('[spine] utility-output helpers install failed:', error.message);
+  }
+
   // B2 regression fix: re-register the customize settings owned by renderer-only
   // stdlib files that are NOT in SPINE_STDLIB. B2.3 computes the `M-x customize`
   // MODEL from the spine's *custom-registry*, so these dropped out of the UI.
@@ -2071,16 +2291,15 @@ export function createSpine(options, effects = {}) {
   //    NB: the jukebox setting's stdlib :on-change (refresh-jukebox-labels!) is a
   //    RENDER-side primitive absent here — we replace it with the config push;
   //    the renderer's own custom-apply! fires the real refresh client-side.
-  //  - The 5 LaTeX settings (latex-compile.lisp) are SPINE-consumed by the
-  //    pending latex-compile port (run-process! reads *latex-command* etc.), so
-  //    they need no config push — just registration + persistence now.
+  //  - The 5 LaTeX settings are now declared by latex-compile.lisp itself (in
+  //    SPINE_STDLIB above, since the latex-compile port landed) — SPINE-consumed,
+  //    no config push — so they are no longer re-declared here.
   try {
     interpreter.evaluate(`
       (defgroup 'sticky-notes 'godot "Sticky notes overlaid on the buffer.")
       (defgroup 'views 'godot "Open views: persistence and switching.")
       (defgroup 'jukebox 'godot "Jukebox view: how audio files are listed.")
       (defgroup 'directory-tree 'godot "The directory tree-view sidebar.")
-      (defgroup 'latex 'godot "LaTeX authoring: the compile / view loop.")
 
       ;; --- renderer-consumed (B0 config push on change) ------------------
       (defcustom *markdown-interpreter* "marked" :string
@@ -2113,33 +2332,6 @@ export function createSpine(options, effects = {}) {
         :options '(editing-pane other-pane this-pane)
         :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
         :doc "Where a file opens when activated in a directory tree-view: 'editing-pane (the main editing area; the default), 'other-pane (the next editing pane after the tree), or 'this-pane (the tree's own pane, promoted to a tabline).")
-
-      ;; --- spine-consumed (the pending latex-compile port reads these) ---
-      (defcustom *latex-command*
-        '("latexmk" "-pdf" "-synctex=1" "-interaction=nonstopmode")
-        :list
-        :group 'latex
-        :doc "The LaTeX build command as a list of strings (program + flags); the source .tex filename is appended at build time. Default latexmk handles the multi-pass rerun/bibtex dance itself. run-process! takes no shell — this is a token list, not a shell string.")
-
-      (defcustom *latex-bibtex-command* '("bibtex")
-        :list
-        :group 'latex
-        :doc "The bibliography command as a list of strings (program + flags). latexmk runs bibtex/biber itself, so this is unused by the default build; it is the seam for an explicit bibliography pass.")
-
-      (defcustom *latex-view* 'pdf-view
-        :symbol
-        :group 'latex
-        :doc "The PDF viewer latex-view uses. v1 supports only the built-in 'pdf-view (open / reload in a split beside the source). The seam for external viewers (Skim, evince) later.")
-
-      (defcustom *latex-pdf-restore* #t :boolean
-        :group 'latex
-        :doc "Whether the PDF latex-view opens persists across a relaunch. #t restores the latexed-output PDF beside its source; #f makes it transient like a generic PDF. Independent of the global *pdf-restore-default*.")
-
-      (defcustom *latex-clean*
-        '(".aux" ".log" ".out" ".synctex.gz" ".fdb_latexmk" ".fls" ".toc" ".bbl" ".blg")
-        :list
-        :group 'latex
-        :doc "Auxiliary file extensions latex-clean deletes — the build by-products latexmk / pdflatex leave beside the source .tex.")
     `);
   } catch (error) {
     console.error('[spine] renderer-config defcustoms install failed:', error.message);

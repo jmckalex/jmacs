@@ -2173,3 +2173,97 @@ test('runNotebookCell: with NO session id, cells stay isolated (no leak)', async
   assert.equal(r.state, 'ok');
   assert.match(num(r.descriptor), /undefined/);
 });
+
+// --- B4: latex-compile port (run-process! + the compile/view loop) ---------
+// The spine is a Node utilityProcess, so run-process! spawns build children
+// directly and applies the on-exit Lisp procedure async; latex-compile.lisp
+// rides that seam. These exercise the real spawn + the compile flow's dock
+// directives + the latex-view pane split, all server-side.
+
+/** Poll until PRED() is truthy or the budget runs out (async spawn waits). */
+async function until(pred, ms = 4000, step = 20) {
+  for (let waited = 0; waited < ms; waited += step) {
+    if (pred()) return true;
+    await new Promise((r) => setTimeout(r, step));
+  }
+  return pred();
+}
+
+test('B4 run-process!: spawns a child and delivers {:stdout :stderr :code} to the Lisp on-exit', async () => {
+  const { spine } = makeSpine('');
+  spine.interpreter.evaluate('(define *rp* nil)');
+  spine.interpreter.evaluate(
+    `(run-process! "node" (list "-e" "process.stdout.write('OUT'); process.stderr.write('ERR'); process.exit(2)") nil (lambda (r) (set! *rp* r)))`
+  );
+  await until(() => spine.interpreter.evaluate('(nil? *rp*)') === false);
+  assert.equal(spine.interpreter.evaluate('(get *rp* :stdout "")'), 'OUT');
+  assert.equal(spine.interpreter.evaluate('(get *rp* :stderr "")'), 'ERR');
+  assert.equal(spine.interpreter.evaluate('(get *rp* :code -1)'), 2);
+});
+
+test('B4 run-process!: a missing program reports :code nil + ENOENT in stderr (fallback trigger)', async () => {
+  const { spine } = makeSpine('');
+  spine.interpreter.evaluate('(define *rp2* nil)');
+  spine.interpreter.evaluate(
+    `(run-process! "no-such-program-zzz" (list) nil (lambda (r) (set! *rp2* r)))`
+  );
+  await until(() => spine.interpreter.evaluate('(nil? *rp2*)') === false);
+  assert.equal(spine.interpreter.evaluate('(nil? (get *rp2* :code nil))'), true);
+  assert.equal(spine.interpreter.evaluate('(-latex-spawn-failed? *rp2*)'), true);
+});
+
+test('B4 latex-compile: saves, runs the build, and writes *TeX output*/*TeX errors* dock tabs', async () => {
+  const { spine, log } = makeSpine('\\documentclass{article}', 'paper.tex', {
+    initialPath: '/tmp/paper.tex',
+    openFile: (p) => (p.endsWith('.tex') ? { text: '% tex', name: 'paper.tex', path: p } : null),
+  });
+  // Use `node` as a deterministic stand-in for the LaTeX toolchain (no latexmk
+  // needed in CI): it prints a line and exits 0; the .tex basename is appended
+  // as an ignored extra arg. The compile flow still parses + tabs the output.
+  spine.interpreter.evaluate(
+    `(custom-apply! (quote *latex-command*) (list "node" "-e" "process.stdout.write('build ok')"))`
+  );
+  spine.interpreter.evaluate('(run-command (quote latex-compile))');
+  const sawOutput = () =>
+    log.directives.some((d) => d.name === 'utility-panel-set' && d.args[0] === 'tex-output');
+  await until(sawOutput, 6000);
+  assert.ok(log.saves.length >= 1, 'saved the buffer before building');
+  assert.ok(
+    log.directives.some((d) => d.name === 'utility-panel-open' && d.args[1] === 'tex-output'),
+    'opened the *TeX output* dock tab'
+  );
+  assert.ok(sawOutput(), 'wrote the build log to *TeX output*');
+  assert.ok(
+    log.directives.some((d) => d.name === 'utility-panel-set' && d.args[0] === 'tex-errors'),
+    'wrote diagnostics to *TeX errors*'
+  );
+});
+
+test('B4 open-file-in-split!: splits the focused pane and opens the pdf in the new leaf', () => {
+  const { spine } = makeSpine('% tex', 'paper.tex', {
+    initialPath: '/tmp/paper.tex',
+    openFile: (p) =>
+      p.endsWith('.pdf') ? { media: true, kind: 'pdf', name: 'paper.pdf', path: p } : null,
+  });
+  spine.interpreter.evaluate('(open-file-in-split! "/tmp/paper.pdf" (quote horizontal) (quote after))');
+  const snap = spine.paneSnapshot(0);
+  assert.equal(snap.kind, 'split');
+  assert.equal(snap.orientation, 'horizontal');
+  // source on the left (unfocused), the freshly-opened pdf on the right (focused).
+  assert.equal(snap.first.name, 'paper.tex');
+  assert.equal(snap.second.viewKind, 'pdf');
+  assert.equal(snap.second.focused, true);
+});
+
+test('B4 view-list: surfaces an open pdf data-source so latex-view can find it (reload vs split)', () => {
+  const { spine } = makeSpine('% tex', 'paper.tex', {
+    initialPath: '/tmp/paper.tex',
+    openFile: (p) =>
+      p.endsWith('.pdf') ? { media: true, kind: 'pdf', name: 'paper.pdf', path: p } : null,
+  });
+  // not open yet
+  assert.equal(spine.interpreter.evaluate('(nil? (-latex-find-view-by-file "/tmp/paper.pdf"))'), true);
+  spine.interpreter.evaluate('(open-file-in-split! "/tmp/paper.pdf" (quote horizontal) (quote after))');
+  // now open: -latex-find-view-by-file matches it via view-list + view-file-path
+  assert.equal(spine.interpreter.evaluate('(nil? (-latex-find-view-by-file "/tmp/paper.pdf"))'), false);
+});
