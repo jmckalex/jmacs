@@ -536,59 +536,6 @@ function nextNonPlaceholderIndex(from, delta) {
 const nameEl = document.getElementById('modeline-name');
 const positionEl = document.getElementById('modeline-position');
 
-function updateModeline() {
-  // In server-mode the modeline is driven by the server's VIEW message (the
-  // G2 chrome paints nameEl/positionEl from the spine's renderModeline); the
-  // in-renderer editor is idle behind the overlay, so its modeline must stand
-  // down or it would fight the server's. Flag-off this guard is never taken.
-  if (window.host && window.host.serverMode) return;
-  const shown = views[currentViewIndex];
-  // A placeholder chooser pane shows its label and no count — never a
-  // `9/7`-style index (it isn't part of the user-visible view list).
-  if (isPlaceholderView(shown)) {
-    const label = shown.name || '(choose a view)';
-    nameEl.textContent = label;
-    positionEl.textContent = '';
-    document.title = `${label} — Godot`;
-    return;
-  }
-  // The user-visible count excludes placeholders, and the index is the
-  // current view's position among the *real* views (so a split that
-  // dropped a placeholder doesn't push the count past the list — the
-  // `9/7` hazard). Falls back to no count when only one real view.
-  const realViews = views.filter((v) => !isPlaceholderView(v));
-  const realIndex = shown ? realViews.indexOf(shown) : -1;
-  const count =
-    realViews.length > 1 && realIndex >= 0
-      ? `  ${realIndex + 1}/${realViews.length}`
-      : '';
-  // A non-text view (image, doc, shell, customize, ...) has no point
-  // and no mode — show just the view name.
-  if (shown && shown.kind !== 'text') {
-    nameEl.textContent = shown.name + count;
-    positionEl.textContent = '';
-    document.title = `${shown.name} — Godot`;
-    return;
-  }
-  const buffer = currentTextBuffer;
-  const mark = dirtyBuffers.has(buffer) ? '● ' : '';
-  const mode = keymapReady
-    ? `   ${interpreter.call('major-mode-name')}` +
-      interpreter.call('minor-mode-line')
-    : '';
-  // The snippet indicator (e.g. "[snippet: 2/4]") appears while a snippet
-  // is being navigated; the Lisp getter returns "" when none is active.
-  const snippet = keymapReady
-    ? interpreter.call('snippet-modeline-indicator')
-    : '';
-  const snippetTag = snippet ? `   ${snippet}` : '';
-  nameEl.textContent = mark + buffer.name + mode + snippetTag + count;
-  const { line, column } = buffer.positionAt(buffer.point);
-  positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
-  // Reflect the current view in the OS window title.
-  document.title = `${mark}${buffer.name} — Godot`;
-}
-
 /** Make BUFFER the current text buffer AND re-point the dirty / autosave
  *  watch at it. Every path that changes which buffer is current must go
  *  through this, not a bare `currentTextBuffer = …` assignment —
@@ -641,7 +588,6 @@ function watchCurrentBuffer() {
         }
       }
     }
-    updateModeline();
   });
 }
 
@@ -974,7 +920,6 @@ function setCurrentPaneId(nextId) {
       editorView = instance;
     }
   }
-  updateModeline();
 }
 
 // Paint the initial focus indicator. With one pane this just adds the
@@ -1152,7 +1097,6 @@ function replacePlaceholder(leaf, newView) {
   mountKindView(newView);
   refreshPaneFocusIndicators();
   scheduleRelayout();
-  updateModeline();
   notifyViewsChanged();
 }
 
@@ -1488,7 +1432,6 @@ function deletePaneInTree(targetLeaf) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  updateModeline();
   // If the removed leaf was a minimap's target, the reconcile drops the now
   // orphaned minimap; otherwise it just rebinds survivors. Deferred, so it
   // runs after this deletion's tree surgery is complete.
@@ -1530,7 +1473,6 @@ function deleteOtherPanesInTree(targetLeaf) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  updateModeline();
 }
 
 /** Set of every leaf-kind view that is currently *visible* in some
@@ -1936,7 +1878,6 @@ function switchToViewIndex(index) {
       tabIndex = tlv.tabs.length - 1;
     }
     activateTabInTabline(tlv, tabIndex);
-    updateModeline();
     notifyViewsChanged();
     return view;
   }
@@ -1967,7 +1908,6 @@ function switchToViewIndex(index) {
   }
   hideInactiveRendererViews(view.kind);
   mountKindView(view);
-  updateModeline();
   notifyViewsChanged();
   return view;
 }
@@ -2131,14 +2071,12 @@ function killViewAtIndex(target) {
       currentViewIndex = activeChild !== null
         ? views.indexOf(activeChild)
         : -1;
-      updateModeline();
       notifyViewsChanged();
     } else if (focused
                && focused.kind === 'leaf'
                && focused.view !== victim) {
       // Auto-collapsed: deletePaneInTree pointed focus at a sibling
       // and set currentViewIndex inside its branch. Just refresh.
-      updateModeline();
       notifyViewsChanged();
     } else {
       const next = Math.min(target, views.length - 1);
@@ -2147,10 +2085,8 @@ function killViewAtIndex(target) {
     }
   } else if (target < currentViewIndex) {
     currentViewIndex -= 1;
-    updateModeline();
     notifyViewsChanged();
   } else {
-    updateModeline();
     notifyViewsChanged();
   }
 }
@@ -2687,7 +2623,6 @@ async function saveBufferInteractive() {
     markBufferSaved(buffer);
     // The buffer is on disk now — drop its crash-recovery snapshot.
     recovery.forget(buffer);
-    updateModeline();
     notifyViewsChanged();
     // Persist sticky notes alongside the file — this also covers a
     // first save, when the buffer has only just gained a file path.
@@ -3506,7 +3441,6 @@ const viewHost = {
       const child = tlv.tabs[nextIdx];
       const i = views.indexOf(child);
       if (i >= 0) currentViewIndex = i;
-      updateModeline();
       notifyViewsChanged();
       return child;
     }
@@ -3530,7 +3464,6 @@ const viewHost = {
       const child = tlv.tabs[prevIdx];
       const i = views.indexOf(child);
       if (i >= 0) currentViewIndex = i;
-      updateModeline();
       notifyViewsChanged();
       return child;
     }
@@ -4643,7 +4576,6 @@ const interpreter = createInterpreter({
         current.name = url;
         const el = browserElementByView.get(current);
         if (el) el.setBuffer(current);
-        updateModeline();
         notifyViewsChanged();
         return NIL;
       }
@@ -8964,7 +8896,6 @@ function showDocInPane(name, html, label) {
     const el = elementForViewInstance(cur);
     if (el && typeof el.setBuffer === 'function') el.setBuffer(cur);
     notifyViewsChanged();
-    updateModeline();
     return;
   }
   const view = createView({
@@ -10632,7 +10563,6 @@ function activateTabInTabline(tablineView, index) {
     if (child) {
       const viewIdx = views.indexOf(child);
       if (viewIdx >= 0) currentViewIndex = viewIdx;
-      updateModeline();
     }
   }
 }
@@ -11314,7 +11244,6 @@ function toggleMarkdownPreview(path) {
 }
 
 watchCurrentBuffer();
-updateModeline();
 editorView.focus();
 
 // --- splitters ---------------------------------------------------------
@@ -12021,7 +11950,6 @@ function installRootPane(newRoot, savedCurrentPaneId) {
     rootTablineLeafId = null;
   }
   notifyViewsChanged();
-  updateModeline();
 }
 
 /** Wrap the root leaf's view in a tabline-view whose tabs are every
@@ -12111,7 +12039,6 @@ function promoteToTablineOnPane(pane) {
   const paneEl = paneElements.get(pane.id);
   if (paneEl) mountKindView(tabline, { paneEl });
   refreshPaneTabStrips();
-  updateModeline();
   scheduleMinimapReconcile(); // promotion changed the leaf's view shape
   return tabline;
 }
@@ -12172,7 +12099,6 @@ function demoteTablineView(tlv) {
     hideInactiveRendererViews(survivor.kind);
     mountKindView(survivor);
   }
-  updateModeline();
   scheduleMinimapReconcile(); // demotion changed the leaf's view shape
   return survivor;
 }
@@ -12271,7 +12197,6 @@ function swapPaneFrames(paneA, paneB) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  updateModeline();
   // Pane positions changed (not the view set) — refresh the View List so
   // its spiral Pane column tracks the move, and re-pickle the session.
   notifyViewsChanged();
@@ -12306,7 +12231,6 @@ function permutePaneFrames(dests) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  updateModeline();
   // Pane positions changed (not the view set) — refresh the View List so
   // its spiral Pane column tracks the move, and re-pickle the session.
   notifyViewsChanged();
