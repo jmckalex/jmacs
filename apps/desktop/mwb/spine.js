@@ -36,6 +36,10 @@
 
 import { readFileSync, statSync, readdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+// Jukebox label formatting reads embedded tags via the standalone audio-metadata
+// reader (a pure Node module — no Electron/MAIN dep), so the SERVER formats the
+// rows (format-track moves off the renderer interpreter). See formatJukeboxLabel.
+import { extractMetadataSync } from '../src/audio-metadata.js';
 import { homedir } from 'node:os';
 import { atomicWriteSync } from './atomic-write-sync.js';
 import { dirname, join } from 'node:path';
@@ -1902,6 +1906,10 @@ export function createSpine(options, effects = {}) {
           return NIL;
         }
         onClientDirective(ids, 'config-apply', [name, valueSrc]);
+        // The jukebox track-format changed: re-format the open jukebox data-
+        // sources server-side (setState fan-out) so rows relabel without the
+        // renderer interpreter (the renderer's refresh-jukebox-labels! is a no-op).
+        if (name === '*jukebox-track-format*') relabelJukeboxes();
         return NIL;
       },
 
@@ -3601,14 +3609,53 @@ export function createSpine(options, effects = {}) {
    * @param {{ dir: string, tracks?: string[], art?: string|null, name?: string }} spec
    * @returns {string | null}
    */
+  // Jukebox port: the display label for a track at PATH — its embedded tags
+  // substituted into *jukebox-track-format*, or the bare filename when the tags
+  // are missing/unusable. Mirrors jukebox.lisp's format-track, but server-side
+  // via the standalone audio-metadata reader (no renderer interpreter).
+  function formatJukeboxLabel(path, template) {
+    const slash = String(path).lastIndexOf('/');
+    const filename = slash >= 0 ? path.slice(slash + 1) : path;
+    let meta = null;
+    try { meta = extractMetadataSync(path); } catch { meta = null; }
+    const usable = meta && (
+      (typeof meta.title === 'string' && meta.title !== '') ||
+      (typeof meta.artist === 'string' && meta.artist !== '')
+    );
+    if (!usable) return filename;
+    const dot = filename.lastIndexOf('.');
+    const stem = dot > 0 ? filename.slice(0, dot) : filename;
+    const field = (v) => (v === null || v === undefined ? '' : String(v));
+    return String(template)
+      .split('{title}').join(field(meta.title))
+      .split('{artist}').join(field(meta.artist))
+      .split('{album}').join(field(meta.album))
+      .split('{track}').join(field(meta.track))
+      .split('{year}').join(field(meta.year))
+      .split('{genre}').join(field(meta.genre))
+      .split('{filename}').join(stem);
+  }
+
+  /** Format every track's label for a jukebox listing (DIR + bare filenames),
+   *  reading the current *jukebox-track-format* template. */
+  function jukeboxLabels(dir, tracks) {
+    let template = '"{title}", {artist}, {album}';
+    try { template = String(interpreter.evaluate('*jukebox-track-format*')); }
+    catch { /* defcustom not ready — use the default */ }
+    return tracks.map((t) => formatJukeboxLabel(`${dir}/${t}`, template));
+  }
+
   function openJukebox(spec) {
     const s = spec && typeof spec === 'object' ? spec : {};
     const dir = typeof s.dir === 'string' ? s.dir : '';
     if (dir === '') return null;
+    const tracks = Array.isArray(s.tracks) ? s.tracks : [];
     const state = {
       dir,
-      tracks: Array.isArray(s.tracks) ? s.tracks : [],
+      tracks,
       art: typeof s.art === 'string' ? s.art : null,
+      // Server-formatted row labels — format-track off the renderer interpreter.
+      labels: jukeboxLabels(dir, tracks),
     };
     const name = typeof s.name === 'string' && s.name !== ''
       ? s.name : `*Jukebox: ${dir}*`;
@@ -3619,6 +3666,18 @@ export function createSpine(options, effects = {}) {
     statusText = '';
     onStatus('');
     return src.id;
+  }
+
+  /** Re-format every open jukebox data-source's labels (a live *jukebox-track-
+   *  format* edit) and fan the new state out — server-side, no renderer
+   *  interpreter. Called from push-renderer-config! when the format changes. */
+  function relabelJukeboxes() {
+    for (const src of dataSources.list()) {
+      if (src.kind !== 'jukebox' || !src.state) continue;
+      const dir = typeof src.state.dir === 'string' ? src.state.dir : '';
+      const tracks = Array.isArray(src.state.tracks) ? src.state.tracks : [];
+      dataSources.setState(src.id, { ...src.state, labels: jukeboxLabels(dir, tracks) });
+    }
   }
 
   /** The buffer name for a customize SCOPE — mirrors app.js openCustomScope so
