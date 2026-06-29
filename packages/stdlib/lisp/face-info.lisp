@@ -144,18 +144,18 @@
    user knows what query rule they'd write to face it. The user's
    diagnostic tool when customising the colour theme. Bound to
    `C-h F`; aliased as `describe-syntax-at-point`."
-  (let ((info (tree-sitter-captures-for-buffer!)))
-    (cond
-      ((nil? info)
-       (println "no tree-sitter language for this buffer"))
-      (else
-        (let* ((lang (car info))
-               (captures (cdr info))
-               (pos (point))
-               (chosen (smallest-covering-capture captures pos)))
-          (cond
-            ((nil? chosen)
-             (let ((node (tree-sitter-node-at-point! pos)))
+  ;; Tree-sitter runs render-side (WASM), so the spine asks the renderer for the
+  ;; focused buffer's captures + node at point, then runs the rest here (Model B).
+  (with-tree-sitter-info
+    (lambda (lang captures node)
+      (cond
+        ((nil? lang)
+         (println "no tree-sitter language for this buffer"))
+        (else
+          (let* ((pos (point))
+                 (chosen (smallest-covering-capture captures pos)))
+            (cond
+              ((nil? chosen)
                (cond
                  ((nil? node)
                   (println (str "no capture covers point ("
@@ -170,16 +170,16 @@
                           (body (-face-info-render-no-capture
                                   lang node-type start end
                                   ancestors snippet)))
-                     (open-docstring-page! "Face at point" body))))))
-            (else
-              (let* ((start (car chosen))
-                     (end (cadr chosen))
-                     (face (caddr chosen))
-                     (color (face-color-for face))
-                     (snippet (-face-info-clip (buffer-text) start end))
-                     (body (-face-info-render
-                             lang face start end color snippet)))
-                (open-docstring-page! "Face at point" body)))))))))
+                     (open-docstring-page! "Face at point" body)))))
+              (else
+                (let* ((start (car chosen))
+                       (end (cadr chosen))
+                       (face (caddr chosen))
+                       (color (face-color-for face))
+                       (snippet (-face-info-clip (buffer-text) start end))
+                       (body (-face-info-render
+                               lang face start end color snippet)))
+                  (open-docstring-page! "Face at point" body))))))))))
 
 (defcommand describe-syntax-at-point ()
   "Alias of `describe-face-at-point` — open a doc page describing the
@@ -258,21 +258,19 @@
    pick a scope (this major mode, the default, or everywhere for the
    language), and apply it LIVE. The action companion to
    `describe-face-at-point` (C-h F); bound to `C-h C-f`."
-  (let ((info (tree-sitter-captures-for-buffer!)))
-    (cond
-      ((nil? info)
-       (println "no tree-sitter language for this buffer"))
-      (else
-        (let* ((lang (car info))
-               (pos (point))
-               (node (tree-sitter-node-at-point! pos)))
-          (cond
-            ((nil? node)
-             (println (str "no construct at point (" (number->string pos)
-                           ") in this " lang " buffer")))
-            (else
-              (let ((node-type (get node :type ""))
-                    (mode (major-mode-name)))
-                (if (= (string-length node-type) 0)
-                    (println "the construct at point has no node type")
-                    (-hcap-prompt-face node-type lang mode))))))))))
+  ;; Same render-side round-trip as describe-face-at-point: fetch the node at
+  ;; point, then run the (server-side) face/rule flow.
+  (with-tree-sitter-info
+    (lambda (lang captures node)
+      (cond
+        ((nil? lang)
+         (println "no tree-sitter language for this buffer"))
+        ((nil? node)
+         (println (str "no construct at point (" (number->string (point))
+                       ") in this " lang " buffer")))
+        (else
+          (let ((node-type (get node :type ""))
+                (mode (major-mode-name)))
+            (if (= (string-length node-type) 0)
+                (println "the construct at point has no node type")
+                (-hcap-prompt-face node-type lang mode))))))))

@@ -175,6 +175,13 @@ export const MSG = Object.freeze({
   // to spine.openProjectAt → a NEW project window. The keyboard path (find-project)
   // delivers via the minibuffer instead; this is the dialog/chooser's way in.
   PROJECT_OPEN: 'project-open',
+  // up (B4 face-info): the renderer's reply to a `tree-sitter-query` directive —
+  // the focused buffer's tree-sitter info at point: `{ lang, captures: [[start,
+  // end, face],…], node: {type,start,end,ancestors}|null }`. tree-sitter is WASM
+  // in the renderer, so the spine asks for it and resumes the suspended C-h F /
+  // C-h C-f command (deliverTreeSitterInfo → tree-sitter-info-delivered). The
+  // reverse of NOTEBOOK_EVAL (renderer→spine→reply).
+  TREE_SITTER_INFO: 'tree-sitter-info',
   // (B2.2b removed CUSTOMIZE_SYNC: customize is server-authoritative now — the
   // spine applies + persists the change and pushes the resulting chrome to every
   // window via CLIENT_DIRECTIVE, so there is no per-window re-apply relay.)

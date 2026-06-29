@@ -540,6 +540,17 @@ const SPINE_STDLIB = Object.freeze([
   // are embedded post-load (files.lisp isn't in SPINE_STDLIB; they resolve at
   // command-call time, so load order is fine). Needs commands.lisp (defcommand).
   'project.lisp',
+  // face-info.lisp — C-h F describe-face-at-point + C-h C-f highlight-construct-
+  // at-point (B4). The commands fetch RENDER-side tree-sitter data (captures +
+  // node at point) via `with-tree-sitter-info` — the spine's async round-trip to
+  // the renderer (embedded glue below; the reverse of NOTEBOOK_EVAL) — then run
+  // server-side: smallest-covering-capture + the Markdown render → open-docstring-
+  // page! (the B3 doc data-source), and the C-h C-f face/rule mutation via
+  // create-face! / add-highlight-rule! (faces.lisp / highlight-rules.lisp, both
+  // loaded). face-color-for resolves from the spine's theme vars. The C-h F / C-h
+  // C-f bindings already live in keymap.lisp. Load-time has no external calls, so
+  // order is free; with-tree-sitter-info resolves at command-call time.
+  'face-info.lisp',
 ]);
 
 /**
@@ -1026,6 +1037,10 @@ export function createSpine(options, effects = {}) {
   let nextRunId = 0;
   /** @type {Map<string, *>} runId → the parked on-exit Lisp procedure. */
   const runProcessCallbacks = new Map();
+  // B4 face-info: the renderer-resolved {faceName: cssColour} from the last
+  // tree-sitter-query reply (the `--tok-<face>` values live in the renderer's CSS
+  // cascade). face-color-for reads it; deliverTreeSitterInfo refreshes it.
+  let treeSitterColors = {};
   /** @type {Map<string, import('node:child_process').ChildProcess>} live children. */
   const runProcessChildren = new Map();
 
@@ -2016,7 +2031,28 @@ export function createSpine(options, effects = {}) {
         }
         return NIL;
       },
-      'face-color-for': () => '',
+      // (face-color-for FACE) — the colour the active theme RENDERS face's token
+      // with. The `--tok-<face>` value lives in the renderer's CSS cascade
+      // (styles.css defaults + theme + face overrides), which the spine can't
+      // replicate, so the renderer resolves it (getComputedStyle) and ships a
+      // {face: colour} map in the tree-sitter-query reply; deliverTreeSitterInfo
+      // stashes it here. Used by describe-face-at-point right after the reply.
+      'face-color-for': (args) => {
+        const face = String(args[0] ?? '');
+        return (face !== '' && typeof treeSitterColors[face] === 'string')
+          ? treeSitterColors[face] : '';
+      },
+      // (request-tree-sitter-info!) — B4 face-info: ask the active window's
+      // renderer for the focused buffer's tree-sitter info (captures + node) at
+      // point. The render-side reply resumes the suspended command via
+      // deliverTreeSitterInfo -> tree-sitter-info-delivered. The point is sent so
+      // the renderer computes node-at-point at the same spot the command reads.
+      'request-tree-sitter-info!': () => {
+        let pt = 0;
+        try { pt = Number(interpreter.evaluate('(point)')) || 0; } catch { /* default 0 */ }
+        onClientDirective([activeClientIndex], 'tree-sitter-query', [pt]);
+        return NIL;
+      },
 
       // --- docs (B3; docs.lisp now in SPINE_STDLIB) --------------------
       // The doc MANIFEST read server-side: the list of documented names from
@@ -2660,6 +2696,33 @@ export function createSpine(options, effects = {}) {
       (let ((reader *picker-reader*))
         (set! *picker-reader* nil)
         (if (not (nil? reader)) (reader result))))
+
+    ;; --- the tree-sitter info round-trip (B4 face-info) ------------------
+    ;; describe-face-at-point (C-h F) / highlight-construct-at-point (C-h C-f)
+    ;; need RENDER-side tree-sitter data — the syntax captures + the node at
+    ;; point — which the spine can't compute (tree-sitter is WASM in the
+    ;; renderer). Same suspend/resume shape as the picker, but the REVERSE of
+    ;; NOTEBOOK_EVAL: with-tree-sitter-info parks a continuation and asks the
+    ;; renderer (request-tree-sitter-info! -> a tree-sitter-query directive);
+    ;; the renderer computes (lang captures node) and replies, and the host
+    ;; resumes via tree-sitter-info-delivered. Everything AFTER the data lands
+    ;; (picking the capture, rendering the page, the C-h C-f rule/face mutation)
+    ;; runs server-side.
+    (define *tree-sitter-reader* nil)
+
+    (define (with-tree-sitter-info callback)
+      "Request the focused buffer's tree-sitter info at point; CALLBACK gets
+       (lang captures node): LANG the language tag (nil = no tree-sitter
+       language), CAPTURES a list of (start end face), NODE a hash-map
+       {:type :start :end :ancestors} or nil."
+      (set! *tree-sitter-reader* callback)
+      (request-tree-sitter-info!))
+
+    (define (tree-sitter-info-delivered lang captures node)
+      "Called by the host when the renderer replies. Resumes the continuation."
+      (let ((reader *tree-sitter-reader*))
+        (set! *tree-sitter-reader* nil)
+        (if (not (nil? reader)) (reader lang captures node))))
 
     ;; M-x — prompt for a command name, then run it. The host completes
     ;; the prompt (it has the command list); on submit the host calls
@@ -5195,6 +5258,35 @@ export function createSpine(options, effects = {}) {
     return deliverPicker(null, pickerId);
   }
 
+  /** B4 face-info: resume a command suspended on `with-tree-sitter-info` with the
+   *  renderer's reply (the focused buffer's tree-sitter INFO at point). Builds the
+   *  Lisp values in-spine (no port crossing) and calls `tree-sitter-info-delivered`.
+   *  INFO is `{ lang, captures: [[start,end,face],…], node: {type,start,end,
+   *  ancestors}|null }`; a missing language → (nil nil nil). */
+  function deliverTreeSitterInfo(info) {
+    const i = info && typeof info === 'object' ? info : {};
+    // Stash the renderer-resolved face→colour map (the `--tok-<face>` values from
+    // its CSS cascade) so face-color-for can read it during the resumed command.
+    treeSitterColors = (i.colors && typeof i.colors === 'object') ? i.colors : {};
+    const lang = (typeof i.lang === 'string' && i.lang !== '') ? i.lang : NIL;
+    const captures = Array.isArray(i.captures)
+      ? arrayToList(i.captures.map((c) => arrayToList([Number(c[0]) || 0, Number(c[1]) || 0, String(c[2] ?? '')])))
+      : NIL;
+    let node = NIL;
+    if (i.node && typeof i.node === 'object') {
+      node = new Map();
+      node.set(keyword('type'), String(i.node.type ?? ''));
+      node.set(keyword('start'), Number(i.node.start) || 0);
+      node.set(keyword('end'), Number(i.node.end) || 0);
+      node.set(keyword('ancestors'), arrayToList((Array.isArray(i.node.ancestors) ? i.node.ancestors : []).map(String)));
+    }
+    try {
+      interpreter.call('tree-sitter-info-delivered', lang, captures, node);
+    } catch (error) {
+      console.error('[spine] tree-sitter-info-delivered failed:', error.message);
+    }
+  }
+
   // --- view-state snapshot ---------------------------------------------
   /** The current point's 1-based line and 0-based column. */
   function pointPosition() {
@@ -5317,6 +5409,9 @@ export function createSpine(options, effects = {}) {
     // the generic picker round-trip (G0b): resolve / cancel the open picker.
     deliverPicker,
     cancelPicker,
+    // B4 face-info: the renderer's tree-sitter reply (server.js routes the
+    // TREE_SITTER_INFO message here to resume the suspended C-h F / C-h C-f).
+    deliverTreeSitterInfo,
     visitFile,
     visitDirectory,
     openElementSource,

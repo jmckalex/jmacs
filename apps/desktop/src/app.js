@@ -7088,6 +7088,48 @@ if (window.host && window.host.serverMode) {
         // B4 project Stage 3 (project-chooser): show the visual launcher; its
         // open/openFolder actions route the chosen path up as PROJECT_OPEN.
         showProjectChooser();
+      } else if (name === 'tree-sitter-query') {
+        // B4 face-info: the spine asked for the focused buffer's tree-sitter info
+        // at a point (tree-sitter is WASM here). Compute the captures + node and
+        // reply up as TREE_SITTER_INFO — the spine resumes the suspended C-h F /
+        // C-h C-f command. Reuses the highlighter (same as the old in-renderer
+        // tree-sitter-captures-for-buffer! / -node-at-point! primitives).
+        const pt = Number(args?.[0] ?? 0);
+        const payload = { lang: null, captures: [], node: null, colors: {} };
+        try {
+          const buf = currentTextBuffer;
+          if (buf && typeof buf.text === 'string') {
+            const language = languageForFilename(buf.name);
+            const hl = language && highlighters[language];
+            if (hl && typeof hl.captures === 'function') {
+              payload.lang = language;
+              payload.captures = hl.captures(buf.text).map((r) => [r.start, r.end, r.face]);
+              // Resolve each distinct face's rendered colour from the live CSS
+              // cascade (--tok-<face>); the spine can't (it has no styles.css /
+              // theme CSS), so it reads these via face-color-for after the reply.
+              const root = getComputedStyle(document.documentElement);
+              for (const [, , face] of payload.captures) {
+                if (face && !(face in payload.colors)) {
+                  payload.colors[face] = root.getPropertyValue(`--tok-${face}`).trim();
+                }
+              }
+              if (typeof hl.nodeAtPoint === 'function') {
+                const info = hl.nodeAtPoint(buf.text, pt);
+                if (info) {
+                  payload.node = {
+                    type: info.type, start: info.start, end: info.end,
+                    ancestors: info.ancestors,
+                  };
+                }
+              }
+            }
+          }
+        } catch (error) {
+          repl.appendError(`tree-sitter: ${error.lispMessage ?? error.message ?? String(error)}`);
+        }
+        if (godotServerPort) {
+          godotServerPort.postMessage({ type: MSG.TREE_SITTER_INFO, ...payload });
+        }
       } else if (name === 'fold-toggle') {
         // B4 (folding.lisp): fold a view concern — act on the focused editor.
         editorView.toggleFoldAtPoint();

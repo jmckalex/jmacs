@@ -432,6 +432,17 @@ async function editor(initialText = 'hello world', options = {}) {
         (await readdir(languagesDir)).filter((n) => n.endsWith('.lisp')),
     }
   );
+  // B4 face-info port: face-info.lisp's commands now fetch tree-sitter info via
+  // `with-tree-sitter-info` (in the real spine, an async renderer round-trip that
+  // returns lang + captures + node-at-point together). Bridge it to the existing
+  // synchronous test stubs so the command-logic tests run unchanged.
+  interpreter.evaluate(`
+    (define (with-tree-sitter-info cb)
+      (let ((info (tree-sitter-captures-for-buffer!)))
+        (if (nil? info)
+            (cb nil nil nil)
+            (cb (car info) (cdr info) (tree-sitter-node-at-point! (point))))))
+  `);
   return {
     buffer,
     interpreter,

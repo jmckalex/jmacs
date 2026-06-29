@@ -1355,6 +1355,12 @@ function onClientMessage(client, event) {
         spine.openProjectAt(msg.path);
       }
       break;
+    case MSG.TREE_SITTER_INFO:
+      // B4 face-info: the renderer's reply to a tree-sitter-query directive.
+      // Resume the suspended C-h F / C-h C-f command with the captures + node.
+      spine.setActiveClient(client.index);
+      spine.deliverTreeSitterInfo({ lang: msg.lang, captures: msg.captures, node: msg.node });
+      break;
     case MSG.MINIBUFFER_COMPLETE: {
       // TAB in the minibuffer. Find-file gets CASE-INSENSITIVE path completion;
       // the client sent its current input. Other prompts (M-x, switch-to-buffer)

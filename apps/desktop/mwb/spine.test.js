@@ -2400,3 +2400,61 @@ test('B4 project Stage 3: spine.openProjectAt (the PROJECT_OPEN path) opens a pr
   assert.equal(spine.openProjectAt('/home/home.txt'), false);
   assert.equal(log.projectWindows.length, 1);
 });
+
+// --- B4: face-info (C-h F / C-h C-f) — the render-side tree-sitter round-trip --
+// describe-face-at-point / highlight-construct-at-point fetch render-side
+// tree-sitter data via with-tree-sitter-info (a tree-sitter-query directive →
+// the renderer replies → deliverTreeSitterInfo resumes), then run server-side.
+
+test('B4 face-info: describe-face-at-point suspends on a tree-sitter-query, then opens a doc page', () => {
+  const { spine, log } = makeSpine('function foo() {}', 'test.js', { initialPath: '/t/test.js' });
+  spine.buffer.moveTo(3); // inside `function`
+  spine.interpreter.evaluate('(run-command (quote describe-face-at-point))');
+  const q = log.directives.find((d) => d.name === 'tree-sitter-query');
+  assert.ok(q, 'emits a tree-sitter-query directive');
+  assert.equal(q.args[0], 3, 'carries point');
+  // the renderer replies with a covering capture → a *Face at point* doc opens
+  spine.deliverTreeSitterInfo({
+    lang: 'javascript', captures: [[0, 8, 'keyword'], [9, 12, 'function']],
+    node: null, colors: { keyword: '#c594c5' },
+  });
+  const snap = JSON.stringify(spine.paneSnapshot(0));
+  assert.ok(snap.includes('"viewKind":"doc"'), 'a doc data-source leaf is shown');
+  assert.ok(snap.includes('Face at point'), 'the doc page is named "Face at point"');
+  // the resolved colour came from the renderer-provided stash
+  assert.equal(spine.interpreter.evaluate('(face-color-for "keyword")'), '#c594c5');
+});
+
+test('B4 face-info: describe-face-at-point falls back to node info when no capture covers point', () => {
+  const { spine, log } = makeSpine('abc def', 'test.js', { initialPath: '/t/test.js' });
+  spine.buffer.moveTo(0);
+  spine.interpreter.evaluate('(run-command (quote describe-face-at-point))');
+  assert.ok(log.directives.some((d) => d.name === 'tree-sitter-query'));
+  spine.deliverTreeSitterInfo({
+    lang: 'javascript', captures: [[5, 9, 'keyword']], // doesn't cover 0
+    node: { type: 'identifier', start: 0, end: 3, ancestors: ['program'] }, colors: {},
+  });
+  assert.ok(JSON.stringify(spine.paneSnapshot(0)).includes('Face at point'),
+    'opens the no-capture fallback doc page from the node info');
+});
+
+test('B4 face-info: highlight-construct-at-point round-trips then prompts for a face', () => {
+  const { spine, log } = makeSpine('abc', 'test.js', { initialPath: '/t/test.js' });
+  spine.interpreter.evaluate('(run-command (quote highlight-construct-at-point))');
+  assert.ok(log.directives.some((d) => d.name === 'tree-sitter-query'), 'C-h C-f emits tree-sitter-query');
+  spine.deliverTreeSitterInfo({
+    lang: 'javascript', captures: [],
+    node: { type: 'identifier', start: 0, end: 3, ancestors: [] }, colors: {},
+  });
+  assert.ok(log.minibufferOpens.some((p) => p.includes('Face for `identifier`')),
+    `prompts for the face (${JSON.stringify(log.minibufferOpens)})`);
+});
+
+test('B4 face-info: describe-face-at-point reports when there is no tree-sitter language', () => {
+  const { spine, log } = makeSpine('plain text', 'notes.txt', { initialPath: '/t/notes.txt' });
+  spine.interpreter.evaluate('(run-command (quote describe-face-at-point))');
+  spine.deliverTreeSitterInfo({ lang: null, captures: [], node: null, colors: {} });
+  // no doc page opened; the focused leaf is still the text buffer
+  assert.ok(!JSON.stringify(spine.paneSnapshot(0)).includes('"viewKind":"doc"'),
+    'no doc page when the buffer has no tree-sitter language');
+});
