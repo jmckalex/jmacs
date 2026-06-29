@@ -3718,16 +3718,11 @@ const interpreter = createInterpreter({
     'host-file-url': (args) => {
       const path = String(args[0] ?? '');
       if (path === '' || !path.startsWith('/')) return '';
-      // Vouch for this specific file's real directory so the __host__
-      // route serves it even when it (or a symlink to it) lives outside a
-      // folder the user opened — e.g. a bibliography symlinked to a shared
+      // Vouch for this file's dir + build the URL (see vouchHostFileUrl) so the
+      // __host__ route serves it even when it (or a symlink to it) lives outside
+      // a folder the user opened — e.g. a bibliography symlinked to a shared
       // .bib. Best-effort; the fetch still 403s gracefully if it fails.
-      try {
-        if (window.host && typeof window.host.allowHostFile === 'function') {
-          window.host.allowHostFile(path);
-        }
-      } catch { /* ignore — fall through to the URL */ }
-      return hostFileUrl(path);
+      return vouchHostFileUrl(path);
     },
     // `(find-file-new! PATH)` — visit a path that does NOT exist yet:
     // open an empty text buffer whose file is PATH, so the next
@@ -7194,7 +7189,10 @@ if (window.host && window.host.serverMode) {
           // it as bibPath; fold it straight into the open payload (host-file-url
           // src + a bib-path attr), exactly as the old Lisp command did. The
           // payload is identical to what open-element-view! built.
-          const payload = elementViewOpenPayload(name, { bibPath, hostFileUrl });
+          const payload = elementViewOpenPayload(name, {
+            bibPath,
+            hostFileUrl: vouchHostFileUrl,
+          });
           if (payload && serverViewClient) {
             serverViewClient.openElementView(payload);
           }
@@ -11111,6 +11109,20 @@ function hostFileUrl(filePath) {
     'app://editor/__host__' +
     filePath.split('/').map(encodeURIComponent).join('/')
   );
+}
+
+/** Build the `__host__` URL for an absolute PATH *and* vouch for its directory
+ *  in the serve allowlist — else the `app://editor/__host__` route 403s the
+ *  fetch (e.g. a bib symlinked outside an opened folder). Mirrors the
+ *  `host-file-url` primitive; shared by it and the plain-JS bib-search dispatch
+ *  (L4), which must NOT skip the allowlisting the way the bare builder does. */
+function vouchHostFileUrl(filePath) {
+  try {
+    if (window.host && typeof window.host.allowHostFile === 'function') {
+      window.host.allowHostFile(filePath);
+    }
+  } catch { /* ignore — fall through to the URL */ }
+  return hostFileUrl(filePath);
 }
 
 // The preview pane DOM: a header + an iframe inside #markdown-preview-host.
