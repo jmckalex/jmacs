@@ -7018,6 +7018,25 @@ if (window.host && window.host.serverMode) {
             document.documentElement.style.setProperty('--line-height', String(lineHeight));
           }
         } catch { /* malformed — keep the current knobs */ }
+      } else if (name === 'config-apply') {
+        // B2 regression / B0 config-push: the spine pushed a renderer-consumed
+        // customize setting that changed live ([varName, valueSrc] — valueSrc is
+        // the writeString SOURCE of the new value, clone-safe across the port).
+        // Re-apply it into THIS window's interpreter via the same custom-apply!
+        // the spine ran, so the renderer-side consumers (markdown preview,
+        // autosave getters, the jukebox format-track fn, the pdf-restore default,
+        // the dir-tree open target) read the new value — and the setting's native
+        // renderer on-change fires (e.g. *jukebox-track-format* relabels open
+        // jukeboxes). B2.2b deleted the old CUSTOMIZE_SYNC relay; this is the
+        // narrow, spine-authoritative replacement for the values the renderer (not
+        // the spine) consumes. Superseded by the pure-JS config store at B7.
+        try {
+          const varName = String(args?.[0] ?? '');
+          const valueSrc = String(args?.[1] ?? '');
+          if (varName) {
+            interpreter.evaluate(`(custom-apply! (quote ${varName}) (quote ${valueSrc}))`);
+          }
+        } catch { /* unregistered / malformed — leave the current value */ }
       } else if (name === 'fold-toggle') {
         // B4 (folding.lisp): fold a view concern — act on the focused editor.
         editorView.toggleFoldAtPoint();

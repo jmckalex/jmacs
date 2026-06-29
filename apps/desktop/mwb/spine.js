@@ -520,6 +520,34 @@ const SPINE_STDLIB = Object.freeze([
 ]);
 
 /**
+ * Renderer-consumed customize variables (B2 regression / B0 config-push).
+ *
+ * These defcustoms live in renderer-only stdlib files NOT loaded into
+ * SPINE_STDLIB (sticky-notes / views / system / jukebox / directory-tree),
+ * so B2.3 — which computes the customize MODEL from the spine's
+ * `*custom-registry*` — dropped them from `M-x customize`. The spine now
+ * DECLARES them itself (see the embedded block after the stdlib load), so
+ * they show + persist again; but the renderer is still the code that READS
+ * their values (markdown preview, autosave, the jukebox `format-track` Lisp
+ * fn, the PDF restore default, the dir-tree open target). B2.2b deleted the
+ * CUSTOMIZE_SYNC relay, so a live customize edit no longer reaches the
+ * renderer's interpreter. This set is the whitelist whose `:on-change`
+ * pushes the new value down (`config-apply`) so a live edit takes effect
+ * without a restart — the explicitly-deferred B0 config push. (The eventual
+ * pure-JS migration of these consumers belongs to B7, when the renderer
+ * interpreter is deleted; until then the renderer re-applies via its own
+ * `custom-apply!`, which also fires its native on-change hooks.)
+ */
+const RENDERER_CONFIG_VARS = Object.freeze(new Set([
+  '*markdown-interpreter*',
+  '*pdf-restore-default*',
+  '*autosave-recovery*',
+  '*autosave-recovery-interval*',
+  '*jukebox-track-format*',
+  '*directory-tree-open-target*',
+]));
+
+/**
  * Create the command spine.
  *
  * @param {object} options
@@ -1647,6 +1675,31 @@ export function createSpine(options, effects = {}) {
       'set-css-tab-width!': () => (pushChromeToAll(), NIL),
       'set-css-line-height!': () => (pushChromeToAll(), NIL),
       'set-highlight-overrides!': () => (pushChromeToAll(), NIL),
+      // B2 regression / B0 config-push: a renderer-consumed defcustom changed
+      // (its :on-change calls this with the var-name string). Push the NEW value
+      // to every window so the renderer re-applies it live — the markdown
+      // preview / autosave / jukebox-label / pdf-restore / dir-tree-target
+      // consumers all read from the renderer's interpreter, which B2.2b's relay
+      // deletion stopped updating on a live edit. The value rides as its
+      // writeString SOURCE (clone-safe — a raw Lisp value would mangle symbols
+      // across the port; see the customize :choice trick), re-applied client-side
+      // via `(custom-apply! (quote NAME) (quote SRC))`. A no-op before any window
+      // connects (the boot custom.lisp apply, which fires on-changes too).
+      'push-renderer-config!': (args) => {
+        if (!chromePushEnabled) return NIL;
+        const ids = [...paneModels.keys()];
+        if (ids.length === 0) return NIL;
+        const name = symName(args[0]) ?? lispString(args[0]) ?? String(args[0] ?? '');
+        if (!RENDERER_CONFIG_VARS.has(name)) return NIL;
+        let valueSrc;
+        try {
+          valueSrc = writeString(interpreter.evaluate(name));
+        } catch {
+          return NIL;
+        }
+        onClientDirective(ids, 'config-apply', [name, valueSrc]);
+        return NIL;
+      },
       // B1.2: read the user's colour overrides from <userData>/faces.json (the
       // same file the renderer writes) and return them in the Lisp shape
       // set-face-overrides! consumes. Empty (defaults) when the file is absent.
@@ -1999,6 +2052,97 @@ export function createSpine(options, effects = {}) {
   for (const file of SPINE_STDLIB) {
     const source = readFileSync(join(STDLIB_DIR, file), 'utf8');
     interpreter.evaluate(source);
+  }
+
+  // B2 regression fix: re-register the customize settings owned by renderer-only
+  // stdlib files that are NOT in SPINE_STDLIB. B2.3 computes the `M-x customize`
+  // MODEL from the spine's *custom-registry*, so these dropped out of the UI.
+  // Declare them here (verbatim type / default / options / group / doc from the
+  // owning files) so they show + persist again. This MUST run before the
+  // custom.lisp load below, so a user's SAVED value applies to the spine's copy
+  // (and the customize panel shows the saved value + the right state badge).
+  //
+  //  - The 6 RENDERER-CONSUMED settings (sticky-notes / views / system / jukebox
+  //    / directory-tree) carry an :on-change that calls push-renderer-config! —
+  //    the B0 config push (RENDERER_CONFIG_VARS). The renderer still owns the
+  //    code that reads them, so a live edit must reach it; the on-change is a
+  //    no-op until a window connects (push-renderer-config! gates on
+  //    chromePushEnabled), so the boot custom.lisp apply below doesn't fan out.
+  //    NB: the jukebox setting's stdlib :on-change (refresh-jukebox-labels!) is a
+  //    RENDER-side primitive absent here — we replace it with the config push;
+  //    the renderer's own custom-apply! fires the real refresh client-side.
+  //  - The 5 LaTeX settings (latex-compile.lisp) are SPINE-consumed by the
+  //    pending latex-compile port (run-process! reads *latex-command* etc.), so
+  //    they need no config push — just registration + persistence now.
+  try {
+    interpreter.evaluate(`
+      (defgroup 'sticky-notes 'godot "Sticky notes overlaid on the buffer.")
+      (defgroup 'views 'godot "Open views: persistence and switching.")
+      (defgroup 'jukebox 'godot "Jukebox view: how audio files are listed.")
+      (defgroup 'directory-tree 'godot "The directory tree-view sidebar.")
+      (defgroup 'latex 'godot "LaTeX authoring: the compile / view loop.")
+
+      ;; --- renderer-consumed (B0 config push on change) ------------------
+      (defcustom *markdown-interpreter* "marked" :string
+        :group 'sticky-notes
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Markdown renderer for sticky notes and live docstrings. \\"marked\\" selects the bundled marked.js library; any other string is a shell command that reads Markdown on stdin and prints HTML on stdout.")
+
+      (defcustom *pdf-restore-default* #t :boolean
+        :group 'views
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Whether a freshly-opened PDF view persists across a relaunch by default. #t restores every PDF on startup; #f keeps generic / texdoc PDFs transient (latex-view's output persists regardless, via *latex-pdf-restore*).")
+
+      (defcustom *autosave-recovery* #t :boolean
+        :group 'editing
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Write crash-recovery snapshots of unsaved buffers (debounced after edits, on window blur). Turn off to disable autosave entirely; a crash will then lose unsaved work. Existing snapshots are cleared on a clean quit regardless.")
+
+      (defcustom *autosave-recovery-interval* 1000 :number
+        :group 'editing
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Milliseconds to wait after an edit before writing a crash-recovery snapshot (the autosave debounce). Lower snapshots more eagerly; higher writes less often.")
+
+      (defcustom *jukebox-track-format* "\\"{title}\\", {artist}, {album}" :string
+        :group 'jukebox
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Template used by format-track to render each row in a jukebox buffer. Placeholders in {braces}: {title} {artist} {album} {track} {year} {genre} {filename}. Missing fields render empty; an untagged file falls back to the bare filename.")
+
+      (defcustom *directory-tree-open-target* 'editing-pane :choice
+        :group 'directory-tree
+        :options '(editing-pane other-pane this-pane)
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "Where a file opens when activated in a directory tree-view: 'editing-pane (the main editing area; the default), 'other-pane (the next editing pane after the tree), or 'this-pane (the tree's own pane, promoted to a tabline).")
+
+      ;; --- spine-consumed (the pending latex-compile port reads these) ---
+      (defcustom *latex-command*
+        '("latexmk" "-pdf" "-synctex=1" "-interaction=nonstopmode")
+        :list
+        :group 'latex
+        :doc "The LaTeX build command as a list of strings (program + flags); the source .tex filename is appended at build time. Default latexmk handles the multi-pass rerun/bibtex dance itself. run-process! takes no shell — this is a token list, not a shell string.")
+
+      (defcustom *latex-bibtex-command* '("bibtex")
+        :list
+        :group 'latex
+        :doc "The bibliography command as a list of strings (program + flags). latexmk runs bibtex/biber itself, so this is unused by the default build; it is the seam for an explicit bibliography pass.")
+
+      (defcustom *latex-view* 'pdf-view
+        :symbol
+        :group 'latex
+        :doc "The PDF viewer latex-view uses. v1 supports only the built-in 'pdf-view (open / reload in a split beside the source). The seam for external viewers (Skim, evince) later.")
+
+      (defcustom *latex-pdf-restore* #t :boolean
+        :group 'latex
+        :doc "Whether the PDF latex-view opens persists across a relaunch. #t restores the latexed-output PDF beside its source; #f makes it transient like a generic PDF. Independent of the global *pdf-restore-default*.")
+
+      (defcustom *latex-clean*
+        '(".aux" ".log" ".out" ".synctex.gz" ".fdb_latexmk" ".fls" ".toc" ".bbl" ".blg")
+        :list
+        :group 'latex
+        :doc "Auxiliary file extensions latex-clean deletes — the build by-products latexmk / pdflatex leave beside the source .tex.")
+    `);
+  } catch (error) {
+    console.error('[spine] renderer-config defcustoms install failed:', error.message);
   }
 
   // Gates runtime chrome pushes (B1.3). OFF during the boot config + faces
