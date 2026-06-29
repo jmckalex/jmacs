@@ -512,6 +512,16 @@ const SPINE_STDLIB = Object.freeze([
   // bridge (citation-parse-lenient / -entries / -format-keys / -register-
   // style!). Extends latex-c-c-map with [. Loads after reftex-refs.lisp.
   'reftex-cite.lisp',
+  // latex-menu.lisp — the STRUCTURED (grouped) LaTeX mode menu (register-mode-menu!
+  // "LaTeX" with the Compile/Insert/Fonts/Math/References/Navigation sections).
+  // Server-side now so the spine pushes the grouped menu instead of the flat
+  // mode-menu-entries (the renderer was the only source of the sections — Markdown/
+  // JMarkdown already register server-side via markdown.lisp / the language loop).
+  // Pure DATA: it stores quoted command symbols; register-mode-menu! is embedded
+  // above and the keys/docstrings resolve from the keymap at menu-compute time, so
+  // it needs no LaTeX command to exist at load. Loaded last among the LaTeX/RefTeX
+  // files, mirroring STDLIB_FILES.
+  'latex-menu.lisp',
   // docs.lisp — the in-editor documentation surface (B3; plans/MODEL-B-DEFAULT.md):
   // doc-manifest / doc-known? (over the load-doc-manifest! host primitive that the
   // spine reads from docs/build/manifest.json via fs), symbol-at-point + doc-

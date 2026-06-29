@@ -7275,9 +7275,6 @@ function dispatchKey(key) {
   }
   try {
     const handled = interpreter.call('handle-key', key) === true;
-    // A key may have switched mode (e.g. toggle-math-mode) — keep the
-    // mode menu in step.
-    refreshModeMenu();
     // If point has wandered out of an active snippet's body (an arrow
     // key, a click-driven move), soft-commit it — the text stays, the
     // active record is dropped. Field navigation (TAB/S-TAB) keeps point
@@ -7429,66 +7426,20 @@ window.addEventListener('paste', (event) => {
 });
 
 // --- mode menu ----------------------------------------------------------
-// The native menu shows the current buffer's mode commands. The
-// renderer owns the keymaps, so it builds the menu data here and ships
-// it to the main process; a click comes back through onMenuCommand.
-
-/** The mode menu for the current buffer, or null when it has none.
- *
- * Two shapes, both consumed by menu.js's recursive renderer:
- *  - flat (the default): `items` are leaves `{label, command, toolTip}`,
- *    one per bound command — byte-for-byte the historical menu;
- *  - nested: when the mode registered a structured menu
- *    (`mode-menu-sections`), `items` are submenus `{label, items:[…]}`,
- *    one per section, whose leaves are resolved (keys + docstring) from
- *    the same flat `mode-menu-entries` data.
- */
-function currentModeMenu() {
-  if (!keymapReady) return null;
-  let raw;
-  try {
-    raw = listToArray(interpreter.call('mode-menu-entries'));
-  } catch (error) {
-    repl.appendError(`mode menu failed: ${error.message}`);
-    return null;
-  }
-  if (raw.length === 0) return null;
-
-  // The structured (sectioned) menu, when this mode registered one.
-  let sections = [];
-  try {
-    sections = listToArray(interpreter.call('mode-menu-sections-resolved'))
-      .map((section) => listToArray(section).map((cell, i) =>
-        i === 0 ? cell : listToArray(cell)));
-  } catch (error) {
-    // A registry slip shouldn't lose the menu — fall back to flat.
-    repl.appendError(`mode menu sections failed: ${error.message}`);
-    sections = [];
-  }
-
-  const flatEntries = raw.map((entry) => listToArray(entry));
-  const items = buildModeMenuItems(flatEntries, sections);
-  return { label: interpreter.call('major-mode-name'), items };
-}
+// The native menu shows the current buffer's mode commands. The SERVER owns the
+// keymaps + the mode-menu registrations (menus.lisp/latex-menu.lisp/markdown.lisp
+// + the language modes, all in SPINE_STDLIB), so the spine computes the menu —
+// `{label, entries, sections}` — and pushes it in the view-state. The renderer
+// just renders the pushed data (applyServerModeMenu) and ships it to the main
+// process; a click comes back through onMenuCommand → the spine (RUN_COMMAND).
 
 let lastModeMenuJson = null;
 
-/** Recompute the mode menu and, when it changed, send it to the host. */
-function refreshModeMenu() {
-  if (!keymapReady) return;
-  const menu = currentModeMenu();
-  const json = JSON.stringify(menu);
-  if (json === lastModeMenuJson) return;
-  lastModeMenuJson = json;
-  window.host.setModeMenu(menu);
-}
-
-/** Forward a SERVER-computed mode menu (carried in the view-state) to the macOS
- *  app menu. Under GODOT_SERVER=1 the focused buffer + its mode live on the
- *  server, so the spine computes the menu and ships `{label, entries, sections}`;
- *  the local interpreter can't (it's inert). Built with the same builder as the
- *  local path and dedup'd via lastModeMenuJson. Called on every view-state
- *  update (mode switch, pane/buffer switch). */
+/** Render a SERVER-computed mode menu (carried in the view-state) into the macOS
+ *  app menu. The focused buffer + its mode live on the server, so the spine
+ *  computes `{label, entries, sections}` (the inert renderer interpreter can't);
+ *  the renderer just builds the items + ships them. Dedup'd via lastModeMenuJson.
+ *  Called on every view-state update (mode switch, pane/buffer switch). */
 function applyServerModeMenu(data) {
   if (!keymapReady) return;
   const menu = data
@@ -9982,7 +9933,8 @@ function applyTextMountSideEffects(view, instance) {
   watchCurrentBuffer();
   ensureMajorMode();
   if (editorView && typeof editorView.focus === 'function') editorView.focus();
-  refreshModeMenu();
+  // The mode menu rides the server's VIEW push (applyServerModeMenu) on a buffer
+  // switch — no local recompute.
   syncMarkdownPreviewToBuffer();
 }
 
@@ -11493,20 +11445,17 @@ if (typeof window.host?.readPanes === 'function') {
     });
 }
 
-// Native menus: run a command chosen from a menu, and publish the
-// current buffer's mode menu to the host.
+// Native menus: run a command chosen from a menu. The mode menu itself is
+// computed + pushed by the server (applyServerModeMenu), not built here.
 window.host.onMenuCommand((command) => {
   editorView.focus();
   // Menu clicks dispatch through the SPINE (like keys), not the inert renderer
   // interpreter — the server routes server vs element-view commands and reports
-  // errors via status. The mode menu refresh rides the server's next VIEW push;
-  // refreshModeMenu() stays for now (renderer mode-menu path, retired in Part 2).
+  // errors via status. The mode menu refresh rides the server's next VIEW push.
   if (serverViewClient && typeof serverViewClient.runCommand === 'function') {
     serverViewClient.runCommand(command);
   }
-  refreshModeMenu();
 });
-refreshModeMenu();
 
 // A native Quit (Cmd+Q / app-menu Quit) is intercepted in the main
 // process and routed here, so it gets the same unsaved-changes confirm
