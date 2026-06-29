@@ -2407,6 +2407,14 @@ test('B4 project Stage 3: spine.openProjectAt (the PROJECT_OPEN path) opens a pr
   assert.equal(log.projectWindows.length, 1);
 });
 
+test('B4 project Stage 3: opening a project records it in the central index (chooser grid)', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project-at! "/proj/btt")');
+  const remember = log.directives.find((d) => d.name === 'remember-project');
+  assert.ok(remember, 'emits a remember-project directive');
+  assert.equal(remember.args[0], '/proj/btt');
+});
+
 // --- B4: face-info (C-h F / C-h C-f) — the render-side tree-sitter round-trip --
 // describe-face-at-point / highlight-construct-at-point fetch render-side
 // tree-sitter data via with-tree-sitter-info (a tree-sitter-query directive →

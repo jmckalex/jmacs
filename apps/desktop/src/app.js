@@ -7084,6 +7084,15 @@ if (window.host && window.host.serverMode) {
           .openDirectory()
           .then((path) => { if (path) requestOpenProject(path); })
           .catch((error) => repl.appendError(error.lispMessage ?? error.message ?? String(error)));
+      } else if (name === 'remember-project') {
+        // B4 project: record an opened project in the central index so the
+        // chooser lists it. Under Model B the spine opens projects, so the old
+        // in-place openProject's rememberProject call no longer runs.
+        const root = String(args?.[0] ?? '');
+        if (root) {
+          rememberProject(root).catch((error) =>
+            repl.appendError(error.lispMessage ?? error.message ?? String(error)));
+        }
       } else if (name === 'open-project-chooser') {
         // B4 project Stage 3 (project-chooser): show the visual launcher; its
         // open/openFolder actions route the chosen path up as PROJECT_OPEN.

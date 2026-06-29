@@ -4089,6 +4089,11 @@ export function createSpine(options, effects = {}) {
       return false;
     }
     const root = (typeof probe.path === 'string' && probe.path !== '') ? probe.path : path;
+    // Record it in the central project index so the chooser lists it. Under
+    // Model B the spine opens projects (find-project / dialog / chooser), so the
+    // old in-renderer openProject's rememberProject call no longer runs — emit a
+    // directive to the active window, which owns the index (window.host).
+    onClientDirective([activeClientIndex], 'remember-project', [root]);
     onOpenProjectWindow({ root });
     statusText = '';
     onStatus('');
