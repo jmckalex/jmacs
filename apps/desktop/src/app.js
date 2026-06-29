@@ -11497,10 +11497,12 @@ if (typeof window.host?.readPanes === 'function') {
 // current buffer's mode menu to the host.
 window.host.onMenuCommand((command) => {
   editorView.focus();
-  try {
-    interpreter.evaluate(`(run-command (quote ${command}))`);
-  } catch (error) {
-    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+  // Menu clicks dispatch through the SPINE (like keys), not the inert renderer
+  // interpreter — the server routes server vs element-view commands and reports
+  // errors via status. The mode menu refresh rides the server's next VIEW push;
+  // refreshModeMenu() stays for now (renderer mode-menu path, retired in Part 2).
+  if (serverViewClient && typeof serverViewClient.runCommand === 'function') {
+    serverViewClient.runCommand(command);
   }
   refreshModeMenu();
 });

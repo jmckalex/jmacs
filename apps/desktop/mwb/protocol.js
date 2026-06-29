@@ -199,6 +199,11 @@ export const INTENT = Object.freeze({
   DELETE_BACKWARD: 'delete-backward', // backspace
   POINT: 'point', // set the cursor offset (window-state)
   KEY: 'key', // a named key string routed through the Lisp keymap
+  // A command to run by EXACT name — the native app-menu / mode-menu click.
+  // The server routes it like M-x's exact branch: a renderer-owned element-view
+  // command goes back DOWN via RUN_CLIENT_COMMAND; anything else runs on the
+  // spine. (Menu clicks used to eval against the inert renderer interpreter.)
+  RUN_COMMAND: 'run-command',
   // Minibuffer round-trip (the command spine). When a server-side command
   // prompts (e.g. M-x, find-file), the server sends a VIEW message whose
   // `minibuffer` is active; the client shows the prompt and the user's

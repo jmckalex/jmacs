@@ -1392,6 +1392,20 @@ function onClientMessage(client, event) {
         }
       }
       break;
+    case MSG.RUN_COMMAND:
+      // A native app-menu / mode-menu click asks to run a command by EXACT name.
+      // Route like M-x's exact branch (no fuzzy match — the name is exact): a
+      // renderer-owned element-view command goes back DOWN via RUN_CLIENT_COMMAND;
+      // anything else runs on the spine, in the clicking window's context.
+      if (typeof msg.name === 'string' && msg.name !== '') {
+        spine.setActiveClient(client.index);
+        if (clientCommandNames.has(msg.name)) {
+          sendRunClientCommand(client, msg.name);
+        } else {
+          spine.runCommand(msg.name);
+        }
+      }
+      break;
     case MSG.BROWSER_NAVIGATED:
       // A browser VIEW navigated (link / URL bar / in-page route). Quietly track
       // the new URL on its data-source so a saved workspace restores the page the

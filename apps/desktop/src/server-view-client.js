@@ -714,6 +714,15 @@ export function createServerViewClient({
     port.postMessage({ type: MSG.OPEN_ELEMENT_SOURCE, spec });
   }
 
+  /** Ask the server to run a command by EXACT name — a native app-menu /
+   *  mode-menu click. The server routes it like M-x (an element-view command
+   *  goes back down via RUN_CLIENT_COMMAND; anything else runs on the spine),
+   *  so a menu click no longer touches the inert renderer interpreter. */
+  function runCommand(name) {
+    if (typeof name !== 'string' || name === '') return;
+    port.postMessage({ type: MSG.RUN_COMMAND, name });
+  }
+
   /** Report that a browser VIEW (data-source SOURCEID) navigated to URL — a link
    *  click, the URL bar, or an in-page route. The server quietly updates the
    *  source's `state.url` (no fan-out) so the page is tracked for session-restore.
@@ -848,6 +857,8 @@ export function createServerViewClient({
     visitPath,
     // Hold a renderer-computed element-view spec as a server data-source.
     openElementView,
+    // Run a command by exact name (native app-menu / mode-menu click).
+    runCommand,
     // Report a browser view's navigation UP so the server tracks its state.url.
     browserNavigated,
     // Insert text into the server's active buffer (element-view insert-text).
