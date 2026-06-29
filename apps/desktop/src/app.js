@@ -5271,10 +5271,11 @@ const interpreter = createInterpreter({
     // Refresh the `labels` array on every open jukebox buffer. Called
     // by the `*jukebox-track-format*` :on-change hook so a user
     // customising the format string sees it take effect immediately.
-    'refresh-jukebox-labels!': () => {
-      refreshAllJukeboxLabels();
-      return NIL;
-    },
+    // No-op under Model B: the jukebox is a server data-source and the SPINE
+    // re-formats + re-pushes its labels when *jukebox-track-format* changes
+    // (relabelJukeboxes). The renderer's format-track path (refreshAllJukeboxLabels)
+    // is dead flag-off code that dies with the interpreter in B7.
+    'refresh-jukebox-labels!': () => NIL,
     // Read an audio file's embedded tag metadata as a Lisp hash-map
     // keyed by :title :artist :album :track :year :genre :duration.
     // Missing fields are nil; an unsupported / unreadable file is nil
@@ -5988,9 +5989,10 @@ if (window.host && window.host.serverMode) {
       } else if (directoryKind) {
         extras = { rootPath: w.filePath, expanded: new Set() };
       } else if (jukeboxKind) {
-        // The server lists the directory's audio files + album art; the client
-        // formats per-track labels (the same Lisp helper + audio-metadata IPC as
-        // flag-off) and plays tracks via media:// URLs (jukebox-view).
+        // The server lists the directory's audio files + album art AND formats the
+        // per-track labels (format-track via the standalone audio-metadata reader,
+        // in spine.openJukebox — no renderer interpreter); the client plays tracks
+        // via media:// URLs (jukebox-view).
         const s = (w.state && typeof w.state === 'object') ? w.state : {};
         const dir = typeof s.dir === 'string' ? s.dir : '';
         const tracks = Array.isArray(s.tracks) ? s.tracks : [];
@@ -5998,7 +6000,8 @@ if (window.host && window.host.serverMode) {
           dir,
           tracks,
           art: typeof s.art === 'string' ? s.art : null,
-          labels: tracks.map((t) => formatTrackLabel(joinPath(dir, t))),
+          // Server-formatted labels ride the data-source state; bare filenames if absent.
+          labels: Array.isArray(s.labels) ? s.labels : tracks,
           // refresh (g) re-reads the dir — deferred in server mode (v1 is
           // immutable; the mutable-source seam would re-scan + restate).
           refresh: () => {},
