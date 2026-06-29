@@ -24,6 +24,8 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
     pickerOpens: [],
     // Each new-window request (the C-x 5 2 effect, G4).
     newWindows: 0,
+    // Each open-project-window request (B4 project): the parked { root } config.
+    projectWindows: [],
     // Each client directive raised (the multi-window round-trip): { ids, name, args }.
     directives: [],
   };
@@ -36,6 +38,7 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
       onScroll: (r) => log.scrolls.push(r),
       onPicker: (req) => log.pickerOpens.push(req),
       onNewWindow: () => { log.newWindows += 1; },
+      onOpenProjectWindow: (cfg) => log.projectWindows.push(cfg),
       onClientDirective: (ids, name, args) => log.directives.push({ ids, name, args }),
       openFile: extra.openFile,
       // A recording save: capture the {path, text} the spine would write, and
@@ -2266,4 +2269,63 @@ test('B4 view-list: surfaces an open pdf data-source so latex-view can find it (
   spine.interpreter.evaluate('(open-file-in-split! "/tmp/paper.pdf" (quote horizontal) (quote after))');
   // now open: -latex-find-view-by-file matches it via view-list + view-file-path
   assert.equal(spine.interpreter.evaluate('(nil? (-latex-find-view-by-file "/tmp/paper.pdf"))'), false);
+});
+
+// --- B4: project port (find-project / open-project-at! -> a NEW window) -----
+// Each project now opens in its OWN window (the old in-renderer path reconfigured
+// the single window in place because it couldn't). open-project-at! validates the
+// directory + raises onOpenProjectWindow; the server spawns a window and assembles
+// the 3-column Nova layout (dir-tree | editing | bookmark) on its HELLO via
+// spine.loadProjectWindow.
+
+function projectSpine() {
+  return makeSpine('', 'home.txt', {
+    initialPath: '/home/home.txt',
+    openFile: (path) => {
+      if (path === '/proj/btt' || path === '/proj/btt/') {
+        return { directory: true, kind: 'directory-tree', name: 'btt', path: '/proj/btt' };
+      }
+      if (path.endsWith('.txt')) return { text: 'hi', name: path.split('/').pop(), path };
+      return null;
+    },
+  });
+}
+
+test('B4 project: commands registered + find-project minibuffer helpers resolve', () => {
+  const { spine } = projectSpine();
+  for (const c of ['find-project', 'open-project', 'close-project', 'project-chooser']) {
+    assert.notEqual(spine.interpreter.evaluate(`(member "${c}" (registered-command-names))`), false);
+  }
+  assert.equal(typeof spine.interpreter.evaluate('(-initial-find-file-value)'), 'string');
+  assert.equal(spine.interpreter.evaluate('(-expand-tilde "/proj/btt")'), '/proj/btt');
+});
+
+test('B4 project: open-project-at! validates the dir + raises onOpenProjectWindow', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project-at! "/proj/btt")');
+  assert.equal(log.projectWindows.length, 1);
+  assert.equal(log.projectWindows[0].root, '/proj/btt');
+  // a non-directory is rejected — no window spawn
+  spine.interpreter.evaluate('(open-project-at! "/home/home.txt")');
+  assert.equal(log.projectWindows.length, 1);
+});
+
+test('B4 project: loadProjectWindow assembles the 3-column layout in a spawned window', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project-at! "/proj/btt")');
+  const cfg = log.projectWindows[0];
+  const idx = spine.addClientView(); // simulate the freshly-spawned window
+  assert.equal(spine.loadProjectWindow(idx, cfg), true);
+  const snap = spine.paneSnapshot(idx);
+  assert.equal(snap.kind, 'split');
+  assert.equal(snap.orientation, 'horizontal');
+  assert.equal(snap.first.viewKind, 'directory-tree'); // left column
+  assert.equal(snap.second.kind, 'split'); // right block = editing | bookmark
+  const leaves = [];
+  (function walk(n) { if (!n) return; if (n.kind === 'leaf') leaves.push(n); else { walk(n.first); walk(n.second); } })(snap);
+  assert.equal(leaves.length, 3);
+  assert.ok(leaves.some((l) => l.viewKind === 'directory-tree'), 'directory-tree leaf');
+  assert.ok(leaves.some((l) => l.viewKind === 'bookmark'), 'bookmark outline leaf');
+  const editing = leaves.find((l) => l.viewKind !== 'directory-tree' && l.viewKind !== 'bookmark');
+  assert.ok(editing && editing.focused === true, 'the editing pane is focused');
 });

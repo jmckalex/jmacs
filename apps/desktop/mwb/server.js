@@ -413,6 +413,14 @@ const spine = createSpine(
     // active client to (host.newWindow() → main creates + attaches it as a new
     // client on this shared server).
     onNewWindow: () => sendWindowNewToActiveClient(),
+    // open-project-at! (find-project / open-project): each project opens in its
+    // OWN window now. Stash the project config, spawn a window, and assemble its
+    // 3-column layout on its HELLO (mirrors the multi-window restore spawn-and-
+    // apply). The home window is left untouched.
+    onOpenProjectWindow: (config) => {
+      pendingProjectWindow = config;
+      requestSpawnWindow(null);
+    },
     // emit-client-directive!: a command drove a renderer-side action in a chosen
     // set of windows (e.g. C-x 5 1 close-other-windows). The spine resolved the
     // target ids; post the directive to just those ports.
@@ -1214,6 +1222,13 @@ function onClientMessage(client, event) {
         // A just-spawned restore window: hand it the next saved layout BEFORE the
         // snapshot below, so it paints its restored tree (not the fresh scratch).
         applyNextRestoreWindow(client);
+      } else if (pendingProjectWindow) {
+        // A just-spawned PROJECT window (B4): assemble its 3-column layout BEFORE
+        // the snapshot, so it paints the directory-tree | editing | bookmark
+        // workspace rather than the default scratch. One project per spawn.
+        const config = pendingProjectWindow;
+        pendingProjectWindow = null;
+        spine.loadProjectWindow(client.index, config);
       }
       sendSnapshot(client);
       sendViewTo(client);
@@ -1601,6 +1616,10 @@ function handleWorkspaceChoice(client, value) {
 let pendingRestore = [];
 let awaitingRestoreWindow = false;
 let restoreInProgress = false;
+// B4 project: the project config awaiting its freshly-spawned window's HELLO
+// (open-project-at! → onOpenProjectWindow stashes it, then requestSpawnWindow).
+// The next non-bootstrap, non-restore HELLO assembles the 3-column layout for it.
+let pendingProjectWindow = null;
 
 /** The saved geometry `{ bounds, display }` of a window-blob, or null. */
 function windowGeometry(w) {

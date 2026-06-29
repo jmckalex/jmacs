@@ -36,6 +36,7 @@
 
 import { readFileSync, statSync, readdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { homedir } from 'node:os';
 import { atomicWriteSync } from './atomic-write-sync.js';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -530,6 +531,15 @@ const SPINE_STDLIB = Object.freeze([
   // that the spine provides as `fold-toggle`/`fold-all`/`unfold-all` directive
   // emitters → the renderer's editorView.toggleFoldAtPoint()/foldAll()/unfoldAll().
   'folding.lisp',
+  // project.lisp — the open-project / find-project / close-project commands (B4).
+  // Thin Lisp over the host primitives open-project-at! / open-project! /
+  // close-project! / open-project-chooser! (above) — under Model B each project
+  // opens in its OWN window (open-project-at! → onOpenProjectWindow → the server
+  // spawns a window + assembles the 3-column layout via loadProjectWindow).
+  // find-project's minibuffer helpers (-initial-find-file-value, -expand-tilde)
+  // are embedded post-load (files.lisp isn't in SPINE_STDLIB; they resolve at
+  // command-call time, so load order is fine). Needs commands.lisp (defcommand).
+  'project.lisp',
 ]);
 
 /**
@@ -559,6 +569,21 @@ const RENDERER_CONFIG_VARS = Object.freeze(new Set([
   '*jukebox-track-format*',
   '*directory-tree-open-target*',
 ]));
+
+/** Expand a leading `~` / `~/` to the user's home directory. The spine reads
+ *  disk directly (Node), so it resolves paths itself rather than leaning on a
+ *  renderer helper. A non-tilde path is returned unchanged. */
+function expandTildePath(p) {
+  const s = String(p ?? '');
+  if (s === '~') return homedir();
+  if (s.startsWith('~/')) return join(homedir(), s.slice(2));
+  return s;
+}
+
+// The left directory-tree sidebar's share of a project window (the canonical
+// Nova proportion, mirroring app.js's PROJECT_SIDEBAR_RATIO). The bookmark
+// outline on the right is split off the editing pane by openBookmarkBeside.
+const PROJECT_SIDEBAR_RATIO = 0.18;
 
 /**
  * Create the command spine.
@@ -710,6 +735,14 @@ export function createSpine(options, effects = {}) {
    *  a WINDOW_NEW down-message to the active client, which asks its host to
    *  open another window (a new client on this shared server). Signature: (). */
   const onNewWindow = effects.onNewWindow ?? (() => {});
+
+  /** Raised when `open-project-at!` (find-project / open-project) opens a project:
+   *  each project gets its OWN window (Model B can do this now; the old in-renderer
+   *  path reconfigured the single window in place because it couldn't). The server
+   *  stashes CONFIG, spawns a fresh window, and assembles the 3-column project
+   *  layout on its HELLO via `spine.loadProjectWindow`. Signature: (config) where
+   *  config is `{ root }` (a project root path). */
+  const onOpenProjectWindow = effects.onOpenProjectWindow ?? (() => {});
 
   /** Raised by `emit-client-directive!`: send the directive `{ name, args }` to
    *  each window in IDS. The command chose the recipients (this/other/all window
@@ -1210,6 +1243,50 @@ export function createSpine(options, effects = {}) {
       // keymap binding + the command) is here; the host half is in the client.
       'request-new-window!': () => {
         onNewWindow();
+        return NIL;
+      },
+
+      // --- projects (B4 project.lisp) -----------------------------------
+      // (open-project-at! PATH) — open the directory PATH as a project in a NEW
+      // window (each project gets its own window now that Model B supports it;
+      // the old in-renderer path reconfigured the single window in place because
+      // it couldn't). Validate PATH is a directory (the openFile effect marks a
+      // dir), then raise onOpenProjectWindow — the server spawns a window and
+      // assembles the 3-column layout (dir-tree | editing | bookmarks) on its
+      // HELLO via loadProjectWindow. A non-directory reports on the status line.
+      'open-project-at!': (args) => {
+        const raw = lispString(args[0]) ?? String(args[0] ?? '');
+        if (raw === '') return NIL;
+        const path = expandTildePath(raw);
+        const probe = openFile(path);
+        if (!probe || !probe.directory) {
+          statusText = `open-project: not a directory — ${raw}`;
+          onStatus(statusText);
+          return NIL;
+        }
+        const root = (typeof probe.path === 'string' && probe.path !== '') ? probe.path : path;
+        onOpenProjectWindow({ root });
+        statusText = '';
+        onStatus('');
+        return NIL;
+      },
+      // (open-project!) — the native directory-picker entry point (the `open-
+      // project` command / a toolbar button). The OS dialog + project chooser are
+      // renderer/main concerns; Stage 2 wires the dialog round-trip. For now the
+      // keyboard path (M-x find-project) is the way in.
+      'open-project!': () => {
+        statusText = 'open-project: use M-x find-project (native picker coming)';
+        onStatus(statusText);
+        return NIL;
+      },
+      'close-project!': () => {
+        statusText = 'close-project: close the project window (C-x 5 0) for now';
+        onStatus(statusText);
+        return NIL;
+      },
+      'open-project-chooser!': () => {
+        statusText = 'project-chooser: use M-x find-project for now';
+        onStatus(statusText);
         return NIL;
       },
 
@@ -2269,6 +2346,15 @@ export function createSpine(options, effects = {}) {
         "Open/reuse the dock tab ID (titled TITLE) and REPLACE its content."
         (utility-panel-open! "output" id title)
         (utility-panel-set! id text))
+
+      ;; project.lisp's find-project minibuffer helpers (files.lisp isn't loaded
+      ;; in the spine). -expand-tilde is a passthrough — open-project-at! expands
+      ;; the leading ~ itself (Node-side). -initial-find-file-value seeds the
+      ;; prompt with the current file's directory (trailing /), empty otherwise.
+      (define (-expand-tilde path) path)
+      (define (-initial-find-file-value)
+        (let ((d (view-directory (current-view))))
+          (if (nil? d) "" (str d "/"))))
     `);
   } catch (error) {
     console.error('[spine] utility-output helpers install failed:', error.message);
@@ -3886,6 +3972,48 @@ export function createSpine(options, effects = {}) {
     return switchClientToSource(index, srcId);
   }
 
+  /** Assemble the 3-column Nova PROJECT layout in client INDEX's window (a window
+   *  the server just spawned for `open-project-at!`): a directory-tree rooted at
+   *  CONFIG.root on the LEFT, a fresh scratch editing pane in the MIDDLE, and the
+   *  following bookmark outline on the RIGHT. Built imperatively (split + the
+   *  bookmark-beside machinery) rather than from a layout blob, so it works for an
+   *  empty project too — a path-less scratch can't ride a path-keyed blob. Stage 2
+   *  will restore <root>/.godot/project.json's open files into the middle. Called
+   *  from server.js on the spawned window's HELLO (when it's the active client).
+   *  Returns true on success. */
+  function loadProjectWindow(index, config) {
+    const model = paneModels.get(index);
+    if (!model || !config || typeof config.root !== 'string' || config.root === '') return false;
+    setActiveClient(index);
+    const root = config.root;
+    // Middle: a fresh, uniquely-named scratch editing buffer (Stage 2: the
+    // project's saved open files instead). Switch the window's leaf onto it.
+    const used = new Set(registry.listRecords().map((r) => r.name));
+    let scratchName = 'scratch.lisp';
+    for (let i = 2; used.has(scratchName); i += 1) scratchName = `scratch-${i}.lisp`;
+    const scratch = registry.add(SPINE_SCRATCH_SEED, scratchName, null);
+    switchClientToBuffer(index, scratch.id);
+    // Left: split the directory-tree sidebar off BEFORE the editing pane. 'before'
+    // makes the new (left) leaf the FIRST child with fraction (1 - r), so pass
+    // (1 - PROJECT_SIDEBAR_RATIO) to give the sidebar PROJECT_SIDEBAR_RATIO width.
+    if (model.split('horizontal', 1 - PROJECT_SIDEBAR_RATIO, 'before')) {
+      rebindFocusedPane(); // focus moved to the new (left) leaf
+      const name = root.replace(/\/+$/, '').split('/').pop() || root;
+      const dt = dataSources.findByPath(root)
+        ?? dataSources.add({ kind: 'directory-tree', name, filePath: root });
+      switchClientToSource(index, dt.id); // left leaf shows the directory-tree
+      model.otherPane(); // focus back to the editing (scratch) pane
+      rebindFocusedPane();
+    }
+    // Right: the following bookmark outline, split off the editing pane (uses the
+    // active client = INDEX and its focused entry = the scratch). Re-focus the
+    // editing pane afterwards so the user lands in the middle, not the outline.
+    openBookmarkView();
+    const mid = model.leaves().find((l) => model.stateOf(l.id)?.bufferId === scratch.id);
+    if (mid) { model.focusPane(mid.id); rebindFocusedPane(); }
+    return true;
+  }
+
   /** Apply an outline op from the bookmark VIEW to its source buffer's records.
    *  OP is `{ op, id?, name? }`. EDIT ops (rename / delete / indent / outdent /
    *  toggle) mutate the records, persist, and fan the fresh outline out. JUMP
@@ -5184,6 +5312,9 @@ export function createSpine(options, effects = {}) {
     // (the files must already be open). The server adds geometry around these.
     serializeWindow,
     loadWindowLayout,
+    // B4 project: assemble the 3-column project layout in a freshly-spawned
+    // window (server.js calls it on the window's HELLO; see onOpenProjectWindow).
+    loadProjectWindow,
     /** Record client INDEX's editor-area pixel rectangle (a VIEWPORT-style
      *  report). Only spatial pane navigation needs it; everything else is
      *  pixel-free. `{ width, height }`. */
