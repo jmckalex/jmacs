@@ -125,7 +125,12 @@ import {
   jsonToLispHighlightRules,
 } from './face-overrides.js';
 import { applyFaceStyles, writeFaceStyleElement } from './face-styles.js';
-import { resolveElementModuleUrl, normalizeFit } from './element-spec.js';
+import {
+  resolveElementModuleUrl,
+  normalizeFit,
+  elementViewKinds,
+  elementViewOpenPayload,
+} from './element-spec.js';
 import {
   isMathPreviewActive,
   bufferMajorModeName,
@@ -7171,32 +7176,28 @@ if (window.host && window.host.serverMode) {
       // The renderer owns element-view commands (define-element-view, incl.
       // user config): announce their names so the server's M-x routes them
       // back down (RUN_CLIENT_COMMAND), and run them here when it does.
-      clientCommandNames: elementViewCommandNames,
+      clientCommandNames: elementViewKinds,
       runClientCommand: (name, bibPath) => {
-        // SAFETY GATE. Only renderer-owned ELEMENT-VIEW commands (define-element-
-        // view) are safe to run in the inert renderer session — they open a view
-        // through the server's OPEN_ELEMENT_SOURCE channel. The server's M-x
-        // fallback forwards ANY unmatched name here (to catch a LIVE-registered
-        // element-view whose CLIENT_COMMANDS announcement didn't include it), so
-        // REFUSE anything that isn't a current element-view: a typo, or a renderer
-        // command not yet ported to Model B (e.g. `shell`, the old minimap) would
-        // otherwise run `(run-command …)` against the inert session and corrupt
-        // the server-owned layout (the bug that blanked the editor on toggle-minimap).
-        if (!elementViewCommandNames().includes(name)) {
+        // L4 (plans/B5-B7-TEARDOWN-AUDIT.md): element-view dispatch is plain JS
+        // now — the registry + payload come from element-spec.js, not the
+        // renderer interpreter. SAFETY GATE unchanged: the server's M-x fallback
+        // forwards ANY unmatched name here, so REFUSE anything that isn't a
+        // current element-view (a typo, or a renderer command not yet ported to
+        // Model B) — it would otherwise reach the inert session.
+        if (!elementViewKinds().includes(name)) {
           minibuffer.message(`No command: ${name}`);
           return;
         }
         try {
-          // bib-search can't see the active document in server mode (the
-          // renderer session is inert), so the server resolved its bibliography
-          // and sent it here. Pin it via the override the command consults; a
-          // null clears any stale pin. Defensive: a missing var (bib-search not
-          // loaded) must not block the command run.
-          const v = typeof bibPath === 'string' && bibPath !== ''
-            ? writeString(bibPath) : 'nil';
-          try { interpreter.evaluate(`(set! *bib-search-doc-override* ${v})`); }
-          catch { /* bib-search lisp not loaded — fine */ }
-          interpreter.evaluate(`(run-command (quote ${name}))`);
+          // bib-search can't see the active document in server mode (the inert
+          // renderer session), so the server resolved its bibliography and sent
+          // it as bibPath; fold it straight into the open payload (host-file-url
+          // src + a bib-path attr), exactly as the old Lisp command did. The
+          // payload is identical to what open-element-view! built.
+          const payload = elementViewOpenPayload(name, { bibPath, hostFileUrl });
+          if (payload && serverViewClient) {
+            serverViewClient.openElementView(payload);
+          }
         } catch (error) {
           repl.appendError(
             `run ${name}: ${error.lispMessage ?? error.message ?? error}`
@@ -8774,16 +8775,6 @@ function parseElementAttrs(list) {
  *  (`define-element-view`) — the `element-views` registry's keys (built-ins +
  *  any in user config). Server mode announces these so M-x routes them back
  *  down (RUN_CLIENT_COMMAND). Tolerant: [] before the stdlib registers any. */
-function elementViewCommandNames() {
-  try {
-    const reg = interpreter.call('element-views');
-    if (reg instanceof Map) {
-      return [...reg.keys()].map((k) => lispText(k)).filter((n) => n !== '');
-    }
-  } catch { /* stdlib/registry not ready — element-views just aren't M-x-routable yet */ }
-  return [];
-}
-
 function configureElementView() {
   return {
     // onKey routes chords to the server's keymap in server mode; flag-off
