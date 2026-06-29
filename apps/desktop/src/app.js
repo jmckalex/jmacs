@@ -7582,17 +7582,23 @@ jukeboxView.style.display = 'none';
  *  on macOS/Linux but the brief glitch keeps the behaviour
  *  predictable across platforms). */
 function runMetadataEdit(primitiveName, buffer, key, value) {
-  if (!keymapReady) return { ok: false, error: 'interpreter not ready' };
   if (!buffer || typeof buffer.filePath !== 'string') {
     return { ok: false, error: 'no audio buffer' };
   }
   const snapshot = audioView.pauseAndRelease();
   try {
-    if (value === undefined) {
-      interpreter.call(primitiveName, buffer.filePath, key);
-    } else {
-      interpreter.call(primitiveName, buffer.filePath, key, value);
-    }
+    // Apply the tag edit directly via the host writer (it's pure host I/O — no
+    // buffer state — so it works without the interpreter). `set` adds/updates
+    // the field; `remove` deletes it. (Was dispatched through the idle renderer
+    // interpreter; the set-/remove-audio-metadata! primitives are now dead and
+    // drop with the primitive table in B7.)
+    applyAudioMetadataEdit(buffer.filePath, (fields) => {
+      if (primitiveName === 'remove-audio-metadata!') {
+        delete fields[key];
+      } else {
+        fields[key] = value === undefined ? '' : String(value);
+      }
+    });
     return { ok: true };
   } catch (error) {
     return {
