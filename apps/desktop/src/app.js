@@ -3601,7 +3601,7 @@ const interpreter = createInterpreter({
     // typing / TABbing. Updating an open panel reuses it in place (no
     // re-activation) so it never steals focus mid-keystroke. The tab is
     // removed by `clear-completions!` (on TAB progress) or when the
-    // completing minibuffer closes (see `open-completing-minibuffer!`).
+    // completing minibuffer closes.
     'show-completions!': (args) => {
       displayCompletionsPanel(listToArray(args[0] ?? NIL).map(String), String(args[1] ?? ''));
       return NIL;
@@ -4734,21 +4734,6 @@ const interpreter = createInterpreter({
       buffer.insert(text);
       return NIL;
     },
-    // Open a minibuffer prompt for the command argument gatherer; the
-    // result is delivered back to Lisp via `minibuffer-delivered`.
-    'open-minibuffer!': (args) => {
-      minibuffer.prompt(String(args[0]), {
-        onSubmit(value) {
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', value);
-        },
-        onCancel() {
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', NIL);
-        },
-      });
-      return NIL;
-    },
     'goto-line!': (args) => {
       const buffer = currentTextBuffer;
       const n = Number(args[0]);
@@ -5017,44 +5002,6 @@ const interpreter = createInterpreter({
       return arrayToList(
         entries.map((entry) => cons(entry.name, keyword(entry.type)))
       );
-    },
-    // Open a completing minibuffer: a prompt the Lisp side drives
-    // through `minibuffer-tab-complete` on Tab and the usual
-    // `minibuffer-delivered` on submit/cancel. This is what `find-file`
-    // uses to gather a path with TAB completion. The handler is
-    // implemented in Lisp (see files.lisp) so the policy — what to
-    // complete against, what to show when ambiguous — stays in
-    // userland.
-    'open-completing-minibuffer!': (args) => {
-      const promptText = String(args[0] ?? '');
-      const initialValue = args.length > 1 ? String(args[1] ?? '') : '';
-      minibuffer.prompt(promptText, {
-        initialValue,
-        onSubmit(value) {
-          // The command is finishing — drop the transient completions tab
-          // (a no-op when none is open, e.g. RefTeX/LaTeX prompts).
-          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', value);
-        },
-        onCancel() {
-          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', NIL);
-        },
-        onTab(value) {
-          try {
-            const result = interpreter.call('minibuffer-tab-complete', value);
-            if (typeof result === 'string') return result;
-          } catch (error) {
-            repl.appendError(
-              `tab-complete: ${error.lispMessage ?? error.message}`
-            );
-          }
-          return value;
-        },
-      });
-      return NIL;
     },
     'play-audio!': (args) => {
       audio.play(expandTilde(String(args[0])));
