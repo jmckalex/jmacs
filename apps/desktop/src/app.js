@@ -8697,46 +8697,21 @@ async function openDocInPane(name) {
 // Phase 3g: directory-tree is a custom element now. Factory reused by
 // the tabline mount path for per-tab `<directory-tree-view>` instances.
 function configureDirectoryTreeView() {
-  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    // onKey routes chords to the server's keymap in server mode (so C-x C-f /
-    // M-x reach it), else the in-renderer dispatchKey. Flag-off byte-for-byte.
+    // onKey routes chords to the server's keymap (so C-x C-f / M-x reach it).
     ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     // Colour file/folder icons from the vendored Material Icon Theme set.
     iconUrlFor: (name, isDirectory, expanded) =>
       materialIconUrlForEntry(name, isDirectory, expanded),
     openPath: (path) => {
-      // Server mode: open the file by path through the server's find-file
-      // (visitFile), switching the focused leaf onto it.
-      if (serverMode) {
-        if (serverViewClient) serverViewClient.visitPath(path);
-        return;
-      }
-      // Route through the `directory-tree-open-file` Lisp function so the
-      // target honours `*directory-tree-open-target*` and stays user-
-      // overridable. Fall back to the focused-pane open if the stdlib
-      // routing isn't available yet.
-      if (keymapReady) {
-        try {
-          interpreter.call('directory-tree-open-file', path);
-          return;
-        } catch {
-          /* fall through to the default */
-        }
-      }
-      openFileInTabAdjacent(path);
+      // Open the file by path through the server's find-file (visitFile),
+      // switching the focused leaf onto it.
+      if (serverViewClient) serverViewClient.visitPath(path);
     },
     closeBuffer: () => {
-      // Server mode: closing a directory pane isn't wired server-side yet
-      // (follow-on). The pane is replaced when a file is opened from it.
-      if (serverMode) return;
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
+      // Closing a directory pane isn't wired server-side yet (follow-on); the
+      // pane is replaced when a file is opened from it.
     },
   };
 }
