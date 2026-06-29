@@ -7086,6 +7086,13 @@ if (window.host && window.host.serverMode) {
     // pill overlay. Guarded against the init-TDZ trap (stickyNotes / inlineEval
     // are declared later); a later snapshot re-wires if this fires too early.
     onServerBuffer: (mirror, serverView) => {
+      // Point currentTextBuffer at the mirror so the overlay managers that read it
+      // — inline-eval positions its pill via getBuffer→currentTextBuffer.positionAt,
+      // and sticky-notes anchors a new note at currentTextBuffer.point — use the
+      // RIGHT buffer (the editor's), not the stale boot scratch. A bare assignment
+      // (not setCurrentTextBuffer): under Model B the SERVER owns dirty/autosave, so
+      // the renderer dirty-watch is moot here.
+      currentTextBuffer = mirror;
       try {
         const overlay = serverView && serverView.overlayLayer;
         if (overlay) {
