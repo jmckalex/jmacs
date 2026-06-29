@@ -132,6 +132,21 @@ const SPINE_CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
 
 `;
 
+/** The seed for a fresh `scratch-buffer` (B4) — mirrors app.js's SCRATCH. */
+const SPINE_SCRATCH_SEED = `;; scratch.lisp — a buffer for evaluating Lisp.
+;;
+;; This buffer is syntax-highlighted because its name ends in .lisp.
+;; Edit freely; press C-x b to switch back to the welcome buffer.
+
+(define (factorial n)
+  "The classic recursion."
+  (if (= n 0)
+      1
+      (* n (factorial (- n 1)))))
+
+(define greeting "hello, world")
+`;
+
 /** Convert a raw Lisp custom value into a clone-safe JS value for the customize
  *  MODEL the spine pushes over the port (B2.3): a symbol/keyword becomes its
  *  name string; NIL becomes null; numbers / strings / booleans pass through. A
@@ -1457,6 +1472,24 @@ export function createSpine(options, effects = {}) {
         switchClientToBuffer(activeClientIndex, entry.id);
         return registry.viewFor(entry.id, activeClientIndex);
       },
+      // view cycling (B4; views.lisp's next-view/previous-view): step the active
+      // window's open-set (clientBuffers, insertion-ordered) relative to its
+      // current buffer and switch — the switch reconciles to the client via the
+      // normal PANE_TREE push, so no directive is needed. A no-op with <2 buffers.
+      'next-view!': () => { cycleActiveView(1); return NIL; },
+      'previous-view!': () => { cycleActiveView(-1); return NIL; },
+      // scratch-buffer (B4): mint a uniquely-named scratch buffer seeded like the
+      // first-run scratch.lisp and switch to it (the startup seed is dropped on
+      // session restore — this conjures one mid-session). Server-owned buffer, so
+      // it reconciles to the client like any switch.
+      'new-scratch-view!': () => {
+        const used = new Set(registry.listRecords().map((r) => r.name));
+        let name = 'scratch.lisp';
+        for (let i = 2; used.has(name); i += 1) name = `scratch-${i}.lisp`;
+        const entry = registry.add(SPINE_SCRATCH_SEED, name);
+        switchClientToBuffer(activeClientIndex, entry.id);
+        return registry.viewFor(entry.id, activeClientIndex);
+      },
       // find-view — a by-name buffer lookup. A miss is `#f` (absence
       // convention), so `(if (find-view n) …)` works. Returns the active
       // client's view of that buffer, or #f.
@@ -2726,6 +2759,27 @@ export function createSpine(options, effects = {}) {
       (emit-client-directive! (list (this-window-id)) 'fold-all))
     (define (unfold-all!)
       (emit-client-directive! (list (this-window-id)) 'unfold-all))
+
+    ;; --- view / misc commands (B4; views.lisp + system.lisp) --------------
+    ;; next-view/previous-view cycle the active window's open-set, scratch-buffer
+    ;; mints a fresh scratch — all server-owned (the host primitives switch the
+    ;; buffer, which reconciles to the client). toggle-repl is a render dock
+    ;; action, so it rides a directive. (These were broken under Model B because
+    ;; views.lisp/system.lisp aren't loaded server-side; loading them wholesale
+    ;; would shadow working server commands like kill-view/quit, so the broken
+    ;; commands are defined HERE instead.)
+    (defcommand next-view ()
+      "Switch to the next view in this window (C-x C-<right>)."
+      (next-view!))
+    (defcommand previous-view ()
+      "Switch to the previous view in this window (C-x C-<left>)."
+      (previous-view!))
+    (defcommand scratch-buffer ()
+      "Open a fresh Lisp scratch buffer (C-x n)."
+      (new-scratch-view!))
+    (defcommand toggle-repl ()
+      "Show or hide the REPL / utility dock (C-x p)."
+      (emit-client-directive! (list (this-window-id)) 'toggle-repl))
   `);
 
   // Now that the stdlib + the mode machinery are loaded, choose the major
@@ -3894,6 +3948,17 @@ export function createSpine(options, effects = {}) {
   /** The buffer id the FOCUSED leaf of client INDEX shows. */
   function currentBufferIdOf(index) {
     return paneModels.get(index)?.focusedBufferId() ?? initialEntry.id;
+  }
+
+  /** Cycle the ACTIVE window's focused leaf through its open-set by DIR (+1 next,
+   *  -1 previous), wrapping. B4: backs next-view! / previous-view!. A no-op when
+   *  the window has fewer than two open buffers. */
+  function cycleActiveView(dir) {
+    const set = clientBuffers.get(activeClientIndex);
+    if (!set || set.size < 2) return;
+    const ids = [...set];
+    const i = Math.max(0, ids.indexOf(currentBufferIdOf(activeClientIndex)));
+    switchClientToBuffer(activeClientIndex, ids[(i + dir + ids.length) % ids.length]);
   }
 
   /** The registry entry backing VIEW (an @editor/view), matched by buffer

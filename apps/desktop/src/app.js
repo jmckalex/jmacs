@@ -7019,6 +7019,12 @@ if (window.host && window.host.serverMode) {
         editorView.foldAll();
       } else if (name === 'unfold-all') {
         editorView.unfoldAll();
+      } else if (name === 'toggle-repl') {
+        // B4 (system.lisp): show/hide the REPL / utility dock, then tell the
+        // server the new visibility so the workspace keeps it (mirrors the old
+        // toggle-repl! primitive).
+        utilityDock.toggleUtilityDock();
+        if (serverViewClient) serverViewClient.reportDock();
       }
     },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
