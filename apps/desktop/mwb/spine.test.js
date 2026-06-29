@@ -26,6 +26,8 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
     newWindows: 0,
     // Each open-project-window request (B4 project): the parked { root } config.
     projectWindows: [],
+    // Each close-project request (B4): { root, files, active, windowId }.
+    projectCloses: [],
     // Each client directive raised (the multi-window round-trip): { ids, name, args }.
     directives: [],
   };
@@ -39,6 +41,7 @@ function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
       onPicker: (req) => log.pickerOpens.push(req),
       onNewWindow: () => { log.newWindows += 1; },
       onOpenProjectWindow: (cfg) => log.projectWindows.push(cfg),
+      onCloseProject: (c) => log.projectCloses.push(c),
       onClientDirective: (ids, name, args) => log.directives.push({ ids, name, args }),
       openFile: extra.openFile,
       // A recording save: capture the {path, text} the spine would write, and
@@ -2328,4 +2331,51 @@ test('B4 project: loadProjectWindow assembles the 3-column layout in a spawned w
   assert.ok(leaves.some((l) => l.viewKind === 'bookmark'), 'bookmark outline leaf');
   const editing = leaves.find((l) => l.viewKind !== 'directory-tree' && l.viewKind !== 'bookmark');
   assert.ok(editing && editing.focused === true, 'the editing pane is focused');
+});
+
+// --- B4: project Stage 2 — restore saved files + close-project save/close ---
+
+test('B4 project Stage 2: a project window restores its saved files into the middle tabline', () => {
+  const { spine } = projectSpine();
+  // mirror server.js: open the project's saved files, then assemble the window.
+  const idx = spine.addClientView();
+  spine.setActiveClient(idx);
+  spine.visitFile('/proj/a.txt');
+  spine.visitFile('/proj/b.txt');
+  assert.equal(
+    spine.loadProjectWindow(idx, { root: '/proj/btt', files: ['/proj/a.txt', '/proj/b.txt'], active: '/proj/b.txt' }),
+    true
+  );
+  const snap = spine.paneSnapshot(idx);
+  const leaves = [];
+  (function walk(n) { if (!n) return; if (n.kind === 'leaf') leaves.push(n); else { walk(n.first); walk(n.second); } })(snap);
+  const tab = leaves.find((l) => Array.isArray(l.tabs));
+  assert.ok(tab, 'middle is a tabline');
+  const names = tab.tabs.map((t) => t.name);
+  assert.ok(names.includes('a.txt') && names.includes('b.txt'), `tabline holds both files: ${JSON.stringify(names)}`);
+});
+
+test('B4 project Stage 2: close-project! saves only the project files + closes the window', () => {
+  const { spine, log } = projectSpine();
+  const idx = spine.addClientView();
+  spine.setActiveClient(idx);
+  spine.visitFile('/proj/a.txt');
+  spine.visitFile('/proj/b.txt');
+  spine.loadProjectWindow(idx, { root: '/proj/btt', files: ['/proj/a.txt', '/proj/b.txt'], active: '/proj/b.txt' });
+  spine.setActiveClient(idx);
+  spine.interpreter.evaluate('(close-project!)');
+  assert.equal(log.projectCloses.length, 1);
+  const c = log.projectCloses[0];
+  assert.equal(c.root, '/proj/btt');
+  assert.equal(c.windowId, idx);
+  // ONLY the project's files — the home seed buffer must NOT leak into project.json
+  assert.deepEqual([...c.files].sort(), ['/proj/a.txt', '/proj/b.txt']);
+  assert.ok(!c.files.includes('/home/home.txt'), 'home buffer did not leak into the project save');
+});
+
+test('B4 project Stage 2: close-project! in a non-project window is a no-op', () => {
+  const { spine, log } = projectSpine();
+  spine.setActiveClient(0); // the home window (not a project)
+  spine.interpreter.evaluate('(close-project!)');
+  assert.equal(log.projectCloses.length, 0);
 });

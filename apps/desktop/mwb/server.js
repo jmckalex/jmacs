@@ -25,7 +25,7 @@
  * ports over `process.parentPort` — one per client window.
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
@@ -418,8 +418,23 @@ const spine = createSpine(
     // 3-column layout on its HELLO (mirrors the multi-window restore spawn-and-
     // apply). The home window is left untouched.
     onOpenProjectWindow: (config) => {
-      pendingProjectWindow = config;
+      // Read the project's saved open-file layout (<root>/.godot/project.json) so
+      // the spawned window restores its files; an unsaved/first-open project has
+      // none (a fresh scratch middle). The files are OPENED on the window's HELLO
+      // (below), then loadProjectWindow seeds the middle tabline from them.
+      const saved = readProjectState(config.root);
+      pendingProjectWindow = { root: config.root, files: saved.files, active: saved.active };
       requestSpawnWindow(null);
+    },
+    // close-project: persist the project window's open files to its sidecar, then
+    // close the window (each project is its own window now). Raised by the spine's
+    // close-project! with the gathered {root, files, active}.
+    onCloseProject: ({ root, files, active, windowId }) => {
+      writeProjectState(root, { files, active });
+      const target = clients.find((c) => c && c.index === windowId);
+      if (target && target.port) {
+        sendClientDirective([windowId], 'close-window', []);
+      }
     },
     // emit-client-directive!: a command drove a renderer-side action in a chosen
     // set of windows (e.g. C-x 5 1 close-other-windows). The spine resolved the
@@ -1223,11 +1238,14 @@ function onClientMessage(client, event) {
         // snapshot below, so it paints its restored tree (not the fresh scratch).
         applyNextRestoreWindow(client);
       } else if (pendingProjectWindow) {
-        // A just-spawned PROJECT window (B4): assemble its 3-column layout BEFORE
-        // the snapshot, so it paints the directory-tree | editing | bookmark
-        // workspace rather than the default scratch. One project per spawn.
+        // A just-spawned PROJECT window (B4): open its saved files into the shared
+        // registry (visitFile switches THIS new window's leaf transiently — the
+        // home window is untouched since the new window is the active client during
+        // its HELLO), then assemble the 3-column layout BEFORE the snapshot so it
+        // paints directory-tree | editing tabline | bookmark. One project per spawn.
         const config = pendingProjectWindow;
         pendingProjectWindow = null;
+        for (const p of config.files) spine.visitFile(p);
         spine.loadProjectWindow(client.index, config);
       }
       sendSnapshot(client);
@@ -1438,6 +1456,55 @@ function pathsInWindowBlob(rootPane) {
   };
   walkPane(rootPane);
   return out;
+}
+
+// --- per-project save-state (<root>/.godot/project.json) — B4 project ------
+// The spine is a Node child, so it owns the project's sidecar directly (no
+// main-process IPC). Mirrors files.js's projectStatePath/project:read/write.
+
+/** `<root>/.godot/project.json`, or null for a non-absolute root. */
+function projectStatePath(root) {
+  if (typeof root !== 'string' || root === '' || !root.startsWith('/')) return null;
+  return join(root, '.godot', 'project.json');
+}
+
+/** Read a project's saved state → `{ files: string[], active: string|null }`.
+ *  Tolerant of BOTH the forward `{ version, files, active }` shape AND an older
+ *  session-style blob (`{ windows:[{rootPane}] }` / `{ rootPane }`) — from which
+ *  the open-file paths are extracted via pathsInWindowBlob. Null/unreadable →
+ *  no saved files (a first open). */
+function readProjectState(root) {
+  const target = projectStatePath(root);
+  if (!target) return { files: [], active: null };
+  let data;
+  try {
+    data = JSON.parse(readFileSync(target, 'utf8'));
+  } catch {
+    return { files: [], active: null };
+  }
+  if (data && Array.isArray(data.files)) {
+    return {
+      files: data.files.filter((p) => typeof p === 'string' && p !== ''),
+      active: typeof data.active === 'string' ? data.active : null,
+    };
+  }
+  // Migrate an older session-blob format: pull the file paths out of its tree.
+  const win = data && Array.isArray(data.windows) ? data.windows[0] : data;
+  const rootPane = win && win.rootPane ? win.rootPane : null;
+  return { files: rootPane ? pathsInWindowBlob(rootPane) : [], active: null };
+}
+
+/** Write a project's open-file layout to `<root>/.godot/project.json` (atomic,
+ *  creating `.godot/`). The forward `{ version, files, active }` shape. */
+function writeProjectState(root, { files, active }) {
+  const target = projectStatePath(root);
+  if (!target) return;
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    atomicWriteSync(target, JSON.stringify({ version: 2, files, active: active ?? null }, null, 2));
+  } catch (error) {
+    console.error(`[mwb-project] write ${target} failed: ${error.message}`);
+  }
 }
 
 /** The boot SEED hint `{ files, active }` from the store's `__last__` snapshot:

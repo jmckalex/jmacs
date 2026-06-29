@@ -744,6 +744,11 @@ export function createSpine(options, effects = {}) {
    *  config is `{ root }` (a project root path). */
   const onOpenProjectWindow = effects.onOpenProjectWindow ?? (() => {});
 
+  /** Raised by `close-project!`: persist the project window's open-file layout to
+   *  `<root>/.godot/project.json` and close the window (each project is its own
+   *  window now). Signature: ({ root, files, active, windowId }). */
+  const onCloseProject = effects.onCloseProject ?? (() => {});
+
   /** Raised by `emit-client-directive!`: send the directive `{ name, args }` to
    *  each window in IDS. The command chose the recipients (this/other/all window
    *  ids); the server posts a CLIENT_DIRECTIVE to just those ports. NAME is a
@@ -808,6 +813,11 @@ export function createSpine(options, effects = {}) {
 
   // Client 0's pane tree starts as a single leaf on the seed buffer.
   makePaneModel(0, initialEntry.id);
+
+  // B4 project: which client windows are PROJECT windows (index → project root).
+  // Set by loadProjectWindow; read by close-project! (to know what to save +
+  // close); cleared when the window tears down (removeClientView).
+  const projectRootByClient = new Map();
 
   /** The pane model of the active client (what the pane primitives mutate).
    *  Falls back to any surviving model — index 0 may have detached — then null
@@ -1279,9 +1289,29 @@ export function createSpine(options, effects = {}) {
         onStatus(statusText);
         return NIL;
       },
+      // (close-project!) — save the project window's open files to its sidecar
+      // (<root>/.godot/project.json) and close the window. A no-op (with a status)
+      // in a non-project window. The save/close happen host-side (onCloseProject).
       'close-project!': () => {
-        statusText = 'close-project: close the project window (C-x 5 0) for now';
-        onStatus(statusText);
+        const root = projectRootByClient.get(activeClientIndex);
+        if (!root) {
+          statusText = 'close-project: this window is not a project';
+          onStatus(statusText);
+          return NIL;
+        }
+        // Gather the project's open FILE paths (the editing tabline) + the focused
+        // one. Data-sources (the dir-tree / bookmark outline) aren't files, so
+        // filtering by registry filePath leaves just the editing files.
+        const files = [];
+        for (const id of (clientBuffers.get(activeClientIndex) ?? new Set())) {
+          const e = registry.get(id);
+          if (e && e.filePath && !files.includes(e.filePath)) files.push(e.filePath);
+        }
+        const focused = registry.get(currentBufferIdOf(activeClientIndex));
+        const active = focused && focused.filePath ? focused.filePath : null;
+        const windowId = activeClientIndex;
+        projectRootByClient.delete(windowId);
+        onCloseProject({ root, files, active, windowId });
         return NIL;
       },
       'open-project-chooser!': () => {
@@ -3974,25 +4004,39 @@ export function createSpine(options, effects = {}) {
 
   /** Assemble the 3-column Nova PROJECT layout in client INDEX's window (a window
    *  the server just spawned for `open-project-at!`): a directory-tree rooted at
-   *  CONFIG.root on the LEFT, a fresh scratch editing pane in the MIDDLE, and the
-   *  following bookmark outline on the RIGHT. Built imperatively (split + the
-   *  bookmark-beside machinery) rather than from a layout blob, so it works for an
-   *  empty project too — a path-less scratch can't ride a path-keyed blob. Stage 2
-   *  will restore <root>/.godot/project.json's open files into the middle. Called
-   *  from server.js on the spawned window's HELLO (when it's the active client).
-   *  Returns true on success. */
+   *  CONFIG.root on the LEFT, the project's open files as an editing tabline in the
+   *  MIDDLE (a fresh scratch when the project has none), and the following bookmark
+   *  outline on the RIGHT. Built imperatively (split + the tabline + bookmark-beside
+   *  machinery) rather than from a path-keyed blob, so an empty project (path-less
+   *  scratch) works too. CONFIG.files are the saved open-file paths (already opened
+   *  into the registry by the caller); CONFIG.active the focused one. Called from
+   *  server.js on the spawned window's HELLO (when it's the active client). Returns
+   *  true on success. */
   function loadProjectWindow(index, config) {
     const model = paneModels.get(index);
     if (!model || !config || typeof config.root !== 'string' || config.root === '') return false;
     setActiveClient(index);
     const root = config.root;
-    // Middle: a fresh, uniquely-named scratch editing buffer (Stage 2: the
-    // project's saved open files instead). Switch the window's leaf onto it.
-    const used = new Set(registry.listRecords().map((r) => r.name));
-    let scratchName = 'scratch.lisp';
-    for (let i = 2; used.has(scratchName); i += 1) scratchName = `scratch-${i}.lisp`;
-    const scratch = registry.add(SPINE_SCRATCH_SEED, scratchName, null);
-    switchClientToBuffer(index, scratch.id);
+    // Middle: the project's open files (resolved to buffer ids — the caller opened
+    // them), or a fresh scratch when the project has none.
+    const fileIds = [];
+    for (const p of (Array.isArray(config.files) ? config.files : [])) {
+      const e = registry.findByPath(p);
+      if (e && !fileIds.includes(e.id)) fileIds.push(e.id);
+    }
+    let activeId;
+    if (fileIds.length > 0) {
+      const ae = config.active ? registry.findByPath(config.active) : null;
+      activeId = ae && fileIds.includes(ae.id) ? ae.id : fileIds[0];
+    } else {
+      const used = new Set(registry.listRecords().map((r) => r.name));
+      let scratchName = 'scratch.lisp';
+      for (let i = 2; used.has(scratchName); i += 1) scratchName = `scratch-${i}.lisp`;
+      const scratch = registry.add(SPINE_SCRATCH_SEED, scratchName, null);
+      fileIds.push(scratch.id);
+      activeId = scratch.id;
+    }
+    switchClientToBuffer(index, activeId);
     // Left: split the directory-tree sidebar off BEFORE the editing pane. 'before'
     // makes the new (left) leaf the FIRST child with fraction (1 - r), so pass
     // (1 - PROJECT_SIDEBAR_RATIO) to give the sidebar PROJECT_SIDEBAR_RATIO width.
@@ -4002,15 +4046,33 @@ export function createSpine(options, effects = {}) {
       const dt = dataSources.findByPath(root)
         ?? dataSources.add({ kind: 'directory-tree', name, filePath: root });
       switchClientToSource(index, dt.id); // left leaf shows the directory-tree
-      model.otherPane(); // focus back to the editing (scratch) pane
+      model.otherPane(); // focus back to the editing pane
       rebindFocusedPane();
     }
+    // Make the editing pane a TABLINE of the project's files (a 1-tab tabline for a
+    // single file / the scratch — consistent with how every window presents).
+    model.seedFocusedTabline(fileIds, activeId);
     // Right: the following bookmark outline, split off the editing pane (uses the
-    // active client = INDEX and its focused entry = the scratch). Re-focus the
-    // editing pane afterwards so the user lands in the middle, not the outline.
+    // active client = INDEX + its focused entry). Re-focus the editing pane after,
+    // so the user lands in the middle, not the outline.
     openBookmarkView();
-    const mid = model.leaves().find((l) => model.stateOf(l.id)?.bufferId === scratch.id);
+    const mid = model.leaves().find((l) => {
+      const s = model.stateOf(l.id);
+      return s && (s.bufferId === activeId || (s.tabline && Array.isArray(s.tabs) && s.tabs.includes(activeId)));
+    });
     if (mid) { model.focusPane(mid.id); rebindFocusedPane(); }
+    // Reset the window's open-set to EXACTLY its leaves' buffers (mirrors
+    // loadWindowLayout). A freshly-spawned window is seeded from the home window's
+    // focused buffer; without this reset that home buffer would linger in the
+    // project's open-set (and wrongly be saved into project.json by close-project).
+    clientBuffers.set(index, new Set());
+    for (const leaf of model.leaves()) {
+      const s = model.stateOf(leaf.id);
+      if (!s) continue;
+      if (s.tabline && Array.isArray(s.tabs)) s.tabs.forEach((id) => noteClientBuffer(index, id));
+      else noteClientBuffer(index, s.bufferId);
+    }
+    projectRootByClient.set(index, root);
     return true;
   }
 
@@ -4262,6 +4324,7 @@ export function createSpine(options, effects = {}) {
     paneModels.delete(index);
     clientViewports.delete(index);
     clientBuffers.delete(index);
+    projectRootByClient.delete(index); // B4: forget a closed project window's root
     registry.dropClient(index);
     // The bookmark outline(s) are per-window — drop this window's own so they
     // don't linger after it closes.
