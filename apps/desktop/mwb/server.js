@@ -42,7 +42,7 @@ import { createSessionStore, flatToWindowSession } from './session-store.js';
 // recovery-snapshot pure helpers are standalone production modules; the
 // server is a Node child, so it does file I/O DIRECTLY (no IPC), reusing
 // these without touching production app.js/main.js/view.js.
-import { atomicWriteSync } from './atomic-write-sync.js';
+import { atomicWriteSync, sweepStaleTemps } from './atomic-write-sync.js';
 import { createAutosave } from './autosave.js';
 // Per-file companion-metadata helpers (the `.godot-metadata` sidecar path
 // scheme + emptiness rule), shared verbatim with files.js's metadata:read /
@@ -65,6 +65,17 @@ const filePath = process.env.MWB_FILE || DEFAULT_FILE;
 // persistence functions further down share this const.
 const SESSION_STORE = process.env.MWB_SESSION_STORE
   || join(tmpdir(), 'godot-mw-b-session.json');
+
+// Sweep orphaned atomic-write temp files (`.<name>.tmp-<pid>-<ms>`) out of the
+// USER-DATA dir on startup. A force-quit during a session-snapshot / config
+// write kills the writer between the temp-write and the atomic rename, so its
+// cleanup never runs and the temp is stranded; without this they pile up forever
+// beside session.json / custom.lisp / faces.json. session.json is written by the
+// MAIN process (files.js) and config by the spine, but both land in MWB_USER_DATA
+// — and the sweep removes every `.*.tmp-*` there regardless of which wrote it.
+// Age-thresholded, so a live concurrent write is never touched. (Falls back to
+// the session-store dir when MWB_USER_DATA is unset, e.g. tests.)
+sweepStaleTemps(process.env.MWB_USER_DATA || dirname(SESSION_STORE));
 
 // The named-session store (v3): the user's labelled sessions + the always-on
 // `__last__` auto-snapshot, each holding the full multi-window pane structure.
