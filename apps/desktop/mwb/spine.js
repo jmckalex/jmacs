@@ -2441,9 +2441,11 @@ export function createSpine(options, effects = {}) {
         if (kind === 'datetime') return `${ymd} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
         return ymd;
       },
-      // (snippet-user-directory) — the user snippet root. None server-side
-      // yet (it is an app/render data-path concern), so "" → no user dir.
-      'snippet-user-directory': () => '',
+      // (snippet-user-directory) — the user snippet root,
+      // `<CONFIG_HOME>/snippets` (i.e. ~/.godot/snippets). "" when
+      // CONFIG_HOME is unset (the unit-test harness), so the built-in
+      // snippets still load but no user directory is searched.
+      'snippet-user-directory': () => (CONFIG_HOME ? join(CONFIG_HOME, 'snippets') : ''),
       // (list-directory-paths dir) — (name . :file/:directory) pairs for the
       // entries of DIR, or nil when DIR can't be listed. A REAL disk read
       // (the server is a Node child), mirroring app.js's
