@@ -91,12 +91,12 @@ import { formBoundsAtPoint, formBoundsBeforePoint } from '../../../packages/rend
 const here = dirname(fileURLToPath(import.meta.url));
 const STDLIB_DIR = join(here, '..', '..', '..', 'packages', 'stdlib', 'lisp');
 
-/** The per-user config directory (`app.getPath('userData')`), passed by main via
- *  MWB_USER_DATA before the fork. Absent under the unit-test harness
+/** Godot's config home (`~/.godot`, or `$GODOT_HOME`), passed by main via
+ *  MWB_CONFIG_HOME before the fork. Absent under the unit-test harness
  *  (`createSpine` without the env) → user-config reads return empty defaults, so
  *  the suite is unaffected. */
-const USER_DATA = process.env.MWB_USER_DATA || null;
-const FACES_PATH = USER_DATA ? join(USER_DATA, 'faces.json') : null;
+const CONFIG_HOME = process.env.MWB_CONFIG_HOME || null;
+const FACES_PATH = CONFIG_HOME ? join(CONFIG_HOME, 'faces.json') : null;
 /** The Lisp constructors face-overrides.js needs to build hash-maps. */
 const FACE_FACTORIES = { keyword, sym };
 
@@ -115,20 +115,20 @@ function readFacesJson() {
 /** Read a config file (e.g. `custom.lisp`) from `<userData>` as text. Null when
  *  absent / unreadable (first launch, or the test harness). */
 function readConfigText(name) {
-  if (!USER_DATA) return null;
+  if (!CONFIG_HOME) return null;
   try {
-    return readFileSync(join(USER_DATA, name), 'utf8');
+    return readFileSync(join(CONFIG_HOME, name), 'utf8');
   } catch {
     return null;
   }
 }
 
 /** Atomically write text to `<userData>/<name>` (custom.lisp on save). A no-op
- *  when USER_DATA is absent (the test harness) so the suite never touches disk.
+ *  when CONFIG_HOME is absent (the test harness) so the suite never touches disk.
  *  Uses the same temp+fsync+rename writer as the buffer-save path. */
 function writeConfigText(name, text) {
-  if (!USER_DATA) return;
-  atomicWriteSync(join(USER_DATA, name), text);
+  if (!CONFIG_HOME) return;
+  atomicWriteSync(join(CONFIG_HOME, name), text);
 }
 
 /** The header the spine writes atop custom.lisp — mirrors the renderer's old
@@ -1874,7 +1874,7 @@ export function createSpine(options, effects = {}) {
       // `(custom-set-saved! (quote NAME) (quote VALUE))` form (writeString quotes
       // the value so its type round-trips) and atomic-write custom.lisp — the
       // same file the spine LOADS at boot (B1.4). The renderer's writer is now a
-      // no-op. A no-op when USER_DATA is absent (the test harness).
+      // no-op. A no-op when CONFIG_HOME is absent (the test harness).
       'write-custom-file!': (args) => {
         try {
           const lines = listToArray(args[0]).map((pair) => {
