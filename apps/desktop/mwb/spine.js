@@ -619,6 +619,7 @@ const RENDERER_CONFIG_SNAPSHOT_VARS = Object.freeze([
   ...RENDERER_CONFIG_VARS,
   '*pane-focus-border*',
   '*markdown-preview-follow-cursor*',
+  '*math-tooltip-scale*',
 ]);
 
 /** Coerce a config defcustom's Lisp value to clone-safe plain JS — a primitive

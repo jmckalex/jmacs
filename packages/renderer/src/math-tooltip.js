@@ -106,6 +106,10 @@ export function createMathTooltip(hostEl) {
    *  different construct resets `lastValid` so a fresh error shows the badge
    *  alone, never a stale image from the previous construct. */
   let currentKey = null;
+  /** Whether the tooltip has been positioned for the current construct. It is
+   *  anchored ONCE on entry and then left put, so it doesn't jitter along with
+   *  the caret while you edit within the same construct. */
+  let positioned = false;
 
   function mountInto(parent, node) {
     if (typeof parent.replaceChildren === 'function') parent.replaceChildren();
@@ -130,10 +134,12 @@ export function createMathTooltip(hostEl) {
     tip.classList.toggle('math-tooltip-below', pos.below);
   }
 
-  function update({ node, key, display = false, anchorRect = null }) {
-    if (key !== currentKey) {
+  function update({ node, key, display = false, anchorRect = null, scale }) {
+    const isNewConstruct = key !== currentKey;
+    if (isNewConstruct) {
       currentKey = key;
       lastValid = null;
+      positioned = false;
     }
     const r = chooseRender({ node, lastValid });
     lastValid = r.lastValid;
@@ -141,14 +147,25 @@ export function createMathTooltip(hostEl) {
     badge.style.display = r.error ? '' : 'none';
     tip.classList.toggle('math-tooltip-display', Boolean(display));
     tip.classList.toggle('math-tooltip-empty', !r.mount);
+    // The preview size is a defcustom (*math-tooltip-scale*), pushed via the
+    // renderer config snapshot; the CSS reads --math-tooltip-scale.
+    if (typeof scale === 'number' && scale > 0) {
+      tip.style.setProperty('--math-tooltip-scale', String(scale));
+    }
     tip.style.display = '';
-    position(anchorRect);
+    // Anchor only on entry (and on the first frame a caret rect is available),
+    // then leave it put — so editing within the construct doesn't drag it.
+    if (!positioned && anchorRect) {
+      position(anchorRect);
+      positioned = true;
+    }
   }
 
   function hide() {
     tip.style.display = 'none';
     currentKey = null;
     lastValid = null;
+    positioned = false;
   }
 
   function dispose() {

@@ -6417,13 +6417,20 @@ notebook-js-view {
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 60vw;
-  padding: 7px 10px;
-  border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
-  border-radius: 6px;
-  background: var(--bg-chrome);
+  max-width: 70vw;
+  padding: 8px 11px;
+  /* Lift the panel off the editor background for contrast: blend the editor
+   * background toward the foreground, so it reads as a raised surface in both
+   * light and dark themes. */
+  --math-tip-bg: color-mix(in srgb, var(--bg-editor) 82%, var(--fg) 18%);
+  background: var(--math-tip-bg);
+  border: 1px solid color-mix(in srgb, var(--fg) 34%, transparent);
+  border-radius: 7px;
+  box-shadow: 0 8px 26px #00000078;
   color: var(--fg);
-  box-shadow: 0 6px 18px #00000060;
+  /* The preview size is the *math-tooltip-scale* defcustom; the renderer sets
+   * --math-tooltip-scale from the config snapshot (default 1.5 = 150%). */
+  font-size: calc(var(--math-tooltip-scale, 1.5) * 1rem);
   pointer-events: none;
   user-select: none;
 }
@@ -6461,12 +6468,12 @@ notebook-js-view {
   top: 100%;
   transform: translateX(-50%);
   border: 6px solid transparent;
-  border-top-color: var(--bg-chrome);
+  border-top-color: var(--math-tip-bg);
 }
 
 .math-tooltip-below::after {
   top: auto;
   bottom: 100%;
   border-top-color: transparent;
-  border-bottom-color: var(--bg-chrome);
+  border-bottom-color: var(--math-tip-bg);
 }

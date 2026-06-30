@@ -33,3 +33,14 @@
   (if (member math-preview-mode (minor-modes))
       (disable-minor-mode math-preview-mode)
       (enable-minor-mode math-preview-mode)))
+
+;; The live math tooltip's size. While the cursor is inside a math construct
+;; (its source is revealed for editing), a tooltip floats above it showing the
+;; MathJax render of what is being edited. The renderer reads this through the
+;; config snapshot (it drives the CSS var --math-tooltip-scale).
+(defcustom *math-tooltip-scale* 1.5 :number
+  :group 'editing
+  :doc "How large the live math-preview tooltip renders, as a multiple of the
+        base font size (1.0 = same size, 1.5 = 150%, 2.0 = double). The tooltip
+        shows the MathJax render of a math construct while the cursor is inside
+        it. Default 1.5.")

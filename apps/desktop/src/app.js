@@ -4496,7 +4496,13 @@ function flushMathTooltip() {
     caret && typeof caret.getBoundingClientRect === 'function'
       ? caret.getBoundingClientRect()
       : null;
-  tip.update({ node, key: pending.key, display: pending.display, anchorRect });
+  tip.update({
+    node,
+    key: pending.key,
+    display: pending.display,
+    anchorRect,
+    scale: pending.scale,
+  });
 }
 
 function scheduleMathTooltip(state) {
@@ -4518,11 +4524,14 @@ function driveMathTooltip(leaf, controller, provider, view) {
       preamble = '';
     }
     const tex = preamble === '' ? seg.body : `${preamble}\n${seg.body}`;
+    // *math-tooltip-scale* defcustom (pushed via the config snapshot).
+    const scale = Number(rendererConfig['*math-tooltip-scale*']) || 1.5;
     mathTooltipOwner = leaf.id;
     scheduleMathTooltip({
       key: seg.start,
       tex,
       display: seg.kind === 'block',
+      scale,
       instanceEl: () => leaf.element ?? editorViewByPaneId.get(leaf.id) ?? null,
     });
   } else if (mathTooltipOwner === leaf.id) {

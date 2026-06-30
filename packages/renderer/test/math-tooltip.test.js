@@ -80,7 +80,11 @@ function fakeEl(doc, tag) {
     className: '',
     textContent: '',
     title: '',
-    style: {},
+    style: {
+      setProperty(k, v) {
+        this[k] = v;
+      },
+    },
     children: [],
     parentNode: null,
     get firstChild() {
@@ -179,4 +183,26 @@ test('hide() hides the tooltip and clears the kept image', () => {
   assert.equal(tip.element.style.display, 'none');
   tip.update({ node: null, key: 5, anchorRect: null }); // must not resurrect
   assert.equal(tip.element.children[0].children.length, 0);
+});
+
+test('the tooltip is anchored once and does not move within the same construct', () => {
+  const host = fakeHost();
+  const tip = createMathTooltip(host);
+  const n = host.ownerDocument.createElement('svg');
+  tip.update({ node: n, key: 5, anchorRect: { left: 100, top: 300, right: 120, bottom: 320, width: 20 } });
+  const frozen = tip.element.style.left;
+  // Same construct, caret moved far right → must NOT reposition.
+  tip.update({ node: n, key: 5, anchorRect: { left: 600, top: 300, right: 620, bottom: 320, width: 20 } });
+  assert.equal(tip.element.style.left, frozen, 'frozen while editing the same construct');
+  // A different construct → repositions.
+  tip.update({ node: n, key: 9, anchorRect: { left: 600, top: 300, right: 620, bottom: 320, width: 20 } });
+  assert.notEqual(tip.element.style.left, frozen, 'repositions for a new construct');
+});
+
+test('update applies the configured scale as a CSS variable', () => {
+  const host = fakeHost();
+  const tip = createMathTooltip(host);
+  const n = host.ownerDocument.createElement('svg');
+  tip.update({ node: n, key: 5, scale: 2, anchorRect: null });
+  assert.equal(tip.element.style['--math-tooltip-scale'], '2');
 });
