@@ -37,7 +37,6 @@ import {
   SPLIT_VERTICAL,
 } from '@editor/pane';
 import {
-  applyProcedure,
   arrayToList,
   cons,
   keyword,
@@ -47,7 +46,7 @@ import {
   sym,
   Sym,
   writeString,
-} from '@editor/lisp';
+} from '@editor/lisp/values.js';
 import {
   AudioView,
   BrowserView,
@@ -101,7 +100,10 @@ import {
   TablineView,
   ElementView,
 } from '@editor/renderer';
-import { pathDirname } from '@editor/stdlib';
+// path-resolve.js directly, NOT @editor/stdlib's index — its index re-exports
+// createBufferPrimitives etc., which import @editor/lisp's interpreter; the
+// subpath keeps the renderer's only Lisp dependency the pure value model (B7).
+import { pathDirname } from '@editor/stdlib/path-resolve.js';
 import { createAudioController } from './audio.js';
 import {
   emptyOverrides,
@@ -8595,27 +8597,9 @@ if (window.host && typeof window.host.onConfirmQuit === 'function') {
   });
 }
 
-// Wire the one-shot process runner's completion channel exactly once.
-// When a `(run-process! …)` child exits, the host sends one
-// `process:exit` with the buffered output; we look up the parked
-// on-exit Lisp procedure (keyed by runId), build the result hash-map
-// `{:stdout :stderr :code}`, apply the procedure, and forget the entry.
-if (window.host && typeof window.host.onRunProcessExit === 'function') {
-  window.host.onRunProcessExit(({ runId, stdout, stderr, code }) => {
-    const proc = runProcessCallbacks.get(runId);
-    runProcessCallbacks.delete(runId);
-    if (proc == null || proc === NIL) return;
-    const result = new Map();
-    result.set(keyword('stdout'), typeof stdout === 'string' ? stdout : '');
-    result.set(keyword('stderr'), typeof stderr === 'string' ? stderr : '');
-    result.set(keyword('code'), typeof code === 'number' ? code : NIL);
-    try {
-      applyProcedure(proc, [result]);
-    } catch (error) {
-      repl.appendError(error.lispMessage ?? error.message ?? String(error));
-    }
-  });
-}
+// (The renderer `(run-process! …)` exit channel was deleted with the interpreter
+// — B7. Processes (latex compile, shell, gnuplot) run server-side now; the spine
+// owns run-process! + its on-exit callbacks.)
 
 // The startup splash: the editor's own Lisp, behind the welcome text.
 // It lives in the view's background layer and is dismissed — faded out
