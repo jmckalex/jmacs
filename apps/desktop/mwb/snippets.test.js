@@ -136,6 +136,21 @@ test('abandoning a snippet (C-a C-k) lets the next trigger expand again', () => 
   assert.equal(spine.interpreter.evaluate('(snippet-active?)'), true);
 });
 
+test('moving out of a snippet (C-p) drops the field selection, so typing inserts', () => {
+  // Regression: soft-commit must clear the field's selection when point leaves,
+  // else the dangling region is replaced by the next keystroke (it ate the
+  // newline + the leading bracket).
+  const { spine } = makeSpine('\n\n');
+  spine.handleKey('down'); // to line 2
+  for (const ch of 'link') spine.handleKey(ch);
+  spine.handleKey('tab'); // expand "[text](url)" on line 2
+  spine.handleKey('C-p'); // move up out of the snippet
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), false);
+  assert.equal(spine.view.mark, null, 'the field selection is cleared');
+  spine.handleKey('d');
+  assert.equal(spine.buffer.text, 'd\n[text](url)\n', 'd inserts on line 1; snippet text intact');
+});
+
 test('a mirrored field installs a multi-cursor set (Policy A), server-side', () => {
   // A snippet where $1 appears twice (a field + a mirror). Arriving on the
   // field installs a secondary cursor over each mirror, so typing updates

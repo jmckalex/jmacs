@@ -824,13 +824,17 @@
 
 (define (snippet-soft-commit-if-outside)
   "If point has moved outside the active snippet's extent, soft-commit:
-   discard the active record but keep the text. Called by the host on
+   discard the active record (the inserted text stays) and drop the field's
+   selection plus any mirror cursors, so the next keystroke inserts at point
+   instead of replacing a now-stale field region. Called by the host on
    cursor moves that aren't field navigation."
   (when (snippet-active?)
     (let ((origin (-as-get :origin 0))
           (end (+ (-as-get :origin 0) (-as-get :length 0)))
           (p (point)))
       (when (or (< p origin) (> p end))
+        (collapse-to-primary!)
+        (clear-mark!)
         (set! *active-snippet* nil)))))
 
 ;; ----------------------------------------------------------------------
