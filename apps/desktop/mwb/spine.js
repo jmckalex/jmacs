@@ -2136,12 +2136,30 @@ export function createSpine(options, effects = {}) {
           return id != null && registry.has(id); // a registry buffer = a text view
         };
         const isTex = (p) => typeof p === 'string' && /\.tex$/i.test(p);
+        // Move point to LINE NOW (so the cursor + the caller's show-status!
+        // broadcast carry it), but DEFER the center+flash. An IMMEDIATE recenter/
+        // flash (gotoLineReveal) would race the pane re-mount AND arrive before the
+        // cursor is broadcast (latex-synctex-inverse calls show-status! AFTER this),
+        // so the line lands at the viewport EDGE with no flash. A short deferral
+        // lands them once the source view is mounted and the cursor has settled on
+        // the target line — view.recenter() then centers on it. unref so the timer
+        // never keeps a test process alive.
+        const revealLine = () => {
+          gotoLine(line);
+          const idx = activeClientIndex;
+          const t = setTimeout(() => {
+            setActiveClient(idx);
+            onScroll({ kind: 'recenter', line: buffer.positionAt(buffer.point).line });
+            onClientDirective([idx], 'flash-current-line', []);
+          }, 80);
+          if (t && typeof t.unref === 'function') t.unref();
+        };
         // Case 1: FILE is already displayed somewhere — focus that pane.
         const showing = leaves.find((l) => pathOf(l) === file);
         if (showing) {
           model.focusPane(showing.id);
           rebindFocusedPane();
-          gotoLineReveal(line);
+          revealLine();
           return NIL;
         }
         // Case 2/3: land in a source pane — a text-buffer leaf (preferring a .tex),
@@ -2155,7 +2173,7 @@ export function createSpine(options, effects = {}) {
           rebindFocusedPane();
           visitFile(file);
           rebindFocusedPane();
-          gotoLineReveal(line);
+          revealLine();
           return NIL;
         }
         // No source pane on screen (only the PDF) — split before it + open there.
@@ -2163,7 +2181,7 @@ export function createSpine(options, effects = {}) {
         rebindFocusedPane();
         visitFile(file);
         rebindFocusedPane();
-        gotoLineReveal(line);
+        revealLine();
         return NIL;
       },
 
