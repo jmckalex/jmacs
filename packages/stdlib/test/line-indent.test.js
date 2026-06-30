@@ -79,6 +79,10 @@ async function indentEditor() {
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'), {});
   const ev = (s) => interpreter.evaluate(s);
+  // These tests exercise the block-indent *geometry* (which lines shift,
+  // cursor follow, region survival) over spaces; pin tabs-mode off so the
+  // expected text stays space-based (*indent-tabs-mode* defaults to #t).
+  ev('(set! *indent-tabs-mode* #f)');
   return { ev, buffer };
 }
 
@@ -178,8 +182,70 @@ test('*tab-width* drives the indent amount', async () => {
   assert.equal(buffer.text, '  one\n');
 });
 
+test('indent-region inserts a literal tab when *indent-tabs-mode* is on', async () => {
+  const { ev, buffer } = await indentEditor();
+  ev('(set! *indent-tabs-mode* #t)'); // the default; pinned on explicitly
+  buffer.text = 'one\n';
+  buffer.pos = 1;
+  ev('(indent-region)');
+  assert.equal(buffer.text, '\tone\n');
+});
+
 test('M-[ and M-] are bound in the global keymap', async () => {
   const { ev } = await indentEditor();
   assert.equal(ev(`(eq? (get the-keymap "M-]") 'indent-region)`), true);
   assert.equal(ev(`(eq? (get the-keymap "M-[") 'outdent-region)`), true);
+});
+
+// --- tabify / untabify ---------------------------------------------------
+
+test('tabify-buffer packs leading *tab-width*-space indents into tabs', async () => {
+  const { ev, buffer } = await indentEditor();
+  buffer.text = '    one\n        two\nthree\n';
+  buffer.pos = 0;
+  ev('(tabify-buffer)');
+  assert.equal(buffer.text, '\tone\n\t\ttwo\nthree\n');
+});
+
+test('tabify-buffer keeps a sub-tab-width remainder as spaces', async () => {
+  const { ev, buffer } = await indentEditor();
+  buffer.text = '      x\n'; // 6 spaces, tab-width 4 -> one tab + two spaces
+  buffer.pos = 0;
+  ev('(tabify-buffer)');
+  assert.equal(buffer.text, '\t  x\n');
+});
+
+test('tabify leaves interior (non-leading) spaces untouched', async () => {
+  const { ev, buffer } = await indentEditor();
+  buffer.text = '    a    b\n'; // leading 4 -> tab; the interior run stays
+  buffer.pos = 0;
+  ev('(tabify-buffer)');
+  assert.equal(buffer.text, '\ta    b\n');
+});
+
+test('untabify-buffer expands leading tabs to *tab-width* spaces', async () => {
+  const { ev, buffer } = await indentEditor();
+  buffer.text = '\tone\n\t\ttwo\n';
+  buffer.pos = 0;
+  ev('(untabify-buffer)');
+  assert.equal(buffer.text, '    one\n        two\n');
+});
+
+test('tabify-region converts only the lines the region touches', async () => {
+  const { ev, buffer } = await indentEditor();
+  buffer.text = '    one\n    two\n    three\n';
+  buffer.mark = buffer.text.indexOf('one'); // line 1
+  buffer.pos = buffer.text.indexOf('two'); // line 2
+  ev('(tabify-region)');
+  assert.equal(buffer.text, '\tone\n\ttwo\n    three\n');
+});
+
+test('tabify then untabify round-trips spaces indentation', async () => {
+  const { ev, buffer } = await indentEditor();
+  const original = '    one\n        two\n  three\n';
+  buffer.text = original;
+  buffer.pos = 0;
+  ev('(tabify-buffer)');
+  ev('(untabify-buffer)');
+  assert.equal(buffer.text, original);
 });

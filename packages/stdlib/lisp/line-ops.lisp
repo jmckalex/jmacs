@@ -233,6 +233,93 @@
    selection survives."
   (-shift-region-lines -outdent-one))
 
+;; --- tabify / untabify (convert leading indentation) --------------------
+;;
+;; Re-express each line's LEADING whitespace between tabs and spaces,
+;; honouring the effective tab width. `tabify` packs every `*tab-width*`
+;; columns of indentation into one tab (any leftover columns stay as
+;; spaces); `untabify` expands every leading tab to spaces. Only the
+;; leading run is touched — interior alignment (tables, trailing
+;; comments) is left exactly as it is. The `-buffer` variants convert the
+;; whole buffer; the `-region` variants convert the lines the region (or
+;; the cursor's line) touches. Use `tabify-buffer` to retab a file that
+;; was indented with spaces after turning `*indent-tabs-mode*` on.
+
+(define (-leading-ws line)
+  "LINE's leading run of spaces and tabs, as a string."
+  (substring line 0 (- (string-length line)
+                       (string-length (drop-leading-blanks line)))))
+
+(define (-ws-columns ws tw i col)
+  "Visual column width of whitespace string WS, each tab advancing to the
+   next multiple of TW. Pure."
+  (if (>= i (string-length ws))
+      col
+      (-ws-columns ws tw (+ i 1)
+        (if (string-prefix? "\t" (substring ws i))
+            (+ col (- tw (remainder col tw)))
+            (+ col 1)))))
+
+(define (-retab-line line to-tabs?)
+  "LINE with its leading whitespace re-expressed: packed into tabs plus a
+   spaces remainder when TO-TABS?, else all spaces. Returns
+   (new-line . delta), delta the change in the leading length. Blank
+   lines (whitespace only) are left untouched."
+  (if (-blank-line? line)
+      (cons line 0)
+      (let* ((ws (-leading-ws line))
+             (rest (substring line (string-length ws)))
+             (tw (-tab-width-effective))
+             (cols (-ws-columns ws tw 0 0))
+             (new-ws (if to-tabs?
+                         (str (string-repeat "\t" (quotient cols tw))
+                              (string-repeat " " (remainder cols tw)))
+                         (string-repeat " " cols))))
+        (cons (str new-ws rest)
+              (- (string-length new-ws) (string-length ws))))))
+
+(define (-tabify-one line) (-retab-line line #t))
+(define (-untabify-one line) (-retab-line line #f))
+
+(define (-retab-whole-buffer transform)
+  "Apply TRANSFORM (line -> (new-line . delta)) to every line in the
+   buffer in one atomic change, keeping point on its character."
+  (let* ((old (buffer-text))
+         (p (point))
+         (result (-transform-lines (-split-lines old) 0 transform))
+         (new-text (car result))
+         (edits (cdr result)))
+    (unless (nil? edits)
+      (atomic-change-group
+        (delete-region! 0 (buffer-length))
+        (goto! 0)
+        (insert! new-text)
+        (goto! (-shift-offset p edits 0))))))
+
+(defcommand tabify-region ()
+  "Convert leading-whitespace indentation to tabs on the lines the region
+   touches (or the current line): every `*tab-width*` columns of indent
+   becomes one tab, any remainder stays as spaces. Interior spaces are
+   left alone; the selection survives."
+  (-shift-region-lines -tabify-one))
+
+(defcommand untabify-region ()
+  "Convert leading-whitespace indentation to spaces on the lines the
+   region touches (or the current line): each leading tab expands to the
+   next `*tab-width*` stop. The selection survives."
+  (-shift-region-lines -untabify-one))
+
+(defcommand tabify-buffer ()
+  "Convert all leading-whitespace indentation in the buffer to tabs (see
+   `tabify-region`). Use this to retab a spaces-indented file after
+   turning `*indent-tabs-mode*` on."
+  (-retab-whole-buffer -tabify-one))
+
+(defcommand untabify-buffer ()
+  "Convert all leading-whitespace indentation in the buffer to spaces
+   (see `untabify-region`)."
+  (-retab-whole-buffer -untabify-one))
+
 ;; --- sorting lines -------------------------------------------------------
 
 (defcommand sort-lines (start end)

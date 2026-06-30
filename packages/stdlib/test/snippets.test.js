@@ -287,14 +287,18 @@ test('the TAB trigger expands the word before point', async () => {
 
 test('TAB with no trigger word falls through to insert-tab', async () => {
   const { buffer, interp } = await engine({ name: 'notes.txt', text: '' });
+  // Pin spaces so this test stays about the fall-through, not the
+  // indent character (*indent-tabs-mode* defaults to #t).
+  interp.evaluate('(set! *indent-tabs-mode* #f)');
   buffer.moveTo(0);
   press(interp, 'tab');
-  // *tab-width* defaults to 4 spaces, *indent-tabs-mode* off.
+  // *tab-width* defaults to 4 spaces.
   assert.equal(buffer.text, '    ');
 });
 
 test('TAB after a non-trigger word falls through to insert-tab', async () => {
   const { buffer, interp } = await engine({ name: 'notes.txt', text: '' });
+  interp.evaluate('(set! *indent-tabs-mode* #f)');
   buffer.insert('zzznotatrigger');
   press(interp, 'tab');
   assert.ok(
@@ -305,6 +309,7 @@ test('TAB after a non-trigger word falls through to insert-tab', async () => {
 
 test('*snippet-expand-key* set to nil disables the TAB trigger', async () => {
   const { buffer, interp } = await engine({ name: 'main.js', text: '' });
+  interp.evaluate('(set! *indent-tabs-mode* #f)');
   interp.evaluate('(set! *snippet-expand-key* nil)');
   buffer.insert('for');
   press(interp, 'tab');
