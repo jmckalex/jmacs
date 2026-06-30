@@ -1028,6 +1028,15 @@ function applyIntent(client, intent) {
         spine.docOpen(intent.name);
         break;
       }
+      case INTENT.SYNCTEX_INVERSE: {
+        // Inverse SyncTeX: run `synctex edit` for the clicked PDF point and
+        // reveal the source file:line in a source pane. The synctex spawn is
+        // async (run-process!); its callback's reveal (pane focus + scroll) fans
+        // out through the model's onChange + onScroll on its own. break (not
+        // return) so the uniform post-intent refresh runs too. Never throws.
+        spine.synctexInverse(intent.pdfPath, intent.page, intent.x, intent.y);
+        break;
+      }
       default:
         break;
     }

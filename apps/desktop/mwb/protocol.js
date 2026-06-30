@@ -298,6 +298,13 @@ export const INTENT = Object.freeze({
   // documentation page for NAME. Fire-and-forget — the spine runs `(open-doc
   // name)`, which opens/reuses the doc-view; no reply. Carries `{ name }`.
   DOC_OPEN: 'doc-open',
+  // Inverse SyncTeX: an Option-click in a pdf-view. The renderer sends the
+  // 1-based `page`, the clicked PDF point `x`/`y` (SyncTeX top-origin points),
+  // and the clicked PDF's `pdfPath`. The spine runs `synctex edit` (the real
+  // latex-synctex-inverse) and reveals the source file:line in a source pane —
+  // the renderer interpreter can't (its pane model is idle in server mode).
+  // Fire-and-forget; the reveal's pane focus / scroll fan back as usual.
+  SYNCTEX_INVERSE: 'synctex-inverse',
 });
 
 /**

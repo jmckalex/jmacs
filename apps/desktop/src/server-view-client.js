@@ -895,6 +895,24 @@ export function createServerViewClient({
     });
   }
 
+  /** Inverse SyncTeX: an Option-click in a pdf-view at PDFPATH, PAGE (1-based),
+   *  PDF point (X, Y). Ask the spine to run `synctex edit` and reveal the source
+   *  file:line in a source pane. Fire-and-forget — the reveal's focus/scroll fan
+   *  back through the normal view updates. */
+  function synctexInverse(pdfPath, page, x, y) {
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: {
+        id: nextIntentId++,
+        kind: INTENT.SYNCTEX_INVERSE,
+        pdfPath: typeof pdfPath === 'string' ? pdfPath : '',
+        page: Number(page),
+        x: Number(x),
+        y: Number(y),
+      },
+    });
+  }
+
   return {
     connect,
     dispatchKey,
@@ -941,6 +959,8 @@ export function createServerViewClient({
     // buffer), and open a doc page by name on click-through.
     requestDocHover,
     docOpen,
+    // Inverse SyncTeX: a pdf-view Option-click → spine `synctex edit` + reveal.
+    synctexInverse,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the

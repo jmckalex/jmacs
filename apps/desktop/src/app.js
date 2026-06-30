@@ -6438,6 +6438,25 @@ if (window.host && window.host.serverMode) {
             pdfView.reload();
           }
         }
+      } else if (name === 'pdf-synctex-show') {
+        // Forward SyncTeX (C-c C-v): the spine ran `synctex view` and asks THIS
+        // window's PDF (when it shows args[0]) to scroll to the page + flash the
+        // typeset box. [path, page, x, y, w, h] (PDF points; page 1-based).
+        // Mirrors the old pdf-synctex-show! prim (the box anchor is x/y, so the
+        // highlight covers the box: { h: x, v: y, w, h_: h }).
+        const current = pdfView.buffer;
+        const wanted = args?.[0] != null ? String(args[0]) : '';
+        const page = Number(args?.[1]);
+        const x = Number(args?.[2]);
+        const y = Number(args?.[3]);
+        if (current
+            && !(wanted !== '' && viewFilePath(current) !== wanted)
+            && Number.isFinite(page) && Number.isFinite(x) && Number.isFinite(y)
+            && typeof pdfView.syncTexShow === 'function') {
+          const w = Number(args?.[4]) || 0;
+          const h = Number(args?.[5]) || 0;
+          pdfView.syncTexShow(page, x, y, { h: x, v: y, w, h_: h });
+        }
       } else if (name === 'open-project-dialog') {
         // B4 project Stage 3 (open-project): the spine asked this window to run the
         // native OS directory picker; the chosen dir goes back up as PROJECT_OPEN
@@ -7711,17 +7730,13 @@ function configurePdfView() {
   return {
     ...serverMediaKeyOption(),
     // Inverse SyncTeX: an Option-click in the PDF jumps the editor to the
-    // source. The pdf-view hands us the 1-based page and the clicked PDF
-    // point (SyncTeX convention); `latex-synctex-inverse` runs
-    // `synctex edit` and opens the resulting file:line. Guarded by the
-    // keymap-ready latch and wrapped so a Lisp error can't break the click.
-    onSyncTexClick: (page, x, y) => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('latex-synctex-inverse', page, x, y);
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
+    // source. The pdf-view hands us the 1-based page, the clicked PDF point
+    // (SyncTeX convention), and the clicked PDF's own path. The SPINE runs
+    // `synctex edit` and reveals the resulting file:line in a source pane —
+    // the renderer interpreter's pane model is idle in server mode, so the
+    // old `interpreter.call('latex-synctex-inverse', …)` here no-op'd.
+    onSyncTexClick: (page, x, y, filePath) => {
+      if (serverViewClient) serverViewClient.synctexInverse(filePath, page, x, y);
     },
   };
 }

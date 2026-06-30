@@ -2705,3 +2705,70 @@ test('docOpen: runs (open-doc name) without throwing; a bad/empty name is a no-o
   assert.doesNotThrow(() => spine.docOpen('zzqq-not-a-real-symbol'));
   assert.doesNotThrow(() => spine.docOpen(''));
 });
+
+// ── Inverse SyncTeX (B6 rehome) ─────────────────────────────────────────────
+// latex-synctex.lisp loads server-side; its pane-walking -latex-reveal-source is
+// overridden by the JS reveal-source-pane! (the spine's leaf view handles are
+// thin {kind:'text'} stubs). The synctex spawn itself needs the `synctex` binary
+// + a real PDF (live-only), so these cover the parts that run without it: the
+// file loaded, point-line-col, the forward directive, and the reveal targeting.
+
+test('latex-synctex.lisp is loaded in the spine', () => {
+  const { spine } = makeSpine('');
+  // The *synctex-command* defcustom proves the file evaluated; the inverse
+  // command + the JS reveal prim are both bound.
+  assert.deepEqual(spine.replEval('(car *synctex-command*)'), { ok: true, text: '"synctex"' });
+  assert.deepEqual(spine.replEval('(procedure? latex-synctex-inverse)'), { ok: true, text: '#t' });
+  assert.deepEqual(spine.replEval('(procedure? reveal-source-pane!)'), { ok: true, text: '#t' });
+});
+
+test('point-line-col: 1-based (line . column) at point', () => {
+  const { spine } = makeSpine('hello\nworld');
+  assert.deepEqual(spine.replEval('(point-line-col)'), { ok: true, text: '(1 . 1)' });
+  spine.replEval('(goto! 8)'); // line 2 ("world"), 0-based col 2 → 1-based col 3
+  assert.deepEqual(spine.replEval('(point-line-col)'), { ok: true, text: '(2 . 3)' });
+});
+
+test('pdf-synctex-show!: emits a pdf-synctex-show directive (forward search)', () => {
+  const { spine, log } = makeSpine('');
+  spine.replEval('(pdf-synctex-show! "/x.pdf" 2 10 20 5 6)');
+  const d = log.directives.find((e) => e.name === 'pdf-synctex-show');
+  assert.ok(d, 'a pdf-synctex-show directive was emitted');
+  assert.deepEqual(d.args, ['/x.pdf', 2, 10, 20, 5, 6]);
+});
+
+test('pdf-current-path: nil outside an inverse-search call', () => {
+  const { spine } = makeSpine('');
+  assert.deepEqual(spine.replEval('(pdf-current-path)'), { ok: true, text: 'nil' });
+});
+
+test('reveal-source-pane!: case 1 — FILE already shown → jump in place', () => {
+  const texPath = '/tmp/synctex-test/source.tex';
+  const openFile = (path) =>
+    path === texPath ? { text: 'a\nb\nc\nd\ne', name: 'source.tex', path: texPath } : null;
+  const { spine } = makeSpine('a\nb\nc\nd\ne', 'source.tex', { initialPath: texPath, openFile });
+  // Reveal line 3 of the already-shown source: point lands at the start of line 3.
+  spine.replEval(`(reveal-source-pane! "${texPath}" 3)`);
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, 'point on line 3 (0-based 2)');
+});
+
+test('reveal-source-pane!: case 2 — opens FILE in the SOURCE pane, never the PDF pane', () => {
+  const dir = '/tmp/synctex-test';
+  const texPath = `${dir}/source.tex`;
+  const otherPath = `${dir}/other.tex`;
+  const pdfPath = `${dir}/doc.pdf`;
+  const openFile = (path) => {
+    if (path === texPath) return { text: 'a\nb\nc', name: 'source.tex', path: texPath };
+    if (path === otherPath) return { text: '1\n2\n3\n4', name: 'other.tex', path: otherPath };
+    if (path === pdfPath) return { media: true, kind: 'pdf', name: 'doc.pdf', path: pdfPath };
+    return null;
+  };
+  const { spine } = makeSpine('a\nb\nc', 'source.tex', { initialPath: texPath, openFile });
+  // Lay out: source.tex | PDF (the split focuses the new PDF leaf).
+  spine.replEval(`(open-file-in-split! "${pdfPath}" (quote horizontal) (quote after))`);
+  // Inverse search resolves to other.tex:2 — must land in the TEXT (source) pane,
+  // NOT the focused PDF pane, opening other.tex there.
+  spine.replEval(`(reveal-source-pane! "${otherPath}" 2)`);
+  assert.equal(spine.buffer.name, 'other.tex', 'opened other.tex in the source pane');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 1, 'point on line 2 (0-based 1)');
+});
