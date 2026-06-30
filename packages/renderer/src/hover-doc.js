@@ -138,12 +138,9 @@ export function createHoverDoc(editorEl, options) {
    *  the click-to-open link. Cancelling the pending show-timer is
    *  enough: a visible tooltip persists until the user clicks
    *  (anywhere) or scrolls. */
-  editorEl.addEventListener('mousedown', hide);
-  editorEl.addEventListener('wheel', hide, { passive: true });
-  editorEl.addEventListener('scroll', hide, { passive: true });
-  editorEl.addEventListener('mouseleave', () => clearShowTimer());
-
-  editorEl.addEventListener('mousemove', (event) => {
+  const onHideEvent = () => hide();
+  const onMouseLeave = () => clearShowTimer();
+  const onMouseMove = (event) => {
     // Skip when the cursor is over a UI overlay (sticky notes etc.).
     // They live inside the editor element but carry their own
     // tooltips / handlers.
@@ -183,12 +180,49 @@ export function createHoverDoc(editorEl, options) {
       currentSymbol = result.symbol;
       show(result.summary, lastClientX, lastClientY);
     }, HOVER_DELAY_MS);
-  });
+  };
+
+  // The hover listeners live on the ACTIVE editor element. Under Model B the
+  // visible editor is a per-leaf `<text-view>` that is swapped on a pane / buffer
+  // switch (and the first server mount can land AFTER this component is created),
+  // so the host re-points us at the live element via `setEditorEl` — exactly as
+  // inline-eval is re-pointed via `setOverlayLayer`. Without this, the listeners
+  // would stay on whatever element existed at construction and never fire.
+  let boundEl = null;
+  function setEditorEl(el) {
+    if (!el || el === boundEl) return;
+    if (boundEl) {
+      boundEl.removeEventListener('mousedown', onHideEvent);
+      boundEl.removeEventListener('wheel', onHideEvent);
+      boundEl.removeEventListener('scroll', onHideEvent);
+      boundEl.removeEventListener('mouseleave', onMouseLeave);
+      boundEl.removeEventListener('mousemove', onMouseMove);
+    }
+    hide();
+    boundEl = el;
+    el.addEventListener('mousedown', onHideEvent);
+    el.addEventListener('wheel', onHideEvent, { passive: true });
+    el.addEventListener('scroll', onHideEvent, { passive: true });
+    el.addEventListener('mouseleave', onMouseLeave);
+    el.addEventListener('mousemove', onMouseMove);
+  }
+  setEditorEl(editorEl);
 
   return {
     hide,
+    // Re-point the hover listeners at the now-active `<text-view>` (server-mode
+    // pane / buffer switch). A no-op for the same element.
+    setEditorEl,
     destroy() {
       hide();
+      if (boundEl) {
+        boundEl.removeEventListener('mousedown', onHideEvent);
+        boundEl.removeEventListener('wheel', onHideEvent);
+        boundEl.removeEventListener('scroll', onHideEvent);
+        boundEl.removeEventListener('mouseleave', onMouseLeave);
+        boundEl.removeEventListener('mousemove', onMouseMove);
+        boundEl = null;
+      }
       tooltip.remove();
     },
   };

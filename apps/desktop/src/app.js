@@ -9096,6 +9096,12 @@ function applyTextMountSideEffects(view, instance) {
           inlineEval.setOverlayLayer(instance.overlayLayer);
         } catch { /* declared later — a reconcile re-mount binds them */ }
       }
+      // The hover-doc tooltip listens on the ACTIVE `<text-view>`; re-point it
+      // here (same per-instance problem as inline-eval's overlay). Without this
+      // the listeners stay on whatever element existed when createHoverDoc ran —
+      // often NOT the server-mounted view — so hover never fires. TDZ-guarded:
+      // hoverDoc is a module const declared later, bound by a reconcile re-mount.
+      try { hoverDoc.setEditorEl(instance); } catch { /* declared later */ }
       if (typeof instance.focus === 'function') instance.focus();
     }
     return;
