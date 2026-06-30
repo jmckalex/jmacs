@@ -21,32 +21,16 @@ import {
   createSplitPane,
   computeRects,
   computeSplitterEdges,
-  findPaneById,
-  insertAtRootBorder,
-  insertAtSplit,
   leafPanes,
-  paneInDirection,
   parentOf,
   replacePane,
   siblingOf,
-  swapLeaves,
-  permuteLeaves,
   spiralOrder,
   bumpIdCounterPast,
   SPLIT_HORIZONTAL,
   SPLIT_VERTICAL,
 } from '@editor/pane';
-import {
-  arrayToList,
-  cons,
-  keyword,
-  LispError,
-  listToArray,
-  NIL,
-  sym,
-  Sym,
-  writeString,
-} from '@editor/lisp/values.js';
+import { keyword, writeString } from '@editor/lisp/values.js';
 import {
   AudioView,
   BrowserView,
@@ -103,15 +87,8 @@ import {
 // path-resolve.js directly, NOT @editor/stdlib's index — its index re-exports
 // createBufferPrimitives etc., which import @editor/lisp's interpreter; the
 // subpath keeps the renderer's only Lisp dependency the pure value model (B7).
-import { pathDirname } from '@editor/stdlib/path-resolve.js';
 import { createAudioController } from './audio.js';
-import {
-  emptyOverrides,
-  jsonToLispOverrides,
-  jsonToLispUserFaces,
-  jsonToLispHighlightRules,
-} from './face-overrides.js';
-import { applyFaceStyles, writeFaceStyleElement } from './face-styles.js';
+import { writeFaceStyleElement } from './face-styles.js';
 import {
   resolveElementModuleUrl,
   normalizeFit,
@@ -167,22 +144,6 @@ import { createPickerPanel } from '../mwb/picker-panel.js';
 // the serverMode pane-layout reconcile below.
 import { createClientBuffer } from '../mwb/client-buffer.js';
 
-/**
- * Build a Lisp hash-map (a JS `Map` with interned-keyword keys) from a
- * plain object — the shape the host's citation / synctex primitives
- * return. (latex-primitives.js keeps its own copy for its own scope; this
- * is the app.js-scope equivalent, used by the citation primitives.)
- *
- * @param {Record<string, *>} fields
- * @returns {Map<*, *>}
- */
-function record(fields) {
-  const map = new Map();
-  for (const [key, value] of Object.entries(fields)) {
-    map.set(keyword(key), value);
-  }
-  return map;
-}
 
 const WELCOME = `
 
@@ -223,18 +184,6 @@ const SCRATCH = `;; scratch.lisp — a buffer for evaluating Lisp.
 (define greeting "hello, world")
 `;
 
-/** The commented init.lisp written into the config directory on first run. */
-const INIT_TEMPLATE = `;;; init.lisp — your Godot configuration.
-;;;
-;;; This file is evaluated at startup, after the standard library and
-;;; your saved customisations. It is the Godot equivalent of .emacs:
-;;; ordinary Lisp, so anything goes — set variables, define commands,
-;;; bind keys.
-;;;
-;;; Examples:
-;;;   (custom-apply! '*markdown-interpreter* "pandoc -f markdown -t html")
-;;;   (define (insert-divider) (insert! "\\n---\\n"))
-`;
 
 // --- views --------------------------------------------------------------
 //
@@ -638,16 +587,7 @@ function editorPaneElement() {
 /** Pending requestAnimationFrame id for a coalesced relayout, or 0. */
 let relayoutHandle = 0;
 
-/** Live handle for an active add-pane overlay (the visual macro that
- *  highlights splitters + outer borders). `null` when the mode is off.
- *  Re-entering the chord toggles it; a successful click or Escape
- *  clears it via the `exit` shim installed at entry. */
-let addPaneHandle = null;
 
-/** Live handle for an active move-views overlay (swap-views /
- *  permute-views), or `null` when off. Same toggle/clear lifecycle as
- *  `addPaneHandle`. */
-let moveViewHandle = null;
 
 
 /** Recompute the layout of every leaf pane against the current editor-
@@ -1248,20 +1188,6 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
   return splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, placeholder);
 }
 
-/** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
- *  Keyword both carry a `.name`), with any leading `:` stripped, or null
- *  when ARG isn't symbol-like. Mirrors pane-primitives' `sideFromArg` /
- *  `coerceEdge` coercion so `open-file-in-split!` reads its
- *  orientation/side args the same way the split primitives read theirs. */
-function symbolNameOf(arg) {
-  let name = null;
-  if (typeof arg === 'string') name = arg;
-  else if (arg && typeof arg === 'object' && typeof arg.name === 'string') {
-    name = arg.name;
-  }
-  if (name === null) return null;
-  return name.startsWith(':') ? name.slice(1) : name;
-}
 
 /** Programmatically split the focused pane and open FILEPATH directly in
  *  the new sibling pane — no placeholder, no chooser. The split runs at
@@ -1302,54 +1228,7 @@ async function splitAndOpenFile(filePath, orientation, side = 'after', persist =
   return view;
 }
 
-/** Insert a fresh leaf "in the gap" of the split node with id SPLIT_ID.
- *  The new leaf gets a *placeholder* chooser (remembering the focused
- *  view as the clone origin) and becomes the focused pane. Returns the
- *  inserted leaf, or `null` when the split id isn't in the tree. */
-function addPaneAtSplitterId(splitId) {
-  if (typeof splitId !== 'string') return null;
-  const splitNode = findPaneById(rootPane, splitId);
-  if (!splitNode || splitNode.kind !== 'split') return null;
-  const sourceView =
-    (currentPane()?.view) ?? views[currentViewIndex] ?? null;
-  const placeholder = buildPlaceholderForSplit(sourceView);
-  const newLeaf = createLeafPane({ view: placeholder });
-  rootPane = insertAtSplit(rootPane, splitNode, newLeaf);
-  syncPaneElements();
-  setCurrentPaneId(newLeaf.id);
-  hideInactiveRendererViews(placeholder.kind);
-  mountKindView(placeholder);
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-  return newLeaf;
-}
 
-/** Insert a fresh leaf at SIDE of the root pane (`'top'`/`'bottom'`/
- *  `'left'`/`'right'`). Wraps the whole existing tree in a new outer
- *  split, with the fresh leaf on that side. Returns the inserted leaf
- *  or `null` for an unrecognised side. */
-function addPaneAtRootBorder(side) {
-  if (
-    side !== 'top' && side !== 'bottom' &&
-    side !== 'left' && side !== 'right'
-  ) {
-    return null;
-  }
-  const sourceView =
-    (currentPane()?.view) ?? views[currentViewIndex] ?? null;
-  const placeholder = buildPlaceholderForSplit(sourceView);
-  const newLeaf = createLeafPane({ view: placeholder });
-  rootPane = insertAtRootBorder(rootPane, side, newLeaf);
-  syncPaneElements();
-  setCurrentPaneId(newLeaf.id);
-  hideInactiveRendererViews(placeholder.kind);
-  mountKindView(placeholder);
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-  return newLeaf;
-}
 
 /** Implementation of `delete-pane!`. Collapses TARGET's parent split
  *  into TARGET's sibling, drops a layer of the tree. No-op when TARGET
@@ -1412,147 +1291,13 @@ function deletePaneInTree(targetLeaf) {
   scheduleMinimapReconcile();
 }
 
-/** Implementation of `delete-other-panes!`. Makes TARGET fill the
- *  whole editor area, disposing every other leaf's editor-view
- *  instance (text leaves only). */
-function deleteOtherPanesInTree(targetLeaf) {
-  if (!targetLeaf || targetLeaf.kind !== 'leaf') return;
-  if (rootPane === targetLeaf) return;
-  // Dispose every editor-view instance for leaves that are about to
-  // disappear (text leaves only — non-text singletons aren't per-pane).
-  // A placeholder pane among them leaves no residue: splice it out.
-  for (const leaf of leafPanes(rootPane)) {
-    if (leaf === targetLeaf) continue;
-    disposeEditorViewForLeaf(leaf);
-    if (isPlaceholderView(leaf.view)) splicePlaceholderFromViews(leaf.view);
-  }
-  rootPane = targetLeaf;
-  syncPaneElements();
-  if (currentPaneId !== targetLeaf.id) {
-    currentPaneId = targetLeaf.id;
-    const view = targetLeaf.view;
-    if (view) {
-      const idx = views.indexOf(view);
-      if (idx >= 0) currentViewIndex = idx;
-      if (view.kind === 'text' && view.buffer) {
-        if (typeof view.buffer.bindCursor === 'function') {
-          view.buffer.bindCursor(view);
-        }
-        setCurrentTextBuffer(view.buffer);
-      }
-      const instance = editorViewByPaneId.get(targetLeaf.id);
-      if (instance) editorView = instance;
-    }
-  }
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-}
 
-/** Set of every leaf-kind view that is currently *visible* in some
- *  pane other than EXCLUDE. "Visible" means: the active child of a
- *  tabline-view, or the direct view of a plain leaf. Hidden tabs
- *  (inactive children of a tabline-view) are *not* visible. Used by
- *  the C-x b picker (Q4) so it can drop candidates that are already
- *  showing on screen elsewhere.
- *
- *  A nested tabline-view's active child is also collected (nested
- *  tablines, Q10).
- *
- *  @param {*} exclude - The pane to skip (typically the focused pane).
- *  @returns {Set<import('@editor/view').View>}
- */
-function viewsVisibleInOtherPanes(exclude) {
-  const visible = new Set();
-  for (const leaf of leafPanes(rootPane)) {
-    if (leaf === exclude) continue;
-    let v = leaf.view;
-    while (v && isTablineView(v)) {
-      const child = tablineActiveChild(v);
-      if (!child) break;
-      visible.add(child);
-      v = child; // walk through nested tablines
-    }
-    if (v && !isTablineView(v)) visible.add(v);
-  }
-  return visible;
-}
 
-/** Cycle focus to the next leaf in display order (depth-first).
- *  Returns the new current pane handle. */
-function focusNextPane() {
-  const leaves = leafPanes(rootPane);
-  if (leaves.length <= 1) return currentPane();
-  const i = leaves.findIndex((l) => l.id === currentPaneId);
-  const start = i < 0 ? 0 : i;
-  // Cycle to the next *focusable* pane — skip passive sidebars (the tree /
-  // bookmark in a project, the minimap, …) so C-x o stays among editing panes.
-  for (let step = 1; step <= leaves.length; step += 1) {
-    const cand = leaves[(start + step) % leaves.length];
-    if (cand.id === currentPaneId) continue;
-    if (isNoFocusPane(cand.id)) continue;
-    setCurrentPaneId(cand.id);
-    return cand;
-  }
-  return currentPane();
-}
 
-/** Focus a *specific* leaf pane by its handle (the absolute counterpart
- *  to `focusNextPane` / `focusPaneByDirection`, which move focus
- *  relatively). Used by features that already hold the pane they want
- *  focused — e.g. inverse SyncTeX, which focuses the pane showing the
- *  resolved source file instead of landing in whatever pane the PDF
- *  click stole focus to. Returns the focused leaf, or null when PANE
- *  isn't a leaf currently in the tree (a split node, a stale handle).
- *  Re-focusing the already-current pane is a no-op that still returns
- *  the leaf. */
-function focusPaneHandle(pane) {
-  if (!pane || typeof pane !== 'object' || pane.kind !== 'leaf') return null;
-  const leaf = leafPanes(rootPane).find((l) => l.id === pane.id);
-  if (!leaf) return null;
-  setCurrentPaneId(leaf.id);
-  return leaf;
-}
 
-/** Spatial pane navigation: focus the leaf adjacent to the current one
- *  in DIRECTION. Returns the new current pane handle, or null when
- *  there's no neighbour on that side. */
-function focusPaneByDirection(direction) {
-  const hostRect = editorHostEl.getBoundingClientRect();
-  const rects = computeRects(rootPane, {
-    width: hostRect.width,
-    height: hostRect.height,
-  });
-  const targetId = paneInDirection(rects, currentPaneId, direction);
-  if (targetId === null) return null;
-  setCurrentPaneId(targetId);
-  return leafPanes(rootPane).find((l) => l.id === targetId) ?? null;
-}
 
-/** Reset every split node's ratio to 0.5. The tree is structurally
- *  shared by the splits; the ratios are mutable fields on each node, so
- *  we walk and write in place. A relayout follows. */
-function balancePanesInTree() {
-  walkAndBalance(rootPane);
-  refreshSplitterHandles();
-  scheduleRelayout();
-}
 
-function walkAndBalance(node) {
-  if (!node || node.kind !== 'split') return;
-  node.ratio = 0.5;
-  walkAndBalance(node.first);
-  walkAndBalance(node.second);
-}
 
-/** Set a split node's ratio in place (the layout reads the live ratio
- *  each frame). RATIO is assumed already clamped by the caller. */
-function setSplitRatioOnNode(splitNode, ratio) {
-  if (!splitNode || splitNode.kind !== 'split') return;
-  splitNode.ratio = ratio;
-  refreshSplitterHandles();
-  scheduleRelayout();
-}
 
 // --- splitter handle DOM + drag ----------------------------------------
 //
@@ -2097,28 +1842,6 @@ function escapeHtml(text) {
     .replace(/"/g, '&quot;');
 }
 
-/** Render NAME's docstring as Markdown and show it in a doc buffer.
- *  Reuses any existing doc buffer for the same NAME. This is the
- *  live path — for user-defined procedures whose documentation
- *  isn't in the pre-built manifest. */
-async function openDocstringBuffer(docName, source) {
-  let body;
-  try {
-    body = await renderMarkdownHtml(source);
-  } catch (error) {
-    repl.appendError(`doc render failed: ${error.message}`);
-    return;
-  }
-  // Frame the rendered body in the same `article.doc-page[data-node-id]`
-  // shape the built pages use, so the doc-view lifts it correctly. This
-  // node isn't in the manifest tree, so the view shows it with minimal
-  // chrome (Contents stays reachable; Prev/Up/Next are disabled).
-  const html =
-    `<article class="doc-page docstring-page" data-node-id="${escapeHtml(docName)}">` +
-    `<h3 class="doc-name"><code>${escapeHtml(docName)}</code></h3>\n` +
-    `<div class="doc-docstring">${body}</div></article>`;
-  showDocInPane(docName, html, docName);
-}
 
 // --- audio playback (jukebox mode) --------------------------------------
 // A single shared HTMLAudioElement, driven by the Lisp jukebox. The
@@ -2131,10 +1854,6 @@ const audio = createAudioController();
  *  and dispatch directly from the renderer, so they need the same
  *  expansion at their own entry. */
 const HOME = window.host?.homeDirectory ?? '';
-/** The editor's per-user data directory (where init.lisp, custom.lisp,
- *  faces.json live). Used by the snippet engine to find
- *  `<userData>/snippets`. Empty when the host can't resolve it. */
-const USER_DATA_DIR = window.host?.userDataDirectory ?? '';
 function expandTilde(path) {
   if (typeof path !== 'string' || HOME === '') return path;
   if (path === '~') return HOME;
@@ -2433,58 +2152,6 @@ async function openFileByPath(filePath, {
 // `session.js` can consume it directly, without the legacy
 // buffer-record adapter shims.
 
-async function saveBufferInteractive() {
-  const view = session.currentView;
-  const buffer = view ? view.buffer : null;
-  if (buffer === null) {
-    repl.appendError('save: no buffer to save in this view');
-    return;
-  }
-  try {
-    let result = await window.host.saveFile(buffer.filePath ?? null, buffer.text);
-    if (result === null) return;
-    // The file changed on disk since we read it — another program rewrote
-    // it. Don't silently clobber that change: ask first. Cancelling is
-    // non-destructive (the buffer keeps its edits, the disk keeps its
-    // version), so the user can reload or diff before deciding.
-    if (result.conflict) {
-      const overwrite = window.confirm(
-        `"${result.name}" has changed on disk since you opened it.\n\n` +
-          'OK = overwrite it with your version.\n' +
-          'Cancel = write nothing and keep editing ' +
-          '(re-open the file to load the disk version).'
-      );
-      if (!overwrite) {
-        repl.appendError(
-          `save: "${result.name}" changed on disk — not overwritten. ` +
-            'Re-open the file to load the disk version.'
-        );
-        return;
-      }
-      result = await window.host.saveFile(buffer.filePath ?? null, buffer.text, {
-        force: true,
-      });
-      if (result === null || result.conflict) return;
-    }
-    buffer.filePath = result.path;
-    buffer.name = result.name;
-    // Mirror the rename onto the view (text views derive their
-    // display name from the buffer).
-    view.name = result.name;
-    dirtyBuffers.delete(buffer);
-    // The saved text is the new clean baseline, so a later undo back to
-    // it (or a re-edit) is measured against what's actually on disk.
-    markBufferSaved(buffer);
-    // The buffer is on disk now — drop its crash-recovery snapshot.
-    recovery.forget(buffer);
-    notifyViewsChanged();
-    // Persist sticky notes alongside the file — this also covers a
-    // first save, when the buffer has only just gained a file path.
-    await flushMetadata(buffer);
-  } catch (error) {
-    repl.appendError(`save failed: ${error.message}`);
-  }
-}
 
 // --- sticky-note metadata ----------------------------------------------
 // Sticky notes persist to a `<file>.jmacs-metadata` companion file.
@@ -2577,223 +2244,13 @@ async function performShutdown() {
 
 const minibuffer = createMinibuffer(document.getElementById('minibuffer-host'));
 
-/** Run an incremental forward search in the minibuffer. */
-function startSearch(initialDirection) {
-  const buffer = currentTextBuffer;
-  const origin = buffer.point;
-  let direction = initialDirection;
-  let lastMatch = -1;
-
-  /** Select the match at `index` so the editor highlights it. */
-  function showMatch(index, query) {
-    buffer.moveTo(index);
-    buffer.moveTo(index + query.length, { extend: true });
-    lastMatch = index;
-  }
-
-  /** Find `query` from offset `from` in `dir`. */
-  function find(query, from, dir) {
-    return dir === 'forward'
-      ? buffer.text.indexOf(query, from)
-      : buffer.text.lastIndexOf(query, from);
-  }
-
-  minibuffer.prompt(
-    initialDirection === 'forward' ? 'I-search: ' : 'I-search backward: ',
-    {
-      onChange(query) {
-        lastMatch = -1;
-        if (query === '') {
-          buffer.moveTo(origin);
-          minibuffer.setStatus('');
-          return;
-        }
-        const from = direction === 'forward' ? origin : Math.max(origin - 1, 0);
-        const index = find(query, from, direction);
-        if (index >= 0) {
-          showMatch(index, query);
-          minibuffer.setStatus('');
-        } else {
-          minibuffer.setStatus('no match');
-        }
-      },
-      onKey(key, query) {
-        // C-s / C-r advance to the next match, forward or backward.
-        if ((key === 'C-s' || key === 'C-r') && query !== '') {
-          direction = key === 'C-s' ? 'forward' : 'backward';
-          const base = lastMatch >= 0 ? lastMatch : origin;
-          const from = direction === 'forward' ? base + 1 : base - 1;
-          const index = find(query, from, direction);
-          if (index >= 0) {
-            showMatch(index, query);
-            minibuffer.setStatus('');
-          } else {
-            minibuffer.setStatus('no more matches');
-          }
-          return true;
-        }
-        return false;
-      },
-      onSubmit() {
-        buffer.clearMark(); // keep the cursor at the match
-        editorView.focus();
-      },
-      onCancel() {
-        buffer.moveTo(origin);
-        editorView.focus();
-      },
-    }
-  );
-}
 
 // --- incremental regexp search ----------------------------------------
 
-/**
- * Compile a JS RegExp from a source string, with the global flag for
- * forward scanning. Returns `null` for an invalid source — the regex
- * isearch swallows mid-typing errors silently.
- */
-function compileRegexpSource(source, flags = 'g') {
-  if (source === '') return null;
-  try {
-    return new RegExp(source, flags);
-  } catch {
-    return null;
-  }
-}
 
-/**
- * Expand REPLACEMENT against a regex match, honouring `$N` (capture
- * group N), `$&` (the whole match), and `$$` (a literal `$`). Anything
- * else is left alone — so `$x` becomes literal `$x`. This is the
- * standard JS String.replace replacement-string semantics, isolated so
- * the regex-replace and query-replace paths share the same expansion.
- *
- * `match` is the args object the RegExp.replace callback receives:
- * `[wholeMatch, group1, group2, ..., offset, fullString, groupsObj?]`.
- */
-function expandReplacement(replacement, match) {
-  return replacement.replace(/\$([\d&$])/g, (token, ch) => {
-    if (ch === '$') return '$';
-    if (ch === '&') return match[0];
-    const n = Number(ch);
-    const captured = match[n];
-    return captured === undefined ? '' : captured;
-  });
-}
 
-/**
- * The first regexp match in `text` at or after `from`. Returns
- * `{ start, end }` or `null`. The supplied RegExp must carry the `g`
- * flag (we drive `lastIndex` ourselves).
- */
-function regexpForwardMatch(text, regexp, from) {
-  regexp.lastIndex = Math.max(0, from);
-  const match = regexp.exec(text);
-  if (match === null) return null;
-  // Skip zero-length matches at the same position; they would loop.
-  if (match[0].length === 0) {
-    regexp.lastIndex = match.index + 1;
-    const retry = regexp.exec(text);
-    if (retry === null || retry[0].length === 0) return null;
-    return { start: retry.index, end: retry.index + retry[0].length };
-  }
-  return { start: match.index, end: match.index + match[0].length };
-}
 
-/**
- * The last regexp match in `text` strictly before `from` (so a backward
- * search past an existing match advances). Returns `{ start, end }` or
- * `null`.
- */
-function regexpBackwardMatch(text, regexp, from) {
-  regexp.lastIndex = 0;
-  const limit = Math.max(0, from);
-  let last = null;
-  let match;
-  while ((match = regexp.exec(text)) !== null) {
-    if (match.index >= limit) break;
-    last = { start: match.index, end: match.index + match[0].length };
-    // Guard against zero-length matches stalling lastIndex.
-    if (match[0].length === 0) regexp.lastIndex += 1;
-  }
-  return last;
-}
 
-/** Run an incremental regexp search in the minibuffer. */
-function startRegexpSearch(initialDirection) {
-  const buffer = currentTextBuffer;
-  const origin = buffer.point;
-  let direction = initialDirection;
-  let lastMatch = null; // { start, end } or null
-
-  /** Show a match by selecting it (the editor renders that). */
-  function showMatch(match) {
-    buffer.moveTo(match.start);
-    buffer.moveTo(match.end, { extend: true });
-    lastMatch = match;
-  }
-
-  /** Find the next match for `source` from `from` in `dir`. */
-  function find(source, from, dir) {
-    const regexp = compileRegexpSource(source);
-    if (regexp === null) return null;
-    return dir === 'forward'
-      ? regexpForwardMatch(buffer.text, regexp, from)
-      : regexpBackwardMatch(buffer.text, regexp, from);
-  }
-
-  minibuffer.prompt(
-    initialDirection === 'forward'
-      ? 'I-search regexp: '
-      : 'I-search regexp backward: ',
-    {
-      onChange(query) {
-        lastMatch = null;
-        if (query === '') {
-          buffer.moveTo(origin);
-          minibuffer.setStatus('');
-          return;
-        }
-        const from = direction === 'forward' ? origin : Math.max(origin, 0);
-        const match = find(query, from, direction);
-        if (match !== null) {
-          showMatch(match);
-          minibuffer.setStatus('');
-        } else {
-          minibuffer.setStatus('no match');
-        }
-      },
-      onKey(key, query) {
-        // C-M-s / C-M-r advance to the next match in either direction.
-        if ((key === 'C-M-s' || key === 'C-M-r') && query !== '') {
-          direction = key === 'C-M-s' ? 'forward' : 'backward';
-          const base = lastMatch !== null
-            ? (direction === 'forward' ? lastMatch.end : lastMatch.start)
-            : origin;
-          const from = direction === 'forward' ? base : base;
-          const match = find(query, from, direction);
-          if (match !== null) {
-            showMatch(match);
-            minibuffer.setStatus('');
-          } else {
-            minibuffer.setStatus('no more matches');
-          }
-          return true;
-        }
-        return false;
-      },
-      onSubmit() {
-        buffer.clearMark();
-        editorView.focus();
-      },
-      onCancel() {
-        buffer.moveTo(origin);
-        editorView.focus();
-      },
-    }
-  );
-}
 
 // --- Lisp interpreter and REPL -----------------------------------------
 
@@ -2965,242 +2422,19 @@ function registerUtilityPanelFactory(name, makePanel) {
 registerUtilityPanelFactory('output', (handle, opts) =>
   createOutputPanel({ title: opts?.title, onClose: handle.close }));
 
-/** Cached doc-page names from `docs/build/manifest.json`. The
- *  `load-doc-manifest!` primitive returns this; populated near
- *  startup once the host has read the file. `null` means unknown
- *  / not loaded; `[]` means the manifest existed but is empty. */
-let docManifestNames = null;
 
-/** Cached face-overrides loaded from `faces.json` at startup. Lisp
- *  reads this via `load-face-overrides!` and installs it before the
- *  first paint, so any user overrides are present from the start.
- *  `null` until the file has been read (it may be missing entirely
- *  on first launch — that case fills it with `emptyOverrides()`). */
-let faceOverridesCache = null;
 
-/** The persisted user highlight rules, as the Lisp store shape
- *  (scope-key -> list of (pattern . face)) — built from faces.json at
- *  startup, or `null` when none were persisted. Installed via
- *  `installHighlightRules` after each stdlib (re)load. */
-let highlightRulesCache = null;
 
-/** The persisted user-created faces, as the Lisp `*user-faces*` map —
- *  built from faces.json at startup, `null` when none. Re-installed via
- *  `set-user-faces!` after each stdlib (re)load (a fresh stdlib drops
- *  the registry). */
-let userFacesCache = null;
 
-/** The Sym / Keyword constructors face-overrides.js needs to build
- *  Lisp-shaped maps. Passed in so that module stays free of a hard
- *  dependency on `@editor/lisp` (the unit tests use stand-ins). */
-const lispFactories = { keyword, sym };
 
-/** The pane-host the Lisp pane-primitives operate through. Phase 3a:
- *  the split / delete / navigate methods land here, backed by the
- *  immutable-replace tree helpers in `@editor/pane`. The host mutates
- *  `rootPane` (rebinding the module-level binding when a split or
- *  delete swaps a subtree) and reschedules a layout pass; the DOM and
- *  editor-view instances follow. */
-const paneHost = {
-  currentPane: () => currentPane(),
-  splitHorizontal: (pane, ratio, side) =>
-    splitPaneAtLeaf(pane, SPLIT_HORIZONTAL, ratio, side),
-  splitVertical: (pane, ratio, side) =>
-    splitPaneAtLeaf(pane, SPLIT_VERTICAL, ratio, side),
-  addPaneAtSplitter: (splitId) => addPaneAtSplitterId(splitId),
-  addPaneAtBorder: (side) => addPaneAtRootBorder(side),
-  deletePane: (pane) => deletePaneInTree(pane),
-  deleteOtherPanes: (pane) => deleteOtherPanesInTree(pane),
-  otherPane: () => focusNextPane(),
-  focusPaneDirection: (direction) => focusPaneByDirection(direction),
-  focusPane: (pane) => focusPaneHandle(pane),
-  balancePanes: () => balancePanesInTree(),
-  setSplitRatio: (pane, ratio) => setSplitRatioOnNode(pane, ratio),
-  // Phase 3b tabline-view operations. Implementations sit further
-  // down the file with the rest of the tabline mount machinery —
-  // these closures forward; the host pickle-shape is what
-  // pane-primitives.js depends on.
-  currentTabline: () => currentTablineView(),
-  promoteToTabline: (pane) => promoteToTablineOnPane(pane),
-  demoteTabline: (tlv) => demoteTablineView(tlv),
-  addTab: (tlv, view, index) => addTabToTabline(tlv, view, index),
-  removeTab: (tlv, index) => {
-    removeTabInTabline(tlv, index);
-    return tlv;
-  },
-  activateTab: (tlv, index) => {
-    activateTabInTabline(tlv, index);
-    return tlv;
-  },
-  setTablineEdge: (tlv, edge) => setTablineEdgeOnTabline(tlv, edge),
-  // Cross-tabline tab move + pane-view swap. Cover the workflows the
-  // user spelled out: "move a view from one pane to another" + "close
-  // a pane while keeping the view alive". (The latter is what
-  // `delete-pane!` already does; the move primitives below close the
-  // gap on the former.)
-  moveTab: (srcTlv, srcIdx, dstTlv, dstIdx) =>
-    moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx),
-  // swap-views / permute-views move the *frames* (swap leaf positions in
-  // the tree, relayout repositions the divs) so view DOM never moves and
-  // webview/pdf/shell panes survive. See plans/PANES-SWAP-PERMUTE.md.
-  swapPanes: (paneA, paneB) => swapPaneFrames(paneA, paneB),
-  permutePanes: (dests) => permutePaneFrames(dests),
-  panesInSpiralOrder: () => spiralOrderedLeaves(),
-};
 
-/** The view-host the Lisp view-primitives operate through. Every
- *  closure reads `views`/`currentViewIndex` live, so the host stays
- *  truthful as the editor switches and kills views.
- *
- *  Phase 2 of plans/PANES.md: `currentView` now resolves through the
- *  focused leaf pane (`paneHost.currentPane()?.view`). With one leaf
- *  this is identical to `views[currentViewIndex]`; the indirection
- *  matters when phase 3 introduces multiple leaves. */
-const viewHost = {
-  currentView: () => {
-    const pane = paneHost.currentPane();
-    if (pane && pane.kind === 'leaf' && pane.view) {
-      // Phase 3b focus-resolution shift: when the focused pane holds a
-      // tabline-view, the user is editing its active child — peel
-      // through (possibly several layers, Q10 nested tablines).
-      return peelTabline(pane.view);
-    }
-    // Fallback for the (vanishingly rare) no-pane / no-view case —
-    // keep the legacy index-based lookup so the editor never lands
-    // with a null current view during early startup.
-    return views[currentViewIndex] ?? null;
-  },
-  viewList: () => views.slice(),
-  // Toggle a minimap companion beside the focused leaf. SIDE ('left'|'right')
-  // and WIDTHFRACTION come from the `*minimap-*` defcustoms (the command
-  // reads them and passes them through).
-  toggleMinimap: (side, widthFraction) =>
-    toggleMinimapForFocusedLeaf(side, widthFraction),
-  switchToView: (target) => switchToView(target),
-  newView: (name) => {
-    const finalName = name ?? `untitled-${views.length + 1}`;
-    const view = createView({
-      kind: 'text',
-      buffer: createBuffer('', { name: finalName }),
-    });
-    views.push(view);
-    switchToViewIndex(views.length - 1);
-    return view;
-  },
-  killView: (target) => {
-    const idx = views.indexOf(target);
-    killViewAtIndex(idx);
-  },
-  // Phase 3b (Q5): cycle the focused pane's tabs only — a tabline-view
-  // advances to the next/prev tab; a plain-leaf pane has only one
-  // view in it so cycling is a no-op (returns the view itself).
-  nextView: () => {
-    dismissSplash();
-    const focused = currentPane();
-    if (focused && isTablineView(focused.view)) {
-      const tlv = focused.view;
-      if (tlv.tabs.length === 0) return null;
-      const nextIdx = (tlv.active + 1) % tlv.tabs.length;
-      activateTabInTabline(tlv, nextIdx);
-      // Sync currentViewIndex so legacy index-based callers (modeline
-      // count `i/N`, session save's current pointer) reflect the
-      // active tab.
-      const child = tlv.tabs[nextIdx];
-      const i = views.indexOf(child);
-      if (i >= 0) currentViewIndex = i;
-      notifyViewsChanged();
-      return child;
-    }
-    // Plain-leaf pane: one view per pane, nothing to cycle.
-    if (focused && focused.view) return focused.view;
-    if (views.length === 0) return null;
-    // Defensive fallback (no focused pane): step to the next index,
-    // skipping any transient placeholder entries.
-    const next = nextNonPlaceholderIndex(currentViewIndex, 1);
-    return next < 0 ? null : switchToViewIndex(next);
-  },
-  previousView: () => {
-    dismissSplash();
-    const focused = currentPane();
-    if (focused && isTablineView(focused.view)) {
-      const tlv = focused.view;
-      if (tlv.tabs.length === 0) return null;
-      const prevIdx =
-        (tlv.active - 1 + tlv.tabs.length) % tlv.tabs.length;
-      activateTabInTabline(tlv, prevIdx);
-      const child = tlv.tabs[prevIdx];
-      const i = views.indexOf(child);
-      if (i >= 0) currentViewIndex = i;
-      notifyViewsChanged();
-      return child;
-    }
-    if (focused && focused.view) return focused.view;
-    if (views.length === 0) return null;
-    const prev = nextNonPlaceholderIndex(currentViewIndex, -1);
-    return prev < 0 ? null : switchToViewIndex(prev);
-  },
-  findViewByName: (name) => views.find((v) => v.name === name) ?? null,
-  // The snapshot the *Buffer List* (view-menu) renders against. One
-  // hash-map per view, with :name, :kind, :mode, :line-count, :file,
-  // :modified. The major mode's display name lives on a text view's
-  // buffer; non-text views don't carry a mode.
-  listViewRecords: () => {
-    // Phase 3b (Q12): the :pane column is the 1-based spiral position of
-    // the pane showing each view (the swap-views / permute-views badge
-    // numbering — tracks on-screen position, not an internal leaf id);
-    // views in no pane (incl. buried tabs) are nil. Placeholders are
-    // transient chooser panes — never shown here (decision 2).
-    const paneByView = panePositionByView();
-    return views.filter((view) => !isPlaceholderView(view)).map((view) => {
-      const record = new Map();
-      record.set(keyword('name'), view.name ?? '');
-      record.set(keyword('kind'), view.kind);
-      const buffer = view.buffer;
-      const major = buffer ? buffer.majorMode : null;
-      const modeName =
-        major && typeof major.get === 'function'
-          ? major.get(keyword('name')) ?? NIL
-          : NIL;
-      record.set(keyword('mode'), modeName);
-      record.set(
-        keyword('line-count'),
-        buffer && typeof buffer.lineCount === 'number' ? buffer.lineCount : 0
-      );
-      const filePath = viewFilePath(view);
-      record.set(keyword('file'), filePath ?? NIL);
-      record.set(keyword('modified'), buffer ? dirtyBuffers.has(buffer) : false);
-      record.set(keyword('pane'), paneByView.get(view) ?? NIL);
-      return record;
-    });
-  },
-};
 
-// --- general process runner (run-process!) -----------------------------
-//
-// Each `(run-process! …)` call gets a monotonic runId (a counter, not a
-// timestamp/random — deterministic and collision-free for the session).
-// The on-exit Lisp procedure is parked in `runProcessCallbacks` keyed by
-// that id; the single `onRunProcessExit` listener (wired once, below)
-// looks it up when the host reports the exit, builds the result hash-map,
-// and applies the procedure exactly once.
-let nextRunId = 0;
-/** @type {Map<string, *>} runId → the parked on-exit Lisp procedure. */
-const runProcessCallbacks = new Map();
 
 
 // (Jukebox auto-advance was a renderer audio.onEnded → jukebox-track-ended call
 // against the idle interpreter. The jukebox is a server data-source now; if
 // playback should auto-advance in server mode, the spine drives it. Filed.)
 
-/** Evaluate a line of REPL input and show the result. */
-/** Format a Lisp error for display: its message, plus the source location
- *  of the offending form when the evaluator tagged one (B6) — so a failing
- *  multi-line definition says *where*, not just *what*. */
-function formatLispError(error) {
-  const message = error?.lispMessage ?? error?.message ?? String(error);
-  const loc = error?.location;
-  return loc ? `${message} (at line ${loc.line}:${loc.col})` : message;
-}
 
 /** Format a spine REPL eval error: its message + the source location of the
  *  offending form when the spine tagged one — mirrors formatLispError for the
@@ -3228,22 +2462,7 @@ function evaluateInRepl(source) {
 
 // --- standard library ---------------------------------------------------
 
-/** Fetch the source of a standard-library file over the app:// scheme. */
-function fetchStdlibSource(name) {
-  return fetch(`app://editor/packages/stdlib/lisp/${name}`).then((response) =>
-    response.text()
-  );
-}
 
-/** List `.lisp` files in the stdlib's `languages/` directory. */
-async function listStdlibLanguageFiles() {
-  const response = await fetch(
-    'app://editor/packages/stdlib/lisp/languages/?list'
-  );
-  if (!response.ok) return [];
-  const names = await response.json();
-  return names.filter((name) => name.endsWith('.lisp'));
-}
 
 /**
  * Import every JS module in `packages/renderer/src/languages/`. Each
@@ -3292,7 +2511,6 @@ window.host
   .readDocManifest()
   .then((manifest) => {
     if (manifest === null) return;
-    docManifestNames = manifest.names;
     // The navigation node tree (TeXinfo-style): hand it to the doc-view so
     // it can render the sidebar, breadcrumb, and Next/Prev/Up. If the Manual
     // panel is already open (docs opened before the manifest resolved), push
@@ -5023,15 +4241,6 @@ function applyServerModeMenu(data) {
 // every other face uses, so a theme / customise edit re-tints the boxes
 // with no extra wiring.
 
-/** Read one `(start . end)` cons pair into a `{start, end}` of finite
- *  numbers, or null when the value is nil / malformed. */
-function snippetRangePair(pair, face) {
-  if (pair === null || pair === undefined || pair === NIL) return null;
-  const start = Number(pair.head);
-  const end = Number(pair.tail);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  return { start, end, face };
-}
 
 /**
  * The face-tagged decoration ranges for an active snippet, or an empty
@@ -5238,14 +4447,6 @@ function disposeMathPreviewForLeaf(leaf) {
   mathPreviewByPaneId.delete(leaf.id);
 }
 
-/** The leaf pane whose view is currently focused. Used to resolve
- *  `editorView` callsites that operate on the "current" instance. */
-function focusedTextLeafId() {
-  // For now, currentPaneId resolves through the pane focus model; with
-  // one pane it's that pane's id. The variable is declared above this
-  // section in the pane block.
-  return currentPaneId;
-}
 
 /** The `onKey` configure option for a leaf's `<text-view>` (Model B). A
  *  per-keystroke router, because `TextView.configure()` cannot re-run after
@@ -6143,41 +5344,7 @@ function toggleMinimapForFocusedLeaf(side, widthFraction) {
 // plans/ELEMENT-VIEWS.md.
 const elementHostByView = new Map();
 
-/** Render a Lisp value (a Sym, a Keyword, or a string) as plain text. */
-function lispText(value) {
-  if (typeof value === 'string') return value;
-  if (value && typeof value.name === 'string') return value.name;
-  if (value === undefined || value === null || value === NIL) return '';
-  return String(value);
-}
 
-/** Parse a spec's `:attrs` — a Lisp list whose entries are a bare symbol
- *  (a boolean attribute) or a list `(name value)` — into `[name, value]`
- *  pairs (`value` is `true` for boolean attributes). */
-function parseElementAttrs(list) {
-  if (list === undefined || list === null || list === NIL) return [];
-  const out = [];
-  for (const entry of listToArray(list)) {
-    if (typeof entry === 'string' || entry instanceof Sym) {
-      const name = lispText(entry);
-      if (name !== '') out.push([name, true]);
-      continue;
-    }
-    const parts = listToArray(entry);
-    if (parts.length === 0) continue;
-    const name = lispText(parts[0]);
-    if (name === '') continue;
-    let value = true;
-    if (parts.length > 1) {
-      const v = parts[1];
-      value = (v === true || v === false || typeof v === 'number')
-        ? v
-        : lispText(v);
-    }
-    out.push([name, value]);
-  }
-  return out;
-}
 
 /** The command names the renderer owns by registering element-views
  *  (`define-element-view`) — the `element-views` registry's keys (built-ins +
@@ -8713,16 +7880,6 @@ function ensureDirectoryTreeViewForPath(rootPath) {
   return view;
 }
 
-/** Find the single *View List* view, or build it and push it into
- *  `views`. There is only ever one (it lists all the others), so this is
- *  a find-or-create by kind rather than by name. */
-function ensureViewListView() {
-  const existing = views.find((v) => v.kind === 'view-list');
-  if (existing) return existing;
-  const view = createView({ kind: 'view-list', name: '*View List*' });
-  views.push(view);
-  return view;
-}
 
 /** Find the single *Recover* view, or build it and push it into `views`.
  *  Like the *View List*, there is only ever one. */
@@ -8848,83 +8005,6 @@ function refreshBookmarkOutline() {
   bookmarkView.setBuffer(view);
 }
 
-/** Open a file from a directory-tree / directory-columns row and place
- *  it as a NEW TAB in the focused pane, promoting the pane to a
- *  tabline first if it's still a plain leaf. The previous behaviour
- *  was to call `openFileByPath` directly, which replaced the
- *  directory view with the opened file's view — losing the user's
- *  navigation context. Now the column / tree stays put and the file
- *  appears alongside it. */
-/**
- * Open FILEPATH from a directory tree-view, honouring TARGET (the value of
- * `*directory-tree-open-target*`). Unlike `openFileInTabAdjacent` — which
- * opens in the *focused* pane and so lands the file in the tree's own pane
- * when you double-click there — this routes the file to the main editing
- * area (a tabline / text pane that isn't the tree or another sidebar), so a
- * project's left-sidebar tree opens files in its middle tabline.
- *
- * - `this-pane`     → the old behaviour (the tree's own pane).
- * - `editing-pane`  → the main editing pane (default).
- * - `other-pane`    → the next editing pane after the tree.
- * When no editing pane exists, the file opens in a split beside the tree.
- */
-async function openFileFromTree(filePath, target) {
-  if (target === 'this-pane') {
-    await openFileInTabAdjacent(filePath);
-    return;
-  }
-  const opened = await openFileByPath(filePath, { switch: false });
-  if (!opened) return;
-  const leaves = leafPanes(rootPane);
-  let targetLeaf = null;
-  // An explicit pane-id target (a leaf id wired into the dir-tree by the
-  // project — see reapplyProjectDirTreeTarget) wins: no guessing which pane
-  // is "the editing area", and it's robust to focus / sidebar passivity.
-  if (target !== 'editing-pane' && target !== 'other-pane') {
-    targetLeaf = leaves.find((leaf) => leaf.id === target) ?? null;
-  }
-  // Otherwise — or when the wired pane no longer exists — fall back to the
-  // symbolic heuristic (a standalone M-x directory-tree has no wired target).
-  if (!targetLeaf) {
-    const descriptors = leaves.map((leaf) => {
-      const peeled = peelTabline(leaf.view);
-      return {
-        id: leaf.id,
-        kind: peeled ? peeled.kind : null,
-        isTabline: isTablineView(leaf.view),
-      };
-    });
-    const symbolic = target === 'other-pane' ? 'other-pane' : 'editing-pane';
-    const targetId = pickEditingLeaf(descriptors, currentPane()?.id ?? null, symbolic);
-    targetLeaf = targetId ? leaves.find((leaf) => leaf.id === targetId) : null;
-  }
-  if (!targetLeaf) {
-    // No suitable editing pane (e.g. the tree is the only pane): open the
-    // file beside the current pane in a new split rather than inside a sidebar.
-    const here = currentPane();
-    if (here && here.kind === 'leaf') {
-      splitPaneAtLeafWith(here, SPLIT_HORIZONTAL, 0.3, 'after', opened);
-    } else {
-      switchToViewIndex(views.indexOf(opened));
-    }
-    return;
-  }
-  // Promote the target to a tabline if needed, add the file as a tab, focus
-  // the editing pane, and activate the new tab.
-  const tlv = isTablineView(targetLeaf.view)
-    ? targetLeaf.view
-    : promoteToTablineOnPane(targetLeaf);
-  if (!tlv) {
-    switchToViewIndex(views.indexOf(opened));
-    return;
-  }
-  if (!tlv.tabs.includes(opened)) {
-    addTabToTabline(tlv, opened, tlv.tabs.length);
-  }
-  setCurrentPaneId(targetLeaf.id);
-  const idx = tlv.tabs.indexOf(opened);
-  if (idx >= 0) activateTabInTabline(tlv, idx);
-}
 
 async function openFileInTabAdjacent(filePath) {
   const pane = currentPane();
@@ -9280,65 +8360,6 @@ function promoteToTablineOnPane(pane) {
   return tabline;
 }
 
-/** Replace the leaf holding TLV with TLV's active child's view (or
- *  the first tab when there's no active). The tabline's per-state DOM
- *  is disposed; the active child takes over. Returns the surviving
- *  view, or null when TLV isn't actually installed on a leaf in the
- *  current tree. */
-function demoteTablineView(tlv) {
-  if (!isTablineView(tlv)) return null;
-  // Find the leaf this tabline lives in.
-  let host = null;
-  for (const leaf of leafPanes(rootPane)) {
-    if (leaf.view === tlv) { host = leaf; break; }
-  }
-  if (!host) return null;
-  // Pick the survivor: the active child, or the first tab if none.
-  const survivor = tablineActiveChild(tlv) ?? tlv.tabs[0] ?? null;
-  // The tabline's `activeEditor` (the single editor instance
-  // managed by mountTablineActiveChild) is what we want to keep
-  // alive for the surviving view. Move its element back into the
-  // pane element and re-register it in `editorViewByPaneId` so post-
-  // demotion code paths (focus changes, switchToView) find it. The
-  // tabline mount's dispose path then *won't* destroy it — we steal
-  // it before disposing.
-  const state = tablineStateByView.get(tlv);
-  let inheritedInstance = null;
-  if (state && state.activeEditor && survivor && survivor.kind === 'text') {
-    inheritedInstance = state.activeEditor;
-    state.activeEditor = null;
-    state.activeEditorChild = null;
-    // Drop the stolen instance from editorByChild so the upcoming
-    // disposeKindView call doesn't destroy what we just rescued. The
-    // map key is the survivor (which was the active child).
-    state.editorByChild.delete(survivor);
-    const paneEl = paneElements.get(host.id);
-    if (paneEl && inheritedInstance.parentNode !== paneEl) {
-      paneEl.append(inheritedInstance);
-    }
-    editorViewByPaneId.set(host.id, inheritedInstance);
-  }
-  // Dispose the tabline-view's remaining state. disposeKindView for
-  // tabline destroys any *remaining* editor instances in
-  // editorByChildId (we removed the inherited one above) and detaches
-  // the container.
-  disposeKindView(tlv);
-  if (rootTablineView === tlv) {
-    rootTablineView = null;
-    rootTablineLeafId = null;
-  }
-  // Install the survivor on the leaf and re-mount through the kind
-  // registry. For a text survivor with an inherited editor instance
-  // already in place, the text mount's `ensureEditorViewForLeaf`
-  // finds it and just calls `setView(survivor)`.
-  host.view = survivor;
-  if (survivor) {
-    hideInactiveRendererViews(survivor.kind);
-    mountKindView(survivor);
-  }
-  scheduleMinimapReconcile(); // demotion changed the leaf's view shape
-  return survivor;
-}
 
 /** Append VIEW to TLV's tabs at INDEX (or the end when undefined).
  *  Refreshes the strip; does not activate. Returns the tabline-view. */
@@ -9371,127 +8392,10 @@ function addTabToTabline(tlv, view, index) {
   return tlv;
 }
 
-/** Move the tab at SRC-IDX in SRC-TLV into DST-TLV at DST-IDX (or the
- *  end when undefined). Idempotent on src === dst with no index
- *  change. The moved view becomes the active tab in the destination.
- *  When the destination is the same as the source, this collapses to
- *  a reorder. Returns the destination tabline-view. */
-function moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx) {
-  if (!isTablineView(srcTlv) || !isTablineView(dstTlv)) return dstTlv;
-  if (
-    typeof srcIdx !== 'number' ||
-    srcIdx < 0 || srcIdx >= srcTlv.tabs.length
-  ) return dstTlv;
-  const view = srcTlv.tabs[srcIdx];
-  if (!view) return dstTlv;
-  // Same-tabline move → reorder. Compute the destination index
-  // accounting for the splice that removed the source tab.
-  if (srcTlv === dstTlv) {
-    let target =
-      typeof dstIdx !== 'number' || dstIdx < 0 || dstIdx > srcTlv.tabs.length
-        ? srcTlv.tabs.length - 1
-        : (dstIdx > srcIdx ? dstIdx - 1 : dstIdx);
-    if (target === srcIdx) return srcTlv;
-    reorderTabInTabline(srcTlv, srcIdx, target);
-    activateTabInTabline(srcTlv, target);
-    return srcTlv;
-  }
-  // Cross-tabline: remove from src (without killing the view), insert
-  // into dst, activate.
-  removeTabInTabline(srcTlv, srcIdx);
-  const target =
-    typeof dstIdx === 'number' && dstIdx >= 0 && dstIdx <= dstTlv.tabs.length
-      ? dstIdx
-      : dstTlv.tabs.length;
-  addTabToTabline(dstTlv, view, target);
-  activateTabInTabline(dstTlv, target);
-  return dstTlv;
-}
 
-/** Every leaf pane handle in clockwise-spiral badge order (the numbering
- *  swap-views / permute-views show). Slot 0 is the top-left pane. */
-function spiralOrderedLeaves() {
-  const hostRect = editorHostEl.getBoundingClientRect();
-  const { ordered } = spiralOrder(rootPane, {
-    width: hostRect.width,
-    height: hostRect.height,
-  });
-  return ordered;
-}
 
-/** Swap which view PANE-A and PANE-B show by *moving the frames*: exchange
- *  the two leaves' positions in the tree and relayout. No view DOM moves —
- *  relayout only repositions the existing `.pane` divs by id — so a
- *  browser/pdf/shell guest is never recreated, and the per-leaf maps stay
- *  valid (the leaf nodes keep their ids + contents, just land in new
- *  slots; focus follows the view). Returns true on success, false on a
- *  no-op (same leaf, missing handle, or a non-leaf). */
-function swapPaneFrames(paneA, paneB) {
-  if (!paneA || !paneB || paneA === paneB) return false;
-  if (paneA.kind !== 'leaf' || paneB.kind !== 'leaf') return false;
-  rootPane = swapLeaves(rootPane, paneA, paneB);
-  syncPaneElements();
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-  // Pane positions changed (not the view set) — refresh the View List so
-  // its spiral Pane column tracks the move, and re-pickle the session.
-  notifyViewsChanged();
-  return true;
-}
 
-/** Rearrange every pane's view by moving the frames. DESTS is a 1-based
- *  destination slot per pane in spiral order: the content of pane K
- *  (1-based) moves to slot DESTS[K]. DESTS must be a permutation of 1..N.
- *  Returns true on success, false on a malformed / non-bijective DESTS or
- *  a mismatched length. Same frame-move guarantees as swapPaneFrames. */
-function permutePaneFrames(dests) {
-  const hostRect = editorHostEl.getBoundingClientRect();
-  const dims = { width: hostRect.width, height: hostRect.height };
-  const { ordered, indexByLeaf } = spiralOrder(rootPane, dims);
-  const n = ordered.length;
-  if (!Array.isArray(dests) || dests.length !== n) return false;
-  // occupantBySlot[slot] = the leaf whose content should land at that
-  // slot. Pane k (ordered[k]) goes to slot dests[k] - 1.
-  const occupantBySlot = new Array(n);
-  const seen = new Set();
-  for (let k = 0; k < n; k += 1) {
-    const dest = dests[k] - 1;
-    if (!Number.isInteger(dest) || dest < 0 || dest >= n || seen.has(dest)) {
-      return false;
-    }
-    seen.add(dest);
-    occupantBySlot[dest] = ordered[k];
-  }
-  rootPane = permuteLeaves(rootPane, indexByLeaf, occupantBySlot);
-  syncPaneElements();
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-  // Pane positions changed (not the view set) — refresh the View List so
-  // its spiral Pane column tracks the move, and re-pickle the session.
-  notifyViewsChanged();
-  return true;
-}
 
-/** Update TLV.edge to EDGE and refresh the strip's data-edge attribute
- *  + the CSS flex direction (the kind-registry mount drives both via
- *  the per-pane state). Returns the tabline-view. */
-function setTablineEdgeOnTabline(tlv, edge) {
-  if (!isTablineView(tlv)) return tlv;
-  if (
-    edge !== 'top' && edge !== 'bottom' &&
-    edge !== 'left' && edge !== 'right'
-  ) return tlv;
-  tlv.edge = edge;
-  const state = tablineStateByView.get(tlv);
-  if (state) {
-    state.container.dataset.edge = edge;
-    state.strip.setEdge(edge);
-    applyTablineStripWidth(tlv);
-  }
-  return tlv;
-}
 
 // --- persistent session -------------------------------------------------
 // On change (debounced 500ms) or pagehide, pickle the open views and
