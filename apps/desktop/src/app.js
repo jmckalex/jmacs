@@ -1126,13 +1126,11 @@ function fillPlaceholderViaOpen(leaf) {
  *  lands here. Afterwards the placeholder is spliced out. */
 function fillPlaceholderViaCommand(leaf, text) {
   const placeholder = leaf.view;
-  try {
-    interpreter.evaluate(`(run-command (quote ${text}))`);
-  } catch (error) {
-    repl.appendError(formatLispError(error));
-  }
-  // A view-opening command replaced `leaf.view` via switchToViewIndex;
-  // a non-view command (or a failure) leaves the placeholder in place.
+  // Run the typed command server-side — the placeholder's pane is focused, so a
+  // view-opening command lands here. (The in-renderer run-command is gone with
+  // the interpreter — B7. The server-mode placeholder chooser doesn't surface
+  // today, so this is a defensive route, not a live path.)
+  if (serverViewClient) serverViewClient.runCommand(text);
   if (leaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
 }
 
@@ -8140,20 +8138,10 @@ function configureElementView() {
     // insert `\cite{…}`.
     insertText: (text) => {
       if (typeof text !== 'string' || text === '') return;
-      // Server mode: route the insert to the SERVER's active buffer (the
-      // document) — the in-renderer session is inert. The server fans the delta
-      // back so the document updates.
-      if (window.host && window.host.serverMode) {
-        if (serverViewClient) serverViewClient.insertText(text);
-        return;
-      }
-      try {
-        interpreter.evaluate(`(insert! ${writeString(text)})`);
-      } catch (error) {
-        repl.appendError(
-          `element-view insert-text: ${error.lispMessage ?? error.message ?? error}`
-        );
-      }
+      // Route the insert to the SERVER's active buffer (the document); the server
+      // fans the delta back so the document updates. (The in-renderer `(insert! …)`
+      // path is gone with the interpreter — B7.)
+      if (serverViewClient) serverViewClient.insertText(text);
     },
     // The generic open-external channel: a hosted element asks the host to
     // open a resource in an OS app. bib-search uses it to open an entry's
@@ -8730,13 +8718,10 @@ function configurePlaceholderView(view) {
     cloneEnabled: !!origin(),
     cloneLabel: placeholderCloneLabel(origin()),
     defaultAction: () => {
-      let raw = null;
-      try {
-        if (keymapReady) raw = interpreter.evaluate('*placeholder-default-action*');
-      } catch {
-        raw = null;
-      }
-      return resolvePlaceholderAction(raw);
+      // `*placeholder-default-action*` was a renderer-interpreter customvar; the
+      // server-mode placeholder chooser doesn't surface (a split shows the shared
+      // buffer), so this resolves to the JS default. (Interpreter gone — B7.)
+      return resolvePlaceholderAction(null);
     },
     onOpen: () => {
       const leaf = findLeaf();
