@@ -4559,7 +4559,7 @@ export function createSpine(options, effects = {}) {
     if (typeof rec.diskBaseline === 'string') {
       entry.savedText = rec.diskBaseline;
     } else {
-      entry.savedText = text === '' ? ' ' : '';
+      entry.savedText = text === '' ? '\0' : '';
     }
     return entry.id;
   }
