@@ -83,6 +83,41 @@ test('an unknown trigger word does not expand (snippet-expand returns #f)', () =
   assert.equal(spine.buffer.text, 'zzznotasnippet', 'the typed word is untouched');
 });
 
+test('the TAB key (via the keymap) expands a trigger word', () => {
+  // Regression: snippets-keymap.lisp binds "tab" -> snippet-tab in the spine.
+  // Without it in SPINE_STDLIB, the-keymap "tab" stayed `insert-tab`, so TAB
+  // inserted a tab and never expanded — the engine worked only when
+  // (snippet-expand) was called directly (as the other tests here do).
+  const { spine } = makeSpine('');
+  assert.equal(
+    spine.interpreter.evaluate('(eq? (get the-keymap "tab" nil) (quote snippet-tab))'),
+    true,
+    'TAB is bound to snippet-tab in the spine keymap'
+  );
+  for (const ch of 'sig') spine.handleKey(ch);
+  spine.handleKey('tab');
+  assert.match(spine.buffer.text, /^-- Your Name\nyou@example\.com$/, 'TAB expanded the trigger');
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), true);
+});
+
+test('advancing to a later field reflows after an earlier field is edited', () => {
+  // Regression: the spine drives snippet-after-edit! from handleKey, so field
+  // 2's stored offset tracks field 1 shrinking. Without it, TAB-to-next-field
+  // selected stale-offset text ("ample.com" instead of "you@example.com").
+  const sel = (s) => {
+    const v = s.view;
+    return s.buffer.text.slice(Math.min(v.point, v.mark), Math.max(v.point, v.mark));
+  };
+  const { spine } = makeSpine('');
+  for (const ch of 'sig') spine.handleKey(ch);
+  spine.handleKey('tab'); // expand; field 1 "Your Name" selected
+  assert.equal(sel(spine), 'Your Name');
+  for (const ch of 'bob') spine.handleKey(ch); // field 1: 9 chars -> 3
+  spine.handleKey('tab'); // advance to field 2
+  assert.equal(sel(spine), 'you@example.com', 'field 2 selects the right text after reflow');
+  assert.equal(spine.buffer.text, '-- bob\nyou@example.com');
+});
+
 test('a mirrored field installs a multi-cursor set (Policy A), server-side', () => {
   // A snippet where $1 appears twice (a field + a mirror). Arriving on the
   // field installs a secondary cursor over each mirror, so typing updates

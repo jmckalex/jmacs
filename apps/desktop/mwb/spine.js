@@ -478,6 +478,13 @@ const SPINE_STDLIB = Object.freeze([
   // expand-region-word-bounds (expand-region.lisp, loaded). See
   // PRIMITIVE-SPLIT.md "Snippets".
   'snippets.lisp',
+  // snippets-keymap.lisp — binds TAB / S-TAB to snippet-tab / -shift-tab in
+  // the-keymap and wraps deselect / keyboard-quit so ESC / C-g cancel an
+  // active snippet. Must load after keymap.lisp + multi-cursor.lisp (the base
+  // deselect/keyboard-quit it wraps) and after snippets.lisp (the commands it
+  // binds). Without it TAB stays bound to insert-tab and a trigger word never
+  // expands — the whole point of the feature.
+  'snippets-keymap.lisp',
   // bookmarks.lisp — Emacs-style bookmarks (C-x r m/b/l): a bookmark-minor-mode
   // (default-on in text buffers) + the set / jump / delete / list commands. The
   // commands wrap the host primitives bookmark-set!/jump!/delete! +
@@ -5367,7 +5374,25 @@ export function createSpine(options, effects = {}) {
    * @returns {boolean}
    */
   function handleKey(key) {
-    return interpreter.call('handle-key', key) === true;
+    // Snippet field tracking: in the renderer era the host called
+    // snippet-after-edit! on every buffer change, so a live snippet's later
+    // fields/mirrors reflow as an earlier field is edited. Model B has no such
+    // host change-hook, so drive it here — after a key that actually changed
+    // the buffer while a snippet is active. Off the snippet path this costs
+    // one cheap (snippet-active?) probe per key; the length compare only runs
+    // while a snippet is live.
+    if (interpreter.evaluate('(snippet-active?)') !== true) {
+      return interpreter.call('handle-key', key) === true;
+    }
+    const before = interpreter.evaluate('(buffer-length)');
+    const handled = interpreter.call('handle-key', key) === true;
+    if (
+      interpreter.evaluate('(snippet-active?)') === true &&
+      interpreter.evaluate('(buffer-length)') !== before
+    ) {
+      interpreter.evaluate('(snippet-after-edit!)');
+    }
+    return handled;
   }
 
   /** Run a command by name through the REAL run-command. The spine's Lisp
