@@ -6819,7 +6819,9 @@ function targetOwnsKeys(el) {
 // unclaimed are routed here. browser-view is exempt by nature: a focused
 // <webview> delivers keydown to the guest page, which never reaches us.
 window.addEventListener('keydown', (event) => {
-  if (!keymapReady) return;
+  // No keymap-ready gate: before the server view mounts, `mounted` is false and
+  // the swallow-pre-mount arm handles the key (B7 — keymapReady is gone with the
+  // interpreter). The two arms self-gate on `mounted` (serverViewClient.getView()).
   const serverMode = !!(window.host && window.host.serverMode);
   const mounted = !!(serverViewClient && serverViewClient.getView());
   // Server-mode (Model B): once the server view is mounted it is the sole
@@ -6864,7 +6866,6 @@ window.addEventListener('keydown', (event) => {
 // Native paste action (right-click Paste, the Edit menu's Paste). In Model B
 // this is a server-owned concern, so the global handler stands down — see below.
 window.addEventListener('paste', () => {
-  if (!keymapReady) return;
   // Model B: paste is server-owned. Keyboard paste is the M-v binding (Cmd-V =
   // M-v → yank server-side). For a native `paste` event (right-click / Edit
   // menu) the in-renderer `yank` would mutate the idle mirror, not the server's
@@ -7154,44 +7155,32 @@ function focusedTextLeafId() {
   return currentPaneId;
 }
 
-/** The `onKey` configure option for a leaf's `<text-view>`.
- *
- *  Flag-off (the common case) this is byte-for-byte the original: bind the
- *  in-renderer `dispatchKey` once the keymap is ready, nothing before.
- *
- *  Flag-on (Model B) it installs a per-keystroke router instead, because
- *  `TextView.configure()` cannot re-run after mount (it throws) yet a leaf may
- *  become server-backed *after* its element was built. The closure decides live
- *  on each key: a server-backed leaf sends the key to the server's keymap
- *  (the leaf-flip — auto-pair / chords / self-insert all resolve server-side);
- *  any other leaf falls back to the in-renderer dispatch exactly as flag-off. */
+/** The `onKey` configure option for a leaf's `<text-view>` (Model B). A
+ *  per-keystroke router, because `TextView.configure()` cannot re-run after
+ *  mount yet a leaf may become server-backed *after* its element was built. The
+ *  closure decides live: a server-backed leaf sends the key to the server's
+ *  keymap (auto-pair / chords / self-insert all resolve server-side); a
+ *  non-server-backed leaf returns false so the key falls through to the global
+ *  router (which routes it to the server too). The in-renderer dispatch the
+ *  flag-off path used here is gone with the interpreter (B7). */
 function serverViewKeyOption(instance) {
-  if (!(window.host && window.host.serverMode)) {
-    return keymapReady ? { onKey: dispatchKey } : {};
-  }
   return {
     onKey: (key) => {
       const v = peelTabline(instance._boundLeaf.view);
-      if (isServerBackedView(v) && serverViewClient) {
-        return serverViewClient.dispatchKey(key);
-      }
-      return keymapReady ? dispatchKey(key) : false;
+      return (isServerBackedView(v) && serverViewClient)
+        ? serverViewClient.dispatchKey(key)
+        : false;
     },
   };
 }
 
-/** The `onKey` for a NON-TEXT element-view (image/audio/video/pdf) that routes to
- *  the SERVER's keymap in server mode — so a chord (C-x C-f, M-x, C-x b…) typed
- *  while a media view is focused reaches the server instead of being swallowed by
- *  the idle in-renderer dispatchKey (which would preventDefault it, so the
- *  window-level router never sees it either). Flag-off it is exactly the legacy
- *  `keymapReady ? { onKey: dispatchKey } : {}`. serverViewClient is resolved at
- *  key-press time (it's null when the singletons are configured at boot). */
+/** The `onKey` for a NON-TEXT element-view (image/audio/video/pdf) that routes a
+ *  chord (C-x C-f, M-x, C-x b…) typed while a media view is focused to the
+ *  SERVER's keymap — else it would be swallowed before the window-level router
+ *  sees it. serverViewClient is resolved at key-press time (it's null when the
+ *  singletons are configured at boot). */
 function serverMediaKeyOption() {
-  if (window.host && window.host.serverMode) {
-    return { onKey: (key) => (serverViewClient ? serverViewClient.dispatchKey(key) : false) };
-  }
-  return keymapReady ? { onKey: dispatchKey } : {};
+  return { onKey: (key) => (serverViewClient ? serverViewClient.dispatchKey(key) : false) };
 }
 
 /** Create (or reuse) the <text-view> custom element for LEAF, mount it
@@ -7481,7 +7470,7 @@ function openCustomScope(scope) {
 // tabline).
 function configureCustomizeView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     // B2.3: no getModel — the model is server-computed and pushed in the leaf
     // state (v.model); the view renders from it.
     applySetting: applyCustomSetting,
@@ -7538,7 +7527,7 @@ function highlightCodeForDocView(text, language) {
 // the tabline mount path for per-tab `<doc-view>` instances.
 function configureDocView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     // View-close is server-driven now (the in-renderer kill-view was inert).
     closeBuffer: () => {},
     // B4: the doc-view OWNS its content + navigation via these — it fetches a
@@ -7763,7 +7752,7 @@ pdfView.style.display = 'none';
 // per-webview state is the only thing keeping that intact.
 function configureBrowserView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     defaultUrl: 'about:blank',
     partition: 'persist:browser-views',
     // Page title updates flow through here so the modeline + tabline
@@ -8565,7 +8554,7 @@ function viewListRecords() {
 
 function configureViewListView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     // Server-owned: the renderer interpreter's chord state is always empty in
     // server mode (keys route to the spine), so a chord is never "in progress"
     // here.
@@ -8680,7 +8669,7 @@ function discardSnapshot(key) {
 
 function configureRecoverView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     // Server-owned: the renderer interpreter's chord state is always empty in
     // server mode (keys route to the spine), so a chord is never "in progress"
     // here.
@@ -8737,7 +8726,7 @@ function configurePlaceholderView(view) {
     leafPanes(rootPane).find((l) => l.view === view) ?? null;
   const origin = () => (view && view.previousView) || null;
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     cloneEnabled: !!origin(),
     cloneLabel: placeholderCloneLabel(origin()),
     defaultAction: () => {
@@ -8882,7 +8871,7 @@ function configureBookmarkView() {
     };
   }
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     // While a chord is mid-flight (C-x just pressed) the outline must
     // forward the *next* key — even a plain one like the `0` of `C-x 0`
     // — to the keymap instead of swallowing it; otherwise focus is
@@ -9023,7 +9012,7 @@ function configureGnuplotView() {
       window.host && typeof window.host.gnuplotSetTheme === 'function'
         ? window.host.gnuplotSetTheme(sessionId, theme)
         : Promise.resolve({ ok: false }),
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
   };
 }
 const gnuplotView = /** @type {*} */ (document.createElement('gnuplot-view'));
@@ -9622,7 +9611,7 @@ function ensureTabElement(state, child) {
     el.configure({
       ...(serverBacked
         ? { onKey: (key) => (serverViewClient ? serverViewClient.dispatchKey(key) : false) }
-        : (keymapReady ? { onKey: dispatchKey } : {})),
+        : {}),
       highlighters,
       foldCaptures,
       getPoint: () => typeof child.point === 'number' ? child.point : 0,
