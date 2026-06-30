@@ -5386,11 +5386,15 @@ export function createSpine(options, effects = {}) {
     }
     const before = interpreter.evaluate('(buffer-length)');
     const handled = interpreter.call('handle-key', key) === true;
-    if (
-      interpreter.evaluate('(snippet-active?)') === true &&
-      interpreter.evaluate('(buffer-length)') !== before
-    ) {
-      interpreter.evaluate('(snippet-after-edit!)');
+    if (interpreter.evaluate('(snippet-active?)') === true) {
+      // An edit reflows the live snippet's later fields/mirrors.
+      if (interpreter.evaluate('(buffer-length)') !== before) {
+        interpreter.evaluate('(snippet-after-edit!)');
+      }
+      // A key that moved point out of the snippet's extent (an arrow, C-a/C-e,
+      // a click) soft-commits it, so the next trigger expands rather than
+      // advancing an abandoned snippet.
+      interpreter.evaluate('(snippet-soft-commit-if-outside)');
     }
     return handled;
   }

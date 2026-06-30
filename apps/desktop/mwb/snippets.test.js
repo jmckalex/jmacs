@@ -118,6 +118,24 @@ test('advancing to a later field reflows after an earlier field is edited', () =
   assert.equal(spine.buffer.text, '-- bob\nyou@example.com');
 });
 
+test('abandoning a snippet (C-a C-k) lets the next trigger expand again', () => {
+  // Regression: clearing the line out from under a live snippet must exit it
+  // (snippet-after-edit! drops the record when point is before the field), so
+  // the next TAB expands a fresh trigger instead of advancing a dead snippet.
+  const { spine } = makeSpine('');
+  for (const ch of 'link') spine.handleKey(ch);
+  spine.handleKey('tab');
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), true);
+  spine.handleKey('C-a');
+  spine.handleKey('C-k');
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), false,
+    'clearing the line exits the snippet');
+  for (const ch of 'link') spine.handleKey(ch);
+  spine.handleKey('tab');
+  assert.match(spine.buffer.text, /\]\(/, 'the next trigger expands again');
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), true);
+});
+
 test('a mirrored field installs a multi-cursor set (Policy A), server-side', () => {
   // A snippet where $1 appears twice (a field + a mirror). Arriving on the
   // field installs a secondary cursor over each mirror, so typing updates

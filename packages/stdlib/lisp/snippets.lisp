@@ -740,8 +740,14 @@
                (new-len (- (-primary-point) (-as-get :origin 0)
                            (get field :start 0)))
                (delta (- new-len old-len)))
-          (unless (= delta 0)
-            (-reflow-occurrences! (get field :index -1) old-len delta)))))))
+          (if (< new-len 0)
+              ;; The edit landed before the active field (e.g. C-a then C-k
+              ;; cleared the line) — the snippet is destroyed; drop it so a
+              ;; fresh trigger can expand instead of the next TAB advancing a
+              ;; dead record.
+              (begin (collapse-to-primary!) (set! *active-snippet* nil))
+              (unless (= delta 0)
+                (-reflow-occurrences! (get field :index -1) old-len delta))))))))
 
 (define (-primary-point)
   "The primary cursor's absolute offset. With a multi-cursor set the
