@@ -87,7 +87,7 @@ export function mimeTypeForPdf(name) {
  *   and didn't originate inside the find input. Returns whether the key
  *   was handled (truthy → preventDefault). Lets chord keys like `C-x b`
  *   reach Godot's keymap while the PDF view has focus.
- * @property {(page: number, x: number, y: number) => void} [onSyncTexClick]
+ * @property {(page: number, x: number, y: number, filePath: (string|null)) => void} [onSyncTexClick]
  *   - Inverse-SyncTeX click hook. Called when the user Option-clicks a
  *   page, with the 1-based `page` and the clicked PDF point `(x, y)` in
  *   SyncTeX's convention (points, origin at the page's top-left). The
@@ -1458,7 +1458,9 @@ export class PdfView extends ViewElement {
     const pageHeightPts = baseViewBox[3] - baseViewBox[1];
     const pdfY = pageHeightPts - pdfYFromBottom;
 
-    onClick(entry.pageNum, pdfX, pdfY);
+    // Pass THIS instance's loaded PDF path so the host (server mode) can run
+    // `synctex edit` against the exact PDF clicked, not a focused-pane guess.
+    onClick(entry.pageNum, pdfX, pdfY, this._loadedFilePath);
   }
 
   // --- internal: state + teardown ------------------------------------

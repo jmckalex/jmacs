@@ -516,6 +516,16 @@ const SPINE_STDLIB = Object.freeze([
   // bridge (citation-parse-lenient / -entries / -format-keys / -register-
   // style!). Extends latex-c-c-map with [. Loads after reftex-refs.lisp.
   'reftex-cite.lisp',
+  // latex-synctex.lisp — AUCTeX Phase 6 SyncTeX (forward C-c C-v + inverse
+  // Option-click). Lisp over run-process! + parse-synctex-view/edit
+  // (createLatexPrimitives) + point-line-col / pdf-current-path / pdf-synctex-show!
+  // (host prims below) + latex-compile.lisp's -latex-* helpers + reftex's
+  // latex-master-file. Its pane-walking `-latex-reveal-source` is OVERRIDDEN
+  // post-load with the JS `reveal-source-pane!` (the spine's leaf view-handles
+  // are thin {kind:'text'} stubs, so the lisp pane-walk can't resolve a source
+  // pane). Loads after latex-compile.lisp (redefines its `latex-view`) and after
+  // reftex.lisp (latex-master-file = the master-detecting R1 version).
+  'latex-synctex.lisp',
   // latex-menu.lisp — the STRUCTURED (grouped) LaTeX mode menu (register-mode-menu!
   // "LaTeX" with the Compile/Insert/Fonts/Math/References/Navigation sections).
   // Server-side now so the spine pushes the grouped menu instead of the flat
@@ -1083,6 +1093,12 @@ export function createSpine(options, effects = {}) {
   let treeSitterColors = {};
   /** @type {Map<string, import('node:child_process').ChildProcess>} live children. */
   const runProcessChildren = new Map();
+  // Inverse SyncTeX: the path of the PDF the user just Option-clicked, stashed by
+  // `synctexInverse` for the duration of the `latex-synctex-inverse` run so the
+  // `pdf-current-path` host primitive returns the EXACT clicked PDF (the spine has
+  // no on-screen singleton; the renderer reports which PDF was clicked). null
+  // outside an inverse-search call.
+  let synctexPdfPath = null;
 
   // --- the interpreter --------------------------------------------------
   const interpreter = createInterpreter({
@@ -2047,6 +2063,132 @@ export function createSpine(options, effects = {}) {
         return NIL;
       },
 
+      // --- SyncTeX (latex-synctex.lisp) host primitives ------------------
+
+      // (point-line-col) — the 1-based (line . column) at point in the ACTIVE
+      // buffer, or nil. latex-forward-search reads it to build the
+      // `synctex view -i LINE:COL:file` spec. Mirrors the renderer prim
+      // (buffer.positionAt is 0-based; +1 to both for SyncTeX's 1-based lines).
+      'point-line-col': () => {
+        if (!buffer || typeof buffer.positionAt !== 'function') return NIL;
+        const { line, column } = buffer.positionAt(buffer.point);
+        return cons(line + 1, column + 1);
+      },
+      // (pdf-current-path) — the path of the PDF inverse search is acting on. The
+      // spine has no on-screen singleton; `synctexInverse` stashes the EXACT PDF
+      // the renderer reported as clicked, so this returns it. nil outside an
+      // inverse-search call (latex-synctex-inverse then shows "no PDF open").
+      'pdf-current-path': () =>
+        (typeof synctexPdfPath === 'string' && synctexPdfPath !== '') ? synctexPdfPath : NIL,
+      // (pdf-synctex-show! PATH PAGE X Y [W H]) — forward SyncTeX: a directive to
+      // THIS window's pdf-view (when it shows PATH) to scroll to PAGE and flash
+      // the typeset box at (X, Y). Mirrors pdf-reload! — the renderer no-ops when
+      // no matching PDF is open. X/Y/W/H are PDF points; PAGE 1-based.
+      'pdf-synctex-show!': (args) => {
+        const path = (args[0] != null && args[0] !== NIL) ? (lispString(args[0]) ?? String(args[0])) : '';
+        const page = Number(args[1]);
+        const x = Number(args[2]);
+        const y = Number(args[3]);
+        if (!Number.isFinite(page) || !Number.isFinite(x) || !Number.isFinite(y)) return NIL;
+        const w = args.length > 4 && args[4] !== NIL ? Number(args[4]) : 0;
+        const h = args.length > 5 && args[5] !== NIL ? Number(args[5]) : 0;
+        onClientDirective([activeClientIndex], 'pdf-synctex-show', [path, page, x, y, w, h]);
+        return NIL;
+      },
+      // (flash-current-line!) — defensive: a directive to flash the active view's
+      // cursor line. The inverse-search reveal goes through `reveal-source-pane!`
+      // (which flashes via gotoLineReveal), so this is unused there; provided so
+      // any stray latex-synctex.lisp call resolves rather than erroring.
+      'flash-current-line!': () => {
+        onClientDirective([activeClientIndex], 'flash-current-line', []);
+        return NIL;
+      },
+      // (reveal-source-pane! FILE LINE) — the JS reveal that REPLACES latex-
+      // synctex.lisp's `-latex-reveal-source` pane-walk (overridden post-load).
+      // The spine's per-leaf view handles are thin {kind:'text', bufferId} stubs
+      // that don't expose a real kind/path, so resolve each leaf's bufferId →
+      // its registry entry (a text buffer) or data-source (a PDF/media) to find
+      // a SOURCE pane (a text-buffer leaf, never the PDF's). Three cases mirror
+      // the original: (1) FILE already shown → focus that pane; (2/3) focus a
+      // source pane (preferring a .tex) and open FILE there; else split before the
+      // PDF. Then jump to LINE with center+flash (gotoLineReveal). Runs in the
+      // async `synctex edit` callback; focusPane / visitFile / gotoLineReveal each
+      // fan their own effects out (onPaneTree / onScroll) on their own.
+      'reveal-source-pane!': (args) => {
+        const file = lispString(args[0]) ?? String(args[0] ?? '');
+        if (file === '') return NIL;
+        const line = Math.max(1, Math.floor(Number(args[1])) || 1);
+        const model = currentPaneModel();
+        if (!model) return NIL;
+        const leaves = model.panesInSpiralOrder() || [];
+        const idOf = (leaf) =>
+          (leaf && leaf.view && leaf.view.bufferId != null) ? leaf.view.bufferId : null;
+        const pathOf = (leaf) => {
+          const id = idOf(leaf);
+          if (id == null) return null;
+          const e = registry.get(id);
+          if (e) return (typeof e.filePath === 'string' && e.filePath !== '') ? e.filePath : null;
+          const ds = dataSources.get(id);
+          return (ds && typeof ds.filePath === 'string' && ds.filePath !== '') ? ds.filePath : null;
+        };
+        const isTextLeaf = (leaf) => {
+          const id = idOf(leaf);
+          return id != null && registry.has(id); // a registry buffer = a text view
+        };
+        const isTex = (p) => typeof p === 'string' && /\.tex$/i.test(p);
+        // Move point to LINE NOW (so the cursor + the caller's show-status!
+        // broadcast carry it), but DEFER the center+flash. An IMMEDIATE recenter/
+        // flash (gotoLineReveal) would race the pane re-mount AND arrive before the
+        // cursor is broadcast (latex-synctex-inverse calls show-status! AFTER this),
+        // so the line lands at the viewport EDGE with no flash. A short deferral
+        // lands them once the source view is mounted and the cursor has settled on
+        // the target line — view.recenter() then centers on it. unref so the timer
+        // never keeps a test process alive.
+        const revealLine = () => {
+          gotoLine(line);
+          const idx = activeClientIndex;
+          const t = setTimeout(() => {
+            setActiveClient(idx);
+            // Recenter via a DIRECTIVE on the renderer's `editorView` — the same
+            // path the flash uses (and which works). The `onScroll`/recenter VIEW
+            // path targets serverViewClient's own `view`, which after a pane switch
+            // is the wrong/stale view object, so it scrolled the line to an edge.
+            onClientDirective([idx], 'recenter-current-line', []);
+            onClientDirective([idx], 'flash-current-line', []);
+          }, 80);
+          if (t && typeof t.unref === 'function') t.unref();
+        };
+        // Case 1: FILE is already displayed somewhere — focus that pane.
+        const showing = leaves.find((l) => pathOf(l) === file);
+        if (showing) {
+          model.focusPane(showing.id);
+          rebindFocusedPane();
+          revealLine();
+          return NIL;
+        }
+        // Case 2/3: land in a source pane — a text-buffer leaf (preferring a .tex),
+        // never the PDF's. Focus it, open FILE there, jump.
+        const src =
+          leaves.find((l) => isTextLeaf(l) && isTex(pathOf(l)))
+          ?? leaves.find((l) => isTextLeaf(l))
+          ?? null;
+        if (src) {
+          model.focusPane(src.id);
+          rebindFocusedPane();
+          visitFile(file);
+          rebindFocusedPane();
+          revealLine();
+          return NIL;
+        }
+        // No source pane on screen (only the PDF) — split before it + open there.
+        model.split('horizontal', 0.5, 'before');
+        rebindFocusedPane();
+        visitFile(file);
+        rebindFocusedPane();
+        revealLine();
+        return NIL;
+      },
+
       // (open-file-in-split! PATH [ORIENTATION [SIDE [PERSIST]]]) — latex-view's
       // programmatic split: open PATH (a built PDF) BESIDE the source. Server-
       // side via the pane tree (no directive): mint/reuse the pdf DATA-SOURCE,
@@ -2478,6 +2620,26 @@ export function createSpine(options, effects = {}) {
     `);
   } catch (error) {
     console.error('[spine] utility-output helpers install failed:', error.message);
+  }
+
+  // SyncTeX inverse: OVERRIDE latex-synctex.lisp's `-latex-reveal-source` (which
+  // walks panes via view-kind / view-file-path on each leaf's view) with the JS
+  // `reveal-source-pane!` host primitive. The spine's per-leaf view handles are
+  // thin {kind:'text', bufferId} stubs that don't carry a real kind/path, so the
+  // lisp pane-walk can't find a source pane; the JS reveal resolves each leaf's
+  // bufferId → its registry entry / data-source instead. Runs AFTER the
+  // SPINE_STDLIB load above (latex-synctex.lisp is loaded), so this definition
+  // wins. The synctex spawn + parse + master logic stays in the real lisp.
+  try {
+    interpreter.evaluate(`
+      (define (-latex-reveal-source file line)
+        "Spine override: reveal FILE at LINE in a source pane via the JS
+         reveal-source-pane! (the lisp pane-walk can't read the spine's thin
+         leaf view-handles). See spine.js reveal-source-pane!."
+        (reveal-source-pane! file line))
+    `);
+  } catch (error) {
+    console.error('[spine] -latex-reveal-source override failed:', error.message);
   }
 
   // B2 regression fix: re-register the customize settings owned by renderer-only
@@ -5538,6 +5700,65 @@ export function createSpine(options, effects = {}) {
     }
   }
 
+  /** Hover-doc: resolve the Lisp symbol straddling OFFSET in the ACTIVE buffer
+   *  and its documentation summary. Runs `(symbol-at-offset (buffer-text)
+   *  offset)` then `(doc-summary-for symbol)` in the real spine world (docs.lisp
+   *  is loaded), so the tooltip sees the LIVE buffer — the renderer interpreter's
+   *  buffer is idle in server mode. Returns `{ kind, name, source? }` ('manifest'
+   *  or 'live' with the docstring SOURCE) or null when there is no documented
+   *  symbol under OFFSET. Never throws (a hover must not crash the intent loop). */
+  function docHover(offset) {
+    try {
+      const pos = Number(offset);
+      if (!Number.isInteger(pos) || pos < 0) return null;
+      const symbol = interpreter.evaluate(`(symbol-at-offset (buffer-text) ${pos})`);
+      if (typeof symbol !== 'string' || symbol === '') return null;
+      const summary = interpreter.call('doc-summary-for', symbol);
+      if (summary === NIL || summary === null || summary === undefined) return null;
+      const parts = listToArray(summary).map((p) => (typeof p === 'string' ? p : String(p)));
+      if (parts.length < 2) return null;
+      const [kind, name, source] = parts;
+      if (kind === 'manifest') return { kind: 'manifest', name };
+      if (kind === 'live') return { kind: 'live', name, source: source ?? '' };
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Hover-doc click-through: open the documentation page for NAME via the real
+   *  `(open-doc name)` (manifest first, live docstring fallback — opens/reuses the
+   *  doc-view). Fire-and-forget; mirrors the renderer's old `interpreter.call(
+   *  'open-doc', symbol)`. Never throws. */
+  function docOpen(name) {
+    if (typeof name !== 'string' || name === '') return;
+    try {
+      interpreter.call('open-doc', name);
+    } catch {
+      /* a bad name just opens nothing — never crash the intent loop */
+    }
+  }
+
+  /** Inverse SyncTeX: an Option-click at PDFPATH, PAGE (1-based), PDF point
+   *  (X, Y). Stash PDFPATH so `pdf-current-path` returns the exact clicked PDF,
+   *  then run the real `latex-synctex-inverse` (latex-synctex.lisp): it spawns
+   *  `synctex edit`, parses Input:/Line:, and reveals the source via the JS
+   *  `reveal-source-pane!` (the spine override of `-latex-reveal-source`). The
+   *  spawn is async; the reveal in its callback fans its own effects out. The
+   *  stash is cleared once the synchronous kick-off returns (the path was already
+   *  read into the spawn spec by then). Never throws. */
+  function synctexInverse(pdfPath, page, x, y) {
+    synctexPdfPath = (typeof pdfPath === 'string' && pdfPath !== '') ? pdfPath : null;
+    try {
+      interpreter.call('latex-synctex-inverse', Number(page), Number(x), Number(y));
+    } catch (error) {
+      try { onStatus(`SyncTeX: ${error?.lispMessage ?? error?.message ?? error}`); }
+      catch { /* status best-effort */ }
+    } finally {
+      synctexPdfPath = null;
+    }
+  }
+
   /** @typedef {object} Spine */
   return {
     /** The canonical L2 buffer (read-only access for the server). */
@@ -5701,6 +5922,13 @@ export function createSpine(options, effects = {}) {
     // JS notebook: evaluate a cell server-side (Node, no CSP) → serializable result.
     runNotebookCell,
     replEval,
+    // Hover-doc: resolve the symbol + doc summary under a buffer offset (request/
+    // response), and open a doc page by name (fire-and-forget). docs.lisp-backed.
+    docHover,
+    docOpen,
+    // Inverse SyncTeX: run latex-synctex-inverse for a clicked PDF point and
+    // reveal the source file:line in a source pane (latex-synctex.lisp).
+    synctexInverse,
     killActiveBuffer,
     /** Plain-data buffer-list records for client INDEX's TABS / View List, each
      *  tagged with whether it is that client's CURRENT buffer. Scoped to the

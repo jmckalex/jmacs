@@ -73,9 +73,6 @@ import {
   GnuplotView,
   ViewListView,
   RecoverView,
-  createReftexSelectPanel,
-  createReftexCiteFormatPanel,
-  createReftexCitePanel,
   PlaceholderView,
   cloneTargetForKind,
   isPlaceholderView,
@@ -83,12 +80,9 @@ import {
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
-  findArt,
   formBoundsAtPoint,
   formBoundsBeforePoint,
-  fuzzyFilter,
   highlightLine,
-  isAudioFile,
   keyEventToString,
   languageForFilename,
   loadLanguageHighlighters,
@@ -536,59 +530,6 @@ function nextNonPlaceholderIndex(from, delta) {
 const nameEl = document.getElementById('modeline-name');
 const positionEl = document.getElementById('modeline-position');
 
-function updateModeline() {
-  // In server-mode the modeline is driven by the server's VIEW message (the
-  // G2 chrome paints nameEl/positionEl from the spine's renderModeline); the
-  // in-renderer editor is idle behind the overlay, so its modeline must stand
-  // down or it would fight the server's. Flag-off this guard is never taken.
-  if (window.host && window.host.serverMode) return;
-  const shown = views[currentViewIndex];
-  // A placeholder chooser pane shows its label and no count — never a
-  // `9/7`-style index (it isn't part of the user-visible view list).
-  if (isPlaceholderView(shown)) {
-    const label = shown.name || '(choose a view)';
-    nameEl.textContent = label;
-    positionEl.textContent = '';
-    document.title = `${label} — Godot`;
-    return;
-  }
-  // The user-visible count excludes placeholders, and the index is the
-  // current view's position among the *real* views (so a split that
-  // dropped a placeholder doesn't push the count past the list — the
-  // `9/7` hazard). Falls back to no count when only one real view.
-  const realViews = views.filter((v) => !isPlaceholderView(v));
-  const realIndex = shown ? realViews.indexOf(shown) : -1;
-  const count =
-    realViews.length > 1 && realIndex >= 0
-      ? `  ${realIndex + 1}/${realViews.length}`
-      : '';
-  // A non-text view (image, doc, shell, customize, ...) has no point
-  // and no mode — show just the view name.
-  if (shown && shown.kind !== 'text') {
-    nameEl.textContent = shown.name + count;
-    positionEl.textContent = '';
-    document.title = `${shown.name} — Godot`;
-    return;
-  }
-  const buffer = currentTextBuffer;
-  const mark = dirtyBuffers.has(buffer) ? '● ' : '';
-  const mode = keymapReady
-    ? `   ${interpreter.call('major-mode-name')}` +
-      interpreter.call('minor-mode-line')
-    : '';
-  // The snippet indicator (e.g. "[snippet: 2/4]") appears while a snippet
-  // is being navigated; the Lisp getter returns "" when none is active.
-  const snippet = keymapReady
-    ? interpreter.call('snippet-modeline-indicator')
-    : '';
-  const snippetTag = snippet ? `   ${snippet}` : '';
-  nameEl.textContent = mark + buffer.name + mode + snippetTag + count;
-  const { line, column } = buffer.positionAt(buffer.point);
-  positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
-  // Reflect the current view in the OS window title.
-  document.title = `${mark}${buffer.name} — Godot`;
-}
-
 /** Make BUFFER the current text buffer AND re-point the dirty / autosave
  *  watch at it. Every path that changes which buffer is current must go
  *  through this, not a bare `currentTextBuffer = …` assignment —
@@ -629,19 +570,9 @@ function watchCurrentBuffer() {
       // The Markdown preview (when open) tracks the SAVED file via its own
       // `jmarkdown watch` server, so an edit needs no renderer-side refresh —
       // the preview updates on save (C-x C-s), not per keystroke.
-      // While a snippet is active, reflow the active field's extent and
-      // the trailing offsets after each edit. A no-op when no snippet is
-      // active (guarded in Lisp).
-      if (keymapReady) {
-        try {
-          interpreter.call('snippet-after-edit!');
-        } catch {
-          // A reflow error must not break editing; the snippet simply
-          // stops tracking. Surfaced lazily on the next command.
-        }
-      }
+      // (Snippet field reflow is server-side now — snippets.lisp runs in the
+      // spine; the renderer interpreter holds no snippet state.)
     }
-    updateModeline();
   });
 }
 
@@ -974,7 +905,6 @@ function setCurrentPaneId(nextId) {
       editorView = instance;
     }
   }
-  updateModeline();
 }
 
 // Paint the initial focus indicator. With one pane this just adds the
@@ -1152,7 +1082,6 @@ function replacePlaceholder(leaf, newView) {
   mountKindView(newView);
   refreshPaneFocusIndicators();
   scheduleRelayout();
-  updateModeline();
   notifyViewsChanged();
 }
 
@@ -1488,7 +1417,6 @@ function deletePaneInTree(targetLeaf) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  updateModeline();
   // If the removed leaf was a minimap's target, the reconcile drops the now
   // orphaned minimap; otherwise it just rebinds survivors. Deferred, so it
   // runs after this deletion's tree surgery is complete.
@@ -1530,7 +1458,6 @@ function deleteOtherPanesInTree(targetLeaf) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  updateModeline();
 }
 
 /** Set of every leaf-kind view that is currently *visible* in some
@@ -1936,7 +1863,6 @@ function switchToViewIndex(index) {
       tabIndex = tlv.tabs.length - 1;
     }
     activateTabInTabline(tlv, tabIndex);
-    updateModeline();
     notifyViewsChanged();
     return view;
   }
@@ -1967,7 +1893,6 @@ function switchToViewIndex(index) {
   }
   hideInactiveRendererViews(view.kind);
   mountKindView(view);
-  updateModeline();
   notifyViewsChanged();
   return view;
 }
@@ -2131,14 +2056,12 @@ function killViewAtIndex(target) {
       currentViewIndex = activeChild !== null
         ? views.indexOf(activeChild)
         : -1;
-      updateModeline();
       notifyViewsChanged();
     } else if (focused
                && focused.kind === 'leaf'
                && focused.view !== victim) {
       // Auto-collapsed: deletePaneInTree pointed focus at a sibling
       // and set currentViewIndex inside its branch. Just refresh.
-      updateModeline();
       notifyViewsChanged();
     } else {
       const next = Math.min(target, views.length - 1);
@@ -2147,132 +2070,10 @@ function killViewAtIndex(target) {
     }
   } else if (target < currentViewIndex) {
     currentViewIndex -= 1;
-    updateModeline();
     notifyViewsChanged();
   } else {
-    updateModeline();
     notifyViewsChanged();
   }
-}
-
-/** Kill the (first) view with NAME, if any. */
-function killViewByName(name) {
-  killViewAtIndex(views.findIndex((v) => v.name === name));
-}
-
-/** Join DIR and NAME with a single slash. Tiny helper used to build
- *  the absolute path for each jukebox track. */
-function joinPath(dir, name) {
-  const trimmed = typeof dir === 'string' && dir.endsWith('/')
-    ? dir.slice(0, -1)
-    : String(dir ?? '');
-  return `${trimmed}/${name}`;
-}
-
-/** Ask Lisp to format the display label for PATH using the current
- *  `*jukebox-track-format*` template. A failure (interpreter not
- *  ready, format-track not yet defined, anything thrown from the
- *  template) falls back to the bare filename — one bad tag must not
- *  break the whole listing. */
-function formatTrackLabel(path) {
-  if (!keymapReady) return basenameOf(path);
-  try {
-    const result = interpreter.call('format-track', path);
-    if (typeof result === 'string' && result !== '') return result;
-  } catch {
-    /* fall through */
-  }
-  return basenameOf(path);
-}
-
-/** The bare filename component of PATH. */
-function basenameOf(path) {
-  const slash = String(path).lastIndexOf('/');
-  return slash >= 0 ? path.slice(slash + 1) : path;
-}
-
-/** Refresh the labels of every open jukebox view. Called by the
- *  `*jukebox-track-format*` :on-change hook so a user customising the
- *  format string sees the change apply to already-open jukeboxes. */
-function refreshAllJukeboxLabels() {
-  let touched = false;
-  for (const view of views) {
-    if (view.kind !== 'jukebox' || !Array.isArray(view.tracks)) continue;
-    view.labels = view.tracks.map((track) =>
-      formatTrackLabel(joinPath(view.dir, track))
-    );
-    touched = true;
-  }
-  // Re-mount the current view so the change is visible immediately
-  // (a view's labels are read in setBuffer). switchToViewIndex with
-  // currentViewIndex forces a re-mount; we only do it when the
-  // current view is a jukebox so other views aren't disturbed.
-  if (touched && currentViewIndex >= 0 &&
-      views[currentViewIndex].kind === 'jukebox') {
-    const i = currentViewIndex;
-    currentViewIndex = -1;
-    switchToViewIndex(i);
-  }
-}
-
-/** Build a fresh tracks/art listing for DIR and create-or-refresh the
- *  matching jukebox buffer. Reusing an existing buffer by name keeps
- *  the user's switch history sane — `(jukebox "/m")` twice does not
- *  pile up two entries.
- *
- *  The host owns the filesystem; the view never touches it. This
- *  function is the bridge.
- */
-function openJukeboxForDirectory(dir) {
-  let entries;
-  try {
-    entries = window.host.listDirectorySync(dir);
-  } catch (error) {
-    repl.appendError(`jukebox: ${error.message}`);
-    return;
-  }
-  if (entries === null) {
-    repl.appendError(`jukebox: cannot read directory ${dir}`);
-    return;
-  }
-  const tracks = entries.filter(isAudioFile);
-  const art = findArt(entries);
-  // Format the display label for each track via the Lisp helper.
-  // Doing this up front (rather than per-row) keeps the renderer free
-  // of IPC chatter when the buffer mounts. A formatting error per
-  // file degrades to the bare filename — one malformed tag must not
-  // break the whole listing.
-  const labels = tracks.map((track) =>
-    formatTrackLabel(joinPath(dir, track))
-  );
-  const name = `*Jukebox: ${dir}*`;
-  let index = views.findIndex(
-    (v) => v.kind === 'jukebox' && v.name === name
-  );
-  // The jukebox view carries two callbacks the renderer invokes: a
-  // refresh (re-read the dir and rebuild) and a quit (stop, kill the
-  // view, restore the previous one).
-  const extras = {
-    dir,
-    tracks,
-    labels,
-    art,
-    refresh: () => openJukeboxForDirectory(dir),
-    quit: () => {
-      audio.stop();
-      killViewByName(name);
-    },
-  };
-  if (index >= 0) {
-    // Reuse the slot — keep the View handle stable but refresh its
-    // kind-specific fields. The renderer's setBuffer rebuilds from
-    // the new fields.
-    Object.assign(views[index], extras);
-  } else {
-    views.push(createView({ kind: 'jukebox', name, extras }));
-    index = views.length - 1;
-  }
-  switchToViewIndex(index);
 }
 
 /** Find or create the customisation view named `name`, switch to it. */
@@ -2687,7 +2488,6 @@ async function saveBufferInteractive() {
     markBufferSaved(buffer);
     // The buffer is on disk now — drop its crash-recovery snapshot.
     recovery.forget(buffer);
-    updateModeline();
     notifyViewsChanged();
     // Persist sticky notes alongside the file — this also covers a
     // first save, when the buffer has only just gained a file path.
@@ -3006,191 +2806,6 @@ function startRegexpSearch(initialDirection) {
   );
 }
 
-// --- command palette (M-x) ---------------------------------------------
-
-/** Run the apropos-doc fuzzy search in the minibuffer. */
-function startDocSearch() {
-  let names;
-  try {
-    names = listToArray(interpreter.call('doc-manifest')).map(String);
-  } catch (error) {
-    repl.appendError(
-      `apropos-doc: ${error.lispMessage ?? error.message}`
-    );
-    return;
-  }
-  if (names.length === 0) {
-    repl.appendOutput(
-      'apropos-doc: no docs are loaded — run `pnpm run docs` and reload.'
-    );
-    return;
-  }
-  minibuffer.prompt('Doc: ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        minibuffer.setStatus('no matching doc');
-        return;
-      }
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      try {
-        interpreter.evaluate(`(open-doc ${JSON.stringify(chosen)})`);
-      } catch (error) {
-        repl.appendError(
-          error.lispMessage ?? error.message ?? String(error)
-        );
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/** Run the command palette in the minibuffer. */
-function startCommandPalette() {
-  const names = [...new Set(listToArray(interpreter.call('command-names')))];
-
-  minibuffer.prompt('M-x ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        minibuffer.setStatus('no matching command');
-        return;
-      }
-      // The first match runs on Enter; show it bracketed.
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      try {
-        interpreter.evaluate(`(run-command (quote ${chosen}))`);
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/**
- * Switch to a buffer chosen by name, with completion, in the
- * minibuffer. A name that matches no open buffer creates a new one —
- * the minibuffer status shows when a submit would create rather than
- * switch.
- *
- * Phase 3b (Q4): the picker source is the global view list minus
- * (a) the current view (so the bracketed suggestion is always a
- * different view) and (b) any view currently *visible* in some other
- * pane — the user can't switch to a view that's already on screen in
- * another pane. The auto-duplicate path on `open-file-path!` covers
- * the "two views of the same file" workflow instead.
- */
-function startBufferSwitcher() {
-  const focused = currentPane();
-  const elsewhere = viewsVisibleInOtherPanes(focused);
-  const names = views
-    .filter((view, index) => index !== currentViewIndex && !elsewhere.has(view))
-    .map((v) => v.name);
-
-  minibuffer.prompt('Buffer: ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        const trimmed = query.trim();
-        minibuffer.setStatus(trimmed === '' ? '' : `[new view: ${trimmed}]`);
-        return;
-      }
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const trimmed = query.trim();
-      // An exact name switches; otherwise the best fuzzy match does.
-      // A blank Enter accepts whatever the bracketed suggestion is —
-      // the first fuzzy match against the empty query, i.e. the first
-      // candidate alphabetically.
-      const exact =
-        trimmed === ''
-          ? -1
-          : views.findIndex((v) => v.name === trimmed);
-      if (exact >= 0) {
-        switchToViewIndex(exact);
-        return;
-      }
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen !== undefined) {
-        switchToViewIndex(views.findIndex((v) => v.name === chosen));
-        return;
-      }
-      if (trimmed === '') return; // nothing to switch to, nothing to create.
-      // No open view matches the typed name — create a fresh text view.
-      views.push(createView({
-        kind: 'text',
-        buffer: createBuffer('', { name: trimmed }),
-      }));
-      switchToViewIndex(views.length - 1);
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/** Pick a command in the minibuffer and show its documentation. */
-function startDescribeCommand() {
-  const names = [...new Set(listToArray(interpreter.call('command-names')))];
-
-  minibuffer.prompt('Describe command: ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        minibuffer.setStatus('no matching command');
-        return;
-      }
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      try {
-        interpreter.call('describe-named-command', chosen);
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
 // --- Lisp interpreter and REPL -----------------------------------------
 
 // The utility dock — the tabbed chrome region at the bottom. The REPL is its
@@ -3326,14 +2941,12 @@ async function displayDocPanel({ id, title, icon, heading, body, empty }) {
 function activateFromPanel(name) {
   const full = completionsDirectory + name;
   if (name.endsWith('/')) {
-    let next = full;
-    try {
-      const result = interpreter.call('minibuffer-tab-complete', full);
-      if (typeof result === 'string') next = result;
-    } catch (error) {
-      repl.appendError(`tab-complete: ${error.lispMessage ?? error.message}`);
-    }
-    minibuffer.setValue(next);
+    // A directory: descend — fill the input and ask the SERVER to complete it
+    // (the reply refreshes the panel via showCompletions), mirroring the
+    // minibuffer TAB path. (Was a renderer `minibuffer-tab-complete` against the
+    // idle interpreter — broken in server mode; this is the rehome.)
+    minibuffer.setValue(full);
+    if (serverViewClient) serverViewClient.requestMinibufferComplete(full);
   } else {
     minibuffer.submit(full);
   }
@@ -3506,7 +3119,6 @@ const viewHost = {
       const child = tlv.tabs[nextIdx];
       const i = views.indexOf(child);
       if (i >= 0) currentViewIndex = i;
-      updateModeline();
       notifyViewsChanged();
       return child;
     }
@@ -3530,7 +3142,6 @@ const viewHost = {
       const child = tlv.tabs[prevIdx];
       const i = views.indexOf(child);
       if (i >= 0) currentViewIndex = i;
-      updateModeline();
       notifyViewsChanged();
       return child;
     }
@@ -3857,7 +3468,7 @@ const interpreter = createInterpreter({
     // typing / TABbing. Updating an open panel reuses it in place (no
     // re-activation) so it never steals focus mid-keystroke. The tab is
     // removed by `clear-completions!` (on TAB progress) or when the
-    // completing minibuffer closes (see `open-completing-minibuffer!`).
+    // completing minibuffer closes.
     'show-completions!': (args) => {
       displayCompletionsPanel(listToArray(args[0] ?? NIL).map(String), String(args[1] ?? ''));
       return NIL;
@@ -4511,31 +4122,6 @@ const interpreter = createInterpreter({
       utilityDock.cycleUtilityTab(Number.isFinite(n) && n !== 0 ? n : 1);
       return NIL;
     },
-    // Open the *RefTeX Select* picker as a right-edge drawer overlaid on
-    // the editor (the document stays visible underneath). RefTeX's
-    // reftex-reference uses this as the selection-first path; the panel
-    // reads its rows through reftex-select-candidates and its keys call
-    // back into reftex-select-on-{select,peek,cancel}. SPC-peek navigates
-    // the editor pane UNDER the overlay (the bug the old pane-takeover
-    // form couldn't fix). See `openReftexSelectOverlay`.
-    'open-reftex-select!': () => {
-      openReftexSelectOverlay();
-      return NIL;
-    },
-    // RefTeX R3 citation flow (bottom dock). `open-reftex-cite-format!`
-    // opens the format menu (\cite / \citep / …); choosing one runs
-    // reftex-cite-format-chosen, which calls `open-reftex-cite-select!` —
-    // and because a dock is already up, that SWAPS it in place for the
-    // cite picker. The picker reads its rows via reftex-cite-select-rows
-    // and inserts via reftex-cite-insert.
-    'open-reftex-cite-format!': () => {
-      openReftexCiteFormat();
-      return NIL;
-    },
-    'open-reftex-cite-select!': () => {
-      openReftexCiteSelect();
-      return NIL;
-    },
     // Open a shell view — a child process running the user's default
     // shell ($SHELL, falling back to /bin/zsh) with a transcript and
     // an input line. The process is spawned by the host the first time
@@ -4643,7 +4229,6 @@ const interpreter = createInterpreter({
         current.name = url;
         const el = browserElementByView.get(current);
         if (el) el.setBuffer(current);
-        updateModeline();
         notifyViewsChanged();
         return NIL;
       }
@@ -4748,13 +4333,6 @@ const interpreter = createInterpreter({
           `pdf-extract-page-range: ${error.message ?? error}`
         );
       });
-      return NIL;
-    },
-    // Documentation: open the fuzzy-search minibuffer with the
-    // manifest's names as candidates; submit opens the matching
-    // doc page.
-    'start-doc-search!': () => {
-      startDocSearch();
       return NIL;
     },
     // Inline eval: the bounds of the form enclosing point in the
@@ -5023,33 +4601,6 @@ const interpreter = createInterpreter({
       buffer.insert(text);
       return NIL;
     },
-    'start-command-palette!': () => {
-      startCommandPalette();
-      return NIL;
-    },
-    'start-buffer-switcher!': () => {
-      startBufferSwitcher();
-      return NIL;
-    },
-    'start-describe-command!': () => {
-      startDescribeCommand();
-      return NIL;
-    },
-    // Open a minibuffer prompt for the command argument gatherer; the
-    // result is delivered back to Lisp via `minibuffer-delivered`.
-    'open-minibuffer!': (args) => {
-      minibuffer.prompt(String(args[0]), {
-        onSubmit(value) {
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', value);
-        },
-        onCancel() {
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', NIL);
-        },
-      });
-      return NIL;
-    },
     'goto-line!': (args) => {
       const buffer = currentTextBuffer;
       const n = Number(args[0]);
@@ -5235,16 +4786,6 @@ const interpreter = createInterpreter({
       const entries = window.host.listDirectorySync(String(args[0]));
       return entries === null ? NIL : arrayToList(entries);
     },
-    // Open (or refresh) the jukebox buffer for DIR. The host reads
-    // the directory, filters to audio files, finds an art file, then
-    // creates a `jukebox`-kind buffer carrying the state the view
-    // needs — no Lisp panel rendering, no buffer text to maintain.
-    'open-jukebox-buffer!': (args) => {
-      const dir = expandTilde(String(args[0] ?? ''));
-      if (dir === '') return NIL;
-      openJukeboxForDirectory(dir);
-      return NIL;
-    },
     // Refresh the `labels` array on every open jukebox buffer. Called
     // by the `*jukebox-track-format*` :on-change hook so a user
     // customising the format string sees it take effect immediately.
@@ -5319,44 +4860,6 @@ const interpreter = createInterpreter({
         entries.map((entry) => cons(entry.name, keyword(entry.type)))
       );
     },
-    // Open a completing minibuffer: a prompt the Lisp side drives
-    // through `minibuffer-tab-complete` on Tab and the usual
-    // `minibuffer-delivered` on submit/cancel. This is what `find-file`
-    // uses to gather a path with TAB completion. The handler is
-    // implemented in Lisp (see files.lisp) so the policy — what to
-    // complete against, what to show when ambiguous — stays in
-    // userland.
-    'open-completing-minibuffer!': (args) => {
-      const promptText = String(args[0] ?? '');
-      const initialValue = args.length > 1 ? String(args[1] ?? '') : '';
-      minibuffer.prompt(promptText, {
-        initialValue,
-        onSubmit(value) {
-          // The command is finishing — drop the transient completions tab
-          // (a no-op when none is open, e.g. RefTeX/LaTeX prompts).
-          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', value);
-        },
-        onCancel() {
-          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', NIL);
-        },
-        onTab(value) {
-          try {
-            const result = interpreter.call('minibuffer-tab-complete', value);
-            if (typeof result === 'string') return result;
-          } catch (error) {
-            repl.appendError(
-              `tab-complete: ${error.lispMessage ?? error.message}`
-            );
-          }
-          return value;
-        },
-      });
-      return NIL;
-    },
     'play-audio!': (args) => {
       audio.play(expandTilde(String(args[0])));
       return NIL;
@@ -5376,40 +4879,12 @@ const interpreter = createInterpreter({
       const p = audio.currentPath();
       return p === null ? NIL : p;
     },
-    // Show the directory picker; on confirm, dispatch the chosen path
-    // back into Lisp via the jukebox callback. Mirrors how `open-file!`
-    // returns immediately and the file is shown when the dialog resolves.
-    'prompt-directory!': () => {
-      window.host
-        .openDirectory()
-        .then((path) => {
-          if (path === null) return;
-          try {
-            interpreter.call('jukebox-on-directory-chosen', path);
-          } catch (error) {
-            repl.appendError(
-              error.lispMessage ?? error.message ?? String(error)
-            );
-          }
-        })
-        .catch((error) => {
-          repl.appendError(`directory open failed: ${error.message}`);
-        });
-      return NIL;
-    },
   },
 });
 
-// Auto-advance: the audio element fires `ended`, which the jukebox
-// translates into a "next track" command. Other contexts have no such
-// command, so the call silently no-ops.
-audio.onEnded(() => {
-  try {
-    interpreter.call('jukebox-track-ended');
-  } catch {
-    // No jukebox loaded — that is fine; the track has simply finished.
-  }
-});
+// (Jukebox auto-advance was a renderer audio.onEnded → jukebox-track-ended call
+// against the idle interpreter. The jukebox is a server data-source now; if
+// playback should auto-advance in server mode, the spine drives it. Filed.)
 
 /** Evaluate a line of REPL input and show the result. */
 /** Format a Lisp error for display: its message, plus the source location
@@ -6844,6 +6319,14 @@ if (window.host && window.host.serverMode) {
         // buffer's saved path (args[0], '' when unsaved); toggle the preview
         // pane here, pointing it at the real `jmarkdown watch` server.
         toggleMarkdownPreview(String(args?.[0] ?? ''));
+      } else if (name === 'recenter-current-line') {
+        // SyncTeX inverse search: center the just-revealed line. Goes through the
+        // ACTIVE editorView (correctly re-pointed at the source pane on mount) —
+        // the server's onScroll/recenter path targets serverViewClient's own view,
+        // which is the wrong object after a pane switch (line stuck at the edge).
+        if (editorView && typeof editorView.recenter === 'function') {
+          editorView.recenter();
+        }
       } else if (name === 'flash-current-line') {
         // Inverse search (Markdown-preview ⌘-click): the server moved + centered
         // the cursor; flash its line so the user sees where the jump landed. The
@@ -6962,6 +6445,25 @@ if (window.host && window.host.serverMode) {
               && typeof pdfView.reload === 'function') {
             pdfView.reload();
           }
+        }
+      } else if (name === 'pdf-synctex-show') {
+        // Forward SyncTeX (C-c C-v): the spine ran `synctex view` and asks THIS
+        // window's PDF (when it shows args[0]) to scroll to the page + flash the
+        // typeset box. [path, page, x, y, w, h] (PDF points; page 1-based).
+        // Mirrors the old pdf-synctex-show! prim (the box anchor is x/y, so the
+        // highlight covers the box: { h: x, v: y, w, h_: h }).
+        const current = pdfView.buffer;
+        const wanted = args?.[0] != null ? String(args[0]) : '';
+        const page = Number(args?.[1]);
+        const x = Number(args?.[2]);
+        const y = Number(args?.[3]);
+        if (current
+            && !(wanted !== '' && viewFilePath(current) !== wanted)
+            && Number.isFinite(page) && Number.isFinite(x) && Number.isFinite(y)
+            && typeof pdfView.syncTexShow === 'function') {
+          const w = Number(args?.[4]) || 0;
+          const h = Number(args?.[5]) || 0;
+          pdfView.syncTexShow(page, x, y, { h: x, v: y, w, h_: h });
         }
       } else if (name === 'open-project-dialog') {
         // B4 project Stage 3 (open-project): the spine asked this window to run the
@@ -7439,34 +6941,11 @@ function snippetRangePair(pair, face) {
  * @returns {Array<{start: number, end: number, face: string}>}
  */
 function snippetDecorationsFor(buffer) {
-  if (!keymapReady) return [];
-  // The active snippet is global (one across the editor) and its offsets
-  // are into the focused buffer; only paint on the pane showing it.
-  if (!buffer || buffer !== currentTextBuffer) return [];
-  try {
-    const ranges = [];
-    // Forthcoming tab stops first, so the active / mirror boxes paint
-    // over them if anything ever overlaps. These read as amber "pending"
-    // pills via `snippet-inactive-face`.
-    for (const pending of listToArray(interpreter.call('snippet-forthcoming-regions'))) {
-      const p = snippetRangePair(pending, 'snippet-inactive-face');
-      if (p !== null) ranges.push(p);
-    }
-    const active = snippetRangePair(
-      interpreter.call('snippet-active-region'),
-      'snippet-active-face'
-    );
-    if (active !== null) ranges.push(active);
-    for (const mirror of listToArray(interpreter.call('snippet-mirror-regions'))) {
-      const m = snippetRangePair(mirror, 'snippet-mirror-face');
-      if (m !== null) ranges.push(m);
-    }
-    return ranges;
-  } catch {
-    // A snippet read must never break rendering — drop the boxes for
-    // this frame. The next render retries.
-    return [];
-  }
+  // Snippet fields are server-side now (snippets.lisp runs in the spine); the
+  // renderer interpreter holds no snippet state, so there are no boxes to paint
+  // from here. If snippet decorations should show in server mode, the spine
+  // pushes them via the overlay channel (filed — verify in the matrix).
+  return [];
 }
 
 // --- editor view (per-pane instances) -----------------------------------
@@ -8060,14 +7539,8 @@ function highlightCodeForDocView(text, language) {
 function configureDocView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // View-close is server-driven now (the in-renderer kill-view was inert).
+    closeBuffer: () => {},
     // B4: the doc-view OWNS its content + navigation via these — it fetches a
     // built page (readPage) or renders a live docstring (renderMarkdown) and
     // setBuffers itself, regardless of how it was mounted (leaf vs tabline child).
@@ -8136,17 +7609,23 @@ jukeboxView.style.display = 'none';
  *  on macOS/Linux but the brief glitch keeps the behaviour
  *  predictable across platforms). */
 function runMetadataEdit(primitiveName, buffer, key, value) {
-  if (!keymapReady) return { ok: false, error: 'interpreter not ready' };
   if (!buffer || typeof buffer.filePath !== 'string') {
     return { ok: false, error: 'no audio buffer' };
   }
   const snapshot = audioView.pauseAndRelease();
   try {
-    if (value === undefined) {
-      interpreter.call(primitiveName, buffer.filePath, key);
-    } else {
-      interpreter.call(primitiveName, buffer.filePath, key, value);
-    }
+    // Apply the tag edit directly via the host writer (it's pure host I/O — no
+    // buffer state — so it works without the interpreter). `set` adds/updates
+    // the field; `remove` deletes it. (Was dispatched through the idle renderer
+    // interpreter; the set-/remove-audio-metadata! primitives are now dead and
+    // drop with the primitive table in B7.)
+    applyAudioMetadataEdit(buffer.filePath, (fields) => {
+      if (primitiveName === 'remove-audio-metadata!') {
+        delete fields[key];
+      } else {
+        fields[key] = value === undefined ? '' : String(value);
+      }
+    });
     return { ok: true };
   } catch (error) {
     return {
@@ -8213,14 +7692,8 @@ function stripDerivedFields(meta) {
 function configureAudioView() {
   return {
     ...serverMediaKeyOption(),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // View-close is server-driven now (the in-renderer kill-view was inert).
+    closeBuffer: () => {},
     // Inline-edit lifecycle. Wired to the stubbed metadata-write
     // primitives — see `set-audio-metadata!` / `remove-audio-metadata!`
     // below. The real writers (agent-audio-edit-id3v2 onwards) replace
@@ -8244,14 +7717,8 @@ audioView.style.display = 'none';
 function configureVideoView() {
   return {
     ...serverMediaKeyOption(),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // View-close is server-driven now (the in-renderer kill-view was inert).
+    closeBuffer: () => {},
   };
 }
 const videoView = /** @type {*} */ (document.createElement('video-view'));
@@ -8271,17 +7738,13 @@ function configurePdfView() {
   return {
     ...serverMediaKeyOption(),
     // Inverse SyncTeX: an Option-click in the PDF jumps the editor to the
-    // source. The pdf-view hands us the 1-based page and the clicked PDF
-    // point (SyncTeX convention); `latex-synctex-inverse` runs
-    // `synctex edit` and opens the resulting file:line. Guarded by the
-    // keymap-ready latch and wrapped so a Lisp error can't break the click.
-    onSyncTexClick: (page, x, y) => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('latex-synctex-inverse', page, x, y);
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
+    // source. The pdf-view hands us the 1-based page, the clicked PDF point
+    // (SyncTeX convention), and the clicked PDF's own path. The SPINE runs
+    // `synctex edit` and reveals the resulting file:line in a source pane —
+    // the renderer interpreter's pane model is idle in server mode, so the
+    // old `interpreter.call('latex-synctex-inverse', …)` here no-op'd.
+    onSyncTexClick: (page, x, y, filePath) => {
+      if (serverViewClient) serverViewClient.synctexInverse(filePath, page, x, y);
     },
   };
 }
@@ -8964,7 +8427,6 @@ function showDocInPane(name, html, label) {
     const el = elementForViewInstance(cur);
     if (el && typeof el.setBuffer === 'function') el.setBuffer(cur);
     notifyViewsChanged();
-    updateModeline();
     return;
   }
   const view = createView({
@@ -8999,46 +8461,21 @@ async function openDocInPane(name) {
 // Phase 3g: directory-tree is a custom element now. Factory reused by
 // the tabline mount path for per-tab `<directory-tree-view>` instances.
 function configureDirectoryTreeView() {
-  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    // onKey routes chords to the server's keymap in server mode (so C-x C-f /
-    // M-x reach it), else the in-renderer dispatchKey. Flag-off byte-for-byte.
+    // onKey routes chords to the server's keymap (so C-x C-f / M-x reach it).
     ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     // Colour file/folder icons from the vendored Material Icon Theme set.
     iconUrlFor: (name, isDirectory, expanded) =>
       materialIconUrlForEntry(name, isDirectory, expanded),
     openPath: (path) => {
-      // Server mode: open the file by path through the server's find-file
-      // (visitFile), switching the focused leaf onto it.
-      if (serverMode) {
-        if (serverViewClient) serverViewClient.visitPath(path);
-        return;
-      }
-      // Route through the `directory-tree-open-file` Lisp function so the
-      // target honours `*directory-tree-open-target*` and stays user-
-      // overridable. Fall back to the focused-pane open if the stdlib
-      // routing isn't available yet.
-      if (keymapReady) {
-        try {
-          interpreter.call('directory-tree-open-file', path);
-          return;
-        } catch {
-          /* fall through to the default */
-        }
-      }
-      openFileInTabAdjacent(path);
+      // Open the file by path through the server's find-file (visitFile),
+      // switching the focused leaf onto it.
+      if (serverViewClient) serverViewClient.visitPath(path);
     },
     closeBuffer: () => {
-      // Server mode: closing a directory pane isn't wired server-side yet
-      // (follow-on). The pane is replaced when a file is opened from it.
-      if (serverMode) return;
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
+      // Closing a directory pane isn't wired server-side yet (follow-on); the
+      // pane is replaced when a file is opened from it.
     },
   };
 }
@@ -9129,8 +8566,10 @@ function viewListRecords() {
 function configureViewListView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     getViews: viewListRecords,
     selectView: (id) => {
       // Server mode: the id is a server buffer id — switch to it (the server
@@ -9242,8 +8681,10 @@ function discardSnapshot(key) {
 function configureRecoverView() {
   return {
     ...(keymapReady ? { onKey: dispatchKey } : {}),
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     getEntries: recoverViewRecords,
     recover: recoverSnapshot,
     discard: discardSnapshot,
@@ -9260,183 +8701,6 @@ recoverView.configure(configureRecoverView());
 editorPaneElement().append(recoverView);
 recoverView.style.display = 'none';
 
-// The *RefTeX Select* picker — RefTeX's label / cite picker, mounted as a
-// right-edge drawer overlaid on the editor (NOT a pane view). The panel
-// is populated and driven entirely from Lisp (reftex-refs.lisp): the
-// candidate model, the origin view+point, and the select / peek / cancel
-// actions all live there. The host closures are thin bridges that marshal
-// Lisp records into the renderer's plain-JS candidate objects and forward
-// the user's choices back. See plans/RefTeX.md "The interactive views".
-//
-// reftexSelectCandidates reads a flat list the Lisp side prepared when
-// the picker opened; each Lisp candidate is a list (name type macro
-// context), which we map positionally into {name,type,macro,context}.
-function reftexSelectCandidates() {
-  if (!keymapReady) return [];
-  try {
-    const rows = listToArray(interpreter.call('reftex-select-candidates'));
-    return rows.map((row) => {
-      const fields = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-      return {
-        name: fields[0] ?? '',
-        type: fields[1] ?? '',
-        macro: fields[2] ?? '',
-        context: fields[3] ?? '',
-      };
-    });
-  } catch (error) {
-    repl.appendError(`reftex-select: ${error.lispMessage ?? error.message}`);
-    return [];
-  }
-}
-
-/** Invoke a RefTeX-select Lisp callback (select / peek / cancel),
- *  swallowing and reporting any Lisp error so the picker never crashes
- *  the renderer. */
-function reftexSelectCallback(name, arg) {
-  if (!keymapReady) return;
-  try {
-    if (arg === undefined) interpreter.call(name);
-    else interpreter.call(name, arg);
-  } catch (error) {
-    repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
-  }
-}
-
-/** The cite *format menu* rows the Lisp side prepared: each Lisp row is
- *  `(key macro desc)`, mapped positionally to `{key, macro, desc}`. */
-function reftexCiteFormats() {
-  if (!keymapReady) return [];
-  try {
-    return listToArray(interpreter.call('reftex-cite-formats')).map((row) => {
-      const f = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-      return { key: f[0] ?? '', macro: f[1] ?? '', desc: f[2] ?? '' };
-    });
-  } catch (error) {
-    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
-    return [];
-  }
-}
-
-/** The cheap cite *index* the Lisp side prepared: each Lisp row is
- *  `(key plain)`, mapped to `{key, plain}`. The picker filters this
- *  client-side; the CSL HTML is fetched lazily via `reftexCiteFormatted`
- *  for the rows actually shown, so a big bibliography isn't formatted
- *  whole. */
-function reftexCiteIndex() {
-  if (!keymapReady) return [];
-  try {
-    return listToArray(interpreter.call('reftex-cite-index')).map((row) => {
-      const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-      return { key: r[0] ?? '', plain: r[1] ?? '' };
-    });
-  } catch (error) {
-    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
-    return [];
-  }
-}
-
-/** CSL-format just the entries named in KEYSCSV (the rows the picker is
- *  about to show), as `{key, html}` pairs. Backed by `reftex-cite-format`
- *  → `citation-format-keys` over a sub-handle. */
-function reftexCiteFormatted(keysCsv) {
-  if (!keymapReady || !keysCsv) return [];
-  try {
-    return listToArray(interpreter.call('reftex-cite-format', keysCsv)).map((row) => {
-      const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-      return { key: r[0] ?? '', html: r[1] ?? '' };
-    });
-  } catch (error) {
-    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
-    return [];
-  }
-}
-
-/** Invoke a cite-flow Lisp callback (format-chosen / insert / cancel),
- *  reporting errors without crashing the renderer. */
-function reftexCiteCallback(name, arg) {
-  if (!keymapReady) return;
-  try {
-    if (arg === undefined) interpreter.call(name);
-    else interpreter.call(name, arg);
-  } catch (error) {
-    repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
-  }
-}
-
-/** R2: the *RefTeX Select* label/reference picker, as a utility-pane tab.
- *  Modal (captures keys, beats a focused webview); SPC-peek drives the editor
- *  pane underneath via the peek callback, then re-focuses the dock so the next
- *  key still feeds the panel. */
-function openReftexSelectOverlay() {
-  utilityDock.openUtilityPanel({
-    id: 'reftex-select',
-    title: 'RefTeX Select',
-    icon: 'fa-solid fa-anchor',
-    modal: true,
-    makePanel: (dock) => createReftexSelectPanel({
-      getCandidates: reftexSelectCandidates,
-      onSelect: (name) => {
-        // Lisp inserts at the origin + re-points editorView; closing the tab
-        // then returns focus to that origin view.
-        reftexSelectCallback('reftex-select-on-select', name);
-        dock.close();
-      },
-      onPeek: (name) => {
-        reftexSelectCallback('reftex-select-on-peek', name);
-        dock.focus();
-      },
-      onCancel: () => {
-        reftexSelectCallback('reftex-select-on-cancel');
-        dock.close();
-      },
-    }),
-  });
-}
-
-/** R3 step 1: the cite *format menu* (choose \cite / \citep / …) as the
- *  `reftex-cite` tab. Picking a format runs the Lisp callback, which calls
- *  open-reftex-cite-select! — re-opening the SAME tab id replaces the format
- *  menu with the picker in place (the swap). */
-function openReftexCiteFormat() {
-  utilityDock.openUtilityPanel({
-    id: 'reftex-cite',
-    title: 'Select citation format',
-    icon: 'fa-solid fa-quote-right',
-    modal: true,
-    makePanel: (dock) => createReftexCiteFormatPanel({
-      getFormats: reftexCiteFormats,
-      onPick: (macro) => reftexCiteCallback('reftex-cite-format-chosen', macro),
-      onCancel: () => {
-        reftexCiteCallback('reftex-cite-on-cancel');
-        dock.close();
-      },
-    }),
-  });
-}
-
-/** R3 step 2: the cite *picker* (cheap index, lazily formats shown rows, mark
- *  + insert). Re-opens the `reftex-cite` tab, replacing the format menu. */
-function openReftexCiteSelect() {
-  utilityDock.openUtilityPanel({
-    id: 'reftex-cite',
-    title: 'Insert citation',
-    icon: 'fa-solid fa-book',
-    modal: true,
-    makePanel: (dock) => createReftexCitePanel({
-      getIndex: reftexCiteIndex,
-      getFormatted: reftexCiteFormatted,
-      onInsert: (keysCsv) => {
-        reftexCiteCallback('reftex-cite-insert', keysCsv);
-        dock.close();
-      },
-      onCancel: () => {
-        reftexCiteCallback('reftex-cite-on-cancel');
-        dock.close();
-      },
-    }),
-  });
-}
 
 // The placeholder view — the chooser a freshly-split pane shows until
 // the user decides what it should hold (replacing split's old silent
@@ -9562,9 +8826,8 @@ function disposePlaceholderElementForView(view) {
 // Phase 3g: directory-columns is a custom element now. Factory reused
 // by the tabline mount path for per-tab `<directory-columns-view>` instances.
 function configureDirectoryColumnsView() {
-  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    // onKey routes to the server's keymap in server mode; flag-off byte-for-byte.
+    // onKey routes to the server's keymap.
     ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     getPreview: (path) => buildColumnPreview(path),
@@ -9572,12 +8835,8 @@ function configureDirectoryColumnsView() {
     // preview pane colourises the file the same way as if it were open.
     highlighters,
     openPath: (path) => {
-      // Server mode: open by path through the server's find-file (visitFile).
-      if (serverMode) {
-        if (serverViewClient) serverViewClient.visitPath(path);
-        return;
-      }
-      openFileInTabAdjacent(path);
+      // Open by path through the server's find-file (visitFile).
+      if (serverViewClient) serverViewClient.visitPath(path);
     },
     onRevealInFolder: (path) => window.host.revealInFolder(path),
     onTrash: (path) => window.host.trashFile(path),
@@ -9587,16 +8846,9 @@ function configureDirectoryColumnsView() {
       const to = parent === '' ? newName : `${parent}/${newName}`;
       return window.host.renameFile(path, to);
     },
-    closeBuffer: () => {
-      // Server mode: closing a directory pane isn't wired server-side yet.
-      if (serverMode) return;
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // Closing a directory pane isn't wired server-side yet (the pane is
+    // replaced when a file opens from it).
+    closeBuffer: () => {},
   };
 }
 const directoryColumnsView = /** @type {*} */ (document.createElement('directory-columns-view'));
@@ -9635,8 +8887,10 @@ function configureBookmarkView() {
     // forward the *next* key — even a plain one like the `0` of `C-x 0`
     // — to the keymap instead of swallowing it; otherwise focus is
     // trapped in the outline and prefix chords (C-x 0/1/2/b/p …) die.
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     closeBuffer: () => {
       // q collapses the outline's pane (the source returns full-width);
       // the single outline view persists hidden and re-opens on C-x r l.
@@ -9757,8 +9011,10 @@ function configureGnuplotView() {
       window.host && typeof window.host.onGnuplotExit === 'function'
         ? window.host.onGnuplotExit(callback)
         : () => {},
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     exportSvg: (svg, name) =>
       window.host && typeof window.host.gnuplotSaveSvg === 'function'
         ? window.host.gnuplotSaveSvg(svg, name)
@@ -9848,6 +9104,12 @@ function applyTextMountSideEffects(view, instance) {
           inlineEval.setOverlayLayer(instance.overlayLayer);
         } catch { /* declared later — a reconcile re-mount binds them */ }
       }
+      // The hover-doc tooltip listens on the ACTIVE `<text-view>`; re-point it
+      // here (same per-instance problem as inline-eval's overlay). Without this
+      // the listeners stay on whatever element existed when createHoverDoc ran —
+      // often NOT the server-mounted view — so hover never fires. TDZ-guarded:
+      // hoverDoc is a module const declared later, bound by a reconcile re-mount.
+      try { hoverDoc.setEditorEl(instance); } catch { /* declared later */ }
       if (typeof instance.focus === 'function') instance.focus();
     }
     return;
@@ -10632,7 +9894,6 @@ function activateTabInTabline(tablineView, index) {
     if (child) {
       const viewIdx = views.indexOf(child);
       if (viewIdx >= 0) currentViewIndex = viewIdx;
-      updateModeline();
     }
   }
 }
@@ -10777,51 +10038,31 @@ async function buildColumnPreview(path) {
  *  `open-doc`: pre-built manifest first, then the live docstring. */
 const hoverDoc = createHoverDoc(editorView, {
   offsetFromPoint: (x, y) => editorView.offsetFromPoint(x, y),
-  symbolAtOffset: (offset) => {
-    if (!keymapReady) return null;
-    try {
-      const result = interpreter.evaluate(
-        `(symbol-at-offset (buffer-text) ${offset})`
-      );
-      return typeof result === 'string' ? result : null;
-    } catch {
-      return null;
+  // Resolve the symbol + doc summary on the SPINE (docs.lisp, against the LIVE
+  // active buffer) — the renderer interpreter's buffer is idle in server mode, so
+  // the old `(symbol-at-offset (buffer-text) …)` there saw an empty buffer and the
+  // tooltip never resolved. The Markdown preview is rendered here (the renderer
+  // owns `renderMarkdown`); the spine returns the raw docstring source.
+  resolveHover: async (offset) => {
+    if (!serverViewClient) return null;
+    const r = await serverViewClient.requestDocHover(offset);
+    if (!r || typeof r.name !== 'string' || r.name === '') return null;
+    if (r.kind === 'manifest') {
+      return { symbol: r.name, summary: { kind: 'manifest', name: r.name } };
     }
-  },
-  summarise: (symbol) => {
-    if (!keymapReady) return null;
-    let value;
-    try {
-      value = interpreter.call('doc-summary-for', symbol);
-    } catch {
-      return null;
-    }
-    if (value === NIL || value === null || value === undefined) return null;
-    const parts = listToArray(value);
-    if (parts.length < 2) return null;
-    const [kind, name, source] = parts.map((part) =>
-      typeof part === 'string' ? part : String(part)
-    );
-    if (kind === 'manifest') return { kind: 'manifest', name };
-    if (kind === 'live') {
+    if (r.kind === 'live') {
       let preview = '';
       try {
-        const trimmed = (source ?? '').slice(0, 320);
-        preview = renderMarkdown(trimmed);
+        preview = renderMarkdown((r.source ?? '').slice(0, 320));
       } catch {
         preview = '';
       }
-      return { kind: 'live', name, preview };
+      return { symbol: r.name, summary: { kind: 'live', name: r.name, preview } };
     }
     return null;
   },
-  openDoc: (symbol) => {
-    if (!keymapReady) return;
-    try {
-      interpreter.call('open-doc', symbol);
-    } catch (error) {
-      repl.appendError(`open-doc: ${error.lispMessage ?? error.message}`);
-    }
+  openDoc: (name) => {
+    if (serverViewClient) serverViewClient.docOpen(name);
   },
 });
 
@@ -11314,7 +10555,6 @@ function toggleMarkdownPreview(path) {
 }
 
 watchCurrentBuffer();
-updateModeline();
 editorView.focus();
 
 // --- splitters ---------------------------------------------------------
@@ -12021,7 +11261,6 @@ function installRootPane(newRoot, savedCurrentPaneId) {
     rootTablineLeafId = null;
   }
   notifyViewsChanged();
-  updateModeline();
 }
 
 /** Wrap the root leaf's view in a tabline-view whose tabs are every
@@ -12111,7 +11350,6 @@ function promoteToTablineOnPane(pane) {
   const paneEl = paneElements.get(pane.id);
   if (paneEl) mountKindView(tabline, { paneEl });
   refreshPaneTabStrips();
-  updateModeline();
   scheduleMinimapReconcile(); // promotion changed the leaf's view shape
   return tabline;
 }
@@ -12172,7 +11410,6 @@ function demoteTablineView(tlv) {
     hideInactiveRendererViews(survivor.kind);
     mountKindView(survivor);
   }
-  updateModeline();
   scheduleMinimapReconcile(); // demotion changed the leaf's view shape
   return survivor;
 }
@@ -12271,7 +11508,6 @@ function swapPaneFrames(paneA, paneB) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  updateModeline();
   // Pane positions changed (not the view set) — refresh the View List so
   // its spiral Pane column tracks the move, and re-pickle the session.
   notifyViewsChanged();
@@ -12306,7 +11542,6 @@ function permutePaneFrames(dests) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  updateModeline();
   // Pane positions changed (not the view set) — refresh the View List so
   // its spiral Pane column tracks the move, and re-pickle the session.
   notifyViewsChanged();

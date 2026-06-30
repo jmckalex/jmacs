@@ -1011,6 +1011,32 @@ function applyIntent(client, intent) {
         catch { /* client detached */ }
         break;
       }
+      case INTENT.DOC_HOVER: {
+        // Hover-doc tooltip: resolve the symbol + doc summary under OFFSET against
+        // the active buffer and reply. `break` (not return): a hover reads, never
+        // edits, but the uniform post-intent fan-out is harmless. spine.docHover
+        // never throws (returns null on any miss).
+        const result = spine.docHover(intent.offset);
+        try { client.port.postMessage({ type: MSG.DOC_HOVER_RESULT, reqId: intent.reqId, result }); }
+        catch { /* client detached */ }
+        break;
+      }
+      case INTENT.DOC_OPEN: {
+        // Hover-doc click-through: open the doc page for NAME (opens/reuses the
+        // doc-view via the real open-doc). Fire-and-forget; the view-open's own
+        // effects refresh the client.
+        spine.docOpen(intent.name);
+        break;
+      }
+      case INTENT.SYNCTEX_INVERSE: {
+        // Inverse SyncTeX: run `synctex edit` for the clicked PDF point and
+        // reveal the source file:line in a source pane. The synctex spawn is
+        // async (run-process!); its callback's reveal (pane focus + scroll) fans
+        // out through the model's onChange + onScroll on its own. break (not
+        // return) so the uniform post-intent refresh runs too. Never throws.
+        spine.synctexInverse(intent.pdfPath, intent.page, intent.x, intent.y);
+        break;
+      }
       default:
         break;
     }
