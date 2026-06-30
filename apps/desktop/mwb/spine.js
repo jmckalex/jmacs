@@ -2149,7 +2149,11 @@ export function createSpine(options, effects = {}) {
           const idx = activeClientIndex;
           const t = setTimeout(() => {
             setActiveClient(idx);
-            onScroll({ kind: 'recenter', line: buffer.positionAt(buffer.point).line });
+            // Recenter via a DIRECTIVE on the renderer's `editorView` — the same
+            // path the flash uses (and which works). The `onScroll`/recenter VIEW
+            // path targets serverViewClient's own `view`, which after a pane switch
+            // is the wrong/stale view object, so it scrolled the line to an edge.
+            onClientDirective([idx], 'recenter-current-line', []);
             onClientDirective([idx], 'flash-current-line', []);
           }, 80);
           if (t && typeof t.unref === 'function') t.unref();

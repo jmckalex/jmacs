@@ -6319,6 +6319,14 @@ if (window.host && window.host.serverMode) {
         // buffer's saved path (args[0], '' when unsaved); toggle the preview
         // pane here, pointing it at the real `jmarkdown watch` server.
         toggleMarkdownPreview(String(args?.[0] ?? ''));
+      } else if (name === 'recenter-current-line') {
+        // SyncTeX inverse search: center the just-revealed line. Goes through the
+        // ACTIVE editorView (correctly re-pointed at the source pane on mount) —
+        // the server's onScroll/recenter path targets serverViewClient's own view,
+        // which is the wrong object after a pane switch (line stuck at the edge).
+        if (editorView && typeof editorView.recenter === 'function') {
+          editorView.recenter();
+        }
       } else if (name === 'flash-current-line') {
         // Inverse search (Markdown-preview ⌘-click): the server moved + centered
         // the cursor; flash its line so the user sees where the jump landed. The
