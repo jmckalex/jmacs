@@ -35,6 +35,7 @@ import { EDITOR_URL, serveAppFile, serveMediaFile, allowHostDir } from './serve.
 import { registerShellHandlers } from './shell.js';
 import { registerProcessHandlers } from './process.js';
 import { registerGnuplotHandlers } from './gnuplot.js';
+import { setupConfigHome } from './config-home.js';
 
 // Match Sublime Text's colour rendering. By default Chromium colour-manages
 // CSS values — it transforms every hex through the display's ICC profile
@@ -50,10 +51,11 @@ app.commandLine.appendSwitch('force-color-profile', 'srgb');
 
 // The product name. Drives the macOS app menu / About / Hide / Quit labels
 // (the menu uses `role: 'appMenu'`, which reads `app.getName()`) and the
-// userData directory (`app.getPath('userData')` → …/Application Support/Godot)
-// — the same location the packaged build resolves from its productName, so
-// dev and release share one config home. Must be set before the app is ready
-// (and before any `getPath('userData')`), hence here at load.
+// Electron userData directory (`app.getPath('userData')` → …/Application
+// Support/Godot) — where Chromium keeps its caches, and the legacy location
+// the config-home migration reads from. (Godot's own user config now lives in
+// ~/.godot; see config-home.js.) `setName` must run before the app is ready
+// and before any `getPath('userData')`, hence here at load.
 app.setName('Godot');
 
 const PRELOAD = join(dirname(fileURLToPath(import.meta.url)), 'preload.mjs');
@@ -276,9 +278,12 @@ app.on('web-contents-created', (_event, contents) => {
 app.whenReady().then(() => {
   protocol.handle('app', serveAppFile);
   protocol.handle('media', serveMediaFile);
-  // The per-user data dir (init.lisp, custom preview CSS kept there, …) is
-  // a trusted host root for the `__host__` route.
-  allowHostDir(app.getPath('userData'));
+  // Godot's config home (~/.godot, or $GODOT_HOME) — created here, with a
+  // one-time migration of config from the legacy Electron userData dir on the
+  // first run. A trusted host root for the `__host__` route (the snippet
+  // engine, init.lisp and custom preview CSS live under it).
+  const configHome = setupConfigHome(app.getPath('userData'));
+  allowHostDir(configHome);
   registerFileHandlers();
   registerShellHandlers();
   registerProcessHandlers();
@@ -413,10 +418,10 @@ app.whenReady().then(() => {
     // server). The forked utilityProcess inherits process.env, so set the path
     // here, before the fork. After the first boot the server owns its own
     // session and ignores this.
-    process.env.MWB_SESSION_SEED = join(app.getPath('userData'), 'session.json');
-    // The spine reads user config (faces.json now; init.lisp/custom.lisp later)
-    // from this dir directly via fs (plans/MODEL-B-DEFAULT.md, Part B).
-    process.env.MWB_USER_DATA = app.getPath('userData');
+    process.env.MWB_SESSION_SEED = join(configHome, 'session.json');
+    // The spine reads user config (faces.json, custom.lisp) from the config
+    // home directly via fs (plans/MODEL-B-DEFAULT.md, Part B; ~/.godot).
+    process.env.MWB_CONFIG_HOME = configHome;
     serverBridge = createServerBridge({ utilityProcess, MessageChannelMain });
     console.error('[main] Model-B server forked');
   } catch (error) {

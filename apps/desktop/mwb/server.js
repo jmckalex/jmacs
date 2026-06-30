@@ -71,11 +71,11 @@ const SESSION_STORE = process.env.MWB_SESSION_STORE
 // write kills the writer between the temp-write and the atomic rename, so its
 // cleanup never runs and the temp is stranded; without this they pile up forever
 // beside session.json / custom.lisp / faces.json. session.json is written by the
-// MAIN process (files.js) and config by the spine, but both land in MWB_USER_DATA
+// MAIN process (files.js) and config by the spine, but both land in MWB_CONFIG_HOME
 // — and the sweep removes every `.*.tmp-*` there regardless of which wrote it.
 // Age-thresholded, so a live concurrent write is never touched. (Falls back to
-// the session-store dir when MWB_USER_DATA is unset, e.g. tests.)
-sweepStaleTemps(process.env.MWB_USER_DATA || dirname(SESSION_STORE));
+// the session-store dir when MWB_CONFIG_HOME is unset, e.g. tests.)
+sweepStaleTemps(process.env.MWB_CONFIG_HOME || dirname(SESSION_STORE));
 
 // The named-session store (v3): the user's labelled sessions + the always-on
 // `__last__` auto-snapshot, each holding the full multi-window pane structure.
