@@ -2660,3 +2660,48 @@ test('replEval drives the REAL buffer: (insert! …) edits it', () => {
   spine.replEval('(insert! "Z")');
   assert.ok(spine.buffer.text.includes('Z'), 'the REPL eval edited the spine buffer');
 });
+
+// ── Hover-doc (B6 rehome) ──────────────────────────────────────────────────
+// The doc-view hover tooltip resolves the symbol + doc summary on the SPINE
+// (docs.lisp, against the LIVE active buffer) — the renderer interpreter's buffer
+// is idle in server mode, so the old in-renderer lookup saw an empty buffer and
+// the tooltip never resolved. docOpen runs the real `(open-doc name)`. See
+// app.js createHoverDoc + server-view-client requestDocHover/docOpen.
+
+test('docHover: resolves the documented symbol + summary under an offset', () => {
+  // The buffer text IS a documented stdlib symbol (defined with a docstring in
+  // the spine-loaded docs.lisp); an offset inside it resolves against buffer-text.
+  const { spine } = makeSpine('symbol-at-offset');
+  const r = spine.docHover(3);
+  assert.ok(r, 'a documented symbol under the offset returns a summary');
+  assert.equal(r.name, 'symbol-at-offset');
+  assert.ok(
+    r.kind === 'manifest' || r.kind === 'live',
+    `kind is manifest|live (got ${r.kind})`
+  );
+  if (r.kind === 'live') {
+    assert.ok(typeof r.source === 'string' && r.source.length > 0,
+      'a live summary carries the docstring source');
+  }
+});
+
+test('docHover: null when there is no symbol / no documentation under the offset', () => {
+  assert.equal(makeSpine('   ').spine.docHover(1), null, 'whitespace — no symbol');
+  assert.equal(
+    makeSpine('zzqq-not-a-real-symbol').spine.docHover(2), null,
+    'a symbol with no documentation'
+  );
+});
+
+test('docHover: null for an out-of-range / invalid offset', () => {
+  const { spine } = makeSpine('symbol-at-offset');
+  assert.equal(spine.docHover(-1), null, 'negative offset is rejected');
+  assert.equal(spine.docHover(9999), null, 'past-end offset finds no symbol');
+});
+
+test('docOpen: runs (open-doc name) without throwing; a bad/empty name is a no-op', () => {
+  const { spine } = makeSpine('');
+  assert.doesNotThrow(() => spine.docOpen('symbol-at-offset'));
+  assert.doesNotThrow(() => spine.docOpen('zzqq-not-a-real-symbol'));
+  assert.doesNotThrow(() => spine.docOpen(''));
+});

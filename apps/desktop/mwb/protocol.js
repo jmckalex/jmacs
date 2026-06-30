@@ -194,6 +194,12 @@ export const MSG = Object.freeze({
   // replies `{ reqId, result }` where result is `{ ok, text, location? }` — the
   // writeString'd value, or the error message + source location. Pairs by reqId.
   REPL_RESULT: 'repl-result',
+  // The hover-doc tooltip reply: the spine resolved the symbol under the hovered
+  // offset (against the active buffer) and its doc summary. Carries `{ reqId,
+  // result }` where result is `{ kind, name, source? } | null` — kind is
+  // 'manifest' (a pre-built page) or 'live' (only a docstring, in `source`);
+  // null when no documented symbol is under the offset. Pairs by reqId.
+  DOC_HOVER_RESULT: 'doc-hover-result',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -282,6 +288,16 @@ export const INTENT = Object.freeze({
   // source }`; the spine replies MSG.REPL_RESULT. Like NOTEBOOK_EVAL but Lisp,
   // not a JS cell. (L5; plans/B5-B7-TEARDOWN-AUDIT.md.)
   REPL_EVAL: 'repl-eval',
+  // The doc-view hover tooltip asks the spine to resolve the Lisp symbol under a
+  // buffer OFFSET (against the live active buffer) and its doc summary — the
+  // renderer interpreter can't (its buffer is idle in server mode). Carries
+  // `{ reqId, offset }`; the spine replies MSG.DOC_HOVER_RESULT. The companion
+  // DOC_OPEN runs `(open-doc name)` when the tooltip's link is clicked.
+  DOC_HOVER: 'doc-hover',
+  // Click-through from the hover tooltip (or `C-h .`-style open): open the
+  // documentation page for NAME. Fire-and-forget — the spine runs `(open-doc
+  // name)`, which opens/reuses the doc-view; no reply. Carries `{ name }`.
+  DOC_OPEN: 'doc-open',
 });
 
 /**

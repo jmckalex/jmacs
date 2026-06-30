@@ -1011,6 +1011,23 @@ function applyIntent(client, intent) {
         catch { /* client detached */ }
         break;
       }
+      case INTENT.DOC_HOVER: {
+        // Hover-doc tooltip: resolve the symbol + doc summary under OFFSET against
+        // the active buffer and reply. `break` (not return): a hover reads, never
+        // edits, but the uniform post-intent fan-out is harmless. spine.docHover
+        // never throws (returns null on any miss).
+        const result = spine.docHover(intent.offset);
+        try { client.port.postMessage({ type: MSG.DOC_HOVER_RESULT, reqId: intent.reqId, result }); }
+        catch { /* client detached */ }
+        break;
+      }
+      case INTENT.DOC_OPEN: {
+        // Hover-doc click-through: open the doc page for NAME (opens/reuses the
+        // doc-view via the real open-doc). Fire-and-forget; the view-open's own
+        // effects refresh the client.
+        spine.docOpen(intent.name);
+        break;
+      }
       default:
         break;
     }

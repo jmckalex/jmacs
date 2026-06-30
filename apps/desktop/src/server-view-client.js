@@ -164,6 +164,11 @@ export function createServerViewClient({
   // in the real world, the promise resolves on the matching MSG.REPL_RESULT.
   let nextReplReq = 1;
   const replPending = new Map();
+  // Hover-doc: the same round-trip shape — the spine resolves the symbol + doc
+  // summary under a buffer offset (docs.lisp, live buffer); the promise resolves
+  // on the matching MSG.DOC_HOVER_RESULT.
+  let nextDocHoverReq = 1;
+  const docHoverPending = new Map();
 
   // --- the server-driven DOM chrome (server-mode only) -----------------
   // Hooks the caller (app.js) supplies; each missing one is a no-op so the
@@ -619,6 +624,11 @@ export function createServerViewClient({
         if (resolve) { notebookPending.delete(msg.reqId); resolve(msg.result); }
         break;
       }
+      case MSG.DOC_HOVER_RESULT: {
+        const resolve = docHoverPending.get(msg.reqId);
+        if (resolve) { docHoverPending.delete(msg.reqId); resolve(msg.result); }
+        break;
+      }
       case MSG.MINIBUFFER_COMPLETIONS:
         showCompletionsDom({ value: msg.value, items: msg.items, directory: msg.directory });
         break;
@@ -860,6 +870,31 @@ export function createServerViewClient({
     });
   }
 
+  /** Hover-doc: ask the spine for the symbol + doc summary under buffer OFFSET
+   *  (resolved against the LIVE active buffer — the renderer interpreter is idle
+   *  in server mode). Resolves with `{ kind, name, source? } | null` on the
+   *  matching MSG.DOC_HOVER_RESULT. */
+  function requestDocHover(offset) {
+    const reqId = nextDocHoverReq++;
+    return new Promise((resolve) => {
+      docHoverPending.set(reqId, resolve);
+      port.postMessage({
+        type: MSG.INTENT,
+        intent: { id: nextIntentId++, kind: INTENT.DOC_HOVER, reqId, offset: Number(offset) },
+      });
+    });
+  }
+
+  /** Hover-doc click-through: ask the spine to open the doc page for NAME (the
+   *  real `(open-doc name)` — opens/reuses the doc-view). Fire-and-forget. */
+  function docOpen(name) {
+    if (typeof name !== 'string' || name === '') return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.DOC_OPEN, name },
+    });
+  }
+
   return {
     connect,
     dispatchKey,
@@ -902,6 +937,10 @@ export function createServerViewClient({
     notebookEval,
     // Evaluate a line of REPL Lisp in the spine (L5).
     replEval,
+    // Hover-doc: resolve the symbol + doc summary under a buffer offset (the live
+    // buffer), and open a doc page by name on click-through.
+    requestDocHover,
+    docOpen,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the

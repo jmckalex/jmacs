@@ -10009,51 +10009,31 @@ async function buildColumnPreview(path) {
  *  `open-doc`: pre-built manifest first, then the live docstring. */
 const hoverDoc = createHoverDoc(editorView, {
   offsetFromPoint: (x, y) => editorView.offsetFromPoint(x, y),
-  symbolAtOffset: (offset) => {
-    if (!keymapReady) return null;
-    try {
-      const result = interpreter.evaluate(
-        `(symbol-at-offset (buffer-text) ${offset})`
-      );
-      return typeof result === 'string' ? result : null;
-    } catch {
-      return null;
+  // Resolve the symbol + doc summary on the SPINE (docs.lisp, against the LIVE
+  // active buffer) — the renderer interpreter's buffer is idle in server mode, so
+  // the old `(symbol-at-offset (buffer-text) …)` there saw an empty buffer and the
+  // tooltip never resolved. The Markdown preview is rendered here (the renderer
+  // owns `renderMarkdown`); the spine returns the raw docstring source.
+  resolveHover: async (offset) => {
+    if (!serverViewClient) return null;
+    const r = await serverViewClient.requestDocHover(offset);
+    if (!r || typeof r.name !== 'string' || r.name === '') return null;
+    if (r.kind === 'manifest') {
+      return { symbol: r.name, summary: { kind: 'manifest', name: r.name } };
     }
-  },
-  summarise: (symbol) => {
-    if (!keymapReady) return null;
-    let value;
-    try {
-      value = interpreter.call('doc-summary-for', symbol);
-    } catch {
-      return null;
-    }
-    if (value === NIL || value === null || value === undefined) return null;
-    const parts = listToArray(value);
-    if (parts.length < 2) return null;
-    const [kind, name, source] = parts.map((part) =>
-      typeof part === 'string' ? part : String(part)
-    );
-    if (kind === 'manifest') return { kind: 'manifest', name };
-    if (kind === 'live') {
+    if (r.kind === 'live') {
       let preview = '';
       try {
-        const trimmed = (source ?? '').slice(0, 320);
-        preview = renderMarkdown(trimmed);
+        preview = renderMarkdown((r.source ?? '').slice(0, 320));
       } catch {
         preview = '';
       }
-      return { kind: 'live', name, preview };
+      return { symbol: r.name, summary: { kind: 'live', name: r.name, preview } };
     }
     return null;
   },
-  openDoc: (symbol) => {
-    if (!keymapReady) return;
-    try {
-      interpreter.call('open-doc', symbol);
-    } catch (error) {
-      repl.appendError(`open-doc: ${error.lispMessage ?? error.message}`);
-    }
+  openDoc: (name) => {
+    if (serverViewClient) serverViewClient.docOpen(name);
   },
 });
 

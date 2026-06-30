@@ -5538,6 +5538,45 @@ export function createSpine(options, effects = {}) {
     }
   }
 
+  /** Hover-doc: resolve the Lisp symbol straddling OFFSET in the ACTIVE buffer
+   *  and its documentation summary. Runs `(symbol-at-offset (buffer-text)
+   *  offset)` then `(doc-summary-for symbol)` in the real spine world (docs.lisp
+   *  is loaded), so the tooltip sees the LIVE buffer — the renderer interpreter's
+   *  buffer is idle in server mode. Returns `{ kind, name, source? }` ('manifest'
+   *  or 'live' with the docstring SOURCE) or null when there is no documented
+   *  symbol under OFFSET. Never throws (a hover must not crash the intent loop). */
+  function docHover(offset) {
+    try {
+      const pos = Number(offset);
+      if (!Number.isInteger(pos) || pos < 0) return null;
+      const symbol = interpreter.evaluate(`(symbol-at-offset (buffer-text) ${pos})`);
+      if (typeof symbol !== 'string' || symbol === '') return null;
+      const summary = interpreter.call('doc-summary-for', symbol);
+      if (summary === NIL || summary === null || summary === undefined) return null;
+      const parts = listToArray(summary).map((p) => (typeof p === 'string' ? p : String(p)));
+      if (parts.length < 2) return null;
+      const [kind, name, source] = parts;
+      if (kind === 'manifest') return { kind: 'manifest', name };
+      if (kind === 'live') return { kind: 'live', name, source: source ?? '' };
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Hover-doc click-through: open the documentation page for NAME via the real
+   *  `(open-doc name)` (manifest first, live docstring fallback — opens/reuses the
+   *  doc-view). Fire-and-forget; mirrors the renderer's old `interpreter.call(
+   *  'open-doc', symbol)`. Never throws. */
+  function docOpen(name) {
+    if (typeof name !== 'string' || name === '') return;
+    try {
+      interpreter.call('open-doc', name);
+    } catch {
+      /* a bad name just opens nothing — never crash the intent loop */
+    }
+  }
+
   /** @typedef {object} Spine */
   return {
     /** The canonical L2 buffer (read-only access for the server). */
@@ -5701,6 +5740,10 @@ export function createSpine(options, effects = {}) {
     // JS notebook: evaluate a cell server-side (Node, no CSP) → serializable result.
     runNotebookCell,
     replEval,
+    // Hover-doc: resolve the symbol + doc summary under a buffer offset (request/
+    // response), and open a doc page by name (fire-and-forget). docs.lisp-backed.
+    docHover,
+    docOpen,
     killActiveBuffer,
     /** Plain-data buffer-list records for client INDEX's TABS / View List, each
      *  tagged with whether it is that client's CURRENT buffer. Scoped to the
