@@ -79,6 +79,10 @@ async function indentEditor() {
   });
   await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'), {});
   const ev = (s) => interpreter.evaluate(s);
+  // These tests exercise the block-indent *geometry* (which lines shift,
+  // cursor follow, region survival) over spaces; pin tabs-mode off so the
+  // expected text stays space-based (*indent-tabs-mode* defaults to #t).
+  ev('(set! *indent-tabs-mode* #f)');
   return { ev, buffer };
 }
 
@@ -176,6 +180,15 @@ test('*tab-width* drives the indent amount', async () => {
   buffer.pos = 1;
   ev('(indent-region)');
   assert.equal(buffer.text, '  one\n');
+});
+
+test('indent-region inserts a literal tab when *indent-tabs-mode* is on', async () => {
+  const { ev, buffer } = await indentEditor();
+  ev('(set! *indent-tabs-mode* #t)'); // the default; pinned on explicitly
+  buffer.text = 'one\n';
+  buffer.pos = 1;
+  ev('(indent-region)');
+  assert.equal(buffer.text, '\tone\n');
 });
 
 test('M-[ and M-] are bound in the global keymap', async () => {
