@@ -6739,45 +6739,6 @@ if (window.host && window.host.serverMode) {
 // highlight-rules on connect (and on change), applied in applyDirective above.
 // No local install at boot. (installHighlightRules stays for reloadStdlib.)
 
-/** Dispatch a keystroke through the Lisp keymap. */
-function dispatchKey(key) {
-  // M-1..M-9 jumps to the Nth buffer (1-indexed). Intercepted here,
-  // before the Lisp keymap, so the tabline shortcut is unaffected by
-  // user keymap edits. Out-of-range indexes are a no-op (handled).
-  // Placeholders are excluded so the count matches the user-visible
-  // View List (the Nth *real* view, not the Nth `views[]` slot).
-  if (
-    typeof key === 'string' &&
-    key.length === 3 &&
-    key.startsWith('M-') &&
-    key[2] >= '1' &&
-    key[2] <= '9'
-  ) {
-    const nth = Number(key[2]) - 1;
-    const realViews = views.filter((v) => !isPlaceholderView(v));
-    const target = views.indexOf(realViews[nth]);
-    if (target >= 0) switchToViewIndex(target);
-    return true;
-  }
-  try {
-    const handled = interpreter.call('handle-key', key) === true;
-    // If point has wandered out of an active snippet's body (an arrow
-    // key, a click-driven move), soft-commit it — the text stays, the
-    // active record is dropped. Field navigation (TAB/S-TAB) keeps point
-    // inside the body, so it does not trip this. A no-op when no snippet
-    // is active (guarded in Lisp).
-    try {
-      interpreter.call('snippet-soft-commit-if-outside');
-    } catch {
-      // Ignore — never let the soft-commit check break key dispatch.
-    }
-    return handled;
-  } catch (error) {
-    repl.appendError(error.lispMessage ?? error.message ?? String(error));
-    return true; // consume the key; the error is visible in the REPL
-  }
-}
-
 /** Keys that are modifiers in their own right — a bare press of one is
  *  not a keystroke to dispatch (waiting for the real key). */
 const BARE_MODIFIER_KEYS = new Set([
@@ -6995,23 +6956,13 @@ const mathPreviewByPaneId = new Map();
  *  buffer's minor-mode list. Null until resolved / if resolution fails.
  *  `latex-math-preview-mode` is an alias of this same map, so a LaTeX
  *  buffer toggled the old way is still recognised here. */
-let mathPreviewMode = null;
-/** Whether we've attempted to resolve `mathPreviewMode` yet. */
-let mathPreviewModeResolved = false;
-
-/** Resolve (once) the general `math-preview-mode` map from the stdlib. */
+/** The general `math-preview-mode` provider map came from the renderer
+ *  interpreter. In Model B the buffer's server-pushed `mathPreviewActive`
+ *  flag drives activation (`resolvedMathPreviewActive` checks it first) and
+ *  the provider is resolved by mode NAME (`mathPreviewProviderForMode`), so
+ *  the map is unused — return null. (Interpreter gone — B7.) */
 function resolveMathPreviewMode() {
-  if (mathPreviewModeResolved || !keymapReady) return mathPreviewMode;
-  mathPreviewModeResolved = true;
-  try {
-    mathPreviewMode = interpreter.evaluate('math-preview-mode');
-  } catch {
-    // The mode is defined in math-preview.lisp; if it isn't loaded the
-    // feature is simply unavailable and we leave the reference null
-    // (→ inactive).
-    mathPreviewMode = null;
-  }
-  return mathPreviewMode;
+  return null;
 }
 
 /** The major-mode display name for BUFFER. Under GODOT_SERVER=1 the renderer's
@@ -9809,22 +9760,18 @@ function elementForViewInstance(view) {
   return singletonElementForKind(view.kind);
 }
 
-/** Invoke a Lisp callback with the given JS-side arguments. The
- *  callback may be either a symbol (looked up as a global procedure
- *  name) or a procedure value (lambda / primitive); errors raised
- *  during the call land in the REPL under PRIMNAME so an async result
- *  delivery can't crash the surrounding event. */
+/** Invoke a hosted-element callback (a plain JS function) with the given
+ *  arguments; errors land in the REPL under PRIMNAME so an async result
+ *  delivery can't crash the surrounding event. The Lisp-callback path (a
+ *  Sym/procedure run through the renderer interpreter) is gone with the
+ *  interpreter — B7; element on-ready callbacks are plain JS now, and a
+ *  non-function callback is a no-op. */
 function deliverLispCallback(callback, callArgs, primName) {
+  if (typeof callback !== 'function') return;
   try {
-    if (callback instanceof Sym) {
-      interpreter.call(callback.name, ...callArgs);
-    } else {
-      applyProcedure(callback, callArgs);
-    }
+    callback(...callArgs);
   } catch (error) {
-    repl.appendError(
-      `${primName} callback: ${error.lispMessage ?? error.message ?? error}`
-    );
+    repl.appendError(`${primName} callback: ${error?.message ?? error}`);
   }
 }
 
