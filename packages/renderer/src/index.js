@@ -197,3 +197,8 @@ export {
   planSegments,
   detectLeave,
 } from './math-preview.js';
+export {
+  createMathTooltip,
+  placeAbove,
+  chooseRender,
+} from './math-tooltip.js';

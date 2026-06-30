@@ -6407,3 +6407,66 @@ notebook-js-view {
 }
 .nbc-table th { color: var(--fg-dim); font-weight: 600; }
 .nbc-trunc { color: var(--fg-dim); font-style: italic; }
+
+/* The live math tooltip — floats above a math construct while the cursor is
+ * inside it (math-preview-mode), showing the MathJax render of what is being
+ * edited. Mirrors the hover-doc tooltip's chrome. */
+.math-tooltip {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 60vw;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
+  border-radius: 6px;
+  background: var(--bg-chrome);
+  color: var(--fg);
+  box-shadow: 0 6px 18px #00000060;
+  pointer-events: none;
+  user-select: none;
+}
+
+.math-tooltip-body {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0.75em;
+  min-height: 1em;
+  overflow-x: auto;
+}
+
+.math-tooltip-body mjx-container {
+  margin: 0 !important;
+}
+
+/* Nothing valid to show yet (e.g. a just-opened, still-empty `$$`). */
+.math-tooltip-empty .math-tooltip-body::before {
+  content: "…";
+  color: var(--fg-dim);
+}
+
+/* Syntax-error flag: shown while the last valid render is kept on screen. */
+.math-tooltip-error {
+  color: var(--error);
+  font-size: 0.95em;
+  line-height: 1;
+}
+
+/* A little arrow pointing down at the construct (or up when flipped below). */
+.math-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--bg-chrome);
+}
+
+.math-tooltip-below::after {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: var(--bg-chrome);
+}
