@@ -185,42 +185,46 @@ test('hide() hides the tooltip and clears the kept image', () => {
   assert.equal(tip.element.children[0].children.length, 0);
 });
 
-test('the tooltip freezes horizontally while editing the same construct', () => {
+test('positions in content coordinates and freezes horizontally', () => {
   const host = fakeHost();
   const tip = createMathTooltip(host);
   const n = host.ownerDocument.createElement('svg');
-  tip.update({ node: n, key: 5, anchorRect: { left: 100, top: 300, right: 120, bottom: 320, width: 20 } });
+  const contentRect = { top: 100, left: 40 };
+  tip.update({ node: n, key: 5, caretRect: { top: 300, bottom: 320, left: 200, width: 20 }, contentRect });
+  // content-Y = 300 - 100 = 200; top = 200 - 64 (fake height) - 8 (gap) = 128.
+  assert.equal(tip.element.style.top, '128px');
   const frozen = tip.element.style.left;
-  // Same construct, caret moved far right (typing) → horizontal must NOT move.
-  tip.update({ node: n, key: 5, anchorRect: { left: 600, top: 300, right: 620, bottom: 320, width: 20 } });
-  assert.equal(tip.element.style.left, frozen, 'frozen while editing the same construct');
+  // Same construct, caret moved right (typing) → horizontal must NOT move.
+  tip.update({ node: n, key: 5, caretRect: { top: 300, bottom: 320, left: 500, width: 20 }, contentRect });
+  assert.equal(tip.element.style.left, frozen, 'horizontal frozen while editing');
   // A different construct → re-anchors horizontally.
-  tip.update({ node: n, key: 9, anchorRect: { left: 600, top: 300, right: 620, bottom: 320, width: 20 } });
+  tip.update({ node: n, key: 9, caretRect: { top: 300, bottom: 320, left: 500, width: 20 }, contentRect });
   assert.notEqual(tip.element.style.left, frozen, 're-anchors for a new construct');
 });
 
-test('the tooltip tracks vertical scroll while staying frozen horizontally', () => {
+test('flips below when there is no room above the construct', () => {
   const host = fakeHost();
   const tip = createMathTooltip(host);
   const n = host.ownerDocument.createElement('svg');
-  tip.update({ node: n, key: 5, anchorRect: { left: 100, top: 300, right: 120, bottom: 320, width: 20 } });
-  const left1 = tip.element.style.left;
-  const top1 = tip.element.style.top;
-  // Simulate a scroll: same construct, the caret moved UP; horizontal unchanged.
-  tip.reposition({ left: 100, top: 200, right: 120, bottom: 220, width: 20 });
-  assert.equal(tip.element.style.left, left1, 'horizontal stays frozen on scroll');
-  assert.notEqual(tip.element.style.top, top1, 'vertical follows the scroll');
+  // caret near the content top: content-Y is small → no room above → below.
+  tip.update({
+    node: n, key: 5,
+    caretRect: { top: 105, bottom: 125, left: 200, width: 20 },
+    contentRect: { top: 100, left: 40 },
+  });
+  assert.equal(tip.element.classList.contains('math-tooltip-below'), true);
 });
 
-test('setVisible toggles visibility without resetting the tooltip', () => {
+test('mount re-parents the tooltip into the given element', () => {
   const host = fakeHost();
   const tip = createMathTooltip(host);
-  const n = host.ownerDocument.createElement('svg');
-  tip.update({ node: n, key: 5, anchorRect: { left: 100, top: 300, right: 120, bottom: 320, width: 20 } });
-  tip.setVisible(false);
-  assert.equal(tip.element.style.visibility, 'hidden');
-  tip.setVisible(true);
-  assert.notEqual(tip.element.style.visibility, 'hidden');
+  const doc = host.ownerDocument;
+  const contentA = doc.createElement('div');
+  const contentB = doc.createElement('div');
+  tip.mount(contentA);
+  assert.equal(tip.element.parentNode, contentA);
+  tip.mount(contentB);
+  assert.equal(tip.element.parentNode, contentB);
 });
 
 test('update applies the configured scale as a CSS variable', () => {

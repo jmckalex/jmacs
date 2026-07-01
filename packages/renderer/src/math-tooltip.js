@@ -114,11 +114,11 @@ export function createMathTooltip(hostEl) {
   /** Identity of the construct currently shown (its start offset). Entering a
    *  different construct resets `lastValid` and the frozen horizontal. */
   let currentKey = null;
-  /** The horizontal position (px), frozen on entering a construct so typing
-   *  never drags the tooltip sideways. Null until the first placement. */
+  /** The horizontal position (content px), frozen on entering a construct so
+   *  typing never drags the tooltip sideways. Null until first placement. */
   let frozenLeft = null;
-  /** Whether the tooltip sits below the construct (flipped when there was no
-   *  room above at entry). Frozen alongside `frozenLeft`. */
+  /** Whether the tooltip sits below the construct (when there's no room above
+   *  at the top of the document). Frozen alongside `frozenLeft`. */
   let below = false;
 
   function mountInto(parent, node) {
@@ -130,45 +130,50 @@ export function createMathTooltip(hostEl) {
   }
 
   /**
-   * Position the tooltip for ANCHORRECT (the caret's client rect). The
-   * horizontal placement and the above/below choice are frozen on the FIRST
-   * call for a construct — so typing doesn't drag the tooltip sideways — but the
-   * VERTICAL position tracks ANCHORRECT on every call, so the tooltip follows
-   * the editor as it scrolls (off-screen if the construct scrolls out of view;
-   * there is deliberately no vertical clamping). Called on each content update
-   * and, continuously, from the host's scroll/track loop.
+   * Re-parent the tooltip into PARENTEL — the editor's scrolling content element
+   * — if it isn't already there. Positioned absolutely within it, the tooltip
+   * rides the editor's native scroll on the compositor (no JS-tracking lag) and
+   * is clipped by the editor's overflow when the construct scrolls out of view.
    *
-   * @param {{left:number,top:number,right:number,bottom:number,width?:number}|null} anchorRect
+   * @param {HTMLElement|null} parentEl
    */
-  function reposition(anchorRect) {
-    if (!anchorRect) return;
-    const view = doc.defaultView || (typeof window !== 'undefined' ? window : null);
-    const viewport = {
-      width: (view && view.innerWidth) || 1024,
-      height: (view && view.innerHeight) || 768,
-    };
+  function mount(parentEl) {
+    if (parentEl && tip.parentNode !== parentEl) parentEl.appendChild(tip);
+  }
+
+  /**
+   * Position the tooltip above the caret in CONTENT coordinates. Both rects are
+   * viewport (client) rects; `caretRect.top - contentRect.top` is the caret's
+   * offset inside the content element — scroll-independent, and exactly the
+   * tooltip's absolute top within that same element, so it rides the scroll for
+   * free. The horizontal centre and the above/below flip are frozen on the
+   * first call for a construct (so typing doesn't drag it); there is no vertical
+   * clamp (the scroll container clips it when it leaves view).
+   *
+   * @param {{top:number,bottom:number,left:number,width?:number}|null} caretRect
+   * @param {{top:number,left:number}|null} contentRect
+   */
+  function position(caretRect, contentRect) {
+    if (!caretRect || !contentRect) return;
     const r = tip.getBoundingClientRect ? tip.getBoundingClientRect() : { width: 0, height: 0 };
-    const size = { width: r.width || 220, height: r.height || 64 };
-    if (frozenLeft === null) {
-      // First placement: freeze the horizontal centre and the above/below flip.
-      const p = placeAbove(anchorRect, size, viewport);
-      frozenLeft = p.left;
-      below = p.below;
-    }
+    const w = r.width || 220;
+    const h = r.height || 64;
     const gap = 8;
-    const top = below ? anchorRect.bottom + gap : anchorRect.top - size.height - gap;
+    const margin = 4;
+    const caretTop = caretRect.top - contentRect.top;
+    const caretBottom = (caretRect.bottom ?? caretRect.top) - contentRect.top;
+    const caretCenterX = caretRect.left - contentRect.left + (caretRect.width ?? 0) / 2;
+    if (frozenLeft === null) {
+      frozenLeft = Math.max(margin, Math.round(caretCenterX - w / 2));
+      below = caretTop - h - gap < margin; // no room above near the document top
+    }
+    const top = below ? caretBottom + gap : caretTop - h - gap;
     tip.style.left = `${frozenLeft}px`;
     tip.style.top = `${top}px`;
     tip.classList.toggle('math-tooltip-below', below);
   }
 
-  /** Show/hide the tooltip via `visibility` WITHOUT resetting it — used to make
-   *  it vanish while the construct is scrolled out of the editor's view. */
-  function setVisible(visible) {
-    tip.style.visibility = visible ? '' : 'hidden';
-  }
-
-  function update({ node, key, display = false, anchorRect = null, scale }) {
+  function update({ node, key, display = false, scale, caretRect = null, contentRect = null }) {
     const isNewConstruct = key !== currentKey;
     if (isNewConstruct) {
       currentKey = key;
@@ -187,14 +192,12 @@ export function createMathTooltip(hostEl) {
     if (typeof scale === 'number' && scale > 0) {
       tip.style.setProperty('--math-tooltip-scale', String(scale));
     }
-    tip.style.visibility = '';
     tip.style.display = '';
-    reposition(anchorRect);
+    position(caretRect, contentRect);
   }
 
   function hide() {
     tip.style.display = 'none';
-    tip.style.visibility = '';
     currentKey = null;
     lastValid = null;
     frozenLeft = null;
@@ -205,5 +208,5 @@ export function createMathTooltip(hostEl) {
     if (tip.parentNode) tip.parentNode.removeChild(tip);
   }
 
-  return { element: tip, update, reposition, setVisible, hide, dispose };
+  return { element: tip, update, mount, hide, dispose };
 }

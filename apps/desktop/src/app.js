@@ -4467,59 +4467,10 @@ let mathTooltipOwner = null;
 /** The state captured for the next animation frame, or null. */
 let mathTooltipPending = null;
 let mathTooltipRaf = 0;
-/** The scroll/track loop's rAF handle + the getter for the owning leaf's editor
- *  element, so the tooltip follows the construct as the editor scrolls. */
-let mathTooltipTrackRaf = 0;
-let mathTooltipInstanceEl = null;
 
 function ensureMathTooltip() {
   if (!mathTooltip) mathTooltip = createMathTooltip(editorHostEl);
   return mathTooltip;
-}
-
-/** The owning leaf's editor element + the live caret rect (or null). */
-function mathTooltipCaret(instanceEl) {
-  const instance = typeof instanceEl === 'function' ? instanceEl() : null;
-  const caret =
-    instance && typeof instance.querySelector === 'function'
-      ? instance.querySelector('.editor-cursor')
-      : null;
-  const rect =
-    caret && typeof caret.getBoundingClientRect === 'function'
-      ? caret.getBoundingClientRect()
-      : null;
-  return { instance, rect };
-}
-
-/** While the tooltip is shown, follow the construct every frame: track the
- *  caret's vertical position (so it rides editor scroll) and hide it while the
- *  construct is scrolled out of the editor's visible area — the horizontal stays
- *  frozen (the controller only tracks the vertical). */
-function trackMathTooltip() {
-  mathTooltipTrackRaf = 0;
-  if (mathTooltipOwner == null || !mathTooltip || !mathTooltipInstanceEl) return;
-  const { instance, rect } = mathTooltipCaret(mathTooltipInstanceEl);
-  if (rect) {
-    const ed =
-      instance && typeof instance.getBoundingClientRect === 'function'
-        ? instance.getBoundingClientRect()
-        : null;
-    const visible = !ed || (rect.bottom > ed.top && rect.top < ed.bottom);
-    mathTooltip.setVisible(visible);
-    mathTooltip.reposition(rect);
-  }
-  mathTooltipTrackRaf = requestAnimationFrame(trackMathTooltip);
-}
-
-function startMathTooltipTracking(instanceEl) {
-  mathTooltipInstanceEl = instanceEl;
-  if (!mathTooltipTrackRaf) mathTooltipTrackRaf = requestAnimationFrame(trackMathTooltip);
-}
-
-function stopMathTooltipTracking() {
-  if (mathTooltipTrackRaf) cancelAnimationFrame(mathTooltipTrackRaf);
-  mathTooltipTrackRaf = 0;
-  mathTooltipInstanceEl = null;
 }
 
 function flushMathTooltip() {
@@ -4530,7 +4481,6 @@ function flushMathTooltip() {
   const tip = ensureMathTooltip();
   if (pending.hide) {
     tip.hide();
-    stopMathTooltipTracking();
     return;
   }
   // Typeset the current body now (synchronous). MathJax 3 renders a TeX
@@ -4541,16 +4491,34 @@ function flushMathTooltip() {
     ? typesetMath(pending.tex, { display: pending.display })
     : null;
   const node = raw && !isMathErrorNode(raw) ? raw : null;
-  const { rect } = mathTooltipCaret(pending.instanceEl);
+  // Anchor the tooltip INSIDE the editor's scrolling content so it rides the
+  // native scroll (no JS-tracking lag), positioned in content coordinates
+  // above the caret.
+  const instance =
+    typeof pending.instanceEl === 'function' ? pending.instanceEl() : null;
+  const q = (sel) =>
+    instance && typeof instance.querySelector === 'function'
+      ? instance.querySelector(sel)
+      : null;
+  const contentEl = q('.editor-content');
+  const caret = q('.editor-cursor');
+  const caretRect =
+    caret && typeof caret.getBoundingClientRect === 'function'
+      ? caret.getBoundingClientRect()
+      : null;
+  const contentRect =
+    contentEl && typeof contentEl.getBoundingClientRect === 'function'
+      ? contentEl.getBoundingClientRect()
+      : null;
+  if (contentEl) tip.mount(contentEl);
   tip.update({
     node,
     key: pending.key,
     display: pending.display,
-    anchorRect: rect,
     scale: pending.scale,
+    caretRect,
+    contentRect,
   });
-  // Keep following the construct (editor scroll) while it's shown.
-  startMathTooltipTracking(pending.instanceEl);
 }
 
 function scheduleMathTooltip(state) {
@@ -4592,7 +4560,6 @@ function driveMathTooltip(leaf, controller, provider, view) {
 function hideMathTooltipForLeaf(leaf) {
   if (mathTooltipOwner === leaf.id) {
     mathTooltipOwner = null;
-    stopMathTooltipTracking();
     if (mathTooltip) scheduleMathTooltip({ hide: true });
   }
 }
