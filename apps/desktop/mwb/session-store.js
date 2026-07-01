@@ -104,7 +104,10 @@ export function createSessionStore({ read, write, now = Date.now, mintId = rando
   }
 
   function persist() {
-    try { write(JSON.stringify(model)); } catch { /* a session write must never disturb editing */ }
+    // Pretty-print (2-space) so the store reads cleanly by hand — it lives in the
+    // config home (~/.godot/workspaces.json) beside session.json / panes.json /
+    // projects-index.json, which are all indented too.
+    try { write(JSON.stringify(model, null, 2)); } catch { /* a session write must never disturb editing */ }
   }
 
   /** The chooser payload: a slim list of saved sessions + whether a last-session
