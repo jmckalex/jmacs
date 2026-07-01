@@ -627,6 +627,7 @@ const RENDERER_CONFIG_SNAPSHOT_VARS = Object.freeze([
   ...RENDERER_CONFIG_VARS,
   '*pane-focus-border*',
   '*markdown-preview-follow-cursor*',
+  '*markdown-preview-debounce-ms*',
 ]);
 
 /** Coerce a config defcustom's Lisp value to clone-safe plain JS — a primitive

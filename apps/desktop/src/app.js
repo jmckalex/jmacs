@@ -3573,6 +3573,9 @@ if (window.host && window.host.serverMode) {
       if (v && 'modeMenu' in v) applyServerModeMenu(v.modeMenu);
       // Markdown-preview forward search: follow the cursor line in the preview.
       if (v && typeof v.cursorLine === 'number') previewScrollToCursor(v.cursorLine);
+      // Live preview: on a text change, debounce a save-free refresh (the
+      // guard inside skips cursor-only pushes and non-previewed buffers).
+      schedulePreviewSync();
     },
     // The echo area: a mid-chord prefix (e.g. "C-x-") or a one-off status. The
     // minibuffer component reuses its row as the echo area when no prompt is up.
@@ -7555,6 +7558,27 @@ let previewPort = null;
  *  is reopened. */
 let previewPoppedOut = false;
 
+// --- debounced live preview (save-free refresh on a typing pause) -------
+// While the preview is open (in-app OR popped out), edits to the previewed
+// buffer are pushed to main after a pause, which rewrites the shadow the watch
+// server reads — so the render updates without a save. See jmarkdown-watch.js
+// and plans/JMD-LIVE-PREVIEW.md.
+/** The real source path the preview was opened on — the sync key. Persists
+ *  across a pop-out (unlike previewWatchedPath); null when no preview is live. */
+let previewSourcePath = null;
+/** The buffer the preview is showing — identified by its stable server buffer
+ *  id (the mirror object is rebuilt on every switch, so identity is not stable;
+ *  the id is). A sync only fires while this is the focused buffer, so editing a
+ *  different buffer never rewrites this shadow. `previewBuffer` is the fallback
+ *  identity when there is no server client (id unavailable). */
+let previewBuffer = null;
+let previewBufferId = null;
+/** The pending debounce timer id, or null. */
+let previewSyncTimer = null;
+/** The text last pushed to the shadow — skips a rewrite when only the cursor
+ *  moved (setModeline fires on cursor moves too, not just edits). */
+let lastPreviewSyncedText = null;
+
 // --- preview ⇄ source sync (forward / inverse search) ------------------
 // The preview iframe is cross-origin (localhost vs app://), so source↔preview
 // position sync goes through postMessage with the watch page's injected
@@ -7626,6 +7650,73 @@ function previewSyncToCursor(line) {
   if (postPreviewScroll(target, true)) lastPostedPreviewLine = target;
 }
 
+/** Debounce interval for the live preview (ms), from live config; floored so a
+ *  misconfigured 0 can't busy-rewrite the shadow. */
+function previewDebounceMs() {
+  const ms = Number(rendererConfig['*markdown-preview-debounce-ms*']);
+  return Number.isFinite(ms) && ms > 0 ? Math.max(50, ms) : 400;
+}
+
+/** Whether the previewed buffer is the one currently focused. Prefers the stable
+ *  server buffer id; falls back to mirror identity when no client is present. */
+function previewBufferIsActive() {
+  if (
+    previewBufferId !== null &&
+    serverViewClient &&
+    typeof serverViewClient.currentBufferId === 'function'
+  ) {
+    return serverViewClient.currentBufferId() === previewBufferId;
+  }
+  return currentTextBuffer !== null && currentTextBuffer === previewBuffer;
+}
+
+/** (Re)arm the debounced preview sync after an edit. Fires only while a preview
+ *  is live for the focused buffer, and only when the text actually changed — the
+ *  driving `setModeline` push also fires on cursor moves, which must not reset
+ *  the edit debounce. Each real edit resets the timer. */
+function schedulePreviewSync() {
+  if (!previewSourcePath || !previewBufferIsActive()) return;
+  if (!currentTextBuffer || currentTextBuffer.text === lastPreviewSyncedText) return;
+  if (previewSyncTimer !== null) clearTimeout(previewSyncTimer);
+  previewSyncTimer = setTimeout(flushPreviewSync, previewDebounceMs());
+}
+
+/** Push the current buffer text to main (which rewrites the preview shadow),
+ *  unless nothing changed since the last push. */
+function flushPreviewSync() {
+  previewSyncTimer = null;
+  if (!previewSourcePath || !currentTextBuffer || !previewBufferIsActive()) return;
+  const text = currentTextBuffer.text;
+  if (typeof text !== 'string' || text === lastPreviewSyncedText) return;
+  lastPreviewSyncedText = text;
+  if (typeof window.host?.syncJmarkdownWatch === 'function') {
+    window.host.syncJmarkdownWatch(previewSourcePath, text);
+  }
+}
+
+/** Begin live-syncing PATH's preview from the current buffer (called on open).
+ *  Seeds `lastPreviewSyncedText` so the first edit — not the open — triggers a
+ *  rewrite. Returns the seed text for the initial shadow. */
+function beginPreviewSync(path) {
+  previewSourcePath = path;
+  previewBuffer = currentTextBuffer;
+  previewBufferId =
+    serverViewClient && typeof serverViewClient.currentBufferId === 'function'
+      ? serverViewClient.currentBufferId()
+      : null;
+  lastPreviewSyncedText = currentTextBuffer ? currentTextBuffer.text : '';
+  return lastPreviewSyncedText;
+}
+
+/** Stop live-syncing (in-app close or popped-out window closed). */
+function clearPreviewSyncState() {
+  if (previewSyncTimer !== null) { clearTimeout(previewSyncTimer); previewSyncTimer = null; }
+  previewSourcePath = null;
+  previewBuffer = null;
+  previewBufferId = null;
+  lastPreviewSyncedText = null;
+}
+
 // Relay from a popped-out preview window (via main): inverse-search clicks and
 // the preview's `ready`. Registered once.
 if (window.host && typeof window.host.onPreviewUp === 'function') {
@@ -7648,6 +7739,7 @@ if (window.host && typeof window.host.onPreviewPopoutClosed === 'function') {
   window.host.onPreviewPopoutClosed(() => {
     previewPoppedOut = false;
     lastPostedPreviewLine = null;
+    clearPreviewSyncState(); // the popped-out preview is gone — stop live-sync
   });
 }
 
@@ -7694,6 +7786,7 @@ function resetMarkdownPreviewPane() {
 /** Hide the preview pane and stop this window's watch subprocess. */
 function hideMarkdownPreview() {
   resetMarkdownPreviewPane();
+  clearPreviewSyncState(); // in-app close ends live-sync (pop-out keeps it)
   if (window.host && typeof window.host.stopJmarkdownWatch === 'function') {
     window.host.stopJmarkdownWatch();
   }
@@ -7735,9 +7828,12 @@ async function showMarkdownPreview(path) {
   previewPoppedOut = false; // reopening in-app takes over forwarding
   markdownPreviewFilename.textContent = `${previewBasename(path)} · starting…`;
   previewWatchedPath = path;
+  // Begin live-syncing: seed the preview shadow with the current (even unsaved)
+  // buffer, then debounce refreshes on edits.
+  const seedText = beginPreviewSync(path);
   let result;
   try {
-    result = await window.host.startJmarkdownWatch(path);
+    result = await window.host.startJmarkdownWatch(path, seedText);
   } catch (error) {
     result = { error: String(error && error.message ? error.message : error) };
   }

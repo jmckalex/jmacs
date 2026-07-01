@@ -7,6 +7,8 @@
  * live against a real watch server.
  */
 
+import { dirname, basename, extname, join } from 'node:path';
+
 /**
  * The spawn args for `jmarkdown watch <file> --port <port>`.
  *
@@ -16,6 +18,38 @@
  */
 export function buildWatchArgs(filePath, port) {
   return ['watch', filePath, '--port', String(port)];
+}
+
+/**
+ * The shadow (preview sidecar) path for a source file: a hidden sibling in the
+ * SAME directory, so relative resources in the metadata header (`CSS:`,
+ * `Bibliography:`, images, `[[includes]]`) resolve exactly as they do for the
+ * real file. The debounced live preview writes the current buffer text here and
+ * points `jmarkdown watch` at it, so the user's real file is never touched until
+ * they actually save. The `.godot-preview` infix keeps it out of the way and
+ * easy to `.gitignore` (`.*.godot-preview.*`); the original extension is kept so
+ * `jmarkdown` treats `.jmd` vs `.md` identically to the source.
+ *
+ * @param {string} filePath - Absolute path of the real source file.
+ * @returns {string}
+ */
+export function shadowPathFor(filePath) {
+  const ext = extname(filePath);
+  const base = basename(filePath, ext);
+  return join(dirname(filePath), `.${base}.godot-preview${ext}`);
+}
+
+/**
+ * The build-output sibling `jmarkdown watch` may emit next to the shadow (a
+ * `<name>.html`), swept on teardown so a preview leaves nothing behind.
+ *
+ * @param {string} shadowPath
+ * @returns {string}
+ */
+export function shadowHtmlSibling(shadowPath) {
+  const ext = extname(shadowPath);
+  const base = basename(shadowPath, ext);
+  return join(dirname(shadowPath), `${base}.html`);
 }
 
 /**

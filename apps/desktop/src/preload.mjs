@@ -232,15 +232,28 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('jmarkdown:render', { command, source }),
 
   /**
-   * Start (or restart) this window's JMarkdown live-preview watcher on the
-   * saved file `path` — spawns `jmarkdown watch path --port N` in the main
-   * process. Resolves `{ port }` once the preview server is accepting
-   * connections, or `{ error }` on failure.
+   * Start (or restart) this window's JMarkdown live-preview watcher for the
+   * saved file `path`. When `text` is given, the watcher previews a hidden
+   * shadow sidecar seeded with it (a save-free live preview of the current
+   * buffer); otherwise it watches the real file. Resolves `{ port }` once the
+   * server accepts connections, or `{ error }` on failure.
    * @param {string} path - Absolute path of the saved file to preview.
+   * @param {string} [text] - Current buffer text to seed the preview shadow.
    * @returns {Promise<{port: number} | {error: string}>}
    */
-  startJmarkdownWatch: (path) =>
-    ipcRenderer.invoke('jmarkdown:watch:start', { path }),
+  startJmarkdownWatch: (path, text) =>
+    ipcRenderer.invoke('jmarkdown:watch:start', { path, text }),
+
+  /**
+   * Rewrite the preview shadow for `path` with the current buffer `text` — the
+   * debounced live-update after a typing pause. Fire-and-forget; a no-op in main
+   * when no preview shadow is active for `path`.
+   * @param {string} path - The real source path the preview was opened on.
+   * @param {string} text
+   * @returns {Promise<{ok: boolean}>}
+   */
+  syncJmarkdownWatch: (path, text) =>
+    ipcRenderer.invoke('jmarkdown:watch:sync', { path, text }),
 
   /**
    * Stop this window's JMarkdown preview watcher (a no-op if none is running).
