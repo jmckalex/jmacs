@@ -79,6 +79,10 @@ import {
   registerCslStyle,
   parseCitationsLenient,
   createMathPreview,
+  createMathTooltip,
+  typesetMath,
+  isMathErrorNode,
+  isMathJaxReady,
   mathPreviewProviderForMode,
   TextView,
   TablineView,
@@ -4438,6 +4442,8 @@ function getMathReplacedRanges(leaf) {
   // Per-render bookkeeping (segment-under-point tracking, MathJax-ready
   // arm) must run before ranges() reads.
   controller.update();
+  // Live math tooltip: show/refresh/hide it for the construct under point.
+  driveMathTooltip(leaf, controller, provider, view);
   return controller.ranges();
 }
 
@@ -4445,6 +4451,117 @@ function getMathReplacedRanges(leaf) {
  *  typeset cache. Safe to call when none exists. */
 function disposeMathPreviewForLeaf(leaf) {
   mathPreviewByPaneId.delete(leaf.id);
+  hideMathTooltipForLeaf(leaf);
+}
+
+// --- the live math tooltip (math-preview-mode) -------------------------
+// When the cursor sits inside a math construct, its source is revealed for
+// editing; this floats a tooltip above the caret showing the live MathJax
+// render of the body, refreshed on each render. A parse error keeps the last
+// valid image plus an error badge; leaving the construct hides it. Renderer
+// -only (MathJax + DOM); the typeset + caret rect are read one frame after
+// the edit, so positioning reflects the just-painted caret.
+let mathTooltip = null;
+/** The leaf id whose construct-under-point currently drives the tooltip. */
+let mathTooltipOwner = null;
+/** The state captured for the next animation frame, or null. */
+let mathTooltipPending = null;
+let mathTooltipRaf = 0;
+
+function ensureMathTooltip() {
+  if (!mathTooltip) mathTooltip = createMathTooltip(editorHostEl);
+  return mathTooltip;
+}
+
+function flushMathTooltip() {
+  mathTooltipRaf = 0;
+  const pending = mathTooltipPending;
+  mathTooltipPending = null;
+  if (!pending) return;
+  const tip = ensureMathTooltip();
+  if (pending.hide) {
+    tip.hide();
+    return;
+  }
+  // Typeset the current body now (synchronous). MathJax 3 renders a TeX
+  // syntax error as an error node rather than throwing, so also treat an
+  // error node (and the not-ready case) as "no new render" — the tooltip then
+  // keeps the last valid image and flags the syntax error.
+  const raw = isMathJaxReady()
+    ? typesetMath(pending.tex, { display: pending.display })
+    : null;
+  const node = raw && !isMathErrorNode(raw) ? raw : null;
+  // Anchor the tooltip INSIDE the editor's scrolling content so it rides the
+  // native scroll (no JS-tracking lag), positioned in content coordinates
+  // above the caret.
+  const instance =
+    typeof pending.instanceEl === 'function' ? pending.instanceEl() : null;
+  const q = (sel) =>
+    instance && typeof instance.querySelector === 'function'
+      ? instance.querySelector(sel)
+      : null;
+  const contentEl = q('.editor-content');
+  const caret = q('.editor-cursor');
+  const caretRect =
+    caret && typeof caret.getBoundingClientRect === 'function'
+      ? caret.getBoundingClientRect()
+      : null;
+  const contentRect =
+    contentEl && typeof contentEl.getBoundingClientRect === 'function'
+      ? contentEl.getBoundingClientRect()
+      : null;
+  if (contentEl) tip.mount(contentEl);
+  tip.update({
+    node,
+    key: pending.key,
+    display: pending.display,
+    scale: pending.scale,
+    caretRect,
+    contentRect,
+  });
+}
+
+function scheduleMathTooltip(state) {
+  mathTooltipPending = state;
+  if (!mathTooltipRaf) mathTooltipRaf = requestAnimationFrame(flushMathTooltip);
+}
+
+/** Show/refresh/hide the live tooltip for LEAF from its controller's
+ *  segment-under-point. Called from getMathReplacedRanges after update(). */
+function driveMathTooltip(leaf, controller, provider, view) {
+  const seg = controller.currentSegment();
+  if (seg && view && view.buffer) {
+    const text = view.buffer.text;
+    let preamble = '';
+    try {
+      const harvest = provider && provider.preamble;
+      preamble = typeof harvest === 'function' ? harvest(text) || '' : '';
+    } catch {
+      preamble = '';
+    }
+    const tex = preamble === '' ? seg.body : `${preamble}\n${seg.body}`;
+    // *math-tooltip-scale* defcustom (pushed via the config snapshot).
+    const scale = Number(rendererConfig['*math-tooltip-scale*']) || 1.5;
+    mathTooltipOwner = leaf.id;
+    scheduleMathTooltip({
+      key: seg.start,
+      tex,
+      display: seg.kind === 'block',
+      scale,
+      instanceEl: () => leaf.element ?? editorViewByPaneId.get(leaf.id) ?? null,
+    });
+  } else if (mathTooltipOwner === leaf.id) {
+    mathTooltipOwner = null;
+    scheduleMathTooltip({ hide: true });
+  }
+}
+
+/** Hide the tooltip if LEAF currently owns it (mode off / leaf gone). */
+function hideMathTooltipForLeaf(leaf) {
+  if (mathTooltipOwner === leaf.id) {
+    mathTooltipOwner = null;
+    if (mathTooltip) scheduleMathTooltip({ hide: true });
+  }
 }
 
 

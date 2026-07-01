@@ -6407,3 +6407,116 @@ notebook-js-view {
 }
 .nbc-table th { color: var(--fg-dim); font-weight: 600; }
 .nbc-trunc { color: var(--fg-dim); font-style: italic; }
+
+/* The live math tooltip — floats above a math construct while the cursor is
+ * inside it (math-preview-mode), showing the MathJax render of what is being
+ * edited. Mirrors the hover-doc tooltip's chrome. */
+.math-tooltip {
+  /* Absolutely positioned INSIDE the editor's scrolling content, so it rides
+   * the native scroll on the compositor (no JS-tracking lag) and is clipped by
+   * the editor's overflow when the construct scrolls out of view. */
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 70vw;
+  padding: 8px 11px;
+  /* Lift the panel off the editor background for contrast: blend the editor
+   * background toward the foreground, so it reads as a raised surface in both
+   * light and dark themes. */
+  --math-tip-bg: color-mix(in srgb, var(--bg-editor) 82%, var(--fg) 18%);
+  --math-tip-border: color-mix(in srgb, var(--fg) 34%, transparent);
+  background: var(--math-tip-bg);
+  border: 1px solid var(--math-tip-border);
+  border-radius: 7px;
+  box-shadow: 0 8px 26px #00000078;
+  color: var(--fg);
+  /* The preview size is the *math-tooltip-scale* defcustom; the renderer sets
+   * --math-tooltip-scale from the config snapshot (default 1.5 = 150%). */
+  font-size: calc(var(--math-tooltip-scale, 1.5) * 1rem);
+  pointer-events: none;
+  user-select: none;
+}
+
+.math-tooltip-body {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0.75em;
+  min-height: 1em;
+  overflow-x: auto;
+}
+
+.math-tooltip-body mjx-container {
+  margin: 0 !important;
+}
+
+/* Nothing valid to show yet (e.g. a just-opened, still-empty `$$`). */
+.math-tooltip-empty .math-tooltip-body::before {
+  content: "…";
+  color: var(--fg-dim);
+}
+
+/* Syntax-error indicator: a red circled-X above the words "syntax error",
+ * centred below the (kept) last valid render. Toggled to `flex` by the
+ * controller only while the current body fails to typeset. */
+.math-tooltip-error {
+  /* display is inline-controlled (none / flex) by the controller. */
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  text-align: center;
+}
+
+.math-tooltip-error-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35em;
+  height: 1.35em;
+  border-radius: 50%;
+  background: var(--error);
+  color: #fff;
+  font-size: 0.8em;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.math-tooltip-error-text {
+  color: var(--error);
+  font-size: 0.55em;
+  letter-spacing: 0.03em;
+  /* Keep "syntax error" on one line even under a narrow expression — it sets a
+   * small minimum width for the tooltip rather than wrapping to two lines. */
+  white-space: nowrap;
+}
+
+/* The arrow is a rotated square (diamond) centred on the tooltip's bottom
+ * edge: its upper half is covered by the tooltip body (same background), and
+ * its two lower edges carry the tooltip's border — so the tail is bordered to
+ * match the rest of the tooltip. Flips to point up when placed below. */
+.math-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 11px;
+  height: 11px;
+  background: var(--math-tip-bg);
+  border: 1px solid transparent;
+  border-right-color: var(--math-tip-border);
+  border-bottom-color: var(--math-tip-border);
+  border-bottom-right-radius: 2px;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.math-tooltip-below::after {
+  top: 0;
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  border-top-color: var(--math-tip-border);
+  border-left-color: var(--math-tip-border);
+  border-bottom-right-radius: 0;
+  border-top-left-radius: 2px;
+}

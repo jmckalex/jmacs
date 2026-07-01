@@ -1285,7 +1285,19 @@ export function createEditorView(buffer, container, options = {}) {
     const caretLineEl = linesEl.querySelector(
       `.editor-line[data-line="${primaryPos.line}"]`
     );
-    if (caretLineEl && hasWide(caretLineEl.textContent)) {
+    // A line with inline widgets (math preview) is already positioned by
+    // columnToXPx, which subtracts each widget's real width — do NOT re-measure
+    // from the DOM there. measureCaretXPxIn walks the line's text nodes counting
+    // characters, but a MathJax widget carries a hidden assistive-MathML copy of
+    // the formula whose (math-italic Unicode) text both trips `hasWide` and gets
+    // counted, so a source column mis-maps to the wrong DOM offset — the caret
+    // drifts a few glyphs and shifts on re-render. The DOM measurement is only
+    // for wide (CJK / emoji) glyphs on widget-free lines.
+    if (
+      caretLineEl &&
+      !inlineWidgetsByLine.has(primaryPos.line) &&
+      hasWide(caretLineEl.textContent)
+    ) {
       const caretPoint = cursors[0] ? cursors[0].point : 0;
       const caretCol = activeBuffer.positionAt(caretPoint).column;
       const measured = measureCaretXPxIn(caretLineEl, caretCol);

@@ -180,6 +180,7 @@ export {
 } from './math-preview-providers.js';
 export {
   typesetMath,
+  isMathErrorNode,
   isMathJaxReady,
   whenMathJaxReady,
   cacheKey,
@@ -197,3 +198,8 @@ export {
   planSegments,
   detectLeave,
 } from './math-preview.js';
+export {
+  createMathTooltip,
+  placeAbove,
+  chooseRender,
+} from './math-tooltip.js';

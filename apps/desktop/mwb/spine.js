@@ -603,6 +603,7 @@ const RENDERER_CONFIG_VARS = Object.freeze(new Set([
   '*autosave-recovery-interval*',
   '*jukebox-track-format*',
   '*directory-tree-open-target*',
+  '*math-tooltip-scale*',
 ]));
 
 // B0 config snapshot (plans/B5-B7-TEARDOWN-AUDIT.md): the full set of
@@ -2700,6 +2701,11 @@ export function createSpine(options, effects = {}) {
         :options '(editing-pane other-pane this-pane)
         :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
         :doc "Where a file opens when activated in a directory tree-view: 'editing-pane (the main editing area; the default), 'other-pane (the next editing pane after the tree), or 'this-pane (the tree's own pane, promoted to a tabline).")
+
+      (defcustom *math-tooltip-scale* 1.5 :number
+        :group 'editing
+        :on-change (lambda (n v) (push-renderer-config! (symbol->string n)))
+        :doc "How large the live math-preview tooltip renders, as a multiple of the base font size (1.0 = same size, 1.5 = 150%, 2.0 = double). The tooltip floats above a math construct while the cursor is inside it, showing the MathJax render of what is being edited. Default 1.5.")
     `);
   } catch (error) {
     console.error('[spine] renderer-config defcustoms install failed:', error.message);

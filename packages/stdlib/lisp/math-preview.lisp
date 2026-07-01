@@ -33,3 +33,8 @@
   (if (member math-preview-mode (minor-modes))
       (disable-minor-mode math-preview-mode)
       (enable-minor-mode math-preview-mode)))
+
+;; NB: the *math-tooltip-scale* defcustom lives in the spine's renderer-config
+;; block (apps/desktop/mwb/spine.js), alongside the other renderer-consumed
+;; settings — it needs an :on-change that calls push-renderer-config! (a spine
+;; host primitive) so a live customize edit reaches the renderer.
