@@ -112,19 +112,14 @@ export function createMathTooltip(hostEl) {
   /** The last non-null node shown for the construct keyed by `currentKey`. */
   let lastValid = null;
   /** Identity of the construct currently shown (its start offset). Entering a
-   *  different construct resets `lastValid` so a fresh error shows the badge
-   *  alone, never a stale image from the previous construct. */
+   *  different construct resets `lastValid` and the frozen horizontal. */
   let currentKey = null;
-  /** Whether the tooltip has been positioned for the current construct. It is
-   *  anchored ONCE on entry and then left put, so it doesn't jitter along with
-   *  the caret while you edit within the same construct. */
-  let positioned = false;
-  /** The anchor rect frozen on entering the current construct. Re-used when the
-   *  error indicator toggles (the height changes) so the tooltip re-anchors
-   *  without following the caret. */
-  let anchor = null;
-  /** Whether the error indicator was shown on the previous update. */
-  let lastErrorState = false;
+  /** The horizontal position (px), frozen on entering a construct so typing
+   *  never drags the tooltip sideways. Null until the first placement. */
+  let frozenLeft = null;
+  /** Whether the tooltip sits below the construct (flipped when there was no
+   *  room above at entry). Frozen alongside `frozenLeft`. */
+  let below = false;
 
   function mountInto(parent, node) {
     if (typeof parent.replaceChildren === 'function') parent.replaceChildren();
@@ -134,7 +129,18 @@ export function createMathTooltip(hostEl) {
     parent.appendChild(el);
   }
 
-  function position(anchorRect) {
+  /**
+   * Position the tooltip for ANCHORRECT (the caret's client rect). The
+   * horizontal placement and the above/below choice are frozen on the FIRST
+   * call for a construct — so typing doesn't drag the tooltip sideways — but the
+   * VERTICAL position tracks ANCHORRECT on every call, so the tooltip follows
+   * the editor as it scrolls (off-screen if the construct scrolls out of view;
+   * there is deliberately no vertical clamping). Called on each content update
+   * and, continuously, from the host's scroll/track loop.
+   *
+   * @param {{left:number,top:number,right:number,bottom:number,width?:number}|null} anchorRect
+   */
+  function reposition(anchorRect) {
     if (!anchorRect) return;
     const view = doc.defaultView || (typeof window !== 'undefined' ? window : null);
     const viewport = {
@@ -143,10 +149,23 @@ export function createMathTooltip(hostEl) {
     };
     const r = tip.getBoundingClientRect ? tip.getBoundingClientRect() : { width: 0, height: 0 };
     const size = { width: r.width || 220, height: r.height || 64 };
-    const pos = placeAbove(anchorRect, size, viewport);
-    tip.style.left = `${pos.left}px`;
-    tip.style.top = `${pos.top}px`;
-    tip.classList.toggle('math-tooltip-below', pos.below);
+    if (frozenLeft === null) {
+      // First placement: freeze the horizontal centre and the above/below flip.
+      const p = placeAbove(anchorRect, size, viewport);
+      frozenLeft = p.left;
+      below = p.below;
+    }
+    const gap = 8;
+    const top = below ? anchorRect.bottom + gap : anchorRect.top - size.height - gap;
+    tip.style.left = `${frozenLeft}px`;
+    tip.style.top = `${top}px`;
+    tip.classList.toggle('math-tooltip-below', below);
+  }
+
+  /** Show/hide the tooltip via `visibility` WITHOUT resetting it — used to make
+   *  it vanish while the construct is scrolled out of the editor's view. */
+  function setVisible(visible) {
+    tip.style.visibility = visible ? '' : 'hidden';
   }
 
   function update({ node, key, display = false, anchorRect = null, scale }) {
@@ -154,9 +173,8 @@ export function createMathTooltip(hostEl) {
     if (isNewConstruct) {
       currentKey = key;
       lastValid = null;
-      positioned = false;
-      anchor = null;
-      lastErrorState = false;
+      frozenLeft = null;
+      below = false;
     }
     const r = chooseRender({ node, lastValid });
     lastValid = r.lastValid;
@@ -169,32 +187,23 @@ export function createMathTooltip(hostEl) {
     if (typeof scale === 'number' && scale > 0) {
       tip.style.setProperty('--math-tooltip-scale', String(scale));
     }
+    tip.style.visibility = '';
     tip.style.display = '';
-    // Freeze the anchor on entry; reposition only on entry or when the error
-    // indicator appears/disappears (its height changes) — never per keystroke,
-    // so it doesn't jitter with the caret. Re-anchoring reuses the FROZEN rect,
-    // and placeAbove pins the bottom above the construct so it grows upward.
-    if (anchorRect && !anchor) anchor = anchorRect;
-    const errorChanged = r.error !== lastErrorState;
-    lastErrorState = r.error;
-    if (anchor && (!positioned || errorChanged)) {
-      position(anchor);
-      positioned = true;
-    }
+    reposition(anchorRect);
   }
 
   function hide() {
     tip.style.display = 'none';
+    tip.style.visibility = '';
     currentKey = null;
     lastValid = null;
-    positioned = false;
-    anchor = null;
-    lastErrorState = false;
+    frozenLeft = null;
+    below = false;
   }
 
   function dispose() {
     if (tip.parentNode) tip.parentNode.removeChild(tip);
   }
 
-  return { element: tip, update, hide, dispose };
+  return { element: tip, update, reposition, setVisible, hide, dispose };
 }

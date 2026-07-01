@@ -185,18 +185,42 @@ test('hide() hides the tooltip and clears the kept image', () => {
   assert.equal(tip.element.children[0].children.length, 0);
 });
 
-test('the tooltip is anchored once and does not move within the same construct', () => {
+test('the tooltip freezes horizontally while editing the same construct', () => {
   const host = fakeHost();
   const tip = createMathTooltip(host);
   const n = host.ownerDocument.createElement('svg');
   tip.update({ node: n, key: 5, anchorRect: { left: 100, top: 300, right: 120, bottom: 320, width: 20 } });
   const frozen = tip.element.style.left;
-  // Same construct, caret moved far right → must NOT reposition.
+  // Same construct, caret moved far right (typing) → horizontal must NOT move.
   tip.update({ node: n, key: 5, anchorRect: { left: 600, top: 300, right: 620, bottom: 320, width: 20 } });
   assert.equal(tip.element.style.left, frozen, 'frozen while editing the same construct');
-  // A different construct → repositions.
+  // A different construct → re-anchors horizontally.
   tip.update({ node: n, key: 9, anchorRect: { left: 600, top: 300, right: 620, bottom: 320, width: 20 } });
-  assert.notEqual(tip.element.style.left, frozen, 'repositions for a new construct');
+  assert.notEqual(tip.element.style.left, frozen, 're-anchors for a new construct');
+});
+
+test('the tooltip tracks vertical scroll while staying frozen horizontally', () => {
+  const host = fakeHost();
+  const tip = createMathTooltip(host);
+  const n = host.ownerDocument.createElement('svg');
+  tip.update({ node: n, key: 5, anchorRect: { left: 100, top: 300, right: 120, bottom: 320, width: 20 } });
+  const left1 = tip.element.style.left;
+  const top1 = tip.element.style.top;
+  // Simulate a scroll: same construct, the caret moved UP; horizontal unchanged.
+  tip.reposition({ left: 100, top: 200, right: 120, bottom: 220, width: 20 });
+  assert.equal(tip.element.style.left, left1, 'horizontal stays frozen on scroll');
+  assert.notEqual(tip.element.style.top, top1, 'vertical follows the scroll');
+});
+
+test('setVisible toggles visibility without resetting the tooltip', () => {
+  const host = fakeHost();
+  const tip = createMathTooltip(host);
+  const n = host.ownerDocument.createElement('svg');
+  tip.update({ node: n, key: 5, anchorRect: { left: 100, top: 300, right: 120, bottom: 320, width: 20 } });
+  tip.setVisible(false);
+  assert.equal(tip.element.style.visibility, 'hidden');
+  tip.setVisible(true);
+  assert.notEqual(tip.element.style.visibility, 'hidden');
 });
 
 test('update applies the configured scale as a CSS variable', () => {
