@@ -478,6 +478,13 @@ const SPINE_STDLIB = Object.freeze([
   // expand-region-word-bounds (expand-region.lisp, loaded). See
   // PRIMITIVE-SPLIT.md "Snippets".
   'snippets.lisp',
+  // snippets-keymap.lisp — binds TAB / S-TAB to snippet-tab / -shift-tab in
+  // the-keymap and wraps deselect / keyboard-quit so ESC / C-g cancel an
+  // active snippet. Must load after keymap.lisp + multi-cursor.lisp (the base
+  // deselect/keyboard-quit it wraps) and after snippets.lisp (the commands it
+  // binds). Without it TAB stays bound to insert-tab and a trigger word never
+  // expands — the whole point of the feature.
+  'snippets-keymap.lisp',
   // bookmarks.lisp — Emacs-style bookmarks (C-x r m/b/l): a bookmark-minor-mode
   // (default-on in text buffers) + the set / jump / delete / list commands. The
   // commands wrap the host primitives bookmark-set!/jump!/delete! +
@@ -2442,9 +2449,11 @@ export function createSpine(options, effects = {}) {
         if (kind === 'datetime') return `${ymd} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
         return ymd;
       },
-      // (snippet-user-directory) — the user snippet root. None server-side
-      // yet (it is an app/render data-path concern), so "" → no user dir.
-      'snippet-user-directory': () => '',
+      // (snippet-user-directory) — the user snippet root,
+      // `<CONFIG_HOME>/snippets` (i.e. ~/.godot/snippets). "" when
+      // CONFIG_HOME is unset (the unit-test harness), so the built-in
+      // snippets still load but no user directory is searched.
+      'snippet-user-directory': () => (CONFIG_HOME ? join(CONFIG_HOME, 'snippets') : ''),
       // (list-directory-paths dir) — (name . :file/:directory) pairs for the
       // entries of DIR, or nil when DIR can't be listed. A REAL disk read
       // (the server is a Node child), mirroring app.js's
@@ -5371,7 +5380,29 @@ export function createSpine(options, effects = {}) {
    * @returns {boolean}
    */
   function handleKey(key) {
-    return interpreter.call('handle-key', key) === true;
+    // Snippet field tracking: in the renderer era the host called
+    // snippet-after-edit! on every buffer change, so a live snippet's later
+    // fields/mirrors reflow as an earlier field is edited. Model B has no such
+    // host change-hook, so drive it here — after a key that actually changed
+    // the buffer while a snippet is active. Off the snippet path this costs
+    // one cheap (snippet-active?) probe per key; the length compare only runs
+    // while a snippet is live.
+    if (interpreter.evaluate('(snippet-active?)') !== true) {
+      return interpreter.call('handle-key', key) === true;
+    }
+    const before = interpreter.evaluate('(buffer-length)');
+    const handled = interpreter.call('handle-key', key) === true;
+    if (interpreter.evaluate('(snippet-active?)') === true) {
+      // An edit reflows the live snippet's later fields/mirrors.
+      if (interpreter.evaluate('(buffer-length)') !== before) {
+        interpreter.evaluate('(snippet-after-edit!)');
+      }
+      // A key that moved point out of the snippet's extent (an arrow, C-a/C-e,
+      // a click) soft-commits it, so the next trigger expands rather than
+      // advancing an abandoned snippet.
+      interpreter.evaluate('(snippet-soft-commit-if-outside)');
+    }
+    return handled;
   }
 
   /** Run a command by name through the REAL run-command. The spine's Lisp

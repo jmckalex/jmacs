@@ -83,6 +83,74 @@ test('an unknown trigger word does not expand (snippet-expand returns #f)', () =
   assert.equal(spine.buffer.text, 'zzznotasnippet', 'the typed word is untouched');
 });
 
+test('the TAB key (via the keymap) expands a trigger word', () => {
+  // Regression: snippets-keymap.lisp binds "tab" -> snippet-tab in the spine.
+  // Without it in SPINE_STDLIB, the-keymap "tab" stayed `insert-tab`, so TAB
+  // inserted a tab and never expanded — the engine worked only when
+  // (snippet-expand) was called directly (as the other tests here do).
+  const { spine } = makeSpine('');
+  assert.equal(
+    spine.interpreter.evaluate('(eq? (get the-keymap "tab" nil) (quote snippet-tab))'),
+    true,
+    'TAB is bound to snippet-tab in the spine keymap'
+  );
+  for (const ch of 'sig') spine.handleKey(ch);
+  spine.handleKey('tab');
+  assert.match(spine.buffer.text, /^-- Your Name\nyou@example\.com$/, 'TAB expanded the trigger');
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), true);
+});
+
+test('advancing to a later field reflows after an earlier field is edited', () => {
+  // Regression: the spine drives snippet-after-edit! from handleKey, so field
+  // 2's stored offset tracks field 1 shrinking. Without it, TAB-to-next-field
+  // selected stale-offset text ("ample.com" instead of "you@example.com").
+  const sel = (s) => {
+    const v = s.view;
+    return s.buffer.text.slice(Math.min(v.point, v.mark), Math.max(v.point, v.mark));
+  };
+  const { spine } = makeSpine('');
+  for (const ch of 'sig') spine.handleKey(ch);
+  spine.handleKey('tab'); // expand; field 1 "Your Name" selected
+  assert.equal(sel(spine), 'Your Name');
+  for (const ch of 'bob') spine.handleKey(ch); // field 1: 9 chars -> 3
+  spine.handleKey('tab'); // advance to field 2
+  assert.equal(sel(spine), 'you@example.com', 'field 2 selects the right text after reflow');
+  assert.equal(spine.buffer.text, '-- bob\nyou@example.com');
+});
+
+test('abandoning a snippet (C-a C-k) lets the next trigger expand again', () => {
+  // Regression: clearing the line out from under a live snippet must exit it
+  // (snippet-after-edit! drops the record when point is before the field), so
+  // the next TAB expands a fresh trigger instead of advancing a dead snippet.
+  const { spine } = makeSpine('');
+  for (const ch of 'link') spine.handleKey(ch);
+  spine.handleKey('tab');
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), true);
+  spine.handleKey('C-a');
+  spine.handleKey('C-k');
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), false,
+    'clearing the line exits the snippet');
+  for (const ch of 'link') spine.handleKey(ch);
+  spine.handleKey('tab');
+  assert.match(spine.buffer.text, /\]\(/, 'the next trigger expands again');
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), true);
+});
+
+test('moving out of a snippet (C-p) drops the field selection, so typing inserts', () => {
+  // Regression: soft-commit must clear the field's selection when point leaves,
+  // else the dangling region is replaced by the next keystroke (it ate the
+  // newline + the leading bracket).
+  const { spine } = makeSpine('\n\n');
+  spine.handleKey('down'); // to line 2
+  for (const ch of 'link') spine.handleKey(ch);
+  spine.handleKey('tab'); // expand "[text](url)" on line 2
+  spine.handleKey('C-p'); // move up out of the snippet
+  assert.equal(spine.interpreter.evaluate('(snippet-active?)'), false);
+  assert.equal(spine.view.mark, null, 'the field selection is cleared');
+  spine.handleKey('d');
+  assert.equal(spine.buffer.text, 'd\n[text](url)\n', 'd inserts on line 1; snippet text intact');
+});
+
 test('a mirrored field installs a multi-cursor set (Policy A), server-side', () => {
   // A snippet where $1 appears twice (a field + a mirror). Arriving on the
   // field installs a secondary cursor over each mirror, so typing updates
