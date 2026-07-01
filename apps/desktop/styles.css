@@ -6481,8 +6481,11 @@ notebook-js-view {
 
 .math-tooltip-error-text {
   color: var(--error);
-  font-size: 0.62em;
+  font-size: 0.55em;
   letter-spacing: 0.03em;
+  /* Keep "syntax error" on one line even under a narrow expression — it sets a
+   * small minimum width for the tooltip rather than wrapping to two lines. */
+  white-space: nowrap;
 }
 
 /* A little arrow pointing down at the construct (or up when flipped below). */
