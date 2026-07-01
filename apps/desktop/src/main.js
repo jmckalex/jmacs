@@ -18,6 +18,8 @@ import {
 } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync, copyFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 import { reconcileBounds } from './window-geometry.js';
 import { registerFileHandlers } from './files.js';
@@ -422,6 +424,23 @@ app.whenReady().then(() => {
     // The spine reads user config (faces.json, custom.lisp) from the config
     // home directly via fs (plans/MODEL-B-DEFAULT.md, Part B; ~/.godot).
     process.env.MWB_CONFIG_HOME = configHome;
+    // The server's named-session ("workspace") store. Its own fallback is a
+    // $TMPDIR file, which macOS periodically sweeps — named workspaces could
+    // silently vanish between reboots. Pin it under the config home, and on the
+    // first run after this move copy the old tmpdir store across so existing
+    // named workspaces carry over (non-destructive; the swept tmpdir copy is the
+    // backup). The forked utilityProcess inherits this env var.
+    const workspaceStore = join(configHome, 'workspaces.json');
+    try {
+      const legacyStore = join(tmpdir(), 'godot-mw-b-session.json');
+      if (!existsSync(workspaceStore) && existsSync(legacyStore)) {
+        copyFileSync(legacyStore, workspaceStore);
+        console.error('[main] migrated named-workspace store from tmpdir into the config home');
+      }
+    } catch (error) {
+      console.error('[main] workspace-store migration failed:', error.message);
+    }
+    process.env.MWB_SESSION_STORE = workspaceStore;
     serverBridge = createServerBridge({ utilityProcess, MessageChannelMain });
     console.error('[main] Model-B server forked');
   } catch (error) {
