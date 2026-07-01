@@ -940,10 +940,16 @@ function applyIntent(client, intent) {
       case INTENT.VISIT_FILE: {
         // Open a file by path directly (no minibuffer) — a file clicked in a
         // directory-view. Like find-file: visitFile ADDS/switches the active
-        // client onto it and fully re-syncs, so skip the edit path.
+        // client onto it and fully re-syncs, so skip the edit path. An optional
+        // `leafId` routes the open into a SPECIFIC leaf (the project's editing
+        // tabline the dir-tree wired), so it doesn't replace the tree's own pane.
         const path = String(intent.path ?? '');
         if (path !== '') {
-          const id = spine.visitFile(path);
+          const leafId =
+            typeof intent.leafId === 'string' && intent.leafId !== ''
+              ? intent.leafId
+              : null;
+          const id = spine.visitFile(path, leafId);
           if (id) resyncClientToCurrentBuffer(client);
           activeClient = null;
           return;

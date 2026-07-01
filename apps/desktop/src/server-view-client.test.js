@@ -166,6 +166,32 @@ test('the mounted view is given onKey + the mirror-reading closures', () => {
   assert.deepEqual(opts.getCursors(), mirror.cursors);
 });
 
+// --- visitPath → VISIT_FILE intent (with an optional target leaf) ------
+
+test('visitPath sends VISIT_FILE; a leafId rides only when provided', () => {
+  const { port, client } = connectedClient();
+  client.visitPath('/proj/a.md'); // no target → the focused leaf (default)
+  client.visitPath('/proj/b.md', 'leaf-mid'); // route into a specific leaf
+  const visits = port.sent.filter(
+    (m) => m.type === MSG.INTENT && m.intent.kind === INTENT.VISIT_FILE
+  );
+  assert.equal(visits.length, 2);
+  assert.equal(visits[0].intent.path, '/proj/a.md');
+  assert.equal('leafId' in visits[0].intent, false, 'no leafId when omitted');
+  assert.equal(visits[1].intent.path, '/proj/b.md');
+  assert.equal(visits[1].intent.leafId, 'leaf-mid', 'leafId carried when given');
+});
+
+test('visitPath ignores an empty/blank leafId (falls back to the focused leaf)', () => {
+  const { port, client } = connectedClient();
+  client.visitPath('/proj/c.md', '');
+  const visit = port.sent.find(
+    (m) => m.type === MSG.INTENT && m.intent.kind === INTENT.VISIT_FILE
+  );
+  assert.ok(visit);
+  assert.equal('leafId' in visit.intent, false);
+});
+
 // --- key routing → intents --------------------------------------------
 
 test('a bare printable routes as a pure KEY intent (the keymap decides) — no local echo', () => {
