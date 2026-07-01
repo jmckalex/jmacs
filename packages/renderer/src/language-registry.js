@@ -45,11 +45,15 @@
  *   the loader threads a `getHighlighter` lookup into the highlighter
  *   so inner ranges render in the injected language's palette.
  * @property {(text: string) => {start: number, end: number,
- *   language: string}[]} [injectionProvider] - A code-driven injection
+ *   language: string, wrapPrefix?: string, wrapSuffix?: string}[]}
+ *   [injectionProvider] - A code-driven injection
  *   source, merged with `injectionQuery`'s matches. For regions a
  *   grammar doesn't parse as nodes (e.g. `$…$` math in Markdown, fed to
  *   the `latex` grammar). Like `injectionQuery`, it makes the loader
- *   thread `getHighlighter` in.
+ *   thread `getHighlighter` in. An entry may carry `wrapPrefix`/
+ *   `wrapSuffix` to highlight the region inside a synthetic context (a
+ *   directive's `{…}` attributes injected into html as `<x … />`); see
+ *   `treesitter.js#spliceInjections`.
  * @property {string} [foldQuery] - A query whose `(node) @fold`
  *   captures mark foldable scopes — function bodies, class bodies,
  *   blocks, JSX elements, etc. When set, the highlighter exposes a

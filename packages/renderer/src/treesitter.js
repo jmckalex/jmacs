@@ -458,9 +458,18 @@ export function applyCaptureProvider(ranges, provided) {
  * outer ranges are returned as-is, leaving the outer face on what
  * would have been an injected region.
  *
+ * An injection may carry optional `wrapPrefix`/`wrapSuffix` strings:
+ * the inner highlighter then runs on `wrapPrefix + slice + wrapSuffix`
+ * and its captures are mapped back onto the real slice (shifted by the
+ * prefix, clipped to the slice). Only code-driven injections set them —
+ * JMarkdown wraps a directive's `{…}` attribute list as `<x … />` so
+ * tree-sitter-html captures the attributes. The live-injection region
+ * is always the real span, so clipping is unaffected.
+ *
  * @param {string} text - The text the outer captures are over.
  * @param {CaptureRange[]} outerRanges
- * @param {{ start: number, end: number, language: string }[]} injections
+ * @param {{ start: number, end: number, language: string,
+ *   wrapPrefix?: string, wrapSuffix?: string }[]} injections
  * @param {((tag: string) => Highlighter | undefined) | undefined} getHighlighter
  * @param {number} depth - Outer call is 0; recursive call is parent + 1.
  * @returns {CaptureRange[]}
@@ -488,15 +497,36 @@ export function spliceInjections(
   for (const injection of injections) {
     const inner = getHighlighter(injection.language);
     if (!inner || typeof inner.captures !== 'function') continue;
-    const sliced = text.slice(injection.start, injection.end);
-    const ranges = inner.captures(sliced, depth + 1);
-    innerByInjection.push(
-      ranges.map((r) => ({
-        start: r.start + injection.start,
-        end: r.end + injection.start,
+    const raw = text.slice(injection.start, injection.end);
+    // A code-driven injection may ask to be highlighted inside a
+    // synthetic context the inner grammar needs but the document does
+    // not contain: JMarkdown injects a directive's `{…}` attribute list
+    // into html wrapped as `<x … />`, because tree-sitter-html only
+    // captures attributes that sit inside a tag. The inner highlighter
+    // runs on `wrapPrefix + raw + wrapSuffix`; its captures are shifted
+    // back by the prefix length and clipped to the real span, so the
+    // wrapper's own captures (the synthetic `<x` / `/>`) fall away and
+    // only faces landing on document text survive. Absent a wrapper —
+    // every query injection and most providers — the prefix/suffix are
+    // '' and this is the identity mapping the callers relied on before.
+    const pre =
+      typeof injection.wrapPrefix === 'string' ? injection.wrapPrefix : '';
+    const suf =
+      typeof injection.wrapSuffix === 'string' ? injection.wrapSuffix : '';
+    const ranges = inner.captures(pre + raw + suf, depth + 1);
+    /** @type {CaptureRange[]} */
+    const mapped = [];
+    for (const r of ranges) {
+      const s = r.start - pre.length;
+      const e = r.end - pre.length;
+      if (e <= 0 || s >= raw.length) continue; // wholly inside the wrapper
+      mapped.push({
+        start: Math.max(0, s) + injection.start,
+        end: Math.min(raw.length, e) + injection.start,
         face: r.face,
-      }))
-    );
+      });
+    }
+    innerByInjection.push(mapped);
     liveInjections.push({ start: injection.start, end: injection.end });
   }
 
