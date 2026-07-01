@@ -109,6 +109,15 @@
   :group 'godot
   :doc "Scroll the Markdown/JMarkdown live preview to follow the editor cursor (forward search). Off keeps the preview still; Command-click inverse search still works.")
 
+;; With the live preview open, the buffer is mirrored to a hidden shadow the
+;; preview server watches, so the render refreshes on a typing pause WITHOUT an
+;; explicit save (the real file is untouched). This is the debounce: how long to
+;; wait after the last edit before pushing the buffer to the preview. Lower feels
+;; more live but rebuilds more often; higher is calmer. Read live by the renderer.
+(defcustom *markdown-preview-debounce-ms* 400 :number
+  :group 'godot
+  :doc "Milliseconds to wait after the last edit before refreshing the open Markdown/JMarkdown live preview (a save-free update). Lower is more live but rebuilds more often.")
+
 ;; --- live inline math preview -----------------------------------------
 ;; Markdown gets the same live MathJax typesetting LaTeX does, built on
 ;; the general `math-preview-mode` (math-preview.lisp). The host scans a
