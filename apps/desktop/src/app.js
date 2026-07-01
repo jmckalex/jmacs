@@ -3440,6 +3440,12 @@ if (window.host && window.host.serverMode) {
     hideInactiveSingletons();
     relayoutPanes();
     refreshPaneFocusIndicators();
+    // Now that the server tree is applied and every leaf is mounted, (re)compute
+    // the project dir-tree's editing-pane target so a file opened from the tree
+    // lands in the middle tabline, not the tree's own pane. Under Model B the
+    // pane tree is server-driven, so this must run on each reconcile (the old
+    // renderer-driven project path did it once at open). A no-op with no tree.
+    reapplyProjectDirTreeTarget();
     // Bind each minimap companion to its target leaf's <text-view> now that every
     // leaf has mounted + laid out (deferred a microtask; a no-op when none exist).
     scheduleMinimapReconcile();
