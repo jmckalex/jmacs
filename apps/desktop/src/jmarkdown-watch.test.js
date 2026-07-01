@@ -9,7 +9,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildWatchArgs, watchEnv } from './jmarkdown-watch-args.js';
+import {
+  buildWatchArgs,
+  watchEnv,
+  shadowPathFor,
+  shadowHtmlSibling,
+} from './jmarkdown-watch-args.js';
 
 test('buildWatchArgs runs `watch <file> --port <port>` with a stringified port', () => {
   assert.deepEqual(
@@ -40,4 +45,29 @@ test('watchEnv does not duplicate a bin dir already on PATH', () => {
 test('watchEnv tolerates a missing PATH', () => {
   const env = watchEnv({});
   assert.equal(env.PATH, '/usr/local/bin:/opt/homebrew/bin');
+});
+
+test('shadowPathFor is a hidden .godot-preview sibling in the same directory', () => {
+  // Same directory ⇒ relative CSS / bib / image / [[include]] paths resolve as
+  // for the real file; hidden + .godot-preview infix ⇒ out of the way.
+  assert.equal(
+    shadowPathFor('/docs/paper.jmd'),
+    '/docs/.paper.godot-preview.jmd'
+  );
+  assert.equal(
+    shadowPathFor('/My Docs/a b.md'),
+    '/My Docs/.a b.godot-preview.md'
+  );
+});
+
+test('shadowPathFor keeps the original extension (jmd vs md matters to jmarkdown)', () => {
+  assert.ok(shadowPathFor('/x/n.jmd').endsWith('.godot-preview.jmd'));
+  assert.ok(shadowPathFor('/x/n.md').endsWith('.godot-preview.md'));
+});
+
+test('shadowHtmlSibling is the .html build-output next to the shadow', () => {
+  assert.equal(
+    shadowHtmlSibling('/docs/.paper.godot-preview.jmd'),
+    '/docs/.paper.godot-preview.html'
+  );
 });
