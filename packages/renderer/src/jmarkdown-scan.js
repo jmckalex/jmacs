@@ -20,8 +20,10 @@
  *   - inline directives `:name[content]{.class #id attr="v"}`
  *   - `@name[text]{attrs}` directives (inline) and `@name+[text]{attrs}`
  *     (block), with an optional `<name>` angle form: the `[text]` group
- *     stays ambient JMarkdown, the `{attrs}` group is injected into html
- *     (wrapped so its attributes highlight)
+ *     is injected into `jmarkdown_inline` (and its interior left unclaimed,
+ *     so the scanner's own inline passes also paint over it); the `{attrs}`
+ *     group is injected into html (wrapped so its attributes highlight),
+ *     and a `style="…"` value inside it is further injected into css
  *   - `{{mustache}}` variables, `==highlight==` spans, `/italic/`
  *     spans (with `\/` escapes and the mid-word-slash abort)
  *   - embedded JavaScript chains `ident(...).prop(...)` → javascript
@@ -753,8 +755,14 @@ function atDirectives(ctx, S) {
     region(ctx, at, openEnd);
     claim(ctx, at, openEnd);
 
-    // Optional [jmarkdown text] group: own/paint the brackets only, and
-    // leave the interior for the ambient JMarkdown highlighting.
+    // Optional [jmarkdown text] group: paint/own the brackets, then
+    // inject the bracket-free interior into the inline grammar. Injecting
+    // the bare slice (rather than leaving the whole `[…]` to the ambient
+    // paragraph injection) renders it as clean JMarkdown — bold, emphasis,
+    // real links, math — without the shortcut-link mis-parse that a
+    // surrounding `[…]` would trigger. The interior is deliberately left
+    // *unclaimed*, so the scanner's own inline passes (==highlight==,
+    // /italic/, {{var}}, citations, footnotes) still paint over it too.
     if (S[p] === '[') {
       const rb = matchGroup(S, p, '[', ']', false);
       if (rb !== -1) {
@@ -764,6 +772,13 @@ function atDirectives(ctx, S) {
         region(ctx, rb, rb + 1);
         claim(ctx, p, p + 1);
         claim(ctx, rb, rb + 1);
+        if (rb > p + 1) {
+          ctx.out.injections.push({
+            start: p + 1,
+            end: rb,
+            language: 'jmarkdown_inline',
+          });
+        }
         p = rb + 1;
       }
     }
@@ -786,6 +801,10 @@ function atDirectives(ctx, S) {
             wrapPrefix: '<x ',
             wrapSuffix: ' />',
           });
+          // A `style="…"` value is CSS, not a bare string — inject each
+          // one into the css grammar (pushed after the html injection so
+          // it wins the value span). See `styleAttrInjections`.
+          styleAttrInjections(ctx, S, p + 1, rc);
           claim(ctx, p + 1, rc);
         }
         claim(ctx, p, p + 1);
@@ -840,6 +859,44 @@ function matchGroup(S, from, open, close, quoteAware) {
     i += 1;
   }
   return -1;
+}
+
+/**
+ * Within a directive's `{…}` attribute list `[from, to)`, inject each
+ * `style="…"` / `style='…'` value into the css grammar. tree-sitter-html
+ * only injects css into `<style>` *elements*, so a style *attribute*
+ * value would otherwise render as a plain string. The value is a
+ * declaration list, not a whole stylesheet, so it is wrapped as a rule
+ * body `*{…}` (see `treesitter.js#spliceInjections`); the synthetic
+ * selector and braces fall outside the real span and are clipped away.
+ * Pushed after the list's html injection so it wins the value span.
+ *
+ * @param {object} ctx
+ * @param {string} S - The masked working copy (offsets are document offsets).
+ * @param {number} from - Absolute start of the attribute interior.
+ * @param {number} to - Absolute end of the attribute interior.
+ */
+function styleAttrInjections(ctx, S, from, to) {
+  const re = /\bstyle\s*=\s*(['"])/g;
+  const seg = S.slice(from, to);
+  let m;
+  while ((m = re.exec(seg))) {
+    const quote = m[1];
+    const valStart = from + m.index + m[0].length;
+    let j = valStart;
+    while (j < to && S[j] !== quote) j += S[j] === '\\' ? 2 : 1;
+    const valEnd = Math.min(j, to);
+    if (valEnd > valStart) {
+      ctx.out.injections.push({
+        start: valStart,
+        end: valEnd,
+        language: 'css',
+        wrapPrefix: '*{',
+        wrapSuffix: '}',
+      });
+    }
+    re.lastIndex = valEnd - from + 1;
+  }
 }
 
 /** Embedded JavaScript chains → the javascript grammar. */

@@ -310,9 +310,13 @@ test('@name directive: sigils/brackets faced, text ambient, attrs injected', () 
   assert.equal(faceAt(scan.captures, text.indexOf(']')), 'jmd-punct');
   assert.equal(faceAt(scan.captures, text.indexOf('{')), 'jmd-punct');
   assert.equal(faceAt(scan.captures, text.indexOf('}')), 'jmd-punct');
-  // The text group is left to ambient highlighting: not owned, not faced.
+  // The text group is injected into jmarkdown_inline: not owned, no
+  // scanner face of its own, but an injection carries its interior.
   assert.ok(!owned(scan, text, 'hello'), 'text group not owned');
   assert.equal(faceOf(scan, text, 'hello'), null);
+  const inline = scan.injections.find((i) => i.language === 'jmarkdown_inline');
+  assert.ok(inline, 'text group injected into jmarkdown_inline');
+  assert.equal(text.slice(inline.start, inline.end), 'hello');
   // The attribute list is injected into html, wrapped, and NOT owned
   // (so the injection shows through the capture-provider clip).
   const html = attrInjection(scan);
@@ -389,11 +393,48 @@ test('attribute injection is quote-aware: a } inside a value does not close', ()
   assert.equal(text.slice(html.start, html.end), `style='a}b' data-y="z"`);
 });
 
-test('the text group stays ambient: ==highlight== inside it still faces', () => {
-  const text = '@note[see ==this==] ok\n';
+test('the text group is a bracket-free jmarkdown_inline injection', () => {
+  // Injecting the bare interior (not the wrapping [ … ]) is what avoids
+  // the shortcut-link mis-parse; the span excludes the brackets.
+  const text = 'Here @note[hello *world*]{.x} there.\n';
   const scan = scanJmarkdown(text);
-  // The highlight pass runs over the unclaimed text interior.
+  const inline = scan.injections.find((i) => i.language === 'jmarkdown_inline');
+  assert.ok(inline);
+  assert.equal(text.slice(inline.start, inline.end), 'hello *world*');
+  assert.equal(text[inline.start - 1], '[', 'injection starts after the [');
+  assert.equal(text[inline.end], ']', 'injection ends before the ]');
+});
+
+test('the text interior stays unclaimed: scanner extras still paint there', () => {
+  // ==highlight==, {{mustache}} and a footnote opener inside the text
+  // group are painted by the scanner passes (the interior is unclaimed).
+  const text = '@note[see ==this==, {{v}} and more[^n: x]] ok\n';
+  const scan = scanJmarkdown(text);
   assert.equal(faceOf(scan, text, 'this'), 'jmd-highlight');
+  assert.equal(faceOf(scan, text, 'v'), 'jmd-mustache');
+  assert.equal(faceOf(scan, text, '[^n:'), 'jmd-footnote');
+});
+
+test('a style="…" value in the attribute list is injected into css', () => {
+  const text = `@x{.a style='color: crimson; font-weight: bold'}\n`;
+  const scan = scanJmarkdown(text);
+  const css = scan.injections.find((i) => i.language === 'css');
+  assert.ok(css, 'a css injection for the style value');
+  assert.equal(text.slice(css.start, css.end), 'color: crimson; font-weight: bold');
+  assert.equal(css.wrapPrefix, '*{');
+  assert.equal(css.wrapSuffix, '}');
+  // The whole attribute list is still injected into html as well.
+  assert.ok(attrInjection(scan), 'html injection for the list is still present');
+});
+
+test('style-value css injection handles double quotes and coexists with html', () => {
+  const text = `@x{style="margin: 0 auto" data-y="7"}\n`;
+  const scan = scanJmarkdown(text);
+  const css = scan.injections.find((i) => i.language === 'css');
+  assert.ok(css);
+  assert.equal(text.slice(css.start, css.end), 'margin: 0 auto');
+  // data-y is a plain attribute, not css — only the style value is injected.
+  assert.equal(scan.injections.filter((i) => i.language === 'css').length, 1);
 });
 
 test('an email address is never a directive (@ must follow start or space)', () => {
