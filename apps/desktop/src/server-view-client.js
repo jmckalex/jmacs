@@ -715,13 +715,15 @@ export function createServerViewClient({
 
   /** Ask the server to open the file at PATH directly (no minibuffer) — a file
    *  clicked in a directory-view. The server runs the same `visitFile` find-file
-   *  uses, switching this client onto the opened buffer. A no-op for a falsy path. */
-  function visitPath(path) {
+   *  uses, switching this client onto the opened buffer. When LEAFID is given,
+   *  the open is routed into that specific leaf (the project's editing tabline a
+   *  directory-tree wired), rather than the client's focused leaf. A no-op for a
+   *  falsy path. */
+  function visitPath(path, leafId = null) {
     if (!path) return;
-    port.postMessage({
-      type: MSG.INTENT,
-      intent: { id: nextIntentId++, kind: INTENT.VISIT_FILE, path: String(path) },
-    });
+    const intent = { id: nextIntentId++, kind: INTENT.VISIT_FILE, path: String(path) };
+    if (typeof leafId === 'string' && leafId !== '') intent.leafId = leafId;
+    port.postMessage({ type: MSG.INTENT, intent });
   }
 
   /** Ask the server to hold a renderer-computed element-view SPEC as a

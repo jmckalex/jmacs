@@ -3628,7 +3628,19 @@ export function createSpine(options, effects = {}) {
    * @param {string} path - An absolute path.
    * @returns {string | null} The buffer id, or null.
    */
-  function visitFile(path) {
+  function visitFile(path, targetLeafId = null) {
+    // A file activated in a directory-tree routes to a SPECIFIC leaf — the
+    // project's editing tabline — not the tree's own (focused) pane. Focus that
+    // leaf first so the open below lands there. Mirrors `reveal-source-pane!`'s
+    // "focus the pane, then visitFile" (SyncTeX). A no-op / natural fallback to
+    // the focused leaf when no target is given or the leaf is gone.
+    if (targetLeafId != null && targetLeafId !== '') {
+      const model = currentPaneModel();
+      if (model && typeof model.focusPane === 'function') {
+        model.focusPane(targetLeafId);
+        rebindFocusedPane();
+      }
+    }
     const result = openFile(path);
     if (!result) {
       statusText = `find-file: cannot open ${path}`;

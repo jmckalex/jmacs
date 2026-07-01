@@ -5793,10 +5793,13 @@ function configureDirectoryTreeView() {
     // Colour file/folder icons from the vendored Material Icon Theme set.
     iconUrlFor: (name, isDirectory, expanded) =>
       materialIconUrlForEntry(name, isDirectory, expanded),
-    openPath: (path) => {
-      // Open the file by path through the server's find-file (visitFile),
-      // switching the focused leaf onto it.
-      if (serverViewClient) serverViewClient.visitPath(path);
+    openPath: (path, targetPaneId) => {
+      // Open the file by path through the server's find-file (visitFile). The
+      // dir-tree passes its wired `openTargetPaneId` (the project's editing
+      // tabline, computed by reapplyProjectDirTreeTarget) so the file lands
+      // THERE, not in the tree's own focused pane. Falls back to the focused
+      // leaf when no target is wired (a standalone directory-tree).
+      if (serverViewClient) serverViewClient.visitPath(path, targetPaneId);
     },
     closeBuffer: () => {
       // Closing a directory pane isn't wired server-side yet (follow-on); the
