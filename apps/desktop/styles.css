@@ -6424,8 +6424,9 @@ notebook-js-view {
    * background toward the foreground, so it reads as a raised surface in both
    * light and dark themes. */
   --math-tip-bg: color-mix(in srgb, var(--bg-editor) 82%, var(--fg) 18%);
+  --math-tip-border: color-mix(in srgb, var(--fg) 34%, transparent);
   background: var(--math-tip-bg);
-  border: 1px solid color-mix(in srgb, var(--fg) 34%, transparent);
+  border: 1px solid var(--math-tip-border);
   border-radius: 7px;
   box-shadow: 0 8px 26px #00000078;
   color: var(--fg);
@@ -6488,20 +6489,31 @@ notebook-js-view {
   white-space: nowrap;
 }
 
-/* A little arrow pointing down at the construct (or up when flipped below). */
+/* The arrow is a rotated square (diamond) centred on the tooltip's bottom
+ * edge: its upper half is covered by the tooltip body (same background), and
+ * its two lower edges carry the tooltip's border — so the tail is bordered to
+ * match the rest of the tooltip. Flips to point up when placed below. */
 .math-tooltip::after {
   content: "";
   position: absolute;
   left: 50%;
   top: 100%;
-  transform: translateX(-50%);
-  border: 6px solid transparent;
-  border-top-color: var(--math-tip-bg);
+  width: 11px;
+  height: 11px;
+  background: var(--math-tip-bg);
+  border: 1px solid transparent;
+  border-right-color: var(--math-tip-border);
+  border-bottom-color: var(--math-tip-border);
+  border-bottom-right-radius: 2px;
+  transform: translate(-50%, -50%) rotate(45deg);
 }
 
 .math-tooltip-below::after {
-  top: auto;
-  bottom: 100%;
-  border-top-color: transparent;
-  border-bottom-color: var(--math-tip-bg);
+  top: 0;
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  border-top-color: var(--math-tip-border);
+  border-left-color: var(--math-tip-border);
+  border-bottom-right-radius: 0;
+  border-top-left-radius: 2px;
 }
