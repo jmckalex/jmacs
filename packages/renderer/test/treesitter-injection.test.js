@@ -288,6 +288,71 @@ test('non-overlapping injections are unaffected by the later-wins rule', () => {
   ]);
 });
 
+// --- wrapped injections: highlight a region inside a synthetic context --
+// A code-driven injection may carry wrapPrefix/wrapSuffix so the inner
+// grammar sees a context the document lacks — JMarkdown wraps a
+// directive's `{…}` attribute list as `<x … />` so tree-sitter-html
+// captures the attributes. The wrapper's own captures must fall away.
+
+test('a wrapped injection maps inner captures back onto the real slice', () => {
+  // The attribute list ".a b" lives at [3, 7) in the document; injected
+  // into html wrapped as "<x " + ".a b" + " />" == "<x .a b />" (len 10).
+  const text = 'ZZZ.a bZZZ'; // slice [3,7) === ".a b"
+  const seen = [];
+  const inner = {
+    highlight: () => [],
+    captures: (t) => {
+      seen.push(t);
+      // Captures over the WRAPPED string "<x .a b />":
+      return [
+        { start: 0, end: 1, face: 'tag' }, // "<"
+        { start: 1, end: 2, face: 'tag' }, // "x"
+        { start: 3, end: 5, face: 'attr' }, // ".a"
+        { start: 6, end: 7, face: 'attr' }, // "b"
+        { start: 8, end: 10, face: 'tag' }, // "/>"
+      ];
+    },
+  };
+  const injections = [
+    { start: 3, end: 7, language: 'html', wrapPrefix: '<x ', wrapSuffix: ' />' },
+  ];
+  const result = spliceInjections(text, [], injections, () => inner, 0);
+  // The inner highlighter saw the wrapped text, not the bare slice.
+  assert.equal(seen[0], '<x .a b />');
+  // Only the two attribute captures land on document text; the synthetic
+  // "<x" and "/>" captures fall away (prefix len 3, base +3).
+  assert.deepEqual(result, [
+    { start: 3, end: 5, face: 'attr' }, // ".a": wrapped [3,5) -> doc [3,5)
+    { start: 6, end: 7, face: 'attr' }, // "b" : wrapped [6,7) -> doc [6,7)
+  ]);
+});
+
+test('a wrapped injection clips a capture straddling the wrapper boundary', () => {
+  const text = 'ABCDEF'; // slice [1,5) === "BCDE"; wrapped "<x BCDE >" (len 9)
+  const inner = {
+    highlight: () => [],
+    captures: () => [{ start: 1, end: 6, face: 'x' }], // spans "x BCDE"
+  };
+  const injections = [
+    { start: 1, end: 5, language: 'h', wrapPrefix: '<x ', wrapSuffix: ' >' },
+  ];
+  const result = spliceInjections(text, [], injections, () => inner, 0);
+  // capture [1,6): s=1-3=-2, e=6-3=3 -> clip to [0,3) of slice -> doc [1,4).
+  assert.deepEqual(result, [{ start: 1, end: 4, face: 'x' }]);
+});
+
+test('a wrapped injection still clips outer ranges against its real span', () => {
+  // The live-injection region is the real [10,20) span, not the wrapped
+  // length — so an outer range inside it is still dropped.
+  const outer = [{ start: 12, end: 18, face: 'block' }];
+  const injections = [
+    { start: 10, end: 20, language: 'h', wrapPrefix: '<x ', wrapSuffix: ' />' },
+  ];
+  const inner = fakeHighlighter([{ start: 3, end: 5, face: 'attr' }]);
+  const result = spliceInjections('a'.repeat(30), outer, injections, () => inner, 0);
+  assert.ok(!result.some((r) => r.face === 'block'), 'outer range inside injection dropped');
+});
+
 // --- mergeInjectedFolds: injection-aware code folding -------------------
 // The fold analog of spliceInjections — pulls each injected region's
 // folds up into outer coordinates so a PHP buffer folds its embedded

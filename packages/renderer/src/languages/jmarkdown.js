@@ -15,10 +15,12 @@
  *     and injects latex into math).
  *   - `injectionProvider` adds the scanner's regions: LaTeX into
  *     `:::TiKZ` and `@begin(TeX|equation|…)` bodies, javascript into
- *     embedded expression chains, html into `<script>` blocks and the
- *     header's `Extension`/`Custom element` bodies. Provider injections
- *     are appended after query matches, so they win where they overlap
- *     the paragraph injection (see `treesitter.js#spliceInjections`).
+ *     embedded expression chains, html into `<script>` blocks, the
+ *     header's `Extension`/`Custom element` bodies, and a `@name…{…}`
+ *     directive's attribute list (wrapped as `<x … />` so tree-sitter-
+ *     html captures the attributes). Provider injections are appended
+ *     after query matches, so they win where they overlap the paragraph
+ *     injection (see `treesitter.js#spliceInjections`).
  *   - `captureProvider` paints the dialect constructs the grammar has
  *     no nodes for, and occludes its mis-parses (a header read as a
  *     setext heading, a directive's `[content]` read as a link).

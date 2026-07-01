@@ -1,0 +1,37 @@
+---
+Title: @-directive highlighting demo
+---
+
+# JMarkdown `@` directives
+
+Inline, both groups: @callout[Watch out — this is *important* and has math $e^{i\pi}=-1$.]{.warning #first data-level="3"}
+
+Inline, angle form: @<fig>[See /figure one/ below.]{.centered}
+
+Block directive (note the `+`): @aside+[A block-level aside with a ==highlighted== phrase and a `code span`.]{.sidebar style="color: crimson; font-weight: bold"}
+
+Block, angle + plus: @<callout>+[Another block, this time with an @callout[nested inline]{.inner} directive.]{#outer}
+
+## Optional groups
+
+Bare name, no groups: @linebreak here.
+
+Text only, no attributes: @ref[section-intro].
+
+Attributes only, no text: @hr{.thin .dashed}.
+
+## Line breaks inside the groups
+
+@summary[
+  The text group may run across
+  several lines, as long as no blank
+  line appears inside it.
+]{.boxed data-collapsible="true"}
+
+## Not directives
+
+An email like jason@example.com is left alone, and an unpaired @<angle stays plain.
+
+@begin(theorem)[Euclid]{.numbered}
+There are infinitely many primes. (This is an environment, not an `@`-directive.)
+@end(theorem)

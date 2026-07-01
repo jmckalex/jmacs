@@ -18,6 +18,12 @@
  *     align/… bodies → latex and mermaid bodies → the Mermaid scanner;
  *     foldable on a name-agnostic stack
  *   - inline directives `:name[content]{.class #id attr="v"}`
+ *   - `@name[text]{attrs}` directives (inline) and `@name+[text]{attrs}`
+ *     (block), with an optional `<name>` angle form: the `[text]` group
+ *     is injected into `jmarkdown_inline` (and its interior left unclaimed,
+ *     so the scanner's own inline passes also paint over it); the `{attrs}`
+ *     group is injected into html (wrapped so its attributes highlight),
+ *     and a `style="…"` value inside it is further injected into css
  *   - `{{mustache}}` variables, `==highlight==` spans, `/italic/`
  *     spans (with `\/` escapes and the mid-word-slash abort)
  *   - embedded JavaScript chains `ident(...).prop(...)` → javascript
@@ -57,8 +63,12 @@ import { scanMermaid } from './mermaid-scan.js';
  *   dialect owns; grammar/injected captures are clipped out of them.
  * @property {{ start: number, end: number }[]} folds - Foldable spans
  *   (directive blocks, `@begin/@end` environments).
- * @property {{ start: number, end: number, language: string }[]} injections -
- *   Code-driven language injections (latex, javascript, html, …).
+ * @property {{ start: number, end: number, language: string,
+ *   wrapPrefix?: string, wrapSuffix?: string }[]} injections -
+ *   Code-driven language injections (latex, javascript, html, …). An
+ *   entry may carry `wrapPrefix`/`wrapSuffix` to be highlighted inside a
+ *   synthetic context — a directive's `{…}` attribute list injected into
+ *   html as `<x … />`; see `treesitter.js#spliceInjections`.
  */
 
 /** LaTeX-bodied `@begin(…)` environment names (the Sublime list). */
@@ -634,6 +644,10 @@ function afterName(ctx, line, col, base) {
  */
 function scanInlines(ctx) {
   const S = ctx.buf.join('');
+  // `@name[…]{…}` directives stake out their sigils/brackets first so the
+  // later passes still highlight the `[…]` text group (left ambient) while
+  // skipping the sigils and the injected `{…}` attribute group.
+  atDirectives(ctx, S);
   mustaches(ctx, S);
   inlineDirectives(ctx, S);
   jsChains(ctx, S);
@@ -691,6 +705,197 @@ function inlineDirectives(ctx, S) {
       claim(ctx, at, end);
       re.lastIndex = end;
     }
+  }
+}
+
+/**
+ * `@name[…]{…}` directives — JMarkdown's inline/block directive
+ * extension. The opening is `@`, an optional `<`, a `[-A-Za-z0-9]+`
+ * name, an optional matching `>` (a `<` obliges a `>`, and vice versa),
+ * and — for a *block* directive — a trailing `+` outside the `>`. Then
+ * an optional `[jmarkdown text]` group and an optional `{HTML attribute
+ * list}` group; both are optional, and either may span lines but not a
+ * blank line.
+ *
+ * The sigils (`@ < > +`) and the group delimiters (`[ ] { }`) are
+ * painted and owned. The text group is *not* owned and *not* injected:
+ * we are already in a JMarkdown context, so the surrounding
+ * highlighting (the paragraph → `jmarkdown_inline` injection, plus the
+ * later inline passes here — `==highlight==`, `/italic/`, `{{var}}`, …)
+ * paints its interior. The attribute group is injected into the html
+ * grammar, wrapped as `<x … />` so tree-sitter-html actually captures
+ * the attributes (bare, tagless attributes are top-level text to it);
+ * see `treesitter.js#spliceInjections`. The attribute interior is
+ * claimed (not owned) so the injection survives the capture-provider
+ * clip while the inline passes stay out of it.
+ *
+ * `@begin(…)` / `@end(…)` environments are consumed and blanked by the
+ * block pass before this runs, so they never reach here; a bare `@begin`
+ * with no `(` is just a directive named "begin".
+ */
+function atDirectives(ctx, S) {
+  const re = /(^|\s)@(<)?([-A-Za-z0-9]+)(>)?(\+)?/g;
+  let m;
+  while ((m = re.exec(S))) {
+    const at = m.index + m[1].length; // offset of '@'
+    if (isClaimed(ctx, at)) continue;
+    // Angle brackets come as a pair, or not at all.
+    if (Boolean(m[2]) !== Boolean(m[4])) continue;
+
+    // Paint the opening: '@', optional '<', name, optional '>', optional '+'.
+    let p = at;
+    cap(ctx, p, p + 1, 'jmd-directive-punct'); // @
+    p += 1;
+    if (m[2]) { cap(ctx, p, p + 1, 'jmd-directive-punct'); p += 1; } // <
+    cap(ctx, p, p + m[3].length, 'jmd-directive-name'); // name
+    p += m[3].length;
+    if (m[4]) { cap(ctx, p, p + 1, 'jmd-directive-punct'); p += 1; } // >
+    if (m[5]) { cap(ctx, p, p + 1, 'jmd-directive-punct'); p += 1; } // +
+    const openEnd = p;
+    region(ctx, at, openEnd);
+    claim(ctx, at, openEnd);
+
+    // Optional [jmarkdown text] group: paint/own the brackets, then
+    // inject the bracket-free interior into the inline grammar. Injecting
+    // the bare slice (rather than leaving the whole `[…]` to the ambient
+    // paragraph injection) renders it as clean JMarkdown — bold, emphasis,
+    // real links, math — without the shortcut-link mis-parse that a
+    // surrounding `[…]` would trigger. The interior is deliberately left
+    // *unclaimed*, so the scanner's own inline passes (==highlight==,
+    // /italic/, {{var}}, citations, footnotes) still paint over it too.
+    if (S[p] === '[') {
+      const rb = matchGroup(S, p, '[', ']', false);
+      if (rb !== -1) {
+        cap(ctx, p, p + 1, 'jmd-punct'); // [
+        cap(ctx, rb, rb + 1, 'jmd-punct'); // ]
+        region(ctx, p, p + 1);
+        region(ctx, rb, rb + 1);
+        claim(ctx, p, p + 1);
+        claim(ctx, rb, rb + 1);
+        if (rb > p + 1) {
+          ctx.out.injections.push({
+            start: p + 1,
+            end: rb,
+            language: 'jmarkdown_inline',
+          });
+        }
+        p = rb + 1;
+      }
+    }
+
+    // Optional {HTML attribute list} group: own/paint the braces, inject
+    // the interior into html (wrapped so its attributes are captured),
+    // and claim (not own) the interior so the injection shows through.
+    if (S[p] === '{') {
+      const rc = matchGroup(S, p, '{', '}', true);
+      if (rc !== -1) {
+        cap(ctx, p, p + 1, 'jmd-punct'); // {
+        cap(ctx, rc, rc + 1, 'jmd-punct'); // }
+        region(ctx, p, p + 1);
+        region(ctx, rc, rc + 1);
+        if (rc > p + 1) {
+          ctx.out.injections.push({
+            start: p + 1,
+            end: rc,
+            language: 'html',
+            wrapPrefix: '<x ',
+            wrapSuffix: ' />',
+          });
+          // A `style="…"` value is CSS, not a bare string — inject each
+          // one into the css grammar (pushed after the html injection so
+          // it wins the value span). See `styleAttrInjections`.
+          styleAttrInjections(ctx, S, p + 1, rc);
+          claim(ctx, p + 1, rc);
+        }
+        claim(ctx, p, p + 1);
+        claim(ctx, rc, rc + 1);
+        p = rc + 1;
+      }
+    }
+    re.lastIndex = p;
+  }
+}
+
+/**
+ * From an opener at `from` (where `S[from] === open`), return the offset
+ * of its matching `close`, or -1 if a blank line or end of input arrives
+ * first (JMarkdown forbids a blank line inside a directive group). Groups
+ * nest by depth. When `quoteAware`, a `close` inside a `'…'` or `"…"`
+ * run (with `\` escapes) does not count — so an attribute value like
+ * `style='a}b'` does not close the `{…}` early.
+ *
+ * @param {string} S
+ * @param {number} from
+ * @param {string} open
+ * @param {string} close
+ * @param {boolean} quoteAware
+ * @returns {number}
+ */
+function matchGroup(S, from, open, close, quoteAware) {
+  let depth = 1;
+  let i = from + 1;
+  while (i < S.length) {
+    const c = S[i];
+    if (quoteAware && (c === '"' || c === "'")) {
+      i += 1;
+      while (i < S.length && S[i] !== c && S[i] !== '\n') {
+        i += S[i] === '\\' ? 2 : 1;
+      }
+      if (S[i] !== c) continue; // unterminated at EOL/EOF — resume scanning
+      i += 1;
+      continue;
+    }
+    if (c === '\n') {
+      // A blank (empty/whitespace-only) next line is not permitted.
+      if (/^[ \t]*(\n|$)/.test(S.slice(i + 1))) return -1;
+      i += 1;
+      continue;
+    }
+    if (c === open) depth += 1;
+    else if (c === close) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+/**
+ * Within a directive's `{…}` attribute list `[from, to)`, inject each
+ * `style="…"` / `style='…'` value into the css grammar. tree-sitter-html
+ * only injects css into `<style>` *elements*, so a style *attribute*
+ * value would otherwise render as a plain string. The value is a
+ * declaration list, not a whole stylesheet, so it is wrapped as a rule
+ * body `*{…}` (see `treesitter.js#spliceInjections`); the synthetic
+ * selector and braces fall outside the real span and are clipped away.
+ * Pushed after the list's html injection so it wins the value span.
+ *
+ * @param {object} ctx
+ * @param {string} S - The masked working copy (offsets are document offsets).
+ * @param {number} from - Absolute start of the attribute interior.
+ * @param {number} to - Absolute end of the attribute interior.
+ */
+function styleAttrInjections(ctx, S, from, to) {
+  const re = /\bstyle\s*=\s*(['"])/g;
+  const seg = S.slice(from, to);
+  let m;
+  while ((m = re.exec(seg))) {
+    const quote = m[1];
+    const valStart = from + m.index + m[0].length;
+    let j = valStart;
+    while (j < to && S[j] !== quote) j += S[j] === '\\' ? 2 : 1;
+    const valEnd = Math.min(j, to);
+    if (valEnd > valStart) {
+      ctx.out.injections.push({
+        start: valStart,
+        end: valEnd,
+        language: 'css',
+        wrapPrefix: '*{',
+        wrapSuffix: '}',
+      });
+    }
+    re.lastIndex = valEnd - from + 1;
   }
 }
 
