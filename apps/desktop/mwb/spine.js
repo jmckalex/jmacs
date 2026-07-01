@@ -3628,18 +3628,42 @@ export function createSpine(options, effects = {}) {
    * @param {string} path - An absolute path.
    * @returns {string | null} The buffer id, or null.
    */
+  /** The leaf id a directory-tree / sidebar activation should open a file into:
+   *  a TEXT (registry-backed) leaf — the project's editing area — preferring a
+   *  tabline, else the first text leaf in spiral order. Null when the window has
+   *  no text leaf (a tree-only window; the caller then falls back to the focused
+   *  leaf). */
+  function editingLeafId(model) {
+    const leaves = (model && model.panesInSpiralOrder && model.panesInSpiralOrder()) || [];
+    const idOf = (l) => (l && l.view && l.view.bufferId != null ? l.view.bufferId : null);
+    const isText = (l) => { const id = idOf(l); return id != null && registry.has(id); };
+    const texts = leaves.filter(isText);
+    if (texts.length === 0) return null;
+    const tabbed = texts.find((l) => Array.isArray(l.tabs) && l.tabs.length > 0);
+    return (tabbed ?? texts[0]).id ?? null;
+  }
+
   function visitFile(path, targetLeafId = null) {
-    // A file activated in a directory-tree routes to a SPECIFIC leaf — the
-    // project's editing tabline — not the tree's own (focused) pane. Focus that
-    // leaf first so the open below lands there. Mirrors `reveal-source-pane!`'s
-    // "focus the pane, then visitFile" (SyncTeX). A no-op / natural fallback to
-    // the focused leaf when no target is given or the leaf is gone.
-    if (targetLeafId != null && targetLeafId !== '') {
-      const model = currentPaneModel();
-      if (model && typeof model.focusPane === 'function') {
-        model.focusPane(targetLeafId);
-        rebindFocusedPane();
-      }
+    // Decide which leaf the file opens into. An EXPLICIT target (a directory-
+    // tree wired to the project's editing tabline via openTargetPaneId) wins.
+    // Otherwise, if the focused leaf is a non-text SIDEBAR — the directory-tree
+    // the file was just activated in — REDIRECT to the editing (text) leaf so
+    // the open doesn't replace the sidebar. A normal find-file from a text leaf
+    // is untouched (its focused leaf IS a text leaf). Then focus the chosen leaf
+    // so the open lands there (mirrors reveal-source-pane! / SyncTeX). The
+    // server owns the pane tree, so this holds even if the client sent no target.
+    const model = currentPaneModel();
+    let leafId = (targetLeafId != null && targetLeafId !== '') ? targetLeafId : null;
+    if (leafId === null && model && typeof model.focusedLeaf === 'function') {
+      const focused = model.focusedLeaf();
+      const focusedIsText = !!(
+        focused && focused.view && registry.has(focused.view.bufferId)
+      );
+      if (focused && !focusedIsText) leafId = editingLeafId(model);
+    }
+    if (leafId !== null && model && typeof model.focusPane === 'function') {
+      model.focusPane(leafId);
+      rebindFocusedPane();
     }
     const result = openFile(path);
     if (!result) {
