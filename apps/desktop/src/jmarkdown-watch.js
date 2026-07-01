@@ -16,7 +16,8 @@
 
 import { ipcMain } from 'electron';
 import { spawn } from 'node:child_process';
-import { createServer, connect } from 'node:net';
+import { createServer } from 'node:net';
+import { get as httpGet } from 'node:http';
 import { writeFileSync, unlinkSync } from 'node:fs';
 
 import {
@@ -62,33 +63,44 @@ function freePort() {
 }
 
 /**
- * Poll `port` until something accepts a connection, the child exits, or the
- * caller aborts / we time out. Resolves true once the server is up, false
- * otherwise. Output-agnostic (we don't parse jmarkdown's stdout).
+ * Poll `GET http://127.0.0.1:port/` until it returns **200**, the child exits,
+ * the caller aborts, or we time out. Resolves true only when the server serves
+ * the built page — NOT merely when the TCP port accepts. `jmarkdown watch`
+ * starts listening ~half a second before its first build finishes, and answers
+ * every request in that window with a bare `404 Not found` page that carries no
+ * live-reload script (so a client that loads it is stuck there forever). A plain
+ * TCP probe resolves inside that window; waiting for 200 makes sure the iframe
+ * loads the real, self-reloading page. (Previously masked because a stale
+ * `.html` from the book build was already on disk to serve at once; the preview
+ * shadow has none.)
  *
  * @param {number} port
  * @param {import('node:child_process').ChildProcess} child
  * @param {() => boolean} isAborted - True once the spawn has failed.
  * @returns {Promise<boolean>}
  */
-function waitForPort(port, child, isAborted) {
+function waitForServer(port, child, isAborted) {
   const deadline = Date.now() + READY_TIMEOUT_MS;
   return new Promise((resolve) => {
+    const retry = () => {
+      if (Date.now() >= deadline) resolve(false);
+      else setTimeout(tryOnce, READY_POLL_MS);
+    };
     const tryOnce = () => {
       if (isAborted() || child.exitCode !== null || child.signalCode !== null) {
         resolve(false);
         return;
       }
-      const sock = connect(port, '127.0.0.1');
-      sock.once('connect', () => {
-        sock.destroy();
-        resolve(true);
-      });
-      sock.once('error', () => {
-        sock.destroy();
-        if (Date.now() >= deadline) resolve(false);
-        else setTimeout(tryOnce, READY_POLL_MS);
-      });
+      const req = httpGet(
+        { host: '127.0.0.1', port, path: '/', timeout: READY_POLL_MS * 4 },
+        (res) => {
+          res.resume(); // drain so the socket frees
+          if (res.statusCode === 200) resolve(true);
+          else retry(); // 404 while still building, or a transient non-200
+        }
+      );
+      req.once('error', retry); // connection refused before it listens
+      req.once('timeout', () => { req.destroy(); retry(); });
     };
     tryOnce();
   });
@@ -195,7 +207,7 @@ async function startWatcher(wcId, filePath, seedText = null) {
     }
   });
 
-  const ready = await waitForPort(port, child, () => spawnError !== null);
+  const ready = await waitForServer(port, child, () => spawnError !== null);
 
   if (!ready) {
     // Drop our slot (only if still ours — a newer start may already own it)
