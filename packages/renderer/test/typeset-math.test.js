@@ -9,12 +9,33 @@ import assert from 'node:assert/strict';
 
 import {
   typesetMath,
+  isMathErrorNode,
   isMathJaxReady,
   whenMathJaxReady,
   cacheKey,
   createMathCache,
   typesetCached,
 } from '../src/typeset-math.js';
+
+/** A fake tex2svg container whose querySelector matches SELECTORS. */
+function fakeNode(matchingSelectors = []) {
+  const set = new Set(matchingSelectors);
+  return { querySelector: (sel) => (set.has(sel) ? {} : null) };
+}
+
+test('isMathErrorNode detects a MathJax data-mjx-error render', () => {
+  assert.equal(isMathErrorNode(fakeNode(['[data-mjx-error]'])), true);
+});
+
+test('isMathErrorNode detects an merror MathML node', () => {
+  assert.equal(isMathErrorNode(fakeNode(['[data-mml-node="merror"]'])), true);
+});
+
+test('isMathErrorNode is false for a clean render and for null', () => {
+  assert.equal(isMathErrorNode(fakeNode([])), false);
+  assert.equal(isMathErrorNode(null), false);
+  assert.equal(isMathErrorNode({}), false); // no querySelector
+});
 
 /** A MathJax stub that records its calls and returns a marker node. */
 function stubMathJax(overrides = {}) {

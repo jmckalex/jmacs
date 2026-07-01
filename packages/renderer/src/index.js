@@ -180,6 +180,7 @@ export {
 } from './math-preview-providers.js';
 export {
   typesetMath,
+  isMathErrorNode,
   isMathJaxReady,
   whenMathJaxReady,
   cacheKey,

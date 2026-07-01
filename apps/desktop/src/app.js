@@ -81,6 +81,7 @@ import {
   createMathPreview,
   createMathTooltip,
   typesetMath,
+  isMathErrorNode,
   isMathJaxReady,
   mathPreviewProviderForMode,
   TextView,
@@ -4482,11 +4483,14 @@ function flushMathTooltip() {
     tip.hide();
     return;
   }
-  // Typeset the current body now (synchronous); null on a parse error or
-  // before MathJax has started → the tooltip keeps the last valid image.
-  const node = isMathJaxReady()
+  // Typeset the current body now (synchronous). MathJax 3 renders a TeX
+  // syntax error as an error node rather than throwing, so also treat an
+  // error node (and the not-ready case) as "no new render" — the tooltip then
+  // keeps the last valid image and flags the syntax error.
+  const raw = isMathJaxReady()
     ? typesetMath(pending.tex, { display: pending.display })
     : null;
+  const node = raw && !isMathErrorNode(raw) ? raw : null;
   const instance = pending.instanceEl();
   const caret =
     instance && typeof instance.querySelector === 'function'

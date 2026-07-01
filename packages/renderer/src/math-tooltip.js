@@ -90,14 +90,23 @@ export function createMathTooltip(hostEl) {
 
   const bodyEl = doc.createElement('div');
   bodyEl.className = 'math-tooltip-body';
-  const badge = doc.createElement('span');
-  badge.className = 'math-tooltip-error';
-  badge.textContent = '⚠';
-  badge.title = 'Math has a syntax error — showing the last valid render';
-  badge.style.display = 'none';
+  // The error indicator: a red circled-X above the words "syntax error",
+  // centred BELOW the (kept) last-valid image. Shown only while the body fails
+  // to typeset; the last good render stays visible above it.
+  const errorEl = doc.createElement('div');
+  errorEl.className = 'math-tooltip-error';
+  errorEl.style.display = 'none';
+  const errorIcon = doc.createElement('span');
+  errorIcon.className = 'math-tooltip-error-icon';
+  errorIcon.textContent = '✕';
+  const errorText = doc.createElement('span');
+  errorText.className = 'math-tooltip-error-text';
+  errorText.textContent = 'syntax error';
+  errorEl.appendChild(errorIcon);
+  errorEl.appendChild(errorText);
 
   tip.appendChild(bodyEl);
-  tip.appendChild(badge);
+  tip.appendChild(errorEl);
   hostEl.appendChild(tip);
 
   /** The last non-null node shown for the construct keyed by `currentKey`. */
@@ -110,6 +119,12 @@ export function createMathTooltip(hostEl) {
    *  anchored ONCE on entry and then left put, so it doesn't jitter along with
    *  the caret while you edit within the same construct. */
   let positioned = false;
+  /** The anchor rect frozen on entering the current construct. Re-used when the
+   *  error indicator toggles (the height changes) so the tooltip re-anchors
+   *  without following the caret. */
+  let anchor = null;
+  /** Whether the error indicator was shown on the previous update. */
+  let lastErrorState = false;
 
   function mountInto(parent, node) {
     if (typeof parent.replaceChildren === 'function') parent.replaceChildren();
@@ -140,11 +155,13 @@ export function createMathTooltip(hostEl) {
       currentKey = key;
       lastValid = null;
       positioned = false;
+      anchor = null;
+      lastErrorState = false;
     }
     const r = chooseRender({ node, lastValid });
     lastValid = r.lastValid;
     mountInto(bodyEl, r.mount);
-    badge.style.display = r.error ? '' : 'none';
+    errorEl.style.display = r.error ? 'flex' : 'none';
     tip.classList.toggle('math-tooltip-display', Boolean(display));
     tip.classList.toggle('math-tooltip-empty', !r.mount);
     // The preview size is a defcustom (*math-tooltip-scale*), pushed via the
@@ -153,10 +170,15 @@ export function createMathTooltip(hostEl) {
       tip.style.setProperty('--math-tooltip-scale', String(scale));
     }
     tip.style.display = '';
-    // Anchor only on entry (and on the first frame a caret rect is available),
-    // then leave it put — so editing within the construct doesn't drag it.
-    if (!positioned && anchorRect) {
-      position(anchorRect);
+    // Freeze the anchor on entry; reposition only on entry or when the error
+    // indicator appears/disappears (its height changes) — never per keystroke,
+    // so it doesn't jitter with the caret. Re-anchoring reuses the FROZEN rect,
+    // and placeAbove pins the bottom above the construct so it grows upward.
+    if (anchorRect && !anchor) anchor = anchorRect;
+    const errorChanged = r.error !== lastErrorState;
+    lastErrorState = r.error;
+    if (anchor && (!positioned || errorChanged)) {
+      position(anchor);
       positioned = true;
     }
   }
@@ -166,6 +188,8 @@ export function createMathTooltip(hostEl) {
     currentKey = null;
     lastValid = null;
     positioned = false;
+    anchor = null;
+    lastErrorState = false;
   }
 
   function dispose() {
