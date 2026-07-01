@@ -2112,6 +2112,48 @@ test('loadWindowLayout resets the window open-set to exactly its restored buffer
   assert.deepEqual(shownPaths, ['/tmp/a.js'], 'only the restored buffer remains in the open-set');
 });
 
+test('loadWindowLayout clamps a restored point past a since-shortened file', () => {
+  // Regression (the "MSc dissertation feedback" freeze): a session saved with the
+  // cursor at offset N, then the file shrank on disk to < N. Restoring the stale
+  // offset must NOT reach positionAt out of range (which threw and aborted the
+  // window's view send → painted-but-frozen, dead keys). The point clamps to the
+  // file's current end, and viewState — the throwing path — succeeds.
+  const files = { '/tmp/short.md': { text: 'abc', name: 'short.md' } }; // length 3
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  spine.visitFile('/tmp/short.md');
+  const blob = {
+    kind: 'leaf',
+    focused: true,
+    view: { kind: 'text', path: '/tmp/short.md', point: 999, mark: 500 },
+  };
+  assert.equal(spine.loadWindowLayout(0, blob), true, 'layout restored');
+  assert.doesNotThrow(() => spine.viewState(), 'viewState must not throw on a stale offset');
+  const vs = spine.viewState();
+  assert.equal(vs.point, 3, 'point clamped to the file length');
+  assert.equal(vs.mark, 3, 'mark clamped to the file length');
+  assert.equal(vs.cursorLine, 1, 'the clamped cursor resolves to a real line');
+});
+
+test('loadWindowLayout clamps a stale point inside a restored tabline (MSc freeze)', () => {
+  // The exact shape of the frozen session: a tabline leaf whose active text tab
+  // carries a point past the file's current length.
+  const files = { '/tmp/feedback.md': { text: 'x'.repeat(213), name: 'feedback.md' } };
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  spine.visitFile('/tmp/feedback.md');
+  const blob = {
+    kind: 'leaf',
+    focused: true,
+    view: {
+      kind: 'tabline',
+      active: 0,
+      tabs: [{ kind: 'text', path: '/tmp/feedback.md', point: 215, mark: null }],
+    },
+  };
+  assert.equal(spine.loadWindowLayout(0, blob), true, 'tabline layout restored');
+  assert.doesNotThrow(() => spine.viewState(), 'viewState must not throw');
+  assert.equal(spine.viewState().point, 213, 'the tab point clamped to the file length');
+});
+
 // --- Notebook: server-side cell eval (M-x notebook-cells) --------------------
 // The renderer can't eval (CSP forbids unsafe-eval); cells run HERE in the
 // spine's Node context and return a SERIALIZABLE result the client materializes.

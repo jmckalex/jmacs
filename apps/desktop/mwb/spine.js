@@ -4923,6 +4923,33 @@ export function createSpine(options, effects = {}) {
     return src.id;
   }
 
+  /** Walk a restore blob and clamp every text leaf/tab's `point` and `mark` to
+   *  the CURRENT length of the buffer at its path (the files are already open).
+   *  A cursor saved past a since-shortened file would otherwise reach `positionAt`
+   *  out of range and throw, aborting the window's view send. Mutates in place —
+   *  clamping the stored offset is correct (a shrunk file's cursor belongs at its
+   *  new end), so the next persist writes back a valid point. */
+  function clampRestoredPoints(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.kind === 'split') {
+      clampRestoredPoints(node.first);
+      clampRestoredPoints(node.second);
+      return;
+    }
+    if (node.kind !== 'leaf') return;
+    const clampView = (v) => {
+      if (!v || typeof v !== 'object') return;
+      if (v.kind === 'tabline' && Array.isArray(v.tabs)) { v.tabs.forEach(clampView); return; }
+      if (v.kind !== 'text' || typeof v.path !== 'string') return;
+      const entry = registry.findByPath(v.path);
+      if (!entry) return;
+      const len = entry.buffer.length;
+      if (Number.isFinite(v.point)) v.point = Math.max(0, Math.min(v.point, len));
+      if (Number.isFinite(v.mark)) v.mark = Math.max(0, Math.min(v.mark, len));
+    };
+    clampView(node.view);
+  }
+
   /** Restore client INDEX's window layout from a path-keyed blob (the mirror of
    *  `serializeWindow`). The referenced files must ALREADY be open in the
    *  registry (the caller opens them first, deduped); each path resolves to its
@@ -4932,6 +4959,13 @@ export function createSpine(options, effects = {}) {
   function loadWindowLayout(index, rootBlob) {
     const model = paneModels.get(index);
     if (!model || !rootBlob) return false;
+    // A saved cursor can point PAST a file that shrank on disk since the session
+    // was saved (edited in another editor, truncated, …). Clamp every restored
+    // point/mark to its buffer's CURRENT length before the model applies them —
+    // an out-of-range offset makes `positionAt` throw when viewState is computed,
+    // which would abort the window's paint (a malformed session must degrade, not
+    // freeze the boot). The files are already open, so lengths are available.
+    clampRestoredPoints(rootBlob);
     const resolveId = (viewBlob) => {
       if (!viewBlob) return null;
       // A LIVE-PROCESS view (shell/gnuplot) restores as a FRESH data-source (new
@@ -5625,9 +5659,13 @@ export function createSpine(options, effects = {}) {
   }
 
   // --- view-state snapshot ---------------------------------------------
-  /** The current point's 1-based line and 0-based column. */
+  /** The current point's 1-based line and 0-based column. Clamps the offset to
+   *  the buffer's length defensively — `positionAt` throws on an out-of-range
+   *  offset, and a single stale cursor (e.g. a restore whose file shrank) must
+   *  never be able to abort the view snapshot and freeze the window. */
   function pointPosition() {
-    const { line, column } = buffer.positionAt(buffer.point);
+    const offset = Math.max(0, Math.min(buffer.point, buffer.length));
+    const { line, column } = buffer.positionAt(offset);
     return { line: line + 1, column };
   }
 
