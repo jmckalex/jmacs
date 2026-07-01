@@ -46,6 +46,7 @@ import {
   swapLeaves,
   spiralOrder,
   computeRects,
+  bumpIdCounterPast,
   SPLIT_HORIZONTAL,
   SPLIT_VERTICAL,
 } from '@editor/pane';
@@ -205,10 +206,12 @@ export function createPaneModel(options = {}, hooks = {}) {
   }
 
   /** Mint a leaf pane over BUFFERID with a fresh state, registered in the map.
-   *  The leaf's `.view` is a thin handle the Lisp `current-view` returns. */
-  function makeLeaf(bufferId, seedState) {
+   *  The leaf's `.view` is a thin handle the Lisp `current-view` returns. An
+   *  explicit ID restores a persisted leaf's identity verbatim (session restore);
+   *  omitted, a fresh monotonic id is minted. */
+  function makeLeaf(bufferId, seedState, id) {
     const state = seedState ?? freshState(bufferId);
-    const leaf = createLeafPane({ view: { kind: 'text', get bufferId() { return state.bufferId; } } });
+    const leaf = createLeafPane({ id, view: { kind: 'text', get bufferId() { return state.bufferId; } } });
     state.bufferId = bufferId ?? state.bufferId ?? null;
     stateById.set(leaf.id, state);
     return leaf;
@@ -902,13 +905,18 @@ export function createPaneModel(options = {}, hooks = {}) {
         }
         return {
           kind: 'split',
+          id: node.id,
           orientation: node.orientation,
           ratio: typeof node.ratio === 'number' ? node.ratio : 0.5,
           first: paneBlob(node.first),
           second: paneBlob(node.second),
         };
       }
-      const blob = { kind: 'leaf', view: serialiseLeafView(stateById.get(node.id), resolve) };
+      // Persist the leaf's id so restore re-creates it VERBATIM (loadLayout).
+      // Stable pane identity across a session round-trip lets a stored target —
+      // e.g. a directory-tree's editing-pane `openTargetPaneId` — still resolve
+      // after a restore instead of pointing at a since-re-minted leaf.
+      const blob = { kind: 'leaf', id: node.id, view: serialiseLeafView(stateById.get(node.id), resolve) };
       if (node.id === focusedId) blob.focused = true;
       return blob;
     }
@@ -983,7 +991,12 @@ export function createPaneModel(options = {}, hooks = {}) {
         state.point = point;
         state.mark = mark;
       }
-      const leaf = makeLeaf(bufferId, state);
+      // Restore the leaf's persisted id verbatim (stable identity across the
+      // round-trip), and advance the shared id source past it so a later fresh
+      // mint can't collide with a restored id.
+      const restoredId = leafBlob && typeof leafBlob.id === 'string' ? leafBlob.id : undefined;
+      if (restoredId) bumpIdCounterPast(restoredId);
+      const leaf = makeLeaf(bufferId, state, restoredId);
       if (leafBlob && leafBlob.focused) nextFocusId = leaf.id;
       return leaf;
     }
@@ -996,7 +1009,9 @@ export function createPaneModel(options = {}, hooks = {}) {
         if (!first || !second) return first || second; // defensive: collapse a half-empty split
         const r = typeof node.ratio === 'number' && node.ratio > 0 && node.ratio < 1 ? node.ratio : 0.5;
         const orientation = node.orientation === SPLIT_VERTICAL ? SPLIT_VERTICAL : SPLIT_HORIZONTAL;
-        return createSplitPane({ orientation, ratio: r, first, second });
+        const splitId = typeof node.id === 'string' ? node.id : undefined;
+        if (splitId) bumpIdCounterPast(splitId);
+        return createSplitPane({ id: splitId, orientation, ratio: r, first, second });
       }
       if (node.kind === 'leaf') {
         const leaf = buildLeaf(node);

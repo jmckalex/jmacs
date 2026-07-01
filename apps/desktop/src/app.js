@@ -3440,6 +3440,12 @@ if (window.host && window.host.serverMode) {
     hideInactiveSingletons();
     relayoutPanes();
     refreshPaneFocusIndicators();
+    // Now that the server tree is applied and every leaf is mounted, (re)compute
+    // the project dir-tree's editing-pane target so a file opened from the tree
+    // lands in the middle tabline, not the tree's own pane. Under Model B the
+    // pane tree is server-driven, so this must run on each reconcile (the old
+    // renderer-driven project path did it once at open). A no-op with no tree.
+    reapplyProjectDirTreeTarget();
     // Bind each minimap companion to its target leaf's <text-view> now that every
     // leaf has mounted + laid out (deferred a microtask; a no-op when none exist).
     scheduleMinimapReconcile();
@@ -5793,10 +5799,13 @@ function configureDirectoryTreeView() {
     // Colour file/folder icons from the vendored Material Icon Theme set.
     iconUrlFor: (name, isDirectory, expanded) =>
       materialIconUrlForEntry(name, isDirectory, expanded),
-    openPath: (path) => {
-      // Open the file by path through the server's find-file (visitFile),
-      // switching the focused leaf onto it.
-      if (serverViewClient) serverViewClient.visitPath(path);
+    openPath: (path, targetPaneId) => {
+      // Open the file by path through the server's find-file (visitFile). The
+      // dir-tree passes its wired `openTargetPaneId` (the project's editing
+      // tabline, computed by reapplyProjectDirTreeTarget) so the file lands
+      // THERE, not in the tree's own focused pane. Falls back to the focused
+      // leaf when no target is wired (a standalone directory-tree).
+      if (serverViewClient) serverViewClient.visitPath(path, targetPaneId);
     },
     closeBuffer: () => {
       // Closing a directory pane isn't wired server-side yet (follow-on); the

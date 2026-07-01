@@ -735,6 +735,31 @@ function sendSnapshot(client) {
   });
 }
 
+/** Paint a freshly-connected / freshly-restored CLIENT: the six per-client
+ *  sends (snapshot, view, overlays, cursors, buffer-list, pane-tree), EACH under
+ *  its own guard. A malformed restored buffer (a stale cursor, a bad overlay)
+ *  must never let one failing send skip the rest — above all the PANE_TREE, which
+ *  carries the window's layout and its keyboard-live leaf. Without this, a throw
+ *  in an early send (the freeze family) leaves the window painted but treeless and
+ *  dead to input; here it degrades to whatever the other sends can deliver. */
+function sendClientState(client) {
+  const steps = [
+    ['snapshot', sendSnapshot],
+    ['view', sendViewTo],
+    ['overlays', sendOverlaysTo],
+    ['cursors', sendCursorsTo],
+    ['bufferList', sendBufferListTo],
+    ['paneTree', sendPaneTreeTo],
+  ];
+  for (const [label, fn] of steps) {
+    try {
+      fn(client);
+    } catch (error) {
+      console.error(`[mwb-session] client paint step "${label}" failed: ${error.message}`);
+    }
+  }
+}
+
 /** Fully re-sync a client onto its current buffer: snapshot + view-state +
  *  its own cursor set + that buffer's overlays. Used after a buffer switch
  *  (the client must tear down its old mirror and build a fresh one). */
@@ -915,10 +940,16 @@ function applyIntent(client, intent) {
       case INTENT.VISIT_FILE: {
         // Open a file by path directly (no minibuffer) — a file clicked in a
         // directory-view. Like find-file: visitFile ADDS/switches the active
-        // client onto it and fully re-syncs, so skip the edit path.
+        // client onto it and fully re-syncs, so skip the edit path. An optional
+        // `leafId` routes the open into a SPECIFIC leaf (the project's editing
+        // tabline the dir-tree wired), so it doesn't replace the tree's own pane.
         const path = String(intent.path ?? '');
         if (path !== '') {
-          const id = spine.visitFile(path);
+          const leafId =
+            typeof intent.leafId === 'string' && intent.leafId !== ''
+              ? intent.leafId
+              : null;
+          const id = spine.visitFile(path, leafId);
           if (id) resyncClientToCurrentBuffer(client);
           activeClient = null;
           return;
@@ -1315,20 +1346,10 @@ function onClientMessage(client, event) {
         for (const p of config.files) spine.visitFile(p);
         spine.loadProjectWindow(client.index, config);
       }
-      sendSnapshot(client);
-      sendViewTo(client);
-      // A late-joining client needs its current buffer's overlays + its own
-      // cursor set (a window can attach while another already has highlights
-      // or multi-cursor active on the same buffer).
-      sendOverlaysTo(client);
-      sendCursorsTo(client);
-      // The full open-buffer set, so the client renders its tabs + active
-      // marker from the first paint (a reconnect may already have several
-      // buffers open). Re-pushed on every later buffer-set change via resync.
-      sendBufferListTo(client);
-      // The window's pane layout (a single leaf on first connect, or its
-      // restored split tree on reconnect).
-      sendPaneTreeTo(client);
+      // Paint the window: snapshot + view + overlays + cursors + buffer-list +
+      // pane-tree, each guarded so a malformed restored buffer degrades to a
+      // usable window rather than freezing the boot (the PANE_TREE always lands).
+      sendClientState(client);
       // B1.3 (plans/MODEL-B-DEFAULT.md): paint this window's chrome from the
       // server — theme CSS vars, the face-overrides CSS, and the user's
       // highlight rules. The renderer no longer computes faces itself; it
@@ -1748,12 +1769,7 @@ function handleWorkspaceChoice(client, value) {
     // restore (applyNextRestoreWindow persists once every window has landed).
     persistLastSession();
   }
-  sendSnapshot(client);
-  sendViewTo(client);
-  sendOverlaysTo(client);
-  sendCursorsTo(client);
-  sendBufferListTo(client);
-  sendPaneTreeTo(client);
+  sendClientState(client); // guarded sends — a bad restored buffer can't freeze the paint
 }
 
 // --- multi-window restore orchestration (slice B) ---------------------
@@ -1864,7 +1880,14 @@ function restoreSession(client, id = '__last__') {
 function applyNextRestoreWindow(client) {
   awaitingRestoreWindow = false;
   const blob = pendingRestore.shift();
-  if (blob && blob.rootPane) spine.loadWindowLayout(client.index, blob.rootPane);
+  // Guard the layout load: a malformed window blob must not throw out of the
+  // HELLO handler (that would skip this window's paint below and freeze it). On
+  // failure the window keeps its fresh scratch — usable, not bricked.
+  try {
+    if (blob && blob.rootPane) spine.loadWindowLayout(client.index, blob.rootPane);
+  } catch (error) {
+    console.error(`[mwb-session] restore window layout failed: ${error.message}`);
+  }
   sendDockTo(client, blob && blob.dock); // restore this window's REPL/dock state
   if (pendingRestore.length > 0) {
     spawnNextRestoreWindow();

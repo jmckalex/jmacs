@@ -3628,7 +3628,52 @@ export function createSpine(options, effects = {}) {
    * @param {string} path - An absolute path.
    * @returns {string | null} The buffer id, or null.
    */
-  function visitFile(path) {
+  /** The leaf id a directory-tree / sidebar activation should open a file into:
+   *  a TEXT (registry-backed) leaf — the project's editing area — preferring a
+   *  tabline, else the first text leaf in spiral order. Null when the window has
+   *  no text leaf (a tree-only window; the caller then falls back to the focused
+   *  leaf). */
+  function editingLeafId(model) {
+    const leaves = (model && model.panesInSpiralOrder && model.panesInSpiralOrder()) || [];
+    const idOf = (l) => (l && l.view && l.view.bufferId != null ? l.view.bufferId : null);
+    const isText = (l) => { const id = idOf(l); return id != null && registry.has(id); };
+    const texts = leaves.filter(isText);
+    if (texts.length === 0) return null;
+    const tabbed = texts.find((l) => Array.isArray(l.tabs) && l.tabs.length > 0);
+    return (tabbed ?? texts[0]).id ?? null;
+  }
+
+  function visitFile(path, targetLeafId = null) {
+    // Decide which leaf the file opens into. An EXPLICIT target (a directory-
+    // tree wired to the project's editing tabline via openTargetPaneId) wins.
+    // Otherwise, if the focused leaf is a non-text SIDEBAR — the directory-tree
+    // the file was just activated in — REDIRECT to the editing (text) leaf so
+    // the open doesn't replace the sidebar. A normal find-file from a text leaf
+    // is untouched (its focused leaf IS a text leaf). Then focus the chosen leaf
+    // so the open lands there (mirrors reveal-source-pane! / SyncTeX). The
+    // server owns the pane tree, so this holds even if the client sent no target.
+    const model = currentPaneModel();
+    let leafId = (targetLeafId != null && targetLeafId !== '') ? targetLeafId : null;
+    // A target that no longer exists in this window's tree (a stale id a client
+    // held across a re-mint) must NOT fall through to focusPane's no-op and land
+    // the file in the focused sidebar. Drop it so the redirect below re-routes to
+    // the editing leaf. With persisted pane ids this rarely fires, but it keeps
+    // "open in ID" fail-safe against any id mismatch.
+    if (leafId !== null && model && typeof model.leaves === 'function'
+        && !model.leaves().some((l) => l.id === leafId)) {
+      leafId = null;
+    }
+    if (leafId === null && model && typeof model.focusedLeaf === 'function') {
+      const focused = model.focusedLeaf();
+      const focusedIsText = !!(
+        focused && focused.view && registry.has(focused.view.bufferId)
+      );
+      if (focused && !focusedIsText) leafId = editingLeafId(model);
+    }
+    if (leafId !== null && model && typeof model.focusPane === 'function') {
+      model.focusPane(leafId);
+      rebindFocusedPane();
+    }
     const result = openFile(path);
     if (!result) {
       statusText = `find-file: cannot open ${path}`;
@@ -4923,6 +4968,33 @@ export function createSpine(options, effects = {}) {
     return src.id;
   }
 
+  /** Walk a restore blob and clamp every text leaf/tab's `point` and `mark` to
+   *  the CURRENT length of the buffer at its path (the files are already open).
+   *  A cursor saved past a since-shortened file would otherwise reach `positionAt`
+   *  out of range and throw, aborting the window's view send. Mutates in place —
+   *  clamping the stored offset is correct (a shrunk file's cursor belongs at its
+   *  new end), so the next persist writes back a valid point. */
+  function clampRestoredPoints(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.kind === 'split') {
+      clampRestoredPoints(node.first);
+      clampRestoredPoints(node.second);
+      return;
+    }
+    if (node.kind !== 'leaf') return;
+    const clampView = (v) => {
+      if (!v || typeof v !== 'object') return;
+      if (v.kind === 'tabline' && Array.isArray(v.tabs)) { v.tabs.forEach(clampView); return; }
+      if (v.kind !== 'text' || typeof v.path !== 'string') return;
+      const entry = registry.findByPath(v.path);
+      if (!entry) return;
+      const len = entry.buffer.length;
+      if (Number.isFinite(v.point)) v.point = Math.max(0, Math.min(v.point, len));
+      if (Number.isFinite(v.mark)) v.mark = Math.max(0, Math.min(v.mark, len));
+    };
+    clampView(node.view);
+  }
+
   /** Restore client INDEX's window layout from a path-keyed blob (the mirror of
    *  `serializeWindow`). The referenced files must ALREADY be open in the
    *  registry (the caller opens them first, deduped); each path resolves to its
@@ -4932,6 +5004,13 @@ export function createSpine(options, effects = {}) {
   function loadWindowLayout(index, rootBlob) {
     const model = paneModels.get(index);
     if (!model || !rootBlob) return false;
+    // A saved cursor can point PAST a file that shrank on disk since the session
+    // was saved (edited in another editor, truncated, …). Clamp every restored
+    // point/mark to its buffer's CURRENT length before the model applies them —
+    // an out-of-range offset makes `positionAt` throw when viewState is computed,
+    // which would abort the window's paint (a malformed session must degrade, not
+    // freeze the boot). The files are already open, so lengths are available.
+    clampRestoredPoints(rootBlob);
     const resolveId = (viewBlob) => {
       if (!viewBlob) return null;
       // A LIVE-PROCESS view (shell/gnuplot) restores as a FRESH data-source (new
@@ -5625,9 +5704,13 @@ export function createSpine(options, effects = {}) {
   }
 
   // --- view-state snapshot ---------------------------------------------
-  /** The current point's 1-based line and 0-based column. */
+  /** The current point's 1-based line and 0-based column. Clamps the offset to
+   *  the buffer's length defensively — `positionAt` throws on an out-of-range
+   *  offset, and a single stale cursor (e.g. a restore whose file shrank) must
+   *  never be able to abort the view snapshot and freeze the window. */
   function pointPosition() {
-    const { line, column } = buffer.positionAt(buffer.point);
+    const offset = Math.max(0, Math.min(buffer.point, buffer.length));
+    const { line, column } = buffer.positionAt(offset);
     return { line: line + 1, column };
   }
 
