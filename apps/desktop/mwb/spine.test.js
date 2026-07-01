@@ -2112,6 +2112,65 @@ test('loadWindowLayout resets the window open-set to exactly its restored buffer
   assert.deepEqual(shownPaths, ['/tmp/a.js'], 'only the restored buffer remains in the open-set');
 });
 
+test('loadWindowLayout preserves pane ids across a serialize/restore round-trip', () => {
+  // Stable pane identity: a serialized layout carries its leaf/split ids, and a
+  // restore re-creates them verbatim (so a stored target — e.g. a dir-tree's
+  // editing-pane openTargetPaneId — still resolves after a session restore
+  // instead of pointing at a since-re-minted leaf).
+  const files = { '/tmp/a.js': { text: 'a', name: 'a.js' }, '/tmp/b.js': { text: 'b', name: 'b.js' } };
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const idA = spine.visitFile('/tmp/a.js');
+  const idB = spine.visitFile('/tmp/b.js');
+  spine.switchClientToBuffer(0, idA);
+  spine.paneModelOf(0).split('horizontal', 0.4, 'after');
+  spine.switchClientToBuffer(0, idB);
+
+  const blob = spine.serializeWindow(0);
+  assert.ok(typeof blob.id === 'string' && blob.id !== '', 'the split blob carries an id');
+  assert.ok(typeof blob.first.id === 'string', 'a leaf blob carries an id');
+  const idsBefore = spine.paneModelOf(0).leaves().map((l) => l.id).sort();
+
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const idsAfter = spine.paneModelOf(0).leaves().map((l) => l.id).sort();
+  assert.deepEqual(idsAfter, idsBefore, 'leaf ids are identical after the restore');
+  assert.deepEqual(spine.serializeWindow(0), blob, 'serialize ∘ load is a fixed point (ids included)');
+});
+
+test('visitFile into a NONEXISTENT target leaf falls back to the editing leaf', () => {
+  // Regression: a stale/mismatched target id (a client held one across a re-mint)
+  // must not fall through to focusPane's no-op and open the file in the focused
+  // SIDEBAR. It degrades to the editing (text) leaf — the dir-tree open-in-ID is
+  // fail-safe.
+  const files = {
+    '/proj': { directory: true, kind: 'directory-tree', name: 'proj', path: '/proj' },
+    '/proj/a.js': { text: 'const a = 1;\n', name: 'a.js', path: '/proj/a.js' },
+    '/proj/b.js': { text: 'const b = 2;\n', name: 'b.js', path: '/proj/b.js' },
+  };
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  spine.visitFile('/proj');
+  spine.visitFile('/proj/a.js');
+  // Restore a  dir-tree | editing-tabline  layout (the project shape).
+  const blob = {
+    kind: 'split', orientation: 'horizontal', ratio: 0.2,
+    first: { kind: 'leaf', view: { kind: 'directory-tree', path: '/proj' } },
+    second: {
+      kind: 'leaf', focused: true,
+      view: { kind: 'tabline', active: 0, tabs: [{ kind: 'text', path: '/proj/a.js', point: 0, mark: null }] },
+    },
+  };
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const model = spine.paneModelOf(0);
+  const treeLeaf = model.leaves().find((l) => spine.isDataSource(model.stateOf(l.id)?.bufferId));
+  const tablineLeaf = model.leaves().find((l) => model.stateOf(l.id)?.tabline);
+  model.focusPane(treeLeaf.id); // activating a file in the tree focuses it
+  const treeSourceBefore = model.stateOf(treeLeaf.id).bufferId;
+
+  spine.visitFile('/proj/b.js', 'pane-leaf-DOES-NOT-EXIST');
+
+  assert.equal(model.stateOf(treeLeaf.id).bufferId, treeSourceBefore, 'the dir-tree pane is untouched');
+  assert.equal(model.focusedId, tablineLeaf.id, 'the open landed in (and focused) the editing tabline');
+});
+
 test('loadWindowLayout clamps a restored point past a since-shortened file', () => {
   // Regression (the "MSc dissertation feedback" freeze): a session saved with the
   // cursor at offset N, then the file shrank on disk to < N. Restoring the stale

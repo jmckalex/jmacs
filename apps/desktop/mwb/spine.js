@@ -3654,6 +3654,15 @@ export function createSpine(options, effects = {}) {
     // server owns the pane tree, so this holds even if the client sent no target.
     const model = currentPaneModel();
     let leafId = (targetLeafId != null && targetLeafId !== '') ? targetLeafId : null;
+    // A target that no longer exists in this window's tree (a stale id a client
+    // held across a re-mint) must NOT fall through to focusPane's no-op and land
+    // the file in the focused sidebar. Drop it so the redirect below re-routes to
+    // the editing leaf. With persisted pane ids this rarely fires, but it keeps
+    // "open in ID" fail-safe against any id mismatch.
+    if (leafId !== null && model && typeof model.leaves === 'function'
+        && !model.leaves().some((l) => l.id === leafId)) {
+      leafId = null;
+    }
     if (leafId === null && model && typeof model.focusedLeaf === 'function') {
       const focused = model.focusedLeaf();
       const focusedIsText = !!(
