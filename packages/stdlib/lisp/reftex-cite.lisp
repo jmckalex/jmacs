@@ -265,4 +265,4 @@
 ;; "C-c". reftex-refs added `(`/`)`; this adds `[`.
 
 (set! latex-c-c-map (assoc latex-c-c-map "[" 'reftex-citation))
-(set! latex-mode-map {"C-c" latex-c-c-map})
+(set! latex-mode-map (assoc latex-mode-map "C-c" latex-c-c-map)) ;; extend, never replace (see latex.lisp)
