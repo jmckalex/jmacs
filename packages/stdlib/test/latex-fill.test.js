@@ -534,3 +534,256 @@ test('latex-fill-block wraps at the passed fill column, not the global', async (
     assert.ok(line.length <= 20, `"${line}" within the 20-column budget`);
   }
 });
+
+// --- the completed AUCTeX port: comments ---------------------------------
+// AUCTeX `LaTeX-fill-paragraph` fills comment paragraphs behind their
+// %-run prefix, and treats a code line's trailing comment ("code
+// comment") as the end of its fill unit — glued on, never filled.
+
+test('a comment paragraph fills behind its % prefix', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '% alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi',
+    '% rho sigma tau upsilon',
+  ].join('\n');
+  const expected = [
+    '% alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu',
+    '% xi omicron pi rho sigma tau upsilon',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected);
+  // Idempotent.
+  assert.equal(fill(ev, expected), expected);
+});
+
+test('comment runs of different %-depth never merge', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '%% Section header comment',
+    '% body comment text here',
+  ].join('\n');
+  assert.equal(fill(ev, input), input, '%% and % stay separate paragraphs');
+});
+
+test('a comment inside an environment indents to the env depth', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '\\begin{itemize}',
+    '% a comment inside the list',
+    '\\end{itemize}',
+  ].join('\n');
+  const expected = [
+    '\\begin{itemize}',
+    '  % a comment inside the list',
+    '\\end{itemize}',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected);
+});
+
+test('a bare % line is a boundary between comment paragraphs', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '% first part',
+    '%',
+    '% second part',
+  ].join('\n');
+  assert.equal(fill(ev, input), input);
+});
+
+test('a trailing code comment ends the fill unit and stays glued', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    'alpha beta',
+    'gamma delta % note',
+    'epsilon zeta',
+  ].join('\n');
+  const expected = [
+    'alpha beta gamma delta % note',
+    'epsilon zeta',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected, 'code joins, comment glues, next line starts fresh');
+  assert.equal(fill(ev, expected), expected, 'idempotent');
+});
+
+test("an item's trailing comment keeps later lines at the continuation indent", async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '\\begin{itemize}',
+    '\\item first words % note',
+    'continuation prose',
+    '\\end{itemize}',
+  ].join('\n');
+  const expected = [
+    '\\begin{itemize}',
+    '  \\item first words % note',
+    '    continuation prose',
+    '\\end{itemize}',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected);
+});
+
+test('\\% is not a comment start (backslash parity)', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    'Costs fifty \\% of the total amount',
+    'and continues here',
+  ].join('\n');
+  const expected = 'Costs fifty \\% of the total amount and continues here';
+  assert.equal(fill(ev, input), expected);
+});
+
+test('a % inside a \\verb group is not a comment', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    'use \\verb|50%| here',
+    'and more words',
+  ].join('\n');
+  assert.equal(fill(ev, input), 'use \\verb|50%| here and more words');
+});
+
+// --- the completed port: \verb and break-at-separators -------------------
+
+test('a \\verb group never breaks across lines', async () => {
+  const { ev } = await fillEditor();
+  const input =
+    'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk \\verb|one two three four| tail';
+  const result = fill(ev, input);
+  const lines = result.split('\n');
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0], 'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk');
+  assert.equal(lines[1], '\\verb|one two three four| tail', 'verb group moved whole, spaces intact');
+});
+
+test('an inline \\(…\\) group moves whole to the next line (break-at-separators)', async () => {
+  const { ev } = await fillEditor();
+  const input =
+    'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk \\(alpha + beta + gamma = delta\\) tail';
+  const result = fill(ev, input);
+  const lines = result.split('\n');
+  assert.equal(lines.length, 2);
+  assert.equal(lines[1], '\\(alpha + beta + gamma = delta\\) tail');
+});
+
+test('with *latex-fill-break-at-separators* off, math splits like prose', async () => {
+  const { ev } = await fillEditor();
+  ev('(set! *latex-fill-break-at-separators* #f)');
+  const input =
+    'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk \\(alpha + beta + gamma = delta\\) tail';
+  const result = fill(ev, input);
+  assert.ok(result.includes('\\(alpha + beta +\ngamma'), 'break lands inside the math group');
+});
+
+test('an unclosed \\( wraps as ordinary words', async () => {
+  const { ev } = await fillEditor();
+  const input =
+    'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk \\(alpha + beta + gamma = delta tail';
+  const result = fill(ev, input);
+  for (const line of result.split('\n')) {
+    assert.ok(line.length <= 72, `"${line}" within the column`);
+  }
+});
+
+// --- the completed port: sentence-end double space ------------------------
+
+test('sentence-end double space on joins when the custom is on', async () => {
+  const { ev } = await fillEditor();
+  ev('(set! *latex-sentence-end-double-space* #t)');
+  const input = [
+    'First sentence ends here.',
+    'Second sentence follows.',
+  ].join('\n');
+  assert.equal(fill(ev, input), 'First sentence ends here.  Second sentence follows.');
+  // An existing intra-line double space is preserved.
+  assert.equal(fill(ev, 'One.  Two.'), 'One.  Two.');
+});
+
+test('sentence-end double space is OFF by default (single-space joins)', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    'First sentence ends here.',
+    'Second sentence follows.',
+  ].join('\n');
+  assert.equal(fill(ev, input), 'First sentence ends here. Second sentence follows.');
+  // With the custom off, stray runs collapse to one space.
+  assert.equal(fill(ev, 'One.  Two.'), 'One. Two.');
+});
+
+// --- the completed port: protected envs inside the block ------------------
+
+test('a protected env inside the block passes through byte-identical', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '\\begin{proof}',
+    '\\begin{align}',
+    'x &= 1 \\\\',
+    'y &= 2',
+    '\\end{align}',
+    '\\end{proof}',
+  ].join('\n');
+  const expected = [
+    '\\begin{proof}',
+    '  \\begin{align}',
+    'x &= 1 \\\\',
+    'y &= 2',
+    '  \\end{align}',
+    '\\end{proof}',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected,
+    'begin/end re-indent, the align body does not move');
+});
+
+test('prose around a protected env fills; the env body does not', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    'Some prose before the alignment environment which is certainly long enough to need wrapping.',
+    '\\begin{align}',
+    '  x &= 1',
+    '\\end{align}',
+    'Prose after.',
+  ].join('\n');
+  const result = fill(ev, input);
+  assert.ok(result.includes('\n  x &= 1\n'), 'align body byte-identical');
+  const lines = result.split('\n');
+  for (const line of lines) {
+    if (!line.includes('&')) assert.ok(line.length <= 72, `"${line}" wrapped`);
+  }
+  assert.ok(lines[lines.length - 1] === 'Prose after.', 'walk resumes after the env');
+});
+
+// --- the completed port: point restoration --------------------------------
+
+test('latex-fill-paragraph keeps point at its prose position', async () => {
+  const initial = [
+    '\\begin{itemize}',
+    '\\item This is a long item that goes well past the fill column and therefore needs to be wrapped onto continuation lines that align nicely under it.',
+    '\\item Short one.',
+    '\\end{itemize}',
+  ].join('\n');
+  const { ev, buffer } = await bufferEditor(initial);
+  ev(`(goto! ${initial.indexOf('goes well')})`);
+  ev('(latex-fill-paragraph)');
+  assert.equal(ev('(point)'), buffer.text.indexOf('goes well'),
+    'point still sits on the word it was on');
+});
+
+// --- the completed port: the command over comments end-to-end -------------
+
+test('latex-fill-paragraph fills a comment paragraph in the buffer', async () => {
+  const initial = [
+    '% alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi',
+    '% rho sigma tau upsilon',
+  ].join('\n');
+  const { ev, buffer } = await bufferEditor(initial);
+  ev(`(goto! ${initial.indexOf('gamma')})`);
+  ev('(latex-fill-paragraph)');
+  const expected = [
+    '% alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu',
+    '% xi omicron pi rho sigma tau upsilon',
+  ].join('\n');
+  assert.equal(buffer.text, expected);
+});
+
+test('the new fill defcustoms have the intended defaults', async () => {
+  const { ev } = await fillEditor();
+  assert.equal(ev('*latex-fill-break-at-separators*'), true);
+  assert.equal(ev('*latex-sentence-end-double-space*'), false);
+});

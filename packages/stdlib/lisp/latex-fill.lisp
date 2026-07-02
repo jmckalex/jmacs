@@ -50,22 +50,55 @@
 ;;; \tableofcontents) and display-math \[ \]. Prose never merges across
 ;;; these; each \item starts a fresh fill unit so list items stay separate.
 ;;;
-;;; ## Approximations vs. real AUCTeX (documented for the architect)
+;;; ## The completed port (the pieces beyond basic indent + wrap)
 ;;;
-;;;   * `*latex-indent-environment-list*` envs (verbatim, tabular, align,
-;;;     matrix, cases, …): AUCTeX leaves these to a per-env indenter and
-;;;     does not fill them. We do NOT special-case them in the pure core —
-;;;     the command refuses to fill when point is inside a verbatim-like or
-;;;     tabular/math alignment env (`-latex-fill-protected-env?`), so their
-;;;     contents are left untouched (the AUCTeX-faithful no-fill outcome).
-;;;     Math display environments are likewise protected.
-;;;   * Comment-aware filling (code comments, comment fill-prefix,
-;;;     `LaTeX-syntactic-comments`): NOT ported. A `%` comment line is
-;;;     treated as ordinary prose and is a fill boundary only when blank.
-;;;     Filling a paragraph that contains a trailing `%` comment is left
-;;;     for the architect's live-testing.
-;;;   * `LaTeX-fill-break-at-separators` (breaking before \( \[ etc.): NOT
-;;;     ported; we wrap purely on whitespace at the fill column.
+;;;   * COMMENTS — AUCTeX `LaTeX-fill-paragraph`'s comment handling:
+;;;       - A run of comment-only lines fills as a comment paragraph: the
+;;;         leading %-run (`%', `%%', …) is preserved as the fill prefix
+;;;         (normalised to one space after it) and the content wraps to the
+;;;         fill column behind it. Runs of DIFFERENT %-depth never merge; a
+;;;         bare `%' line is a boundary between comment paragraphs.
+;;;       - A code line's trailing comment (a "code comment") ends its fill
+;;;         unit: the code words fill normally, the comment stays glued —
+;;;         unfilled — after the last code word (AUCTeX: "Code comments …
+;;;         will not be filled"), and the following lines start a fresh
+;;;         unit at the interrupted run's indent.
+;;;       - `\%' is not a comment start; backslash-run parity decides
+;;;         (`\\%' after a line-break macro IS one). A `%' inside a
+;;;         \verb group is not a comment either.
+;;;   * `LaTeX-fill-break-at-separators` — with
+;;;     `*latex-fill-break-at-separators*' (default on, matching AUCTeX's
+;;;     default `(\( \) \[ \])`): an inline \(…\) or \[…\] math group is
+;;;     never broken across lines — the break lands before the opener or
+;;;     after the closer, the whole group moving to the next line when it
+;;;     straddles the column. A \verb<delim>…<delim> group is NEVER broken,
+;;;     regardless of the option (its spaces are not break points).
+;;;   * PROTECTED ENVIRONMENTS inside the block — verbatim / tabular /
+;;;     alignment / display-math envs (`*latex-fill-protected-envs*',
+;;;     AUCTeX's `LaTeX-indent-environment-list` no-refill outcome)
+;;;     encountered INSIDE the filled block pass through byte-identical:
+;;;     the \begin/\end lines re-indent, the body lines do not change at
+;;;     all. Filling with point INSIDE one is still refused outright.
+;;;   * SENTENCE SPACING — Emacs's `sentence-end-double-space' rule, which
+;;;     AUCTeX inherits, behind `*latex-sentence-end-double-space*': when
+;;;     on, joining a line after a sentence-ending word inserts two spaces,
+;;;     and an existing run of two-or-more spaces between words is
+;;;     preserved as two. Default OFF here (Emacs defaults it ON): TeX
+;;;     collapses source spacing anyway and the architect's documents are
+;;;     single-spaced — on would inject double spaces at every refill.
+;;;   * POINT — after filling, point returns to the same prose position
+;;;     (the same count of non-whitespace characters), as AUCTeX does,
+;;;     instead of jumping to the end of the block.
+;;;
+;;; ## Remaining approximations vs. real AUCTeX (for the architect)
+;;;
+;;;   * `$…$' groups break freely — `$' is not in AUCTeX's default
+;;;     `LaTeX-fill-break-at-separators' either.
+;;;   * `LaTeX-syntactic-comments''s full code/comment indentation
+;;;     interplay is reduced to the rules above (comment content is filled
+;;;     as prose, re-indented to the environment depth).
+;;;   * The env-marker scanner does not ignore \begin/\end inside comments
+;;;     (pre-existing, shared with latex-insert.lisp).
 
 ;; --- user-facing settings ---------------------------------------------
 ;; The `latex` customize group is declared by latex-compile.lisp (loaded
@@ -90,6 +123,26 @@
    `*latex-indent-level*' deeper. The item line's indent is
    (body-level + this); its continuation lines stay at body-level + one
    step.")
+
+(defcustom *latex-fill-break-at-separators* #t
+  :boolean
+  :group 'latex
+  :doc "When on, `latex-fill-paragraph' (M-q) never breaks a line inside
+   an inline \\(…\\) or \\[…\\] math group: the break lands before the
+   opening or after the closing delimiter, the whole group moving to the
+   next line when it straddles the fill column. Mirrors AUCTeX's
+   `LaTeX-fill-break-at-separators' (default `(\\( \\) \\[ \\])`).
+   A \\verb group is never broken regardless of this option.")
+
+(defcustom *latex-sentence-end-double-space* #f
+  :boolean
+  :group 'latex
+  :doc "When on, `latex-fill-paragraph' (M-q) puts TWO spaces after a
+   sentence-ending word when joining lines, and preserves an existing run
+   of two-or-more spaces between words — Emacs's
+   `sentence-end-double-space' fill rule, which AUCTeX inherits. Off by
+   default (Emacs defaults it ON): with it off, all inter-word whitespace
+   collapses to a single space when filling.")
 
 ;; The fill column. AUCTeX uses Emacs's `fill-column' (default 70); the
 ;; editor's existing generic fill (`fill-paragraph!`) hardcodes 72, so we
@@ -154,10 +207,7 @@
   (length (filter (lambda (e) (not (-latex-non-indenting-env? e)))
                   (-latex-open-env-stack text offset))))
 
-;; --- pure: line classification ----------------------------------------
-;; Each line of the block is classified by its leading control word (after
-;; stripping indentation). This drives both its own indent and whether it
-;; is a fill boundary.
+;; --- pure: character classes and trims ---------------------------------
 
 (define *latex-fill-letters*
   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -165,6 +215,10 @@
 (define (-latex-fill-letter? c)
   "Whether single-character string C is an ASCII letter."
   (>= (string-index-of *latex-fill-letters* c) 0))
+
+(define (-latex-fill-ws-char? c)
+  "Whether single-character string C is a space, tab or newline. PURE."
+  (or (string=? c " ") (string=? c "\t") (string=? c "\n")))
 
 (define (-latex-fill-trim-leading s)
   "S with leading spaces/tabs removed (not newlines — lines are split
@@ -190,6 +244,26 @@
 (define (-latex-fill-blank-line? line)
   "Whether LINE is blank (only spaces/tabs). PURE."
   (string=? (-latex-fill-trim-leading line) ""))
+
+;; --- pure: backslash-escape parity --------------------------------------
+;; A `%' (or `\(' etc.) only counts when the backslash run immediately
+;; before it has EVEN length: `\%' is escaped, `\\%' (a % after the \\
+;; line-break macro) is a real comment, `\\\%' escaped again, and so on.
+
+(define (-latex-fill-escaped? s i)
+  "Whether the character at index I of S is escaped — preceded by an ODD
+   run of backslashes. PURE."
+  (-latex-fill-odd-backslash-run? s (- i 1) #f))
+
+(define (-latex-fill-odd-backslash-run? s i odd?)
+  (if (or (< i 0) (not (string=? (substring s i (+ i 1)) "\\")))
+      odd?
+      (-latex-fill-odd-backslash-run? s (- i 1) (not odd?))))
+
+;; --- pure: line classification ----------------------------------------
+;; Each line of the block is classified by its leading control word (after
+;; stripping indentation). This drives both its own indent and whether it
+;; is a fill boundary.
 
 ;; Paragraph commands that AUCTeX gives their own line (a fill boundary),
 ;; from `LaTeX-paragraph-commands-internal`. \begin / \end / \item are
@@ -232,6 +306,25 @@
   (let ((cw (-latex-fill-control-word content)))
     (or (string=? cw "item") (string=? cw "bibitem"))))
 
+(define (-latex-fill-comment-line? content)
+  "Whether left-trimmed CONTENT is a comment-only line (its first
+   character is `%'; an escaped \\% cannot reach column 0 of the trimmed
+   content). PURE."
+  (string-prefix? "%" content))
+
+(define (-latex-fill-comment-run content)
+  "The leading run of `%' characters of CONTENT (which starts with `%'):
+   \"%\", \"%%\", … — the comment prefix AUCTeX preserves when filling
+   comment paragraphs. PURE."
+  (substring content 0 (-latex-fill-percent-run-end content 0)))
+
+(define (-latex-fill-percent-run-end s i)
+  (cond
+    ((>= i (string-length s)) i)
+    ((string=? (substring s i (+ i 1)) "%")
+     (-latex-fill-percent-run-end s (+ i 1)))
+    (else i)))
+
 (define (-latex-fill-env-name content)
   "The environment name in a \\begin{NAME} / \\end{NAME} CONTENT line — the
    text between the first `{` and the next `}` — or \"\" when absent. Used
@@ -268,6 +361,25 @@
       (-latex-fill-item-line? content)
       (-latex-fill-paragraph-command-line? content)))
 
+;; --- pure: trailing ("code") comments -----------------------------------
+;; AUCTeX: "Code comments, i.e. comments with uncommented code preceding
+;; them in the same line, will not be filled unless they comprise a single
+;; line." The code part fills; the comment ends the fill unit and stays
+;; glued, verbatim, after the last code word.
+
+(define (-latex-fill-comment-pos s i)
+  "The index of the first REAL comment `%' at/after I in S, or -1: not
+   backslash-escaped (`\\%'), and not inside a \\verb group's delimited
+   argument. PURE."
+  (cond
+    ((>= i (string-length s)) -1)
+    ((-latex-fill-verb-at? s i)
+     (-latex-fill-comment-pos s (-latex-fill-verb-end s i)))
+    ((and (string=? (substring s i (+ i 1)) "%")
+          (not (-latex-fill-escaped? s i)))
+     i)
+    (else (-latex-fill-comment-pos s (+ i 1)))))
+
 ;; --- pure: indentation ------------------------------------------------
 
 (define (-latex-fill-spaces n)
@@ -296,185 +408,291 @@
    \\begin, (DEPTH+1)*LEVEL. PURE."
   (-latex-fill-spaces (* (+ depth 1) level)))
 
+;; --- pure: sentence-end detection ---------------------------------------
+
+(define *latex-fill-sentence-closers* "\"')]}")
+
+(define (-latex-fill-sentence-end-word? w)
+  "Whether word W ends a sentence: after stripping trailing closing
+   quotes/brackets, it ends with `.', `?' or `!'. PURE."
+  (let ((core (-latex-fill-strip-closers w)))
+    (and (> (string-length core) 0)
+         (let ((last (substring core (- (string-length core) 1)
+                                (string-length core))))
+           (or (string=? last ".") (string=? last "?") (string=? last "!"))))))
+
+(define (-latex-fill-strip-closers w)
+  (let ((n (string-length w)))
+    (if (and (> n 0)
+             (>= (string-index-of *latex-fill-sentence-closers*
+                                  (substring w (- n 1) n))
+                 0))
+        (-latex-fill-strip-closers (substring w 0 (- n 1)))
+        w)))
+
+(define (-latex-fill-last-word s)
+  "The final whitespace-delimited word of S (\"\" when S is blank). PURE."
+  (let ((end (-latex-fill-skip-ws-back s (string-length s))))
+    (substring s (-latex-fill-word-start s end) end)))
+
+(define (-latex-fill-skip-ws-back s i)
+  "The index after the last non-whitespace character at or before I. PURE."
+  (if (or (= i 0)
+          (not (-latex-fill-ws-char? (substring s (- i 1) i))))
+      i
+      (-latex-fill-skip-ws-back s (- i 1))))
+
+(define (-latex-fill-word-start s end)
+  "The start index of the word ending (exclusively) at END in S. PURE."
+  (if (or (= end 0)
+          (-latex-fill-ws-char? (substring s (- end 1) end)))
+      end
+      (-latex-fill-word-start s (- end 1))))
+
+(define (-latex-fill-join-sep prev-text)
+  "The separator for joining the next source line onto PREV-TEXT: two
+   spaces after a sentence-ending word when
+   `*latex-sentence-end-double-space*' is on (the Emacs fill rule AUCTeX
+   inherits), else one space. PURE w.r.t. the custom."
+  (if (and *latex-sentence-end-double-space*
+           (-latex-fill-sentence-end-word? (-latex-fill-last-word prev-text)))
+      "  "
+      " "))
+
+;; --- pure: tokenizing (\verb-safe, math-group-safe) ---------------------
+;; A prose run is split into wrap TOKENS — records {:w word :sep2 bool}
+;; where :sep2 marks a two-space separator BEFORE the token (preserved on
+;; output when `*latex-sentence-end-double-space*' is on). A token is
+;; normally a whitespace-delimited word, but:
+;;   * a \verb<delim>…<delim> / \verb*<delim>…<delim> group is ALWAYS one
+;;     token — its spaces are never break points;
+;;   * with `*latex-fill-break-at-separators*', an inline \(…\) or \[…\]
+;;     math group (closer present) is one token, so a line break can only
+;;     land before its opener or after its closer — AUCTeX's
+;;     `LaTeX-fill-break-at-separators'.
+
+(define (-latex-fill-tokens text)
+  "Split TEXT (one joined prose run) into wrap-token records
+   {:w word :sep2 double-space-before?}. PURE w.r.t. the customs."
+  (-latex-fill-tokens-loop text 0 (list)))
+
+(define (-latex-fill-tokens-loop text i acc)
+  (let* ((start (-latex-fill-skip-ws text i))
+         (run (- start i)))
+    (if (>= start (string-length text))
+        (reverse acc)
+        (let ((end (-latex-fill-token-end text start)))
+          (-latex-fill-tokens-loop
+           text end
+           (cons (hash-map :w (substring text start end)
+                           :sep2 (and *latex-sentence-end-double-space*
+                                      (> i 0)
+                                      (>= run 2)))
+                 acc))))))
+
+(define (-latex-fill-skip-ws text i)
+  "The index of the first non-whitespace character at/after I in TEXT (its
+   length when none). PURE."
+  (if (and (< i (string-length text))
+           (-latex-fill-ws-char? (substring text i (+ i 1))))
+      (-latex-fill-skip-ws text (+ i 1))
+      i))
+
+(define (-latex-fill-token-end text i)
+  "The end index of the wrap token starting at I in TEXT: the next
+   whitespace, except that a \\verb group's delimited argument — and, when
+   `*latex-fill-break-at-separators*' is on, an inline \\(…\\) / \\[…\\]
+   math group — is scanned straight through. PURE w.r.t. the customs."
+  (cond
+    ((>= i (string-length text)) i)
+    ((-latex-fill-ws-char? (substring text i (+ i 1))) i)
+    ((-latex-fill-verb-at? text i)
+     (-latex-fill-token-end text (-latex-fill-verb-end text i)))
+    ((and *latex-fill-break-at-separators*
+          (-latex-fill-math-open-at? text i "\\(" "\\)"))
+     (-latex-fill-token-end text (-latex-fill-math-end text i "\\)")))
+    ((and *latex-fill-break-at-separators*
+          (-latex-fill-math-open-at? text i "\\[" "\\]"))
+     (-latex-fill-token-end text (-latex-fill-math-end text i "\\]")))
+    (else (-latex-fill-token-end text (+ i 1)))))
+
+(define (-latex-fill-verb-at? text i)
+  "Whether an unescaped \\verb (or \\verb*) macro WITH its delimiter
+   character starts at I in TEXT — the delimiter is the character right
+   after the macro name, any non-letter non-whitespace (so \\verbatim etc.
+   do not match). PURE."
+  (and (>= (string-length text) (+ i 6))
+       (string=? (substring text i (+ i 5)) "\\verb")
+       (not (-latex-fill-escaped? text i))
+       (let ((d (-latex-fill-verb-delim-pos text i)))
+         (and (< d (string-length text))
+              (let ((c (substring text d (+ d 1))))
+                (and (not (-latex-fill-letter? c))
+                     (not (-latex-fill-ws-char? c))))))))
+
+(define (-latex-fill-verb-delim-pos text i)
+  "The index of the delimiter character of the \\verb / \\verb* macro at I
+   (just past the macro name and optional star). PURE."
+  (let ((j (+ i 5)))
+    (if (and (< j (string-length text))
+             (string=? (substring text j (+ j 1)) "*"))
+        (+ j 1)
+        j)))
+
+(define (-latex-fill-verb-end text i)
+  "The index just after the closing delimiter of the \\verb group at I
+   (the end of TEXT when unterminated). PURE."
+  (let* ((d (-latex-fill-verb-delim-pos text i))
+         (delim (substring text d (+ d 1)))
+         (close (string-index-of text delim (+ d 1))))
+    (if (< close 0) (string-length text) (+ close 1))))
+
+(define (-latex-fill-math-open-at? text i opener closer)
+  "Whether an unescaped math OPENER (\\( or \\[) starts at I in TEXT and a
+   matching unescaped CLOSER exists later — only then is the group
+   atomized (an unclosed opener wraps as ordinary words). PURE."
+  (and (>= (string-length text) (+ i 2))
+       (string=? (substring text i (+ i 2)) opener)
+       (not (-latex-fill-escaped? text i))
+       (>= (-latex-fill-find-unescaped text closer (+ i 2)) 0)))
+
+(define (-latex-fill-math-end text i closer)
+  "The index just after the unescaped CLOSER matching the math opener at I
+   in TEXT (the opener is known to be closed). PURE."
+  (+ (-latex-fill-find-unescaped text closer (+ i 2)) 2))
+
+(define (-latex-fill-find-unescaped text needle from)
+  "The index of the first backslash-unescaped occurrence of NEEDLE
+   at/after FROM in TEXT, or -1. PURE."
+  (let ((p (string-index-of text needle from)))
+    (cond
+      ((< p 0) -1)
+      ((-latex-fill-escaped? text p)
+       (-latex-fill-find-unescaped text needle (+ p 1)))
+      (else p))))
+
 ;; --- pure: word wrapping ----------------------------------------------
-;; Wrap a list of WORDS into lines no longer than the fill column. The
+;; Wrap the token list into lines no longer than the fill column. The
 ;; FIRST line is prefixed with FIRST-INDENT, every continuation line with
 ;; REST-INDENT (they differ for \item, equal for plain prose). A single
-;; word longer than the column is left on its own line (never split) —
-;; AUCTeX does the same for an unbreakable token.
+;; token longer than the column is left on its own line (never split) —
+;; AUCTeX does the same for an unbreakable construct.
 
-(define (-latex-fill-wrap words first-indent rest-indent fill-column)
-  "Greedily wrap WORDS (a list of non-empty strings) into a list of lines.
-   The first line carries FIRST-INDENT, the rest REST-INDENT; no line
-   exceeds FILL-COLUMN unless it holds a single over-long word. PURE."
+(define (-latex-fill-wrap tokens first-indent rest-indent fill-column)
+  "Greedily wrap TOKENS ({:w :sep2} records) into a list of lines. The
+   first line carries FIRST-INDENT, the rest REST-INDENT; no line exceeds
+   FILL-COLUMN unless it holds a single over-long token. A :sep2 token
+   keeps two spaces before it. PURE."
   (cond
-    ((nil? words) (list))
+    ((nil? tokens) (list))
     (else
-     (-latex-fill-wrap-loop (cdr words) (str first-indent (car words))
+     (-latex-fill-wrap-loop (cdr tokens)
+                            (str first-indent (get (car tokens) :w ""))
                             rest-indent fill-column (list)))))
 
-(define (-latex-fill-wrap-loop words current rest-indent fill-column acc)
+(define (-latex-fill-wrap-loop tokens current rest-indent fill-column acc)
   "Tail loop for `-latex-fill-wrap`: CURRENT is the line being built, ACC
    the completed lines (reversed)."
   (cond
-    ((nil? words) (reverse (cons current acc)))
+    ((nil? tokens) (reverse (cons current acc)))
     (else
-     (let ((candidate (str current " " (car words))))
+     (let* ((tok (car tokens))
+            (sep (if (get tok :sep2 #f) "  " " "))
+            (candidate (str current sep (get tok :w ""))))
        (if (> (string-length candidate) fill-column)
-           ;; The word does not fit: flush CURRENT, start a new line.
-           (-latex-fill-wrap-loop (cdr words)
-                                  (str rest-indent (car words))
+           ;; The token does not fit: flush CURRENT, start a new line.
+           (-latex-fill-wrap-loop (cdr tokens)
+                                  (str rest-indent (get tok :w ""))
                                   rest-indent fill-column
                                   (cons current acc))
-           (-latex-fill-wrap-loop (cdr words) candidate
+           (-latex-fill-wrap-loop (cdr tokens) candidate
                                   rest-indent fill-column acc))))))
 
-(define (-latex-fill-words content)
-  "Split left-trimmed CONTENT (one or more already-joined prose lines)
-   into a list of whitespace-separated words, dropping empties. PURE."
-  (filter (lambda (w) (not (string=? w "")))
-          (string-split (-latex-fill-collapse-spaces content) " ")))
+;; --- pure: the pending prose/comment run --------------------------------
+;; A "pending" run is a record of the text gathered so far and the
+;; first/rest indents to wrap it with; :comment holds the %-run prefix
+;; string for a comment run (nil for prose). A record whose :text is nil
+;; is "ARMED": a code comment just ended the previous unit, and the next
+;; prose line should start a fresh run AT THE SAME INDENTS (an item's
+;; continuation level survives the interruption).
 
-(define (-latex-fill-collapse-spaces s)
-  "S with every run of spaces/tabs/newlines collapsed to a single space,
-   and leading/trailing whitespace trimmed. PURE."
-  (-latex-fill-trim-trailing
-   (-latex-fill-trim-leading
-    (-latex-fill-collapse-loop s 0 "" #f))))
-
-(define (-latex-fill-collapse-loop s i acc prev-space?)
-  (cond
-    ((>= i (string-length s)) acc)
-    (else
-     (let ((c (substring s i (+ i 1))))
-       (if (or (string=? c " ") (string=? c "\t") (string=? c "\n"))
-           (-latex-fill-collapse-loop s (+ i 1)
-                                      (if prev-space? acc (str acc " "))
-                                      #t)
-           (-latex-fill-collapse-loop s (+ i 1) (str acc c) #f))))))
-
-;; --- pure: the block filler -------------------------------------------
-;; The heart of the command. Given the BLOCK (the paragraph region's text,
-;; newline-joined) and the env depth at its FIRST line, walk the lines
-;; tracking depth from \begin/\end, re-indent every line, and re-wrap each
-;; run of prose lines (between boundaries) to the fill column. Returns the
-;; rebuilt block text (no trailing newline). PURE — fully unit-testable.
-
-(define (latex-fill-block block base-depth level item-indent fill-column)
-  "Re-indent and re-wrap BLOCK (a newline-joined run of LaTeX source
-   lines) as AUCTeX's `LaTeX-fill-paragraph` would. BASE-DEPTH is the
-   environment nesting depth at the block's first line; LEVEL is
-   `*latex-indent-level*`; ITEM-INDENT is `*latex-item-indent*`;
-   FILL-COLUMN the wrap column. Every line is re-indented by its depth
-   (nested envs, list items, \\begin/\\end backindent); consecutive prose
-   lines are joined and wrapped, broken at \\begin/\\end/\\item/paragraph
-   commands so items and structure never merge. Spaces only. PURE — string
-   in, string out, no buffer."
-  (-latex-fill-join-lines
-   (-latex-fill-walk (string-split block "\n") base-depth level item-indent
-                     fill-column (list) (list))))
-
-(define (-latex-fill-walk lines depth level item-indent fill-column
-                          pending acc)
-  "Walk LINES tracking DEPTH; PENDING accumulates the words of the prose
-   run currently being gathered (with their first/rest indents), ACC the
-   emitted output lines (reversed, each a final string). A structural or
-   blank line flushes PENDING first. Returns the output lines in order."
-  (cond
-    ((nil? lines)
-     (reverse (-latex-fill-flush pending acc fill-column)))
-    (else
-     (let* ((raw (car lines))
-            (content (-latex-fill-trim-leading raw)))
-       (cond
-         ;; Blank line: flush any prose, emit an empty line.
-         ((-latex-fill-blank-line? raw)
-          (-latex-fill-walk (cdr lines) depth level item-indent fill-column
-                            (list) (cons "" (-latex-fill-flush pending acc fill-column))))
-         ;; \begin{...}: flush, emit at outer level, then go one deeper —
-         ;; UNLESS it is a non-indenting env (`document'), which keeps the
-         ;; depth so its body stays at the outer level.
-         ((-latex-fill-begin-line? content)
-          (let ((next (if (-latex-non-indenting-env? (-latex-fill-env-name content))
-                          depth
-                          (+ depth 1))))
-            (-latex-fill-walk
-             (cdr lines) next level item-indent fill-column (list)
-             (cons (str (-latex-fill-body-indent depth level) content)
-                   (-latex-fill-flush pending acc fill-column)))))
-         ;; \end{...}: flush, dedent first, emit at the outer level — unless
-         ;; a non-indenting env (`document'), which never changed the depth.
-         ((-latex-fill-end-line? content)
-          (let ((d (if (-latex-non-indenting-env? (-latex-fill-env-name content))
-                       depth
-                       (- depth 1))))
-            (-latex-fill-walk
-             (cdr lines) d level item-indent fill-column (list)
-             (cons (str (-latex-fill-body-indent d level) content)
-                   (-latex-fill-flush pending acc fill-column)))))
-         ;; \item / \bibitem: flush the previous unit, start a NEW prose
-         ;; run seeded with the item's own words (so items never merge),
-         ;; first line at item indent, continuations one step deeper.
-         ((-latex-fill-item-line? content)
-          (-latex-fill-walk
-           (cdr lines) depth level item-indent fill-column
-           (-latex-fill-pending (-latex-fill-words content)
-                                (-latex-fill-item-indent depth level item-indent)
-                                (-latex-fill-continuation-indent depth level))
-           (-latex-fill-flush pending acc fill-column)))
-         ;; Paragraph command (\par, \section, \caption, …) / display math:
-         ;; flush, emit on its own line at the body level.
-         ((-latex-fill-paragraph-command-line? content)
-          (-latex-fill-walk
-           (cdr lines) depth level item-indent fill-column (list)
-           (cons (str (-latex-fill-body-indent depth level) content)
-                 (-latex-fill-flush pending acc fill-column))))
-         ;; Plain prose: append its words to the current run (seeding the
-         ;; run's indents from the body level when it is the first line).
-         (else
-          (-latex-fill-walk
-           (cdr lines) depth level item-indent fill-column
-           (-latex-fill-extend-pending
-            pending (-latex-fill-words content)
-            (-latex-fill-body-indent depth level)
-            (-latex-fill-body-indent depth level))
-           acc)))))))
-
-;; A "pending" prose run is a record of the accumulated words and the
-;; first/rest indents to wrap them with. Kept as a hash-map so the walk
-;; stays readable.
-
-(define (-latex-fill-pending words first-indent rest-indent)
-  "A fresh pending-run record from WORDS with the given indents."
-  (hash-map :words words :first first-indent :rest rest-indent))
+(define (-latex-fill-pending text first-indent rest-indent comment)
+  "A fresh pending-run record from TEXT with the given indents; COMMENT is
+   the %-run prefix for a comment run, nil for prose."
+  (hash-map :text text :first first-indent :rest rest-indent
+            :comment comment))
 
 (define (-latex-fill-pending-empty? pending)
-  "Whether PENDING (a list = no run, or a record) holds no run/words."
+  "Whether PENDING (a list = no run, or a record) holds no text to wrap.
+   An ARMED record (indents but nil :text) counts as empty for flushing."
   (or (nil? pending)
       (and (list? pending) (nil? pending))
-      (nil? (get pending :words nil))))
+      (nil? (get pending :text nil))))
 
-(define (-latex-fill-extend-pending pending words first-indent rest-indent)
-  "Add WORDS to PENDING. When PENDING is empty, start a new run with the
-   given indents (a plain-prose run uses the body indent for both)."
-  (if (-latex-fill-pending-empty? pending)
-      (-latex-fill-pending words first-indent rest-indent)
-      (hash-map :words (append (get pending :words (list)) words)
-                :first (get pending :first first-indent)
-                :rest (get pending :rest rest-indent))))
+(define (-latex-fill-pending-comment pending)
+  "The %-run prefix of PENDING's comment run, or nil for prose / no run."
+  (if (or (nil? pending) (and (list? pending) (nil? pending)))
+      nil
+      (get pending :comment nil)))
+
+(define (-latex-fill-pending-comment? pending)
+  "Whether PENDING is a comment run (strict boolean)."
+  (not (nil? (-latex-fill-pending-comment pending))))
+
+(define (-latex-fill-armed pending fallback-indent)
+  "An ARMED pending record carrying forward PENDING's rest indent (or
+   FALLBACK-INDENT when PENDING has none): the next prose line starts a
+   fresh run at that indent — how a unit continues after a trailing code
+   comment ended it."
+  (let ((r (if (or (nil? pending) (and (list? pending) (nil? pending)))
+               fallback-indent
+               (get pending :rest fallback-indent))))
+    (hash-map :text nil :first r :rest r :comment nil)))
+
+(define (-latex-fill-extend-pending pending text first-indent rest-indent
+                                    comment)
+  "Append TEXT (one source line's trimmed content) to PENDING with the
+   sentence-aware join separator. An empty PENDING starts a new run with
+   the given indents and COMMENT prefix; an ARMED record starts the run at
+   ITS OWN stored indents instead."
+  (cond
+    ((or (nil? pending) (and (list? pending) (nil? pending)))
+     (-latex-fill-pending text first-indent rest-indent comment))
+    ((nil? (get pending :text nil))
+     (-latex-fill-pending text
+                          (get pending :first first-indent)
+                          (get pending :rest rest-indent)
+                          (get pending :comment comment)))
+    (else
+     (hash-map :text (str (get pending :text "")
+                          (-latex-fill-join-sep (get pending :text ""))
+                          text)
+               :first (get pending :first first-indent)
+               :rest (get pending :rest rest-indent)
+               :comment (get pending :comment nil)))))
 
 (define (-latex-fill-flush pending acc fill-column)
-  "Wrap PENDING's prose run (if any) to FILL-COLUMN onto ACC (reversed
-   output lines), returning the new reversed ACC. An empty run leaves ACC
+  "Wrap PENDING's run (if any) to FILL-COLUMN onto ACC (reversed output
+   lines), returning the new reversed ACC. An empty/armed run leaves ACC
    unchanged."
   (if (-latex-fill-pending-empty? pending)
       acc
       (-latex-fill-prepend-reversed
-       (-latex-fill-wrap (get pending :words (list))
+       (-latex-fill-wrap (-latex-fill-tokens (get pending :text ""))
                          (get pending :first "")
                          (get pending :rest "")
                          fill-column)
        acc)))
+
+(define (-latex-fill-glue-comment pending cmt indent acc fill-column)
+  "Flush PENDING and glue ` CMT` (a trailing %-comment, verbatim) onto the
+   flushed run's LAST line — AUCTeX's code-comment rule: the comment ends
+   the fill unit and is not itself filled (the line may exceed the column).
+   An empty PENDING emits the comment alone at INDENT."
+  (if (-latex-fill-pending-empty? pending)
+      (cons (str indent cmt) acc)
+      (let ((flushed (-latex-fill-flush pending acc fill-column)))
+        (cons (str (car flushed) " " cmt) (cdr flushed)))))
 
 (define (-latex-fill-prepend-reversed lines acc)
   "Push LINES (in order) onto ACC (a reversed list), keeping ACC reversed."
@@ -492,8 +710,9 @@
 ;; --- pure: protected (non-fillable) environments ----------------------
 ;; AUCTeX does not reflow verbatim / tabular / math-alignment envs (its
 ;; `LaTeX-indent-environment-list` hands them to a dedicated indenter and
-;; filling skips them). We refuse to fill when point's innermost env is
-;; one of these, leaving the contents byte-for-byte unchanged.
+;; filling skips them). We refuse to fill when POINT's innermost env is
+;; one of these; when one appears INSIDE the filled block its body passes
+;; through byte-identical (only the \begin/\end lines re-indent).
 
 (define *latex-fill-protected-envs*
   (list "verbatim" "verbatim*" "lstlisting" "filecontents" "filecontents*"
@@ -508,6 +727,214 @@
    math-alignment environment AUCTeX does not fill. PURE."
   (and (not (nil? env))
        (-latex-member? env *latex-fill-protected-envs*)))
+
+;; --- pure: the block filler -------------------------------------------
+;; The heart of the command. Given the BLOCK (the paragraph region's text,
+;; newline-joined) and the env depth at its FIRST line, walk the lines
+;; tracking depth from \begin/\end, re-indent every line, and re-wrap each
+;; run of prose lines (between boundaries) to the fill column. Returns the
+;; rebuilt block text (no trailing newline). PURE — fully unit-testable.
+
+(define (latex-fill-block block base-depth level item-indent fill-column)
+  "Re-indent and re-wrap BLOCK (a newline-joined run of LaTeX source
+   lines) as AUCTeX's `LaTeX-fill-paragraph` would. BASE-DEPTH is the
+   environment nesting depth at the block's first line; LEVEL is
+   `*latex-indent-level*`; ITEM-INDENT is `*latex-item-indent*`;
+   FILL-COLUMN the wrap column. Every line is re-indented by its depth
+   (nested envs, list items, \\begin/\\end backindent); consecutive prose
+   lines are joined and wrapped, broken at \\begin/\\end/\\item/paragraph
+   commands so items and structure never merge. Comment paragraphs fill
+   behind their %-run prefix; trailing code comments end their fill unit
+   and stay glued; protected envs inside the block pass through
+   byte-identical. Spaces only. PURE — string in, string out, no buffer."
+  (-latex-fill-join-lines
+   (-latex-fill-walk (string-split block "\n") base-depth level item-indent
+                     fill-column (list) (list))))
+
+(define (-latex-fill-walk lines depth level item-indent fill-column
+                          pending acc)
+  "Walk LINES tracking DEPTH; PENDING accumulates the prose/comment run
+   currently being gathered (with its wrap indents), ACC the emitted
+   output lines (reversed, each a final string). A structural or blank
+   line flushes PENDING first. Returns the output lines in order."
+  (cond
+    ((nil? lines)
+     (reverse (-latex-fill-flush pending acc fill-column)))
+    (else
+     (let* ((raw (car lines))
+            (content (-latex-fill-trim-leading raw)))
+       (cond
+         ;; Blank line: flush any run, emit an empty line.
+         ((-latex-fill-blank-line? raw)
+          (-latex-fill-walk (cdr lines) depth level item-indent fill-column
+                            (list)
+                            (cons "" (-latex-fill-flush pending acc
+                                                        fill-column))))
+         ;; Comment-only line: fill as a comment paragraph behind the
+         ;; %-run prefix. Runs of different %-depth never merge; a bare
+         ;; `%' line is a boundary emitted as-is.
+         ((-latex-fill-comment-line? content)
+          (let* ((run (-latex-fill-comment-run content))
+                 (body (-latex-fill-trim-trailing
+                        (-latex-fill-trim-leading
+                         (substring content (string-length run)
+                                    (string-length content)))))
+                 (prefix (str (-latex-fill-body-indent depth level) run " "))
+                 (pc (-latex-fill-pending-comment pending)))
+            (cond
+              ((string=? body "")
+               (-latex-fill-walk (cdr lines) depth level item-indent
+                                 fill-column (list)
+                                 (cons (str (-latex-fill-body-indent depth level)
+                                            run)
+                                       (-latex-fill-flush pending acc
+                                                          fill-column))))
+              ((and (not (nil? pc)) (string=? pc run))
+               (-latex-fill-walk (cdr lines) depth level item-indent
+                                 fill-column
+                                 (-latex-fill-extend-pending pending body
+                                                             prefix prefix run)
+                                 acc))
+              (else
+               (-latex-fill-walk (cdr lines) depth level item-indent
+                                 fill-column
+                                 (-latex-fill-pending body prefix prefix run)
+                                 (-latex-fill-flush pending acc
+                                                    fill-column))))))
+         ;; \begin{...}: flush, emit at outer level, then go one deeper —
+         ;; UNLESS it is a non-indenting env (`document'), which keeps the
+         ;; depth, or a PROTECTED env, whose body passes through verbatim.
+         ((-latex-fill-begin-line? content)
+          (let ((env (-latex-fill-env-name content)))
+            (if (-latex-fill-protected-env? env)
+                (-latex-fill-emit-protected
+                 (cdr lines) env 0 depth level item-indent fill-column
+                 (cons (str (-latex-fill-body-indent depth level)
+                            (-latex-fill-trim-trailing content))
+                       (-latex-fill-flush pending acc fill-column)))
+                (let ((next (if (-latex-non-indenting-env? env)
+                                depth
+                                (+ depth 1))))
+                  (-latex-fill-walk
+                   (cdr lines) next level item-indent fill-column (list)
+                   (cons (str (-latex-fill-body-indent depth level)
+                              (-latex-fill-trim-trailing content))
+                         (-latex-fill-flush pending acc fill-column)))))))
+         ;; \end{...}: flush, dedent first, emit at the outer level — unless
+         ;; a non-indenting env (`document'), which never changed the depth.
+         ((-latex-fill-end-line? content)
+          (let ((d (if (-latex-non-indenting-env? (-latex-fill-env-name content))
+                       depth
+                       (- depth 1))))
+            (-latex-fill-walk
+             (cdr lines) d level item-indent fill-column (list)
+             (cons (str (-latex-fill-body-indent d level)
+                        (-latex-fill-trim-trailing content))
+                   (-latex-fill-flush pending acc fill-column)))))
+         ;; \item / \bibitem: flush the previous unit, start a NEW run
+         ;; seeded with the item's own text (so items never merge), first
+         ;; line at item indent, continuations one step deeper. A trailing
+         ;; code comment ends the unit with the comment glued on.
+         ((-latex-fill-item-line? content)
+          (let ((first-ind (-latex-fill-item-indent depth level item-indent))
+                (rest-ind (-latex-fill-continuation-indent depth level))
+                (acc0 (-latex-fill-flush pending acc fill-column))
+                (cpos (-latex-fill-comment-pos content 0)))
+            (if (< cpos 0)
+                (-latex-fill-walk
+                 (cdr lines) depth level item-indent fill-column
+                 (-latex-fill-pending (-latex-fill-trim-trailing content)
+                                      first-ind rest-ind nil)
+                 acc0)
+                (-latex-fill-walk
+                 (cdr lines) depth level item-indent fill-column
+                 (-latex-fill-armed (list) rest-ind)
+                 (-latex-fill-glue-comment
+                  (-latex-fill-pending
+                   (-latex-fill-trim-trailing (substring content 0 cpos))
+                   first-ind rest-ind nil)
+                  (-latex-fill-trim-trailing
+                   (substring content cpos (string-length content)))
+                  first-ind acc0 fill-column)))))
+         ;; Paragraph command (\par, \section, \caption, …) / display math:
+         ;; flush, emit on its own line at the body level.
+         ((-latex-fill-paragraph-command-line? content)
+          (-latex-fill-walk
+           (cdr lines) depth level item-indent fill-column (list)
+           (cons (str (-latex-fill-body-indent depth level)
+                      (-latex-fill-trim-trailing content))
+                 (-latex-fill-flush pending acc fill-column))))
+         ;; Plain prose: append its text to the current run (seeding the
+         ;; run's indents from the body level when it is the first line; a
+         ;; comment run in PENDING is flushed first — prose and comments
+         ;; never merge). A trailing code comment ends the unit: the code
+         ;; fills, the comment glues onto the last line, and the following
+         ;; lines resume at the unit's indent (ARMED record).
+         (else
+          (let* ((body-ind (-latex-fill-body-indent depth level))
+                 (comment? (-latex-fill-pending-comment? pending))
+                 (acc0 (if comment?
+                           (-latex-fill-flush pending acc fill-column)
+                           acc))
+                 (pend0 (if comment? (list) pending))
+                 (cpos (-latex-fill-comment-pos content 0)))
+            (if (< cpos 0)
+                (-latex-fill-walk
+                 (cdr lines) depth level item-indent fill-column
+                 (-latex-fill-extend-pending
+                  pend0 (-latex-fill-trim-trailing content)
+                  body-ind body-ind nil)
+                 acc0)
+                (let ((pend1 (-latex-fill-extend-pending
+                              pend0
+                              (-latex-fill-trim-trailing
+                               (substring content 0 cpos))
+                              body-ind body-ind nil)))
+                  (-latex-fill-walk
+                   (cdr lines) depth level item-indent fill-column
+                   (-latex-fill-armed pend1 body-ind)
+                   (-latex-fill-glue-comment
+                    pend1
+                    (-latex-fill-trim-trailing
+                     (substring content cpos (string-length content)))
+                    body-ind acc0 fill-column)))))))))))
+
+(define (-latex-fill-emit-protected lines env nest depth level item-indent
+                                    fill-column acc)
+  "Emit LINES byte-identical (indentation and spacing preserved) until the
+   \\end line closing the protected ENV opened just above; that closing
+   line is emitted re-indented at DEPTH (the \\begin's level) and the
+   normal walk resumes. Same-name nested \\begin{ENV} groups are tracked
+   via NEST; an unterminated env runs to the end of the block. This is
+   AUCTeX's `LaTeX-indent-environment-list' outcome: begin/end indent, the
+   body is never refilled."
+  (cond
+    ((nil? lines)
+     (-latex-fill-walk lines depth level item-indent fill-column (list) acc))
+    (else
+     (let* ((raw (car lines))
+            (content (-latex-fill-trim-leading raw)))
+       (cond
+         ((and (-latex-fill-end-line? content)
+               (string=? (-latex-fill-env-name content) env))
+          (if (= nest 0)
+              (-latex-fill-walk
+               (cdr lines) depth level item-indent fill-column (list)
+               (cons (str (-latex-fill-body-indent depth level)
+                          (-latex-fill-trim-trailing content))
+                     acc))
+              (-latex-fill-emit-protected (cdr lines) env (- nest 1) depth
+                                          level item-indent fill-column
+                                          (cons raw acc))))
+         ((and (-latex-fill-begin-line? content)
+               (string=? (-latex-fill-env-name content) env))
+          (-latex-fill-emit-protected (cdr lines) env (+ nest 1) depth
+                                      level item-indent fill-column
+                                      (cons raw acc)))
+         (else
+          (-latex-fill-emit-protected (cdr lines) env nest depth
+                                      level item-indent fill-column
+                                      (cons raw acc))))))))
 
 ;; --- pure: paragraph bounds in the buffer text ------------------------
 ;; Find the run of lines around point delimited by blank lines — the
@@ -553,6 +980,60 @@
            lines target (+ i 1)
            (+ acc (string-length (nth lines i)) 1)))))
 
+;; --- pure: point restoration --------------------------------------------
+;; Filling never adds or removes a non-whitespace character, so a position
+;; in the old block maps to the new one by its count of non-whitespace
+;; characters — AUCTeX keeps point at its place in the prose the same way.
+
+(define (-latex-fill-map-offset old new rel)
+  "Map REL (an offset into OLD) to the corresponding offset in NEW: the
+   position with the same count of non-whitespace characters before it.
+   When REL sits ON a non-whitespace character, the mapped offset sits on
+   that same character in NEW. PURE."
+  (if (and (< rel (string-length old))
+           (not (-latex-fill-ws-char? (substring old rel (+ rel 1)))))
+      (-latex-fill-offset-at-nth-solid new
+                                       (+ (-latex-fill-count-solid old rel) 1))
+      (-latex-fill-offset-after-nth-solid new
+                                          (-latex-fill-count-solid old rel))))
+
+(define (-latex-fill-count-solid s limit)
+  "The number of non-whitespace characters in S strictly before LIMIT."
+  (-latex-fill-count-solid-loop s 0 (min limit (string-length s)) 0))
+
+(define (-latex-fill-count-solid-loop s i limit acc)
+  (cond
+    ((>= i limit) acc)
+    ((-latex-fill-ws-char? (substring s i (+ i 1)))
+     (-latex-fill-count-solid-loop s (+ i 1) limit acc))
+    (else (-latex-fill-count-solid-loop s (+ i 1) limit (+ acc 1)))))
+
+(define (-latex-fill-offset-at-nth-solid s n)
+  "The index OF the N-th (1-based) non-whitespace character of S — the end
+   of S when it has fewer. PURE."
+  (-latex-fill-at-nth-loop s 0 n))
+
+(define (-latex-fill-at-nth-loop s i n)
+  (cond
+    ((>= i (string-length s)) i)
+    ((-latex-fill-ws-char? (substring s i (+ i 1)))
+     (-latex-fill-at-nth-loop s (+ i 1) n))
+    ((<= n 1) i)
+    (else (-latex-fill-at-nth-loop s (+ i 1) (- n 1)))))
+
+(define (-latex-fill-offset-after-nth-solid s n)
+  "The index just AFTER the N-th (1-based) non-whitespace character of S
+   (0 for N=0) — the end of S when it has fewer. PURE."
+  (-latex-fill-after-nth-loop s 0 n))
+
+(define (-latex-fill-after-nth-loop s i n)
+  (cond
+    ((<= n 0) i)
+    ((>= i (string-length s)) i)
+    ((-latex-fill-ws-char? (substring s i (+ i 1)))
+     (-latex-fill-after-nth-loop s (+ i 1) n))
+    (else (-latex-fill-after-nth-loop s (+ i 1) (- n 1)))))
+
 ;; --- the command ------------------------------------------------------
 
 (defcommand latex-fill-paragraph ()
@@ -564,6 +1045,14 @@
    only (`*latex-indent-level*' spaces per level; \\item lines pulled back
    by `*latex-item-indent*' with continuations one level deeper).
 
+   Comment paragraphs fill behind their %-run prefix; a code line's
+   trailing comment ends its fill unit and stays glued, unfilled. Inline
+   \\(…\\)/\\[…\\] math never breaks across lines when
+   `*latex-fill-break-at-separators*' is on, and a \\verb group never
+   breaks at all. Verbatim / tabular / math-alignment environments inside
+   the block pass through byte-identical. Point stays at its position in
+   the prose.
+
    The paragraph is the run of non-blank lines around point; structural
    lines (\\begin / \\end / \\item / \\par / \\section… / display math) are
    re-indented in place and never merged into surrounding prose. A blank
@@ -571,14 +1060,19 @@
    leaves the buffer unchanged. Bound to M-q in latex-mode (overriding the
    global `fill-paragraph')."
   (let* ((text (buffer-text))
+         (pt (point))
          (lines (string-split text "\n"))
-         (cursor-line (-latex-fill-line-of-offset text (point)))
+         (cursor-line (-latex-fill-line-of-offset text pt))
          (bounds (-latex-fill-paragraph-bounds lines cursor-line)))
     (cond
       ((nil? bounds)
        (show-status! "Nothing to fill (blank line)"))
-      ((-latex-fill-protected-env?
-        (car (-latex-open-env-stack text (point))))
+      ;; (car nil) throws in this Lisp — an empty open-env stack (point
+      ;; outside every environment) must not reach `car'; it used to, so
+      ;; M-q crashed on top-level prose.
+      ((let ((stack (-latex-open-env-stack text pt)))
+         (and (not (nil? stack))
+              (-latex-fill-protected-env? (car stack))))
        (show-status! "latex-fill-paragraph: not filling a verbatim/math/tabular environment"))
       (else
        (let* ((start-line (car bounds))
@@ -598,6 +1092,8 @@
                  (delete-region! from to)
                  (goto! from)
                  (insert! filled))
+               (goto! (+ from (-latex-fill-map-offset block filled
+                                                      (- pt from))))
                (show-status! "Filled paragraph"))))))))
 
 (define (-latex-fill-line-of-offset text offset)
