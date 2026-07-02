@@ -66,6 +66,18 @@
 ;;;       - `\%' is not a comment start; backslash-run parity decides
 ;;;         (`\\%' after a line-break macro IS one). A `%' inside a
 ;;;         \verb group is not a comment either.
+;;;   * PARAGRAPH-COMMAND UNITS — a \caption{…} / \section{…} / \chapter…
+;;;     line is its own fill unit spanning the MACRO'S EXTENT: following
+;;;     lines are gathered while the macro's braces stay unclosed
+;;;     (AUCTeX's `LaTeX-forward-paragraph`: the paragraph command's
+;;;     paragraph ends with its macro) and the whole unit re-wraps to the
+;;;     fill column. Continuation lines indent an extra
+;;;     `*latex-brace-indent-level*' per brace still open at the break —
+;;;     AUCTeX's `TeX-brace-indent-level' — dropping back to the
+;;;     environment indent once the closing `}' is passed. \noindent and
+;;;     \newblock instead LEAD IN an ordinary prose paragraph (following
+;;;     lines merge into it), and a display-math \[ / \] line keeps its
+;;;     own unwrapped line.
 ;;;   * `LaTeX-fill-break-at-separators` — with
 ;;;     `*latex-fill-break-at-separators*' (default on, matching AUCTeX's
 ;;;     default `(\( \) \[ \])`): an inline \(…\) or \[…\] math group is
@@ -123,6 +135,16 @@
    `*latex-indent-level*' deeper. The item line's indent is
    (body-level + this); its continuation lines stay at body-level + one
    step.")
+
+(defcustom *latex-brace-indent-level* 2
+  :number
+  :group 'latex
+  :doc "Extra spaces of indentation per unclosed `{' for the wrapped
+   continuation lines of a paragraph-command fill unit (\\caption{…},
+   \\section{…}, …) in `latex-fill-paragraph' (M-q) — AUCTeX's
+   `TeX-brace-indent-level' (default 2). Continuation lines inside the
+   macro's argument indent this much beyond the environment indent;
+   once the closing `}' is passed they drop back.")
 
 (defcustom *latex-fill-break-at-separators* #t
   :boolean
@@ -259,6 +281,29 @@
   (if (or (< i 0) (not (string=? (substring s i (+ i 1)) "\\")))
       odd?
       (-latex-fill-odd-backslash-run? s (- i 1) (not odd?))))
+
+;; --- pure: net brace count ----------------------------------------------
+;; The grouping-brace surplus of a string: +1 per unescaped `{', -1 per
+;; unescaped `}'. \{ and \} don't count (escape parity) and a \verb
+;; group's argument is skipped. Drives both the extent of a
+;; paragraph-command fill unit and its continuation-line indentation.
+
+(define (-latex-fill-brace-net s)
+  "The net count of unescaped grouping `{' minus `}' in S. PURE."
+  (-latex-fill-brace-net-loop s 0 0))
+
+(define (-latex-fill-brace-net-loop s i n)
+  (cond
+    ((>= i (string-length s)) n)
+    ((-latex-fill-verb-at? s i)
+     (-latex-fill-brace-net-loop s (-latex-fill-verb-end s i) n))
+    ((and (string=? (substring s i (+ i 1)) "{")
+          (not (-latex-fill-escaped? s i)))
+     (-latex-fill-brace-net-loop s (+ i 1) (+ n 1)))
+    ((and (string=? (substring s i (+ i 1)) "}")
+          (not (-latex-fill-escaped? s i)))
+     (-latex-fill-brace-net-loop s (+ i 1) (- n 1)))
+    (else (-latex-fill-brace-net-loop s (+ i 1) n))))
 
 ;; --- pure: line classification ----------------------------------------
 ;; Each line of the block is classified by its leading control word (after
@@ -578,35 +623,56 @@
 ;; token longer than the column is left on its own line (never split) —
 ;; AUCTeX does the same for an unbreakable construct.
 
-(define (-latex-fill-wrap tokens first-indent rest-indent fill-column)
+(define (-latex-fill-wrap tokens first-indent rest-indent fill-column
+                          brace-step)
   "Greedily wrap TOKENS ({:w :sep2} records) into a list of lines. The
    first line carries FIRST-INDENT, the rest REST-INDENT; no line exceeds
    FILL-COLUMN unless it holds a single over-long token. A :sep2 token
-   keeps two spaces before it. PURE."
+   keeps two spaces before it. When BRACE-STEP is non-zero (a
+   paragraph-command unit), each continuation line indents an extra
+   BRACE-STEP spaces per grouping brace still open where the break lands
+   — AUCTeX's `TeX-brace-indent-level' rule — dedenting back after the
+   closing `}'. PURE."
   (cond
     ((nil? tokens) (list))
     (else
      (-latex-fill-wrap-loop (cdr tokens)
                             (str first-indent (get (car tokens) :w ""))
-                            rest-indent fill-column (list)))))
+                            rest-indent fill-column
+                            (if (= brace-step 0)
+                                0
+                                (-latex-fill-brace-net (get (car tokens) :w "")))
+                            brace-step (list)))))
 
-(define (-latex-fill-wrap-loop tokens current rest-indent fill-column acc)
-  "Tail loop for `-latex-fill-wrap`: CURRENT is the line being built, ACC
+(define (-latex-fill-wrap-loop tokens current rest-indent fill-column
+                               braces brace-step acc)
+  "Tail loop for `-latex-fill-wrap`: CURRENT is the line being built,
+   BRACES the grouping-brace surplus of the tokens consumed so far, ACC
    the completed lines (reversed)."
   (cond
     ((nil? tokens) (reverse (cons current acc)))
     (else
      (let* ((tok (car tokens))
+            (w (get tok :w ""))
             (sep (if (get tok :sep2 #f) "  " " "))
-            (candidate (str current sep (get tok :w ""))))
+            (candidate (str current sep w))
+            (nb (if (= brace-step 0)
+                    0
+                    (+ braces (-latex-fill-brace-net w)))))
        (if (> (string-length candidate) fill-column)
-           ;; The token does not fit: flush CURRENT, start a new line.
+           ;; The token does not fit: flush CURRENT, start a new line
+           ;; (brace-indented by the surplus open BEFORE this token).
            (-latex-fill-wrap-loop (cdr tokens)
-                                  (str rest-indent (get tok :w ""))
-                                  rest-indent fill-column
+                                  (str rest-indent
+                                       (-latex-fill-spaces
+                                        (* (if (> braces 0) braces 0)
+                                           brace-step))
+                                       w)
+                                  rest-indent fill-column nb brace-step
                                   (cons current acc))
            (-latex-fill-wrap-loop (cdr tokens) candidate
-                                  rest-indent fill-column acc))))))
+                                  rest-indent fill-column nb brace-step
+                                  acc))))))
 
 ;; --- pure: the pending prose/comment run --------------------------------
 ;; A "pending" run is a record of the text gathered so far and the
@@ -616,11 +682,13 @@
 ;; prose line should start a fresh run AT THE SAME INDENTS (an item's
 ;; continuation level survives the interruption).
 
-(define (-latex-fill-pending text first-indent rest-indent comment)
+(define (-latex-fill-pending text first-indent rest-indent comment brace)
   "A fresh pending-run record from TEXT with the given indents; COMMENT is
-   the %-run prefix for a comment run, nil for prose."
+   the %-run prefix for a comment run (nil for prose); BRACE is the
+   per-open-brace continuation indent step (0 for prose/comments,
+   `*latex-brace-indent-level*' for a paragraph-command unit)."
   (hash-map :text text :first first-indent :rest rest-indent
-            :comment comment))
+            :comment comment :brace brace))
 
 (define (-latex-fill-pending-empty? pending)
   "Whether PENDING (a list = no run, or a record) holds no text to wrap.
@@ -647,7 +715,7 @@
   (let ((r (if (or (nil? pending) (and (list? pending) (nil? pending)))
                fallback-indent
                (get pending :rest fallback-indent))))
-    (hash-map :text nil :first r :rest r :comment nil)))
+    (hash-map :text nil :first r :rest r :comment nil :brace 0)))
 
 (define (-latex-fill-extend-pending pending text first-indent rest-indent
                                     comment)
@@ -657,19 +725,21 @@
    ITS OWN stored indents instead."
   (cond
     ((or (nil? pending) (and (list? pending) (nil? pending)))
-     (-latex-fill-pending text first-indent rest-indent comment))
+     (-latex-fill-pending text first-indent rest-indent comment 0))
     ((nil? (get pending :text nil))
      (-latex-fill-pending text
                           (get pending :first first-indent)
                           (get pending :rest rest-indent)
-                          (get pending :comment comment)))
+                          (get pending :comment comment)
+                          (get pending :brace 0)))
     (else
      (hash-map :text (str (get pending :text "")
                           (-latex-fill-join-sep (get pending :text ""))
                           text)
                :first (get pending :first first-indent)
                :rest (get pending :rest rest-indent)
-               :comment (get pending :comment nil)))))
+               :comment (get pending :comment nil)
+               :brace (get pending :brace 0)))))
 
 (define (-latex-fill-flush pending acc fill-column)
   "Wrap PENDING's run (if any) to FILL-COLUMN onto ACC (reversed output
@@ -681,7 +751,8 @@
        (-latex-fill-wrap (-latex-fill-tokens (get pending :text ""))
                          (get pending :first "")
                          (get pending :rest "")
-                         fill-column)
+                         fill-column
+                         (get pending :brace 0))
        acc)))
 
 (define (-latex-fill-glue-comment pending cmt indent acc fill-column)
@@ -798,7 +869,7 @@
               (else
                (-latex-fill-walk (cdr lines) depth level item-indent
                                  fill-column
-                                 (-latex-fill-pending body prefix prefix run)
+                                 (-latex-fill-pending body prefix prefix run 0)
                                  (-latex-fill-flush pending acc
                                                     fill-column))))))
          ;; \begin{...}: flush, emit at outer level, then go one deeper —
@@ -844,7 +915,7 @@
                 (-latex-fill-walk
                  (cdr lines) depth level item-indent fill-column
                  (-latex-fill-pending (-latex-fill-trim-trailing content)
-                                      first-ind rest-ind nil)
+                                      first-ind rest-ind nil 0)
                  acc0)
                 (-latex-fill-walk
                  (cdr lines) depth level item-indent fill-column
@@ -852,52 +923,163 @@
                  (-latex-fill-glue-comment
                   (-latex-fill-pending
                    (-latex-fill-trim-trailing (substring content 0 cpos))
-                   first-ind rest-ind nil)
+                   first-ind rest-ind nil 0)
                   (-latex-fill-trim-trailing
                    (substring content cpos (string-length content)))
                   first-ind acc0 fill-column)))))
-         ;; Paragraph command (\par, \section, \caption, …) / display math:
-         ;; flush, emit on its own line at the body level.
-         ((-latex-fill-paragraph-command-line? content)
+         ;; Display math \[ / \]: a boundary that keeps its own unwrapped
+         ;; line at the body level (its content is never re-broken).
+         ((-latex-fill-display-math-line? content)
           (-latex-fill-walk
            (cdr lines) depth level item-indent fill-column (list)
            (cons (str (-latex-fill-body-indent depth level)
                       (-latex-fill-trim-trailing content))
                  (-latex-fill-flush pending acc fill-column))))
-         ;; Plain prose: append its text to the current run (seeding the
-         ;; run's indents from the body level when it is the first line; a
-         ;; comment run in PENDING is flushed first — prose and comments
-         ;; never merge). A trailing code comment ends the unit: the code
-         ;; fills, the comment glues onto the last line, and the following
-         ;; lines resume at the unit's indent (ARMED record).
+         ;; \noindent / \newblock LEAD IN a prose paragraph (AUCTeX: text
+         ;; after the macro continues as an ordinary paragraph): flush the
+         ;; previous unit, then treat this line as plain prose so the
+         ;; following lines merge into it.
+         ((-latex-fill-prose-lead-command-line? content)
+          (-latex-fill-prose-line lines depth level item-indent fill-column
+                                  (list)
+                                  (-latex-fill-flush pending acc fill-column)
+                                  content))
+         ;; Paragraph command (\caption, \section, \par, …): its own fill
+         ;; unit spanning the macro's extent — gathered while its braces
+         ;; stay unclosed, wrapped with brace-indented continuations.
+         ((-latex-fill-paragraph-command-line? content)
+          (-latex-fill-emit-pcommand
+           lines depth level item-indent fill-column
+           (-latex-fill-flush pending acc fill-column)))
+         ;; Plain prose.
          (else
-          (let* ((body-ind (-latex-fill-body-indent depth level))
-                 (comment? (-latex-fill-pending-comment? pending))
-                 (acc0 (if comment?
-                           (-latex-fill-flush pending acc fill-column)
-                           acc))
-                 (pend0 (if comment? (list) pending))
-                 (cpos (-latex-fill-comment-pos content 0)))
-            (if (< cpos 0)
-                (-latex-fill-walk
-                 (cdr lines) depth level item-indent fill-column
-                 (-latex-fill-extend-pending
-                  pend0 (-latex-fill-trim-trailing content)
-                  body-ind body-ind nil)
-                 acc0)
-                (let ((pend1 (-latex-fill-extend-pending
-                              pend0
-                              (-latex-fill-trim-trailing
-                               (substring content 0 cpos))
-                              body-ind body-ind nil)))
-                  (-latex-fill-walk
-                   (cdr lines) depth level item-indent fill-column
-                   (-latex-fill-armed pend1 body-ind)
-                   (-latex-fill-glue-comment
-                    pend1
-                    (-latex-fill-trim-trailing
-                     (substring content cpos (string-length content)))
-                    body-ind acc0 fill-column)))))))))))
+          (-latex-fill-prose-line lines depth level item-indent fill-column
+                                  pending acc content)))))))
+
+(define (-latex-fill-prose-line lines depth level item-indent fill-column
+                                pending acc content)
+  "Handle one plain-prose line (CONTENT is (car LINES) left-trimmed):
+   append its text to the current run — seeding the run's indents from
+   the body level when it is the first line; a comment run in PENDING is
+   flushed first, prose and comments never merge. A trailing code comment
+   ends the unit: the code fills, the comment glues onto the last line,
+   and the following lines resume at the unit's indent (ARMED record).
+   Continues the walk on (cdr LINES)."
+  (let* ((body-ind (-latex-fill-body-indent depth level))
+         (comment? (-latex-fill-pending-comment? pending))
+         (acc0 (if comment?
+                   (-latex-fill-flush pending acc fill-column)
+                   acc))
+         (pend0 (if comment? (list) pending))
+         (cpos (-latex-fill-comment-pos content 0)))
+    (if (< cpos 0)
+        (-latex-fill-walk
+         (cdr lines) depth level item-indent fill-column
+         (-latex-fill-extend-pending
+          pend0 (-latex-fill-trim-trailing content)
+          body-ind body-ind nil)
+         acc0)
+        (let ((pend1 (-latex-fill-extend-pending
+                      pend0
+                      (-latex-fill-trim-trailing
+                       (substring content 0 cpos))
+                      body-ind body-ind nil)))
+          (-latex-fill-walk
+           (cdr lines) depth level item-indent fill-column
+           (-latex-fill-armed pend1 body-ind)
+           (-latex-fill-glue-comment
+            pend1
+            (-latex-fill-trim-trailing
+             (substring content cpos (string-length content)))
+            body-ind acc0 fill-column))))))
+
+;; --- the paragraph-command fill unit ------------------------------------
+;; AUCTeX's `LaTeX-forward-paragraph`: a paragraph command's paragraph is
+;; the MACRO'S EXTENT — a \caption{…} whose argument spans lines is one
+;; unit through its closing `}'. The unit re-wraps to the fill column;
+;; the wrap indents continuation lines `*latex-brace-indent-level*' per
+;; brace still open at the break (see `-latex-fill-wrap`). A blank or
+;; structural line ends the gather early (the runaway guard for an
+;; unbalanced brace), and a trailing %-comment ends it with the comment
+;; glued on, unfilled.
+
+(define *latex-fill-prose-lead-commands* (list "noindent" "newblock"))
+
+(define (-latex-fill-prose-lead-command-line? content)
+  "Whether left-trimmed CONTENT starts with a paragraph command that
+   LEADS IN prose (\\noindent, \\newblock) rather than carrying its own
+   braced argument. PURE."
+  (-latex-member? (-latex-fill-control-word content)
+                  *latex-fill-prose-lead-commands*))
+
+(define (-latex-fill-emit-pcommand lines depth level item-indent fill-column
+                                   acc)
+  "Fill the paragraph-command unit starting at (car LINES): the macro
+   line plus following lines while its grouping braces stay unclosed.
+   Resumes the walk on the remaining lines."
+  (let* ((base (-latex-fill-body-indent depth level))
+         (content (-latex-fill-trim-leading (car lines)))
+         (cpos (-latex-fill-comment-pos content 0))
+         (code (-latex-fill-trim-trailing
+                (if (< cpos 0) content (substring content 0 cpos))))
+         (cmt (if (< cpos 0)
+                  nil
+                  (-latex-fill-trim-trailing
+                   (substring content cpos (string-length content)))))
+         (pend (-latex-fill-pending code base base nil
+                                    *latex-brace-indent-level*)))
+    (if (and (nil? cmt) (> (-latex-fill-brace-net code) 0))
+        (-latex-fill-pcommand-continue (cdr lines) depth level item-indent
+                                       fill-column acc pend
+                                       (-latex-fill-brace-net code))
+        ;; Balanced on its own line (or comment-stopped): a
+        ;; self-contained unit — wrap it now.
+        (-latex-fill-walk (cdr lines) depth level item-indent fill-column
+                          (list)
+                          (if (nil? cmt)
+                              (-latex-fill-flush pend acc fill-column)
+                              (-latex-fill-glue-comment pend cmt base acc
+                                                        fill-column))))))
+
+(define (-latex-fill-pcommand-continue lines depth level item-indent
+                                       fill-column acc pend deficit)
+  "Gather the continuation lines of an open paragraph-command unit: PEND
+   holds the text so far, DEFICIT its unclosed-brace surplus. The unit
+   closes when the braces balance; a blank / structural / comment-only
+   line closes it early (unbalanced-brace guard)."
+  (cond
+    ((nil? lines)
+     (-latex-fill-walk lines depth level item-indent fill-column (list)
+                       (-latex-fill-flush pend acc fill-column)))
+    (else
+     (let ((raw (car lines))
+           (content (-latex-fill-trim-leading (car lines))))
+       (if (or (-latex-fill-blank-line? raw)
+               (-latex-fill-comment-line? content)
+               (-latex-fill-boundary-line? content))
+           (-latex-fill-walk lines depth level item-indent fill-column
+                             (list)
+                             (-latex-fill-flush pend acc fill-column))
+           (let* ((cpos (-latex-fill-comment-pos content 0))
+                  (code (-latex-fill-trim-trailing
+                         (if (< cpos 0) content (substring content 0 cpos))))
+                  (cmt (if (< cpos 0)
+                           nil
+                           (-latex-fill-trim-trailing
+                            (substring content cpos
+                                       (string-length content)))))
+                  (pend2 (-latex-fill-extend-pending pend code "" "" nil))
+                  (d2 (+ deficit (-latex-fill-brace-net code))))
+             (if (and (nil? cmt) (> d2 0))
+                 (-latex-fill-pcommand-continue (cdr lines) depth level
+                                                item-indent fill-column
+                                                acc pend2 d2)
+                 (-latex-fill-walk
+                  (cdr lines) depth level item-indent fill-column (list)
+                  (if (nil? cmt)
+                      (-latex-fill-flush pend2 acc fill-column)
+                      (-latex-fill-glue-comment pend2 cmt "" acc
+                                                fill-column))))))))))
 
 (define (-latex-fill-emit-protected lines env nest depth level item-indent
                                     fill-column acc)
@@ -1054,8 +1236,12 @@
    the prose.
 
    The paragraph is the run of non-blank lines around point; structural
-   lines (\\begin / \\end / \\item / \\par / \\section… / display math) are
-   re-indented in place and never merged into surrounding prose. A blank
+   lines (\\begin / \\end / \\item / display math) are re-indented in
+   place and never merged into surrounding prose. A paragraph command
+   (\\caption{…}, \\section{…}, …) is its own fill unit spanning the
+   macro's extent — gathered to its closing `}' and re-wrapped, with
+   continuation lines indented `*latex-brace-indent-level*' per brace
+   still open at the break (AUCTeX's `TeX-brace-indent-level'). A blank
    line, or point inside a verbatim / tabular / math-alignment environment,
    leaves the buffer unchanged. Bound to M-q in latex-mode (overriding the
    global `fill-paragraph')."

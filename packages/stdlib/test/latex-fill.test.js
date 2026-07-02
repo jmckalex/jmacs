@@ -816,3 +816,111 @@ test('describe-key reports the mode binding that shadows the global (M-q)', asyn
   assert.ok(out.join('\n').includes('M-q runs latex-fill-paragraph'),
     `C-h k resolves through the mode chain, got: ${out.join(' | ')}`);
 });
+
+// --- paragraph-command units: \caption{…} wraps, brace-indented ------------
+// Live report 2026-07-02 (round 2): M-q on a long \caption line did
+// nothing ("Paragraph already filled") — paragraph-command lines were
+// boundary lines emitted verbatim, never wrapped. AUCTeX fills the
+// macro's extent, indenting continuations TeX-brace-indent-level per
+// unclosed brace and dedenting after the closing `}'.
+
+test('a long \\caption wraps; continuations indent per the open brace', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '\\begin{figure}[htbp]',
+    '\\centering',
+    '\\caption{Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi}',
+    '\\label{fig:x}',
+    '\\end{figure}',
+  ].join('\n');
+  const expected = [
+    '\\begin{figure}[htbp]',
+    '  \\centering',
+    '  \\caption{Alpha beta gamma delta epsilon zeta eta theta iota kappa',
+    '    lambda mu nu xi}',
+    '  \\label{fig:x}',
+    '\\end{figure}',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected);
+  assert.equal(fill(ev, expected), expected, 'idempotent');
+});
+
+test('a pre-wrapped \\caption re-fills as one unit through its closing brace', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '\\caption{Alpha beta gamma',
+    'delta epsilon}',
+    '\\label{fig:x}',
+  ].join('\n');
+  const expected = [
+    '\\caption{Alpha beta gamma delta epsilon}',
+    '\\label{fig:x}',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected,
+    'the unit joins to the closing } and \\label stays its own line');
+});
+
+test('continuation lines dedent back once the closing brace is passed', async () => {
+  const { ev } = await fillEditor();
+  const input =
+    '\\section{alpha beta gamma delta epsilon zeta eta theta iota kappa} tail words following here';
+  const expected = [
+    '\\section{alpha beta gamma delta epsilon zeta eta theta iota kappa} tail',
+    'words following here',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected,
+    'past the }, continuations return to the environment indent');
+});
+
+test('*latex-brace-indent-level* is 2 by default and customisable', async () => {
+  const { ev } = await fillEditor();
+  assert.equal(ev('*latex-brace-indent-level*'), 2);
+  ev('(set! *latex-brace-indent-level* 6)');
+  const input =
+    '\\caption{Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi}';
+  const out = fill(ev, input).split('\n');
+  assert.match(out[1], /^ {6}\S/, 'continuation carries the custom brace indent');
+});
+
+test('\\noindent leads in a prose paragraph that following lines join', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '\\noindent First words',
+    'and more words',
+  ].join('\n');
+  assert.equal(fill(ev, input), '\\noindent First words and more words');
+});
+
+test('an unclosed brace stops gathering at a blank line (runaway guard)', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '\\caption{unclosed alpha',
+    '',
+    'next para',
+  ].join('\n');
+  assert.equal(fill(ev, input), input, 'nothing leaks across the blank line');
+});
+
+test('latex-fill-paragraph wraps the caption under the cursor (the live repro)', async () => {
+  const initial = [
+    '\\begin{figure}[htbp]',
+    '\\centering',
+    '\\caption{Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi}',
+    '\\label{fig:x}',
+    '\\end{figure}',
+  ].join('\n');
+  const { ev, buffer } = await bufferEditor(initial);
+  ev(`(goto! ${initial.indexOf('lambda')})`);
+  ev('(latex-fill-paragraph)');
+  const expected = [
+    '\\begin{figure}[htbp]',
+    '  \\centering',
+    '  \\caption{Alpha beta gamma delta epsilon zeta eta theta iota kappa',
+    '    lambda mu nu xi}',
+    '  \\label{fig:x}',
+    '\\end{figure}',
+  ].join('\n');
+  assert.equal(buffer.text, expected);
+  assert.equal(ev('(point)'), buffer.text.indexOf('lambda'),
+    'point stays on the word it was on');
+});
