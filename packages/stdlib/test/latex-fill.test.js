@@ -924,3 +924,49 @@ test('latex-fill-paragraph wraps the caption under the cursor (the live repro)',
   assert.equal(ev('(point)'), buffer.text.indexOf('lambda'),
     'point stays on the word it was on');
 });
+
+// --- brace-indented continuations in ALL units (round 3) -------------------
+// A mid-paragraph unclosed group — the classic spanning \footnote{…} —
+// brace-indents its continuation lines exactly like a \caption's
+// argument, dedenting once the group closes. Comments are exempt.
+
+test('prose with a spanning \\footnote{ brace-indents its continuations', async () => {
+  const { ev } = await fillEditor();
+  const input =
+    'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda.\\footnote{Mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega and more words here.} Final words.';
+  const expected = [
+    'alpha beta gamma delta epsilon zeta eta theta iota kappa',
+    'lambda.\\footnote{Mu nu xi omicron pi rho sigma tau upsilon phi chi psi',
+    '  omega and more words here.} Final words.',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected);
+  assert.equal(fill(ev, expected), expected, 'idempotent');
+});
+
+test('\\item text with a spanning group brace-indents past the continuation indent', async () => {
+  const { ev } = await fillEditor();
+  const input = [
+    '\\begin{itemize}',
+    '\\item Alpha beta \\footnote{gamma delta epsilon zeta eta theta iota kappa lambda mu} tail',
+    '\\end{itemize}',
+  ].join('\n');
+  const expected = [
+    '\\begin{itemize}',
+    '  \\item Alpha beta \\footnote{gamma delta epsilon zeta eta theta iota',
+    '      kappa lambda mu} tail',
+    '\\end{itemize}',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected,
+    'continuation = item continuation indent (4) + one open brace (2)');
+});
+
+test('comment paragraphs do not brace-indent (a { in comment prose is text)', async () => {
+  const { ev } = await fillEditor();
+  const input =
+    '% alpha beta { gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron';
+  const expected = [
+    '% alpha beta { gamma delta epsilon zeta eta theta iota kappa lambda mu',
+    '% nu xi omicron',
+  ].join('\n');
+  assert.equal(fill(ev, input), expected);
+});

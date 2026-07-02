@@ -71,13 +71,17 @@
 ;;;     lines are gathered while the macro's braces stay unclosed
 ;;;     (AUCTeX's `LaTeX-forward-paragraph`: the paragraph command's
 ;;;     paragraph ends with its macro) and the whole unit re-wraps to the
-;;;     fill column. Continuation lines indent an extra
-;;;     `*latex-brace-indent-level*' per brace still open at the break —
-;;;     AUCTeX's `TeX-brace-indent-level' — dropping back to the
-;;;     environment indent once the closing `}' is passed. \noindent and
-;;;     \newblock instead LEAD IN an ordinary prose paragraph (following
-;;;     lines merge into it), and a display-math \[ / \] line keeps its
-;;;     own unwrapped line.
+;;;     fill column. \noindent and \newblock instead LEAD IN an ordinary
+;;;     prose paragraph (following lines merge into it), and a
+;;;     display-math \[ / \] line keeps its own unwrapped line.
+;;;   * BRACE-INDENTED CONTINUATIONS — in every wrapped unit (paragraph
+;;;     commands, plain prose, \item text) a continuation line indents an
+;;;     extra `*latex-brace-indent-level*' per grouping brace still open
+;;;     at the break — AUCTeX's `TeX-brace-indent-level' — dropping back
+;;;     to the environment indent once the closing `}' is passed. So a
+;;;     mid-paragraph \footnote{…} spanning lines indents its
+;;;     continuations just as a \caption{…} does. Comment paragraphs are
+;;;     exempt (a `{' in comment prose is not a TeX group).
 ;;;   * `LaTeX-fill-break-at-separators` — with
 ;;;     `*latex-fill-break-at-separators*' (default on, matching AUCTeX's
 ;;;     default `(\( \) \[ \])`): an inline \(…\) or \[…\] math group is
@@ -139,12 +143,15 @@
 (defcustom *latex-brace-indent-level* 2
   :number
   :group 'latex
-  :doc "Extra spaces of indentation per unclosed `{' for the wrapped
-   continuation lines of a paragraph-command fill unit (\\caption{…},
-   \\section{…}, …) in `latex-fill-paragraph' (M-q) — AUCTeX's
-   `TeX-brace-indent-level' (default 2). Continuation lines inside the
-   macro's argument indent this much beyond the environment indent;
-   once the closing `}' is passed they drop back.")
+  :doc "Extra spaces of indentation per unclosed `{' for wrapped
+   continuation lines in `latex-fill-paragraph' (M-q) — AUCTeX's
+   `TeX-brace-indent-level' (default 2). Applies to every wrapped fill
+   unit: a paragraph command's argument (\\caption{…}, \\section{…}),
+   plain prose with a group spanning lines (a mid-paragraph
+   \\footnote{…}), and \\item text. A continuation line indents this
+   much per brace still open where the break lands, dropping back once
+   the closing `}' is passed. Comment paragraphs are exempt (a `{' in
+   comment text is not a TeX group). Set 0 for flat continuations.")
 
 (defcustom *latex-fill-break-at-separators* #t
   :boolean
@@ -715,7 +722,8 @@
   (let ((r (if (or (nil? pending) (and (list? pending) (nil? pending)))
                fallback-indent
                (get pending :rest fallback-indent))))
-    (hash-map :text nil :first r :rest r :comment nil :brace 0)))
+    (hash-map :text nil :first r :rest r :comment nil
+              :brace *latex-brace-indent-level*)))
 
 (define (-latex-fill-extend-pending pending text first-indent rest-indent
                                     comment)
@@ -725,7 +733,11 @@
    ITS OWN stored indents instead."
   (cond
     ((or (nil? pending) (and (list? pending) (nil? pending)))
-     (-latex-fill-pending text first-indent rest-indent comment 0))
+     ;; A fresh PROSE run is brace-aware (a mid-paragraph \footnote{ that
+     ;; spans lines indents its continuations); a comment run is not — a
+     ;; `{' in comment text is not a TeX group.
+     (-latex-fill-pending text first-indent rest-indent comment
+                          (if (nil? comment) *latex-brace-indent-level* 0)))
     ((nil? (get pending :text nil))
      (-latex-fill-pending text
                           (get pending :first first-indent)
@@ -915,7 +927,8 @@
                 (-latex-fill-walk
                  (cdr lines) depth level item-indent fill-column
                  (-latex-fill-pending (-latex-fill-trim-trailing content)
-                                      first-ind rest-ind nil 0)
+                                      first-ind rest-ind nil
+                                      *latex-brace-indent-level*)
                  acc0)
                 (-latex-fill-walk
                  (cdr lines) depth level item-indent fill-column
@@ -923,7 +936,8 @@
                  (-latex-fill-glue-comment
                   (-latex-fill-pending
                    (-latex-fill-trim-trailing (substring content 0 cpos))
-                   first-ind rest-ind nil 0)
+                   first-ind rest-ind nil
+                   *latex-brace-indent-level*)
                   (-latex-fill-trim-trailing
                    (substring content cpos (string-length content)))
                   first-ind acc0 fill-column)))))
@@ -1239,9 +1253,11 @@
    lines (\\begin / \\end / \\item / display math) are re-indented in
    place and never merged into surrounding prose. A paragraph command
    (\\caption{…}, \\section{…}, …) is its own fill unit spanning the
-   macro's extent — gathered to its closing `}' and re-wrapped, with
-   continuation lines indented `*latex-brace-indent-level*' per brace
-   still open at the break (AUCTeX's `TeX-brace-indent-level'). A blank
+   macro's extent — gathered to its closing `}' and re-wrapped. In every
+   wrapped unit (prose, \\item text, paragraph commands) continuation
+   lines indent `*latex-brace-indent-level*' per brace still open at the
+   break (AUCTeX's `TeX-brace-indent-level'), so a mid-paragraph
+   \\footnote{…} spanning lines brace-indents too. A blank
    line, or point inside a verbatim / tabular / math-alignment environment,
    leaves the buffer unchanged. Bound to M-q in latex-mode (overriding the
    global `fill-paragraph')."

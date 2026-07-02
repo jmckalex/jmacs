@@ -398,10 +398,13 @@ level, `\item` lines pulled back by `*latex-item-indent*`). Structural
 lines (`\begin`/`\end`/`\item`/display math) are re-indented in place,
 never merged into prose. A paragraph command (`\caption{…}`,
 `\section{…}`, …) is its own fill unit spanning the macro's extent —
-gathered to its closing `}` and re-wrapped, continuation lines indented
+gathered to its closing `}` and re-wrapped; `\noindent`/`\newblock`
+lead in an ordinary prose paragraph. In every wrapped unit (prose,
+`\item` text, paragraph commands) continuation lines indent
 `*latex-brace-indent-level*` per brace still open at the break
-(AUCTeX's `TeX-brace-indent-level`); `\noindent`/`\newblock` lead in an
-ordinary prose paragraph. Comment paragraphs fill
+(AUCTeX's `TeX-brace-indent-level`) — a mid-paragraph `\footnote{…}`
+spanning lines brace-indents like a caption — dedenting after the
+closing `}`. Comment paragraphs fill
 behind their `%`-run prefix; a code line's trailing comment ends its
 fill unit and stays glued, unfilled. Inline `\(…\)`/`\[…\]` math never
 breaks across lines when `*latex-fill-break-at-separators*` is on
