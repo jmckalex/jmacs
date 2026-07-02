@@ -395,8 +395,13 @@ Re-wrap the paragraph around point AUCTeX-style: fill prose to
 `*latex-fill-column*` and re-indent every line of the enclosing block
 by its environment depth (using `*latex-indent-level*` spaces per
 level, `\item` lines pulled back by `*latex-item-indent*`). Structural
-lines (`\begin`/`\end`/`\item`/`\par`/`\section…`/display math) are
-re-indented in place, never merged into prose. Comment paragraphs fill
+lines (`\begin`/`\end`/`\item`/display math) are re-indented in place,
+never merged into prose. A paragraph command (`\caption{…}`,
+`\section{…}`, …) is its own fill unit spanning the macro's extent —
+gathered to its closing `}` and re-wrapped, continuation lines indented
+`*latex-brace-indent-level*` per brace still open at the break
+(AUCTeX's `TeX-brace-indent-level`); `\noindent`/`\newblock` lead in an
+ordinary prose paragraph. Comment paragraphs fill
 behind their `%`-run prefix; a code line's trailing comment ends its
 fill unit and stays glued, unfilled. Inline `\(…\)`/`\[…\]` math never
 breaks across lines when `*latex-fill-break-at-separators*` is on

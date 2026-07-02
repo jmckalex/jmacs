@@ -221,7 +221,13 @@ environment depth. Structural lines (`\begin`/`\end`, `\item`,
 sectioning, display math) are re-indented in place, never merged into
 prose; point inside a `verbatim`, `tabular` or math-alignment environment
 leaves the buffer untouched, and one of those environments sitting
-*inside* the paragraph passes through byte-for-byte. Comments fill too:
+*inside* the paragraph passes through byte-for-byte. A paragraph
+command like `\caption{…}` or `\section{…}` is its own fill unit
+spanning the macro's extent: a long caption wraps at the fill column
+with its continuation lines indented an extra
+`*latex-brace-indent-level*` (AUCTeX's `TeX-brace-indent-level`,
+default 2) for the unclosed `{`, dropping back once the closing `}` is
+passed. Comments fill too:
 a run of `%` lines wraps behind its `%`-prefix (a `%%` header never
 merges with a `%` body), and a comment trailing code stays glued to its
 line, unfilled. Inline `\(…\)`/`\[…\]` math never breaks across lines
