@@ -6786,6 +6786,18 @@ function ensureTablineState(view) {
       }
       const target = view.tabs[i];
       if (!target) return;
+      // In server mode a tab can back a SERVER buffer (a server text leaf shown
+      // through a renderer tab strip, or the live façade) that is NOT in the
+      // global `views` array — so `views.indexOf` is -1 and the renderer-only
+      // `removeTabInTabline` below would drop the tab while the buffer lives on
+      // in the spine (visible in C-x C-b). Kill it server-side instead (switch +
+      // C-x k, which re-homes the client onto a survivor and re-pushes the list).
+      if (serverViewClient) {
+        const serverId = target === serverFacadeView
+          ? serverViewClient.currentBufferId()
+          : target._serverBufferId;
+        if (serverId) { serverViewClient.closeBuffer(serverId); return; }
+      }
       const globalIdx = views.indexOf(target);
       if (globalIdx >= 0) killViewAtIndex(globalIdx);
       else removeTabInTabline(view, i);
