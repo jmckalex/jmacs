@@ -396,10 +396,17 @@ Re-wrap the paragraph around point AUCTeX-style: fill prose to
 by its environment depth (using `*latex-indent-level*` spaces per
 level, `\item` lines pulled back by `*latex-item-indent*`). Structural
 lines (`\begin`/`\end`/`\item`/`\par`/`\section…`/display math) are
-re-indented in place, never merged into prose. A blank line, or point
-inside a verbatim / tabular / math-alignment environment, leaves the
-buffer unchanged. Bound to `M-q` in latex-mode, overriding the global
-cmd(fill-paragraph).
+re-indented in place, never merged into prose. Comment paragraphs fill
+behind their `%`-run prefix; a code line's trailing comment ends its
+fill unit and stays glued, unfilled. Inline `\(…\)`/`\[…\]` math never
+breaks across lines when `*latex-fill-break-at-separators*` is on
+(default), and a `\verb` group never breaks at all;
+`*latex-sentence-end-double-space*` (default off) enables Emacs's
+two-space sentence joins. A verbatim / tabular / math-alignment
+environment inside the block passes through byte-identical, and point
+stays at its position in the prose. A blank line, or point inside such
+an environment, leaves the buffer unchanged. Bound to `M-q` in
+latex-mode, overriding the global cmd(fill-paragraph).
 :::
 
 ### Labels and references
