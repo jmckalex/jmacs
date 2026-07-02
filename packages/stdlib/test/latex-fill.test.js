@@ -787,3 +787,32 @@ test('the new fill defcustoms have the intended defaults', async () => {
   assert.equal(ev('*latex-fill-break-at-separators*'), true);
   assert.equal(ev('*latex-sentence-end-double-space*'), false);
 });
+
+// --- describe-key resolves through the mode chain --------------------------
+// C-h k used to look only at the global keymap, so in a latex buffer it
+// reported "M-q runs fill-paragraph" while the mode map's
+// latex-fill-paragraph was what actually ran (live report 2026-07-02).
+
+test('describe-key reports the mode binding that shadows the global (M-q)', async () => {
+  const out = [];
+  const buffer = createBuffer('some latex prose', { name: 'test.tex' });
+  const interpreter = createInterpreter({
+    write: (s) => out.push(String(s)),
+    primitives: {
+      ...createBufferPrimitives({ current: buffer }),
+      'read-file-text!': () => NIL,
+      'file-exists?': () => false,
+      'list-directory-paths': () => NIL,
+      'show-status!': () => NIL,
+      'clear-status!': () => NIL,
+      'load-doc-manifest!': () => NIL,
+    },
+  });
+  await loadStdlib(interpreter, (name) => readFile(join(lispDir, name), 'utf8'), {});
+  const ev = (s) => interpreter.evaluate(s);
+  ev('(set-major-mode! latex-mode)');
+  ev('(describe-key)');
+  ev('(handle-key "M-q")');
+  assert.ok(out.join('\n').includes('M-q runs latex-fill-paragraph'),
+    `C-h k resolves through the mode chain, got: ${out.join(' | ')}`);
+});
