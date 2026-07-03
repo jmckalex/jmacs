@@ -7,7 +7,15 @@
  * normal test run because it needs an Electron runtime.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  protocol,
+  utilityProcess,
+  MessageChannelMain,
+} from 'electron';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from '../src/files.js';
 import { renderJMarkdown } from '../src/jmarkdown.js';
+import { createServerBridge } from '../src/server-bridge.js';
 import { EDITOR_URL, serveAppFile, serveMediaFile } from '../src/serve.js';
 import { registerShellHandlers } from '../src/shell.js';
 
@@ -31,6 +40,13 @@ const repoRoot = resolve(
  *  seconds, which is needlessly slow. The doc-view smoke arm is
  *  skipped when the manifest isn't present. */
 const docsBuilt = existsSync(join(repoRoot, 'docs', 'build', 'manifest.json'));
+
+/** An isolated config home for the forked Model-B spine. Points MWB_CONFIG_HOME
+ *  (+ the session/recovery stores) at a scratch dir so the smoke never reads or
+ *  writes the user's ~/.godot: the spine boots with clean defaults (no
+ *  faces.json / custom.lisp / init.lisp) and its autosave + named-session store
+ *  land in tmp. Wiped and recreated at startup so every run is deterministic. */
+const smokeConfigHome = join(tmpdir(), 'jmacs-smoke-config');
 
 /** A scratch path the file round-trip writes to. */
 const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
@@ -188,11 +204,19 @@ const PRELOAD = join(
 
 let done = false;
 
+/** The Model-B spine bridge, forked in `whenReady`. Killed in `finish` so the
+ *  forked server `utilityProcess` never outlives the smoke run. */
+let serverBridge = null;
+
 /** Report a result once and quit. */
 function finish(code, message) {
   if (done) return;
   done = true;
   console.log(code === 0 ? `PASS — ${message}` : `FAIL — ${message}`);
+  if (serverBridge) {
+    serverBridge.dispose();
+    serverBridge = null;
+  }
   app.exit(code);
 }
 
@@ -213,6 +237,28 @@ app.whenReady().then(() => {
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
   );
+
+  // Model B: the renderer is a THIN CLIENT — it runs no interpreter of its own
+  // (that was deleted when Model B became the default), so with nothing on the
+  // other end of the wire it never receives a VIEW push and every spine-driven
+  // arm returns empty. Fork the spine and plumb a port to the window, exactly as
+  // `src/main.js` does. Isolate the spine's config/session/recovery to a scratch
+  // dir (wiped first) so the run is hermetic and deterministic — no ~/.godot
+  // reads, no seeded session. The forked server inherits these env vars.
+  rmSync(smokeConfigHome, { recursive: true, force: true });
+  mkdirSync(smokeConfigHome, { recursive: true });
+  process.env.MWB_CONFIG_HOME = smokeConfigHome;
+  process.env.MWB_SESSION_STORE = join(smokeConfigHome, 'workspaces.json');
+  process.env.MWB_RECOVERY_DIR = join(smokeConfigHome, 'recovery');
+  // No MWB_SESSION_SEED: boot a fresh session (the spine opens its DEFAULT_FILE)
+  // rather than seeding from any prior renderer session.json.
+  delete process.env.MWB_SESSION_SEED;
+  try {
+    serverBridge = createServerBridge({ utilityProcess, MessageChannelMain });
+  } catch (error) {
+    finish(1, `failed to fork the Model-B spine: ${error.message}`);
+    return;
+  }
 
   const win = new BrowserWindow({
     show: false,
@@ -4232,6 +4278,11 @@ app.whenReady().then(() => {
   });
 
   win.loadURL(EDITOR_URL);
+  // Plumb a MessageChannel port from the spine to this window's renderer, exactly
+  // as `src/main.js createWindow` does. `attachWindow` registers its own
+  // `did-finish-load` listener to deliver the port once the page has loaded; the
+  // inspection above then has the 5s settle window to receive the first VIEW push.
+  if (serverBridge) serverBridge.attachWindow(win.webContents);
   // The smoke runs a long sequence of inspections; the timer protects
   // against a wedge in `did-finish-load`, not against slow checks. Sized
   // for v2 where the shell arm waits up to 8s for stdout under the pty
