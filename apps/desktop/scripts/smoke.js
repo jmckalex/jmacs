@@ -224,7 +224,7 @@ let serverBridge = null;
  */
 const WAIT_HELPERS = `
   const __sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const __waitFor = async (pred, ms = 5000) => {
+  const __waitFor = async (pred, ms = 3000) => {
     const t0 = performance.now();
     for (;;) {
       let v;
@@ -1101,8 +1101,7 @@ app.whenReady().then(() => {
       // A sticky note: created via Lisp, it shows its source and rides
       // the document when the buffer scrolls.
       const sticky = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1110,8 +1109,10 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-view! "notes-sticky.txt")');
-        await frame();
+        ${REPL_RUN}
+        const noteCount = () => document.querySelectorAll('.sticky-note').length;
+
+        await __run('(new-view! "notes-sticky.txt")');
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         for (let i = 0; i < 200; i += 1) {
@@ -1119,35 +1120,40 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         }
-        await frame();
-        submit('(goto! 0)');
-        await frame();
+        await __sleep(300);
+        await __run('(goto! 0)');
         // Drive the render pipeline with a controlled command — 'cat'
         // echoes the source, so the output here is deterministic and
         // independent of whether a real JMarkdown binary is installed.
-        submit('(set! *markdown-interpreter* "cat")');
-        await frame();
+        await __run('(set! *markdown-interpreter* "cat")');
+
+        // Each note round-trips renderer->server->renderer, so wait for the
+        // note to actually mount in the DOM before touching it.
         submit('(note-set-source! (note-create!) "sticky body text")');
-        await frame();
+        await __waitFor(() => noteCount() >= 1);
         const note = document.querySelector('.sticky-note');
         const body = note && note.querySelector('.sticky-note-body');
+        await __waitFor(() => body && body.textContent.includes('sticky body text'));
         const before = note ? note.getBoundingClientRect().top : 0;
         editor.scrollTop = editor.scrollTop + 300;
-        await frame();
-        await frame();
+        await __sleep(80);
         const after = note ? note.getBoundingClientRect().top : 0;
         // An HTML tag in the source becomes a real element once rendered.
         submit('(note-set-source! (note-create!) "<b>bold note</b>")');
-        await wait(500);
+        await __waitFor(() => noteCount() >= 2);
+        await __waitFor(() => document.querySelectorAll('.sticky-note-body b').length > 0);
         // A note with mathematics — MathJax typesets it in place.
         submit('(note-set-source! (note-create!) "energy $E = mc^2$")');
-        await wait(1200);
+        await __waitFor(() => noteCount() >= 3);
+        await __waitFor(() => document.querySelectorAll('.sticky-note-body mjx-container').length > 0);
         // A metadata header sets the note's colour. The \\n reach the
         // REPL as a two-character escape, so the Lisp reader makes the
         // newlines — a real newline would be stripped by the input.
         submit('(note-set-source! (note-create!) "---\\\\ncolor: tomato\\\\n---\\\\ncoloured")');
-        await wait(400);
+        await __waitFor(() => noteCount() >= 4);
         const colourNote = document.querySelectorAll('.sticky-note')[3];
+        await __waitFor(() => colourNote &&
+          getComputedStyle(colourNote).backgroundColor === 'rgb(255, 99, 71)');
         const coloured = colourNote
           ? getComputedStyle(colourNote).backgroundColor
           : '';
@@ -1161,26 +1167,29 @@ app.whenReady().then(() => {
         // Collapse the coloured note via its control, then expand it by
         // double-clicking the icon. Collapsed, only the Font Awesome
         // icon shows — the panel background goes transparent.
-        colourNote.querySelector('.sticky-note-collapse').dispatchEvent(
-          new MouseEvent('click', { bubbles: true })
-        );
-        await frame();
-        const collapsed = colourNote.classList.contains('is-collapsed');
-        const collapsedTransparent =
-          getComputedStyle(colourNote).backgroundColor === 'rgba(0, 0, 0, 0)';
-        const faLoaded = getComputedStyle(
-          colourNote.querySelector('.sticky-note-icon i')
-        ).fontFamily.includes('Font Awesome');
-        colourNote.querySelector('.sticky-note-icon').dispatchEvent(
-          new MouseEvent('dblclick', { bubbles: true })
-        );
-        await frame();
-        const expanded = !colourNote.classList.contains('is-collapsed');
+        let collapsed = false, collapsedTransparent = false, faLoaded = false, expanded = false;
+        if (colourNote) {
+          colourNote.querySelector('.sticky-note-collapse').dispatchEvent(
+            new MouseEvent('click', { bubbles: true })
+          );
+          await __waitFor(() => colourNote.classList.contains('is-collapsed'));
+          collapsed = colourNote.classList.contains('is-collapsed');
+          collapsedTransparent =
+            getComputedStyle(colourNote).backgroundColor === 'rgba(0, 0, 0, 0)';
+          faLoaded = getComputedStyle(
+            colourNote.querySelector('.sticky-note-icon i')
+          ).fontFamily.includes('Font Awesome');
+          colourNote.querySelector('.sticky-note-icon').dispatchEvent(
+            new MouseEvent('dblclick', { bubbles: true })
+          );
+          await __waitFor(() => !colourNote.classList.contains('is-collapsed'));
+          expanded = !colourNote.classList.contains('is-collapsed');
+        }
         return {
           present: note !== null,
           body: body ? body.textContent.trim() : '',
           scrolled: Math.abs(after - before + 300) < 4,
-          count: document.querySelectorAll('.sticky-note').length,
+          count: noteCount(),
           rendered: document.querySelectorAll('.sticky-note-body b').length > 0,
           mathTypeset:
             document.querySelectorAll('.sticky-note-body mjx-container')
@@ -2739,21 +2748,35 @@ app.whenReady().then(() => {
       // it. The echo area is the .minibuffer-echo element, visible
       // only when no prompt is active.
       const chord = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        ${WAIT_HELPERS}
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        // The prior arm (shell) leaves a non-text view current, so there is no
+        // .editor to focus. Switch to a text buffer first (and leave one active
+        // for the arms that follow).
+        await __run('(new-view! "chord-test.txt")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
+        if (!editor) return { echo: '', visible: false, cleared: false };
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
         }));
-        await frame();
         const echoEl = document.querySelector('.minibuffer-echo');
+        await __waitFor(() => echoEl && !echoEl.hidden && echoEl.textContent.length > 0);
         const echo = echoEl ? echoEl.textContent : '';
         const visible = echoEl ? !echoEl.hidden : false;
         // Press C-g to abort the prefix; the echo clears.
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'g', ctrlKey: true, bubbles: true, cancelable: true,
         }));
-        await frame();
+        await __waitFor(() => echoEl && echoEl.textContent === '' && echoEl.hidden);
         const cleared = echoEl ? echoEl.textContent === '' && echoEl.hidden : true;
         return { echo, visible, cleared };
       })()`);
@@ -4334,7 +4357,9 @@ app.whenReady().then(() => {
   if (serverBridge) serverBridge.attachWindow(win.webContents);
   // The smoke runs a long sequence of inspections; the timer protects
   // against a wedge in `did-finish-load`, not against slow checks. Sized
-  // for v2 where the shell arm waits up to 8s for stdout under the pty
-  // backing — the older 20s cap raced the tail of the run.
-  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 60000);
+  // for the Model-B round-trip: every command/keystroke now crosses to the
+  // server process and back, and the polling `__waitFor` helpers spend real
+  // wall-clock waiting for projected state, so the full run is minutes, not
+  // the ~20s of the in-renderer era.
+  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 240000);
 });
