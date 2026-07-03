@@ -1507,16 +1507,19 @@ app.whenReady().then(() => {
         ${WAIT_HELPERS}
         const frame = __sleep.bind(null, 60);
         const replInput = document.querySelector('.repl-input');
-        replInput.value = '(open-file!)';
+        // Open by explicit path — NOT (open-file!). The native-dialog
+        // primitive is a no-op in the hermetic smoke (not a spine
+        // primitive / not a client directive; the dialog stub is never
+        // reached — see the tabline arm). open-file-path! routes a .png
+        // to the image view (verified live via scripts/drive.js).
+        replInput.value = '(open-file-path! ${JSON.stringify(imagePath)})';
         replInput.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
-        // The open path is async (IPC + a data-URL read + the server VIEW push);
-        // wait (bounded) for the image-view to mount. NOTE: currently a real
-        // gap — the image view does not mount under the smoke's spine, so this
-        // times out fast rather than perturbing later arms.
+        // The open path is async (a data-URL read + the server VIEW push);
+        // wait (bounded) for the image-view to mount.
         await __waitFor(() =>
-          document.querySelector('image-view:not([style*="display: none"]) .image-content'), 800);
+          document.querySelector('image-view:not([style*="display: none"]) .image-content'), 2000);
         const view = document.querySelector('image-view:not([style*="display: none"])');
         const img = view ? view.querySelector('.image-content') : null;
         const toggle = view ? view.querySelector('.image-zoom-toggle') : null;
@@ -1644,6 +1647,7 @@ app.whenReady().then(() => {
       // doesn't depend on `pnpm run docs` — it exercises the
       // marked.js pipeline directly.
       const liveDocs = await runArm(`(async () => {
+        ${WAIT_HELPERS}
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1652,6 +1656,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        ${REPL_RUN}
         // Define a procedure whose docstring is Markdown. The
         // \\\\\\\\n sequences become \\\\n in the inner JS string,
         // which the Lisp reader then converts to real newlines so
@@ -1659,15 +1664,22 @@ app.whenReady().then(() => {
         // Earlier smoke arms set *markdown-interpreter* to "cat" /
         // "echo smoke" for their own purposes; reset to the bundled
         // marked.js path before exercising the live-doc renderer.
-        submit('(set! *markdown-interpreter* "marked")');
-        submit('(define (smoke-doc-fn) "Smoke test for _live_ Markdown.\\\\n\\\\nIncludes:\\\\n\\\\n- A **bold** word.\\\\n- An /italic/ word.\\\\n\\\\nThe end." nil)');
-        await frame();
-        submit('(open-doc "smoke-doc-fn")');
-        for (let i = 0; i < 8; i += 1) await frame();
+        // NB: each form round-trips renderer<->spine, so submit-and-
+        // wait (__run) — a bare fire-and-forget + a few rAF races the
+        // define/interpreter set and the marked render (verified live
+        // via scripts/drive.js: the render IS correct given enough time).
+        await __run('(set! *markdown-interpreter* "marked")');
+        await __run('(define (smoke-doc-fn) "Smoke test for _live_ Markdown.\\\\n\\\\nIncludes:\\\\n\\\\n- A **bold** word.\\\\n- An /italic/ word.\\\\n\\\\nThe end." nil)');
+        await __run('(open-doc "smoke-doc-fn")');
         // Doc pages open as a pane view now (showDocInPane), so the
         // page lives in a visible doc-view and the name shows on the
-        // modeline — not in the utility dock.
-        const view = document.querySelector('doc-view:not([style*="display: none"])');
+        // modeline — not in the utility dock. Poll for the rendered
+        // markdown to land (the marked pass is async).
+        const view = await __waitFor(() => {
+          const v = document.querySelector('doc-view:not([style*="display: none"])');
+          const p = v ? v.querySelector('.doc-page') : null;
+          return p && /<strong>bold<\\/strong>/.test(p.innerHTML) ? v : null;
+        }, 3000);
         const shown = !!view;
         const page = view ? view.querySelector('.doc-page') : null;
         const html = page ? page.innerHTML : '';
@@ -1814,9 +1826,32 @@ app.whenReady().then(() => {
         // jukebox view on window for inspection isn't ideal — we read
         // the DOM instead and rely on the fact that the underlying
         // HTMLAudioElement updates its src.
-        submit('(jukebox ${JSON.stringify(jukeboxDir)})');
-        await frame();
-        await frame();
+        // The jukebox command PROMPTS for its directory in the minibuffer
+        // (a spine defcommand: (interactive (string "Jukebox directory: "))).
+        // A bare (jukebox dir) hits the stdlib define whose direct
+        // open-jukebox-buffer! path doesn't scan/switch in the hermetic
+        // spine — run the command and fill the prompt, exactly like
+        // directory-tree / directory-columns. Verified live via drive.js.
+        submit('(run-command (quote jukebox))');
+        let jbMbInput = null;
+        for (let i = 0; i < 80; i += 1) {
+          const mb = document.querySelector('.minibuffer');
+          jbMbInput = document.querySelector('.minibuffer-input');
+          if (jbMbInput && mb && !mb.hasAttribute('hidden')) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        if (jbMbInput) {
+          jbMbInput.focus();
+          jbMbInput.value = ${JSON.stringify(jukeboxDir)};
+          jbMbInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        }
+        // Wait for the jukebox view to mount + become visible.
+        for (let i = 0; i < 80; i += 1) {
+          if (document.querySelector('jukebox-view:not([style*="display: none"])')) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
         // Embedded-art lookup is async (IPC round-trip); wait for the
         // <img src> to flip from the sidecar's media:// URL to the
         // data: URL the parser produces. Poll a handful of frames so
