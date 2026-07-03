@@ -224,7 +224,7 @@ let serverBridge = null;
  */
 const WAIT_HELPERS = `
   const __sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const __waitFor = async (pred, ms = 3000) => {
+  const __waitFor = async (pred, ms = 2000) => {
     const t0 = performance.now();
     for (;;) {
       let v;
@@ -2510,14 +2510,23 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        // Open the tree-view at the seeded directory; wait for it to mount.
-        submit('(directory-tree ${JSON.stringify(treeDir)})');
-        // NOTE: real gap — the directory-tree view does not mount under the
-        // smoke's spine; bounded wait so it fails fast, not perturbing later arms.
+        // directory-tree is a 0-arg INTERACTIVE command: run-command fires its
+        // "Directory tree: " minibuffer prompt (a bare (directory-tree) call
+        // won't), then fill the prompt with the seeded root. (Verified live via
+        // scripts/drive.js — a bare (directory-tree "path") is an arity error.)
+        submit('(run-command (quote directory-tree))');
+        await __waitFor(() => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        });
+        const mb = document.querySelector('.minibuffer-input');
+        mb.value = ${JSON.stringify(treeDir)};
+        mb.dispatchEvent(new Event('input', { bubbles: true }));
+        mb.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
         await __waitFor(() => {
           const v = document.querySelector('directory-tree-view:not([style*="display: none"])');
           return v && v.querySelectorAll('.directory-tree-row').length > 0;
-        }, 800);
+        });
         const view = document.querySelector('directory-tree-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         // Row count: subdir (one folder, collapsed) + main.js + note.txt
@@ -2607,13 +2616,21 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(directory-columns ${JSON.stringify(colsDir)})');
-        // NOTE: real gap — the directory-columns view does not mount under the
-        // smoke's spine; bounded wait so it fails fast, not perturbing later arms.
+        // directory-columns is also a 0-arg interactive command (prompts
+        // "Directory columns: "); run-command fires the prompt, then fill it.
+        submit('(run-command (quote directory-columns))');
+        await __waitFor(() => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        });
+        const mbc = document.querySelector('.minibuffer-input');
+        mbc.value = ${JSON.stringify(colsDir)};
+        mbc.dispatchEvent(new Event('input', { bubbles: true }));
+        mbc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
         await __waitFor(() => {
           const v = document.querySelector('directory-columns-view:not([style*="display: none"])');
           return v && v.querySelectorAll('.directory-columns-column').length > 0;
-        }, 800);
+        });
         const view = document.querySelector('directory-columns-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         const initialColumns = view
@@ -4149,8 +4166,10 @@ app.whenReady().then(() => {
         tree.rowsBefore === 3 &&
         tree.rowsAfterExpand === 4 &&
         tree.chevronOpen === true &&
-        tree.jsIconClass.includes('fa-file-code') &&
-        tree.noteIconClass.includes('fa-file-lines') &&
+        // File-row icons are SVG now (was Font Awesome fa-file-*); the class no
+        // longer encodes the file type, so just assert an icon renders per row.
+        tree.jsIconClass.includes('directory-tree-icon') &&
+        tree.noteIconClass.includes('directory-tree-icon') &&
         tree.beforeOpenBuffer !== tree.afterOpenBuffer &&
         tree.afterOpenBuffer.includes('note.txt');
       // Directory columns-view arm: the view mounts; the first
@@ -4438,5 +4457,5 @@ app.whenReady().then(() => {
   // server process and back, and the polling `__waitFor` helpers spend real
   // wall-clock waiting for projected state, so the full run is minutes, not
   // the ~20s of the in-renderer era.
-  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 240000);
+  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 360000);
 });
