@@ -2908,9 +2908,34 @@ app.whenReady().then(() => {
       const ffPath = '/tmp/jmacs-smoke-find-file.txt';
       await writeFile(ffPath, 'smoke find-file ok');
       const findFile = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        ${WAIT_HELPERS}
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        const mbOpen = () => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        };
+        const promptOf = () => (document.querySelector('.minibuffer-prompt')?.textContent ?? '');
+        const modeline = () => (document.getElementById('modeline-name')?.textContent ?? '');
+        // Model B shares one spine across all arms, so a prior arm can leave a
+        // prompt/picker or a non-text view current. Reset: dismiss anything open
+        // (Escape on the focused element), then land on a fresh text buffer.
+        for (let i = 0; i < 2; i += 1) {
+          const active = document.activeElement;
+          if (active) active.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Escape', bubbles: true, cancelable: true,
+          }));
+          await __sleep(60);
+        }
+        await __run('(new-view! "find-file-anchor.txt")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
@@ -2918,12 +2943,9 @@ app.whenReady().then(() => {
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'f', ctrlKey: true, bubbles: true, cancelable: true,
         }));
-        await frame();
+        const opened = !!(await __waitFor(() => mbOpen() && promptOf().includes('Find file')));
         const mb = document.querySelector('.minibuffer-input');
-        const panel = document.querySelector('.minibuffer');
-        const opened = !!mb && !panel.hidden;
-        const promptText = document.querySelector('.minibuffer-prompt')
-          ?.textContent ?? '';
+        const promptText = promptOf();
         const seed = mb ? mb.value : '';
         // Replace the seeded $HOME/ with a known absolute path and
         // drive TAB; the unique prefix completes to the full filename.
@@ -2932,16 +2954,15 @@ app.whenReady().then(() => {
         mb.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Tab', bubbles: true, cancelable: true,
         }));
-        await frame();
-        const completed = mb.value;
+        await __waitFor(() =>
+          (document.querySelector('.minibuffer-input')?.value ?? '') === '/tmp/jmacs-smoke-find-file.txt');
+        const completed = document.querySelector('.minibuffer-input')?.value ?? '';
         // Enter opens the completed path.
-        mb.dispatchEvent(new KeyboardEvent('keydown', {
+        document.querySelector('.minibuffer-input').dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
-        // The open path is async (IPC + read); give it room.
-        await wait(400);
-        const opened2 = document.getElementById('modeline-name')
-          ?.textContent ?? '';
+        await __waitFor(() => modeline().includes('jmacs-smoke-find-file.txt'));
+        const opened2 = modeline();
         return { opened, promptText, seed, completed, opened2 };
       })()`);
       console.log('  findFile:', JSON.stringify(findFile));
