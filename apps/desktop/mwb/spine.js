@@ -141,6 +141,22 @@ const SPINE_CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
 
 `;
 
+/** The commented `init.lisp` the spine seeds on first run (when none exists
+ *  yet). Mirrors the renderer's old INIT_TEMPLATE — the file is free-form Lisp,
+ *  evaluated at startup after the stdlib and custom.lisp. */
+const SPINE_INIT_FILE_TEMPLATE = `;;; init.lisp — your Godot configuration.
+;;;
+;;; This file is evaluated at startup, after the standard library and
+;;; your saved customisations (custom.lisp). It is the Godot equivalent
+;;; of .emacs: ordinary Lisp, so anything goes — set variables, define
+;;; commands, bind keys, or choose which major mode opens a file type.
+;;;
+;;; Examples:
+;;;   (custom-apply! '*markdown-interpreter* "pandoc -f markdown -t html")
+;;;   (register-mode ".md" jmarkdown-mode)   ; open .md files in JMarkdown mode
+;;;   (define (insert-divider) (insert! "---"))
+`;
+
 /** The seed for a fresh `scratch-buffer` (B4) — mirrors app.js's SCRATCH. */
 const SPINE_SCRATCH_SEED = `;; scratch.lisp — a buffer for evaluating Lisp.
 ;;
@@ -2721,25 +2737,18 @@ export function createSpine(options, effects = {}) {
     console.error('[spine] renderer-config defcustoms install failed:', error.message);
   }
 
-  // Gates runtime chrome pushes (B1.3). OFF during the boot config + faces
-  // install below, so the defcustom :on-change handlers (e.g. *theme* ->
-  // apply-theme!) and set-face-overrides! / set-highlight-rules! don't emit
-  // chrome directives before any client port exists (the real initial push is the
-  // on-connect one in server.js). Turned ON once the helpers are defined.
+  // Gates runtime chrome pushes (B1.3). OFF during the boot faces install below,
+  // so set-face-overrides! / set-highlight-rules! don't emit chrome directives
+  // before any client port exists (the real initial push is the on-connect one
+  // in server.js). Turned ON once the helpers are defined.
   let chromePushEnabled = false;
 
-  // Load the user's saved customisations (defcustom values incl. the active
-  // *theme*) so the server's computed chrome reflects them — mirrors app.js
-  // loadUserConfig's custom.lisp step. custom-set-saved! -> custom-apply! sets
-  // the active value (and fires :on-change, suppressed above); a setting the
-  // spine doesn't register (renderer-only stdlib not loaded here) is a safe
-  // no-op. (init.lisp is deferred — it may call renderer-only primitives.)
-  try {
-    const customSrc = readConfigText('custom.lisp');
-    if (customSrc) interpreter.evaluate(customSrc);
-  } catch (error) {
-    console.error('[spine] custom.lisp load failed:', error.message);
-  }
+  // NB: the user's config — BOTH custom.lisp and init.lisp — is evaluated LATE,
+  // at the end of boot (the config block near -spine-choose-major-mode), NOT
+  // here. custom.lisp SETS defcustom variables, so every defcustom must be
+  // declared first — including those in the languages/*.lisp modes, which load
+  // further down. Applying custom.lisp here silently dropped a saved value for
+  // any language-file defcustom (e.g. *jmarkdown-math-preview-default*).
 
   // B1.2 (plans/MODEL-B-DEFAULT.md): install the user's faces.json overrides
   // into the server's face / theme / highlight registries, so the spine's
@@ -3603,6 +3612,41 @@ export function createSpine(options, effects = {}) {
        Bound to C-x C-e."
       (eval-form-before-point!))
   `);
+
+  // The user's configuration, evaluated at the END of boot so the whole Lisp
+  // world is built first — the stdlib, EVERY defcustom (incl. those declared in
+  // the languages/*.lisp modes), and the spine commands above. Order mirrors
+  // Emacs:
+  //   1. custom.lisp — the values the customize UI saved. It SETS defcustom
+  //      variables, so it must run after they are ALL declared; applying it
+  //      earlier (before the languages load) silently dropped a saved value for
+  //      any late-declared defcustom (e.g. *jmarkdown-math-preview-default*).
+  //   2. init.lisp — free-form user Lisp, which may override anything and
+  //      reference every mode (e.g. `(register-mode ".md" jmarkdown-mode)`).
+  // Both run BEFORE the initial buffer's major mode is chosen below, so an
+  // init.lisp mode-registry override even reshapes that first buffer. No window
+  // is connected yet (createSpine runs before any HELLO), so a defcustom
+  // :on-change that pushes chrome / renderer-config is a no-op (both push paths
+  // early-return with zero windows); the real state ships via the on-connect
+  // push in server.js. A broken config file is reported, never fatal. On first
+  // run, init.lisp is seeded with a commented template. (Only reached with a real
+  // CONFIG_HOME; the test harness has none, so the reads return null / no-op.)
+  try {
+    const customSrc = readConfigText('custom.lisp');
+    if (customSrc) interpreter.evaluate(customSrc);
+  } catch (error) {
+    console.error('[spine] custom.lisp load failed:', error.message);
+  }
+  try {
+    let initSrc = readConfigText('init.lisp');
+    if (initSrc === null && CONFIG_HOME) {
+      writeConfigText('init.lisp', SPINE_INIT_FILE_TEMPLATE);
+      initSrc = SPINE_INIT_FILE_TEMPLATE;
+    }
+    if (initSrc) interpreter.evaluate(initSrc);
+  } catch (error) {
+    console.error('[spine] init.lisp load failed:', error.message);
+  }
 
   // Now that the stdlib + the mode machinery are loaded, choose the major
   // mode for the initial buffer from its name (e.g. a `.md` file gets
