@@ -1668,7 +1668,16 @@ app.whenReady().then(() => {
         // wait (__run) — a bare fire-and-forget + a few rAF races the
         // define/interpreter set and the marked render (verified live
         // via scripts/drive.js: the render IS correct given enough time).
-        await __run('(set! *markdown-interpreter* "marked")');
+        // The doc-view renders with the RENDERER's cached
+        // *markdown-interpreter* (app.js reads rendererConfig). A plain
+        // (set! ...) updates only the SPINE var — it does NOT push to the
+        // renderer — so the render keeps using the PRIOR interpreter (an
+        // earlier arm leaves "echo smoke" via custom-apply!, which renders
+        // any docstring as the literal "smoke"). custom-apply! is what
+        // fires the config-apply push (same lesson as the themes arm).
+        // Verified live via scripts/drive.js.
+        await __run('(custom-apply! (quote *markdown-interpreter*) "marked")');
+        await __sleep(300);
         await __run('(define (smoke-doc-fn) "Smoke test for _live_ Markdown.\\\\n\\\\nIncludes:\\\\n\\\\n- A **bold** word.\\\\n- An /italic/ word.\\\\n\\\\nThe end." nil)');
         await __run('(open-doc "smoke-doc-fn")');
         // Doc pages open as a pane view now (showDocInPane), so the
@@ -1689,15 +1698,6 @@ app.whenReady().then(() => {
         const page = view ? view.querySelector('.doc-page') : null;
         const html = page ? page.innerHTML : '';
         const modeline = document.getElementById('modeline-name')?.textContent ?? '';
-        // Diagnostics (kept small): dump every doc-view's page + the
-        // live interpreter so a failure is legible from the tally line.
-        await __run('*markdown-interpreter*');
-        const interp = (() => {
-          const all = document.querySelectorAll('.repl-result');
-          return all.length ? all[all.length - 1].textContent : '';
-        })();
-        const allPages = Array.from(document.querySelectorAll('doc-view'))
-          .map((v) => (v.querySelector('.doc-page')?.innerHTML ?? '(none)').slice(0, 80));
         return {
           shown,
           // marked's rendered output uses these tags for **bold**,
@@ -1707,8 +1707,6 @@ app.whenReady().then(() => {
           hasEm: /<em>live<\\/em>/.test(html),
           hasList: /<ul>[\\s\\S]*<li>/.test(html),
           modeline,
-          interp,
-          allPages,
         };
       })()`);
       console.log('  liveDocs:', JSON.stringify(liveDocs));
@@ -3078,6 +3076,7 @@ app.whenReady().then(() => {
       await writeFile(paneA, 'pane a — left side\nsecond line a', 'utf8');
       await writeFile(paneB, 'pane b — right side\nsecond line b', 'utf8');
       const panes = await runArm(`(async () => {
+        ${WAIT_HELPERS}
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -3087,6 +3086,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        ${REPL_RUN}
         const lastResult = () => {
           const all = document.querySelectorAll('.repl-result');
           return all.length ? all[all.length - 1].textContent : '';
@@ -3133,11 +3133,11 @@ app.whenReady().then(() => {
         await wait(350);
         const rightNameAfterOpen = document.getElementById('modeline-name')
           ?.textContent ?? '';
-        submit('(goto! 5)');
-        await wait(80);
-        submit('(point)');
-        await wait(80);
-        const rightPointEcho = lastResult();
+        // Submit-and-wait for each REPL round-trip — a fixed wait(80)
+        // races the renderer<->spine hop and reads a stale/empty result
+        // (point came back "nil" intermittently before this).
+        await __run('(goto! 5)');
+        const rightPointEcho = await __run('(point)');
 
         // Cycle focus back to the original pane (C-x o → other-pane).
         submit('(other-pane!)');
@@ -3151,9 +3151,7 @@ app.whenReady().then(() => {
           ?.textContent ?? '';
         // The original pane's cursor was never moved — its point is
         // still 0, independent of the other pane's 5.
-        submit('(point)');
-        await wait(80);
-        const leftPointEcho = lastResult();
+        const leftPointEcho = await __run('(point)');
 
         // delete-other-panes from the original pane (C-x 1): collapses
         // back to one pane, with the original pane's view surviving.
