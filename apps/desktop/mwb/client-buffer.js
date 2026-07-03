@@ -105,6 +105,11 @@ export function createClientBuffer(options = {}) {
   // fresh mirror before its first VIEW) simply never previews.
   let majorModeName = '';
   let mathPreviewActive = false;
+  // The MAJOR MODE's highlight grammar tag (e.g. 'jmarkdown'), server-owned like
+  // the fields above. The editor view highlights by this when set, so a file
+  // whose extension was re-registered to another mode (.md -> jmarkdown-mode) is
+  // highlighted by the mode, not its filename. '' = fall back to the filename.
+  let highlightLang = '';
 
   /** @type {Set<(event: BufferEvent) => void>} */
   const listeners = new Set();
@@ -255,15 +260,22 @@ export function createClientBuffer(options = {}) {
    * when the cursor reconciles; this returns whether either value CHANGED so a
    * mode toggle that moved no cursor can still force one render.
    *
-   * @param {{ majorModeName?: string, mathPreviewActive?: boolean }} v
-   * @returns {boolean} Whether majorModeName or mathPreviewActive changed.
+   * @param {{ majorModeName?: string, mathPreviewActive?: boolean,
+   *   highlightLang?: string }} v
+   * @returns {boolean} Whether majorModeName, mathPreviewActive or highlightLang
+   *   changed (a highlightLang change must force a re-render so the editor
+   *   re-highlights with the mode's grammar).
    */
   function applyViewMode(v) {
     const nextName = typeof v.majorModeName === 'string' ? v.majorModeName : '';
     const nextActive = v.mathPreviewActive === true;
-    const changed = nextName !== majorModeName || nextActive !== mathPreviewActive;
+    const nextHighlight = typeof v.highlightLang === 'string' ? v.highlightLang : '';
+    const changed = nextName !== majorModeName
+      || nextActive !== mathPreviewActive
+      || nextHighlight !== highlightLang;
     majorModeName = nextName;
     mathPreviewActive = nextActive;
+    highlightLang = nextHighlight;
     return changed;
   }
 
@@ -344,6 +356,9 @@ export function createClientBuffer(options = {}) {
     get majorModeName() { return majorModeName; },
     /** Whether `math-preview-mode` is on for this buffer (server-pushed). */
     get mathPreviewActive() { return mathPreviewActive; },
+    /** The major mode's highlight grammar tag (e.g. 'jmarkdown'), server-pushed;
+     *  '' before the first VIEW. The editor view highlights by this when set. */
+    get highlightLang() { return highlightLang; },
 
     // --- mutators (intent-emitting) ------------------------------------
     // These are what `view.js` (and the IME path) call. Instead of

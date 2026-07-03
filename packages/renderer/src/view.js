@@ -156,6 +156,13 @@ export function createEditorView(buffer, container, options = {}) {
     typeof options.getTabWidth === 'function'
       ? options.getTabWidth
       : () => 4;
+  // The highlighter grammar for the active buffer. The MAJOR MODE is the source
+  // of truth (server-pushed `highlightLang`), so a file whose extension was
+  // re-registered to another mode — e.g. `.md` in jmarkdown-mode — highlights by
+  // that mode, not by its filename. Falls back to the filename when no mode hint
+  // is present (a plain L2 buffer, or before the first server VIEW).
+  const activeLanguage = () =>
+    (activeBuffer && activeBuffer.highlightLang) || languageForName(activeBuffer.name);
   // Face-tagged decoration ranges (snippet fields + mirrors). Read every
   // render so the boxes recompute from live offsets and survive edits —
   // unlike the inline-eval pill, which hides on any mutation. Default to
@@ -291,7 +298,7 @@ export function createEditorView(buffer, container, options = {}) {
   /** Recompute and cache the fold index for the current buffer text. */
   function refreshFoldIndex() {
     const text = activeBuffer.text;
-    const language = languageForName(activeBuffer.name);
+    const language = activeLanguage();
     if (text === foldCacheText && language === foldCacheLanguage) {
       return foldCache;
     }
@@ -685,7 +692,7 @@ export function createEditorView(buffer, container, options = {}) {
    */
   function renderLines() {
     const lineHeight = cursorEl.getBoundingClientRect().height || 22;
-    const language = languageForName(activeBuffer.name);
+    const language = activeLanguage();
     const lines = toLines(activeBuffer.text);
     const lineCount = lines.length;
 
@@ -1220,7 +1227,7 @@ export function createEditorView(buffer, container, options = {}) {
     const match = matchingBracket(
       activeBuffer.text,
       getPoint(),
-      languageForName(activeBuffer.name)
+      activeLanguage()
     );
     if (match === null) {
       bracketLayer.replaceChildren();
@@ -1675,7 +1682,7 @@ export function createEditorView(buffer, container, options = {}) {
       if (contentStickyLayer.firstChild) contentStickyLayer.replaceChildren();
       if (gutterStickyLayer.firstChild) gutterStickyLayer.replaceChildren();
     };
-    const language = languageForName(activeBuffer.name);
+    const language = activeLanguage();
     if (!stickyHeaderLanguages.has(language) || !displayRowForLine) {
       clearSticky();
       return;
