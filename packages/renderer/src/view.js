@@ -377,18 +377,41 @@ export function createEditorView(buffer, container, options = {}) {
   /** True while an IME composition is in progress — key dispatch is
    *  suppressed and the committed text is inserted on `compositionend`. */
   let composing = false;
+  // macOS press-and-hold accent support. Holding a bare printable key opens the
+  // OS accent chooser — a COMPOSITION — instead of repeating (see the keydown
+  // handler's repeat guard). `printableBaseCandidate` marks the just-typed
+  // printable as a possible BASE character; if a composition then opens over it,
+  // the chosen accent must REPLACE that base char rather than append — else
+  // holding "e" and picking "é" yields "eé". The flag is set ONLY on the
+  // self-insert path, so a plain dead-key / CJK composition (which never
+  // self-inserts a base) is untouched — and if the OS routes the first keydown
+  // straight through the IME (no self-insert), the flag stays false and nothing
+  // is deleted. So the replace is safe whichever way the OS behaves.
+  let printableBaseCandidate = false;
+  let compositionReplacesBase = false;
   input.addEventListener('compositionstart', () => {
     composing = true;
+    compositionReplacesBase = printableBaseCandidate;
   });
   input.addEventListener('compositionend', (event) => {
     composing = false;
     const text = typeof event.data === 'string' ? event.data : '';
     input.value = ''; // the sink only hosts composition — never accumulate
+    const replaceBase = compositionReplacesBase;
+    compositionReplacesBase = false;
+    printableBaseCandidate = false;
     if (text) {
+      // Press-and-hold commit: drop the base char the keydown already inserted
+      // so the chosen accent takes its place ("e" → "é", not "eé").
+      if (replaceBase && typeof activeBuffer.deleteBackward === 'function') {
+        activeBuffer.deleteBackward(1);
+      }
       activeBuffer.insert(text);
       followCursor = true;
       schedule();
     }
+    // A composition that opened over a base char but committed nothing (Escape /
+    // cancel) leaves the base char as already typed — nothing to do.
   });
   // Any non-composition text reaching the sink (a rare unhandled printable
   // key whose keydown wasn't preventDefault'd) is unwanted — the buffer
@@ -1540,8 +1563,16 @@ export function createEditorView(buffer, container, options = {}) {
     // keyCode 229 is the IME "still processing" sentinel that also covers
     // the first keydown of a composition, before `isComposing` flips.
     if (composing || event.isComposing || event.keyCode === 229) return;
+    const keyString = keyEventToString(event);
+    const barePrintable = [...keyString].length === 1;
+    // macOS press-and-hold: a HELD bare printable must NOT repeat-insert — the
+    // OS opens the accent chooser instead. Navigation / editing keys (arrows,
+    // Backspace, …) keep auto-repeating. Suppressing the repeat also keeps the
+    // caret — and the IME sink positioned over it — put, so the chooser opens at
+    // the caret instead of wherever a runaway repeat dragged it.
+    if (event.repeat && barePrintable) return;
     let handled = onKey
-      ? onKey(keyEventToString(event))
+      ? onKey(keyString)
       : handleKeyEvent(activeBuffer, event);
     // An unbound Option chord that composed a printable character
     // (curly quotes, accents) self-inserts the composed character — a
@@ -1550,6 +1581,11 @@ export function createEditorView(buffer, container, options = {}) {
       handled = onKey(event.key);
     }
     if (handled) event.preventDefault();
+    // Remember a just-typed bare printable as a possible accent BASE char (for a
+    // press-and-hold composition that may open next); any OTHER handled key
+    // clears the candidacy. A suppressed repeat returned above, so the flag
+    // survives the hold.
+    printableBaseCandidate = handled && barePrintable;
   });
 
   // Scrolling changes which lines are visible — re-render the window.
@@ -2024,6 +2060,9 @@ export function createEditorView(buffer, container, options = {}) {
   // count on mousedown is unaffected.
   root.addEventListener('mousedown', (event) => {
     focusInput();
+    // A click moves the caret away from a just-typed printable, so it is no
+    // longer an accent base char for a press-and-hold composition.
+    printableBaseCandidate = false;
     if (event.button !== 0) return;
     const offset = offsetFromPoint(event.clientX, event.clientY);
     if (offset === null) return;
