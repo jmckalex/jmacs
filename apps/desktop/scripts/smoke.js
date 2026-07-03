@@ -1668,14 +1668,18 @@ app.whenReady().then(() => {
         // wait (__run) — a bare fire-and-forget + a few rAF races the
         // define/interpreter set and the marked render (verified live
         // via scripts/drive.js: the render IS correct given enough time).
-        // The doc-view renders with the RENDERER's cached
-        // *markdown-interpreter* (app.js reads rendererConfig). A plain
-        // (set! ...) updates only the SPINE var — it does NOT push to the
-        // renderer — so the render keeps using the PRIOR interpreter (an
-        // earlier arm leaves "echo smoke" via custom-apply!, which renders
-        // any docstring as the literal "smoke"). custom-apply! is what
-        // fires the config-apply push (same lesson as the themes arm).
-        // Verified live via scripts/drive.js.
+        // TEST SETUP (not an app pattern): establish this arm's
+        // precondition — the interpreter must be "marked" for the render.
+        // The customize-save arm above pushed "echo smoke" to the RENDERER
+        // (via custom-apply-and-save!, which fires config-apply); the
+        // renderer's doc-view reads its OWN cached *markdown-interpreter*
+        // (app.js rendererConfig), so we restore it through the SAME
+        // customize pathway. NB a plain (set! ...) would NOT work here:
+        // it writes only the spine var, never firing config-apply, so the
+        // renderer would keep rendering with "echo smoke" (the docstring
+        // comes out as the literal "smoke"). That set!-doesn't-propagate
+        // gap is an APP-level observation flagged in architect-notes.md —
+        // here we just need the config to actually reach the renderer.
         await __run('(custom-apply! (quote *markdown-interpreter*) "marked")');
         await __sleep(300);
         await __run('(define (smoke-doc-fn) "Smoke test for _live_ Markdown.\\\\n\\\\nIncludes:\\\\n\\\\n- A **bold** word.\\\\n- An /italic/ word.\\\\n\\\\nThe end." nil)');

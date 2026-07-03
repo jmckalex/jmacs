@@ -3284,3 +3284,39 @@ L6/ensureMajorMode/A3 merged (unpushed). HANDOVER.md current. Deferred bug filed
 clipboard not syncing (M-w/C-w; not A3-introduced).
 
 ---
+
+## [2026-07-04 00:30] Smoke triage: `set!` on a renderer-mirrored defcustom doesn't reach the renderer
+
+**Context**: Fixing the `liveDocs` smoke arm. The doc-view renders a live docstring
+through the RENDERER's cached `*markdown-interpreter*` (`app.js` reads
+`rendererConfig['*markdown-interpreter*']`, ~line 7523). The arm used
+`(set! *markdown-interpreter* "marked")` to force the render path; it had no
+effect — the render kept using a prior arm's `"echo smoke"`.
+
+**Observation (app-level, not a smoke bug)**: `*markdown-interpreter*` is a
+defcustom in `RENDERER_CONFIG_VARS` (spine.js ~622). The renderer's copy is only
+updated by `config-snapshot` (boot) or `config-apply` (live). `config-apply` is
+fired by the defcustom's `:on-change`, which runs on `custom-apply!` /
+`custom-apply-and-save!` — **not** on `set!`. So `(set! *markdown-interpreter* …)`
+(e.g. a user typing it in the REPL, or in init.lisp AFTER boot) silently changes
+only the spine var; every renderer-mirrored config var stays stale until the next
+`custom-apply!`. This is a footgun: `set!` looks like it should work and doesn't.
+
+**Question/blocker (your call)**: Is this intended (defcustoms must be changed via
+the customize pathway to take effect) or a gap worth closing? Options:
+  - (a) Leave as-is; document that live config changes go through `custom-apply!`.
+    Cheapest. But `set!` on these vars stays a silent no-op-to-the-renderer.
+  - (b) Make `set!` (or a thin `setq`-like) on a `RENDERER_CONFIG_VARS` member also
+    fire the config-apply push. Removes the footgun; a little magic in `set!`.
+  - (c) A dedicated "apply this config var live" primitive that isn't the
+    user-facing customize verb, for programmatic/live use (closer to what you
+    hinted at — a distinct access pathway rather than reusing `custom-apply!`).
+  I did NOT change any app behavior. For the SMOKE only, I used `custom-apply!`
+  to set up the test precondition (it's the same pathway the pollution — the
+  customize-save arm — came in on, so it's symmetric and realistic). If you pick
+  (b)/(c), the smoke arm can switch to whatever the new pathway is.
+
+**State of the work**: branch `fix-smoke-spine-wiring`. liveDocs green with
+`custom-apply!`. No app files touched.
+
+---
