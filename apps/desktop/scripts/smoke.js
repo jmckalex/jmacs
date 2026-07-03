@@ -1516,7 +1516,7 @@ app.whenReady().then(() => {
       // chooser, and confirming it writes the chosen colour back into the
       // buffer, replacing the literal's text.
       const swatches = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1524,25 +1524,26 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-view! "swatch.css")');
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        ${REPL_RUN}
+        const firstLine = () => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        await __run('(new-view! "swatch.css")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         for (const ch of 'a #ff8800 b rgb(0,0,0)') {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
             key: ch, bubbles: true, cancelable: true,
           }));
         }
-        await frame();
         // One swatch per literal — the #ff8800 hash and the rgb() form.
+        await __waitFor(() => document.querySelectorAll('.colour-swatch').length >= 2);
         const count = document.querySelectorAll('.colour-swatch').length;
-        const firstBefore = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        const firstBefore = firstLine();
         // Click the first swatch: the modal opens with OK / Cancel.
         const swatch = document.querySelector('.colour-swatch');
         swatch.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
         swatch.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        await frame();
-        const modal = document.querySelector('.colour-picker');
+        const modal = await __waitFor(() => document.querySelector('.colour-picker'));
         const modalShown = !!modal;
         // Pick a new colour and confirm with OK.
         let edited = '';
@@ -1552,8 +1553,8 @@ app.whenReady().then(() => {
           input.dispatchEvent(new Event('input', { bubbles: true }));
           document.querySelector('.colour-picker-ok')
             .dispatchEvent(new MouseEvent('click', { bubbles: true }));
-          await frame();
-          edited = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+          await __waitFor(() => firstLine().includes('#00ccff'));
+          edited = firstLine();
         }
         const modalClosed = document.querySelector('.colour-picker') === null;
         return { count, firstBefore, modalShown, edited, modalClosed };
