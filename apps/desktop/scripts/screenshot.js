@@ -48,6 +48,7 @@ app.whenReady().then(() => {
   rmSync(configHome, { recursive: true, force: true });
   mkdirSync(configHome, { recursive: true });
   process.env.MWB_CONFIG_HOME = configHome;
+  process.env.GODOT_HOME = configHome; // isolate the MAIN-process config home too
   process.env.MWB_SESSION_STORE = join(configHome, 'workspaces.json');
   process.env.MWB_RECOVERY_DIR = join(configHome, 'recovery');
   delete process.env.MWB_SESSION_SEED;

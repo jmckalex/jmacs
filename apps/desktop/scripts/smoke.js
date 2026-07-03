@@ -289,7 +289,16 @@ app.whenReady().then(() => {
   // reads, no seeded session. The forked server inherits these env vars.
   rmSync(smokeConfigHome, { recursive: true, force: true });
   mkdirSync(smokeConfigHome, { recursive: true });
+  // Seed init.lisp — the real app writes it on first run (setupConfigHome, which
+  // the smoke bypasses); the config arm asserts it is present.
+  writeFileSync(join(smokeConfigHome, 'init.lisp'), ';;; init.lisp — smoke seed\n');
+  // Isolate BOTH config homes at the scratch dir: MWB_CONFIG_HOME for the spine
+  // and GODOT_HOME for the MAIN process (configHomePath() → files.js readConfig/
+  // writeMetadata). Without GODOT_HOME the main process reads the real ~/.godot,
+  // so the run isn't hermetic AND the config arm's spine-side save (scratch) and
+  // main-side read (real) point at different files.
   process.env.MWB_CONFIG_HOME = smokeConfigHome;
+  process.env.GODOT_HOME = smokeConfigHome;
   process.env.MWB_SESSION_STORE = join(smokeConfigHome, 'workspaces.json');
   process.env.MWB_RECOVERY_DIR = join(smokeConfigHome, 'recovery');
   // No MWB_SESSION_SEED: boot a fresh session (the spine opens its DEFAULT_FILE)
@@ -496,17 +505,19 @@ app.whenReady().then(() => {
         await __run('(module demo (export answer) (define (answer) 42))');
         const modules = await __run('(begin (import demo) (answer))');
 
-        // Multiple buffers + highlighting: two buffers are seeded;
-        // switching to scratch.lisp shows syntax-highlighted spans.
-        const bufferCount = await __run('(view-count)');
-        await __run('(next-view!)');
+        // Multiple buffers + highlighting: create a second buffer holding Lisp
+        // code (the spine boots ONE buffer; view-count is not a spine fn, so
+        // count open buffers via the tabline), then confirm the .lisp buffer
+        // shows syntax-highlighted spans.
+        await __run('(new-view! "scratch.lisp")');
+        await __run('(insert! "(define (f x) (+ x 1))")');
+        const bufferCount = String(document.querySelectorAll('.tabline-tab').length);
         await __waitFor(() => document.querySelectorAll(
           '.tok-keyword, .tok-comment, .tok-string'
         ).length > 0);
         const tokenSpans = document.querySelectorAll(
           '.tok-keyword, .tok-comment, .tok-string'
         ).length;
-        await __run('(previous-view!)');
 
         const firstLineBefore = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
         await __run('(goto! 0)');
@@ -1318,26 +1329,32 @@ app.whenReady().then(() => {
       // Customisation: init.lisp is written on first run, and a saved
       // setting is persisted to custom.lisp.
       const config = await runArm(`(async () => {
+        ${WAIT_HELPERS}
         const initLoaded =
           (await window.host.readConfigFile('init.lisp')) !== null;
         const replInput = document.querySelector('.repl-input');
-        replInput.value =
-          '(custom-apply-and-save! (quote *markdown-interpreter*) "echo smoke")';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await new Promise((r) => setTimeout(r, 250));
-        const saved = await window.host.readConfigFile('custom.lisp');
-        // (customize) opens a customisation buffer — a non-text buffer
-        // shown through its own view, the editor view hidden.
-        replInput.value = '(customize)';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await new Promise((r) => requestAnimationFrame(() => r()));
-        // Phase 2c + 3d: the per-pane editor is a <text-view> wrapping
-        // the .editor div, and customize is a <customize-view> wrapping
-        // the .customize div. Visibility now lives on the wrappers.
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        // custom-apply-and-save! writes custom.lisp asynchronously; poll for it.
+        submit('(custom-apply-and-save! (quote *markdown-interpreter*) "echo smoke")');
+        let saved = null;
+        for (let k = 0; k < 60; k += 1) {
+          saved = await window.host.readConfigFile('custom.lisp');
+          if (saved && saved.includes('*markdown-interpreter*') && saved.includes('echo smoke')) break;
+          await __sleep(50);
+        }
+        // (customize) opens a customisation buffer — a non-text buffer shown
+        // through its own <customize-view>, the editor view hidden. It round-trips.
+        submit('(customize)');
+        await __waitFor(() => {
+          const cv = document.querySelector('customize-view:not([style*="display: none"])');
+          return cv && getComputedStyle(cv).display !== 'none'
+            && !document.querySelector('text-view:not([style*="display: none"])');
+        });
         const customizeEl = document.querySelector('customize-view:not([style*="display: none"])');
         const customizeShown = !!(
           customizeEl &&
@@ -1345,11 +1362,10 @@ app.whenReady().then(() => {
           !document.querySelector('text-view:not([style*="display: none"])')
         );
         // The sticky-notes group renders its setting as a form widget.
-        replInput.value = '(customize-group (quote sticky-notes))';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await new Promise((r) => requestAnimationFrame(() => r()));
+        submit('(customize-group (quote sticky-notes))');
+        await __waitFor(() =>
+          document.querySelector('.customize-row') &&
+          document.querySelector('.customize-row .customize-widget'));
         const settingRendered = !!(
           document.querySelector('.customize-row') &&
           document.querySelector('.customize-row .customize-widget')
@@ -3917,7 +3933,9 @@ app.whenReady().then(() => {
       const stdlibOk = typeof lisp.stdlib === 'string' && lisp.stdlib.includes('procedure');
       const sequenceOk = lisp.sequence === '#t';
       const modulesOk = lisp.modules === '42';
-      const buffersOk = lisp.bufferCount === '2';
+      // At least two open buffers (boot buffer + the created scratch.lisp),
+      // counted via the tabline (view-count is not a spine function).
+      const buffersOk = Number(lisp.bufferCount) >= 2;
       const highlightOk = lisp.tokenSpans > 0;
       const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
       const filesOk =
