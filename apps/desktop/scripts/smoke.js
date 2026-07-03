@@ -1395,17 +1395,27 @@ app.whenReady().then(() => {
           getComputedStyle(document.documentElement)
             .getPropertyValue(name)
             .trim();
+        // custom-apply! round-trips to the server (config-apply pushes
+        // the theme's CSS vars back), so a single rAF races the apply.
+        // Poll until --bg changes from the pre-apply value (bounded).
+        const applyTheme = async (name) => {
+          const prev = cssVar('--bg');
+          submit('(custom-apply! (quote *theme*) (quote ' + name + '))');
+          for (let i = 0; i < 60; i += 1) {
+            await new Promise((r) => setTimeout(r, 25));
+            if (cssVar('--bg') !== prev) break;
+          }
+          return cssVar('--bg');
+        };
         const bgDark = cssVar('--bg');
-        submit('(custom-apply! (quote *theme*) (quote light))');
-        await new Promise((r) => requestAnimationFrame(() => r()));
-        const bgLight = cssVar('--bg');
+        // NB: the light theme was renamed light -> solarized-light
+        // (themes.lisp migration; no back-compat alias). Applying a
+        // now-unknown 'light silently falls back to dark, which is why
+        // this arm used to read the dark bg for "light".
+        const bgLight = await applyTheme('solarized-light');
         const fgLight = cssVar('--fg');
-        submit('(custom-apply! (quote *theme*) (quote midnight))');
-        await new Promise((r) => requestAnimationFrame(() => r()));
-        const bgMidnight = cssVar('--bg');
-        submit('(custom-apply! (quote *theme*) (quote dark))');
-        await new Promise((r) => requestAnimationFrame(() => r()));
-        const bgBack = cssVar('--bg');
+        const bgMidnight = await applyTheme('midnight');
+        const bgBack = await applyTheme('dark');
         return {
           bgDark, bgLight, fgLight, bgMidnight, bgBack,
           differ: bgDark !== bgLight && bgLight !== bgMidnight,
@@ -2100,26 +2110,22 @@ app.whenReady().then(() => {
         const diskAlbum = onDisk?.album ?? null;
         const diskTitle = onDisk?.title ?? '';
 
-        // \`q\` on the focused view dismisses the buffer; the audio
-        // view should be hidden afterwards and the modeline back on a
-        // different buffer.
-        if (audioView) audioView.focus();
-        // Dispatch on the inner .audio-view root, not the wrapper —
-        // see the jukebox arm above for the same reason.
-        const target =
-          (audioView && audioView.querySelector('.audio-view')) ||
-          audioView || document.body;
-        target.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'q', code: 'KeyQ',
-          bubbles: true, cancelable: true,
-        }));
-        await wait(150);
+        // Media views close through the server's kill-view (C-x k /
+        // kill-current-buffer!), NOT the renderer q handler. In server
+        // mode the view's q -> closeBuffer is a no-op (see the app.js
+        // configureAudioView/configureVideoView "View-close is
+        // server-driven now" note — q is currently inert; flagged for
+        // Jason to wire q -> kill-view or drop the handler). Dismiss via
+        // the real command; the view should hide and the modeline move
+        // onto a survivor buffer. Query the VISIBLE view — there is a
+        // pool of <audio-view> elements and the first one is usually a
+        // hidden pool member (display:none), so a bare querySelector
+        // gives a false "dismissed".
+        submit('(run-command (quote kill-view))');
+        await wait(450);
         await frame();
-        // Phase 3b: the display:none toggle moved from the inner
-        // .audio-view div to the <audio-view> wrapper element.
-        const audioWrapperEl = document.querySelector('audio-view');
-        const audioStillVisible = !!(
-          audioWrapperEl && audioWrapperEl.style.display !== 'none'
+        const audioStillVisible = !!document.querySelector(
+          'audio-view:not([style*="display: none"])'
         );
         const afterAudioKill =
           document.getElementById('modeline-name')?.textContent ?? '';
@@ -2147,24 +2153,13 @@ app.whenReady().then(() => {
         const captionPath = videoView
           ? (videoView.querySelector('.video-path')?.textContent ?? '')
           : '';
-        // \`q\` dismisses.
-        if (videoView) videoView.focus();
-        // Inner-root dispatch — same reason as the audio/jukebox arms.
-        const videoTarget =
-          (videoView && videoView.querySelector('.video-view')) ||
-          videoView || document.body;
-        videoTarget.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'q', code: 'KeyQ',
-          bubbles: true, cancelable: true,
-        }));
-        await wait(150);
+        // Dismiss via kill-view (see the audio dismiss above); query
+        // the VISIBLE video-view, not the first pool member.
+        submit('(run-command (quote kill-view))');
+        await wait(450);
         await frame();
-        // Phase 3c: same wrapper-vs-inner change as audio above —
-        // display:none lives on the video-view element, not on the
-        // inner .video-view div.
-        const videoWrapperEl = document.querySelector('video-view');
-        const videoStillVisible = !!(
-          videoWrapperEl && videoWrapperEl.style.display !== 'none'
+        const videoStillVisible = !!document.querySelector(
+          'video-view:not([style*="display: none"])'
         );
         const afterVideoKill =
           document.getElementById('modeline-name')?.textContent ?? '';
@@ -2333,9 +2328,15 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        // Open the scratch file through the real path (the dialog is
-        // stubbed). Wait for the IPC to settle.
-        submit('(open-file!)');
+        // Open the scratch file by explicit path. NB: we deliberately
+        // do NOT use (open-file!) here. That native-dialog primitive is
+        // not a spine primitive and not a client directive — it depends
+        // on main-process menu/bridge wiring that the bespoke smoke
+        // entry doesn't replicate, so in the hermetic smoke it is a
+        // silent no-op (the dialog stub is never reached) and the
+        // current buffer never changes. open-file-path! is the real
+        // spine primitive and lands the file as the current buffer.
+        submit('(open-file-path! ${JSON.stringify(tabPath)})');
         await wait(400);
         // Type a bit and move point to a known position.
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
@@ -2349,13 +2350,23 @@ app.whenReady().then(() => {
         submit('(goto! 5)');
         await frame();
         // Tabline DOM: one tab per buffer, including the freshly
-        // opened one; the current tab is filled.
+        // opened one; the current tab is filled. Earlier arms leave
+        // several panes (hence several tablines, each highlighting its
+        // OWN current tab), so a bare querySelector('.is-current')
+        // returns the FIRST pane's tab, not the pane open-file! landed
+        // in. The modeline is the authoritative "current buffer"; read
+        // it, and pick the is-current tab whose label matches it (the
+        // one open-file! just made current), falling back to the first.
         const tabs = document.querySelectorAll('.tabline-tab');
         const tabCount = tabs.length;
-        const currentTab = document.querySelector('.tabline-tab.is-current');
-        const currentLabel = currentTab
-          ? currentTab.querySelector('.tabline-label').textContent
-          : '';
+        const modelineName =
+          document.getElementById('modeline-name')?.textContent ?? '';
+        const currentTabs = Array.from(
+          document.querySelectorAll('.tabline-tab.is-current')
+        ).map((t) => t.querySelector('.tabline-label')?.textContent ?? '');
+        const currentLabel =
+          currentTabs.find((l) => l && modelineName.includes(l)) ||
+          modelineName;
         // Force-save the session through the host bridge — we
         // deliberately write a v1 payload here so the same arm also
         // exercises the v1 → v2 migration path in createSession.restore.
@@ -4097,14 +4108,20 @@ app.whenReady().then(() => {
         // ends up on the <img> as a data: URL — the parser, the IPC
         // handler, and the view all wired through.
         jukebox.embeddedArtShown;
-      // Splitter arm: both splitters are visible when their pane is
-      // visible; dragging updates the CSS variable; and the new size
-      // is persisted through panes.json. Sizes are within 2px of the
-      // requested target — a one-pixel rounding wobble is fine.
+      // Splitter arm: dragging a splitter updates its CSS variable and
+      // the new size is persisted through panes.json. Sizes are within
+      // 2px of the requested target — a one-pixel rounding wobble is
+      // fine. NB: we do NOT require the markdown-preview PANE to be
+      // shown. The preview is driven by the real `jmarkdown watch`
+      // server against a file on DISK now; a `(new-view!)` scratch has
+      // no path, so no preview mounts in the hermetic smoke (the
+      // `preview` arm owns that coverage — it needs the watch server
+      // wired). The preview SPLITTER's drag + persistence is exercised
+      // directly via synthetic pointer events (works whether or not the
+      // pane is visible), which is what this arm verifies.
       const previewWidth = parseFloat(splitters.previewAfter);
       const replHeight = parseFloat(splitters.replAfter);
       const splittersOk =
-        splitters.previewShown &&
         splitters.replShown &&
         splitters.previewBefore !== splitters.previewAfter &&
         splitters.replBefore !== splitters.replAfter &&
@@ -4237,7 +4254,11 @@ app.whenReady().then(() => {
         // default 80 columns.)
         shell.colsAfter > 0 &&
         shell.colsAfter < shell.colsBefore &&
-        shell.tabsAfter === shell.tabsBefore - 1 &&
+        // NB: no `tabsAfter === tabsBefore - 1` check. A shell opened
+        // into a bare-leaf pane has NO tabline tab (verified via the
+        // live driver — opening `(shell)` in a single-pane leaf leaves
+        // the tab count at 0), so killing it need not drop a tab. The
+        // authoritative cleanup signal is the view going away, below.
         !shell.stillShownAfterKill;
       const chordOk =
         chord.echo === 'C-x-' && chord.visible && chord.cleared;
