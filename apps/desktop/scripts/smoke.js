@@ -208,6 +208,48 @@ let done = false;
  *  forked server `utilityProcess` never outlives the smoke run. */
 let serverBridge = null;
 
+/**
+ * A polling-wait prelude injected into interaction arms. Under Model B every
+ * command and keystroke round-trips renderer -> server (a separate process) ->
+ * renderer, so a single `requestAnimationFrame` no longer covers the latency
+ * the way it did when the interpreter ran in-renderer. `__waitFor` polls a
+ * predicate until it holds (or a timeout), and `__run` submits a REPL form and
+ * waits for its `.repl-result` to actually arrive before reading it. Interpolate
+ * with `${WAIT_HELPERS}` at the top of an arm; the arm keeps its own
+ * `frame`/`wait`/`submit` (these names are prefixed so they never collide).
+ *
+ * MUST contain no backticks — it is spliced into an executeJavaScript template
+ * literal, and a backtick would close the outer template (see the smoke-arm
+ * backtick trap).
+ */
+const WAIT_HELPERS = `
+  const __sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const __waitFor = async (pred, ms = 5000) => {
+    const t0 = performance.now();
+    for (;;) {
+      let v;
+      try { v = pred(); } catch { v = false; }
+      if (v) return v;
+      if (performance.now() - t0 > ms) return v;
+      await __sleep(20);
+    }
+  };
+`;
+
+/** As `WAIT_HELPERS`, plus `__run(src)`: submit a REPL form through an existing
+ *  `submit(src)` (defined by the arm) and resolve with the text of the new
+ *  `.repl-result` once it lands — the reliable replacement for "submit then read
+ *  after one frame". Splice this AFTER the arm defines its own `submit`. */
+const REPL_RUN = `
+  const __run = async (src) => {
+    const n = document.querySelectorAll('.repl-result').length;
+    submit(src);
+    await __waitFor(() => document.querySelectorAll('.repl-result').length > n);
+    const all = document.querySelectorAll('.repl-result');
+    return all.length ? all[all.length - 1].textContent : '';
+  };
+`;
+
 /** Report a result once and quit. */
 function finish(code, message) {
   if (done) return;
@@ -325,21 +367,21 @@ app.whenReady().then(() => {
       // Drive the real input path: dispatch key events at the editor
       // and confirm the projected DOM changes.
       const input = await win.webContents.executeJavaScript(`(async () => {
+        ${WAIT_HELPERS}
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         const press = (key, opts = {}) =>
           editor.dispatchEvent(new KeyboardEvent('keydown', {
             key, bubbles: true, cancelable: true, ...opts,
           }));
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const firstLine = () => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
 
         const before = firstLine();
         for (const ch of 'Zz!') press(ch);
-        await frame();
+        await __waitFor(() => firstLine() === 'Zz!' + before);
         const afterType = firstLine();
         press('Backspace'); press('Backspace'); press('Backspace');
-        await frame();
+        await __waitFor(() => firstLine() === before);
         const afterDelete = firstLine();
         return { before, afterType, afterDelete };
       })()`);
@@ -401,7 +443,7 @@ app.whenReady().then(() => {
       // Drive the REPL: evaluate arithmetic, and have Lisp edit the
       // buffer, confirming the L3 -> L2 -> L4 path.
       const lisp = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -409,46 +451,39 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        const lastResult = () => {
-          const all = document.querySelectorAll('.repl-result');
-          return all.length ? all[all.length - 1].textContent : '';
-        };
+        ${REPL_RUN}
 
-        submit('(+ 1 2 3)');
-        const arithmetic = lastResult();
+        const arithmetic = await __run('(+ 1 2 3)');
 
         // handle-key exists only if the standard library loaded.
-        submit('handle-key');
-        const stdlib = lastResult();
+        const stdlib = await __run('handle-key');
 
         // A prefix key (C-x) begins a sequence rather than running a
         // command; this checks and then resets the pending state.
-        submit('(begin (handle-key "C-x")'
+        const sequence = await __run('(begin (handle-key "C-x")'
           + ' (let ((p (not (eq? active-keymap the-keymap))))'
           + ' (reset-keymap!) p))');
-        const sequence = lastResult();
 
         // The module system: define a module, import it, call its export.
-        submit('(module demo (export answer) (define (answer) 42))');
-        submit('(begin (import demo) (answer))');
-        const modules = lastResult();
+        await __run('(module demo (export answer) (define (answer) 42))');
+        const modules = await __run('(begin (import demo) (answer))');
 
         // Multiple buffers + highlighting: two buffers are seeded;
         // switching to scratch.lisp shows syntax-highlighted spans.
-        submit('(view-count)');
-        const bufferCount = lastResult();
-        submit('(next-view!)');
-        await frame();
+        const bufferCount = await __run('(view-count)');
+        await __run('(next-view!)');
+        await __waitFor(() => document.querySelectorAll(
+          '.tok-keyword, .tok-comment, .tok-string'
+        ).length > 0);
         const tokenSpans = document.querySelectorAll(
           '.tok-keyword, .tok-comment, .tok-string'
         ).length;
-        submit('(previous-view!)');
-        await frame();
+        await __run('(previous-view!)');
 
         const firstLineBefore = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
-        submit('(goto! 0)');
-        submit('(insert! "[lisp] ")');
-        await frame();
+        await __run('(goto! 0)');
+        await __run('(insert! "[lisp] ")');
+        await __waitFor(() => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent === '[lisp] ' + firstLineBefore);
         const firstLineAfter = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
 
         return {
@@ -481,12 +516,16 @@ app.whenReady().then(() => {
       // Incremental search: C-s opens the minibuffer; typing a query
       // selects a match (rendered as selection rectangles).
       const search = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 's', ctrlKey: true, bubbles: true, cancelable: true,
         }));
+        await __waitFor(() => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        });
         const mb = document.querySelector('.minibuffer-input');
         const panel = document.querySelector('.minibuffer');
         const opened = !!mb && panel !== null && !panel.hidden;
@@ -494,7 +533,7 @@ app.whenReady().then(() => {
         if (opened) {
           mb.value = 'Lisp';
           mb.dispatchEvent(new Event('input', { bubbles: true }));
-          await frame();
+          matched = await __waitFor(() => document.querySelectorAll('text-view:not([style*="display: none"]) .editor-selection-rect').length > 0);
           matched = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-selection-rect').length > 0;
           mb.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Escape', bubbles: true, cancelable: true,
@@ -507,6 +546,7 @@ app.whenReady().then(() => {
       // Command palette: M-x opens it, a query filters commands, Enter
       // runs the top match and closes the minibuffer.
       const palette = await win.webContents.executeJavaScript(`(async () => {
+        ${WAIT_HELPERS}
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         // Command is Meta now (keyEventToString maps metaKey to M-,
@@ -514,6 +554,10 @@ app.whenReady().then(() => {
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', code: 'KeyX', metaKey: true, bubbles: true, cancelable: true,
         }));
+        await __waitFor(() => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        });
         const mb = document.querySelector('.minibuffer-input');
         const panel = document.querySelector('.minibuffer');
         const opened = !!mb && panel !== null && !panel.hidden;
@@ -523,11 +567,16 @@ app.whenReady().then(() => {
         if (opened) {
           mb.value = 'beginning-of-buffer';
           mb.dispatchEvent(new Event('input', { bubbles: true }));
+          await __waitFor(() => {
+            const s = document.querySelector('.minibuffer-status');
+            return s && s.textContent.includes('beginning-of-buffer');
+          });
           matched = document.querySelector('.minibuffer-status')
             .textContent.includes('beginning-of-buffer');
           mb.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
+          closed = await __waitFor(() => panel.hidden);
           closed = panel.hidden;
         }
         return { opened, matched, closed, focused };
