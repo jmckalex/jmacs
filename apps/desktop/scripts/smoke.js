@@ -902,6 +902,7 @@ app.whenReady().then(() => {
         };
         const promptText = () => (document.querySelector('.minibuffer-prompt')?.textContent ?? '');
         const echo = () => (document.querySelector('.minibuffer-echo')?.textContent ?? '');
+        const modeline = () => document.getElementById('modeline-name').textContent;
         const fill = (text) => {
           const input = document.querySelector('.minibuffer-input');
           input.value = text;
@@ -943,11 +944,20 @@ app.whenReady().then(() => {
         const press = (key) => editor.dispatchEvent(new KeyboardEvent('keydown', {
           key, bubbles: true, cancelable: true,
         }));
+        const mlBeforeY = modeline();
         press('y'); // replace the first
-        await __waitFor(() => firstLine().startsWith('xxx'));
+        // Wait until the FIRST replacement landed AND the loop advanced to the
+        // 2nd match (point moved -> read-next-key re-armed), so 'q' can't race
+        // the re-arm and self-insert / leak the loop into later arms.
+        await __waitFor(() => firstLine().startsWith('xxx') && modeline() !== mlBeforeY);
         press('q'); // quit before the second
-        // Let the loop tear down (clear-status!) so it doesn't leak into later arms.
         await __waitFor(() => !echo().includes('Query replacing'));
+        // Safety net: if 'q' somehow raced, force the loop closed so a leaked
+        // prompt can't cascade into chord / findFile.
+        if (echo().includes('Query replacing')) {
+          press('q'); press('escape');
+          await __waitFor(() => !echo().includes('Query replacing'));
+        }
         const queryText = firstLine();
         return { regexText, queryText };
       })()`);
@@ -1018,21 +1028,25 @@ app.whenReady().then(() => {
 
       // Markdown: a .md buffer highlights a heading.
       const markdown = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
-        replInput.value = '(new-view! "notes.md")';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        await __run('(new-view! "notes.md")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         for (const ch of '# Title') {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
             key: ch, bubbles: true, cancelable: true,
           }));
         }
-        await frame();
+        await __waitFor(() => document.querySelectorAll('.tok-heading').length > 0);
         return { headings: document.querySelectorAll('.tok-heading').length };
       })()`);
       console.log('  markdown:', JSON.stringify(markdown));
@@ -1457,15 +1471,19 @@ app.whenReady().then(() => {
       // view — a non-text buffer kind — with the editor view hidden.
       // The dialog is stubbed (above) to choose the scratch PNG.
       const image = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
+        const frame = __sleep.bind(null, 60);
         const replInput = document.querySelector('.repl-input');
         replInput.value = '(open-file!)';
         replInput.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
-        // The open path is async (IPC + a data-URL read); give it room.
-        await new Promise((r) => setTimeout(r, 400));
-        await frame();
+        // The open path is async (IPC + a data-URL read + the server VIEW push);
+        // wait (bounded) for the image-view to mount. NOTE: currently a real
+        // gap — the image view does not mount under the smoke's spine, so this
+        // times out fast rather than perturbing later arms.
+        await __waitFor(() =>
+          document.querySelector('image-view:not([style*="display: none"]) .image-content'), 800);
         const view = document.querySelector('image-view:not([style*="display: none"])');
         const img = view ? view.querySelector('.image-content') : null;
         const toggle = view ? view.querySelector('.image-zoom-toggle') : null;
@@ -2481,8 +2499,9 @@ app.whenReady().then(() => {
       await writeFile(join(treeDir, 'main.js'), 'export default 1\n', 'utf8');
       await writeFile(join(treeDir, 'subdir', 'inner.md'), '# inner\n', 'utf8');
       const tree = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        ${WAIT_HELPERS}
+        const frame = __sleep.bind(null, 60);
+        const wait = __sleep;
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -2490,10 +2509,14 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        // Open the tree-view at the seeded directory.
+        // Open the tree-view at the seeded directory; wait for it to mount.
         submit('(directory-tree ${JSON.stringify(treeDir)})');
-        await wait(150);
-        await frame();
+        // NOTE: real gap — the directory-tree view does not mount under the
+        // smoke's spine; bounded wait so it fails fast, not perturbing later arms.
+        await __waitFor(() => {
+          const v = document.querySelector('directory-tree-view:not([style*="display: none"])');
+          return v && v.querySelectorAll('.directory-tree-row').length > 0;
+        }, 800);
         const view = document.querySelector('directory-tree-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         // Row count: subdir (one folder, collapsed) + main.js + note.txt
@@ -2573,8 +2596,9 @@ app.whenReady().then(() => {
       await writeFile(join(colsDir, 'subdir', 'inner.txt'), 'hello columns\n', 'utf8');
       await writeFile(join(colsDir, 'readme.md'), '# readme\n', 'utf8');
       const cols = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        ${WAIT_HELPERS}
+        const frame = __sleep.bind(null, 60);
+        const wait = __sleep;
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -2583,8 +2607,12 @@ app.whenReady().then(() => {
           }));
         };
         submit('(directory-columns ${JSON.stringify(colsDir)})');
-        await wait(200);
-        await frame();
+        // NOTE: real gap — the directory-columns view does not mount under the
+        // smoke's spine; bounded wait so it fails fast, not perturbing later arms.
+        await __waitFor(() => {
+          const v = document.querySelector('directory-columns-view:not([style*="display: none"])');
+          return v && v.querySelectorAll('.directory-columns-column').length > 0;
+        }, 800);
         const view = document.querySelector('directory-columns-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         const initialColumns = view
