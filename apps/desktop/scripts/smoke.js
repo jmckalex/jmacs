@@ -1675,15 +1675,29 @@ app.whenReady().then(() => {
         // page lives in a visible doc-view and the name shows on the
         // modeline — not in the utility dock. Poll for the rendered
         // markdown to land (the marked pass is async).
-        const view = await __waitFor(() => {
-          const v = document.querySelector('doc-view:not([style*="display: none"])');
-          const p = v ? v.querySelector('.doc-page') : null;
-          return p && /<strong>bold<\\/strong>/.test(p.innerHTML) ? v : null;
-        }, 3000);
+        // The docs arm (which runs first) leaves its own doc-view(s), so
+        // there are several <doc-view> elements; the one open-doc just
+        // rendered smoke-doc-fn into isn't necessarily the DOM-first
+        // visible one. Scan ALL doc-views for the one carrying the
+        // rendered docstring (verified live: the marked pass IS correct).
+        const view = await __waitFor(() =>
+          Array.from(document.querySelectorAll('doc-view')).find((v) => {
+            const p = v.querySelector('.doc-page');
+            return p && /<strong>bold<\\/strong>/.test(p.innerHTML);
+          }) || null, 4000);
         const shown = !!view;
         const page = view ? view.querySelector('.doc-page') : null;
         const html = page ? page.innerHTML : '';
         const modeline = document.getElementById('modeline-name')?.textContent ?? '';
+        // Diagnostics (kept small): dump every doc-view's page + the
+        // live interpreter so a failure is legible from the tally line.
+        await __run('*markdown-interpreter*');
+        const interp = (() => {
+          const all = document.querySelectorAll('.repl-result');
+          return all.length ? all[all.length - 1].textContent : '';
+        })();
+        const allPages = Array.from(document.querySelectorAll('doc-view'))
+          .map((v) => (v.querySelector('.doc-page')?.innerHTML ?? '(none)').slice(0, 80));
         return {
           shown,
           // marked's rendered output uses these tags for **bold**,
@@ -1693,6 +1707,8 @@ app.whenReady().then(() => {
           hasEm: /<em>live<\\/em>/.test(html),
           hasList: /<ul>[\\s\\S]*<li>/.test(html),
           modeline,
+          interp,
+          allPages,
         };
       })()`);
       console.log('  liveDocs:', JSON.stringify(liveDocs));
@@ -3096,6 +3112,17 @@ app.whenReady().then(() => {
         const paneCountAfterSplit = countPanes();
         const focusAfterSplit = focusedPaneId();
         const focusMoved = !!focusAfterSplit && focusAfterSplit !== focusBefore;
+        // Model B: split-horizontal! DUPLICATES the current view into the
+        // new (focused) pane — there is no "choose a view" placeholder
+        // chooser in server mode (verified live via scripts/drive.js), so
+        // the new pane shows the same buffer (pane-a) until we open pane-b
+        // into it. The originating pane is the non-focused leaf after the
+        // split (single-pane focus is null pre-split, so focusBefore can't
+        // identify it).
+        const leafIdsAfterSplit = Array.from(editorHost.querySelectorAll('.pane'))
+          .map((p) => p.dataset?.paneId ?? null);
+        const originalPaneId =
+          leafIdsAfterSplit.find((id) => id && id !== focusAfterSplit) ?? null;
         const placeholderName = document.getElementById('modeline-name')
           ?.textContent ?? '';
 
@@ -3116,7 +3143,10 @@ app.whenReady().then(() => {
         submit('(other-pane!)');
         await wait(200);
         const focusAfterOther = focusedPaneId();
-        const cycled = focusAfterOther === focusBefore;
+        // other-pane! must return focus to the ORIGINAL pane, not the new
+        // one. Compare against the original leaf id captured after the
+        // split (focusBefore is null in the single-pane case).
+        const cycled = !!originalPaneId && focusAfterOther === originalPaneId;
         const leftNameAfterCycle = document.getElementById('modeline-name')
           ?.textContent ?? '';
         // The original pane's cursor was never moved — its point is
@@ -4312,7 +4342,9 @@ app.whenReady().then(() => {
         panes.paneCountBefore === 1 &&
         panes.paneCountAfterSplit === 2 &&
         panes.focusMoved === true &&
-        panes.placeholderName.includes('choose a view') &&
+        // Split duplicates the current view (pane-a) into the new pane —
+        // no "choose a view" placeholder in Model B (verified live).
+        panes.placeholderName.includes('jmacs-smoke-pane-a.txt') &&
         // Per-view-point: the new (right) pane's point is 5 (we set
         // it); the original pane's cursor was never moved, so its
         // point is independent of the right pane's.
