@@ -331,8 +331,15 @@ app.whenReady().then(() => {
       // per-arm tally. (Model B turned several once-synchronous reads into
       // async round-trips, so an arm that hasn't been ported yet may throw on
       // a not-yet-projected element; that must not blind us to the other 40.)
+      // A Node-side watchdog bounds each arm: no single wedged arm can stall the
+      // whole suite (and the final tally). Rescues a renderer-side hang; a
+      // main-process block would also freeze this timer, which is itself a signal.
       const runArm = (js) =>
-        win.webContents.executeJavaScript(js).catch((error) => {
+        Promise.race([
+          win.webContents.executeJavaScript(js),
+          new Promise((resolve) => setTimeout(
+            () => resolve({ __armError: 'arm timed out (30s watchdog)' }), 30000)),
+        ]).catch((error) => {
           console.log('  (arm threw:', error.message + ')');
           return { __armError: error.message };
         });
@@ -2760,7 +2767,9 @@ app.whenReady().then(() => {
         };
       })()`);
       console.log('  cols:', JSON.stringify(cols));
-      await rm(colsDir, { recursive: true, force: true });
+      // (Do NOT rm colsDir here — the cols arm opened inner.txt from it into a
+      // buffer, and deleting an open file's backing wedges the next arm's
+      // shell pty spawn. colsDir is wiped at the START of the cols arm anyway.)
 
       // Shell-buffer arm (v4): open a shell buffer, drive the xterm.js
       // terminal directly through its `__term` handle (the view exposes
