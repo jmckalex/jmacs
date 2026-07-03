@@ -1589,7 +1589,7 @@ app.whenReady().then(() => {
       // link inside opens a second doc buffer.
       const docs = docsBuilt
         ? await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1597,36 +1597,32 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        // Docs open as a PANE doc-view now (showDocInPane), not a utility-dock
+        // tab — wait for the visible doc-view's page to carry the name.
+        const paneDoc = () => document.querySelector('doc-view:not([style*="display: none"]) .doc-page');
         submit('(open-doc "forward-char")');
-        // The first await yields to the REPL; the open-doc primitive
-        // dispatches an async fetch through host.readDocPage, then a
-        // buffer switch. A handful of frames is enough for both.
-        for (let i = 0; i < 6; i += 1) await frame();
-        // Docs render as utility-dock tabs now; the active tab is the one
-        // visible panel (its wrapper has no hidden attribute).
-        const view = document.querySelector('.utility-panel:not([hidden]) doc-view');
-        const shown = !!view;
-        const page = view ? view.querySelector('.doc-page') : null;
+        await __waitFor(() => { const p = paneDoc(); return p && p.textContent.includes('forward-char'); });
+        const page = paneDoc();
         const pageText = page ? page.textContent : '';
         // Click the first cross-link inside the page (the cmd() helper
-        // emits the backward-char reference).
+        // emits the backward-char reference); the pane re-renders to it.
         const xref = page ? page.querySelector('[data-jmacs-doc]') : null;
         const xrefName = xref ? xref.getAttribute('data-jmacs-doc') : '';
         if (xref) {
           xref.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          for (let i = 0; i < 6; i += 1) await frame();
+          await __waitFor(() => {
+            const p = paneDoc();
+            return p && p.textContent !== pageText && p.textContent.includes(xrefName);
+          });
         }
-        const secondPage = document.querySelector('.utility-panel:not([hidden]) doc-view .doc-page');
+        const secondPage = paneDoc();
         const secondText = secondPage ? secondPage.textContent : '';
         return {
-          shown,
+          shown: !!page,
           containsName: pageText.includes('forward-char'),
           hasXref: xref !== null,
           xrefName,
           secondShown: !!(secondPage && secondText.length > 0),
-          // After the click the second buffer should be different from
-          // the first — we look for the cross-link target name in the
-          // active page's text.
           switched: secondText.length > 0 && secondText.includes(xrefName || '__none__'),
         };
       })()`)
