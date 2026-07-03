@@ -42,8 +42,10 @@ import {
   replacePane,
   parentOf,
   siblingOf,
+  insertAtSplit,
   insertAtRootBorder,
   swapLeaves,
+  permuteLeaves,
   spiralOrder,
   computeRects,
   bumpIdCounterPast,
@@ -291,6 +293,56 @@ export function createPaneModel(options = {}, hooks = {}) {
     return newLeaf;
   }
 
+  /** A fresh leaf seeded from the focused leaf's buffer (the add-pane gestures
+   *  insert one, matching `split`'s "new pane shows the same buffer" semantics).
+   *  Returns the leaf; the caller places it in the tree + moves focus. */
+  function makeAddedLeaf() {
+    const src = focusedState();
+    const newState = freshState(src ? src.bufferId : null, src ?? undefined);
+    return makeLeaf(newState.bufferId, newState);
+  }
+
+  /**
+   * Insert a fresh leaf INTO an existing split (the visual add-pane gesture on
+   * a SPLITTER): the split gains a third child along its axis, so its two
+   * existing leaves plus the new one become equal siblings. The new leaf shows
+   * the focused leaf's buffer and TAKES FOCUS. No-op (null) when SPLITID names
+   * no split node in this window.
+   *
+   * @param {string} splitId - A split node id (from the client's PANE_TREE; the
+   *   client rebuilds the tree with the server's ids, so they match).
+   * @returns {object|null} The new leaf, or null.
+   */
+  function addPaneAtSplitter(splitId) {
+    const splitNode = findSplitById(rootPane, String(splitId ?? ''));
+    if (!splitNode) return null;
+    const newLeaf = makeAddedLeaf();
+    rootPane = insertAtSplit(rootPane, splitNode, newLeaf);
+    focusedId = newLeaf.id;
+    onChange();
+    return newLeaf;
+  }
+
+  /**
+   * Insert a fresh leaf at an OUTER BORDER (the add-pane gesture on a window
+   * edge): wrap the whole existing layout in a new outer split with the fresh
+   * leaf on SIDE. The new leaf shows the focused leaf's buffer and TAKES FOCUS.
+   * No-op (null) on an unrecognised side.
+   *
+   * @param {'top'|'bottom'|'left'|'right'} side
+   * @returns {object|null} The new leaf, or null.
+   */
+  function addPaneAtBorder(side) {
+    if (side !== 'top' && side !== 'bottom' && side !== 'left' && side !== 'right') {
+      return null;
+    }
+    const newLeaf = makeAddedLeaf();
+    rootPane = insertAtRootBorder(rootPane, side, newLeaf);
+    focusedId = newLeaf.id;
+    onChange();
+    return newLeaf;
+  }
+
   /**
    * Delete the focused leaf — collapse its parent split into its sibling.
    * No-op when the focused leaf is the root (the only pane). Focus follows:
@@ -487,6 +539,46 @@ export function createPaneModel(options = {}, hooks = {}) {
     // Exchange the state records (and re-point the leaf `.view` handles).
     stateById.set(leafA.id, b);
     stateById.set(leafB.id, a);
+    onChange();
+    return true;
+  }
+
+  /**
+   * Rearrange which pane shows which view by MOVING THE LEAVES (the visual
+   * swap-views / permute-views macro). SLOTORDER lists the leaf id currently at
+   * each slot (in the client's badge order); OCCUPANTS[s] is the leaf id whose
+   * content should land at slot s. Together they must be a permutation of every
+   * leaf in this window. Unlike `swapPanes` (which exchanges STATE between two
+   * fixed positions), this moves the leaf NODES — they keep their ids + content,
+   * so a guest view (browser / pdf / shell) is repositioned, never recreated,
+   * and focus follows the focused leaf to its new slot. Geometry lives on the
+   * client (it computes the badge order); the server just resolves ids. No-op
+   * (false) on a malformed / non-bijective request.
+   *
+   * @param {string[]} slotOrder - The leaf id at each slot, in badge order.
+   * @param {string[]} occupants - The leaf id whose content lands at each slot.
+   * @returns {boolean}
+   */
+  function moveViews(slotOrder, occupants) {
+    if (!Array.isArray(slotOrder) || !Array.isArray(occupants)) return false;
+    if (slotOrder.length === 0 || slotOrder.length !== occupants.length) return false;
+    const byId = new Map(leafPanes(rootPane).map((l) => [l.id, l]));
+    // permuteLeaves requires EVERY tree leaf slotted exactly once.
+    if (slotOrder.length !== byId.size) return false;
+    const slotByLeaf = new Map();
+    const occupantBySlot = [];
+    for (let s = 0; s < slotOrder.length; s += 1) {
+      const slotLeaf = byId.get(String(slotOrder[s]));
+      const occLeaf = byId.get(String(occupants[s]));
+      if (!slotLeaf || !occLeaf) return false;
+      slotByLeaf.set(slotLeaf, s);
+      occupantBySlot[s] = occLeaf;
+    }
+    try {
+      rootPane = permuteLeaves(rootPane, slotByLeaf, occupantBySlot);
+    } catch {
+      return false; // non-bijective slotting: permuteLeaves throws
+    }
     onChange();
     return true;
   }
@@ -1037,6 +1129,8 @@ export function createPaneModel(options = {}, hooks = {}) {
   return {
     // structural ops (the model half of panes.lisp)
     split,
+    addPaneAtSplitter,
+    addPaneAtBorder,
     deletePane,
     deleteOtherPanes,
     otherPane,
@@ -1044,6 +1138,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     toggleFocusedMinimap,
     balancePanes,
     swapPanes,
+    moveViews,
     setSplitRatio,
     focusPaneDirection,
     panesInSpiralOrder,

@@ -544,6 +544,15 @@ const editorHostEl = /** @type {HTMLElement} */ (
  *  the initial current view. */
 let rootPane = createLeafPane({ view: views[currentViewIndex] ?? null });
 
+/** The visual add-pane (`add-pane-mode.js`) / move-views (`move-view-mode.js`)
+ *  overlays, when active. Held so a second entry toggles the overlay off, and a
+ *  picked target / committed move can clear it. Null when no overlay is up.
+ *  The overlays are renderer UI driven server-side: the `add-pane` /
+ *  `swap-views` / `permute-views` commands emit an `enter-*-mode` directive; a
+ *  pick sends a PANE_INTENT back that the server applies to the pane model. */
+let addPaneModeHandle = null;
+let moveViewsModeHandle = null;
+
 /** Map from each live leaf-pane id to the `<div class="pane">` element
  *  that mirrors it. The map is rebuilt whenever the tree changes (phase
  *  3); for now it stays stable across the editor's lifetime. */
@@ -3712,6 +3721,97 @@ if (window.host && window.host.serverMode) {
         // Explicit forward search (C-c C-v): scroll the preview to the cursor's
         // line (args[0], 1-based) and flash it, regardless of the follow setting.
         previewSyncToCursor(Number(args?.[0]));
+      } else if (name === 'enter-add-pane-mode') {
+        // The visual add-pane macro (C-x + / M-x add-pane): the server asked
+        // THIS window to show the overlay over #editor-host. Re-entry toggles it
+        // off. A picked splitter / border sends a PANE_INTENT the server applies
+        // to this window's pane model (it re-pushes PANE_TREE with the new pane).
+        // The overlay reads the server-synced `rootPane` (ids match the server).
+        if (addPaneModeHandle && addPaneModeHandle.active) {
+          addPaneModeHandle.exit();
+          addPaneModeHandle = null;
+        } else {
+          const sendPane = (intent) => {
+            if (serverViewClient && typeof serverViewClient.sendPaneIntent === 'function') {
+              serverViewClient.sendPaneIntent(intent);
+            }
+          };
+          addPaneModeHandle = enterAddPaneMode({
+            host: editorHostEl,
+            getRootPane: () => rootPane,
+            onPickSplitter: (splitId) => {
+              sendPane({ op: 'add-at-splitter', paneId: splitId });
+              addPaneModeHandle = null;
+            },
+            onPickBorder: (side) => {
+              sendPane({ op: 'add-at-border', side });
+              addPaneModeHandle = null;
+            },
+          });
+          // Escape tears the overlay down itself; drop our handle so a re-entry
+          // doesn't try to exit() a dead overlay.
+          if (addPaneModeHandle) {
+            const original = addPaneModeHandle.exit;
+            addPaneModeHandle.exit = () => { original(); addPaneModeHandle = null; };
+          }
+        }
+      } else if (name === 'enter-move-views-mode') {
+        // The visual swap-views / permute-views macro (args[0] = 'swap'|'permute'):
+        // badge every pane, read the user's picks, then commit ONE structural
+        // rearrangement. Re-entry toggles the overlay off. We translate the
+        // overlay's badge-number assignments into leaf IDS — using the SAME
+        // spiral order it badged — and send ONE move-views PANE_INTENT; the
+        // server moves the leaves (a browser/pdf/shell guest rides along, not
+        // recreated), keeping the geometry decision on the client.
+        const moveMode = args?.[0] === 'permute' ? 'permute' : 'swap';
+        if (moveViewsModeHandle && moveViewsModeHandle.active) {
+          moveViewsModeHandle.exit();
+          moveViewsModeHandle = null;
+        } else {
+          moveViewsModeHandle = enterMoveViewsMode({
+            mode: moveMode,
+            host: editorHostEl,
+            getRootPane: () => rootPane,
+            onCommit: (assignments) => {
+              moveViewsModeHandle = null;
+              if (!Array.isArray(assignments)) return;
+              const rect = editorHostEl.getBoundingClientRect();
+              const { ordered } = spiralOrder(rootPane, { width: rect.width, height: rect.height });
+              const n = ordered.length;
+              if (n === 0) return;
+              // occupantBySlot[s] = the leaf whose content should land at slot s.
+              const occupantBySlot = new Array(n);
+              if (moveMode === 'swap') {
+                for (let i = 0; i < n; i += 1) occupantBySlot[i] = ordered[i];
+                const a = assignments[0] - 1;
+                const b = assignments[1] - 1;
+                if (a < 0 || b < 0 || a >= n || b >= n) return;
+                const tmp = occupantBySlot[a];
+                occupantBySlot[a] = occupantBySlot[b];
+                occupantBySlot[b] = tmp;
+              } else {
+                if (assignments.length !== n) return;
+                for (let k = 0; k < n; k += 1) {
+                  const dest = assignments[k] - 1;
+                  if (dest < 0 || dest >= n) return;
+                  occupantBySlot[dest] = ordered[k];
+                }
+              }
+              if (occupantBySlot.some((leaf) => !leaf)) return; // incomplete pick
+              if (serverViewClient && typeof serverViewClient.sendPaneIntent === 'function') {
+                serverViewClient.sendPaneIntent({
+                  op: 'move-views',
+                  slotOrder: ordered.map((l) => l.id),
+                  occupants: occupantBySlot.map((l) => l.id),
+                });
+              }
+            },
+          });
+          if (moveViewsModeHandle) {
+            const original = moveViewsModeHandle.exit;
+            moveViewsModeHandle.exit = () => { original(); moveViewsModeHandle = null; };
+          }
+        }
       } else if (name === 'theme-apply') {
         // B1.3 (plans/MODEL-B-DEFAULT.md): the spine pushed the theme's CSS
         // variables (JSON array of [--var, value]). Apply them to :root and
