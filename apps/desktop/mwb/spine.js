@@ -5294,6 +5294,19 @@ export function createSpine(options, effects = {}) {
     }
   }
 
+  /** The current buffer's major-mode highlight grammar tag (e.g. 'jmarkdown'),
+   *  or '' when the mode declares none. Sent to the client so it highlights by
+   *  MAJOR MODE, not by filename — a `.md` buffer in jmarkdown-mode gets the
+   *  JMarkdown grammar. */
+  function majorModeHighlight() {
+    try {
+      const h = interpreter.call('major-mode-highlight');
+      return typeof h === 'string' ? h : '';
+    } catch {
+      return '';
+    }
+  }
+
   /** The major-mode display name a SPECIFIC buffer entry would show. The
    *  major mode is a property of the buffer (derived from its name), but the
    *  interpreter only knows the mode of the ACTIVE view — so we briefly bind
@@ -5338,7 +5351,7 @@ export function createSpine(options, effects = {}) {
         menu = data ? { label: name, entries: data.entries, sections: data.sections } : null;
         modeMenuCache.set(name, menu);
       }
-      return { name, menu };
+      return { name, menu, highlight: majorModeHighlight() };
     };
     if (entry === activeEntry) return build();
     const savedEntry = activeEntry;
@@ -5348,7 +5361,7 @@ export function createSpine(options, effects = {}) {
       interpreter.call('-spine-choose-major-mode');
       return build();
     } catch {
-      return { name: '', menu: null };
+      return { name: '', menu: null, highlight: '' };
     } finally {
       bindActive(savedEntry, savedView);
       interpreter.call('-spine-choose-major-mode');
@@ -5420,6 +5433,7 @@ export function createSpine(options, effects = {}) {
         name: ds.name,
         // A data-source leaf has no text major mode and never typesets math.
         majorModeName: '',
+        highlightLang: '',
         modeMenu: null,
         mathPreviewActive: false,
         modeline: renderModeline({ name: ds.name, modified: false, mode: ds.kind, noPosition: true }),
@@ -5438,7 +5452,7 @@ export function createSpine(options, effects = {}) {
     // a client under GODOT_SERVER=1 can pick the math scanner provider + decide
     // whether to typeset — its own interpreter is inert, so the buffer's
     // minor-mode/major-mode state is only knowable from the server.
-    const { name: modeName, menu: modeMenu } = modeInfoFor(entry, v);
+    const { name: modeName, menu: modeMenu, highlight: highlightLang } = modeInfoFor(entry, v);
     return {
       point: v.point,
       // The cursor's 1-based source line (positionAt is 0-based). Travels as its
@@ -5449,6 +5463,9 @@ export function createSpine(options, effects = {}) {
       mark: v.mark,
       name: buf.name,
       majorModeName: modeName,
+      // The highlight grammar tag for the MAJOR MODE (e.g. 'jmarkdown'), so the
+      // client highlights by mode not filename (a .md buffer in jmarkdown-mode).
+      highlightLang: highlightLang,
       // The focused buffer's mode menu, computed server-side (the client's
       // interpreter is inert) so the macOS app menu can follow the buffer's mode.
       modeMenu,

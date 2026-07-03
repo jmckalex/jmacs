@@ -61,6 +61,28 @@ test('applyViewMode adopts the server-pushed major-mode name + math-preview flag
   assert.equal(b.majorModeName, '');
 });
 
+test('applyViewMode tracks the highlight grammar; a grammar change forces a re-render', () => {
+  const b = createClientBuffer({ initialText: '# hi', name: 'note.md' });
+  assert.equal(b.highlightLang, ''); // unknown before the first VIEW
+
+  // The server pushes the major mode's highlight tag (e.g. a .md buffer whose
+  // mode was re-registered to jmarkdown-mode). Adopting it reports a change.
+  assert.equal(b.applyViewMode({ majorModeName: 'JMarkdown', highlightLang: 'jmarkdown' }), true);
+  assert.equal(b.highlightLang, 'jmarkdown');
+
+  // Identical state: no change.
+  assert.equal(b.applyViewMode({ majorModeName: 'JMarkdown', highlightLang: 'jmarkdown' }), false);
+
+  // A highlightLang change ALONE (same mode name, same preview) must still count
+  // as changed, so the editor re-highlights with the new grammar.
+  assert.equal(b.applyViewMode({ majorModeName: 'JMarkdown', highlightLang: 'markdown' }), true);
+  assert.equal(b.highlightLang, 'markdown');
+
+  // A missing / garbled field reads as '' (fall back to the filename downstream).
+  assert.equal(b.applyViewMode({ majorModeName: 'JMarkdown' }), true);
+  assert.equal(b.highlightLang, '');
+});
+
 // --- cursor as window-state -------------------------------------------
 
 test('point/mark are owned window-state, seeded from options', () => {

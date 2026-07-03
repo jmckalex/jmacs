@@ -82,3 +82,13 @@ test('first run with no init.lisp seeds a commented template', () => {
   spineWith({ init: null }); // removes INIT; createSpine should re-create it
   assert.match(readFileSync(INIT, 'utf8'), /init\.lisp — your Godot configuration/);
 });
+
+test('the major mode drives the highlight grammar (viewStateOf.highlightLang)', () => {
+  // Native: .jmd → jmarkdown grammar, .md → markdown grammar.
+  assert.equal(spineWith({ init: null }, 'notes.jmd').viewStateOf(0).highlightLang, 'jmarkdown');
+  assert.equal(spineWith({ init: null }, 'notes.md').viewStateOf(0).highlightLang, 'markdown');
+  // With .md re-registered to jmarkdown-mode, the grammar follows the MODE, not
+  // the filename — the fix for "syntax highlighting doesn't track the mode".
+  const md = spineWith({ init: '(register-mode ".md" jmarkdown-mode)\n' }, 'notes.md');
+  assert.equal(md.viewStateOf(0).highlightLang, 'jmarkdown');
+});
