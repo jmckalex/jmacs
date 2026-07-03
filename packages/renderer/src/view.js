@@ -413,13 +413,14 @@ export function createEditorView(buffer, container, options = {}) {
     // A composition that opened over a base char but committed nothing (Escape /
     // cancel) leaves the base char as already typed — nothing to do.
   });
-  // Any non-composition text reaching the sink (a rare unhandled printable
-  // key whose keydown wasn't preventDefault'd) is unwanted — the buffer
-  // holds the text, not the sink — so drop it. During composition the
-  // value is left alone so the IME can build it up.
-  input.addEventListener('input', () => {
-    if (!composing) input.value = '';
-  });
+  // The sink is deliberately NOT cleared here on every `input`. A bare printable
+  // now flows INTO it (its keydown isn't preventDefault'd — see the keydown
+  // handler) and must REMAIN there so macOS press-and-hold can mark that base
+  // char and start the accent COMPOSITION over it; clearing it immediately left
+  // nothing to compose, so the popup showed but no composition began and the
+  // number-select self-inserted. The stale char is instead dropped at the start
+  // of the NEXT keystroke (keydown) and by `compositionend`. During a
+  // composition the value is macOS's marked text — never touched here.
 
   /** Focus the editor: focus the hidden input sink (a child of root), so
    *  the IME composes there and keystrokes still bubble to root's keydown
@@ -1571,6 +1572,11 @@ export function createEditorView(buffer, container, options = {}) {
     // caret — and the IME sink positioned over it — put, so the chooser opens at
     // the caret instead of wherever a runaway repeat dragged it.
     if (event.repeat && barePrintable) return;
+    // Drop the char the PREVIOUS keystroke left in the sink (we no longer clear
+    // it on `input`, so a held base char survives for the OS accent
+    // composition). This key's own char is inserted into the sink by the
+    // browser AFTER this handler returns, so the sink ends holding just it.
+    if (input.value !== '') input.value = '';
     let handled = onKey
       ? onKey(keyString)
       : handleKeyEvent(activeBuffer, event);
