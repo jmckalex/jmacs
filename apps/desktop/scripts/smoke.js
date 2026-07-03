@@ -345,11 +345,20 @@ app.whenReady().then(() => {
       // wastes the full subsequent inspection cycle.
       await new Promise((resolve) => setTimeout(resolve, 5000));
 
-      const render = await runArm(`(() => ({
-        lines: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line').length,
-        hasCursor: !!document.querySelector('text-view:not([style*="display: none"]) .editor-cursor'),
-        modeline: document.getElementById('modeline-position')?.textContent ?? '',
-      }))()`);
+      const render = await runArm(`(async () => {
+        ${WAIT_HELPERS}
+        // Model B bakes the whole modeline (line:col included) into the NAME
+        // slot; the position slot is always cleared (see app.js serverChrome).
+        // The first modeline push arrives on the server's VIEW round-trip,
+        // which can land after the boot settle — wait for it before reading.
+        await __waitFor(() =>
+          (document.getElementById('modeline-name')?.textContent ?? '').length > 0);
+        return {
+          lines: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line').length,
+          hasCursor: !!document.querySelector('text-view:not([style*="display: none"]) .editor-cursor'),
+          modeline: document.getElementById('modeline-name')?.textContent ?? '',
+        };
+      })()`);
       console.log('  rendered:', JSON.stringify(render));
 
       // The startup splash: present in the background layer, and
@@ -896,17 +905,21 @@ app.whenReady().then(() => {
 
       // Mouse: click in the buffer to place the cursor on another line.
       const mouse = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
-        const replSubmit = (src) => {
+        const submit = (src) => {
           replInput.value = src;
           replInput.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        replSubmit('(new-view! "mouse-test")');
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        ${REPL_RUN}
+        // Model B bakes line:col into the modeline NAME slot (L<line>:C<col>,
+        // 1-based line, 0-based col); the position slot is always empty now.
+        const modeline = () => document.getElementById('modeline-name').textContent;
+        await __run('(new-view! "mouse-test")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         const press = (key) => editor.dispatchEvent(new KeyboardEvent('keydown', {
           key, bubbles: true, cancelable: true,
@@ -916,8 +929,8 @@ app.whenReady().then(() => {
         for (const ch of 'beta') press(ch);
         press('Enter');
         for (const ch of 'gamma') press(ch);
-        await frame();
-        const before = document.getElementById('modeline-position').textContent;
+        await __waitFor(() => modeline().includes('L3:'));
+        const before = modeline();
         const click = (x, y) => {
           editor.dispatchEvent(new MouseEvent('mousedown', {
             clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true,
@@ -926,14 +939,14 @@ app.whenReady().then(() => {
         // The cursor is on line 3; click line 1 and check it moved.
         const line0 = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line')[0].getBoundingClientRect();
         click(line0.left + 16, line0.top + 4);
-        await frame();
-        const after = document.getElementById('modeline-position').textContent;
+        await __waitFor(() => modeline().includes('L1:'));
+        const after = modeline();
         // Click well past the end of line 2 ("beta") — the cursor should
         // land at that line's end, not stay put.
         const line1 = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line')[1].getBoundingClientRect();
         click(line1.right + 90, line1.top + 4);
-        await frame();
-        const endOfLine = document.getElementById('modeline-position').textContent;
+        await __waitFor(() => modeline().includes('L2:'));
+        const endOfLine = modeline();
         // Double-click selects the word — a mousedown with detail 2,
         // which is how the editor detects a double-click.
         const line0b = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line')[0].getBoundingClientRect();
@@ -942,7 +955,8 @@ app.whenReady().then(() => {
           clientX: line0b.left + 12, clientY: line0b.top + 4,
           bubbles: true, cancelable: true,
         }));
-        await frame();
+        await __waitFor(() =>
+          document.querySelectorAll('text-view:not([style*="display: none"]) .editor-selection-rect').length > 0);
         return {
           before,
           after,
@@ -1043,28 +1057,34 @@ app.whenReady().then(() => {
       // Virtualisation: a long buffer keeps only a window of lines in
       // the DOM, while the scroll height spans the whole document.
       const virtual = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
-        replInput.value = '(new-view! "big.txt")';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        await __run('(new-view! "big.txt")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         for (let i = 0; i < 400; i += 1) {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         }
-        await frame();
-        // The cursor sits on the last line. Scroll to the top and let
-        // it settle: the first frame runs the scroll-driven render, the
-        // second lets any cursor-follow bounce land. A scroll-only
-        // render must leave the viewport where the scroll put it.
+        // Let the inserts land, then move the caret to the top so the
+        // scroll-to-top isn't fought by a cursor-follow bounce, and wait for
+        // the windowed render to actually settle at line 1 / scrollTop 0.
+        await __sleep(400);
+        await __run('(goto! 0)');
         editor.scrollTop = 0;
-        await frame();
-        await frame();
+        await __waitFor(() => {
+          const no = document.querySelector('text-view:not([style*="display: none"]) .editor-line-no');
+          return editor.scrollTop === 0 && no && no.textContent === '1';
+        });
         return {
           lineDivs: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line').length,
           firstNumber: (document.querySelector('text-view:not([style*="display: none"]) .editor-line-no') || {}).textContent,
@@ -1077,7 +1097,7 @@ app.whenReady().then(() => {
       // Modes: a new buffer's major mode is chosen from its name and
       // shown in the modeline.
       const modes = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1085,15 +1105,20 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-view! "core.lisp")');
-        await frame();
-        const lisp = document.getElementById('modeline-name').textContent;
-        submit('(new-view! "notes.txt")');
-        await frame();
-        const txt = document.getElementById('modeline-name').textContent;
-        submit('(toggle-math-mode)'); // a minor mode — shows in the modeline
-        await frame();
-        const math = document.getElementById('modeline-name').textContent;
+        ${REPL_RUN}
+        const modeline = () => document.getElementById('modeline-name').textContent;
+
+        // Each buffer switch round-trips; wait for the modeline to name the
+        // new buffer before reading its mode tag.
+        await __run('(new-view! "core.lisp")');
+        await __waitFor(() => modeline().includes('core.lisp'));
+        const lisp = modeline();
+        await __run('(new-view! "notes.txt")');
+        await __waitFor(() => modeline().includes('notes.txt'));
+        const txt = modeline();
+        await __run('(toggle-math-mode)'); // a minor mode — shows in the modeline
+        await __waitFor(() => modeline().includes('Math'));
+        const math = modeline();
         // With math mode on, \` then Shift then G must insert \\Gamma —
         // the bare Shift press must not reach the key reader.
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
@@ -1104,7 +1129,7 @@ app.whenReady().then(() => {
         key('\`');
         key('Shift', true);
         key('G', true);
-        await frame();
+        await __waitFor(() => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent.includes('Gamma'));
         const mathText = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
         return { lisp, txt, math, mathText };
       })()`);
@@ -3811,10 +3836,12 @@ app.whenReady().then(() => {
       const regexReplaceOk =
         regexReplace.regexText === '123-foo 45-bar 6-baz' &&
         regexReplace.queryText === 'xxx foo foo';
+      // Model B modeline format: L<1-based line>:C<0-based col>. Clicking
+      // line 1 → L1; clicking past the end of "beta" (4 chars) → L2:C4.
       const mouseOk =
-        !!mouse.after && mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
+        !!mouse.after && mouse.after.includes('L1:') && mouse.before !== mouse.after &&
         !!mouse.endOfLine &&
-        mouse.endOfLine.includes('Ln 2') && mouse.endOfLine.includes('Col 5') &&
+        mouse.endOfLine.includes('L2:') && mouse.endOfLine.includes('C4') &&
         mouse.wordSelected;
       const markdownOk = markdown.headings > 0;
       const previewOk =
