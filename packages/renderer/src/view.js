@@ -1580,7 +1580,16 @@ export function createEditorView(buffer, container, options = {}) {
     if (!handled && onKey && altComposedInsert(event)) {
       handled = onKey(event.key);
     }
-    if (handled) event.preventDefault();
+    // Do NOT preventDefault a bare printable. Marking the key "handled" tells
+    // Chromium to swallow it, which SUPPRESSES the native macOS press-and-hold
+    // accent COMPOSITION — the popup then detaches to the window corner and a
+    // number-select types the digit instead of picking the accent. We already
+    // self-inserted the char via onKey (through the keymap, so auto-pair /
+    // electric keys still fire); the stray copy that lands in the hidden sink is
+    // dropped by the sink's `input` handler. Command keys, chords and named keys
+    // (Enter / Tab / Space / …) are still preventDefaulted so the textarea sink
+    // never acts on them.
+    if (handled && !barePrintable) event.preventDefault();
     // Remember a just-typed bare printable as a possible accent BASE char (for a
     // press-and-hold composition that may open next); any OTHER handled key
     // clears the candidacy. A suppressed repeat returned above, so the flag
