@@ -608,7 +608,7 @@ app.whenReady().then(() => {
       // by their grammars. The function spans in Python prove it is the
       // grammar and not the line tokenizer (which never emits @function).
       const treesitter = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -616,18 +616,19 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        const tok = (cls) => document.querySelectorAll('.' + cls).length;
         submit('(new-view! "smoke.js")');
         submit('(insert! "const answer = 42;")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-number') > 0);
         const keywords = document.querySelectorAll('.tok-keyword').length;
         const numbers = document.querySelectorAll('.tok-number').length;
         submit('(new-view! "smoke.py")');
         submit('(insert! "def go(): return go()")');
-        await frame();
+        await __waitFor(() => tok('tok-function') > 0);
         const pyFunctions = document.querySelectorAll('.tok-function').length;
         submit('(new-view! "smoke.html")');
         submit('(insert! "<div id=x></div>")');
-        await frame();
+        await __waitFor(() => tok('tok-tag') > 0);
         const htmlTags = document.querySelectorAll('.tok-tag').length;
         // HTML → CSS language injection: a <style> body in an HTML
         // buffer must be highlighted with CSS faces. The HTML
@@ -636,7 +637,7 @@ app.whenReady().then(() => {
         // here proves the inner CSS highlighter ran on the raw_text.
         submit('(new-view! "smoke-injection.html")');
         submit('(insert! "<style>p { color: red; }</style>")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0);
         const htmlInjectsCss = document.querySelectorAll('.tok-keyword').length;
         // PHP (mixed) — a <?php ?> block plus surrounding HTML. The
         // PHP grammar's own captures cover the keyword, variable and
@@ -646,8 +647,7 @@ app.whenReady().then(() => {
         // non-zero prove PHP loaded and the HTML injection ran.
         submit('(new-view! "smoke.php")');
         submit('(insert! "<?php echo 1; ?> <b>html</b>")');
-        await frame();
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-tag') > 0);
         const phpKeywords = document.querySelectorAll('.tok-keyword').length;
         const phpTags = document.querySelectorAll('.tok-tag').length;
         submit('(new-view! "smoke.json")');
@@ -657,34 +657,34 @@ app.whenReady().then(() => {
         // JSON has no fallback tokenizer that could emit @number or
         // @constant otherwise.
         submit('(insert! "[1, true, null]")');
-        await frame();
+        await __waitFor(() => tok('tok-number') > 0 && tok('tok-constant') > 0);
         const jsonNumbers = document.querySelectorAll('.tok-number').length;
         const jsonConstants = document.querySelectorAll('.tok-constant').length;
         submit('(new-view! "smoke.css")');
         submit('(insert! "p { color: red; }")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0);
         // CSS has no fallback tokenizer either — tok-keyword (the
         // property name "color") proves the grammar loaded.
         const cssKeywords = document.querySelectorAll('.tok-keyword').length;
         const cssTags = document.querySelectorAll('.tok-tag').length;
         submit('(new-view! "smoke.ts")');
         submit('(insert! "const n: number = 1;")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-type') > 0);
         const tsKeywords = document.querySelectorAll('.tok-keyword').length;
         const tsTypes = document.querySelectorAll('.tok-type').length;
         submit('(new-view! "smoke.rs")');
         submit('(insert! "fn go() -> u32 { 1 }")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-type') > 0);
         const rsKeywords = document.querySelectorAll('.tok-keyword').length;
         const rsTypes = document.querySelectorAll('.tok-type').length;
         submit('(new-view! "smoke.go")');
         submit('(insert! "package p; func F() int32 { return 0 }")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-type') > 0);
         const goKeywords = document.querySelectorAll('.tok-keyword').length;
         const goTypes = document.querySelectorAll('.tok-type').length;
         submit('(new-view! "smoke.sh")');
         submit('(insert! "if true; then echo hi; fi")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-function') > 0);
         const shKeywords = document.querySelectorAll('.tok-keyword').length;
         const shFunctions = document.querySelectorAll('.tok-function').length;
         // Markdown: a .md buffer with a heading and a fenced JS block
@@ -708,7 +708,7 @@ app.whenReady().then(() => {
         // a real newline here would be stripped, since the REPL is a
         // single-line <input>.)
         submit('(insert! "# heading\\\\n\\\\n\`\`\`js\\\\nconst x = 1;\\\\n\`\`\`\\\\n")');
-        await frame();
+        await __waitFor(() => tok('tok-heading') > 0 && tok('tok-keyword') > 0);
         const mdHeadings = document.querySelectorAll('.tok-heading').length;
         const mdInjectsJs = document.querySelectorAll('.tok-keyword').length;
         // LaTeX: a .tex buffer with a generic command, a sectioning
@@ -728,8 +728,9 @@ app.whenReady().then(() => {
         // the REPL's single-line input won't accept verbatim).
         submit('(new-view! "smoke.tex")');
         submit('(insert! "\\\\\\\\textbf{hi} $x=1$\\\\n\\\\\\\\section{Hi}\\\\n\\\\\\\\begin{equation}x=1\\\\\\\\end{equation}\\\\n\\\\\\\\begin{tikzpicture}\\\\n\\\\\\\\draw (0,0) -- (1,1);\\\\n\\\\\\\\end{tikzpicture}\\\\n")');
-        await frame();
-        await frame();
+        await __waitFor(() =>
+          tok('tok-function') > 0 && tok('tok-type') > 0 &&
+          tok('tok-string') > 0 && tok('tok-tag') > 0);
         const texFunctions = document.querySelectorAll('.tok-function').length;
         const texTypes = document.querySelectorAll('.tok-type').length;
         const texStrings = document.querySelectorAll('.tok-string').length;
