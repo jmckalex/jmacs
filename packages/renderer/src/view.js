@@ -36,6 +36,7 @@ import {
 } from './folding.js';
 import { lineIndentColumns, computeIndentGuides } from './indent-guides.js';
 import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
+import { createFollowTracker } from './follow-cursor.js';
 
 /** Keys that are only modifiers — never a keystroke on their own. */
 const MODIFIER_KEYS = new Set([
@@ -1369,6 +1370,14 @@ export function createEditorView(buffer, container, options = {}) {
   // must not: pulling the cursor back into view would yank the viewport
   // back, so the user could never scroll past the cursor's line.
   let followCursor = false;
+  // WHICH follow renders actually scroll the caret into view: only when the
+  // caret may have moved. A real edit or a switch/reveal forces it; otherwise
+  // the follow is gated on the offset having changed since the last follow, so
+  // a pure repaint (an overlay refresh, a redundant server view/cursor
+  // reconcile, a status tick) preserves a viewport the user scrolled away from
+  // instead of yanking it back to the caret (the "autosave scrolls my editor"
+  // bug). See follow-cursor.js.
+  const followTracker = createFollowTracker();
   // Recenter / flash are *deferred to the end of a render*, not run
   // synchronously by their callers. `goto-line!` (and any buffer move)
   // repositions the cursor on the next animation frame, so a recenter or
@@ -1462,10 +1471,19 @@ export function createEditorView(buffer, container, options = {}) {
       if (pendingRecenter) {
         pendingRecenter = false;
         followCursor = false;
+        followTracker.recentered(getPoint());
         cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
       } else if (followCursor) {
         followCursor = false;
-        cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        // Follow only when the caret moved since the last follow, a real edit
+        // forced it, or a switch/reveal did. Otherwise this is a pure repaint
+        // (an overlay refresh, a redundant view/cursor reconcile) — leave the
+        // user's scroll where it is. `scrollIntoView({block:'nearest'})` is
+        // already a no-op when the caret is on screen, so this only changes
+        // the scrolled-away case, which is exactly the yank we must not do.
+        if (followTracker.shouldScroll(getPoint())) {
+          cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
       }
       if (pendingFlash) {
         pendingFlash = false;
@@ -1483,8 +1501,14 @@ export function createEditorView(buffer, container, options = {}) {
     frame = win.requestAnimationFrame(render);
   }
 
-  /** Schedule a render that also keeps the cursor on screen. */
-  function scheduleFollowingCursor() {
+  /** Schedule a render that keeps the cursor on screen. A real text edit
+   *  (`event.change` non-null) FORCES the follow — Emacs keeps the caret
+   *  visible on self-insert / delete even when the offset itself did not
+   *  advance. A change-less event (an overlay refresh, a cursor-only adopt)
+   *  does not force it, so the follow is gated on the caret actually having
+   *  moved and a decoration repaint never yanks a scrolled-away viewport. */
+  function scheduleFollowingCursor(event) {
+    if (event && event.change !== null) followTracker.forceOnce();
     followCursor = true;
     schedule();
   }
@@ -2104,14 +2128,15 @@ export function createEditorView(buffer, container, options = {}) {
      * @param {import('@editor/view').View} next - The view to show.
      *   `next.buffer` is the L2 buffer; the renderer subscribes to it.
      */
-    setView(next) {
+    setView(next, options = {}) {
       const nextBuffer = next && next.buffer ? next.buffer : null;
       if (nextBuffer === null) {
         // Defensive: a non-text view should never reach here; the
         // host's mount dispatch routes elsewhere. No-op rather than crash.
         return;
       }
-      if (nextBuffer !== activeBuffer) {
+      const bufferChanged = nextBuffer !== activeBuffer;
+      if (bufferChanged) {
         unsubscribe();
         activeBuffer = nextBuffer;
         unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
@@ -2121,6 +2146,15 @@ export function createEditorView(buffer, container, options = {}) {
       // and any render that fired while the view was hidden produced a
       // 0-height layout. The reveal pass redraws against the real
       // viewport.
+      //
+      // A switch / reveal (the default) FORCES the follow so the target's
+      // caret is shown. A server-driven reconcile passes `followMode: 'auto'`:
+      // then the follow is gated on the caret actually having moved, so a
+      // repaint that left the caret put (an overlay update, a redundant
+      // view/cursor message) preserves the user's scroll instead of yanking
+      // it back. A switch to a DIFFERENT buffer always forces (its caret may
+      // sit at the same numeric offset yet be off-screen).
+      if (options.followMode !== 'auto' || bufferChanged) followTracker.forceOnce();
       followCursor = true;
       render();
     },
