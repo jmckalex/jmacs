@@ -325,6 +325,18 @@ app.whenReady().then(() => {
 
   win.webContents.once('did-finish-load', async () => {
     try {
+      // Run one arm's in-page script, catching any throw so a single broken
+      // arm can't abort the whole sweep — it resolves to a marker object, its
+      // assertion then reads as a failure, and the run continues to a full
+      // per-arm tally. (Model B turned several once-synchronous reads into
+      // async round-trips, so an arm that hasn't been ported yet may throw on
+      // a not-yet-projected element; that must not blind us to the other 40.)
+      const runArm = (js) =>
+        win.webContents.executeJavaScript(js).catch((error) => {
+          console.log('  (arm threw:', error.message + ')');
+          return { __armError: error.message };
+        });
+
       // Give the module graph a moment to evaluate and the first
       // animation frame to render.
       // 33 tree-sitter grammars + the directory views need to load
@@ -333,7 +345,7 @@ app.whenReady().then(() => {
       // wastes the full subsequent inspection cycle.
       await new Promise((resolve) => setTimeout(resolve, 5000));
 
-      const render = await win.webContents.executeJavaScript(`(() => ({
+      const render = await runArm(`(() => ({
         lines: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line').length,
         hasCursor: !!document.querySelector('text-view:not([style*="display: none"]) .editor-cursor'),
         modeline: document.getElementById('modeline-position')?.textContent ?? '',
@@ -342,7 +354,7 @@ app.whenReady().then(() => {
 
       // The startup splash: present in the background layer, and
       // dismissed (no longer visible) once a buffer is switched.
-      const splash = await win.webContents.executeJavaScript(`(async () => {
+      const splash = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const present =
           document.querySelector('text-view:not([style*="display: none"]) .editor-background .splash.is-visible')
@@ -366,7 +378,7 @@ app.whenReady().then(() => {
 
       // Drive the real input path: dispatch key events at the editor
       // and confirm the projected DOM changes.
-      const input = await win.webContents.executeJavaScript(`(async () => {
+      const input = await runArm(`(async () => {
         ${WAIT_HELPERS}
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
@@ -395,7 +407,7 @@ app.whenReady().then(() => {
       // dispatches the InputEvent shapes the OS produces. Three shapes:
       // digit selection, ordinary typing after a hold, and a click
       // selection (which has no keydown at all).
-      const accents = await win.webContents.executeJavaScript(`(async () => {
+      const accents = await runArm(`(async () => {
         const view = document.querySelector('text-view:not([style*="display: none"])');
         const editor = view.querySelector('.editor');
         const sink = view.querySelector('.editor-input');
@@ -442,7 +454,7 @@ app.whenReady().then(() => {
 
       // Drive the REPL: evaluate arithmetic, and have Lisp edit the
       // buffer, confirming the L3 -> L2 -> L4 path.
-      const lisp = await win.webContents.executeJavaScript(`(async () => {
+      const lisp = await runArm(`(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -496,7 +508,7 @@ app.whenReady().then(() => {
 
       // Check the file bridge: the host API is exposed, and a save with
       // an explicit path writes the file (no dialog needed).
-      const files = await win.webContents.executeJavaScript(`(async () => {
+      const files = await runArm(`(async () => {
         const api = window.host;
         const exposed = !!(api
           && typeof api.openFile === 'function'
@@ -515,7 +527,7 @@ app.whenReady().then(() => {
 
       // Incremental search: C-s opens the minibuffer; typing a query
       // selects a match (rendered as selection rectangles).
-      const search = await win.webContents.executeJavaScript(`(async () => {
+      const search = await runArm(`(async () => {
         ${WAIT_HELPERS}
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
@@ -545,7 +557,7 @@ app.whenReady().then(() => {
 
       // Command palette: M-x opens it, a query filters commands, Enter
       // runs the top match and closes the minibuffer.
-      const palette = await win.webContents.executeJavaScript(`(async () => {
+      const palette = await runArm(`(async () => {
         ${WAIT_HELPERS}
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
@@ -586,7 +598,7 @@ app.whenReady().then(() => {
       // Tree-sitter: JavaScript, Python and HTML buffers are highlighted
       // by their grammars. The function spans in Python prove it is the
       // grammar and not the line tokenizer (which never emits @function).
-      const treesitter = await win.webContents.executeJavaScript(`(async () => {
+      const treesitter = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -749,7 +761,7 @@ app.whenReady().then(() => {
       // `function foo() {}`, with point inside `function`, the
       // command opens a *Doc: Face at point* buffer whose HTML names
       // the `keyword` face.
-      const faceInfo = await win.webContents.executeJavaScript(`(async () => {
+      const faceInfo = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -780,7 +792,7 @@ app.whenReady().then(() => {
       // Structural test of the editor's CSS layers — works on any
       // text-view, visible or not, so the unfiltered selectors are
       // correct here.
-      const layers = await win.webContents.executeJavaScript(`(() => {
+      const layers = await runArm(`(() => {
         const z = (sel) =>
           Number(getComputedStyle(document.querySelector(sel)).zIndex);
         return {
@@ -795,7 +807,7 @@ app.whenReady().then(() => {
       console.log('  layers:', JSON.stringify(layers));
 
       // Replace-string: a chained two-prompt minibuffer flow.
-      const replace = await win.webContents.executeJavaScript(`(async () => {
+      const replace = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const replSubmit = (src) => {
@@ -825,7 +837,7 @@ app.whenReady().then(() => {
       // Regex-replace and query-replace: two new commands that share
       // the chained two-prompt minibuffer flow as replace-string, with
       // JS RegExp semantics and a per-match prompt respectively.
-      const regexReplace = await win.webContents.executeJavaScript(`(async () => {
+      const regexReplace = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const replSubmit = (src) => {
@@ -883,7 +895,7 @@ app.whenReady().then(() => {
       console.log('  regexReplace:', JSON.stringify(regexReplace));
 
       // Mouse: click in the buffer to place the cursor on another line.
-      const mouse = await win.webContents.executeJavaScript(`(async () => {
+      const mouse = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const replSubmit = (src) => {
@@ -941,7 +953,7 @@ app.whenReady().then(() => {
       console.log('  mouse:', JSON.stringify(mouse));
 
       // Markdown: a .md buffer highlights a heading.
-      const markdown = await win.webContents.executeJavaScript(`(async () => {
+      const markdown = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         replInput.value = '(new-view! "notes.md")';
@@ -966,7 +978,7 @@ app.whenReady().then(() => {
       // command so the result is deterministic without a JMarkdown
       // binary; the heading text must reach the rendered pane, and the
       // pane must refresh as the buffer is edited.
-      const preview = await win.webContents.executeJavaScript(`(async () => {
+      const preview = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -1030,7 +1042,7 @@ app.whenReady().then(() => {
 
       // Virtualisation: a long buffer keeps only a window of lines in
       // the DOM, while the scroll height spans the whole document.
-      const virtual = await win.webContents.executeJavaScript(`(async () => {
+      const virtual = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         replInput.value = '(new-view! "big.txt")';
@@ -1064,7 +1076,7 @@ app.whenReady().then(() => {
 
       // Modes: a new buffer's major mode is chosen from its name and
       // shown in the modeline.
-      const modes = await win.webContents.executeJavaScript(`(async () => {
+      const modes = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1100,7 +1112,7 @@ app.whenReady().then(() => {
 
       // A sticky note: created via Lisp, it shows its source and rides
       // the document when the buffer scrolls.
-      const sticky = await win.webContents.executeJavaScript(`(async () => {
+      const sticky = await runArm(`(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1209,7 +1221,7 @@ app.whenReady().then(() => {
 
       // Customisation: init.lisp is written on first run, and a saved
       // setting is persisted to custom.lisp.
-      const config = await win.webContents.executeJavaScript(`(async () => {
+      const config = await runArm(`(async () => {
         const initLoaded =
           (await window.host.readConfigFile('init.lisp')) !== null;
         const replInput = document.querySelector('.repl-input');
@@ -1259,7 +1271,7 @@ app.whenReady().then(() => {
 
       // Themes: changing *theme* through the customisation registry
       // rewrites CSS variables on the document root.
-      const themes = await win.webContents.executeJavaScript(`(async () => {
+      const themes = await runArm(`(async () => {
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1295,7 +1307,7 @@ app.whenReady().then(() => {
       // computed `.tok-keyword` colour (from the live swatch inside
       // the customize buffer) reflects the override. Reset, then
       // assert the default colour is back.
-      const faces = await win.webContents.executeJavaScript(`(async () => {
+      const faces = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1369,7 +1381,7 @@ app.whenReady().then(() => {
       // Image buffers: opening an image file shows it through the image
       // view — a non-text buffer kind — with the editor view hidden.
       // The dialog is stubbed (above) to choose the scratch PNG.
-      const image = await win.webContents.executeJavaScript(`(async () => {
+      const image = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         replInput.value = '(open-file!)';
@@ -1410,7 +1422,7 @@ app.whenReady().then(() => {
       // swatch beside each one; clicking a swatch opens the modal colour
       // chooser, and confirming it writes the chosen colour back into the
       // buffer, replacing the literal's text.
-      const swatches = await win.webContents.executeJavaScript(`(async () => {
+      const swatches = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1459,7 +1471,7 @@ app.whenReady().then(() => {
       // shows the HTML the build produced; clicking a [data-jmacs-doc]
       // link inside opens a second doc buffer.
       const docs = docsBuilt
-        ? await win.webContents.executeJavaScript(`(async () => {
+        ? await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1508,7 +1520,7 @@ app.whenReady().then(() => {
       // Markdown docstring opens through the doc-view too. This arm
       // doesn't depend on `pnpm run docs` — it exercises the
       // marked.js pipeline directly.
-      const liveDocs = await win.webContents.executeJavaScript(`(async () => {
+      const liveDocs = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1557,7 +1569,7 @@ app.whenReady().then(() => {
       // and kill a row by clicking its ✕. The whole body is wrapped so a
       // failure here returns a clean shape instead of throwing and
       // aborting every later arm (the §2 per-arm-isolation discipline).
-      const bufferMenu = await win.webContents.executeJavaScript(`(async () => {
+      const bufferMenu = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -1665,7 +1677,7 @@ app.whenReady().then(() => {
         writeFile(join(jukeboxDir, 'cover.jpg'), ''),
         writeFile(join(jukeboxDir, 'readme.txt'), 'ignore me'),
       ]);
-      const jukebox = await win.webContents.executeJavaScript(`(async () => {
+      const jukebox = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1801,7 +1813,7 @@ app.whenReady().then(() => {
       // <video controls> element. `q` dismisses each. The smoke uses
       // `open-file-path!` so the dialog stub (still pointing at the
       // smoke image) stays out of the way.
-      const mediaViews = await win.webContents.executeJavaScript(`(async () => {
+      const mediaViews = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2105,7 +2117,7 @@ app.whenReady().then(() => {
       // panes.json. The check programmatically drives pointer events
       // at each splitter, reads back the CSS variable, then reads
       // panes.json through the host bridge to confirm persistence.
-      const splitters = await win.webContents.executeJavaScript(`(async () => {
+      const splitters = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2198,7 +2210,7 @@ app.whenReady().then(() => {
         canceled: false,
         filePaths: [tabPath],
       });
-      const tabline = await win.webContents.executeJavaScript(`(async () => {
+      const tabline = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2326,7 +2338,7 @@ app.whenReady().then(() => {
       // boolean. Languages whose grammar is built from C source are
       // bunched with the npm-prebuilt ones; the .wasm file is the
       // same shape either way.
-      const langPack = await win.webContents.executeJavaScript(`(async () => {
+      const langPack = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -2393,7 +2405,7 @@ app.whenReady().then(() => {
       await writeFile(join(treeDir, 'note.txt'), 'hello\n', 'utf8');
       await writeFile(join(treeDir, 'main.js'), 'export default 1\n', 'utf8');
       await writeFile(join(treeDir, 'subdir', 'inner.md'), '# inner\n', 'utf8');
-      const tree = await win.webContents.executeJavaScript(`(async () => {
+      const tree = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2485,7 +2497,7 @@ app.whenReady().then(() => {
       await mkdir(join(colsDir, 'subdir'), { recursive: true });
       await writeFile(join(colsDir, 'subdir', 'inner.txt'), 'hello columns\n', 'utf8');
       await writeFile(join(colsDir, 'readme.md'), '# readme\n', 'utf8');
-      const cols = await win.webContents.executeJavaScript(`(async () => {
+      const cols = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2637,7 +2649,7 @@ app.whenReady().then(() => {
       // sanity check — shrink the term host's width and verify
       // term.cols updates — and finally kill the buffer and confirm
       // cleanup.
-      const shell = await win.webContents.executeJavaScript(`(async () => {
+      const shell = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2747,7 +2759,7 @@ app.whenReady().then(() => {
       // in the minibuffer's echo area; a follow-up unbound key clears
       // it. The echo area is the .minibuffer-echo element, visible
       // only when no prompt is active.
-      const chord = await win.webContents.executeJavaScript(`(async () => {
+      const chord = await runArm(`(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -2791,7 +2803,7 @@ app.whenReady().then(() => {
       // /var/folders/ on macOS, which is unwieldy for a smoke test).
       const ffPath = '/tmp/jmacs-smoke-find-file.txt';
       await writeFile(ffPath, 'smoke find-file ok');
-      const findFile = await win.webContents.executeJavaScript(`(async () => {
+      const findFile = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
@@ -2840,7 +2852,7 @@ app.whenReady().then(() => {
       const paneB = '/tmp/jmacs-smoke-pane-b.txt';
       await writeFile(paneA, 'pane a — left side\nsecond line a', 'utf8');
       await writeFile(paneB, 'pane b — right side\nsecond line b', 'utf8');
-      const panes = await win.webContents.executeJavaScript(`(async () => {
+      const panes = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -3013,7 +3025,7 @@ app.whenReady().then(() => {
       await writeFile(tablineSessionFile1, 'sess1\n', 'utf8');
       await writeFile(tablineSessionFile2, 'sess2\n', 'utf8');
       await writeFile(tablineSessionFile3, 'sess3\n', 'utf8');
-      const tablineArm = await win.webContents.executeJavaScript(`(async () => {
+      const tablineArm = await runArm(`(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -3279,7 +3291,7 @@ app.whenReady().then(() => {
       // Runs last because it leaves the editor with a non-pristine
       // view list (each split spawns a duplicate text view, the cleanup
       // collapses panes but doesn't reclaim the views).
-      const addPaneArm = await win.webContents.executeJavaScript(`(async () => {
+      const addPaneArm = await runArm(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3440,7 +3452,7 @@ app.whenReady().then(() => {
       // one tab should leave the other alive — Q9 auto-duplicate's job.
       const bug2File = join(tmpdir(), 'jmacs-bug2-shared.txt');
       await writeFile(bug2File, 'shared content\\n', 'utf8');
-      const bug2 = await win.webContents.executeJavaScript(`(async () => {
+      const bug2 = await runArm(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3529,7 +3541,7 @@ app.whenReady().then(() => {
       // Reuse the media-arm's video file shape — minimal MP4 isn't
       // really needed since the test only checks visibility, not playback.
       await writeFile(bug3VideoPath, 'placeholder\\n', 'utf8');
-      const bug3 = await win.webContents.executeJavaScript(`(async () => {
+      const bug3 = await runArm(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3652,7 +3664,7 @@ app.whenReady().then(() => {
       await writeFile(bug4FileB, 'bb\\n', 'utf8');
       await writeFile(bug4FileC, 'cc\\n', 'utf8');
       await writeFile(bug4FileD, 'dd\\n', 'utf8');
-      const bug4 = await win.webContents.executeJavaScript(`(async () => {
+      const bug4 = await runArm(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const editorHost = document.getElementById('editor-host');
         const replInput = document.querySelector('.repl-input');
@@ -3751,7 +3763,7 @@ app.whenReady().then(() => {
         accents.afterClick === 'éoxü' + accents.before &&
         accents.restored === accents.before;
       const replOk = lisp.arithmetic === '6';
-      const stdlibOk = lisp.stdlib.includes('procedure');
+      const stdlibOk = typeof lisp.stdlib === 'string' && lisp.stdlib.includes('procedure');
       const sequenceOk = lisp.sequence === '#t';
       const modulesOk = lisp.modules === '42';
       const buffersOk = lisp.bufferCount === '2';
@@ -3791,6 +3803,7 @@ app.whenReady().then(() => {
       // The doc-view modeline shows the page title ("Face at point"),
       // not the raw *Doc: …* buffer name.
       const faceInfoOk =
+        !!faceInfo.modeline &&
         faceInfo.modeline.includes('Face at point') &&
         faceInfo.mentionsKeyword &&
         faceInfo.mentionsTokKeyword;
@@ -3799,7 +3812,8 @@ app.whenReady().then(() => {
         regexReplace.regexText === '123-foo 45-bar 6-baz' &&
         regexReplace.queryText === 'xxx foo foo';
       const mouseOk =
-        mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
+        !!mouse.after && mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
+        !!mouse.endOfLine &&
         mouse.endOfLine.includes('Ln 2') && mouse.endOfLine.includes('Col 5') &&
         mouse.wordSelected;
       const markdownOk = markdown.headings > 0;
@@ -3813,8 +3827,10 @@ app.whenReady().then(() => {
         virtual.scrollHeight > 3000 && virtual.firstNumber === '1' &&
         virtual.scrollTop === 0;
       const modesOk =
-        modes.lisp.includes('Lisp') && modes.txt.includes('Fundamental') &&
-        modes.math.includes('Math') && modes.mathText.includes('Gamma');
+        !!modes.lisp && modes.lisp.includes('Lisp') &&
+        !!modes.txt && modes.txt.includes('Fundamental') &&
+        !!modes.math && modes.math.includes('Math') &&
+        !!modes.mathText && modes.mathText.includes('Gamma');
       const layersOk = layers.background && layers.overlay && layers.ordered;
       const splashOk = splash.present && splash.dismissed;
       const stickyOk =
@@ -3887,6 +3903,7 @@ app.whenReady().then(() => {
         bufferMenu.targetGone &&
         bufferMenu.keepStill;
       const jukeboxOk =
+        !!jukebox.name &&
         jukebox.name.includes('Jukebox:') &&
         jukebox.visible &&
         jukebox.hasAudio &&
@@ -3994,7 +4011,7 @@ app.whenReady().then(() => {
         'swift', 'zig',
       ];
       const langPackOk =
-        langPack &&
+        langPack && langPack.langs &&
         expectedLangs.every((tag) => langPack.langs.includes(tag));
       // Directory tree-view arm: the view mounts, the seeded folder
       // expands on click (showing one more row), and clicking a file
@@ -4208,141 +4225,74 @@ app.whenReady().then(() => {
         tablineArm.restoredCurrent === 'pane-leaf-sess' &&
         tablineArm.restoredCurrentBuffer.includes('jmacs-smoke-tabline-sess-2.txt');
 
-      if (
-        renderOk && typeOk && deleteOk && accentsOk && replOk && stdlibOk && sequenceOk &&
-        modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
-        searchOk && paletteOk && treesitterOk && faceInfoOk && replaceOk &&
-        regexReplaceOk &&
-        mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
-        splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
-        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
-        tablineOk && langPackOk && treeOk && colsOk && shellOk &&
-        chordOk && findFileOk && panesOk && addPaneOk && bug2Ok && bug3Ok &&
-        bug4Ok && tablineArmOk
-      ) {
-        finish(
-          0,
-          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, markdown preview, virtualisation, sticky notes, colour swatches, customisation, image buffers, splitters, search and files all work`
-        );
-      } else if (!renderOk) {
-        finish(1, 'editor did not render expected DOM');
-      } else if (!typeOk || !deleteOk) {
-        finish(1, 'editor rendered but typing did not update the DOM');
-      } else if (!accentsOk) {
-        finish(1, `press-and-hold accents did not work (${JSON.stringify(accents)})`);
-      } else if (!replOk) {
-        finish(1, 'the REPL did not evaluate Lisp');
-      } else if (!stdlibOk) {
-        finish(1, 'the standard library did not load');
-      } else if (!sequenceOk) {
-        finish(1, 'key sequences (prefix keys) did not work');
-      } else if (!modulesOk) {
-        finish(1, 'the module system did not work');
-      } else if (!buffersOk) {
-        finish(1, 'multiple buffers did not work');
-      } else if (!highlightOk) {
-        finish(1, 'syntax highlighting did not render');
-      } else if (!interopOk) {
-        finish(1, 'Lisp did not edit the buffer');
-      } else if (!filesOk) {
-        finish(1, 'the file bridge did not work');
-      } else if (!searchOk) {
-        finish(1, 'incremental search did not work');
-      } else if (!paletteOk) {
-        finish(1, 'the command palette did not work');
-      } else if (!treesitterOk) {
-        finish(
-          1,
-          `tree-sitter highlighting did not work (${JSON.stringify(treesitter)})`
-        );
-      } else if (!faceInfoOk) {
-        finish(
-          1,
-          `describe-face-at-point did not work (${JSON.stringify(faceInfo)})`
-        );
-      } else if (!replaceOk) {
-        finish(1, 'replace-string did not work');
-      } else if (!regexReplaceOk) {
-        finish(
-          1,
-          `regex-replace or query-replace did not work (${JSON.stringify(regexReplace)})`
-        );
-      } else if (!mouseOk) {
-        finish(1, 'mouse click did not move the cursor');
-      } else if (!markdownOk) {
-        finish(1, 'markdown highlighting did not work');
-      } else if (!previewOk) {
-        finish(
-          1,
-          `the Markdown preview pane did not work (${JSON.stringify(preview)})`
-        );
-      } else if (!virtualOk) {
-        finish(
-          1,
-          `view virtualisation did not work (${JSON.stringify(virtual)})`
-        );
-      } else if (!modesOk) {
-        finish(1, `modes did not work (${JSON.stringify(modes)})`);
-      } else if (!layersOk) {
-        finish(1, `the view layers did not work (${JSON.stringify(layers)})`);
-      } else if (!splashOk) {
-        finish(1, `the splash did not work (${JSON.stringify(splash)})`);
-      } else if (!stickyOk) {
-        finish(1, `sticky notes did not work (${JSON.stringify(sticky)})`);
-      } else if (!configOk) {
-        finish(1, `customisation did not work (${JSON.stringify(config)})`);
-      } else if (!themesOk) {
-        finish(1, `themes did not work (${JSON.stringify(themes)})`);
-      } else if (!facesOk) {
-        finish(1, `face customisation did not work (${JSON.stringify(faces)})`);
-      } else if (!imageOk) {
-        finish(1, `image buffers did not work (${JSON.stringify(image)})`);
-      } else if (!docsOk) {
-        finish(1, `docs did not work (${JSON.stringify(docs)})`);
-      } else if (!liveDocsOk) {
-        finish(1, `live docstring rendering did not work (${JSON.stringify(liveDocs)})`);
-      } else if (!bufferMenuOk) {
-        finish(1, `buffer menu did not work (${JSON.stringify(bufferMenu)})`);
-      } else if (!swatchesOk) {
-        finish(
-          1,
-          `colour swatches did not work (${JSON.stringify(swatches)})`
-        );
-      } else if (!chordOk) {
-        finish(1, `chord-prefix display did not work (${JSON.stringify(chord)})`);
-      } else if (!findFileOk) {
-        finish(1, `find-file did not work (${JSON.stringify(findFile)})`);
-      } else if (!jukeboxOk) {
-        finish(1, `jukebox did not work (${JSON.stringify(jukebox)})`);
-      } else if (!mediaViewsOk) {
-        finish(
-          1,
-          `media views did not work (${JSON.stringify(mediaViews)})`
-        );
-      } else if (!splittersOk) {
-        finish(1, `splitters did not work (${JSON.stringify(splitters)})`);
-      } else if (!tablineOk) {
-        finish(1, `tabline / session did not work (${JSON.stringify(tabline)})`);
-      } else if (!langPackOk) {
-        finish(1, `language pack did not work (${JSON.stringify(langPack)})`);
-      } else if (!treeOk) {
-        finish(1, `directory tree-view did not work (${JSON.stringify(tree)})`);
-      } else if (!colsOk) {
-        finish(1, `directory columns-view did not work (${JSON.stringify(cols)})`);
-      } else if (!shellOk) {
-        finish(1, `shell buffer did not work (${JSON.stringify(shell)})`);
-      } else if (!panesOk) {
-        finish(1, `multi-pane splits did not work (${JSON.stringify(panes)})`);
-      } else if (!addPaneOk) {
-        finish(1, `add-pane mode / C-u flip did not work (${JSON.stringify(addPaneArm)})`);
-      } else if (!bug2Ok) {
-        finish(1, `close-one-closes-both regression (${JSON.stringify(bug2)})`);
-      } else if (!bug3Ok) {
-        finish(1, `cross-pane tab click regression (${JSON.stringify(bug3)})`);
-      } else if (!bug4Ok) {
-        finish(1, `tabline ring-fence regression (${JSON.stringify(bug4)})`);
+      // Per-arm tally: every assertion is evaluated and reported, so one run
+      // shows the whole picture instead of exiting on the first failure. A
+      // failed arm logs its captured data for triage. (The Ok computations
+      // above are crash-safe — a broken arm reads as false, never a throw.)
+      const checks = [
+        ['render', renderOk, render],
+        ['type', typeOk, input],
+        ['delete', deleteOk, input],
+        ['accents', accentsOk, accents],
+        ['repl', replOk, lisp],
+        ['stdlib', stdlibOk, lisp],
+        ['sequence', sequenceOk, lisp],
+        ['modules', modulesOk, lisp],
+        ['buffers', buffersOk, lisp],
+        ['highlight', highlightOk, lisp],
+        ['interop', interopOk, lisp],
+        ['files', filesOk, files],
+        ['search', searchOk, search],
+        ['palette', paletteOk, palette],
+        ['treesitter', treesitterOk, treesitter],
+        ['faceInfo', faceInfoOk, faceInfo],
+        ['replace', replaceOk, replace],
+        ['regexReplace', regexReplaceOk, regexReplace],
+        ['mouse', mouseOk, mouse],
+        ['markdown', markdownOk, markdown],
+        ['preview', previewOk, preview],
+        ['virtual', virtualOk, virtual],
+        ['modes', modesOk, modes],
+        ['layers', layersOk, layers],
+        ['splash', splashOk, splash],
+        ['sticky', stickyOk, sticky],
+        ['config', configOk, config],
+        ['themes', themesOk, themes],
+        ['faces', facesOk, faces],
+        ['image', imageOk, image],
+        ['swatches', swatchesOk, swatches],
+        ['docs', docsOk, docs],
+        ['liveDocs', liveDocsOk, liveDocs],
+        ['bufferMenu', bufferMenuOk, bufferMenu],
+        ['jukebox', jukeboxOk, jukebox],
+        ['splitters', splittersOk, splitters],
+        ['mediaViews', mediaViewsOk, mediaViews],
+        ['tabline', tablineOk, tabline],
+        ['langPack', langPackOk, langPack],
+        ['tree', treeOk, tree],
+        ['cols', colsOk, cols],
+        ['shell', shellOk, shell],
+        ['chord', chordOk, chord],
+        ['findFile', findFileOk, findFile],
+        ['panes', panesOk, panes],
+        ['addPane', addPaneOk, addPaneArm],
+        ['bug2', bug2Ok, bug2],
+        ['bug3', bug3Ok, bug3],
+        ['bug4', bug4Ok, bug4],
+        ['tablineArm', tablineArmOk, tablineArm],
+      ];
+      const failed = [];
+      for (const [label, ok, data] of checks) {
+        console.log('  ' + (ok ? 'PASS' : 'FAIL') + ' ' + label +
+          (ok ? '' : ' — ' + JSON.stringify(data)));
+        if (!ok) failed.push(label);
+      }
+      const passed = checks.length - failed.length;
+      console.log(`  TALLY: ${passed}/${checks.length} arms passed`);
+      if (failed.length === 0) {
+        finish(0, `all ${checks.length} smoke arms passed (${render.lines} lines)`);
       } else {
-        finish(1, `tabline behaviour did not work (${JSON.stringify(tablineArm)})`);
+        finish(1, `${failed.length}/${checks.length} smoke arms failed: ${failed.join(', ')}`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);
