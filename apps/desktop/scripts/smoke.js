@@ -583,41 +583,50 @@ app.whenReady().then(() => {
       })()`);
       console.log('  search:', JSON.stringify(search));
 
-      // Command palette: M-x opens it, a query filters commands, Enter
-      // runs the top match and closes the minibuffer.
+      // Command palette (M-x = execute-command): opens a minibuffer prompt that
+      // reads a command name, then runs it. Tested end-to-end: seed a buffer,
+      // move point off line 1, then M-x beginning-of-buffer and confirm the
+      // command actually ran (point jumps to L1) and the prompt closed.
+      // (`matched` = the invoked command ran — a robust signal independent of
+      // how the completion candidates are surfaced.)
       const palette = await runArm(`(async () => {
         ${WAIT_HELPERS}
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        const modeline = () => document.getElementById('modeline-name').textContent;
+        const mbOpen = () => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        };
+        await __run('(new-view! "palette-test")');
+        await __run('(insert! "aaa\\\\nbbb\\\\nccc")');
+        // point is at the end (line 3) after the insert.
+        await __waitFor(() => !modeline().includes('L1:'));
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
-        // Command is Meta now (keyEventToString maps metaKey to M-,
-        // altKey to A-), so M-x is the real macOS Cmd+X event.
+        // Command is Meta now (metaKey -> M-), so M-x is the real macOS Cmd+X.
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', code: 'KeyX', metaKey: true, bubbles: true, cancelable: true,
         }));
-        await __waitFor(() => {
-          const p = document.querySelector('.minibuffer');
-          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
-        });
+        const opened = !!(await __waitFor(mbOpen));
         const mb = document.querySelector('.minibuffer-input');
-        const panel = document.querySelector('.minibuffer');
-        const opened = !!mb && panel !== null && !panel.hidden;
         const focused = document.activeElement === mb;
         let matched = false;
         let closed = false;
         if (opened) {
           mb.value = 'beginning-of-buffer';
           mb.dispatchEvent(new Event('input', { bubbles: true }));
-          await __waitFor(() => {
-            const s = document.querySelector('.minibuffer-status');
-            return s && s.textContent.includes('beginning-of-buffer');
-          });
-          matched = document.querySelector('.minibuffer-status')
-            .textContent.includes('beginning-of-buffer');
           mb.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
-          closed = await __waitFor(() => panel.hidden);
-          closed = panel.hidden;
+          closed = !!(await __waitFor(() => !mbOpen()));
+          matched = !!(await __waitFor(() => modeline().includes('L1:')));
         }
         return { opened, matched, closed, focused };
       })()`);
@@ -837,29 +846,39 @@ app.whenReady().then(() => {
 
       // Replace-string: a chained two-prompt minibuffer flow.
       const replace = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
-        const replSubmit = (src) => {
+        const submit = (src) => {
           replInput.value = src;
           replInput.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        replSubmit('(new-view! "replace-test")');
-        replSubmit('(insert! "foo foo foo")');
-        await frame();
-        replSubmit('(run-command (quote replace-string))');
-        const mb = document.querySelector('.minibuffer-input');
-        const fill = async (text) => {
-          mb.value = text;
-          mb.dispatchEvent(new KeyboardEvent('keydown', {
+        ${REPL_RUN}
+        const firstLine = () => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        const mbOpen = () => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        };
+        const promptText = () => (document.querySelector('.minibuffer-prompt')?.textContent ?? '');
+        const fill = (text) => {
+          const input = document.querySelector('.minibuffer-input');
+          input.value = text;
+          input.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
-          await frame();
         };
-        await fill('foo');
-        await fill('bar');
-        return { text: document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent };
+        await __run('(new-view! "replace-test")');
+        await __run('(insert! "foo foo foo")');
+        // replace-string is a chained two-prompt minibuffer flow ("Replace: "
+        // then "Replace with: "); each prompt round-trips to the spine.
+        submit('(run-command (quote replace-string))');
+        await __waitFor(() => mbOpen() && promptText().includes('Replace:'));
+        fill('foo');
+        await __waitFor(() => mbOpen() && promptText().includes('with'));
+        fill('bar');
+        await __waitFor(() => firstLine() === 'bar bar bar');
+        return { text: firstLine() };
       })()`);
       console.log('  replace:', JSON.stringify(replace));
 
@@ -867,58 +886,69 @@ app.whenReady().then(() => {
       // the chained two-prompt minibuffer flow as replace-string, with
       // JS RegExp semantics and a per-match prompt respectively.
       const regexReplace = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
-        const replSubmit = (src) => {
+        const submit = (src) => {
           replInput.value = src;
           replInput.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        // 1. replace-regexp: (\\w+)(\\d+) -> $2-$1 on a mixed line.
-        replSubmit('(new-view! "regex-replace-test")');
-        replSubmit('(insert! "foo123 bar45 baz6")');
-        await frame();
-        replSubmit('(run-command (quote replace-regexp))');
-        const mb = () => document.querySelector('.minibuffer-input');
-        const fill = async (text) => {
-          const input = mb();
+        ${REPL_RUN}
+        const firstLine = () => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        const mbOpen = () => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        };
+        const promptText = () => (document.querySelector('.minibuffer-prompt')?.textContent ?? '');
+        const echo = () => (document.querySelector('.minibuffer-echo')?.textContent ?? '');
+        const fill = (text) => {
+          const input = document.querySelector('.minibuffer-input');
           input.value = text;
           input.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
-          await frame();
         };
+        // 1. replace-regexp: (\\w+?)(\\d+) -> $2-$1 on a mixed line. Prompts
+        //    "Regexp: " then "Replace with: ".
+        await __run('(new-view! "regex-replace-test")');
+        await __run('(insert! "foo123 bar45 baz6")');
+        submit('(run-command (quote replace-regexp))');
+        await __waitFor(() => mbOpen() && promptText().includes('Regexp'));
         // Four backslashes in the template literal -> two in JS string
         // -> two in the Lisp-readable text the REPL submits.
-        await fill('(\\\\w+?)(\\\\d+)');
-        await fill('$2-$1');
-        const regexText = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        fill('(\\\\w+?)(\\\\d+)');
+        await __waitFor(() => mbOpen() && promptText().includes('with'));
+        fill('$2-$1');
+        await __waitFor(() => firstLine() === '123-foo 45-bar 6-baz');
+        const regexText = firstLine();
 
-        // 2. query-replace: foo -> xxx with a y, then a n, then a q
-        //    sequence — exactly one replacement should happen.
-        replSubmit('(new-view! "query-replace-test")');
-        replSubmit('(insert! "foo foo foo")');
-        await frame();
-        // Move to the start so the walk sees every match.
-        replSubmit('(beginning-of-buffer)');
-        await frame();
-        replSubmit('(run-command (quote query-replace))');
-        await fill('foo');
-        await fill('xxx');
-        // Now the editor has focus (query-replace's status message did
-        // not steal it), and read-next-key has installed a callback.
-        // Send the answers as keyboard events on the editor surface.
+        // 2. query-replace: foo -> xxx, answering y then q so exactly one
+        //    replacement happens. The from/to are minibuffer prompts; the
+        //    per-match decision is a read-next-key loop whose prompt shows in
+        //    the ECHO area ("Query replacing ... (y/n/q/! RET)").
+        await __run('(new-view! "query-replace-test")');
+        await __run('(insert! "foo foo foo")');
+        await __run('(beginning-of-buffer)');
+        submit('(run-command (quote query-replace))');
+        await __waitFor(() => mbOpen() && promptText().includes('Query replace'));
+        fill('foo');
+        await __waitFor(() => mbOpen() && promptText().includes('with'));
+        fill('xxx');
+        // Wait for the per-match prompt in the echo area before answering, so
+        // the keys route to the read-next-key loop instead of self-inserting.
+        await __waitFor(() => echo().includes('Query replacing'));
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         const press = (key) => editor.dispatchEvent(new KeyboardEvent('keydown', {
           key, bubbles: true, cancelable: true,
         }));
         press('y'); // replace the first
-        await frame();
+        await __waitFor(() => firstLine().startsWith('xxx'));
         press('q'); // quit before the second
-        await frame();
-        const queryText = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        // Let the loop tear down (clear-status!) so it doesn't leak into later arms.
+        await __waitFor(() => !echo().includes('Query replacing'));
+        const queryText = firstLine();
         return { regexText, queryText };
       })()`);
       console.log('  regexReplace:', JSON.stringify(regexReplace));
