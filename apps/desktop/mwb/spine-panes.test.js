@@ -408,3 +408,72 @@ test('focus-pane-direction needs the reported host rect (the geometry coupling)'
   spine.runCommand('focus-pane-left');
   assert.equal(wireFocusedLeafId(spine.paneSnapshot(0)), leftId);
 });
+
+// --- add-pane: the visual macro's server half (C-x +) -----------------
+
+test('add-pane asks THIS window to show the overlay (enter-add-pane-mode directive)', () => {
+  const dirs = [];
+  const spine = createSpine({ initialText: 'hi', name: 'a.txt' }, {
+    onClientDirective: (ids, name, args) => dirs.push({ ids, name, args }),
+  });
+  spine.runCommand('add-pane');
+  assert.deepEqual(dirs, [{ ids: [0], name: 'enter-add-pane-mode', args: [] }]);
+});
+
+test('an add-at-border PANE_INTENT wraps the layout + focuses the new pane + re-pushes', () => {
+  const { spine, log } = makeSpine();
+  const before = log.paneTrees.length;
+  assert.equal(spine.applyPaneIntent(0, { op: 'add-at-border', side: 'right' }), true);
+  const snap = spine.paneSnapshot(0);
+  assert.equal(snap.kind, 'split');
+  assert.equal(wireLeaves(snap).length, 2);
+  assert.equal(wireFocusedLeafId(snap), snap.second.id); // new leaf on the right, focused
+  assert.ok(log.paneTrees.length > before, 'a fresh PANE_TREE was pushed');
+});
+
+test('an add-at-splitter PANE_INTENT inserts a third sibling into the split', () => {
+  const { spine } = makeSpine();
+  cx(spine, '3'); // one split, two leaves
+  const splitId = spine.paneSnapshot(0).id;
+  assert.equal(spine.applyPaneIntent(0, { op: 'add-at-splitter', paneId: splitId }), true);
+  assert.equal(wireLeaves(spine.paneSnapshot(0)).length, 3);
+});
+
+test('a malformed add-pane intent is rejected (no tree change)', () => {
+  const { spine } = makeSpine();
+  assert.equal(spine.applyPaneIntent(0, { op: 'add-at-border', side: 'nope' }), false);
+  assert.equal(spine.applyPaneIntent(0, { op: 'add-at-splitter', paneId: 'no-such' }), false);
+  assert.equal(wireLeaves(spine.paneSnapshot(0)).length, 1);
+});
+
+// --- move-views: swap-views / permute-views server half --------------
+
+test('swap-views/permute-views ask THIS window to show the badge overlay', () => {
+  const dirs = [];
+  const spine = createSpine({ initialText: 'hi', name: 'a.txt' }, {
+    onClientDirective: (ids, name, args) => dirs.push({ ids, name, args }),
+  });
+  spine.runCommand('swap-views'); // one pane → refused (status only, no directive)
+  spine.applyPaneIntent(0, { op: 'split-right' }); // now two panes
+  spine.runCommand('swap-views');
+  spine.runCommand('permute-views');
+  assert.deepEqual(dirs, [
+    { ids: [0], name: 'enter-move-views-mode', args: ['swap'] },
+    { ids: [0], name: 'enter-move-views-mode', args: ['permute'] },
+  ]);
+});
+
+test('a move-views PANE_INTENT moves the leaves structurally + re-pushes PANE_TREE', () => {
+  const { spine, log } = makeSpine();
+  cx(spine, '3'); // two leaves
+  const [l0, l1] = wireLeaves(spine.paneSnapshot(0));
+  const before = log.paneTrees.length;
+  assert.equal(
+    spine.applyPaneIntent(0, { op: 'move-views', slotOrder: [l0.id, l1.id], occupants: [l1.id, l0.id] }),
+    true
+  );
+  const [n0, n1] = wireLeaves(spine.paneSnapshot(0));
+  assert.equal(n0.id, l1.id); // the leaf ids swapped slots (content rode along)
+  assert.equal(n1.id, l0.id);
+  assert.ok(log.paneTrees.length > before);
+});

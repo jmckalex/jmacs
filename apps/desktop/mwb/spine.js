@@ -5590,6 +5590,31 @@ export function createSpine(options, effects = {}) {
       case 'delete-other-windows':
         runCommand('delete-other-panes');
         return true;
+      case 'add-at-splitter':
+        // The visual add-pane macro (C-x +): the client clicked a SPLITTER
+        // target. Insert a fresh sibling into that split; focus moves to it, so
+        // rebind (like focus-pane) so the next edit lands in the new pane. The
+        // model's onChange re-pushes PANE_TREE and the split becomes visible.
+        if (model.addPaneAtSplitter(String(intent.paneId ?? ''))) {
+          setActiveClient(index);
+          return true;
+        }
+        return false;
+      case 'add-at-border':
+        // The visual add-pane macro: the client clicked an OUTER-BORDER target.
+        // Wrap the layout in a new outer split with the fresh leaf on that side.
+        if (model.addPaneAtBorder(String(intent.side ?? ''))) {
+          setActiveClient(index);
+          return true;
+        }
+        return false;
+      case 'move-views':
+        // The visual swap-views / permute-views macro: the client computed the
+        // structural rearrangement (the leaf id at each slot + the leaf whose
+        // content lands there, in the client's own badge order), so the server
+        // just moves the leaves — guest views ride along, focus follows. The
+        // model's onChange re-pushes PANE_TREE.
+        return model.moveViews(intent.slotOrder, intent.occupants);
       case 'focus-pane':
         // A client click: focus a specific leaf by id, then rebind so the
         // next edit lands in it.
