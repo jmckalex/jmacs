@@ -299,6 +299,59 @@ app.whenReady().then(() => {
       })()`);
       console.log('  input:', JSON.stringify(input));
 
+      // macOS press-and-hold accents (plans/PRESS-AND-HOLD-ACCENTS.md): the
+      // OS popup's selection arrives as a plain input insertText REPLACING
+      // the held base char in the hidden sink - there are NO composition
+      // events on this path. Synthetic keydowns don't run browser default
+      // actions, so the arm sets the sink value by hand to mimic them, then
+      // dispatches the InputEvent shapes the OS produces. Three shapes:
+      // digit selection, ordinary typing after a hold, and a click
+      // selection (which has no keydown at all).
+      const accents = await win.webContents.executeJavaScript(`(async () => {
+        const view = document.querySelector('text-view:not([style*="display: none"])');
+        const editor = view.querySelector('.editor');
+        const sink = view.querySelector('.editor-input');
+        editor.focus();
+        const press = (key, opts = {}) =>
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key, bubbles: true, cancelable: true, ...opts,
+          }));
+        const type = (data) =>
+          sink.dispatchEvent(new InputEvent('input', {
+            inputType: 'insertText', data, bubbles: true,
+          }));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const firstLine = () => view.querySelector('.editor-line').textContent;
+
+        const before = firstLine();
+        // (1) Digit selection: hold e, popup opens, 2 picks é over the e.
+        press('e'); sink.value = 'e';        // mimic the keydown default action
+        press('e', { repeat: true });        // the hold arms the popup state
+        press('2');                          // deferred - must NOT self-insert
+        const sinkAfterDigit = sink.value;   // must still hold the base 'e'
+        sink.value = 'é'; type('é');         // the commit the OS delivers
+        await wait(150);
+        const afterPick = firstLine();
+        // (2) Ordinary typing after a hold: o held (popup ignored), then x.
+        press('o'); sink.value = 'o';
+        press('o', { repeat: true });
+        press('x');                          // deferred...
+        sink.value = 'ox'; type('x');        // ...default action APPENDS
+        await wait(150);
+        const afterTyping = firstLine();
+        // (3) Click selection: u held, popup clicked - no keydown at all.
+        press('u'); sink.value = 'u';
+        press('u', { repeat: true });
+        sink.value = 'ü'; type('ü');
+        await wait(150);
+        const afterClick = firstLine();
+        for (let i = 0; i < 4; i += 1) press('Backspace');
+        await wait(150);
+        const restored = firstLine();
+        return { before, sinkAfterDigit, afterPick, afterTyping, afterClick, restored };
+      })()`);
+      console.log('  accents:', JSON.stringify(accents));
+
       // Drive the REPL: evaluate arithmetic, and have Lisp edit the
       // buffer, confirming the L3 -> L2 -> L4 path.
       const lisp = await win.webContents.executeJavaScript(`(async () => {
@@ -3573,6 +3626,12 @@ app.whenReady().then(() => {
         render.lines > 0 && render.hasCursor && render.modeline.length > 0;
       const typeOk = input.afterType === 'Zz!' + input.before;
       const deleteOk = input.afterDelete === input.before;
+      const accentsOk =
+        accents.sinkAfterDigit === 'e' &&
+        accents.afterPick === 'é' + accents.before &&
+        accents.afterTyping === 'éox' + accents.before &&
+        accents.afterClick === 'éoxü' + accents.before &&
+        accents.restored === accents.before;
       const replOk = lisp.arithmetic === '6';
       const stdlibOk = lisp.stdlib.includes('procedure');
       const sequenceOk = lisp.sequence === '#t';
@@ -4032,7 +4091,7 @@ app.whenReady().then(() => {
         tablineArm.restoredCurrentBuffer.includes('jmacs-smoke-tabline-sess-2.txt');
 
       if (
-        renderOk && typeOk && deleteOk && replOk && stdlibOk && sequenceOk &&
+        renderOk && typeOk && deleteOk && accentsOk && replOk && stdlibOk && sequenceOk &&
         modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
         searchOk && paletteOk && treesitterOk && faceInfoOk && replaceOk &&
         regexReplaceOk &&
@@ -4051,6 +4110,8 @@ app.whenReady().then(() => {
         finish(1, 'editor did not render expected DOM');
       } else if (!typeOk || !deleteOk) {
         finish(1, 'editor rendered but typing did not update the DOM');
+      } else if (!accentsOk) {
+        finish(1, `press-and-hold accents did not work (${JSON.stringify(accents)})`);
       } else if (!replOk) {
         finish(1, 'the REPL did not evaluate Lisp');
       } else if (!stdlibOk) {

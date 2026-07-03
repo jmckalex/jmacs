@@ -377,18 +377,29 @@ export function createEditorView(buffer, container, options = {}) {
   /** True while an IME composition is in progress — key dispatch is
    *  suppressed and the committed text is inserted on `compositionend`. */
   let composing = false;
-  // macOS press-and-hold accent support. Holding a bare printable key opens the
-  // OS accent chooser — a COMPOSITION — instead of repeating (see the keydown
-  // handler's repeat guard). `printableBaseCandidate` marks the just-typed
-  // printable as a possible BASE character; if a composition then opens over it,
-  // the chosen accent must REPLACE that base char rather than append — else
-  // holding "e" and picking "é" yields "eé". The flag is set ONLY on the
-  // self-insert path, so a plain dead-key / CJK composition (which never
-  // self-inserts a base) is untouched — and if the OS routes the first keydown
-  // straight through the IME (no self-insert), the flag stays false and nothing
-  // is deleted. So the replace is safe whichever way the OS behaves.
+  // macOS press-and-hold accent support. Holding a bare printable key opens
+  // the OS accent chooser instead of repeating (see the keydown handler's
+  // repeat guard). The chooser does NOT drive a web composition here: the
+  // selection (a digit or a click on the popup) arrives solely as the sink's
+  // `input insertText` whose data is the ACCENT, REPLACING the held base char
+  // in the sink ("e" → "é", value length unchanged) — verified against a bare
+  // textarea on this Electron; see plans/PRESS-AND-HOLD-ACCENTS.md. So:
+  //   - `printableBaseCandidate` marks the just-typed printable as a possible
+  //     base char (self-inserted into the buffer AND kept in the sink);
+  //   - `accentPopupPending` arms when that base is HELD (repeat keydowns
+  //     observed) — the popup may now be open;
+  //   - while armed, the next bare printable's dispatch is DEFERRED
+  //     (`deferredAccentKey`) until the sink's `input` event discloses whether
+  //     it was a popup selection or ordinary typing (the input listener below).
+  // The composition base-replace below is KEPT as a defensive parallel path:
+  // should some macOS/Electron combination commit press-and-hold through a
+  // composition over a self-inserted base, it replaces rather than appends.
+  // A plain dead-key / CJK composition never self-inserts a base, so the flag
+  // stays false there and nothing is deleted.
   let printableBaseCandidate = false;
   let compositionReplacesBase = false;
+  let accentPopupPending = false;
+  let deferredAccentKey = null;
   input.addEventListener('compositionstart', () => {
     composing = true;
     compositionReplacesBase = printableBaseCandidate;
@@ -413,14 +424,51 @@ export function createEditorView(buffer, container, options = {}) {
     // A composition that opened over a base char but committed nothing (Escape /
     // cancel) leaves the base char as already typed — nothing to do.
   });
-  // The sink is deliberately NOT cleared here on every `input`. A bare printable
-  // now flows INTO it (its keydown isn't preventDefault'd — see the keydown
-  // handler) and must REMAIN there so macOS press-and-hold can mark that base
-  // char and start the accent COMPOSITION over it; clearing it immediately left
-  // nothing to compose, so the popup showed but no composition began and the
-  // number-select self-inserted. The stale char is instead dropped at the start
-  // of the NEXT keystroke (keydown) and by `compositionend`. During a
-  // composition the value is macOS's marked text — never touched here.
+  // The sink is deliberately NOT cleared on every `input`. A bare printable
+  // flows INTO it (its keydown isn't preventDefault'd — see the keydown
+  // handler) and must REMAIN there as the accent popup's replacement target.
+  // The stale char is dropped at the start of the NEXT keystroke (keydown),
+  // by `compositionend`, and by the deferred-dispatch resolution below.
+  // During a composition the value is the IME's marked text — never touched.
+  //
+  // Press-and-hold resolution: while `accentPopupPending`, this listener is
+  // the second half of key dispatch. A popup SELECTION replaced the sink's
+  // whole value with the accent (value === data, "e" → "é" — also the shape
+  // of a mouse click on the popup, which has no keydown at all); any other
+  // insert is ordinary typing that APPENDED to the sink, so the deferred key
+  // goes through the keymap exactly as it would have at keydown time.
+  input.addEventListener('input', (event) => {
+    if (!onKey) return; // standalone fallback dispatches at keydown — nothing deferred
+    if (composing || event.isComposing) return; // composition commits via compositionend
+    const type = event.inputType || '';
+    const data = typeof event.data === 'string' ? event.data : '';
+    const deferredKey = deferredAccentKey;
+    deferredAccentKey = null;
+    if (
+      accentPopupPending &&
+      (type === 'insertText' || type === 'insertReplacementText') &&
+      data !== '' &&
+      input.value === data
+    ) {
+      // Popup commit: replace the base char the hold's first keydown already
+      // self-inserted, so "e" + popup-pick "é" yields "é", not "eé" or "e2".
+      accentPopupPending = false;
+      printableBaseCandidate = false;
+      if (typeof activeBuffer.deleteBackward === 'function') {
+        activeBuffer.deleteBackward(1);
+      }
+      activeBuffer.insert(data);
+      followCursor = true;
+      schedule();
+      return;
+    }
+    if (deferredKey !== null) {
+      // Ordinary typing after a hold — complete the deferred dispatch.
+      accentPopupPending = false;
+      printableBaseCandidate = onKey(deferredKey) === true;
+      input.value = data; // keep just this char as the next possible base
+    }
+  });
 
   /** Focus the editor: focus the hidden input sink (a child of root), so
    *  the IME composes there and keystrokes still bubble to root's keydown
@@ -1568,14 +1616,33 @@ export function createEditorView(buffer, container, options = {}) {
     const barePrintable = [...keyString].length === 1;
     // macOS press-and-hold: a HELD bare printable must NOT repeat-insert — the
     // OS opens the accent chooser instead. Navigation / editing keys (arrows,
-    // Backspace, …) keep auto-repeating. Suppressing the repeat also keeps the
-    // caret — and the IME sink positioned over it — put, so the chooser opens at
-    // the caret instead of wherever a runaway repeat dragged it.
-    if (event.repeat && barePrintable) return;
-    // Drop the char the PREVIOUS keystroke left in the sink (we no longer clear
-    // it on `input`, so a held base char survives for the OS accent
-    // composition). This key's own char is inserted into the sink by the
-    // browser AFTER this handler returns, so the sink ends holding just it.
+    // Backspace, …) keep auto-repeating. The repeats also ARM the popup state:
+    // once a self-inserted base has repeated, the chooser may be open, and the
+    // next key needs the deferred treatment below.
+    if (event.repeat && barePrintable) {
+      if (printableBaseCandidate) accentPopupPending = true;
+      return;
+    }
+    // A fresh keydown supersedes any unresolved deferral (a deferred key whose
+    // default action produced no `input` at all — e.g. a popup digit beyond
+    // the last option, which macOS swallows).
+    deferredAccentKey = null;
+    if (accentPopupPending && barePrintable && onKey) {
+      // The accent popup may be open. This key could be a popup SELECTION
+      // (digit) or ordinary typing — indistinguishable until its default
+      // action lands in the sink, so dispatch is deferred to the sink's
+      // `input` listener. Crucially, do NOT touch the sink: the held base
+      // char in it is the popup's replacement target. (Clearing it here was
+      // the bug that broke press-and-hold — the popup's commit died against
+      // an emptied sink and the digit self-inserted instead.)
+      deferredAccentKey = keyString;
+      return;
+    }
+    accentPopupPending = false;
+    // Drop the char the PREVIOUS keystroke left in the sink (we no longer
+    // clear it on `input`, so a held base char survives as the popup's
+    // replacement target). This key's own char is inserted into the sink by
+    // the browser AFTER this handler returns, so the sink ends holding just it.
     if (input.value !== '') input.value = '';
     let handled = onKey
       ? onKey(keyString)
