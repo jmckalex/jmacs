@@ -534,33 +534,52 @@ app.whenReady().then(() => {
       const savedContent = await readFile(savePath, 'utf8').catch(() => null);
       await rm(savePath, { force: true });
 
-      // Incremental search: C-s opens the minibuffer; typing a query
-      // selects a match (rendered as selection rectangles).
+      // Incremental search (C-s): isearch is a read-next-key loop (search.lisp),
+      // NOT a minibuffer prompt — its prompt shows in the ECHO area
+      // (show-status! → "I-search: <query>") and typing routes each key through
+      // the spine's search dispatcher, moving point to the match. Seed a buffer
+      // with a known term so the match is deterministic.
       const search = await runArm(`(async () => {
         ${WAIT_HELPERS}
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        const modeline = () => document.getElementById('modeline-name').textContent;
+        const echo = () => (document.querySelector('.minibuffer-echo')?.textContent ?? '');
+        await __run('(new-view! "search-test")');
+        await __run('(insert! "alpha beta gamma\\\\nfind Lisp here\\\\nmore text")');
+        await __run('(goto! 0)');
+        await __waitFor(() => modeline().includes('L1:'));
+        const originModeline = modeline();
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 's', ctrlKey: true, bubbles: true, cancelable: true,
         }));
-        await __waitFor(() => {
-          const p = document.querySelector('.minibuffer');
-          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
-        });
-        const mb = document.querySelector('.minibuffer-input');
-        const panel = document.querySelector('.minibuffer');
-        const opened = !!mb && panel !== null && !panel.hidden;
-        let matched = false;
-        if (opened) {
-          mb.value = 'Lisp';
-          mb.dispatchEvent(new Event('input', { bubbles: true }));
-          matched = await __waitFor(() => document.querySelectorAll('text-view:not([style*="display: none"]) .editor-selection-rect').length > 0);
-          matched = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-selection-rect').length > 0;
-          mb.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Escape', bubbles: true, cancelable: true,
+        // The isearch prompt lands in the echo area.
+        const opened = !!(await __waitFor(() => echo().includes('I-search')));
+        // Type the query; each key routes to the spine's isearch dispatcher and
+        // extends the query. Point jumps to the match on line 2.
+        for (const ch of 'Lisp') {
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: ch, bubbles: true, cancelable: true,
           }));
         }
-        return { opened, matched };
+        await __waitFor(() => echo().includes('Lisp') && modeline() !== originModeline);
+        const matched = echo().includes('I-search') && echo().includes('Lisp') &&
+          modeline().includes('L2:');
+        const echoText = echo();
+        // Enter exits isearch at the match; the echo clears.
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        await __waitFor(() => !echo().includes('I-search'));
+        return { opened, matched, echoText };
       })()`);
       console.log('  search:', JSON.stringify(search));
 
