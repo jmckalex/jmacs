@@ -413,18 +413,6 @@ export function createEditorView(buffer, container, options = {}) {
     // A composition that opened over a base char but committed nothing (Escape /
     // cancel) leaves the base char as already typed — nothing to do.
   });
-  // --- TEMP DIAGNOSTIC (press-and-hold accents) — remove after debugging ------
-  input.addEventListener('compositionstart', (e) =>
-    console.log('[accent-diag] compositionstart data=', JSON.stringify(e.data), 'baseCandidate=', printableBaseCandidate));
-  input.addEventListener('compositionupdate', (e) =>
-    console.log('[accent-diag] compositionupdate data=', JSON.stringify(e.data), 'sink=', JSON.stringify(input.value)));
-  input.addEventListener('compositionend', (e) =>
-    console.log('[accent-diag] compositionend data=', JSON.stringify(e.data)));
-  input.addEventListener('beforeinput', (e) =>
-    console.log('[accent-diag] beforeinput type=', e.inputType, 'data=', JSON.stringify(e.data), 'sink=', JSON.stringify(input.value)));
-  input.addEventListener('input', (e) =>
-    console.log('[accent-diag] input type=', e.inputType, 'data=', JSON.stringify(e.data), 'sink=', JSON.stringify(input.value)));
-  // --- end TEMP DIAGNOSTIC -----------------------------------------------------
   // The sink is deliberately NOT cleared here on every `input`. A bare printable
   // now flows INTO it (its keydown isn't preventDefault'd — see the keydown
   // handler) and must REMAIN there so macOS press-and-hold can mark that base
@@ -1570,12 +1558,6 @@ export function createEditorView(buffer, container, options = {}) {
     // right — dispatching it would, e.g., feed "S-shift" to a pending
     // key reader. Wait for the real key.
     if (MODIFIER_KEYS.has(event.key)) return;
-    // --- TEMP DIAGNOSTIC (press-and-hold accents) — remove after debugging ---
-    console.log('[accent-diag] keydown key=', JSON.stringify(event.key),
-      'code=', event.code, 'keyCode=', event.keyCode,
-      'isComposing=', event.isComposing, 'repeat=', event.repeat,
-      'composing=', composing, 'sink=', JSON.stringify(input.value));
-    // --- end TEMP DIAGNOSTIC ---
     // While an IME is composing, let it handle the key — don't dispatch to
     // the editor keymap (which would self-insert the raw keys or fire
     // commands mid-composition). `isComposing` covers the composition;
