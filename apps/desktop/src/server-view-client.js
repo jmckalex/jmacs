@@ -508,7 +508,7 @@ export function createServerViewClient({
     if (msg.echoId != null) pending.delete(msg.echoId);
     mirror.cursors[0].point = msg.point;
     mirror.cursors[0].mark = msg.mark ?? null;
-    if (view) view.setView({ buffer: mirror });
+    if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
   }
 
   /** A CURSORS message: this client's full cursor set (multi-cursor). Skip the
@@ -521,14 +521,14 @@ export function createServerViewClient({
     const predictionsInFlight = [...pending.values()].some((p) => p.predicted);
     if (predictionsInFlight && cursors.length <= 1) return;
     mirror.applyCursors(cursors);
-    if (view) view.setView({ buffer: mirror });
+    if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
   }
 
   /** An OVERLAYS message: the buffer's shared overlay set. */
   function onOverlays(overlays) {
     if (!mirror) return;
     mirror.applyOverlays(overlays);
-    if (view) view.setView({ buffer: mirror });
+    if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
   }
 
   /** A RESYNC: canonical text + this client's cursor set (a multi-cursor edit
@@ -539,7 +539,7 @@ export function createServerViewClient({
       if (p.predicted) pending.delete(id);
     }
     mirror.applyResync(msg);
-    if (view) view.setView({ buffer: mirror });
+    if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
   }
 
   /** A VIEW message: non-text render state (modeline / status / minibuffer /
@@ -562,11 +562,11 @@ export function createServerViewClient({
     if (mirror && typeof v.point === 'number' && !predictionsInFlight) {
       mirror.cursors[0].point = v.point;
       mirror.cursors[0].mark = v.mark ?? null;
-      if (view) view.setView({ buffer: mirror });
+      if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
     } else if (modeChanged && mirror && view) {
       // A mode toggle (e.g. C-c C-p math-preview) with no cursor motion still
       // needs one re-render so the typeset widgets appear / disappear.
-      view.setView({ buffer: mirror });
+      view.setView({ buffer: mirror }, { followMode: 'auto' });
     }
     renderChrome(v);
   }
