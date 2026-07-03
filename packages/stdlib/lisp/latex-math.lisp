@@ -202,4 +202,4 @@
 ;; fresh map; we add the slot and re-install under "C-c", not re-editing the
 ;; prior installs.
 (set! latex-c-c-map (assoc latex-c-c-map "~" 'toggle-latex-math-mode))
-(set! latex-mode-map {"C-c" latex-c-c-map})
+(set! latex-mode-map (assoc latex-mode-map "C-c" latex-c-c-map)) ;; extend, never replace (see latex.lisp)

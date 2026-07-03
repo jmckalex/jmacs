@@ -102,4 +102,10 @@
    "n" 'latex-enumerate
    "C-p" 'toggle-latex-math-preview})
 
-(set! latex-mode-map {"C-c" latex-c-c-map})
+;; EXTEND latex-mode-map, never wholesale-replace it: the latex/reftex
+;; feature files load in DIFFERENT orders in the stdlib index and in the
+;; spine's SPINE_STDLIB list, and a `{...}` reinstall silently drops every
+;; key some other file added (this wiped M-q / M-enter / `"` in the live
+;; app while the test order kept them). Each file assocs its own keys on,
+;; refreshing the shared "C-c" slot after extending latex-c-c-map.
+(set! latex-mode-map (assoc latex-mode-map "C-c" latex-c-c-map))

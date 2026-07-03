@@ -121,3 +121,58 @@ test('the LaTeX-extras commands are M-x-visible', () => {
     assert.ok(names.includes(c), `${c} is a real command`);
   }
 });
+
+// --- keymap install regression (the spine load order) --------------------
+// latex.lisp, the latex feature files and the reftex files each install
+// keys onto latex-mode-map; the spine's SPINE_STDLIB order loads reftex
+// AFTER latex-nav/latex-fill, and a wholesale `{...}` reinstall used to
+// wipe M-q / M-enter / `"` from the live app while the stdlib test order
+// masked it (live report 2026-07-02: M-q ran the generic fill-paragraph
+// and inlined a \begin{equation} block into prose). These tests walk the
+// REAL spine loader and dispatch through the keymap — not runCommand.
+
+test('latex-mode top-level keys survive the spine load order', () => {
+  const { spine } = makeSpine('x');
+  const ev = (s) => spine.interpreter.evaluate(s);
+  assert.equal(ev(`(eq? (get latex-mode-map "M-q" nil) 'latex-fill-paragraph)`), true, 'M-q');
+  assert.equal(ev(`(eq? (get latex-mode-map "M-enter" nil) 'latex-insert-item)`), true, 'M-enter');
+  assert.equal(ev(`(eq? (get latex-mode-map "\\"" nil) 'latex-smart-quote)`), true, 'smart quote');
+  // The shared C-c prefix map accumulated every file's chords:
+  assert.equal(ev(`(eq? (get (get latex-mode-map "C-c") "[" nil) 'reftex-citation)`), true, 'C-c [ (reftex-cite)');
+  assert.equal(ev(`(eq? (get (get latex-mode-map "C-c") "C-e" nil) 'latex-insert-environment)`), true, 'C-c C-e (latex-insert)');
+  assert.equal(ev(`(eq? (get (get latex-mode-map "C-c") "C-c" nil) 'latex-compile)`), true, 'C-c C-c (latex-compile)');
+});
+
+test('M-q through the keymap runs the AUCTeX fill (not the generic one)', () => {
+  const initial = [
+    '\\begin{itemize}',
+    '\\item alpha beta',
+    '\\end{itemize}',
+  ].join('\n');
+  const { spine } = makeSpine(initial);
+  spine.buffer.moveTo(initial.indexOf('alpha'));
+  spine.handleKey('M-q');
+  assert.equal(spine.buffer.text, [
+    '\\begin{itemize}',
+    '  \\item alpha beta',
+    '\\end{itemize}',
+  ].join('\n'), 'the item re-indented: latex-fill-paragraph ran');
+});
+
+test('M-q never merges a \\begin/\\end block into the prose (the live report)', () => {
+  const initial = [
+    'Some prose that precedes the equation block goes right here.',
+    '\\begin{equation}',
+    '  \\label{eq:d}',
+    '  x = 1',
+    '\\end{equation}',
+    'And some prose after it.',
+  ].join('\n');
+  const { spine } = makeSpine(initial);
+  spine.buffer.moveTo(0);
+  spine.handleKey('M-q');
+  const t = spine.buffer.text;
+  assert.ok(t.includes('\n\\begin{equation}\n'), '\\begin keeps its own line');
+  assert.ok(t.includes('\n  \\label{eq:d}\n  x = 1\n'), 'the equation body is byte-identical');
+  assert.ok(t.includes('\n\\end{equation}\n'), '\\end keeps its own line');
+});

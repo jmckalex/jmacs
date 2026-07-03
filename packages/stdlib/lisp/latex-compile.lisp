@@ -397,4 +397,4 @@
                 "C-v" 'latex-view)
          "`" 'latex-next-error))
 
-(set! latex-mode-map {"C-c" latex-c-c-map})
+(set! latex-mode-map (assoc latex-mode-map "C-c" latex-c-c-map)) ;; extend, never replace (see latex.lisp)
