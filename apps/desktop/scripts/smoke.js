@@ -3311,8 +3311,13 @@ app.whenReady().then(() => {
           const el = paneEl.querySelector('.tabline-tab.is-current .tabline-label');
           return el ? el.textContent : '';
         };
+        // A single pane carries NO .pane--focused class (the focus border
+        // only draws with a split), so fall back to the sole .pane — else
+        // allTabsInPane(null) throws and aborts the whole arm. With a split
+        // present, .pane--focused resolves the focused leaf as before.
         const focusedPaneEl = () =>
-          editorHost.querySelector('.pane--focused');
+          editorHost.querySelector('.pane--focused') ||
+          editorHost.querySelector('.pane');
 
         // --- Phase A: tabs accumulate on open-file inside the root tabline.
         submit('(open-file-path! "${tablineA}")');
