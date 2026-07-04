@@ -193,3 +193,86 @@ test('M-q is bound to the JMarkdown fill in jmarkdown-mode-map', async () => {
     true
   );
 });
+
+// --- structural prefixes: the shared list/blockquote/definition brain ----
+
+test('-jmd-structural-prefixes: bullets give a hanging indent', async () => {
+  const { ev } = await fillEditor();
+  const pair = (line) =>
+    [ev(`(car (-jmd-structural-prefixes ${JSON.stringify(line)}))`),
+     ev(`(cdr (-jmd-structural-prefixes ${JSON.stringify(line)}))`)];
+  assert.deepEqual(pair('- item'), ['- ', '  ']);
+  assert.deepEqual(pair('* item'), ['* ', '  ']);
+  assert.deepEqual(pair('+ item'), ['+ ', '  ']);
+});
+
+test('-jmd-structural-prefixes: ordered lists indent to the marker width', async () => {
+  const { ev } = await fillEditor();
+  const pair = (line) =>
+    [ev(`(car (-jmd-structural-prefixes ${JSON.stringify(line)}))`),
+     ev(`(cdr (-jmd-structural-prefixes ${JSON.stringify(line)}))`)];
+  assert.deepEqual(pair('1. item'), ['1. ', '   ']);
+  assert.deepEqual(pair('12. item'), ['12. ', '    ']);
+  assert.deepEqual(pair('3) item'), ['3) ', '   ']);
+});
+
+test('-jmd-structural-prefixes: a description-list definition (: ) hangs by two', async () => {
+  const { ev } = await fillEditor();
+  assert.equal(ev(`(car (-jmd-structural-prefixes ": a definition"))`), ': ');
+  assert.equal(ev(`(cdr (-jmd-structural-prefixes ": a definition"))`), '  ');
+});
+
+test('-jmd-structural-prefixes: blockquote markers repeat verbatim', async () => {
+  const { ev } = await fillEditor();
+  assert.equal(ev(`(cdr (-jmd-structural-prefixes "> quote"))`), '> ');
+  assert.equal(ev(`(cdr (-jmd-structural-prefixes "> > nested"))`), '> > ');
+});
+
+test('-jmd-structural-prefixes: plain / indented prose keeps its indent', async () => {
+  const { ev } = await fillEditor();
+  assert.equal(ev(`(car (-jmd-structural-prefixes "plain text"))`), '');
+  assert.equal(ev(`(cdr (-jmd-structural-prefixes "    indented"))`), '    ');
+  // A double dash is not a bullet (no space after the first "-").
+  assert.equal(ev(`(car (-jmd-structural-prefixes "-- not a list"))`), '');
+});
+
+// --- fill-paragraph now respects list items and blockquotes ---------------
+
+test('fill-paragraph gives a list item a hanging indent', async () => {
+  const { buffer, fillAt } = await fillEditor();
+  buffer.text = `- ${LONG}\n`;
+  fillAt('Lorem');
+  const lines = buffer.text.split('\n').slice(0, -1);
+  assert.ok(lines.length >= 2, 'a long item wraps');
+  assert.ok(lines[0].startsWith('- '), 'the bullet stays on the first line');
+  assert.ok(
+    lines.slice(1).every((l) => l.startsWith('  ') && !l.startsWith('- ')),
+    'continuation lines hang under the text, no repeated bullet'
+  );
+  assert.ok(lines.every((l) => l.length <= 72));
+  // The prose is preserved.
+  const text = lines.map((l) => l.replace(/^(- |\s+)/, '')).join(' ');
+  assert.equal(text, LONG.replace(/\s+/g, ' '));
+});
+
+test('fill-paragraph indents an ordered item to its marker width', async () => {
+  const { buffer, fillAt } = await fillEditor();
+  buffer.text = `1. ${LONG}\n`;
+  fillAt('Lorem');
+  const lines = buffer.text.split('\n').slice(0, -1);
+  assert.ok(lines[0].startsWith('1. '));
+  assert.ok(lines.slice(1).every((l) => l.startsWith('   ')), 'hang by three');
+  assert.ok(lines.every((l) => l.length <= 72));
+});
+
+test('fill-paragraph keeps the > on every line of a blockquote', async () => {
+  const { buffer, fillAt } = await fillEditor();
+  buffer.text = `> ${LONG}\n`;
+  fillAt('Lorem');
+  const lines = buffer.text.split('\n').slice(0, -1);
+  assert.ok(lines.length >= 2);
+  assert.ok(lines.every((l) => l.startsWith('> ')), 'quote marker on each line');
+  assert.ok(lines.every((l) => l.length <= 72));
+  const text = lines.map((l) => l.replace(/^>\s+/, '')).join(' ');
+  assert.equal(text, LONG.replace(/\s+/g, ' '));
+});
