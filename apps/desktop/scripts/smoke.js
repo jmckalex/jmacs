@@ -3406,8 +3406,7 @@ app.whenReady().then(() => {
       await writeFile(tablineSessionFile2, 'sess2\n', 'utf8');
       await writeFile(tablineSessionFile3, 'sess3\n', 'utf8');
       const tablineArm = await runArm('tablineArm', `(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -3415,6 +3414,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        ${REPL_RUN}
         const editorHost = document.getElementById('editor-host');
         const modelineName = () =>
           document.getElementById('modeline-name')?.textContent ?? '';
@@ -3433,40 +3433,61 @@ app.whenReady().then(() => {
           editorHost.querySelector('.pane--focused') ||
           editorHost.querySelector('.pane');
 
-        // --- Phase A: tabs accumulate on open-file inside the root tabline.
+        // --- Phase 0: reset to a known base. Collapse panes; drain this
+        // window's open set server-side in ONE round-trip (the spine
+        // refuses to kill the last buffer); close any leftover curated
+        // tabs via the real × path; then make sure the pane carries a
+        // strip (toggle-tabline! — the Model-B flip; the first toggle
+        // after boot can no-op, so retry).
+        submit('(delete-other-panes!)');
+        await __waitFor(() => editorHost.querySelectorAll('.pane').length === 1);
+        await __run('(while (> (length (view-list)) 1) (kill-current-buffer!))');
+        for (let i = 0; i < 40; i += 1) {
+          const labels = allTabsInPane(focusedPaneEl());
+          if (labels.length <= 1) break;
+          const btn = focusedPaneEl().querySelector('.tabline-tab .tabline-close');
+          if (!btn) break;
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          await __waitFor(() => allTabsInPane(focusedPaneEl()).length < labels.length, 1500);
+        }
+        for (let i = 0; i < 3 && !focusedPaneEl().querySelector('.tabline-strip'); i += 1) {
+          submit('(toggle-tabline!)');
+          await __waitFor(() => focusedPaneEl().querySelector('.tabline-strip'), 700);
+        }
+        const baseTabs = allTabsInPane(focusedPaneEl());
+        const openBuffersBase = await __run('(length (view-list))');
+
+        // --- Phase A: tabs accumulate on open-file inside the tabline.
         submit('(open-file-path! "${tablineA}")');
-        await wait(250);
+        await __waitFor(() =>
+          allTabsInPane(focusedPaneEl()).length === baseTabs.length + 1);
         submit('(open-file-path! "${tablineB}")');
-        await wait(250);
+        await __waitFor(() =>
+          allTabsInPane(focusedPaneEl()).length === baseTabs.length + 2);
         submit('(open-file-path! "${tablineC}")');
-        await wait(250);
+        await __waitFor(() =>
+          allTabsInPane(focusedPaneEl()).length === baseTabs.length + 3);
         const pane = focusedPaneEl();
         const tabsAfterThreeOpens = allTabsInPane(pane);
         const activeAfterThreeOpens = activeTabInPane(pane);
         const threeTabsPresent =
-          tabsAfterThreeOpens.includes('${'jmacs-smoke-tabline-A.txt'}') &&
-          tabsAfterThreeOpens.includes('${'jmacs-smoke-tabline-B.txt'}') &&
-          tabsAfterThreeOpens.includes('${'jmacs-smoke-tabline-C.txt'}');
+          tabsAfterThreeOpens.includes('jmacs-smoke-tabline-A.txt') &&
+          tabsAfterThreeOpens.includes('jmacs-smoke-tabline-B.txt') &&
+          tabsAfterThreeOpens.includes('jmacs-smoke-tabline-C.txt');
 
         // --- Open a 4th file → new tab added, activated.
         submit('(open-file-path! "${tablineD}")');
-        await wait(250);
+        await __waitFor(() =>
+          allTabsInPane(pane).length === baseTabs.length + 4);
         const tabsAfterFourOpens = allTabsInPane(pane);
         const activeAfterFourOpens = activeTabInPane(pane);
 
-        // Per-tab text-views: with four text tabs now open, each one's
-        // <text-view> wrapper should carry its own data-file-path (the
-        // per-view-instance architecture). A single shared/repointed
-        // element would collapse this to one. We capture this now,
-        // before the subsequent kill/split steps tear most tabs down.
-        const distinctTextViewPathsAfterFour = (() => {
-          const paths = new Set();
-          for (const tv of document.querySelectorAll('text-view')) {
-            const p = tv.getAttribute('data-file-path');
-            if (p) paths.add(p);
-          }
-          return paths.size;
-        })();
+        // Four distinct backing buffers: Model B mounts ONE live
+        // <text-view> (the active tab) and label-only proxies for the
+        // rest, so counting mounted elements is meaningless — the
+        // per-tab identity lives in the server's registry. The window's
+        // open set must have grown by exactly the four opened files.
+        const openBuffersAfterFour = await __run('(length (view-list))');
 
         // --- C-x ← cycles to the previous tab; C-x → returns.
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
@@ -3480,65 +3501,72 @@ app.whenReady().then(() => {
           }));
         };
         chord('ArrowLeft');
-        await frame();
-        await wait(60);
+        await __waitFor(() =>
+          !activeTabInPane(pane).includes('jmacs-smoke-tabline-D.txt'));
         const activeAfterArrowLeft = activeTabInPane(pane);
         chord('ArrowRight');
-        await frame();
-        await wait(60);
+        await __waitFor(() =>
+          activeTabInPane(pane).includes('jmacs-smoke-tabline-D.txt'));
         const activeAfterArrowRight = activeTabInPane(pane);
 
-        // --- C-x k kills the active tab; previous tab becomes active.
+        // --- C-x k kills the active tab's BUFFER (the Model-B kill is
+        // global: blunt re-home, and the survivor pick may push a tab
+        // into the strip) — assert D is gone, not the exact tab set.
         chord('k');
-        await wait(120);
+        await __waitFor(() =>
+          !allTabsInPane(pane).includes('jmacs-smoke-tabline-D.txt'));
         const tabsAfterKill = allTabsInPane(pane);
         const activeAfterKill = activeTabInPane(pane);
 
-        // --- Phase B: split horizontally; left keeps tabline, right is plain leaf.
+        // --- Phase B: split horizontally; left keeps tabline, right is
+        // a PLAIN leaf (the split DUPLICATES the current view into the
+        // new pane — no placeholder chooser in Model B) and takes focus.
         submit('(split-horizontal!)');
-        await wait(250);
+        await __waitFor(() => editorHost.querySelectorAll('.pane').length === 2);
         const paneCountAfterSplit = editorHost.querySelectorAll('.pane').length;
         const leaves = editorHost.querySelectorAll('.pane');
-        // After split, the originating (left) pane is index 0; the
-        // newly-created right pane is index 1. Left keeps its tabline-
-        // pane container; the right pane holds the placeholder chooser
-        // — NOT a tabline-pane container.
         const leftHasTabline = leaves[0].querySelector('tabline-view') !== null;
         const rightHasTabline = leaves[1].querySelector('tabline-view') !== null;
 
-        // The split moved focus to the new right pane (the current
-        // contract), so open a file straight away: it fills the
-        // placeholder as a plain leaf view — no new tabline strip.
+        // Open a file in the focused right pane: the leaf view swaps —
+        // still no tabline strip on the right.
         submit('(open-file-path! "${tablineE}")');
-        await wait(250);
+        await __waitFor(() => modelineName().includes('jmacs-smoke-tabline-E.txt'));
         const rightLeafAfterOpen = leaves[1];
         const rightHasTablineAfterOpen =
           rightLeafAfterOpen.querySelector('tabline-view') !== null;
         const rightModelineAfterOpen = modelineName();
 
-        // --- Phase C: kill-until-scratch on the root tabline.
-        // First, collapse back to a single pane (the left pane / the
-        // root tabline). Then run a tight kill-view! loop until the
-        // root tabline's only surviving tab is *scratch*.
+        // --- Phase C: drain the root tabline through the REAL × path
+        // (each close-tab un-curates from this strip, re-points to a
+        // neighbour tab, and kills the buffer), then close the LAST tab:
+        // the Model-B Q6 fallback collapses the tabline to a bare
+        // *scratch* leaf — strip gone, *scratch* in the modeline.
         submit('(other-pane!)');           // back to left pane
-        await wait(120);
-        submit('(delete-other-panes!)');   // collapse to root tabline
-        await wait(200);
+        await __waitFor(() => leaves[0].classList.contains('pane--focused'));
+        submit('(delete-other-panes!)');   // collapse to the root tabline
+        await __waitFor(() => editorHost.querySelectorAll('.pane').length === 1);
         const paneCountAfterCollapse = editorHost.querySelectorAll('.pane').length;
-        // Kill aggressively. The kill-view! command drops the current
-        // tab; the previous tab becomes active. We bound the loop
-        // generously — the smoke has accumulated 60–70 views by now.
-        for (let i = 0; i < 200; i += 1) {
-          // Stop once the only view is *scratch* (the Q6 fallback).
+        // The pane count settles a beat before the strip re-renders in
+        // the collapsed pane — wait for the tabs to be readable or the
+        // drain loop below reads an empty list and bails.
+        await __waitFor(() => allTabsInPane(focusedPaneEl()).length >= 1);
+        for (let i = 0; i < 40; i += 1) {
           const labels = allTabsInPane(focusedPaneEl());
-          if (labels.length === 1 && labels[0].includes('*scratch*')) break;
-          submit('(kill-view!)');
-          // Yielding a microtask is enough — kill-view! is synchronous.
-          if (i % 5 === 0) await wait(20);
+          if (labels.length <= 1) break;
+          const btn = focusedPaneEl().querySelector('.tabline-tab .tabline-close');
+          if (!btn) break;
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          await __waitFor(() => allTabsInPane(focusedPaneEl()).length < labels.length, 1500);
         }
-        await wait(200);
-        const finalTabs = allTabsInPane(focusedPaneEl());
-        const finalActive = activeTabInPane(focusedPaneEl());
+        const lastBtn = focusedPaneEl().querySelector('.tabline-tab .tabline-close');
+        if (lastBtn) {
+          lastBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await __waitFor(() => !focusedPaneEl().querySelector('.tabline-strip'));
+        const finalStripGone = !focusedPaneEl().querySelector('.tabline-strip');
+        await __waitFor(() => modelineName().includes('*scratch*'));
+        const finalModeline = modelineName();
 
         // --- Phase D: controller-level v2-session restore (no reload).
         // Write a v2 session blob with three files + a specific active
@@ -3601,15 +3629,15 @@ app.whenReady().then(() => {
           ? (restoredRoot.view.tabs[restoredRoot.view.active]?.path ?? '')
           : '';
 
-        // Carried forward from the earlier four-files snapshot.
-        const distinctTextViewPaths = distinctTextViewPathsAfterFour;
-
         return {
+          baseTabCount: baseTabs.length,
+          openBuffersBase,
           tabsAfterThreeOpens,
           threeTabsPresent,
           activeAfterThreeOpens,
           tabsAfterFourOpens,
           activeAfterFourOpens,
+          openBuffersAfterFour,
           activeAfterArrowLeft,
           activeAfterArrowRight,
           tabsAfterKill,
@@ -3620,9 +3648,8 @@ app.whenReady().then(() => {
           rightHasTablineAfterOpen,
           rightModelineAfterOpen,
           paneCountAfterCollapse,
-          finalTabs,
-          finalActive,
-          distinctTextViewPaths,
+          finalStripGone,
+          finalModeline,
           restoredTabs,
           restoredActive,
           restoredCurrent,
@@ -3631,9 +3658,12 @@ app.whenReady().then(() => {
         };
       })()`);
       console.log('  tablineArm:', JSON.stringify({
+        baseTabCount: tablineArm.baseTabCount,
+        openBuffersBase: tablineArm.openBuffersBase,
         threeTabsPresent: tablineArm.threeTabsPresent,
         activeAfterThreeOpens: tablineArm.activeAfterThreeOpens,
         activeAfterFourOpens: tablineArm.activeAfterFourOpens,
+        openBuffersAfterFour: tablineArm.openBuffersAfterFour,
         activeAfterArrowLeft: tablineArm.activeAfterArrowLeft,
         activeAfterArrowRight: tablineArm.activeAfterArrowRight,
         activeAfterKill: tablineArm.activeAfterKill,
@@ -3643,9 +3673,8 @@ app.whenReady().then(() => {
         rightHasTablineAfterOpen: tablineArm.rightHasTablineAfterOpen,
         rightModelineAfterOpen: tablineArm.rightModelineAfterOpen,
         paneCountAfterCollapse: tablineArm.paneCountAfterCollapse,
-        finalTabs: tablineArm.finalTabs,
-        finalActive: tablineArm.finalActive,
-        distinctTextViewPaths: tablineArm.distinctTextViewPaths,
+        finalStripGone: tablineArm.finalStripGone,
+        finalModeline: tablineArm.finalModeline,
         restoredTabs: tablineArm.restoredTabs,
         restoredActive: tablineArm.restoredActive,
         restoredCurrent: tablineArm.restoredCurrent,
@@ -3728,7 +3757,7 @@ app.whenReady().then(() => {
         await wait(150);
 
         // --- (2) Add-pane mode: open overlay ------------------------
-        submit('(enter-add-pane-mode!)');
+        submit('(run-command (quote add-pane))');
         await wait(120);
         const overlay = editorHost.querySelector('.add-pane-overlay');
         const overlayShown = !!overlay;
@@ -3771,7 +3800,7 @@ app.whenReady().then(() => {
         // We now have a vertical split (top region + bottom new pane).
         // Re-enter add-pane mode; the one splitter should appear as a
         // target. Clicking it should insert a third pane "in the gap".
-        submit('(enter-add-pane-mode!)');
+        submit('(run-command (quote add-pane))');
         await wait(120);
         const overlay2 = editorHost.querySelector('.add-pane-overlay');
         const splitterTargetsWithSplit = overlay2
@@ -3792,7 +3821,7 @@ app.whenReady().then(() => {
         const afterSplitterClickCount = countPanes();
 
         // --- (4) Escape cancels --------------------------------------
-        submit('(enter-add-pane-mode!)');
+        submit('(run-command (quote add-pane))');
         await wait(120);
         const overlay3 = editorHost.querySelector('.add-pane-overlay');
         const overlay3Shown = !!overlay3;
@@ -3838,7 +3867,7 @@ app.whenReady().then(() => {
       const bug2File = join(tmpdir(), 'jmacs-bug2-shared.txt');
       await writeFile(bug2File, 'shared content\\n', 'utf8');
       const bug2 = await runArm('bug2', `(async () => {
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -3846,69 +3875,81 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        ${REPL_RUN}
         const editorHost = document.getElementById('editor-host');
-        const tabsForFile = () => {
-          // Count tabline-tab elements whose label matches the file's
-          // basename, across every visible tabline strip in the panes.
-          const basename = '${bug2File}'.split('/').pop();
-          const labels = editorHost.querySelectorAll(
+        const basename = '${bug2File}'.split('/').pop();
+        const panes = () => editorHost.querySelectorAll('.pane');
+        const tabsForFile = () =>
+          Array.from(editorHost.querySelectorAll(
             '.tabline-strip .tabline-tab .tabline-label'
-          );
-          return Array.from(labels).filter((el) => el.textContent === basename).length;
+          )).filter((el) => el.textContent === basename).length;
+        const closeTabIn = (paneEl) => {
+          const tab = Array.from(paneEl.querySelectorAll('.tabline-tab'))
+            .find((t) => (t.querySelector('.tabline-label')?.textContent ?? '') === basename);
+          if (!tab) return false;
+          tab.querySelector('.tabline-close').dispatchEvent(
+            new MouseEvent('click', { bubbles: true, cancelable: true }));
+          return true;
         };
-        const panesWithFile = () => {
-          const basename = '${bug2File}'.split('/').pop();
-          return Array.from(editorHost.querySelectorAll('.pane'))
-            .map((paneEl) =>
-              Array.from(paneEl.querySelectorAll(
-                '.tabline-strip .tabline-tab .tabline-label'
-              )).some((el) => el.textContent === basename)
-            );
+        const ensureStrip = async (paneEl) => {
+          for (let i = 0; i < 3 && !paneEl.querySelector('.tabline-strip'); i += 1) {
+            submit('(toggle-tabline!)');
+            await __waitFor(() => paneEl.querySelector('.tabline-strip'), 700);
+          }
+          return !!paneEl.querySelector('.tabline-strip');
         };
 
+        // The renderer-era Q9 contract (two Views over one buffer; closing
+        // one leaves the other) is retired: under Model B a tab close
+        // KILLS the buffer globally by default, and the defcustom
+        // *close-tab-kills-view* selects the old keep-the-buffer
+        // behaviour. This arm asserts BOTH modes of that contract.
         submit('(delete-other-panes!)');
-        await wait(150);
-        submit('(promote-to-tabline!)');
-        await wait(120);
-
-        // Open shared file in pane A.
+        await __waitFor(() => panes().length === 1);
+        await ensureStrip(panes()[0]);
         submit('(open-file-path! "${bug2File}")');
-        await wait(300);
+        await __waitFor(() => tabsForFile() === 1);
 
-        // Split horizontally; focus moves to the new placeholder
-        // pane B (the current split contract).
+        // Split (right pane duplicates the current view as a plain leaf,
+        // takes focus); give it a strip — the file now sits in TWO strips.
         submit('(split-horizontal!)');
-        await wait(250);
-
-        // Open the same file in pane B — auto-dup fires (the file is
-        // visible in pane A), filling the placeholder with a fresh
-        // View over the shared buffer. Then promote B to a tabline so
-        // the file sits in two separate tablines.
-        submit('(open-file-path! "${bug2File}")');
-        await wait(400);
-        submit('(promote-to-tabline!)');
-        await wait(150);
-
+        await __waitFor(() => panes().length === 2);
+        await ensureStrip(panes()[1]);
+        await __waitFor(() => tabsForFile() === 2);
         const tabsBeforeKill = tabsForFile();
-        const panesBeforeKill = panesWithFile();
 
-        // The focused pane is B. The × button on a tab triggers
-        // killViewAtIndex (not just remove-tab), so use kill-view! to
-        // mirror that behaviour for the active view in pane B.
-        submit('(kill-view!)');
-        await wait(400);
+        // MODE 1 (default, kills-view): closing the file's tab in right
+        // kills the buffer everywhere — the left strip loses it too, and
+        // right (whose ONLY tab it was) collapses to a bare scratch leaf.
+        closeTabIn(panes()[1]);
+        await __waitFor(() => tabsForFile() === 0);
+        const killModeGone = tabsForFile() === 0;
+        const rightCollapsed = !panes()[1].querySelector('.tabline-strip');
 
-        const tabsAfterKill = tabsForFile();
-        const panesAfterKill = panesWithFile();
+        // MODE 2 (un-curate only): with the defcustom off, closing the
+        // tab removes it from the strip but the buffer STAYS in the
+        // window's open set.
+        await __run('(set! *close-tab-kills-view* #f)');
+        await ensureStrip(panes()[1]);
+        submit('(open-file-path! "${bug2File}")');
+        await __waitFor(() => tabsForFile() === 1);
+        const lenBefore = await __run('(length (view-list))');
+        closeTabIn(panes()[1]);
+        await __waitFor(() => tabsForFile() === 0);
+        const uncurated = tabsForFile() === 0;
+        const lenAfter = await __run('(length (view-list))');
+        await __run('(set! *close-tab-kills-view* #t)');
 
         // Tidy.
         submit('(delete-other-panes!)');
-        await wait(150);
+        await __waitFor(() => panes().length === 1);
         return {
           tabsBeforeKill,
-          panesBeforeKill,
-          tabsAfterKill,
-          panesAfterKill,
+          killModeGone,
+          rightCollapsed,
+          uncurated,
+          lenBefore,
+          lenAfter,
         };
       })()`);
       console.log('  bug2:', JSON.stringify(bug2));
@@ -3927,7 +3968,7 @@ app.whenReady().then(() => {
       // really needed since the test only checks visibility, not playback.
       await writeFile(bug3VideoPath, 'placeholder\\n', 'utf8');
       const bug3 = await runArm('bug3', `(async () => {
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -3957,45 +3998,64 @@ app.whenReady().then(() => {
             };
           });
 
+        // Pane A must be a PLAIN leaf (text-view as a direct child) —
+        // strip any tabline it inherited from earlier arms, then open
+        // the text file into it. (toggle-tabline! is the Model-B flip;
+        // there is no demote-tabline! primitive in the spine.)
         submit('(delete-other-panes!)');
-        await wait(150);
-        submit('(promote-to-tabline!)');
-        await wait(120);
-
-        // Open the markdown in the root tabline — this becomes pane A.
+        await __waitFor(() =>
+          editorHost.querySelectorAll('.pane').length === 1);
+        for (let i = 0; i < 3 &&
+          editorHost.querySelector('.pane .tabline-strip'); i += 1) {
+          submit('(toggle-tabline!)');
+          await __waitFor(() =>
+            !editorHost.querySelector('.pane .tabline-strip'), 700);
+        }
         submit('(open-file-path! "${bug3TextA}")');
-        await wait(300);
-        // Demote so pane A is a leaf-direct text view (matches user's
-        // scenario where the middle pane is a leaf, not a tabline).
-        submit('(demote-tabline!)');
-        await wait(200);
+        await __waitFor(() => (document.getElementById('modeline-name')
+          ?.textContent ?? '').includes('jmacs-bug3-A.txt'));
 
-        // Split horizontally to make pane B on the right; focus moves
-        // to the new placeholder pane (current split contract).
+        // Split: pane B duplicates the text view as a plain leaf and
+        // takes focus. Give B a strip, then open the video there — it
+        // lands as B's active tab.
         submit('(split-horizontal!)');
-        await wait(250);
-
-        // Open the video file in pane B (fills the placeholder), then
-        // promote B to a tabline so the video sits in a tab.
+        await __waitFor(() =>
+          editorHost.querySelectorAll('.pane').length === 2);
+        const paneBEl = editorHost.querySelectorAll('.pane')[1];
+        for (let i = 0; i < 3 && !paneBEl.querySelector('.tabline-strip'); i += 1) {
+          submit('(toggle-tabline!)');
+          await __waitFor(() => paneBEl.querySelector('.tabline-strip'), 700);
+        }
         submit('(open-file-path! "${bug3VideoPath}")');
-        await wait(400);
-        submit('(promote-to-tabline!)');
-        await wait(150);
+        await __waitFor(() =>
+          Array.from(paneBEl.querySelectorAll('.tabline-tab .tabline-label'))
+            .some((el) => el.textContent.endsWith('.mp4')));
 
         // Snapshot before clicking.
         const before = paneSummary();
         const focusedBefore = focusedPaneId();
 
-        // Cycle focus back to pane A (the leaf with text-view).
-        submit('(other-pane!)');
-        await wait(200);
+        // Move focus back to pane A the way the user does: CLICK its
+        // editor (routes a focus-pane intent by leaf id). NB: (other-pane!)
+        // is deliberately NOT used — with a media tab active in the other
+        // pane it can no-op in an aged session (see architect-notes
+        // 2026-07-04, the other-pane-after-media finding).
+        const paneAEl = editorHost.querySelectorAll('.pane')[0];
+        const paneAEd = paneAEl.querySelector('.editor') || paneAEl;
+        paneAEd.dispatchEvent(new MouseEvent('mousedown', {
+          button: 0, bubbles: true, cancelable: true,
+        }));
+        paneAEd.dispatchEvent(new MouseEvent('click', {
+          button: 0, bubbles: true, cancelable: true,
+        }));
+        await __waitFor(() => focusedPaneId() === before[0].id);
         const focusedAfterCycle = focusedPaneId();
 
-        // Now simulate clicking the video tab in pane B's tabline.
-        // Real clicks fire mousedown → click; tabline's onSelect is on
-        // mousedown, so we need to dispatch that explicitly.
-        const paneB = editorHost.querySelector('.pane[data-pane-id="' +
-          (focusedAfterCycle === before[0].id ? before[1]?.id : before[0]?.id) + '"]');
+        // Now simulate clicking the video tab in pane B's tabline — the
+        // pane that carries the strip. Real clicks fire mousedown → click;
+        // tabline's onSelect is on mousedown, so dispatch that explicitly.
+        const paneB = Array.from(editorHost.querySelectorAll('.pane'))
+          .find((p) => p.querySelector('.tabline-strip'));
         const videoTab = Array.from(paneB?.querySelectorAll('.tabline-strip .tabline-tab') ?? [])
           .find((t) => {
             const name = t.querySelector('.tabline-label')?.textContent ?? '';
@@ -4010,14 +4070,29 @@ app.whenReady().then(() => {
             bubbles: true, cancelable: true,
           }));
         }
-        await wait(300);
+        // The click routes focus-pane through the server — poll for the
+        // focus to land back on pane B before snapshotting.
+        await __waitFor(() => focusedPaneId() !== focusedAfterCycle);
 
         const after = paneSummary();
         const focusedAfterClick = focusedPaneId();
 
-        // Tidy.
+        // Tidy: re-activate a TEXT tab first so the media view isn't left
+        // active for the next arm (a media-active pane is a known trouble
+        // state for server ops — see architect-notes 2026-07-04), then
+        // collapse.
+        const textTab = Array.from(paneB?.querySelectorAll('.tabline-tab') ?? [])
+          .find((t) => (t.querySelector('.tabline-label')?.textContent ?? '').endsWith('.txt'));
+        if (textTab) {
+          textTab.dispatchEvent(new MouseEvent('mousedown', {
+            button: 0, bubbles: true, cancelable: true,
+          }));
+          await __waitFor(() => (document.getElementById('modeline-name')
+            ?.textContent ?? '').includes('.txt'));
+        }
         submit('(delete-other-panes!)');
-        await wait(150);
+        await __waitFor(() =>
+          editorHost.querySelectorAll('.pane').length === 1);
 
         return {
           before,
@@ -4050,7 +4125,7 @@ app.whenReady().then(() => {
       await writeFile(bug4FileC, 'cc\\n', 'utf8');
       await writeFile(bug4FileD, 'dd\\n', 'utf8');
       const bug4 = await runArm('bug4', `(async () => {
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        ${WAIT_HELPERS}
         const editorHost = document.getElementById('editor-host');
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -4059,70 +4134,94 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        const panes = () => editorHost.querySelectorAll('.pane');
         const tabsInPane = (paneEl) =>
           Array.from(paneEl.querySelectorAll(
             '.tabline-strip .tabline-tab .tabline-label'
           )).map((el) => el.textContent);
+        // Model B has no promote-to-tabline! primitive in the spine —
+        // toggle-tabline! flips the focused leaf. The first toggle right
+        // after boot can no-op, so retry until the strip actually mounts.
+        const ensureStrip = async (paneEl) => {
+          for (let i = 0; i < 3 && !paneEl.querySelector('.tabline-strip'); i += 1) {
+            submit('(toggle-tabline!)');
+            await __waitFor(() => paneEl.querySelector('.tabline-strip'), 700);
+          }
+          return !!paneEl.querySelector('.tabline-strip');
+        };
 
-        // Clean slate: collapse to one pane, ensure it's a tabline.
+        // Clean slate: one pane, carrying a tabline strip. If an earlier
+        // arm left a MEDIA tab active, activate a text tab first (a
+        // media-active pane is a known trouble state for server ops).
         submit('(delete-other-panes!)');
-        await wait(150);
-        submit('(promote-to-tabline!)');
-        await wait(150);
+        await __waitFor(() => panes().length === 1);
+        {
+          const strip0 = panes()[0].querySelector('.tabline-strip');
+          const tt = strip0 && Array.from(strip0.querySelectorAll('.tabline-tab'))
+            .find((t) => (t.querySelector('.tabline-label')?.textContent ?? '').endsWith('.txt'));
+          if (tt) {
+            tt.dispatchEvent(new MouseEvent('mousedown', {
+              button: 0, bubbles: true, cancelable: true,
+            }));
+            await __waitFor(() => (document.getElementById('modeline-name')
+              ?.textContent ?? '').includes('.txt'));
+          }
+        }
+        await ensureStrip(panes()[0]);
 
         // File A goes into the (soon-to-be) left tabline.
         submit('(open-file-path! "${bug4FileA}")');
-        await wait(250);
+        await __waitFor(() =>
+          tabsInPane(panes()[0]).some((l) => l.includes('jmacs-bug4-A')));
 
-        // Split horizontally → focus moves to the new right
-        // placeholder pane (current split contract). Open B there —
-        // it fills the placeholder — then promote the right pane to
-        // its own tabline. Right tabline = [B].
+        // Split: the new right pane DUPLICATES the current view (A) as a
+        // plain leaf and takes focus (the Model-B contract). Give it its
+        // own strip, then open B there — the right tabline gains B.
         submit('(split-horizontal!)');
-        await wait(250);
+        await __waitFor(() => panes().length === 2);
+        await ensureStrip(panes()[1]);
         submit('(open-file-path! "${bug4FileB}")');
-        await wait(250);
-        submit('(promote-to-tabline!)');
-        await wait(150);
+        await __waitFor(() =>
+          tabsInPane(panes()[1]).some((l) => l.includes('jmacs-bug4-B')));
 
-        // Cross over to left, open D so it lands AFTER B in the
-        // global views list. Without this step, the kill in right
-        // would pick the previous view (= B, already in right's
-        // tabs) and the leak wouldn't even fire — the bug only
-        // manifests when the global-next pick is a view from some
-        // other container.
+        // Cross over to left, open D (a buffer foreign to right's strip —
+        // the leak this arm guards against is a kill pushing D into
+        // right via a global survivor pick). Back to right, open C.
         submit('(other-pane!)');
-        await wait(150);
+        await __waitFor(() => panes()[0].classList.contains('pane--focused'));
         submit('(open-file-path! "${bug4FileD}")');
-        await wait(250);
-
-        // Back to right; open C as its new active tab. Now the
-        // global views list ends with [..., A, B, D, C] and the
-        // right tabline is [B, C].
+        await __waitFor(() =>
+          tabsInPane(panes()[0]).some((l) => l.includes('jmacs-bug4-D')));
         submit('(other-pane!)');
-        await wait(150);
+        await __waitFor(() => panes()[1].classList.contains('pane--focused'));
         submit('(open-file-path! "${bug4FileC}")');
-        await wait(250);
+        await __waitFor(() =>
+          tabsInPane(panes()[1]).some((l) => l.includes('jmacs-bug4-C')));
 
-        const panes = editorHost.querySelectorAll('.pane');
-        const leftBeforeKill = tabsInPane(panes[0]);
-        const rightBeforeKill = tabsInPane(panes[1]);
+        const leftBeforeKill = tabsInPane(panes()[0]);
+        const rightBeforeKill = tabsInPane(panes()[1]);
 
-        // Kill C in right. Pre-fix, the kill picked the global next
-        // view (= D, the view immediately before C in the post-splice
-        // list) and pushed it into right — D leaks from left to
-        // right. Post-fix: ring-fence holds; right's active falls
-        // back to B, no global pick happens.
-        submit('(kill-view!)');
-        await wait(300);
+        // Close C through the REAL user path: the tab's × button sends
+        // the close-tab PANE_INTENT — un-curate from THIS strip (re-point
+        // to a neighbour tab), then kill the buffer. The ring-fence
+        // contract under test: nothing enters either strip that wasn't
+        // already there, and the left strip is byte-identical after.
+        const cTab = Array.from(panes()[1].querySelectorAll('.tabline-tab'))
+          .find((t) => (t.querySelector('.tabline-label')?.textContent ?? '')
+            .includes('jmacs-bug4-C'));
+        if (cTab) {
+          cTab.querySelector('.tabline-close').dispatchEvent(
+            new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await __waitFor(() =>
+          !tabsInPane(panes()[1]).some((l) => l.includes('jmacs-bug4-C')));
 
-        const panes2 = editorHost.querySelectorAll('.pane');
-        const leftAfterKill = panes2[0] ? tabsInPane(panes2[0]) : [];
-        const rightAfterKill = panes2[1] ? tabsInPane(panes2[1]) : [];
+        const leftAfterKill = tabsInPane(panes()[0]);
+        const rightAfterKill = tabsInPane(panes()[1]);
 
         // Tidy: collapse back to one pane.
         submit('(delete-other-panes!)');
-        await wait(200);
+        await __waitFor(() => panes().length === 1);
 
         return {
           leftBeforeKill,
@@ -4522,7 +4621,7 @@ app.whenReady().then(() => {
       //   left edge.
       // - `(split-vertical! 0.5 'before)` puts it above; the focused
       //   (new) pane hugs the host's top edge.
-      // - `(enter-add-pane-mode!)` shows .add-pane-overlay with
+      // - `(run-command (quote add-pane))` shows .add-pane-overlay with
       //   exactly four border targets and zero splitter targets in
       //   the single-pane case.
       // - Clicking the bottom-border target inserts a pane spanning
@@ -4549,15 +4648,19 @@ app.whenReady().then(() => {
         addPaneArm.countAfterEscape === addPaneArm.afterSplitterClickCount &&
         addPaneArm.finalPaneCount === 1;
 
-      // Bug-2: closing a tab in pane B (the duplicate) does NOT remove
-      // the original from pane A. Q9 auto-duplicate has done its job.
+      // Bug-2 (reframed for Model B): the renderer-era Q9 contract is
+      // retired — a tab close kills the buffer globally by default. The
+      // arm asserts BOTH modes of the *close-tab-kills-view* defcustom:
+      // default → the buffer leaves every strip and the sole-tab pane
+      // collapses to a bare scratch leaf; off → the close only un-curates
+      // (the buffer stays in the open set: view-list length unchanged).
       const bug2Ok =
         bug2.tabsBeforeKill === 2 &&
-        bug2.panesBeforeKill.length === 2 &&
-        bug2.panesBeforeKill[0] === true && bug2.panesBeforeKill[1] === true &&
-        bug2.tabsAfterKill === 1 &&
-        bug2.panesAfterKill.length === 1 &&
-        bug2.panesAfterKill[0] === true;
+        bug2.killModeGone === true &&
+        bug2.rightCollapsed === true &&
+        bug2.uncurated === true &&
+        !!bug2.lenBefore &&
+        bug2.lenBefore === bug2.lenAfter;
 
       // Bug-3: clicking a non-text tab in a non-focused pane's tabline
       // should (a) move focus to that pane and (b) leave the previously
@@ -4603,19 +4706,20 @@ app.whenReady().then(() => {
         tablineArm.activeAfterThreeOpens.includes('jmacs-smoke-tabline-C.txt') &&
         tablineArm.tabsAfterFourOpens.length === tablineArm.tabsAfterThreeOpens.length + 1 &&
         tablineArm.activeAfterFourOpens.includes('jmacs-smoke-tabline-D.txt') &&
+        // Four distinct backing buffers: the window's open set grew by
+        // exactly the four opened files. (Model B mounts one live
+        // text-view + label proxies, so counting DOM elements — the old
+        // distinctTextViewPaths — was architecturally stale.)
+        Number(tablineArm.openBuffersAfterFour) ===
+          Number(tablineArm.openBuffersBase) + 4 &&
         // C-x ← moves off D; C-x → returns to it.
         !tablineArm.activeAfterArrowLeft.includes('jmacs-smoke-tabline-D.txt') &&
         tablineArm.activeAfterArrowRight.includes('jmacs-smoke-tabline-D.txt') &&
-        // C-x k kills D; another tab becomes active. D is gone from
-        // the tabs list.
+        // C-x k kills D's buffer; D leaves the strip. (The Model-B kill
+        // is a global buffer kill with a blunt re-home — the survivor
+        // pick may push a tab, so the exact tab set isn't asserted.)
         !tablineArm.tabsAfterKill.includes('jmacs-smoke-tabline-D.txt') &&
         !tablineArm.activeAfterKill.includes('jmacs-smoke-tabline-D.txt') &&
-        // Per-tab text-views: after opening four text files, each tab
-        // has its own <text-view> with its own data-file-path. A single
-        // shared/repointed element would collapse this to one path.
-        // (Includes the scratch tab's text-view too, which has no
-        // data-file-path and isn't counted.)
-        tablineArm.distinctTextViewPaths >= 4 &&
         // Split: 2 panes; left keeps its tabline strip, right doesn't.
         tablineArm.paneCountAfterSplit === 2 &&
         tablineArm.leftHasTabline === true &&
@@ -4623,12 +4727,12 @@ app.whenReady().then(() => {
         // Open in right pane: leaf swaps, still no tabline strip.
         tablineArm.rightHasTablineAfterOpen === false &&
         tablineArm.rightModelineAfterOpen.includes('jmacs-smoke-tabline-E.txt') &&
-        // After collapse: single pane. Killing every view leaves a
-        // single *scratch* tab in the tabline (Q6 fallback).
+        // After collapse: single pane. Draining the strip through the ×
+        // path and closing the LAST tab collapses the tabline to a bare
+        // *scratch* leaf (the Model-B Q6 fallback).
         tablineArm.paneCountAfterCollapse === 1 &&
-        tablineArm.finalTabs.length === 1 &&
-        tablineArm.finalTabs[0].includes('*scratch*') &&
-        tablineArm.finalActive.includes('*scratch*') &&
+        tablineArm.finalStripGone === true &&
+        tablineArm.finalModeline.includes('*scratch*') &&
         // Controller-level v2 restore: three tabs, active = 1, the
         // sole installed leaf matches the persisted id.
         tablineArm.restoredTabs.length === 3 &&
