@@ -3471,3 +3471,38 @@ and `(-jmd-structural-prefixes ...)` returns the right prefixes server-side.
 for the live pass + merge alongside auto-fill-mode.
 
 ---
+## [2026-07-04] jmarkdown fill: flush-right (>>) / centred (>> <<) + frontmatter guard
+
+Follow-on to the jmarkdown fill work, same branch `auto-fill-mode` (commit
+`bbb39b11`). You asked for flush-right / centred support in fill-paragraph and
+flagged that syntax-extensions matter.
+
+- **Aligned blocks** (docs/syntax-adjustments): a `>>`-prefixed line is
+  flush-right; a `>> … <<` line is centred (trailing `<<` distinguishes them).
+  You chose REFLOW-like-a-blockquote, so M-q merges the block's lines and
+  re-wraps to the fill column, keeping `>> ` on every line and (centred)
+  re-aligning `<<` to the column. `>>`/`<<` are matched as whitespace-delimited
+  TOKENS (per the extensions "split on whitespace" rule), which also keeps them
+  distinct from a `> ` blockquote. A bare `>>` / `>> <<` line is a paragraph
+  separator (bounds sub-paragraphs like a blank line).
+- **Frontmatter guard** (the syntax-extensions point): user syntax extensions are
+  DEFINED in the `---` metadata header (multi-line, whitespace-significant
+  `Extension …:` entries). Reflowing those corrupts them, so fill now leaves the
+  entire `---` frontmatter untouched. (Inline extension delimiters within prose
+  reflow safely; `@begin/@end` block environments were already bounded.)
+
+Verified: 7 new tests (token-rule detection, flush-right + centred reflow, fixed
+point, separator bounding, frontmatter no-op, prose-after-frontmatter); existing
+tests preserved; full suite green (stdlib 946). Spine-load + exact reflow output
+self-verified via drive.js — including the centred `<<` aligned at the column.
+
+**Interpretation flagged for you**: I read "syntax-extensions is important too" as
+"don't let fill corrupt the extension DEFINITIONS in the frontmatter" (+ respect
+the `>>`/`<<` token rule). If you meant something more (e.g. bounding fill at
+user-defined *block* extensions with custom sigils, which a general fill can't
+know without parsing each doc's header), say so and I'll extend it.
+
+Live-test (needs a .jmd): M-q inside a `>>` block and a `>> … <<` block; M-q
+inside the `---` header (should no-op).
+
+---
