@@ -3135,9 +3135,13 @@ app.whenReady().then(() => {
           ?.textContent ?? '';
 
         // Split horizontally (side-by-side) — bound to C-x 3. Focus
-        // moves to the NEW pane, which holds a placeholder chooser.
+        // moves to the NEW pane. The split round-trips (command ->
+        // directive -> PANE_INTENT -> PANE_TREE push -> re-render), so a
+        // fixed wait races it (paneCountAfterSplit read 1 intermittently);
+        // poll until the second pane actually mounts.
         submit('(split-horizontal!)');
-        await wait(250);
+        await __waitFor(() => countPanes() === 2, 3000);
+        await frame();
         const paneCountAfterSplit = countPanes();
         const focusAfterSplit = focusedPaneId();
         const focusMoved = !!focusAfterSplit && focusAfterSplit !== focusBefore;
@@ -3159,7 +3163,8 @@ app.whenReady().then(() => {
         // (focused) pane, then move its point so we can verify the two
         // panes' cursors are independent.
         submit('(open-file-path! "${paneB}")');
-        await wait(350);
+        await __waitFor(() => (document.getElementById('modeline-name')
+          ?.textContent ?? '').includes('jmacs-smoke-pane-b.txt'), 3000);
         const rightNameAfterOpen = document.getElementById('modeline-name')
           ?.textContent ?? '';
         // Submit-and-wait for each REPL round-trip — a fixed wait(80)
@@ -3170,7 +3175,7 @@ app.whenReady().then(() => {
 
         // Cycle focus back to the original pane (C-x o → other-pane).
         submit('(other-pane!)');
-        await wait(200);
+        await __waitFor(() => focusedPaneId() === originalPaneId, 3000);
         const focusAfterOther = focusedPaneId();
         // other-pane! must return focus to the ORIGINAL pane, not the new
         // one. Compare against the original leaf id captured after the
@@ -3185,7 +3190,7 @@ app.whenReady().then(() => {
         // delete-other-panes from the original pane (C-x 1): collapses
         // back to one pane, with the original pane's view surviving.
         submit('(delete-other-panes!)');
-        await wait(200);
+        await __waitFor(() => countPanes() === 1, 3000);
         const paneCountAfterCollapse = countPanes();
         const focusAfterCollapse = focusedPaneId();
         const nameAfterCollapse = document.getElementById('modeline-name')
@@ -3195,7 +3200,7 @@ app.whenReady().then(() => {
         // verify the resulting pane-A rect shrank. This validates the
         // pointer-capture path end-to-end.
         submit('(split-horizontal!)');
-        await wait(200);
+        await __waitFor(() => countPanes() === 2, 3000);
         const splitter = editorHost.querySelector('.pane-splitter');
         const splitterShown = !!splitter;
         let widthBefore = 0;
@@ -3231,10 +3236,14 @@ app.whenReady().then(() => {
         // original pane FIRST — collapsing from the placeholder would
         // keep the placeholder and discard the root tabline (and with
         // it every later arm's tab behaviour).
+        // Wait for the focus to actually cycle back before collapsing —
+        // else delete-other-panes! runs from the wrong (placeholder) pane
+        // and discards the root tabline.
+        const beforeTidyFocus = focusedPaneId();
         submit('(other-pane!)');
-        await wait(120);
+        await __waitFor(() => focusedPaneId() !== beforeTidyFocus, 3000);
         submit('(delete-other-panes!)');
-        await wait(150);
+        await __waitFor(() => countPanes() === 1, 3000);
         const paneCountFinal = countPanes();
 
         return {
