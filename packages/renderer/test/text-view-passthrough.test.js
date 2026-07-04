@@ -57,3 +57,21 @@ test('flashCurrentLine is a safe no-op before the editor is mounted', () => {
   const tv = new TextView(); // _editor stays null (never connected)
   assert.doesNotThrow(() => tv.flashCurrentLine());
 });
+
+test('setView forwards its opts (followMode) to the inner editor', () => {
+  // Regression: a server reconcile calls setView(view, {followMode:'auto'}) so
+  // the follow-cursor yank-gate applies. Dropping the 2nd arg here forced a
+  // follow on every reconcile → a scrolled-away viewport snapped to the caret
+  // on any server push (the "hover a swatch → jump to top of file" bug).
+  const { tv, calls } = mountedTextView();
+  tv._syncFilePathAttr = () => {}; // no DOM in Node; not what this asserts
+  const view = { buffer: null };
+  tv.setView(view, { followMode: 'auto' });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'setView');
+  assert.deepEqual(
+    calls[0].args[1],
+    { followMode: 'auto' },
+    'the follow-mode opts must reach the inner editor, not be dropped'
+  );
+});
