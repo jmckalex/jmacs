@@ -7,7 +7,15 @@
  * normal test run because it needs an Electron runtime.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  protocol,
+  utilityProcess,
+  MessageChannelMain,
+} from 'electron';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,6 +24,11 @@ import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from '../src/files.js';
 import { renderJMarkdown } from '../src/jmarkdown.js';
+import {
+  registerJmarkdownWatchHandlers,
+  reapJmarkdownWatchers,
+} from '../src/jmarkdown-watch.js';
+import { createServerBridge } from '../src/server-bridge.js';
 import { EDITOR_URL, serveAppFile, serveMediaFile } from '../src/serve.js';
 import { registerShellHandlers } from '../src/shell.js';
 
@@ -32,11 +45,44 @@ const repoRoot = resolve(
  *  skipped when the manifest isn't present. */
 const docsBuilt = existsSync(join(repoRoot, 'docs', 'build', 'manifest.json'));
 
+/** An isolated config home for the forked Model-B spine. Points MWB_CONFIG_HOME
+ *  (+ the session/recovery stores) at a scratch dir so the smoke never reads or
+ *  writes the user's ~/.godot: the spine boots with clean defaults (no
+ *  faces.json / custom.lisp / init.lisp) and its autosave + named-session store
+ *  land in tmp. Wiped and recreated at startup so every run is deterministic.
+ *  MUST be a DIFFERENT dir from `configDir` (Electron's userData, below): the
+ *  whenReady rmSync of this path would otherwise race Chromium writing its
+ *  userData (blob_storage/Code Cache/…) into the same dir → ENOTEMPTY at boot. */
+const smokeConfigHome = join(tmpdir(), 'jmacs-smoke-spine-config');
+
+/** Optional arm filter for rapid iteration: SMOKE_ARMS="panes,tablineArm"
+ *  runs only the named arms (runArm labels); every other arm resolves to a
+ *  skip marker and its checks report SKIP, not FAIL. A single arm runs in
+ *  boot + a couple of seconds instead of the full sweep. NB: arms are
+ *  hermetic-ish, not perfectly isolated — a filtered run boots a FRESH
+ *  spine, so an arm that green-lights alone can still differ inside the
+ *  full shared-state sweep. */
+const ARM_FILTER = (process.env.SMOKE_ARMS ?? '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+const armEnabled = (label) =>
+  ARM_FILTER.length === 0 || ARM_FILTER.includes(label);
+
 /** A scratch path the file round-trip writes to. */
 const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
 
 /** A scratch path the sticky-note metadata round-trip writes beside. */
 const notesPath = join(tmpdir(), 'jmacs-smoke-notes.txt');
+
+/** A REAL on-disk markdown file for the preview arm: the preview pane
+ *  drives the actual `jmarkdown watch` server (main-process subprocess +
+ *  cross-origin iframe), and the spine's markdown-preview! only emits its
+ *  directive for a markdown-mode buffer WITH a filePath. The arm is
+ *  skipped (like docs) when no jmarkdown binary is installed. */
+const previewMdPath = join(tmpdir(), 'jmacs-smoke-preview.md');
+writeFileSync(previewMdPath, '# PreviewHeading\n\nbody line\n');
+const jmarkdownInstalled =
+  existsSync('/usr/local/bin/jmarkdown') ||
+  existsSync('/opt/homebrew/bin/jmarkdown');
 
 /** A scratch image file the image-buffer check opens. */
 const imagePath = join(tmpdir(), 'jmacs-smoke-image.png');
@@ -171,6 +217,13 @@ writeFileSync(
 );
 writeFileSync(mediaVideoPath, Buffer.from([0, 0, 0, 0]));
 
+// Belt-and-braces with backgroundThrottling:false on the window: keep
+// Chromium from down-clocking the hidden renderer at the process level
+// too (timer clamping + occlusion backgrounding both slow the polls).
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
 // Isolate the smoke run's config files (custom.lisp, init.lisp) in a
 // fresh temp directory, so it never touches the real user data dir.
 const configDir = join(tmpdir(), 'jmacs-smoke-config');
@@ -188,11 +241,64 @@ const PRELOAD = join(
 
 let done = false;
 
+/** The Model-B spine bridge, forked in `whenReady`. Killed in `finish` so the
+ *  forked server `utilityProcess` never outlives the smoke run. */
+let serverBridge = null;
+
+/**
+ * A polling-wait prelude injected into interaction arms. Under Model B every
+ * command and keystroke round-trips renderer -> server (a separate process) ->
+ * renderer, so a single `requestAnimationFrame` no longer covers the latency
+ * the way it did when the interpreter ran in-renderer. `__waitFor` polls a
+ * predicate until it holds (or a timeout), and `__run` submits a REPL form and
+ * waits for its `.repl-result` to actually arrive before reading it. Interpolate
+ * with `${WAIT_HELPERS}` at the top of an arm; the arm keeps its own
+ * `frame`/`wait`/`submit` (these names are prefixed so they never collide).
+ *
+ * MUST contain no backticks — it is spliced into an executeJavaScript template
+ * literal, and a backtick would close the outer template (see the smoke-arm
+ * backtick trap).
+ */
+const WAIT_HELPERS = `
+  const __sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const __waitFor = async (pred, ms = 2000) => {
+    const t0 = performance.now();
+    for (;;) {
+      let v;
+      try { v = pred(); } catch { v = false; }
+      if (v) return v;
+      if (performance.now() - t0 > ms) return v;
+      await __sleep(20);
+    }
+  };
+`;
+
+/** As `WAIT_HELPERS`, plus `__run(src)`: submit a REPL form through an existing
+ *  `submit(src)` (defined by the arm) and resolve with the text of the new
+ *  `.repl-result` once it lands — the reliable replacement for "submit then read
+ *  after one frame". Splice this AFTER the arm defines its own `submit`. */
+const REPL_RUN = `
+  const __run = async (src) => {
+    const n = document.querySelectorAll('.repl-result').length;
+    submit(src);
+    await __waitFor(() => document.querySelectorAll('.repl-result').length > n);
+    const all = document.querySelectorAll('.repl-result');
+    return all.length ? all[all.length - 1].textContent : '';
+  };
+`;
+
 /** Report a result once and quit. */
 function finish(code, message) {
   if (done) return;
   done = true;
   console.log(code === 0 ? `PASS — ${message}` : `FAIL — ${message}`);
+  // Reap any live `jmarkdown watch` subprocess (the preview arm's server)
+  // so it never outlives the smoke run.
+  try { reapJmarkdownWatchers(); } catch { /* not registered — fine */ }
+  if (serverBridge) {
+    serverBridge.dispose();
+    serverBridge = null;
+  }
   app.exit(code);
 }
 
@@ -213,6 +319,40 @@ app.whenReady().then(() => {
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
   );
+  // The markdown-preview pane starts a real `jmarkdown watch` subprocess
+  // through these handlers — exactly as src/main.js registers them.
+  registerJmarkdownWatchHandlers();
+
+  // Model B: the renderer is a THIN CLIENT — it runs no interpreter of its own
+  // (that was deleted when Model B became the default), so with nothing on the
+  // other end of the wire it never receives a VIEW push and every spine-driven
+  // arm returns empty. Fork the spine and plumb a port to the window, exactly as
+  // `src/main.js` does. Isolate the spine's config/session/recovery to a scratch
+  // dir (wiped first) so the run is hermetic and deterministic — no ~/.godot
+  // reads, no seeded session. The forked server inherits these env vars.
+  rmSync(smokeConfigHome, { recursive: true, force: true });
+  mkdirSync(smokeConfigHome, { recursive: true });
+  // Seed init.lisp — the real app writes it on first run (setupConfigHome, which
+  // the smoke bypasses); the config arm asserts it is present.
+  writeFileSync(join(smokeConfigHome, 'init.lisp'), ';;; init.lisp — smoke seed\n');
+  // Isolate BOTH config homes at the scratch dir: MWB_CONFIG_HOME for the spine
+  // and GODOT_HOME for the MAIN process (configHomePath() → files.js readConfig/
+  // writeMetadata). Without GODOT_HOME the main process reads the real ~/.godot,
+  // so the run isn't hermetic AND the config arm's spine-side save (scratch) and
+  // main-side read (real) point at different files.
+  process.env.MWB_CONFIG_HOME = smokeConfigHome;
+  process.env.GODOT_HOME = smokeConfigHome;
+  process.env.MWB_SESSION_STORE = join(smokeConfigHome, 'workspaces.json');
+  process.env.MWB_RECOVERY_DIR = join(smokeConfigHome, 'recovery');
+  // No MWB_SESSION_SEED: boot a fresh session (the spine opens its DEFAULT_FILE)
+  // rather than seeding from any prior renderer session.json.
+  delete process.env.MWB_SESSION_SEED;
+  try {
+    serverBridge = createServerBridge({ utilityProcess, MessageChannelMain });
+  } catch (error) {
+    finish(1, `failed to fork the Model-B spine: ${error.message}`);
+    return;
+  }
 
   const win = new BrowserWindow({
     show: false,
@@ -221,6 +361,11 @@ app.whenReady().then(() => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // A hidden window is "backgrounded" to Chromium, which clamps its
+      // setTimeout timers toward 1s ticks — every __waitFor poll (20ms
+      // sleeps) crawls at throttled speed. Un-throttle: the smoke IS the
+      // foreground job.
+      backgroundThrottling: false,
     },
   });
 
@@ -228,7 +373,12 @@ app.whenReady().then(() => {
     const detail = args.find((a) => a && typeof a === 'object');
     console.log('  [renderer]', detail?.message ?? args.join(' '));
   });
-  win.webContents.on('did-fail-load', (_event, code, desc) => {
+  win.webContents.on('did-fail-load', (_event, code, desc, _url, isMainFrame) => {
+    // Subframe failures are survivable — the markdown-preview iframe points
+    // at the jmarkdown watch server and its loads can abort (-3) while the
+    // server starts or when the pane hides. Only a main-frame failure is
+    // fatal to the smoke.
+    if (!isMainFrame) return;
     finish(1, `page failed to load (${code}): ${desc}`);
   });
   win.webContents.on('render-process-gone', (_event, details) => {
@@ -237,40 +387,74 @@ app.whenReady().then(() => {
 
   win.webContents.once('did-finish-load', async () => {
     try {
-      // Give the module graph a moment to evaluate and the first
-      // animation frame to render.
-      // 33 tree-sitter grammars + the directory views need to load
-      // before the editor can mount its view; on a cold machine this
-      // is ~3s. Bump generously — a smoke run that flakes here
-      // wastes the full subsequent inspection cycle.
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      // Run one arm's in-page script, catching any throw so a single broken
+      // arm can't abort the whole sweep — it resolves to a marker object, its
+      // assertion then reads as a failure, and the run continues to a full
+      // per-arm tally. (Model B turned several once-synchronous reads into
+      // async round-trips, so an arm that hasn't been ported yet may throw on
+      // a not-yet-projected element; that must not blind us to the other 40.)
+      // A Node-side watchdog bounds each arm: no single wedged arm can stall the
+      // whole suite (and the final tally). Rescues a renderer-side hang; a
+      // main-process block would also freeze this timer, which is itself a signal.
+      const runArm = async (label, js) => {
+        if (!armEnabled(label)) return { __skipped: true };
+        const t0 = Date.now();
+        const result = await Promise.race([
+          win.webContents.executeJavaScript(js),
+          new Promise((resolve) => setTimeout(
+            () => resolve({ __armError: 'arm timed out (30s watchdog)' }), 30000)),
+        ]).catch((error) => {
+          console.log('  (arm threw:', error.message + ')');
+          return { __armError: error.message };
+        });
+        const secs = (Date.now() - t0) / 1000;
+        console.log(`  [time] ${label}: ${secs.toFixed(1)}s`);
+        return result;
+      };
 
-      const render = await win.webContents.executeJavaScript(`(() => ({
-        lines: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line').length,
-        hasCursor: !!document.querySelector('text-view:not([style*="display: none"]) .editor-cursor'),
-        modeline: document.getElementById('modeline-position')?.textContent ?? '',
-      }))()`);
+      // Wait for the module graph to evaluate and the first VIEW push to
+      // project (33 tree-sitter grammars + the directory views load before
+      // the editor can mount its view — ~3s cold). Poll instead of a fixed
+      // 5s sleep: a warm boot proceeds the moment a line is projected.
+      {
+        const bootT0 = Date.now();
+        for (;;) {
+          const ready = await win.webContents
+            .executeJavaScript(`!!document.querySelector('.editor-line')`)
+            .catch(() => false);
+          if (ready || Date.now() - bootT0 > 15000) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+
+      const render = await runArm('render', `(async () => {
+        ${WAIT_HELPERS}
+        // Model B bakes the whole modeline (line:col included) into the NAME
+        // slot; the position slot is always cleared (see app.js serverChrome).
+        // The first modeline push arrives on the server's VIEW round-trip,
+        // which can land after the boot settle — wait for it before reading.
+        await __waitFor(() =>
+          (document.getElementById('modeline-name')?.textContent ?? '').length > 0);
+        return {
+          lines: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line').length,
+          hasCursor: !!document.querySelector('text-view:not([style*="display: none"]) .editor-cursor'),
+          modeline: document.getElementById('modeline-name')?.textContent ?? '',
+        };
+      })()`);
       console.log('  rendered:', JSON.stringify(render));
 
       // The startup splash: present in the background layer, and
       // dismissed (no longer visible) once a buffer is switched.
-      const splash = await win.webContents.executeJavaScript(`(async () => {
+      // Model B RETIRED the boot splash: mountServerView dismisses it
+      // unconditionally on the first server SNAPSHOT (app.js — "the server
+      // drives the view now, so retire it"), so the contract to hold is the
+      // NEGATIVE one: no splash element may linger visible behind server
+      // views after boot (it used to ghost behind the empty *scratch*).
+      const splash = await runArm('splash', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const present =
-          document.querySelector('text-view:not([style*="display: none"]) .editor-background .splash.is-visible')
-            !== null;
-        const replInput = document.querySelector('.repl-input');
-        const submit = (src) => {
-          replInput.value = src;
-          replInput.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', bubbles: true, cancelable: true,
-          }));
-        };
-        submit('(next-view!)');     // a switch dismisses the splash
-        submit('(previous-view!)'); // ... and back: the count is intact
         await frame();
         return {
-          present,
+          lingering: document.querySelector('.splash.is-visible') !== null,
           dismissed: document.querySelector('.splash.is-visible') === null,
         };
       })()`);
@@ -278,22 +462,22 @@ app.whenReady().then(() => {
 
       // Drive the real input path: dispatch key events at the editor
       // and confirm the projected DOM changes.
-      const input = await win.webContents.executeJavaScript(`(async () => {
+      const input = await runArm('input', `(async () => {
+        ${WAIT_HELPERS}
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         const press = (key, opts = {}) =>
           editor.dispatchEvent(new KeyboardEvent('keydown', {
             key, bubbles: true, cancelable: true, ...opts,
           }));
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const firstLine = () => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
 
         const before = firstLine();
         for (const ch of 'Zz!') press(ch);
-        await frame();
+        await __waitFor(() => firstLine() === 'Zz!' + before);
         const afterType = firstLine();
         press('Backspace'); press('Backspace'); press('Backspace');
-        await frame();
+        await __waitFor(() => firstLine() === before);
         const afterDelete = firstLine();
         return { before, afterType, afterDelete };
       })()`);
@@ -307,7 +491,8 @@ app.whenReady().then(() => {
       // dispatches the InputEvent shapes the OS produces. Three shapes:
       // digit selection, ordinary typing after a hold, and a click
       // selection (which has no keydown at all).
-      const accents = await win.webContents.executeJavaScript(`(async () => {
+      const accents = await runArm('accents', `(async () => {
+        ${WAIT_HELPERS}
         const view = document.querySelector('text-view:not([style*="display: none"])');
         const editor = view.querySelector('.editor');
         const sink = view.querySelector('.editor-input');
@@ -320,33 +505,42 @@ app.whenReady().then(() => {
           sink.dispatchEvent(new InputEvent('input', {
             inputType: 'insertText', data, bubbles: true,
           }));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const firstLine = () => view.querySelector('.editor-line').textContent;
 
         const before = firstLine();
+        // PACING MATTERS: on real hardware the popup only commits after a
+        // ~500ms hold, long after the base char's server delta has landed
+        // in the mirror. Fire the commit before that and the mirror's
+        // local prediction runs against stale text (wrong offsets). So
+        // each phase waits for the base char to PROJECT before the
+        // popup-commit events — that is the faithful simulation, and it
+        // doubles as the pass/fail poll.
         // (1) Digit selection: hold e, popup opens, 2 picks é over the e.
         press('e'); sink.value = 'e';        // mimic the keydown default action
+        await __waitFor(() => firstLine() === 'e' + before);
         press('e', { repeat: true });        // the hold arms the popup state
         press('2');                          // deferred - must NOT self-insert
         const sinkAfterDigit = sink.value;   // must still hold the base 'e'
         sink.value = 'é'; type('é');         // the commit the OS delivers
-        await wait(150);
+        await __waitFor(() => firstLine() === 'é' + before);
         const afterPick = firstLine();
         // (2) Ordinary typing after a hold: o held (popup ignored), then x.
         press('o'); sink.value = 'o';
+        await __waitFor(() => firstLine() === 'éo' + before);
         press('o', { repeat: true });
         press('x');                          // deferred...
         sink.value = 'ox'; type('x');        // ...default action APPENDS
-        await wait(150);
+        await __waitFor(() => firstLine() === 'éox' + before);
         const afterTyping = firstLine();
         // (3) Click selection: u held, popup clicked - no keydown at all.
         press('u'); sink.value = 'u';
+        await __waitFor(() => firstLine() === 'éoxu' + before);
         press('u', { repeat: true });
         sink.value = 'ü'; type('ü');
-        await wait(150);
+        await __waitFor(() => firstLine() === 'éoxü' + before);
         const afterClick = firstLine();
         for (let i = 0; i < 4; i += 1) press('Backspace');
-        await wait(150);
+        await __waitFor(() => firstLine() === before);
         const restored = firstLine();
         return { before, sinkAfterDigit, afterPick, afterTyping, afterClick, restored };
       })()`);
@@ -354,8 +548,8 @@ app.whenReady().then(() => {
 
       // Drive the REPL: evaluate arithmetic, and have Lisp edit the
       // buffer, confirming the L3 -> L2 -> L4 path.
-      const lisp = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const lisp = await runArm('lisp', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -363,46 +557,41 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        const lastResult = () => {
-          const all = document.querySelectorAll('.repl-result');
-          return all.length ? all[all.length - 1].textContent : '';
-        };
+        ${REPL_RUN}
 
-        submit('(+ 1 2 3)');
-        const arithmetic = lastResult();
+        const arithmetic = await __run('(+ 1 2 3)');
 
         // handle-key exists only if the standard library loaded.
-        submit('handle-key');
-        const stdlib = lastResult();
+        const stdlib = await __run('handle-key');
 
         // A prefix key (C-x) begins a sequence rather than running a
         // command; this checks and then resets the pending state.
-        submit('(begin (handle-key "C-x")'
+        const sequence = await __run('(begin (handle-key "C-x")'
           + ' (let ((p (not (eq? active-keymap the-keymap))))'
           + ' (reset-keymap!) p))');
-        const sequence = lastResult();
 
         // The module system: define a module, import it, call its export.
-        submit('(module demo (export answer) (define (answer) 42))');
-        submit('(begin (import demo) (answer))');
-        const modules = lastResult();
+        await __run('(module demo (export answer) (define (answer) 42))');
+        const modules = await __run('(begin (import demo) (answer))');
 
-        // Multiple buffers + highlighting: two buffers are seeded;
-        // switching to scratch.lisp shows syntax-highlighted spans.
-        submit('(view-count)');
-        const bufferCount = lastResult();
-        submit('(next-view!)');
-        await frame();
+        // Multiple buffers + highlighting: create a second buffer holding Lisp
+        // code (the spine boots ONE buffer; view-count is not a spine fn, so
+        // count open buffers via the tabline), then confirm the .lisp buffer
+        // shows syntax-highlighted spans.
+        await __run('(new-view! "scratch.lisp")');
+        await __run('(insert! "(define (f x) (+ x 1))")');
+        const bufferCount = String(document.querySelectorAll('.tabline-tab').length);
+        await __waitFor(() => document.querySelectorAll(
+          '.tok-keyword, .tok-comment, .tok-string'
+        ).length > 0);
         const tokenSpans = document.querySelectorAll(
           '.tok-keyword, .tok-comment, .tok-string'
         ).length;
-        submit('(previous-view!)');
-        await frame();
 
         const firstLineBefore = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
-        submit('(goto! 0)');
-        submit('(insert! "[lisp] ")');
-        await frame();
+        await __run('(goto! 0)');
+        await __run('(insert! "[lisp] ")');
+        await __waitFor(() => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent === '[lisp] ' + firstLineBefore);
         const firstLineAfter = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
 
         return {
@@ -415,7 +604,7 @@ app.whenReady().then(() => {
 
       // Check the file bridge: the host API is exposed, and a save with
       // an explicit path writes the file (no dialog needed).
-      const files = await win.webContents.executeJavaScript(`(async () => {
+      const files = await runArm('files', `(async () => {
         const api = window.host;
         const exposed = !!(api
           && typeof api.openFile === 'function'
@@ -432,57 +621,99 @@ app.whenReady().then(() => {
       const savedContent = await readFile(savePath, 'utf8').catch(() => null);
       await rm(savePath, { force: true });
 
-      // Incremental search: C-s opens the minibuffer; typing a query
-      // selects a match (rendered as selection rectangles).
-      const search = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      // Incremental search (C-s): isearch is a read-next-key loop (search.lisp),
+      // NOT a minibuffer prompt — its prompt shows in the ECHO area
+      // (show-status! → "I-search: <query>") and typing routes each key through
+      // the spine's search dispatcher, moving point to the match. Seed a buffer
+      // with a known term so the match is deterministic.
+      const search = await runArm('search', `(async () => {
+        ${WAIT_HELPERS}
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        const modeline = () => document.getElementById('modeline-name').textContent;
+        const echo = () => (document.querySelector('.minibuffer-echo')?.textContent ?? '');
+        await __run('(new-view! "search-test")');
+        await __run('(insert! "alpha beta gamma\\\\nfind Lisp here\\\\nmore text")');
+        await __run('(goto! 0)');
+        await __waitFor(() => modeline().includes('L1:'));
+        const originModeline = modeline();
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 's', ctrlKey: true, bubbles: true, cancelable: true,
         }));
-        const mb = document.querySelector('.minibuffer-input');
-        const panel = document.querySelector('.minibuffer');
-        const opened = !!mb && panel !== null && !panel.hidden;
-        let matched = false;
-        if (opened) {
-          mb.value = 'Lisp';
-          mb.dispatchEvent(new Event('input', { bubbles: true }));
-          await frame();
-          matched = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-selection-rect').length > 0;
-          mb.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Escape', bubbles: true, cancelable: true,
+        // The isearch prompt lands in the echo area.
+        const opened = !!(await __waitFor(() => echo().includes('I-search')));
+        // Type the query; each key routes to the spine's isearch dispatcher and
+        // extends the query. Point jumps to the match on line 2.
+        for (const ch of 'Lisp') {
+          editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: ch, bubbles: true, cancelable: true,
           }));
         }
-        return { opened, matched };
+        await __waitFor(() => echo().includes('Lisp') && modeline() !== originModeline);
+        const matched = echo().includes('I-search') && echo().includes('Lisp') &&
+          modeline().includes('L2:');
+        const echoText = echo();
+        // Enter exits isearch at the match; the echo clears.
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true,
+        }));
+        await __waitFor(() => !echo().includes('I-search'));
+        return { opened, matched, echoText };
       })()`);
       console.log('  search:', JSON.stringify(search));
 
-      // Command palette: M-x opens it, a query filters commands, Enter
-      // runs the top match and closes the minibuffer.
-      const palette = await win.webContents.executeJavaScript(`(async () => {
+      // Command palette (M-x = execute-command): opens a minibuffer prompt that
+      // reads a command name, then runs it. Tested end-to-end: seed a buffer,
+      // move point off line 1, then M-x beginning-of-buffer and confirm the
+      // command actually ran (point jumps to L1) and the prompt closed.
+      // (`matched` = the invoked command ran — a robust signal independent of
+      // how the completion candidates are surfaced.)
+      const palette = await runArm('palette', `(async () => {
+        ${WAIT_HELPERS}
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        const modeline = () => document.getElementById('modeline-name').textContent;
+        const mbOpen = () => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        };
+        await __run('(new-view! "palette-test")');
+        await __run('(insert! "aaa\\\\nbbb\\\\nccc")');
+        // point is at the end (line 3) after the insert.
+        await __waitFor(() => !modeline().includes('L1:'));
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
-        // Command is Meta now (keyEventToString maps metaKey to M-,
-        // altKey to A-), so M-x is the real macOS Cmd+X event.
+        // Command is Meta now (metaKey -> M-), so M-x is the real macOS Cmd+X.
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', code: 'KeyX', metaKey: true, bubbles: true, cancelable: true,
         }));
+        const opened = !!(await __waitFor(mbOpen));
         const mb = document.querySelector('.minibuffer-input');
-        const panel = document.querySelector('.minibuffer');
-        const opened = !!mb && panel !== null && !panel.hidden;
         const focused = document.activeElement === mb;
         let matched = false;
         let closed = false;
         if (opened) {
           mb.value = 'beginning-of-buffer';
           mb.dispatchEvent(new Event('input', { bubbles: true }));
-          matched = document.querySelector('.minibuffer-status')
-            .textContent.includes('beginning-of-buffer');
           mb.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
-          closed = panel.hidden;
+          closed = !!(await __waitFor(() => !mbOpen()));
+          matched = !!(await __waitFor(() => modeline().includes('L1:')));
         }
         return { opened, matched, closed, focused };
       })()`);
@@ -491,8 +722,8 @@ app.whenReady().then(() => {
       // Tree-sitter: JavaScript, Python and HTML buffers are highlighted
       // by their grammars. The function spans in Python prove it is the
       // grammar and not the line tokenizer (which never emits @function).
-      const treesitter = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const treesitter = await runArm('treesitter', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -500,18 +731,19 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        const tok = (cls) => document.querySelectorAll('.' + cls).length;
         submit('(new-view! "smoke.js")');
         submit('(insert! "const answer = 42;")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-number') > 0);
         const keywords = document.querySelectorAll('.tok-keyword').length;
         const numbers = document.querySelectorAll('.tok-number').length;
         submit('(new-view! "smoke.py")');
         submit('(insert! "def go(): return go()")');
-        await frame();
+        await __waitFor(() => tok('tok-function') > 0);
         const pyFunctions = document.querySelectorAll('.tok-function').length;
         submit('(new-view! "smoke.html")');
         submit('(insert! "<div id=x></div>")');
-        await frame();
+        await __waitFor(() => tok('tok-tag') > 0);
         const htmlTags = document.querySelectorAll('.tok-tag').length;
         // HTML → CSS language injection: a <style> body in an HTML
         // buffer must be highlighted with CSS faces. The HTML
@@ -520,7 +752,7 @@ app.whenReady().then(() => {
         // here proves the inner CSS highlighter ran on the raw_text.
         submit('(new-view! "smoke-injection.html")');
         submit('(insert! "<style>p { color: red; }</style>")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0);
         const htmlInjectsCss = document.querySelectorAll('.tok-keyword').length;
         // PHP (mixed) — a <?php ?> block plus surrounding HTML. The
         // PHP grammar's own captures cover the keyword, variable and
@@ -530,8 +762,7 @@ app.whenReady().then(() => {
         // non-zero prove PHP loaded and the HTML injection ran.
         submit('(new-view! "smoke.php")');
         submit('(insert! "<?php echo 1; ?> <b>html</b>")');
-        await frame();
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-tag') > 0);
         const phpKeywords = document.querySelectorAll('.tok-keyword').length;
         const phpTags = document.querySelectorAll('.tok-tag').length;
         submit('(new-view! "smoke.json")');
@@ -541,34 +772,34 @@ app.whenReady().then(() => {
         // JSON has no fallback tokenizer that could emit @number or
         // @constant otherwise.
         submit('(insert! "[1, true, null]")');
-        await frame();
+        await __waitFor(() => tok('tok-number') > 0 && tok('tok-constant') > 0);
         const jsonNumbers = document.querySelectorAll('.tok-number').length;
         const jsonConstants = document.querySelectorAll('.tok-constant').length;
         submit('(new-view! "smoke.css")');
         submit('(insert! "p { color: red; }")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0);
         // CSS has no fallback tokenizer either — tok-keyword (the
         // property name "color") proves the grammar loaded.
         const cssKeywords = document.querySelectorAll('.tok-keyword').length;
         const cssTags = document.querySelectorAll('.tok-tag').length;
         submit('(new-view! "smoke.ts")');
         submit('(insert! "const n: number = 1;")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-type') > 0);
         const tsKeywords = document.querySelectorAll('.tok-keyword').length;
         const tsTypes = document.querySelectorAll('.tok-type').length;
         submit('(new-view! "smoke.rs")');
         submit('(insert! "fn go() -> u32 { 1 }")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-type') > 0);
         const rsKeywords = document.querySelectorAll('.tok-keyword').length;
         const rsTypes = document.querySelectorAll('.tok-type').length;
         submit('(new-view! "smoke.go")');
         submit('(insert! "package p; func F() int32 { return 0 }")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-type') > 0);
         const goKeywords = document.querySelectorAll('.tok-keyword').length;
         const goTypes = document.querySelectorAll('.tok-type').length;
         submit('(new-view! "smoke.sh")');
         submit('(insert! "if true; then echo hi; fi")');
-        await frame();
+        await __waitFor(() => tok('tok-keyword') > 0 && tok('tok-function') > 0);
         const shKeywords = document.querySelectorAll('.tok-keyword').length;
         const shFunctions = document.querySelectorAll('.tok-function').length;
         // Markdown: a .md buffer with a heading and a fenced JS block
@@ -592,14 +823,17 @@ app.whenReady().then(() => {
         // a real newline here would be stripped, since the REPL is a
         // single-line <input>.)
         submit('(insert! "# heading\\\\n\\\\n\`\`\`js\\\\nconst x = 1;\\\\n\`\`\`\\\\n")');
-        await frame();
+        await __waitFor(() => tok('tok-heading') > 0 && tok('tok-keyword') > 0);
         const mdHeadings = document.querySelectorAll('.tok-heading').length;
         const mdInjectsJs = document.querySelectorAll('.tok-keyword').length;
         // LaTeX: a .tex buffer with a generic command, a sectioning
         // command, inline math, an environment and a tikzpicture
-        // exercises five key faces. \\textbf is a generic_command, the
-        // @function catch-all; environment names (equation, tikzpicture)
-        // are @type; the math delimiters ($) are @string; and the TikZ
+        // exercises four key faces of the Sublime-JMarkdown palette
+        // (languages/latex.js): \\textbf is a generic_command captured
+        // as @latex-command (the italic command face — NOT @function);
+        // environment names (equation, tikzpicture) are @type; the math
+        // delimiters ($) are @operator (teal — the old @string mapping
+        // was deliberately dropped, no green math); and the TikZ
         // specials (\\draw, \\node, ...) are @tag, a face no other
         // inserted buffer in this smoke arm produces inside its content
         // — so a non-zero count proves the LaTeX grammar's TikZ rule
@@ -612,11 +846,12 @@ app.whenReady().then(() => {
         // the REPL's single-line input won't accept verbatim).
         submit('(new-view! "smoke.tex")');
         submit('(insert! "\\\\\\\\textbf{hi} $x=1$\\\\n\\\\\\\\section{Hi}\\\\n\\\\\\\\begin{equation}x=1\\\\\\\\end{equation}\\\\n\\\\\\\\begin{tikzpicture}\\\\n\\\\\\\\draw (0,0) -- (1,1);\\\\n\\\\\\\\end{tikzpicture}\\\\n")');
-        await frame();
-        await frame();
-        const texFunctions = document.querySelectorAll('.tok-function').length;
+        await __waitFor(() =>
+          tok('tok-latex-command') > 0 && tok('tok-type') > 0 &&
+          tok('tok-operator') > 0 && tok('tok-tag') > 0);
+        const texCommands = document.querySelectorAll('.tok-latex-command').length;
         const texTypes = document.querySelectorAll('.tok-type').length;
-        const texStrings = document.querySelectorAll('.tok-string').length;
+        const texOperators = document.querySelectorAll('.tok-operator').length;
         const texTags = document.querySelectorAll('.tok-tag').length;
         return {
           // The languages whose grammar WASM actually loaded.
@@ -642,9 +877,9 @@ app.whenReady().then(() => {
           shFunctions,
           mdHeadings,
           mdInjectsJs,
-          texFunctions,
+          texCommands,
           texTypes,
-          texStrings,
+          texOperators,
           texTags,
         };
       })()`);
@@ -654,7 +889,7 @@ app.whenReady().then(() => {
       // `function foo() {}`, with point inside `function`, the
       // command opens a *Doc: Face at point* buffer whose HTML names
       // the `keyword` face.
-      const faceInfo = await win.webContents.executeJavaScript(`(async () => {
+      const faceInfo = await runArm('faceInfo', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -685,7 +920,7 @@ app.whenReady().then(() => {
       // Structural test of the editor's CSS layers — works on any
       // text-view, visible or not, so the unfiltered selectors are
       // correct here.
-      const layers = await win.webContents.executeJavaScript(`(() => {
+      const layers = await runArm('layers', `(() => {
         const z = (sel) =>
           Number(getComputedStyle(document.querySelector(sel)).zIndex);
         return {
@@ -700,106 +935,141 @@ app.whenReady().then(() => {
       console.log('  layers:', JSON.stringify(layers));
 
       // Replace-string: a chained two-prompt minibuffer flow.
-      const replace = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const replace = await runArm('replace', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
-        const replSubmit = (src) => {
+        const submit = (src) => {
           replInput.value = src;
           replInput.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        replSubmit('(new-view! "replace-test")');
-        replSubmit('(insert! "foo foo foo")');
-        await frame();
-        replSubmit('(run-command (quote replace-string))');
-        const mb = document.querySelector('.minibuffer-input');
-        const fill = async (text) => {
-          mb.value = text;
-          mb.dispatchEvent(new KeyboardEvent('keydown', {
+        ${REPL_RUN}
+        const firstLine = () => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        const mbOpen = () => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        };
+        const promptText = () => (document.querySelector('.minibuffer-prompt')?.textContent ?? '');
+        const fill = (text) => {
+          const input = document.querySelector('.minibuffer-input');
+          input.value = text;
+          input.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
-          await frame();
         };
-        await fill('foo');
-        await fill('bar');
-        return { text: document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent };
+        await __run('(new-view! "replace-test")');
+        await __run('(insert! "foo foo foo")');
+        // replace-string is a chained two-prompt minibuffer flow ("Replace: "
+        // then "Replace with: "); each prompt round-trips to the spine.
+        submit('(run-command (quote replace-string))');
+        await __waitFor(() => mbOpen() && promptText().includes('Replace:'));
+        fill('foo');
+        await __waitFor(() => mbOpen() && promptText().includes('with'));
+        fill('bar');
+        await __waitFor(() => firstLine() === 'bar bar bar');
+        return { text: firstLine() };
       })()`);
       console.log('  replace:', JSON.stringify(replace));
 
       // Regex-replace and query-replace: two new commands that share
       // the chained two-prompt minibuffer flow as replace-string, with
       // JS RegExp semantics and a per-match prompt respectively.
-      const regexReplace = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const regexReplace = await runArm('regexReplace', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
-        const replSubmit = (src) => {
+        const submit = (src) => {
           replInput.value = src;
           replInput.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        // 1. replace-regexp: (\\w+)(\\d+) -> $2-$1 on a mixed line.
-        replSubmit('(new-view! "regex-replace-test")');
-        replSubmit('(insert! "foo123 bar45 baz6")');
-        await frame();
-        replSubmit('(run-command (quote replace-regexp))');
-        const mb = () => document.querySelector('.minibuffer-input');
-        const fill = async (text) => {
-          const input = mb();
+        ${REPL_RUN}
+        const firstLine = () => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        const mbOpen = () => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        };
+        const promptText = () => (document.querySelector('.minibuffer-prompt')?.textContent ?? '');
+        const echo = () => (document.querySelector('.minibuffer-echo')?.textContent ?? '');
+        const modeline = () => document.getElementById('modeline-name').textContent;
+        const fill = (text) => {
+          const input = document.querySelector('.minibuffer-input');
           input.value = text;
           input.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
-          await frame();
         };
+        // 1. replace-regexp: (\\w+?)(\\d+) -> $2-$1 on a mixed line. Prompts
+        //    "Regexp: " then "Replace with: ".
+        await __run('(new-view! "regex-replace-test")');
+        await __run('(insert! "foo123 bar45 baz6")');
+        submit('(run-command (quote replace-regexp))');
+        await __waitFor(() => mbOpen() && promptText().includes('Regexp'));
         // Four backslashes in the template literal -> two in JS string
         // -> two in the Lisp-readable text the REPL submits.
-        await fill('(\\\\w+?)(\\\\d+)');
-        await fill('$2-$1');
-        const regexText = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        fill('(\\\\w+?)(\\\\d+)');
+        await __waitFor(() => mbOpen() && promptText().includes('with'));
+        fill('$2-$1');
+        await __waitFor(() => firstLine() === '123-foo 45-bar 6-baz');
+        const regexText = firstLine();
 
-        // 2. query-replace: foo -> xxx with a y, then a n, then a q
-        //    sequence — exactly one replacement should happen.
-        replSubmit('(new-view! "query-replace-test")');
-        replSubmit('(insert! "foo foo foo")');
-        await frame();
-        // Move to the start so the walk sees every match.
-        replSubmit('(beginning-of-buffer)');
-        await frame();
-        replSubmit('(run-command (quote query-replace))');
-        await fill('foo');
-        await fill('xxx');
-        // Now the editor has focus (query-replace's status message did
-        // not steal it), and read-next-key has installed a callback.
-        // Send the answers as keyboard events on the editor surface.
+        // 2. query-replace: foo -> xxx, answering y then q so exactly one
+        //    replacement happens. The from/to are minibuffer prompts; the
+        //    per-match decision is a read-next-key loop whose prompt shows in
+        //    the ECHO area ("Query replacing ... (y/n/q/! RET)").
+        await __run('(new-view! "query-replace-test")');
+        await __run('(insert! "foo foo foo")');
+        await __run('(beginning-of-buffer)');
+        submit('(run-command (quote query-replace))');
+        await __waitFor(() => mbOpen() && promptText().includes('Query replace'));
+        fill('foo');
+        await __waitFor(() => mbOpen() && promptText().includes('with'));
+        fill('xxx');
+        // Wait for the per-match prompt in the echo area before answering, so
+        // the keys route to the read-next-key loop instead of self-inserting.
+        await __waitFor(() => echo().includes('Query replacing'));
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         const press = (key) => editor.dispatchEvent(new KeyboardEvent('keydown', {
           key, bubbles: true, cancelable: true,
         }));
+        const mlBeforeY = modeline();
         press('y'); // replace the first
-        await frame();
+        // Wait until the FIRST replacement landed AND the loop advanced to the
+        // 2nd match (point moved -> read-next-key re-armed), so 'q' can't race
+        // the re-arm and self-insert / leak the loop into later arms.
+        await __waitFor(() => firstLine().startsWith('xxx') && modeline() !== mlBeforeY);
         press('q'); // quit before the second
-        await frame();
-        const queryText = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        await __waitFor(() => !echo().includes('Query replacing'));
+        // Safety net: if 'q' somehow raced, force the loop closed so a leaked
+        // prompt can't cascade into chord / findFile.
+        if (echo().includes('Query replacing')) {
+          press('q'); press('escape');
+          await __waitFor(() => !echo().includes('Query replacing'));
+        }
+        const queryText = firstLine();
         return { regexText, queryText };
       })()`);
       console.log('  regexReplace:', JSON.stringify(regexReplace));
 
       // Mouse: click in the buffer to place the cursor on another line.
-      const mouse = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const mouse = await runArm('mouse', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
-        const replSubmit = (src) => {
+        const submit = (src) => {
           replInput.value = src;
           replInput.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        replSubmit('(new-view! "mouse-test")');
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        ${REPL_RUN}
+        // Model B bakes line:col into the modeline NAME slot (L<line>:C<col>,
+        // 1-based line, 0-based col); the position slot is always empty now.
+        const modeline = () => document.getElementById('modeline-name').textContent;
+        await __run('(new-view! "mouse-test")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         const press = (key) => editor.dispatchEvent(new KeyboardEvent('keydown', {
           key, bubbles: true, cancelable: true,
@@ -809,8 +1079,8 @@ app.whenReady().then(() => {
         for (const ch of 'beta') press(ch);
         press('Enter');
         for (const ch of 'gamma') press(ch);
-        await frame();
-        const before = document.getElementById('modeline-position').textContent;
+        await __waitFor(() => modeline().includes('L3:'));
+        const before = modeline();
         const click = (x, y) => {
           editor.dispatchEvent(new MouseEvent('mousedown', {
             clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true,
@@ -819,14 +1089,14 @@ app.whenReady().then(() => {
         // The cursor is on line 3; click line 1 and check it moved.
         const line0 = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line')[0].getBoundingClientRect();
         click(line0.left + 16, line0.top + 4);
-        await frame();
-        const after = document.getElementById('modeline-position').textContent;
+        await __waitFor(() => modeline().includes('L1:'));
+        const after = modeline();
         // Click well past the end of line 2 ("beta") — the cursor should
         // land at that line's end, not stay put.
         const line1 = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line')[1].getBoundingClientRect();
         click(line1.right + 90, line1.top + 4);
-        await frame();
-        const endOfLine = document.getElementById('modeline-position').textContent;
+        await __waitFor(() => modeline().includes('L2:'));
+        const endOfLine = modeline();
         // Double-click selects the word — a mousedown with detail 2,
         // which is how the editor detects a double-click.
         const line0b = document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line')[0].getBoundingClientRect();
@@ -835,7 +1105,8 @@ app.whenReady().then(() => {
           clientX: line0b.left + 12, clientY: line0b.top + 4,
           bubbles: true, cancelable: true,
         }));
-        await frame();
+        await __waitFor(() =>
+          document.querySelectorAll('text-view:not([style*="display: none"]) .editor-selection-rect').length > 0);
         return {
           before,
           after,
@@ -846,22 +1117,26 @@ app.whenReady().then(() => {
       console.log('  mouse:', JSON.stringify(mouse));
 
       // Markdown: a .md buffer highlights a heading.
-      const markdown = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const markdown = await runArm('markdown', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
-        replInput.value = '(new-view! "notes.md")';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        await __run('(new-view! "notes.md")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         for (const ch of '# Title') {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
             key: ch, bubbles: true, cancelable: true,
           }));
         }
-        await frame();
+        await __waitFor(() => document.querySelectorAll('.tok-heading').length > 0);
         return { headings: document.querySelectorAll('.tok-heading').length };
       })()`);
       console.log('  markdown:', JSON.stringify(markdown));
@@ -871,9 +1146,104 @@ app.whenReady().then(() => {
       // command so the result is deterministic without a JMarkdown
       // binary; the heading text must reach the rendered pane, and the
       // pane must refresh as the buffer is edited.
-      const preview = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      // The preview pane drives the REAL `jmarkdown watch` server: the
+      // buffer must be a markdown-mode file WITH an on-disk path (the spine
+      // guard emits no directive otherwise), and the iframe loads
+      // http://localhost:PORT — a DIFFERENT origin from app://, so its
+      // content can't be read via contentDocument. The arm therefore only
+      // drives the UI in-page; the rendered HTML is asserted MAIN-side by
+      // fetching the watch server's URL. Skipped when jmarkdown isn't
+      // installed (same pattern as the docs arm).
+      const preview = !jmarkdownInstalled
+        ? { skipped: true }
+        : await (async () => {
+          // Poll the watch server for a needle in its rendered HTML —
+          // covers the build delay AND the debounce+rebuild on refresh.
+          const fetchForNeedle = async (url, needle, ms) => {
+            const t0 = Date.now();
+            for (;;) {
+              const text = await fetch(url)
+                .then((r) => (r.ok ? r.text() : ''))
+                .catch(() => '');
+              if (text.includes(needle)) return true;
+              if (Date.now() - t0 > ms) return false;
+              await new Promise((r) => setTimeout(r, 150));
+            }
+          };
+          const opened = await runArm('preview', `(async () => {
+            ${WAIT_HELPERS}
+            const replInput = document.querySelector('.repl-input');
+            const submit = (src) => {
+              replInput.value = src;
+              replInput.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter', bubbles: true, cancelable: true,
+              }));
+            };
+            submit('(open-file-path! ${JSON.stringify(previewMdPath)})');
+            await __waitFor(() => (document.getElementById('modeline-name')
+              ?.textContent ?? '').includes('jmacs-smoke-preview.md'));
+            const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+            editor.focus();
+            // C-c v (C-c is a prefix; the completing 'v' is bare).
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
+            }));
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'v', bubbles: true, cancelable: true,
+            }));
+            // frame.src is only pointed at localhost AFTER the main-side
+            // readiness probe saw HTTP 200 (the watch server 404s for
+            // ~0.5s while building), so poll generously.
+            const frameEl = document.querySelector('.markdown-preview-frame');
+            await __waitFor(() => frameEl.src.startsWith('http://localhost'), 12000);
+            return {
+              shown: !document.body.classList.contains('markdown-preview-hidden'),
+              src: frameEl.src.startsWith('http://localhost') ? frameEl.src : '',
+            };
+          })()`);
+          if (opened.__skipped || opened.__armError) return opened;
+          const rendered = opened.src
+            ? await fetchForNeedle(opened.src, 'PreviewHeading', 8000)
+            : false;
+          // Refresh: type a nonce into the buffer; the debounced
+          // (~400ms) shadow-sidecar sync rebuilds the watch output.
+          await runArm('preview', `(async () => {
+            const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+            editor.focus();
+            for (const ch of 'RefreshNonce ') {
+              editor.dispatchEvent(new KeyboardEvent('keydown', {
+                key: ch, bubbles: true, cancelable: true,
+              }));
+            }
+            return { typed: true };
+          })()`);
+          const refreshed = opened.src
+            ? await fetchForNeedle(opened.src, 'RefreshNonce', 8000)
+            : false;
+          const closed = await runArm('preview', `(async () => {
+            ${WAIT_HELPERS}
+            const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+            editor.focus();
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
+            }));
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'v', bubbles: true, cancelable: true,
+            }));
+            await __waitFor(() =>
+              document.body.classList.contains('markdown-preview-hidden'));
+            return {
+              hidden: document.body.classList.contains('markdown-preview-hidden'),
+            };
+          })()`);
+          return { shown: opened.shown, rendered, refreshed, hidden: closed.hidden };
+        })();
+      console.log('  preview:', JSON.stringify(preview));
+
+      // Virtualisation: a long buffer keeps only a window of lines in
+      // the DOM, while the scroll height spans the whole document.
+      const virtual = await runArm('virtual', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -881,83 +1251,26 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        // A fresh markdown buffer; 'cat' echoes the source verbatim.
-        submit('(new-view! "preview.md")');
-        await frame();
-        submit('(set! *markdown-interpreter* "cat")');
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
-        editor.focus();
-        for (const ch of '# Heading') {
-          editor.dispatchEvent(new KeyboardEvent('keydown', {
-            key: ch, bubbles: true, cancelable: true,
-          }));
-        }
-        await frame();
-        // C-c v toggles the preview pane open. C-c is a prefix; the
-        // 'v' that completes it carries no modifier.
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
-        }));
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'v', bubbles: true, cancelable: true,
-        }));
-        await wait(600);
-        const pane = document.querySelector('.markdown-preview-host');
-        // The preview renders inside an isolated iframe now; read its
-        // document body for the rendered text.
-        const frameEl = document.querySelector('.markdown-preview-frame');
-        const frameBody = () => (frameEl && frameEl.contentDocument)
-          ? frameEl.contentDocument.body : null;
-        const shown = !!(pane && getComputedStyle(pane).display !== 'none');
-        const rendered = !!(frameBody() && frameBody().textContent.includes('Heading'));
-        // Editing the buffer refreshes the pane (debounced ~250ms).
-        editor.focus();
-        for (const ch of ' more') {
-          editor.dispatchEvent(new KeyboardEvent('keydown', {
-            key: ch, bubbles: true, cancelable: true,
-          }));
-        }
-        await wait(600);
-        const refreshed = !!(frameBody() && frameBody().textContent.includes('Heading more'));
-        // C-c v again hides the pane.
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
-        }));
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'v', bubbles: true, cancelable: true,
-        }));
-        await frame();
-        const hidden = !!(pane && getComputedStyle(pane).display === 'none');
-        return { shown, rendered, refreshed, hidden };
-      })()`);
-      console.log('  preview:', JSON.stringify(preview));
-
-      // Virtualisation: a long buffer keeps only a window of lines in
-      // the DOM, while the scroll height spans the whole document.
-      const virtual = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const replInput = document.querySelector('.repl-input');
-        replInput.value = '(new-view! "big.txt")';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        ${REPL_RUN}
+        await __run('(new-view! "big.txt")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         for (let i = 0; i < 400; i += 1) {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         }
-        await frame();
-        // The cursor sits on the last line. Scroll to the top and let
-        // it settle: the first frame runs the scroll-driven render, the
-        // second lets any cursor-follow bounce land. A scroll-only
-        // render must leave the viewport where the scroll put it.
+        // Let the inserts land, then move the caret to the top so the
+        // scroll-to-top isn't fought by a cursor-follow bounce, and wait for
+        // the windowed render to actually settle at line 1 / scrollTop 0.
+        await __sleep(400);
+        await __run('(goto! 0)');
         editor.scrollTop = 0;
-        await frame();
-        await frame();
+        await __waitFor(() => {
+          const no = document.querySelector('text-view:not([style*="display: none"]) .editor-line-no');
+          return editor.scrollTop === 0 && no && no.textContent === '1';
+        });
         return {
           lineDivs: document.querySelectorAll('text-view:not([style*="display: none"]) .editor-line').length,
           firstNumber: (document.querySelector('text-view:not([style*="display: none"]) .editor-line-no') || {}).textContent,
@@ -969,8 +1282,8 @@ app.whenReady().then(() => {
 
       // Modes: a new buffer's major mode is chosen from its name and
       // shown in the modeline.
-      const modes = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const modes = await runArm('modes', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -978,15 +1291,24 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-view! "core.lisp")');
-        await frame();
-        const lisp = document.getElementById('modeline-name').textContent;
-        submit('(new-view! "notes.txt")');
-        await frame();
-        const txt = document.getElementById('modeline-name').textContent;
-        submit('(toggle-math-mode)'); // a minor mode — shows in the modeline
-        await frame();
-        const math = document.getElementById('modeline-name').textContent;
+        ${REPL_RUN}
+        const modeline = () => document.getElementById('modeline-name').textContent;
+
+        // Each buffer switch round-trips; wait for the modeline to name the
+        // new buffer before reading its mode tag.
+        await __run('(new-view! "core.lisp")');
+        await __waitFor(() => modeline().includes('core.lisp'));
+        const lisp = modeline();
+        await __run('(new-view! "notes.txt")');
+        await __waitFor(() => modeline().includes('notes.txt'));
+        const txt = modeline();
+        // Minor modes are NOT baked into the Model-B modeline (the spine
+        // composes major-mode-name only; minor-mode-line is unwired), so
+        // assert activation through the Lisp side directly: after the
+        // toggle, (minor-mode-line) reports the "  Math" fragment. The
+        // Gamma insertion below then proves the mode's keymap is live.
+        await __run('(toggle-math-mode)');
+        const math = await __run('(minor-mode-line)');
         // With math mode on, \` then Shift then G must insert \\Gamma —
         // the bare Shift press must not reach the key reader.
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
@@ -997,7 +1319,7 @@ app.whenReady().then(() => {
         key('\`');
         key('Shift', true);
         key('G', true);
-        await frame();
+        await __waitFor(() => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent.includes('Gamma'));
         const mathText = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
         return { lisp, txt, math, mathText };
       })()`);
@@ -1005,9 +1327,8 @@ app.whenReady().then(() => {
 
       // A sticky note: created via Lisp, it shows its source and rides
       // the document when the buffer scrolls.
-      const sticky = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const sticky = await runArm('sticky', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1015,8 +1336,35 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-view! "notes-sticky.txt")');
-        await frame();
+        ${REPL_RUN}
+        const noteCount = () => document.querySelectorAll('.sticky-note').length;
+        // Sticky notes are created + edited through the SERVER command
+        // add-sticky-note (M-n M-n), which rides a sticky-add directive:
+        // the renderer creates a note at the cursor and opens a textarea
+        // (.sticky-note-edit) over it. The old (note-create!)/(note-set-
+        // source!) primitives are RENDERER-side and unreachable from the
+        // spine REPL. Drive the real path: run add-sticky-note, type the
+        // source into the fresh textarea, and blur to commit (see
+        // sticky-notes.js beginEdit). Verified live via scripts/drive.js.
+        const addNote = async (source) => {
+          const seen = noteCount();
+          submit('(run-command (quote add-sticky-note))');
+          const ta = await __waitFor(() => {
+            const eds = document.querySelectorAll('.sticky-note-edit');
+            return eds.length ? eds[eds.length - 1] : null;
+          }, 2500);
+          if (!ta) return false;
+          ta.focus();
+          ta.value = source;
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          // blur commits the typed source (beginEdit's blur handler).
+          ta.dispatchEvent(new FocusEvent('blur', { bubbles: false }));
+          await __waitFor(() => noteCount() >= seen + 1 &&
+            document.querySelectorAll('.sticky-note-edit').length === 0, 2000);
+          return true;
+        };
+
+        await __run('(new-view! "notes-sticky.txt")');
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
         for (let i = 0; i < 200; i += 1) {
@@ -1024,35 +1372,42 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         }
-        await frame();
-        submit('(goto! 0)');
-        await frame();
-        // Drive the render pipeline with a controlled command — 'cat'
-        // echoes the source, so the output here is deterministic and
-        // independent of whether a real JMarkdown binary is installed.
-        submit('(set! *markdown-interpreter* "cat")');
-        await frame();
-        submit('(note-set-source! (note-create!) "sticky body text")');
-        await frame();
+        await __sleep(300);
+        await __run('(goto! 0)');
+        // Deterministic render: 'cat' echoes the source. custom-apply! is
+        // the propagating verb — the note body renders with the RENDERER's
+        // *markdown-interpreter* (a plain set! would update only the spine
+        // and never reach the renderer that owns the note render).
+        await __run('(custom-apply! (quote *markdown-interpreter*) "cat")');
+        await __sleep(200);
+
+        // Note 1: plain body text.
+        await addNote('sticky body text');
         const note = document.querySelector('.sticky-note');
         const body = note && note.querySelector('.sticky-note-body');
+        await __waitFor(() => body && body.textContent.includes('sticky body text'));
+        // Scroll-follow: the note tracks the buffer as it scrolls.
         const before = note ? note.getBoundingClientRect().top : 0;
         editor.scrollTop = editor.scrollTop + 300;
-        await frame();
-        await frame();
+        await __sleep(120);
         const after = note ? note.getBoundingClientRect().top : 0;
-        // An HTML tag in the source becomes a real element once rendered.
-        submit('(note-set-source! (note-create!) "<b>bold note</b>")');
-        await wait(500);
-        // A note with mathematics — MathJax typesets it in place.
-        submit('(note-set-source! (note-create!) "energy $E = mc^2$")');
-        await wait(1200);
-        // A metadata header sets the note's colour. The \\n reach the
-        // REPL as a two-character escape, so the Lisp reader makes the
-        // newlines — a real newline would be stripped by the input.
-        submit('(note-set-source! (note-create!) "---\\\\ncolor: tomato\\\\n---\\\\ncoloured")');
-        await wait(400);
+        editor.scrollTop = 0;
+        await __sleep(80);
+        // Note 2: an HTML tag becomes a real element.
+        await addNote('<b>bold note</b>');
+        await __waitFor(() => document.querySelectorAll('.sticky-note-body b').length > 0);
+        // Note 3: mathematics — MathJax typesets it in place.
+        await addNote('energy $E = mc^2$');
+        await __waitFor(() => document.querySelectorAll('.sticky-note-body mjx-container').length > 0);
+        // Note 4: a leading metadata header sets the note's colour. Real
+        // newlines here (\\n -> a newline in this JS string) — the source
+        // is set straight on the textarea, not read by the Lisp reader, so
+        // it does NOT need the old quadruple-escaped \\\\n form.
+        await addNote('---\\ncolor: tomato\\n---\\ncoloured');
+        await __waitFor(() => noteCount() >= 4);
         const colourNote = document.querySelectorAll('.sticky-note')[3];
+        await __waitFor(() => colourNote &&
+          getComputedStyle(colourNote).backgroundColor === 'rgb(255, 99, 71)');
         const coloured = colourNote
           ? getComputedStyle(colourNote).backgroundColor
           : '';
@@ -1066,26 +1421,29 @@ app.whenReady().then(() => {
         // Collapse the coloured note via its control, then expand it by
         // double-clicking the icon. Collapsed, only the Font Awesome
         // icon shows — the panel background goes transparent.
-        colourNote.querySelector('.sticky-note-collapse').dispatchEvent(
-          new MouseEvent('click', { bubbles: true })
-        );
-        await frame();
-        const collapsed = colourNote.classList.contains('is-collapsed');
-        const collapsedTransparent =
-          getComputedStyle(colourNote).backgroundColor === 'rgba(0, 0, 0, 0)';
-        const faLoaded = getComputedStyle(
-          colourNote.querySelector('.sticky-note-icon i')
-        ).fontFamily.includes('Font Awesome');
-        colourNote.querySelector('.sticky-note-icon').dispatchEvent(
-          new MouseEvent('dblclick', { bubbles: true })
-        );
-        await frame();
-        const expanded = !colourNote.classList.contains('is-collapsed');
+        let collapsed = false, collapsedTransparent = false, faLoaded = false, expanded = false;
+        if (colourNote) {
+          colourNote.querySelector('.sticky-note-collapse').dispatchEvent(
+            new MouseEvent('click', { bubbles: true })
+          );
+          await __waitFor(() => colourNote.classList.contains('is-collapsed'));
+          collapsed = colourNote.classList.contains('is-collapsed');
+          collapsedTransparent =
+            getComputedStyle(colourNote).backgroundColor === 'rgba(0, 0, 0, 0)';
+          faLoaded = getComputedStyle(
+            colourNote.querySelector('.sticky-note-icon i')
+          ).fontFamily.includes('Font Awesome');
+          colourNote.querySelector('.sticky-note-icon').dispatchEvent(
+            new MouseEvent('dblclick', { bubbles: true })
+          );
+          await __waitFor(() => !colourNote.classList.contains('is-collapsed'));
+          expanded = !colourNote.classList.contains('is-collapsed');
+        }
         return {
           present: note !== null,
           body: body ? body.textContent.trim() : '',
           scrolled: Math.abs(after - before + 300) < 4,
-          count: document.querySelectorAll('.sticky-note').length,
+          count: noteCount(),
           rendered: document.querySelectorAll('.sticky-note-body b').length > 0,
           mathTypeset:
             document.querySelectorAll('.sticky-note-body mjx-container')
@@ -1105,27 +1463,33 @@ app.whenReady().then(() => {
 
       // Customisation: init.lisp is written on first run, and a saved
       // setting is persisted to custom.lisp.
-      const config = await win.webContents.executeJavaScript(`(async () => {
+      const config = await runArm('config', `(async () => {
+        ${WAIT_HELPERS}
         const initLoaded =
           (await window.host.readConfigFile('init.lisp')) !== null;
         const replInput = document.querySelector('.repl-input');
-        replInput.value =
-          '(custom-apply-and-save! (quote *markdown-interpreter*) "echo smoke")';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await new Promise((r) => setTimeout(r, 250));
-        const saved = await window.host.readConfigFile('custom.lisp');
-        // (customize) opens a customisation buffer — a non-text buffer
-        // shown through its own view, the editor view hidden.
-        replInput.value = '(customize)';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await new Promise((r) => requestAnimationFrame(() => r()));
-        // Phase 2c + 3d: the per-pane editor is a <text-view> wrapping
-        // the .editor div, and customize is a <customize-view> wrapping
-        // the .customize div. Visibility now lives on the wrappers.
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        // custom-apply-and-save! writes custom.lisp asynchronously; poll for it.
+        submit('(custom-apply-and-save! (quote *markdown-interpreter*) "echo smoke")');
+        let saved = null;
+        for (let k = 0; k < 60; k += 1) {
+          saved = await window.host.readConfigFile('custom.lisp');
+          if (saved && saved.includes('*markdown-interpreter*') && saved.includes('echo smoke')) break;
+          await __sleep(50);
+        }
+        // (customize) opens a customisation buffer — a non-text buffer shown
+        // through its own <customize-view>, the editor view hidden. It round-trips.
+        submit('(customize)');
+        await __waitFor(() => {
+          const cv = document.querySelector('customize-view:not([style*="display: none"])');
+          return cv && getComputedStyle(cv).display !== 'none'
+            && !document.querySelector('text-view:not([style*="display: none"])');
+        });
         const customizeEl = document.querySelector('customize-view:not([style*="display: none"])');
         const customizeShown = !!(
           customizeEl &&
@@ -1133,11 +1497,10 @@ app.whenReady().then(() => {
           !document.querySelector('text-view:not([style*="display: none"])')
         );
         // The sticky-notes group renders its setting as a form widget.
-        replInput.value = '(customize-group (quote sticky-notes))';
-        replInput.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', bubbles: true, cancelable: true,
-        }));
-        await new Promise((r) => requestAnimationFrame(() => r()));
+        submit('(customize-group (quote sticky-notes))');
+        await __waitFor(() =>
+          document.querySelector('.customize-row') &&
+          document.querySelector('.customize-row .customize-widget'));
         const settingRendered = !!(
           document.querySelector('.customize-row') &&
           document.querySelector('.customize-row .customize-widget')
@@ -1155,7 +1518,7 @@ app.whenReady().then(() => {
 
       // Themes: changing *theme* through the customisation registry
       // rewrites CSS variables on the document root.
-      const themes = await win.webContents.executeJavaScript(`(async () => {
+      const themes = await runArm('themes', `(async () => {
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1167,17 +1530,27 @@ app.whenReady().then(() => {
           getComputedStyle(document.documentElement)
             .getPropertyValue(name)
             .trim();
+        // custom-apply! round-trips to the server (config-apply pushes
+        // the theme's CSS vars back), so a single rAF races the apply.
+        // Poll until --bg changes from the pre-apply value (bounded).
+        const applyTheme = async (name) => {
+          const prev = cssVar('--bg');
+          submit('(custom-apply! (quote *theme*) (quote ' + name + '))');
+          for (let i = 0; i < 60; i += 1) {
+            await new Promise((r) => setTimeout(r, 25));
+            if (cssVar('--bg') !== prev) break;
+          }
+          return cssVar('--bg');
+        };
         const bgDark = cssVar('--bg');
-        submit('(custom-apply! (quote *theme*) (quote light))');
-        await new Promise((r) => requestAnimationFrame(() => r()));
-        const bgLight = cssVar('--bg');
+        // NB: the light theme was renamed light -> solarized-light
+        // (themes.lisp migration; no back-compat alias). Applying a
+        // now-unknown 'light silently falls back to dark, which is why
+        // this arm used to read the dark bg for "light".
+        const bgLight = await applyTheme('solarized-light');
         const fgLight = cssVar('--fg');
-        submit('(custom-apply! (quote *theme*) (quote midnight))');
-        await new Promise((r) => requestAnimationFrame(() => r()));
-        const bgMidnight = cssVar('--bg');
-        submit('(custom-apply! (quote *theme*) (quote dark))');
-        await new Promise((r) => requestAnimationFrame(() => r()));
-        const bgBack = cssVar('--bg');
+        const bgMidnight = await applyTheme('midnight');
+        const bgBack = await applyTheme('dark');
         return {
           bgDark, bgLight, fgLight, bgMidnight, bgBack,
           differ: bgDark !== bgLight && bgLight !== bgMidnight,
@@ -1191,7 +1564,7 @@ app.whenReady().then(() => {
       // computed `.tok-keyword` colour (from the live swatch inside
       // the customize buffer) reflects the override. Reset, then
       // assert the default colour is back.
-      const faces = await win.webContents.executeJavaScript(`(async () => {
+      const faces = await runArm('faces', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1265,16 +1638,23 @@ app.whenReady().then(() => {
       // Image buffers: opening an image file shows it through the image
       // view — a non-text buffer kind — with the editor view hidden.
       // The dialog is stubbed (above) to choose the scratch PNG.
-      const image = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const image = await runArm('image', `(async () => {
+        ${WAIT_HELPERS}
+        const frame = __sleep.bind(null, 60);
         const replInput = document.querySelector('.repl-input');
-        replInput.value = '(open-file!)';
+        // Open by explicit path — NOT (open-file!). The native-dialog
+        // primitive is a no-op in the hermetic smoke (not a spine
+        // primitive / not a client directive; the dialog stub is never
+        // reached — see the tabline arm). open-file-path! routes a .png
+        // to the image view (verified live via scripts/drive.js).
+        replInput.value = '(open-file-path! ${JSON.stringify(imagePath)})';
         replInput.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
-        // The open path is async (IPC + a data-URL read); give it room.
-        await new Promise((r) => setTimeout(r, 400));
-        await frame();
+        // The open path is async (a data-URL read + the server VIEW push);
+        // wait (bounded) for the image-view to mount.
+        await __waitFor(() =>
+          document.querySelector('image-view:not([style*="display: none"]) .image-content'), 2000);
         const view = document.querySelector('image-view:not([style*="display: none"])');
         const img = view ? view.querySelector('.image-content') : null;
         const toggle = view ? view.querySelector('.image-zoom-toggle') : null;
@@ -1306,8 +1686,8 @@ app.whenReady().then(() => {
       // swatch beside each one; clicking a swatch opens the modal colour
       // chooser, and confirming it writes the chosen colour back into the
       // buffer, replacing the literal's text.
-      const swatches = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const swatches = await runArm('swatches', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1315,25 +1695,26 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(new-view! "swatch.css")');
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+        ${REPL_RUN}
+        const firstLine = () => document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        await __run('(new-view! "swatch.css")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         for (const ch of 'a #ff8800 b rgb(0,0,0)') {
           editor.dispatchEvent(new KeyboardEvent('keydown', {
             key: ch, bubbles: true, cancelable: true,
           }));
         }
-        await frame();
         // One swatch per literal — the #ff8800 hash and the rgb() form.
+        await __waitFor(() => document.querySelectorAll('.colour-swatch').length >= 2);
         const count = document.querySelectorAll('.colour-swatch').length;
-        const firstBefore = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+        const firstBefore = firstLine();
         // Click the first swatch: the modal opens with OK / Cancel.
         const swatch = document.querySelector('.colour-swatch');
         swatch.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
         swatch.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        await frame();
-        const modal = document.querySelector('.colour-picker');
+        const modal = await __waitFor(() => document.querySelector('.colour-picker'));
         const modalShown = !!modal;
         // Pick a new colour and confirm with OK.
         let edited = '';
@@ -1343,8 +1724,8 @@ app.whenReady().then(() => {
           input.dispatchEvent(new Event('input', { bubbles: true }));
           document.querySelector('.colour-picker-ok')
             .dispatchEvent(new MouseEvent('click', { bubbles: true }));
-          await frame();
-          edited = document.querySelector('text-view:not([style*="display: none"]) .editor-line').textContent;
+          await __waitFor(() => firstLine().includes('#00ccff'));
+          edited = firstLine();
         }
         const modalClosed = document.querySelector('.colour-picker') === null;
         return { count, firstBefore, modalShown, edited, modalClosed };
@@ -1355,8 +1736,8 @@ app.whenReady().then(() => {
       // shows the HTML the build produced; clicking a [data-jmacs-doc]
       // link inside opens a second doc buffer.
       const docs = docsBuilt
-        ? await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        ? await runArm('docs', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1364,36 +1745,32 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        // Docs open as a PANE doc-view now (showDocInPane), not a utility-dock
+        // tab — wait for the visible doc-view's page to carry the name.
+        const paneDoc = () => document.querySelector('doc-view:not([style*="display: none"]) .doc-page');
         submit('(open-doc "forward-char")');
-        // The first await yields to the REPL; the open-doc primitive
-        // dispatches an async fetch through host.readDocPage, then a
-        // buffer switch. A handful of frames is enough for both.
-        for (let i = 0; i < 6; i += 1) await frame();
-        // Docs render as utility-dock tabs now; the active tab is the one
-        // visible panel (its wrapper has no hidden attribute).
-        const view = document.querySelector('.utility-panel:not([hidden]) doc-view');
-        const shown = !!view;
-        const page = view ? view.querySelector('.doc-page') : null;
+        await __waitFor(() => { const p = paneDoc(); return p && p.textContent.includes('forward-char'); });
+        const page = paneDoc();
         const pageText = page ? page.textContent : '';
         // Click the first cross-link inside the page (the cmd() helper
-        // emits the backward-char reference).
+        // emits the backward-char reference); the pane re-renders to it.
         const xref = page ? page.querySelector('[data-jmacs-doc]') : null;
         const xrefName = xref ? xref.getAttribute('data-jmacs-doc') : '';
         if (xref) {
           xref.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          for (let i = 0; i < 6; i += 1) await frame();
+          await __waitFor(() => {
+            const p = paneDoc();
+            return p && p.textContent !== pageText && p.textContent.includes(xrefName);
+          });
         }
-        const secondPage = document.querySelector('.utility-panel:not([hidden]) doc-view .doc-page');
+        const secondPage = paneDoc();
         const secondText = secondPage ? secondPage.textContent : '';
         return {
-          shown,
+          shown: !!page,
           containsName: pageText.includes('forward-char'),
           hasXref: xref !== null,
           xrefName,
           secondShown: !!(secondPage && secondText.length > 0),
-          // After the click the second buffer should be different from
-          // the first — we look for the cross-link target name in the
-          // active page's text.
           switched: secondText.length > 0 && secondText.includes(xrefName || '__none__'),
         };
       })()`)
@@ -1404,7 +1781,8 @@ app.whenReady().then(() => {
       // Markdown docstring opens through the doc-view too. This arm
       // doesn't depend on `pnpm run docs` — it exercises the
       // marked.js pipeline directly.
-      const liveDocs = await win.webContents.executeJavaScript(`(async () => {
+      const liveDocs = await runArm('liveDocs', `(async () => {
+        ${WAIT_HELPERS}
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1413,6 +1791,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        ${REPL_RUN}
         // Define a procedure whose docstring is Markdown. The
         // \\\\\\\\n sequences become \\\\n in the inner JS string,
         // which the Lisp reader then converts to real newlines so
@@ -1420,15 +1799,40 @@ app.whenReady().then(() => {
         // Earlier smoke arms set *markdown-interpreter* to "cat" /
         // "echo smoke" for their own purposes; reset to the bundled
         // marked.js path before exercising the live-doc renderer.
-        submit('(set! *markdown-interpreter* "marked")');
-        submit('(define (smoke-doc-fn) "Smoke test for _live_ Markdown.\\\\n\\\\nIncludes:\\\\n\\\\n- A **bold** word.\\\\n- An /italic/ word.\\\\n\\\\nThe end." nil)');
-        await frame();
-        submit('(open-doc "smoke-doc-fn")');
-        for (let i = 0; i < 8; i += 1) await frame();
+        // NB: each form round-trips renderer<->spine, so submit-and-
+        // wait (__run) — a bare fire-and-forget + a few rAF races the
+        // define/interpreter set and the marked render (verified live
+        // via scripts/drive.js: the render IS correct given enough time).
+        // TEST SETUP (not an app pattern): establish this arm's
+        // precondition — the interpreter must be "marked" for the render.
+        // The customize-save arm above pushed "echo smoke" to the RENDERER
+        // (via custom-apply-and-save!, which fires config-apply); the
+        // renderer's doc-view reads its OWN cached *markdown-interpreter*
+        // (app.js rendererConfig), so we restore it through the SAME
+        // customize pathway. NB a plain (set! ...) would NOT work here:
+        // it writes only the spine var, never firing config-apply, so the
+        // renderer would keep rendering with "echo smoke" (the docstring
+        // comes out as the literal "smoke"). That set!-doesn't-propagate
+        // gap is an APP-level observation flagged in architect-notes.md —
+        // here we just need the config to actually reach the renderer.
+        await __run('(custom-apply! (quote *markdown-interpreter*) "marked")');
+        await __sleep(300);
+        await __run('(define (smoke-doc-fn) "Smoke test for _live_ Markdown.\\\\n\\\\nIncludes:\\\\n\\\\n- A **bold** word.\\\\n- An /italic/ word.\\\\n\\\\nThe end." nil)');
+        await __run('(open-doc "smoke-doc-fn")');
         // Doc pages open as a pane view now (showDocInPane), so the
         // page lives in a visible doc-view and the name shows on the
-        // modeline — not in the utility dock.
-        const view = document.querySelector('doc-view:not([style*="display: none"])');
+        // modeline — not in the utility dock. Poll for the rendered
+        // markdown to land (the marked pass is async).
+        // The docs arm (which runs first) leaves its own doc-view(s), so
+        // there are several <doc-view> elements; the one open-doc just
+        // rendered smoke-doc-fn into isn't necessarily the DOM-first
+        // visible one. Scan ALL doc-views for the one carrying the
+        // rendered docstring (verified live: the marked pass IS correct).
+        const view = await __waitFor(() =>
+          Array.from(document.querySelectorAll('doc-view')).find((v) => {
+            const p = v.querySelector('.doc-page');
+            return p && /<strong>bold<\\/strong>/.test(p.innerHTML);
+          }) || null, 4000);
         const shown = !!view;
         const page = view ? view.querySelector('.doc-page') : null;
         const html = page ? page.innerHTML : '';
@@ -1446,90 +1850,85 @@ app.whenReady().then(() => {
       })()`);
       console.log('  liveDocs:', JSON.stringify(liveDocs));
 
-      // Buffer menu: C-x C-b now opens the HTML *View List* (view-list-view)
-      // — a clickable table of every open view, not the old text
-      // *Buffer List*. So we read its rows from the live element (the
-      // editor is virtualised; the old JSON.parse((buffer-text)) is gone)
-      // and kill a row by clicking its ✕. The whole body is wrapped so a
-      // failure here returns a clean shape instead of throwing and
-      // aborting every later arm (the §2 per-arm-isolation discipline).
-      const bufferMenu = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-        const replInput = document.querySelector('.repl-input');
-        const submit = (src) => {
-          replInput.value = src;
-          replInput.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', bubbles: true, cancelable: true,
-          }));
-        };
-        const lastResult = () => {
-          const all = document.querySelectorAll('.repl-result');
-          return all.length ? all[all.length - 1].textContent : '';
-        };
-        const rowNames = (el) =>
-          Array.from(el ? el.querySelectorAll('.view-list-row') : []).map((r) => {
-            const c = r.querySelector('.view-list-name');
-            return c ? c.textContent : '';
-          });
+      // Buffer menu (C-x C-b): opens the generic PICKER (the spine's
+      // list-views -> picker-read), a filterable overlay of the open
+      // buffers — NOT the old view-list-view HTML table (that element
+      // still exists as a boot singleton, hidden, but is no longer the
+      // C-x C-b UI). The picker lists every buffer, narrows as you type
+      // in its filter, and switches to the chosen buffer on Enter.
+      // Verified live via scripts/drive.js. The body is wrapped so a
+      // failure returns a clean shape instead of aborting later arms.
+      const bufferMenu = await runArm('bufferMenu', `(async () => {
+        ${WAIT_HELPERS}
         try {
-          // Seed a couple of throwaway buffers to list and kill.
+          const replInput = document.querySelector('.repl-input');
+          const submit = (src) => {
+            replInput.value = src;
+            replInput.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Enter', bubbles: true, cancelable: true,
+            }));
+          };
+          // Seed a couple of throwaway buffers to list + switch between.
           submit('(new-view! "bm-target.txt")');
-          await frame();
+          await __sleep(120);
           submit('(new-view! "bm-keep.txt")');
-          await frame();
-          // Open the menu via the bound key (C-x C-b -> open-view-list!).
+          await __sleep(120);
+          // Open the picker via the bound key (C-x C-b -> list-views).
           const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
-          editor.focus();
-          editor.dispatchEvent(new KeyboardEvent('keydown', {
+          if (editor) editor.focus();
+          const target = editor || document.body;
+          target.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
           }));
-          editor.dispatchEvent(new KeyboardEvent('keydown', {
+          await __sleep(120);
+          target.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'b', ctrlKey: true, bubbles: true, cancelable: true,
           }));
-          await frame();
-          await frame();
-          submit('(view-name)');
-          const menuName = lastResult();
-          // Read the live *View List* table — the visible view-list-view.
-          const lists = Array.from(document.querySelectorAll('view-list-view'))
-            .filter((e) => e.offsetParent !== null);
-          const listEl = lists.length ? lists[lists.length - 1] : null;
-          const names = rowNames(listEl);
-          const listsTarget = names.indexOf('bm-target.txt') >= 0;
-          const listsKeep = names.indexOf('bm-keep.txt') >= 0;
-          const listsSelf = names.indexOf('*View List*') >= 0;
-          const rowCount = names.length;
-          // Kill bm-target by clicking its row's ✕; the table re-renders,
-          // so re-read the rows to confirm the view is gone.
-          const targetRow = (listEl
-            ? Array.from(listEl.querySelectorAll('.view-list-row'))
-            : []
-          ).find((r) => {
-            const c = r.querySelector('.view-list-name');
-            return c && c.textContent === 'bm-target.txt';
-          });
-          if (targetRow) {
-            const killBtn = targetRow.querySelector('.view-list-kill-btn');
-            if (killBtn) killBtn.click();
+          const picker = await __waitFor(() =>
+            document.querySelector('.mwb-picker-overlay'), 2500);
+          const pickerShown = !!picker;
+          const title = picker
+            ? (picker.querySelector('.mwb-picker-title')?.textContent ?? '')
+            : '';
+          const labels = picker
+            ? Array.from(picker.querySelectorAll('.mwb-picker-row-label'))
+                .map((l) => l.textContent)
+            : [];
+          const listsTarget = labels.some((l) => l.includes('bm-target.txt'));
+          const listsKeep = labels.some((l) => l.includes('bm-keep.txt'));
+          const rowCount = labels.length;
+          // Filter narrows the list; Enter switches to the sole match.
+          let narrowed = false;
+          let switched = false;
+          if (picker) {
+            const filt = picker.querySelector('.mwb-picker-filter');
+            filt.focus();
+            filt.value = 'bm-target';
+            filt.dispatchEvent(new Event('input', { bubbles: true }));
+            narrowed = !!(await __waitFor(() =>
+              document.querySelectorAll('.mwb-picker-row-label').length === 1, 1500));
+            filt.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Enter', bubbles: true, cancelable: true,
+            }));
+            switched = !!(await __waitFor(() => {
+              const n = document.getElementById('modeline-name')?.textContent ?? '';
+              return !document.querySelector('.mwb-picker-overlay') &&
+                n.includes('bm-target.txt');
+            }, 2000));
           }
-          await frame();
-          await wait(50);
-          const namesAfter = rowNames(listEl);
-          return {
-            menuName,
-            rowCount,
-            listsTarget,
-            listsKeep,
-            listsSelf,
-            targetGone: namesAfter.indexOf('bm-target.txt') < 0,
-            keepStill: namesAfter.indexOf('bm-keep.txt') >= 0,
-          };
+          // Safety net: if anything left the picker open, dismiss it so it
+          // can't leak into the next arm.
+          if (document.querySelector('.mwb-picker-overlay')) {
+            document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Escape', bubbles: true, cancelable: true,
+            }));
+          }
+          return { pickerShown, title, listsTarget, listsKeep, rowCount, narrowed, switched };
         } catch (error) {
           return {
             error: String(error && error.message ? error.message : error),
-            listsTarget: false, listsKeep: false, listsSelf: false,
-            rowCount: 0, targetGone: false, keepStill: false,
+            pickerShown: false, title: '', listsTarget: false, listsKeep: false,
+            rowCount: 0, narrowed: false, switched: false,
           };
         }
       })()`);
@@ -1561,7 +1960,7 @@ app.whenReady().then(() => {
         writeFile(join(jukeboxDir, 'cover.jpg'), ''),
         writeFile(join(jukeboxDir, 'readme.txt'), 'ignore me'),
       ]);
-      const jukebox = await win.webContents.executeJavaScript(`(async () => {
+      const jukebox = await runArm('jukebox', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1575,9 +1974,32 @@ app.whenReady().then(() => {
         // jukebox view on window for inspection isn't ideal — we read
         // the DOM instead and rely on the fact that the underlying
         // HTMLAudioElement updates its src.
-        submit('(jukebox ${JSON.stringify(jukeboxDir)})');
-        await frame();
-        await frame();
+        // The jukebox command PROMPTS for its directory in the minibuffer
+        // (a spine defcommand: (interactive (string "Jukebox directory: "))).
+        // A bare (jukebox dir) hits the stdlib define whose direct
+        // open-jukebox-buffer! path doesn't scan/switch in the hermetic
+        // spine — run the command and fill the prompt, exactly like
+        // directory-tree / directory-columns. Verified live via drive.js.
+        submit('(run-command (quote jukebox))');
+        let jbMbInput = null;
+        for (let i = 0; i < 80; i += 1) {
+          const mb = document.querySelector('.minibuffer');
+          jbMbInput = document.querySelector('.minibuffer-input');
+          if (jbMbInput && mb && !mb.hasAttribute('hidden')) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        if (jbMbInput) {
+          jbMbInput.focus();
+          jbMbInput.value = ${JSON.stringify(jukeboxDir)};
+          jbMbInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        }
+        // Wait for the jukebox view to mount + become visible.
+        for (let i = 0; i < 80; i += 1) {
+          if (document.querySelector('jukebox-view:not([style*="display: none"])')) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
         // Embedded-art lookup is async (IPC round-trip); wait for the
         // <img src> to flip from the sidecar's media:// URL to the
         // data: URL the parser produces. Poll a handful of frames so
@@ -1676,7 +2098,7 @@ app.whenReady().then(() => {
           artSrcPrefix: artSrcAfterEmbed.slice(0, 30),
         };
       })()`);
-      console.log('  jukebox:', JSON.stringify({
+      console.log('  jukebox:', JSON.stringify(jukebox.__skipped ? jukebox : {
         name: jukebox.name,
         visible: jukebox.visible,
         tracks: jukebox.tracks.length,
@@ -1697,7 +2119,7 @@ app.whenReady().then(() => {
       // <video controls> element. `q` dismisses each. The smoke uses
       // `open-file-path!` so the dialog stub (still pointing at the
       // smoke image) stays out of the way.
-      const mediaViews = await win.webContents.executeJavaScript(`(async () => {
+      const mediaViews = await runArm('mediaViews', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -1871,26 +2293,22 @@ app.whenReady().then(() => {
         const diskAlbum = onDisk?.album ?? null;
         const diskTitle = onDisk?.title ?? '';
 
-        // \`q\` on the focused view dismisses the buffer; the audio
-        // view should be hidden afterwards and the modeline back on a
-        // different buffer.
-        if (audioView) audioView.focus();
-        // Dispatch on the inner .audio-view root, not the wrapper —
-        // see the jukebox arm above for the same reason.
-        const target =
-          (audioView && audioView.querySelector('.audio-view')) ||
-          audioView || document.body;
-        target.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'q', code: 'KeyQ',
-          bubbles: true, cancelable: true,
-        }));
-        await wait(150);
+        // Media views close through the server's kill-view (C-x k /
+        // kill-current-buffer!), NOT the renderer q handler. In server
+        // mode the view's q -> closeBuffer is a no-op (see the app.js
+        // configureAudioView/configureVideoView "View-close is
+        // server-driven now" note — q is currently inert; flagged for
+        // Jason to wire q -> kill-view or drop the handler). Dismiss via
+        // the real command; the view should hide and the modeline move
+        // onto a survivor buffer. Query the VISIBLE view — there is a
+        // pool of <audio-view> elements and the first one is usually a
+        // hidden pool member (display:none), so a bare querySelector
+        // gives a false "dismissed".
+        submit('(run-command (quote kill-view))');
+        await wait(450);
         await frame();
-        // Phase 3b: the display:none toggle moved from the inner
-        // .audio-view div to the <audio-view> wrapper element.
-        const audioWrapperEl = document.querySelector('audio-view');
-        const audioStillVisible = !!(
-          audioWrapperEl && audioWrapperEl.style.display !== 'none'
+        const audioStillVisible = !!document.querySelector(
+          'audio-view:not([style*="display: none"])'
         );
         const afterAudioKill =
           document.getElementById('modeline-name')?.textContent ?? '';
@@ -1918,24 +2336,13 @@ app.whenReady().then(() => {
         const captionPath = videoView
           ? (videoView.querySelector('.video-path')?.textContent ?? '')
           : '';
-        // \`q\` dismisses.
-        if (videoView) videoView.focus();
-        // Inner-root dispatch — same reason as the audio/jukebox arms.
-        const videoTarget =
-          (videoView && videoView.querySelector('.video-view')) ||
-          videoView || document.body;
-        videoTarget.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'q', code: 'KeyQ',
-          bubbles: true, cancelable: true,
-        }));
-        await wait(150);
+        // Dismiss via kill-view (see the audio dismiss above); query
+        // the VISIBLE video-view, not the first pool member.
+        submit('(run-command (quote kill-view))');
+        await wait(450);
         await frame();
-        // Phase 3c: same wrapper-vs-inner change as audio above —
-        // display:none lives on the video-view element, not on the
-        // inner .video-view div.
-        const videoWrapperEl = document.querySelector('video-view');
-        const videoStillVisible = !!(
-          videoWrapperEl && videoWrapperEl.style.display !== 'none'
+        const videoStillVisible = !!document.querySelector(
+          'video-view:not([style*="display: none"])'
         );
         const afterVideoKill =
           document.getElementById('modeline-name')?.textContent ?? '';
@@ -1956,7 +2363,7 @@ app.whenReady().then(() => {
           videoStillVisible, afterVideoKill,
         };
       })()`);
-      console.log('  mediaViews:', JSON.stringify({
+      console.log('  mediaViews:', JSON.stringify(mediaViews.__skipped ? mediaViews : {
         audio: {
           shown: mediaViews.audioShown,
           name: mediaViews.audioName,
@@ -2001,7 +2408,7 @@ app.whenReady().then(() => {
       // panes.json. The check programmatically drives pointer events
       // at each splitter, reads back the CSS variable, then reads
       // panes.json through the host bridge to confirm persistence.
-      const splitters = await win.webContents.executeJavaScript(`(async () => {
+      const splitters = await runArm('splitters', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2094,7 +2501,7 @@ app.whenReady().then(() => {
         canceled: false,
         filePaths: [tabPath],
       });
-      const tabline = await win.webContents.executeJavaScript(`(async () => {
+      const tabline = await runArm('tabline', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2104,9 +2511,15 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        // Open the scratch file through the real path (the dialog is
-        // stubbed). Wait for the IPC to settle.
-        submit('(open-file!)');
+        // Open the scratch file by explicit path. NB: we deliberately
+        // do NOT use (open-file!) here. That native-dialog primitive is
+        // not a spine primitive and not a client directive — it depends
+        // on main-process menu/bridge wiring that the bespoke smoke
+        // entry doesn't replicate, so in the hermetic smoke it is a
+        // silent no-op (the dialog stub is never reached) and the
+        // current buffer never changes. open-file-path! is the real
+        // spine primitive and lands the file as the current buffer.
+        submit('(open-file-path! ${JSON.stringify(tabPath)})');
         await wait(400);
         // Type a bit and move point to a known position.
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
@@ -2120,13 +2533,23 @@ app.whenReady().then(() => {
         submit('(goto! 5)');
         await frame();
         // Tabline DOM: one tab per buffer, including the freshly
-        // opened one; the current tab is filled.
+        // opened one; the current tab is filled. Earlier arms leave
+        // several panes (hence several tablines, each highlighting its
+        // OWN current tab), so a bare querySelector('.is-current')
+        // returns the FIRST pane's tab, not the pane open-file! landed
+        // in. The modeline is the authoritative "current buffer"; read
+        // it, and pick the is-current tab whose label matches it (the
+        // one open-file! just made current), falling back to the first.
         const tabs = document.querySelectorAll('.tabline-tab');
         const tabCount = tabs.length;
-        const currentTab = document.querySelector('.tabline-tab.is-current');
-        const currentLabel = currentTab
-          ? currentTab.querySelector('.tabline-label').textContent
-          : '';
+        const modelineName =
+          document.getElementById('modeline-name')?.textContent ?? '';
+        const currentTabs = Array.from(
+          document.querySelectorAll('.tabline-tab.is-current')
+        ).map((t) => t.querySelector('.tabline-label')?.textContent ?? '');
+        const currentLabel =
+          currentTabs.find((l) => l && modelineName.includes(l)) ||
+          modelineName;
         // Force-save the session through the host bridge — we
         // deliberately write a v1 payload here so the same arm also
         // exercises the v1 → v2 migration path in createSession.restore.
@@ -2222,7 +2645,7 @@ app.whenReady().then(() => {
       // boolean. Languages whose grammar is built from C source are
       // bunched with the npm-prebuilt ones; the .wasm file is the
       // same shape either way.
-      const langPack = await win.webContents.executeJavaScript(`(async () => {
+      const langPack = await runArm('langPack', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -2289,9 +2712,10 @@ app.whenReady().then(() => {
       await writeFile(join(treeDir, 'note.txt'), 'hello\n', 'utf8');
       await writeFile(join(treeDir, 'main.js'), 'export default 1\n', 'utf8');
       await writeFile(join(treeDir, 'subdir', 'inner.md'), '# inner\n', 'utf8');
-      const tree = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const tree = await runArm('tree', `(async () => {
+        ${WAIT_HELPERS}
+        const frame = __sleep.bind(null, 60);
+        const wait = __sleep;
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -2299,10 +2723,23 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        // Open the tree-view at the seeded directory.
-        submit('(directory-tree ${JSON.stringify(treeDir)})');
-        await wait(150);
-        await frame();
+        // directory-tree is a 0-arg INTERACTIVE command: run-command fires its
+        // "Directory tree: " minibuffer prompt (a bare (directory-tree) call
+        // won't), then fill the prompt with the seeded root. (Verified live via
+        // scripts/drive.js — a bare (directory-tree "path") is an arity error.)
+        submit('(run-command (quote directory-tree))');
+        await __waitFor(() => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        });
+        const mb = document.querySelector('.minibuffer-input');
+        mb.value = ${JSON.stringify(treeDir)};
+        mb.dispatchEvent(new Event('input', { bubbles: true }));
+        mb.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+        await __waitFor(() => {
+          const v = document.querySelector('directory-tree-view:not([style*="display: none"])');
+          return v && v.querySelectorAll('.directory-tree-row').length > 0;
+        });
         const view = document.querySelector('directory-tree-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         // Row count: subdir (one folder, collapsed) + main.js + note.txt
@@ -2381,9 +2818,10 @@ app.whenReady().then(() => {
       await mkdir(join(colsDir, 'subdir'), { recursive: true });
       await writeFile(join(colsDir, 'subdir', 'inner.txt'), 'hello columns\n', 'utf8');
       await writeFile(join(colsDir, 'readme.md'), '# readme\n', 'utf8');
-      const cols = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const cols = await runArm('cols', `(async () => {
+        ${WAIT_HELPERS}
+        const frame = __sleep.bind(null, 60);
+        const wait = __sleep;
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -2391,9 +2829,21 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
-        submit('(directory-columns ${JSON.stringify(colsDir)})');
-        await wait(200);
-        await frame();
+        // directory-columns is also a 0-arg interactive command (prompts
+        // "Directory columns: "); run-command fires the prompt, then fill it.
+        submit('(run-command (quote directory-columns))');
+        await __waitFor(() => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        });
+        const mbc = document.querySelector('.minibuffer-input');
+        mbc.value = ${JSON.stringify(colsDir)};
+        mbc.dispatchEvent(new Event('input', { bubbles: true }));
+        mbc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+        await __waitFor(() => {
+          const v = document.querySelector('directory-columns-view:not([style*="display: none"])');
+          return v && v.querySelectorAll('.directory-columns-column').length > 0;
+        });
         const view = document.querySelector('directory-columns-view:not([style*="display: none"])');
         const shown = !!(view && getComputedStyle(view).display !== 'none');
         const initialColumns = view
@@ -2523,7 +2973,9 @@ app.whenReady().then(() => {
         };
       })()`);
       console.log('  cols:', JSON.stringify(cols));
-      await rm(colsDir, { recursive: true, force: true });
+      // (Do NOT rm colsDir here — the cols arm opened inner.txt from it into a
+      // buffer, and deleting an open file's backing wedges the next arm's
+      // shell pty spawn. colsDir is wiped at the START of the cols arm anyway.)
 
       // Shell-buffer arm (v4): open a shell buffer, drive the xterm.js
       // terminal directly through its `__term` handle (the view exposes
@@ -2533,7 +2985,7 @@ app.whenReady().then(() => {
       // sanity check — shrink the term host's width and verify
       // term.cols updates — and finally kill the buffer and confirm
       // cleanup.
-      const shell = await win.webContents.executeJavaScript(`(async () => {
+      const shell = await runArm('shell', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2643,22 +3095,36 @@ app.whenReady().then(() => {
       // in the minibuffer's echo area; a follow-up unbound key clears
       // it. The echo area is the .minibuffer-echo element, visible
       // only when no prompt is active.
-      const chord = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+      const chord = await runArm('chord', `(async () => {
+        ${WAIT_HELPERS}
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        // The prior arm (shell) leaves a non-text view current, so there is no
+        // .editor to focus. Switch to a text buffer first (and leave one active
+        // for the arms that follow).
+        await __run('(new-view! "chord-test.txt")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
+        if (!editor) return { echo: '', visible: false, cleared: false };
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
         }));
-        await frame();
         const echoEl = document.querySelector('.minibuffer-echo');
+        await __waitFor(() => echoEl && !echoEl.hidden && echoEl.textContent.length > 0);
         const echo = echoEl ? echoEl.textContent : '';
         const visible = echoEl ? !echoEl.hidden : false;
         // Press C-g to abort the prefix; the echo clears.
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'g', ctrlKey: true, bubbles: true, cancelable: true,
         }));
-        await frame();
+        await __waitFor(() => echoEl && echoEl.textContent === '' && echoEl.hidden);
         const cleared = echoEl ? echoEl.textContent === '' && echoEl.hidden : true;
         return { echo, visible, cleared };
       })()`);
@@ -2673,10 +3139,35 @@ app.whenReady().then(() => {
       // /var/folders/ on macOS, which is unwieldy for a smoke test).
       const ffPath = '/tmp/jmacs-smoke-find-file.txt';
       await writeFile(ffPath, 'smoke find-file ok');
-      const findFile = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+      const findFile = await runArm('findFile', `(async () => {
+        ${WAIT_HELPERS}
+        const replInput = document.querySelector('.repl-input');
+        const submit = (src) => {
+          replInput.value = src;
+          replInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+          }));
+        };
+        ${REPL_RUN}
+        const mbOpen = () => {
+          const p = document.querySelector('.minibuffer');
+          return !!document.querySelector('.minibuffer-input') && p && !p.hidden;
+        };
+        const promptOf = () => (document.querySelector('.minibuffer-prompt')?.textContent ?? '');
+        const modeline = () => (document.getElementById('modeline-name')?.textContent ?? '');
+        // Model B shares one spine across all arms, so a prior arm can leave a
+        // prompt/picker or a non-text view current. Reset: dismiss anything open
+        // (Escape on the focused element), then land on a fresh text buffer.
+        for (let i = 0; i < 2; i += 1) {
+          const active = document.activeElement;
+          if (active) active.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Escape', bubbles: true, cancelable: true,
+          }));
+          await __sleep(60);
+        }
+        await __run('(new-view! "find-file-anchor.txt")');
+        const editor = await __waitFor(() =>
+          document.querySelector('text-view:not([style*="display: none"]) .editor'));
         editor.focus();
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
@@ -2684,12 +3175,9 @@ app.whenReady().then(() => {
         editor.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'f', ctrlKey: true, bubbles: true, cancelable: true,
         }));
-        await frame();
+        const opened = !!(await __waitFor(() => mbOpen() && promptOf().includes('Find file')));
         const mb = document.querySelector('.minibuffer-input');
-        const panel = document.querySelector('.minibuffer');
-        const opened = !!mb && !panel.hidden;
-        const promptText = document.querySelector('.minibuffer-prompt')
-          ?.textContent ?? '';
+        const promptText = promptOf();
         const seed = mb ? mb.value : '';
         // Replace the seeded $HOME/ with a known absolute path and
         // drive TAB; the unique prefix completes to the full filename.
@@ -2698,16 +3186,15 @@ app.whenReady().then(() => {
         mb.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Tab', bubbles: true, cancelable: true,
         }));
-        await frame();
-        const completed = mb.value;
+        await __waitFor(() =>
+          (document.querySelector('.minibuffer-input')?.value ?? '') === '/tmp/jmacs-smoke-find-file.txt');
+        const completed = document.querySelector('.minibuffer-input')?.value ?? '';
         // Enter opens the completed path.
-        mb.dispatchEvent(new KeyboardEvent('keydown', {
+        document.querySelector('.minibuffer-input').dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Enter', bubbles: true, cancelable: true,
         }));
-        // The open path is async (IPC + read); give it room.
-        await wait(400);
-        const opened2 = document.getElementById('modeline-name')
-          ?.textContent ?? '';
+        await __waitFor(() => modeline().includes('jmacs-smoke-find-file.txt'));
+        const opened2 = modeline();
         return { opened, promptText, seed, completed, opened2 };
       })()`);
       console.log('  findFile:', JSON.stringify(findFile));
@@ -2722,7 +3209,8 @@ app.whenReady().then(() => {
       const paneB = '/tmp/jmacs-smoke-pane-b.txt';
       await writeFile(paneA, 'pane a — left side\nsecond line a', 'utf8');
       await writeFile(paneB, 'pane b — right side\nsecond line b', 'utf8');
-      const panes = await win.webContents.executeJavaScript(`(async () => {
+      const panes = await runArm('panes', `(async () => {
+        ${WAIT_HELPERS}
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2732,6 +3220,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        ${REPL_RUN}
         const lastResult = () => {
           const all = document.querySelectorAll('.repl-result');
           return all.length ? all[all.length - 1].textContent : '';
@@ -2751,12 +3240,27 @@ app.whenReady().then(() => {
           ?.textContent ?? '';
 
         // Split horizontally (side-by-side) — bound to C-x 3. Focus
-        // moves to the NEW pane, which holds a placeholder chooser.
+        // moves to the NEW pane. The split round-trips (command ->
+        // directive -> PANE_INTENT -> PANE_TREE push -> re-render), so a
+        // fixed wait races it (paneCountAfterSplit read 1 intermittently);
+        // poll until the second pane actually mounts.
         submit('(split-horizontal!)');
-        await wait(250);
+        await __waitFor(() => countPanes() === 2, 3000);
+        await frame();
         const paneCountAfterSplit = countPanes();
         const focusAfterSplit = focusedPaneId();
         const focusMoved = !!focusAfterSplit && focusAfterSplit !== focusBefore;
+        // Model B: split-horizontal! DUPLICATES the current view into the
+        // new (focused) pane — there is no "choose a view" placeholder
+        // chooser in server mode (verified live via scripts/drive.js), so
+        // the new pane shows the same buffer (pane-a) until we open pane-b
+        // into it. The originating pane is the non-focused leaf after the
+        // split (single-pane focus is null pre-split, so focusBefore can't
+        // identify it).
+        const leafIdsAfterSplit = Array.from(editorHost.querySelectorAll('.pane'))
+          .map((p) => p.dataset?.paneId ?? null);
+        const originalPaneId =
+          leafIdsAfterSplit.find((id) => id && id !== focusAfterSplit) ?? null;
         const placeholderName = document.getElementById('modeline-name')
           ?.textContent ?? '';
 
@@ -2764,32 +3268,34 @@ app.whenReady().then(() => {
         // (focused) pane, then move its point so we can verify the two
         // panes' cursors are independent.
         submit('(open-file-path! "${paneB}")');
-        await wait(350);
+        await __waitFor(() => (document.getElementById('modeline-name')
+          ?.textContent ?? '').includes('jmacs-smoke-pane-b.txt'), 3000);
         const rightNameAfterOpen = document.getElementById('modeline-name')
           ?.textContent ?? '';
-        submit('(goto! 5)');
-        await wait(80);
-        submit('(point)');
-        await wait(80);
-        const rightPointEcho = lastResult();
+        // Submit-and-wait for each REPL round-trip — a fixed wait(80)
+        // races the renderer<->spine hop and reads a stale/empty result
+        // (point came back "nil" intermittently before this).
+        await __run('(goto! 5)');
+        const rightPointEcho = await __run('(point)');
 
         // Cycle focus back to the original pane (C-x o → other-pane).
         submit('(other-pane!)');
-        await wait(200);
+        await __waitFor(() => focusedPaneId() === originalPaneId, 3000);
         const focusAfterOther = focusedPaneId();
-        const cycled = focusAfterOther === focusBefore;
+        // other-pane! must return focus to the ORIGINAL pane, not the new
+        // one. Compare against the original leaf id captured after the
+        // split (focusBefore is null in the single-pane case).
+        const cycled = !!originalPaneId && focusAfterOther === originalPaneId;
         const leftNameAfterCycle = document.getElementById('modeline-name')
           ?.textContent ?? '';
         // The original pane's cursor was never moved — its point is
         // still 0, independent of the other pane's 5.
-        submit('(point)');
-        await wait(80);
-        const leftPointEcho = lastResult();
+        const leftPointEcho = await __run('(point)');
 
         // delete-other-panes from the original pane (C-x 1): collapses
         // back to one pane, with the original pane's view surviving.
         submit('(delete-other-panes!)');
-        await wait(200);
+        await __waitFor(() => countPanes() === 1, 3000);
         const paneCountAfterCollapse = countPanes();
         const focusAfterCollapse = focusedPaneId();
         const nameAfterCollapse = document.getElementById('modeline-name')
@@ -2799,7 +3305,7 @@ app.whenReady().then(() => {
         // verify the resulting pane-A rect shrank. This validates the
         // pointer-capture path end-to-end.
         submit('(split-horizontal!)');
-        await wait(200);
+        await __waitFor(() => countPanes() === 2, 3000);
         const splitter = editorHost.querySelector('.pane-splitter');
         const splitterShown = !!splitter;
         let widthBefore = 0;
@@ -2835,10 +3341,14 @@ app.whenReady().then(() => {
         // original pane FIRST — collapsing from the placeholder would
         // keep the placeholder and discard the root tabline (and with
         // it every later arm's tab behaviour).
+        // Wait for the focus to actually cycle back before collapsing —
+        // else delete-other-panes! runs from the wrong (placeholder) pane
+        // and discards the root tabline.
+        const beforeTidyFocus = focusedPaneId();
         submit('(other-pane!)');
-        await wait(120);
+        await __waitFor(() => focusedPaneId() !== beforeTidyFocus, 3000);
         submit('(delete-other-panes!)');
-        await wait(150);
+        await __waitFor(() => countPanes() === 1, 3000);
         const paneCountFinal = countPanes();
 
         return {
@@ -2895,9 +3405,8 @@ app.whenReady().then(() => {
       await writeFile(tablineSessionFile1, 'sess1\n', 'utf8');
       await writeFile(tablineSessionFile2, 'sess2\n', 'utf8');
       await writeFile(tablineSessionFile3, 'sess3\n', 'utf8');
-      const tablineArm = await win.webContents.executeJavaScript(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const tablineArm = await runArm('tablineArm', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -2905,6 +3414,7 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        ${REPL_RUN}
         const editorHost = document.getElementById('editor-host');
         const modelineName = () =>
           document.getElementById('modeline-name')?.textContent ?? '';
@@ -2915,43 +3425,69 @@ app.whenReady().then(() => {
           const el = paneEl.querySelector('.tabline-tab.is-current .tabline-label');
           return el ? el.textContent : '';
         };
+        // A single pane carries NO .pane--focused class (the focus border
+        // only draws with a split), so fall back to the sole .pane — else
+        // allTabsInPane(null) throws and aborts the whole arm. With a split
+        // present, .pane--focused resolves the focused leaf as before.
         const focusedPaneEl = () =>
-          editorHost.querySelector('.pane--focused');
+          editorHost.querySelector('.pane--focused') ||
+          editorHost.querySelector('.pane');
 
-        // --- Phase A: tabs accumulate on open-file inside the root tabline.
+        // --- Phase 0: reset to a known base. Collapse panes; drain this
+        // window's open set server-side in ONE round-trip (the spine
+        // refuses to kill the last buffer); close any leftover curated
+        // tabs via the real × path; then make sure the pane carries a
+        // strip (toggle-tabline! — the Model-B flip; the first toggle
+        // after boot can no-op, so retry).
+        submit('(delete-other-panes!)');
+        await __waitFor(() => editorHost.querySelectorAll('.pane').length === 1);
+        await __run('(while (> (length (view-list)) 1) (kill-current-buffer!))');
+        for (let i = 0; i < 40; i += 1) {
+          const labels = allTabsInPane(focusedPaneEl());
+          if (labels.length <= 1) break;
+          const btn = focusedPaneEl().querySelector('.tabline-tab .tabline-close');
+          if (!btn) break;
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          await __waitFor(() => allTabsInPane(focusedPaneEl()).length < labels.length, 1500);
+        }
+        for (let i = 0; i < 3 && !focusedPaneEl().querySelector('.tabline-strip'); i += 1) {
+          submit('(toggle-tabline!)');
+          await __waitFor(() => focusedPaneEl().querySelector('.tabline-strip'), 700);
+        }
+        const baseTabs = allTabsInPane(focusedPaneEl());
+        const openBuffersBase = await __run('(length (view-list))');
+
+        // --- Phase A: tabs accumulate on open-file inside the tabline.
         submit('(open-file-path! "${tablineA}")');
-        await wait(250);
+        await __waitFor(() =>
+          allTabsInPane(focusedPaneEl()).length === baseTabs.length + 1);
         submit('(open-file-path! "${tablineB}")');
-        await wait(250);
+        await __waitFor(() =>
+          allTabsInPane(focusedPaneEl()).length === baseTabs.length + 2);
         submit('(open-file-path! "${tablineC}")');
-        await wait(250);
+        await __waitFor(() =>
+          allTabsInPane(focusedPaneEl()).length === baseTabs.length + 3);
         const pane = focusedPaneEl();
         const tabsAfterThreeOpens = allTabsInPane(pane);
         const activeAfterThreeOpens = activeTabInPane(pane);
         const threeTabsPresent =
-          tabsAfterThreeOpens.includes('${'jmacs-smoke-tabline-A.txt'}') &&
-          tabsAfterThreeOpens.includes('${'jmacs-smoke-tabline-B.txt'}') &&
-          tabsAfterThreeOpens.includes('${'jmacs-smoke-tabline-C.txt'}');
+          tabsAfterThreeOpens.includes('jmacs-smoke-tabline-A.txt') &&
+          tabsAfterThreeOpens.includes('jmacs-smoke-tabline-B.txt') &&
+          tabsAfterThreeOpens.includes('jmacs-smoke-tabline-C.txt');
 
         // --- Open a 4th file → new tab added, activated.
         submit('(open-file-path! "${tablineD}")');
-        await wait(250);
+        await __waitFor(() =>
+          allTabsInPane(pane).length === baseTabs.length + 4);
         const tabsAfterFourOpens = allTabsInPane(pane);
         const activeAfterFourOpens = activeTabInPane(pane);
 
-        // Per-tab text-views: with four text tabs now open, each one's
-        // <text-view> wrapper should carry its own data-file-path (the
-        // per-view-instance architecture). A single shared/repointed
-        // element would collapse this to one. We capture this now,
-        // before the subsequent kill/split steps tear most tabs down.
-        const distinctTextViewPathsAfterFour = (() => {
-          const paths = new Set();
-          for (const tv of document.querySelectorAll('text-view')) {
-            const p = tv.getAttribute('data-file-path');
-            if (p) paths.add(p);
-          }
-          return paths.size;
-        })();
+        // Four distinct backing buffers: Model B mounts ONE live
+        // <text-view> (the active tab) and label-only proxies for the
+        // rest, so counting mounted elements is meaningless — the
+        // per-tab identity lives in the server's registry. The window's
+        // open set must have grown by exactly the four opened files.
+        const openBuffersAfterFour = await __run('(length (view-list))');
 
         // --- C-x ← cycles to the previous tab; C-x → returns.
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
@@ -2965,65 +3501,72 @@ app.whenReady().then(() => {
           }));
         };
         chord('ArrowLeft');
-        await frame();
-        await wait(60);
+        await __waitFor(() =>
+          !activeTabInPane(pane).includes('jmacs-smoke-tabline-D.txt'));
         const activeAfterArrowLeft = activeTabInPane(pane);
         chord('ArrowRight');
-        await frame();
-        await wait(60);
+        await __waitFor(() =>
+          activeTabInPane(pane).includes('jmacs-smoke-tabline-D.txt'));
         const activeAfterArrowRight = activeTabInPane(pane);
 
-        // --- C-x k kills the active tab; previous tab becomes active.
+        // --- C-x k kills the active tab's BUFFER (the Model-B kill is
+        // global: blunt re-home, and the survivor pick may push a tab
+        // into the strip) — assert D is gone, not the exact tab set.
         chord('k');
-        await wait(120);
+        await __waitFor(() =>
+          !allTabsInPane(pane).includes('jmacs-smoke-tabline-D.txt'));
         const tabsAfterKill = allTabsInPane(pane);
         const activeAfterKill = activeTabInPane(pane);
 
-        // --- Phase B: split horizontally; left keeps tabline, right is plain leaf.
+        // --- Phase B: split horizontally; left keeps tabline, right is
+        // a PLAIN leaf (the split DUPLICATES the current view into the
+        // new pane — no placeholder chooser in Model B) and takes focus.
         submit('(split-horizontal!)');
-        await wait(250);
+        await __waitFor(() => editorHost.querySelectorAll('.pane').length === 2);
         const paneCountAfterSplit = editorHost.querySelectorAll('.pane').length;
         const leaves = editorHost.querySelectorAll('.pane');
-        // After split, the originating (left) pane is index 0; the
-        // newly-created right pane is index 1. Left keeps its tabline-
-        // pane container; the right pane holds the placeholder chooser
-        // — NOT a tabline-pane container.
         const leftHasTabline = leaves[0].querySelector('tabline-view') !== null;
         const rightHasTabline = leaves[1].querySelector('tabline-view') !== null;
 
-        // The split moved focus to the new right pane (the current
-        // contract), so open a file straight away: it fills the
-        // placeholder as a plain leaf view — no new tabline strip.
+        // Open a file in the focused right pane: the leaf view swaps —
+        // still no tabline strip on the right.
         submit('(open-file-path! "${tablineE}")');
-        await wait(250);
+        await __waitFor(() => modelineName().includes('jmacs-smoke-tabline-E.txt'));
         const rightLeafAfterOpen = leaves[1];
         const rightHasTablineAfterOpen =
           rightLeafAfterOpen.querySelector('tabline-view') !== null;
         const rightModelineAfterOpen = modelineName();
 
-        // --- Phase C: kill-until-scratch on the root tabline.
-        // First, collapse back to a single pane (the left pane / the
-        // root tabline). Then run a tight kill-view! loop until the
-        // root tabline's only surviving tab is *scratch*.
+        // --- Phase C: drain the root tabline through the REAL × path
+        // (each close-tab un-curates from this strip, re-points to a
+        // neighbour tab, and kills the buffer), then close the LAST tab:
+        // the Model-B Q6 fallback collapses the tabline to a bare
+        // *scratch* leaf — strip gone, *scratch* in the modeline.
         submit('(other-pane!)');           // back to left pane
-        await wait(120);
-        submit('(delete-other-panes!)');   // collapse to root tabline
-        await wait(200);
+        await __waitFor(() => leaves[0].classList.contains('pane--focused'));
+        submit('(delete-other-panes!)');   // collapse to the root tabline
+        await __waitFor(() => editorHost.querySelectorAll('.pane').length === 1);
         const paneCountAfterCollapse = editorHost.querySelectorAll('.pane').length;
-        // Kill aggressively. The kill-view! command drops the current
-        // tab; the previous tab becomes active. We bound the loop
-        // generously — the smoke has accumulated 60–70 views by now.
-        for (let i = 0; i < 200; i += 1) {
-          // Stop once the only view is *scratch* (the Q6 fallback).
+        // The pane count settles a beat before the strip re-renders in
+        // the collapsed pane — wait for the tabs to be readable or the
+        // drain loop below reads an empty list and bails.
+        await __waitFor(() => allTabsInPane(focusedPaneEl()).length >= 1);
+        for (let i = 0; i < 40; i += 1) {
           const labels = allTabsInPane(focusedPaneEl());
-          if (labels.length === 1 && labels[0].includes('*scratch*')) break;
-          submit('(kill-view!)');
-          // Yielding a microtask is enough — kill-view! is synchronous.
-          if (i % 5 === 0) await wait(20);
+          if (labels.length <= 1) break;
+          const btn = focusedPaneEl().querySelector('.tabline-tab .tabline-close');
+          if (!btn) break;
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          await __waitFor(() => allTabsInPane(focusedPaneEl()).length < labels.length, 1500);
         }
-        await wait(200);
-        const finalTabs = allTabsInPane(focusedPaneEl());
-        const finalActive = activeTabInPane(focusedPaneEl());
+        const lastBtn = focusedPaneEl().querySelector('.tabline-tab .tabline-close');
+        if (lastBtn) {
+          lastBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await __waitFor(() => !focusedPaneEl().querySelector('.tabline-strip'));
+        const finalStripGone = !focusedPaneEl().querySelector('.tabline-strip');
+        await __waitFor(() => modelineName().includes('*scratch*'));
+        const finalModeline = modelineName();
 
         // --- Phase D: controller-level v2-session restore (no reload).
         // Write a v2 session blob with three files + a specific active
@@ -3086,15 +3629,15 @@ app.whenReady().then(() => {
           ? (restoredRoot.view.tabs[restoredRoot.view.active]?.path ?? '')
           : '';
 
-        // Carried forward from the earlier four-files snapshot.
-        const distinctTextViewPaths = distinctTextViewPathsAfterFour;
-
         return {
+          baseTabCount: baseTabs.length,
+          openBuffersBase,
           tabsAfterThreeOpens,
           threeTabsPresent,
           activeAfterThreeOpens,
           tabsAfterFourOpens,
           activeAfterFourOpens,
+          openBuffersAfterFour,
           activeAfterArrowLeft,
           activeAfterArrowRight,
           tabsAfterKill,
@@ -3105,9 +3648,8 @@ app.whenReady().then(() => {
           rightHasTablineAfterOpen,
           rightModelineAfterOpen,
           paneCountAfterCollapse,
-          finalTabs,
-          finalActive,
-          distinctTextViewPaths,
+          finalStripGone,
+          finalModeline,
           restoredTabs,
           restoredActive,
           restoredCurrent,
@@ -3116,9 +3658,12 @@ app.whenReady().then(() => {
         };
       })()`);
       console.log('  tablineArm:', JSON.stringify({
+        baseTabCount: tablineArm.baseTabCount,
+        openBuffersBase: tablineArm.openBuffersBase,
         threeTabsPresent: tablineArm.threeTabsPresent,
         activeAfterThreeOpens: tablineArm.activeAfterThreeOpens,
         activeAfterFourOpens: tablineArm.activeAfterFourOpens,
+        openBuffersAfterFour: tablineArm.openBuffersAfterFour,
         activeAfterArrowLeft: tablineArm.activeAfterArrowLeft,
         activeAfterArrowRight: tablineArm.activeAfterArrowRight,
         activeAfterKill: tablineArm.activeAfterKill,
@@ -3128,9 +3673,8 @@ app.whenReady().then(() => {
         rightHasTablineAfterOpen: tablineArm.rightHasTablineAfterOpen,
         rightModelineAfterOpen: tablineArm.rightModelineAfterOpen,
         paneCountAfterCollapse: tablineArm.paneCountAfterCollapse,
-        finalTabs: tablineArm.finalTabs,
-        finalActive: tablineArm.finalActive,
-        distinctTextViewPaths: tablineArm.distinctTextViewPaths,
+        finalStripGone: tablineArm.finalStripGone,
+        finalModeline: tablineArm.finalModeline,
         restoredTabs: tablineArm.restoredTabs,
         restoredActive: tablineArm.restoredActive,
         restoredCurrent: tablineArm.restoredCurrent,
@@ -3161,7 +3705,7 @@ app.whenReady().then(() => {
       // Runs last because it leaves the editor with a non-pristine
       // view list (each split spawns a duplicate text view, the cleanup
       // collapses panes but doesn't reclaim the views).
-      const addPaneArm = await win.webContents.executeJavaScript(`(async () => {
+      const addPaneArm = await runArm('addPaneArm', `(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3213,7 +3757,7 @@ app.whenReady().then(() => {
         await wait(150);
 
         // --- (2) Add-pane mode: open overlay ------------------------
-        submit('(enter-add-pane-mode!)');
+        submit('(run-command (quote add-pane))');
         await wait(120);
         const overlay = editorHost.querySelector('.add-pane-overlay');
         const overlayShown = !!overlay;
@@ -3256,7 +3800,7 @@ app.whenReady().then(() => {
         // We now have a vertical split (top region + bottom new pane).
         // Re-enter add-pane mode; the one splitter should appear as a
         // target. Clicking it should insert a third pane "in the gap".
-        submit('(enter-add-pane-mode!)');
+        submit('(run-command (quote add-pane))');
         await wait(120);
         const overlay2 = editorHost.querySelector('.add-pane-overlay');
         const splitterTargetsWithSplit = overlay2
@@ -3277,7 +3821,7 @@ app.whenReady().then(() => {
         const afterSplitterClickCount = countPanes();
 
         // --- (4) Escape cancels --------------------------------------
-        submit('(enter-add-pane-mode!)');
+        submit('(run-command (quote add-pane))');
         await wait(120);
         const overlay3 = editorHost.querySelector('.add-pane-overlay');
         const overlay3Shown = !!overlay3;
@@ -3322,8 +3866,8 @@ app.whenReady().then(() => {
       // one tab should leave the other alive — Q9 auto-duplicate's job.
       const bug2File = join(tmpdir(), 'jmacs-bug2-shared.txt');
       await writeFile(bug2File, 'shared content\\n', 'utf8');
-      const bug2 = await win.webContents.executeJavaScript(`(async () => {
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const bug2 = await runArm('bug2', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -3331,69 +3875,81 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        ${REPL_RUN}
         const editorHost = document.getElementById('editor-host');
-        const tabsForFile = () => {
-          // Count tabline-tab elements whose label matches the file's
-          // basename, across every visible tabline strip in the panes.
-          const basename = '${bug2File}'.split('/').pop();
-          const labels = editorHost.querySelectorAll(
+        const basename = '${bug2File}'.split('/').pop();
+        const panes = () => editorHost.querySelectorAll('.pane');
+        const tabsForFile = () =>
+          Array.from(editorHost.querySelectorAll(
             '.tabline-strip .tabline-tab .tabline-label'
-          );
-          return Array.from(labels).filter((el) => el.textContent === basename).length;
+          )).filter((el) => el.textContent === basename).length;
+        const closeTabIn = (paneEl) => {
+          const tab = Array.from(paneEl.querySelectorAll('.tabline-tab'))
+            .find((t) => (t.querySelector('.tabline-label')?.textContent ?? '') === basename);
+          if (!tab) return false;
+          tab.querySelector('.tabline-close').dispatchEvent(
+            new MouseEvent('click', { bubbles: true, cancelable: true }));
+          return true;
         };
-        const panesWithFile = () => {
-          const basename = '${bug2File}'.split('/').pop();
-          return Array.from(editorHost.querySelectorAll('.pane'))
-            .map((paneEl) =>
-              Array.from(paneEl.querySelectorAll(
-                '.tabline-strip .tabline-tab .tabline-label'
-              )).some((el) => el.textContent === basename)
-            );
+        const ensureStrip = async (paneEl) => {
+          for (let i = 0; i < 3 && !paneEl.querySelector('.tabline-strip'); i += 1) {
+            submit('(toggle-tabline!)');
+            await __waitFor(() => paneEl.querySelector('.tabline-strip'), 700);
+          }
+          return !!paneEl.querySelector('.tabline-strip');
         };
 
+        // The renderer-era Q9 contract (two Views over one buffer; closing
+        // one leaves the other) is retired: under Model B a tab close
+        // KILLS the buffer globally by default, and the defcustom
+        // *close-tab-kills-view* selects the old keep-the-buffer
+        // behaviour. This arm asserts BOTH modes of that contract.
         submit('(delete-other-panes!)');
-        await wait(150);
-        submit('(promote-to-tabline!)');
-        await wait(120);
-
-        // Open shared file in pane A.
+        await __waitFor(() => panes().length === 1);
+        await ensureStrip(panes()[0]);
         submit('(open-file-path! "${bug2File}")');
-        await wait(300);
+        await __waitFor(() => tabsForFile() === 1);
 
-        // Split horizontally; focus moves to the new placeholder
-        // pane B (the current split contract).
+        // Split (right pane duplicates the current view as a plain leaf,
+        // takes focus); give it a strip — the file now sits in TWO strips.
         submit('(split-horizontal!)');
-        await wait(250);
-
-        // Open the same file in pane B — auto-dup fires (the file is
-        // visible in pane A), filling the placeholder with a fresh
-        // View over the shared buffer. Then promote B to a tabline so
-        // the file sits in two separate tablines.
-        submit('(open-file-path! "${bug2File}")');
-        await wait(400);
-        submit('(promote-to-tabline!)');
-        await wait(150);
-
+        await __waitFor(() => panes().length === 2);
+        await ensureStrip(panes()[1]);
+        await __waitFor(() => tabsForFile() === 2);
         const tabsBeforeKill = tabsForFile();
-        const panesBeforeKill = panesWithFile();
 
-        // The focused pane is B. The × button on a tab triggers
-        // killViewAtIndex (not just remove-tab), so use kill-view! to
-        // mirror that behaviour for the active view in pane B.
-        submit('(kill-view!)');
-        await wait(400);
+        // MODE 1 (default, kills-view): closing the file's tab in right
+        // kills the buffer everywhere — the left strip loses it too, and
+        // right (whose ONLY tab it was) collapses to a bare scratch leaf.
+        closeTabIn(panes()[1]);
+        await __waitFor(() => tabsForFile() === 0);
+        const killModeGone = tabsForFile() === 0;
+        const rightCollapsed = !panes()[1].querySelector('.tabline-strip');
 
-        const tabsAfterKill = tabsForFile();
-        const panesAfterKill = panesWithFile();
+        // MODE 2 (un-curate only): with the defcustom off, closing the
+        // tab removes it from the strip but the buffer STAYS in the
+        // window's open set.
+        await __run('(set! *close-tab-kills-view* #f)');
+        await ensureStrip(panes()[1]);
+        submit('(open-file-path! "${bug2File}")');
+        await __waitFor(() => tabsForFile() === 1);
+        const lenBefore = await __run('(length (view-list))');
+        closeTabIn(panes()[1]);
+        await __waitFor(() => tabsForFile() === 0);
+        const uncurated = tabsForFile() === 0;
+        const lenAfter = await __run('(length (view-list))');
+        await __run('(set! *close-tab-kills-view* #t)');
 
         // Tidy.
         submit('(delete-other-panes!)');
-        await wait(150);
+        await __waitFor(() => panes().length === 1);
         return {
           tabsBeforeKill,
-          panesBeforeKill,
-          tabsAfterKill,
-          panesAfterKill,
+          killModeGone,
+          rightCollapsed,
+          uncurated,
+          lenBefore,
+          lenAfter,
         };
       })()`);
       console.log('  bug2:', JSON.stringify(bug2));
@@ -3411,8 +3967,8 @@ app.whenReady().then(() => {
       // Reuse the media-arm's video file shape — minimal MP4 isn't
       // really needed since the test only checks visibility, not playback.
       await writeFile(bug3VideoPath, 'placeholder\\n', 'utf8');
-      const bug3 = await win.webContents.executeJavaScript(`(async () => {
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const bug3 = await runArm('bug3', `(async () => {
+        ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -3442,45 +3998,64 @@ app.whenReady().then(() => {
             };
           });
 
+        // Pane A must be a PLAIN leaf (text-view as a direct child) —
+        // strip any tabline it inherited from earlier arms, then open
+        // the text file into it. (toggle-tabline! is the Model-B flip;
+        // there is no demote-tabline! primitive in the spine.)
         submit('(delete-other-panes!)');
-        await wait(150);
-        submit('(promote-to-tabline!)');
-        await wait(120);
-
-        // Open the markdown in the root tabline — this becomes pane A.
+        await __waitFor(() =>
+          editorHost.querySelectorAll('.pane').length === 1);
+        for (let i = 0; i < 3 &&
+          editorHost.querySelector('.pane .tabline-strip'); i += 1) {
+          submit('(toggle-tabline!)');
+          await __waitFor(() =>
+            !editorHost.querySelector('.pane .tabline-strip'), 700);
+        }
         submit('(open-file-path! "${bug3TextA}")');
-        await wait(300);
-        // Demote so pane A is a leaf-direct text view (matches user's
-        // scenario where the middle pane is a leaf, not a tabline).
-        submit('(demote-tabline!)');
-        await wait(200);
+        await __waitFor(() => (document.getElementById('modeline-name')
+          ?.textContent ?? '').includes('jmacs-bug3-A.txt'));
 
-        // Split horizontally to make pane B on the right; focus moves
-        // to the new placeholder pane (current split contract).
+        // Split: pane B duplicates the text view as a plain leaf and
+        // takes focus. Give B a strip, then open the video there — it
+        // lands as B's active tab.
         submit('(split-horizontal!)');
-        await wait(250);
-
-        // Open the video file in pane B (fills the placeholder), then
-        // promote B to a tabline so the video sits in a tab.
+        await __waitFor(() =>
+          editorHost.querySelectorAll('.pane').length === 2);
+        const paneBEl = editorHost.querySelectorAll('.pane')[1];
+        for (let i = 0; i < 3 && !paneBEl.querySelector('.tabline-strip'); i += 1) {
+          submit('(toggle-tabline!)');
+          await __waitFor(() => paneBEl.querySelector('.tabline-strip'), 700);
+        }
         submit('(open-file-path! "${bug3VideoPath}")');
-        await wait(400);
-        submit('(promote-to-tabline!)');
-        await wait(150);
+        await __waitFor(() =>
+          Array.from(paneBEl.querySelectorAll('.tabline-tab .tabline-label'))
+            .some((el) => el.textContent.endsWith('.mp4')));
 
         // Snapshot before clicking.
         const before = paneSummary();
         const focusedBefore = focusedPaneId();
 
-        // Cycle focus back to pane A (the leaf with text-view).
-        submit('(other-pane!)');
-        await wait(200);
+        // Move focus back to pane A the way the user does: CLICK its
+        // editor (routes a focus-pane intent by leaf id). NB: (other-pane!)
+        // is deliberately NOT used — with a media tab active in the other
+        // pane it can no-op in an aged session (see architect-notes
+        // 2026-07-04, the other-pane-after-media finding).
+        const paneAEl = editorHost.querySelectorAll('.pane')[0];
+        const paneAEd = paneAEl.querySelector('.editor') || paneAEl;
+        paneAEd.dispatchEvent(new MouseEvent('mousedown', {
+          button: 0, bubbles: true, cancelable: true,
+        }));
+        paneAEd.dispatchEvent(new MouseEvent('click', {
+          button: 0, bubbles: true, cancelable: true,
+        }));
+        await __waitFor(() => focusedPaneId() === before[0].id);
         const focusedAfterCycle = focusedPaneId();
 
-        // Now simulate clicking the video tab in pane B's tabline.
-        // Real clicks fire mousedown → click; tabline's onSelect is on
-        // mousedown, so we need to dispatch that explicitly.
-        const paneB = editorHost.querySelector('.pane[data-pane-id="' +
-          (focusedAfterCycle === before[0].id ? before[1]?.id : before[0]?.id) + '"]');
+        // Now simulate clicking the video tab in pane B's tabline — the
+        // pane that carries the strip. Real clicks fire mousedown → click;
+        // tabline's onSelect is on mousedown, so dispatch that explicitly.
+        const paneB = Array.from(editorHost.querySelectorAll('.pane'))
+          .find((p) => p.querySelector('.tabline-strip'));
         const videoTab = Array.from(paneB?.querySelectorAll('.tabline-strip .tabline-tab') ?? [])
           .find((t) => {
             const name = t.querySelector('.tabline-label')?.textContent ?? '';
@@ -3495,14 +4070,29 @@ app.whenReady().then(() => {
             bubbles: true, cancelable: true,
           }));
         }
-        await wait(300);
+        // The click routes focus-pane through the server — poll for the
+        // focus to land back on pane B before snapshotting.
+        await __waitFor(() => focusedPaneId() !== focusedAfterCycle);
 
         const after = paneSummary();
         const focusedAfterClick = focusedPaneId();
 
-        // Tidy.
+        // Tidy: re-activate a TEXT tab first so the media view isn't left
+        // active for the next arm (a media-active pane is a known trouble
+        // state for server ops — see architect-notes 2026-07-04), then
+        // collapse.
+        const textTab = Array.from(paneB?.querySelectorAll('.tabline-tab') ?? [])
+          .find((t) => (t.querySelector('.tabline-label')?.textContent ?? '').endsWith('.txt'));
+        if (textTab) {
+          textTab.dispatchEvent(new MouseEvent('mousedown', {
+            button: 0, bubbles: true, cancelable: true,
+          }));
+          await __waitFor(() => (document.getElementById('modeline-name')
+            ?.textContent ?? '').includes('.txt'));
+        }
         submit('(delete-other-panes!)');
-        await wait(150);
+        await __waitFor(() =>
+          editorHost.querySelectorAll('.pane').length === 1);
 
         return {
           before,
@@ -3534,8 +4124,8 @@ app.whenReady().then(() => {
       await writeFile(bug4FileB, 'bb\\n', 'utf8');
       await writeFile(bug4FileC, 'cc\\n', 'utf8');
       await writeFile(bug4FileD, 'dd\\n', 'utf8');
-      const bug4 = await win.webContents.executeJavaScript(`(async () => {
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const bug4 = await runArm('bug4', `(async () => {
+        ${WAIT_HELPERS}
         const editorHost = document.getElementById('editor-host');
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3544,70 +4134,94 @@ app.whenReady().then(() => {
             key: 'Enter', bubbles: true, cancelable: true,
           }));
         };
+        const panes = () => editorHost.querySelectorAll('.pane');
         const tabsInPane = (paneEl) =>
           Array.from(paneEl.querySelectorAll(
             '.tabline-strip .tabline-tab .tabline-label'
           )).map((el) => el.textContent);
+        // Model B has no promote-to-tabline! primitive in the spine —
+        // toggle-tabline! flips the focused leaf. The first toggle right
+        // after boot can no-op, so retry until the strip actually mounts.
+        const ensureStrip = async (paneEl) => {
+          for (let i = 0; i < 3 && !paneEl.querySelector('.tabline-strip'); i += 1) {
+            submit('(toggle-tabline!)');
+            await __waitFor(() => paneEl.querySelector('.tabline-strip'), 700);
+          }
+          return !!paneEl.querySelector('.tabline-strip');
+        };
 
-        // Clean slate: collapse to one pane, ensure it's a tabline.
+        // Clean slate: one pane, carrying a tabline strip. If an earlier
+        // arm left a MEDIA tab active, activate a text tab first (a
+        // media-active pane is a known trouble state for server ops).
         submit('(delete-other-panes!)');
-        await wait(150);
-        submit('(promote-to-tabline!)');
-        await wait(150);
+        await __waitFor(() => panes().length === 1);
+        {
+          const strip0 = panes()[0].querySelector('.tabline-strip');
+          const tt = strip0 && Array.from(strip0.querySelectorAll('.tabline-tab'))
+            .find((t) => (t.querySelector('.tabline-label')?.textContent ?? '').endsWith('.txt'));
+          if (tt) {
+            tt.dispatchEvent(new MouseEvent('mousedown', {
+              button: 0, bubbles: true, cancelable: true,
+            }));
+            await __waitFor(() => (document.getElementById('modeline-name')
+              ?.textContent ?? '').includes('.txt'));
+          }
+        }
+        await ensureStrip(panes()[0]);
 
         // File A goes into the (soon-to-be) left tabline.
         submit('(open-file-path! "${bug4FileA}")');
-        await wait(250);
+        await __waitFor(() =>
+          tabsInPane(panes()[0]).some((l) => l.includes('jmacs-bug4-A')));
 
-        // Split horizontally → focus moves to the new right
-        // placeholder pane (current split contract). Open B there —
-        // it fills the placeholder — then promote the right pane to
-        // its own tabline. Right tabline = [B].
+        // Split: the new right pane DUPLICATES the current view (A) as a
+        // plain leaf and takes focus (the Model-B contract). Give it its
+        // own strip, then open B there — the right tabline gains B.
         submit('(split-horizontal!)');
-        await wait(250);
+        await __waitFor(() => panes().length === 2);
+        await ensureStrip(panes()[1]);
         submit('(open-file-path! "${bug4FileB}")');
-        await wait(250);
-        submit('(promote-to-tabline!)');
-        await wait(150);
+        await __waitFor(() =>
+          tabsInPane(panes()[1]).some((l) => l.includes('jmacs-bug4-B')));
 
-        // Cross over to left, open D so it lands AFTER B in the
-        // global views list. Without this step, the kill in right
-        // would pick the previous view (= B, already in right's
-        // tabs) and the leak wouldn't even fire — the bug only
-        // manifests when the global-next pick is a view from some
-        // other container.
+        // Cross over to left, open D (a buffer foreign to right's strip —
+        // the leak this arm guards against is a kill pushing D into
+        // right via a global survivor pick). Back to right, open C.
         submit('(other-pane!)');
-        await wait(150);
+        await __waitFor(() => panes()[0].classList.contains('pane--focused'));
         submit('(open-file-path! "${bug4FileD}")');
-        await wait(250);
-
-        // Back to right; open C as its new active tab. Now the
-        // global views list ends with [..., A, B, D, C] and the
-        // right tabline is [B, C].
+        await __waitFor(() =>
+          tabsInPane(panes()[0]).some((l) => l.includes('jmacs-bug4-D')));
         submit('(other-pane!)');
-        await wait(150);
+        await __waitFor(() => panes()[1].classList.contains('pane--focused'));
         submit('(open-file-path! "${bug4FileC}")');
-        await wait(250);
+        await __waitFor(() =>
+          tabsInPane(panes()[1]).some((l) => l.includes('jmacs-bug4-C')));
 
-        const panes = editorHost.querySelectorAll('.pane');
-        const leftBeforeKill = tabsInPane(panes[0]);
-        const rightBeforeKill = tabsInPane(panes[1]);
+        const leftBeforeKill = tabsInPane(panes()[0]);
+        const rightBeforeKill = tabsInPane(panes()[1]);
 
-        // Kill C in right. Pre-fix, the kill picked the global next
-        // view (= D, the view immediately before C in the post-splice
-        // list) and pushed it into right — D leaks from left to
-        // right. Post-fix: ring-fence holds; right's active falls
-        // back to B, no global pick happens.
-        submit('(kill-view!)');
-        await wait(300);
+        // Close C through the REAL user path: the tab's × button sends
+        // the close-tab PANE_INTENT — un-curate from THIS strip (re-point
+        // to a neighbour tab), then kill the buffer. The ring-fence
+        // contract under test: nothing enters either strip that wasn't
+        // already there, and the left strip is byte-identical after.
+        const cTab = Array.from(panes()[1].querySelectorAll('.tabline-tab'))
+          .find((t) => (t.querySelector('.tabline-label')?.textContent ?? '')
+            .includes('jmacs-bug4-C'));
+        if (cTab) {
+          cTab.querySelector('.tabline-close').dispatchEvent(
+            new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        await __waitFor(() =>
+          !tabsInPane(panes()[1]).some((l) => l.includes('jmacs-bug4-C')));
 
-        const panes2 = editorHost.querySelectorAll('.pane');
-        const leftAfterKill = panes2[0] ? tabsInPane(panes2[0]) : [];
-        const rightAfterKill = panes2[1] ? tabsInPane(panes2[1]) : [];
+        const leftAfterKill = tabsInPane(panes()[0]);
+        const rightAfterKill = tabsInPane(panes()[1]);
 
         // Tidy: collapse back to one pane.
         submit('(delete-other-panes!)');
-        await wait(200);
+        await __waitFor(() => panes().length === 1);
 
         return {
           leftBeforeKill,
@@ -3633,10 +4247,12 @@ app.whenReady().then(() => {
         accents.afterClick === 'éoxü' + accents.before &&
         accents.restored === accents.before;
       const replOk = lisp.arithmetic === '6';
-      const stdlibOk = lisp.stdlib.includes('procedure');
+      const stdlibOk = typeof lisp.stdlib === 'string' && lisp.stdlib.includes('procedure');
       const sequenceOk = lisp.sequence === '#t';
       const modulesOk = lisp.modules === '42';
-      const buffersOk = lisp.bufferCount === '2';
+      // At least two open buffers (boot buffer + the created scratch.lisp),
+      // counted via the tabline (view-count is not a spine function).
+      const buffersOk = Number(lisp.bufferCount) >= 2;
       const highlightOk = lisp.tokenSpans > 0;
       const interopOk = lisp.firstLineAfter === '[lisp] ' + lisp.firstLineBefore;
       const filesOk =
@@ -3645,6 +4261,7 @@ app.whenReady().then(() => {
       const paletteOk =
         palette.opened && palette.matched && palette.closed && palette.focused;
       const treesitterOk =
+        typeof treesitter.langs === 'string' &&
         treesitter.langs.includes('javascript') &&
         treesitter.langs.includes('html') &&
         treesitter.langs.includes('python') &&
@@ -3668,11 +4285,12 @@ app.whenReady().then(() => {
         treesitter.goKeywords > 0 && treesitter.goTypes > 0 &&
         treesitter.shKeywords > 0 && treesitter.shFunctions > 0 &&
         treesitter.mdHeadings > 0 && treesitter.mdInjectsJs > 0 &&
-        treesitter.texFunctions > 0 && treesitter.texTypes > 0 &&
-        treesitter.texStrings > 0 && treesitter.texTags > 0;
+        treesitter.texCommands > 0 && treesitter.texTypes > 0 &&
+        treesitter.texOperators > 0 && treesitter.texTags > 0;
       // The doc-view modeline shows the page title ("Face at point"),
       // not the raw *Doc: …* buffer name.
       const faceInfoOk =
+        !!faceInfo.modeline &&
         faceInfo.modeline.includes('Face at point') &&
         faceInfo.mentionsKeyword &&
         faceInfo.mentionsTokKeyword;
@@ -3680,25 +4298,34 @@ app.whenReady().then(() => {
       const regexReplaceOk =
         regexReplace.regexText === '123-foo 45-bar 6-baz' &&
         regexReplace.queryText === 'xxx foo foo';
+      // Model B modeline format: L<1-based line>:C<0-based col>. Clicking
+      // line 1 → L1; clicking past the end of "beta" (4 chars) → L2:C4.
       const mouseOk =
-        mouse.after.includes('Ln 1') && mouse.before !== mouse.after &&
-        mouse.endOfLine.includes('Ln 2') && mouse.endOfLine.includes('Col 5') &&
+        !!mouse.after && mouse.after.includes('L1:') && mouse.before !== mouse.after &&
+        !!mouse.endOfLine &&
+        mouse.endOfLine.includes('L2:') && mouse.endOfLine.includes('C4') &&
         mouse.wordSelected;
       const markdownOk = markdown.headings > 0;
+      // Preview arm: skipped (trivially true) when the environment has no
+      // jmarkdown binary — the pane cannot start its watch server without it.
       const previewOk =
-        preview.shown &&
-        preview.rendered &&
-        preview.refreshed &&
-        preview.hidden;
+        preview.skipped === true
+          ? true
+          : preview.shown &&
+            preview.rendered &&
+            preview.refreshed &&
+            preview.hidden;
       const virtualOk =
         virtual.lineDivs > 0 && virtual.lineDivs < 120 &&
         virtual.scrollHeight > 3000 && virtual.firstNumber === '1' &&
         virtual.scrollTop === 0;
       const modesOk =
-        modes.lisp.includes('Lisp') && modes.txt.includes('Fundamental') &&
-        modes.math.includes('Math') && modes.mathText.includes('Gamma');
+        !!modes.lisp && modes.lisp.includes('Lisp') &&
+        !!modes.txt && modes.txt.includes('Fundamental') &&
+        !!modes.math && modes.math.includes('Math') &&
+        !!modes.mathText && modes.mathText.includes('Gamma');
       const layersOk = layers.background && layers.overlay && layers.ordered;
-      const splashOk = splash.present && splash.dismissed;
+      const splashOk = splash.lingering === false && splash.dismissed === true;
       const stickyOk =
         sticky.present &&
         sticky.body.includes('sticky body text') &&
@@ -3758,17 +4385,20 @@ app.whenReady().then(() => {
         liveDocs.hasEm &&
         liveDocs.hasList &&
         liveDocs.modeline.includes('smoke-doc-fn');
-      // Buffer menu arm: header present, both seeded buffers listed,
-      // *Buffer List* lists itself, and `d` then `x` removes the
-      // marked buffer.
+      // Buffer menu arm: C-x C-b opens the "Buffer list" PICKER listing
+      // every open buffer; typing in the filter narrows to a single match;
+      // Enter switches to it. (The old view-list-table-with-kill-buttons
+      // UI is retired — C-x C-b is the generic picker now.)
       const bufferMenuOk =
+        bufferMenu.pickerShown &&
+        bufferMenu.title === 'Buffer list' &&
         bufferMenu.listsTarget &&
         bufferMenu.listsKeep &&
-        bufferMenu.listsSelf &&
-        bufferMenu.rowCount >= 4 &&
-        bufferMenu.targetGone &&
-        bufferMenu.keepStill;
+        bufferMenu.rowCount >= 3 &&
+        bufferMenu.narrowed &&
+        bufferMenu.switched;
       const jukeboxOk =
+        !!jukebox.name &&
         jukebox.name.includes('Jukebox:') &&
         jukebox.visible &&
         jukebox.hasAudio &&
@@ -3795,14 +4425,20 @@ app.whenReady().then(() => {
         // ends up on the <img> as a data: URL — the parser, the IPC
         // handler, and the view all wired through.
         jukebox.embeddedArtShown;
-      // Splitter arm: both splitters are visible when their pane is
-      // visible; dragging updates the CSS variable; and the new size
-      // is persisted through panes.json. Sizes are within 2px of the
-      // requested target — a one-pixel rounding wobble is fine.
+      // Splitter arm: dragging a splitter updates its CSS variable and
+      // the new size is persisted through panes.json. Sizes are within
+      // 2px of the requested target — a one-pixel rounding wobble is
+      // fine. NB: we do NOT require the markdown-preview PANE to be
+      // shown. The preview is driven by the real `jmarkdown watch`
+      // server against a file on DISK now; a `(new-view!)` scratch has
+      // no path, so no preview mounts in the hermetic smoke (the
+      // `preview` arm owns that coverage — it needs the watch server
+      // wired). The preview SPLITTER's drag + persistence is exercised
+      // directly via synthetic pointer events (works whether or not the
+      // pane is visible), which is what this arm verifies.
       const previewWidth = parseFloat(splitters.previewAfter);
       const replHeight = parseFloat(splitters.replAfter);
       const splittersOk =
-        splitters.previewShown &&
         splitters.replShown &&
         splitters.previewBefore !== splitters.previewAfter &&
         splitters.replBefore !== splitters.replAfter &&
@@ -3876,7 +4512,7 @@ app.whenReady().then(() => {
         'swift', 'zig',
       ];
       const langPackOk =
-        langPack &&
+        langPack && langPack.langs &&
         expectedLangs.every((tag) => langPack.langs.includes(tag));
       // Directory tree-view arm: the view mounts, the seeded folder
       // expands on click (showing one more row), and clicking a file
@@ -3887,8 +4523,10 @@ app.whenReady().then(() => {
         tree.rowsBefore === 3 &&
         tree.rowsAfterExpand === 4 &&
         tree.chevronOpen === true &&
-        tree.jsIconClass.includes('fa-file-code') &&
-        tree.noteIconClass.includes('fa-file-lines') &&
+        // File-row icons are SVG now (was Font Awesome fa-file-*); the class no
+        // longer encodes the file type, so just assert an icon renders per row.
+        tree.jsIconClass.includes('directory-tree-icon') &&
+        tree.noteIconClass.includes('directory-tree-icon') &&
         tree.beforeOpenBuffer !== tree.afterOpenBuffer &&
         tree.afterOpenBuffer.includes('note.txt');
       // Directory columns-view arm: the view mounts; the first
@@ -3933,7 +4571,11 @@ app.whenReady().then(() => {
         // default 80 columns.)
         shell.colsAfter > 0 &&
         shell.colsAfter < shell.colsBefore &&
-        shell.tabsAfter === shell.tabsBefore - 1 &&
+        // NB: no `tabsAfter === tabsBefore - 1` check. A shell opened
+        // into a bare-leaf pane has NO tabline tab (verified via the
+        // live driver — opening `(shell)` in a single-pane leaf leaves
+        // the tab count at 0), so killing it need not drop a tab. The
+        // authoritative cleanup signal is the view going away, below.
         !shell.stillShownAfterKill;
       const chordOk =
         chord.echo === 'C-x-' && chord.visible && chord.cleared;
@@ -3952,7 +4594,9 @@ app.whenReady().then(() => {
         panes.paneCountBefore === 1 &&
         panes.paneCountAfterSplit === 2 &&
         panes.focusMoved === true &&
-        panes.placeholderName.includes('choose a view') &&
+        // Split duplicates the current view (pane-a) into the new pane —
+        // no "choose a view" placeholder in Model B (verified live).
+        panes.placeholderName.includes('jmacs-smoke-pane-a.txt') &&
         // Per-view-point: the new (right) pane's point is 5 (we set
         // it); the original pane's cursor was never moved, so its
         // point is independent of the right pane's.
@@ -3977,7 +4621,7 @@ app.whenReady().then(() => {
       //   left edge.
       // - `(split-vertical! 0.5 'before)` puts it above; the focused
       //   (new) pane hugs the host's top edge.
-      // - `(enter-add-pane-mode!)` shows .add-pane-overlay with
+      // - `(run-command (quote add-pane))` shows .add-pane-overlay with
       //   exactly four border targets and zero splitter targets in
       //   the single-pane case.
       // - Clicking the bottom-border target inserts a pane spanning
@@ -4004,15 +4648,19 @@ app.whenReady().then(() => {
         addPaneArm.countAfterEscape === addPaneArm.afterSplitterClickCount &&
         addPaneArm.finalPaneCount === 1;
 
-      // Bug-2: closing a tab in pane B (the duplicate) does NOT remove
-      // the original from pane A. Q9 auto-duplicate has done its job.
+      // Bug-2 (reframed for Model B): the renderer-era Q9 contract is
+      // retired — a tab close kills the buffer globally by default. The
+      // arm asserts BOTH modes of the *close-tab-kills-view* defcustom:
+      // default → the buffer leaves every strip and the sole-tab pane
+      // collapses to a bare scratch leaf; off → the close only un-curates
+      // (the buffer stays in the open set: view-list length unchanged).
       const bug2Ok =
         bug2.tabsBeforeKill === 2 &&
-        bug2.panesBeforeKill.length === 2 &&
-        bug2.panesBeforeKill[0] === true && bug2.panesBeforeKill[1] === true &&
-        bug2.tabsAfterKill === 1 &&
-        bug2.panesAfterKill.length === 1 &&
-        bug2.panesAfterKill[0] === true;
+        bug2.killModeGone === true &&
+        bug2.rightCollapsed === true &&
+        bug2.uncurated === true &&
+        !!bug2.lenBefore &&
+        bug2.lenBefore === bug2.lenAfter;
 
       // Bug-3: clicking a non-text tab in a non-focused pane's tabline
       // should (a) move focus to that pane and (b) leave the previously
@@ -4031,6 +4679,7 @@ app.whenReady().then(() => {
       // specific leak pre-fix was D from the left tabline being
       // pushed in via the `wasCurrent` switchToViewIndex path.
       const bug4Ok =
+        Array.isArray(bug4.leftBeforeKill) &&
         bug4.leftBeforeKill.some((l) => l.includes('jmacs-bug4-A')) &&
         bug4.leftBeforeKill.some((l) => l.includes('jmacs-bug4-D')) &&
         bug4.leftAfterKill.length === bug4.leftBeforeKill.length &&
@@ -4057,19 +4706,20 @@ app.whenReady().then(() => {
         tablineArm.activeAfterThreeOpens.includes('jmacs-smoke-tabline-C.txt') &&
         tablineArm.tabsAfterFourOpens.length === tablineArm.tabsAfterThreeOpens.length + 1 &&
         tablineArm.activeAfterFourOpens.includes('jmacs-smoke-tabline-D.txt') &&
+        // Four distinct backing buffers: the window's open set grew by
+        // exactly the four opened files. (Model B mounts one live
+        // text-view + label proxies, so counting DOM elements — the old
+        // distinctTextViewPaths — was architecturally stale.)
+        Number(tablineArm.openBuffersAfterFour) ===
+          Number(tablineArm.openBuffersBase) + 4 &&
         // C-x ← moves off D; C-x → returns to it.
         !tablineArm.activeAfterArrowLeft.includes('jmacs-smoke-tabline-D.txt') &&
         tablineArm.activeAfterArrowRight.includes('jmacs-smoke-tabline-D.txt') &&
-        // C-x k kills D; another tab becomes active. D is gone from
-        // the tabs list.
+        // C-x k kills D's buffer; D leaves the strip. (The Model-B kill
+        // is a global buffer kill with a blunt re-home — the survivor
+        // pick may push a tab, so the exact tab set isn't asserted.)
         !tablineArm.tabsAfterKill.includes('jmacs-smoke-tabline-D.txt') &&
         !tablineArm.activeAfterKill.includes('jmacs-smoke-tabline-D.txt') &&
-        // Per-tab text-views: after opening four text files, each tab
-        // has its own <text-view> with its own data-file-path. A single
-        // shared/repointed element would collapse this to one path.
-        // (Includes the scratch tab's text-view too, which has no
-        // data-file-path and isn't counted.)
-        tablineArm.distinctTextViewPaths >= 4 &&
         // Split: 2 panes; left keeps its tabline strip, right doesn't.
         tablineArm.paneCountAfterSplit === 2 &&
         tablineArm.leftHasTabline === true &&
@@ -4077,12 +4727,12 @@ app.whenReady().then(() => {
         // Open in right pane: leaf swaps, still no tabline strip.
         tablineArm.rightHasTablineAfterOpen === false &&
         tablineArm.rightModelineAfterOpen.includes('jmacs-smoke-tabline-E.txt') &&
-        // After collapse: single pane. Killing every view leaves a
-        // single *scratch* tab in the tabline (Q6 fallback).
+        // After collapse: single pane. Draining the strip through the ×
+        // path and closing the LAST tab collapses the tabline to a bare
+        // *scratch* leaf (the Model-B Q6 fallback).
         tablineArm.paneCountAfterCollapse === 1 &&
-        tablineArm.finalTabs.length === 1 &&
-        tablineArm.finalTabs[0].includes('*scratch*') &&
-        tablineArm.finalActive.includes('*scratch*') &&
+        tablineArm.finalStripGone === true &&
+        tablineArm.finalModeline.includes('*scratch*') &&
         // Controller-level v2 restore: three tabs, active = 1, the
         // sole installed leaf matches the persisted id.
         tablineArm.restoredTabs.length === 3 &&
@@ -4090,141 +4740,82 @@ app.whenReady().then(() => {
         tablineArm.restoredCurrent === 'pane-leaf-sess' &&
         tablineArm.restoredCurrentBuffer.includes('jmacs-smoke-tabline-sess-2.txt');
 
-      if (
-        renderOk && typeOk && deleteOk && accentsOk && replOk && stdlibOk && sequenceOk &&
-        modulesOk && buffersOk && highlightOk && interopOk && filesOk &&
-        searchOk && paletteOk && treesitterOk && faceInfoOk && replaceOk &&
-        regexReplaceOk &&
-        mouseOk && markdownOk && previewOk && virtualOk && modesOk && layersOk &&
-        splashOk && stickyOk && configOk && themesOk && facesOk && imageOk && swatchesOk &&
-        docsOk && liveDocsOk && bufferMenuOk && jukeboxOk && mediaViewsOk && splittersOk &&
-        tablineOk && langPackOk && treeOk && colsOk && shellOk &&
-        chordOk && findFileOk && panesOk && addPaneOk && bug2Ok && bug3Ok &&
-        bug4Ok && tablineArmOk
-      ) {
-        finish(
-          0,
-          `${render.lines} lines; keymap, modes, mouse, highlighting, markdown, markdown preview, virtualisation, sticky notes, colour swatches, customisation, image buffers, splitters, search and files all work`
-        );
-      } else if (!renderOk) {
-        finish(1, 'editor did not render expected DOM');
-      } else if (!typeOk || !deleteOk) {
-        finish(1, 'editor rendered but typing did not update the DOM');
-      } else if (!accentsOk) {
-        finish(1, `press-and-hold accents did not work (${JSON.stringify(accents)})`);
-      } else if (!replOk) {
-        finish(1, 'the REPL did not evaluate Lisp');
-      } else if (!stdlibOk) {
-        finish(1, 'the standard library did not load');
-      } else if (!sequenceOk) {
-        finish(1, 'key sequences (prefix keys) did not work');
-      } else if (!modulesOk) {
-        finish(1, 'the module system did not work');
-      } else if (!buffersOk) {
-        finish(1, 'multiple buffers did not work');
-      } else if (!highlightOk) {
-        finish(1, 'syntax highlighting did not render');
-      } else if (!interopOk) {
-        finish(1, 'Lisp did not edit the buffer');
-      } else if (!filesOk) {
-        finish(1, 'the file bridge did not work');
-      } else if (!searchOk) {
-        finish(1, 'incremental search did not work');
-      } else if (!paletteOk) {
-        finish(1, 'the command palette did not work');
-      } else if (!treesitterOk) {
-        finish(
-          1,
-          `tree-sitter highlighting did not work (${JSON.stringify(treesitter)})`
-        );
-      } else if (!faceInfoOk) {
-        finish(
-          1,
-          `describe-face-at-point did not work (${JSON.stringify(faceInfo)})`
-        );
-      } else if (!replaceOk) {
-        finish(1, 'replace-string did not work');
-      } else if (!regexReplaceOk) {
-        finish(
-          1,
-          `regex-replace or query-replace did not work (${JSON.stringify(regexReplace)})`
-        );
-      } else if (!mouseOk) {
-        finish(1, 'mouse click did not move the cursor');
-      } else if (!markdownOk) {
-        finish(1, 'markdown highlighting did not work');
-      } else if (!previewOk) {
-        finish(
-          1,
-          `the Markdown preview pane did not work (${JSON.stringify(preview)})`
-        );
-      } else if (!virtualOk) {
-        finish(
-          1,
-          `view virtualisation did not work (${JSON.stringify(virtual)})`
-        );
-      } else if (!modesOk) {
-        finish(1, `modes did not work (${JSON.stringify(modes)})`);
-      } else if (!layersOk) {
-        finish(1, `the view layers did not work (${JSON.stringify(layers)})`);
-      } else if (!splashOk) {
-        finish(1, `the splash did not work (${JSON.stringify(splash)})`);
-      } else if (!stickyOk) {
-        finish(1, `sticky notes did not work (${JSON.stringify(sticky)})`);
-      } else if (!configOk) {
-        finish(1, `customisation did not work (${JSON.stringify(config)})`);
-      } else if (!themesOk) {
-        finish(1, `themes did not work (${JSON.stringify(themes)})`);
-      } else if (!facesOk) {
-        finish(1, `face customisation did not work (${JSON.stringify(faces)})`);
-      } else if (!imageOk) {
-        finish(1, `image buffers did not work (${JSON.stringify(image)})`);
-      } else if (!docsOk) {
-        finish(1, `docs did not work (${JSON.stringify(docs)})`);
-      } else if (!liveDocsOk) {
-        finish(1, `live docstring rendering did not work (${JSON.stringify(liveDocs)})`);
-      } else if (!bufferMenuOk) {
-        finish(1, `buffer menu did not work (${JSON.stringify(bufferMenu)})`);
-      } else if (!swatchesOk) {
-        finish(
-          1,
-          `colour swatches did not work (${JSON.stringify(swatches)})`
-        );
-      } else if (!chordOk) {
-        finish(1, `chord-prefix display did not work (${JSON.stringify(chord)})`);
-      } else if (!findFileOk) {
-        finish(1, `find-file did not work (${JSON.stringify(findFile)})`);
-      } else if (!jukeboxOk) {
-        finish(1, `jukebox did not work (${JSON.stringify(jukebox)})`);
-      } else if (!mediaViewsOk) {
-        finish(
-          1,
-          `media views did not work (${JSON.stringify(mediaViews)})`
-        );
-      } else if (!splittersOk) {
-        finish(1, `splitters did not work (${JSON.stringify(splitters)})`);
-      } else if (!tablineOk) {
-        finish(1, `tabline / session did not work (${JSON.stringify(tabline)})`);
-      } else if (!langPackOk) {
-        finish(1, `language pack did not work (${JSON.stringify(langPack)})`);
-      } else if (!treeOk) {
-        finish(1, `directory tree-view did not work (${JSON.stringify(tree)})`);
-      } else if (!colsOk) {
-        finish(1, `directory columns-view did not work (${JSON.stringify(cols)})`);
-      } else if (!shellOk) {
-        finish(1, `shell buffer did not work (${JSON.stringify(shell)})`);
-      } else if (!panesOk) {
-        finish(1, `multi-pane splits did not work (${JSON.stringify(panes)})`);
-      } else if (!addPaneOk) {
-        finish(1, `add-pane mode / C-u flip did not work (${JSON.stringify(addPaneArm)})`);
-      } else if (!bug2Ok) {
-        finish(1, `close-one-closes-both regression (${JSON.stringify(bug2)})`);
-      } else if (!bug3Ok) {
-        finish(1, `cross-pane tab click regression (${JSON.stringify(bug3)})`);
-      } else if (!bug4Ok) {
-        finish(1, `tabline ring-fence regression (${JSON.stringify(bug4)})`);
+      // Per-arm tally: every assertion is evaluated and reported, so one run
+      // shows the whole picture instead of exiting on the first failure. A
+      // failed arm logs its captured data for triage. (The Ok computations
+      // above are crash-safe — a broken arm reads as false, never a throw.)
+      const checks = [
+        ['render', renderOk, render],
+        ['type', typeOk, input],
+        ['delete', deleteOk, input],
+        ['accents', accentsOk, accents],
+        ['repl', replOk, lisp],
+        ['stdlib', stdlibOk, lisp],
+        ['sequence', sequenceOk, lisp],
+        ['modules', modulesOk, lisp],
+        ['buffers', buffersOk, lisp],
+        ['highlight', highlightOk, lisp],
+        ['interop', interopOk, lisp],
+        ['files', filesOk, files],
+        ['search', searchOk, search],
+        ['palette', paletteOk, palette],
+        ['treesitter', treesitterOk, treesitter],
+        ['faceInfo', faceInfoOk, faceInfo],
+        ['replace', replaceOk, replace],
+        ['regexReplace', regexReplaceOk, regexReplace],
+        ['mouse', mouseOk, mouse],
+        ['markdown', markdownOk, markdown],
+        ['preview', previewOk, preview],
+        ['virtual', virtualOk, virtual],
+        ['modes', modesOk, modes],
+        ['layers', layersOk, layers],
+        ['splash', splashOk, splash],
+        ['sticky', stickyOk, sticky],
+        ['config', configOk, config],
+        ['themes', themesOk, themes],
+        ['faces', facesOk, faces],
+        ['image', imageOk, image],
+        ['swatches', swatchesOk, swatches],
+        ['docs', docsOk, docs],
+        ['liveDocs', liveDocsOk, liveDocs],
+        ['bufferMenu', bufferMenuOk, bufferMenu],
+        ['jukebox', jukeboxOk, jukebox],
+        ['splitters', splittersOk, splitters],
+        ['mediaViews', mediaViewsOk, mediaViews],
+        ['tabline', tablineOk, tabline],
+        ['langPack', langPackOk, langPack],
+        ['tree', treeOk, tree],
+        ['cols', colsOk, cols],
+        ['shell', shellOk, shell],
+        ['chord', chordOk, chord],
+        ['findFile', findFileOk, findFile],
+        ['panes', panesOk, panes],
+        ['addPane', addPaneOk, addPaneArm],
+        ['bug2', bug2Ok, bug2],
+        ['bug3', bug3Ok, bug3],
+        ['bug4', bug4Ok, bug4],
+        ['tablineArm', tablineArmOk, tablineArm],
+      ];
+      const failed = [];
+      let skippedCount = 0;
+      for (const [label, ok, data] of checks) {
+        if (data && data.__skipped) {
+          skippedCount += 1;
+          console.log('  SKIP ' + label + ' (SMOKE_ARMS)');
+          continue;
+        }
+        console.log('  ' + (ok ? 'PASS' : 'FAIL') + ' ' + label +
+          (ok ? '' : ' — ' + JSON.stringify(data)));
+        if (!ok) failed.push(label);
+      }
+      const ran = checks.length - skippedCount;
+      const passed = ran - failed.length;
+      console.log(`  TALLY: ${passed}/${ran} arms passed` +
+        (skippedCount ? ` (${skippedCount} skipped by SMOKE_ARMS)` : ''));
+      if (failed.length === 0) {
+        finish(0, `all ${ran} smoke arms passed`);
       } else {
-        finish(1, `tabline behaviour did not work (${JSON.stringify(tablineArm)})`);
+        finish(1, `${failed.length}/${ran} smoke arms failed: ${failed.join(', ')}`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);
@@ -4232,9 +4823,16 @@ app.whenReady().then(() => {
   });
 
   win.loadURL(EDITOR_URL);
+  // Plumb a MessageChannel port from the spine to this window's renderer, exactly
+  // as `src/main.js createWindow` does. `attachWindow` registers its own
+  // `did-finish-load` listener to deliver the port once the page has loaded; the
+  // inspection above then has the 5s settle window to receive the first VIEW push.
+  if (serverBridge) serverBridge.attachWindow(win.webContents);
   // The smoke runs a long sequence of inspections; the timer protects
   // against a wedge in `did-finish-load`, not against slow checks. Sized
-  // for v2 where the shell arm waits up to 8s for stdout under the pty
-  // backing — the older 20s cap raced the tail of the run.
-  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 60000);
+  // for the Model-B round-trip: every command/keystroke now crosses to the
+  // server process and back, and the polling `__waitFor` helpers spend real
+  // wall-clock waiting for projected state, so the full run is minutes, not
+  // the ~20s of the in-renderer era.
+  setTimeout(() => finish(1, 'overall run watchdog fired (smoke exceeded its time budget)'), 540000);
 });

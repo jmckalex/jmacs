@@ -3156,11 +3156,19 @@ if (window.host && window.host.serverMode) {
         });
       }
       // A text tab: the active one is the façade/static content; the rest proxies.
-      return t.bufferId === activeId
-        ? activeTextView
-        : ensureServerProxy({
-            id: t.bufferId, name: t.name, modified: t.modified, filePath: t.filePath,
-          });
+      if (t.bufferId === activeId) {
+        // Stamp the wire's bufferId on the active view too (re-stamped on
+        // every reconcile): the tab-close handler must resolve the id from
+        // the SAME wire data the strip renders — the old fallback through
+        // serverViewClient.currentBufferId() lags the server's re-points
+        // (a close-active-tab sequence left it pointing at a killed buffer,
+        // making the next active-tab × a silent no-op).
+        activeTextView._serverBufferId = t.bufferId;
+        return activeTextView;
+      }
+      return ensureServerProxy({
+        id: t.bufferId, name: t.name, modified: t.modified, filePath: t.filePath,
+      });
     });
     const activeIdx = tabs.findIndex((t) => t.bufferId === activeId);
     tlv.active = activeIdx >= 0 ? activeIdx : 0;
@@ -3500,7 +3508,7 @@ if (window.host && window.host.serverMode) {
     // tabline focused leaf) the façade element in its active tab.
     const focusedInstance = focusedServerLeafElement;
     return {
-      setView: () => { const i = focusedInstance(); if (i) { try { i.setView(i.boundView ?? serverFacadeView); } catch { /* ignore */ } } },
+      setView: (_requestedView, opts) => { const i = focusedInstance(); if (i) { try { i.setView(i.boundView ?? serverFacadeView, opts); } catch { /* ignore */ } } },
       focus: () => { const i = focusedInstance(); if (i) { try { i.focus(); } catch { /* ignore */ } } },
       recenter: () => { const i = focusedInstance(); if (i) { try { i.recenter(); } catch { /* ignore */ } } },
       pageLines: () => { const i = focusedInstance(); try { return i ? i.pageLines() : 0; } catch { return 0; } },
@@ -6876,9 +6884,11 @@ function ensureTablineState(view) {
       if (view._serverLeafTabline) {
         const target = view.tabs[i];
         if (!target || !serverViewClient) return;
-        const id = target === serverFacadeView
-          ? serverViewClient.currentBufferId()
-          : target._serverBufferId;
+        // Every tab — the active façade included — carries the wire's
+        // bufferId (stamped in buildServerLeafTabline); currentBufferId()
+        // is only a fallback, since it can lag the server's re-points.
+        const id = target._serverBufferId
+          ?? (target === serverFacadeView ? serverViewClient.currentBufferId() : null);
         if (!id) return;
         serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId: view._serverLeafId });
         serverViewClient.sendPaneIntent({ op: 'close-tab', paneId: view._serverLeafId, bufferId: id });

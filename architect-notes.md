@@ -3284,3 +3284,96 @@ L6/ensureMajorMode/A3 merged (unpushed). HANDOVER.md current. Deferred bug filed
 clipboard not syncing (M-w/C-w; not A3-introduced).
 
 ---
+
+## [2026-07-04 00:30] Smoke triage: `set!` on a renderer-mirrored defcustom doesn't reach the renderer
+
+**Context**: Fixing the `liveDocs` smoke arm. The doc-view renders a live docstring
+through the RENDERER's cached `*markdown-interpreter*` (`app.js` reads
+`rendererConfig['*markdown-interpreter*']`, ~line 7523). The arm used
+`(set! *markdown-interpreter* "marked")` to force the render path; it had no
+effect — the render kept using a prior arm's `"echo smoke"`.
+
+**Observation (app-level, not a smoke bug)**: `*markdown-interpreter*` is a
+defcustom in `RENDERER_CONFIG_VARS` (spine.js ~622). The renderer's copy is only
+updated by `config-snapshot` (boot) or `config-apply` (live). `config-apply` is
+fired by the defcustom's `:on-change`, which runs on `custom-apply!` /
+`custom-apply-and-save!` — **not** on `set!`. So `(set! *markdown-interpreter* …)`
+(e.g. a user typing it in the REPL, or in init.lisp AFTER boot) silently changes
+only the spine var; every renderer-mirrored config var stays stale until the next
+`custom-apply!`. This is a footgun: `set!` looks like it should work and doesn't.
+
+**Question/blocker (your call)**: Is this intended (defcustoms must be changed via
+the customize pathway to take effect) or a gap worth closing? Options:
+  - (a) Leave as-is; document that live config changes go through `custom-apply!`.
+    Cheapest. But `set!` on these vars stays a silent no-op-to-the-renderer.
+  - (b) Make `set!` (or a thin `setq`-like) on a `RENDERER_CONFIG_VARS` member also
+    fire the config-apply push. Removes the footgun; a little magic in `set!`.
+  - (c) A dedicated "apply this config var live" primitive that isn't the
+    user-facing customize verb, for programmatic/live use (closer to what you
+    hinted at — a distinct access pathway rather than reusing `custom-apply!`).
+  I did NOT change any app behavior. For the SMOKE only, I used `custom-apply!`
+  to set up the test precondition (it's the same pathway the pollution — the
+  customize-save arm — came in on, so it's symmetric and realistic). If you pick
+  (b)/(c), the smoke arm can switch to whatever the new pathway is.
+
+**State of the work**: branch `fix-smoke-spine-wiring`. liveDocs green with
+`custom-apply!`. No app files touched.
+
+---
+## [2026-07-04 12:30] Smoke harness: 50/50 in ~25s; four app bugs found+fixed; two findings for you
+
+**Context**: Finishing the smoke port (branch `fix-smoke-spine-wiring`). The
+7–9 min runtime was Chromium throttling the hidden window's timers — fixed
+with `backgroundThrottling: false` (full sweep now ~25s, and
+`SMOKE_ARMS=<arm>` runs one arm in ~1.6s). All 10 red arms are green; the
+sweep is 50/50, three consecutive runs, no flake.
+
+**App bugs fixed along the way** (each has a regression test; all committed,
+tests green — but per test-before-merge these want a live pass from you):
+
+1. `client-buffer.js` — echoed direct edits double-applied in the mirror (the
+   press-and-hold éé bug): `sendIntent` never registered a predicted pending
+   entry. Live-verify: press-and-hold accents.
+2. `client-buffer.js` — `predictInsert` ignored the active selection (masked
+   by bug 1). Live-verify: click a colour swatch, OK a new colour.
+3. `spine.js`/`app.js` — closing the ACTIVE tab re-pointed the pane model but
+   never switched the client: modeline stuck on the killed buffer and the
+   next active-tab × silently no-op'd (an unkillable tab). The × now resolves
+   its bufferId from the wire tabs, and close-tab does a full
+   `switchClientToBuffer`.
+4. `spine.js` — `killBufferById`'s registry branch now un-curates the killed
+   id from tabline strips (mirrors the data-source branch). Before: corpse
+   ids lingered in curation (wire-filtered visually), later re-points landed
+   on them, and C-x k pushed an unrelated survivor tab into the strip.
+   **Behaviour change to review**: C-x k in a multi-tab tabline now stays
+   ring-fenced (re-points to a neighbour tab) instead of switching to a
+   global survivor. I believe this matches the tabline design; say if not.
+5. `spine.js` — two crash guards: `activeCursorCount()` read `.cursors` off
+   the null view a focused MEDIA leaf mints, and `entryForClient` fell back
+   to the long-killed `initialEntry`. Either uncaught throw EXITED THE WHOLE
+   SERVER process — focusing a video/audio view and pressing a key could
+   kill the spine. Live-verify: focus a video view, type, run REPL forms.
+
+**Finding 1 — `other-pane!` no-ops with a media leaf focused (NOT fixed)**:
+reproducible in an aged session (drive.js: open files into a strip, activate
+a video tab, then `(other-pane!)` — focus never moves; clicking the other
+pane works). The smoke's bug3 arm works around it by clicking. Suspect the
+focus echo/reconcile fight around the media façade, not pane-model (its
+`otherPane()` is sound). Needs its own investigation.
+
+**Finding 2 — should the server survive Lisp errors from intents?** Both
+crashes in (5) were ordinary exceptions escaping `onClientMessage` and
+killing the utilityProcess. A top-level catch (log + status message) would
+make the spine resilient to the whole class, at the cost of possibly hiding
+bugs. Your call; happy to implement either way.
+
+**Also open (carried)**: wire `(minor-mode-line)` into the server-baked
+modeline? Minor modes are invisible in the modeline today (the smoke now
+asserts via Lisp instead); `renderModeline` + spine viewState would need a
+small change if you want Emacs-style minor-mode display.
+
+**State of the work**: branch `fix-smoke-spine-wiring`, 33 commits, unmerged.
+`pnpm test` green (1086 desktop, all packages pass). Smoke 50/50 × 3 runs.
+Ready for your live pass + merge.
+
+---

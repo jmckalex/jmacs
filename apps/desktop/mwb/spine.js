@@ -4832,11 +4832,19 @@ export function createSpine(options, effects = {}) {
     }
   }
 
-  /** The buffer entry the FOCUSED leaf of client INDEX shows (defaults to the
-   *  seed buffer if somehow unset). */
+  /** The buffer entry the FOCUSED leaf of client INDEX shows. The fallback
+   *  must be a LIVE registry entry: the leaf can show a DATA SOURCE (media —
+   *  not in the registry), and the seed buffer itself may have been killed
+   *  by then — binding the interpreter to the removed initialEntry gave
+   *  choose-major-mode! a view with no buffer, and the uncaught LispError
+   *  took the whole server process down. The registry is never empty (the
+   *  kill path refuses to remove the last buffer). */
   function entryForClient(index) {
     const id = paneModels.get(index)?.focusedBufferId() ?? initialEntry.id;
-    return registry.get(id) ?? initialEntry;
+    return registry.get(id)
+      ?? registry.get(initialEntry.id)
+      ?? registry.list()[0]
+      ?? initialEntry;
   }
 
   /** Make client INDEX active: bind the interpreter to its FOCUSED leaf's
@@ -5260,14 +5268,30 @@ export function createSpine(options, effects = {}) {
     registry.remove(killedId);
     // Drop the killed buffer from EVERY window's open-set (it's gone globally).
     for (const s of clientBuffers.values()) s.delete(killedId);
-    // Re-home EVERY pane (across all windows) showing the killed buffer onto
-    // the survivor. A window is affected if its focused pane showed it (the
-    // simple, tested re-home path: re-point the focused leaf + re-sync).
+    // Re-home / un-curate EVERY pane referencing the killed buffer (across all
+    // windows), mirroring the data-source branch: a multi-tab tabline
+    // UN-CURATES the dead id (the ring-fenced re-point to a neighbour tab); a
+    // bare leaf — or a sole-tab tabline — re-homes onto the survivor. The dead
+    // id must leave the CURATION too, not just the display: the wire filters
+    // dead tabs visually, but a corpse left in `tabs` becomes the target of a
+    // later re-point and wedges the client on a killed buffer.
     for (const [ci, model] of paneModels) {
       for (const leaf of model.leaves()) {
-        if (model.stateOf(leaf.id)?.bufferId === killedId) {
-          model.focusPane(leaf.id);
+        const st = model.stateOf(leaf.id);
+        if (!st) continue;
+        const shows = st.bufferId === killedId;
+        const curates = st.tabline === true && Array.isArray(st.tabs)
+          && st.tabs.includes(killedId);
+        if (!shows && !curates) continue;
+        model.focusPane(leaf.id);
+        if (curates && st.tabs.length > 1) {
+          model.closeFocusedTab(killedId);
+          if (shows) switchClientToBuffer(ci, model.focusedBufferId());
+        } else {
           switchClientToBuffer(ci, survivor.id);
+          // A sole-tab tabline: the switch curated the survivor as a second
+          // tab, so the dead tab can now be un-curated.
+          if (curates) model.closeFocusedTab(killedId);
         }
       }
     }
@@ -5496,9 +5520,13 @@ export function createSpine(options, effects = {}) {
   /** How many cursors the active client's view has (≥1). The server uses
    *  this to decide a single delta vs a RESYNC after an edit: a
    *  multi-cursor edit makes several L1 edits but emits one change event,
-   *  so it needs a whole-buffer resync to replicate faithfully. */
+   *  so it needs a whole-buffer resync to replicate faithfully. NB: a
+   *  focused MEDIA leaf mints NO text view (`view` is null) — this must
+   *  not throw then, or the first buffer intent in that state kills the
+   *  whole server process (it did: an uncaught TypeError in the intent
+   *  handler exited the utilityProcess). */
   function activeCursorCount() {
-    return Array.isArray(view.cursors) ? view.cursors.length : 1;
+    return view && Array.isArray(view.cursors) ? view.cursors.length : 1;
   }
 
   // --- the keymap dispatch ---------------------------------------------
@@ -5663,8 +5691,13 @@ export function createSpine(options, effects = {}) {
           if (isEmptyScratch(closedEntry)) return true; // already a bare scratch
           const reuse = registry.list().find((e) => e.id !== closedId && isEmptyScratch(e));
           const scratchId = reuse ? reuse.id : registry.add('', '*scratch*', null).id;
-          clientBuffers.get(index)?.add(scratchId);
-          model.setFocusedBuffer(scratchId); // the bare leaf now shows the scratch
+          // Switch the client onto the scratch (open-set note, leaf re-point,
+          // interpreter re-bind, snapshot push) BEFORE the kill: without the
+          // full switch the client/modeline stays on the killed buffer, the
+          // interpreter keeps editing a detached buffer, and the next
+          // active-tab × resolves a dead bufferId from currentBufferId()
+          // and silently no-ops.
+          switchClientToBuffer(index, scratchId);
           if (killsView) killBufferById(closedId); else reapIfProcess(closedId);
           onBufferList();
           return true;
@@ -5672,9 +5705,13 @@ export function createSpine(options, effects = {}) {
 
         // A normal multi-tab close: un-curate from the focused tabline (re-points
         // to a neighbour — the proven path), then kill the view (default) or
-        // just un-curate (a detached live process is always reaped).
+        // just un-curate (a detached live process is always reaped). Closing the
+        // ACTIVE tab must then SWITCH the client onto the re-pointed neighbour —
+        // not just re-point the model — or the client/modeline stays on the
+        // killed buffer and the interpreter keeps editing it detached.
         const ok = model.closeFocusedTab(closedId);
         if (!ok) return false;
+        switchClientToBuffer(index, model.focusedBufferId());
         if (killsView) killBufferById(closedId); else reapIfProcess(closedId);
         return true;
       }
