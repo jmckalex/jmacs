@@ -3508,7 +3508,7 @@ if (window.host && window.host.serverMode) {
     // tabline focused leaf) the façade element in its active tab.
     const focusedInstance = focusedServerLeafElement;
     return {
-      setView: () => { const i = focusedInstance(); if (i) { try { i.setView(i.boundView ?? serverFacadeView); } catch { /* ignore */ } } },
+      setView: (_requestedView, opts) => { const i = focusedInstance(); if (i) { try { i.setView(i.boundView ?? serverFacadeView, opts); } catch { /* ignore */ } } },
       focus: () => { const i = focusedInstance(); if (i) { try { i.focus(); } catch { /* ignore */ } } },
       recenter: () => { const i = focusedInstance(); if (i) { try { i.recenter(); } catch { /* ignore */ } } },
       pageLines: () => { const i = focusedInstance(); try { return i ? i.pageLines() : 0; } catch { return 0; } },
