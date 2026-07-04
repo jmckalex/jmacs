@@ -3377,3 +3377,49 @@ small change if you want Emacs-style minor-mode display.
 Ready for your live pass + merge.
 
 ---
+## [2026-07-04] auto-fill-mode: wrap-as-you-type minor mode — BUILT + self-verified
+
+**Context**: You asked (while away) for an auto-fill minor mode for text
+views: wrap lines as the user types at a customisable column, auto-indenting
+per the major mode via a mode-specifiable Lisp indent function. Built it end
+to end on branch `auto-fill-mode` off `main` (`0badde23`).
+
+**What landed** (see `plans/AUTO-FILL-MODE.md` for the full design + the
+assumptions I had to make):
+
+- `packages/stdlib/lisp/auto-fill.lisp` — `auto-fill-minor-mode` (the mode
+  value) + `M-x auto-fill-mode` (the toggle command; named for Emacs muscle
+  memory — the two names must differ, shared namespace), `*fill-column*`
+  defcustom (default 70; per-mode `:fill-column` override), the pure
+  `-auto-fill-break-index` core, `do-auto-fill`, the `:fill-indent-function`
+  seam, `set-fill-column` (C-x f).
+- `keymap.lisp` — a general `*post-self-insert-hook*` (Emacs's
+  post-self-insert-hook), run guarded (try/catch) after each self-insert;
+  empty by default. Auto-fill is its first client. Also the C-x f binding.
+- Registered `auto-fill.lisp` in BOTH load lists (STDLIB_FILES + SPINE_STDLIB)
+  right after keymap.lisp.
+- 20 unit tests (pure core + real-buffer mutation + the self-insert chain +
+  the indent seam + the toggle). Full suite green (stdlib 924, all packages).
+
+**Self-verified headless** (drive.js): the real spine loaded auto-fill.lisp
+(`command-registered? 'auto-fill-mode` → #t, hook registered → #t), and REAL
+keystrokes into the editor wrapped "the quick brown fox jumps over the lazy
+dog and runs away" at column 24 into "the quick brown fox" / "jumps over the
+lazy dog" / "and runs away…" — server buffer shows the inserted `\n`s and the
+client rendered the separate lines (the client-prediction reconcile displays
+cleanly, no jank). So the spine-load + hook + wrap all work live, not just in
+the harness.
+
+**Decisions you may want to revisit** (all noted in the plan):
+1. Off by default (Emacs). Enable per mode via
+   `(add-hook markdown-mode (lambda () (enable-minor-mode auto-fill-minor-mode)))`.
+   Say if you'd rather it be default-on in prose modes.
+2. `*fill-column*` default 70; the generic M-q `fill-paragraph!` (a JS host
+   primitive) still hardcodes 72 — I left it independent. Unify on request.
+3. Only the prose-default indenter ships; `:fill-indent-function` is the seam
+   for a real per-syntax indenter (none exists in the tree yet).
+
+**State of the work**: branch `auto-fill-mode`, 2 commits, unmerged, tests
+green, self-verified. Ready for your live pass + merge (per test-before-merge).
+
+---
