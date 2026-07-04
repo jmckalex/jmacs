@@ -298,10 +298,21 @@ export function createClientBuffer(options = {}) {
   // let the server's delta apply fresh).
   function predictInsert(text) {
     if (!localEcho || text.length === 0) return false;
-    const at = cursors[0].point;
+    const c = cursors[0];
+    // The canonical buffer's insert REPLACES an active selection (the
+    // colour-swatch picker relies on it: select the literal, insert the
+    // replacement). The prediction must match — the echo is reconcile-only
+    // now, so a wrong prediction is never corrected by a re-apply.
+    if (c.mark !== null && c.mark !== c.point) {
+      const from = Math.min(c.point, c.mark);
+      const to = Math.max(c.point, c.mark);
+      storage.delete(from, to);
+      c.point = from;
+    }
+    c.mark = null;
+    const at = c.point;
     storage.insert(at, text);
-    cursors[0].point = at + text.length;
-    cursors[0].mark = null;
+    c.point = at + text.length;
     emit(lastLowLevelChange);
     return true;
   }

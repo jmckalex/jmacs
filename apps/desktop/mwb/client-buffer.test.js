@@ -221,6 +221,20 @@ test('edit mutators flag their intents as predicted (localEcho on)', () => {
   assert.deepEqual(metas, [{ predicted: true }, { predicted: true }]);
 });
 
+test('insert with an active selection predicts a replace-of-selection', () => {
+  // The colour-swatch picker selects the old literal then inserts the new
+  // one; the canonical buffer applies that as a replace. The prediction
+  // must do the same — the echo no longer re-applies (reconcile-only), so
+  // a prediction that ignores the selection would leave both literals.
+  const b = createClientBuffer({ initialText: 'a #ff8800 b', point: 0 });
+  b.moveTo(2);
+  b.moveTo(9, { extend: true });
+  b.insert('#00ccff');
+  assert.equal(b.text, 'a #00ccff b');
+  assert.equal(b.point, 9);
+  assert.equal(b.mark, null);
+});
+
 test('a no-op prediction is flagged unpredicted (delete at start)', () => {
   // The flag must be truthful: at buffer start the local delete
   // prediction cannot mutate, so the server's (also no-op) echo must
