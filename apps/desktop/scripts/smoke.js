@@ -51,6 +51,18 @@ const docsBuilt = existsSync(join(repoRoot, 'docs', 'build', 'manifest.json'));
  *  userData (blob_storage/Code Cache/…) into the same dir → ENOTEMPTY at boot. */
 const smokeConfigHome = join(tmpdir(), 'jmacs-smoke-spine-config');
 
+/** Optional arm filter for rapid iteration: SMOKE_ARMS="panes,tablineArm"
+ *  runs only the named arms (runArm labels); every other arm resolves to a
+ *  skip marker and its checks report SKIP, not FAIL. A single arm runs in
+ *  boot + a couple of seconds instead of the full sweep. NB: arms are
+ *  hermetic-ish, not perfectly isolated — a filtered run boots a FRESH
+ *  spine, so an arm that green-lights alone can still differ inside the
+ *  full shared-state sweep. */
+const ARM_FILTER = (process.env.SMOKE_ARMS ?? '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+const armEnabled = (label) =>
+  ARM_FILTER.length === 0 || ARM_FILTER.includes(label);
+
 /** A scratch path the file round-trip writes to. */
 const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
 
@@ -359,6 +371,7 @@ app.whenReady().then(() => {
       // whole suite (and the final tally). Rescues a renderer-side hang; a
       // main-process block would also freeze this timer, which is itself a signal.
       const runArm = async (label, js) => {
+        if (!armEnabled(label)) return { __skipped: true };
         const t0 = Date.now();
         const result = await Promise.race([
           win.webContents.executeJavaScript(js),
@@ -2017,7 +2030,7 @@ app.whenReady().then(() => {
           artSrcPrefix: artSrcAfterEmbed.slice(0, 30),
         };
       })()`);
-      console.log('  jukebox:', JSON.stringify({
+      console.log('  jukebox:', JSON.stringify(jukebox.__skipped ? jukebox : {
         name: jukebox.name,
         visible: jukebox.visible,
         tracks: jukebox.tracks.length,
@@ -2282,7 +2295,7 @@ app.whenReady().then(() => {
           videoStillVisible, afterVideoKill,
         };
       })()`);
-      console.log('  mediaViews:', JSON.stringify({
+      console.log('  mediaViews:', JSON.stringify(mediaViews.__skipped ? mediaViews : {
         audio: {
           shown: mediaViews.audioShown,
           name: mediaViews.audioName,
@@ -4081,6 +4094,7 @@ app.whenReady().then(() => {
       const paletteOk =
         palette.opened && palette.matched && palette.closed && palette.focused;
       const treesitterOk =
+        typeof treesitter.langs === 'string' &&
         treesitter.langs.includes('javascript') &&
         treesitter.langs.includes('html') &&
         treesitter.langs.includes('python') &&
@@ -4490,6 +4504,7 @@ app.whenReady().then(() => {
       // specific leak pre-fix was D from the left tabline being
       // pushed in via the `wasCurrent` switchToViewIndex path.
       const bug4Ok =
+        Array.isArray(bug4.leftBeforeKill) &&
         bug4.leftBeforeKill.some((l) => l.includes('jmacs-bug4-A')) &&
         bug4.leftBeforeKill.some((l) => l.includes('jmacs-bug4-D')) &&
         bug4.leftAfterKill.length === bug4.leftBeforeKill.length &&
@@ -4606,17 +4621,25 @@ app.whenReady().then(() => {
         ['tablineArm', tablineArmOk, tablineArm],
       ];
       const failed = [];
+      let skippedCount = 0;
       for (const [label, ok, data] of checks) {
+        if (data && data.__skipped) {
+          skippedCount += 1;
+          console.log('  SKIP ' + label + ' (SMOKE_ARMS)');
+          continue;
+        }
         console.log('  ' + (ok ? 'PASS' : 'FAIL') + ' ' + label +
           (ok ? '' : ' — ' + JSON.stringify(data)));
         if (!ok) failed.push(label);
       }
-      const passed = checks.length - failed.length;
-      console.log(`  TALLY: ${passed}/${checks.length} arms passed`);
+      const ran = checks.length - skippedCount;
+      const passed = ran - failed.length;
+      console.log(`  TALLY: ${passed}/${ran} arms passed` +
+        (skippedCount ? ` (${skippedCount} skipped by SMOKE_ARMS)` : ''));
       if (failed.length === 0) {
-        finish(0, `all ${checks.length} smoke arms passed (${render.lines} lines)`);
+        finish(0, `all ${ran} smoke arms passed`);
       } else {
-        finish(1, `${failed.length}/${checks.length} smoke arms failed: ${failed.join(', ')}`);
+        finish(1, `${failed.length}/${ran} smoke arms failed: ${failed.join(', ')}`);
       }
     } catch (err) {
       finish(1, `inspection failed: ${err.message}`);
