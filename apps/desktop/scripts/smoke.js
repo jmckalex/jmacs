@@ -492,6 +492,7 @@ app.whenReady().then(() => {
       // digit selection, ordinary typing after a hold, and a click
       // selection (which has no keydown at all).
       const accents = await runArm('accents', `(async () => {
+        ${WAIT_HELPERS}
         const view = document.querySelector('text-view:not([style*="display: none"])');
         const editor = view.querySelector('.editor');
         const sink = view.querySelector('.editor-input');
@@ -504,33 +505,42 @@ app.whenReady().then(() => {
           sink.dispatchEvent(new InputEvent('input', {
             inputType: 'insertText', data, bubbles: true,
           }));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const firstLine = () => view.querySelector('.editor-line').textContent;
 
         const before = firstLine();
+        // PACING MATTERS: on real hardware the popup only commits after a
+        // ~500ms hold, long after the base char's server delta has landed
+        // in the mirror. Fire the commit before that and the mirror's
+        // local prediction runs against stale text (wrong offsets). So
+        // each phase waits for the base char to PROJECT before the
+        // popup-commit events — that is the faithful simulation, and it
+        // doubles as the pass/fail poll.
         // (1) Digit selection: hold e, popup opens, 2 picks é over the e.
         press('e'); sink.value = 'e';        // mimic the keydown default action
+        await __waitFor(() => firstLine() === 'e' + before);
         press('e', { repeat: true });        // the hold arms the popup state
         press('2');                          // deferred - must NOT self-insert
         const sinkAfterDigit = sink.value;   // must still hold the base 'e'
         sink.value = 'é'; type('é');         // the commit the OS delivers
-        await wait(150);
+        await __waitFor(() => firstLine() === 'é' + before);
         const afterPick = firstLine();
         // (2) Ordinary typing after a hold: o held (popup ignored), then x.
         press('o'); sink.value = 'o';
+        await __waitFor(() => firstLine() === 'éo' + before);
         press('o', { repeat: true });
         press('x');                          // deferred...
         sink.value = 'ox'; type('x');        // ...default action APPENDS
-        await wait(150);
+        await __waitFor(() => firstLine() === 'éox' + before);
         const afterTyping = firstLine();
         // (3) Click selection: u held, popup clicked - no keydown at all.
         press('u'); sink.value = 'u';
+        await __waitFor(() => firstLine() === 'éoxu' + before);
         press('u', { repeat: true });
         sink.value = 'ü'; type('ü');
-        await wait(150);
+        await __waitFor(() => firstLine() === 'éoxü' + before);
         const afterClick = firstLine();
         for (let i = 0; i < 4; i += 1) press('Backspace');
-        await wait(150);
+        await __waitFor(() => firstLine() === before);
         const restored = firstLine();
         return { before, sinkAfterDigit, afterPick, afterTyping, afterClick, restored };
       })()`);
