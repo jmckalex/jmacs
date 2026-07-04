@@ -637,7 +637,56 @@ export function createServerViewClient({
       case MSG.MINIBUFFER_COMPLETIONS:
         showCompletionsDom({ value: msg.value, items: msg.items, directory: msg.directory });
         break;
+      case MSG.TRACE:
+        setTrace(!!msg.on);
+        break;
       default: break; // PANE_TREE: not in this slice
+    }
+  }
+
+  // --- debug op-trace (off unless the spine booted with GODOT_TRACE) --------
+  // When on, `globalThis.__godotTrace(kind, data)` forwards a renderer LOCAL op
+  // (a scroll/follow decision — the stuff that never hits the wire) up to the
+  // spine, which writes it into the single trace file alongside the wire
+  // traffic. view.js et al. call `globalThis.__godotTrace?.(...)` at the key
+  // sites, so this is a no-op with zero cost when off.
+  let scrollIntoViewRaw = null;
+  function setTrace(on) {
+    if (on) {
+      globalThis.__godotTrace = (kind, data) => {
+        try {
+          port.postMessage({ type: '__trace__', kind, data, t: Date.now() });
+        } catch { /* ignore — a trace line must never break the app */ }
+      };
+      // Wrap scrollIntoView to capture WHAT scrolls the editor (the swatch-hover
+      // "snap to top" bug): the element, args, editor scrollTop, and a short
+      // stack pinning the exact call path.
+      if (!scrollIntoViewRaw && typeof Element !== 'undefined') {
+        scrollIntoViewRaw = Element.prototype.scrollIntoView;
+        const raw = scrollIntoViewRaw;
+        Element.prototype.scrollIntoView = function scrollIntoViewTraced(...args) {
+          try {
+            const ed = this.closest && this.closest('.editor');
+            if (globalThis.__godotTrace) {
+              globalThis.__godotTrace('scrollIntoView', {
+                cls: this.className,
+                args: JSON.stringify(args),
+                editorScrollTop: ed ? ed.scrollTop : null,
+                stack: (new Error().stack || '').split('\n').slice(2, 8)
+                  .map((s) => s.trim()).join(' | '),
+              });
+            }
+          } catch { /* ignore */ }
+          return raw.apply(this, args);
+        };
+      }
+      log('[trace] renderer op-trace ON');
+    } else {
+      globalThis.__godotTrace = null;
+      if (scrollIntoViewRaw) {
+        Element.prototype.scrollIntoView = scrollIntoViewRaw;
+        scrollIntoViewRaw = null;
+      }
     }
   }
 
