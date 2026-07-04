@@ -243,14 +243,19 @@ export function createServerViewClient({
   const pending = new Map();
 
   /** The mirror's wire-out: post an intent the server applies. The mirror only
-   *  calls this from its OWN mutators (a direct mirror edit); the typing path
-   *  no longer mutates the mirror locally (every key goes up as a KEY intent and
-   *  the server's echoed DELTA reconciles), so this is a thin pass-through kept
-   *  to satisfy the ClientBuffer contract. */
-  function sendIntent(intent) {
+   *  calls this from its OWN mutators (a direct mirror edit — the accent-commit
+   *  and IME paths); the typing path routes through sendKey instead. When the
+   *  mirror locally predicted the edit (meta.predicted — localEcho), register a
+   *  PREDICTED pending entry so onDelta reconciles the echo (cursor/seq only)
+   *  rather than re-applying the text on top of the prediction: without it the
+   *  press-and-hold accent commit landed twice in the mirror (the éé bug) while
+   *  the server's canonical buffer stayed correct. */
+  function sendIntent(intent, meta) {
+    const id = nextIntentId++;
+    pending.set(id, { predicted: !!(meta && meta.predicted) });
     port.postMessage({
       type: MSG.INTENT,
-      intent: { id: nextIntentId++, ...intent },
+      intent: { id, ...intent },
     });
   }
 

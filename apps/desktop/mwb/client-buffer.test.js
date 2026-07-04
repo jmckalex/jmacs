@@ -204,6 +204,51 @@ test('deleteBackward at buffer start is a no-op with no intent change', () => {
   assert.deepEqual(intents, [{ kind: 'delete-backward', count: 1 }]);
 });
 
+test('edit mutators flag their intents as predicted (localEcho on)', () => {
+  // Regression: the accent-commit path (a direct mirror insert/delete)
+  // predicts locally, so the transport must be told to register a
+  // PREDICTED pending entry — otherwise the server's echoed DELTA
+  // re-applies the edit on top of the prediction and the mirror doubles
+  // it (the press-and-hold éé bug).
+  const metas = [];
+  const b = createClientBuffer({
+    initialText: 'a',
+    point: 1,
+    sendIntent: (_i, meta) => metas.push(meta),
+  });
+  b.insert('é');
+  b.deleteBackward(1);
+  assert.deepEqual(metas, [{ predicted: true }, { predicted: true }]);
+});
+
+test('a no-op prediction is flagged unpredicted (delete at start)', () => {
+  // The flag must be truthful: at buffer start the local delete
+  // prediction cannot mutate, so the server's (also no-op) echo must
+  // not be treated as already-applied.
+  const metas = [];
+  const b = createClientBuffer({
+    initialText: 'abc',
+    point: 0,
+    sendIntent: (_i, meta) => metas.push(meta),
+  });
+  b.deleteBackward(1);
+  assert.deepEqual(metas, [{ predicted: false }]);
+});
+
+test('edit mutators flag their intents unpredicted with localEcho off', () => {
+  const metas = [];
+  const b = createClientBuffer({
+    initialText: 'a',
+    point: 1,
+    localEcho: false,
+    sendIntent: (_i, meta) => metas.push(meta),
+  });
+  b.insert('é');
+  b.deleteBackward(1);
+  // No local prediction happened, so the echo must apply fresh.
+  assert.deepEqual(metas, [{ predicted: false }, { predicted: false }]);
+});
+
 test('deleteBackward steps a whole surrogate pair, not a code unit', () => {
   const b = createClientBuffer({ initialText: 'x\u{1F600}', point: 3 });
   b.deleteBackward(1);

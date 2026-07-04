@@ -64,8 +64,12 @@ import { normaliseCursors, overlaysToDecorations } from './protocol.js';
  *   name like `app.js` highlights as JavaScript).
  * @param {number} [options.point=0] - The initial cursor offset.
  * @param {IntentSink} [options.sendIntent] - Where to route edit/motion
- *   intents (the wire up to the server). Defaults to a no-op, which makes
- *   the mirror a pure local buffer (used in tests of the read surface).
+ *   intents (the wire up to the server). Called as `sendIntent(intent,
+ *   meta)` where `meta.predicted` says whether the mutator locally
+ *   predicted the edit (localEcho) — the transport uses it to register a
+ *   predicted pending entry so the echoed DELTA doesn't double-apply.
+ *   Defaults to a no-op, which makes the mirror a pure local buffer
+ *   (used in tests of the read surface).
  * @param {boolean} [options.localEcho=true] - Whether a mutator predicts
  *   its result on the mirror immediately (instant typing) before the
  *   server confirms. With it off, the mirror only changes when a server
@@ -287,24 +291,31 @@ export function createClientBuffer(options = {}) {
   // via applyDelta({echoed:true}), which only adopts the authoritative
   // cursor (the text already matches the prediction).
 
+  // Each predictor returns whether it actually mutated the mirror — the
+  // mutators forward that as the intent's `predicted` meta, so the
+  // transport only marks an echo as reconcile-only when a prediction
+  // really landed (a no-op prediction, e.g. delete at buffer start, must
+  // let the server's delta apply fresh).
   function predictInsert(text) {
-    if (!localEcho) return;
+    if (!localEcho || text.length === 0) return false;
     const at = cursors[0].point;
     storage.insert(at, text);
     cursors[0].point = at + text.length;
     cursors[0].mark = null;
     emit(lastLowLevelChange);
+    return true;
   }
 
   function predictDeleteBackward(count) {
-    if (!localEcho) return;
+    if (!localEcho) return false;
     const to = cursors[0].point;
     const from = storage.stepBackward(to, count);
-    if (from === to) return;
+    if (from === to) return false;
     storage.delete(from, to);
     cursors[0].point = from;
     cursors[0].mark = null;
     emit(lastLowLevelChange);
+    return true;
   }
 
   /** @type {ClientBuffer} */
@@ -366,13 +377,18 @@ export function createClientBuffer(options = {}) {
 
     insert(text) {
       const str = String(text);
-      predictInsert(str);
-      sendIntent({ kind: 'self-insert', text: str });
+      // Tell the transport whether this edit was locally predicted: it
+      // must register a PREDICTED pending entry so the server's echoed
+      // DELTA reconciles (cursor/seq only) instead of re-applying the
+      // text on top of the prediction — the accent-commit path doubled
+      // its é exactly because this flag didn't exist.
+      const predicted = predictInsert(str);
+      sendIntent({ kind: 'self-insert', text: str }, { predicted });
     },
 
     deleteBackward(count = 1) {
-      predictDeleteBackward(count);
-      sendIntent({ kind: 'delete-backward', count });
+      const predicted = predictDeleteBackward(count);
+      sendIntent({ kind: 'delete-backward', count }, { predicted });
       return true;
     },
 
