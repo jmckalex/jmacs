@@ -200,6 +200,13 @@ export const MSG = Object.freeze({
   // 'manifest' (a pre-built page) or 'live' (only a docstring, in `source`);
   // null when no documented symbol is under the offset. Pairs by reqId.
   DOC_HOVER_RESULT: 'doc-hover-result',
+  // down (debug): the spine tells a client to turn its renderer op-trace ON/OFF
+  // (`{ on }`). Sent to each client at attach when the spine booted with
+  // GODOT_TRACE set. The client then forwards its local scroll/follow ops to the
+  // spine as `{ type: '__trace__' }` messages, which the spine writes into the
+  // single trace file alongside the wire traffic it already sees. Off by default;
+  // zero cost when off (the renderer's `globalThis.__godotTrace` hook is null).
+  TRACE: 'trace',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
