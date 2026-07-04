@@ -276,3 +276,112 @@ test('fill-paragraph keeps the > on every line of a blockquote', async () => {
   const text = lines.map((l) => l.replace(/^>\s+/, '')).join(' ');
   assert.equal(text, LONG.replace(/\s+/g, ' '));
 });
+
+// --- flush-right (>>) and centred (>> … <<) aligned blocks ---------------
+
+test('aligned-line detection follows the whitespace-token rule', async () => {
+  const { ev } = await fillEditor();
+  const t = (form) => ev(`(if ${form} #t #f)`);
+  assert.equal(t('(-jmd-aligned-line? ">> text")'), true);
+  assert.equal(t('(-jmd-aligned-line? ">>")'), true, 'a bare >> is aligned');
+  assert.equal(t('(-jmd-aligned-line? "> text")'), false, 'a blockquote is not');
+  assert.equal(t('(-jmd-aligned-line? ">>text")'), false, '>> must be a token');
+  assert.equal(t('(-jmd-centred-line? ">> text <<")'), true);
+  assert.equal(t('(-jmd-centred-line? ">> text")'), false, 'no << is flush-right');
+  assert.equal(t('(-jmd-centred-line? ">> <<")'), true, 'empty centred separator');
+  // A bare >> / >> << is a separator, not content.
+  assert.equal(t('(-jmd-aligned-content-line? ">>")'), false);
+  assert.equal(t('(-jmd-aligned-content-line? ">> hi")'), true);
+  // Sigils strip cleanly.
+  assert.equal(ev('(-jmd-strip-align ">> hello world" #f)'), 'hello world');
+  assert.equal(ev('(-jmd-strip-align ">> hello   <<" #t)'), 'hello');
+});
+
+test('fill-paragraph reflows a flush-right block, >> on every line', async () => {
+  const { ev, buffer } = await fillEditor();
+  ev('(set! *jmarkdown-fill-column* 20)');
+  buffer.text = '>> alpha beta\n>> gamma delta epsilon zeta eta theta iota\n';
+  buffer.pos = buffer.text.indexOf('alpha');
+  ev('(jmarkdown-fill-paragraph)');
+  const lines = buffer.text.split('\n').slice(0, -1);
+  assert.ok(lines.length >= 3, 'the two source lines reflow together');
+  assert.ok(lines.every((l) => l.startsWith('>> ')), '>> kept on every line');
+  assert.ok(lines.every((l) => l.length <= 20));
+  const text = lines.map((l) => l.replace(/^>> /, '')).join(' ');
+  assert.equal(text, 'alpha beta gamma delta epsilon zeta eta theta iota');
+});
+
+test('fill-paragraph reflows a centred block, >> … << aligned to the column', async () => {
+  const { ev, buffer } = await fillEditor();
+  ev('(set! *jmarkdown-fill-column* 24)');
+  buffer.text = '>> alpha beta gamma <<\n>> delta epsilon zeta eta <<\n';
+  buffer.pos = buffer.text.indexOf('alpha');
+  ev('(jmarkdown-fill-paragraph)');
+  const lines = buffer.text.split('\n').slice(0, -1);
+  assert.ok(lines.length >= 2);
+  assert.ok(lines.every((l) => l.startsWith('>> ')), '>> opens every line');
+  assert.ok(lines.every((l) => l.endsWith('<<')), '<< closes every line');
+  assert.ok(lines.every((l) => l.length === 24), '<< aligned at the column');
+  const text = lines
+    .map((l) => l.replace(/^>> /, '').replace(/\s*<<$/, ''))
+    .join(' ');
+  assert.equal(text, 'alpha beta gamma delta epsilon zeta eta');
+});
+
+test('an already-reflowed aligned block is a fixed point', async () => {
+  const { ev, buffer } = await fillEditor();
+  ev('(set! *jmarkdown-fill-column* 24)');
+  buffer.text = '>> alpha beta gamma <<\n>> delta epsilon zeta eta <<\n';
+  buffer.pos = buffer.text.indexOf('alpha');
+  ev('(jmarkdown-fill-paragraph)');
+  const once = buffer.text;
+  buffer.pos = buffer.text.indexOf('alpha');
+  ev('(jmarkdown-fill-paragraph)');
+  assert.equal(buffer.text, once, 'filling twice changes nothing');
+});
+
+test('a bare >> separator bounds sub-paragraphs within a flush-right block', async () => {
+  const { ev, buffer } = await fillEditor();
+  ev('(set! *jmarkdown-fill-column* 24)');
+  buffer.text =
+    '>> first paragraph is quite long and wraps\n>>\n>> second paragraph stays\n';
+  buffer.pos = buffer.text.indexOf('first');
+  ev('(jmarkdown-fill-paragraph)');
+  // Only the first sub-paragraph reflowed; the separator and the second
+  // sub-paragraph below it are untouched.
+  assert.ok(
+    buffer.text.includes('\n>>\n>> second paragraph stays\n'),
+    'separator + second paragraph preserved'
+  );
+  const firstPart = buffer.text.split('\n>>\n')[0].split('\n');
+  assert.ok(firstPart.length >= 2, 'the first sub-paragraph wrapped');
+  assert.ok(firstPart.every((l) => l.startsWith('>> ') && l.length <= 24));
+});
+
+// --- the metadata frontmatter (where syntax extensions live) -------------
+
+test('fill-paragraph never reflows the --- metadata frontmatter', async () => {
+  const { ev, buffer } = await fillEditor();
+  // An Extension definition (header line + indented replacement HTML) is
+  // whitespace-significant; merging its lines would corrupt it.
+  buffer.text =
+    '---\nTitle: Test\nExtension keycap: ⌜ ⌝ false 1\n' +
+    '\t<kbd>${content1}</kbd>\n---\n\n' + LONG + '\n';
+  const before = buffer.text;
+  buffer.pos = buffer.text.indexOf('Extension');
+  ev('(jmarkdown-fill-paragraph)');
+  assert.equal(buffer.text, before, 'frontmatter left untouched');
+});
+
+test('prose after the frontmatter still fills normally', async () => {
+  const { ev, buffer } = await fillEditor();
+  buffer.text = '---\nTitle: Test\n---\n\n' + LONG + '\n';
+  buffer.pos = buffer.text.indexOf('Lorem');
+  ev('(jmarkdown-fill-paragraph)');
+  const lines = buffer.text.split('\n');
+  // The header survives; the body wrapped.
+  assert.equal(lines[0], '---');
+  assert.equal(lines[2], '---');
+  const body = lines.slice(4).filter((l) => l !== '');
+  assert.ok(body.length >= 2 && body.every((l) => l.length <= 72));
+});

@@ -144,6 +144,9 @@
         (string-prefix? "@begin(" content)
         (string-prefix? "@end(" content)
         (string-prefix? ":::" content)
+        ;; A flush-right / centred line (>> …) bounds an ordinary
+        ;; paragraph; the aligned block is filled by its own plan branch.
+        (string-prefix? ">>" content)
         (string-prefix? "#" content)
         (string-prefix? "```" content)
         (string-prefix? "~~~" content)
@@ -240,6 +243,101 @@
   (let ((l (drop-leading-blanks line)))
     (drop-leading-blanks (substring l (-jmd-blockquote-len l)))))
 
+;; --- aligned blocks: flush-right (>>) and centred (>> … <<) --------------
+;; JMarkdown's two line-oriented alignment forms (docs/syntax-adjustments):
+;; a line prefixed with the `>>` token is pushed flush right; a line that
+;; ALSO ends with the `<<` token is centred (the trailing `<<` is what
+;; distinguishes the two, and its column is free to pad). `>>` and `<<` are
+;; whitespace-delimited TOKENS — `>> <<` is an aligned pair, `> > < <` is
+;; not (docs/extensions-simple) — so detection requires whitespace after
+;; `>>` and before `<<`, which also keeps them distinct from a `> `
+;; blockquote. M-q reflows an aligned block like a blockquote: the run's
+;; text is re-wrapped to the fill column, `>> ` kept on every line and (for
+;; centred) `<<` re-aligned to the column.
+
+(define (-jmd-rtrim-walk s n)
+  (if (and (> n 0) (-jmd-space? (substring s (- n 1) n)))
+      (-jmd-rtrim-walk s (- n 1))
+      (substring s 0 n)))
+
+(define (-jmd-rtrim s)
+  "S without trailing spaces/tabs. PURE."
+  (-jmd-rtrim-walk s (string-length s)))
+
+(define (-jmd-aligned-line? line)
+  "Whether LINE is an aligned line: after its leading whitespace it opens
+   with the `>>` token (>> then whitespace, or >> alone). PURE."
+  (let ((c (drop-leading-blanks line)))
+    (and (string-prefix? ">>" c)
+         (or (= (string-length c) 2)
+             (-jmd-space? (substring c 2 3))))))
+
+(define (-jmd-centred-line? line)
+  "Whether LINE is a CENTRED aligned line: aligned and ending with the
+   `<<` token (a space then `<<` at the end). PURE."
+  (and (-jmd-aligned-line? line)
+       (string-suffix? " <<" (-jmd-rtrim (drop-leading-blanks line)))))
+
+(define (-jmd-strip-align line centred?)
+  "The inner text of an aligned LINE: the `>>` opener (and following
+   whitespace) removed, and for a CENTRED line the trailing `<<` (and the
+   whitespace before it) too. PURE."
+  (let ((after (drop-leading-blanks (substring (drop-leading-blanks line) 2))))
+    (if centred?
+        (let ((rt (-jmd-rtrim after)))
+          (if (string-suffix? "<<" rt)
+              (-jmd-rtrim (substring rt 0 (- (string-length rt) 2)))
+              rt))
+        (-jmd-rtrim after))))
+
+(define (-jmd-aligned-content-line? line)
+  "An aligned line that carries body text — not a bare `>>` / `>> <<`
+   paragraph separator (which bounds sub-paragraphs like a blank line). PURE."
+  (and (-jmd-aligned-line? line)
+       (not (equal? (-jmd-strip-align line (-jmd-centred-line? line)) ""))))
+
+(define (-jmd-centre-pad line fill-column)
+  "Pad the `>> …` LINE with spaces and append `<<` so the closing marker
+   lands at FILL-COLUMN, with at least one space before it. PURE."
+  (let ((pad (- (- fill-column 2) (string-length line))))
+    (str line (string-repeat " " (if (> pad 1) pad 1)) "<<")))
+
+(define (-jmd-aligned-wrap words lead centred? fill-column)
+  "Reflow WORDS as an aligned block at indent LEAD: `>> ` on every line,
+   wrapped to FILL-COLUMN. For CENTRED, wrap shorter and append a
+   column-aligned `<<`. PURE."
+  (let ((prefix (str lead ">> ")))
+    (if centred?
+        (map (lambda (l) (-jmd-centre-pad l fill-column))
+             (-jmd-wrap2 words prefix prefix (- fill-column 3)))
+        (-jmd-wrap2 words prefix prefix fill-column))))
+
+;; --- the metadata frontmatter (where syntax extensions are defined) ------
+;; A JMarkdown document opens with a `---`-fenced metadata header carrying
+;; Title:, Bibliography:, and multi-line `Extension …:` definitions (whose
+;; indented replacement-HTML lines are whitespace-significant). Reflowing
+;; any of that corrupts it, so fill never touches the frontmatter.
+
+(define (-jmd-find-dash lines i)
+  (cond
+    ((nil? lines) -1)
+    ((-jmd-dash-rule? (drop-leading-blanks (car lines))) i)
+    (else (-jmd-find-dash (cdr lines) (+ i 1)))))
+
+(define (-jmd-frontmatter-end lines)
+  "If LINES opens with a `---` metadata fence (line 0 a dash rule), the
+   index of its closing dash-rule line; else -1. PURE."
+  (if (and (not (nil? lines))
+           (-jmd-dash-rule? (drop-leading-blanks (car lines))))
+      (-jmd-find-dash (cdr lines) 1)
+      -1))
+
+(define (-jmd-in-frontmatter? lines index)
+  "Whether line INDEX sits strictly inside the `---` metadata frontmatter.
+   The fence lines themselves are dash-rule boundaries already. PURE."
+  (let ((end (-jmd-frontmatter-end lines)))
+    (and (>= end 0) (> index 0) (< index end))))
+
 ;; --- small list/line helpers (the dialect's Lisp has no list-ref) ------
 
 (define (-jmd-nth lst n)
@@ -303,6 +401,37 @@
   (-jmd-join
     (cons (substring (car para) (string-length first-prefix))
           (map -jmd-strip-quote (cdr para)))))
+
+(define (-jmd-aligned-edge lines index delta)
+  "The last aligned-CONTENT line index reachable from INDEX by DELTA
+   (+1/-1) without crossing a non-content line (a separator, a plain line,
+   or the buffer edge). PURE."
+  (let ((next (+ index delta)))
+    (if (or (< next 0)
+            (nil? (-jmd-nth lines next))
+            (not (-jmd-aligned-content-line? (-jmd-nth lines next))))
+        index
+        (-jmd-aligned-edge lines next delta))))
+
+(define (-jmd-aligned-body block centred?)
+  "BLOCK (an aligned-line list) joined into one text string, each line's
+   `>>` (and `<<`) sigils stripped. PURE."
+  (-jmd-join (map (lambda (l) (-jmd-strip-align l centred?)) block)))
+
+(define (-jmd-aligned-plan lines cursor fill-column)
+  "Plan the reflow of the flush-right / centred block at line CURSOR.
+   Returns nil (nothing to do) or (start end . replacement-lines). PURE."
+  (let* ((centred? (-jmd-centred-line? (-jmd-nth lines cursor)))
+         (start (-jmd-aligned-edge lines cursor -1))
+         (end (-jmd-aligned-edge lines cursor 1))
+         (block (-jmd-slice lines start end))
+         (lead (-jmd-line-indent (-jmd-nth lines cursor)))
+         (wrapped (-jmd-aligned-wrap
+                   (-jmd-words (-jmd-aligned-body block centred?))
+                   lead centred? fill-column)))
+    (if (equal? wrapped block)
+        nil
+        (cons start (cons end wrapped)))))
 
 ;; --- the @begin(...) line treatment --------------------------------------
 
@@ -404,14 +533,21 @@
   (let ((line (-jmd-nth lines cursor)))
     (cond
       ((nil? line) nil)
+      ;; The metadata frontmatter (syntax-extension definitions etc.) is
+      ;; whitespace-significant and never filled.
+      ((-jmd-in-frontmatter? lines cursor) nil)
       ((-jmd-in-fence? lines cursor) nil)
       ((-jmd-begin-line? line)
        (let ((replacement (-jmd-wrap-begin line fill-column step)))
          (if (nil? replacement)
              nil
              (cons cursor (cons cursor replacement)))))
-      ;; Any other structural line (@end, :::, heading, fence, rule,
-      ;; blank): nothing to fill.
+      ;; A flush-right (>>) / centred (>> … <<) block reflows like a
+      ;; blockquote, keeping its sigils on every line.
+      ((-jmd-aligned-content-line? line)
+       (-jmd-aligned-plan lines cursor fill-column))
+      ;; Any other structural line (@end, :::, heading, fence, rule, a bare
+      ;; >> / >> << separator, blank): nothing to fill.
       ((-jmd-fill-boundary? line) nil)
       (else
        (let* ((start (-jmd-para-edge lines cursor -1))
