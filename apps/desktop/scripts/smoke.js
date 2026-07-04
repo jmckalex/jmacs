@@ -45,8 +45,11 @@ const docsBuilt = existsSync(join(repoRoot, 'docs', 'build', 'manifest.json'));
  *  (+ the session/recovery stores) at a scratch dir so the smoke never reads or
  *  writes the user's ~/.godot: the spine boots with clean defaults (no
  *  faces.json / custom.lisp / init.lisp) and its autosave + named-session store
- *  land in tmp. Wiped and recreated at startup so every run is deterministic. */
-const smokeConfigHome = join(tmpdir(), 'jmacs-smoke-config');
+ *  land in tmp. Wiped and recreated at startup so every run is deterministic.
+ *  MUST be a DIFFERENT dir from `configDir` (Electron's userData, below): the
+ *  whenReady rmSync of this path would otherwise race Chromium writing its
+ *  userData (blob_storage/Code Cache/…) into the same dir → ENOTEMPTY at boot. */
+const smokeConfigHome = join(tmpdir(), 'jmacs-smoke-spine-config');
 
 /** A scratch path the file round-trip writes to. */
 const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
