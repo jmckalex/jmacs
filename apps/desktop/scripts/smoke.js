@@ -190,6 +190,13 @@ writeFileSync(
 );
 writeFileSync(mediaVideoPath, Buffer.from([0, 0, 0, 0]));
 
+// Belt-and-braces with backgroundThrottling:false on the window: keep
+// Chromium from down-clocking the hidden renderer at the process level
+// too (timer clamping + occlusion backgrounding both slow the polls).
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
 // Isolate the smoke run's config files (custom.lisp, init.lisp) in a
 // fresh temp directory, so it never touches the real user data dir.
 const configDir = join(tmpdir(), 'jmacs-smoke-config');
@@ -321,6 +328,11 @@ app.whenReady().then(() => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // A hidden window is "backgrounded" to Chromium, which clamps its
+      // setTimeout timers toward 1s ticks — every __waitFor poll (20ms
+      // sleeps) crawls at throttled speed. Un-throttle: the smoke IS the
+      // foreground job.
+      backgroundThrottling: false,
     },
   });
 
@@ -346,8 +358,9 @@ app.whenReady().then(() => {
       // A Node-side watchdog bounds each arm: no single wedged arm can stall the
       // whole suite (and the final tally). Rescues a renderer-side hang; a
       // main-process block would also freeze this timer, which is itself a signal.
-      const runArm = (js) =>
-        Promise.race([
+      const runArm = async (label, js) => {
+        const t0 = Date.now();
+        const result = await Promise.race([
           win.webContents.executeJavaScript(js),
           new Promise((resolve) => setTimeout(
             () => resolve({ __armError: 'arm timed out (30s watchdog)' }), 30000)),
@@ -355,16 +368,27 @@ app.whenReady().then(() => {
           console.log('  (arm threw:', error.message + ')');
           return { __armError: error.message };
         });
+        const secs = (Date.now() - t0) / 1000;
+        console.log(`  [time] ${label}: ${secs.toFixed(1)}s`);
+        return result;
+      };
 
-      // Give the module graph a moment to evaluate and the first
-      // animation frame to render.
-      // 33 tree-sitter grammars + the directory views need to load
-      // before the editor can mount its view; on a cold machine this
-      // is ~3s. Bump generously — a smoke run that flakes here
-      // wastes the full subsequent inspection cycle.
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      // Wait for the module graph to evaluate and the first VIEW push to
+      // project (33 tree-sitter grammars + the directory views load before
+      // the editor can mount its view — ~3s cold). Poll instead of a fixed
+      // 5s sleep: a warm boot proceeds the moment a line is projected.
+      {
+        const bootT0 = Date.now();
+        for (;;) {
+          const ready = await win.webContents
+            .executeJavaScript(`!!document.querySelector('.editor-line')`)
+            .catch(() => false);
+          if (ready || Date.now() - bootT0 > 15000) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
 
-      const render = await runArm(`(async () => {
+      const render = await runArm('render', `(async () => {
         ${WAIT_HELPERS}
         // Model B bakes the whole modeline (line:col included) into the NAME
         // slot; the position slot is always cleared (see app.js serverChrome).
@@ -382,7 +406,7 @@ app.whenReady().then(() => {
 
       // The startup splash: present in the background layer, and
       // dismissed (no longer visible) once a buffer is switched.
-      const splash = await runArm(`(async () => {
+      const splash = await runArm('splash', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const present =
           document.querySelector('text-view:not([style*="display: none"]) .editor-background .splash.is-visible')
@@ -406,7 +430,7 @@ app.whenReady().then(() => {
 
       // Drive the real input path: dispatch key events at the editor
       // and confirm the projected DOM changes.
-      const input = await runArm(`(async () => {
+      const input = await runArm('input', `(async () => {
         ${WAIT_HELPERS}
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
         editor.focus();
@@ -435,7 +459,7 @@ app.whenReady().then(() => {
       // dispatches the InputEvent shapes the OS produces. Three shapes:
       // digit selection, ordinary typing after a hold, and a click
       // selection (which has no keydown at all).
-      const accents = await runArm(`(async () => {
+      const accents = await runArm('accents', `(async () => {
         const view = document.querySelector('text-view:not([style*="display: none"])');
         const editor = view.querySelector('.editor');
         const sink = view.querySelector('.editor-input');
@@ -482,7 +506,7 @@ app.whenReady().then(() => {
 
       // Drive the REPL: evaluate arithmetic, and have Lisp edit the
       // buffer, confirming the L3 -> L2 -> L4 path.
-      const lisp = await runArm(`(async () => {
+      const lisp = await runArm('lisp', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -538,7 +562,7 @@ app.whenReady().then(() => {
 
       // Check the file bridge: the host API is exposed, and a save with
       // an explicit path writes the file (no dialog needed).
-      const files = await runArm(`(async () => {
+      const files = await runArm('files', `(async () => {
         const api = window.host;
         const exposed = !!(api
           && typeof api.openFile === 'function'
@@ -560,7 +584,7 @@ app.whenReady().then(() => {
       // (show-status! → "I-search: <query>") and typing routes each key through
       // the spine's search dispatcher, moving point to the match. Seed a buffer
       // with a known term so the match is deterministic.
-      const search = await runArm(`(async () => {
+      const search = await runArm('search', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -610,7 +634,7 @@ app.whenReady().then(() => {
       // command actually ran (point jumps to L1) and the prompt closed.
       // (`matched` = the invoked command ran — a robust signal independent of
       // how the completion candidates are surfaced.)
-      const palette = await runArm(`(async () => {
+      const palette = await runArm('palette', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -656,7 +680,7 @@ app.whenReady().then(() => {
       // Tree-sitter: JavaScript, Python and HTML buffers are highlighted
       // by their grammars. The function spans in Python prove it is the
       // grammar and not the line tokenizer (which never emits @function).
-      const treesitter = await runArm(`(async () => {
+      const treesitter = await runArm('treesitter', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -820,7 +844,7 @@ app.whenReady().then(() => {
       // `function foo() {}`, with point inside `function`, the
       // command opens a *Doc: Face at point* buffer whose HTML names
       // the `keyword` face.
-      const faceInfo = await runArm(`(async () => {
+      const faceInfo = await runArm('faceInfo', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -851,7 +875,7 @@ app.whenReady().then(() => {
       // Structural test of the editor's CSS layers — works on any
       // text-view, visible or not, so the unfiltered selectors are
       // correct here.
-      const layers = await runArm(`(() => {
+      const layers = await runArm('layers', `(() => {
         const z = (sel) =>
           Number(getComputedStyle(document.querySelector(sel)).zIndex);
         return {
@@ -866,7 +890,7 @@ app.whenReady().then(() => {
       console.log('  layers:', JSON.stringify(layers));
 
       // Replace-string: a chained two-prompt minibuffer flow.
-      const replace = await runArm(`(async () => {
+      const replace = await runArm('replace', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -906,7 +930,7 @@ app.whenReady().then(() => {
       // Regex-replace and query-replace: two new commands that share
       // the chained two-prompt minibuffer flow as replace-string, with
       // JS RegExp semantics and a per-match prompt respectively.
-      const regexReplace = await runArm(`(async () => {
+      const regexReplace = await runArm('regexReplace', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -985,7 +1009,7 @@ app.whenReady().then(() => {
       console.log('  regexReplace:', JSON.stringify(regexReplace));
 
       // Mouse: click in the buffer to place the cursor on another line.
-      const mouse = await runArm(`(async () => {
+      const mouse = await runArm('mouse', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1048,7 +1072,7 @@ app.whenReady().then(() => {
       console.log('  mouse:', JSON.stringify(mouse));
 
       // Markdown: a .md buffer highlights a heading.
-      const markdown = await runArm(`(async () => {
+      const markdown = await runArm('markdown', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1077,7 +1101,7 @@ app.whenReady().then(() => {
       // command so the result is deterministic without a JMarkdown
       // binary; the heading text must reach the rendered pane, and the
       // pane must refresh as the buffer is edited.
-      const preview = await runArm(`(async () => {
+      const preview = await runArm('preview', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -1141,7 +1165,7 @@ app.whenReady().then(() => {
 
       // Virtualisation: a long buffer keeps only a window of lines in
       // the DOM, while the scroll height spans the whole document.
-      const virtual = await runArm(`(async () => {
+      const virtual = await runArm('virtual', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1181,7 +1205,7 @@ app.whenReady().then(() => {
 
       // Modes: a new buffer's major mode is chosen from its name and
       // shown in the modeline.
-      const modes = await runArm(`(async () => {
+      const modes = await runArm('modes', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1222,7 +1246,7 @@ app.whenReady().then(() => {
 
       // A sticky note: created via Lisp, it shows its source and rides
       // the document when the buffer scrolls.
-      const sticky = await runArm(`(async () => {
+      const sticky = await runArm('sticky', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1358,7 +1382,7 @@ app.whenReady().then(() => {
 
       // Customisation: init.lisp is written on first run, and a saved
       // setting is persisted to custom.lisp.
-      const config = await runArm(`(async () => {
+      const config = await runArm('config', `(async () => {
         ${WAIT_HELPERS}
         const initLoaded =
           (await window.host.readConfigFile('init.lisp')) !== null;
@@ -1413,7 +1437,7 @@ app.whenReady().then(() => {
 
       // Themes: changing *theme* through the customisation registry
       // rewrites CSS variables on the document root.
-      const themes = await runArm(`(async () => {
+      const themes = await runArm('themes', `(async () => {
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
           replInput.value = src;
@@ -1459,7 +1483,7 @@ app.whenReady().then(() => {
       // computed `.tok-keyword` colour (from the live swatch inside
       // the customize buffer) reflects the override. Reset, then
       // assert the default colour is back.
-      const faces = await runArm(`(async () => {
+      const faces = await runArm('faces', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1533,7 +1557,7 @@ app.whenReady().then(() => {
       // Image buffers: opening an image file shows it through the image
       // view — a non-text buffer kind — with the editor view hidden.
       // The dialog is stubbed (above) to choose the scratch PNG.
-      const image = await runArm(`(async () => {
+      const image = await runArm('image', `(async () => {
         ${WAIT_HELPERS}
         const frame = __sleep.bind(null, 60);
         const replInput = document.querySelector('.repl-input');
@@ -1581,7 +1605,7 @@ app.whenReady().then(() => {
       // swatch beside each one; clicking a swatch opens the modal colour
       // chooser, and confirming it writes the chosen colour back into the
       // buffer, replacing the literal's text.
-      const swatches = await runArm(`(async () => {
+      const swatches = await runArm('swatches', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1631,7 +1655,7 @@ app.whenReady().then(() => {
       // shows the HTML the build produced; clicking a [data-jmacs-doc]
       // link inside opens a second doc buffer.
       const docs = docsBuilt
-        ? await runArm(`(async () => {
+        ? await runArm('docs', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -1676,7 +1700,7 @@ app.whenReady().then(() => {
       // Markdown docstring opens through the doc-view too. This arm
       // doesn't depend on `pnpm run docs` — it exercises the
       // marked.js pipeline directly.
-      const liveDocs = await runArm(`(async () => {
+      const liveDocs = await runArm('liveDocs', `(async () => {
         ${WAIT_HELPERS}
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
@@ -1753,7 +1777,7 @@ app.whenReady().then(() => {
       // in its filter, and switches to the chosen buffer on Enter.
       // Verified live via scripts/drive.js. The body is wrapped so a
       // failure returns a clean shape instead of aborting later arms.
-      const bufferMenu = await runArm(`(async () => {
+      const bufferMenu = await runArm('bufferMenu', `(async () => {
         ${WAIT_HELPERS}
         try {
           const replInput = document.querySelector('.repl-input');
@@ -1855,7 +1879,7 @@ app.whenReady().then(() => {
         writeFile(join(jukeboxDir, 'cover.jpg'), ''),
         writeFile(join(jukeboxDir, 'readme.txt'), 'ignore me'),
       ]);
-      const jukebox = await runArm(`(async () => {
+      const jukebox = await runArm('jukebox', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -2014,7 +2038,7 @@ app.whenReady().then(() => {
       // <video controls> element. `q` dismisses each. The smoke uses
       // `open-file-path!` so the dialog stub (still pointing at the
       // smoke image) stays out of the way.
-      const mediaViews = await runArm(`(async () => {
+      const mediaViews = await runArm('mediaViews', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2303,7 +2327,7 @@ app.whenReady().then(() => {
       // panes.json. The check programmatically drives pointer events
       // at each splitter, reads back the CSS variable, then reads
       // panes.json through the host bridge to confirm persistence.
-      const splitters = await runArm(`(async () => {
+      const splitters = await runArm('splitters', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2396,7 +2420,7 @@ app.whenReady().then(() => {
         canceled: false,
         filePaths: [tabPath],
       });
-      const tabline = await runArm(`(async () => {
+      const tabline = await runArm('tabline', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2540,7 +2564,7 @@ app.whenReady().then(() => {
       // boolean. Languages whose grammar is built from C source are
       // bunched with the npm-prebuilt ones; the .wasm file is the
       // same shape either way.
-      const langPack = await runArm(`(async () => {
+      const langPack = await runArm('langPack', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -2607,7 +2631,7 @@ app.whenReady().then(() => {
       await writeFile(join(treeDir, 'note.txt'), 'hello\n', 'utf8');
       await writeFile(join(treeDir, 'main.js'), 'export default 1\n', 'utf8');
       await writeFile(join(treeDir, 'subdir', 'inner.md'), '# inner\n', 'utf8');
-      const tree = await runArm(`(async () => {
+      const tree = await runArm('tree', `(async () => {
         ${WAIT_HELPERS}
         const frame = __sleep.bind(null, 60);
         const wait = __sleep;
@@ -2713,7 +2737,7 @@ app.whenReady().then(() => {
       await mkdir(join(colsDir, 'subdir'), { recursive: true });
       await writeFile(join(colsDir, 'subdir', 'inner.txt'), 'hello columns\n', 'utf8');
       await writeFile(join(colsDir, 'readme.md'), '# readme\n', 'utf8');
-      const cols = await runArm(`(async () => {
+      const cols = await runArm('cols', `(async () => {
         ${WAIT_HELPERS}
         const frame = __sleep.bind(null, 60);
         const wait = __sleep;
@@ -2880,7 +2904,7 @@ app.whenReady().then(() => {
       // sanity check — shrink the term host's width and verify
       // term.cols updates — and finally kill the buffer and confirm
       // cleanup.
-      const shell = await runArm(`(async () => {
+      const shell = await runArm('shell', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -2990,7 +3014,7 @@ app.whenReady().then(() => {
       // in the minibuffer's echo area; a follow-up unbound key clears
       // it. The echo area is the .minibuffer-echo element, visible
       // only when no prompt is active.
-      const chord = await runArm(`(async () => {
+      const chord = await runArm('chord', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3034,7 +3058,7 @@ app.whenReady().then(() => {
       // /var/folders/ on macOS, which is unwieldy for a smoke test).
       const ffPath = '/tmp/jmacs-smoke-find-file.txt';
       await writeFile(ffPath, 'smoke find-file ok');
-      const findFile = await runArm(`(async () => {
+      const findFile = await runArm('findFile', `(async () => {
         ${WAIT_HELPERS}
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3104,7 +3128,7 @@ app.whenReady().then(() => {
       const paneB = '/tmp/jmacs-smoke-pane-b.txt';
       await writeFile(paneA, 'pane a — left side\nsecond line a', 'utf8');
       await writeFile(paneB, 'pane b — right side\nsecond line b', 'utf8');
-      const panes = await runArm(`(async () => {
+      const panes = await runArm('panes', `(async () => {
         ${WAIT_HELPERS}
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -3300,7 +3324,7 @@ app.whenReady().then(() => {
       await writeFile(tablineSessionFile1, 'sess1\n', 'utf8');
       await writeFile(tablineSessionFile2, 'sess2\n', 'utf8');
       await writeFile(tablineSessionFile3, 'sess3\n', 'utf8');
-      const tablineArm = await runArm(`(async () => {
+      const tablineArm = await runArm('tablineArm', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
@@ -3571,7 +3595,7 @@ app.whenReady().then(() => {
       // Runs last because it leaves the editor with a non-pristine
       // view list (each split spawns a duplicate text view, the cleanup
       // collapses panes but doesn't reclaim the views).
-      const addPaneArm = await runArm(`(async () => {
+      const addPaneArm = await runArm('addPaneArm', `(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3732,7 +3756,7 @@ app.whenReady().then(() => {
       // one tab should leave the other alive — Q9 auto-duplicate's job.
       const bug2File = join(tmpdir(), 'jmacs-bug2-shared.txt');
       await writeFile(bug2File, 'shared content\\n', 'utf8');
-      const bug2 = await runArm(`(async () => {
+      const bug2 = await runArm('bug2', `(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3821,7 +3845,7 @@ app.whenReady().then(() => {
       // Reuse the media-arm's video file shape — minimal MP4 isn't
       // really needed since the test only checks visibility, not playback.
       await writeFile(bug3VideoPath, 'placeholder\\n', 'utf8');
-      const bug3 = await runArm(`(async () => {
+      const bug3 = await runArm('bug3', `(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const replInput = document.querySelector('.repl-input');
         const submit = (src) => {
@@ -3944,7 +3968,7 @@ app.whenReady().then(() => {
       await writeFile(bug4FileB, 'bb\\n', 'utf8');
       await writeFile(bug4FileC, 'cc\\n', 'utf8');
       await writeFile(bug4FileD, 'dd\\n', 'utf8');
-      const bug4 = await runArm(`(async () => {
+      const bug4 = await runArm('bug4', `(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const editorHost = document.getElementById('editor-host');
         const replInput = document.querySelector('.repl-input');
