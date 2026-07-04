@@ -86,6 +86,12 @@ export const STDLIB_FILES = Object.freeze([
   // host primitive `set-highlight-overrides!` recompiles queries live.
   'highlight-rules.lisp',
   'keymap.lisp',
+  // auto-fill — wrap-as-you-type minor mode. Loads right after keymap.lisp:
+  // it registers on that file's `*post-self-insert-hook*` at load time, and
+  // its glue needs editing.lisp (atomic-change-group / with-marker),
+  // custom.lisp (defcustom) and modes.lisp (define-mode / minor modes), all
+  // earlier in this list.
+  'auto-fill.lisp',
   // multi-cursor.lisp needs `expand-region-word-bounds` (expand-region.lisp)
   // and rebinds `keyboard-quit` (keymap.lisp), so it loads after both.
   // The keymap binds C-c d / C-c D to the commands by *symbol*; symbols

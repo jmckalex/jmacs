@@ -350,6 +350,15 @@ const SPINE_STDLIB = Object.freeze([
   // bracket bindings layer onto the real the-keymap). Needs only commands.lisp
   // (defcommand / register-command!); the commands it binds resolve late.
   'keymap.lisp',
+  // auto-fill.lisp — the wrap-as-you-type minor mode (M-x auto-fill-mode).
+  // FULLY model-side: it hooks keymap.lisp's `*post-self-insert-hook*` (run
+  // server-side after each self-insert) and works over point / line-start /
+  // line-indent / buffer-substring / insert! / goto! / delete-region! plus a
+  // `*fill-column*` defcustom — all present. Loads right after keymap.lisp so
+  // the hook seam exists at load; needs editing.lisp (atomic-change-group /
+  // with-marker), custom.lisp (defcustom) and modes.lisp (define-mode / minor
+  // modes), all earlier in this list.
+  'auto-fill.lisp',
   'math-preview.lisp',
   'kill.lisp',
   'yank-pop.lisp',
