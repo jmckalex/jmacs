@@ -692,6 +692,25 @@ test('close-tab KILLS the view by default; *close-tab-kills-view* #f un-curates'
   assert.equal(spine.bufferCount, 2, 'nothing killed under the opt-out');
 });
 
+test('closing the ACTIVE tab switches the client onto the re-pointed neighbour', () => {
+  // Regression: close-tab re-pointed the pane model but never switched the
+  // client — the renderer's currentBufferId() (and the modeline) stayed on
+  // the killed buffer, so the NEXT active-tab × resolved a dead bufferId
+  // and silently no-op'd, and the interpreter kept editing the detached
+  // buffer.
+  const files = {
+    '/a.md': { text: 'A\n', name: 'a.md', path: '/a.md' },
+    '/b.md': { text: 'B\n', name: 'b.md', path: '/b.md' },
+  };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const aId = spine.visitFile('/a.md');
+  const bId = spine.visitFile('/b.md');
+  spine.seedClientTabline(0, [aId, bId], bId); // active = b
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: bId }));
+  assert.equal(spine.currentBufferIdOf(0), aId, 'the client follows the re-point');
+  assert.equal(spine.buffer.name, 'a.md', 'the interpreter is bound to the survivor');
+});
+
 test('closing the LAST tab collapses the tabline to a bare *scratch* leaf', () => {
   const files = { '/a.md': { text: 'A\n', name: 'a.md', path: '/a.md' } };
   const { spine } = makeSpine('seed', 'doc.txt', { openFile: (p) => files[p] ?? null });
