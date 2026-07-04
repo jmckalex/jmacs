@@ -1544,6 +1544,7 @@ export function createEditorView(buffer, container, options = {}) {
         pendingRecenter = false;
         followCursor = false;
         followTracker.recentered(getPoint());
+        globalThis.__godotTrace?.('follow', { why: 'recenter', point: getPoint() });
         cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
       } else if (followCursor) {
         followCursor = false;
@@ -1553,7 +1554,9 @@ export function createEditorView(buffer, container, options = {}) {
         // user's scroll where it is. `scrollIntoView({block:'nearest'})` is
         // already a no-op when the caret is on screen, so this only changes
         // the scrolled-away case, which is exactly the yank we must not do.
-        if (followTracker.shouldScroll(getPoint())) {
+        const willScroll = followTracker.shouldScroll(getPoint());
+        globalThis.__godotTrace?.('follow', { why: 'followCursor', point: getPoint(), willScroll });
+        if (willScroll) {
           cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         }
       }
@@ -1580,7 +1583,9 @@ export function createEditorView(buffer, container, options = {}) {
    *  does not force it, so the follow is gated on the caret actually having
    *  moved and a decoration repaint never yanks a scrolled-away viewport. */
   function scheduleFollowingCursor(event) {
-    if (event && event.change !== null) followTracker.forceOnce();
+    const forced = !!(event && event.change !== null);
+    if (forced) followTracker.forceOnce();
+    globalThis.__godotTrace?.('scheduleFollow', { forced, hasEvent: !!event });
     followCursor = true;
     schedule();
   }
@@ -2275,7 +2280,11 @@ export function createEditorView(buffer, container, options = {}) {
       // view/cursor message) preserves the user's scroll instead of yanking
       // it back. A switch to a DIFFERENT buffer always forces (its caret may
       // sit at the same numeric offset yet be off-screen).
-      if (options.followMode !== 'auto' || bufferChanged) followTracker.forceOnce();
+      const forced = options.followMode !== 'auto' || bufferChanged;
+      if (forced) followTracker.forceOnce();
+      globalThis.__godotTrace?.('setView', {
+        followMode: options.followMode ?? null, bufferChanged, forced,
+      });
       followCursor = true;
       render();
     },

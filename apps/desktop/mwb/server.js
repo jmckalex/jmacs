@@ -43,6 +43,9 @@ import { createSessionStore, flatToWindowSession } from './session-store.js';
 // server is a Node child, so it does file I/O DIRECTLY (no IPC), reusing
 // these without touching production app.js/main.js/view.js.
 import { atomicWriteSync, sweepStaleTemps } from './atomic-write-sync.js';
+import {
+  initTrace, traceEnabled, traceWire, traceRendererOp,
+} from './trace.js';
 import { createAutosave } from './autosave.js';
 // Per-file companion-metadata helpers (the `.godot-metadata` sidecar path
 // scheme + emptiness rule), shared verbatim with files.js's metadata:read /
@@ -76,6 +79,15 @@ const SESSION_STORE = process.env.MWB_SESSION_STORE
 // Age-thresholded, so a live concurrent write is never touched. (Falls back to
 // the session-store dir when MWB_CONFIG_HOME is unset, e.g. tests.)
 sweepStaleTemps(process.env.MWB_CONFIG_HOME || dirname(SESSION_STORE));
+
+// Debug tracer (off unless GODOT_TRACE is set). Writes one ordered log of every
+// client<->spine message + the renderer's forwarded scroll/follow ops. See
+// trace.js; the per-client wire taps live in registerClient.
+const TRACE_FILE = initTrace(
+  process.env,
+  process.env.MWB_CONFIG_HOME || process.env.GODOT_HOME || dirname(SESSION_STORE),
+);
+if (TRACE_FILE) console.error(`[mwb-server] TRACE ON → ${TRACE_FILE}`);
 
 // The named-session store (v3): the user's labelled sessions + the always-on
 // `__last__` auto-snapshot, each holding the full multi-window pane structure.
@@ -502,12 +514,35 @@ function registerClient(port) {
   bootstrapClaimed = true;
   const client = { port, index, windowKind: 'single' };
   clients.push(client);
-  port.on('message', (event) => onClientMessage(client, event));
+  if (traceEnabled()) {
+    // Tap OUTBOUND (S->C): shadow the port's own postMessage so every send is
+    // logged in ONE place, whatever helper emitted it (all sends go through
+    // `client.port.postMessage`, and client.port === this port).
+    try {
+      const rawPost = port.postMessage.bind(port);
+      port.postMessage = (msg, transfer) => {
+        try { traceWire('S->C', index, msg); } catch { /* never break a send */ }
+        return transfer !== undefined ? rawPost(msg, transfer) : rawPost(msg);
+      };
+    } catch { /* a native port that forbids reassign: skip S->C wire trace */ }
+  }
+  port.on('message', (event) => {
+    const data = event && event.data;
+    // A renderer local-op line forwarded for the trace file — record + swallow.
+    // It is NOT a protocol message; never dispatch it.
+    if (data && data.type === '__trace__') { traceRendererOp(index, data); return; }
+    if (traceEnabled()) { try { traceWire('C->S', index, data); } catch { /* ignore */ } }
+    onClientMessage(client, event);
+  });
   // G4: when the window closes, its renderer's port is closed/GC'd and the
   // server's end fires 'close'. Reap the client so broadcasts don't post to a
   // dead port and the spine drops its window-state (the buffers outlive it).
   port.on('close', () => detachClient(client));
   port.start();
+  // Debug: ask this client to turn its renderer op-trace on (no-op when off).
+  if (traceEnabled()) {
+    try { port.postMessage({ type: MSG.TRACE, on: true }); } catch { /* ignore */ }
+  }
   // The client asks for its snapshot itself via HELLO once its page +
   // highlighters are ready (onClientMessage), so we don't snapshot here —
   // a pre-load snapshot would race the page and be discarded.
