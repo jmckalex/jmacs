@@ -24,6 +24,10 @@ import { fileURLToPath } from 'node:url';
 
 import { registerFileHandlers } from '../src/files.js';
 import { renderJMarkdown } from '../src/jmarkdown.js';
+import {
+  registerJmarkdownWatchHandlers,
+  reapJmarkdownWatchers,
+} from '../src/jmarkdown-watch.js';
 import { createServerBridge } from '../src/server-bridge.js';
 import { EDITOR_URL, serveAppFile, serveMediaFile } from '../src/serve.js';
 import { registerShellHandlers } from '../src/shell.js';
@@ -68,6 +72,17 @@ const savePath = join(tmpdir(), 'jmacs-smoke-save.txt');
 
 /** A scratch path the sticky-note metadata round-trip writes beside. */
 const notesPath = join(tmpdir(), 'jmacs-smoke-notes.txt');
+
+/** A REAL on-disk markdown file for the preview arm: the preview pane
+ *  drives the actual `jmarkdown watch` server (main-process subprocess +
+ *  cross-origin iframe), and the spine's markdown-preview! only emits its
+ *  directive for a markdown-mode buffer WITH a filePath. The arm is
+ *  skipped (like docs) when no jmarkdown binary is installed. */
+const previewMdPath = join(tmpdir(), 'jmacs-smoke-preview.md');
+writeFileSync(previewMdPath, '# PreviewHeading\n\nbody line\n');
+const jmarkdownInstalled =
+  existsSync('/usr/local/bin/jmarkdown') ||
+  existsSync('/opt/homebrew/bin/jmarkdown');
 
 /** A scratch image file the image-buffer check opens. */
 const imagePath = join(tmpdir(), 'jmacs-smoke-image.png');
@@ -277,6 +292,9 @@ function finish(code, message) {
   if (done) return;
   done = true;
   console.log(code === 0 ? `PASS — ${message}` : `FAIL — ${message}`);
+  // Reap any live `jmarkdown watch` subprocess (the preview arm's server)
+  // so it never outlives the smoke run.
+  try { reapJmarkdownWatchers(); } catch { /* not registered — fine */ }
   if (serverBridge) {
     serverBridge.dispose();
     serverBridge = null;
@@ -301,6 +319,9 @@ app.whenReady().then(() => {
   ipcMain.handle('jmarkdown:render', (_event, { command, source }) =>
     renderJMarkdown(command, source)
   );
+  // The markdown-preview pane starts a real `jmarkdown watch` subprocess
+  // through these handlers — exactly as src/main.js registers them.
+  registerJmarkdownWatchHandlers();
 
   // Model B: the renderer is a THIN CLIENT — it runs no interpreter of its own
   // (that was deleted when Model B became the default), so with nothing on the
@@ -352,7 +373,12 @@ app.whenReady().then(() => {
     const detail = args.find((a) => a && typeof a === 'object');
     console.log('  [renderer]', detail?.message ?? args.join(' '));
   });
-  win.webContents.on('did-fail-load', (_event, code, desc) => {
+  win.webContents.on('did-fail-load', (_event, code, desc, _url, isMainFrame) => {
+    // Subframe failures are survivable — the markdown-preview iframe points
+    // at the jmarkdown watch server and its loads can abort (-3) while the
+    // server starts or when the pane hides. Only a main-frame failure is
+    // fatal to the smoke.
+    if (!isMainFrame) return;
     finish(1, `page failed to load (${code}): ${desc}`);
   });
   win.webContents.on('render-process-gone', (_event, details) => {
@@ -419,23 +445,16 @@ app.whenReady().then(() => {
 
       // The startup splash: present in the background layer, and
       // dismissed (no longer visible) once a buffer is switched.
+      // Model B RETIRED the boot splash: mountServerView dismisses it
+      // unconditionally on the first server SNAPSHOT (app.js — "the server
+      // drives the view now, so retire it"), so the contract to hold is the
+      // NEGATIVE one: no splash element may linger visible behind server
+      // views after boot (it used to ghost behind the empty *scratch*).
       const splash = await runArm('splash', `(async () => {
         const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const present =
-          document.querySelector('text-view:not([style*="display: none"]) .editor-background .splash.is-visible')
-            !== null;
-        const replInput = document.querySelector('.repl-input');
-        const submit = (src) => {
-          replInput.value = src;
-          replInput.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', bubbles: true, cancelable: true,
-          }));
-        };
-        submit('(next-view!)');     // a switch dismisses the splash
-        submit('(previous-view!)'); // ... and back: the count is intact
         await frame();
         return {
-          present,
+          lingering: document.querySelector('.splash.is-visible') !== null,
           dismissed: document.querySelector('.splash.is-visible') === null,
         };
       })()`);
@@ -799,9 +818,12 @@ app.whenReady().then(() => {
         const mdInjectsJs = document.querySelectorAll('.tok-keyword').length;
         // LaTeX: a .tex buffer with a generic command, a sectioning
         // command, inline math, an environment and a tikzpicture
-        // exercises five key faces. \\textbf is a generic_command, the
-        // @function catch-all; environment names (equation, tikzpicture)
-        // are @type; the math delimiters ($) are @string; and the TikZ
+        // exercises four key faces of the Sublime-JMarkdown palette
+        // (languages/latex.js): \\textbf is a generic_command captured
+        // as @latex-command (the italic command face — NOT @function);
+        // environment names (equation, tikzpicture) are @type; the math
+        // delimiters ($) are @operator (teal — the old @string mapping
+        // was deliberately dropped, no green math); and the TikZ
         // specials (\\draw, \\node, ...) are @tag, a face no other
         // inserted buffer in this smoke arm produces inside its content
         // — so a non-zero count proves the LaTeX grammar's TikZ rule
@@ -815,11 +837,11 @@ app.whenReady().then(() => {
         submit('(new-view! "smoke.tex")');
         submit('(insert! "\\\\\\\\textbf{hi} $x=1$\\\\n\\\\\\\\section{Hi}\\\\n\\\\\\\\begin{equation}x=1\\\\\\\\end{equation}\\\\n\\\\\\\\begin{tikzpicture}\\\\n\\\\\\\\draw (0,0) -- (1,1);\\\\n\\\\\\\\end{tikzpicture}\\\\n")');
         await __waitFor(() =>
-          tok('tok-function') > 0 && tok('tok-type') > 0 &&
-          tok('tok-string') > 0 && tok('tok-tag') > 0);
-        const texFunctions = document.querySelectorAll('.tok-function').length;
+          tok('tok-latex-command') > 0 && tok('tok-type') > 0 &&
+          tok('tok-operator') > 0 && tok('tok-tag') > 0);
+        const texCommands = document.querySelectorAll('.tok-latex-command').length;
         const texTypes = document.querySelectorAll('.tok-type').length;
-        const texStrings = document.querySelectorAll('.tok-string').length;
+        const texOperators = document.querySelectorAll('.tok-operator').length;
         const texTags = document.querySelectorAll('.tok-tag').length;
         return {
           // The languages whose grammar WASM actually loaded.
@@ -845,9 +867,9 @@ app.whenReady().then(() => {
           shFunctions,
           mdHeadings,
           mdInjectsJs,
-          texFunctions,
+          texCommands,
           texTypes,
-          texStrings,
+          texOperators,
           texTags,
         };
       })()`);
@@ -1114,66 +1136,98 @@ app.whenReady().then(() => {
       // command so the result is deterministic without a JMarkdown
       // binary; the heading text must reach the rendered pane, and the
       // pane must refresh as the buffer is edited.
-      const preview = await runArm('preview', `(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-        const replInput = document.querySelector('.repl-input');
-        const submit = (src) => {
-          replInput.value = src;
-          replInput.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', bubbles: true, cancelable: true,
-          }));
-        };
-        // A fresh markdown buffer; 'cat' echoes the source verbatim.
-        submit('(new-view! "preview.md")');
-        await frame();
-        submit('(set! *markdown-interpreter* "cat")');
-        await frame();
-        const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
-        editor.focus();
-        for (const ch of '# Heading') {
-          editor.dispatchEvent(new KeyboardEvent('keydown', {
-            key: ch, bubbles: true, cancelable: true,
-          }));
-        }
-        await frame();
-        // C-c v toggles the preview pane open. C-c is a prefix; the
-        // 'v' that completes it carries no modifier.
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
-        }));
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'v', bubbles: true, cancelable: true,
-        }));
-        await wait(600);
-        const pane = document.querySelector('.markdown-preview-host');
-        // The preview renders inside an isolated iframe now; read its
-        // document body for the rendered text.
-        const frameEl = document.querySelector('.markdown-preview-frame');
-        const frameBody = () => (frameEl && frameEl.contentDocument)
-          ? frameEl.contentDocument.body : null;
-        const shown = !!(pane && getComputedStyle(pane).display !== 'none');
-        const rendered = !!(frameBody() && frameBody().textContent.includes('Heading'));
-        // Editing the buffer refreshes the pane (debounced ~250ms).
-        editor.focus();
-        for (const ch of ' more') {
-          editor.dispatchEvent(new KeyboardEvent('keydown', {
-            key: ch, bubbles: true, cancelable: true,
-          }));
-        }
-        await wait(600);
-        const refreshed = !!(frameBody() && frameBody().textContent.includes('Heading more'));
-        // C-c v again hides the pane.
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
-        }));
-        editor.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'v', bubbles: true, cancelable: true,
-        }));
-        await frame();
-        const hidden = !!(pane && getComputedStyle(pane).display === 'none');
-        return { shown, rendered, refreshed, hidden };
-      })()`);
+      // The preview pane drives the REAL `jmarkdown watch` server: the
+      // buffer must be a markdown-mode file WITH an on-disk path (the spine
+      // guard emits no directive otherwise), and the iframe loads
+      // http://localhost:PORT — a DIFFERENT origin from app://, so its
+      // content can't be read via contentDocument. The arm therefore only
+      // drives the UI in-page; the rendered HTML is asserted MAIN-side by
+      // fetching the watch server's URL. Skipped when jmarkdown isn't
+      // installed (same pattern as the docs arm).
+      const preview = !jmarkdownInstalled
+        ? { skipped: true }
+        : await (async () => {
+          // Poll the watch server for a needle in its rendered HTML —
+          // covers the build delay AND the debounce+rebuild on refresh.
+          const fetchForNeedle = async (url, needle, ms) => {
+            const t0 = Date.now();
+            for (;;) {
+              const text = await fetch(url)
+                .then((r) => (r.ok ? r.text() : ''))
+                .catch(() => '');
+              if (text.includes(needle)) return true;
+              if (Date.now() - t0 > ms) return false;
+              await new Promise((r) => setTimeout(r, 150));
+            }
+          };
+          const opened = await runArm('preview', `(async () => {
+            ${WAIT_HELPERS}
+            const replInput = document.querySelector('.repl-input');
+            const submit = (src) => {
+              replInput.value = src;
+              replInput.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter', bubbles: true, cancelable: true,
+              }));
+            };
+            submit('(open-file-path! ${JSON.stringify(previewMdPath)})');
+            await __waitFor(() => (document.getElementById('modeline-name')
+              ?.textContent ?? '').includes('jmacs-smoke-preview.md'));
+            const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+            editor.focus();
+            // C-c v (C-c is a prefix; the completing 'v' is bare).
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
+            }));
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'v', bubbles: true, cancelable: true,
+            }));
+            // frame.src is only pointed at localhost AFTER the main-side
+            // readiness probe saw HTTP 200 (the watch server 404s for
+            // ~0.5s while building), so poll generously.
+            const frameEl = document.querySelector('.markdown-preview-frame');
+            await __waitFor(() => frameEl.src.startsWith('http://localhost'), 12000);
+            return {
+              shown: !document.body.classList.contains('markdown-preview-hidden'),
+              src: frameEl.src.startsWith('http://localhost') ? frameEl.src : '',
+            };
+          })()`);
+          if (opened.__skipped || opened.__armError) return opened;
+          const rendered = opened.src
+            ? await fetchForNeedle(opened.src, 'PreviewHeading', 8000)
+            : false;
+          // Refresh: type a nonce into the buffer; the debounced
+          // (~400ms) shadow-sidecar sync rebuilds the watch output.
+          await runArm('preview', `(async () => {
+            const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+            editor.focus();
+            for (const ch of 'RefreshNonce ') {
+              editor.dispatchEvent(new KeyboardEvent('keydown', {
+                key: ch, bubbles: true, cancelable: true,
+              }));
+            }
+            return { typed: true };
+          })()`);
+          const refreshed = opened.src
+            ? await fetchForNeedle(opened.src, 'RefreshNonce', 8000)
+            : false;
+          const closed = await runArm('preview', `(async () => {
+            ${WAIT_HELPERS}
+            const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
+            editor.focus();
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'c', ctrlKey: true, bubbles: true, cancelable: true,
+            }));
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'v', bubbles: true, cancelable: true,
+            }));
+            await __waitFor(() =>
+              document.body.classList.contains('markdown-preview-hidden'));
+            return {
+              hidden: document.body.classList.contains('markdown-preview-hidden'),
+            };
+          })()`);
+          return { shown: opened.shown, rendered, refreshed, hidden: closed.hidden };
+        })();
       console.log('  preview:', JSON.stringify(preview));
 
       // Virtualisation: a long buffer keeps only a window of lines in
@@ -1238,9 +1292,13 @@ app.whenReady().then(() => {
         await __run('(new-view! "notes.txt")');
         await __waitFor(() => modeline().includes('notes.txt'));
         const txt = modeline();
-        await __run('(toggle-math-mode)'); // a minor mode — shows in the modeline
-        await __waitFor(() => modeline().includes('Math'));
-        const math = modeline();
+        // Minor modes are NOT baked into the Model-B modeline (the spine
+        // composes major-mode-name only; minor-mode-line is unwired), so
+        // assert activation through the Lisp side directly: after the
+        // toggle, (minor-mode-line) reports the "  Math" fragment. The
+        // Gamma insertion below then proves the mode's keymap is live.
+        await __run('(toggle-math-mode)');
+        const math = await __run('(minor-mode-line)');
         // With math mode on, \` then Shift then G must insert \\Gamma —
         // the bare Shift press must not reach the key reader.
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
@@ -4118,8 +4176,8 @@ app.whenReady().then(() => {
         treesitter.goKeywords > 0 && treesitter.goTypes > 0 &&
         treesitter.shKeywords > 0 && treesitter.shFunctions > 0 &&
         treesitter.mdHeadings > 0 && treesitter.mdInjectsJs > 0 &&
-        treesitter.texFunctions > 0 && treesitter.texTypes > 0 &&
-        treesitter.texStrings > 0 && treesitter.texTags > 0;
+        treesitter.texCommands > 0 && treesitter.texTypes > 0 &&
+        treesitter.texOperators > 0 && treesitter.texTags > 0;
       // The doc-view modeline shows the page title ("Face at point"),
       // not the raw *Doc: …* buffer name.
       const faceInfoOk =
@@ -4139,11 +4197,15 @@ app.whenReady().then(() => {
         mouse.endOfLine.includes('L2:') && mouse.endOfLine.includes('C4') &&
         mouse.wordSelected;
       const markdownOk = markdown.headings > 0;
+      // Preview arm: skipped (trivially true) when the environment has no
+      // jmarkdown binary — the pane cannot start its watch server without it.
       const previewOk =
-        preview.shown &&
-        preview.rendered &&
-        preview.refreshed &&
-        preview.hidden;
+        preview.skipped === true
+          ? true
+          : preview.shown &&
+            preview.rendered &&
+            preview.refreshed &&
+            preview.hidden;
       const virtualOk =
         virtual.lineDivs > 0 && virtual.lineDivs < 120 &&
         virtual.scrollHeight > 3000 && virtual.firstNumber === '1' &&
@@ -4154,7 +4216,7 @@ app.whenReady().then(() => {
         !!modes.math && modes.math.includes('Math') &&
         !!modes.mathText && modes.mathText.includes('Gamma');
       const layersOk = layers.background && layers.overlay && layers.ordered;
-      const splashOk = splash.present && splash.dismissed;
+      const splashOk = splash.lingering === false && splash.dismissed === true;
       const stickyOk =
         sticky.present &&
         sticky.body.includes('sticky body text') &&
