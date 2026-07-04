@@ -1230,6 +1230,31 @@ app.whenReady().then(() => {
         };
         ${REPL_RUN}
         const noteCount = () => document.querySelectorAll('.sticky-note').length;
+        // Sticky notes are created + edited through the SERVER command
+        // add-sticky-note (M-n M-n), which rides a sticky-add directive:
+        // the renderer creates a note at the cursor and opens a textarea
+        // (.sticky-note-edit) over it. The old (note-create!)/(note-set-
+        // source!) primitives are RENDERER-side and unreachable from the
+        // spine REPL. Drive the real path: run add-sticky-note, type the
+        // source into the fresh textarea, and blur to commit (see
+        // sticky-notes.js beginEdit). Verified live via scripts/drive.js.
+        const addNote = async (source) => {
+          const seen = noteCount();
+          submit('(run-command (quote add-sticky-note))');
+          const ta = await __waitFor(() => {
+            const eds = document.querySelectorAll('.sticky-note-edit');
+            return eds.length ? eds[eds.length - 1] : null;
+          }, 2500);
+          if (!ta) return false;
+          ta.focus();
+          ta.value = source;
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          // blur commits the typed source (beginEdit's blur handler).
+          ta.dispatchEvent(new FocusEvent('blur', { bubbles: false }));
+          await __waitFor(() => noteCount() >= seen + 1 &&
+            document.querySelectorAll('.sticky-note-edit').length === 0, 2000);
+          return true;
+        };
 
         await __run('(new-view! "notes-sticky.txt")');
         const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
@@ -1241,34 +1266,36 @@ app.whenReady().then(() => {
         }
         await __sleep(300);
         await __run('(goto! 0)');
-        // Drive the render pipeline with a controlled command — 'cat'
-        // echoes the source, so the output here is deterministic and
-        // independent of whether a real JMarkdown binary is installed.
-        await __run('(set! *markdown-interpreter* "cat")');
+        // Deterministic render: 'cat' echoes the source. custom-apply! is
+        // the propagating verb — the note body renders with the RENDERER's
+        // *markdown-interpreter* (a plain set! would update only the spine
+        // and never reach the renderer that owns the note render).
+        await __run('(custom-apply! (quote *markdown-interpreter*) "cat")');
+        await __sleep(200);
 
-        // Each note round-trips renderer->server->renderer, so wait for the
-        // note to actually mount in the DOM before touching it.
-        submit('(note-set-source! (note-create!) "sticky body text")');
-        await __waitFor(() => noteCount() >= 1);
+        // Note 1: plain body text.
+        await addNote('sticky body text');
         const note = document.querySelector('.sticky-note');
         const body = note && note.querySelector('.sticky-note-body');
         await __waitFor(() => body && body.textContent.includes('sticky body text'));
+        // Scroll-follow: the note tracks the buffer as it scrolls.
         const before = note ? note.getBoundingClientRect().top : 0;
         editor.scrollTop = editor.scrollTop + 300;
-        await __sleep(80);
+        await __sleep(120);
         const after = note ? note.getBoundingClientRect().top : 0;
-        // An HTML tag in the source becomes a real element once rendered.
-        submit('(note-set-source! (note-create!) "<b>bold note</b>")');
-        await __waitFor(() => noteCount() >= 2);
+        editor.scrollTop = 0;
+        await __sleep(80);
+        // Note 2: an HTML tag becomes a real element.
+        await addNote('<b>bold note</b>');
         await __waitFor(() => document.querySelectorAll('.sticky-note-body b').length > 0);
-        // A note with mathematics — MathJax typesets it in place.
-        submit('(note-set-source! (note-create!) "energy $E = mc^2$")');
-        await __waitFor(() => noteCount() >= 3);
+        // Note 3: mathematics — MathJax typesets it in place.
+        await addNote('energy $E = mc^2$');
         await __waitFor(() => document.querySelectorAll('.sticky-note-body mjx-container').length > 0);
-        // A metadata header sets the note's colour. The \\n reach the
-        // REPL as a two-character escape, so the Lisp reader makes the
-        // newlines — a real newline would be stripped by the input.
-        submit('(note-set-source! (note-create!) "---\\\\ncolor: tomato\\\\n---\\\\ncoloured")');
+        // Note 4: a leading metadata header sets the note's colour. Real
+        // newlines here (\\n -> a newline in this JS string) — the source
+        // is set straight on the textarea, not read by the Lisp reader, so
+        // it does NOT need the old quadruple-escaped \\\\n form.
+        await addNote('---\\ncolor: tomato\\n---\\ncoloured');
         await __waitFor(() => noteCount() >= 4);
         const colourNote = document.querySelectorAll('.sticky-note')[3];
         await __waitFor(() => colourNote &&
@@ -1715,90 +1742,85 @@ app.whenReady().then(() => {
       })()`);
       console.log('  liveDocs:', JSON.stringify(liveDocs));
 
-      // Buffer menu: C-x C-b now opens the HTML *View List* (view-list-view)
-      // — a clickable table of every open view, not the old text
-      // *Buffer List*. So we read its rows from the live element (the
-      // editor is virtualised; the old JSON.parse((buffer-text)) is gone)
-      // and kill a row by clicking its ✕. The whole body is wrapped so a
-      // failure here returns a clean shape instead of throwing and
-      // aborting every later arm (the §2 per-arm-isolation discipline).
+      // Buffer menu (C-x C-b): opens the generic PICKER (the spine's
+      // list-views -> picker-read), a filterable overlay of the open
+      // buffers — NOT the old view-list-view HTML table (that element
+      // still exists as a boot singleton, hidden, but is no longer the
+      // C-x C-b UI). The picker lists every buffer, narrows as you type
+      // in its filter, and switches to the chosen buffer on Enter.
+      // Verified live via scripts/drive.js. The body is wrapped so a
+      // failure returns a clean shape instead of aborting later arms.
       const bufferMenu = await runArm(`(async () => {
-        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
-        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-        const replInput = document.querySelector('.repl-input');
-        const submit = (src) => {
-          replInput.value = src;
-          replInput.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', bubbles: true, cancelable: true,
-          }));
-        };
-        const lastResult = () => {
-          const all = document.querySelectorAll('.repl-result');
-          return all.length ? all[all.length - 1].textContent : '';
-        };
-        const rowNames = (el) =>
-          Array.from(el ? el.querySelectorAll('.view-list-row') : []).map((r) => {
-            const c = r.querySelector('.view-list-name');
-            return c ? c.textContent : '';
-          });
+        ${WAIT_HELPERS}
         try {
-          // Seed a couple of throwaway buffers to list and kill.
+          const replInput = document.querySelector('.repl-input');
+          const submit = (src) => {
+            replInput.value = src;
+            replInput.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Enter', bubbles: true, cancelable: true,
+            }));
+          };
+          // Seed a couple of throwaway buffers to list + switch between.
           submit('(new-view! "bm-target.txt")');
-          await frame();
+          await __sleep(120);
           submit('(new-view! "bm-keep.txt")');
-          await frame();
-          // Open the menu via the bound key (C-x C-b -> open-view-list!).
+          await __sleep(120);
+          // Open the picker via the bound key (C-x C-b -> list-views).
           const editor = document.querySelector('text-view:not([style*="display: none"]) .editor');
-          editor.focus();
-          editor.dispatchEvent(new KeyboardEvent('keydown', {
+          if (editor) editor.focus();
+          const target = editor || document.body;
+          target.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'x', ctrlKey: true, bubbles: true, cancelable: true,
           }));
-          editor.dispatchEvent(new KeyboardEvent('keydown', {
+          await __sleep(120);
+          target.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'b', ctrlKey: true, bubbles: true, cancelable: true,
           }));
-          await frame();
-          await frame();
-          submit('(view-name)');
-          const menuName = lastResult();
-          // Read the live *View List* table — the visible view-list-view.
-          const lists = Array.from(document.querySelectorAll('view-list-view'))
-            .filter((e) => e.offsetParent !== null);
-          const listEl = lists.length ? lists[lists.length - 1] : null;
-          const names = rowNames(listEl);
-          const listsTarget = names.indexOf('bm-target.txt') >= 0;
-          const listsKeep = names.indexOf('bm-keep.txt') >= 0;
-          const listsSelf = names.indexOf('*View List*') >= 0;
-          const rowCount = names.length;
-          // Kill bm-target by clicking its row's ✕; the table re-renders,
-          // so re-read the rows to confirm the view is gone.
-          const targetRow = (listEl
-            ? Array.from(listEl.querySelectorAll('.view-list-row'))
-            : []
-          ).find((r) => {
-            const c = r.querySelector('.view-list-name');
-            return c && c.textContent === 'bm-target.txt';
-          });
-          if (targetRow) {
-            const killBtn = targetRow.querySelector('.view-list-kill-btn');
-            if (killBtn) killBtn.click();
+          const picker = await __waitFor(() =>
+            document.querySelector('.mwb-picker-overlay'), 2500);
+          const pickerShown = !!picker;
+          const title = picker
+            ? (picker.querySelector('.mwb-picker-title')?.textContent ?? '')
+            : '';
+          const labels = picker
+            ? Array.from(picker.querySelectorAll('.mwb-picker-row-label'))
+                .map((l) => l.textContent)
+            : [];
+          const listsTarget = labels.some((l) => l.includes('bm-target.txt'));
+          const listsKeep = labels.some((l) => l.includes('bm-keep.txt'));
+          const rowCount = labels.length;
+          // Filter narrows the list; Enter switches to the sole match.
+          let narrowed = false;
+          let switched = false;
+          if (picker) {
+            const filt = picker.querySelector('.mwb-picker-filter');
+            filt.focus();
+            filt.value = 'bm-target';
+            filt.dispatchEvent(new Event('input', { bubbles: true }));
+            narrowed = !!(await __waitFor(() =>
+              document.querySelectorAll('.mwb-picker-row-label').length === 1, 1500));
+            filt.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Enter', bubbles: true, cancelable: true,
+            }));
+            switched = !!(await __waitFor(() => {
+              const n = document.getElementById('modeline-name')?.textContent ?? '';
+              return !document.querySelector('.mwb-picker-overlay') &&
+                n.includes('bm-target.txt');
+            }, 2000));
           }
-          await frame();
-          await wait(50);
-          const namesAfter = rowNames(listEl);
-          return {
-            menuName,
-            rowCount,
-            listsTarget,
-            listsKeep,
-            listsSelf,
-            targetGone: namesAfter.indexOf('bm-target.txt') < 0,
-            keepStill: namesAfter.indexOf('bm-keep.txt') >= 0,
-          };
+          // Safety net: if anything left the picker open, dismiss it so it
+          // can't leak into the next arm.
+          if (document.querySelector('.mwb-picker-overlay')) {
+            document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Escape', bubbles: true, cancelable: true,
+            }));
+          }
+          return { pickerShown, title, listsTarget, listsKeep, rowCount, narrowed, switched };
         } catch (error) {
           return {
             error: String(error && error.message ? error.message : error),
-            listsTarget: false, listsKeep: false, listsSelf: false,
-            rowCount: 0, targetGone: false, keepStill: false,
+            pickerShown: false, title: '', listsTarget: false, listsKeep: false,
+            rowCount: 0, narrowed: false, switched: false,
           };
         }
       })()`);
@@ -4137,16 +4159,18 @@ app.whenReady().then(() => {
         liveDocs.hasEm &&
         liveDocs.hasList &&
         liveDocs.modeline.includes('smoke-doc-fn');
-      // Buffer menu arm: header present, both seeded buffers listed,
-      // *Buffer List* lists itself, and `d` then `x` removes the
-      // marked buffer.
+      // Buffer menu arm: C-x C-b opens the "Buffer list" PICKER listing
+      // every open buffer; typing in the filter narrows to a single match;
+      // Enter switches to it. (The old view-list-table-with-kill-buttons
+      // UI is retired — C-x C-b is the generic picker now.)
       const bufferMenuOk =
+        bufferMenu.pickerShown &&
+        bufferMenu.title === 'Buffer list' &&
         bufferMenu.listsTarget &&
         bufferMenu.listsKeep &&
-        bufferMenu.listsSelf &&
-        bufferMenu.rowCount >= 4 &&
-        bufferMenu.targetGone &&
-        bufferMenu.keepStill;
+        bufferMenu.rowCount >= 3 &&
+        bufferMenu.narrowed &&
+        bufferMenu.switched;
       const jukeboxOk =
         !!jukebox.name &&
         jukebox.name.includes('Jukebox:') &&
@@ -4570,5 +4594,5 @@ app.whenReady().then(() => {
   // server process and back, and the polling `__waitFor` helpers spend real
   // wall-clock waiting for projected state, so the full run is minutes, not
   // the ~20s of the in-renderer era.
-  setTimeout(() => finish(1, 'timed out waiting for the editor to load'), 360000);
+  setTimeout(() => finish(1, 'overall run watchdog fired (smoke exceeded its time budget)'), 540000);
 });
