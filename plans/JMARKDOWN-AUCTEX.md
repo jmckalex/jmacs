@@ -14,8 +14,11 @@ construct surface · full RefTeX analog · AUCTeX-style keys · HTML/LaTeX/PDF.
 
 - **Branch:** `jmarkdown-auctex`, off `auto-fill-mode` (includes the recent
   fill work; merge `auto-fill-mode` first, then this). Off `main` @ `75d621e6`.
-- **State:** in progress (autonomous build).
-- **Merge:** await the architect's live pass (`feedback_test_before_merge`).
+- **State:** ✅ BUILT · 47 unit tests · full suite green (stdlib 974) ·
+  spine-load self-verified (drive.js) · adversarially reviewed (6 dims → 13
+  findings fixed). Everything below is implemented as designed.
+- **Merge:** await the architect's live pass (`feedback_test_before_merge`);
+  see the live-verify checklist at the bottom.
 
 ## Architecture decision — pure Lisp, minimal spine footprint
 
