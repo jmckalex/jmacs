@@ -194,6 +194,19 @@ export const STDLIB_FILES = Object.freeze([
   // `register-mode-menu!` from menus.lisp; purely additive (the flat
   // `mode-menu-entries` and every other mode's menu are unaffected).
   'latex-menu.lisp',
+  // --- the JMarkdown authoring layer ("AUCTeX for JMarkdown") ------------
+  // A compile/view loop, smart insertion, structural navigation and a
+  // RefTeX-style reference manager for jmarkdown-mode. All TOP-LEVEL files
+  // (they define commands + defcustoms + pure helpers only — the keymap and
+  // menu are wired in languages/jmarkdown.lisp, which loads last, so these
+  // must NOT touch jmarkdown-mode-map). Load after markdown.lisp (reuse
+  // `insert-at-line-start`) and the base `minibuffer-tab-complete`.
+  // Order: compile first (its `jmarkdown` defgroup), then insert (the shared
+  // completing-minibuffer machinery), then nav + ref which reuse it.
+  'jmarkdown-compile.lisp',
+  'jmarkdown-insert.lisp',
+  'jmarkdown-nav.lisp',
+  'jmarkdown-ref.lisp',
 ]);
 
 /**

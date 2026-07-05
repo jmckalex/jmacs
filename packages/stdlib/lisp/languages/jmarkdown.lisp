@@ -738,3 +738,144 @@
           (list (cons "Toggle Preview Pane" 'markdown-preview)
                 (cons "Toggle Math Preview" 'toggle-jmarkdown-math-preview)
                 (cons "Toggle Math Symbols" 'toggle-math-mode)))))
+
+;; ============================================================================
+;; The JMarkdown authoring layer ("AUCTeX for JMarkdown")
+;; ============================================================================
+;; The compile/insert/navigate/reference commands are defined in the top-level
+;; files jmarkdown-compile / -insert / -nav / -ref (loaded before this language
+;; file). Here — in the ONE place `jmarkdown-mode-map` exists — we bind them
+;; AUCTeX-style under C-c, add the font/toggle sub-maps and M-enter, and extend
+;; the mode menu. Bindings are added by `assoc` (returns a new map), never a
+;; wholesale `{…}` replace, so nothing already on the map is dropped. See
+;; plans/JMARKDOWN-AUCTEX.md.
+
+;; The C-c C-f font sub-map (AUCTeX letter + C-letter forms → the existing
+;; JMarkdown emphasis commands). `*` is intense, single `*` bold — the
+;; commands already emit the right JMarkdown syntax.
+(define jmarkdown-font-map
+  {"b" 'markdown-bold      "C-b" 'markdown-bold
+   "i" 'markdown-italic    "C-i" 'markdown-italic
+   "e" 'jmarkdown-intense  "C-e" 'jmarkdown-intense
+   "u" 'jmarkdown-underline "C-u" 'jmarkdown-underline
+   "h" 'markdown-highlight "C-h" 'markdown-highlight
+   "c" 'markdown-code      "C-c" 'markdown-code})
+
+;; The C-c C-t toggle sub-map.
+(define jmarkdown-toggle-map
+  {"p" 'markdown-preview            "C-p" 'markdown-preview
+   "m" 'toggle-math-mode            "C-m" 'toggle-math-mode
+   "x" 'toggle-jmarkdown-math-preview "C-x" 'toggle-jmarkdown-math-preview})
+
+;; Extend the C-c prefix map with the authoring chords (existing single-letter
+;; b/i/e/u/c/h/l/k/f/r/a/d/@/t/g/q/-/1-6/m/v and C-v/C-p are untouched).
+(set! jmarkdown-c-c-map
+  (let* ((m jmarkdown-c-c-map)
+         (m (assoc m "C-c" 'jmarkdown-compile))       ; compile (format prompt)
+         (m (assoc m "C-o" 'jmarkdown-view-output))   ; open built artifact
+         (m (assoc m "`"   'jmarkdown-next-error))    ; next diagnostic
+         (m (assoc m "C-w" 'jmarkdown-show-output))   ; show output dock
+         (m (assoc m "C-e" 'jmarkdown-environment))   ; @begin picker
+         (m (assoc m "C-m" 'jmarkdown-directive))     ; ::: picker
+         (m (assoc m "C-s" 'jmarkdown-insert-section)) ; heading
+         (m (assoc m "C-f" jmarkdown-font-map))       ; font sub-map
+         (m (assoc m "C-t" jmarkdown-toggle-map))     ; toggle sub-map
+         (m (assoc m "C-n" 'jmarkdown-next-section))  ; next heading
+         (m (assoc m "C-u" 'jmarkdown-previous-section)) ; previous heading
+         (m (assoc m "C-j" 'jmarkdown-goto-matching)) ; @begin<->@end
+         (m (assoc m "("   'jmarkdown-label))         ; RefTeX: label
+         (m (assoc m ")"   'jmarkdown-reference))     ; RefTeX: reference
+         (m (assoc m "["   'jmarkdown-citation))      ; RefTeX: citation
+         (m (assoc m "="   'jmarkdown-toc))           ; RefTeX: outline
+         (m (assoc m "/"   'jmarkdown-index)))        ; RefTeX: index
+    m))
+
+;; Re-install: point the mode map's C-c at the extended sub-map and add M-enter
+;; (continue-list). M-q / tab / S-tab already set above are preserved.
+(set! jmarkdown-mode-map
+  (let* ((m jmarkdown-mode-map)
+         (m (assoc m "C-c" jmarkdown-c-c-map))
+         (m (assoc m "M-enter" 'jmarkdown-insert-item)))
+    m))
+
+;; The extended mode menu (replaces the registration above — a later call for
+;; the same mode name wins). Adds Compile/Navigate/References/Extensions groups
+;; and enriches Insert; keeps Format/Headings/Preview.
+(register-mode-menu! "JMarkdown"
+  (list
+    (cons "Compile & View"
+          (list (cons "Compile" 'jmarkdown-compile)
+                (cons "Compile to HTML" 'jmarkdown-compile-html)
+                (cons "Compile to LaTeX" 'jmarkdown-compile-latex)
+                (cons "Compile to PDF" 'jmarkdown-compile-pdf)
+                (cons "View Output" 'jmarkdown-view-output)
+                (cons "Next Error" 'jmarkdown-next-error)
+                (cons "Previous Error" 'jmarkdown-previous-error)
+                (cons "Show Output" 'jmarkdown-show-output)))
+    (cons "Format"
+          (list (cons "Bold" 'markdown-bold)
+                (cons "Italic" 'markdown-italic)
+                (cons "Intense" 'jmarkdown-intense)
+                (cons "Underline" 'jmarkdown-underline)
+                (cons "Highlight" 'markdown-highlight)
+                (cons "Inline Code" 'markdown-code)
+                (cons "Fill Paragraph" 'jmarkdown-fill-paragraph)))
+    (cons "Insert"
+          (list (cons "Environment (completing)" 'jmarkdown-environment)
+                (cons "Directive (completing)" 'jmarkdown-directive)
+                (cons "Environment (@begin, quick)" 'jmarkdown-insert-environment)
+                (cons "Directive (:::, quick)" 'jmarkdown-insert-directive)
+                (cons "Heading" 'jmarkdown-insert-section)
+                (cons "Link" 'markdown-insert-link)
+                (cons "Footnote" 'markdown-insert-footnote)
+                (cons "Inline Comment" 'jmarkdown-comment-region)))
+    (cons "Insert Block"
+          (list (cons "Table" 'jmarkdown-insert-table)
+                (cons "Figure" 'jmarkdown-insert-figure)
+                (cons "Table (float)" 'jmarkdown-insert-table-float)
+                (cons "Listing" 'jmarkdown-insert-listing)
+                (cons "Code Block" 'jmarkdown-insert-code-block)
+                (cons "Math" 'jmarkdown-insert-math)
+                (cons "Alert" 'jmarkdown-insert-alert)
+                (cons "TiKZ Diagram" 'jmarkdown-insert-tikz)
+                (cons "Mermaid Diagram" 'jmarkdown-insert-mermaid)
+                (cons "Strategic-form Game" 'jmarkdown-insert-game)
+                (cons "Description Item" 'jmarkdown-insert-description-item)
+                (cons "Task Item" 'jmarkdown-insert-task-item)
+                (cons "Blockquote" 'markdown-blockquote)
+                (cons "List Item" 'markdown-list-item)))
+    (cons "References"
+          (list (cons "Label" 'jmarkdown-label)
+                (cons "Reference" 'jmarkdown-reference)
+                (cons "Citation" 'jmarkdown-citation)
+                (cons "Index Mark" 'jmarkdown-index)
+                (cons "Anchor" 'jmarkdown-insert-anchor)
+                (cons "Table of Contents" 'jmarkdown-insert-toc)
+                (cons "List of Figures" 'jmarkdown-insert-list-of-figures)
+                (cons "List of Tables" 'jmarkdown-insert-list-of-tables)
+                (cons "List of Listings" 'jmarkdown-insert-list-of-listings)
+                (cons "Index Block" 'jmarkdown-insert-index-block)
+                (cons "Bibliography" 'jmarkdown-insert-bibliography)))
+    (cons "Navigate"
+          (list (cons "Next Heading" 'jmarkdown-next-section)
+                (cons "Previous Heading" 'jmarkdown-previous-section)
+                (cons "Goto Matching @begin/@end" 'jmarkdown-goto-matching)
+                (cons "Outline / TOC" 'jmarkdown-toc)
+                (cons "Continue List" 'jmarkdown-insert-item)))
+    (cons "Headings"
+          (list (cons "Heading 1" 'markdown-heading-1)
+                (cons "Heading 2" 'markdown-heading-2)
+                (cons "Heading 3" 'markdown-heading-3)
+                (cons "Heading 4" 'markdown-heading-4)
+                (cons "Heading 5" 'markdown-heading-5)
+                (cons "Heading 6" 'markdown-heading-6)))
+    (cons "Advanced"
+          (list (cons "File Include" 'jmarkdown-insert-include)
+                (cons "Simple Extension" 'jmarkdown-insert-extension)
+                (cons "Script Block" 'jmarkdown-insert-script-block)
+                (cons "Reuse Target" 'jmarkdown-insert-target)
+                (cons "Reuse Source" 'jmarkdown-insert-source)))
+    (cons "Preview & Math"
+          (list (cons "Toggle Preview Pane" 'markdown-preview)
+                (cons "Toggle Math Preview" 'toggle-jmarkdown-math-preview)
+                (cons "Toggle Math Symbols" 'toggle-math-mode)))))
