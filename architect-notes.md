@@ -3545,8 +3545,8 @@ jmarkdown language file):
 - Docs: a `C-h d` manual chapter "Authoring in JMarkdown"
   (`docs/chapters/jmarkdown.md`, included in MANUAL.jmd; rebuilds clean, 802 nodes).
 
-**Verified**: 47 tests (23 feature + 24… actually 28 incl. regressions); full
-suite green (stdlib 974). drive.js confirmed the real spine loads all 18
+**Verified**: 28 tests in `jmarkdown-auctex.test.js` (23 feature + 5 review
+regressions); full suite green (stdlib 974). drive.js confirmed the real spine loads all 18
 commands, wires every keybinding (existing preserved), runs the pure helpers,
 and shows 9 menu sections. Review fixed a real citation-picker crash
 (author-less bib entry), the target/source directive syntax, PDF-warning loss,
