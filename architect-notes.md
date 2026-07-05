@@ -3377,3 +3377,132 @@ small change if you want Emacs-style minor-mode display.
 Ready for your live pass + merge.
 
 ---
+## [2026-07-04] auto-fill-mode: wrap-as-you-type minor mode — BUILT + self-verified
+
+**Context**: You asked (while away) for an auto-fill minor mode for text
+views: wrap lines as the user types at a customisable column, auto-indenting
+per the major mode via a mode-specifiable Lisp indent function. Built it end
+to end on branch `auto-fill-mode` off `main` (`0badde23`).
+
+**What landed** (see `plans/AUTO-FILL-MODE.md` for the full design + the
+assumptions I had to make):
+
+- `packages/stdlib/lisp/auto-fill.lisp` — `auto-fill-minor-mode` (the mode
+  value) + `M-x auto-fill-mode` (the toggle command; named for Emacs muscle
+  memory — the two names must differ, shared namespace), `*fill-column*`
+  defcustom (default 70; per-mode `:fill-column` override), the pure
+  `-auto-fill-break-index` core, `do-auto-fill`, the `:fill-indent-function`
+  seam, `set-fill-column` (C-x f).
+- `keymap.lisp` — a general `*post-self-insert-hook*` (Emacs's
+  post-self-insert-hook), run guarded (try/catch) after each self-insert;
+  empty by default. Auto-fill is its first client. Also the C-x f binding.
+- Registered `auto-fill.lisp` in BOTH load lists (STDLIB_FILES + SPINE_STDLIB)
+  right after keymap.lisp.
+- 20 unit tests (pure core + real-buffer mutation + the self-insert chain +
+  the indent seam + the toggle). Full suite green (stdlib 924, all packages).
+
+**Self-verified headless** (drive.js): the real spine loaded auto-fill.lisp
+(`command-registered? 'auto-fill-mode` → #t, hook registered → #t), and REAL
+keystrokes into the editor wrapped "the quick brown fox jumps over the lazy
+dog and runs away" at column 24 into "the quick brown fox" / "jumps over the
+lazy dog" / "and runs away…" — server buffer shows the inserted `\n`s and the
+client rendered the separate lines (the client-prediction reconcile displays
+cleanly, no jank). So the spine-load + hook + wrap all work live, not just in
+the harness.
+
+**Decisions you may want to revisit** (all noted in the plan):
+1. Off by default (Emacs). Enable per mode via
+   `(add-hook markdown-mode (lambda () (enable-minor-mode auto-fill-minor-mode)))`.
+   Say if you'd rather it be default-on in prose modes.
+2. `*fill-column*` default 70; the generic M-q `fill-paragraph!` (a JS host
+   primitive) still hardcodes 72 — I left it independent. Unify on request.
+3. Only the prose-default indenter ships; `:fill-indent-function` is the seam
+   for a real per-syntax indenter (none exists in the tree yet).
+
+**State of the work**: branch `auto-fill-mode`, 2 commits, unmerged, tests
+green, self-verified. Ready for your live pass + merge (per test-before-merge).
+
+---
+## [2026-07-04] jmarkdown-mode fill: :fill-indent-function + list/quote-aware M-q
+
+**Context**: Follow-on to auto-fill-mode — you asked for a fill-indent-function
+and a fill-paragraph for jmarkdown-mode. On the SAME branch `auto-fill-mode`
+(commit `b1f118a6`).
+
+**Found**: a JMarkdown-aware `jmarkdown-fill-paragraph` (M-q) already existed
+(languages/jmarkdown.lisp) — @begin/@end + ::: + heading + fence bounding, the
+@begin-line part-wrapping, indent-preserving. But it treated list items and
+blockquotes as plain prose (bullet/`>` swallowed as a word, continuations went
+flush-left). So the real gaps were: no fill-indent-function at all, and M-q
+mishandling lists/quotes.
+
+**Built** (sharing one structural-prefix brain, so M-q and auto-fill agree):
+- `jmarkdown-fill-indent` — the mode's `:fill-indent-function`. On an auto-fill
+  break, the continuation gets the paragraph's hanging prefix: list/definition
+  markers (`- * +`, `1.`/`2)`, `: `) → spaces (hang under the text); blockquote
+  `>` → repeated; plain prose → its indent. Wired in the define-mode form so the
+  registered mode map carries it.
+- `jmarkdown-fill-paragraph` prose branch reworked to use first-vs-continuation
+  structural prefixes, so M-q now hangs list items and keeps `>` on blockquotes.
+- Helpers: `-jmd-structural-prefixes`, `-jmd-marker-len`, `-jmd-blockquote-len`,
+  `-jmd-wrap2`, `-jmd-para-body` (superseded `-jmd-wrap`, removed).
+
+**Verified**: 15 new tests (structural-prefix cases, list/ordered/blockquote
+fill-paragraph, fill-indent in isolation + auto-fill end-to-end in jmarkdown-mode
++ wiring); ALL existing jmarkdown-fill tests preserved; full suite green (stdlib
+939). Headless (drive.js): the spine LOADS the changes live — jmarkdown-fill-
+paragraph registered, `:fill-indent-function` present & `eq?` the right symbol,
+and `(-jmd-structural-prefixes ...)` returns the right prefixes server-side.
+
+**Two honest caveats**:
+1. I could not exercise the jmarkdown-specific LIVE typing via drive.js: the
+   drive instance had a `.js` file open, and a buffer's mode is derived from its
+   filename, so a REPL `set-major-mode! jmarkdown-mode` didn't stick (it reverts
+   to JavaScript). Open a `.jmd` file to live-test: `M-x auto-fill-mode`, type a
+   long `- list item` / `> quote` and watch the hang / `>`; and `M-q` on same.
+2. Under fast SYNTHETIC typing (45ms/char, throttled hidden window) the GENERIC
+   auto-fill dropped a space at a wrap boundary ("delta epsilon"->"deltaepsilon")
+   — a client-prediction/reconcile artifact (auto-fill plan assumption #6). Not
+   seen in the unit tests (which drive keys synchronously) or the earlier live
+   run of a different sentence. Please watch for it under real typing; if it
+   reproduces, it's an auto-fill reconcile issue, not jmarkdown-specific.
+
+**State**: branch `auto-fill-mode`, now 4 commits, unmerged, suite green. Ready
+for the live pass + merge alongside auto-fill-mode.
+
+---
+## [2026-07-04] jmarkdown fill: flush-right (>>) / centred (>> <<) + frontmatter guard
+
+Follow-on to the jmarkdown fill work, same branch `auto-fill-mode` (commit
+`bbb39b11`). You asked for flush-right / centred support in fill-paragraph and
+flagged that syntax-extensions matter.
+
+- **Aligned blocks** (docs/syntax-adjustments): a `>>`-prefixed line is
+  flush-right; a `>> … <<` line is centred (trailing `<<` distinguishes them).
+  You chose REFLOW-like-a-blockquote, so M-q merges the block's lines and
+  re-wraps to the fill column, keeping `>> ` on every line and (centred)
+  re-aligning `<<` to the column. `>>`/`<<` are matched as whitespace-delimited
+  TOKENS (per the extensions "split on whitespace" rule), which also keeps them
+  distinct from a `> ` blockquote. A bare `>>` / `>> <<` line is a paragraph
+  separator (bounds sub-paragraphs like a blank line).
+- **Frontmatter guard** (the syntax-extensions point): user syntax extensions are
+  DEFINED in the `---` metadata header (multi-line, whitespace-significant
+  `Extension …:` entries). Reflowing those corrupts them, so fill now leaves the
+  entire `---` frontmatter untouched. (Inline extension delimiters within prose
+  reflow safely; `@begin/@end` block environments were already bounded.)
+
+Verified: 7 new tests (token-rule detection, flush-right + centred reflow, fixed
+point, separator bounding, frontmatter no-op, prose-after-frontmatter); existing
+tests preserved; full suite green (stdlib 946). Spine-load + exact reflow output
+self-verified via drive.js — including the centred `<<` aligned at the column.
+
+**Interpretation flagged for you**: I read "syntax-extensions is important too" as
+"don't let fill corrupt the extension DEFINITIONS in the frontmatter" (+ respect
+the `>>`/`<<` token rule). If you meant something more (e.g. bounding fill at
+user-defined *block* extensions with custom sigils, which a general fill can't
+know without parsing each doc's header), say so and I'll extend it.
+
+Live-test (needs a .jmd): M-q inside a `>>` block and a `>> … <<` block; M-q
+inside the `---` header (should no-op).
+
+---

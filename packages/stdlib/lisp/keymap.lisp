@@ -29,6 +29,8 @@
    "C-s"   'save-buffer
    "C-r"   'reload-stdlib
    "C-c"   'quit-editor
+   ;; C-x f — set the fill column (Emacs's binding; auto-fill.lisp).
+   "f"     'set-fill-column
    "b"     'switch-view
    "C-b"   'list-views
    "right" 'next-view
@@ -405,6 +407,40 @@
    modifier."
   (or (not (nil? active-keymap)) (not (nil? *key-reader*))))
 
+;; --- the post-self-insert hook -----------------------------------------
+;; Procedures run *after* a self-inserting keystroke has been inserted,
+;; each called with the inserted key string. This is Emacs's
+;; `post-self-insert-hook` — the seam an "electric" behaviour hooks into.
+;; Its first client is auto-fill-mode (auto-fill.lisp), which wraps the
+;; line when it grows past the fill column.
+;;
+;; Empty by default, so a self-insert costs nothing extra until something
+;; registers. The hook is GLOBAL while modes are per-buffer, so a client
+;; registers ONCE (at load) and guards its body on the buffer's own mode
+;; membership — it must not add/remove itself on mode enable/disable, or
+;; toggling the mode in one buffer would clobber every other buffer.
+(define *post-self-insert-hook* (list))
+
+(define (add-post-self-insert-hook fn)
+  "Register FN (a one-argument procedure, called with the inserted key
+   string) to run after each self-insert. Idempotent by identity."
+  (unless (member fn *post-self-insert-hook*)
+    (set! *post-self-insert-hook*
+          (append *post-self-insert-hook* (list fn)))))
+
+(define (remove-post-self-insert-hook fn)
+  "Remove FN from the post-self-insert hook."
+  (set! *post-self-insert-hook*
+        (filter (lambda (f) (not (eq? f fn))) *post-self-insert-hook*)))
+
+(define (run-post-self-insert-hook key)
+  "Run every post-self-insert hook with KEY. Each call is wrapped so a
+   buggy hook can neither wedge typing nor crash the spine — self-insert
+   is the one path that must never throw."
+  (for-each
+    (lambda (fn) (try (fn key) (catch _e nil)))
+    *post-self-insert-hook*))
+
 (define (handle-key key)
   "Dispatch KEY. If a key-reader is pending it receives the key;
    otherwise KEY runs a command, begins a sequence, or self-inserts.
@@ -466,5 +502,7 @@
            ;; subtlety): mark this as a self-insert before inserting.
            (set! *last-command* 'self-insert)
            (insert! key)
+           ;; Electric behaviours run after the insert (auto-fill etc.).
+           (run-post-self-insert-hook key)
            #t)
           (else #f)))))
