@@ -568,6 +568,21 @@ const SPINE_STDLIB = Object.freeze([
   // it needs no LaTeX command to exist at load. Loaded last among the LaTeX/RefTeX
   // files, mirroring STDLIB_FILES.
   'latex-menu.lisp',
+  // --- the JMarkdown authoring layer ("AUCTeX for JMarkdown") -----------
+  // Compile/view loop, smart insertion, navigation, and a RefTeX-style
+  // reference manager for jmarkdown-mode. FULLY model-side: run-process!
+  // (compile), the completing-minibuffer + tab-complete chaining (insertion
+  // & pickers), Lisp text-scanning (references), and citation-parse-lenient/
+  // citation-entries + read-file-text! (the cite picker over the front-matter
+  // .bib) — all primitives present. TOP-LEVEL files: they define commands +
+  // defcustoms only; the keymap/menu wiring lives in the jmarkdown language
+  // file (loaded by the language glob after this list). Load after
+  // markdown.lisp (insert-at-line-start) and the base minibuffer-tab-complete
+  // (embedded before this loop). Same order as STDLIB_FILES.
+  'jmarkdown-compile.lisp',
+  'jmarkdown-insert.lisp',
+  'jmarkdown-nav.lisp',
+  'jmarkdown-ref.lisp',
   // docs.lisp — the in-editor documentation surface (B3; plans/MODEL-B-DEFAULT.md):
   // doc-manifest / doc-known? (over the load-doc-manifest! host primitive that the
   // spine reads from docs/build/manifest.json via fs), symbol-at-point + doc-
