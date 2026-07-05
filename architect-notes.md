@@ -3506,3 +3506,69 @@ Live-test (needs a .jmd): M-q inside a `>>` block and a `>> … <<` block; M-q
 inside the `---` header (should no-op).
 
 ---
+## [2026-07-05] "AUCTeX for JMarkdown" — full authoring environment for jmarkdown-mode
+
+**Context**: You asked (overnight) to design + build an AUCTeX/RefTeX-class
+authoring layer for jmarkdown-mode, menu- AND key-accessible, with in-app docs.
+You chose: HTML/LaTeX/PDF compile · full RefTeX analog · AUCTeX-style
+`C-c C-<letter>` keys · full construct surface. Built autonomously on branch
+`jmarkdown-auctex` (off `auto-fill-mode`, so merge that first). Design +
+assumptions + live-verify checklist: **`plans/JMARKDOWN-AUCTEX.md`**.
+
+**Method**: a 13-agent understanding sweep (JMarkdown source + docs + the Godot
+LaTeX/RefTeX/doc/menu machinery) → design → implement in tested commits →
+spine-load self-verify → a 6-dimension adversarial review (13 findings fixed).
+
+**What shipped** (four TOP-LEVEL stdlib files, pure Lisp over existing
+primitives — no new spine host primitives; keymap+menu wiring appended to the
+jmarkdown language file):
+- `jmarkdown-compile.lisp` — `C-c C-c` compile (HTML/LaTeX via the `jmarkdown`
+  CLI; PDF = HTML then headless Chrome; `C-u` prompts format), `C-c C-o` view
+  built artifact, `` C-c ` `` next-error (jumps on a parsed `path:line:`),
+  `C-c C-w` show output. run-process! loop → utility-dock output/errors.
+- `jmarkdown-insert.lisp` — completing `@begin` (`C-c C-e` `jmarkdown-environment`)
+  / `:::` (`C-c C-m` `jmarkdown-directive`) / heading (`C-c C-s`) pickers + a
+  large templated-insert set (tables, floats, code, math, alerts, games, lists,
+  collection markers, anchor, comments, extension/script/target/source). Ports
+  latex-insert's completing-minibuffer + TAB-chaining + NUL-sentinel templates.
+- `jmarkdown-nav.lisp` — `C-c C-n`/`C-c C-u` section motion, `C-c C-j`
+  nesting-aware `@begin`↔`@end` jump, `M-RET` continue-list (increments ordered/
+  lettered), `C-c =` outline/TOC jump.
+- `jmarkdown-ref.lisp` — `C-c (` label (heading-slug suggestion), `C-c )`
+  reference (`:ref`/`:cref`/`:Cref`, key completed from scanned `:label[]`/`{id=}`),
+  `C-c [` citation (picks from the front-matter `.bib` via
+  citation-parse-lenient/citation-entries), `C-c /` index. Lisp doc scanning.
+- Wiring: font (`C-c C-f`) + toggle (`C-c C-t`) sub-maps, `M-RET`, and a grouped
+  9-section mode menu. Existing single-letter `C-c` keys + the quick
+  `jmarkdown-insert-environment`/`-directive` (C-c @ / C-c d) are UNTOUCHED — the
+  smart versions are separately named so both coexist.
+- Docs: a `C-h d` manual chapter "Authoring in JMarkdown"
+  (`docs/chapters/jmarkdown.md`, included in MANUAL.jmd; rebuilds clean, 802 nodes).
+
+**Verified**: 47 tests (23 feature + 24… actually 28 incl. regressions); full
+suite green (stdlib 974). drive.js confirmed the real spine loads all 18
+commands, wires every keybinding (existing preserved), runs the pure helpers,
+and shows 9 menu sections. Review fixed a real citation-picker crash
+(author-less bib entry), the target/source directive syntax, PDF-warning loss,
+dead diagnostic-jump, and an `id=` false-positive scan.
+
+**Assumptions (in the plan)**: PDF via headless Chrome (`*jmarkdown-chrome*`;
+fails gracefully if absent — LaTeX→PDF is the alt); `jmarkdown` on PATH (dev
+launch inherits it); single-file scan (no `[[include]]` expansion yet);
+completing-minibuffer pickers, not the floating panel.
+
+**🔴 Live-verify before merge** (needs full quit + relaunch — spine + language
+files). Open a `.jmd`, then:
+1. `C-c C-c` → HTML build; dock shows output; `C-c C-o` opens the `.html`. Set
+   `*jmarkdown-compile-format*` latex/pdf and retry (PDF needs Chrome).
+2. `C-c C-e` → complete `theorem` → skeleton; `C-c C-m` → `note`; `C-c C-s` → heading.
+3. `C-c (` on a heading → `:label[sec:…]`; `C-c )` → pick → `:cref[…]`; `C-c [`
+   with a `Bibliography:` line → pick a bib entry → `\citep{…}`.
+4. `C-c =` outline → jump; `C-c C-n`/`C-c C-u` sections; `C-c C-j` on `@begin`;
+   `M-RET` in a list; the JMarkdown menu shows the new groups; `C-h d` → the
+   new chapter.
+
+**State**: branch `jmarkdown-auctex`, ~8 commits, unmerged, suite green,
+self-verified, reviewed. Depends on `auto-fill-mode` (merge that first).
+
+---
