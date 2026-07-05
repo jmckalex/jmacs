@@ -508,16 +508,18 @@
    (str "<script data-type=\"jmarkdown\">\n" *jmarkdown-point-mark* "\n</script>")))
 
 (defcommand jmarkdown-insert-target ()
-  "Insert a `:::target{key=\"…\"} … :::` reusable-content block."
-  (-jmarkdown-insert-with-mark
-   (let ((indent (line-indent)))
-     (str ":::target{key=\"" *jmarkdown-point-mark* "\"}\n" indent "\n" indent ":::"))))
+  "Insert an inline `:target[id]` placeholder — the LOCATION into which the
+   content of a matching `:::source{target=id}` block is spliced at build time
+   (docs/sources-and-targets)."
+  (-jmarkdown-insert-with-mark (str ":target[" *jmarkdown-point-mark* "]")))
 
 (defcommand jmarkdown-insert-source ()
-  "Insert a `:::source{key=\"…\"} … :::` reference to a defined target."
+  "Insert a `:::source{target=\"id\"} … :::` block whose content is moved into
+   the matching `:target[id]` placeholder at build time. The required attribute
+   is `target=`, not `key=`."
   (-jmarkdown-insert-with-mark
    (let ((indent (line-indent)))
-     (str ":::source{key=\"" *jmarkdown-point-mark* "\"}\n" indent ":::"))))
+     (str ":::source{target=\"" *jmarkdown-point-mark* "\"}\n" indent "\n" indent ":::"))))
 
 ;; --- shared completion dispatch (the latex-insert chaining, renamed) --
 ;; The host's onTab always calls `minibuffer-tab-complete`. Earlier files

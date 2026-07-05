@@ -270,6 +270,45 @@ test('ref: wiring — C-c ( ) [ = / bound', async () => {
 
 // --- the mode menu -------------------------------------------------------
 
+// --- review regressions --------------------------------------------------
+
+test('regression: -jmref-entry-label survives a nil author/year (no crash)', async () => {
+  const { ev } = await auctexEditor();
+  // author-less @manual/@misc entries store :author = nil; must not (string=? nil "").
+  assert.equal(ev('(-jmref-entry-label (hash-map :key "GnuMake" :author nil :year nil))'), 'GnuMake');
+  assert.equal(ev('(-jmref-entry-label (hash-map :key "K" :author "A" :year 1999))'), 'K — A (1999)');
+});
+
+test('regression: -jmref-scan-ids ignores grid=/uuid=/url id= tails', async () => {
+  const { ev } = await auctexEditor();
+  const ids = listToArray(ev('(-jmref-scan-ids "grid=x {id=fig:a} valid=1 http://h?id=zzz")')).map(String);
+  assert.deepEqual(ids, ['fig:a'], 'only the real {id=…} attribute');
+});
+
+test('regression: compile parses a path:line: diagnostic (and jumps)', async () => {
+  const { ev } = await auctexEditor();
+  assert.equal(ev('(get (-jmd-parse-location "src/doc.jmd:12: bad") :line nil)'), 12);
+  assert.equal(ev('(get (-jmd-parse-location "src/doc.jmd:12: bad") :file nil)'), 'src/doc.jmd');
+  assert.equal(ev('(if (nil? (-jmd-parse-location "Warning: unresolved ref")) #t #f)'), true,
+    'a Warning: line (no digits) is not a location');
+});
+
+test('regression: dotfile has no extension mistaken', async () => {
+  const { ev } = await auctexEditor();
+  assert.equal(ev('(-jmd-swap-ext ".bashrc" ".html")'), '.bashrc.html');
+  assert.equal(ev('(-jmd-swap-ext "/a/.hidden" ".html")'), '/a/.hidden.html');
+});
+
+test('regression: target/source use the correct JMarkdown syntax', async () => {
+  const { buffer, ev } = await auctexEditor('');
+  ev('(jmarkdown-insert-target)');
+  assert.equal(buffer.text, ':target[]', 'inline :target[id], not a :::target container');
+  ev('(set-buffer-text! "")');
+  ev('(goto! 0)');
+  ev('(jmarkdown-insert-source)');
+  assert.match(buffer.text, /:::source\{target="/, 'source uses target= not key=');
+});
+
 test('menu: JMarkdown menu carries the new groups', async () => {
   const { ev } = await auctexEditor();
   const sections = listToArray(ev('(map car (get *mode-menu-sections* "JMarkdown"))')).map(String);

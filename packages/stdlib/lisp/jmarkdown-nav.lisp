@@ -61,14 +61,15 @@
 
 (define (-jmnav-heading-title text i)
   "The heading text at offset I (after the `#`s and space), trimmed of a
-   trailing `:label[…]` and `{-}` marker. Pure."
+   trailing `:label[…]`. Pure."
   (let* ((h (-jmnav-hash-run text i))
          (start (+ i h 1))
          (end (-jmnav-line-end text start)))
     (-jmnav-strip-heading-suffix (substring text start end))))
 
 (define (-jmnav-strip-heading-suffix s)
-  "S with a trailing `:label[…]` or `{…}` removed. Pure (best-effort)."
+  "S with a trailing `:label[…]` removed (its key is not part of the title).
+   Pure — best-effort."
   (let ((lab (string-index-of s ":label[")))
     (if (>= lab 0) (-jmnav-rtrim (substring s 0 lab)) (-jmnav-rtrim s))))
 
@@ -318,14 +319,21 @@
 
 (define (-jmnav-toc-register entries i acc)
   "Register each (offset . label) in *jmnav-toc-offsets*, returning the
-   ordered label list. Equal labels get a ` (N)` suffix to stay unique."
+   ordered label list. A label already taken gets a ` (N)` suffix — probing
+   the ACTUAL candidate label (not just the base) so a heading whose title
+   already looks like `Foo (2)` cannot collide."
   (cond
     ((nil? entries) (reverse acc))
     (else
      (let* ((e (car entries))
-            (base (cdr e))
-            (label (if (nil? (get *jmnav-toc-offsets* base nil))
-                       base
-                       (str base " (" i ")"))))
+            (label (-jmnav-free-label (cdr e) 0)))
        (set! *jmnav-toc-offsets* (assoc *jmnav-toc-offsets* label (car e)))
        (-jmnav-toc-register (cdr entries) (+ i 1) (cons label acc))))))
+
+(define (-jmnav-free-label base n)
+  "The first of BASE, `BASE (2)`, `BASE (3)`, … not already a key in
+   *jmnav-toc-offsets*."
+  (let ((cand (if (= n 0) base (str base " (" n ")"))))
+    (if (nil? (get *jmnav-toc-offsets* cand nil))
+        cand
+        (-jmnav-free-label base (if (= n 0) 2 (+ n 1))))))

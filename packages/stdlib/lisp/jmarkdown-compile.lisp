@@ -96,8 +96,11 @@
 (define (-jmd-last-dot-loop text i)
   (cond
     ((< i 0) -1)
-    ((equal? (substring text i (+ i 1)) ".") i)
     ((equal? (substring text i (+ i 1)) "/") -1) ; a dot must be in the basename
+    ((equal? (substring text i (+ i 1)) ".")
+     ;; A leading dot (index 0, or right after a `/`) is a dotfile prefix, not
+     ;; an extension separator — `.bashrc` has no extension.
+     (if (or (= i 0) (equal? (substring text (- i 1) i) "/")) -1 i))
     (else (-jmd-last-dot-loop text (- i 1)))))
 
 (define (-jmd-swap-ext path ext)
@@ -189,19 +192,46 @@
                                  :kind :error)))
         (else '())))))
 
+(define (-jmd-digit-run s i)
+  "The index past the run of decimal digits in S starting at I. Pure."
+  (if (and (< i (string-length s))
+           (>= (string-index-of "0123456789" (substring s i (+ i 1))) 0))
+      (-jmd-digit-run s (+ i 1)) i))
+
+(define (-jmd-parse-location line)
+  "If LINE begins `path:line: message`, a jumpable diagnostic hash-map
+   (:file :line :message :kind), else nil. Requires a colon at >0, then one or
+   more digits, then another colon — so `Warning: …` (no digits) is not a hit.
+   Pure."
+  (let ((c1 (string-index-of line ":")))
+    (if (< c1 1)
+        nil
+        (let* ((after (+ c1 1))
+               (dend (-jmd-digit-run line after)))
+          (if (and (> dend after)
+                   (< dend (string-length line))
+                   (equal? (substring line dend (+ dend 1)) ":"))
+              (hash-map :file (substring line 0 c1)
+                        :line (string->number (substring line after dend))
+                        :message (-jmd-trim (substring line (+ dend 1) (string-length line)))
+                        :kind :error)
+              nil)))))
+
 (define (-jmd-line->diag line)
   "A log LINE → a diagnostic hash-map, or nil when it is ordinary output.
    Recognises a leading `path:line:` for a jumpable diagnostic; otherwise a
    line mentioning warning/error/unresolved/duplicate becomes a message-only
    diagnostic. Pure."
-  (cond
-    ((-jmd-contains-ci? line "warning") (-jmd-classify line))
-    ((-jmd-contains-ci? line "error") (-jmd-classify line))
-    ((-jmd-contains-ci? line "unresolved") (hash-map :file nil :line nil
-                                                     :message (-jmd-trim line) :kind :warning))
-    ((-jmd-contains-ci? line "duplicate") (hash-map :file nil :line nil
-                                                    :message (-jmd-trim line) :kind :warning))
-    (else nil)))
+  (let ((loc (-jmd-parse-location (-jmd-trim line))))
+    (cond
+      ((not (nil? loc)) loc)
+      ((-jmd-contains-ci? line "warning") (-jmd-classify line))
+      ((-jmd-contains-ci? line "error") (-jmd-classify line))
+      ((-jmd-contains-ci? line "unresolved") (hash-map :file nil :line nil
+                                                       :message (-jmd-trim line) :kind :warning))
+      ((-jmd-contains-ci? line "duplicate") (hash-map :file nil :line nil
+                                                      :message (-jmd-trim line) :kind :warning))
+      (else nil))))
 
 (define (-jmd-classify line)
   (hash-map :file nil :line nil :message (-jmd-trim line) :kind (-jmd-diag-kind line)))
@@ -279,6 +309,14 @@
         (set! *jmarkdown-last-format* format)
         (-jmd-reload-artifact-if-open (-jmd-artifact-path src format))))))
 
+(define (-jmd-merge-results a b)
+  "Combine two process results — A's log (the HTML build's warnings) then B's
+   (the Chrome print), keeping B's exit code as the final status."
+  (hash-map :stdout (str (get a :stdout "") (get b :stdout ""))
+            :stderr (str (get a :stderr "")
+                         (if (equal? (get b :stderr "") "") "" (str "\n" (get b :stderr ""))))
+            :code (get b :code nil)))
+
 (define (-jmd-spawn-failed? result)
   "Whether RESULT indicates the program was never found (ENOENT / not found)."
   (and (nil? (get result :code nil))
@@ -332,7 +370,10 @@
                           (show-status!
                            (str "JMarkdown: Chrome not found (" *jmarkdown-chrome*
                                 ") — set *jmarkdown-chrome*; HTML built"))
-                          (-jmd-on-exit pdf-result src 'pdf)))))))))
+                          ;; Merge so the HTML step's JMarkdown warnings are not
+                          ;; lost behind Chrome's (near-empty) output.
+                          (-jmd-on-exit (-jmd-merge-results html-result pdf-result)
+                                        src 'pdf)))))))))
         ;; HTML or LaTeX: one CLI call.
         (-jmd-run-cli
          src dir format
@@ -412,9 +453,19 @@
 
 ;; --- error navigation -------------------------------------------------
 
+(define (-jmd-resolve-diag-file file)
+  "Resolve a diagnostic FILE to an absolute path: an absolute path unchanged,
+   a relative one against the current file's directory, nil stays nil."
+  (cond
+    ((nil? file) nil)
+    ((string-prefix? "/" file) file)
+    (else (let ((src (view-file-path (current-view))))
+            (if (nil? src) file (path-resolve (path-dirname src) file))))))
+
 (define (-jmd-visit-diag diag)
-  "Echo DIAG's message, jumping to its file:line when it carries one."
-  (let ((file (get diag :file nil))
+  "Echo DIAG's message, jumping to its file:line when it carries one (the file
+   resolved against the current document's directory)."
+  (let ((file (-jmd-resolve-diag-file (get diag :file nil)))
         (line (get diag :line nil)))
     (when (and (not (nil? file)) (file-exists? file))
       (open-file-path! file)

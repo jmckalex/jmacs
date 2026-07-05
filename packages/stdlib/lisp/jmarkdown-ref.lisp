@@ -54,10 +54,21 @@
   (let ((hit (string-index-of text "id=" from)))
     (if (< hit 0)
         (reverse acc)
-        (let* ((start (+ hit 3))
-               (val (-jmref-id-value text start)))
-          (-jmref-scan-ids-loop text (+ hit 3)
-                                (if (string=? val "") acc (cons val acc)))))))
+        (if (-jmref-id-boundary? text hit)
+            (let* ((start (+ hit 3))
+                   (val (-jmref-id-value text start)))
+              (-jmref-scan-ids-loop text (+ hit 3)
+                                    (if (string=? val "") acc (cons val acc))))
+            ;; `id=` is the tail of grid=/uuid=/valid= or a URL param — skip it.
+            (-jmref-scan-ids-loop text (+ hit 3) acc)))))
+
+(define (-jmref-id-boundary? text hit)
+  "Whether the `id=` at HIT starts an attribute (at the buffer start, or after
+   a non-identifier char), not the tail of `grid=` / a `?…&id=` URL param. Pure."
+  (or (= hit 0)
+      (let ((c (substring text (- hit 1) hit)))
+        (or (equal? c " ") (equal? c "{") (equal? c "(")
+            (equal? c "\n") (equal? c "\t")))))
 
 (define (-jmref-id-value text start)
   "The id value in TEXT beginning at START: a `\"quoted\"` run, else up to the
@@ -196,8 +207,9 @@
     (set! *minibuffer-reader*
           (lambda (key)
             (unless (or (nil? key) (string=? key ""))
-              (-jmref-insert-label (-jmref-uniquify key (-jmref-label-keys (buffer-text))))
-              (show-status! (str "Inserted :label[" key "]")))))))
+              (let ((k (-jmref-uniquify key (-jmref-label-keys (buffer-text)))))
+                (-jmref-insert-label k)
+                (show-status! (str "Inserted :label[" k "]"))))))))
 
 ;; --- command: jmarkdown-reference (C-c )) -----------------------------
 
@@ -283,12 +295,15 @@
 (define *jmref-cite-keys* {})
 
 (define (-jmref-entry-label entry)
-  "A picker label for a citation ENTRY hash-map: `key — Author (year)`."
+  "A picker label for a citation ENTRY hash-map: `key — Author (year)`. Guards
+   author/year for nil — citation-entries stores those keys with a NIL value
+   for author-less / year-less entries (@manual, @misc), so a `(get … \"\")`
+   default does NOT fire and `(string=? nil …)` would throw."
   (let ((key (get entry :key ""))
-        (author (get entry :author ""))
-        (year (get entry :year "")))
+        (author (get entry :author nil))
+        (year (get entry :year nil)))
     (str key
-         (if (string=? author "") "" (str " — " author))
+         (if (or (nil? author) (string=? author "")) "" (str " — " author))
          (if (nil? year) "" (str " (" year ")")))))
 
 (define (-jmref-register-cite-entries entries)
