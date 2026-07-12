@@ -514,7 +514,12 @@ export class SvgEditorView extends ViewElement {
   // --- pointer handling ------------------------------------------------
 
   _onPointerDown(event) {
-    if (this._inline && this._inline.active) return; // editor commits on blur
+    if (this._inline && this._inline.active) {
+      // Click-away commits explicitly — the blur handler can't tell a
+      // deliberate canvas click from a stray focus steal, but we can.
+      this._inline.commitNow();
+      return;
+    }
     const isPan = this._spacePan || event.button === 1;
     if (event.button !== 0 && !isPan) return;
     this._stage.focus();
@@ -564,6 +569,10 @@ export class SvgEditorView extends ViewElement {
     }
 
     if (this._tool === 'node') {
+      // Cancel the pointerdown's default action, or the browser focuses
+      // the stage AFTER our handlers run and blurs the just-opened inline
+      // editor shut (a flash the synthetic-event tests can't see).
+      event.preventDefault();
       this._placeNode(p, event);
       return;
     }

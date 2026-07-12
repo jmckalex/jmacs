@@ -69,12 +69,44 @@ export class SvgInlineEditor {
     // Keep canvas pointer handlers away while editing; a click inside the
     // editor must not start a canvas gesture.
     this._root.addEventListener('pointerdown', (e) => e.stopPropagation());
-    this._textarea.addEventListener('blur', () => this._commit());
     this._textarea.addEventListener('input', () => this._autoGrow());
+
+    this._textarea.addEventListener('blur', (e) => this._onBlur(e));
 
     this._autoGrow();
     this._textarea.focus();
     this._textarea.select();
+  }
+
+  /**
+   * Blur: commit — unless focus was stolen by the editor's own stage or
+   * one of its containers (the pointerdown default action and the host's
+   * focus routing both do that after a click), in which case take the
+   * focus back and keep editing. A deliberate click-away onto the canvas
+   * commits explicitly via the view's pointerdown (which runs before any
+   * focus change), so it never relies on this handler.
+   */
+  _onBlur(event) {
+    if (!this._root || this._committed) return;
+    const to = event.relatedTarget;
+    if (to && (to === this._stage || to.contains(this._stage))) {
+      // Chromium may ignore a focus() call issued while the stolen focus
+      // is still being committed — retry asynchronously as well.
+      this._textarea.focus();
+      const ta = this._textarea;
+      setTimeout(() => {
+        if (this._textarea === ta && ta.ownerDocument.activeElement !== ta) {
+          ta.focus();
+        }
+      }, 0);
+      return;
+    }
+    this._commit();
+  }
+
+  /** Commit whatever is in the box now (the view's click-away path). */
+  commitNow() {
+    this._commit();
   }
 
   _onKeyDown(event) {
