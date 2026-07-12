@@ -1,20 +1,38 @@
 # svg-editor — a vector-drawing view with LaTeX-in-text-boxes
 
-**Status:** Phases 1–2 BUILT + the Phase-4 path tools; branch `svg-editor`
-(this worktree), rebased-by-merge onto Model-B-default main 2026-07-12.
-The live registration is now `ELEMENT_VIEW_SPECS` in
-`apps/desktop/src/element-spec.js` (the renderer Lisp interpreter is
-deleted; `element-view-svg-editor.lisp` is stdlib-test parity only).
-Built 2026-07-12 (single session, headless-verified via drive.js):
-TikZ-style nodes (text / $math$ / mixed, fitted rect/rounded/circle/
-ellipse/diamond borders), pen tool + node-edit (anchors, control
-handles, insert/delete/toggle-smooth), properties sidebar (paint, dash,
-arrowheads, node knobs), snapshot undo/redo, multi-select, zoom/pan,
-host-backed Save/Save As/Open + clean Export. Save keeps `data-godot-*`
-(re-editable file); Export strips it. NOT yet merged; Jason's live pass
-pending. Parked: `.svg` default-handler decision (§9.1) and the
-server-owned `svg-document` data-source (persistence / multi-window,
-§5) — an `element` view still vanishes from a restored session.
+**Status:** Phases 1–4 essentially BUILT (+ big slices of Phase 5); branch
+`svg-editor` (this worktree), rebased-by-merge onto Model-B-default main
+2026-07-12, tip `8887f9c1`, **merge-ready** (main is the merge-base — a
+`--no-ff` merge applies conflict-free). The live registration is
+`ELEMENT_VIEW_SPECS` in `apps/desktop/src/element-spec.js` (the renderer
+Lisp interpreter is deleted; `element-view-svg-editor.lisp` is
+stdlib-test parity only).
+
+Built 2026-07-12 across three rounds (headless-verified via drive.js;
+suite green):
+- **Editor core**: select/multi-select/marquee, move/resize, zoom/pan,
+  snapshot undo/redo, duplicate, z-order, grid + snap-to-grid,
+  group/ungroup, host-backed Save / Save As / Open (native dialogs) +
+  clean **Export** + 2× **PNG export**. Save keeps `data-godot-*` (the
+  file re-opens editable); Export strips it.
+- **TikZ nodes** (tool `t`): plain prose = NATIVE flowed text (word-wrap
+  tspans, resize = wrap width, selectable font); `$math$`/TeX = MathJax
+  vector islands; mixed = `\text{…}`; fitted rect/rounded/circle/
+  ellipse/diamond borders; inline overlay label editor.
+- **Paths + connectors** (pen `p`, edit-points `n`): Bezier pen with
+  symmetric handles; anchors/handles editing, knot insertion, corner⇄
+  smooth toggle; pen clicks on shapes create ATTACHED connectors
+  (compass or auto border anchors, arrow tip exactly on the border,
+  live reroute on move/resize/rebuild).
+- **Properties sidebar**: paint, dash, arrowheads, corner radius, node
+  knobs (border/padding/font/size/width), fill styles (linear/radial
+  gradients + hatch/crosshatch/dots/checker patterns), align/distribute.
+
+NOT merged; Jason's live pass pending (checklist in HANDOVER.md at the
+main repo root). Parked: `.svg` default-handler decision (§9.1), the
+server-owned `svg-document` data-source (persistence / multi-window, §5 —
+an `element` view still vanishes from a restored session), PDF export,
+and the Lisp `svg-*` scripting module.
 **Motivating use case (Jason):** "An SVG editor with drawing functions and
 toolbars a bit like Inkscape, but with the ability to include LaTeX math in
 text boxes which gets formatted to SVG graphics via MathJax. Useful for knocking
@@ -26,19 +44,24 @@ glyphs embedded in the drawing. We do not add a second MathJax.
 
 ## STATUS
 
-- [ ] Phase 0 — host-side seam: `svg-document` data-source + `.svg` ownership
-      decision (read-as-image vs. edit) + `<svg-editor-view>` mounts blank.
-- [ ] Phase 1 — MVP raw vector editor: rect / ellipse / line / plain text;
-      select / move / resize; tool palette + minimal style toolbar; save `.svg`.
-- [ ] Phase 2 — **LaTeX text boxes** via the MathJax-SVG pipeline (the
-      differentiator): author LaTeX, commit → embedded `<g>` of glyph paths,
-      re-edit the source, position / scale / colour.
-- [ ] Phase 3 — flowchart layer: connectors that attach to shapes and re-route
-      on move; arrowheads / markers; a thin node+edge model over raw SVG.
-- [ ] Phase 4 — path / pen editing, freehand, boolean/align/distribute,
-      grouping refinements, snapping/guides polish.
-- [ ] Phase 5 — export (clean SVG, PNG, PDF), the Lisp scripting surface,
-      session-restore as a server-owned data-source.
+- [~] Phase 0 — host-side seam: shipped as an ELEMENT-VIEW (JS registry,
+      `element-spec.js`), not yet a `svg-document` data-source; `.svg`
+      ownership decision still open (image view stays the default).
+- [x] Phase 1 — MVP raw vector editor: rect / ellipse / line / text;
+      select / move / resize; tool palette + properties sidebar; save `.svg`
+      (host dialogs, atomic write; save keeps `data-godot-*`).
+- [x] Phase 2 — **LaTeX text boxes** via the MathJax-SVG pipeline: TikZ-style
+      nodes, text/math/mixed classification, fitted borders, defs id
+      de-collision, inline re-edit, colour/size knobs.
+- [x] Phase 3 — flowchart layer: pen-drawn connectors attach to shape borders
+      (compass/auto anchors), arrow tip exactly on the border, LIVE re-route
+      on move/resize/rebuild; arrowhead markers; grouping; align/distribute.
+- [~] Phase 4 — path / pen editing DONE (Bezier pen, anchors/handles, knot
+      insertion, corner⇄smooth); grid + snap DONE; freehand / boolean ops /
+      guides NOT built.
+- [~] Phase 5 — clean-SVG export + 2× PNG export DONE; gradients/patterns
+      DONE; PDF export, the Lisp `svg-*` scripting surface, and
+      session-restore (server-owned data-source) NOT built.
 
 Each phase is a live-verify gate (Jason runs the GUI). The build side cannot
 launch the GUI.
