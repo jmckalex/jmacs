@@ -92,6 +92,18 @@ export const ELEMENT_VIEW_SPECS = {
     keyboard: 'off',
     noFocus: false,
   },
+  'svg-edit': {
+    title: 'SVG Editor',
+    tag: 'svg-editor-view',
+    module: '', // pre-registered by the renderer (packages/renderer/src/index.js)
+    attrs: [],
+    fit: 'fill',
+    // 'share': plain keys are the canvas's (tools, nudge); C-/M-/A- chords
+    // bubble to the editor router. The element stopPropagation()s the few
+    // chords it owns (save/undo/redo) before they reach the router.
+    keyboard: 'share',
+    noFocus: false,
+  },
 };
 
 /** The registered element-view command/kind names (M-x-routable). */

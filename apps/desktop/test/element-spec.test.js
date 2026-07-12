@@ -55,9 +55,18 @@ test('normalizeFit defaults unknown / empty to center', () => {
 
 // --- L4: the plain-JS element-view registry (replaces the Lisp registry) ----
 
-test('elementViewKinds is the three built-ins', () => {
+test('elementViewKinds is the four built-ins', () => {
   assert.deepEqual(elementViewKinds().sort(),
-    ['atari', 'bib-search', 'notebook-cells']);
+    ['atari', 'bib-search', 'notebook-cells', 'svg-edit']);
+});
+
+test('svg-edit: empty module (bundled tag), fill, shared keyboard', () => {
+  const p = elementViewOpenPayload('svg-edit');
+  assert.equal(p.moduleUrl, '');
+  assert.equal(p.tag, 'svg-editor-view');
+  assert.equal(p.keyboard, 'share');
+  assert.equal(p.fit, 'fill');
+  assert.equal(p.noFocus, false);
 });
 
 test('elementViewSpec returns the spec, or null for an unknown kind', () => {
