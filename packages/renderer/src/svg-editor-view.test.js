@@ -13,9 +13,9 @@ import assert from 'node:assert/strict';
 
 import { TOOLS, toolForKey, SvgEditorView } from './svg-editor-view.js';
 
-test('TOOLS includes the MVP tool set with unique keys', () => {
+test('TOOLS includes the full tool set with unique keys', () => {
   const ids = TOOLS.map((t) => t.id);
-  for (const id of ['select', 'rect', 'ellipse', 'line', 'text', 'math']) {
+  for (const id of ['select', 'rect', 'ellipse', 'line', 'pen', 'node', 'node-edit']) {
     assert.ok(ids.includes(id), `has ${id} tool`);
   }
   const keys = TOOLS.map((t) => t.key);
@@ -24,7 +24,9 @@ test('TOOLS includes the MVP tool set with unique keys', () => {
 
 test('toolForKey maps a letter to its tool, null otherwise', () => {
   assert.equal(toolForKey('r'), 'rect');
-  assert.equal(toolForKey('m'), 'math');
+  assert.equal(toolForKey('p'), 'pen');
+  assert.equal(toolForKey('t'), 'node');
+  assert.equal(toolForKey('n'), 'node-edit');
   assert.equal(toolForKey('z'), null);
 });
 

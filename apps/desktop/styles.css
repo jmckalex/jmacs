@@ -6062,6 +6062,7 @@ svg-editor-view.svg-editor-view {
   background: var(--bg, #1a2026);
   color: var(--fg);
   overflow: hidden;
+  --svg-editor-accent: var(--accent, #2d8cf0);
 }
 .svg-editor-palette {
   display: flex;
@@ -6071,9 +6072,10 @@ svg-editor-view.svg-editor-view {
   background: var(--bg-chrome);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  flex-wrap: wrap;
 }
 .svg-editor-tool,
-.svg-editor-save {
+.svg-editor-action {
   font: inherit;
   font-size: 12px;
   padding: 3px 9px;
@@ -6084,15 +6086,34 @@ svg-editor-view.svg-editor-view {
   cursor: pointer;
 }
 .svg-editor-tool:hover,
-.svg-editor-save:hover {
+.svg-editor-action:hover {
   background: color-mix(in srgb, var(--fg) 14%, transparent);
 }
 .svg-editor-tool.active {
   background: color-mix(in srgb, var(--accent, #88c0d0) 30%, transparent);
   border-color: color-mix(in srgb, var(--accent, #88c0d0) 55%, transparent);
 }
-.svg-editor-save {
-  margin-left: auto;
+.svg-editor-spacer {
+  flex: 1 1 auto;
+}
+.svg-editor-status {
+  font-size: 11px;
+  opacity: 0.75;
+  padding: 0 6px;
+}
+.svg-editor-file {
+  font-size: 11px;
+  opacity: 0.65;
+  padding: 0 6px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.svg-editor-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .svg-editor-stage {
   position: relative;
@@ -6107,6 +6128,23 @@ svg-editor-view.svg-editor-view {
     )
     50% / 24px 24px;
 }
+.svg-editor-stage.svg-editor-panning {
+  cursor: grab;
+}
+.svg-editor-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  box-shadow: 0 2px 14px color-mix(in srgb, #000 35%, transparent);
+}
+.svg-editor-document,
+.svg-editor-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
 .svg-editor-document {
   background: #ffffff;
 }
@@ -6115,6 +6153,129 @@ svg-editor-view.svg-editor-view {
 }
 .svg-editor-handle {
   pointer-events: all;
+}
+.svg-editor-math-invalid {
+  fill: #cc3333;
+  text-decoration: underline wavy;
+}
+/* Inline label editor (svg-inline-editor.js) */
+.svg-editor-inline {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-chrome);
+  border: 1px solid color-mix(in srgb, var(--accent, #88c0d0) 55%, transparent);
+  border-radius: 5px;
+  padding: 5px;
+  box-shadow: 0 4px 16px color-mix(in srgb, #000 40%, transparent);
+}
+.svg-editor-inline-input {
+  font: inherit;
+  font-size: 13px;
+  font-family: var(--font-mono, monospace);
+  min-width: 220px;
+  resize: none;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 5px;
+  outline: none;
+}
+.svg-editor-inline-hint {
+  font-size: 10px;
+  opacity: 0.6;
+}
+/* Properties sidebar (svg-properties-panel.js) */
+.svg-editor-props {
+  flex: 0 0 200px;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--bg-chrome);
+  padding: 8px;
+  font-size: 12px;
+}
+.svg-editor-props-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  opacity: 0.85;
+}
+.svg-editor-props-hint {
+  opacity: 0.6;
+  line-height: 1.4;
+}
+.svg-editor-props-edit-label {
+  font: inherit;
+  font-size: 12px;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 3px 8px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.svg-editor-props-edit-label:hover {
+  background: color-mix(in srgb, var(--fg) 14%, transparent);
+}
+.svg-editor-props-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 5px 0;
+}
+.svg-editor-props-label {
+  opacity: 0.75;
+  flex: 0 0 auto;
+}
+.svg-editor-props-row input[type='number'] {
+  width: 58px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+.svg-editor-props-row input[type='range'] {
+  width: 90px;
+}
+.svg-editor-props-row select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-chrome);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 4px;
+  max-width: 100px;
+}
+.svg-editor-props-row input[type='color'] {
+  width: 30px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
+}
+.svg-editor-props-color {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.svg-editor-props-none {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
 /* Workspace restore chooser: lay each row out as a 3-column table —
    label (wide, no early wrap) | windows | date — so the columns line up down
    the list. Scoped to the workspace picker; other pickers keep the flex flow. */
