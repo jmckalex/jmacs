@@ -3674,3 +3674,37 @@ M-x svg-edit — draw (r/e/l), pen a spline (p; Enter/close/Esc), edit points
 wheel/meta-wheel/space-pan, Save/Open/Export.
 
 ---
+
+## [2026-07-12 γ] SVG editor round 2: text/math split, TikZ connectors, showcase wave (branch `svg-editor`, unmerged)
+
+**Context**: Jason asked (1) text typeset natively (resizable/reflowed like a
+div, selectable font) with math via MathJax; (2) pen-drawn paths that attach
+to node anchors and terminate on node borders with TikZ-perfect arrow tips;
+(3) knot/control-point insertion (already existed — Edit Pts dbl-click);
+then (4) "as many features as possible, your judgement" for a showcase.
+
+**Landed** (3 commits on top of the focus fix: `776b0553`, `b36eaede`, + the
+focus fix `8e18fb92`; suite green 3560+/0):
+- Flowed text nodes: greedy wrap into tspans (pure wrapParagraph), resize =
+  wrap width, Font + Text-width panel knobs. Math/mixed unchanged (MathJax).
+- Connectors: pen click on node/rect/ellipse starts at the border (compass
+  dots; near-dot pins, elsewhere TikZ auto), click a shape terminates +
+  arrowhead tip EXACTLY on the border (marker refX=10); data-godot-from/to;
+  LIVE reroute on move/resize/label-rebuild; endpoint drag detaches; delete
+  detaches; duplicate remaps among clones. Pure svg-connect.js ray geometry.
+- Wave: linear/radial gradients + hatch/crosshatch/dots/checker patterns
+  (def-backed, panel-driven, borders included); align/distribute rows;
+  grid + snap ('g'); PNG export at 2x (data: URLs — CSP blocks blob:);
+  group/ungroup (M-g/M-S-g) with group-aware moves and duplicates.
+
+**Decisions to review**: connector default gets an arrowhead; text-node
+resize changes wrap width not font size; PNG is white-background 2x to
+~/Downloads (no binary host-save path exists); grid is 10u, editor-local
+state (not persisted).
+
+**State**: branch `svg-editor` @ godot-svg worktree, tip `b36eaede`, UNMERGED,
+awaiting your live pass (checklist in HANDOVER.md). Everything drive-verified
+headless except: the inline-editor blur guard and real download UX (focus/
+download need a visible window).
+
+---
