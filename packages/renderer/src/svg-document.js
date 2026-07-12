@@ -160,6 +160,47 @@ export function textMarkup(spec) {
 }
 
 /**
+ * A colour's slug for stable per-colour marker ids (`#ff0000` → `ff0000`,
+ * `red` → `red`).
+ * @param {string} color
+ * @returns {string}
+ */
+export function colorSlug(color) {
+  return String(color ?? 'currentColor')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * The id of the arrowhead marker for a stroke colour.
+ * @param {string} color
+ * @returns {string}
+ */
+export function arrowMarkerId(color) {
+  return `godot-arrow-${colorSlug(color)}`;
+}
+
+/**
+ * Markup for an arrowhead `<marker>`, colour-matched to a stroke (one
+ * marker per colour keeps the saved file clean and portable — no
+ * `context-stroke`, which several SVG consumers don't support).
+ * `orient="auto-start-reverse"` lets the same marker serve both
+ * `marker-start` and `marker-end`.
+ * @param {string} color
+ * @returns {string}
+ */
+export function arrowMarkerMarkup(color) {
+  const id = arrowMarkerId(color);
+  return (
+    `<marker id="${escapeAttr(id)}" viewBox="0 0 10 10" refX="8.5" refY="5" ` +
+    `markerWidth="7" markerHeight="7" orient="auto-start-reverse" ` +
+    `markerUnits="strokeWidth">` +
+    `<path d="M 0 0 L 10 5 L 0 10 z" fill="${escapeAttr(color)}"/>` +
+    `</marker>`
+  );
+}
+
+/**
  * Remove editor-only `data-godot-*` attributes from a serialised SVG
  * string, for the "export clean SVG" / save path. Removing the
  * attributes (rather than rewriting the tree) keeps this a pure string
