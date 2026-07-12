@@ -3621,3 +3621,56 @@ element is exercised by you in Electron. Build order followed the brief: pure
 testable helpers first, then the element, then the wiring.
 
 ---
+
+## [2026-07-12 β] SVG editor: TikZ nodes + pen/bezier + properties panel (branch `svg-editor`, unmerged)
+
+**Context**: Jason asked for TikZ-like text nodes (typeset math, rect/circle/
+ellipse borders), shapes with resize handles, bezier splines with adjustable
+control points, click-to-select with property editing, "and anything else
+useful". Built on the `svg-editor` worktree after merging main in (the branch
+was 325 commits stale, pre-Model-B-default).
+
+**What landed** (8 commits, full suite green — 3540 tests / 0 fail):
+- merge of main + the JS-registry rewire (`ELEMENT_VIEW_SPECS['svg-edit']` in
+  element-spec.js — the .lisp file is test-parity only now; without the
+  registry entry M-x svg-edit was dead on arrival).
+- pure modules + tests: svg-path-model (34), svg-node (21), svg-properties(13).
+- pen + node-edit tools; TikZ nodes (inline overlay editor, MathJax island
+  embed w/ per-node id namespacing, TikZ border geometry incl. diamond);
+  properties sidebar; snapshot undo/redo; multi-select; zoom/pan; host-backed
+  Save/Save As/Open + clean Export; per-colour arrowhead markers.
+- MVP bugs fixed on the way: overlay/document coordinate mismatch (the
+  original selection handles drew misaligned); zero-length "phantom handles"
+  from parse shadowing anchors; the saved file used to carry the editor's
+  inline style/class.
+
+**Decisions I made you should review**:
+1. **Save keeps `data-godot-*`** (file re-opens fully editable); a separate
+   Export… writes the stripped clean SVG. The MVP stripped on save, which
+   made nodes un-re-editable.
+2. The old `text`/`math` tools are UNIFIED into the node tool ('t'): plain
+   prose → native <text>, `$…$`/TeX → math island, mixed prose+$math$ →
+   \text{…} wrap (real TikZ label semantics). Legacy shapes from old files
+   still select/edit.
+3. Node resize scales font-size + padding uniformly (TikZ-ish), not the
+   border independently.
+4. `keyboard: 'share'` kept; the canvas owns M-s/M-z/M-S-z/M-d (stopPropagation)
+   while focused.
+
+**Still parked** (from the design doc, unchanged): `.svg` default-handler
+(image vs editor — currently still image; M-x svg-edit is the entry point),
+and the server-owned `svg-document` data-source — an `element` view has no
+filePath, so an svg-edit pane VANISHES from a restored workspace, and there
+is no multi-window fan-out. That's the natural next phase if the tool earns
+its keep.
+
+**State of the work**: branch `svg-editor` @ worktree godot-svg, 8 commits
+ahead of the merge point, unmerged, suite green, headless-verified end to end
+(drive.js: real M-x → key/pointer events; save → reopen → still editable).
+Your live pass: `cd apps/desktop && ./node_modules/.bin/electron .` then
+M-x svg-edit — draw (r/e/l), pen a spline (p; Enter/close/Esc), edit points
+(n; drag anchors + handles, dbl-click to insert/toggle), place nodes
+(t; "accept $q_0$", dbl-click to re-edit), panel edits, M-z/M-S-z, M-d,
+wheel/meta-wheel/space-pan, Save/Open/Export.
+
+---

@@ -1,6 +1,20 @@
 # svg-editor — a vector-drawing view with LaTeX-in-text-boxes
 
-**Status:** Design only — no code yet. Branch `svg-editor` (this worktree).
+**Status:** Phases 1–2 BUILT + the Phase-4 path tools; branch `svg-editor`
+(this worktree), rebased-by-merge onto Model-B-default main 2026-07-12.
+The live registration is now `ELEMENT_VIEW_SPECS` in
+`apps/desktop/src/element-spec.js` (the renderer Lisp interpreter is
+deleted; `element-view-svg-editor.lisp` is stdlib-test parity only).
+Built 2026-07-12 (single session, headless-verified via drive.js):
+TikZ-style nodes (text / $math$ / mixed, fitted rect/rounded/circle/
+ellipse/diamond borders), pen tool + node-edit (anchors, control
+handles, insert/delete/toggle-smooth), properties sidebar (paint, dash,
+arrowheads, node knobs), snapshot undo/redo, multi-select, zoom/pan,
+host-backed Save/Save As/Open + clean Export. Save keeps `data-godot-*`
+(re-editable file); Export strips it. NOT yet merged; Jason's live pass
+pending. Parked: `.svg` default-handler decision (§9.1) and the
+server-owned `svg-document` data-source (persistence / multi-window,
+§5) — an `element` view still vanishes from a restored session.
 **Motivating use case (Jason):** "An SVG editor with drawing functions and
 toolbars a bit like Inkscape, but with the ability to include LaTeX math in
 text boxes which gets formatted to SVG graphics via MathJax. Useful for knocking
