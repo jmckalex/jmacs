@@ -105,6 +105,18 @@ test('Z marks the model closed and folds a duplicated last anchor', () => {
   assert.equal(dup.anchors.length, 3);
 });
 
+test('zero-length control points canonicalise to null handles (no phantoms)', () => {
+  // The pen emits c1 = the from-anchor for corner→smooth segments; a
+  // round-trip must restore hOut = null, not an invisible handle sitting
+  // on the anchor (which would shadow it during node editing).
+  const m = parsePathData('M 0 0 C 0 0 20 10 30 10 C 40 10 30 10 60 0');
+  assert.equal(m.anchors[0].hOut, null);
+  assert.deepEqual(m.anchors[1].hIn, { x: 20, y: 10 });
+  assert.deepEqual(m.anchors[1].hOut, { x: 40, y: 10 });
+  // c2 of the second segment equals its end anchor (30 10 ≠ 60 0 — keep).
+  assert.deepEqual(m.anchors[2].hIn, { x: 30, y: 10 });
+});
+
 test('implicit repetition: M followed by extra pairs continues as lineto', () => {
   const m = parsePathData('M 0 0 10 0 10 10');
   assert.equal(m.anchors.length, 3);

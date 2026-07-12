@@ -99,11 +99,21 @@ export function parsePathData(d) {
     prevQuadC = null;
   };
 
-  /** Append a cubic segment with absolute control points. */
+  /**
+   * Append a cubic segment with absolute control points. A control point
+   * that coincides with its anchor is a zero-length handle — canonicalise
+   * it to null (a corner), or an invisible "phantom handle" would sit on
+   * the anchor and shadow it during node editing.
+   */
   const cubicTo = (c1x, c1y, c2x, c2y, x, y) => {
     const from = lastAnchor();
-    from.hOut = { x: c1x, y: c1y };
-    anchors.push(makeAnchor(x, y, { x: c2x, y: c2y }));
+    from.hOut =
+      Math.abs(c1x - from.x) < 1e-9 && Math.abs(c1y - from.y) < 1e-9
+        ? null
+        : { x: c1x, y: c1y };
+    const hIn =
+      Math.abs(c2x - x) < 1e-9 && Math.abs(c2y - y) < 1e-9 ? null : { x: c2x, y: c2y };
+    anchors.push(makeAnchor(x, y, hIn));
     cur = { x, y };
     prevCubicC2 = { x: c2x, y: c2y };
     prevQuadC = null;
