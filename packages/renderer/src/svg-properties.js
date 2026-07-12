@@ -22,6 +22,7 @@
  */
 
 import { NODE_BORDER_SHAPES } from './svg-node.js';
+import { FILL_STYLES, FILL_ANGLES } from './svg-fill-styles.js';
 
 /** Dash presets. `null` = solid (remove the attribute). */
 export const DASH_PRESETS = {
@@ -142,10 +143,60 @@ function arrowProp(key, label, attr, target) {
   };
 }
 
+/**
+ * The fill colour descriptor for style-capable shapes: when a gradient /
+ * pattern is active the primary colour lives in `data-godot-fill-a`
+ * (the `fill` attribute is the def url); the view's `_applyFillStyle`
+ * routes the patched colour into the def.
+ */
+function styledFillProp(target, fillDefault, label = 'Fill') {
+  return {
+    key: 'fill',
+    label,
+    type: 'color',
+    target,
+    allowNone: true,
+    get: (attrs) =>
+      attrs['data-godot-fill-style']
+        ? attrs['data-godot-fill-a'] ?? fillDefault
+        : attrs.fill ?? fillDefault,
+    set: (value) => ({ fill: value === '' ? null : value }),
+  };
+}
+
+/** Fill style (solid / gradients / patterns) + its extra knobs. */
+function fillStyleProps(target) {
+  return [
+    {
+      key: 'fill-style',
+      label: 'Fill style',
+      type: 'select',
+      target,
+      options: [...FILL_STYLES],
+      get: (attrs) => attrs['data-godot-fill-style'] ?? 'solid',
+      set: (value) => ({ 'data-godot-fill-style': value === 'solid' ? null : value }),
+    },
+    colorProp('fill-b', 'Fill colour 2', 'data-godot-fill-b', target, {
+      allowNone: false,
+      dflt: '#ffffff',
+    }),
+    {
+      key: 'fill-angle',
+      label: 'Angle',
+      type: 'select',
+      target,
+      options: FILL_ANGLES.map(String),
+      get: (attrs) => String(attrs['data-godot-fill-angle'] ?? '0'),
+      set: (value) => ({ 'data-godot-fill-angle': value === '0' ? null : value }),
+    },
+  ];
+}
+
 /** The full paint set shared by filled shapes. */
 function paintProps(target, { fillDefault = '#cccccc' } = {}) {
   return [
-    colorProp('fill', 'Fill', 'fill', target, { dflt: fillDefault }),
+    styledFillProp(target, fillDefault),
+    ...fillStyleProps(target),
     colorProp('stroke', 'Stroke', 'stroke', target, { dflt: '#222222' }),
     numberProp('stroke-width', 'Stroke width', 'stroke-width', target, {
       min: 0,
@@ -269,7 +320,8 @@ const NODE_PROPS = [
     }),
   },
   colorProp('color', 'Text colour', 'fill', 'content', { allowNone: false, dflt: '#222222' }),
-  colorProp('fill', 'Border fill', 'fill', 'border', { dflt: '#ffffff' }),
+  styledFillProp('border', '#ffffff', 'Border fill'),
+  ...fillStyleProps('border'),
   colorProp('stroke', 'Border stroke', 'stroke', 'border', { dflt: '#222222' }),
   numberProp('stroke-width', 'Border width', 'stroke-width', 'border', {
     min: 0,
@@ -293,6 +345,7 @@ const SCHEMA = {
   text: TEXT_PROPS,
   math: MATH_PROPS,
   node: NODE_PROPS,
+  group: OPAQUE_PROPS,
   shape: SHAPE_PROPS,
   opaque: OPAQUE_PROPS,
 };

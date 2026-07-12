@@ -38,6 +38,9 @@ import {
   resizeRect,
   screenToUser,
   distToSegment,
+  snapToGrid,
+  alignDeltas,
+  distributeDeltas,
 } from './svg-geometry.js';
 import {
   SVG_NS,
@@ -74,6 +77,7 @@ import { SvgNodeEditTool } from './svg-node-edit.js';
 import { SvgInlineEditor } from './svg-inline-editor.js';
 import { SvgPropertiesPanel } from './svg-properties-panel.js';
 import { SvgConnections } from './svg-connections.js';
+import { fillStyleDef } from './svg-fill-styles.js';
 
 /** The drawing tools, in palette order. Each is `{ id, label, key }`. */
 export const TOOLS = [
@@ -93,6 +97,18 @@ export function toolForKey(key) {
 }
 
 const UNDO_LIMIT = 100;
+
+/** Border-child attributes preserved across a node border refit. */
+const BORDER_PAINT_ATTRS = [
+  'fill',
+  'stroke',
+  'stroke-width',
+  'stroke-dasharray',
+  'data-godot-fill-style',
+  'data-godot-fill-a',
+  'data-godot-fill-b',
+  'data-godot-fill-angle',
+];
 
 export class SvgEditorView extends ViewElement {
   constructor() {
@@ -119,6 +135,8 @@ export class SvgEditorView extends ViewElement {
     this._docSize = { width: 800, height: 600 };
     this._fitted = false;
     this._spacePan = false;
+    this._gridOn = false;
+    this._gridSize = 10;
 
     // interaction state
     this._tool = 'select';
@@ -225,6 +243,7 @@ export class SvgEditorView extends ViewElement {
       ['Save', 'M-s', () => this.save(false)],
       ['Save As…', 'M-S-s', () => this.save(true)],
       ['Export…', 'clean SVG without editor metadata', () => this.exportClean()],
+      ['PNG…', 'render a 2x PNG to Downloads', () => this.exportPng()],
     ];
     for (const [label, title, fn] of actions) {
       const btn = doc.createElement('button');
@@ -234,6 +253,12 @@ export class SvgEditorView extends ViewElement {
       btn.addEventListener('click', fn);
       this._chrome.append(btn);
     }
+    this._gridBtn = doc.createElement('button');
+    this._gridBtn.className = 'svg-editor-action';
+    this._gridBtn.textContent = 'Grid';
+    this._gridBtn.title = 'grid + snapping (g)';
+    this._gridBtn.addEventListener('click', () => this.toggleGrid());
+    this._chrome.append(this._gridBtn);
 
     // ── body: stage + properties sidebar ────────────────────────────
     const body = doc.createElement('div');
@@ -321,6 +346,11 @@ export class SvgEditorView extends ViewElement {
 
     this._stage.replaceChildren(this._canvas);
 
+    // The grid extras layer is created FIRST so it paints beneath the
+    // selection / gesture / tool layers.
+    this.overlayExtrasLayer('grid');
+    this._updateGrid();
+
     if (!opts.preserveView) {
       this._fitted = false;
       this.zoomToFit();
@@ -406,6 +436,49 @@ export class SvgEditorView extends ViewElement {
       this._panY -= event.deltaY;
       this._applyViewTransform();
     }
+  }
+
+  // --- grid + snapping ---------------------------------------------------
+
+  /** Snap a gesture point to the grid when the grid is on. */
+  _maybeSnap(p) {
+    if (!this._gridOn) return p;
+    return { x: snapToGrid(p.x, this._gridSize), y: snapToGrid(p.y, this._gridSize) };
+  }
+
+  toggleGrid() {
+    this._gridOn = !this._gridOn;
+    if (this._gridBtn) this._gridBtn.classList.toggle('active', this._gridOn);
+    this._updateGrid();
+  }
+
+  /** (Re)draw the grid into its overlay layer (never serialised). */
+  _updateGrid() {
+    const layer = this.overlayExtrasLayer('grid');
+    if (!layer) return;
+    layer.replaceChildren();
+    if (!this._gridOn) return;
+    const doc = this.ownerDocument;
+    const g = this._gridSize;
+    const defs = doc.createElementNS(SVG_NS, 'defs');
+    const pat = doc.createElementNS(SVG_NS, 'pattern');
+    pat.setAttribute('id', 'godot-grid-overlay');
+    pat.setAttribute('width', String(g));
+    pat.setAttribute('height', String(g));
+    pat.setAttribute('patternUnits', 'userSpaceOnUse');
+    const path = doc.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', `M ${g} 0 L 0 0 0 ${g}`);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('class', 'svg-editor-grid-line');
+    pat.append(path);
+    defs.append(pat);
+    const rect = doc.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', '0');
+    rect.setAttribute('y', '0');
+    rect.setAttribute('width', String(this._docSize.width));
+    rect.setAttribute('height', String(this._docSize.height));
+    rect.setAttribute('fill', 'url(#godot-grid-overlay)');
+    layer.append(defs, rect);
   }
 
   // --- tools -----------------------------------------------------------
@@ -554,7 +627,7 @@ export class SvgEditorView extends ViewElement {
     const p = this._toUser(event.clientX, event.clientY);
 
     if (this._tool === 'pen') {
-      this._pen.pointerDown(p, event);
+      this._pen.pointerDown(this._maybeSnap(p), event);
       this._drag = { mode: 'pen', pointerId: event.pointerId };
       this._stage.setPointerCapture(event.pointerId);
       return;
@@ -586,7 +659,7 @@ export class SvgEditorView extends ViewElement {
       // the stage AFTER our handlers run and blurs the just-opened inline
       // editor shut (a flash the synthetic-event tests can't see).
       event.preventDefault();
-      this._placeNode(p, event);
+      this._placeNode(this._maybeSnap(p), event);
       return;
     }
 
@@ -594,7 +667,7 @@ export class SvgEditorView extends ViewElement {
     this._drag = {
       mode: 'create',
       tool: this._tool,
-      startUser: p,
+      startUser: this._maybeSnap(p),
       curUser: p,
       pointerId: event.pointerId,
     };
@@ -700,7 +773,7 @@ export class SvgEditorView extends ViewElement {
         this._nodeEdit.pointerMove(p, event);
         break;
       case 'create':
-        drag.curUser = p;
+        drag.curUser = this._maybeSnap(p);
         this._previewCreate();
         break;
       case 'move': {
@@ -714,12 +787,13 @@ export class SvgEditorView extends ViewElement {
         break;
       }
       case 'resize':
-        this._resizeSelection(p, drag);
+        this._resizeSelection(this._maybeSnap(p), drag);
         break;
       case 'line-end': {
+        const sp = this._maybeSnap(p);
         const n = drag.which === 1 ? ['x1', 'y1'] : ['x2', 'y2'];
-        this._setNum(drag.el, n[0], p.x);
-        this._setNum(drag.el, n[1], p.y);
+        this._setNum(drag.el, n[0], sp.x);
+        this._setNum(drag.el, n[1], sp.y);
         this._redrawSelection();
         break;
       }
@@ -746,13 +820,14 @@ export class SvgEditorView extends ViewElement {
       this._pen.pointerUp(p, event);
       return;
     }
+    const pc = drag.mode === 'create' ? this._maybeSnap(p) : p;
     if (drag.mode === 'node-edit') {
       this._nodeEdit.pointerUp(p, event);
       return;
     }
     if (drag.mode === 'pan') return;
     if (drag.mode === 'create') {
-      this._commitCreate(drag.startUser, p, drag.tool);
+      this._commitCreate(drag.startUser, pc, drag.tool);
     } else if (drag.mode === 'marquee') {
       this._commitMarquee(drag.startUser, p, drag.additive);
     } else if (drag.mode === 'move') {
@@ -846,7 +921,7 @@ export class SvgEditorView extends ViewElement {
     const contentFill = oldContent ? oldContent.getAttribute('fill') : null;
     const borderPaint = {};
     if (oldBorder) {
-      for (const a of ['fill', 'stroke', 'stroke-width', 'stroke-dasharray']) {
+      for (const a of BORDER_PAINT_ATTRS) {
         const v = oldBorder.getAttribute(a);
         if (v != null) borderPaint[a] = v;
       }
@@ -1011,7 +1086,7 @@ export class SvgEditorView extends ViewElement {
     const old = g.querySelector('[data-godot-role="border"]');
     const paint = keepPaint ?? {};
     if (old && keepPaint === null) {
-      for (const a of ['fill', 'stroke', 'stroke-width', 'stroke-dasharray']) {
+      for (const a of BORDER_PAINT_ATTRS) {
         const v = old.getAttribute(a);
         if (v != null) paint[a] = v;
       }
@@ -1250,15 +1325,9 @@ export class SvgEditorView extends ViewElement {
     for (const el of this._selection) {
       this._moveElement(el, dx, dy, drag);
     }
-    // Connectors attached to anything that moved (or moved themselves)
-    // re-pin their endpoints to the borders.
-    if (this._connections) {
-      const ids = new Set();
-      for (const el of this._selection) {
-        if (el.id) ids.add(el.id);
-      }
-      if (ids.size > 0) this._connections.rerouteFor(ids);
-    }
+    // Connectors attached to anything that moved (or moved themselves,
+    // or members of a moved group) re-pin their endpoints.
+    this._rerouteMoved(Array.from(this._selection));
     if (this._nodeEdit && this._nodeEdit.target) this._nodeEdit.resync();
     this._redrawSelection();
   }
@@ -1556,6 +1625,9 @@ export class SvgEditorView extends ViewElement {
         else this.undo();
       } else if (k === 'd') {
         this.duplicateSelection();
+      } else if (k === 'g') {
+        if (event.shiftKey) this.ungroupSelection();
+        else this.groupSelection();
       } else {
         return; // other chords bubble to the editor router ('share')
       }
@@ -1580,6 +1652,11 @@ export class SvgEditorView extends ViewElement {
       return;
     }
 
+    if (key === 'g' && !event.altKey) {
+      this.toggleGrid();
+      event.preventDefault();
+      return;
+    }
     if (!event.altKey && key.length === 1) {
       const tool = toolForKey(key.toLowerCase());
       if (tool) {
@@ -1687,12 +1764,24 @@ export class SvgEditorView extends ViewElement {
       if (el.id) idMap.set(el.id, newId);
       clone.setAttribute('id', newId);
       this._layer.append(clone);
+      // Grouped members keep their ids on clone — re-id every descendant
+      // so the document never holds duplicates.
+      for (const child of clone.querySelectorAll('[id]')) {
+        if (child.closest('[data-godot-role], [data-godot-shape="math"]')) continue; // math internals re-id via rebuild
+        const cid = this.allocId();
+        if (child.id) idMap.set(child.id, cid);
+        child.setAttribute('id', cid);
+      }
       // Re-namespace embedded math so ids stay unique.
       const shape = clone.getAttribute('data-godot-shape');
       if (shape === 'node') {
         this._rebuildNodeContent(clone);
       } else if (shape === 'math') {
         this._renderLegacyMathInto(clone, clone.getAttribute('data-godot-latex') || '', clone.id);
+      } else if (shape === 'group') {
+        for (const node of clone.querySelectorAll('[data-godot-shape="node"]')) {
+          this._rebuildNodeContent(node);
+        }
       }
       this._moveElement(clone, 12, 12, null);
       clones.push(clone);
@@ -1759,6 +1848,14 @@ export class SvgEditorView extends ViewElement {
       }
     }
 
+    if (['fill', 'fill-style', 'fill-b', 'fill-angle'].includes(desc.key)) {
+      // Choosing 'none' abandons any gradient/pattern; otherwise re-derive
+      // the def-backed fill from the style attributes.
+      if (desc.key === 'fill' && value === 'none') {
+        target.removeAttribute('data-godot-fill-style');
+      }
+      this._applyFillStyle(target);
+    }
     if (desc.key === 'stroke') {
       this.refreshAttachedMarkers(target);
     }
@@ -1787,9 +1884,8 @@ export class SvgEditorView extends ViewElement {
     this._redrawSelection();
   }
 
-  /** `url(#…)` for the arrow marker of a stroke colour (find-or-create). */
-  _markerRef(color) {
-    const id = arrowMarkerId(color);
+  /** Find-or-create a def by id from its markup; returns the url ref. */
+  _ensureDef(id, markup) {
     if (!this._doc.querySelector(`#${CSS.escape(id)}`)) {
       let defs = this._doc.querySelector('defs');
       if (!defs) {
@@ -1797,12 +1893,126 @@ export class SvgEditorView extends ViewElement {
         this._doc.prepend(defs);
       }
       const frag = new DOMParser().parseFromString(
-        `<svg xmlns="${SVG_NS}">${arrowMarkerMarkup(color)}</svg>`,
+        `<svg xmlns="${SVG_NS}">${markup}</svg>`,
         'image/svg+xml'
       ).documentElement;
       defs.append(this.ownerDocument.importNode(frag.firstElementChild, true));
     }
     return `url(#${id})`;
+  }
+
+  /** `url(#…)` for the arrow marker of a stroke colour (find-or-create). */
+  _markerRef(color) {
+    return this._ensureDef(arrowMarkerId(color), arrowMarkerMarkup(color));
+  }
+
+  /**
+   * Re-apply a target's fill from its style attributes: solid restores
+   * the plain colour; a gradient / pattern gets (or reuses) its def and
+   * points `fill` at it. The primary colour rides `data-godot-fill-a`
+   * while styled, so the panel's Fill swatch keeps working.
+   */
+  _applyFillStyle(target) {
+    const style = target.getAttribute('data-godot-fill-style');
+    const cur = target.getAttribute('fill');
+    if (!style) {
+      if (cur && cur.startsWith('url(#godot-fill-')) {
+        target.setAttribute('fill', target.getAttribute('data-godot-fill-a') || '#cccccc');
+      }
+      return;
+    }
+    let a = target.getAttribute('data-godot-fill-a');
+    if (cur && cur !== 'none' && !cur.startsWith('url(')) {
+      a = cur;
+      target.setAttribute('data-godot-fill-a', a);
+    }
+    a = a || '#888888';
+    const b = target.getAttribute('data-godot-fill-b') || '#ffffff';
+    const angle = Number(target.getAttribute('data-godot-fill-angle')) || 0;
+    const def = fillStyleDef(style, a, b, angle);
+    if (def) target.setAttribute('fill', this._ensureDef(def.id, def.markup));
+  }
+
+  // --- align / distribute / group ---------------------------------------
+
+  /** Align the multi-selection (mode: left/centerX/right/top/centerY/bottom). */
+  alignSelection(mode) {
+    const els = this.selectionList();
+    if (els.length < 2) return;
+    const rects = els.map((el) => this._bboxOf(el));
+    if (rects.some((r) => !r)) return;
+    this.pushUndo();
+    const deltas = alignDeltas(rects, mode);
+    els.forEach((el, i) => this._moveElement(el, deltas[i].dx, deltas[i].dy, null));
+    this._rerouteMoved(els);
+    this._redrawSelection();
+    this.notifyChange();
+  }
+
+  /** Distribute the multi-selection's centres evenly along an axis. */
+  distributeSelection(axis) {
+    const els = this.selectionList();
+    if (els.length < 3) return;
+    const rects = els.map((el) => this._bboxOf(el));
+    if (rects.some((r) => !r)) return;
+    this.pushUndo();
+    const deltas = distributeDeltas(rects, axis);
+    els.forEach((el, i) => this._moveElement(el, deltas[i].dx, deltas[i].dy, null));
+    this._rerouteMoved(els);
+    this._redrawSelection();
+    this.notifyChange();
+  }
+
+  /** Reroute connectors touching any of these elements (or their members). */
+  _rerouteMoved(els) {
+    if (!this._connections) return;
+    const ids = new Set();
+    for (const el of els) {
+      if (el.id) ids.add(el.id);
+      for (const child of el.querySelectorAll('[id]')) ids.add(child.id);
+    }
+    if (ids.size > 0) this._connections.rerouteFor(ids);
+  }
+
+  /** Group the multi-selection into a `<g>` (document order preserved). */
+  groupSelection() {
+    const els = this.selectionList();
+    if (els.length < 2) return;
+    this.pushUndo();
+    const ordered = Array.from(this._layer.children).filter((c) => this._selection.has(c));
+    const g = this.ownerDocument.createElementNS(SVG_NS, 'g');
+    g.setAttribute('id', this.allocId());
+    g.setAttribute('data-godot-shape', 'group');
+    for (const el of ordered) g.append(el);
+    this._layer.append(g);
+    this.selectOnly(g);
+    this.notifyChange();
+  }
+
+  /** Ungroup selected groups back into the layer, keeping paint order. */
+  ungroupSelection() {
+    const groups = this.selectionList().filter(
+      (el) => el.getAttribute('data-godot-shape') === 'group'
+    );
+    if (groups.length === 0) return;
+    this.pushUndo();
+    const freed = [];
+    for (const g of groups) {
+      // A moved group carries a translate — bake it into the children so
+      // ungrouping doesn't jump them.
+      const t = this._transformOf(g) || { x: 0, y: 0 };
+      const kids = Array.from(g.children);
+      for (const kid of kids) {
+        this._layer.insertBefore(kid, g);
+        if (t.x !== 0 || t.y !== 0) this._moveElement(kid, t.x, t.y, null);
+        freed.push(kid);
+      }
+      g.remove();
+    }
+    this._rerouteMoved(freed);
+    this._selection = new Set(freed);
+    this._selectionChanged();
+    this.notifyChange();
   }
 
   /** Keep arrow markers colour-matched after a stroke change. */
@@ -1969,13 +2179,20 @@ export class SvgEditorView extends ViewElement {
   }
 
   _downloadSvg(svgText) {
-    if (typeof document === 'undefined' || typeof Blob === 'undefined') return;
+    if (typeof Blob === 'undefined') return;
+    this._downloadBlob(
+      new Blob([svgText], { type: 'image/svg+xml' }),
+      (this._buffer && this._buffer.name) || 'drawing.svg'
+    );
+  }
+
+  _downloadBlob(blob, name) {
+    if (typeof document === 'undefined') return;
     try {
-      const blob = new Blob([svgText], { type: 'image/svg+xml' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = (this._buffer && this._buffer.name) || 'drawing.svg';
+      a.download = name;
       document.body.append(a);
       a.click();
       a.remove();
@@ -1983,6 +2200,40 @@ export class SvgEditorView extends ViewElement {
     } catch {
       /* download unavailable */
     }
+  }
+
+  /**
+   * Render the document to a 2× PNG (white background — what the canvas
+   * shows) and hand it to the browser download path (→ ~/Downloads).
+   * The math is already vector paths, so it rasterises crisply.
+   */
+  exportPng() {
+    const svgText = this.serialize({ clean: true });
+    // data: URLs, not blob: — the app CSP allows img-src data: only.
+    const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgText)}`;
+    const img = new Image();
+    img.onload = () => {
+      const scale = 2;
+      const canvas = this.ownerDocument.createElement('canvas');
+      canvas.width = Math.round(this._docSize.width * scale);
+      canvas.height = Math.round(this._docSize.height * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const base = this._filePath
+        ? this._filePath.split('/').pop().replace(/\.svg$/i, '')
+        : 'drawing';
+      const a = this.ownerDocument.createElement('a');
+      a.href = canvas.toDataURL('image/png');
+      a.download = `${base}.png`;
+      this.ownerDocument.body.append(a);
+      a.click();
+      a.remove();
+      this._status('PNG saved to Downloads');
+    };
+    img.onerror = () => this._status('PNG export failed');
+    img.src = svgUrl;
   }
 
   // --- chrome ------------------------------------------------------------

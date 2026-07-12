@@ -62,16 +62,35 @@ export class SvgPropertiesPanel {
     }
     if (sel.length > 1) {
       title.textContent = `${sel.length} objects`;
-      const hint = doc.createElement('div');
-      hint.className = 'svg-editor-props-hint';
-      hint.textContent = 'Move, delete, duplicate or z-order the group; select a single object to edit properties.';
-      this._container.append(hint);
+      this._buttonRow(doc, 'Align', [
+        ['⇤', 'align left edges', () => this._view.alignSelection('left')],
+        ['⇹', 'align horizontal centres', () => this._view.alignSelection('centerX')],
+        ['⇥', 'align right edges', () => this._view.alignSelection('right')],
+      ]);
+      this._buttonRow(doc, '', [
+        ['⤒', 'align top edges', () => this._view.alignSelection('top')],
+        ['⇳', 'align vertical centres', () => this._view.alignSelection('centerY')],
+        ['⤓', 'align bottom edges', () => this._view.alignSelection('bottom')],
+      ]);
+      this._buttonRow(doc, 'Spread', [
+        ['↔', 'distribute horizontally (needs 3+)', () => this._view.distributeSelection('x')],
+        ['↕', 'distribute vertically (needs 3+)', () => this._view.distributeSelection('y')],
+      ]);
+      this._buttonRow(doc, 'Group', [
+        ['Group (M-g)', 'group into one object', () => this._view.groupSelection()],
+      ]);
       return;
     }
 
     const el = sel[0];
     const kind = kindOfShape(el.getAttribute('data-godot-shape'), el.tagName);
     title.textContent = this._kindLabel(kind);
+
+    if (kind === 'group') {
+      this._buttonRow(doc, '', [
+        ['Ungroup (M-S-g)', 'dissolve the group', () => this._view.ungroupSelection()],
+      ]);
+    }
 
     // A label-bearing object gets an edit affordance up top.
     if (kind === 'node' || kind === 'math' || kind === 'text') {
@@ -98,10 +117,33 @@ export class SvgPropertiesPanel {
       text: 'Text',
       math: 'Math',
       node: 'Node',
+      group: 'Group',
       shape: 'Shape',
       opaque: 'Object',
     };
     return labels[kind] ?? 'Object';
+  }
+
+  /** A labelled row of small action buttons. */
+  _buttonRow(doc, label, buttons) {
+    const row = doc.createElement('div');
+    row.className = 'svg-editor-props-row';
+    const name = doc.createElement('span');
+    name.className = 'svg-editor-props-label';
+    name.textContent = label;
+    row.append(name);
+    const wrap = doc.createElement('span');
+    wrap.className = 'svg-editor-props-buttons';
+    for (const [text, title, fn] of buttons) {
+      const btn = doc.createElement('button');
+      btn.className = 'svg-editor-props-btn';
+      btn.textContent = text;
+      btn.title = title;
+      btn.addEventListener('click', fn);
+      wrap.append(btn);
+    }
+    row.append(wrap);
+    this._container.append(row);
   }
 
   _row(doc, el, desc, target) {

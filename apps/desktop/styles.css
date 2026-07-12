@@ -6158,6 +6158,34 @@ svg-editor-view.svg-editor-view {
   fill: #cc3333;
   text-decoration: underline wavy;
 }
+/* Grid overlay (never serialised) + the toggled chrome button. */
+.svg-editor-grid-line {
+  stroke: color-mix(in srgb, #4488cc 30%, transparent);
+  stroke-width: 0.5;
+}
+.svg-editor-action.active {
+  background: color-mix(in srgb, var(--accent, #88c0d0) 30%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #88c0d0) 55%, transparent);
+}
+/* Properties-panel action buttons (align / distribute / group). */
+.svg-editor-props-buttons {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+.svg-editor-props-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 7px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.svg-editor-props-btn:hover {
+  background: color-mix(in srgb, var(--fg) 14%, transparent);
+}
 /* Pen-tool compass anchor affordances on a hovered connectable shape;
    .svg-editor-close-target marks the snap/commit-ready one. */
 .svg-editor-anchor-target {

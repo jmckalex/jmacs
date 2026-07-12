@@ -310,6 +310,75 @@ export function distToSegment(pt, a, b) {
   return Math.hypot(pt.x - px, pt.y - py);
 }
 
+/** The alignment modes `alignDeltas` supports. */
+export const ALIGN_MODES = ['left', 'centerX', 'right', 'top', 'centerY', 'bottom'];
+
+/**
+ * Per-rect movement deltas that align a set of bboxes: to the leftmost
+ * edge, horizontal centre, rightmost edge, topmost edge, vertical
+ * centre, or bottommost edge of the set.
+ * @param {Array<{x:number,y:number,width:number,height:number}>} rects
+ * @param {string} mode - one of ALIGN_MODES.
+ * @returns {Array<{dx:number,dy:number}>}
+ */
+export function alignDeltas(rects, mode) {
+  if (!rects || rects.length === 0) return [];
+  const rs = rects.map(normalizeRect);
+  const lefts = rs.map((r) => r.x);
+  const rights = rs.map((r) => r.x + r.width);
+  const tops = rs.map((r) => r.y);
+  const bottoms = rs.map((r) => r.y + r.height);
+  const minL = Math.min(...lefts);
+  const maxR = Math.max(...rights);
+  const minT = Math.min(...tops);
+  const maxB = Math.max(...bottoms);
+  const midX = (minL + maxR) / 2;
+  const midY = (minT + maxB) / 2;
+  return rs.map((r) => {
+    switch (mode) {
+      case 'left':
+        return { dx: minL - r.x, dy: 0 };
+      case 'centerX':
+        return { dx: midX - (r.x + r.width / 2), dy: 0 };
+      case 'right':
+        return { dx: maxR - (r.x + r.width), dy: 0 };
+      case 'top':
+        return { dx: 0, dy: minT - r.y };
+      case 'centerY':
+        return { dx: 0, dy: midY - (r.y + r.height / 2) };
+      case 'bottom':
+        return { dx: 0, dy: maxB - (r.y + r.height) };
+      default:
+        return { dx: 0, dy: 0 };
+    }
+  });
+}
+
+/**
+ * Per-rect deltas that distribute bbox centres evenly between the two
+ * extreme centres along an axis (`'x'` or `'y'`). Under three rects is a
+ * no-op. Returned in INPUT order.
+ * @param {Array<{x:number,y:number,width:number,height:number}>} rects
+ * @param {'x'|'y'} axis
+ * @returns {Array<{dx:number,dy:number}>}
+ */
+export function distributeDeltas(rects, axis) {
+  const n = rects ? rects.length : 0;
+  if (n < 3) return (rects ?? []).map(() => ({ dx: 0, dy: 0 }));
+  const rs = rects.map(normalizeRect);
+  const centre = (r) => (axis === 'x' ? r.x + r.width / 2 : r.y + r.height / 2);
+  const order = rs.map((r, i) => ({ c: centre(r), i })).sort((a, b) => a.c - b.c);
+  const first = order[0].c;
+  const step = (order[n - 1].c - first) / (n - 1);
+  const out = rs.map(() => ({ dx: 0, dy: 0 }));
+  order.forEach(({ c, i }, rank) => {
+    const target = first + rank * step;
+    if (axis === 'x') out[i] = { dx: target - c, dy: 0 };
+    else out[i] = { dx: 0, dy: target - c };
+  });
+  return out;
+}
+
 /**
  * Anchor point on a bbox for a named side, used by connectors to attach
  * to a shape. Sides: `n e s w` (edge midpoints), `center`, and the four

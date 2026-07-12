@@ -242,11 +242,15 @@ export class SvgConnections {
    */
   remapClones(idMap, clones) {
     for (const el of clones) {
-      if (!el.tagName || el.tagName.toLowerCase() !== 'path') continue;
-      for (const end of ['from', 'to']) {
-        const ref = el.getAttribute(`data-godot-${end}`);
-        if (ref && idMap.has(ref)) {
-          el.setAttribute(`data-godot-${end}`, idMap.get(ref));
+      const paths = [];
+      if (el.tagName && el.tagName.toLowerCase() === 'path') paths.push(el);
+      paths.push(...el.querySelectorAll('path[data-godot-from], path[data-godot-to]'));
+      for (const p of paths) {
+        for (const end of ['from', 'to']) {
+          const ref = p.getAttribute(`data-godot-${end}`);
+          if (ref && idMap.has(ref)) {
+            p.setAttribute(`data-godot-${end}`, idMap.get(ref));
+          }
         }
       }
     }
