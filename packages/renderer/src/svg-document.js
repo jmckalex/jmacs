@@ -185,14 +185,16 @@ export function arrowMarkerId(color) {
  * marker per colour keeps the saved file clean and portable — no
  * `context-stroke`, which several SVG consumers don't support).
  * `orient="auto-start-reverse"` lets the same marker serve both
- * `marker-start` and `marker-end`.
+ * `marker-start` and `marker-end`. `refX` sits on the arrow TIP (x=10 of
+ * the viewBox), so the tip lands exactly on the path endpoint — which a
+ * connector places exactly on the node border, TikZ-style.
  * @param {string} color
  * @returns {string}
  */
 export function arrowMarkerMarkup(color) {
   const id = arrowMarkerId(color);
   return (
-    `<marker id="${escapeAttr(id)}" viewBox="0 0 10 10" refX="8.5" refY="5" ` +
+    `<marker id="${escapeAttr(id)}" viewBox="0 0 10 10" refX="10" refY="5" ` +
     `markerWidth="7" markerHeight="7" orient="auto-start-reverse" ` +
     `markerUnits="strokeWidth">` +
     `<path d="M 0 0 L 10 5 L 0 10 z" fill="${escapeAttr(color)}"/>` +

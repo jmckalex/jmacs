@@ -140,6 +140,51 @@ export function fitNodeBorder(contentSize, opts = {}) {
 }
 
 /**
+ * Greedy word-wrap of one paragraph to `maxWidth`, using an injected
+ * `measure(text) → width` (the live view supplies canvas text metrics;
+ * tests supply arithmetic). A `maxWidth` of 0 / null means no wrapping.
+ * A single word wider than the line gets its own (overflowing) line —
+ * matching normal CSS behaviour for unbreakable content.
+ * @param {string} text
+ * @param {number|null} maxWidth
+ * @param {(s: string) => number} measure
+ * @returns {string[]} the wrapped lines (at least one).
+ */
+export function wrapParagraph(text, maxWidth, measure) {
+  const s = String(text ?? '');
+  if (!maxWidth || maxWidth <= 0) return [s];
+  const words = s.split(/\s+/).filter((w) => w !== '');
+  if (words.length === 0) return [''];
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const cand = cur === '' ? w : `${cur} ${w}`;
+    if (cur !== '' && measure(cand) > maxWidth) {
+      lines.push(cur);
+      cur = w;
+    } else {
+      cur = cand;
+    }
+  }
+  if (cur !== '') lines.push(cur);
+  return lines;
+}
+
+/**
+ * Wrap a whole node label: explicit newlines are hard paragraph breaks,
+ * each paragraph wraps independently.
+ * @param {string} source
+ * @param {number|null} maxWidth
+ * @param {(s: string) => number} measure
+ * @returns {string[]}
+ */
+export function wrapNodeText(source, maxWidth, measure) {
+  return String(source ?? '')
+    .split('\n')
+    .flatMap((para) => wrapParagraph(para, maxWidth, measure));
+}
+
+/**
  * Parse a MathJax `ex` length attribute (e.g. `"2.34ex"`) to its number.
  * @param {string} value
  * @returns {number|null}

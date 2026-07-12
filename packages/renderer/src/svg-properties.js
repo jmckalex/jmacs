@@ -208,6 +208,17 @@ const MATH_PROPS = [
   }),
 ];
 
+/** Font families offered for flowed text nodes (math ignores these). */
+export const NODE_FONTS = [
+  'sans-serif',
+  'serif',
+  'monospace',
+  'Helvetica Neue',
+  'Georgia',
+  'Times New Roman',
+  'Menlo',
+];
+
 const NODE_PROPS = [
   {
     key: 'border-shape',
@@ -230,6 +241,33 @@ const NODE_PROPS = [
     step: 1,
     dflt: 16,
   }),
+  {
+    key: 'font',
+    label: 'Font',
+    type: 'select',
+    target: 'self',
+    options: [...NODE_FONTS],
+    get: (attrs) => attrs['data-godot-font'] ?? 'sans-serif',
+    set: (value) => ({ 'data-godot-font': value === 'sans-serif' ? null : value }),
+  },
+  // Wrap width for flowed text labels; 0 = natural (no wrapping). Resize
+  // sets it too — this is the numeric way in (and back out to natural).
+  {
+    key: 'text-width',
+    label: 'Text width',
+    type: 'number',
+    target: 'self',
+    min: 0,
+    max: 2000,
+    step: 5,
+    get: (attrs) => {
+      const n = Number(attrs['data-godot-wrap-width']);
+      return Number.isFinite(n) ? n : 0;
+    },
+    set: (value) => ({
+      'data-godot-wrap-width': Number(value) > 0 ? String(value) : null,
+    }),
+  },
   colorProp('color', 'Text colour', 'fill', 'content', { allowNone: false, dflt: '#222222' }),
   colorProp('fill', 'Border fill', 'fill', 'border', { dflt: '#ffffff' }),
   colorProp('stroke', 'Border stroke', 'stroke', 'border', { dflt: '#222222' }),
@@ -276,4 +314,6 @@ export const NODE_REBUILD_KEYS = new Set([
   'border-shape',
   'padding',
   'font-size',
+  'font',
+  'text-width',
 ]);

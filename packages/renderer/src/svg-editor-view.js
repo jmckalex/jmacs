@@ -66,12 +66,14 @@ import {
   fitNodeBorder,
   parseExLength,
   mathSvgPlacement,
+  wrapNodeText,
 } from './svg-node.js';
 import { NODE_REBUILD_KEYS } from './svg-properties.js';
 import { SvgPenTool } from './svg-pen-tool.js';
 import { SvgNodeEditTool } from './svg-node-edit.js';
 import { SvgInlineEditor } from './svg-inline-editor.js';
 import { SvgPropertiesPanel } from './svg-properties-panel.js';
+import { SvgConnections } from './svg-connections.js';
 
 /** The drawing tools, in palette order. Each is `{ id, label, key }`. */
 export const TOOLS = [
@@ -255,6 +257,7 @@ export class SvgEditorView extends ViewElement {
     this._stage.addEventListener('dblclick', (e) => this._onDblClick(e));
     this._stage.addEventListener('wheel', (e) => this._onWheel(e), { passive: false });
 
+    this._connections = new SvgConnections(this);
     this._pen = new SvgPenTool(this);
     this._nodeEdit = new SvgNodeEditTool(this);
     this._inline = new SvgInlineEditor(this._stage);
@@ -461,6 +464,16 @@ export class SvgEditorView extends ViewElement {
   }
 
   // --- selection API (used by controllers + panel) ----------------------
+
+  /** The connector plumbing (pen + reroute use it). */
+  get connections() {
+    return this._connections;
+  }
+
+  /** Public face of the find-or-create arrow marker (pen commit). */
+  markerRef(color) {
+    return this._markerRef(color);
+  }
 
   selectionList() {
     return Array.from(this._selection);
@@ -841,15 +854,17 @@ export class SvgEditorView extends ViewElement {
     if (oldBorder) oldBorder.remove();
     if (oldContent) oldContent.remove();
 
+    const family = g.getAttribute('data-godot-font') || 'sans-serif';
+    const wrapWidth = Number(g.getAttribute('data-godot-wrap-width')) || 0;
     const tex = texForNodeContent(source);
     let content = null;
     if (tex === null) {
-      content = this._buildTextContent(source, fontSize);
+      content = this._buildTextContent(source, fontSize, family, wrapWidth);
     } else {
       content = this._buildMathContent(g.id, tex, fontSize);
       if (!content) {
         // MathJax not ready, or a TeX error: show the raw source, flagged.
-        content = this._buildTextContent(source, fontSize);
+        content = this._buildTextContent(source, fontSize, family, wrapWidth);
         content.classList.add('svg-editor-math-invalid');
         if (!isMathJaxReady()) {
           whenMathJaxReady(() => {
@@ -880,18 +895,34 @@ export class SvgEditorView extends ViewElement {
     this._refitNodeBorder(g, borderPaint);
   }
 
-  /** Multi-line-capable centred `<text>` content. */
-  _buildTextContent(source, fontSize) {
+  /** Measure text with canvas metrics (matches the SVG text engine). */
+  _measureText(text, fontSize, family) {
+    if (!this._measureCtx) {
+      this._measureCtx = this.ownerDocument.createElement('canvas').getContext('2d');
+    }
+    this._measureCtx.font = `${fontSize}px ${family}`;
+    return this._measureCtx.measureText(text).width;
+  }
+
+  /**
+   * Flowed `<text>` content: native typesetting in the node's font,
+   * word-wrapped to the wrap width (0 = natural), centred per line —
+   * a plain div's behaviour, in portable SVG tspans.
+   */
+  _buildTextContent(source, fontSize, family = 'sans-serif', wrapWidth = 0) {
     const doc = this.ownerDocument;
     const text = doc.createElementNS(SVG_NS, 'text');
     text.setAttribute('text-anchor', 'middle');
     text.setAttribute('font-size', String(fontSize));
+    text.setAttribute('font-family', family);
     text.setAttribute('fill', '#222222');
     text.setAttribute('x', '0');
     text.setAttribute('y', '0');
-    const lines = String(source).split('\n');
+    const lines = wrapNodeText(source, wrapWidth, (s) =>
+      this._measureText(s, fontSize, family)
+    );
     if (lines.length === 1) {
-      text.textContent = source;
+      text.textContent = lines[0];
     } else {
       lines.forEach((line, i) => {
         const tspan = doc.createElementNS(SVG_NS, 'tspan');
@@ -963,8 +994,18 @@ export class SvgEditorView extends ViewElement {
     return true;
   }
 
-  /** Fit (or refit) a node's border to its content, keeping paint attrs. */
+  /**
+   * Fit (or refit) a node's border to its content, keeping paint attrs;
+   * attached connectors re-route to the new border afterwards.
+   */
   _refitNodeBorder(g, keepPaint = null) {
+    this._refitNodeBorderCore(g, keepPaint);
+    if (this._connections && g.id) {
+      this._connections.rerouteFor(new Set([g.id]));
+    }
+  }
+
+  _refitNodeBorderCore(g, keepPaint = null) {
     const shape = g.getAttribute('data-godot-node-shape') || 'rect';
     const padding = Number(g.getAttribute('data-godot-padding'));
     const old = g.querySelector('[data-godot-role="border"]');
@@ -1209,6 +1250,15 @@ export class SvgEditorView extends ViewElement {
     for (const el of this._selection) {
       this._moveElement(el, dx, dy, drag);
     }
+    // Connectors attached to anything that moved (or moved themselves)
+    // re-pin their endpoints to the borders.
+    if (this._connections) {
+      const ids = new Set();
+      for (const el of this._selection) {
+        if (el.id) ids.add(el.id);
+      }
+      if (ids.size > 0) this._connections.rerouteFor(ids);
+    }
     if (this._nodeEdit && this._nodeEdit.target) this._nodeEdit.resync();
     this._redrawSelection();
   }
@@ -1292,17 +1342,27 @@ export class SvgEditorView extends ViewElement {
       el.setAttribute('d', pathDataFromModel(resized));
       if (this._nodeEdit && this._nodeEdit.target === el) this._nodeEdit.resync();
     } else if (shape === 'node') {
-      // Uniform: scale font size + padding, refit the border.
-      const s = this._uniformScale(drag.origBbox, next);
-      const fs = Math.max(4, Math.round((drag.origFontSize ?? 16) * s * 10) / 10);
-      const pad = Math.max(0, Math.round((drag.origPadding ?? NODE_DEFAULT_PADDING) * s * 10) / 10);
-      el.setAttribute('data-godot-font-size', String(fs));
-      el.setAttribute('data-godot-padding', String(pad));
-      if (!this._replaceMathIsland(el, fs)) {
-        const content = el.querySelector('text[data-godot-role="content"]');
-        if (content) content.setAttribute('font-size', String(fs));
+      const source = el.getAttribute('data-godot-latex') ?? '';
+      if (texForNodeContent(source) === null) {
+        // Flowed text: resizing sets the wrap width and reflows — a
+        // div's behaviour. Type size stays put (it's a panel knob).
+        const pad = this._paddingOf(el) ?? NODE_DEFAULT_PADDING;
+        const w = Math.max(20, Math.round(next.width - 2 * pad));
+        el.setAttribute('data-godot-wrap-width', String(w));
+        this._rebuildNodeContent(el);
+      } else {
+        // Math: uniform scale of font size + padding, border refits.
+        const s = this._uniformScale(drag.origBbox, next);
+        const fs = Math.max(4, Math.round((drag.origFontSize ?? 16) * s * 10) / 10);
+        const pad = Math.max(0, Math.round((drag.origPadding ?? NODE_DEFAULT_PADDING) * s * 10) / 10);
+        el.setAttribute('data-godot-font-size', String(fs));
+        el.setAttribute('data-godot-padding', String(pad));
+        if (!this._replaceMathIsland(el, fs)) {
+          const content = el.querySelector('text[data-godot-role="content"]');
+          if (content) content.setAttribute('font-size', String(fs));
+        }
+        this._refitNodeBorder(el);
       }
-      this._refitNodeBorder(el);
     } else if (shape === 'math') {
       // Legacy math boxes scale via their transform.
       const s = this._uniformScale(drag.origBbox, next);
@@ -1318,6 +1378,10 @@ export class SvgEditorView extends ViewElement {
       const s = this._uniformScale(drag.origBbox, next);
       const fs = Math.max(4, Math.round((drag.origFontSize ?? 16) * s * 10) / 10);
       el.setAttribute('font-size', String(fs));
+    }
+    // A resized shape's attached connectors re-pin to the new border.
+    if (this._connections && el.id) {
+      this._connections.rerouteFor(new Set([el.id]));
     }
     this._redrawSelection();
   }
@@ -1595,8 +1659,14 @@ export class SvgEditorView extends ViewElement {
   _deleteSelection() {
     if (this._selection.size === 0) return;
     this.pushUndo();
+    const deletedIds = new Set();
     for (const el of this._selection) {
+      if (el.id) deletedIds.add(el.id);
       if (el.parentNode) el.parentNode.removeChild(el);
+    }
+    // Connectors that referenced a deleted shape become plain paths.
+    if (this._connections && deletedIds.size > 0) {
+      this._connections.detachReferences(deletedIds);
     }
     if (this._nodeEdit && this._nodeEdit.target && !this._nodeEdit.target.isConnected) {
       this._nodeEdit.detach();
@@ -1610,9 +1680,12 @@ export class SvgEditorView extends ViewElement {
     if (this._selection.size === 0) return;
     this.pushUndo();
     const clones = [];
+    const idMap = new Map();
     for (const el of this.selectionList()) {
       const clone = el.cloneNode(true);
-      clone.setAttribute('id', this.allocId());
+      const newId = this.allocId();
+      if (el.id) idMap.set(el.id, newId);
+      clone.setAttribute('id', newId);
       this._layer.append(clone);
       // Re-namespace embedded math so ids stay unique.
       const shape = clone.getAttribute('data-godot-shape');
@@ -1623,6 +1696,12 @@ export class SvgEditorView extends ViewElement {
       }
       this._moveElement(clone, 12, 12, null);
       clones.push(clone);
+    }
+    // Cloned connectors re-attach to cloned shapes (not the originals),
+    // and re-pin to their borders.
+    if (this._connections) {
+      this._connections.remapClones(idMap, clones);
+      this._connections.rerouteFor(new Set(clones.map((c) => c.id)));
     }
     this._selection = new Set(clones);
     this._selectionChanged();
@@ -1685,14 +1764,18 @@ export class SvgEditorView extends ViewElement {
     }
     const shape = el.getAttribute('data-godot-shape');
     if (shape === 'node' && NODE_REBUILD_KEYS.has(desc.key)) {
-      if (desc.key === 'font-size') {
-        const fs = Number(el.getAttribute('data-godot-font-size')) || 16;
-        if (!this._replaceMathIsland(el, fs)) {
-          const content = el.querySelector('text[data-godot-role="content"]');
-          if (content) content.setAttribute('font-size', String(fs));
-        }
+      if (desc.key === 'border-shape' || desc.key === 'padding') {
+        this._refitNodeBorder(el);
+      } else if (
+        desc.key === 'font-size' &&
+        this._replaceMathIsland(el, Number(el.getAttribute('data-godot-font-size')) || 16)
+      ) {
+        // Math islands re-place without a re-typeset.
+        this._refitNodeBorder(el);
+      } else {
+        // font / text-width / font-size on flowed text: re-wrap the lot.
+        this._rebuildNodeContent(el);
       }
-      this._refitNodeBorder(el);
     }
     if (shape === 'math' && desc.key === 'font-size') {
       // Legacy boxes: font size rides the transform scale.

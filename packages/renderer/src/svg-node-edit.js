@@ -138,6 +138,18 @@ export class SvgNodeEditTool {
       if (Math.hypot(p.x - anchors[i].x, p.y - anchors[i].y) <= tol) {
         this._activeAnchor = i;
         this._view.pushUndo();
+        // Dragging a connector's END anchor detaches that end — the
+        // user is explicitly taking the endpoint away from the shape.
+        if (this._mode === 'path') {
+          if (i === 0 && this._target.hasAttribute('data-godot-from')) {
+            this._target.removeAttribute('data-godot-from');
+            this._target.removeAttribute('data-godot-from-anchor');
+          }
+          if (i === anchors.length - 1 && this._target.hasAttribute('data-godot-to')) {
+            this._target.removeAttribute('data-godot-to');
+            this._target.removeAttribute('data-godot-to-anchor');
+          }
+        }
         this._drag = { type: 'anchor', index: i, last: p };
         this._draw();
         return true;

@@ -16,6 +16,8 @@ import {
   fitNodeBorder,
   parseExLength,
   mathSvgPlacement,
+  wrapParagraph,
+  wrapNodeText,
 } from './svg-node.js';
 
 // --- classification ---------------------------------------------------------
@@ -125,6 +127,47 @@ test('NODE_BORDER_SHAPES lists every supported shape', () => {
   for (const s of NODE_BORDER_SHAPES.filter((x) => x !== 'none')) {
     assert.ok(fitNodeBorder({ width: 10, height: 4 }, { shape: s }) !== null, s);
   }
+});
+
+// --- text wrapping -------------------------------------------------------------
+
+/** A toy measurer: every character is 10 units wide. */
+const measure10 = (s) => s.length * 10;
+
+test('wrapParagraph fills lines greedily to the width', () => {
+  // 'aaa bbb ccc' with maxWidth 70: 'aaa bbb' = 7 chars = 70 fits;
+  // adding ' ccc' overflows.
+  assert.deepEqual(wrapParagraph('aaa bbb ccc', 70, measure10), ['aaa bbb', 'ccc']);
+});
+
+test('wrapParagraph: no width means no wrapping', () => {
+  assert.deepEqual(wrapParagraph('aaa bbb ccc', 0, measure10), ['aaa bbb ccc']);
+  assert.deepEqual(wrapParagraph('aaa bbb', null, measure10), ['aaa bbb']);
+});
+
+test('wrapParagraph: an overlong word overflows on its own line', () => {
+  assert.deepEqual(wrapParagraph('a extraordinarily b', 50, measure10), [
+    'a',
+    'extraordinarily',
+    'b',
+  ]);
+});
+
+test('wrapParagraph collapses runs of whitespace like normal flow', () => {
+  assert.deepEqual(wrapParagraph('a    b\tc', 1000, measure10), ['a b c']);
+  assert.deepEqual(wrapParagraph('', 100, measure10), ['']);
+});
+
+test('wrapNodeText: explicit newlines are hard breaks; paragraphs wrap alone', () => {
+  assert.deepEqual(wrapNodeText('aaa bbb\nccc ddd', 70, measure10), [
+    'aaa bbb',
+    'ccc ddd',
+  ]);
+  assert.deepEqual(wrapNodeText('aaa bbb ccc\nx', 70, measure10), [
+    'aaa bbb',
+    'ccc',
+    'x',
+  ]);
 });
 
 // --- ex-length placement -----------------------------------------------------------

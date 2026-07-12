@@ -122,10 +122,27 @@ test('colorSlug flattens colours to id-safe slugs', () => {
   assert.equal(colorSlug('red'), 'red');
 });
 
-test('arrowMarkerMarkup builds a per-colour, both-ends marker', () => {
+test('arrowMarkerMarkup builds a per-colour, both-ends marker, tip on the endpoint', () => {
   const m = arrowMarkerMarkup('#222222');
   assert.ok(m.includes(`id="${arrowMarkerId('#222222')}"`));
   assert.ok(m.includes('orient="auto-start-reverse"'));
   assert.ok(m.includes('fill="#222222"'));
   assert.ok(!m.includes('context-stroke'));
+  // refX = the tip x of the arrow path: the tip sits exactly on the path
+  // endpoint (which connectors place exactly on the node border).
+  assert.ok(m.includes('refX="10"'));
+});
+
+test('node font + text-width descriptors read and patch data attrs', () => {
+  const font = prop('node', 'font');
+  assert.equal(font.get({}), 'sans-serif');
+  assert.deepEqual(font.set('Georgia'), { 'data-godot-font': 'Georgia' });
+  assert.deepEqual(font.set('sans-serif'), { 'data-godot-font': null });
+  const tw = prop('node', 'text-width');
+  assert.equal(tw.get({}), 0);
+  assert.equal(tw.get({ 'data-godot-wrap-width': '140' }), 140);
+  assert.deepEqual(tw.set(120), { 'data-godot-wrap-width': '120' });
+  assert.deepEqual(tw.set(0), { 'data-godot-wrap-width': null });
+  assert.ok(NODE_REBUILD_KEYS.has('font'));
+  assert.ok(NODE_REBUILD_KEYS.has('text-width'));
 });

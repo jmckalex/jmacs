@@ -6158,6 +6158,16 @@ svg-editor-view.svg-editor-view {
   fill: #cc3333;
   text-decoration: underline wavy;
 }
+/* Pen-tool compass anchor affordances on a hovered connectable shape;
+   .svg-editor-close-target marks the snap/commit-ready one. */
+.svg-editor-anchor-target {
+  opacity: 0.55;
+}
+.svg-editor-anchor-target.svg-editor-close-target,
+.svg-editor-pen-dot.svg-editor-close-target {
+  opacity: 1;
+  fill: var(--svg-editor-accent, #2d8cf0);
+}
 /* Inline label editor (svg-inline-editor.js) */
 .svg-editor-inline {
   position: absolute;
